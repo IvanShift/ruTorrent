@@ -11,7 +11,7 @@ plugin.setValue = function( full, free )
 	if(plugin.freeBytesInMeter) $("#meter-disk-text").text(theConverter.bytes(free));
 	else $("#meter-disk-text").text(percent+'%');
 	$("#meter-disk-pane").prop("title",
-		theUILang.diskUsage
+		(theUILang.diskUsage || "%USED%/%TOTAL% (%FREE% free)")
 			.replace(/%USED%/, theConverter.bytes(used))
 			.replace(/%TOTAL%/, theConverter.bytes(full))
 			.replace(/%FREE%/, theConverter.bytes(free))
@@ -22,7 +22,7 @@ plugin.setValue = function( full, free )
 		if((free<plugin.notifySpaceLimit) && !plugin.noty)
 			plugin.noty = $.noty(
 			{
-				text: theUILang.diskNotification, 
+				text: theUILang.diskNotification || "Warning! The disk is full. rTorrent may not run correctly, and no data will be downloaded until you free some disk space.",
 				layout : 'bottomLeft',
 				type: 'error',
 				timeout : false,
@@ -96,4 +96,4 @@ plugin.onRemove = function()
 	}
 }
 
-plugin.loadLang(true);
+plugin.loadLang();
