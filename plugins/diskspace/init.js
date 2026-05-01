@@ -1,4 +1,3 @@
-plugin.loadLang();
 plugin.loadMainCSS();
 
 plugin.setValue = function( full, free )
@@ -77,11 +76,15 @@ plugin.init = function()
 			});
 		};
 		plugin.check();
-		plugin.markLoaded();
 	}
 	else
 		window.setTimeout(arguments.callee,500);
 };
+
+plugin.onLangLoaded = function()
+{
+	plugin.init();
+}
 
 plugin.onRemove = function()
 {
@@ -93,4 +96,4 @@ plugin.onRemove = function()
 	}
 }
 
-plugin.init();
+plugin.loadLang(true);
