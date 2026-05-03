@@ -2,6 +2,16 @@
 
 class RuTrackerCheckImpl
 {
+    static private function looksLikeHtmlError($content)
+    {
+        return (stripos($content, '<html') !== false)
+            || (stripos($content, '<!DOCTYPE') !== false)
+            || (stripos($content, '<center>') !== false)
+            || (stripos($content, 'Error:') !== false)
+            || (stripos($content, 'attachment data not found') !== false)
+            || (stripos($content, 'name="login_password"') !== false);
+    }
+
     // Decode CP1251 HTML to UTF-8 for reliable text search.
     static private function decodePage($content)
     {
@@ -96,6 +106,7 @@ class RuTrackerCheckImpl
             // --- STAGE 1: Check via API ---
             $req_url = "https://api.rutracker.cc/v1/get_tor_hash?by=topic_id&val=" . $topic_id;
             $client = ruTrackerChecker::makeClient($req_url);
+            $remoteHash = null;
 
             if ($client->status == 200) {
                 $ret = @json_decode($client->results, true);
@@ -109,9 +120,13 @@ class RuTrackerCheckImpl
                      if (array_key_exists($topic_id, $ret)) {
                          $apiVal = $ret[$topic_id];
                          // The hash can be a string or an array ['hash' => '...']
-                         $remoteHash = (is_array($apiVal) && isset($apiVal['hash'])) ? $apiVal['hash'] : $apiVal;
+                         if (is_array($apiVal) && isset($apiVal['hash'])) {
+                             $remoteHash = $apiVal['hash'];
+                         } elseif (is_string($apiVal) && ($apiVal !== '')) {
+                             $remoteHash = $apiVal;
+                         }
 
-                         if (!empty($hash) && strtoupper($remoteHash) == strtoupper($hash)) {
+                         if (($remoteHash !== null) && !empty($hash) && strtoupper($remoteHash) == strtoupper($hash)) {
                              return ruTrackerChecker::STE_UPTODATE;
                          }
                      }
@@ -122,13 +137,8 @@ class RuTrackerCheckImpl
             $client->setcookies();
             $client->fetchComplex("https://rutracker.org/forum/dl.php?t=" . $topic_id);
 
-            // Protection against "Soft 404": server returned 200 OK, but the content is an HTML error
-            // Check for HTML tags (full or fragments) and error messages
-            $is_html_garbage = (stripos($client->results, '<html') !== false)
-                            || (stripos($client->results, '<!DOCTYPE') !== false)
-                            || (stripos($client->results, '<center>') !== false)
-                            || (stripos($client->results, 'Error:') !== false)
-                            || (stripos($client->results, 'attachment data not found') !== false);
+            // Protection against "Soft 404": server returned 200 OK, but the content is an HTML error.
+            $is_html_garbage = self::looksLikeHtmlError($client->results);
 
             if ($client->status == 200 && !$is_html_garbage) {
                 return ruTrackerChecker::createTorrent($client->results, $hash);
@@ -144,14 +154,28 @@ class RuTrackerCheckImpl
                 // Download torrent for the NEW topic
                 $client->fetchComplex("https://rutracker.org/forum/dl.php?t=" . $absorbedTopicId);
 
-                $is_new_html_garbage = (stripos($client->results, '<html') !== false);
+                $is_new_html_garbage = self::looksLikeHtmlError($client->results);
 
                 if ($client->status == 200 && !$is_new_html_garbage) {
                     return ruTrackerChecker::createTorrent($client->results, $hash);
                 }
             }
 
-            return (($client->status < 0) ? ruTrackerChecker::STE_CANT_REACH_TRACKER : ruTrackerChecker::STE_DELETED);
+            if ($client->status < 0) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
+
+            // If the API reports a concrete remote hash, the topic is not deleted.
+            // A failed dl.php response here is an access/auth/download problem, not deletion.
+            if (($remoteHash !== null) && (strtoupper($remoteHash) != strtoupper($hash))) {
+                ruTrackerChecker::logDebug(
+                    "RuTracker topic {$topic_id}: API reports hash {$remoteHash}, but dl.php did not return a torrent"
+                    . " (status={$client->status}, length=" . strlen($client->results) . ")"
+                );
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
+
+            return ruTrackerChecker::STE_DELETED;
         }
         return ruTrackerChecker::STE_NOT_NEED;
     }
