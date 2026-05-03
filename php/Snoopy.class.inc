@@ -290,7 +290,7 @@ class Snoopy
 			}
 			case "https":
 			{
-				$ret = $this->_httpsrequest($URI,$content_type,$body);
+				$ret = $this->_httpsrequest($URI,$method,$content_type,$body);
 				break;
 			}
 			default:
@@ -484,7 +484,7 @@ class Snoopy
 		return true;
 	}
 
-	function _httpsrequest($url,$content_type="",$body="")
+	function _httpsrequest($url,$http_method="GET",$content_type="",$body="")
 	{
 		if($this->passcookies && $this->_redirectaddr)
 			$this->setcookies();
@@ -519,6 +519,9 @@ class Snoopy
 			$headers[] = "Authorization: Basic ".base64_encode($this->user.":".$this->pass);
 
 		$cmdline_params = '';
+		$http_method = strtoupper($http_method);
+		if($http_method != "GET")
+			$cmdline_params .= " -X ".escapeshellarg($http_method);
 		foreach( $headers as $header )
 			$cmdline_params .= " -H ".escapeshellarg($header);
 
