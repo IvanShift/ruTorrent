@@ -1646,6 +1646,16 @@ var theWebUI = {
 				table.setRowById(torrent, hash, sInfo[0], {})
 			})
 			.enqueueFunc(() => {
+				if (theWebUI.dID && !(theWebUI.dID in dataTorrents)) {
+					const staleDetailsHash = theWebUI.dID;
+					delete theWebUI.files[staleDetailsHash];
+					delete theWebUI.dirs[staleDetailsHash];
+					delete theWebUI.peers[staleDetailsHash];
+					delete theWebUI.trackers[staleDetailsHash];
+					theWebUI.dID = "";
+					theWebUI.clearDetails();
+				}
+
 				// update details page
 				const detailsTorrent = dataTorrents[theWebUI.dID];
 				const oldDetailsTorrent = this.torrents[theWebUI.dID];
@@ -1666,6 +1676,7 @@ var theWebUI = {
 						delete theWebUI.files[hash];
 						delete theWebUI.dirs[hash];
 						delete theWebUI.peers[hash];
+						delete theWebUI.trackers[hash];
 						table.removeRow(hash);
 					}
 				}
