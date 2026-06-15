@@ -220,9 +220,14 @@ class rTorrentSettings
 			{
 				require_once( 'methods-0.9.4.php' );
 			}
-			if($this->iVersion>=0x1002)
+			// rTorrent 0.10.2 aliases are still inherited by newer 0.16.x builds.
+			if($this->iVersion>=0x0a02)
 			{
 				require_once( 'methods-0.10.2.php' );
+			}
+			if($this->iVersion>=0x1000)
+			{
+				require_once( 'methods-0.16.0.php' );
 			}
 			$this->apiVersion = 0;
 			if($this->iVersion>=0x901)
@@ -311,7 +316,7 @@ class rTorrentSettings
 	}
 	public function getRatioGroupCommand($ratio,$cmd,$args)
 	{
-		$prefix = ($this->iVersion >= 0x904) && in_array($cmd,$this->ratioCmds) ? "group2." : "group.";
+		$prefix = ($this->iVersion >= 0x904) && ($this->iVersion < 0x1000) && in_array($cmd,$this->ratioCmds) ? "group2." : "group.";
 		return( new rXMLRPCCommand( $prefix.$ratio.".".$cmd, $args ) );
 	}
 	public function getEventCommand($cmd1,$cmd2,$args)
@@ -388,7 +393,8 @@ class rTorrentSettings
 	public function patchDeprecatedCommand( $cmd, $name )
 	{
 		if((array_key_exists($name,$this->aliases) && $this->aliases[$name]["prm"]) || 
-			(($this->iVersion>=0x904) && (strpos($cmd->command,"group2.")===0)))
+			(($this->iVersion>=0x904) && (strpos($cmd->command,"group2.")===0)) ||
+			(($this->iVersion>=0x1000) && preg_match('/^group\.[^.]+\.ratio\.(min|max|upload)(\.set)?$/', $cmd->command)))
 			$cmd->addParameter("");
 	}
 	public function maxContentSize()

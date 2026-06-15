@@ -851,7 +851,8 @@ function correctContent()
 			"load"			:	{ name: "load.normal", prm: 1 }
 		});
 	}
-	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1002)
+	// rTorrent 0.10.2 introduced these method aliases; 0.16.x keeps them too.
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x0a02)
 	{
 		$.extend(theRequestManager.aliases,
 		{
@@ -870,6 +871,22 @@ function correctContent()
 			"ratio.upload.set"              : { name: "group2.seeding.ratio.upload.set", prm: 1 },
 			"connection_leech"              : { name: "protocol.connection.leech.set", prm: 1 },
 			"connection_seed"               : { name: "protocol.connection.seed.set", prm: 1 },
+		});
+	}
+	// rTorrent 0.16 removed deprecated execute2/schedule2 and uses group.* ratios.
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1000)
+	{
+		$.extend(theRequestManager.aliases,
+		{
+			"execute"                       : { name: "execute", prm: 1 },
+			"schedule"                      : { name: "schedule", prm: 1 },
+			"schedule_remove"               : { name: "schedule.remove", prm: 1 },
+			"ratio.min"                     : { name: "group.seeding.ratio.min", prm: 0 },
+			"ratio.max"                     : { name: "group.seeding.ratio.max", prm: 0 },
+			"ratio.upload"                  : { name: "group.seeding.ratio.upload", prm: 0 },
+			"ratio.min.set"                 : { name: "group.seeding.ratio.min.set", prm: 1 },
+			"ratio.max.set"                 : { name: "group.seeding.ratio.max.set", prm: 1 },
+			"ratio.upload.set"              : { name: "group.seeding.ratio.upload.set", prm: 1 },
 		});
 	}
 	if(theWebUI.systemInfo.rTorrent.iVersion < 0x907) {
