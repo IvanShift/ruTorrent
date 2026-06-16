@@ -17,6 +17,7 @@ window.theWebUI = {
 
 for (const src of [
   "../lang/en.js",
+  "../js/browser.js",
   "../js/common.js",
   "../js/content.js",
   "../js/rtorrent.js",
@@ -42,6 +43,61 @@ function loadXML(action) {
 }
 
 describe("xmlrpc calls", () => {
+  function withRtorrentVersion(version, callback) {
+    const oldAliases = theRequestManager.aliases;
+    const oldVersion = theWebUI.systemInfo.rTorrent.iVersion;
+
+    theRequestManager.aliases = {};
+    theWebUI.systemInfo.rTorrent.iVersion = version;
+
+    try {
+      correctContent();
+      callback();
+    } finally {
+      theRequestManager.aliases = oldAliases;
+      theWebUI.systemInfo.rTorrent.iVersion = oldVersion;
+    }
+  }
+
+  it("maps rTorrent 0.16 commands without deprecated aliases", () => {
+    withRtorrentVersion(0x100e, () => {
+      expect(theRequestManager.map("execute")).toBe("execute");
+      expect(theRequestManager.map("schedule")).toBe("schedule");
+      expect(theRequestManager.map("schedule_remove")).toBe("schedule.remove");
+      expect(theRequestManager.map("ratio.min.set")).toBe(
+        "group.seeding.ratio.min.set"
+      );
+
+      const command = new rXMLRPCCommand("schedule");
+      expect(command.command).toBe("schedule");
+      expect(command.params[0]).toStrictEqual({ type: "string", value: "" });
+    });
+  });
+
+  it("keeps rTorrent 0.10.2 aliases available on 0.16.0", () => {
+    withRtorrentVersion(0x1000, () => {
+      expect(theRequestManager.map("dht")).toBe("dht.mode.set");
+      expect(theRequestManager.map("connection_leech")).toBe(
+        "protocol.connection.leech.set"
+      );
+      expect(theRequestManager.map("ratio.min.set")).toBe(
+        "group.seeding.ratio.min.set"
+      );
+    });
+  });
+
+  it("loads rTorrent 0.10.2 aliases at the 0.10.2 boundary", () => {
+    withRtorrentVersion(0x0a02, () => {
+      expect(theRequestManager.map("dht")).toBe("dht.mode.set");
+      expect(theRequestManager.map("connection_seed")).toBe(
+        "protocol.connection.seed.set"
+      );
+      expect(theRequestManager.map("ratio.min.set")).toBe(
+        "group2.seeding.ratio.min.set"
+      );
+    });
+  });
+
   it("should parse getprops response", () => {
     const stub = new rTorrentStub(`?action=getprops&hash=${h("A")}`);
     //console.log(stub.content);

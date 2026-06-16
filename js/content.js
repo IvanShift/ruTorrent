@@ -851,7 +851,8 @@ function correctContent()
 			"load"			:	{ name: "load.normal", prm: 1 }
 		});
 	}
-	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1002)
+	// rTorrent 0.10.2 introduced these method aliases; 0.16.x keeps them too.
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x0a02)
 	{
 		$.extend(theRequestManager.aliases,
 		{

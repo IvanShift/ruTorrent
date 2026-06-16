@@ -31,48 +31,64 @@ class rCache
 	{
 		global $profileMask;
 		$name = $this->getName($rss);
+		$lockName = $name.'.lock';
+		// Keep one writer per cache key so merge and atomic rename see a stable file.
+		$lock = fopen( $lockName, "c" );
+		if($lock===false)
+			return(false);
+		@chmod($lockName,$profileMask & 0666);
+		if(!self::flock( $lock ))
+		{
+			fclose($lock);
+			return(false);
+		}
+
 		$cacheKey = is_object($rss) ? self::getCacheKey($rss) : null;
 		$modTime = $cacheKey ? (self::$modifiedTimes[$cacheKey] ?? (isset($rss->modified) ? $rss->modified : 0)) : 0;
 		if(     is_object($rss) &&
 			$modTime &&
 			method_exists($rss,"merge") &&
+			is_file($name) &&
 			($modTime < filemtime($name)))
 		{
-		        $className = get_class($rss);
+			$className = get_class($rss);
 			$newInstance = new $className();
 			if($this->get($newInstance) &&
 				!$rss->merge($newInstance, $arg))
+			{
+				flock( $lock, LOCK_UN );
+				fclose( $lock );
 				return(false);
+			}
 		}
-		$fp = fopen( $name.'.tmp', "a" );
+		// Use a per-process temporary file and publish it atomically under the key lock.
+		$tmpName = $name.'.'.getmypid().'.'.uniqid('', true).'.tmp';
+		$fp = fopen( $tmpName, "wb" );
 		if($fp!==false)
 		{
-			if(self::flock( $fp ))
+			$str = serialize( $rss );
+			if((fwrite( $fp, $str ) == strlen($str)) && fflush( $fp ))
 			{
-				ftruncate( $fp, 0 );
-				$str = serialize( $rss );
-	        		if((fwrite( $fp, $str ) == strlen($str)) && fflush( $fp ))
-	        		{
-					flock( $fp, LOCK_UN );
-        				if(fclose( $fp ) !== false)
-        				{
-	       					@rename( $name.'.tmp', $name );
+				if(fclose( $fp ) !== false)
+				{
+					@chmod($tmpName,$profileMask & 0666);
+					if(@rename( $tmpName, $name ))
+					{
 						@chmod($name,$profileMask & 0666);
-	        				return(true);
+						flock( $lock, LOCK_UN );
+						fclose( $lock );
+						return(true);
 					}
-					else
-						unlink( $name.'.tmp' );
 				}
 				else
-				{
-					flock( $fp, LOCK_UN );
-        				fclose( $fp );
-        				unlink( $name.'.tmp' );
-				}	        			
-	        	}
-	        	else
-		        	fclose( $fp );
+					@unlink( $tmpName );
+			}
+			else
+				fclose( $fp );
 		}
+		@unlink( $tmpName );
+		flock( $lock, LOCK_UN );
+		fclose( $lock );
 	        return(false);
 	}
 	public function get( &$rss )
@@ -81,7 +97,13 @@ class rCache
 		$ret = @file_get_contents($fname);
 		if($ret!==false)
 		{
-			$tmp = unserialize($ret);
+			// Corrupt or legacy cache files can emit warnings; always restore the caller's handler.
+			set_error_handler(function () { return true; });
+			try {
+				$tmp = unserialize($ret);
+			} finally {
+				restore_error_handler();
+			}
 			if(is_array($tmp))
 			{
 				$rss = $tmp;				
@@ -107,7 +129,25 @@ class rCache
 	}
 	public function remove( $rss )
 	{
-		return(@unlink($this->getName($rss)));
+		global $profileMask;
+		$name = $this->getName($rss);
+		$lockName = $name.'.lock';
+		// Delete cache data and its sidecar lock while holding the same key lock used by writers.
+		$lock = fopen( $lockName, "c" );
+		if($lock!==false)
+		{
+			@chmod($lockName,$profileMask & 0666);
+			if(self::flock( $lock ))
+			{
+				$ret = @unlink($name);
+				flock( $lock, LOCK_UN );
+				fclose( $lock );
+				@unlink($lockName);
+				return($ret);
+			}
+			fclose($lock);
+		}
+		return(@unlink($name));
 	}
 	protected function getName($rss)
 	{
