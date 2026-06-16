@@ -52,6 +52,10 @@ docker run --rm --entrypoint php85 \
 
 The full Jest suite has unrelated existing failures in legacy specs. Do not claim it passes unless it has been run fresh and returns exit 0.
 
+## Code Documentation
+
+Keep new and changed code comments, inline documentation, and regression-test assertion messages in English. Add short comments only for non-obvious compatibility gates, locking/race handling, XMLRPC quirks, and Docker handoff assumptions.
+
 ## Docker Handoff
 
 The default `docker-rutorrent` build fetches `IvanShift/ruTorrent` from `refs/heads/master`. Push fork commits before expecting a normal Docker build to include them.
