@@ -1,3 +1,4 @@
+plugin.loadLang();
 plugin.loadMainCSS();
 
 plugin.setValue = function( full, free )
@@ -10,19 +11,21 @@ plugin.setValue = function( full, free )
 		visibility: !percent ? "hidden" : "visible" } );
 	if(plugin.freeBytesInMeter) $("#meter-disk-text").text(theConverter.bytes(free));
 	else $("#meter-disk-text").text(percent+'%');
-	$("#meter-disk-pane").prop("title",
-		(theUILang.diskUsage || "%USED%/%TOTAL% (%FREE% free)")
-			.replace(/%USED%/, theConverter.bytes(used))
-			.replace(/%TOTAL%/, theConverter.bytes(full))
-			.replace(/%FREE%/, theConverter.bytes(free))
-	);
+	if(theUILang.diskUsage) {
+		$("#meter-disk-pane").prop("title",
+			theUILang.diskUsage
+				.replace(/%USED%/, theConverter.bytes(used))
+				.replace(/%TOTAL%/, theConverter.bytes(full))
+				.replace(/%FREE%/, theConverter.bytes(free))
+		);
+	}
 
 	if($.noty && plugin.allStuffLoaded)
 	{
 		if((free<plugin.notifySpaceLimit) && !plugin.noty)
 			plugin.noty = $.noty(
 			{
-				text: theUILang.diskNotification || "Warning! The disk is full. rTorrent may not run correctly, and no data will be downloaded until you free some disk space.",
+				text: theUILang.diskNotification,
 				layout : 'bottomLeft',
 				type: 'error',
 				timeout : false,
@@ -76,15 +79,11 @@ plugin.init = function()
 			});
 		};
 		plugin.check();
+		plugin.markLoaded();
 	}
 	else
 		window.setTimeout(arguments.callee,500);
 };
-
-plugin.onLangLoaded = function()
-{
-	plugin.init();
-}
 
 plugin.onRemove = function()
 {
@@ -96,4 +95,4 @@ plugin.onRemove = function()
 	}
 }
 
-plugin.loadLang();
+plugin.init();

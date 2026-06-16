@@ -61,6 +61,10 @@ docker run --rm --entrypoint php85 \
 
 The full Jest suite currently has unrelated existing failures in some legacy specs. Prefer focused tests plus syntax checks unless the task is specifically to repair the test suite.
 
+## Code Documentation
+
+Keep new and updated code comments, inline documentation, and test assertion messages in English. Add concise comments for non-obvious compatibility gates, locking/race handling, XMLRPC quirks, or cross-repository handoff assumptions; avoid comments that merely restate straightforward code.
+
 ## Change Workflow
 
 1. Make ruTorrent behavior changes in this repository.
