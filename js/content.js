@@ -897,6 +897,20 @@ function correctContent()
 			"ratio.upload.set"  : { name: "group.seeding.ratio.upload.set",        prm: 1 },
 		});
 	}
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x100f)
+	{
+		// rTorrent 0.16.15 keeps legacy socket/file allocation setters as
+		// warning-only compatibility stubs. Use socket-manager commands and
+		// let rtorrent.js add system.sockets.adjust_alloc after setters.
+		$.extend(theRequestManager.aliases,
+		{
+			"get_max_open_files"   : { name: "system.sockets.files.max_size",      prm: 0 },
+			"set_max_open_files"   : { name: "system.sockets.files.min_alloc.set", prm: 1 },
+			"get_max_open_http"    : { name: "system.sockets.http.max_size",       prm: 0 },
+			"set_max_open_http"    : { name: "system.sockets.http.min_alloc.set",  prm: 1 },
+			"get_max_open_sockets" : { name: "system.sockets.max_size",            prm: 0 },
+		});
+	}
 	if(theWebUI.systemInfo.rTorrent.iVersion < 0x907) {
 		const title = theUILang.requiresAtLeastRtorrent.replace('{version}', 'v0.9.7');
 		$($$('webui.show_open_status')).attr({ disabled: '', title });

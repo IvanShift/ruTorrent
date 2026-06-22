@@ -409,12 +409,22 @@ class rTorrentSettings
 	{
 		return 2 << (20 + 3*($this->apiVersion>=11));
 	}
-	public function patchDeprecatedRequest($commands)
+	public function patchDeprecatedRequest(&$commands)
 	{
+		$needsSocketAdjust = false;
 		if($this->iVersion>=0x904)
 		{
 			foreach($commands as $cmd)
 			{
+				if(($this->iVersion>=0x100f) &&
+					in_array($cmd->command, array(
+						"system.sockets.files.min_alloc.set",
+						"system.sockets.files.max_alloc.set",
+						"system.sockets.http.min_alloc.set",
+						"system.sockets.http.max_alloc.set",
+					), true))
+					$needsSocketAdjust = true;
+
 				$prefix = '';
 				if(strpos($cmd->command, 't.') === 0)
 					$prefix = ':t';
@@ -434,5 +444,7 @@ class rTorrentSettings
 				}
 			}
 		}
+		if($needsSocketAdjust)
+			$commands[] = new rXMLRPCCommand("system.sockets.adjust_alloc");
 	}
 }

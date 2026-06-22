@@ -152,9 +152,18 @@ var theRequestManager =
 	},
 	patchRequest: function( commands )
 	{
+		var needsSocketAdjust = false;
 		for( var i in commands )
 		{
 			var cmd = commands[i];
+			if([
+				"system.sockets.files.min_alloc.set",
+				"system.sockets.files.max_alloc.set",
+				"system.sockets.http.min_alloc.set",
+				"system.sockets.http.max_alloc.set",
+			].indexOf(cmd.command) >= 0)
+				needsSocketAdjust = true;
+
 			var prefix = '';
 			if(cmd.command.indexOf('t.') === 0)
 				prefix = ':t';
@@ -173,6 +182,8 @@ var theRequestManager =
 				cmd.params.splice( 1, 1 );
 			}
 		}
+		if(needsSocketAdjust)
+			commands.push(new rXMLRPCCommand("system.sockets.adjust_alloc"));
 	}
 };
 
