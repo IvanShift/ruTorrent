@@ -71,6 +71,11 @@ describe("xmlrpc calls", () => {
       const command = new rXMLRPCCommand("schedule");
       expect(command.command).toBe("schedule");
       expect(command.params[0]).toStrictEqual({ type: "string", value: "" });
+
+      const ratioCommand = new rXMLRPCCommand("ratio.min.set");
+      ratioCommand.addParameter("i4", 100);
+      expect(ratioCommand.command).toBe("group.seeding.ratio.min.set");
+      expect(ratioCommand.params).toStrictEqual([{ type: "i4", value: 100 }]);
     });
   });
 
