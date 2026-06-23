@@ -401,8 +401,7 @@ class rTorrentSettings
 	public function patchDeprecatedCommand( $cmd, $name )
 	{
 		if((array_key_exists($name,$this->aliases) && $this->aliases[$name]["prm"]) || 
-			(($this->iVersion>=0x904) && (strpos($cmd->command,"group2.")===0)) ||
-			(($this->iVersion>=0x1000) && preg_match('/^group\.[^.]+\.ratio\.(min|max|upload)(\.set)?$/', $cmd->command)))
+			(($this->iVersion>=0x904) && (strpos($cmd->command,"group2.")===0)))
 			$cmd->addParameter("");
 	}
 	public function maxContentSize()

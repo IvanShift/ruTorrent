@@ -74,10 +74,15 @@ class RtorrentCompatibilityTest extends TestCase
 		$settings = $this->makeSettings(0x100e);
 		$this->useSettingsSingleton($settings);
 
+		$aliasCommand = new rXMLRPCCommand('ratio.min.set', 100);
+		$this->assertEquals('group.seeding.ratio.min.set', $aliasCommand->command, 'rTorrent 0.16 maps bare ratio setters to group commands');
+		$this->assertEquals(1, count($aliasCommand->params), 'rTorrent 0.16 bare ratio value setters send one scalar argument');
+		$this->assertEquals('100', $aliasCommand->params[0]->value, 'rTorrent 0.16 bare ratio setters keep the requested value');
+
 		$command = $settings->getRatioGroupCommand('rat_0', 'ratio.min.set', 100);
 
 		$this->assertEquals('group.rat_0.ratio.min.set', $command->command, 'rTorrent 0.16 uses group ratio command names');
-		$this->assertEquals('', $command->params[0]->value, 'rTorrent 0.16 group ratio commands keep an empty target parameter');
-		$this->assertEquals('100', $command->params[1]->value, 'rTorrent 0.16 group ratio commands keep the requested value');
+		$this->assertEquals(1, count($command->params), 'rTorrent 0.16 group ratio value setters send one scalar argument');
+		$this->assertEquals('100', $command->params[0]->value, 'rTorrent 0.16 group ratio commands keep the requested value');
 	}
 }

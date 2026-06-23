@@ -32,9 +32,9 @@ $this->aliases = array_merge($this->aliases, array(
 	"ratio.min"         => array( "name"=>"group.seeding.ratio.min",         "prm"=>0 ),
 	"ratio.max"         => array( "name"=>"group.seeding.ratio.max",         "prm"=>0 ),
 	"ratio.upload"      => array( "name"=>"group.seeding.ratio.upload",      "prm"=>0 ),
-	"ratio.min.set"     => array( "name"=>"group.seeding.ratio.min.set",     "prm"=>1 ),
-	"ratio.max.set"     => array( "name"=>"group.seeding.ratio.max.set",     "prm"=>1 ),
-	"ratio.upload.set"  => array( "name"=>"group.seeding.ratio.upload.set",  "prm"=>1 ),
+	"ratio.min.set"     => array( "name"=>"group.seeding.ratio.min.set",     "prm"=>0 ),
+	"ratio.max.set"     => array( "name"=>"group.seeding.ratio.max.set",     "prm"=>0 ),
+	"ratio.upload.set"  => array( "name"=>"group.seeding.ratio.upload.set",  "prm"=>0 ),
 
 ));
 
