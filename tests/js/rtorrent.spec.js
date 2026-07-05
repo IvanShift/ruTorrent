@@ -91,6 +91,37 @@ describe("xmlrpc calls", () => {
     });
   });
 
+  it("maps rTorrent 0.16.15 socket commands to socket manager commands", () => {
+    withRtorrentVersion(0x100f, () => {
+      expect(theRequestManager.map("get_max_open_files")).toBe(
+        "system.sockets.files.max_size"
+      );
+      expect(theRequestManager.map("set_max_open_http")).toBe(
+        "system.sockets.http.min_alloc.set"
+      );
+      expect(theRequestManager.map("network.open_sockets")).toBe(
+        "system.sockets.size"
+      );
+    });
+  });
+
+  it("maps rTorrent 0.16.16 proxy commands to proxy manager commands", () => {
+    withRtorrentVersion(0x1010, () => {
+      expect(theRequestManager.map("get_http_proxy")).toBe(
+        "network.proxy.http"
+      );
+      expect(theRequestManager.map("set_http_proxy")).toBe(
+        "network.proxy.http.set"
+      );
+      expect(theRequestManager.map("get_proxy_address")).toBe(
+        "network.proxy.global"
+      );
+      expect(theRequestManager.map("set_proxy_address")).toBe(
+        "network.proxy.global.set"
+      );
+    });
+  });
+
   it("loads rTorrent 0.10.2 aliases at the 0.10.2 boundary", () => {
     withRtorrentVersion(0x0a02, () => {
       expect(theRequestManager.map("dht")).toBe("dht.mode.set");

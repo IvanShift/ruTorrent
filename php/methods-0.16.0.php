@@ -6,8 +6,9 @@
 // from the rc file — only via the -D launch flag. Stock 0.16.14+ therefore
 // does NOT register these aliases, so anything sending them faults with
 // "Method '<name>' not defined". rTorrent 0.16.15 also moved socket/file
-// allocation setters under system.sockets.* and leaves the old setters as
-// warning-only compatibility stubs.
+// allocation under system.sockets.* and deprecated network.open_sockets.
+// rTorrent 0.16.16 replaced the old proxy_address commands with
+// network.proxy.global/http.
 //
 // This file overrides the offending entries from methods-0.9.4.php with
 // the canonical command names that exist on every 0.16.x build. Loaded
@@ -48,5 +49,17 @@ if($this->iVersion >= 0x100f)
 		"get_max_open_http"    => array( "name"=>"system.sockets.http.max_size",       "prm"=>0 ),
 		"set_max_open_http"    => array( "name"=>"system.sockets.http.min_alloc.set",  "prm"=>1 ),
 		"get_max_open_sockets" => array( "name"=>"system.sockets.max_size",            "prm"=>0 ),
+		"network.open_sockets" => array( "name"=>"system.sockets.size",                "prm"=>0 ),
+	));
+}
+
+if($this->iVersion >= 0x1010)
+{
+	$this->aliases = array_merge($this->aliases, array(
+		"get_http_proxy"    => array( "name"=>"network.proxy.http",       "prm"=>0 ),
+		"http_proxy"        => array( "name"=>"network.proxy.http",       "prm"=>0 ),
+		"set_http_proxy"    => array( "name"=>"network.proxy.http.set",   "prm"=>1 ),
+		"get_proxy_address" => array( "name"=>"network.proxy.global",     "prm"=>0 ),
+		"set_proxy_address" => array( "name"=>"network.proxy.global.set", "prm"=>1 ),
 	));
 }

@@ -86,4 +86,23 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('', $command->params[0]->value, 'rTorrent 0.16 group ratio commands send an empty target argument');
 		$this->assertEquals('100', $command->params[1]->value, 'rTorrent 0.16 group ratio commands keep the requested value');
 	}
+
+	public function testRtorrent01615UsesSocketManagerCommands()
+	{
+		$settings = $this->makeSettings(0x100f);
+
+		$this->assertEquals('system.sockets.files.max_size', $settings->getCommand('get_max_open_files'), 'rTorrent 0.16.15 reads file allocation through socket manager');
+		$this->assertEquals('system.sockets.http.min_alloc.set', $settings->getCommand('set_max_open_http'), 'rTorrent 0.16.15 writes HTTP allocation through socket manager');
+		$this->assertEquals('system.sockets.size', $settings->getCommand('network.open_sockets'), 'rTorrent 0.16.15 reads open sockets through socket manager');
+	}
+
+	public function testRtorrent01616UsesProxyManagerCommands()
+	{
+		$settings = $this->makeSettings(0x1010);
+
+		$this->assertEquals('network.proxy.http', $settings->getCommand('get_http_proxy'), 'rTorrent 0.16.16 reads HTTP proxy through proxy manager');
+		$this->assertEquals('network.proxy.http.set', $settings->getCommand('set_http_proxy'), 'rTorrent 0.16.16 writes HTTP proxy through proxy manager');
+		$this->assertEquals('network.proxy.global', $settings->getCommand('get_proxy_address'), 'rTorrent 0.16.16 reads global proxy through proxy manager');
+		$this->assertEquals('network.proxy.global.set', $settings->getCommand('set_proxy_address'), 'rTorrent 0.16.16 writes global proxy through proxy manager');
+	}
 }
