@@ -905,19 +905,21 @@ function correctContent()
 		$.extend(theRequestManager.aliases,
 		{
 			"get_max_open_files"   : { name: "system.sockets.files.max_size",      prm: 0 },
-			"set_max_open_files"   : { name: "system.sockets.files.min_alloc.set", prm: 1 },
+			"set_max_open_files"   : { name: "system.sockets.files.max_alloc.set", prm: 1 },
 			"get_max_open_http"    : { name: "system.sockets.http.max_size",       prm: 0 },
-			"set_max_open_http"    : { name: "system.sockets.http.min_alloc.set",  prm: 1 },
+			"set_max_open_http"    : { name: "system.sockets.http.max_alloc.set",  prm: 1 },
 			"get_max_open_sockets" : { name: "system.sockets.max_size",            prm: 0 },
 			"network.open_sockets" : { name: "system.sockets.size",                prm: 0 },
 		});
 	}
 	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1010)
 	{
-		// rTorrent 0.16.16 replaced the old proxy_address commands with the
-		// proxy manager commands.
+		// rTorrent 0.16.16 uses canonical download multicalls and replaced the
+		// old proxy_address commands with the proxy manager commands.
 		$.extend(theRequestManager.aliases,
 		{
+			"d.multicall"       : { name: "d.multicall",              prm: 1 },
+			"d.multicall2"      : { name: "d.multicall",              prm: 1 },
 			"get_http_proxy"    : { name: "network.proxy.http",       prm: 0 },
 			"http_proxy"        : { name: "network.proxy.http",       prm: 0 },
 			"set_http_proxy"    : { name: "network.proxy.http.set",   prm: 1 },

@@ -90,19 +90,37 @@ class RtorrentCompatibilityTest extends TestCase
 	public function testRtorrent01615UsesSocketManagerCommands()
 	{
 		$settings = $this->makeSettings(0x100f);
+		$this->useSettingsSingleton($settings);
 
 		$this->assertEquals('system.sockets.files.max_size', $settings->getCommand('get_max_open_files'), 'rTorrent 0.16.15 reads file allocation through socket manager');
-		$this->assertEquals('system.sockets.http.min_alloc.set', $settings->getCommand('set_max_open_http'), 'rTorrent 0.16.15 writes HTTP allocation through socket manager');
+		$this->assertEquals('system.sockets.files.max_alloc.set', $settings->getCommand('set_max_open_files'), 'rTorrent 0.16.15 writes the file allocation ceiling');
+		$this->assertEquals('system.sockets.http.max_alloc.set', $settings->getCommand('set_max_open_http'), 'rTorrent 0.16.15 writes the HTTP allocation ceiling');
 		$this->assertEquals('system.sockets.size', $settings->getCommand('network.open_sockets'), 'rTorrent 0.16.15 reads open sockets through socket manager');
+
+		$commands = array(
+			new rXMLRPCCommand('set_max_open_files', 600),
+			new rXMLRPCCommand('set_max_open_http', 50),
+		);
+		$settings->patchDeprecatedRequest($commands);
+
+		$this->assertEquals(3, count($commands), 'socket allocation setters append one allocation recalculation command');
+		$this->assertEquals('system.sockets.adjust_alloc', $commands[2]->command, 'socket allocation ceilings are applied after setters');
 	}
 
-	public function testRtorrent01616UsesProxyManagerCommands()
+	public function testRtorrent01616UsesCanonicalCommands()
 	{
 		$settings = $this->makeSettings(0x1010);
+		$this->useSettingsSingleton($settings);
 
 		$this->assertEquals('network.proxy.http', $settings->getCommand('get_http_proxy'), 'rTorrent 0.16.16 reads HTTP proxy through proxy manager');
 		$this->assertEquals('network.proxy.http.set', $settings->getCommand('set_http_proxy'), 'rTorrent 0.16.16 writes HTTP proxy through proxy manager');
 		$this->assertEquals('network.proxy.global', $settings->getCommand('get_proxy_address'), 'rTorrent 0.16.16 reads global proxy through proxy manager');
 		$this->assertEquals('network.proxy.global.set', $settings->getCommand('set_proxy_address'), 'rTorrent 0.16.16 writes global proxy through proxy manager');
+		$this->assertEquals('d.multicall', $settings->getCommand('d.multicall'), 'rTorrent 0.16.16 uses the canonical download multicall command');
+		$this->assertEquals('d.multicall', $settings->getCommand('d.multicall2'), 'rTorrent 0.16.16 maps the legacy download multicall command to the canonical command');
+
+		$command = new rXMLRPCCommand('d.multicall', array('main', 'd.hash='));
+		$this->assertEquals('d.multicall', $command->command, 'rTorrent 0.16.16 sends canonical download multicalls');
+		$this->assertEquals('', $command->params[0]->value, 'canonical download multicalls keep the required empty target argument');
 	}
 }

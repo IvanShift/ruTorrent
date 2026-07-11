@@ -45,9 +45,9 @@ if($this->iVersion >= 0x100f)
 		// Socket/file allocation caps. rTorrent 0.16.15 keeps the old getters
 		// but deprecates their setters, so use the new socket-manager commands.
 		"get_max_open_files"   => array( "name"=>"system.sockets.files.max_size",      "prm"=>0 ),
-		"set_max_open_files"   => array( "name"=>"system.sockets.files.min_alloc.set", "prm"=>1 ),
+		"set_max_open_files"   => array( "name"=>"system.sockets.files.max_alloc.set", "prm"=>1 ),
 		"get_max_open_http"    => array( "name"=>"system.sockets.http.max_size",       "prm"=>0 ),
-		"set_max_open_http"    => array( "name"=>"system.sockets.http.min_alloc.set",  "prm"=>1 ),
+		"set_max_open_http"    => array( "name"=>"system.sockets.http.max_alloc.set",  "prm"=>1 ),
 		"get_max_open_sockets" => array( "name"=>"system.sockets.max_size",            "prm"=>0 ),
 		"network.open_sockets" => array( "name"=>"system.sockets.size",                "prm"=>0 ),
 	));
@@ -56,6 +56,8 @@ if($this->iVersion >= 0x100f)
 if($this->iVersion >= 0x1010)
 {
 	$this->aliases = array_merge($this->aliases, array(
+		"d.multicall"       => array( "name"=>"d.multicall",              "prm"=>1 ),
+		"d.multicall2"      => array( "name"=>"d.multicall",              "prm"=>1 ),
 		"get_http_proxy"    => array( "name"=>"network.proxy.http",       "prm"=>0 ),
 		"http_proxy"        => array( "name"=>"network.proxy.http",       "prm"=>0 ),
 		"set_http_proxy"    => array( "name"=>"network.proxy.http.set",   "prm"=>1 ),

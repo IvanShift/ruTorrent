@@ -96,16 +96,31 @@ describe("xmlrpc calls", () => {
       expect(theRequestManager.map("get_max_open_files")).toBe(
         "system.sockets.files.max_size"
       );
+      expect(theRequestManager.map("set_max_open_files")).toBe(
+        "system.sockets.files.max_alloc.set"
+      );
       expect(theRequestManager.map("set_max_open_http")).toBe(
-        "system.sockets.http.min_alloc.set"
+        "system.sockets.http.max_alloc.set"
       );
       expect(theRequestManager.map("network.open_sockets")).toBe(
         "system.sockets.size"
       );
+
+      const commands = [
+        new rXMLRPCCommand("set_max_open_files"),
+        new rXMLRPCCommand("set_max_open_http"),
+      ];
+      theRequestManager.patchRequest(commands);
+
+      expect(commands.map(({ command }) => command)).toStrictEqual([
+        "system.sockets.files.max_alloc.set",
+        "system.sockets.http.max_alloc.set",
+        "system.sockets.adjust_alloc",
+      ]);
     });
   });
 
-  it("maps rTorrent 0.16.16 proxy commands to proxy manager commands", () => {
+  it("maps rTorrent 0.16.16 commands to canonical names", () => {
     withRtorrentVersion(0x1010, () => {
       expect(theRequestManager.map("get_http_proxy")).toBe(
         "network.proxy.http"
@@ -119,6 +134,12 @@ describe("xmlrpc calls", () => {
       expect(theRequestManager.map("set_proxy_address")).toBe(
         "network.proxy.global.set"
       );
+      expect(theRequestManager.map("d.multicall")).toBe("d.multicall");
+      expect(theRequestManager.map("d.multicall2")).toBe("d.multicall");
+
+      const command = new rXMLRPCCommand("d.multicall");
+      expect(command.command).toBe("d.multicall");
+      expect(command.params[0]).toStrictEqual({ type: "string", value: "" });
     });
   });
 
