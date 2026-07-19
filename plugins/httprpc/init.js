@@ -28,12 +28,12 @@ rTorrentStub.prototype.getCommon = function(cmd)
 		this.content = "mode="+cmd;
 		for(var i=0; i<this.hashes.length; i++)
 			this.content+=("&hash="+this.hashes[i]);
-		for(var i=0; i<this.vs.length; i++)
+		for(i=0; i<this.vs.length; i++)
 		        this.content+=("&v="+encodeURIComponent(this.vs[i]));
-		for(var i=0; i<this.ss.length; i++)
+		for(i=0; i<this.ss.length; i++)
 		        this.content+=("&s="+encodeURIComponent(this.ss[i]));
 		if($type(theRequestManager[cmd]))
-			for(var i=theRequestManager[cmd].count; i<theRequestManager[cmd].commands.length; i++)
+			for(i=theRequestManager[cmd].count; i<theRequestManager[cmd].commands.length; i++)
 				this.content+=("&cmd="+encodeURIComponent(theRequestManager.map(cmd,i)));
 	}
 	else
@@ -220,7 +220,7 @@ rTorrentStub.prototype.addpeer = function()
 }
 
 plugin.origgetchunks = rTorrentStub.prototype.getchunks;
-rTorrentStub.prototype.getchunks = function() 
+rTorrentStub.prototype.getchunks = function()
 {
 	this.hashes[0] = theWebUI.dID;
         this.getCommon("getchunks");

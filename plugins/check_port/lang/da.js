@@ -3,7 +3,7 @@
  *
  * Danish language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -15,5 +15,9 @@
  				  "Port is open"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Gennemtving bestemt port...";
+ theUILang.forcePortPrompt	= "Angiv lytteporten (1-65535):";
+ theUILang.forcePortInvalid	= "Ugyldigt portnummer.";
 
 thePlugins.get("check_port").langLoaded();

@@ -4,7 +4,7 @@
  */
 
 var theWebUI = {
-	version: "5.3.6",
+	version: "5.3.9",
 	tables: {
 		trt: {
 			obj: new dxSTable(),
@@ -349,7 +349,7 @@ var theWebUI = {
 		correctContent();
 		this.updateServerTime();
 		window.setInterval( this.updateServerTime, 1000 );
-		
+
 		// Mark plugins as done loading. Initialize UI if JSON file is loaded
 		this.pluginsLoaded = true;
 		this.initFinish();
@@ -369,7 +369,7 @@ var theWebUI = {
 			this.update();
 		}
 	},
-	
+
 	createSpeedGraph: function()
 	{
 		const speedTab = $("#Speed");
@@ -638,12 +638,12 @@ var theWebUI = {
 	{
 		// Add webui settings for the first time
 		this.addSettings(newSettings);
-		
+
 		// Mark JSON file as loaded. Initialize UI if plugins are loaded
 		this.jsonLoaded = true;
 		this.initFinish();
 	},
-	
+
 	addSettings: function(newSettings)
 	{
 		$.each(newSettings, function(i,v)
@@ -684,7 +684,7 @@ var theWebUI = {
 					switch(i)
 					{
 					        case "max_memory_usage":
-              						v /= 1024;
+              						v /= 1024;  // falls through
 						case "upload_rate":
 						case "download_rate":
               						v /= 1024;
@@ -712,7 +712,7 @@ var theWebUI = {
 				var nv = o.is("input:checkbox") ? (o.prop('checked') ? 1 : 0) : o.val();
 				switch(i) {
 					case "max_memory_usage":
-						nv *= 1024;
+						nv *= 1024;  // falls through
 					case "upload_rate":
 					case "download_rate":
 						nv *= 1024;
@@ -1020,8 +1020,8 @@ var theWebUI = {
 		return(
 			(/(http|https|udp):\/\/(?:[0-9]{1,3}\.){3}[0-9]{1,3}((:(\d){2,5})|).*(\/a.*(\?.+=.+|\/.+)|\?.+=.+)/i).test(url) ||
 			(/(http|https|udp):\/\/(?:[0-9]{1,3}\.){3}[0-9]{1,3}((:(\d){2,5})|)\/.*[0-9a-z]{8,32}\/a/i).test(url) ||
-			(/(http|https|udp):\/\/[a-z0-9-\.]+\.[a-z]{2,253}((:(\d){2,5})|).*(\/a.*(\?.+=.+|\/.+)|\?.+=.+)/i).test(url) ||
-			(/(http|https|udp):\/\/[a-z0-9-\.]+\.[a-z]{2,253}((:(\d){2,5})|)\/.*[0-9a-z]{8,32}\/a/i).test(url) ? 1 : 0 );
+			(/(http|https|udp):\/\/[a-z0-9-.]+\.[a-z]{2,253}((:(\d){2,5})|).*(\/a.*(\?.+=.+|\/.+)|\?.+=.+)/i).test(url) ||
+			(/(http|https|udp):\/\/[a-z0-9-.]+\.[a-z]{2,253}((:(\d){2,5})|)\/.*[0-9a-z]{8,32}\/a/i).test(url) ? 1 : 0 );
 	},
 
    	trkSelect: function(e, id)
@@ -1171,15 +1171,15 @@ var theWebUI = {
 			if(!this.settings["webui.fls.view"] && this.dirs[hash])
 			{
 				var dir = this.dirs[hash].getDirectory();
-				for(var i in dir)
+				for(i in dir)
 				{
 					var entry = dir[i];
 					if(entry.link!=null)
 						table.setRowById(entry.data, i, entry.icon, {link: entry.link});
 				}
-				for(var i in dir)
+				for(i in dir)
 				{
-					var entry = dir[i];
+					entry = dir[i];
 					if(entry.link==null)
 						table.setRowById(entry.data, i, entry.icon, {link: undefined});
 				}
@@ -1325,7 +1325,7 @@ var theWebUI = {
 				        var dir = theWebUI.dirs[id];
 				        var ids = new Array();
 				        dir.getFilesIds(ids,dir.current,k,p);
-				        for(var i in ids)
+				        for(i in ids)
 						str += "&f=" + ids[i];
 					needSort = true;
         			}
@@ -1473,7 +1473,7 @@ var theWebUI = {
 	},
 
 	/**
-	 * Check if an action is enabled to be performed on 
+	 * Check if an action is enabled to be performed on
 	 * a torrent specified by the torrent's hash.
 	 * @param {string} act Action to be checked.
 	 * @param {string} hash Hash of the torrent to be checked.
@@ -1504,8 +1504,8 @@ var theWebUI = {
 	},
 
 	/**
-	 * 
-	 * @param {string} act 
+	 *
+	 * @param {string} act
 	 * @returns {string} Query string of hashes of selected torrents.
 	 */
 	getHashes: function(act) {
@@ -1540,7 +1540,7 @@ var theWebUI = {
 	/**
 	 * Remove selected torrent(s), **without** confirmation.
 	 */
-	remove: function() {		
+	remove: function() {
 		this.perform("remove");
 	},
 
@@ -1951,7 +1951,7 @@ var theWebUI = {
 	createLabel: function()
 	{
    		var lbl = $("#txtLabel").val().trim();
-		lbl = lbl.replace(/\"/g, "'");
+		lbl = lbl.replace(/"/g, "'");
    		if(lbl != "")
 		{
 	   		var sr = this.getTable("trt").rowSel;
@@ -2461,10 +2461,10 @@ var theWebUI = {
 				msg = "JS error: [" + url + " : " + line + "] " + msg;
 				theWebUI.msg(msg);
 				log(msg);
-				
+
 				if (error != null)
 					console.log(msg, "from", error.stack);
-				
+
 				return true;
 			}
    	},

@@ -372,9 +372,9 @@ function makeContent() {
 	);
 	theDialogManager.setHandler('dlgLabel', 'afterShow', function() {
 		setTimeout(function() {
-			$("#txtLabel").off('focus').on('focus',function() { 
-				$(this).select(); 
-			}).trigger('focus');		
+			$("#txtLabel").off('focus').on('focus',function() {
+				$(this).select();
+			}).trigger('focus');
 		}, 0);
 	});
 	theDialogManager.make("yesnoDlg","",
@@ -399,7 +399,7 @@ function makeContent() {
 			),
 		),
 	);
-	
+
 	theOptionsWindow.init();
 }
 
@@ -455,6 +455,16 @@ function correctContent()
 		rPlugin.prototype.removePageFromOptions("st_dl");
 	if(!(theWebUI.showFlags & showEnum.showConnectionPage))
 		rPlugin.prototype.removePageFromOptions("st_con");
+	// rtorrent 0.16.x: network.port_open is an unused no-op (nothing in rtorrent
+	// reads it; an explicit deprecated no-op since 0.16.18). Drop its checkbox
+	// from the Connection page, and add an empty grid cell after the "randomize"
+	// checkbox so the two-column layout stays even and the port-range label + its
+	// field remain paired on one row. rtorrent <= 0.9.x keeps the checkbox.
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1000)
+	{
+		$("#port_open").closest(".col-md-6").remove();
+		$("#port_random").closest(".col-md-6").after($("<div>").addClass("col-md-6"));
+	}
 	if(!(theWebUI.showFlags & showEnum.showBittorentPage))
 		rPlugin.prototype.removePageFromOptions("st_bt");
 	if(!(theWebUI.showFlags & showEnum.showAdvancedPage))
@@ -483,7 +493,7 @@ function correctContent()
         if(!(theWebUI.showFlags & showEnum.canChangeTorrentOptions))
 	{
 		$("#addtorrent #torrent_options").remove();
-	}	
+	}
         if(!(theWebUI.showFlags & showEnum.canAddTorrentsWithoutPath))
 	{
 		$("#addtorrent #not_add_path_option").remove();
@@ -618,6 +628,8 @@ function correctContent()
 			"d.get_skip_total"	:	{ name: "d.skip.total", prm: 0 },
 			"d.get_state"		:	{ name: "d.state", prm: 0 },
 			"d.get_state_changed"	:	{ name: "d.state_changed", prm: 0 },
+			"d.get_timestamp_finished"      : { name: "d.timestamp.finished", prm: 0 },
+			"d.get_timestamp_started"      : { name: "d.timestamp.started", prm: 0 },
 			"d.get_state_counter"	:	{ name: "d.state_counter", prm: 0 },
 			"d.get_throttle_name"	:	{ name: "d.throttle_name", prm: 0 },
 			"d.get_tied_to_file"	:	{ name: "d.tied_to_file", prm: 0 },
@@ -925,6 +937,45 @@ function correctContent()
 			"set_http_proxy"    : { name: "network.proxy.http.set",   prm: 1 },
 			"get_proxy_address" : { name: "network.proxy.global",     prm: 0 },
 			"set_proxy_address" : { name: "network.proxy.global.set", prm: 1 },
+		});
+	}
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1010)
+	{
+		// rtorrent >= 0.16.16: override aliases for commands that were
+		// removed or now log deprecation warnings. Mirrors php/methods-0.16.16.php.
+		$.extend(theRequestManager.aliases,
+		{
+			"get_max_open_http"      : { name: "system.sockets.http.max_alloc",          prm: 0 },
+			"set_max_open_http"      : { name: "system.sockets.http.max_alloc.set",      prm: 1 },
+			"set_max_open_files"     : { name: "system.sockets.files.max_alloc.set",     prm: 1 },
+			"d.multicall2"           : { name: "d.multicall",                             prm: 1 },
+			"get_http_proxy"         : { name: "network.proxy.http",                     prm: 0 },
+			"set_http_proxy"         : { name: "network.proxy.http.set",                 prm: 1 },
+			"http_proxy"             : { name: "network.proxy.http",                     prm: 0 },
+			"get_proxy_address"      : { name: "network.proxy.global",                    prm: 0 },
+			"set_proxy_address"      : { name: "network.proxy.global.set",                prm: 1 },
+			"get_max_open_sockets"   : { name: "system.sockets.max_size",                prm: 0 },
+			"network.open_sockets"   : { name: "system.sockets.size",                    prm: 0 },
+			"network.max_open_sockets": { name: "system.sockets.max_size",               prm: 0 },
+		});
+	}
+	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1012)
+	{
+		// rtorrent >= 0.16.18: the listening-port commands were renamed
+		// (network.port_range/.random -> network.listen.port.range/.random) and
+		// network.port_open was removed. On a normal launch (no -D) the old names
+		// are absent and fault; mirror php/methods-0.16.18.php so any client-side
+		// XMLRPC keeps working. network.port_open has no replacement -> route it
+		// to the harmless "cat" no-op.
+		$.extend(theRequestManager.aliases,
+		{
+			"get_port_range"  : { name: "network.listen.port.range",      prm: 0 },
+			"set_port_range"  : { name: "network.listen.port.range.set",  prm: 1 },
+			"get_port_random" : { name: "network.listen.port.random",     prm: 0 },
+			"set_port_random" : { name: "network.listen.port.random.set", prm: 1 },
+			"get_port_open"   : { name: "cat", prm: 0 },
+			"set_port_open"   : { name: "cat", prm: 1 },
+			"port_open"       : { name: "cat", prm: 0 },
 		});
 	}
 	if(theWebUI.systemInfo.rTorrent.iVersion < 0x907) {

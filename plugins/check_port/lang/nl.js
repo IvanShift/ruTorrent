@@ -3,7 +3,7 @@
  *
  * Dutch language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -15,5 +15,9 @@
  				  "Port is open"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Specifieke poort forceren...";
+ theUILang.forcePortPrompt	= "Luisterpoort instellen (1-65535):";
+ theUILang.forcePortInvalid	= "Ongeldig poortnummer.";
 
 thePlugins.get("check_port").langLoaded();

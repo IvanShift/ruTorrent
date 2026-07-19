@@ -3,7 +3,7 @@
  *
  * Slovak language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -15,5 +15,9 @@
  				  "Port is open"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Vynútiť konkrétny port...";
+ theUILang.forcePortPrompt	= "Nastavte počúvací port (1-65535):";
+ theUILang.forcePortInvalid	= "Neplatné číslo portu.";
 
 thePlugins.get("check_port").langLoaded();

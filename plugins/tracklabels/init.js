@@ -76,7 +76,7 @@ if(!$type(theWebUI.getTrackerName))
 		var domain = '';
 		if(announce)
 		{
-			var parts = announce.match(/^(?:([^:\/?#]+):)?(?:\/\/((?:(([^:@]*):?([^:@]*))?@)?([^:\/?#]*)(?::(\d*))?))((((?:[^?#\/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/);
+			var parts = announce.match(/^(?:([^:/?#]+):)?(?:\/\/((?:(([^:@]*):?([^:@]*))?@)?([^:/?#]*)(?::(\d*))?))((((?:[^?#/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/);
 			if(parts && (parts.length>6))
 			{
 				domain = parts[6];
@@ -302,4 +302,3 @@ plugin.onRemove = function()
 			theWebUI.getTable("rss").removeColumnById("tracker");
 	}
 }
-

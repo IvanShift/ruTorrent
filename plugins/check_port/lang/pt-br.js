@@ -3,7 +3,7 @@
  *
  * Portuguese (Brazil) language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "plugin check_port: O plugin não funcionará. Configuração inválida";
@@ -15,5 +15,9 @@
  				  "Porta está aberta"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Forçar porta específica...";
+ theUILang.forcePortPrompt	= "Definir a porta de escuta (1-65535):";
+ theUILang.forcePortInvalid	= "Número de porta inválido.";
 
 thePlugins.get("check_port").langLoaded();

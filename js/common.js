@@ -187,6 +187,7 @@ $.fn.extend(
 
 function addslashes(str)
 {
+	// eslint-disable-next-line no-control-regex -- intentional: escape NUL, LF and CR
 	return( (str + '').replace(/[\\"']/g, '\\$&').replace(/\u0000/g, '\\0').replace(/\u000A/g, '\\n').replace(/\u000D/g, '\\r') );
 }
 
@@ -216,10 +217,10 @@ function ir(val) {
  * @param {HTMLInputElement | HTMLSelectElement} obj The HTML element
  * to be linked to.
  * @param {boolean | string} _33 An additional option when linking.
- * 
+ *
  * (1) When linking to a checkbox, a falsey value will enable the linked
  * objects when the checkbox is checked on.
- * 
+ *
  * (2) When linking to a dropdown select, it should be one of the values
  * from the options, which will disable the linked elements when selected.
  * @param {string[]} lst An array of HTML `id`s of elements to be linked.
@@ -230,7 +231,7 @@ function linked(obj, _33, lst) {
 		var d = _33 ? obj.checked : !obj.checked;
 	else if (tn === "select") {
 		var v = obj.options[obj.selectedIndex].value;
-		var d = (v === _33) ? true : false;
+		d = (v === _33) ? true : false;
 	} else {
 		return;
 	}
@@ -273,7 +274,7 @@ function cloneObject( srcObj )
 		{
 			newObject = new srcObj.constructor();
 			for( var property in srcObj )
-				if( srcObj.hasOwnProperty(property) || typeof( srcObj[property] ) === 'object' )
+				if( Object.prototype.hasOwnProperty.call(srcObj, property) || typeof( srcObj[property] ) === 'object' )
 					newObject[property]= cloneObject( srcObj[property] );
 			break;
        		}
@@ -486,12 +487,12 @@ var theNormalizer = {
 				// replace dot, underscore, and dash with whitespace
 				// replace multiple whitespace with single whitespace
 				s = s
-					.replace(/(\.|_|\-)/g, ' ')
+					.replace(/(\.|_|-)/g, ' ')
 					.replace(/\s{2,}/g, ' ');
 			} else {
 				s = s
-					.replace(/^(\.|_|\-)/g, ' ')
-					.replace(/(\.|_|\-)$/g, ' ');
+					.replace(/^(\.|_|-)/g, ' ')
+					.replace(/(\.|_|-)$/g, ' ');
 			}
 			s = s.trim();
 		}
@@ -1021,7 +1022,7 @@ rDirectory.prototype.addFile = function(aData,no)
 		}
 		else
 		{
-			var sId = "_d_"+name;
+			sId = "_d_"+name;
 			if(!this.dirs[file.path][sId])
 				this.dirs[file.path][sId] = { data: { name: file.name, size: 0, done: 0, percent: 0.0, priority: -1, prioritize: -1 }, icon: "Icon_Dir", link: name };
 		}
@@ -1159,7 +1160,7 @@ var theBTClientVersion =
 	},
 	shLikeClients:
 	{
-		"A" : "ABC", "O" : "Osprey ", "Q" : "BTQueue", "R" : "Tribler", "S" : "Shad0w", 
+		"A" : "ABC", "O" : "Osprey ", "Q" : "BTQueue", "R" : "Tribler", "S" : "Shad0w",
 		"T" : "BitTornado", "U" : "UPnP NAT Bit Torrent"
 	},
 	get: function( origStr )
@@ -1282,7 +1283,7 @@ var theBTClientVersion =
 						ret = cli+" "+str.charAt(3)+"."+str.charAt(4);
 						break;
 					default:
-						var ch = str.charAt(6);
+						ch = str.charAt(6);
 						ret = cli+" "+str.charAt(3)+"."+parseInt(str.substr(4,2),10);
 						if((ch=='Z') || (ch=='X'))
 							ret+='+';
@@ -1310,7 +1311,7 @@ var theBTClientVersion =
 		}
 		if(!ret)
 		{
-			if(str.match(/^[MQ]\d-\d[\-\d][\-\d][\-\d]-/))
+			if(str.match(/^[MQ]\d-\d[-\d][-\d][-\d]-/))
 			{
 				ret = (str.charAt(0)=='Q') ? "Queen Bee " : "BitTorrent ";
 				if(str.charAt(4) == '-')
@@ -1445,9 +1446,9 @@ var theBTClientVersion =
 		}
 		if(!ret)
 		{
-			if(str.match(/^[A-Z]([A-Z0-9\-\.]{1,5})/i))
+			if(str.match(/^[A-Z]([A-Z0-9\-.]{1,5})/i))
 			{
-				var cli = this.shLikeClients[str.charAt(0)];
+				cli = this.shLikeClients[str.charAt(0)];
 				if(cli)
 					ret = cli+" "+shChar(str.charAt(1))+"."+shChar(str.charAt(2))+"."+shChar(str.charAt(3));
 			}
@@ -1497,7 +1498,7 @@ function RGBackground( selector )
 		var cs;
                 var rule = getCSSRule(selector);
 		if(rule)
-			var cs = rule.style.backgroundColor;
+			cs = rule.style.backgroundColor;
 		else
 			cs = selector;
 		if(cs.charAt(0) == '#')

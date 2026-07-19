@@ -3,7 +3,7 @@
  *
  * Latvian language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -15,5 +15,9 @@
  				  "Port is open"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Piespiest noteiktu portu...";
+ theUILang.forcePortPrompt	= "Iestatīt klausīšanās portu (1-65535):";
+ theUILang.forcePortInvalid	= "Nederīgs porta numurs.";
 
 thePlugins.get("check_port").langLoaded();

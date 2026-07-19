@@ -3,7 +3,7 @@
  *
  * Finnish language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -15,5 +15,9 @@
  				  "Port is open"
  				  ];
  theUILang.notAvailable = "-";
+
+ theUILang.forcePort		= "Pakota tietty portti...";
+ theUILang.forcePortPrompt	= "Aseta kuunteluportti (1-65535):";
+ theUILang.forcePortInvalid	= "Virheellinen portin numero.";
 
 thePlugins.get("check_port").langLoaded();

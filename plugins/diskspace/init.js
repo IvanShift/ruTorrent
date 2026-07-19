@@ -59,7 +59,7 @@ plugin.init = function()
 
 		plugin.check = function()
 		{
-			var AjaxReq = jQuery.ajax(
+			jQuery.ajax(
 			{
 				type: "GET",
 				timeout: theWebUI.settings["webui.reqtimeout"],
@@ -67,7 +67,6 @@ plugin.init = function()
 			        cache: false,
 				url : "plugins/diskspace/action.php",
 				dataType : "json",
-				cache: false,
 				success : function(data)
 				{
 					plugin.setValue( data.total, data.free );

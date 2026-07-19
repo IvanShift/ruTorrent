@@ -24,7 +24,7 @@ if(isset($HTTP_RAW_POST_DATA))
 				$c = getCmd(rawurldecode($parts[1]));
 				if(strpos($c,"execute")===false)
 					$add[] = $c;
-				break;  	
+				break;
 			}
 			case "s":
 			{
@@ -80,7 +80,7 @@ function makeSimpleCall($cmds,$hash)
 {
 	$req = new rXMLRPCRequest();
 	foreach($hash as $h)
-		foreach($cmds as $cmd)	
+		foreach($cmds as $cmd)
 			$req->addCommand( new rXMLRPCCommand( $cmd, $h ) );
        	return($req->success(true) ? $req->val : false);
 }
@@ -111,13 +111,13 @@ switch($mode)
 			$theCache = new rpcCache();
 			$dTorrents = array();
 			$torrents = array();
-			foreach($req->val as $index=>$value) 
+			foreach($req->val as $index=>$value)
 			{
-				if($index % $cnt == 0) 
+				if($index % $cnt == 0)
 				{
 					$current_index = $value;
 					$torrents[$current_index] = array();
-				} 
+				}
 				else
 					$torrents[$current_index][] = $value;
 			}
@@ -152,7 +152,7 @@ switch($mode)
 	case "trk":	/**/
 	{
 		$result = makeMulticall(array(
-		        "t.get_url=", "t.get_type=", "t.is_enabled=", "t.get_group=", "t.get_scrape_complete=", 
+		        "t.get_url=", "t.get_type=", "t.is_enabled=", "t.get_group=", "t.get_scrape_complete=",
 			"t.get_scrape_incomplete=", "t.get_scrape_downloaded=",
 			"t.get_normal_interval=", "t.get_scrape_time_last="
 			),$hash[0],$add,'t');
@@ -163,7 +163,7 @@ switch($mode)
 	case "stg":	/**/
 	{
 		$cmds = array(
-			"get_check_hash", "get_bind", "get_dht_port", "get_directory", "get_download_rate", 
+			"get_check_hash", "get_bind", "get_dht_port", "get_directory", "get_download_rate",
 			"get_hash_interval", "get_hash_max_tries", "get_hash_read_ahead", "get_http_cacert", "get_http_capath",
 			"get_http_proxy", "get_ip", "get_max_downloads_div", "get_max_downloads_global", "get_max_file_size",
 			"get_max_memory_usage", "get_max_open_files", "get_max_open_http", "get_max_peers", "get_max_peers_seed",
@@ -178,9 +178,9 @@ switch($mode)
 			$cmds[5] = $cmds[6] = $cmds[7] = "cat";
 		$req = new rXMLRPCRequest( new rXMLRPCCommand( "dht_statistics" ) );
 		foreach( $cmds as $cmd )
-			$req->addCommand( new rXMLRPCCommand( $cmd ) );	
+			$req->addCommand( new rXMLRPCCommand( $cmd ) );
 		foreach( $add as $prm )
-			$req->addCommand( new rXMLRPCCommand( $prm ) );	
+			$req->addCommand( new rXMLRPCCommand( $prm ) );
 		if($req->success(true))
 		{
 	        	$result = array();
@@ -204,9 +204,9 @@ switch($mode)
 		        );
 		$req = new rXMLRPCRequest();
 		foreach( $cmds as $cmd )
-			$req->addCommand( new rXMLRPCCommand( $cmd ) );	
+			$req->addCommand( new rXMLRPCCommand( $cmd ) );
 		foreach( $add as $prm )
-			$req->addCommand( new rXMLRPCCommand( $prm ) );	
+			$req->addCommand( new rXMLRPCCommand( $prm ) );
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
@@ -236,9 +236,9 @@ switch($mode)
 		        );
 		$req = new rXMLRPCRequest();
 		foreach( $cmds as $cmd )
-			$req->addCommand( new rXMLRPCCommand( $cmd, $hash[0] ) );	
+			$req->addCommand( new rXMLRPCCommand( $cmd, $hash[0] ) );
 		foreach( $add as $prm )
-			$req->addCommand( new rXMLRPCCommand( $prm, $hash[0] ) );	
+			$req->addCommand( new rXMLRPCCommand( $prm, $hash[0] ) );
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
@@ -309,51 +309,24 @@ switch($mode)
 	case "removewithdata":	/**/
 	{
 		$forceDelete = isset($vs[0]) ? $vs[0] : "1";
-		// Record the files to delete before erasing the torrents. Older rtorrent
-		// captured this list from the erase event via file.append, but newer
-		// rtorrent does not register file.append unless method.use_deprecated is
-		// enabled at startup, so that event silently records nothing and the data
-		// is left on disk. Building the list here over RPC works on every rtorrent
-		// version. rXMLRPCRequest flattens every returned value into ->val, so
-		// query a single torrent per request to keep the layout unambiguous:
-		// val[0] = base path, val[1] = is_multi, val[2..] = each file path.
-		$listPath = FileUtil::getSettingsPath()."/erasedata";
-		@FileUtil::makeDirectory($listPath);
-		foreach($hash as $h)
+		// Delegate to the shared erasedata helper so the httprpc and direct
+		// (plugins/erasedata/action.php) paths record the identical delete list.
+		// removewithdata only originates from the erasedata plugin, so its helper
+		// is present; guard anyway and fall back to a plain erase if it is not.
+		$helper = dirname(__FILE__)."/../erasedata/removewithdata.php";
+		if(file_exists($helper))
 		{
-			$info = new rXMLRPCRequest( array(
-				new rXMLRPCCommand( getCmd("d.get_base_path"), $h ),
-				new rXMLRPCCommand( getCmd("d.is_multi_file"), $h ),
-				new rXMLRPCCommand( getCmd("f.multicall"), array($h, "", getCmd("f.get_frozen_path")."=") )
-			) );
-			if($info->success() && count($info->val) >= 3)
-			{
-				$lines = array();
-				foreach(array_slice($info->val, 2) as $path)
-					if(strlen($path))
-						$lines[] = $path;
-				if(count($lines))
-				{
-					$lines[] = $info->val[0];
-					$lines[] = $info->val[1] ? "1" : "0";
-					$lines[] = $forceDelete;
-					@file_put_contents($listPath."/".$h.".list", implode("\n", $lines)."\n");
-				}
-			}
+			require_once($helper);
+			$result = erasedataRemoveWithData($hash, $forceDelete);
 		}
-		// Clear the erase flag so the legacy file.append event stays inactive
-		// where it still exists (the list written above is authoritative), then
-		// drop the tied file and erase. The erasedata garbage collector removes
-		// the listed files on its next scheduled run.
-		$req = new rXMLRPCRequest();
-		foreach($hash as $h)
+		else
 		{
-			$req->addCommand( new rXMLRPCCommand( getCmd("d.set_custom5"), array($h, "") ) );
-			$req->addCommand( new rXMLRPCCommand( getCmd("d.delete_tied"), $h ) );
-			$req->addCommand( new rXMLRPCCommand( getCmd("d.erase"), $h ) );
+			$req = new rXMLRPCRequest();
+			foreach($hash as $h)
+				$req->addCommand( new rXMLRPCCommand( getCmd("d.erase"), $h ) );
+			if($req->success())
+				$result = $req->val;
 		}
-		if($req->success())
-			$result = $req->val;
 		break;
 	}
 	case "remove":	/**/
@@ -382,7 +355,7 @@ switch($mode)
 	case "trkall":	/**/
 	{
 		$cmds = array(
-		        "t.get_url=", "t.get_type=", "t.is_enabled=", "t.get_group=", "t.get_scrape_complete=", 
+		        "t.get_url=", "t.get_type=", "t.is_enabled=", "t.get_group=", "t.get_scrape_complete=",
 			"t.get_scrape_incomplete=", "t.get_scrape_downloaded="
 		        );
 		$result = array();
@@ -397,11 +370,11 @@ switch($mode)
 			$cnt = count($cmds)+count($add);
 			$req = new rXMLRPCRequest();
 			$req->addCommand( new rXMLRPCCommand( "d.multicall", array
-			( 
+			(
 				"main",
 				getCmd("d.get_hash="),
 				$prm
-			) ) );						
+			) ) );
 	       		if($req->success(true))
 			{
 				for( $i = 0; $i< count($req->val); $i+=2 )
@@ -411,7 +384,7 @@ switch($mode)
 						unset( $tracker[ count($tracker)-1 ] );
 					$result[ $req->val[$i] ] = array_chunk( $tracker, $cnt );
 				}
-			}									
+			}
 		}
 		else
 		{
@@ -419,7 +392,7 @@ switch($mode)
 			{
 				$ret = makeMulticall($cmds,$h,$add,'t');
 				if($ret===false)
-					$result[$h] = array();				
+					$result[$h] = array();
 				else
 					$result[$h] = $ret;
 			}

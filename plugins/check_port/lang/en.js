@@ -3,7 +3,7 @@
  *
  * English language file.
  *
- * Author: 
+ * Author:
  */
 
  theUILang.checkWebsiteNotFound = "Check_port plugin: Plugin will not work. Invalid configuration";
@@ -16,5 +16,9 @@
  				  ];
  theUILang.notAvailable = "-";
  theUILang.portNotConfigured = "Not available on this server";
+
+ theUILang.forcePort		= "Force specific port...";
+ theUILang.forcePortPrompt	= "Set the listening port (1-65535):";
+ theUILang.forcePortInvalid	= "Invalid port number.";
 
 thePlugins.get("check_port").langLoaded();
