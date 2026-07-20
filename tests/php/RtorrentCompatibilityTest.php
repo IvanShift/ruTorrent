@@ -19,6 +19,12 @@ class RtorrentCompatibilityTest extends TestCase
 		if ($version >= 0x1000 && is_file(__DIR__ . '/../../php/methods-0.16.0.php')) {
 			$this->loadMethodAliases($settings, 'methods-0.16.0.php');
 		}
+		if ($version >= 0x1010) {
+			$this->loadMethodAliases($settings, 'methods-0.16.16.php');
+		}
+		if ($version >= 0x1012) {
+			$this->loadMethodAliases($settings, 'methods-0.16.18.php');
+		}
 
 		return $settings;
 	}
@@ -122,5 +128,36 @@ class RtorrentCompatibilityTest extends TestCase
 		$command = new rXMLRPCCommand('d.multicall', array('main', 'd.hash='));
 		$this->assertEquals('d.multicall', $command->command, 'rTorrent 0.16.16 sends canonical download multicalls');
 		$this->assertEquals('', $command->params[0]->value, 'canonical download multicalls keep the required empty target argument');
+	}
+
+	public function testRtorrent01618LoadsCanonicalPortAliasesAtExactThreshold()
+	{
+		$legacyAliases = array(
+			'get_port_range' => 'network.port_range',
+			'set_port_range' => 'network.port_range.set',
+			'get_port_random' => 'network.port_random',
+			'set_port_random' => 'network.port_random.set',
+			'get_port_open' => 'network.port_open',
+			'set_port_open' => 'network.port_open.set',
+			'port_open' => 'network.port_open',
+		);
+		$settings = $this->makeSettings(0x1011);
+		foreach ($legacyAliases as $alias => $command) {
+			$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent 0.16.17 keeps '.$alias.' on its legacy command');
+		}
+
+		$canonicalAliases = array(
+			'get_port_range' => 'network.listen.port.range',
+			'set_port_range' => 'network.listen.port.range.set',
+			'get_port_random' => 'network.listen.port.random',
+			'set_port_random' => 'network.listen.port.random.set',
+			'get_port_open' => 'cat',
+			'set_port_open' => 'cat',
+			'port_open' => 'cat',
+		);
+		$settings = $this->makeSettings(0x1012);
+		foreach ($canonicalAliases as $alias => $command) {
+			$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent 0.16.18 maps '.$alias.' to its canonical command');
+		}
 	}
 }

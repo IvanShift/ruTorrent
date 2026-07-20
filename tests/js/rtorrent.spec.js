@@ -143,6 +143,48 @@ describe("xmlrpc calls", () => {
     });
   });
 
+  it("switches port aliases at the rTorrent 0.16.18 boundary", () => {
+    withRtorrentVersion(0x1011, () => {
+      expect(theRequestManager.map("get_port_range")).toBe(
+        "network.port_range"
+      );
+      expect(theRequestManager.map("set_port_range")).toBe(
+        "network.port_range.set"
+      );
+      expect(theRequestManager.map("get_port_random")).toBe(
+        "network.port_random"
+      );
+      expect(theRequestManager.map("set_port_random")).toBe(
+        "network.port_random.set"
+      );
+      expect(theRequestManager.map("get_port_open")).toBe(
+        "network.port_open"
+      );
+      expect(theRequestManager.map("set_port_open")).toBe(
+        "network.port_open.set"
+      );
+      expect(theRequestManager.map("port_open")).toBe("network.port_open");
+    });
+
+    withRtorrentVersion(0x1012, () => {
+      expect(theRequestManager.map("get_port_range")).toBe(
+        "network.listen.port.range"
+      );
+      expect(theRequestManager.map("set_port_range")).toBe(
+        "network.listen.port.range.set"
+      );
+      expect(theRequestManager.map("get_port_random")).toBe(
+        "network.listen.port.random"
+      );
+      expect(theRequestManager.map("set_port_random")).toBe(
+        "network.listen.port.random.set"
+      );
+      expect(theRequestManager.map("get_port_open")).toBe("cat");
+      expect(theRequestManager.map("set_port_open")).toBe("cat");
+      expect(theRequestManager.map("port_open")).toBe("cat");
+    });
+  });
+
   it("loads rTorrent 0.10.2 aliases at the 0.10.2 boundary", () => {
     withRtorrentVersion(0x0a02, () => {
       expect(theRequestManager.map("dht")).toBe("dht.mode.set");
