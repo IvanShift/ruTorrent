@@ -130,7 +130,7 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('', $command->params[0]->value, 'canonical download multicalls keep the required empty target argument');
 	}
 
-	public function testRtorrent01618LoadsCanonicalPortAliasesAtExactThreshold()
+	public function testRtorrent01618AndLaterLoadCanonicalPortAliasesAtExactThreshold()
 	{
 		$legacyAliases = array(
 			'get_port_range' => 'network.port_range',
@@ -155,9 +155,13 @@ class RtorrentCompatibilityTest extends TestCase
 			'set_port_open' => 'cat',
 			'port_open' => 'cat',
 		);
-		$settings = $this->makeSettings(0x1012);
-		foreach ($canonicalAliases as $alias => $command) {
-			$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent 0.16.18 maps '.$alias.' to its canonical command');
+		foreach (array(0x1012 => '0.16.18', 0x1013 => '0.16.19') as $version => $label) {
+			$settings = $this->makeSettings($version);
+			foreach ($canonicalAliases as $alias => $command) {
+				$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent '.$label.' maps '.$alias.' to its canonical command');
+			}
+			$this->assertEquals('system.sockets.max_size', $settings->getCommand('get_max_open_sockets'), 'rTorrent '.$label.' reads the generic socket ceiling without removed allocation commands');
+			$this->assertEquals('system.sockets.files.max_alloc.set', $settings->getCommand('set_max_open_files'), 'rTorrent '.$label.' keeps the file-category allocation setter');
 		}
 	}
 }

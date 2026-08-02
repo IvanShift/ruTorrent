@@ -166,23 +166,31 @@ describe("xmlrpc calls", () => {
       expect(theRequestManager.map("port_open")).toBe("network.port_open");
     });
 
-    withRtorrentVersion(0x1012, () => {
-      expect(theRequestManager.map("get_port_range")).toBe(
-        "network.listen.port.range"
-      );
-      expect(theRequestManager.map("set_port_range")).toBe(
-        "network.listen.port.range.set"
-      );
-      expect(theRequestManager.map("get_port_random")).toBe(
-        "network.listen.port.random"
-      );
-      expect(theRequestManager.map("set_port_random")).toBe(
-        "network.listen.port.random.set"
-      );
-      expect(theRequestManager.map("get_port_open")).toBe("cat");
-      expect(theRequestManager.map("set_port_open")).toBe("cat");
-      expect(theRequestManager.map("port_open")).toBe("cat");
-    });
+    for (const version of [0x1012, 0x1013]) {
+      withRtorrentVersion(version, () => {
+        expect(theRequestManager.map("get_port_range")).toBe(
+          "network.listen.port.range"
+        );
+        expect(theRequestManager.map("set_port_range")).toBe(
+          "network.listen.port.range.set"
+        );
+        expect(theRequestManager.map("get_port_random")).toBe(
+          "network.listen.port.random"
+        );
+        expect(theRequestManager.map("set_port_random")).toBe(
+          "network.listen.port.random.set"
+        );
+        expect(theRequestManager.map("get_port_open")).toBe("cat");
+        expect(theRequestManager.map("set_port_open")).toBe("cat");
+        expect(theRequestManager.map("port_open")).toBe("cat");
+        expect(theRequestManager.map("get_max_open_sockets")).toBe(
+          "system.sockets.max_size"
+        );
+        expect(theRequestManager.map("set_max_open_files")).toBe(
+          "system.sockets.files.max_alloc.set"
+        );
+      });
+    }
   });
 
   it("loads rTorrent 0.10.2 aliases at the 0.10.2 boundary", () => {
