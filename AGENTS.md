@@ -61,6 +61,12 @@ docker run --rm --entrypoint php85 \
 
 The full Jest suite currently has unrelated existing failures in some legacy specs. Prefer focused tests plus syntax checks unless the task is specifically to repair the test suite.
 
+## Upstream Sync
+
+Inspect the dirty tree before merging, but do not require a stash merely because unrelated user changes exist. Preserve dirty files in place when upstream does not touch those paths; stop and protect the changes only when the merge overlaps them.
+
+When the user explicitly prefers upstream conflict resolution, `git merge -X theirs upstream/master` may encode that textual policy. Always inspect the resulting shared files and run focused tests afterward: valid fork-only compatibility and race handling can live in the same file as a correct upstream fix.
+
 ## Code Documentation
 
 Keep new and updated code comments, inline documentation, and test assertion messages in English. Add concise comments for non-obvious compatibility gates, locking/race handling, XMLRPC quirks, or cross-repository handoff assumptions; avoid comments that merely restate straightforward code.
