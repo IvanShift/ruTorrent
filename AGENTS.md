@@ -67,6 +67,21 @@ Inspect the dirty tree before merging, but do not require a stash merely because
 
 When the user explicitly prefers upstream conflict resolution, `git merge -X theirs upstream/master` may encode that textual policy. Always inspect the resulting shared files and run focused tests afterward: valid fork-only compatibility and race handling can live in the same file as a correct upstream fix.
 
+## Upstream PR Handoff
+
+When a ruTorrent fix should be proposed to upstream `Novik/ruTorrent`, do not open the PR from `IvanShift/master` or from a local merge commit. This fork carries Docker handoff, `rutracker_check`, and other fork-specific history that should not leak into upstream PRs.
+
+Create a clean upstream branch from the intended upstream base, usually `upstream/master`, then apply only the upstreamable patch:
+
+```sh
+git fetch upstream master
+git switch -c upstream-<short-fix-name> upstream/master
+```
+
+Before pushing or opening the PR, inspect `git diff --stat upstream/master..HEAD` and `git diff --name-status upstream/master..HEAD`. The PR diff should contain only upstream-owned ruTorrent files and focused tests; exclude this fork's `AGENTS.md`, `.codex/`, `plugins/rutracker_check`, Docker-specific notes, and merge commits unless upstream explicitly asked for them.
+
+Push the clean branch to `IvanShift/ruTorrent` and open the compare against `Novik/ruTorrent:<base>`. Keep the fork's `master` push/merge workflow separate from upstream PR preparation.
+
 ## Code Documentation
 
 Keep new and updated code comments, inline documentation, and test assertion messages in English. Add concise comments for non-obvious compatibility gates, locking/race handling, XMLRPC quirks, or cross-repository handoff assumptions; avoid comments that merely restate straightforward code.

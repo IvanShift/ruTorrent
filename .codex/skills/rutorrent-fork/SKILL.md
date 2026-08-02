@@ -1,6 +1,6 @@
 ---
 name: rutorrent-fork
-description: Use when changing or reviewing the IvanShift ruTorrent fork in /home/dev/Documents/my_projects/ruTorrent, especially ruTorrent PHP, JavaScript, CSS, bundled plugins, rutracker_check, httprpc/xmlrpc compatibility, or behavior that the docker-rutorrent image consumes from this fork.
+description: Use when changing or reviewing the IvanShift ruTorrent fork in /home/dev/Documents/my_projects/ruTorrent, especially ruTorrent PHP, JavaScript, CSS, bundled plugins, rutracker_check, httprpc/xmlrpc compatibility, upstream PR handoff to Novik/ruTorrent, or behavior that the docker-rutorrent image consumes from this fork.
 ---
 
 # IvanShift ruTorrent Fork
@@ -57,6 +57,26 @@ The full Jest suite has unrelated existing failures in legacy specs. Do not clai
 Inspect the dirty tree before merging, but keep unrelated user changes in place when upstream does not touch those paths. Do not require a stash solely because the tree is dirty; stop and protect changes only when paths overlap.
 
 If the user requests upstream-preferred conflict handling, `git merge -X theirs upstream/master` is a textual policy, not semantic proof. Inspect every shared file after the merge and verify that correct upstream changes coexist with required fork compatibility and race handling.
+
+## Upstream PR Handoff
+
+For PRs to upstream `Novik/ruTorrent`, do not use `IvanShift/master` or a local merge commit as the PR branch. This fork can contain Docker handoff, `rutracker_check`, AGENTS/skill files, and other fork-only history.
+
+Create a clean branch from the intended upstream base, usually `upstream/master`, then apply only the upstreamable diff:
+
+```sh
+git fetch upstream master
+git switch -c upstream-<short-fix-name> upstream/master
+```
+
+Before pushing, compare against upstream:
+
+```sh
+git diff --stat upstream/master..HEAD
+git diff --name-status upstream/master..HEAD
+```
+
+The upstream PR should include only upstream-owned ruTorrent files and focused tests. Keep `AGENTS.md`, `.codex/`, Docker-specific notes, fork-only plugins, and merge commits out unless upstream explicitly requests them.
 
 ## Code Documentation
 
