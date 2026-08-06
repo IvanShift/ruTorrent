@@ -58,5 +58,8 @@ php/commands.lst
 *.iml
 rutorrent-custom-plugins
 
+# Torrent files carry a personal passkey in their announce URL
+*.torrent
+
 # MacOS
 .DS_Store
