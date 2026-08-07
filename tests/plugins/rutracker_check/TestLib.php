@@ -415,6 +415,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             . "Chrome/120.0.0.0 Safari/537.36";
 
         public static $created = array();
+        // $created only records payloads that parsed, so a handler that must
+        // not reach createTorrent() at all is asserted against this counter.
+        public static $createCalls = 0;
         public static $logs = array();
         public static $registrations = array();
         public static $createResult = null;
@@ -424,6 +427,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function reset()
         {
             self::$created = array();
+            self::$createCalls = 0;
             self::$logs = array();
             self::$registrations = array();
             self::$createResult = null;
@@ -482,6 +486,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         public static function createTorrent($payload, $oldHash)
         {
+            self::$createCalls++;
             $parsed = @new Torrent($payload);
             if ($parsed->errors() || strlen((string) $parsed->hash_info()) !== 40) {
                 return self::STE_ERROR;
