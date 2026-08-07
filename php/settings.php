@@ -402,6 +402,27 @@ class rTorrentSettings
 		}
 		return(strpos(FileUtil::addslash($dir),$topDirectory)===0);
 	}
+	// The file and HTTP socket limits belong to libtorrent's socket manager:
+	// network.max_open_files.set is an inert stub, and
+	// system.sockets.<category>.max_alloc is a ceiling that can only lower the
+	// allocation. Landing on the exact requested value therefore needs both
+	// min_alloc and max_alloc, followed by a system.sockets.adjust_alloc
+	// recompute -- nothing takes effect until adjust_alloc runs.
+	//
+	// Restricted to 0.16.19+. Earlier versions abort the process on an
+	// over-budget adjust_alloc, and the budget cannot be checked beforehand
+	// because its reserve and min_generic terms are not exposed over RPC.
+	// 0.16.19 reports a regular XMLRPC fault instead.
+	public function getSocketAllocCategory( $name )
+	{
+		if($this->iVersion<0x1013)
+			return(null);
+		if($name=="nmax_open_files")
+			return("files");
+		if($name=="nmax_open_http")
+			return("http");
+		return(null);
+	}
 	public function patchDeprecatedCommand( $cmd, $name )
 	{
 		if((array_key_exists($name,$this->aliases) && $this->aliases[$name]["prm"]) ||
@@ -412,22 +433,12 @@ class rTorrentSettings
 	{
 		return 2 << (20 + 3*($this->apiVersion>=11));
 	}
-	public function patchDeprecatedRequest(&$commands)
+	public function patchDeprecatedRequest($commands)
 	{
-		$needsSocketAdjust = false;
 		if($this->iVersion>=0x904)
 		{
 			foreach($commands as $cmd)
 			{
-				if(($this->iVersion>=0x100f) &&
-					in_array($cmd->command, array(
-						"system.sockets.files.min_alloc.set",
-						"system.sockets.files.max_alloc.set",
-						"system.sockets.http.min_alloc.set",
-						"system.sockets.http.max_alloc.set",
-					), true))
-					$needsSocketAdjust = true;
-
 				$prefix = '';
 				if(strpos($cmd->command, 't.') === 0)
 					$prefix = ':t';
@@ -447,7 +458,5 @@ class rTorrentSettings
 				}
 			}
 		}
-		if($needsSocketAdjust)
-			$commands[] = new rXMLRPCCommand("system.sockets.adjust_alloc");
 	}
 }

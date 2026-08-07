@@ -909,45 +909,18 @@ function correctContent()
 			"ratio.upload.set"  : { name: "group.seeding.ratio.upload.set",        prm: 0 },
 		});
 	}
-	if(theWebUI.systemInfo.rTorrent.iVersion>=0x100f)
-	{
-		// rTorrent 0.16.15 deprecates legacy socket/file allocation commands.
-		// Use socket-manager commands and let rtorrent.js add
-		// system.sockets.adjust_alloc after setters.
-		$.extend(theRequestManager.aliases,
-		{
-			"get_max_open_files"   : { name: "system.sockets.files.max_size",      prm: 0 },
-			"set_max_open_files"   : { name: "system.sockets.files.max_alloc.set", prm: 1 },
-			"get_max_open_http"    : { name: "system.sockets.http.max_size",       prm: 0 },
-			"set_max_open_http"    : { name: "system.sockets.http.max_alloc.set",  prm: 1 },
-			"get_max_open_sockets" : { name: "system.sockets.max_size",            prm: 0 },
-			"network.open_sockets" : { name: "system.sockets.size",                prm: 0 },
-		});
-	}
-	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1010)
-	{
-		// rTorrent 0.16.16 uses canonical download multicalls and replaced the
-		// old proxy_address commands with the proxy manager commands.
-		$.extend(theRequestManager.aliases,
-		{
-			"d.multicall"       : { name: "d.multicall",              prm: 1 },
-			"d.multicall2"      : { name: "d.multicall",              prm: 1 },
-			"get_http_proxy"    : { name: "network.proxy.http",       prm: 0 },
-			"http_proxy"        : { name: "network.proxy.http",       prm: 0 },
-			"set_http_proxy"    : { name: "network.proxy.http.set",   prm: 1 },
-			"get_proxy_address" : { name: "network.proxy.global",     prm: 0 },
-			"set_proxy_address" : { name: "network.proxy.global.set", prm: 1 },
-		});
-	}
 	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1010)
 	{
 		// rtorrent >= 0.16.16: override aliases for commands that were
 		// removed or now log deprecation warnings. Mirrors php/methods-0.16.16.php.
+		// get_max_open_http reads the effective allocation (max_size), since
+		// max_alloc is only the ceiling and commonly sits far above it.
 		$.extend(theRequestManager.aliases,
 		{
-			"get_max_open_http"      : { name: "system.sockets.http.max_alloc",          prm: 0 },
+			"get_max_open_http"      : { name: "system.sockets.http.max_size",           prm: 0 },
 			"set_max_open_http"      : { name: "system.sockets.http.max_alloc.set",      prm: 1 },
 			"set_max_open_files"     : { name: "system.sockets.files.max_alloc.set",     prm: 1 },
+			"d.multicall"            : { name: "d.multicall",                             prm: 1 },
 			"d.multicall2"           : { name: "d.multicall",                             prm: 1 },
 			"get_http_proxy"         : { name: "network.proxy.http",                     prm: 0 },
 			"set_http_proxy"         : { name: "network.proxy.http.set",                 prm: 1 },

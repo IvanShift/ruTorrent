@@ -93,26 +93,6 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('100', $command->params[1]->value, 'rTorrent 0.16 group ratio commands keep the requested value');
 	}
 
-	public function testRtorrent01615UsesSocketManagerCommands()
-	{
-		$settings = $this->makeSettings(0x100f);
-		$this->useSettingsSingleton($settings);
-
-		$this->assertEquals('system.sockets.files.max_size', $settings->getCommand('get_max_open_files'), 'rTorrent 0.16.15 reads file allocation through socket manager');
-		$this->assertEquals('system.sockets.files.max_alloc.set', $settings->getCommand('set_max_open_files'), 'rTorrent 0.16.15 writes the file allocation ceiling');
-		$this->assertEquals('system.sockets.http.max_alloc.set', $settings->getCommand('set_max_open_http'), 'rTorrent 0.16.15 writes the HTTP allocation ceiling');
-		$this->assertEquals('system.sockets.size', $settings->getCommand('network.open_sockets'), 'rTorrent 0.16.15 reads open sockets through socket manager');
-
-		$commands = array(
-			new rXMLRPCCommand('set_max_open_files', 600),
-			new rXMLRPCCommand('set_max_open_http', 50),
-		);
-		$settings->patchDeprecatedRequest($commands);
-
-		$this->assertEquals(3, count($commands), 'socket allocation setters append one allocation recalculation command');
-		$this->assertEquals('system.sockets.adjust_alloc', $commands[2]->command, 'socket allocation ceilings are applied after setters');
-	}
-
 	public function testRtorrent01616UsesCanonicalCommands()
 	{
 		$settings = $this->makeSettings(0x1010);

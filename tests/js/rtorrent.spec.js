@@ -91,35 +91,6 @@ describe("xmlrpc calls", () => {
     });
   });
 
-  it("maps rTorrent 0.16.15 socket commands to socket manager commands", () => {
-    withRtorrentVersion(0x100f, () => {
-      expect(theRequestManager.map("get_max_open_files")).toBe(
-        "system.sockets.files.max_size"
-      );
-      expect(theRequestManager.map("set_max_open_files")).toBe(
-        "system.sockets.files.max_alloc.set"
-      );
-      expect(theRequestManager.map("set_max_open_http")).toBe(
-        "system.sockets.http.max_alloc.set"
-      );
-      expect(theRequestManager.map("network.open_sockets")).toBe(
-        "system.sockets.size"
-      );
-
-      const commands = [
-        new rXMLRPCCommand("set_max_open_files"),
-        new rXMLRPCCommand("set_max_open_http"),
-      ];
-      theRequestManager.patchRequest(commands);
-
-      expect(commands.map(({ command }) => command)).toStrictEqual([
-        "system.sockets.files.max_alloc.set",
-        "system.sockets.http.max_alloc.set",
-        "system.sockets.adjust_alloc",
-      ]);
-    });
-  });
-
   it("maps rTorrent 0.16.16 commands to canonical names", () => {
     withRtorrentVersion(0x1010, () => {
       expect(theRequestManager.map("get_http_proxy")).toBe(
@@ -323,5 +294,62 @@ describe("xmlrpc calls", () => {
       expect(ret.torrents[hash].label).toBe(label);
       expect(ret.torrents[hash].comment).toBe(comment);
     }
+  });
+});
+
+describe("visibilitychange handler", () => {
+  let hiddenDescriptor;
+
+  beforeEach(() => {
+    // Save original descriptor so we can restore it after each test
+    hiddenDescriptor = Object.getOwnPropertyDescriptor(
+      Document.prototype,
+      "hidden"
+    );
+  });
+
+  afterEach(() => {
+    // Restore original document.hidden behavior
+    delete document.hidden;
+    if (hiddenDescriptor) {
+      Object.defineProperty(Document.prototype, "hidden", hiddenDescriptor);
+    }
+    // Reset state
+    theWebUI.deltaTime = 0;
+    theWebUI.serverDeltaTime = 0;
+  });
+
+  it("should reset deltaTime and serverDeltaTime when tab becomes visible", () => {
+    // Simulate cached deltas from a previous Ajax_UpdateTime call
+    theWebUI.deltaTime = 5000;
+    theWebUI.serverDeltaTime = 3000;
+
+    // Mock document.hidden to return false (tab is now visible)
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => false,
+    });
+
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(theWebUI.deltaTime).toBe(0);
+    expect(theWebUI.serverDeltaTime).toBe(0);
+  });
+
+  it("should NOT reset deltas when tab becomes hidden", () => {
+    theWebUI.deltaTime = 5000;
+    theWebUI.serverDeltaTime = 3000;
+
+    // Mock document.hidden to return true (tab is now hidden)
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => true,
+    });
+
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    // Values should remain unchanged
+    expect(theWebUI.deltaTime).toBe(5000);
+    expect(theWebUI.serverDeltaTime).toBe(3000);
   });
 });
