@@ -18,7 +18,9 @@
  				  "Błąd podczas próby dostępu do trackera",
  				  "Błąd interakcji z rTorrentem",
  				  "Nie potrzeba",
- 				  "Zignorowano"
+ 				  "Zignorowano",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

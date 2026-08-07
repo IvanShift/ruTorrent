@@ -18,7 +18,9 @@
  				  "Сталася помилка доступу до трекера",
  				  "Сталася помилка взаємодії з rTorrent",
  				  "Немає необхідності",
- 				  "Ігнорується"
+ 				  "Ігнорується",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

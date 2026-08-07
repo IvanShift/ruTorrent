@@ -18,7 +18,9 @@
  				  "트래커 접근 중 오류",
  				  "rTorrent 통신 오류",
  				  "불필요함",
- 				  "무시됨"
+ 				  "무시됨",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

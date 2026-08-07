@@ -18,7 +18,9 @@
  				  "Fel, uppstigning tracker",
  				  "Fel vid interaktivitet med rTorrent",
  				  "Behövs inte",
- 				  "Ignorerad"
+ 				  "Ignorerad",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

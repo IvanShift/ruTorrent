@@ -19,7 +19,9 @@
  				  "İzleyiciye erişim hatası",
  				  "rTorrent ile etkileşim hatası",
  				  "Gerek yok",
- 				  "Yoksayılmış"
+ 				  "Yoksayılmış",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

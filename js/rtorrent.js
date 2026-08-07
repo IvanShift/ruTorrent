@@ -1068,6 +1068,7 @@ rTorrentStub.prototype.getalltrackersResponse = function(values)
  * @property {string} base_path
  * @property {number} chkstate - rutracker_check plugin. See @ruTrackerChecker
  * @property {number} chktime
+ * @property {string} chkmsg
  * @property {string} comment
  * @property {string} created - timestamp - number with quotes (e.g.: "123")
  * @property {number} dl

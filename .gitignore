@@ -63,3 +63,12 @@ rutorrent-custom-plugins
 
 # MacOS
 .DS_Store
+
+# Local design notes and implementation plans, not shipped with the fork
+docs/
+
+# Agent tooling and scratch: sessions, worktrees, skills, task briefs
+.claude/
+.agents/
+.codex/
+.superpowers/

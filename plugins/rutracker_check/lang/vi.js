@@ -18,7 +18,9 @@
  				  "Lỗi truy cập máy theo dỗi",
  				  "Lỗi giao tiếp với rTorrent",
  				  "Không cần thiết",
- 				  "Bị bỏ qua"
+ 				  "Bị bỏ qua",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

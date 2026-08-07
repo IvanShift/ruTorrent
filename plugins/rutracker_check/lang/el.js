@@ -18,7 +18,9 @@
  				  "Σφάλμα πρόσβασης στον tracker",
  				  "Σφάλμα αλληλεπίδρασης με το rTorrent",
  				  "Δεν χρειάζεται",
- 				  "Αγνοήθηκε"
+ 				  "Αγνοήθηκε",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

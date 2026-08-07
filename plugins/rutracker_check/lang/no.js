@@ -18,7 +18,9 @@
  				  "Tilgangsfeil med trackeren oppstod",
  				  "Kommunikasjonsfeil med rTorrent oppstod",
  				  "Ikke nødvendig",
- 				  "Ignorert"
+ 				  "Ignorert",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

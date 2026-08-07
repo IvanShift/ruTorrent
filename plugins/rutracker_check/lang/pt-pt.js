@@ -18,7 +18,9 @@
  				  "Erro ao acessar o rastreador",
  				  "Erro ao interagir com o rTorrent",
  				  "Não há necessidade",
- 				  "Ignorado"
+ 				  "Ignorado",
+ 				  "Waiting for metadata",
+ 				  "Absorbed by another topic — resolve manually"
  				  ];
 
 thePlugins.get("rutracker_check").langLoaded();

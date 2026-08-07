@@ -1,9 +1,15 @@
 <?php
 
 $tests = array(
+    __DIR__ . '/StateTest.php',
     __DIR__ . '/CheckerTest.php',
     __DIR__ . '/RuTrackerHandlerTest.php',
+    __DIR__ . '/RuTrackerAnnounceTest.php',
+    __DIR__ . '/ForumIndexTest.php',
+    __DIR__ . '/DetectorTest.php',
+    __DIR__ . '/UpdatePassTest.php',
     __DIR__ . '/NNMClubHandlerTest.php',
+    __DIR__ . '/MetaFetchTest.php',
     __DIR__ . '/../../php/SnoopyTest.php',
 );
 $failures = 0;

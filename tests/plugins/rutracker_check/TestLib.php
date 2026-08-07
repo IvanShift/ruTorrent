@@ -4,10 +4,11 @@
  * Shared harness for the rutracker_check test suite.
  *
  * The always-defined part carries the runner, assertions and the XMLRPC test
- * doubles. Handler-facing stubs (Snoopy, a fake ruTrackerChecker, bencode
- * fixture builders backed by the real Torrent class) are defined only when the
- * including test sets TESTLIB_HANDLER_STUBS, because CheckerTest loads the
- * real ruTrackerChecker and a fake Torrent instead.
+ * doubles. Handler-facing stubs (Snoopy, a fake ruTrackerChecker, an identity
+ * getCmd(), bencode fixture builders backed by the real Torrent class -- and,
+ * transitively through requiring Torrent.php, the real FileUtil) are defined
+ * only when the including test sets TESTLIB_HANDLER_STUBS, because
+ * CheckerTest loads the real ruTrackerChecker and a fake Torrent instead.
  */
 
 function testFindRepoRoot()
@@ -153,6 +154,27 @@ class rXMLRPCRequest
 
     public static function queue($commands, $ok, $fault, $values = array())
     {
+        // The real transport (php/xmlrpc.php rXMLRPCRequest::run()) parses
+        // the SCGI answer with one flat regex over the whole XML document,
+        // however many commands or however deeply nested XMLRPC arrays
+        // (e.g. t.multicall's own <array><data>) it contains -- $val is
+        // always a flat list of scalars, never an array of rows. A queued
+        // value that nests an array inside $values describes a response the
+        // transport cannot produce; reject it here so a test built on that
+        // fiction fails loudly at queue time instead of silently passing.
+        // A Closure is exempt: it is resolved lazily at execute() time (see
+        // CheckerTest's queueLoadConfirmed()), and its own body must still
+        // return a flat array when called.
+        if (is_array($values)) {
+            foreach ($values as $value) {
+                if (is_array($value)) {
+                    throw new InvalidArgumentException(
+                        'rXMLRPCRequest::queue(): nested array value queued for "' . (is_array($commands) ? implode('|', $commands) : $commands)
+                        . '" -- the real transport only ever returns a flat list of scalars, flatten the fixture instead'
+                    );
+                }
+            }
+        }
         $key = is_array($commands) ? implode('|', $commands) : $commands;
         self::$responses[$key][] = array($ok, $fault, $values);
     }
@@ -174,7 +196,16 @@ class rXMLRPCRequest
             ? array_shift(self::$responses[$key])
             : array(false, true, array());
         $this->fault = $response[1];
-        $this->val = is_callable($response[2]) ? call_user_func($response[2], $this->commands) : $response[2];
+        // A lazily-computed value is queued as a Closure (see CheckerTest's
+        // queueLoadConfirmed()); every other value is a plain literal, most
+        // often a two-element array of strings. is_callable() would treat
+        // that shape as a ['Class', 'method'] callable and probe the
+        // autoloader for a class named after the first element -- harmless
+        // (the probe fails and the literal array is used regardless) but
+        // noisy when $al_diagnostic is on (conf/config.php default), and
+        // wasted work either way. Closure is the only callable this double
+        // ever needs to recognise.
+        $this->val = ($response[2] instanceof Closure) ? call_user_func($response[2], $this->commands) : $response[2];
         return $response[0];
     }
 
@@ -224,6 +255,21 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return false;
         }
     }
+
+    // Identity command mapper. The real getCmd() (php/xmlrpc.php) resolves a
+    // handful of legacy command names through rTorrentSettings' version-keyed
+    // alias table; none of that table changes the shape of what any test in
+    // this suite asserts on, so every rutracker_check test that needs
+    // getCmd() (this file included) uses plain identity instead of pulling in
+    // the real version-detection machinery.
+    function getCmd($command)
+    {
+        return $command;
+    }
+
+    // FileUtil itself needs no stub here: requiring Torrent.php above already
+    // pulls in the real php/util.php, which autoloads the real FileUtil
+    // (util.php:59's own FileUtil::getProfilePath() call) before this point.
 
     // Fixtures use the production encoder, so they are byte-identical to what
     // the plugin itself produces and re-parses.
@@ -282,10 +328,18 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
     class Snoopy
     {
         public static $responses = array();
+        // Catch-all queue, consulted only when $url has no exact match.
+        // RuTracker's layer-2 probe URL carries a random peer_id tail and a
+        // random key (RuTrackerAnnounce::makePeerId()/random_bytes()), so a
+        // test can never know the exact URL in advance the way it does for
+        // every other (deterministic) request this suite makes.
+        public static $any = array();
         public static $requests = array();
 
         public $status = -1;
         public $results = '';
+        public $headers = array();
+        public $rawheaders = array();
         public $read_timeout = 0;
         public $_fp_timeout = 0;
         public $agent = '';
@@ -293,25 +347,39 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function reset()
         {
             self::$responses = array();
+            self::$any = array();
             self::$requests = array();
         }
 
-        public static function queue($url, $status, $results)
+        // $headers models the response headers real Snoopy collects into
+        // $this->headers (raw "Name: value" lines, see
+        // php/Snoopy.class.inc:596) — not $rawheaders, which is the request
+        // side and stays unmodeled since nothing here asserts on it.
+        public static function queue($url, $status, $results, $headers = array())
         {
             if (!isset(self::$responses[$url])) {
                 self::$responses[$url] = array();
             }
-            self::$responses[$url][] = array($status, $results);
+            self::$responses[$url][] = array($status, $results, $headers);
+        }
+
+        public static function queueAny($status, $results, $headers = array())
+        {
+            self::$any[] = array($status, $results, $headers);
         }
 
         private function respond($method, $url)
         {
             self::$requests[] = array($method, $url);
-            if (!isset(self::$responses[$url]) || count(self::$responses[$url]) === 0) {
-                throw new RuntimeException("Unexpected {$method} request: {$url}");
+            if (isset(self::$responses[$url]) && count(self::$responses[$url])) {
+                list($this->status, $this->results, $this->headers) = array_shift(self::$responses[$url]);
+                return true;
             }
-            list($this->status, $this->results) = array_shift(self::$responses[$url]);
-            return true;
+            if (count(self::$any)) {
+                list($this->status, $this->results, $this->headers) = array_shift(self::$any);
+                return true;
+            }
+            throw new RuntimeException("Unexpected {$method} request: {$url}");
         }
 
         public function fetch($url, $method = 'GET', $contentType = '', $body = '')
@@ -339,6 +407,8 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         const STE_ERROR = 6;
         const STE_NOT_NEED = 7;
         const STE_IGNORED = 8;
+        const STE_META_PENDING = 9;
+        const STE_ABSORBED = 10;
 
         const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             . "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -348,6 +418,8 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $logs = array();
         public static $registrations = array();
         public static $createResult = null;
+        public static $states = array();
+        public static $messages = array();
 
         public static function reset()
         {
@@ -355,6 +427,8 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$logs = array();
             self::$registrations = array();
             self::$createResult = null;
+            self::$states = array();
+            self::$messages = array();
             Snoopy::reset();
             rXMLRPCRequest::reset();
         }
@@ -371,13 +445,57 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return $client;
         }
 
+        // Mirrors check.php:76-83 (now public there too -- RuTrackerMetaFetch
+        // is a separate class and needs to call this from outside).
+        public static function torrentExists($hash)
+        {
+            $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.hash'), $hash));
+            $req->important = false;
+            if (!$req->run())
+                return null;
+            return !$req->fault;
+        }
+
+        // Mirrors check.php:85-105's signature and null-on-missing-target
+        // fallback; records every call for tests to assert against.
+        public static function setState($hash, $state)
+        {
+            self::$states[] = array('hash' => $hash, 'state' => $state);
+            $req = new rXMLRPCRequest(new rXMLRPCCommand(
+                getCmd('d.set_custom'), array($hash, 'chk-state', (string) $state)));
+            $req->important = false;
+            if ($req->success())
+                return true;
+            return self::torrentExists($hash) === false ? null : false;
+        }
+
+        // Mirrors check.php:108-114; records every call for tests to assert
+        // against.
+        public static function setMessage($hash, $message)
+        {
+            self::$messages[] = array('hash' => $hash, 'message' => $message);
+            $req = new rXMLRPCRequest(new rXMLRPCCommand(
+                getCmd('d.set_custom'), array($hash, 'chk-msg', (string) $message)));
+            $req->important = false;
+            return $req->success();
+        }
+
         public static function createTorrent($payload, $oldHash)
         {
             $parsed = @new Torrent($payload);
             if ($parsed->errors() || strlen((string) $parsed->hash_info()) !== 40) {
                 return self::STE_ERROR;
             }
-            self::$created[] = array('payload' => $payload, 'old_hash' => $oldHash);
+            // Captured at call time so a test can assert the erase genuinely
+            // preceded this replacement, not merely occurred somewhere in the
+            // run (real createTorrent() refuses a surviving new hash).
+            $newHash = (string) $parsed->hash_info();
+            $erasedFirst = false;
+            foreach (rXMLRPCRequest::$requests as $request)
+                foreach ($request['commands'] as $command)
+                    if ($command->command === getCmd('d.erase') && (string) $command->params === $newHash)
+                        $erasedFirst = true;
+            self::$created[] = array('payload' => $payload, 'old_hash' => $oldHash, 'erased_first' => $erasedFirst);
             return self::$createResult;
         }
 

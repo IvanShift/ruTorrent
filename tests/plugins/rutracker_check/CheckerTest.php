@@ -110,6 +110,27 @@ class rTorrent
 	}
 }
 
+// Fake collaborator for run()'s STE_META_PENDING short-circuit. pump()'s own
+// ordered-harvest logic is exercised in full by MetaFetchTest.php; this
+// double only has to prove run() actually hands off to it (instead of
+// falling into the normal INPROGRESS transition) and persists whatever it
+// returns. It still issues one real XMLRPC read, so a test can tell "pump
+// ran" from "pump was a no-op stub".
+class RuTrackerMetaFetch
+{
+	public static $calls = array();
+	public static $result = null;
+
+	public static function pump($hash, $now)
+	{
+		self::$calls[] = array('hash' => $hash, 'now' => $now);
+		$probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'), array($hash, 'chk-meta-new')));
+		$probe->important = false;
+		$probe->success();
+		return self::$result;
+	}
+}
+
 eval(loadClassDefinition(
 	__DIR__ . '/../../../plugins/rutracker_check/check.php',
 	'ruTrackerChecker'
@@ -162,6 +183,8 @@ class CheckerTest
 		rTorrent::$sends = array();
 		rXMLRPCRequest::reset();
 		FileUtil::$log = array();
+		RuTrackerMetaFetch::$calls = array();
+		RuTrackerMetaFetch::$result = null;
 		strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
 		strictSetPrivateStatic('ruTrackerChecker', 'ANNOUNCES', array());
 	}
@@ -680,6 +703,76 @@ class CheckerTest
 			'a state-write race must not be reported as a check failure'
 		);
 		strictAssertSame(3, count(rXMLRPCRequest::$requests), 'the raced run must stop right after the confirming probe');
+	}
+
+	public function testNewStatusConstantsAreAppendedWithoutRenumbering()
+	{
+		strictAssertSame(9, ruTrackerChecker::STE_META_PENDING, 'META_PENDING value');
+		strictAssertSame(10, ruTrackerChecker::STE_ABSORBED, 'ABSORBED value');
+		strictAssertSame(4, ruTrackerChecker::STE_DELETED, 'existing values untouched');
+	}
+
+	// run()'s META_PENDING short-circuit (check.php ~603): a torrent parked
+	// mid-metadata-fetch must be handed to RuTrackerMetaFetch::pump(),
+	// never re-classified through the normal INPROGRESS transition.
+	// pump()'s own ordered harvest is covered exhaustively by
+	// MetaFetchTest.php; this only proves the wiring in run().
+	public function testMetaPendingStateCallsPumpInsteadOfInProgress()
+	{
+		$this->resetFakes();
+		RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+		rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+		rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+
+		$result = ruTrackerChecker::run('OLD', ruTrackerChecker::STE_META_PENDING, time(), 0, '');
+
+		strictAssertSame(true, $result, 'a still-pending pump keeps the check successful');
+		strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'run must hand the meta-pending state to pump exactly once');
+		strictAssertSame('OLD', RuTrackerMetaFetch::$calls[0]['hash'], 'pump must be called with the torrent hash');
+		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'pump must reach the XMLRPC layer, not a no-op stub');
+		$stateWrites = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+		strictAssertSame(1, count($stateWrites), 'run must persist the non-null pump result');
+		strictAssertSame(
+			array('OLD', 'chk-state', (string) ruTrackerChecker::STE_META_PENDING),
+			$stateWrites[0]['commands'][0]->params,
+			'the persisted state must be the pump result, never the INPROGRESS transition'
+		);
+	}
+
+	public function testMetaPendingCompletedReplacementSkipsStateWrite()
+	{
+		$this->resetFakes();
+		RuTrackerMetaFetch::$result = null; // createTorrent success: state already set by its own load additions
+		rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+
+		$result = ruTrackerChecker::run('OLD', ruTrackerChecker::STE_META_PENDING, time(), 0, '');
+
+		strictAssertSame(true, $result, 'a completed replacement is a successful check');
+		strictAssertSame(
+			0,
+			count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			'run must not write state on the now-erased old hash after a successful replacement'
+		);
+	}
+
+	public function testSetMessageWritesChkMsgCustom()
+	{
+		$this->resetFakes();
+		rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+		strictAssertTrue(
+			ruTrackerChecker::setMessage(str_repeat('A', 40), 'дамп: строки нет, цикл 2/3'),
+			'setMessage should succeed'
+		);
+		$requests = rXMLRPCRequest::requestsFor('d.set_custom');
+		strictAssertSame(1, count($requests), 'one write request');
+		strictAssertSame(
+			array(str_repeat('A', 40), 'chk-msg', 'дамп: строки нет, цикл 2/3'),
+			$requests[0]['commands'][0]->params,
+			'params'
+		);
 	}
 
 	public function testSchedulerStateStillSkipsMissingHash()

@@ -11,6 +11,7 @@ require_once( "trackers/nnmclub.php" );
 require_once( "trackers/tapocheknet.php" );
 require_once( "trackers/tfile.php" );
 require_once( "trackers/toloka.php" );
+require_once( "metafetch.php" );
 
 eval(FileUtil::getPluginConf( "rutracker_check" ));
 
@@ -24,6 +25,8 @@ class ruTrackerChecker
 	const STE_ERROR			= 6;
 	const STE_NOT_NEED		= 7;
 	const STE_IGNORED		= 8;
+	const STE_META_PENDING		= 9;
+	const STE_ABSORBED		= 10;
 
 	const MAX_LOCK_TIME		= 900;	// 15 min
 
@@ -71,7 +74,7 @@ class ruTrackerChecker
 	 * @return bool|null true when present, false when the target is missing,
 	 *                   null when the XMLRPC request itself failed
 	 */
-	static protected function torrentExists( $hash )
+	static public function torrentExists( $hash )
 	{
 		$req = new rXMLRPCRequest( new rXMLRPCCommand( getCmd("d.hash"), $hash ) );
 		$req->important = false;
@@ -80,7 +83,7 @@ class ruTrackerChecker
 		return(!$req->fault);
 	}
 
-	static protected function setState( $hash, $state )
+	static public function setState( $hash, $state )
 	{
 		$req = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.set_custom"), array($hash, "chk-state", $state."")  ),
@@ -100,6 +103,15 @@ class ruTrackerChecker
 			return(null);
 		}
 		return(false);
+	}
+
+	// Writes the human-readable chk-msg custom; an empty string clears it.
+	static public function setMessage( $hash, $message )
+	{
+		$req = new rXMLRPCRequest( new rXMLRPCCommand(
+			getCmd("d.set_custom"), array($hash, "chk-msg", (string) $message) ) );
+		$req->important = false;
+		return($req->success());
 	}
 
 	static protected function getState( $hash, &$state, &$time, &$successful_time, &$label )
@@ -562,10 +574,18 @@ class ruTrackerChecker
 		return $client;
 	}
 
-	static public function run( $hash, $state = null, $time = null, $successful_time = null, $label = null )
+	// Shared by run() below and RuTrackerUpdatePass::run()'s direct-write
+	// paths (updatepass.php), so an ignored torrent can never flap between
+	// STE_IGNORED and a scheduler-derived state depending only on which of
+	// the two ever ends up touching it in a given cycle.
+	static public function isIgnoredLabel( $label )
 	{
 		global $ignoreLabels;
+		return( !is_null($label) && isset($ignoreLabels) && is_array($ignoreLabels) && in_array($label, $ignoreLabels) );
+	}
 
+	static public function run( $hash, $state = null, $time = null, $successful_time = null, $label = null )
+	{
 		// update.php can pass cached state directly, bypassing getState(). Check
 		// the live target before acting on a possibly stale scheduler row.
 		if(!is_null($state))
@@ -581,11 +601,18 @@ class ruTrackerChecker
 			return(true);
 
 		// Skip torrent if its label is in the ignore list
-		if(!is_null($label) && isset($ignoreLabels) && is_array($ignoreLabels) && in_array($label, $ignoreLabels))
+		if(self::isIgnoredLabel($label))
 		{
 			$state = self::STE_IGNORED;
 			self::setState($hash, $state);
 			return(true);
+		}
+
+		if($state == self::STE_META_PENDING)
+		{
+			$state = RuTrackerMetaFetch::pump($hash, time());
+			if(!is_null($state)) self::setState($hash, $state);
+			return($state != self::STE_CANT_REACH_TRACKER);
 		}
 
 		if(($state==self::STE_INPROGRESS) && ((time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
