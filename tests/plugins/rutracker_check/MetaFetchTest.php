@@ -687,6 +687,56 @@ $suite->test('the marker is the fallback when the old torrent can no longer be r
     strictAssertTrue(strpos($line, 'started=1') !== false, 'and carrying what the marker said: ' . $line);
 });
 
+// decodeRunState()'s own branches, reached only through the marker fallback
+// above ('started' is already pinned by the test just above). Backward
+// compatibility: the first version of this marker wrote plain '1'/'0'
+// instead of the current started/open/stopped words.
+$suite->test('the legacy "1" marker restores the replacement exactly like "started"', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, null, '1');
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0)); // came up closed and stopped
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // and now really runs
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    $starts = rXMLRPCRequest::requestsFor('d.open|d.start');
+    strictAssertSame(1, count($starts), 'the legacy "1" marker is honoured exactly like "started"');
+    strictAssertSame($newHash, $starts[0]['commands'][0]->params, 'd.open targets the new hash');
+    strictAssertSame($newHash, $starts[0]['commands'][1]->params, 'and d.start after it, on the same hash');
+});
+
+$suite->test('the "open" marker restores the replacement as paused, never as started', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, null, 'open');
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0)); // came up closed and stopped
+    rXMLRPCRequest::queue('d.open', true, false, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1)); // and now reopened
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    $opens = rXMLRPCRequest::requestsFor('d.open');
+    strictAssertSame(1, count($opens), 'the "open" marker reopens the replacement');
+    strictAssertSame($newHash, $opens[0]['commands'][0]->params, 'on the new hash');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+        'but never starts it: the marker recorded a pause, not a run');
+});
+
+// A marker nobody wrote -- an absent read, a genuinely empty custom, the
+// legacy '0', or plain garbage -- must decode the SAFE way: as stopped, so a
+// replacement is never started on the strength of a value nobody actually
+// recorded.
+$suite->test('an absent, empty, legacy-stopped or unrecognised marker decodes to stopped', function () use ($oldHash) {
+    foreach (array(null, '', '0', 'bogus') as $marker) {
+        mfQueueHarvest($oldHash, null, $marker);
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000),
+            'the replacement is committed for marker ' . var_export($marker, true));
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+            'marker ' . var_export($marker, true) . ' must never start the replacement');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')),
+            'marker ' . var_export($marker, true) . ' must never even reopen the replacement');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'neither open nor started',
+            'marker ' . var_export($marker, true) . ' is treated as neither open nor started');
+    }
+});
+
 $suite->test('harvest leaves the replacement stopped when the old torrent was stopped', function () use ($oldHash) {
     mfQueueHarvest($oldHash, array(0, 0));
 

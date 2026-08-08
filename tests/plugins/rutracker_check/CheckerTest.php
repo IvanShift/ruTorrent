@@ -384,6 +384,27 @@ class CheckerTest
 		});
 	}
 
+	// Most replacements belong to no ratio group at all: d.views comes back
+	// with nothing matching rat_\d+, so buildReplacementAddition() has no
+	// membership to confirm. The view.list round trip existingViews() pays
+	// lands inside createTorrent(), after the old torrent has already been
+	// stopped and closed and before the replacement is sent -- not a place to
+	// spend a lookup whose answer nothing then uses.
+	public function testNoRatioViewsSkipsTheViewListLookup()
+	{
+		$this->resetFakes();
+		$addition = strictInvoke('ruTrackerChecker', 'buildReplacementAddition',
+			array('seed-value', 'slow', array(), ruTrackerChecker::STE_UPDATED, 'deadbeef'));
+
+		$keys = array_map(function($request) { return $request['key']; }, rXMLRPCRequest::$requests);
+		strictAssertTrue(!in_array('view_list', $keys, true),
+			'no ratio views were collected, so view.list must never be asked for: saw ' . implode(',', $keys));
+		$views = array_values(array_filter($addition, function($command) {
+			return strpos($command, 'view.set_visible=') === 0;
+		}));
+		strictAssertSame(array(), $views, 'and no membership command can be emitted either');
+	}
+
 	// The version rides along with the cycle counts so a log can be read
 	// against the rTorrent that produced it. rTorrentSettings::get() answers
 	// from the cached rtorrent.dat -- only a browser-driven get(true) ever

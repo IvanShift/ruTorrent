@@ -343,14 +343,17 @@ class ruTrackerChecker
 		// membership is only ever forwarded once the view has been confirmed;
 		// an unconfirmable one is dropped, because a lost ratio group costs
 		// far less than an aborted load.
-		$existing = self::existingViews();
 		$dropped = array();
-		foreach($ratioViews as $ratioView)
+		if(!empty($ratioViews))
 		{
-			if($existing !== null && isset($existing[$ratioView]))
-				$addition[] = getCmd("view.set_visible=").$ratioView;
-			else
-				$dropped[] = $ratioView;
+			$existing = self::existingViews();
+			foreach($ratioViews as $ratioView)
+			{
+				if($existing !== null && isset($existing[$ratioView]))
+					$addition[] = getCmd("view.set_visible=").$ratioView;
+				else
+					$dropped[] = $ratioView;
+			}
 		}
 		if(count($dropped))
 			self::logDebug("buildReplacementAddition: dropped ".implode(',', $dropped)
