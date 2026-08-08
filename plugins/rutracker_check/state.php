@@ -28,6 +28,38 @@ class RuTrackerState
         return $dir;
     }
 
+    // A whole-cycle mutex, and a different thing from the per-document locks
+    // below: those keep one JSON file internally consistent, this keeps two
+    // cycles from doing the same outward-facing work twice. Overlapping passes
+    // are not merely wasteful. Every safeguard that bounds outbound traffic --
+    // the announce cap, the forum-dump memo, the Kinozal session latch -- is a
+    // per-process static and cannot see its twin, so two cycles silently double
+    // each limit. They also share one loginmgr cookie jar: a failed request in
+    // one erases the stored session for both, the other logs in again, and a
+    // tracker that allows a single live session per account keeps knocking the
+    // pair out in turn.
+    //
+    // Non-blocking on purpose: a cycle that cannot get in has nothing useful to
+    // wait for, since the running one is already doing exactly its work. The
+    // handle is returned for the caller to hold for the process lifetime; the
+    // lock is released when the process exits and the descriptor closes, so a
+    // cycle killed mid-run cannot wedge the next one.
+    //
+    // Returns the open handle when the lock is taken, false when another cycle
+    // holds it, and true when no lock file could be created at all -- a guard
+    // that cannot be built must not stop the cycle, since losing the guard is
+    // better than losing every cycle.
+    static public function acquireCycleLock()
+    {
+        $fp = @fopen(self::dir() . '/cycle.lock', 'c');
+        if ($fp === false) return true;
+        if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+            @fclose($fp);
+            return false;
+        }
+        return $fp;
+    }
+
     static public function load($name)
     {
         $raw = @file_get_contents(self::dir() . '/' . $name . '.json');

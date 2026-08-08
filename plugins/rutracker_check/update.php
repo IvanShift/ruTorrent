@@ -9,6 +9,17 @@ if( count( $argv ) > 1 )
 require_once( "check.php" );
 require_once( "updatepass.php" );
 
+// Two cycles were seen running three seconds apart on the live system, each
+// repeating the other's work. See RuTrackerState::acquireCycleLock() for why
+// that is worse than wasteful. The handle stays in scope for the whole file so
+// the lock is held until this process exits.
+$cycleLock = RuTrackerState::acquireCycleLock();
+if($cycleLock === false)
+{
+	ruTrackerChecker::logDebug("update: another cycle is still running, this one stands down");
+	exit();
+}
+
 // The scheduler starts this file as a detached "sh -c ... &", so PHP's own
 // stderr goes nowhere. A fatal partway through the cycle therefore leaves no
 // trace whatsoever, and the summary at the bottom never runs -- indistinguishable
@@ -18,7 +29,10 @@ require_once( "updatepass.php" );
 // change how a cycle behaves, and nothing recorded which version produced which
 // cycle. It is asked of the daemon rather than of the cached settings, which go
 // stale across exactly the upgrade this is meant to catch.
-ruTrackerChecker::logDebug("update: cycle start ".ruTrackerChecker::liveVersionLabel());
+// src tells the two apart: rTorrent's scheduler always passes the user name as
+// argv[1] (empty string included), a hand run from the shell passes nothing.
+ruTrackerChecker::logDebug("update: cycle start ".ruTrackerChecker::liveVersionLabel()
+	." src=".(count($argv) > 1 ? "scheduler" : "cli"));
 
 $req =  new rXMLRPCRequest(
 		new rXMLRPCCommand("d.multicall",array("seeding",

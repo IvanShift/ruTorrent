@@ -98,4 +98,26 @@ $suite->test('load() stays a plain read: it never creates or modifies the file',
     }
 });
 
+$suite->test('acquireCycleLock() admits one cycle and turns the next one away', function () {
+    $tmp = sys_get_temp_dir() . '/chk-state-cyclelock-' . getmypid();
+    strictRemoveTree($tmp);
+    strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+
+    try {
+        $first = RuTrackerState::acquireCycleLock();
+        strictAssertTrue(is_resource($first), 'the first cycle takes the lock');
+        strictAssertSame(false, RuTrackerState::acquireCycleLock(),
+            'a second cycle is turned away while the first still holds it');
+
+        // Closing the handle is what a finishing process does implicitly, and
+        // it is the whole reason a killed cycle cannot wedge the next one.
+        fclose($first);
+        $third = RuTrackerState::acquireCycleLock();
+        strictAssertTrue(is_resource($third), 'the lock is free again once the holder lets go');
+        fclose($third);
+    } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
 exit($suite->run());
