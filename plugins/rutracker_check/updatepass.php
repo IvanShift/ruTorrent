@@ -162,7 +162,7 @@ class RuTrackerUpdatePass
             $host = $hosts[$index];
             if (in_array($host, $fused, true)) {
                 ruTrackerChecker::setState($row['hash'], ruTrackerChecker::STE_CANT_REACH_TRACKER);
-                ruTrackerChecker::setMessage($row['hash'], 'предохранитель: похоже на отказ трекера ' . $host);
+                ruTrackerChecker::setMessage($row['hash'], ruTrackerChecker::CHKMSG_FUSE . '|' . $host);
                 continue;
             }
 

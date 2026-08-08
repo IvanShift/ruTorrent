@@ -34,13 +34,17 @@ class RuTrackerMetaFetch
         global $rutrackerMetaDeadline;
         $deadline = $now + (isset($rutrackerMetaDeadline) ? (int) $rutrackerMetaDeadline : 86400);
 
-        // load silently swallows a hash it already knows, so a user who
-        // replaced the torrent by hand must be detected before loading.
+        // load silently swallows a hash it already knows, so an already
+        // present successor must be detected before loading. How it got
+        // there is unknowable -- the user, another automation, or an earlier
+        // incomplete run of this plugin -- so the token records only the
+        // hash, and rutracker.php's layer 0 reads it back to keep this
+        // terminal outcome from re-running the whole chain every cycle.
         $exists = ruTrackerChecker::torrentExists($newHash);
         if ($exists === null) return ruTrackerChecker::STE_ERROR;
         if ($exists === true) {
             ruTrackerChecker::setMessage($oldHash,
-                'новый торрент топика уже загружен вручную: ' . $newHash);
+                ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash);
             return ruTrackerChecker::STE_NOT_NEED;
         }
 
@@ -134,9 +138,9 @@ class RuTrackerMetaFetch
                     $failed = max($failed, intval($value));
 
             if ($failed > 0)
-                return self::dropStub($oldHash, $newHash, 'трекер не признал новый хеш');
+                return self::dropStub($oldHash, $newHash, 'the tracker rejected the new hash');
             if ($now > $deadline)
-                return self::dropStub($oldHash, $newHash, 'метаданные не пришли до дедлайна');
+                return self::dropStub($oldHash, $newHash, 'metadata did not arrive before the deadline');
             return ruTrackerChecker::STE_META_PENDING;
         }
 
@@ -162,7 +166,7 @@ class RuTrackerMetaFetch
         $torrent = rTorrent::getSource($newHash);
         if (!is_object($torrent) || $torrent->errors()
             || (string) $torrent->hash_info() !== $newHash)
-            return self::dropStub($oldHash, $newHash, 'метаданные не прошли проверку');
+            return self::dropStub($oldHash, $newHash, 'the fetched metadata failed validation');
 
         if ((string) $torrent->announce() === '') {
             $old = rTorrent::getSource($oldHash);
@@ -183,13 +187,17 @@ class RuTrackerMetaFetch
 
     // Best-effort: the stub is abandoned either way, so a failed erase here
     // just leaves an unused item behind rather than blocking the candidate's
-    // return to the queue.
+    // return to the queue. The abort reason is diagnostics -- the torrent
+    // simply returns to the queue, which the status label already says -- so
+    // it goes to the debug log, and chk-msg is cleared rather than left
+    // carrying a token from an earlier cycle.
     static private function dropStub($oldHash, $newHash, $reason)
     {
         $erase = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.erase"), $newHash));
         $erase->important = false;
         $erase->success();
-        ruTrackerChecker::setMessage($oldHash, $reason);
+        ruTrackerChecker::setMessage($oldHash, '');
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' dropped stub ' . $newHash . ': ' . $reason);
         return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER);
     }
 

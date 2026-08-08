@@ -61,12 +61,42 @@ theWebUI.isTorrentCommandEnabled = function(act,hash)
 	return(plugin.isTorrentCommandEnabled.call(this,act,hash));
 }
 
+// chk-msg is written by PHP as "<token>|<parameter>" (see ruTrackerChecker's
+// CHKMSG_* constants), never as prose: the sentence itself lives here, in the
+// viewer's own language, and the parameter is substituted for its %s.
+// "absorbed" needs no sentence at all -- the status label already says
+// "absorbed, resolve manually", so its topic id just becomes a plain URL.
+// The result is used as an icon tooltip and via .text(), so it stays PLAIN
+// TEXT; anything unrecognised renders as nothing rather than as "undefined".
+plugin.chkMessageText = function(message)
+{
+	var raw = "" + message;
+	var separator = raw.indexOf("|");
+	if(separator < 1)
+		return("");
+	var token = raw.substr(0, separator);
+	var param = raw.substr(separator + 1);
+	if(param === "")
+		return("");
+	if(token == "absorbed")
+		return(/^[0-9]+$/.test(param) ? "https://rutracker.org/forum/viewtopic.php?t=" + param : "");
+	var sentence = theUILang.chkMessages ? theUILang.chkMessages[token] : null;
+	if(typeof sentence != "string")
+		return("");
+	// Function replacement: a parameter containing "$&" or "$1" must be
+	// inserted literally, not interpreted as a replacement pattern.
+	return(sentence.replace("%s", function() { return(param); }));
+}
+
 // Status text for the chk-state result, with the chk-msg detail appended when present.
 plugin.chkResultText = function(torrent)
 {
 	var text = theUILang.chkResults[torrent.chkstate-1];
-	if(torrent.chkmsg)
-		text += " — "+torrent.chkmsg;
+	if(typeof text != "string")
+		text = "";
+	var detail = torrent.chkmsg ? plugin.chkMessageText(torrent.chkmsg) : "";
+	if(detail)
+		text += (text ? " — " : "") + detail;
 	return(text);
 }
 

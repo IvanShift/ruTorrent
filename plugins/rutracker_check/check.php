@@ -28,6 +28,19 @@ class ruTrackerChecker
 	const STE_META_PENDING		= 9;
 	const STE_ABSORBED		= 10;
 
+	// chk-msg carries a machine token, never prose: "<token>|<parameter>".
+	// The sentence itself is localised in the browser (init.js renders
+	// theUILang.chkMessages[token] with the parameter substituted for its
+	// %s), so a message written here reads in the user's own language
+	// instead of the language of whoever wrote the handler. Anything that
+	// is only of interest while debugging goes to logDebug() instead, and
+	// clears chk-msg.
+	const CHKMSG_SUPERSEDED		= 'superseded';		// param: 40-hex successor hash
+	const CHKMSG_DELETING		= 'deleting';		// param: "N/M" confirmation cycles
+	const CHKMSG_TOPIC_STATUS	= 'topic-status';	// param: dump tor_status
+	const CHKMSG_FUSE		= 'fuse';		// param: announce host
+	const CHKMSG_ABSORBED		= 'absorbed';		// param: topic id
+
 	const MAX_LOCK_TIME		= 900;	// 15 min
 
 	// load_raw inserts the torrent from a deferred rTorrent event-loop task,
@@ -105,7 +118,8 @@ class ruTrackerChecker
 		return(false);
 	}
 
-	// Writes the human-readable chk-msg custom; an empty string clears it.
+	// Writes the chk-msg custom -- a CHKMSG_* token plus its single
+	// parameter, "<token>|<parameter>"; an empty string clears it.
 	static public function setMessage( $hash, $message )
 	{
 		$req = new rXMLRPCRequest( new rXMLRPCCommand(
@@ -401,6 +415,20 @@ class ruTrackerChecker
 				new rXMLRPCCommand("d.is_open", $newHash),
 			) );
 			$markerReq->important = false;
+			// An unmarked existing hash is the very situation the RuTracker
+			// handler now diagnoses for itself before it ever gets here
+			// (CHKMSG_SUPERSEDED: the topic's current version is already in
+			// the client, so there is nothing to replace) -- and this is the
+			// one place every tracker handler passes through, so diagnosing
+			// it here would fix it for Kinozal, NNMClub, Toloka, tfile,
+			// AniDUB and TapochekNet too. Deliberately NOT done: this
+			// function is the transaction that stops, erases and reloads the
+			// user's torrents, and its return contract binds all seven
+			// handlers -- STE_ERROR is what every one of them expects here.
+			// Generalising it means giving createTorrent() a distinct return
+			// value (or an out-parameter) for "already present, unmarked",
+			// having each handler map that value to STE_NOT_NEED plus a
+			// setMessage(CHKMSG_SUPERSEDED), and re-testing all seven paths.
 			if(!$markerReq->success() || !isset($markerReq->val[2]) || (string) $markerReq->val[0] === '')
 				return self::STE_ERROR;
 			if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)

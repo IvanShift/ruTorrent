@@ -60,8 +60,14 @@ $suite->test('begin refuses when the new hash already exists', function () use (
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash)); // torrentExists -> true
     rXMLRPCRequest::queue('d.set_custom', true, false, array());   // chk-msg write
     $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'manual replacement detected');
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'the topic\'s current version is already present');
     strictAssertSame(0, count(rTorrent::$magnets), 'no magnet loaded');
+    // Who put it there is unknowable (the user, another automation, or an
+    // earlier incomplete run of this plugin), so the token records only the
+    // successor hash and the sentence says only that it is present.
+    strictAssertSame(1, count(ruTrackerChecker::$messages), 'exactly one chk-msg write');
+    strictAssertSame(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
+        ruTrackerChecker::$messages[0]['message'], 'superseded token carries the successor hash');
 });
 
 $suite->test('begin loads a stopped magnet with inline markers and starts the stub', function () use ($oldHash, $newHash) {
@@ -247,7 +253,13 @@ $suite->test('harvest drops the stub and retries when the fetched bytes hash to 
     $erased = rXMLRPCRequest::requestsFor('d.erase');
     strictAssertSame(1, count($erased), 'the mismatched stub is erased');
     strictAssertSame($newHash, $erased[0]['commands'][0]->params, 'erased the stub, not the old torrent');
-    strictAssertSame(1, count(ruTrackerChecker::$messages), 'a human-readable reason is recorded on the old torrent');
+    // An abort reason is diagnostics, not a verdict worth a sentence in the
+    // UI: chk-msg is cleared so no stale token survives, and the reason goes
+    // to the debug log.
+    strictAssertSame(1, count(ruTrackerChecker::$messages), 'chk-msg is written once');
+    strictAssertSame('', ruTrackerChecker::$messages[0]['message'], 'cleared, not filled with prose');
+    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the reason is logged instead');
+    strictAssertTrue(strpos(ruTrackerChecker::$logs[0], $oldHash) !== false, 'the log line names the torrent');
 });
 
 $suite->test('harvest stays pending when the erased stub is still present', function () use ($oldHash) {
@@ -282,7 +294,8 @@ $suite->test('pump aborts early when the tracker rejects the new hash', function
     $state = RuTrackerMetaFetch::pump($oldHash, 1000);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'early abort is retryable');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.erase')), 'the rejected stub is erased, not left behind');
-    strictAssertSame(1, count(ruTrackerChecker::$messages), 'a human-readable reason is recorded on the old torrent');
+    strictAssertSame('', ruTrackerChecker::$messages[0]['message'], 'chk-msg cleared, no stale token left behind');
+    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the tracker rejection is logged');
 });
 
 $suite->test('pump enforces the deadline', function () use ($oldHash, $newHash) {
@@ -297,6 +310,8 @@ $suite->test('pump enforces the deadline', function () use ($oldHash, $newHash) 
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerMetaFetch::pump($oldHash, 1000), 'deadline expiry rolls back');
+    strictAssertSame('', ruTrackerChecker::$messages[0]['message'], 'chk-msg cleared, not filled with prose');
+    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the expired deadline is logged');
 });
 
 $suite->test('pump keeps waiting while the stub is healthy', function () use ($oldHash, $newHash) {

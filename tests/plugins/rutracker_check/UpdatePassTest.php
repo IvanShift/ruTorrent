@@ -170,7 +170,8 @@ $suite->test('candidates go to the checker, alive stay home, fuse trips per host
 
     $messages = rXMLRPCRequest::requestsFor('d.set_custom');
     foreach ($messages as $request)
-        strictAssertTrue(strpos($request['commands'][0]->params[2], 'bt2.t-ru.org') !== false, 'message names the tripped host');
+        strictAssertSame(ruTrackerChecker::CHKMSG_FUSE . '|bt2.t-ru.org', $request['commands'][0]->params[2],
+            'the fuse token carries the tripped host and nothing else');
 });
 
 $suite->test('cold torrents are skipped entirely: no checker call, no state write', function () {
@@ -210,7 +211,7 @@ $suite->test('a transport-error message marks CANT_REACH_TRACKER without running
 });
 
 $suite->test('an alive row with a leftover deletion counter and message clears both, with no extra read', function () {
-    $values = upRow(str_repeat('A', 40), 0, 'bt.t-ru.org', '3', '', '', '2:900', 'строки нет, цикл 2/3');
+    $values = upRow(str_repeat('A', 40), 0, 'bt.t-ru.org', '3', '', '', '2:900', 'deleting|2/3');
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('alive rows never reach the checker'); });
     rXMLRPCRequest::reset();

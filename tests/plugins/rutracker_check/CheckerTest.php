@@ -762,17 +762,38 @@ class CheckerTest
 		$this->resetFakes();
 		rXMLRPCRequest::queue('d.set_custom', true, false, array());
 
+		$token = ruTrackerChecker::CHKMSG_DELETING . '|2/3';
 		strictAssertTrue(
-			ruTrackerChecker::setMessage(str_repeat('A', 40), 'дамп: строки нет, цикл 2/3'),
+			ruTrackerChecker::setMessage(str_repeat('A', 40), $token),
 			'setMessage should succeed'
 		);
 		$requests = rXMLRPCRequest::requestsFor('d.set_custom');
 		strictAssertSame(1, count($requests), 'one write request');
 		strictAssertSame(
-			array(str_repeat('A', 40), 'chk-msg', 'дамп: строки нет, цикл 2/3'),
+			array(str_repeat('A', 40), 'chk-msg', $token),
 			$requests[0]['commands'][0]->params,
 			'params'
 		);
+	}
+
+	// chk-msg is a token, never prose: the sentence is localised in the
+	// browser (init.js + theUILang.chkMessages), so the vocabulary itself is
+	// part of check.php's contract with every writer.
+	public function testChkMessageTokensAreDistinctBareIdentifiers()
+	{
+		$tokens = array(
+			ruTrackerChecker::CHKMSG_SUPERSEDED,
+			ruTrackerChecker::CHKMSG_DELETING,
+			ruTrackerChecker::CHKMSG_TOPIC_STATUS,
+			ruTrackerChecker::CHKMSG_FUSE,
+			ruTrackerChecker::CHKMSG_ABSORBED,
+		);
+		strictAssertSame(count($tokens), count(array_unique($tokens)), 'every token is distinct');
+		foreach($tokens as $token)
+			strictAssertTrue(
+				preg_match('/^[a-z][a-z-]*$/', $token) === 1,
+				'a token carries no separator and no prose: ' . $token
+			);
 	}
 
 	public function testSchedulerStateStillSkipsMissingHash()

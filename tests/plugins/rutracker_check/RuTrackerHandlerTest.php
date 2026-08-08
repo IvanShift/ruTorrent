@@ -111,6 +111,30 @@ function hQueueTopicKnown($topicId)
     rXMLRPCRequest::queue('d.get_custom', true, false, array((string) $topicId));
 }
 
+// download_torrent()'s superseded short-circuit reads chk-state and chk-msg
+// as ONE paired request ('d.get_custom|d.get_custom'), a key no other read in
+// this handler uses. Tests that do not queue it get the double's default
+// fault, which is exactly the production "no usable record -> run the normal
+// flow" answer; the two tests that exercise the short-circuit queue it with
+// hQueueSuperseded() below.
+function hQueueSuperseded($successorHash, $state = ruTrackerChecker::STE_NOT_NEED)
+{
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+        (string) $state,
+        ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $successorHash,
+    ));
+}
+
+// The message text the fake ruTrackerChecker recorded for the Nth setMessage
+// call, so token assertions read as one value rather than an XMLRPC params
+// triple.
+function hMessage($index)
+{
+    $messages = ruTrackerChecker::$messages;
+    if (!isset($messages[$index])) return null;
+    return $messages[$index]['message'];
+}
+
 function hQueueForum($forumId)
 {
     rXMLRPCRequest::queue('d.get_custom', true, false, array((string) $forumId));
@@ -303,6 +327,7 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'first miss: 1/3');
     strictAssertSame(array($hash, 'chk-del', '1:' . $now),
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'count starts at 1');
+    strictAssertSame('deleting|1/3', hMessage(0), 'the deleting token carries the cycle counter');
 
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 10))); // fresh -> no increment
@@ -310,6 +335,7 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
     $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600));
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'within the interval: no increment');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'only the message is written');
+    strictAssertSame('deleting|2/3', hMessage(0), 'the unchanged count is restated, not advanced');
 
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 7200))); // old -> increments to 3
@@ -319,6 +345,25 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
     strictAssertSame(ruTrackerChecker::STE_DELETED, $state, 'third confirmation reaches the cap');
     strictAssertSame(array($hash, 'chk-del', '3:' . $now),
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'count reaches 3');
+    strictAssertSame('deleting|3/3', hMessage(0), 'the final cycle is still the deleting token');
+});
+
+// Every chk-msg the handler writes is a "<token>|<parameter>" pair (check.php's
+// CHKMSG_* constants), never prose: the sentence lives in the browser's own
+// language file, so the exact emitted form is part of the contract.
+$suite->test('the emitted chk-msg tokens carry exactly one parameter and no prose', function () use ($hash) {
+    $now = 1000000;
+
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600));
+    strictAssertSame(ruTrackerChecker::CHKMSG_DELETING . '|1/3', hMessage(0), 'deleting|N/M');
+
+    foreach (ruTrackerChecker::$messages as $written)
+        strictAssertTrue(preg_match('/^[a-z-]+\|[^|]+$/', $written['message']) === 1,
+            'token|parameter, one separator, no prose: ' . $written['message']);
 });
 
 // Finding 3: conf.php documents $updateInterval = 0 as "disable the
@@ -433,7 +478,7 @@ $suite->test('3: layer1 candidate + layer2 unregistered + dump with a new hash b
         'magnet targets the new hash');
 });
 
-$suite->test('4: dump row tor_status=7 is absorbed, with a viewtopic link in chk-msg', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+$suite->test('4: dump row tor_status=7 is absorbed, with the topic id tokenised into chk-msg', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
     hQueueLayer1(array(hCandidateRow()));
@@ -448,8 +493,26 @@ $suite->test('4: dump row tor_status=7 is absorbed, with a viewtopic link in chk
     strictAssertSame(ruTrackerChecker::STE_ABSORBED, $result, 'tor_status 7 -> absorbed');
     $writes = rXMLRPCRequest::requestsFor('d.set_custom');
     strictAssertSame(3, count($writes), 'chk-del reset, chk-msg cleared, then the absorbed message');
-    $message = $writes[2]['commands'][0]->params[2];
-    strictAssertTrue(strpos($message, 'viewtopic.php?t=' . $topicId) !== false, 'message links the topic');
+    strictAssertSame(ruTrackerChecker::CHKMSG_ABSORBED . '|' . $topicId, $writes[2]['commands'][0]->params[2],
+        'the bare topic id, not a URL: init.js builds the link itself');
+});
+
+$suite->test('4b: a closed/duplicate dump row tokenises its tor_status and is terminal', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 5, str_repeat('C', 40)));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: chk-msg cleared
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // topic-status message
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result, 'tor_status 5 -> nothing to do');
+    strictAssertSame(ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|5',
+        rXMLRPCRequest::requestsFor('d.set_custom')[2]['commands'][0]->params[2],
+        'the raw tor_status is the only parameter');
 });
 
 $suite->test('5: dump row with an ambiguous tor_status (9) is retried, not acted on, but still resets chk-del', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
@@ -544,6 +607,12 @@ $suite->test('9: with layer 2 disabled a missing row can never reach STE_DELETED
         'layer 2 disabled: only the dump fetch happens, no announce attempted');
     foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
         strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del', 'chk-del must never be touched without layer 2');
+    // Diagnostics only: nothing here is worth a sentence in the UI, so
+    // chk-msg is cleared (never left carrying a stale token) and the reason
+    // goes to the debug log instead.
+    strictAssertSame('', hMessage(0), 'the unconfirmed-miss notice clears chk-msg instead of writing prose');
+    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the reason is logged, not shown');
+    strictAssertTrue(strpos(ruTrackerChecker::$logs[0], $hash) !== false, 'the log line names the torrent');
 });
 
 $suite->test('10: an unresolved forum queues the topic for the crawl and stays retryable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
@@ -558,6 +627,8 @@ $suite->test('10: an unresolved forum queues the topic for the crawl and stays r
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'forum unknown -> retry later');
     strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(), 'topic queued for the forum crawl');
     strictAssertSame(array(), Snoopy::$requests, 'no dump fetch is attempted without a forum id');
+    strictAssertSame('', hMessage(0), 'a queued-for-sweep notice is diagnostics, so chk-msg is cleared');
+    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the notice is logged instead');
 });
 
 $suite->test('11: regression -- nothing in the flow ever requests rutracker.org', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
@@ -611,6 +682,78 @@ $suite->test('13: layer1 candidate + layer2 failure reason other than the measur
     strictAssertSame(1, count(Snoopy::$requests), 'only the announce probe runs; the forum dump (layer 3) is never fetched');
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
         'chk-del/chk-msg are never touched -- an inconclusive layer 2 cannot contribute to a deletion verdict');
+});
+
+// --- The superseded short-circuit -------------------------------------------
+//
+// "The topic's current version is already in the client" can never stop being
+// true by itself, yet the full chain used to re-run every cycle: an announce
+// probe out of the host's budget, plus a forum dump fetch, forever. The
+// recorded chk-msg token is the record, and one d.hash probe re-verifies it.
+
+$suite->test('14: a recorded superseded token short-circuits the whole chain with one existence probe', function () use ($hash, $newHash, $oldTorrent, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    hQueueSuperseded($newHash);
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash)); // the successor is still there
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result, 'settled: still nothing to replace');
+    strictAssertSame(array(), Snoopy::$requests, 'no announce probe, no dump fetch -- no HTTP at all');
+    $keys = array_map(function ($request) { return $request['key']; }, rXMLRPCRequest::$requests);
+    strictAssertSame(array('d.get_custom|d.get_custom', 'd.hash'), $keys,
+        'exactly two requests: the token read and the existence probe');
+    strictAssertSame(array(), ruTrackerChecker::$messages, 'a settled torrent is not rewritten');
+});
+
+// check.php's run() writes STE_INPROGRESS immediately before dispatching, so
+// STE_INPROGRESS is the state this handler actually sees in production; the
+// short-circuit is worthless if it only recognises the stored verdict.
+$suite->test('14b: the short-circuit also fires under the in-flight STE_INPROGRESS marker', function () use ($hash, $newHash, $oldTorrent, $topicUrl) {
+    hReset();
+    hQueueSuperseded($newHash, ruTrackerChecker::STE_INPROGRESS);
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result, 'the check-in-progress marker is not another verdict');
+    strictAssertSame(array(), Snoopy::$requests, 'still no HTTP request');
+});
+
+$suite->test('15: the short-circuit falls through once the successor is gone, clearing the stale token', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueSuperseded($newHash);
+    rXMLRPCRequest::queue('d.hash', true, true, array());        // the user deleted the successor
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // stale token cleared
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hAliveRow()));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-msg cleared
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'the normal flow decides again');
+    strictAssertSame('', hMessage(0), 'the stale superseded token is cleared before falling through');
+    strictAssertSame(array($hash, 'chk-msg', ''),
+        rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'cleared on the checked torrent');
+});
+
+$suite->test('16: a superseded token recorded against another state is stale and never short-circuits', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+        (string) ruTrackerChecker::STE_DELETED,
+        ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
+    ));
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hAliveRow()));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-msg cleared
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'another verdict has since been recorded');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.hash'), 'no existence probe is spent on a stale token');
 });
 
 $exitCode = $suite->run();

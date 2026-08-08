@@ -316,21 +316,60 @@ class RuTrackerCheckImpl
             $lastIncrement = (int) $m[2];
         }
 
+        // The message is the same token throughout: "row missing, this is
+        // confirmation cycle N of M". At N == M the status label already says
+        // "probably deleted", and N/M then reads as what backed that verdict.
         if ($count > 0 && ($now - $lastIncrement) < $interval) {
-            ruTrackerChecker::setMessage($hash, 'строки нет, цикл ' . $count . '/' . $cycles);
+            self::reportDeletionProgress($hash, $count, $cycles);
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
 
         $count++;
         self::writeCustom($hash, "chk-del", $count . ':' . $now);
+        self::reportDeletionProgress($hash, $count, $cycles);
 
-        if ($count >= $cycles) {
-            ruTrackerChecker::setMessage($hash,
-                'строки нет ' . $count . ' цикл(а) подряд, трекер подтвердил удаление');
-            return ruTrackerChecker::STE_DELETED;
-        }
-        ruTrackerChecker::setMessage($hash, 'строки нет, цикл ' . $count . '/' . $cycles);
-        return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        return ($count >= $cycles)
+            ? ruTrackerChecker::STE_DELETED
+            : ruTrackerChecker::STE_CANT_REACH_TRACKER;
+    }
+
+    static private function reportDeletionProgress($hash, $count, $cycles)
+    {
+        ruTrackerChecker::setMessage($hash,
+            ruTrackerChecker::CHKMSG_DELETING . '|' . $count . '/' . $cycles);
+    }
+
+    // Fix A: "the topic's current version is already in the client" is a
+    // terminal outcome -- nothing about it can change until the user removes
+    // that successor -- yet the old code re-ran the whole chain every cycle,
+    // spending one of the host's ten announce probes and a forum dump fetch
+    // on a settled case, forever. The chk-msg token metafetch.php wrote IS
+    // the record (no new custom field), and one d.hash probe re-verifies it.
+    //
+    // check.php's run() writes STE_INPROGRESS immediately before dispatching
+    // to this handler, so that -- not the stored verdict -- is the state a
+    // scheduled or manual check actually sees here; a direct call still sees
+    // STE_NOT_NEED. Any other state means something else has judged this
+    // torrent since the token was written, so the token is stale.
+    //
+    // @return string|null the recorded successor hash, or null when there is
+    //         no usable record and the normal flow must run
+    static private function supersededBy($hash)
+    {
+        $req = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-msg")),
+        ));
+        $req->important = false;
+        if (!$req->success() || !isset($req->val[0], $req->val[1])) return null;
+
+        $state = (int) $req->val[0];
+        if ($state !== ruTrackerChecker::STE_NOT_NEED && $state !== ruTrackerChecker::STE_INPROGRESS)
+            return null;
+
+        $parts = explode('|', (string) $req->val[1], 2);
+        if (count($parts) !== 2 || $parts[0] !== ruTrackerChecker::CHKMSG_SUPERSEDED) return null;
+        return self::normalizeHash($parts[1]);
     }
 
     static public function download_torrent($url, $hash, $oldTorrent)
@@ -341,10 +380,27 @@ class RuTrackerCheckImpl
         if ($topicId === null && is_object($oldTorrent))
             $topicId = self::extractTopicId($oldTorrent->comment());
         if ($topicId === null) return ruTrackerChecker::STE_NOT_NEED;
-        self::rememberTopic($hash, $topicId);
 
         $localHash = self::normalizeHash($hash);
         if ($localHash === null) return ruTrackerChecker::STE_NOT_NEED;
+
+        // Layer 0: a settled "superseded" verdict is re-verified with one
+        // existence probe and nothing else (see supersededBy()), ahead of
+        // even the local bookkeeping below -- chk-topic was already recorded
+        // by the run that wrote the token. If the user has since removed the
+        // successor, the stale token is cleared and the normal flow decides
+        // again.
+        $successor = self::supersededBy($hash);
+        if ($successor !== null) {
+            // Only a definite "gone" reopens the question: a failed probe
+            // (null) is no evidence the user removed anything, and spending
+            // the whole chain on that guess is exactly what this avoids.
+            if (ruTrackerChecker::torrentExists($successor) !== false)
+                return ruTrackerChecker::STE_NOT_NEED;
+            ruTrackerChecker::setMessage($hash, '');
+        }
+
+        self::rememberTopic($hash, $topicId);
 
         // Layer 1: local, request-free verdict (design doc 4.1). Runs on
         // every call -- including a manual batch_check.php click -- rather
@@ -399,7 +455,11 @@ class RuTrackerCheckImpl
         $forumId = self::resolveForum($hash);
         if ($forumId === null) {
             RuTrackerForumIndex::queueTopic($topicId);
-            ruTrackerChecker::setMessage($hash, 'форум топика неизвестен, поставлен в очередь обхода');
+            // Internal bookkeeping, not a verdict: the user is told nothing
+            // (and any stale token is cleared), the reason goes to the log.
+            ruTrackerChecker::setMessage($hash, '');
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' forum unknown for topic ' . $topicId . ', queued for the crawl');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
 
@@ -416,7 +476,11 @@ class RuTrackerCheckImpl
             self::forgetForum($hash);
             RuTrackerForumIndex::queueTopic($topicId);
             if (!$trackerConfirmed) {
-                ruTrackerChecker::setMessage($hash, 'строки нет в дампе; трекер не подтверждал удаление');
+                // Nothing was decided, so there is nothing to report: clear
+                // chk-msg (an older token here would now be stale) and log.
+                ruTrackerChecker::setMessage($hash, '');
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                    . ' row missing from the dump, but the tracker never confirmed deletion');
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
             return self::confirmDeletion($hash, time(), (int) $updateInterval * 60);
@@ -433,12 +497,15 @@ class RuTrackerCheckImpl
         // doc 4.4); every other verdict is terminal here.
         switch ($decision['verdict']) {
             case 'absorbed':
+                // The bare topic id: the status label already says "absorbed,
+                // resolve manually", so init.js only has to turn this into the
+                // topic URL -- no sentence to translate at all.
                 ruTrackerChecker::setMessage($hash,
-                    'поглощена другой раздачей: https://rutracker.org/forum/viewtopic.php?t=' . $topicId);
+                    ruTrackerChecker::CHKMSG_ABSORBED . '|' . $topicId);
                 return ruTrackerChecker::STE_ABSORBED;
             case 'closed':
                 ruTrackerChecker::setMessage($hash,
-                    'topic status ' . $decision['status'] . ': закрыта/не оформлена/повтор');
+                    ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|' . $decision['status']);
                 return ruTrackerChecker::STE_NOT_NEED;
             case 'uptodate':
                 return ruTrackerChecker::STE_UPTODATE;

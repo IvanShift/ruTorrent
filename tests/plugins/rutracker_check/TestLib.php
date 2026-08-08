@@ -410,6 +410,15 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         const STE_META_PENDING = 9;
         const STE_ABSORBED = 10;
 
+        // Mirrors check.php's chk-msg token vocabulary; the tests assert on
+        // these constants rather than on the literals, exactly like the
+        // production call sites do.
+        const CHKMSG_SUPERSEDED = 'superseded';
+        const CHKMSG_DELETING = 'deleting';
+        const CHKMSG_TOPIC_STATUS = 'topic-status';
+        const CHKMSG_FUSE = 'fuse';
+        const CHKMSG_ABSORBED = 'absorbed';
+
         const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             . "AppleWebKit/537.36 (KHTML, like Gecko) "
             . "Chrome/120.0.0.0 Safari/537.36";
