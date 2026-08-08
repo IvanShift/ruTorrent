@@ -17,6 +17,7 @@ function kinozalReset()
     // production cycles, so it is cleared between them the same way the
     // other private statics in this suite are.
     strictSetPrivateStatic('KinozalCheckImpl', 'sessionDead', false);
+    strictSetPrivateStatic('KinozalCheckImpl', 'guestAnswers', 0);
 }
 
 function kinozalTopicUrl($id)
@@ -89,23 +90,67 @@ $suite->test('a guest answer from the details endpoint is a reachability error',
     strictAssertSame(0, ruTrackerChecker::$createCalls, 'the replacement path is never entered');
 });
 
-$suite->test('one guest answer stops the rest of the cycle from asking again', function () {
+$suite->test('two guest answers in a row stop the rest of the cycle from asking again', function () {
     kinozalReset();
     list($rawA, $hashA, $torrentA) = kinozalTorrent('first.mkv', 2148020);
     list($rawB, $hashB, $torrentB) = kinozalTorrent('second.mkv', 2144802);
+    list($rawC, $hashC, $torrentC) = kinozalTorrent('third.mkv', 2144913);
     Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalUnauthorizedBody());
+    Snoopy::queue(kinozalDetailsUrl(2144802), 200, kinozalUnauthorizedBody());
 
     $first = KinozalCheckImpl::download_torrent(kinozalTopicUrl(2148020), $hashA, $torrentA);
     $second = KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144802), $hashB, $torrentB);
+    $third = KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144913), $hashC, $torrentC);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $first, 'a login wall proves nothing');
-    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $second,
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $second, 'and neither does the second one');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $third,
         'a skipped topic keeps the same retryable verdict it would have got the hard way');
     strictAssertSame(
-        array(array('fetchComplex', kinozalDetailsUrl(2148020))),
+        array(
+            array('fetchComplex', kinozalDetailsUrl(2148020)),
+            array('fetchComplex', kinozalDetailsUrl(2144802)),
+        ),
         Snoopy::$requests,
-        'the second topic costs no request: the session is already known to be gone'
+        'the third topic costs no request: the session is by then known to be gone'
     );
+});
+
+$suite->test('a single guest answer is a blink and does not cost the cycle', function () {
+    kinozalReset();
+    list($rawA, $hashA, $torrentA) = kinozalTorrent('blinked.mkv', 2148020);
+    list($rawB, $hashB, $torrentB) = kinozalTorrent('healthy.mkv', 2144802);
+    Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalUnauthorizedBody());
+    Snoopy::queue(kinozalDetailsUrl(2144802), 200, kinozalDetailsBody($hashB));
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent(kinozalTopicUrl(2148020), $hashA, $torrentA),
+        'the blink itself is still unproven, so it stays retryable');
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144802), $hashB, $torrentB),
+        'the next topic is checked for real: one answer is not proof of a lost session');
+    strictAssertSame(2, count(Snoopy::$requests), 'both topics were asked about');
+});
+
+$suite->test('an authenticated answer between two guest ones clears the count', function () {
+    kinozalReset();
+    list($rawA, $hashA, $torrentA) = kinozalTorrent('first.mkv', 2148020);
+    list($rawB, $hashB, $torrentB) = kinozalTorrent('healthy.mkv', 2144802);
+    list($rawC, $hashC, $torrentC) = kinozalTorrent('third.mkv', 2144913);
+    list($rawD, $hashD, $torrentD) = kinozalTorrent('fourth.mkv', 2130523);
+    Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalUnauthorizedBody());
+    Snoopy::queue(kinozalDetailsUrl(2144802), 200, kinozalDetailsBody($hashB));
+    Snoopy::queue(kinozalDetailsUrl(2144913), 200, kinozalUnauthorizedBody());
+    Snoopy::queue(kinozalDetailsUrl(2130523), 200, kinozalDetailsBody($hashD));
+
+    KinozalCheckImpl::download_torrent(kinozalTopicUrl(2148020), $hashA, $torrentA);
+    KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144802), $hashB, $torrentB);
+    KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144913), $hashC, $torrentC);
+
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent(kinozalTopicUrl(2130523), $hashD, $torrentD),
+        'two guest answers separated by a healthy one are two blinks, not a lost session');
+    strictAssertSame(4, count(Snoopy::$requests), 'every topic was asked about on its own merits');
 });
 
 $suite->test('a live session checks every topic on its own merits', function () {
