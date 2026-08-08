@@ -20,7 +20,7 @@
  				  "No need",
  				  "Ignored",
  				  "Venter på metadata",
- 				  "Slået sammen med et andet emne — løs det manuelt"
+ 				  "Slået sammen med et andet emne – løs det manuelt"
  				  ];
  theUILang.chkMessages		= {
  				  "superseded":	"Den aktuelle version af dette emne findes allerede i klienten: %s",

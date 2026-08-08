@@ -19,7 +19,7 @@
  				  "Lỗi giao tiếp với rTorrent",
  				  "Không cần thiết",
  				  "Bị bỏ qua",
- 				  "Đang chờ dữ liệu mô tả",
+ 				  "Đang chờ siêu dữ liệu",
  				  "Đã gộp vào chủ đề khác — cần xử lý thủ công"
  				  ];
  theUILang.chkMessages		= {

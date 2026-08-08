@@ -20,7 +20,7 @@
  				  "No need",
  				  "Ignored",
  				  "Wachten op metadata",
- 				  "Opgenomen in een ander onderwerp — handmatig oplossen"
+ 				  "Opgenomen in een ander onderwerp – handmatig oplossen"
  				  ];
  theUILang.chkMessages		= {
  				  "superseded":	"De huidige versie van dit onderwerp is al aanwezig in de client: %s",

@@ -26,7 +26,7 @@
  				  "superseded":	"A téma jelenlegi verziója már megvan a kliensben: %s",
  				  "deleting":	"A téma nem szerepel a fórum listájában; megerősítési ciklus %s",
  				  "topic-status": "A téma állapota %s: lezárt, nem jóváhagyott vagy duplikátum",
- 				  "fuse":	"%s tracker nem elérhetőnek tűnik; az ellenőrzés elhalasztva"
+ 				  "fuse":	"A(z) %s tracker elérhetetlennek tűnik; az ellenőrzés elhalasztva"
  				  };
 
 thePlugins.get("rutracker_check").langLoaded();

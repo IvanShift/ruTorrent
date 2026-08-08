@@ -20,7 +20,7 @@
  				  "Nicht nötig",
  				  "Ignoriert",
  				  "Warten auf Metadaten",
- 				  "In einem anderen Thema aufgegangen — manuell klären"
+ 				  "In einem anderen Thema aufgegangen – manuell klären"
  				  ];
  theUILang.chkMessages		= {
  				  "superseded":	"Die aktuelle Version dieses Themas ist bereits im Client: %s",

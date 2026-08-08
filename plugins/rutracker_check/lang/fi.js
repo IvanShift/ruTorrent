@@ -24,7 +24,7 @@
  				  ];
  theUILang.chkMessages		= {
  				  "superseded":	"Tämän ketjun nykyinen versio on jo asiakasohjelmassa: %s",
- 				  "deleting":	"Ketjua ei ole foorumin listassa; varmistuskierros %s",
+ 				  "deleting":	"Ketjua ei ole foorumin listalla; varmistuskierros %s",
  				  "topic-status": "Ketjun tila %s: suljettu, hyväksymätön tai kaksoiskappale",
  				  "fuse":	"Seurantapalvelin %s ei näytä olevan saatavilla; tarkistus lykätty"
  				  };
