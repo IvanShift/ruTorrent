@@ -19,8 +19,14 @@
  				  "Error interacting with rTorrent",
  				  "No need",
  				  "Ignored",
- 				  "Waiting for metadata",
- 				  "Absorbed by another topic — resolve manually"
+ 				  "Čekání na metadata",
+ 				  "Sloučeno s jiným tématem — vyřešte ručně"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Aktuální verze tohoto tématu je již v klientu: %s",
+ 				  "deleting":	"Téma chybí v seznamu fóra; potvrzovací cyklus %s",
+ 				  "topic-status": "Stav tématu %s: uzavřeno, neschváleno nebo duplikát",
+ 				  "fuse":	"Tracker %s se zdá nedostupný; kontrola je odložena"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

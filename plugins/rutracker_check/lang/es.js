@@ -19,8 +19,14 @@
  				  "Error interacting with rTorrent",
  				  "No need",
  				  "Ignored",
- 				  "Waiting for metadata",
- 				  "Absorbed by another topic — resolve manually"
+ 				  "Esperando metadatos",
+ 				  "Absorbido por otro tema — resolver manualmente"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"La versión actual de este tema ya está en rTorrent: %s",
+ 				  "deleting":	"El tema no aparece en la lista del foro; ciclo de confirmación %s",
+ 				  "topic-status": "Estado del tema %s: cerrado, no aprobado o duplicado",
+ 				  "fuse":	"El tracker %s parece no estar disponible; la comprobación se aplaza"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

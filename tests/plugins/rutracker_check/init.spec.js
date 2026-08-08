@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 
 /**
  * Tests for plugins/rutracker_check/init.js's chk-msg rendering.
@@ -131,4 +131,82 @@ describe("chkResultText", () => {
     expect(plugin.chkMessageText("fuse|<b>x</b>")).not.toContain("&lt;");
     expect(plugin.chkResultText(torrent(10, "absorbed|42"))).not.toContain("<");
   });
+});
+
+/**
+ * The sentences above are only renderable if every language file supplies the
+ * whole vocabulary in the shape init.js expects: chkMessages keyed by the
+ * CHKMSG_* tokens that need a sentence (absorbed does not -- init.js builds a
+ * URL for it), each with the single %s that carries the parameter, and a
+ * chkResults entry for every chk-state. A file that drops a key or a
+ * placeholder renders an empty detail rather than failing loudly, so the files
+ * are checked here instead of at the user's screen.
+ */
+describe("language files", () => {
+  const SENTENCE_TOKENS = ["superseded", "deleting", "topic-status", "fuse"];
+  // check.php numbers chk-state 1..10, and init.js indexes chkResults by
+  // chkstate-1.
+  const CHK_STATES = 10;
+  const languages = readdirSync("../plugins/rutracker_check/lang")
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => name.replace(/\.js$/, ""));
+
+  function load(language) {
+    global.theUILang = {};
+    new Function(
+      readFileSync(`../plugins/rutracker_check/lang/${language}.js`, {
+        encoding: "utf-8",
+      })
+    )();
+    return global.theUILang;
+  }
+
+  it("covers every language the plugin ships", () => {
+    expect(languages).toContain("en");
+    expect(languages).toContain("ru");
+    expect(languages.length).toBeGreaterThan(20);
+  });
+
+  it.each(languages)("%s defines the whole chk vocabulary", (language) => {
+    const lang = load(language);
+
+    expect(Object.keys(lang.chkMessages).sort()).toEqual(
+      [...SENTENCE_TOKENS].sort()
+    );
+    for (const token of SENTENCE_TOKENS) {
+      expect(lang.chkMessages[token].match(/%s/g)).toHaveLength(1);
+    }
+
+    expect(lang.chkResults).toHaveLength(CHK_STATES);
+    for (const result of lang.chkResults) {
+      expect(typeof result).toBe("string");
+      expect(result.trim()).not.toBe("");
+    }
+  });
+
+  // The tokenised sentences and the two chk-states added with them were
+  // seeded in English; a locale still carrying the seed is untranslated, not
+  // translated into the same words.
+  it.each(languages.filter((language) => language !== "en"))(
+    "%s translates the sentences rather than keeping the English seed",
+    (language) => {
+      const en = load("en");
+      const seeded = {
+        chkMessages: { ...en.chkMessages },
+        chkResults: [...en.chkResults],
+      };
+      const lang = load(language);
+
+      for (const token of SENTENCE_TOKENS) {
+        expect(lang.chkMessages[token]).not.toBe(seeded.chkMessages[token]);
+      }
+      // Each entry on its own: comparing the pair would pass while one half
+      // still carried the seed.
+      for (const state of [9, 10]) {
+        expect(lang.chkResults[state - 1]).not.toBe(
+          seeded.chkResults[state - 1]
+        );
+      }
+    }
+  );
 });

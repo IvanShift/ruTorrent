@@ -19,8 +19,14 @@
  				  "Error interacting with rTorrent",
  				  "No need",
  				  "Ignored",
- 				  "Waiting for metadata",
- 				  "Absorbed by another topic — resolve manually"
+ 				  "Odotetaan metatietoja",
+ 				  "Sulautettu toiseen ketjuun — selvitä käsin"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Tämän ketjun nykyinen versio on jo asiakasohjelmassa: %s",
+ 				  "deleting":	"Ketjua ei ole foorumin listassa; varmistuskierros %s",
+ 				  "topic-status": "Ketjun tila %s: suljettu, hyväksymätön tai kaksoiskappale",
+ 				  "fuse":	"Seurantapalvelin %s ei näytä olevan saatavilla; tarkistus lykätty"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

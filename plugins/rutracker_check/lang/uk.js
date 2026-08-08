@@ -19,8 +19,14 @@
  				  "Сталася помилка взаємодії з rTorrent",
  				  "Немає необхідності",
  				  "Ігнорується",
- 				  "Waiting for metadata",
- 				  "Absorbed by another topic — resolve manually"
+ 				  "Очікування метаданих",
+ 				  "Поглинуто іншою темою — розберіться вручну"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Поточна версія цієї теми вже є в клієнті: %s",
+ 				  "deleting":	"Теми немає у списку форуму; цикл підтвердження %s",
+ 				  "topic-status": "Статус теми %s: закрита, не оформлена або повтор",
+ 				  "fuse":	"Трекер %s, здається, недоступний; перевірку відкладено"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

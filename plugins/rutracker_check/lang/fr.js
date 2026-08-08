@@ -19,8 +19,14 @@
  				  "Problème d'accès à rTorrent",
  				  "Pas besoin",
  				  "Ignoré",
- 				  "Waiting for metadata",
- 				  "Absorbed by another topic — resolve manually"
+ 				  "En attente des métadonnées",
+ 				  "Absorbé par un autre sujet — à régler manuellement"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"La version actuelle de ce sujet est déjà dans rTorrent : %s",
+ 				  "deleting":	"Sujet absent de la liste du forum ; cycle de confirmation %s",
+ 				  "topic-status": "Statut du sujet %s : fermé, non approuvé ou en doublon",
+ 				  "fuse":	"Le tracker %s semble indisponible ; la vérification est reportée"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();
