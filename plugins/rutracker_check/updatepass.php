@@ -248,6 +248,12 @@ class RuTrackerUpdatePass
                 array($req->val[$i], "chk-forum", (string) $map[$topic]['forum'])));
             $write->important = false;
             $write->success();
+            // The other half of the handler's "layer3 forum=N from the
+            // chk-forum cache": this is where a cached id came from when the
+            // feed, rather than a sweep, resolved it. Bounded by the torrents
+            // whose forum is still unknown, never the whole fleet.
+            ruTrackerChecker::logDebug('pollFeed: ' . $req->val[$i] . ' forum=' . (int) $map[$topic]['forum']
+                . ' for topic ' . $topic . ', learned from the feed');
         }
     }
 

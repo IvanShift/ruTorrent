@@ -99,6 +99,42 @@ $suite->test('announce budget: cap, 403 cooldown doubling and success reset', fu
     }
 });
 
+// allowProbe() answers the decision; probeDecision() answers WHY, so a skipped
+// layer 2 can name the budget that stopped it instead of leaving the log with a
+// bare "denied". The two must never disagree.
+$suite->test('probeDecision names the budget that denied a probe, and agrees with allowProbe', function () {
+    $tmp = sys_get_temp_dir() . '/chk-announce-reason-' . getmypid();
+    strictRemoveTree($tmp);
+    strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+
+    try {
+        strictAssertSame('allow', RuTrackerAnnounce::probeDecision('bt8.t-ru.org', 1000, 2, RAT_WINDOW),
+            'a fresh host may be probed');
+
+        RuTrackerAnnounce::recordProbe('bt8.t-ru.org', 1000, false, RAT_WINDOW);
+        RuTrackerAnnounce::recordProbe('bt8.t-ru.org', 1001, false, RAT_WINDOW);
+        strictAssertSame('cap', RuTrackerAnnounce::probeDecision('bt8.t-ru.org', 1002, 2, RAT_WINDOW),
+            'a spent window budget is reported as the cap');
+
+        // A 403 installs the cooldown, which outranks the cap: a host that is
+        // both capped and cooling down must report the cooldown, since that is
+        // the one that survives the window rolling over.
+        RuTrackerAnnounce::recordProbe('bt9.t-ru.org', 1000, true, RAT_WINDOW);
+        strictAssertSame('cooldown', RuTrackerAnnounce::probeDecision('bt9.t-ru.org', 1001, 10, RAT_WINDOW),
+            'a running 403 cooldown is reported as the cooldown');
+
+        foreach (array('bt8.t-ru.org', 'bt9.t-ru.org', 'bt10.t-ru.org') as $host)
+            foreach (array(0, 2, 10) as $cap)
+                strictAssertSame(
+                    RuTrackerAnnounce::probeDecision($host, 1002, $cap, RAT_WINDOW) === 'allow',
+                    RuTrackerAnnounce::allowProbe($host, 1002, $cap, RAT_WINDOW),
+                    "allowProbe and probeDecision agree for {$host} at cap {$cap}"
+                );
+    } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
 $suite->test('announce budget: a successful probe clears the remembered cooldown length', function () {
     $tmp = sys_get_temp_dir() . '/chk-announce-reset-' . getmypid();
     strictRemoveTree($tmp);

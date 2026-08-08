@@ -66,18 +66,29 @@ class RuTrackerAnnounce
     {
     }
 
-    static public function allowProbe($host, $now, $cap, $window)
+    // Why this host may or may not be probed right now: 'allow', 'cooldown'
+    // (a 403 cooldown is still running) or 'cap' (the window's budget is
+    // spent). allowProbe() is the boolean every caller used before and still
+    // uses for the decision itself; this is what the debug log names, so a
+    // skipped layer 2 says which of the two budgets stopped it instead of
+    // merely that something did.
+    static public function probeDecision($host, $now, $cap, $window)
     {
         $window = max((int) $window, self::MIN_WINDOW);
         $state = RuTrackerState::load('announce');
         $entry = isset($state[$host]) && is_array($state[$host]) ? $state[$host] : array();
 
         $until = (int) ($entry['cooldown_until'] ?? 0);
-        if ($now <= $until) return false;
+        if ($now <= $until) return 'cooldown';
 
         $windowStart = (int) ($entry['window_start'] ?? 0);
         $count = ($windowStart !== 0 && $now - $windowStart < $window) ? (int) ($entry['window_count'] ?? 0) : 0;
-        return $count < $cap;
+        return $count < $cap ? 'allow' : 'cap';
+    }
+
+    static public function allowProbe($host, $now, $cap, $window)
+    {
+        return self::probeDecision($host, $now, $cap, $window) === 'allow';
     }
 
     static public function recordProbe($host, $now, $got403, $window)

@@ -252,7 +252,31 @@ class RuTrackerCheckImpl
                 'failed' => (int) $values[$i + 2], 'success' => (int) $values[$i + 3],
             );
         }
-        return RuTrackerDetector::classify($rows, $message);
+        $verdict = RuTrackerDetector::classify($rows, $message);
+        // Candidates only. Layer 1 runs over every seeding torrent, and the
+        // healthy majority answers 'alive' -- logging those would put hundreds
+        // of lines an hour into the log and bury everything that matters.
+        if ($verdict === 'candidate')
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer1 verdict=candidate from '
+                . self::describeCounters($rows));
+        return $verdict;
+    }
+
+    // The tracker counters layer 1's verdict was derived from. Hosts only,
+    // never the row's URL: a RuTracker announce URL carries the user's passkey
+    // in its query string, and no log line may ever contain it.
+    static private function describeCounters($rows)
+    {
+        $described = array();
+        foreach ($rows as $row) {
+            if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) $row['url'])) continue;
+            $host = (string) @parse_url($row['url'], PHP_URL_HOST);
+            $described[] = ($host !== '' ? $host : 'unknown host')
+                . ' enabled=' . (int) $row['enabled']
+                . ' failed=' . (int) $row['failed']
+                . ' success=' . (int) $row['success'];
+        }
+        return count($described) ? implode('; ', $described) : 'no RuTracker tracker row';
     }
 
     // Layer 3's forum_id cache: chk-forum, written once resolved (feed or
@@ -333,10 +357,15 @@ class RuTrackerCheckImpl
             : ruTrackerChecker::STE_CANT_REACH_TRACKER;
     }
 
+    // The token is all the UI needs: the status label already says "probably
+    // deleted" and "deleting|N/M" already carries the count, so the sentence
+    // that used to spell this out belongs in the log, not in chk-msg.
     static private function reportDeletionProgress($hash, $count, $cycles)
     {
         ruTrackerChecker::setMessage($hash,
             ruTrackerChecker::CHKMSG_DELETING . '|' . $count . '/' . $cycles);
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' row missing from the dump for '
+            . $count . ' of ' . $cycles . ' consecutive cycles, with the tracker confirming the deletion');
     }
 
     // Fix A: "the topic's current version is already in the client" is a
@@ -428,19 +457,41 @@ class RuTrackerCheckImpl
         // cannot void the cap.
         $announceWindow = (int) $updateInterval * 60;
         $trackerConfirmed = false;
-        if (!empty($rutrackerLayer2Enabled) && $host !== ''
-            && RuTrackerAnnounce::allowProbe($host, time(), (int) $rutrackerAnnounceCap, $announceWindow)) {
+        // Named skip reasons, all of them logged: a cycle that concluded
+        // nothing must say whether layer 2 was off, out of budget, or cooling
+        // down after a 403 -- the three are indistinguishable from the verdict
+        // alone, and guessing between them is exactly what this log removes.
+        $probeDecision = 'skipped';
+        if (empty($rutrackerLayer2Enabled)) $skip = 'disabled in the configuration';
+        elseif ($host === '') $skip = 'the torrent carries no announce host';
+        else {
+            $probeDecision = RuTrackerAnnounce::probeDecision($host, time(), (int) $rutrackerAnnounceCap, $announceWindow);
+            if ($probeDecision === 'cap') $skip = 'the per-host announce cap for ' . $host . ' is exhausted';
+            elseif ($probeDecision === 'cooldown') $skip = 'the 403 cooldown for ' . $host . ' is still active';
+            else $skip = null;
+        }
+        if ($skip !== null)
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 skipped: ' . $skip);
+
+        if ($probeDecision === 'allow') {
             // A misconfigured non-positive pause must not turn into a
             // negative sleep() argument; zero is a legitimate pause, so the
             // floor is 0, not 1.
             sleep(max(0, (int) $rutrackerAnnouncePause + random_int(0, 3)));
             $probeUrl = RuTrackerAnnounce::buildUrl($announceUrl, $localHash,
                 RuTrackerAnnounce::makePeerId(), 63981, bin2hex(random_bytes(4)));
-            if ($probeUrl !== null) {
+            if ($probeUrl === null) {
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                    . ' layer2 skipped: the announce URL cannot be turned into a probe URL');
+            } else {
                 $client = ruTrackerChecker::makeClient($probeUrl);
                 RuTrackerAnnounce::recordProbe($host, time(), (int) $client->status === 403, $announceWindow);
                 $answer = RuTrackerAnnounce::classify($client->status, $client->results,
                     RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON);
+                // The probe URL itself is never logged: buildUrl() strips the
+                // passkey, but the announce host is all a diagnosis needs.
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 verdict=' . $answer
+                    . ' http=' . (int) $client->status . ' host=' . $host);
                 if ($answer === 'registered') {
                     self::resetDeletion($hash);
                     ruTrackerChecker::setMessage($hash, '');
@@ -459,15 +510,31 @@ class RuTrackerCheckImpl
             // (and any stale token is cleared), the reason goes to the log.
             ruTrackerChecker::setMessage($hash, '');
             ruTrackerChecker::logDebug('download_torrent: ' . $hash
-                . ' forum unknown for topic ' . $topicId . ', queued for the crawl');
+                . ' layer3 forum unknown for topic ' . $topicId . ', queued for a sweep');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 forum=' . $forumId
+            . ' from the chk-forum cache');
 
         $rows = RuTrackerForumIndex::fetchDump($forumId);
-        if ($rows === 'unchanged') $rows = RuTrackerForumIndex::cachedDump($forumId);
+        if ($rows === 'unchanged') {
+            $rows = RuTrackerForumIndex::cachedDump($forumId);
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' unchanged, ' . (is_array($rows) ? count($rows) . ' rows from the cache' : 'nothing cached'));
+        } elseif (is_array($rows)) {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' fetched, ' . count($rows) . ' rows');
+        } else {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' unavailable');
+        }
         if (!is_array($rows)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
         $decision = self::classifyDump($rows, $topicId, $localHash);
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 topic=' . $topicId . ' '
+            . ($decision === null
+                ? 'row missing from the dump'
+                : 'verdict=' . $decision['verdict'] . ' tor_status=' . $decision['status']));
         if ($decision === null) {
             // Row missing: could be a move to another forum, not proof of
             // deletion on its own. Invalidate the cache and re-queue

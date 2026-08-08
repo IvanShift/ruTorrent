@@ -45,6 +45,13 @@ if($req->success())
 		shell_exec( Utility::getPHP()." -f ".escapeshellarg(dirname(__FILE__)."/forumcrawl.php")
 			." ".escapeshellarg(User::getUser())." > /dev/null 2>&1 &" );
 
-	ruTrackerChecker::logDebug("update: checked=".count($result['checked'])
+	// The rTorrent version rides along with the counts: an upgrade on the live
+	// system turned out to change how a cycle behaves, and nothing in the log
+	// recorded which version produced any given cycle.
+	$theSettings = rTorrentSettings::get();
+	$clientVersion = (string) $theSettings->version;
+	ruTrackerChecker::logDebug("update: client=".($clientVersion !== '' ? $clientVersion : '?')
+		." api=".(int) $theSettings->apiVersion
+		." checked=".count($result['checked'])
 		." uptodate=".$result['uptodate']." fused=".implode(',',$result['fused']));
 }

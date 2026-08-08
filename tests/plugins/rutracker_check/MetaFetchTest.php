@@ -75,9 +75,10 @@ $suite->test('begin loads a stopped magnet with inline markers and starts the st
     rTorrent::$magnets = array();
     rTorrent::$sendResult = $newHash;
     rXMLRPCRequest::queue('d.hash', true, true, array());                 // collision check: missing
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // old torrent: seeding
     rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));  // wait poll: ours
     rXMLRPCRequest::queue('d.start', true, false, array());
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // old torrent marks
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array()); // old torrent marks
 
     $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
     strictAssertSame(ruTrackerChecker::STE_META_PENDING, $state, 'pending state');
@@ -134,7 +135,8 @@ $suite->test('begin does not start, stamp or erase a foreign item at the same ha
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'foreign item is retryable, not fatal');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'foreign item not started');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'foreign item not erased');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'old torrent not stamped');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom')),
+        'old torrent not stamped');
 });
 
 $suite->test('begin erases the stub and skips stamping when d.start fails', function () use ($oldHash, $newHash) {
@@ -151,7 +153,8 @@ $suite->test('begin erases the stub and skips stamping when d.start fails', func
     $erased = rXMLRPCRequest::requestsFor('d.erase');
     strictAssertSame(1, count($erased), 'stub erased after failed start');
     strictAssertSame($newHash, $erased[0]['commands'][0]->params, 'erased the stub, not the old torrent');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'old torrent not stamped');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom')),
+        'old torrent not stamped');
 });
 
 // pump()/harvest(): begin() only stamps the old download with chk-meta-new
@@ -258,8 +261,9 @@ $suite->test('harvest drops the stub and retries when the fetched bytes hash to 
     // to the debug log.
     strictAssertSame(1, count(ruTrackerChecker::$messages), 'chk-msg is written once');
     strictAssertSame('', ruTrackerChecker::$messages[0]['message'], 'cleared, not filled with prose');
-    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the reason is logged instead');
-    strictAssertTrue(strpos(ruTrackerChecker::$logs[0], $oldHash) !== false, 'the log line names the torrent');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dropped stub',
+        'the reason is logged instead');
+    strictAssertTrue(strpos($line, $oldHash) !== false, 'the log line names the torrent');
 });
 
 $suite->test('harvest stays pending when the erased stub is still present', function () use ($oldHash) {
@@ -344,6 +348,223 @@ $suite->test('pump hard-errors and clears markers when the recorded new hash is 
     strictAssertSame(ruTrackerChecker::STE_ERROR,
         RuTrackerMetaFetch::pump($oldHash, 1000), 'a corrupt marker cannot be pursued further');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.hash')), 'no existence probe is issued against a bad hash');
+});
+
+// --- Every abort reason reaches the log in English --------------------------
+//
+// These three strings are the only prose the metadata fetch produces, and they
+// go to the debug log rather than to chk-msg (which carries a token the browser
+// localises). The log is the maintainer's, not the torrent owner's, so it is
+// English -- asserted on the recorded text, since a translated log line would
+// otherwise sail through every other test in this file unnoticed.
+
+$suite->test('the three metadata-fetch abort reasons are logged in English', function () use ($oldHash, $newHash) {
+    // 1. The tracker rejected the new hash (failed_counter > 0).
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
+    rXMLRPCRequest::queue('t.multicall', true, false, array('3'));
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    RuTrackerMetaFetch::pump($oldHash, 1000);
+    $rejected = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dropped stub',
+        'the tracker rejection is logged');
+    strictAssertEnglish($rejected, 'the tracker-rejection reason');
+    strictAssertTrue(strpos($rejected, 'the tracker rejected the new hash') !== false,
+        'the rejection reason still says what happened: ' . $rejected);
+
+    // 2. The deadline expired.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '500'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
+    rXMLRPCRequest::queue('t.multicall', true, false, array('0'));
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    RuTrackerMetaFetch::pump($oldHash, 1000);
+    $expired = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dropped stub',
+        'the expired deadline is logged');
+    strictAssertEnglish($expired, 'the expired-deadline reason');
+    strictAssertTrue(strpos($expired, 'deadline') !== false,
+        'the deadline reason still says what happened: ' . $expired);
+
+    // 3. The fetched metadata failed validation.
+    ruTrackerChecker::reset();
+    rTorrent::$sourcesByHash = array();
+    rTorrent::$source = new Torrent(strictTorrentRaw('Wrong Metadata', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    RuTrackerMetaFetch::pump($oldHash, 1000);
+    $invalid = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dropped stub',
+        'the failed validation is logged');
+    strictAssertEnglish($invalid, 'the failed-validation reason');
+    strictAssertTrue(strpos($invalid, 'validation') !== false,
+        'the validation reason still says what happened: ' . $invalid);
+
+    // Nothing else the fetch logs may slip back into another language either.
+    foreach (ruTrackerChecker::$logs as $line)
+        strictAssertEnglish($line, 'every metadata-fetch log line');
+});
+
+// --- The run-state marker (chk-meta-run) ------------------------------------
+//
+// createTorrent() reads the old torrent's started/open state at its own commit
+// point and leaves the replacement stopped when it reads "neither". In this
+// flow that read happens one or more cycles -- hours -- after begin() picked
+// the candidate out of the seeding view, so anything that stops the old
+// torrent in between silently turns into "leave the replacement stopped".
+// begin() records the state at decision time; harvest() honours it.
+
+$suite->test('begin records the old torrent run state next to chk-meta-new and chk-meta-until', function () use ($oldHash, $newHash) {
+    $marks = function () use ($oldHash, $newHash) {
+        rTorrent::$magnets = array();
+        rTorrent::$sendResult = $newHash;
+        rXMLRPCRequest::queue('d.hash', true, true, array());                // collision check: missing
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // wait poll: ours
+        rXMLRPCRequest::queue('d.start', true, false, array());
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+            'the fetch begins');
+        $stamps = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
+        strictAssertSame(1, count($stamps), 'the old torrent is stamped in exactly one multicall');
+        return $stamps[0]['commands'];
+    };
+
+    // A seeding old torrent -> "1".
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    $commands = $marks();
+    strictAssertSame(array($oldHash, 'chk-meta-new', $newHash), $commands[0]->params, 'chk-meta-new unchanged');
+    strictAssertSame(array($oldHash, 'chk-meta-until', (string) (1000 + 86400)), $commands[1]->params,
+        'chk-meta-until unchanged');
+    strictAssertSame(array($oldHash, 'chk-meta-run', '1'), $commands[2]->params,
+        'a running old torrent is recorded as running');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=running') !== false,
+        'the layer-4 start line names the recorded run state');
+
+    // Stopped and closed -> "0": the user stopped it on purpose, and the
+    // replacement must inherit exactly that.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
+    strictAssertSame(array($oldHash, 'chk-meta-run', '0'), $marks()[2]->params,
+        'a stopped old torrent is recorded as stopped');
+
+    // Open but not started still counts as running: that is the same pair of
+    // values createTorrent()'s own activation branch treats as "restore me".
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1));
+    strictAssertSame(array($oldHash, 'chk-meta-run', '1'), $marks()[2]->params,
+        'a stopped-but-open old torrent is recorded as running');
+
+    // An unreadable state may never be guessed into "running".
+    ruTrackerChecker::reset();
+    strictAssertSame(array($oldHash, 'chk-meta-run', '0'), $marks()[2]->params,
+        'a failed state read is recorded as not running');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=unreadable') !== false,
+        'an unreadable state is logged as such, never as "stopped"');
+});
+
+// Shared harvest staging for the two directions below: metadata has arrived,
+// the stub validates, the stub erase is confirmed, and createTorrent() reports
+// success. $runMark is what begin() recorded on the old torrent.
+function mfQueueHarvest($oldHash, $runMark)
+{
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$createResult = null; // createTorrent()'s success contract
+    rTorrent::$sourcesByHash = array();
+    $fixture = new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+    $newHash = strtoupper($fixture->hash_info());
+    rTorrent::$source = $fixture;
+
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));         // stub exists
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));           // metadata arrived
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));  // chk-meta-topic (stub)
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($runMark));   // chk-meta-run (old torrent)
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    rXMLRPCRequest::queue('d.hash', true, true, array());                  // the stub is gone
+    return $newHash;
+}
+
+$suite->test('harvest starts the replacement when the marker says the old torrent was running', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, '1');
+    rXMLRPCRequest::queue('d.get_state', true, false, array(0)); // the replacement came up stopped
+    rXMLRPCRequest::queue('d.start', true, false, array());
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    $starts = rXMLRPCRequest::requestsFor('d.start');
+    strictAssertSame(1, count($starts), 'the replacement is started exactly once');
+    strictAssertSame($newHash, $starts[0]['commands'][0]->params, 'the NEW hash is started, not the old one');
+    // The read must have happened while the old torrent still existed, i.e.
+    // before createTorrent() erased it -- the only place the marker can be
+    // read from at all.
+    $keys = array_map(function ($request) { return $request['key']; }, rXMLRPCRequest::$requests);
+    strictAssertTrue(array_search('d.start', $keys) > array_search('d.erase', $keys),
+        'the marker is read and acted on around the replacement, not before the harvest');
+});
+
+$suite->test('harvest leaves the replacement stopped when the marker says the old torrent was stopped', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, '0');
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')),
+        'a torrent the user had stopped must not be resurrected by its replacement');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.get_state')),
+        'a stopped marker is not even worth probing the replacement for');
+});
+
+$suite->test('harvest does not re-start a replacement that came up running by itself', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, '1');
+    rXMLRPCRequest::queue('d.get_state', true, false, array(1)); // already started
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'no redundant d.start');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'already running') !== false,
+        'the log says why no start was issued');
+});
+
+$suite->test('harvest logs the byte count, the hash match, the erase and what createTorrent returned', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, '0');
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    $joined = implode("\n", ruTrackerChecker::$logs);
+    strictAssertTrue(strpos($joined, 'metadata arrived for ' . $newHash) !== false, 'the arrival is logged');
+    strictAssertTrue(strpos($joined, 'hash matched=yes') !== false, 'the hash match is logged');
+    strictAssertTrue(preg_match('/bytes=[1-9]\d*/', $joined) === 1, 'the byte count is logged');
+    strictAssertTrue(strpos($joined, 'service item erased=yes') !== false, 'the confirmed erase is logged');
+    strictAssertTrue(strpos($joined, 'returned success') !== false, 'the createTorrent answer is logged');
+    foreach (ruTrackerChecker::$logs as $line) strictAssertEnglish($line, 'every harvest log line');
+});
+
+$suite->test('harvest names the STE_* code when createTorrent refuses the replacement', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, '1');
+    ruTrackerChecker::$createResult = ruTrackerChecker::STE_ERROR;
+
+    strictAssertSame(ruTrackerChecker::STE_ERROR, RuTrackerMetaFetch::pump($oldHash, 1000),
+        'createTorrent\'s own answer is passed through');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'returned STE_ERROR') !== false,
+        'the refusal is logged by name, not as a bare number');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')),
+        'a failed replacement must never be started');
+});
+
+$suite->test('a healthy pending stub logs that it is still a stub, with the reason it keeps waiting', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
+    rXMLRPCRequest::queue('t.multicall', true, false, array('0'));
+
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING, RuTrackerMetaFetch::pump($oldHash, 1000), 'still pending');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'still a metadata stub',
+        'a waiting stub says so exactly once per cycle');
+    strictAssertEnglish($line, 'the still-a-stub line');
 });
 
 exit($suite->run());

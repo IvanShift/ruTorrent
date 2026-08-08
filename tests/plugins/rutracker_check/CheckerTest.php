@@ -492,6 +492,67 @@ class CheckerTest
 		}
 	}
 
+	// The five replacements observed sitting stopped on the owner's live system
+	// could not be diagnosed because these two facts were nowhere in the log:
+	// what createTorrent() read for the old torrent, and whether activation was
+	// skipped because of it. Log-only, no behaviour change -- activation still
+	// does exactly what it did.
+	private function withDebugLog($body)
+	{
+		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
+		$GLOBALS['rutrackerCheckDebug'] = true;
+		try
+		{
+			$body();
+		}
+		finally
+		{
+			if($savedDebug === null)
+				unset($GLOBALS['rutrackerCheckDebug']);
+			else
+				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+		}
+	}
+
+	public function testActivationEarlyReturnIsLogged()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			strictAssertSame(
+				true,
+				strictInvoke('ruTrackerChecker', 'activateReplacement', array('NEW', false, false)),
+				'a replacement whose predecessor was neither open nor started is still a success'
+			);
+			strictAssertSame(0, count(rXMLRPCRequest::$requests), 'the early return issues no command at all');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'activateReplacement',
+				'the branch that used to be silent now says it was taken');
+			strictAssertEnglish($line, 'the skipped-activation line');
+			strictAssertTrue(strpos($line, 'NEW') !== false, 'the line names the replacement: ' . $line);
+			strictAssertTrue(strpos($line, 'neither open nor started') !== false,
+				'the line says why activation was skipped: ' . $line);
+		});
+	}
+
+	public function testCommitPointRunStateIsLogged()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			$this->stageHappyReplacement(sys_get_temp_dir(), 0, 0);
+
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+				'a fully stopped replacement still commits');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'old run state at commit',
+				'the input to the activation decision is recorded');
+			strictAssertEnglish($line, 'the commit-point run-state line');
+			strictAssertTrue(strpos($line, 'started=0 open=0') !== false,
+				'the exact pair of values the decision was made on: ' . $line);
+			strictAssertTrue(strpos($line, 'OLD') !== false, 'the line names the old torrent: ' . $line);
+			// And the pair really is what silenced activation.
+			strictAssertSame(1, count(strictLogsMatching(FileUtil::$log, 'neither open nor started')),
+				'the two lines together explain a stopped replacement without guesswork');
+		});
+	}
+
 	public function testForeignMarkerAfterLoadIsNeverErased()
 	{
 		$this->resetFakes();

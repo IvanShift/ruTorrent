@@ -169,9 +169,11 @@ function hQueueMetaFetchFlow($hash, $newHash, $topicId, $forumId = 1106)
     rXMLRPCRequest::queue('d.set_custom', true, false, array());         // row found: resetDeletion
     rXMLRPCRequest::queue('d.set_custom', true, false, array());         // row found: chk-msg cleared
     rXMLRPCRequest::queue('d.hash', true, true, array());                // begin(): collision check, missing
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // begin(): old torrent seeding
     rXMLRPCRequest::queue('d.get_custom', true, false, array($hash));    // begin(): wait-poll, ours
     rXMLRPCRequest::queue('d.start', true, false, array());
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // markOldTorrent
+    // markOldTorrent: chk-meta-new, chk-meta-until AND chk-meta-run
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
 }
 
 function ruTopicUrl($topicId, $start = null)
@@ -611,8 +613,11 @@ $suite->test('9: with layer 2 disabled a missing row can never reach STE_DELETED
     // chk-msg is cleared (never left carrying a stale token) and the reason
     // goes to the debug log instead.
     strictAssertSame('', hMessage(0), 'the unconfirmed-miss notice clears chk-msg instead of writing prose');
-    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the reason is logged, not shown');
-    strictAssertTrue(strpos(ruTrackerChecker::$logs[0], $hash) !== false, 'the log line names the torrent');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs,
+        'row missing from the dump, but the tracker never confirmed deletion',
+        'the reason is logged, not shown');
+    strictAssertTrue(strpos($line, $hash) !== false, 'the log line names the torrent');
+    strictAssertEnglish($line, 'the unconfirmed-miss diagnostic');
 });
 
 $suite->test('10: an unresolved forum queues the topic for the crawl and stays retryable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
@@ -628,7 +633,11 @@ $suite->test('10: an unresolved forum queues the topic for the crawl and stays r
     strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(), 'topic queued for the forum crawl');
     strictAssertSame(array(), Snoopy::$requests, 'no dump fetch is attempted without a forum id');
     strictAssertSame('', hMessage(0), 'a queued-for-sweep notice is diagnostics, so chk-msg is cleared');
-    strictAssertSame(1, count(ruTrackerChecker::$logs), 'the notice is logged instead');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'forum unknown for topic',
+        'the notice is logged instead');
+    strictAssertTrue(strpos($line, 'queued for a sweep') !== false,
+        'the notice still says the topic was queued: ' . $line);
+    strictAssertEnglish($line, 'the unknown-forum diagnostic');
 });
 
 $suite->test('11: regression -- nothing in the flow ever requests rutracker.org', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
@@ -754,6 +763,190 @@ $suite->test('16: a superseded token recorded against another state is stale and
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'another verdict has since been recorded');
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.hash'), 'no existence probe is spent on a stale token');
+});
+
+// --- The per-candidate debug log --------------------------------------------
+//
+// With the debug flag on, one candidate's cycle must be explainable from the
+// log alone: which layer decided what, and on what evidence. Every line here is
+// English (the log is the maintainer's, not the torrent owner's) and every line
+// is per-candidate -- the healthy majority never reaches any of them, which is
+// what keeps the log from drowning in hundreds of lines an hour.
+
+$suite->test('17: the deletion-confirmation progress is logged in English, not written into chk-msg as prose', function () use ($hash) {
+    $now = 1000000;
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 7200)));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-del
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-msg
+
+    strictAssertSame(ruTrackerChecker::STE_DELETED,
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        'the third confirmation reaches the cap');
+
+    // chk-msg stays a bare token: the status label already says "probably
+    // deleted" and "deleting|N/M" already carries the count, so the sentence
+    // needs no translated token of its own -- it belongs in the log.
+    strictAssertSame(ruTrackerChecker::CHKMSG_DELETING . '|3/3', hMessage(0), 'still just the token');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'row missing from the dump for',
+        'the consecutive-cycle count is logged');
+    strictAssertEnglish($line, 'the deletion-progress line');
+    strictAssertTrue(strpos($line, '3 of 3 consecutive cycles') !== false, 'the counts survive the move: ' . $line);
+    strictAssertTrue(strpos($line, 'tracker confirming the deletion') !== false,
+        'so does the tracker confirmation: ' . $line);
+    strictAssertTrue(strpos($line, $hash) !== false, 'the line names the torrent');
+});
+
+$suite->test('18: a candidate logs layer 1\'s verdict together with the counters it came from, and never its passkey', function () use ($hash) {
+    ruTrackerChecker::reset();
+    hQueueLayer1(array(hAliveRow()), '');
+    strictAssertSame('alive', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)), 'healthy row');
+    strictAssertSame(array(), ruTrackerChecker::$logs,
+        'the healthy majority logs nothing at all -- hundreds of lines an hour would bury everything else');
+
+    ruTrackerChecker::reset();
+    hQueueLayer1(array(hCandidateRow('bt.t-ru.org', 6)), '');
+    strictAssertSame('candidate', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)), 'candidate row');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer1 verdict=candidate',
+        'a candidate logs its verdict');
+    strictAssertEnglish($line, 'the layer-1 verdict line');
+    strictAssertTrue(strpos($line, 'failed=6') !== false && strpos($line, 'success=0') !== false
+        && strpos($line, 'enabled=1') !== false, 'the counters the verdict came from: ' . $line);
+    strictAssertTrue(strpos($line, 'bt.t-ru.org') !== false, 'the announce host is named: ' . $line);
+    // hCandidateRow()'s URL carries "?pk=x": the host is diagnostics, the
+    // passkey never is.
+    strictAssertTrue(strpos($line, 'pk=') === false, 'a tracker URL (and its passkey) never reaches the log: ' . $line);
+});
+
+$suite->test('19: layer 2 logs its verdict with the HTTP status when it runs', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    Snoopy::queueAny(200, hRegisteredBody());
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent), 'registered -> up to date');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 verdict=', 'the probe answer is logged');
+    strictAssertEnglish($line, 'the layer-2 verdict line');
+    strictAssertTrue(strpos($line, 'layer2 verdict=registered') !== false, 'the classified answer: ' . $line);
+    strictAssertTrue(strpos($line, 'http=200') !== false, 'the HTTP status the answer came with: ' . $line);
+    strictAssertTrue(strpos($line, 'pk=') === false, 'the probe URL never reaches the log: ' . $line);
+});
+
+$suite->test('20: layer 2 names which of its three skip reasons applied', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    // (a) switched off in the configuration.
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
+    strictAssertEnglish($line, 'the layer-2 skip line');
+    strictAssertTrue(strpos($line, 'disabled in the configuration') !== false, 'reason (a): ' . $line);
+
+    // (b) the per-host cap is exhausted.
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    $GLOBALS['rutrackerAnnounceCap'] = 0;
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
+    strictAssertEnglish($line, 'the layer-2 skip line');
+    strictAssertTrue(strpos($line, 'announce cap') !== false && strpos($line, 'exhausted') !== false,
+        'reason (b): ' . $line);
+
+    // (c) a 403 cooldown is still running for this host. recordProbe() with
+    // got403 = true is what installs it, exactly as a real 403 would.
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    RuTrackerAnnounce::recordProbe('bt.t-ru.org', time(), true, 3600);
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
+    strictAssertEnglish($line, 'the layer-2 skip line');
+    strictAssertTrue(strpos($line, 'cooldown') !== false, 'reason (c): ' . $line);
+    strictAssertSame(array(), Snoopy::$requests, 'a cooldown really does stop the probe');
+});
+
+$suite->test('21: layer 3 logs where the forum id came from, what the dump returned and the classification', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 5, str_repeat('C', 40)));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-msg cleared
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // topic-status message
+
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent), 'tor_status 5 is terminal');
+
+    $joined = implode("\n", ruTrackerChecker::$logs);
+    strictAssertTrue(strpos($joined, 'layer3 forum=1106 from the chk-forum cache') !== false,
+        'the forum id\'s source: ' . $joined);
+    strictAssertTrue(strpos($joined, 'layer3 dump forum=1106 fetched, 1 rows') !== false,
+        'what the dump returned: ' . $joined);
+    strictAssertTrue(strpos($joined, 'layer3 topic=' . $topicId . ' verdict=closed tor_status=5') !== false,
+        'the classification decision: ' . $joined);
+    foreach (ruTrackerChecker::$logs as $line) strictAssertEnglish($line, 'every layer-3 log line');
+});
+
+$suite->test('22: layer 3 reports an unavailable dump and a missing row distinctly', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    // Unavailable: a non-200 dump fetch tells layer 3 nothing at all.
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 503, '');
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent), 'an unreadable dump is retryable');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer3 dump forum=1106',
+        'the unavailable dump is logged');
+    strictAssertTrue(strpos($line, 'unavailable') !== false, 'named as unavailable: ' . $line);
+    strictAssertSame(array(), strictLogsMatching(ruTrackerChecker::$logs, 'layer3 topic='),
+        'no classification is claimed for a dump that was never read');
+
+    // Present but missing our row: that IS a classification outcome.
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // forgetForum
+    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // chk-msg
+
+    RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer3 topic=' . $topicId,
+        'the missing row is logged as a classification outcome');
+    strictAssertTrue(strpos($line, 'row missing from the dump') !== false, 'named as missing: ' . $line);
+    strictAssertEnglish($line, 'the missing-row classification line');
+});
+
+$suite->test('23: layer 4 logs the hashes, the topic and the recorded run state as it starts', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    rTorrent::$sendResult = $newHash;
+    hQueueMetaFetchFlow($hash, $newHash, $topicId);
+
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent), 'the metadata fetch begins');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'metafetch: begin', 'layer 4 announces itself');
+    strictAssertEnglish($line, 'the layer-4 start line');
+    strictAssertTrue(strpos($line, $hash) !== false, 'the old hash: ' . $line);
+    strictAssertTrue(strpos($line, $newHash) !== false, 'the new hash: ' . $line);
+    strictAssertTrue(strpos($line, 'topic=' . $topicId) !== false, 'the topic id: ' . $line);
+    strictAssertTrue(strpos($line, 'old run state=running') !== false, 'the recorded run state: ' . $line);
 });
 
 $exitCode = $suite->run();

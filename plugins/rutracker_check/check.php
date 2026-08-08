@@ -361,7 +361,15 @@ class ruTrackerChecker
 	static private function activateReplacement($hash, $wasOpen, $wasStarted)
 	{
 		if(!$wasOpen && !$wasStarted)
+		{
+			// Deliberate: a torrent the user had stopped must not be
+			// resurrected by its replacement. This branch used to be silent,
+			// which is exactly why a live run that left five replacements
+			// stopped could not be told apart from one that never got here.
+			self::logDebug("activateReplacement: " . $hash
+				. " left stopped and closed: the old torrent was neither open nor started");
 			return(true);
+		}
 		for($attempt = 0; $attempt < 2; $attempt++)
 		{
 			self::restoreExistingTorrent($hash, $wasOpen, $wasStarted);
@@ -492,6 +500,11 @@ class ruTrackerChecker
 		$connectionSeed = $req->val[3];
 		$wasStarted = ($req->val[4] != 0);
 		$wasOpen = ($req->val[5] != 0);
+		// The input to the whole activation decision below, read at this
+		// commit point and nowhere else. Log-only: whether a replacement comes
+		// up running is decided from exactly these two values.
+		self::logDebug("createTorrent: " . $hash . " old run state at commit: started="
+			. ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
 		$addition = self::buildReplacementAddition(
 			$connectionSeed, $throttle, $ratioViews, self::STE_UPDATED, $marker
 		);
