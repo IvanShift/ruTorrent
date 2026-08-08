@@ -9,6 +9,17 @@ if( count( $argv ) > 1 )
 require_once( "check.php" );
 require_once( "updatepass.php" );
 
+// The scheduler starts this file as a detached "sh -c ... &", so PHP's own
+// stderr goes nowhere. A fatal partway through the cycle therefore leaves no
+// trace whatsoever, and the summary at the bottom never runs -- indistinguishable
+// from a cycle that was never scheduled at all. This line brackets the cycle from
+// the front, so a start without its matching summary pins the death to this file.
+// The rTorrent version rides along: an upgrade on the live system turned out to
+// change how a cycle behaves, and nothing recorded which version produced which
+// cycle. It is asked of the daemon rather than of the cached settings, which go
+// stale across exactly the upgrade this is meant to catch.
+ruTrackerChecker::logDebug("update: cycle start ".ruTrackerChecker::liveVersionLabel());
+
 $req =  new rXMLRPCRequest(
 		new rXMLRPCCommand("d.multicall",array("seeding",
 			getCmd("d.get_hash="),
@@ -45,12 +56,14 @@ if($req->success())
 		shell_exec( Utility::getPHP()." -f ".escapeshellarg(dirname(__FILE__)."/forumcrawl.php")
 			." ".escapeshellarg(User::getUser())." > /dev/null 2>&1 &" );
 
-	// The rTorrent version rides along with the counts: an upgrade on the live
-	// system turned out to change how a cycle behaves, and nothing in the log
-	// recorded which version produced any given cycle. It is asked of the
-	// daemon itself rather than of the cached settings, which go stale across
-	// exactly the upgrade this is meant to catch.
-	ruTrackerChecker::logDebug("update: ".ruTrackerChecker::liveVersionLabel()
+	ruTrackerChecker::logDebug("update: cycle done"
 		." checked=".count($result['checked'])
 		." uptodate=".$result['uptodate']." fused=".implode(',',$result['fused']));
 }
+else
+	// The one outcome that used to be completely silent: every statement above,
+	// the summary included, hangs off this request succeeding, so a daemon that
+	// is down, busy or refusing the call produced an empty log and looked exactly
+	// like a plugin with diagnostics switched off.
+	ruTrackerChecker::logDebug("update: aborted, the seeding multicall failed"
+		.($req->fault ? ": ".$req->faultString : ""));
