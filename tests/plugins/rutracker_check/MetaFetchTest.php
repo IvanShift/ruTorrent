@@ -436,44 +436,153 @@ $suite->test('begin records the old torrent run state next to chk-meta-new and c
         return $stamps[0]['commands'];
     };
 
-    // A seeding old torrent -> "1".
+    // A seeding old torrent -> "started".
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
     $commands = $marks();
     strictAssertSame(array($oldHash, 'chk-meta-new', $newHash), $commands[0]->params, 'chk-meta-new unchanged');
     strictAssertSame(array($oldHash, 'chk-meta-until', (string) (1000 + 86400)), $commands[1]->params,
         'chk-meta-until unchanged');
-    strictAssertSame(array($oldHash, 'chk-meta-run', '1'), $commands[2]->params,
-        'a running old torrent is recorded as running');
-    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=running') !== false,
+    strictAssertSame(array($oldHash, 'chk-meta-run', 'started'), $commands[2]->params,
+        'a started old torrent is recorded as started');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=started') !== false,
         'the layer-4 start line names the recorded run state');
 
-    // Stopped and closed -> "0": the user stopped it on purpose, and the
+    // Stopped and closed -> "stopped": the user stopped it on purpose, and the
     // replacement must inherit exactly that.
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
-    strictAssertSame(array($oldHash, 'chk-meta-run', '0'), $marks()[2]->params,
+    strictAssertSame(array($oldHash, 'chk-meta-run', 'stopped'), $marks()[2]->params,
         'a stopped old torrent is recorded as stopped');
 
-    // Open but not started still counts as running: that is the same pair of
-    // values createTorrent()'s own activation branch treats as "restore me".
+    // Open but not started is ruTorrent's pause: a state of its own, because
+    // createTorrent()'s restoreExistingTorrent() answers it with d.open, not
+    // with d.start. One bit could not tell the two apart.
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1));
-    strictAssertSame(array($oldHash, 'chk-meta-run', '1'), $marks()[2]->params,
-        'a stopped-but-open old torrent is recorded as running');
+    strictAssertSame(array($oldHash, 'chk-meta-run', 'open'), $marks()[2]->params,
+        'a paused old torrent is recorded as paused, not as started');
+    strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=open') !== false,
+        'the paused state is named in the log too');
 
-    // An unreadable state may never be guessed into "running".
+    // An unreadable state may never be guessed into "started".
     ruTrackerChecker::reset();
-    strictAssertSame(array($oldHash, 'chk-meta-run', '0'), $marks()[2]->params,
+    strictAssertSame(array($oldHash, 'chk-meta-run', 'stopped'), $marks()[2]->params,
         'a failed state read is recorded as not running');
     strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'old run state=unreadable') !== false,
         'an unreadable state is logged as such, never as "stopped"');
 });
 
-// Shared harvest staging for the two directions below: metadata has arrived,
-// the stub validates, the stub erase is confirmed, and createTorrent() reports
-// success. $runMark is what begin() recorded on the old torrent.
-function mfQueueHarvest($oldHash, $runMark)
+// --- begin() names the outcome of every exit ---------------------------------
+//
+// The "begin" line is written before anything is loaded, so on its own it says
+// only that a fetch was attempted. A misconfigured service directory used to
+// produce that one identical line an hour, forever, with nothing to say why.
+// Every way out of begin() now names what happened.
+
+$suite->test('every begin exit logs its outcome', function () use ($oldHash, $newHash) {
+    $announce = 'http://bt.t-ru.org/ann?pk=s3cr3t';
+
+    // 1. The collision probe itself failed.
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rXMLRPCRequest::queue('d.hash', false, false, array());
+    strictAssertSame(ruTrackerChecker::STE_ERROR,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'transport failure');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'already in the client',
+        'an unreadable collision probe says so');
+
+    // 2. The successor is already present.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'already superseded');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'nothing left to fetch',
+        'the already-present successor says so');
+
+    // 3. The service load was refused -- the misconfigured-directory case.
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = false;
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    strictAssertSame(ruTrackerChecker::STE_ERROR,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'refused load');
+    $refused = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'refused the service load',
+        'a refused load names the service directory it was refused for');
+    strictAssertTrue(strpos($refused, '/data/.chk-meta') !== false,
+        'the one thing worth checking is in the line: ' . $refused);
+
+    // 4. Someone else's item sits at that hash.
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(str_repeat('C', 40)));
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'foreign item');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'belongs to someone else',
+        'a foreign item at the same hash says so');
+
+    // 5. The stub would not start.
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));
+    rXMLRPCRequest::queue('d.start', false, false, array());
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'unstartable stub');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'could not start the metadata stub',
+        'an unstartable stub says so');
+
+    // 6. The load never materialised (the poll budget ran out).
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'stub never appeared');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'never appeared',
+        'an expired wait says so');
+
+    // 7. The success path names the deadline it will wait until.
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));
+    rXMLRPCRequest::queue('d.start', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'the fetch begins');
+    $loaded = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'loaded the metadata stub',
+        'the successful load says so');
+    strictAssertTrue(strpos($loaded, (string) (1000 + 86400)) !== false,
+        'and names the deadline it will wait until: ' . $loaded);
+
+    // Not one of those lines may leak the passkey the magnet carries.
+    foreach (ruTrackerChecker::$logs as $line) {
+        strictAssertEnglish($line, 'every begin log line');
+        strictAssertTrue(strpos($line, 's3cr3t') === false, 'no log line carries the passkey: ' . $line);
+    }
+});
+
+// Shared harvest staging for the directions below: metadata has arrived, the
+// stub validates, the stub erase is confirmed, and createTorrent() reports
+// success.
+//
+// $live is what a d.get_state/d.is_open read of the old torrent answers at
+// commit time -- array(state, is_open), or null when that read fails. $runMark
+// is what begin() recorded in chk-meta-run; it is only ever consulted when the
+// live read failed, so a test that expects it to be read must pass it.
+function mfQueueHarvest($oldHash, $live, $runMark = null)
 {
     ruTrackerChecker::reset();
     ruTrackerChecker::$createResult = null; // createTorrent()'s success contract
@@ -486,51 +595,145 @@ function mfQueueHarvest($oldHash, $runMark)
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));         // stub exists
     rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));           // metadata arrived
     rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));  // chk-meta-topic (stub)
-    rXMLRPCRequest::queue('d.get_custom', true, false, array($runMark));   // chk-meta-run (old torrent)
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, true, array());                  // the stub is gone
+    // The commit-point read of the old torrent's run state; the first
+    // d.get_state|d.is_open of the harvest is always this one.
+    if ($live === null)
+        rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), false, false, array());
+    else
+        rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, $live);
+    if ($runMark !== null)
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($runMark)); // chk-meta-run (old torrent)
     return $newHash;
 }
 
-$suite->test('harvest starts the replacement when the marker says the old torrent was running', function () use ($oldHash) {
-    $newHash = mfQueueHarvest($oldHash, '1');
-    rXMLRPCRequest::queue('d.get_state', true, false, array(0)); // the replacement came up stopped
-    rXMLRPCRequest::queue('d.start', true, false, array());
+$suite->test('harvest restores the replacement when the old torrent was started at commit time', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, array(1, 1));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0)); // came up closed and stopped
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // and now really runs
 
     strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
-    $starts = rXMLRPCRequest::requestsFor('d.start');
+    $starts = rXMLRPCRequest::requestsFor('d.open|d.start');
     strictAssertSame(1, count($starts), 'the replacement is started exactly once');
-    strictAssertSame($newHash, $starts[0]['commands'][0]->params, 'the NEW hash is started, not the old one');
-    // The read must have happened while the old torrent still existed, i.e.
-    // before createTorrent() erased it -- the only place the marker can be
-    // read from at all.
+    // ruTorrent's own UI opens before it starts (plugins/httprpc/action.php,
+    // case "start"); a d.start alone can leave a closed download closed.
+    strictAssertSame($newHash, $starts[0]['commands'][0]->params, 'd.open targets the NEW hash');
+    strictAssertSame($newHash, $starts[0]['commands'][1]->params, 'and d.start after it, on the same hash');
+    // The state must be read from the old torrent while it still exists, i.e.
+    // before createTorrent() erased it.
     $keys = array_map(function ($request) { return $request['key']; }, rXMLRPCRequest::$requests);
-    strictAssertTrue(array_search('d.start', $keys) > array_search('d.erase', $keys),
-        'the marker is read and acted on around the replacement, not before the harvest');
+    strictAssertTrue(array_search('d.open|d.start', $keys) > array_search('d.erase', $keys),
+        'the run state is acted on around the replacement, not before the harvest');
+    // Measured, never assumed: the line reports the state that was read back.
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'd.open+d.start accepted',
+        'the verified start is logged exactly once');
+    strictAssertTrue(strpos($line, 'now state=1 open=1') !== false,
+        'the line reports the state that was measured afterwards: ' . $line);
 });
 
-$suite->test('harvest leaves the replacement stopped when the marker says the old torrent was stopped', function () use ($oldHash) {
-    mfQueueHarvest($oldHash, '0');
+$suite->test('harvest gives a paused old torrent a paused replacement', function () use ($oldHash) {
+    $newHash = mfQueueHarvest($oldHash, array(0, 1)); // ruTorrent's pause: d.stop alone, still open
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
+    rXMLRPCRequest::queue('d.open', true, false, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1));
 
     strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')),
+    $opens = rXMLRPCRequest::requestsFor('d.open');
+    strictAssertSame(1, count($opens), 'a paused predecessor is answered with d.open');
+    strictAssertSame($newHash, $opens[0]['commands'][0]->params, 'on the new hash');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+        'a paused torrent must never come back seeding');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'and never through a bare d.start either');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'd.open accepted',
+        'the verified reopen is logged exactly once');
+    strictAssertTrue(strpos($line, 'now state=0 open=1') !== false,
+        'the line reports the measured pair: ' . $line);
+});
+
+// The defect this pins: a marker written up to $rutrackerMetaDeadline (86400s)
+// ago must never outrank a run state that can still be read right now. The
+// stopped read is the same one createTorrent() takes at its own commit point,
+// and it is what decides whether the replacement comes up running.
+$suite->test('a readable stopped state at commit time beats a was-running marker', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, array(0, 0), 'started'); // the user stopped it after the fetch began
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
         'a torrent the user had stopped must not be resurrected by its replacement');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.get_state')),
-        'a stopped marker is not even worth probing the replacement for');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'not by a bare start either');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'and not even reopened');
+    // chk-meta-topic is the one d.get_custom of a harvest; a second one would
+    // be the marker, which a readable state must not even bother to consult.
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')),
+        'the marker is not consulted at all while the live read answers');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'run state before the replacement',
+        'the state the decision was made on is recorded');
+    strictAssertTrue(strpos($line, 'started=0 open=0') !== false, 'with the values themselves: ' . $line);
+    strictAssertTrue(strpos($line, 'live read') !== false, 'and where they came from: ' . $line);
+});
+
+$suite->test('the marker is the fallback when the old torrent can no longer be read', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, null, 'started');
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // already running
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.get_custom')),
+        'the marker is read only after the live read failed');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'run state before the replacement',
+        'the state the decision was made on is recorded');
+    strictAssertTrue(strpos($line, 'chk-meta-run') !== false, 'named as the marker, not as a live read: ' . $line);
+    strictAssertTrue(strpos($line, 'started=1') !== false, 'and carrying what the marker said: ' . $line);
+});
+
+$suite->test('harvest leaves the replacement stopped when the old torrent was stopped', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, array(0, 0));
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+        'a torrent the user had stopped must not be resurrected by its replacement');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_state|d.is_open')),
+        'a stopped predecessor is not even worth probing the replacement for');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'neither open nor started',
+        'the deliberate do-nothing says so, exactly like createTorrent() does');
 });
 
 $suite->test('harvest does not re-start a replacement that came up running by itself', function () use ($oldHash) {
-    mfQueueHarvest($oldHash, '1');
-    rXMLRPCRequest::queue('d.get_state', true, false, array(1)); // already started
+    mfQueueHarvest($oldHash, array(1, 1));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // already started
 
     strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'no redundant d.start');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'no redundant start');
     strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'already running') !== false,
         'the log says why no start was issued');
 });
 
+// The failure this whole layer-4 work was chasing: a replacement sitting at
+// state 0, closed, with correct metainfo. An XMLRPC ack alone must never be
+// logged as a success.
+$suite->test('an accepted but ineffective start is logged as what it is', function () use ($oldHash) {
+    mfQueueHarvest($oldHash, array(1, 1));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array()); // the daemon says yes
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0)); // and nothing happened
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
+
+    strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is still committed');
+    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+        'the start is retried once, like activateReplacement() does');
+    strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'now state=')),
+        'no success line may be written for a start that did nothing');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'still state=0 open=0',
+        'the measured, unchanged state is what gets logged');
+    strictAssertTrue(strpos($line, 'accepted') !== false,
+        'together with the fact that the daemon accepted the command: ' . $line);
+    foreach (ruTrackerChecker::$logs as $log) strictAssertEnglish($log, 'every activation log line');
+});
+
 $suite->test('harvest logs the byte count, the hash match, the erase and what createTorrent returned', function () use ($oldHash) {
-    $newHash = mfQueueHarvest($oldHash, '0');
+    $newHash = mfQueueHarvest($oldHash, array(0, 0));
 
     strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
     $joined = implode("\n", ruTrackerChecker::$logs);
@@ -543,14 +746,14 @@ $suite->test('harvest logs the byte count, the hash match, the erase and what cr
 });
 
 $suite->test('harvest names the STE_* code when createTorrent refuses the replacement', function () use ($oldHash) {
-    mfQueueHarvest($oldHash, '1');
+    mfQueueHarvest($oldHash, array(1, 1));
     ruTrackerChecker::$createResult = ruTrackerChecker::STE_ERROR;
 
     strictAssertSame(ruTrackerChecker::STE_ERROR, RuTrackerMetaFetch::pump($oldHash, 1000),
         'createTorrent\'s own answer is passed through');
     strictAssertTrue(strpos(implode(' ', ruTrackerChecker::$logs), 'returned STE_ERROR') !== false,
         'the refusal is logged by name, not as a bare number');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')),
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
         'a failed replacement must never be started');
 });
 

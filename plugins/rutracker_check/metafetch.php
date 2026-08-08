@@ -10,6 +10,19 @@ class RuTrackerMetaFetch
     const WAIT_ATTEMPTS = 40;
     const WAIT_DELAY_US = 50000;
 
+    // How many times a restore is issued and then verified before giving up,
+    // the same budget activateReplacement() spends (check.php).
+    const RESTORE_ATTEMPTS = 2;
+
+    // chk-meta-run's vocabulary. Three values, not a bit: "stopped but open"
+    // is what ruTorrent's pause button produces (d.stop alone), and
+    // createTorrent()'s restoreExistingTorrent() answers it with d.open rather
+    // than d.start -- a single "was it running" flag could not tell the two
+    // apart and brought a paused torrent back seeding.
+    const RUN_STARTED = 'started';
+    const RUN_OPEN = 'open';
+    const RUN_STOPPED = 'stopped';
+
     static private function serviceDirectory()
     {
         global $topDirectory;
@@ -20,25 +33,28 @@ class RuTrackerMetaFetch
     // best effort, run after metadata has already started downloading, so a
     // failure here does not undo the successful load.
     //
-    // chk-meta-run rides along with the other two markers because harvest()
-    // needs it for the same reason it needs chk-meta-new: it is a fact about
-    // the moment the replacement was decided, and by the time harvest() runs
-    // -- a later cycle, possibly many hours on -- nothing else records it.
-    static private function markOldTorrent($oldHash, $newHash, $deadline, $wasRunning)
+    // chk-meta-run rides along with the other two markers as harvest()'s
+    // fallback: it is the run state at the moment the replacement was decided,
+    // and it is the only answer left when the old torrent can no longer be
+    // read at commit time. A reading taken then wins over it -- see harvest().
+    static private function markOldTorrent($oldHash, $newHash, $deadline, $run)
     {
         $req = new rXMLRPCRequest(array(
             new rXMLRPCCommand(getCmd("d.set_custom"), array($oldHash, "chk-meta-new", $newHash)),
             new rXMLRPCCommand(getCmd("d.set_custom"), array($oldHash, "chk-meta-until", (string) $deadline)),
-            new rXMLRPCCommand(getCmd("d.set_custom"), array($oldHash, "chk-meta-run", $wasRunning === true ? "1" : "0")),
+            new rXMLRPCCommand(getCmd("d.set_custom"), array($oldHash, "chk-meta-run", self::encodeRunState($run))),
         ));
         $req->important = false;
         $req->success();
     }
 
-    // The old torrent's run state right now, i.e. at the moment this fetch is
-    // decided on. null when the read itself failed; for the marker that is
-    // the same outcome as "stopped" (neither may start the replacement), but
-    // it is logged distinctly so the two are never confused in a diagnosis.
+    // A torrent's run state as the pair rTorrent itself keeps it: started
+    // (d.state) and open (d.is_open). null when the read failed -- for the
+    // marker that is the same outcome as "stopped" (neither may start the
+    // replacement), but it is logged distinctly so the two are never confused
+    // in a diagnosis.
+    //
+    // @return array('started'=>bool,'open'=>bool)|null
     static private function readRunState($hash)
     {
         $req = new rXMLRPCRequest(array(
@@ -47,19 +63,52 @@ class RuTrackerMetaFetch
         ));
         $req->important = false;
         if (!$req->success() || !isset($req->val[0], $req->val[1])) return null;
-        return (intval($req->val[0]) !== 0 || intval($req->val[1]) !== 0);
+        return array(
+            'started' => intval($req->val[0]) !== 0,
+            'open' => intval($req->val[1]) !== 0,
+        );
     }
 
-    static private function describeRunState($wasRunning)
+    static private function encodeRunState($run)
     {
-        if ($wasRunning === null) return 'unreadable';
-        return $wasRunning ? 'running' : 'stopped';
+        if (!is_array($run)) return self::RUN_STOPPED;
+        if ($run['started']) return self::RUN_STARTED;
+        return $run['open'] ? self::RUN_OPEN : self::RUN_STOPPED;
     }
 
+    // The inverse. "1"/"0" are what the first version of this marker wrote, so
+    // a fetch that began before an upgrade is still honoured rather than
+    // silently downgraded to "stopped".
+    static private function decodeRunState($value)
+    {
+        $value = trim((string) $value);
+        if ($value === self::RUN_STARTED || $value === '1') return array('started' => true, 'open' => true);
+        if ($value === self::RUN_OPEN) return array('started' => false, 'open' => true);
+        return array('started' => false, 'open' => false);
+    }
+
+    static private function describeRunState($run)
+    {
+        return $run === null ? 'unreadable' : self::encodeRunState($run);
+    }
+
+    // The measured pair, for a log line that reports what was read back rather
+    // than what was asked for.
+    static private function measuredRunState($run)
+    {
+        if ($run === null) return 'state=? open=?';
+        return 'state=' . ($run['started'] ? 1 : 0) . ' open=' . ($run['open'] ? 1 : 0);
+    }
+
+    // Every exit below logs what happened. The "begin" line alone says only
+    // that a fetch was attempted: a misconfigured service directory used to
+    // produce that one identical line an hour, forever, and nothing else.
     static public function begin($oldHash, $newHash, $topicId, $announceUrl, $now)
     {
         global $rutrackerMetaDeadline;
         $deadline = $now + (isset($rutrackerMetaDeadline) ? (int) $rutrackerMetaDeadline : 86400);
+        ruTrackerChecker::logDebug('metafetch: begin ' . $oldHash . ' -> ' . $newHash
+            . ' topic=' . (int) $topicId);
 
         // load silently swallows a hash it already knows, so an already
         // present successor must be detected before loading. How it got
@@ -68,19 +117,25 @@ class RuTrackerMetaFetch
         // hash, and rutracker.php's layer 0 reads it back to keep this
         // terminal outcome from re-running the whole chain every cycle.
         $exists = ruTrackerChecker::torrentExists($newHash);
-        if ($exists === null) return ruTrackerChecker::STE_ERROR;
+        if ($exists === null) {
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash
+                . ' aborted: could not tell whether ' . $newHash . ' is already in the client');
+            return ruTrackerChecker::STE_ERROR;
+        }
         if ($exists === true) {
             ruTrackerChecker::setMessage($oldHash,
                 ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash);
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' aborted: ' . $newHash
+                . ' is already in the client, nothing left to fetch');
             return ruTrackerChecker::STE_NOT_NEED;
         }
 
         // Read before anything is loaded: this is the only point in the whole
         // layer-4 flow at which the old torrent is still the torrent the
         // candidate was picked from (update.php's "seeding" view).
-        $wasRunning = self::readRunState($oldHash);
-        ruTrackerChecker::logDebug('metafetch: begin ' . $oldHash . ' -> ' . $newHash
-            . ' topic=' . (int) $topicId . ' old run state=' . self::describeRunState($wasRunning));
+        $run = self::readRunState($oldHash);
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' old run state='
+            . self::describeRunState($run));
 
         $magnet = 'magnet:?xt=urn:btih:' . $newHash . '&tr=' . rawurlencode($announceUrl);
         $addition = array(
@@ -91,7 +146,14 @@ class RuTrackerMetaFetch
         // Stopped, plain load: the meta stub's start=0 survives into the
         // real download rTorrent creates once metadata arrives (§2.7).
         $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), '', $addition);
-        if ($sent === false) return ruTrackerChecker::STE_ERROR;
+        if ($sent === false) {
+            // The likeliest cause by far, and the one thing worth naming: a
+            // service directory rTorrent cannot write into.
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash
+                . ' aborted: rTorrent refused the service load of ' . $newHash
+                . ' into ' . self::serviceDirectory());
+            return ruTrackerChecker::STE_ERROR;
+        }
 
         // load is deferred: wait for the stub, and confirm the hash that
         // appears carries OUR chk-meta-old marker before touching it -- a
@@ -104,6 +166,8 @@ class RuTrackerMetaFetch
             if (!$marker->run() || $marker->fault) continue;
 
             if (!isset($marker->val[0]) || (string) $marker->val[0] !== (string) $oldHash) {
+                ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' aborted: the item at '
+                    . $newHash . ' belongs to someone else, leaving it alone');
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
 
@@ -113,12 +177,18 @@ class RuTrackerMetaFetch
                 $erase = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.erase"), $newHash));
                 $erase->important = false;
                 $erase->success();
+                ruTrackerChecker::logDebug('metafetch: ' . $oldHash
+                    . ' aborted: could not start the metadata stub ' . $newHash . ', erased it');
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
 
-            self::markOldTorrent($oldHash, $newHash, $deadline, $wasRunning);
+            self::markOldTorrent($oldHash, $newHash, $deadline, $run);
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' loaded the metadata stub '
+                . $newHash . ', waiting until ' . $deadline);
             return ruTrackerChecker::STE_META_PENDING;
         }
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' aborted: the metadata stub '
+            . $newHash . ' never appeared after ' . self::WAIT_ATTEMPTS . ' polls');
         return ruTrackerChecker::STE_CANT_REACH_TRACKER;
     }
 
@@ -217,78 +287,114 @@ class RuTrackerMetaFetch
         $torrent->comment('https://rutracker.org/forum/viewtopic.php?t=' . (int) $topicId);
         $bytes = (string) $torrent;
 
-        // Read while there is still an old torrent to read it off: the
-        // replacement below erases it, and every chk-* custom it carried goes
-        // with it.
-        $wasRunning = self::recordedRunState($oldHash);
-
         $erase = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.erase"), $newHash));
         $erase->important = false;
         $erase->success();
         $stubGone = (ruTrackerChecker::torrentExists($newHash) === false);
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
-            . ' bytes=' . strlen($bytes) . ' service item erased=' . ($stubGone ? 'yes' : 'no')
-            . ' recorded old run state=' . ($wasRunning ? 'running' : 'stopped'));
+            . ' bytes=' . strlen($bytes) . ' service item erased=' . ($stubGone ? 'yes' : 'no'));
         if (!$stubGone)
             return ruTrackerChecker::STE_META_PENDING;
+
+        // The old torrent's run state, read here -- the last moment at which
+        // it can be read at all, since createTorrent() erases it at its own
+        // commit point a few statements later. The live read outranks
+        // chk-meta-run: the marker was written when the fetch was decided on,
+        // up to $rutrackerMetaDeadline (a day, by default) ago, and it can
+        // only disagree with a reading taken now in the very cases where the
+        // reading is the truthful one -- the user stopping the old torrent
+        // while the metadata was being fetched. The marker is what is left
+        // when there is nothing to read.
+        $run = self::readRunState($oldHash);
+        $source = 'a live read';
+        if ($run === null) {
+            $run = self::decodeRunState(self::recordedRunState($oldHash));
+            $source = 'the chk-meta-run marker, the live read having failed';
+        }
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' old run state before the replacement: started='
+            . ($run['started'] ? 1 : 0) . ' open=' . ($run['open'] ? 1 : 0) . ' from ' . $source);
 
         $result = ruTrackerChecker::createTorrent($bytes, $oldHash);
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' replacement by ' . $newHash
             . ' returned ' . self::describeResult($result));
-        if ($result === null && $wasRunning) self::startReplacement($newHash);
+        if ($result === null) self::restoreReplacement($newHash, $run);
         return $result;
     }
 
-    // The run state begin() recorded, as a plain "was it running" flag.
-    // Anything other than a readable "1" -- an unset field, a failed read, a
-    // marker written by a begin() whose own state read failed -- counts as
-    // "not running", i.e. leaves the replacement alone.
+    // The raw chk-meta-run value begin() recorded, '' when it cannot be read;
+    // decodeRunState() turns anything unrecognised into "stopped", so a failed
+    // read leaves the replacement alone.
     static private function recordedRunState($oldHash)
     {
         $req = new rXMLRPCRequest(new rXMLRPCCommand(
             getCmd("d.get_custom"), array($oldHash, "chk-meta-run")));
         $req->important = false;
-        if (!$req->success() || !isset($req->val[0])) return false;
-        return trim((string) $req->val[0]) === '1';
+        if (!$req->success() || !isset($req->val[0])) return '';
+        return (string) $req->val[0];
     }
 
-    // createTorrent() decides the replacement's run state from a
-    // d.get_state/d.is_open read it takes at its own commit point. In this
-    // layer-4 flow that point is one or more cycles -- often hours -- after
-    // begin() picked the candidate out of the seeding view, so anything that
-    // stopped the old torrent in the meantime turns into "leave the
-    // replacement stopped". The chk-meta-run marker is the state at decision
-    // time instead of at commit time, and this restores it.
+    // Give the replacement the run state its predecessor had, and then check
+    // that it actually took: an XMLRPC ack proves only that rTorrent accepted
+    // the command, and the failure this whole layer was chasing is a
+    // replacement sitting at state 0, closed, with correct metainfo. Every
+    // line below reports what was measured afterwards, never what was asked
+    // for.
     //
-    // What this does NOT claim: the five replacements observed sitting stopped
-    // on the live system were never explained -- the debug log was off at the
-    // time, so nothing recorded what createTorrent() actually read. This
-    // removes a known dependency on a momentary state read; it is defence in
-    // depth, not a fix for a diagnosed root cause.
+    // The shape mirrors createTorrent()'s activateReplacement() (check.php):
+    // issue, re-read, retry once, and say so when the reading disagrees.
+    // Its restoreExistingTorrent() is not reused: it is private to
+    // ruTrackerChecker, whose createTorrent() logic the owner has frozen, and
+    // it issues one command (d.start OR d.open) where this needs d.open before
+    // d.start -- and it reports an ack, which is the very thing this must not
+    // trust.
     //
-    // Deliberately silent when the marker says the old torrent was stopped:
-    // never resurrecting something the user stopped on purpose is
+    // Deliberately does nothing when the predecessor was neither open nor
+    // started: never resurrecting a torrent the user stopped on purpose is
     // createTorrent()'s existing, intended behaviour.
-    static private function startReplacement($newHash)
+    static private function restoreReplacement($newHash, $run)
     {
-        $state = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_state"), $newHash));
-        $state->important = false;
-        if (!$state->success() || !isset($state->val[0])) {
-            ruTrackerChecker::logDebug('metafetch: could not read the run state of the replacement '
-                . $newHash . ', leaving it as it is');
-            return;
-        }
-        if (intval($state->val[0]) !== 0) {
-            ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' is already running');
+        if (!$run['started'] && !$run['open']) {
+            ruTrackerChecker::logDebug('metafetch: leaving the replacement ' . $newHash
+                . ' stopped and closed: the old torrent was neither open nor started');
             return;
         }
 
-        $start = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.start"), $newHash));
-        $start->important = false;
-        $started = $start->success();
-        ruTrackerChecker::logDebug('metafetch: started the replacement ' . $newHash
-            . ' because the old torrent was running when the fetch began (d.start '
-            . ($started ? 'accepted' : 'refused') . ')');
+        $observed = self::readRunState($newHash);
+        if ($observed !== null && self::satisfies($observed, $run['started'])) {
+            ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' is already '
+                . ($run['started'] ? 'running' : 'open') . ' (' . self::measuredRunState($observed) . ')');
+            return;
+        }
+
+        // d.open before d.start, exactly the order ruTorrent's own UI sends
+        // (plugins/httprpc/action.php, case "start"): a bare d.start on a
+        // closed download can leave it closed.
+        $issued = $run['started'] ? 'd.open+d.start' : 'd.open';
+        for ($attempt = 0; $attempt < self::RESTORE_ATTEMPTS; $attempt++) {
+            $commands = array(new rXMLRPCCommand(getCmd("d.open"), $newHash));
+            if ($run['started']) $commands[] = new rXMLRPCCommand(getCmd("d.start"), $newHash);
+            $restore = new rXMLRPCRequest($commands);
+            $restore->important = false;
+            $accepted = $restore->success() ? 'accepted' : 'refused';
+
+            $observed = self::readRunState($newHash);
+            if ($observed !== null && self::satisfies($observed, $run['started'])) {
+                ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' inherited the old torrent\'s '
+                    . self::encodeRunState($run) . ' state (' . $issued . ' ' . $accepted . ', now '
+                    . self::measuredRunState($observed) . ')');
+                return;
+            }
+        }
+        ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' should be '
+            . self::encodeRunState($run) . ' but ' . $issued . ' was ' . $accepted
+            . ' and it is still ' . self::measuredRunState($observed));
+    }
+
+    // A started torrent may stay closed until the scheduler grants it a slot,
+    // the same allowance activateReplacement() makes.
+    static private function satisfies($observed, $wantStarted)
+    {
+        return $wantStarted ? $observed['started'] : $observed['open'];
     }
 
     // createTorrent()'s answer as text: null is its success contract, and

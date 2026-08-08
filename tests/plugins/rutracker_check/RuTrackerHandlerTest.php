@@ -946,7 +946,13 @@ $suite->test('23: layer 4 logs the hashes, the topic and the recorded run state 
     strictAssertTrue(strpos($line, $hash) !== false, 'the old hash: ' . $line);
     strictAssertTrue(strpos($line, $newHash) !== false, 'the new hash: ' . $line);
     strictAssertTrue(strpos($line, 'topic=' . $topicId) !== false, 'the topic id: ' . $line);
-    strictAssertTrue(strpos($line, 'old run state=running') !== false, 'the recorded run state: ' . $line);
+    // The run state is a line of its own: begin() now announces itself before
+    // the first probe, so that every exit before the state read still has a
+    // line to be read against.
+    $state = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'old run state=',
+        'the recorded run state is logged too');
+    strictAssertEnglish($state, 'the layer-4 run-state line');
+    strictAssertTrue(strpos($state, 'old run state=started') !== false, 'the recorded run state: ' . $state);
 });
 
 $exitCode = $suite->run();

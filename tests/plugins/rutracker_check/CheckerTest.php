@@ -197,10 +197,19 @@ class CheckerTest
 		rTorrent::$sendResult = 'NEW';
 	}
 
-	private function queueViews($views = null)
+	// $views is what the OLD torrent belongs to (d.views); $existing is what
+	// rTorrent currently has (view.list, aliased "view_list"). They are two
+	// different reads: views are runtime state, so a rat_N the old torrent
+	// belonged to before a restart can be missing from the live list, and a
+	// view.set_visible for it would throw input_error inside the load command
+	// list. By default every view the old torrent belongs to still exists.
+	private function queueViews($views = null, $existing = null)
 	{
-		rXMLRPCRequest::queue('d.views', true, false,
-			$views === null ? array('main', 'rat_2', 'rat_7', 'rat_9', 'rat_bad', 'rat_2_extra') : $views);
+		$views = $views === null ? array('main', 'rat_2', 'rat_7', 'rat_9', 'rat_bad', 'rat_2_extra') : $views;
+		rXMLRPCRequest::queue('d.views', true, false, $views);
+		if($existing !== false)
+			rXMLRPCRequest::queue('view_list', true, false,
+				$existing === null ? array_merge(array('main', 'default', 'seeding'), $views) : $existing);
 	}
 
 	private function queueSnapshot($baseDir, $state = 1, $open = 1)
@@ -303,6 +312,107 @@ class CheckerTest
 		$clears = rXMLRPCRequest::requestsFor('d.set_custom');
 		strictAssertSame(1, count($clears), 'the replacement marker must be cleared exactly once');
 		strictAssertSame(array('NEW', 'chk-replacement', ''), $clears[0]['commands'][0]->params, 'the marker clear must target the new hash');
+	}
+
+	// rTorrent runs a load command list inside ONE try block: the first
+	// input_error aborts every command after it, including rTorrent's own
+	// d.state.set and event.download.inserted_new -- which is exactly a
+	// replacement sitting at d.state=0, d.is_open=0, never hash-checked, with
+	// correct metainfo. view.set_visible throws that error for a view that
+	// does not exist, and views are runtime state: every rat_N is gone after a
+	// restart until ruTorrent's ratio plugin recreates it.
+	public function testMissingRatioViewIsDroppedFromTheLoadCommandList()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			$this->stageTorrents();
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+			$this->queueViews(
+				array('main', 'rat_2', 'rat_7', 'rat_9'),
+				array('main', 'default', 'seeding', 'rat_2', 'rat_9')  // rat_7 did not survive the restart
+			);
+			$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
+			$this->queueLoadConfirmed();
+			rXMLRPCRequest::queue('d.erase', true, false, array(0));
+			rXMLRPCRequest::queue('d.set_custom', true, false, array());
+			rXMLRPCRequest::queue('d.start', true, false, array(0));
+			rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+				'a missing view must cost the membership, never the load');
+			$addition = rTorrent::$lastSend['addition'];
+			$views = array_values(array_filter($addition, function($command) {
+				return strpos($command, 'view.set_visible=') === 0;
+			}));
+			strictAssertSame(
+				array('view.set_visible=rat_2', 'view.set_visible=rat_9'),
+				$views,
+				'the surviving memberships stay, in their original order; the missing one is dropped'
+			);
+			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('view_list')),
+				'the live view list is read exactly once per replacement');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'rat_7',
+				'a dropped membership is never silent');
+			strictAssertEnglish($line, 'the dropped-view line');
+		});
+	}
+
+	public function testUnreadableViewListDropsEveryRatioView()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			$this->stageTorrents();
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+			$this->queueViews(array('main', 'rat_2', 'rat_9'), false); // nothing queued: view.list faults
+			$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
+			$this->queueLoadConfirmed();
+			rXMLRPCRequest::queue('d.erase', true, false, array(0));
+			rXMLRPCRequest::queue('d.set_custom', true, false, array());
+			rXMLRPCRequest::queue('d.start', true, false, array(0));
+			rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+				'an unreadable view list must not abort the replacement');
+			$views = array_values(array_filter(rTorrent::$lastSend['addition'], function($command) {
+				return strpos($command, 'view.set_visible=') === 0;
+			}));
+			strictAssertSame(array(), $views,
+				'an unconfirmed view is dropped: a lost ratio group costs less than an aborted load');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'rat_2,rat_9',
+				'the dropped memberships are named');
+			strictAssertEnglish($line, 'the unreadable-view-list line');
+		});
+	}
+
+	// The version rides along with the cycle counts so a log can be read
+	// against the rTorrent that produced it. rTorrentSettings::get() answers
+	// from the cached rtorrent.dat -- only a browser-driven get(true) ever
+	// refreshes it -- so after an upgrade and a restart it can report the old
+	// version for days, which is the one answer this diagnostic must not give.
+	public function testVersionLabelAsksTheDaemonAndSurvivesAFailedQuery()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			rXMLRPCRequest::queue('system.client_version|system.api_version', true, false, array('0.16.20', '11'));
+			strictAssertSame('client=0.16.20 api=11', ruTrackerChecker::liveVersionLabel(),
+				'the live daemon answers, not the cached settings singleton');
+			$asked = rXMLRPCRequest::requestsFor('system.client_version|system.api_version');
+			strictAssertSame(1, count($asked), 'one request per logged cycle');
+			strictAssertSame(false, $asked[0]['important'],
+				'a diagnostic may never sink the cycle it is describing');
+
+			// A failed query must still leave a readable line.
+			rXMLRPCRequest::reset();
+			strictAssertSame('client=? api=?', ruTrackerChecker::liveVersionLabel(),
+				'a failed version query degrades to a placeholder');
+		});
+
+		// And with the debug log off nothing is asked at all.
+		rXMLRPCRequest::reset();
+		strictAssertSame('client=? api=?', ruTrackerChecker::liveVersionLabel(),
+			'no version is claimed when no line will be written');
+		strictAssertSame(0, count(rXMLRPCRequest::$requests),
+			'the cost of the diagnostic stays behind the debug flag');
 	}
 
 	public function testStoppedOpenReplacementUsesOpen()

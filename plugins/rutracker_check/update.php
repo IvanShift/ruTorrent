@@ -47,11 +47,10 @@ if($req->success())
 
 	// The rTorrent version rides along with the counts: an upgrade on the live
 	// system turned out to change how a cycle behaves, and nothing in the log
-	// recorded which version produced any given cycle.
-	$theSettings = rTorrentSettings::get();
-	$clientVersion = (string) $theSettings->version;
-	ruTrackerChecker::logDebug("update: client=".($clientVersion !== '' ? $clientVersion : '?')
-		." api=".(int) $theSettings->apiVersion
+	// recorded which version produced any given cycle. It is asked of the
+	// daemon itself rather than of the cached settings, which go stale across
+	// exactly the upgrade this is meant to catch.
+	ruTrackerChecker::logDebug("update: ".ruTrackerChecker::liveVersionLabel()
 		." checked=".count($result['checked'])
 		." uptodate=".$result['uptodate']." fused=".implode(',',$result['fused']));
 }

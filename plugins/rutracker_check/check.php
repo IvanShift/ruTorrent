@@ -297,11 +297,35 @@ class ruTrackerChecker
 		}
 	}
 
+	// The views rTorrent currently has, keyed by name; null when the list
+	// itself could not be read. Views are runtime state: rTorrent recreates
+	// none of the rat_N ones on restart -- ruTorrent's ratio plugin does, on
+	// its next start (plugins/ratio/ratio.php, flush()).
+	static private function existingViews()
+	{
+		// "view_list" is the alias every methods-*.php table maps to
+		// view.list, the same spelling plugins/ratio uses.
+		$req = new rXMLRPCRequest( new rXMLRPCCommand(getCmd("view_list")) );
+		$req->important = false;
+		if(!$req->success())
+			return(null);
+		$views = array();
+		foreach($req->val as $view)
+			if(is_string($view))
+				$views[$view] = true;
+		return($views);
+	}
+
 	static private function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $state, $marker)
 	{
 		$now = time();
 		$addition = array(
 			getCmd("d.set_custom")."=".self::REPLACEMENT_MARKER_KEY.",".$marker,
+			// d.set_connection_seed= resolves to d.connection_seed.set, which
+			// rTorrent registers PRIVATE: it works here only because a load
+			// command list is executed internally, not through the XMLRPC
+			// entry point. Moving it into a post-load system.multicall would
+			// silently fault.
 			getCmd("d.set_connection_seed=").$connectionSeed,
 			getCmd("d.set_custom")."=chk-state,".$state,
 			getCmd("d.set_custom")."=chk-time,".$now,
@@ -309,8 +333,31 @@ class ruTrackerChecker
 		);
 		if(!empty($throttle))
 			$addition[] = getCmd("d.set_throttle_name=").$throttle;
+
+		// DownloadFactory runs this whole list inside one try block: the first
+		// torrent::input_error aborts every command after it AND skips the
+		// d.state.set and the event.download.inserted_new that rTorrent itself
+		// appends, leaving the download inserted with correct metainfo but at
+		// state 0, never opened and never hash-checked. view.set_visible
+		// throws exactly that error for a view that does not exist, so a
+		// membership is only ever forwarded once the view has been confirmed;
+		// an unconfirmable one is dropped, because a lost ratio group costs
+		// far less than an aborted load.
+		$existing = self::existingViews();
+		$dropped = array();
 		foreach($ratioViews as $ratioView)
-			$addition[] = getCmd("view.set_visible=").$ratioView;
+		{
+			if($existing !== null && isset($existing[$ratioView]))
+				$addition[] = getCmd("view.set_visible=").$ratioView;
+			else
+				$dropped[] = $ratioView;
+		}
+		if(count($dropped))
+			self::logDebug("buildReplacementAddition: dropped ".implode(',', $dropped)
+				." from the load command list (".($existing === null
+					? "the view list could not be read"
+					: "no such view in rTorrent")
+				."): one input_error would abort every load command after it");
 		return($addition);
 	}
 
@@ -584,6 +631,29 @@ class ruTrackerChecker
 			}
 		}
 		return self::STE_NOT_NEED;
+	}
+
+	// The version of the rTorrent that is answering right now, as one log
+	// fragment. rTorrentSettings::get() would answer from the cached
+	// rtorrent.dat instead -- only a browser-driven get(true) ever refreshes
+	// it -- so after an upgrade and a restart it can report the old version
+	// for days, which is the single answer this diagnostic must never give.
+	// The query is skipped entirely when the debug log is off: nothing pays
+	// for a line that is not written.
+	static public function liveVersionLabel()
+	{
+		global $rutrackerCheckDebug;
+		$unknown = "client=? api=?";
+		if(empty($rutrackerCheckDebug))
+			return($unknown);
+		$req = new rXMLRPCRequest( array(
+			new rXMLRPCCommand(getCmd("system.client_version")),
+			new rXMLRPCCommand(getCmd("system.api_version")),
+		) );
+		$req->important = false;
+		if(!$req->success() || !isset($req->val[0], $req->val[1]))
+			return($unknown);
+		return("client=".trim((string) $req->val[0])." api=".trim((string) $req->val[1]));
 	}
 
 	static public function logDebug($message)
