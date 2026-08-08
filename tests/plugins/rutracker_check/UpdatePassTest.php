@@ -467,4 +467,60 @@ $suite->test('reapOrphans reaps a stub whose old torrent no longer exists, once 
     strictAssertSame($stub, $erased[0]['commands'][0]->params, 'erased the stub');
 });
 
+// This pass is the scheduler's ONLY route into ruTrackerChecker::run(), and it
+// carries every registered tracker, not just RuTracker. The layer-1 detector
+// reads RuTracker tracker rows exclusively, so it answers 'none' for a
+// Kinozal/NNMClub/Toloka/tfile torrent -- which must not be read as "no signal
+// worth a request", or those handlers stop being called at all.
+$suite->test('a torrent from another supported tracker still reaches its handler', function () {
+    $kinozal = str_repeat('K', 40);
+    $nnmclub = str_repeat('N', 40);
+    $rutracker = str_repeat('A', 40);
+    $values = array_merge(
+        upRow($kinozal, 0, 'tr2.torrent4me.com', '4'),  // left at STE_DELETED by an earlier cycle
+        upRow($nnmclub, 3, 'bt.nnmclub.to'),
+        upRow($rutracker, 0)                            // alive, takes the fast path
+    );
+    $rows = RuTrackerUpdatePass::parseMulticall($values);
+
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(array($kinozal, $nnmclub), $result['checked'],
+        'both foreign-tracker rows are dispatched, in row order');
+    strictAssertSame(array($kinozal, $nnmclub), $checked, 'the checker itself received them');
+    strictAssertSame(array(), $result['fused'], 'a foreign announce host never feeds the RuTracker fuse');
+    strictAssertSame(1, $result['uptodate'], 'only the RuTracker row took the alive fast path');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom')),
+        'a dispatched row gets no scheduler-side state write -- its own handler decides');
+});
+
+$suite->test('an ignored label still short-circuits a foreign-tracker torrent', function () {
+    $GLOBALS['ignoreLabels'] = array('tv-sonarr');
+    try {
+        $rows = RuTrackerUpdatePass::parseMulticall(
+            upRow(str_repeat('K', 40), 0, 'tr2.torrent4me.com', '4', '', 'tv-sonarr'));
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+            function ($hash) { throw new RuntimeException('an ignored row must never reach the checker'); });
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+        $result = RuTrackerUpdatePass::run($rows);
+
+        strictAssertSame(array(), $result['checked'], 'the ignore list outranks the foreign-tracker dispatch');
+        $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+        strictAssertSame(
+            array(str_repeat('K', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
+            $writes[0]['commands'][0]->params,
+            'written IGNORED like every other ignored row'
+        );
+    } finally {
+        unset($GLOBALS['ignoreLabels']);
+    }
+});
+
 exit($suite->run());

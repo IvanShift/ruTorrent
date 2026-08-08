@@ -36,6 +36,16 @@ The active tracker checker lives in `plugins/rutracker_check/`.
 
 Stale hash races are normal during torrent replacement: the old hash can disappear while UI or plugin polling is still in flight. Treat missing hashes as an early-exit condition, not as an exceptional XMLRPC failure.
 
+### The plugin is multi-tracker despite its name
+
+`registerTracker()` carries seven handlers (RuTracker, Kinozal, NNMClub, Toloka, tfile, AniDUB, TapochekNet), and `update.php` -> `RuTrackerUpdatePass::run()` is the scheduler's only route into `ruTrackerChecker::run()` for all of them. RuTracker-specific machinery — `RuTrackerDetector::classify()`, the announce fuse, the forum-dump layers — must never decide whether a *foreign*-tracker torrent gets checked.
+
+`classify()` inspects only tracker rows matching `TRACKER_PATTERN`, so it answers `'none'` for a torrent that has no RuTracker row. That verdict means "not my jurisdiction", not "no signal worth a request". Gating dispatch on it once stopped every non-RuTracker handler for a full deploy: 211 of 211 torrents checked in a cycle were RuTracker, and 122 seeding Kinozal/NNMClub torrents were never dispatched, freezing their `chk-state` at whatever the previous release had left. `UpdatePassTest.php` pins this.
+
+When adding a layer that reads RuTracker signals, ask what it returns for a torrent from another tracker, and make sure that answer cannot suppress the dispatch. Symptom to watch for on a live instance: `chk-time` on non-RuTracker torrents stops advancing while RuTracker ones keep updating.
+
+Only the scheduler goes through that pass. The manual "check for update" button (`action.php` -> `batch_check.php`) calls `ruTrackerChecker::run($hash)` directly, so it keeps working even when the pass drops a tracker — which makes it the quickest way to tell a broken handler apart from a broken dispatch.
+
 ## Build & Test
 
 Useful focused checks:

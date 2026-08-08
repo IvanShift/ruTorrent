@@ -130,6 +130,22 @@ class RuTrackerUpdatePass
                 continue;
             }
 
+            // This pass carries every registered tracker: update.php admits a
+            // row when ANY announce filter matches (isTrackerSupported), and
+            // this is the scheduler's only route into ruTrackerChecker::run().
+            // Layer 1 below reads RuTracker tracker rows exclusively, so a
+            // Kinozal/NNMClub/Toloka/tfile torrent gives classify() nothing to
+            // judge and it answers 'none' -- which for those torrents means
+            // "not my jurisdiction", NOT "no signal worth a request". They go
+            // straight to their own handler, once per cycle, the way the
+            // pre-layer-1 pass dispatched them; hostOf() returns '' for
+            // exactly this case.
+            if (self::hostOf($row['trackers']) === '') {
+                call_user_func($checker, $row['hash'], $row);
+                $checked[] = $row['hash'];
+                continue;
+            }
+
             $verdict = $verdicts[$index];
             if ($verdict === 'alive') {
                 self::clearStaleDeletion($row['hash'], $row['del'], $row['msg']);

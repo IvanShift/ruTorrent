@@ -33,6 +33,13 @@ class RuTrackerDetector
     // $dMessage (d.message) is download-global and holds only the most
     // recent tracker event of ANY row, so it may recognise a transport
     // failure but never prove a topic is gone.
+    //
+    // 'none' is returned both for a disabled RuTracker row and for a torrent
+    // that has no RuTracker row at all -- a Kinozal/NNMClub/Toloka/tfile
+    // torrent, over which this detector simply has no jurisdiction. Callers
+    // that sweep the whole seeding view (RuTrackerUpdatePass::run) carry all
+    // of those too and must not read that second 'none' as "nothing to do",
+    // or every other tracker's handler silently stops running.
     static public function classify($rows, $dMessage)
     {
         foreach ((array) $rows as $row) {
