@@ -13,6 +13,10 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/kinozal.php
 function kinozalReset()
 {
     ruTrackerChecker::reset();
+    // The latch is per-process, and one test process stands in for many
+    // production cycles, so it is cleared between them the same way the
+    // other private statics in this suite are.
+    strictSetPrivateStatic('KinozalCheckImpl', 'sessionDead', false);
 }
 
 function kinozalTopicUrl($id)
@@ -83,6 +87,40 @@ $suite->test('a guest answer from the details endpoint is a reachability error',
         'the chain stops at the details request'
     );
     strictAssertSame(0, ruTrackerChecker::$createCalls, 'the replacement path is never entered');
+});
+
+$suite->test('one guest answer stops the rest of the cycle from asking again', function () {
+    kinozalReset();
+    list($rawA, $hashA, $torrentA) = kinozalTorrent('first.mkv', 2148020);
+    list($rawB, $hashB, $torrentB) = kinozalTorrent('second.mkv', 2144802);
+    Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalUnauthorizedBody());
+
+    $first = KinozalCheckImpl::download_torrent(kinozalTopicUrl(2148020), $hashA, $torrentA);
+    $second = KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144802), $hashB, $torrentB);
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $first, 'a login wall proves nothing');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $second,
+        'a skipped topic keeps the same retryable verdict it would have got the hard way');
+    strictAssertSame(
+        array(array('fetchComplex', kinozalDetailsUrl(2148020))),
+        Snoopy::$requests,
+        'the second topic costs no request: the session is already known to be gone'
+    );
+});
+
+$suite->test('a live session checks every topic on its own merits', function () {
+    kinozalReset();
+    list($rawA, $hashA, $torrentA) = kinozalTorrent('first.mkv', 2148020);
+    list($rawB, $hashB, $torrentB) = kinozalTorrent('second.mkv', 2144802);
+    Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalDetailsBody($hashA));
+    Snoopy::queue(kinozalDetailsUrl(2144802), 200, kinozalDetailsBody($hashB));
+
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent(kinozalTopicUrl(2148020), $hashA, $torrentA), 'first topic');
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent(kinozalTopicUrl(2144802), $hashB, $torrentB),
+        'the latch must not trip on an authenticated answer');
+    strictAssertSame(2, count(Snoopy::$requests), 'both topics were asked about');
 });
 
 $suite->test('the login page served with status 200 is a reachability error', function () {
