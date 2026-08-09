@@ -49,9 +49,33 @@ class RuTrackerState
     // holds it, and true when no lock file could be created at all -- a guard
     // that cannot be built must not stop the cycle, since losing the guard is
     // better than losing every cycle.
+    // Deliberately NOT dir(): that path sits inside one ruTorrent user's
+    // profile, and the live system had two of them -- an anonymous one and
+    // "torrent" -- driving the very same rTorrent. Each got its own lock, so
+    // neither could see the other and both cycles ran, which is the whole
+    // reason the guard did nothing. What needs protecting is the daemon and
+    // the trackers behind it, not a profile, so the lock lives outside every
+    // user's profile and is keyed by how this ruTorrent reaches its rTorrent:
+    // a genuine multiuser install with a daemon per user keeps a lock per
+    // daemon and never serialises unrelated cycles.
+    static private function cycleLockPath()
+    {
+        global $scgi_host, $scgi_port, $XMLRPCMountPoint;
+
+        // The test override stands in for the whole storage location, this
+        // file included, so a run stays inside its own temporary directory.
+        $dir = self::$dir !== null ? self::$dir
+            : FileUtil::getSettingsPathEx('') . '/rutracker_check';
+        if (!is_dir($dir)) @mkdir($dir, 0777, true);
+        $daemon = md5((isset($scgi_host) ? $scgi_host : '')
+            . ':' . (isset($scgi_port) ? $scgi_port : '')
+            . ':' . (isset($XMLRPCMountPoint) ? $XMLRPCMountPoint : ''));
+        return $dir . '/cycle-' . substr($daemon, 0, 8) . '.lock';
+    }
+
     static public function acquireCycleLock()
     {
-        $fp = @fopen(self::dir() . '/cycle.lock', 'c');
+        $fp = @fopen(self::cycleLockPath(), 'c');
         if ($fp === false) return true;
         if (!@flock($fp, LOCK_EX | LOCK_NB)) {
             @fclose($fp);
