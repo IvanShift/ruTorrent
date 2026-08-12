@@ -38,6 +38,7 @@
 <value><i8>111111111111</i8></value>
 <value><i8>1</i8></value>
 <value><i8>1</i8></value>
+<value><i8>0</i8></value>
 </data></array></value>
 <value><array><data>
 <value><string>BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB</string></value>
@@ -74,6 +75,7 @@
 <value><string></string></value>
 <value><i8>111111111111</i8></value>
 <value><i8>1</i8></value>
+<value><i8>0</i8></value>
 <value><i8>0</i8></value>
 </data></array></value>
 <value><array><data>
@@ -112,6 +114,7 @@
 <value><i8>222222222222</i8></value>
 <value><i8>1</i8></value>
 <value><i8>0</i8></value>
+<value><i8>0</i8></value>
 </data></array></value>
 <value><array><data>
 <value><string>DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD</string></value>
@@ -149,6 +152,7 @@
 <value><i8>111111111111</i8></value>
 <value><i8>1</i8></value>
 <value><i8>0</i8></value>
+<value><i8>1</i8></value>
 </data></array></value>
 </data></array></value></param>
 </params>

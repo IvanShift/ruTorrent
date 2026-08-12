@@ -24,7 +24,9 @@ export class CategoryList {
       pstate: [
         (_, torrent) => [
           // Main group (Completed / Downloading / Stopped)
-          (torrent.done >= 1000)
+          // A torrent with deselected files never reaches done >= 1000, so
+          // rTorrent's d.is_partially_done counts as completed here as well.
+          (torrent.done >= 1000 || torrent.partially_done == 1)
             ? "-_-_-com-_-_-" // Completed (even if error)
             : (torrent.state & this.dStatus.paused)
             ? "-_-_-wfa-_-_-" // Truly paused (Stopped)

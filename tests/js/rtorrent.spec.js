@@ -176,6 +176,22 @@ describe("xmlrpc calls", () => {
     });
   });
 
+  it("routes d.is_partially_done to a no-op below rTorrent 0.9.0", () => {
+    withRtorrentVersion(0x809, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
+    });
+    withRtorrentVersion(0x900, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
+    withRtorrentVersion(0x1014, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
+  });
+
   it("should parse getprops response", () => {
     const stub = new rTorrentStub(`?action=getprops&hash=${h("A")}`);
     //console.log(stub.content);
@@ -294,6 +310,15 @@ describe("xmlrpc calls", () => {
       expect(ret.torrents[hash].label).toBe(label);
       expect(ret.torrents[hash].comment).toBe(comment);
     }
+  });
+
+  it("reads the partially done flag from the list response", () => {
+    const stub = new rTorrentStub("?list=1");
+    const ret = stub.getResponse(loadXML(stub.action));
+    expect(ret.torrents[h("A")].partially_done).toBe(0);
+    expect(ret.torrents[h("B")].partially_done).toBe(0);
+    expect(ret.torrents[h("C")].partially_done).toBe(0);
+    expect(ret.torrents[h("D")].partially_done).toBe(1);
   });
 });
 

@@ -12,7 +12,12 @@ class RtorrentCompatibilityTest extends TestCase
 		$settings->iVersion = $version;
 		$settings->aliases = [];
 
-		$this->loadMethodAliases($settings, 'methods-0.9.4.php');
+		if ($version < 0x900) {
+			$this->loadMethodAliases($settings, 'methods-pre-0.9.0.php');
+		}
+		if ($version >= 0x904) {
+			$this->loadMethodAliases($settings, 'methods-0.9.4.php');
+		}
 		if ($version >= 0x0a02) {
 			$this->loadMethodAliases($settings, 'methods-0.10.2.php');
 		}
@@ -142,6 +147,18 @@ class RtorrentCompatibilityTest extends TestCase
 			}
 			$this->assertEquals('system.sockets.max_size', $settings->getCommand('get_max_open_sockets'), 'rTorrent '.$label.' reads the generic socket ceiling without removed allocation commands');
 			$this->assertEquals('system.sockets.files.max_alloc.set', $settings->getCommand('set_max_open_files'), 'rTorrent '.$label.' keeps the file-category allocation setter');
+		}
+	}
+
+	public function testPartiallyDoneCommandIsANoOpBelowRtorrent090()
+	{
+		$settings = $this->makeSettings(0x809);
+		$this->assertEquals('cat', $settings->getCommand('d.is_partially_done'), 'rTorrent 0.8.9 answers the partially done question with the no-op cat');
+		$this->assertEquals('cat=', $settings->getCommand('d.is_partially_done='), 'the no-op keeps the trailing = so the multicall field stays in place');
+
+		foreach (array(0x900 => '0.9.0', 0x908 => '0.9.8', 0x1014 => '0.16.20') as $version => $label) {
+			$settings = $this->makeSettings($version);
+			$this->assertEquals('d.is_partially_done', $settings->getCommand('d.is_partially_done'), 'rTorrent '.$label.' asks the daemon directly');
 		}
 	}
 }
