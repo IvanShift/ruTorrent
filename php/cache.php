@@ -106,13 +106,13 @@ class rCache
 			}
 			if(is_array($tmp))
 			{
-				$rss = $tmp;				
+				$rss = $tmp;
 				$ret = true;
 			}
 			else
 			{
-				if(($tmp!==false) && 
-					(!isset($rss->version) || 
+				if(($tmp!==false) &&
+					(!isset($rss->version) ||
 					(isset($rss->version) && !isset($tmp->version)) ||
 					(isset($tmp->version) && ($tmp->version==$rss->version))))
 				{
@@ -155,8 +155,8 @@ class rCache
 	}
 	public function getModified( $obj = null )
 	{
-		return(@filemtime( is_null($obj) ? $this->dir : 
+		return(@filemtime( is_null($obj) ? $this->dir :
 			(is_object($obj) ? $this->getName($obj) : $this->dir."/".$obj) ));
-			
+
 	}
 }
