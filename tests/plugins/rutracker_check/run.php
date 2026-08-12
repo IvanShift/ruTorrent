@@ -12,6 +12,7 @@ $tests = array(
     __DIR__ . '/KinozalHandlerTest.php',
     __DIR__ . '/MetaFetchTest.php',
     __DIR__ . '/../loginmgr/KinozalAccountTest.php',
+    __DIR__ . '/../history/HistoryDataTest.php',
     __DIR__ . '/../../php/SnoopyTest.php',
 );
 $failures = 0;
