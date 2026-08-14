@@ -4,7 +4,8 @@ require_once( 'util.php' );
 class rCache
 {
 	protected $dir;
-	protected static $modifiedTimes = [];
+	// How each cache file looked when this process loaded it, keyed by cache key.
+	protected static $loadStamps = [];
 
 	public function __construct( $name = '' )
 	{
@@ -27,6 +28,28 @@ class rCache
 	{
 		return(get_class($rss).':'.$rss->hash);
 	}
+	// A cache file's identity, used to tell whether it is still the one this
+	// process loaded. filemtime resolves only to the second, so two writes
+	// inside one second look identical -- and that is the common case here:
+	// replacing a torrent fires three writers within the same second. set()
+	// always publishes through rename(), which gives the file a fresh inode,
+	// so the inode is what actually separates them.
+	protected static function stampOf( $name )
+	{
+		clearstatcache(true, $name);
+		$st = @stat($name);
+		return($st===false ? null : $st['ino'].':'.$st['mtime'].':'.$st['size']);
+	}
+	// True when the file on disk is no longer the one this process loaded.
+	protected static function hasChangedSinceLoad( $rss, $name, $stamp )
+	{
+		if(!is_null($stamp))
+			return($stamp !== self::stampOf($name));
+		// Nothing was loaded through get() in this process: fall back to the
+		// caller-supplied timestamp, the way this check always did.
+		$modTime = isset($rss->modified) ? $rss->modified : 0;
+		return($modTime && ($modTime < filemtime($name)));
+	}
 	public function set( $rss, $arg = null )
 	{
 		global $profileMask;
@@ -44,12 +67,11 @@ class rCache
 		}
 
 		$cacheKey = is_object($rss) ? self::getCacheKey($rss) : null;
-		$modTime = $cacheKey ? (self::$modifiedTimes[$cacheKey] ?? (isset($rss->modified) ? $rss->modified : 0)) : 0;
+		$stamp = ($cacheKey !== null) ? (self::$loadStamps[$cacheKey] ?? null) : null;
 		if(     is_object($rss) &&
-			$modTime &&
 			method_exists($rss,"merge") &&
 			is_file($name) &&
-			($modTime < filemtime($name)))
+			self::hasChangedSinceLoad($rss, $name, $stamp))
 		{
 			$className = get_class($rss);
 			$newInstance = new $className();
@@ -118,7 +140,7 @@ class rCache
 				{
 					$rss = $tmp;
 					$cacheKey = self::getCacheKey($rss);
-					self::$modifiedTimes[$cacheKey] = filemtime($fname);
+					self::$loadStamps[$cacheKey] = self::stampOf($fname);
 					$ret = true;
 				}
 				else

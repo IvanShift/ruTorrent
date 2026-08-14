@@ -4,6 +4,7 @@ $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-cache-test-' . getmy
 
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/../../php/cache.php');
+require_once(__DIR__ . '/CacheMergePayloadFixture.php');
 
 class CacheTestPayload
 {
@@ -119,6 +120,59 @@ class CacheTest extends TestCase
 		clearstatcache(true, $lockFile);
 		$this->assertEquals(false, file_exists($cacheFile), 'Cache remove deletes the cache file');
 		$this->assertEquals(false, file_exists($lockFile), 'Cache remove deletes the lock file');
+	}
+
+	// Writes a helper that does what a second update.php does -- load the
+	// cache, record one row, store it -- as a genuinely separate process. It
+	// has to be a real process: rCache remembers the loaded file's stamp in a
+	// static, so a second writer inside this one would share it.
+	private function makeWriterScript()
+	{
+		$path = FileUtil::getSettingsPath() . '/concurrent-writer.php';
+		$code = "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
+			. "\$payload = new CacheMergePayload();\n"
+			. "(new rCache())->get(\$payload);\n"
+			. "exit(\$payload->addRow(\$argv[1]) ? 0 : 1);\n";
+		file_put_contents($path, $code);
+		return $path;
+	}
+
+	// The live failure this guards: replacing a torrent fires three update.php
+	// processes inside one second, and filemtime only resolves to the second,
+	// so a writer that reloaded after a same-second write saw an unchanged
+	// timestamp, skipped merging and republished the file without the other
+	// process's row. On a live fleet the row that vanished was the "added" one
+	// of every replacement.
+	public function testRowFromAnotherProcessSurvivesAWriteInTheSameSecond()
+	{
+		// Start near the top of a second so the seed, this process's load and
+		// the other process's write all share one mtime.
+		usleep((int) ((1 - fmod(microtime(true), 1)) * 1000000));
+
+		$seed = new CacheMergePayload();
+		$this->assertTrue($seed->addRow('seed'), 'the seeding write succeeds');
+
+		// This process loads the file; rCache records how the file looked.
+		$mine = new CacheMergePayload();
+		(new rCache())->get($mine);
+
+		// Another process records its own row in the very same second.
+		$writer = $this->makeWriterScript();
+		exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($writer) . ' other-process', $output, $code);
+		$this->assertEquals(0, $code, 'the second writer process stores its row');
+
+		// Only now does this process store its own row.
+		$this->assertTrue($mine->addRow('mine'), 'this process stores its row');
+
+		$check = new CacheMergePayload();
+		(new rCache())->get($check);
+		$this->assertTrue(isset($check->rows['mine']), 'this process keeps its own row');
+		$this->assertTrue(isset($check->rows['other-process']),
+			'the row another process wrote in the same second is not overwritten');
+		$this->assertTrue(isset($check->rows['seed']), 'the pre-existing row is untouched');
 	}
 
 	public function testGetRestoresErrorHandlerWhenUnserializeThrows()
