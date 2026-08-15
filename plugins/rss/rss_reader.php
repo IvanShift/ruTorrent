@@ -1,9 +1,27 @@
 <?php
 require_once(dirname(__FILE__) . "/../../php/util.php");
 
+function rssIsValidUTF8($data)
+{
+	if (function_exists('mb_check_encoding')) {
+		return mb_check_encoding($data, 'UTF-8');
+	}
+	if (function_exists('iconv')) {
+		return @iconv('UTF-8', 'UTF-8', $data) === $data;
+	}
+	// PCRE is always available: the /u modifier rejects invalid UTF-8.
+	return preg_match('//u', $data) === 1;
+}
+
 function rssConvertToUTF8($data, $encoding)
 {
 	if (strcasecmp($encoding, 'UTF-8') == 0 || strcasecmp($encoding, 'UTF8') == 0) {
+		return $data;
+	}
+	// Misconfigured aggregators declare a legacy encoding over bytes that are
+	// already UTF-8; converting those a second time would garble every
+	// non-ASCII character, so trust the bytes over the declared encoding.
+	if (rssIsValidUTF8($data)) {
 		return $data;
 	}
 	if (function_exists('mb_convert_encoding')) {
@@ -31,13 +49,18 @@ function rssNormalizeXMLDocumentEncoding($data)
 	if (!preg_match($declaration, $data, $matches)) {
 		return $data;
 	}
-
-	$converted = rssConvertToUTF8($data, $matches['encoding']);
-	if ($converted === false || $converted === $data) {
+	$encoding = $matches['encoding'];
+	if (strcasecmp($encoding, 'UTF-8') == 0 || strcasecmp($encoding, 'UTF8') == 0) {
 		return $data;
 	}
 
-	// DOM uses UTF-8 internally, so keep the declaration consistent with the converted bytes.
+	$converted = rssConvertToUTF8($data, $encoding);
+	if ($converted === false) {
+		return $data;
+	}
+	// DOM uses UTF-8 internally, so keep the declaration consistent with the
+	// converted bytes — also when a lying declaration left already-UTF-8
+	// bytes untouched above, so libxml decodes the document as the UTF-8 it is.
 	$normalized = preg_replace_callback(
 		'/^(\s*<\?xml\s+[^>]*\bencoding\s*=\s*)(["\'])[^"\']+\2/i',
 		function ($parts) {
