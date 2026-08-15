@@ -6,6 +6,15 @@ require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/../../php/cache.php');
 require_once(__DIR__ . '/CacheMergePayloadFixture.php');
 
+// Its own class rather than an instance with a reassigned hash: when set()
+// reconciles a concurrent write it reloads the file through a freshly
+// constructed instance of the same class, so a merge-capable payload has to
+// carry its identity in the class, the way rHistoryData does.
+class CacheGhostLoadPayload extends CacheMergePayload
+{
+	public $hash = 'ghost-load-test.dat';
+}
+
 class CacheTestPayload
 {
 	public $hash = 'cache-test.dat';
@@ -140,6 +149,33 @@ class CacheTest extends TestCase
 		return $path;
 	}
 
+	private function makeBarrierWriterScript()
+	{
+		$path = FileUtil::getSettingsPath() . '/overlapping-writer.php';
+		$code = "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
+			. "list(, \$row, \$readyMine, \$readyOther) = \$argv;\n"
+			. "\$payload = new CacheMergePayload();\n"
+			. "(new rCache())->get(\$payload);\n"
+			. "touch(\$readyMine);\n"
+			. "\$deadline = microtime(true) + 10;\n"
+			. "for (;;) {\n"
+			. "\tclearstatcache(true, \$readyOther);\n"
+			. "\tif (file_exists(\$readyOther)) break;\n"
+			. "\tif (microtime(true) > \$deadline) exit(2);\n"
+			. "\tusleep(200);\n"
+			. "}\n"
+			. "// Both writers saw each other; spinning to the same clock boundary\n"
+			. "// puts their set() calls within microseconds of each other.\n"
+			. "\$go = ceil((microtime(true) + 0.05) * 4) / 4;\n"
+			. "while (microtime(true) < \$go);\n"
+			. "exit(\$payload->addRow(\$row) ? 0 : 1);\n";
+		file_put_contents($path, $code);
+		return $path;
+	}
+
 	// The live failure this guards: replacing a torrent fires three update.php
 	// processes inside one second, and filemtime only resolves to the second,
 	// so a writer that reloaded after a same-second write saw an unchanged
@@ -173,6 +209,69 @@ class CacheTest extends TestCase
 		$this->assertTrue(isset($check->rows['other-process']),
 			'the row another process wrote in the same second is not overwritten');
 		$this->assertTrue(isset($check->rows['seed']), 'the pre-existing row is untouched');
+	}
+
+	// Unlike the sequential test above, here the two writers overlap inside
+	// set(): both have loaded the same file when they start storing. Checking
+	// the stamp outside the writer lock loses a row here -- both compare
+	// against the pre-write state, both skip merging, and whichever publishes
+	// last erases the other's row. Only a check-merge-publish critical
+	// section makes this deterministic, which is why the rounds are asserted
+	// individually instead of retried.
+	public function testTwoOverlappingWritersBothKeepTheirRows()
+	{
+		$writer = $this->makeBarrierWriterScript();
+		$settings = FileUtil::getSettingsPath();
+		$cacheFile = $settings . '/' . (new CacheMergePayload())->hash;
+		$readyFirst = $settings . '/first-writer.ready';
+		$readySecond = $settings . '/second-writer.ready';
+
+		// One round can miss the race by scheduling luck; ten in a row do not.
+		for ($round = 1; $round <= 10; $round++) {
+			@unlink($cacheFile);
+			@unlink($readyFirst);
+			@unlink($readySecond);
+
+			$seed = new CacheMergePayload();
+			$this->assertTrue($seed->addRow('seed'), "round {$round}: the seeding write succeeds");
+
+			$php = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($writer);
+			$first = proc_open($php . ' first '
+				. escapeshellarg($readyFirst) . ' ' . escapeshellarg($readySecond), [], $pipesFirst);
+			$second = proc_open($php . ' second '
+				. escapeshellarg($readySecond) . ' ' . escapeshellarg($readyFirst), [], $pipesSecond);
+			$this->assertEquals(0, proc_close($first), "round {$round}: the first writer stores its row");
+			$this->assertEquals(0, proc_close($second), "round {$round}: the second writer stores its row");
+
+			$check = new CacheMergePayload();
+			(new rCache())->get($check);
+			$this->assertTrue(
+				isset($check->rows['first']) && isset($check->rows['second']) && isset($check->rows['seed']),
+				"round {$round}: both overlapping writers' rows and the seed survive");
+		}
+	}
+
+	// A writer whose get() found nothing -- the file did not exist yet -- has
+	// no stamp to compare against. It must still notice a file that appeared
+	// before its own store and merge with it instead of clobbering it.
+	public function testWriterThatLoadedNothingMergesAFileThatAppearedMeanwhile()
+	{
+		// This writer asks for a cache entry that does not exist yet.
+		$mine = new CacheGhostLoadPayload();
+		$this->assertEquals(false, (new rCache())->get($mine), 'nothing to load yet');
+
+		// Before it stores, another writer publishes the file.
+		$other = new CacheGhostLoadPayload();
+		$this->assertTrue($other->addRow('other'), 'the other writer stores its row');
+
+		// The first writer's store must merge with the file that appeared.
+		$this->assertTrue($mine->addRow('mine'), 'this writer stores its row');
+
+		$check = new CacheGhostLoadPayload();
+		(new rCache())->get($check);
+		$this->assertTrue(isset($check->rows['mine']), 'this writer keeps its own row');
+		$this->assertTrue(isset($check->rows['other']),
+			'the row that appeared while this writer held nothing is merged, not clobbered');
 	}
 
 	public function testGetRestoresErrorHandlerWhenUnserializeThrows()

@@ -41,14 +41,15 @@ class rCache
 		return($st===false ? null : $st['ino'].':'.$st['mtime'].':'.$st['size']);
 	}
 	// True when the file on disk is no longer the one this process loaded.
-	protected static function hasChangedSinceLoad( $rss, $name, $stamp )
+	protected static function hasChangedSinceLoad( $name, $stamp )
 	{
 		if(!is_null($stamp))
 			return($stamp !== self::stampOf($name));
-		// Nothing was loaded through get() in this process: fall back to the
-		// caller-supplied timestamp, the way this check always did.
-		$modTime = isset($rss->modified) ? $rss->modified : 0;
-		return($modTime && ($modTime < filemtime($name)));
+		// This process loaded nothing: the file was absent or unreadable when
+		// get() ran. Any file present now was published by someone else, and
+		// merging what is on disk is always safe for the merge-capable
+		// classes that are the only callers of this check.
+		return(is_file($name));
 	}
 	public function set( $rss, $arg = null )
 	{
@@ -70,8 +71,7 @@ class rCache
 		$stamp = ($cacheKey !== null) ? (self::$loadStamps[$cacheKey] ?? null) : null;
 		if(     is_object($rss) &&
 			method_exists($rss,"merge") &&
-			is_file($name) &&
-			self::hasChangedSinceLoad($rss, $name, $stamp))
+			self::hasChangedSinceLoad($name, $stamp))
 		{
 			$className = get_class($rss);
 			$newInstance = new $className();
@@ -116,6 +116,12 @@ class rCache
 	public function get( &$rss )
 	{
 		$fname = $this->getName($rss);
+		// Stamp before reading. If a concurrent rename lands between the stat
+		// and the read, this process holds new content under an old stamp and
+		// its set() merely performs one redundant merge. Stamping after the
+		// read inverts that: a rename between read and stat pairs old content
+		// with the new identity, and that concurrent write is never merged.
+		$stamp = self::stampOf($fname);
 		$ret = @file_get_contents($fname);
 		if($ret!==false)
 		{
@@ -140,7 +146,7 @@ class rCache
 				{
 					$rss = $tmp;
 					$cacheKey = self::getCacheKey($rss);
-					self::$loadStamps[$cacheKey] = self::stampOf($fname);
+					self::$loadStamps[$cacheKey] = $stamp;
 					$ret = true;
 				}
 				else
