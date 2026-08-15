@@ -5,6 +5,35 @@ require_once(__DIR__ . '/../../php/settings.php');
 
 class RtorrentCompatibilityTest extends TestCase
 {
+	/**
+	 * settings.php loads the per-version method alias files from obtain(),
+	 * which interrogates a live daemon over XMLRPC before it reaches the
+	 * require_once ladder, so the ladder cannot be executed directly here.
+	 * Instead, parse the version => file gate table out of the source and
+	 * replay it, so the constants under test are the real ones and a wrong
+	 * gate in settings.php fails these tests.
+	 */
+	private function methodFileGates()
+	{
+		// This fork carries one downlevel gate (methods-pre-0.9.0.php loads
+		// under iVersion < 0x900), so both comparison directions are parsed.
+		$source = file_get_contents(__DIR__ . '/../../php/settings.php');
+		preg_match_all(
+			'/if\s*\(\s*\$this->iVersion\s*(>=|<)\s*(0x[0-9A-Fa-f]+)\s*\)\s*\{\s*require_once\(\s*\'(methods-[^\']+\.php)\'\s*\);/',
+			$source,
+			$matches,
+			PREG_SET_ORDER
+		);
+		if (count($matches) < 4) {
+			throw new Exception('Could not parse the method alias gates out of php/settings.php');
+		}
+		$gates = array();
+		foreach ($matches as $match) {
+			$gates[] = array('op' => $match[1], 'version' => intval($match[2], 16), 'file' => $match[3]);
+		}
+		return $gates;
+	}
+
 	private function makeSettings($version)
 	{
 		$reflection = new ReflectionClass('rTorrentSettings');
@@ -12,23 +41,13 @@ class RtorrentCompatibilityTest extends TestCase
 		$settings->iVersion = $version;
 		$settings->aliases = [];
 
-		if ($version < 0x900) {
-			$this->loadMethodAliases($settings, 'methods-pre-0.9.0.php');
-		}
-		if ($version >= 0x904) {
-			$this->loadMethodAliases($settings, 'methods-0.9.4.php');
-		}
-		if ($version >= 0x0a02) {
-			$this->loadMethodAliases($settings, 'methods-0.10.2.php');
-		}
-		if ($version >= 0x1000 && is_file(__DIR__ . '/../../php/methods-0.16.0.php')) {
-			$this->loadMethodAliases($settings, 'methods-0.16.0.php');
-		}
-		if ($version >= 0x1010) {
-			$this->loadMethodAliases($settings, 'methods-0.16.16.php');
-		}
-		if ($version >= 0x1012) {
-			$this->loadMethodAliases($settings, 'methods-0.16.18.php');
+		foreach ($this->methodFileGates() as $gate) {
+			$applies = ($gate['op'] === '>=')
+				? ($version >= $gate['version'])
+				: ($version < $gate['version']);
+			if ($applies) {
+				$this->loadMethodAliases($settings, $gate['file']);
+			}
 		}
 
 		return $settings;
@@ -50,6 +69,21 @@ class RtorrentCompatibilityTest extends TestCase
 			$property->setAccessible(true);
 		}
 		$property->setValue(null, $settings);
+	}
+
+	public function testRtorrent0102MethodAliasGateUsesBytewiseVersion()
+	{
+		// iVersion packs one version component per byte, so 0.10.2 is 0x0a02
+		// (0x1002 would be 0.16.2) and 0.10.1 is 0x0a01.
+		foreach (array(0x908 => '0.9.8', 0x0a01 => '0.10.1') as $version => $label) {
+			$settings = $this->makeSettings($version);
+			$this->assertEquals('dht', $settings->getCommand('dht'), 'rTorrent '.$label.' predates the 0.10.2 aliases so dht stays unmapped');
+			$this->assertEquals('connection_leech', $settings->getCommand('connection_leech'), 'rTorrent '.$label.' predates the 0.10.2 aliases so connection_leech stays unmapped');
+		}
+
+		$settings = $this->makeSettings(0x0a02);
+		$this->assertEquals('dht.mode.set', $settings->getCommand('dht'), 'rTorrent 0.10.2 itself gets its dht alias');
+		$this->assertEquals('group2.seeding.ratio.min.set', $settings->getCommand('ratio.min.set'), 'rTorrent 0.10.2 itself gets its ratio aliases');
 	}
 
 	public function testRtorrent016UsesNonDeprecatedRpcCommandNames()
@@ -80,15 +114,25 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('group.seeding.ratio.min.set', $settings->getCommand('ratio.min.set'), 'rTorrent 0.16.0 overrides ratio aliases back to group commands');
 	}
 
-	public function testRtorrent016UsesGroupRatioCommands()
+	public function testRtorrent016RatioSettersPrependAnEmptyTarget()
 	{
+		// rtorrent 0.16's XMLRPC dispatcher (src/rpc/xmlrpc_tinyxml2.cc)
+		// unconditionally parses the FIRST param of any call as the target,
+		// so group.NAME.ratio.*.set must be sent as ('', value); a bare
+		// (value) faults with "invalid parameters: target must be a string".
+		// getRatioGroupCommand in php/settings.php prepends '' for the same
+		// reason. This pins the shape on both the alias path (prm=1 makes
+		// rXMLRPCCommand prepend the empty target) and the group-command
+		// path — this fork once got the alias shape wrong (prm=0), which
+		// this test now guards against.
 		$settings = $this->makeSettings(0x100e);
 		$this->useSettingsSingleton($settings);
 
 		$aliasCommand = new rXMLRPCCommand('ratio.min.set', 100);
 		$this->assertEquals('group.seeding.ratio.min.set', $aliasCommand->command, 'rTorrent 0.16 maps bare ratio setters to group commands');
-		$this->assertEquals(1, count($aliasCommand->params), 'rTorrent 0.16 bare ratio value setters send one scalar argument');
-		$this->assertEquals('100', $aliasCommand->params[0]->value, 'rTorrent 0.16 bare ratio setters keep the requested value');
+		$this->assertEquals(2, count($aliasCommand->params), 'rTorrent 0.16 ratio setters send target and value arguments');
+		$this->assertEquals('', $aliasCommand->params[0]->value, 'rTorrent 0.16 ratio setters prepend the empty target the dispatcher requires');
+		$this->assertEquals('100', $aliasCommand->params[1]->value, 'rTorrent 0.16 ratio setters keep the requested value after the target');
 
 		$command = $settings->getRatioGroupCommand('rat_0', 'ratio.min.set', 100);
 

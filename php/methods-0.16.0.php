@@ -3,7 +3,7 @@
 // rtorrent 0.16.x: deprecated command aliases (schedule2, schedule_remove2,
 // execute2, network.http.max_open, throttle.ip, dht.throttle.name, ...) are
 // gated behind method.use_deprecated, which since 0.16.14 cannot be enabled
-// from the rc file — only via the -D launch flag. Stock 0.16.14+ therefore
+// from the rc file — only via the -D launch flag. Stock 0.16.14 therefore
 // does NOT register these aliases, so anything sending them faults with
 // "Method '<name>' not defined".
 //
@@ -20,9 +20,7 @@ $this->aliases = array_merge($this->aliases, array(
 	// Command execution
 	"execute"         => array( "name"=>"execute",         "prm"=>1 ),
 
-	// HTTP connection cap (was network.http.max_open in 0.9.x).
-	// rTorrent >= 0.16.16 overrides this in methods-0.16.16.php with
-	// socket-manager commands.
+	// HTTP connection cap (was network.http.max_open in 0.9.x)
 	"get_max_open_http" => array( "name"=>"network.http.max_total_connections",     "prm"=>0 ),
 	"set_max_open_http" => array( "name"=>"network.http.max_total_connections.set", "prm"=>1 ),
 
@@ -31,8 +29,8 @@ $this->aliases = array_merge($this->aliases, array(
 	"ratio.min"         => array( "name"=>"group.seeding.ratio.min",         "prm"=>0 ),
 	"ratio.max"         => array( "name"=>"group.seeding.ratio.max",         "prm"=>0 ),
 	"ratio.upload"      => array( "name"=>"group.seeding.ratio.upload",      "prm"=>0 ),
-	"ratio.min.set"     => array( "name"=>"group.seeding.ratio.min.set",     "prm"=>0 ),
-	"ratio.max.set"     => array( "name"=>"group.seeding.ratio.max.set",     "prm"=>0 ),
-	"ratio.upload.set"  => array( "name"=>"group.seeding.ratio.upload.set",  "prm"=>0 ),
+	"ratio.min.set"     => array( "name"=>"group.seeding.ratio.min.set",     "prm"=>1 ),
+	"ratio.max.set"     => array( "name"=>"group.seeding.ratio.max.set",     "prm"=>1 ),
+	"ratio.upload.set"  => array( "name"=>"group.seeding.ratio.upload.set",  "prm"=>1 ),
 
 ));

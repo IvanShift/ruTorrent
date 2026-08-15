@@ -914,9 +914,11 @@ function correctContent()
 			"ratio.min"         : { name: "group.seeding.ratio.min",               prm: 0 },
 			"ratio.max"         : { name: "group.seeding.ratio.max",               prm: 0 },
 			"ratio.upload"      : { name: "group.seeding.ratio.upload",            prm: 0 },
-			"ratio.min.set"     : { name: "group.seeding.ratio.min.set",           prm: 0 },
-			"ratio.max.set"     : { name: "group.seeding.ratio.max.set",           prm: 0 },
-			"ratio.upload.set"  : { name: "group.seeding.ratio.upload.set",        prm: 0 },
+			// The 0.16 dispatcher reads the first param of any call as the
+			// target, so the setters need the empty target prepended (prm: 1).
+			"ratio.min.set"     : { name: "group.seeding.ratio.min.set",           prm: 1 },
+			"ratio.max.set"     : { name: "group.seeding.ratio.max.set",           prm: 1 },
+			"ratio.upload.set"  : { name: "group.seeding.ratio.upload.set",        prm: 1 },
 		});
 	}
 	if(theWebUI.systemInfo.rTorrent.iVersion>=0x1010)

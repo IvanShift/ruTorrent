@@ -17,7 +17,6 @@ window.theWebUI = {
 
 for (const src of [
   "../lang/en.js",
-  "../js/browser.js",
   "../js/common.js",
   "../js/content.js",
   "../js/rtorrent.js",
@@ -72,10 +71,16 @@ describe("xmlrpc calls", () => {
       expect(command.command).toBe("schedule");
       expect(command.params[0]).toStrictEqual({ type: "string", value: "" });
 
+      // rtorrent 0.16's dispatcher parses the first param of any call as
+      // the target, so the ratio setters must send ('', value) — prm: 1
+      // makes rXMLRPCCommand prepend the empty target.
       const ratioCommand = new rXMLRPCCommand("ratio.min.set");
       ratioCommand.addParameter("i4", 100);
       expect(ratioCommand.command).toBe("group.seeding.ratio.min.set");
-      expect(ratioCommand.params).toStrictEqual([{ type: "i4", value: 100 }]);
+      expect(ratioCommand.params).toStrictEqual([
+        { type: "string", value: "" },
+        { type: "i4", value: 100 },
+      ]);
     });
   });
 
@@ -165,6 +170,17 @@ describe("xmlrpc calls", () => {
   });
 
   it("loads rTorrent 0.10.2 aliases at the 0.10.2 boundary", () => {
+    // iVersion packs one version component per byte: 0.10.2 is 0x0a02.
+    // Daemons older than 0.10.2 must not get its aliases.
+    for (const version of [0x908, 0x0a01]) {
+      withRtorrentVersion(version, () => {
+        expect(theRequestManager.map("dht")).toBe("dht");
+        expect(theRequestManager.map("connection_seed")).toBe(
+          "connection_seed"
+        );
+      });
+    }
+
     withRtorrentVersion(0x0a02, () => {
       expect(theRequestManager.map("dht")).toBe("dht.mode.set");
       expect(theRequestManager.map("connection_seed")).toBe(
@@ -172,22 +188,6 @@ describe("xmlrpc calls", () => {
       );
       expect(theRequestManager.map("ratio.min.set")).toBe(
         "group2.seeding.ratio.min.set"
-      );
-    });
-  });
-
-  it("routes d.is_partially_done to a no-op below rTorrent 0.9.0", () => {
-    withRtorrentVersion(0x809, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
-    });
-    withRtorrentVersion(0x900, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe(
-        "d.is_partially_done="
-      );
-    });
-    withRtorrentVersion(0x1014, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe(
-        "d.is_partially_done="
       );
     });
   });
@@ -310,6 +310,22 @@ describe("xmlrpc calls", () => {
       expect(ret.torrents[hash].label).toBe(label);
       expect(ret.torrents[hash].comment).toBe(comment);
     }
+  });
+
+  it("routes d.is_partially_done to a no-op below rTorrent 0.9.0", () => {
+    withRtorrentVersion(0x809, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
+    });
+    withRtorrentVersion(0x900, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
+    withRtorrentVersion(0x1014, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
   });
 
   it("reads the partially done flag from the list response", () => {
