@@ -137,6 +137,35 @@ $tests = array(
         historyAssertSame('new', array_keys($ours->data)[0], 'the newest row is kept');
     },
 
+    // Two kinds of entry describe something the user never did. rTorrent names
+    // a magnet that has no metadata yet <INFOHASH>.meta and replaces that
+    // placeholder with the real download the moment metadata arrives, so every
+    // magnet the user adds logs an arrival and a removal nobody asked for. And
+    // a plugin that loads a download for its own bookkeeping marks it with a
+    // dot-prefixed label; on a live instance the metadata fetcher's stub was
+    // logged as added, then deleted a cycle later under the same name as the
+    // real torrent, so a single replacement read as two deletions.
+    'placeholder and service entries are recognised' => function () {
+        $service = array(
+            'a magnet placeholder' => array(str_repeat('A', 40) . '.meta', ''),
+            'a lowercase placeholder' => array(str_repeat('b', 40) . '.meta', ''),
+            'a dot-labelled service download' => array('Some Release 1080p', '.chk-meta'),
+            'a placeholder that is also labelled' => array(str_repeat('C', 40) . '.meta', '.chk-meta'),
+        );
+        foreach ($service as $label => $row)
+            historyAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be recognised');
+
+        $real = array(
+            'a normal download' => array('Some Release 1080p', 'Video/Movies'),
+            'an unlabelled download' => array('Some Release 1080p', ''),
+            'a name that merely ends in .meta' => array('metadata.meta', ''),
+            'a hash-named file that is not a placeholder' => array(str_repeat('A', 40) . '.mkv', ''),
+            'a label that merely contains a dot' => array('Some Release', 'Video/4K.HDR'),
+        );
+        foreach ($real as $label => $row)
+            historyAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be kept');
+    },
+
     'the stored format carries nothing but what it always carried' => function () {
         $ours = historyLoaded(array('a' => historyRecord('a', 100)));
         historyRecordAddition($ours, historyRecord('b', 101), 500);

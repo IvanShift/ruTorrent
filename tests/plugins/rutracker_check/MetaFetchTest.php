@@ -24,7 +24,7 @@ class rTorrent
 
     public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
     {
-        self::$magnets[] = compact('magnet', 'isStart', 'directory', 'addition');
+        self::$magnets[] = compact('magnet', 'isStart', 'directory', 'label', 'addition');
         return self::$sendResult;
     }
 
@@ -92,6 +92,15 @@ $suite->test('begin loads a stopped magnet with inline markers and starts the st
     $additions = implode(' ', $sent['addition']);
     foreach (array('chk-meta-old,' . $oldHash, 'chk-meta-topic,6879823', 'chk-meta-until,' . (1000 + 86400)) as $mark)
         strictAssertTrue(strpos($additions, $mark) !== false, "inline marker {$mark}");
+    // The stub is a service download, and the label is what says so to
+    // anything watching rTorrent's events -- the history plugin above all,
+    // which otherwise logs the stub's arrival and removal as if the user had
+    // added and deleted a torrent. The inline chk-meta-* markers cannot serve
+    // that purpose: they are custom fields the event handlers never read.
+    strictAssertSame(RuTrackerMetaFetch::SERVICE_LABEL, $sent['label'],
+        'the stub carries the service label, and keeps it after metadata arrives');
+    strictAssertSame('.', substr(RuTrackerMetaFetch::SERVICE_LABEL, 0, 1),
+        'a leading dot is the convention that marks a label as service-only');
 });
 
 $suite->test('begin fails closed when the load never materialises', function () use ($oldHash, $newHash) {

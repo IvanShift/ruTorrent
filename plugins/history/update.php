@@ -32,12 +32,17 @@
 			"tracker"=>$tracker,
 			"label"=>rawurldecode($argv[11]),
 		);
-		if($mgr->log[$actions[$action]])
+		// A magnet placeholder or a plugin's service download is not the
+		// user's own event: neither record it nor notify about it.
+		if(!rHistoryData::isServiceEntry($data["name"], $data["label"]))
 		{
-			$hst->add( $data, $mgr->log["limit"] );
-		}
-		if($mgr->log['pushbullet_enabled'] && $mgr->log['pushbullet_'.$actions[$action]] && !$argv[12])
-		{
-			$mgr->pushBulletNotify( $data );
+			if($mgr->log[$actions[$action]])
+			{
+				$hst->add( $data, $mgr->log["limit"] );
+			}
+			if($mgr->log['pushbullet_enabled'] && $mgr->log['pushbullet_'.$actions[$action]] && !$argv[12])
+			{
+				$mgr->pushBulletNotify( $data );
+			}
 		}
 	}

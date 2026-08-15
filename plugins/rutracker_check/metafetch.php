@@ -23,6 +23,15 @@ class RuTrackerMetaFetch
     const RUN_OPEN = 'open';
     const RUN_STOPPED = 'stopped';
 
+    // The label the service download carries. The leading dot is the
+    // convention that marks a download as a plugin's own bookkeeping rather
+    // than the user's; the history plugin skips such entries, which is what
+    // keeps a replacement from being logged as two deletions -- the stub
+    // takes the real torrent's name once metadata arrives, and only the
+    // label still tells the two apart. Unlike the inline chk-meta-* customs,
+    // a label is a field rTorrent's event handlers actually pass on.
+    const SERVICE_LABEL = '.chk-meta';
+
     static private function serviceDirectory()
     {
         global $topDirectory;
@@ -145,7 +154,7 @@ class RuTrackerMetaFetch
         );
         // Stopped, plain load: the meta stub's start=0 survives into the
         // real download rTorrent creates once metadata arrives (§2.7).
-        $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), '', $addition);
+        $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), self::SERVICE_LABEL, $addition);
         if ($sent === false) {
             // The likeliest cause by far, and the one thing worth naming: a
             // service directory rTorrent cannot write into.
