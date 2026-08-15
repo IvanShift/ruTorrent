@@ -1091,6 +1091,62 @@ class CheckerTest
 		}
 	}
 
+	// A handler that answers STE_UNCHANGED has no data to judge by -- layer 1
+	// calls that 'cold', which is the normal answer for a stopped torrent whose
+	// tracker counters are still at zero. run() must then put back the verdict
+	// the torrent already carried instead of publishing the STE_INPROGRESS lock
+	// it wrote before dispatching, and instead of the error that lock decays to.
+	public function testUnchangedVerdictRestoresThePreviousState()
+	{
+		$rows = array(
+			'a stored verdict is put back' => array(
+				'previous' => ruTrackerChecker::STE_UPTODATE,
+				'expect'   => (string) ruTrackerChecker::STE_UPTODATE,
+			),
+			'a torrent that was never checked stays unchecked' => array(
+				'previous' => 0,
+				'expect'   => '0',
+			),
+		);
+
+		foreach($rows as $label => $row)
+		{
+			$this->resetFakes();
+			$dir = sys_get_temp_dir() . '/rut-cold-' . bin2hex(random_bytes(5)) . '/';
+			mkdir($dir, 0777, true);
+			$fname = $dir . 'OLD.torrent';
+			file_put_contents($fname, 'x');
+			rTorrentSettings::get()->session = $dir;
+
+			Torrent::$fixtures[$fname] = array(
+				'comment' => 'http://topic.cold-test.invalid/1',
+				'announce' => 'http://tracker.cold-test.invalid/announce',
+			);
+			ruTrackerChecker::registerTracker('/topic\.cold-test\.invalid/', '/tracker\.cold-test\.invalid/',
+				function($url) { return ruTrackerChecker::STE_UNCHANGED; });
+
+			rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the INPROGRESS lock
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the restore
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array()); // if it restores UPTODATE
+
+			$result = ruTrackerChecker::run('OLD', $row['previous'], time(), 0, '');
+
+			strictAssertSame(true, $result, $label . ': an unchanged verdict is not a failed check');
+			$writes = array();
+			foreach(rXMLRPCRequest::$requests as $request)
+				foreach($request['commands'] as $command)
+					if(($command->command === getCmd('d.set_custom')) && ($command->params[1] === 'chk-state'))
+						$writes[] = $command->params[2];
+			strictAssertSame(
+				array((string) ruTrackerChecker::STE_INPROGRESS, $row['expect']),
+				$writes,
+				$label . ': the lock is written, then the previous verdict is put back'
+			);
+			strictRemoveTree($dir);
+		}
+	}
+
 	public function testCleanupDeletesOnlyRenamedOldFileAndKeepsBase()
 	{
 		$this->resetFakes();

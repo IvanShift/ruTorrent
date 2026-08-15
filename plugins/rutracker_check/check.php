@@ -28,6 +28,12 @@ class ruTrackerChecker
 	const STE_META_PENDING		= 9;
 	const STE_ABSORBED		= 10;
 
+	// Not a status: a handler answers this when it has no data to judge by and
+	// the verdict already stored must be left alone. Negative on purpose -- the
+	// stored values are the STE_* above, and 0 means "never checked", both of
+	// which a handler may legitimately want restored.
+	const STE_UNCHANGED		= -1;
+
 	// chk-msg carries a machine token, never prose: "<token>|<parameter>".
 	// The sentence itself is localised in the browser (init.js renders
 	// theUILang.chkMessages[token] with the parameter substituted for its
@@ -732,6 +738,10 @@ class ruTrackerChecker
 		if(($state==self::STE_INPROGRESS) && ((time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
 
 		if($state!==self::STE_INPROGRESS){
+			// Kept across the dispatch so a handler that cannot judge (see
+			// STE_UNCHANGED) can have this verdict put back: by then the
+			// stored value is the STE_INPROGRESS lock written just below.
+			$previous = $state;
 			$state = self::STE_INPROGRESS;
 			$stateWrite = self::setState( $hash, $state );
 			if($stateWrite === null) return(true);
@@ -740,6 +750,7 @@ class ruTrackerChecker
 			$fname = rTorrentSettings::get()->session.$hash.".torrent";
 
 			if(is_readable($fname))	$state = self::run_ex($hash, $fname);
+			if($state===self::STE_UNCHANGED) $state = $previous;
 			if($state==self::STE_INPROGRESS) $state=self::STE_ERROR;
 
 			if(!is_null($state)) self::setState( $hash, $state );

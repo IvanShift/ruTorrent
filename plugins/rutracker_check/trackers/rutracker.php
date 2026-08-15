@@ -440,7 +440,15 @@ class RuTrackerCheckImpl
             ruTrackerChecker::setMessage($hash, '');
             return ruTrackerChecker::STE_UPTODATE;
         }
-        if ($verdict === 'cold' || $verdict === 'transport') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        // 'cold' is not a failure: the torrent simply has not announced in this
+        // rTorrent session, which is the permanent state of a stopped one. There
+        // is nothing to judge by, so keep whatever verdict is already stored --
+        // the same call updatepass.php's fast pass makes when it skips a cold
+        // row without writing state. Reporting "cannot reach the tracker" here
+        // used to overwrite a perfectly good verdict, and a stopped torrent is
+        // outside the seeding view the hourly cycle walks, so it never recovered.
+        if ($verdict === 'cold') return ruTrackerChecker::STE_UNCHANGED;
+        if ($verdict === 'transport') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         if ($verdict !== 'candidate') return ruTrackerChecker::STE_NOT_NEED;
 
         $announceUrl = is_object($oldTorrent) ? (string) $oldTorrent->announce() : '';

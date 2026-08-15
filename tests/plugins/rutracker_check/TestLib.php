@@ -440,6 +440,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         const STE_IGNORED = 8;
         const STE_META_PENDING = 9;
         const STE_ABSORBED = 10;
+        // Not a status but a handler answer: "no data to judge by, keep the
+        // stored verdict". Mirrors check.php's own constant.
+        const STE_UNCHANGED = -1;
 
         // Mirrors check.php's chk-msg token vocabulary; the tests assert on
         // these constants rather than on the literals, exactly like the

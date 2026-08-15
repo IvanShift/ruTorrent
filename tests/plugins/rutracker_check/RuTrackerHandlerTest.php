@@ -92,6 +92,14 @@ function hCandidateRow($host = 'bt.t-ru.org', $failed = 6)
     return array("http://{$host}/ann?pk=x", 1, $failed, 0);
 }
 
+// Both counters zero: the torrent has not announced in this rTorrent session,
+// which is the normal state of a stopped one. RuTrackerDetector calls that
+// 'cold' -- no signal either way, as opposed to a tracker that answered badly.
+function hColdRow($host = 'bt.t-ru.org')
+{
+    return array("http://{$host}/ann?pk=x", 1, 0, 0);
+}
+
 function hQueueLayer1($rows, $message = '')
 {
     // Mirrors the real transport (php/xmlrpc.php): layer1Verdict() issues
@@ -953,6 +961,38 @@ $suite->test('23: layer 4 logs the hashes, the topic and the recorded run state 
         'the recorded run state is logged too');
     strictAssertEnglish($state, 'the layer-4 run-state line');
     strictAssertTrue(strpos($state, 'old run state=started') !== false, 'the recorded run state: ' . $state);
+});
+
+// A stopped torrent never announces, so its tracker counters stay at zero and
+// layer 1 answers 'cold' -- it has nothing to judge by. That is not the same as
+// a tracker that could not be reached, and it must not overwrite the verdict the
+// torrent already carries: updatepass.php has always skipped cold rows without
+// writing state (see its "no request-worthy signal yet" branch), while a manual
+// check went through this handler and turned every stopped torrent's status into
+// "error accessing the tracker" -- permanently, because a stopped torrent is not
+// in the seeding view the hourly cycle walks.
+$suite->test('a cold torrent keeps its previous verdict instead of being reported unreachable',
+    function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hColdRow()));
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_UNCHANGED, $result,
+        'cold means "no data to judge by", so the stored verdict must be left alone');
+    strictAssertSame(array(), Snoopy::$requests, 'a cold verdict costs no HTTP request');
+});
+
+$suite->test('a transport failure is still reported as unreachable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()), 'Tracker: [Could not resolve hostname]');
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
+        'an actual transport error is a real "cannot reach", unlike a cold torrent');
 });
 
 $exitCode = $suite->run();
