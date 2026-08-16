@@ -98,21 +98,32 @@ class rHistoryData
 		return(true);
 	}
 
-	// True for an entry that records something the user never did.
+	// True for the placeholder rTorrent gives a magnet that has no metadata
+	// yet: it names such a download <INFOHASH>.meta and replaces it with the
+	// real one the moment the metainfo arrives. rTorrent::sendMagnet() hands
+	// the magnet straight to load/load_start, so this is what every magnet
+	// added through ruTorrent looks like for as long as the fetch takes --
+	// one magnet, an arrival and a removal of a torrent named after its own
+	// hash, neither of which the user did.
 	//
-	// rTorrent names a magnet whose metadata has not arrived yet
-	// <INFOHASH>.meta, and swaps that placeholder for the real download as
-	// soon as it has the metainfo -- so a magnet the user adds once shows up
-	// as an arrival and a removal of a torrent named after its own hash.
-	//
-	// A dot-prefixed label is the convention for a download a plugin loaded
-	// for its own bookkeeping rather than for the user (rutracker_check's
-	// metadata fetcher uses '.chk-meta'). Such a stub inherits the real
-	// torrent's name once metadata arrives, so without this its removal reads
-	// as the user's own torrent being deleted twice.
+	// The name is the whole test on purpose. An entry whose name merely ends
+	// in .meta, or a hash-named file with any other extension, is a real
+	// download and stays in the log.
+	static public function isMagnetPlaceholder( $name )
+	{
+		return(preg_match('/^[0-9A-Fa-f]{40}\.meta$/', (string) $name) === 1);
+	}
+
+	// Fork-only, layered on top of the upstream test above: a dot-prefixed
+	// label marks a download a plugin loaded for its own bookkeeping rather
+	// than for the user (rutracker_check's metadata fetcher uses '.chk-meta').
+	// Such a stub inherits the real torrent's name once metadata arrives, so
+	// without this its removal reads as the user's own torrent being deleted
+	// twice. Upstream ships no producer of such labels yet; this travels with
+	// the metadata fetcher when that is submitted.
 	static public function isServiceEntry( $name, $label )
 	{
-		if(preg_match('/^[0-9A-Fa-f]{40}\.meta$/', (string) $name))
+		if(self::isMagnetPlaceholder($name))
 			return(true);
 		return(strncmp((string) $label, '.', 1) === 0);
 	}

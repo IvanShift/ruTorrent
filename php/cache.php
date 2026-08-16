@@ -56,7 +56,12 @@ class rCache
 		global $profileMask;
 		$name = $this->getName($rss);
 		$lockName = $name.'.lock';
-		// Keep one writer per cache key so merge and atomic rename see a stable file.
+		// One writer per cache key. The changed-since-load check, the merge
+		// and the publishing rename must form a single critical section: two
+		// writers that both check before either publishes both conclude
+		// nothing changed, both skip merging, and the later rename erases the
+		// earlier writer's data. The lock is a sidecar file because the cache
+		// file itself is replaced by rename() on every store.
 		$lock = fopen( $lockName, "c" );
 		if($lock===false)
 			return(false);
@@ -125,7 +130,8 @@ class rCache
 		$ret = @file_get_contents($fname);
 		if($ret!==false)
 		{
-			// Corrupt or legacy cache files can emit warnings; always restore the caller's handler.
+			// Corrupt or legacy cache files can emit warnings; always restore the
+			// caller's handler, even when the payload throws out of __wakeup().
 			set_error_handler(function () { return true; });
 			try {
 				$tmp = unserialize($ret);

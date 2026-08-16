@@ -137,20 +137,44 @@ $tests = array(
         historyAssertSame('new', array_keys($ours->data)[0], 'the newest row is kept');
     },
 
-    // Two kinds of entry describe something the user never did. rTorrent names
-    // a magnet that has no metadata yet <INFOHASH>.meta and replaces that
-    // placeholder with the real download the moment metadata arrives, so every
-    // magnet the user adds logs an arrival and a removal nobody asked for. And
-    // a plugin that loads a download for its own bookkeeping marks it with a
-    // dot-prefixed label; on a live instance the metadata fetcher's stub was
-    // logged as added, then deleted a cycle later under the same name as the
-    // real torrent, so a single replacement read as two deletions.
-    'placeholder and service entries are recognised' => function () {
+    // rTorrent names a magnet that has no metadata yet <INFOHASH>.meta and
+    // replaces that placeholder with the real download the moment metadata
+    // arrives, so every magnet the user adds logs an arrival and a removal
+    // nobody asked for. The hash is hex, so the pattern is case-insensitive on
+    // the letters and anchored on both ends: only a name that IS a placeholder
+    // qualifies, never one that merely looks related.
+    'magnet placeholders are recognised, real downloads are not' => function () {
+        $placeholders = array(
+            'an uppercase placeholder' => str_repeat('A', 40) . '.meta',
+            'a lowercase placeholder' => str_repeat('b', 40) . '.meta',
+            'a mixed-case placeholder' => str_repeat('cD', 20) . '.meta',
+        );
+        foreach ($placeholders as $label => $name)
+            historyAssertSame(true, rHistoryData::isMagnetPlaceholder($name), $label . ' must be recognised');
+
+        $real = array(
+            'a normal download' => 'Some Release 1080p',
+            'a name that merely ends in .meta' => 'metadata.meta',
+            'a hash-named file with another extension' => str_repeat('A', 40) . '.mkv',
+            'a hash-named directory with no extension' => str_repeat('A', 40),
+            'a placeholder name with something appended' => str_repeat('A', 40) . '.meta.part',
+            'a name one character short of a hash' => str_repeat('A', 39) . '.meta',
+            'a name with a non-hex character' => str_repeat('A', 39) . 'Z.meta',
+        );
+        foreach ($real as $label => $name)
+            historyAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
+    },
+
+    // Fork-only layer over the test above. A plugin that loads a download for
+    // its own bookkeeping marks it with a dot-prefixed label; on a live
+    // instance the metadata fetcher's stub was logged as added, then deleted a
+    // cycle later under the same name as the real torrent, so a single
+    // replacement read as two deletions.
+    'a dot-labelled service download is not the user\'s event either' => function () {
         $service = array(
-            'a magnet placeholder' => array(str_repeat('A', 40) . '.meta', ''),
-            'a lowercase placeholder' => array(str_repeat('b', 40) . '.meta', ''),
             'a dot-labelled service download' => array('Some Release 1080p', '.chk-meta'),
             'a placeholder that is also labelled' => array(str_repeat('C', 40) . '.meta', '.chk-meta'),
+            'a placeholder with no label' => array(str_repeat('A', 40) . '.meta', ''),
         );
         foreach ($service as $label => $row)
             historyAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be recognised');
@@ -158,8 +182,6 @@ $tests = array(
         $real = array(
             'a normal download' => array('Some Release 1080p', 'Video/Movies'),
             'an unlabelled download' => array('Some Release 1080p', ''),
-            'a name that merely ends in .meta' => array('metadata.meta', ''),
-            'a hash-named file that is not a placeholder' => array(str_repeat('A', 40) . '.mkv', ''),
             'a label that merely contains a dot' => array('Some Release', 'Video/4K.HDR'),
         );
         foreach ($real as $label => $row)

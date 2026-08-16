@@ -18,13 +18,13 @@ class KinozalCheckImpl
     const MISSING_MARKER = 'Торрент файл не найден';
 
     // Per-process latch. Production runs one PHP process per cycle (update.php,
-    // batch_check.php), so process lifetime IS cycle lifetime -- the same
-    // reasoning as RuTrackerForumIndex's dump memo. A locked-out loginmgr
-    // account is a property of the whole run rather than of one topic: without
-    // this, every Kinozal torrent spent a request proving the same thing over
-    // again -- 130 of them per cycle on the live fleet -- and buried the log
-    // under 130 identical lines. The latch dies with the process, so the next
-    // cycle retries from scratch and a restored session heals itself.
+    // batch_check.php), so process lifetime IS cycle lifetime and the latch
+    // cannot outlive the run. A locked-out loginmgr account is a property of
+    // the whole run rather than of one topic: without this, every Kinozal
+    // torrent spent a request proving the same thing over again -- 130 of
+    // them per cycle on the live fleet -- and buried the log under 130
+    // identical lines. The latch dies with the process, so the next cycle
+    // retries from scratch and a restored session heals itself.
     static private $sessionDead = false;
 
     // How many guest answers in a row mean the session is really gone rather
@@ -127,9 +127,10 @@ class KinozalCheckImpl
 
         $client->setcookies();
         $client->fetchComplex("https://dl.kinozal.guru/download.php?id=".$id);
-        // A guest download is a redirect to login.php; Snoopy mangles its
-        // protocol-relative Location and loops until maxredirs, so the status
-        // stays 3xx. Either way this is "could not fetch", not "deleted".
+        // A guest download is a redirect to login.php. Whether Snoopy follows
+        // it to the 200 login page (the guest marker below catches that) or
+        // stops on a 3xx, the answer is treated as a login wall either way:
+        // a non-200 status is "could not fetch", never "deleted".
         if ($client->status != 200)
             return self::cantReach("download.php failed: status=".$client->status." id=".$id);
 

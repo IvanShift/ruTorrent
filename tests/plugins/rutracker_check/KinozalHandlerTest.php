@@ -241,8 +241,9 @@ $suite->test('a download redirected to the login page is a reachability error', 
     list($newRaw, $newHash, $newTorrent) = kinozalTorrent('new.mkv', 2148020);
 
     Snoopy::queue(kinozalDetailsUrl(2148020), 200, kinozalDetailsBody($newHash));
-    // What dl.kinozal.guru answers without a session; Snoopy exhausts its
-    // redirect budget on the protocol-relative Location and keeps the 302.
+    // What dl.kinozal.guru answers without a session, as seen when the
+    // redirect chain does not end in a 200: the 302 itself, with the
+    // login.php Location it carries on the live site.
     Snoopy::queue(kinozalDownloadUrl(2148020), 302, '',
         array('Location: //kinozal.guru/login.php?to=%2Fdownload.php%3Fid%3D2148020'));
 
