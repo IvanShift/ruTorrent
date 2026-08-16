@@ -279,6 +279,34 @@ class CheckerTest
 		strictInvoke('ruTrackerChecker', 'cleanupObsoleteFiles', array($oldTorrent, $newTorrent, $baseDir));
 	}
 
+	// Both spellings a ratio membership can take in the load command list:
+	// view.set_visible for a confirmed view, d.views.push_back_unique for an
+	// attribute-only forward of an unconfirmed one.
+	private function membershipCommands($addition)
+	{
+		return array_values(array_filter($addition, function($command) {
+			return strpos($command, 'view.set_visible=') === 0
+				|| strpos($command, 'd.views.push_back_unique=') === 0;
+		}));
+	}
+
+	private function withDebugLog($body)
+	{
+		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
+		$GLOBALS['rutrackerCheckDebug'] = true;
+		try
+		{
+			$body();
+		}
+		finally
+		{
+			if($savedDebug === null)
+				unset($GLOBALS['rutrackerCheckDebug']);
+			else
+				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+		}
+	}
+
 	public function testStartedReplacementSucceeds()
 	{
 		$this->resetFakes();
@@ -294,13 +322,10 @@ class CheckerTest
 		strictAssertTrue(strpos($addition[0], 'd.set_custom=chk-replacement,') === 0, 'the ownership marker must be the first load command');
 		strictAssertTrue(in_array('d.set_connection_seed=seed-value', $addition, true), 'the connection seed must be forwarded');
 		strictAssertTrue(in_array('d.set_throttle_name=slow', $addition, true), 'the throttle must be forwarded');
-		$views = array_values(array_filter($addition, function($command) {
-			return strpos($command, 'view.set_visible=') === 0;
-		}));
 		strictAssertSame(
 			array('view.set_visible=rat_2', 'view.set_visible=rat_7', 'view.set_visible=rat_9'),
-			$views,
-			'exactly the rat_N view memberships must be forwarded'
+			$this->membershipCommands($addition),
+			'exactly the rat_N view memberships must be forwarded, all visible when all are confirmed'
 		);
 
 		$waits = $this->requestIndexes('d.get_custom');
@@ -315,13 +340,16 @@ class CheckerTest
 	}
 
 	// rTorrent runs a load command list inside ONE try block: the first
-	// input_error aborts every command after it, including rTorrent's own
-	// d.state.set and event.download.inserted_new -- which is exactly a
-	// replacement sitting at d.state=0, d.is_open=0, never hash-checked, with
-	// correct metainfo. view.set_visible throws that error for a view that
-	// does not exist, and views are runtime state: every rat_N is gone after a
-	// restart until ruTorrent's ratio plugin recreates it.
-	public function testMissingRatioViewIsDroppedFromTheLoadCommandList()
+	// input_error aborts every command after it, plus rTorrent's own
+	// d.state.set and event.download.inserted_new. view.set_visible throws
+	// that error for a view that does not exist, and views are runtime state:
+	// every rat_N is gone after a restart until ruTorrent's ratio plugin
+	// recreates it. An unconfirmed membership must therefore ride along as
+	// d.views.push_back_unique -- the attribute write never throws -- both to
+	// keep the list abort-free and because an empty d.views would let the
+	// ratio plugin's default-group insert hook re-home the replacement into
+	// the default ratio group, whose action can be erase-data.
+	public function testMissingRatioViewIsForwardedAsAttributeOnly()
 	{
 		$this->resetFakes();
 		$this->withDebugLog(function() {
@@ -339,25 +367,29 @@ class CheckerTest
 			rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
 
 			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
-				'a missing view must cost the membership, never the load');
-			$addition = rTorrent::$lastSend['addition'];
-			$views = array_values(array_filter($addition, function($command) {
-				return strpos($command, 'view.set_visible=') === 0;
-			}));
+				'a missing view must cost nothing but the visible membership');
 			strictAssertSame(
-				array('view.set_visible=rat_2', 'view.set_visible=rat_9'),
-				$views,
-				'the surviving memberships stay, in their original order; the missing one is dropped'
+				array(
+					'view.set_visible=rat_2',
+					'd.views.push_back_unique=rat_7',
+					'view.set_visible=rat_9',
+				),
+				$this->membershipCommands(rTorrent::$lastSend['addition']),
+				'a confirmed membership stays visible; the missing one becomes the d.views attribute only'
 			);
-			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('view_list')),
+			$viewList = $this->requestIndexes('view_list');
+			$snapshots = $this->requestIndexes(self::SNAPSHOT_KEY);
+			strictAssertSame(1, count($viewList),
 				'the live view list is read exactly once per replacement');
+			strictAssertTrue(count($snapshots) === 1 && $viewList[0] < $snapshots[0],
+				'the view list must be read while the old torrent still runs, before the stop/close');
 			$line = strictAssertOneLogMatching(FileUtil::$log, 'rat_7',
-				'a dropped membership is never silent');
-			strictAssertEnglish($line, 'the dropped-view line');
+				'an attribute-only membership is never silent');
+			strictAssertEnglish($line, 'the attribute-only line');
 		});
 	}
 
-	public function testUnreadableViewListDropsEveryRatioView()
+	public function testUnreadableViewListForwardsEveryRatioViewAsAttributeOnly()
 	{
 		$this->resetFakes();
 		$this->withDebugLog(function() {
@@ -373,36 +405,44 @@ class CheckerTest
 
 			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
 				'an unreadable view list must not abort the replacement');
-			$views = array_values(array_filter(rTorrent::$lastSend['addition'], function($command) {
-				return strpos($command, 'view.set_visible=') === 0;
-			}));
-			strictAssertSame(array(), $views,
-				'an unconfirmed view is dropped: a lost ratio group costs less than an aborted load');
+			strictAssertSame(
+				array('d.views.push_back_unique=rat_2', 'd.views.push_back_unique=rat_9'),
+				$this->membershipCommands(rTorrent::$lastSend['addition']),
+				'every unconfirmed membership becomes the d.views attribute, none stays view.set_visible'
+			);
 			$line = strictAssertOneLogMatching(FileUtil::$log, 'rat_2,rat_9',
-				'the dropped memberships are named');
+				'the attribute-only memberships are named');
 			strictAssertEnglish($line, 'the unreadable-view-list line');
 		});
 	}
 
 	// Most replacements belong to no ratio group at all: d.views comes back
-	// with nothing matching rat_\d+, so buildReplacementAddition() has no
-	// membership to confirm. The view.list round trip existingViews() pays
-	// lands inside createTorrent(), after the old torrent has already been
-	// stopped and closed and before the replacement is sent -- not a place to
-	// spend a lookup whose answer nothing then uses.
+	// with nothing matching rat_\d+, so there is no membership to confirm and
+	// the view.list round trip would buy nothing. createTorrent() skips it --
+	// a lookup whose answer nothing uses is a round trip wasted between the
+	// tracker check and the load.
 	public function testNoRatioViewsSkipsTheViewListLookup()
 	{
 		$this->resetFakes();
-		$addition = strictInvoke('ruTrackerChecker', 'buildReplacementAddition',
-			array('seed-value', 'slow', array(), ruTrackerChecker::STE_UPDATED, 'deadbeef'));
+		$this->stageTorrents();
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		// rat_bad and rat_2_extra do not match rat_\d+. view_list is NOT
+		// queued, so asking for it anyway would surface as a fault.
+		$this->queueViews(array('main', 'rat_bad', 'rat_2_extra'), false);
+		$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
+		$this->queueLoadConfirmed();
+		rXMLRPCRequest::queue('d.erase', true, false, array(0));
+		rXMLRPCRequest::queue('d.set_custom', true, false, array());
+		rXMLRPCRequest::queue('d.start', true, false, array(0));
+		rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
 
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+			'a replacement without ratio groups must succeed without a view list read');
 		$keys = array_map(function($request) { return $request['key']; }, rXMLRPCRequest::$requests);
 		strictAssertTrue(!in_array('view_list', $keys, true),
 			'no ratio views were collected, so view.list must never be asked for: saw ' . implode(',', $keys));
-		$views = array_values(array_filter($addition, function($command) {
-			return strpos($command, 'view.set_visible=') === 0;
-		}));
-		strictAssertSame(array(), $views, 'and no membership command can be emitted either');
+		strictAssertSame(array(), $this->membershipCommands(rTorrent::$lastSend['addition']),
+			'and no membership command can be emitted either');
 	}
 
 	// The version rides along with the cycle counts so a log can be read
@@ -616,28 +656,6 @@ class CheckerTest
 		finally
 		{
 			Snoopy::$nextStatus = 200;
-			if($savedDebug === null)
-				unset($GLOBALS['rutrackerCheckDebug']);
-			else
-				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
-		}
-	}
-
-	// The five replacements observed sitting stopped on the owner's live system
-	// could not be diagnosed because these two facts were nowhere in the log:
-	// what createTorrent() read for the old torrent, and whether activation was
-	// skipped because of it. Log-only, no behaviour change -- activation still
-	// does exactly what it did.
-	private function withDebugLog($body)
-	{
-		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
-		$GLOBALS['rutrackerCheckDebug'] = true;
-		try
-		{
-			$body();
-		}
-		finally
-		{
 			if($savedDebug === null)
 				unset($GLOBALS['rutrackerCheckDebug']);
 			else

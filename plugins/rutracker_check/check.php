@@ -314,8 +314,10 @@ class ruTrackerChecker
 	// its next start (plugins/ratio/ratio.php, flush()).
 	static private function existingViews()
 	{
-		// "view_list" is the alias every methods-*.php table maps to
-		// view.list, the same spelling plugins/ratio uses.
+		// Only php/methods-0.9.4.php aliases "view_list" to view.list, but
+		// php/settings.php layers the method tables cumulatively, so that
+		// mapping is loaded for every daemon >= 0.9.4; on anything older the
+		// name passes through unchanged and is the native command.
 		$req = new rXMLRPCRequest( new rXMLRPCCommand(getCmd("view_list")) );
 		$req->important = false;
 		if(!$req->success())
@@ -327,7 +329,9 @@ class ruTrackerChecker
 		return($views);
 	}
 
-	static private function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $state, $marker)
+	// $existingViews is existingViews()' answer, read by createTorrent()
+	// while the old torrent was still running; null means unreadable.
+	static private function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $existingViews, $state, $marker)
 	{
 		$now = time();
 		$addition = array(
@@ -346,32 +350,50 @@ class ruTrackerChecker
 			$addition[] = getCmd("d.set_throttle_name=").$throttle;
 
 		// DownloadFactory runs this whole list inside one try block: the first
-		// torrent::input_error aborts every command after it AND skips the
+		// torrent::input_error aborts every command after it, plus the
 		// d.state.set and the event.download.inserted_new that rTorrent itself
-		// appends, leaving the download inserted with correct metainfo but at
-		// state 0, never opened and never hash-checked. view.set_visible
-		// throws exactly that error for a view that does not exist, so a
-		// membership is only ever forwarded once the view has been confirmed;
-		// an unconfirmable one is dropped, because a lost ratio group costs
-		// far less than an aborted load.
-		$dropped = array();
-		if(!empty($ratioViews))
+		// appends. view.set_visible throws exactly that error for a view that
+		// does not exist. The abort is not fatal to the load -- the marker is
+		// the first command, so waitForLoad() still confirms ownership, and
+		// for a previously-started source activateReplacement()'s d.start
+		// makes the download visible in the started view, whose view event
+		// sets d.state=1. What it silently costs is every load command after
+		// the failing one, the inserted_new side effects (history logging,
+		// the ratio plugin's default-group hook), and -- since that d.start
+		// rescue only reaches sources activateReplacement() starts -- a
+		// previously-stopped source staying closed at state 0.
+		//
+		// So memberships are forwarded in two tiers. A view confirmed against
+		// the live view list gets view.set_visible, which also records the
+		// membership in the d.views attribute (rat_N views are persistent,
+		// and a persistent view's event_added runs d.views.push_back_unique).
+		// An unconfirmed one gets d.views.push_back_unique directly: it never
+		// throws and records the attribute only. Dropping it instead would be
+		// worse than a lost group -- a replacement with an empty d.views is
+		// re-homed by the ratio plugin's default-group insert hook (a branch
+		// over d.views.has, ratio.php flush()) into the DEFAULT ratio group,
+		// whose action can be erase-data. The attribute keeps that hook a
+		// no-op, and the ratio plugin's correct() pass turns it back into
+		// visible membership once the views exist again.
+		$attributeOnly = array();
+		foreach($ratioViews as $ratioView)
 		{
-			$existing = self::existingViews();
-			foreach($ratioViews as $ratioView)
+			if($existingViews !== null && isset($existingViews[$ratioView]))
+				$addition[] = getCmd("view.set_visible=").$ratioView;
+			else
 			{
-				if($existing !== null && isset($existing[$ratioView]))
-					$addition[] = getCmd("view.set_visible=").$ratioView;
-				else
-					$dropped[] = $ratioView;
+				$addition[] = getCmd("d.views.push_back_unique=").$ratioView;
+				$attributeOnly[] = $ratioView;
 			}
 		}
-		if(count($dropped))
-			self::logDebug("buildReplacementAddition: dropped ".implode(',', $dropped)
-				." from the load command list (".($existing === null
+		if(count($attributeOnly))
+			self::logDebug("buildReplacementAddition: forwarded ".implode(',', $attributeOnly)
+				." as the d.views attribute only (".($existingViews === null
 					? "the view list could not be read"
 					: "no such view in rTorrent")
-				."): one input_error would abort every load command after it");
+				."): view.set_visible would throw input_error and abort the rest of"
+				." the load command list; the ratio plugin restores the visible"
+				." membership once the views exist again");
 		return($addition);
 	}
 
@@ -579,6 +601,15 @@ class ruTrackerChecker
 				$ratioViews[$view] = true;
 		$ratioViews = array_keys($ratioViews);
 
+		// Confirm the memberships against the live view list now, while the
+		// old torrent is still running: the round trip must not lengthen the
+		// window between the stop/close below and the replacement load. It is
+		// still a check-to-load TOCTOU either way -- the hoist leaves that gap
+		// at the same order of magnitude, buildReplacementAddition() just
+		// degrades an unconfirmed membership instead of trusting it. Skipped
+		// entirely when the torrent belongs to no ratio group.
+		$existingViews = empty($ratioViews) ? null : self::existingViews();
+
 		// Snapshot the logical state and stop/close it in the same multicall so a
 		// scheduler action cannot slip between the read and the mutation.
 		$req = new rXMLRPCRequest( array(
@@ -611,7 +642,7 @@ class ruTrackerChecker
 		self::logDebug("createTorrent: " . $hash . " old run state at commit: started="
 			. ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
 		$addition = self::buildReplacementAddition(
-			$connectionSeed, $throttle, $ratioViews, self::STE_UPDATED, $marker
+			$connectionSeed, $throttle, $ratioViews, $existingViews, self::STE_UPDATED, $marker
 		);
 
 		// Stage stopped: a failed pre-commit replacement cannot write shared data.
