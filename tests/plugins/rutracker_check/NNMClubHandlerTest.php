@@ -185,10 +185,10 @@ $suite->test('scrape miss downloads guest torrent and patches real passkey', fun
 });
 
 // NNMClub serves one account passkey per user and writes it into the announce
-// URL of every torrent that account downloads: `/PASSKEY/announce` on today's
-// hosts, `announce?uk=PASSKEY` on the legacy ones. A torrent's own passkey is
-// therefore the right key for its own replacement, in whichever form the
-// tracker served the replacement's URLs.
+// URL of every torrent that account downloads: `/PASSKEY/announce` in
+// currently served .torrents, `announce?uk=PASSKEY` in older downloads. A
+// torrent's own passkey is therefore the right key for its own replacement,
+// in whichever form the tracker served the replacement's URLs.
 $suite->test('a torrent path-form passkey is reused for its own replacement', function () use ($realPasskey, $dummyPasskey) {
     nnmReset();
     $oldRaw = strictTorrentRaw(

@@ -117,9 +117,10 @@ class KinozalCheckImpl
         if (self::bodyHas($details, self::MISSING_MARKER))
             return ruTrackerChecker::STE_DELETED;
 
-        // Strict comparison: two different all-digit hashes are both numeric
-        // strings, and loose == would compare them as floats, which cannot
-        // hold 40 digits.
+        // Strict comparison: loose == reads a hex hash shaped like scientific
+        // notation as a number -- '1E' followed by 38 zeros == '00...01'
+        // (both are numerically 1) -- so two different 40-char hashes could
+        // pass as equal.
         if (preg_match('`<li>.*(?P<hash>[0-9A-Fa-f]{40})</li>`', $details, $matches1)
             && strtoupper($matches1["hash"]) === strtoupper((string) $hash))
             return ruTrackerChecker::STE_UPTODATE;

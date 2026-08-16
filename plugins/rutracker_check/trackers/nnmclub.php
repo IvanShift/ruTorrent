@@ -13,12 +13,15 @@
  * replacement is loaded.
  *
  * NNMClub issues one passkey per account and writes it into the announce URL
- * of every torrent that account downloads, in either of two forms carrying the
- * same value: `/PASSKEY/announce` on the current hosts and
- * `announce?uk=PASSKEY` on the legacy ones. A torrent's own passkey is
- * therefore what its own replacement needs; every form a replacement URL
+ * of every torrent that account downloads, in either of two forms carrying
+ * the same value. The form tracks when the .torrent was downloaded, not
+ * which host it announces to: currently served .torrents carry
+ * `/PASSKEY/announce` on every official host, legacy-named ones included,
+ * while older downloads carry `announce?uk=PASSKEY`. A torrent's own passkey
+ * is therefore what its own replacement needs; every form a replacement URL
  * already carries is updated in place, and a URL with no passkey at all gets
- * the query form, which every generation of hosts accepts. A passkey is never
+ * the query form -- the only form this handler wrote before, and torrents
+ * carrying it announce successfully on the live fleet. A passkey is never
  * taken from a different torrent unless that torrent published it in the
  * profile-wide query form (real sessions do carry torrents downloaded from
  * other accounts, whose path-form keys are not this profile's), and never
@@ -198,9 +201,9 @@ class NNMClubCheckImpl
     /**
      * Parse one announce URL into a typed credential descriptor. `mode` names
      * the URL form the passkey was found in: `path` (/PASSKEY/announce, the
-     * form the current hosts serve) or `query` (announce?uk=PASSKEY, the
-     * legacy form). Both forms carry the same account passkey; when a URL
-     * carries both, the query value wins.
+     * form in currently served .torrents) or `query` (announce?uk=PASSKEY,
+     * the form in older downloads). Both forms carry the same account
+     * passkey; when a URL carries both, the query value wins.
      *
      * @return array|null ['mode' => 'path'|'query', 'token' => string, 'announceUrl' => string]
      */
@@ -396,7 +399,8 @@ class NNMClubCheckImpl
      * Write the account passkey into an NNMClub announce URL. Every form the
      * URL already carries is updated in place -- the tracker serves both forms
      * and they hold the same value -- and a URL with no passkey at all gets
-     * the query form, which every generation of hosts accepts.
+     * the query form: the only form this handler wrote before, and torrents
+     * carrying it announce successfully on the live fleet.
      *
      * @param  string $token Passkey already validated against TOKEN_RE
      * @return string|null Patched URL (possibly identical to the input), or
