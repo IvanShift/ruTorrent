@@ -1805,7 +1805,8 @@ var theWebUI = {
 		var state = torrent.state;
 		var completed = torrent.done;
 		// rTorrent calls a download complete only when every chunk of the torrent
-		// is on disk, so a download with deselected files never gets there.
+		// is on disk, so a download whose deselected files own at least one chunk
+		// outright never gets there -- those chunks are never fetched.
 		// d.is_partially_done says every selected chunk is on disk -- true for a
 		// fully downloaded torrent as well, hence the percentage test -- and that
 		// is treated as complete wherever the status acts as a category. The

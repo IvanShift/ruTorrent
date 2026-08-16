@@ -24,7 +24,8 @@ export class CategoryList {
       pstate: [
         (_, torrent) => [
           // Main group (Completed / Downloading / Stopped)
-          // A torrent with deselected files never reaches done >= 1000, so
+          // A torrent whose deselected files own at least one chunk outright
+          // never reaches done >= 1000 -- those chunks are never fetched -- so
           // rTorrent's d.is_partially_done counts as completed here as well.
           (torrent.done >= 1000 || torrent.partially_done == 1)
             ? "-_-_-com-_-_-" // Completed (even if error)
