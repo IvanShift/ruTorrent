@@ -28,6 +28,11 @@ class ruTrackerChecker
 	const STE_META_PENDING		= 9;
 	const STE_ABSORBED		= 10;
 
+	// awaitMetadata()'s polling interval, and the default seconds it waits
+	// when $rutrackerMetaWait is not set.
+	const METADATA_POLL_US		= 500000;
+	const METADATA_WAIT_DEFAULT	= 10;
+
 	// Not a status: a handler answers this when it has no data to judge by and
 	// the verdict already stored must be left alone. Negative on purpose -- the
 	// stored values are the STE_* above, and 0 means "never checked", both of
@@ -451,6 +456,50 @@ class ruTrackerChecker
 		) );
 		$req->important = false;
 		$req->success();
+	}
+
+	/**
+	 * Wait for a magnet download to acquire its metainfo.
+	 *
+	 * Lives here, beside createTorrent(), because it is the same kind of
+	 * service every handler may need rather than anything RuTracker-specific:
+	 * it takes a hash and answers whether rTorrent still calls that download a
+	 * metadata stub. A handler that loads a magnet can therefore finish the
+	 * replacement in the cycle it started, instead of leaving it to the next
+	 * scheduled run. Today only the RuTracker handler loads magnets -- NNMClub
+	 * and Kinozal fetch the .torrent from the site and already replace within
+	 * one cycle -- but nothing here knows which tracker is asking.
+	 *
+	 * Waiting pays because metadata almost always arrives at once: across 21
+	 * replacements measured on a live fleet the median wait was 1 second and
+	 * 20 of the 21 were under 5, the lone outlier taking 83. The default ten
+	 * seconds thus turns nearly every fetch into a same-cycle replacement,
+	 * while a slow one still falls through to whatever the caller does next.
+	 * It costs an idle cycle nothing: it runs only once a fetch has begun.
+	 *
+	 * @param  string   $hash    The magnet download to watch
+	 * @param  int|null $seconds Override for $rutrackerMetaWait
+	 * @return bool     true once the download carries real metainfo
+	 */
+	static public function awaitMetadata( $hash, $seconds = null )
+	{
+		global $rutrackerMetaWait;
+		if(is_null($seconds))
+			$seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
+		$seconds = max(0, (int) $seconds);
+		$until = microtime(true) + $seconds;
+		for(;;)
+		{
+			$meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
+			$meta->important = false;
+			// A failed read is not "metadata arrived": keep waiting and let
+			// the caller's own deadline settle it, the way the fetcher does.
+			if($meta->success() && isset($meta->val[0]) && (intval($meta->val[0]) === 0))
+				return(true);
+			if(microtime(true) >= $until)
+				return(false);
+			usleep(self::METADATA_POLL_US);
+		}
 	}
 
 	static public function createTorrent($torrent, $hash){

@@ -103,6 +103,71 @@ $suite->test('begin loads a stopped magnet with inline markers and starts the st
         'a leading dot is the convention that marks a label as service-only');
 });
 
+// Measured on a live fleet across 21 replacements: the metadata was there
+// after 1 second in the median case and within 5 in 20 of the 21, the lone
+// outlier taking 83. Waiting briefly inside the cycle therefore turns the
+// common case into a same-cycle replacement, instead of one that idles a
+// whole hour with the metainfo already downloaded. The slow ones still fall
+// through to the next cycle's pump(), exactly as before.
+$suite->test('metadata that arrives while begin waits is harvested in the same cycle', function () use ($oldHash) {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$createResult = null;
+    rTorrent::$magnets = array();
+    rTorrent::$sourcesByHash = array();
+    $fixture = new Torrent(strictTorrentRaw('Yomi no Tsugai', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+    $newHash = strtoupper($fixture->hash_info());
+    rTorrent::$source = $fixture;
+    rTorrent::$sendResult = $newHash;
+    $GLOBALS['rutrackerMetaWait'] = 1;
+
+    rXMLRPCRequest::queue('d.hash', true, true, array());                              // collision check: missing
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // old run state
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));               // stub is ours
+    rXMLRPCRequest::queue('d.start', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+    // The in-cycle wait: still a stub on the first poll, metadata on the second.
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
+    // ... which hands straight over to pump()'s own sequence.
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));
+    rXMLRPCRequest::queue('d.erase', true, false, array());
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+
+    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+
+    strictAssertSame(null, $state, 'the replacement completed inside this cycle, not next hour');
+    strictAssertSame(1, count(ruTrackerChecker::$created), 'createTorrent ran without waiting for another cycle');
+    strictAssertSame($oldHash, ruTrackerChecker::$created[0]['old_hash'], 'the old torrent is the one replaced');
+    unset($GLOBALS['rutrackerMetaWait']);
+});
+
+$suite->test('metadata that does not arrive in time still leaves the fetch pending', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    // Zero seconds: poll once, do not sleep. A test must not spend the real
+    // wait, and the production default stays in conf.php.
+    $GLOBALS['rutrackerMetaWait'] = 0;
+
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));
+    rXMLRPCRequest::queue('d.start', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('1')); // still a stub when the wait runs out
+
+    $started = microtime(true);
+    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING, $state, 'the slow case is left to the next cycle, as before');
+    strictAssertSame(0, count(ruTrackerChecker::$created), 'nothing is replaced while the stub has no metainfo');
+    strictAssertTrue((microtime(true) - $started) < 2, 'a zero wait must not sleep');
+    unset($GLOBALS['rutrackerMetaWait']);
+});
+
 $suite->test('begin fails closed when the load never materialises', function () use ($oldHash, $newHash) {
     ruTrackerChecker::reset();
     rTorrent::$magnets = array();

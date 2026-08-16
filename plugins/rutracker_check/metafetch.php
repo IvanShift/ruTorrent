@@ -32,6 +32,7 @@ class RuTrackerMetaFetch
     // a label is a field rTorrent's event handlers actually pass on.
     const SERVICE_LABEL = '.chk-meta';
 
+
     static private function serviceDirectory()
     {
         global $topDirectory;
@@ -194,6 +195,15 @@ class RuTrackerMetaFetch
             self::markOldTorrent($oldHash, $newHash, $deadline, $run);
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' loaded the metadata stub '
                 . $newHash . ', waiting until ' . $deadline);
+
+            // Give the metainfo a moment to land: it usually already has by
+            // the time the marks above are written, and harvesting now saves
+            // the replacement an idle hour until the next cycle.
+            if (ruTrackerChecker::awaitMetadata($newHash)) {
+                ruTrackerChecker::logDebug('metafetch: ' . $oldHash
+                    . ' metadata arrived while the cycle waited, harvesting now');
+                return self::pump($oldHash, $now);
+            }
             return ruTrackerChecker::STE_META_PENDING;
         }
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' aborted: the metadata stub '

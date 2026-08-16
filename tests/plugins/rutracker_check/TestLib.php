@@ -444,6 +444,30 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // stored verdict". Mirrors check.php's own constant.
         const STE_UNCHANGED = -1;
 
+        const METADATA_POLL_US = 500000;
+        const METADATA_WAIT_DEFAULT = 10;
+
+        // Mirrors check.php's own awaitMetadata(): the real thing is a plain
+        // d.is_meta poll, and the tests drive it through the queued XMLRPC
+        // double exactly as production drives the real transport.
+        public static function awaitMetadata($hash, $seconds = null)
+        {
+            global $rutrackerMetaWait;
+            if (is_null($seconds))
+                $seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
+            $seconds = max(0, (int) $seconds);
+            $until = microtime(true) + $seconds;
+            for (;;) {
+                $meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
+                $meta->important = false;
+                if ($meta->success() && isset($meta->val[0]) && (intval($meta->val[0]) === 0))
+                    return true;
+                if (microtime(true) >= $until)
+                    return false;
+                usleep(self::METADATA_POLL_US);
+            }
+        }
+
         // Mirrors check.php's chk-msg token vocabulary; the tests assert on
         // these constants rather than on the literals, exactly like the
         // production call sites do.
