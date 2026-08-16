@@ -192,6 +192,29 @@ describe("xmlrpc calls", () => {
     });
   });
 
+  it("routes d.is_partially_done to a no-op below rTorrent 0.9.0", () => {
+    withRtorrentVersion(0x809, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
+    });
+    withRtorrentVersion(0x900, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
+    withRtorrentVersion(0x1014, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
+    // 0 is the sentinel php/getplugins.php emits while the daemon is
+    // unreachable. The alias covers it on purpose: cat is understood by every
+    // daemon generation, so an unknown version degrades to the no-op instead
+    // of risking a faulted multicall.
+    withRtorrentVersion(0, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
+    });
+  });
+
   it("should parse getprops response", () => {
     const stub = new rTorrentStub(`?action=getprops&hash=${h("A")}`);
     //console.log(stub.content);
@@ -310,29 +333,6 @@ describe("xmlrpc calls", () => {
       expect(ret.torrents[hash].label).toBe(label);
       expect(ret.torrents[hash].comment).toBe(comment);
     }
-  });
-
-  it("routes d.is_partially_done to a no-op below rTorrent 0.9.0", () => {
-    withRtorrentVersion(0x809, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
-    });
-    withRtorrentVersion(0x900, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe(
-        "d.is_partially_done="
-      );
-    });
-    withRtorrentVersion(0x1014, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe(
-        "d.is_partially_done="
-      );
-    });
-    // 0 is the sentinel php/getplugins.php emits while the daemon is
-    // unreachable. The alias covers it on purpose: cat is understood by every
-    // daemon generation, so an unknown version degrades to the no-op instead
-    // of risking a faulted multicall.
-    withRtorrentVersion(0, () => {
-      expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
-    });
   });
 
   it("reads the partially done flag from the list response", () => {
