@@ -61,6 +61,24 @@ class ruTrackerChecker
 	const LOAD_WAIT_DELAY_US	= 50000;
 	const REPLACEMENT_MARKER_KEY	= 'chk-replacement';
 
+	// The replacement transaction's second key. The marker answers "is the
+	// download at this hash the one this process staged"; the record answers
+	// "and what was it supposed to become". Both are written in the load
+	// command list and cleared together, so a non-empty marker without a
+	// record can only mean a row staged before this key existed.
+	const INHERIT_KEY		= 'chk-replaces';
+
+	// The record's run tokens. Deliberately the same three literals
+	// RuTrackerMetaFetch owns (metafetch.php), because they describe the same
+	// three daemon states -- "stopped but open" is what ruTorrent's pause
+	// button produces, and a single was-it-running flag brought a paused
+	// torrent back seeding. They are duplicated rather than shared: seven test
+	// suites replace this class with TestLib's stub, so a vocabulary declared
+	// here and read there would vanish under them. A test pins the agreement.
+	const RUN_STARTED		= 'started';
+	const RUN_OPEN			= 'open';
+	const RUN_STOPPED		= 'stopped';
+
 	const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 		. "AppleWebKit/537.36 (KHTML, like Gecko) "
 		. "Chrome/120.0.0.0 Safari/537.36";
@@ -331,11 +349,16 @@ class ruTrackerChecker
 
 	// $existingViews is existingViews()' answer, read by createTorrent()
 	// while the old torrent was still running; null means unreadable.
-	static private function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $existingViews, $state, $marker)
+	static private function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $existingViews, $state, $marker, $inherit)
 	{
 		$now = time();
 		$addition = array(
 			getCmd("d.set_custom")."=".self::REPLACEMENT_MARKER_KEY.",".$marker,
+			// Shares the marker's privileged position for the same reason:
+			// the first input_error aborts every command after it, and a
+			// record that never lands leaves the row in the legacy branch --
+			// which starts nothing -- rather than in a wrong guess.
+			getCmd("d.set_custom")."=".self::INHERIT_KEY.",".$inherit,
 			// d.set_connection_seed= resolves to d.connection_seed.set, which
 			// rTorrent registers PRIVATE: it works here only because a load
 			// command list is executed internally, not through the XMLRPC
@@ -471,13 +494,72 @@ class ruTrackerChecker
 		return(false);
 	}
 
-	static private function clearReplacementMarker($hash)
+	/**
+	 * Close the replacement transaction: the marker and the record go away
+	 * together, so the invariant a later cycle relies on holds -- a non-empty
+	 * record can only accompany a non-empty marker.
+	 *
+	 * Called only where the transaction is known to be over: after a confirmed
+	 * activation, and where a live torrent turns out to carry a stale marker.
+	 * Never on a row whose fate is unknown -- clearing is the irreversible
+	 * step, because createTorrent() treats an unmarked existing hash as
+	 * foreign and refuses to reuse it from then on.
+	 */
+	static public function clearReplacementRecord($hash)
 	{
-		$req = new rXMLRPCRequest( new rXMLRPCCommand(
-			getCmd("d.set_custom"), array($hash, self::REPLACEMENT_MARKER_KEY, "")
+		$req = new rXMLRPCRequest( array(
+			new rXMLRPCCommand(getCmd("d.set_custom"), array($hash, self::REPLACEMENT_MARKER_KEY, "")),
+			new rXMLRPCCommand(getCmd("d.set_custom"), array($hash, self::INHERIT_KEY, "")),
 		) );
 		$req->important = false;
 		$req->success();
+	}
+
+	/**
+	 * The predecessor's identity and run state, as one comma-free string.
+	 *
+	 * Three fields, each earning its place: the hash separates "the commit
+	 * never happened" (the predecessor is still there) from "the commit
+	 * happened and the activation did not" (it is gone); the token is the
+	 * (started, open) pair read at the commit point, which until now died with
+	 * the PHP process; the epoch lets a sweep tell a crashed transaction from
+	 * one that is simply still running.
+	 *
+	 * Hyphen-separated: a 40-hex hash, a lowercase token and an integer
+	 * contain none, so the split is unambiguous, and the whole value stays
+	 * comma-free -- d.custom.set splits its own arguments on commas.
+	 */
+	static public function encodeInheritance($oldHash, $wasStarted, $wasOpen, $now)
+	{
+		return($oldHash . '-'
+			. ($wasStarted ? self::RUN_STARTED : ($wasOpen ? self::RUN_OPEN : self::RUN_STOPPED))
+			. '-' . intval($now));
+	}
+
+	/**
+	 * The record, or null when the value is not one this class wrote.
+	 *
+	 * null is the legacy signal -- the row predates the record, or its load
+	 * command list aborted before the record landed -- and every caller must
+	 * route it to the branch that starts nothing. An unrecognised run token is
+	 * not a legacy signal but the safest of the three states, the same
+	 * catch-all RuTrackerMetaFetch::decodeRunState applies.
+	 */
+	static public function decodeInheritance($value)
+	{
+		if(!is_string($value)) return(null);
+		$parts = explode('-', $value);
+		if(count($parts) !== 3) return(null);
+		if(!preg_match('/^[0-9a-fA-F]{40}$/', $parts[0])) return(null);
+		if(!ctype_digit($parts[2]) || intval($parts[2]) <= 0) return(null);
+		return(array(
+			'old' => $parts[0],
+			'run' => array(
+				'started' => ($parts[1] === self::RUN_STARTED),
+				'open' => ($parts[1] === self::RUN_STARTED || $parts[1] === self::RUN_OPEN),
+			),
+			'staged' => intval($parts[2]),
+		));
 	}
 
 	/**
@@ -571,7 +653,7 @@ class ruTrackerChecker
 				// A running torrent with a leftover marker is a committed
 				// replacement whose final marker clear was lost; repair the
 				// marker, but never treat a live torrent as disposable.
-				self::clearReplacementMarker($newHash);
+				self::clearReplacementRecord($newHash);
 				return self::STE_ERROR;
 			}
 			if(!self::eraseStaged($newHash))
@@ -642,7 +724,8 @@ class ruTrackerChecker
 		self::logDebug("createTorrent: " . $hash . " old run state at commit: started="
 			. ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
 		$addition = self::buildReplacementAddition(
-			$connectionSeed, $throttle, $ratioViews, $existingViews, self::STE_UPDATED, $marker
+			$connectionSeed, $throttle, $ratioViews, $existingViews, self::STE_UPDATED, $marker,
+			self::encodeInheritance($hash, $wasStarted, $wasOpen, time())
 		);
 
 		// Stage stopped: a failed pre-commit replacement cannot write shared data.
@@ -680,9 +763,16 @@ class ruTrackerChecker
 			// The old torrent is gone despite the failed erase: proceed.
 		}
 
-		self::activateReplacement($newHash, $wasOpen, $wasStarted);
+		$activated = self::activateReplacement($newHash, $wasOpen, $wasStarted);
 		self::cleanupObsoleteFiles($oldTorrent, $torrent, $baseDir);
-		self::clearReplacementMarker($newHash);
+		// The transaction is closed only once the daemon has been seen in the
+		// intended state. An unconfirmed activation keeps both keys, so the
+		// next cycle's sweep finds the row instead of a torrent that merely
+		// looks finished -- which is how a replacement sat stopped for a day.
+		if($activated)
+			self::clearReplacementRecord($newHash);
+		else
+			self::logDebug("createTorrent: ".$newHash." keeps its replacement record: activation was not confirmed");
 		return null;
 	}
 

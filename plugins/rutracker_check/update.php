@@ -34,6 +34,15 @@ if($cycleLock === false)
 ruTrackerChecker::logDebug("update: cycle start ".ruTrackerChecker::liveVersionLabel()
 	." src=".(count($argv) > 1 ? "scheduler" : "cli"));
 
+// Before this cycle can create new work, finish what a crashed one left
+// behind: a replacement whose transaction died between erasing the old
+// torrent and activating the new one is invisible to everything below --
+// stopped and closed, so outside the "seeding" view, and with no predecessor
+// left for a check to reach it through. Deliberately outside the seeding
+// request's success gate, so the repair still runs on a cycle where the
+// daemon is flaky, and under the cycle lock taken above.
+RuTrackerUpdatePass::sweepReplacements(time());
+
 $req =  new rXMLRPCRequest(
 		new rXMLRPCCommand("d.multicall",array("seeding",
 			getCmd("d.get_hash="),

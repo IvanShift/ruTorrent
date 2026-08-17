@@ -309,4 +309,174 @@ class RuTrackerUpdatePass
             }
         }
     }
+
+    // Columns of the sweep's own fleet scan: hash, ownership marker, record.
+    const SWEEP_COLUMNS = 3;
+
+    /**
+     * Finish or diagnose a replacement transaction that never closed.
+     *
+     * The transaction is: stage the copy (marker + record written in the load
+     * command list), erase the predecessor, activate, clear both keys. A
+     * process that dies after the erase and before the clear leaves a torrent
+     * nothing else in this plugin can reach -- it is stopped and closed, so it
+     * is outside the "seeding" view the cycle scans, and its predecessor is
+     * gone, so no later check reaches createTorrent()'s adoption path. That is
+     * not hypothetical: a container auto-update did exactly this on
+     * 2026-08-16 and left a 6.58 GiB download sitting at 0 %.
+     *
+     * Runs on "main" for that reason, before the cycle's own work, under the
+     * cycle lock update.php already holds.
+     */
+    static public function sweepReplacements($now)
+    {
+        $scan = new rXMLRPCRequest(new rXMLRPCCommand("d.multicall", array("main",
+            getCmd("d.get_hash="),
+            getCmd("d.get_custom=") . ruTrackerChecker::REPLACEMENT_MARKER_KEY,
+            getCmd("d.get_custom=") . ruTrackerChecker::INHERIT_KEY,
+        )));
+        $scan->important = false;
+        if (!$scan->success()) return;
+
+        for ($i = 0; $i + self::SWEEP_COLUMNS <= count($scan->val); $i += self::SWEEP_COLUMNS) {
+            $hash = (string) $scan->val[$i];
+            if ((string) $scan->val[$i + 1] === '') continue;   // unmarked: foreign, hands off
+            $record = ruTrackerChecker::decodeInheritance((string) $scan->val[$i + 2]);
+            // A transaction younger than the lock window may simply be in
+            // flight -- batch_check.php takes no cycle lock, so "no other
+            // cycle is running" is not the same as "nobody is mid-replacement".
+            if ($record !== null && ($now - $record['staged']) <= ruTrackerChecker::MAX_LOCK_TIME) continue;
+            self::sweepMarkedRow($hash, $record, $now);
+        }
+    }
+
+    // One candidate. Reads first, decides second, and writes at most once.
+    static private function sweepMarkedRow($hash, $record, $now)
+    {
+        $probe = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_state"), $hash),
+            new rXMLRPCCommand(getCmd("d.is_open"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_chunks_hashed"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_completed_bytes"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_complete"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_message"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-stime")),
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
+            new rXMLRPCCommand(getCmd("d.get_directory_base"), $hash),
+        ));
+        $probe->important = false;
+        // A faulting member injects its faultString into the flat value list
+        // rather than shortening it, so the last slot must be present before
+        // any of them is trusted.
+        if (!$probe->success() || !isset($probe->val[8])) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash . " could not be read, deferring to the next cycle");
+            return;
+        }
+        $val = $probe->val;
+
+        // A marked row that is running is a finished replacement whose final
+        // clear was lost -- or one a human started by hand. Either way its run
+        // state is somebody's decision and the keys are simply retired.
+        if (intval($val[0]) !== 0 || intval($val[1]) !== 0) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " is already running, retiring its replacement keys");
+            ruTrackerChecker::clearReplacementRecord($hash);
+            return;
+        }
+
+        if ($record === null) {
+            // Staged before the record existed, or its load command list
+            // aborted before the record landed. The predecessor and the run
+            // state it was meant to inherit are both unrecoverable, so the row
+            // is labelled once -- never started, and never cleared, because
+            // clearing would make the hash foreign to any future replacement.
+            $stime = intval($val[6]);
+            if ($stime <= 0 || ($now - $stime) <= ruTrackerChecker::MAX_LOCK_TIME) return;
+            if (intval($val[7]) === ruTrackerChecker::STE_ERROR) return;   // already settled
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " carries a replacement marker with no record: the predecessor and its run state"
+                . " cannot be recovered, so it is flagged and left untouched"
+                . " (state=" . intval($val[0]) . " open=" . intval($val[1])
+                . " hashed=" . intval($val[2]) . " bytes=" . intval($val[3]) . ")");
+            ruTrackerChecker::setState($hash, ruTrackerChecker::STE_ERROR);
+            return;
+        }
+
+        // The recorded predecessor is read, and only ever read: it tells the
+        // two halves of the transaction apart.
+        $exists = ruTrackerChecker::torrentExists($record['old']);
+        if ($exists === null) return;                      // never act on an unknowable fact
+        if ($exists === true) {
+            // The commit never happened. The staged copy is still adoptable by
+            // a normal check of the predecessor, so nothing here may touch it.
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " was staged for " . $record['old'] . ", which is still in the client:"
+                . " the commit never happened, leaving both to the predecessor's own check");
+            return;
+        }
+        self::finishStrandedReplacement($hash, $record, $val, $now);
+    }
+
+    // Reached only when the marker is set, the record decoded, the transaction
+    // aged past the lock window, the copy stopped AND closed, and the recorded
+    // predecessor provably gone.
+    static private function finishStrandedReplacement($hash, $record, $val, $now)
+    {
+        if (!$record['run']['started'] && !$record['run']['open']) {
+            // The predecessor was stopped, so leaving the replacement stopped
+            // IS the finished outcome -- createTorrent()'s never-resurrect
+            // rule, now surviving the erase that used to destroy its input.
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " inherited a stopped predecessor, so the transaction is complete as it stands");
+            ruTrackerChecker::clearReplacementRecord($hash);
+            return;
+        }
+        if (intval($val[2]) > 0 || intval($val[3]) > 0 || intval($val[4]) !== 0) {
+            // It was opened at some point and is stopped now: that is a
+            // decision somebody made after the crash, not one to undo.
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " has been opened since it was staged, leaving its run state alone");
+            ruTrackerChecker::clearReplacementRecord($hash);
+            return;
+        }
+        if ((string) $val[5] !== '') {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " will not be started blind, the daemon already reports: " . (string) $val[5]);
+            if (intval($val[7]) !== ruTrackerChecker::STE_ERROR)
+                ruTrackerChecker::setState($hash, ruTrackerChecker::STE_ERROR);
+            return;
+        }
+
+        $commands = array(new rXMLRPCCommand(getCmd("d.open"), $hash));
+        // d.open before d.start: a bare d.start on a closed download can leave
+        // it closed (the measurement RuTrackerMetaFetch records).
+        if ($record['run']['started'])
+            $commands[] = new rXMLRPCCommand(getCmd("d.start"), $hash);
+        $activate = new rXMLRPCRequest($commands);
+        $activate->important = false;
+        $activate->success();
+
+        // Believe the measured reading, never the ack. A started download may
+        // still be waiting on a scheduler slot, so it is judged on d.get_state
+        // exactly as activateReplacement() judges it.
+        $check = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_state"), $hash),
+            new rXMLRPCCommand(getCmd("d.is_open"), $hash),
+        ));
+        $check->important = false;
+        $satisfied = $check->success() && isset($check->val[1])
+            && ($record['run']['started'] ? intval($check->val[0]) === 1 : intval($check->val[1]) === 1);
+        if ($satisfied) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " finished a replacement its own cycle never activated"
+                . " (wanted " . ($record['run']['started'] ? "started" : "open")
+                . ", measured state=" . intval($check->val[0]) . " open=" . intval($check->val[1]) . ")");
+            ruTrackerChecker::clearReplacementRecord($hash);
+            return;
+        }
+        ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+            . " did not come up as recorded, keeping its keys for the next cycle");
+        if (intval($val[7]) !== ruTrackerChecker::STE_ERROR)
+            ruTrackerChecker::setState($hash, ruTrackerChecker::STE_ERROR);
+    }
 }
