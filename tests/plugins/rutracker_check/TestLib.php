@@ -3,12 +3,13 @@
 /**
  * Shared harness for the rutracker_check test suite.
  *
- * The always-defined part carries the runner, assertions and the XMLRPC test
- * doubles. Handler-facing stubs (Snoopy, a fake ruTrackerChecker, an identity
- * getCmd(), bencode fixture builders backed by the real Torrent class -- and,
- * transitively through requiring Torrent.php, the real FileUtil) are defined
- * only when the including test sets TESTLIB_HANDLER_STUBS, because
- * CheckerTest loads the real ruTrackerChecker and a fake Torrent instead.
+ * The always-defined part carries the runner, assertions, the XMLRPC test
+ * doubles, the identity getCmd() and loadClassDefinition(). Handler-facing
+ * stubs (Snoopy, a fake ruTrackerChecker, bencode fixture builders backed by
+ * the real Torrent class -- and, transitively through requiring Torrent.php,
+ * the real FileUtil) are defined only when the including test sets
+ * TESTLIB_HANDLER_STUBS, because CheckerTest loads the real ruTrackerChecker
+ * and a fake Torrent instead.
  */
 
 function testFindRepoRoot()
@@ -16,6 +17,29 @@ function testFindRepoRoot()
     $path = realpath(__DIR__ . '/../../..');
     if ($path !== false && is_file($path . '/plugins/rutracker_check/trackers/rutracker.php')) return $path;
     throw new RuntimeException('Unable to locate the ruTorrent repository root');
+}
+
+// Identity command mapper. The real getCmd() (php/xmlrpc.php) resolves a
+// handful of legacy command names through rTorrentSettings' version-keyed
+// alias table; none of that table changes the shape of what any test in
+// this suite asserts on, so every rutracker_check test that needs getCmd()
+// uses plain identity instead of pulling in the real version-detection
+// machinery.
+function getCmd($command)
+{
+    return $command;
+}
+
+// The source of one class out of a file the test must not require whole
+// (check.php would pull in util.php and half the application with it).
+function loadClassDefinition($filename, $className)
+{
+    $source = file_get_contents($filename);
+    $offset = strpos($source, 'class ' . $className);
+    if ($offset === false)
+        throw new RuntimeException("Class {$className} was not found in {$filename}");
+    // ruTrackerChecker is the final declaration in check.php.
+    return substr($source, $offset);
 }
 
 class StrictTestSuite
@@ -287,17 +311,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         }
     }
 
-    // Identity command mapper. The real getCmd() (php/xmlrpc.php) resolves a
-    // handful of legacy command names through rTorrentSettings' version-keyed
-    // alias table; none of that table changes the shape of what any test in
-    // this suite asserts on, so every rutracker_check test that needs
-    // getCmd() (this file included) uses plain identity instead of pulling in
-    // the real version-detection machinery.
-    function getCmd($command)
-    {
-        return $command;
-    }
-
     // FileUtil itself needs no stub here: requiring Torrent.php above already
     // pulls in the real php/util.php, which autoloads the real FileUtil
     // (util.php:59's own FileUtil::getProfilePath() call) before this point.
@@ -366,6 +379,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // every other (deterministic) request this suite makes.
         public static $any = array();
         public static $requests = array();
+        public static $rawheadersLog = array();
 
         public $status = -1;
         public $results = '';
@@ -380,12 +394,14 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$responses = array();
             self::$any = array();
             self::$requests = array();
+            self::$rawheadersLog = array();
         }
 
         // $headers models the response headers real Snoopy collects into
         // $this->headers (raw "Name: value" lines, see
-        // php/Snoopy.class.inc:596) — not $rawheaders, which is the request
-        // side and stays unmodeled since nothing here asserts on it.
+        // php/Snoopy.class.inc:596). The request side ($rawheaders) is
+        // recorded per request into $rawheadersLog, index-parallel to
+        // $requests, for the tests that pin conditional-GET behaviour.
         public static function queue($url, $status, $results, $headers = array())
         {
             if (!isset(self::$responses[$url])) {
@@ -402,6 +418,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         private function respond($method, $url)
         {
             self::$requests[] = array($method, $url);
+            self::$rawheadersLog[] = $this->rawheaders;
             if (isset(self::$responses[$url]) && count(self::$responses[$url])) {
                 list($this->status, $this->results, $this->headers) = array_shift(self::$responses[$url]);
                 return true;
@@ -488,7 +505,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $logs = array();
         public static $registrations = array();
         public static $createResult = null;
-        public static $states = array();
         public static $messages = array();
 
         public static function reset()
@@ -498,7 +514,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$logs = array();
             self::$registrations = array();
             self::$createResult = null;
-            self::$states = array();
             self::$messages = array();
             Snoopy::reset();
             rXMLRPCRequest::reset();
@@ -528,10 +543,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         }
 
         // Mirrors check.php:85-105's signature and null-on-missing-target
-        // fallback; records every call for tests to assert against.
+        // fallback; tests assert on the d.set_custom writes it issues.
         public static function setState($hash, $state)
         {
-            self::$states[] = array('hash' => $hash, 'state' => $state);
             $req = new rXMLRPCRequest(new rXMLRPCCommand(
                 getCmd('d.set_custom'), array($hash, 'chk-state', (string) $state)));
             $req->important = false;

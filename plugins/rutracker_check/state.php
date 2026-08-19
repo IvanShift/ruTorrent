@@ -23,8 +23,9 @@ class RuTrackerState
 
     static private function dir()
     {
+        global $profileMask;
         $dir = self::$dir !== null ? self::$dir : FileUtil::getSettingsPath() . '/rutracker_check';
-        if (!is_dir($dir)) @mkdir($dir, 0777, true);
+        if (!is_dir($dir)) @mkdir($dir, (isset($profileMask) ? $profileMask : 0777) & 0777, true);
         return $dir;
     }
 
@@ -93,16 +94,34 @@ class RuTrackerState
 
     static public function save($name, $state)
     {
-        $dir = self::dir();
+        self::replace(self::dir(), $name, $state);
+    }
+
+    // Complete-file replacement, following the trafic precedent named in the
+    // header: write a sibling temp file, rename it over the target, then open
+    // the result up to the profile mask -- tempnam() creates 0600 files owned
+    // by whichever OS user wrote first, and the scheduler's rTorrent user and
+    // the web server's are routinely different, so without the chmod the
+    // second user of the pair silently loses the document. The write is
+    // skipped when json_encode() cannot represent the state: a stale document
+    // beats a truncated one. This is also what keeps the lock-free load()
+    // safe: a reader always sees a complete old or complete new document,
+    // and a writer killed mid-write leaves the old one intact.
+    static private function replace($dir, $name, $state)
+    {
+        global $profileMask;
+        $json = json_encode($state);
+        if ($json === false) return;
         $tmp = @tempnam($dir, $name);
         if ($tmp === false) return;
-        if (@file_put_contents($tmp, json_encode($state)) === false) {
+        if (@file_put_contents($tmp, $json) === false) {
             @unlink($tmp);
             return;
         }
-        if (!@rename($tmp, $dir . '/' . $name . '.json')) {
+        if (@rename($tmp, $dir . '/' . $name . '.json'))
+            @chmod($dir . '/' . $name . '.json', (isset($profileMask) ? $profileMask : 0777) & 0666);
+        else
             @unlink($tmp);
-        }
     }
 
     // Atomic read-modify-write: opens <name>.json (creating it if missing),
@@ -120,25 +139,42 @@ class RuTrackerState
     // In particular it must never wrap a slow operation like an HTTP fetch
     // -- callers with one (forumindex.php's fetchDump()) do the fetch
     // outside update() entirely and only reach for it to apply the result.
-    static public function update($name, $mutator)
+    // Removes a document (and its lock) outright -- for per-forum dumps
+    // whose retention has lapsed, where an empty-but-present file would just
+    // accumulate. Safe against a concurrent update(): its rename would
+    // simply recreate the file, which is the fresher fact anyway.
+    static public function drop($name)
     {
         $dir = self::dir();
-        $fp = @fopen($dir . '/' . $name . '.json', 'c+');
-        if ($fp === false) return;
+        @unlink($dir . '/' . $name . '.json');
+        @unlink($dir . '/' . $name . '.lock');
+    }
+
+    static public function update($name, $mutator)
+    {
+        global $profileMask;
+        $dir = self::dir();
+        // The lock lives BESIDE the document, never on it: the write below
+        // replaces the document wholesale by rename, and a lock taken on the
+        // replaced inode would let the next writer base its mutation on a
+        // document the previous writer had already superseded. The lock file
+        // itself is never renamed, so every update() for one $name contends
+        // on the same inode; it is opened up to the profile mask for the
+        // same cross-user reason replace() documents.
+        $lock = $dir . '/' . $name . '.lock';
+        $fp = @fopen($lock, 'c');
+        if ($fp === false) {
+            if (class_exists('ruTrackerChecker'))
+                ruTrackerChecker::logDebug('state: cannot open ' . $lock . ', the ' . $name . ' update is lost');
+            return;
+        }
+        @chmod($lock, (isset($profileMask) ? $profileMask : 0777) & 0666);
 
         try {
             if (!flock($fp, LOCK_EX)) return;
             try {
-                $raw = stream_get_contents($fp);
-                $state = is_string($raw) && $raw !== '' ? @json_decode($raw, true) : null;
-                $state = is_array($state) ? $state : array();
-
-                $state = call_user_func($mutator, $state);
-
-                rewind($fp);
-                ftruncate($fp, 0);
-                fwrite($fp, json_encode($state));
-                fflush($fp);
+                $state = call_user_func($mutator, self::load($name));
+                self::replace($dir, $name, $state);
             } finally {
                 flock($fp, LOCK_UN);
             }

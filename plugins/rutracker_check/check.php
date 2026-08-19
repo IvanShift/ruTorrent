@@ -620,6 +620,7 @@ class ruTrackerChecker
 
 		$exists = self::torrentExists($newHash);
 		if($exists === null) return self::STE_ERROR;
+		$stagedRecord = null;
 		if($exists === true)
 		{
 			// A staged copy abandoned by a crashed run still carries a marker
@@ -630,6 +631,7 @@ class ruTrackerChecker
 				new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, self::REPLACEMENT_MARKER_KEY)),
 				new rXMLRPCCommand("d.get_state", $newHash),
 				new rXMLRPCCommand("d.is_open", $newHash),
+				new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, self::INHERIT_KEY)),
 			) );
 			$markerReq->important = false;
 			// An unmarked existing hash is the very situation the RuTracker
@@ -646,7 +648,7 @@ class ruTrackerChecker
 			// value (or an out-parameter) for "already present, unmarked",
 			// having each handler map that value to STE_NOT_NEED plus a
 			// setMessage(CHKMSG_SUPERSEDED), and re-testing all seven paths.
-			if(!$markerReq->success() || !isset($markerReq->val[2]) || (string) $markerReq->val[0] === '')
+			if(!$markerReq->success() || !isset($markerReq->val[3]) || (string) $markerReq->val[0] === '')
 				return self::STE_ERROR;
 			if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)
 			{
@@ -656,6 +658,16 @@ class ruTrackerChecker
 				self::clearReplacementRecord($newHash);
 				return self::STE_ERROR;
 			}
+			// The record the dead run wrote at ITS commit point, read before
+			// the copy carrying it is erased. The dead run's own stop/close
+			// is what left the predecessor stopped, so for this transaction
+			// the live re-read below reports the crash, not the user -- the
+			// record is the one truthful account of the state the torrent
+			// was last in (the same reasoning as metafetch.php's chk-meta-run
+			// fallback when there is nothing left to read).
+			$stagedRecord = self::decodeInheritance((string) $markerReq->val[3]);
+			if($stagedRecord !== null && strcasecmp($stagedRecord['old'], (string) $hash) !== 0)
+				$stagedRecord = null;	// staged for some other predecessor: not this transaction
 			if(!self::eraseStaged($newHash))
 				return self::STE_ERROR;
 		}
@@ -723,6 +735,18 @@ class ruTrackerChecker
 		// up running is decided from exactly these two values.
 		self::logDebug("createTorrent: " . $hash . " old run state at commit: started="
 			. ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
+		if($stagedRecord !== null && !$wasStarted && !$wasOpen
+			&& ($stagedRecord['run']['started'] || $stagedRecord['run']['open']))
+		{
+			// Stopped AND closed is exactly what the dead run's own stop/close
+			// left behind; encoding it forward would hand the replacement a
+			// state nobody chose. Inherit what that run recorded instead.
+			$wasStarted = $stagedRecord['run']['started'];
+			$wasOpen = $stagedRecord['run']['open'];
+			self::logDebug("createTorrent: " . $hash . " measures stopped and closed, but the staged"
+				. " copy's record says " . ($wasStarted ? "started" : "open")
+				. ": inheriting the recorded state, the measured one is the dead run's own stop");
+		}
 		$addition = self::buildReplacementAddition(
 			$connectionSeed, $throttle, $ratioViews, $existingViews, self::STE_UPDATED, $marker,
 			self::encodeInheritance($hash, $wasStarted, $wasOpen, time())

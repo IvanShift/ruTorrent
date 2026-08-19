@@ -49,6 +49,10 @@ class rTorrent
 }
 
 $GLOBALS['topDirectory'] = '/data/';
+// No in-cycle metadata wait by default: the tests that exercise the wait set
+// their own budget explicitly, and every other begin() success path would
+// otherwise sleep the full production default (10s) for nothing.
+$GLOBALS['rutrackerMetaWait'] = 0;
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/metafetch.php');
 
 $suite = new StrictTestSuite();
@@ -57,14 +61,16 @@ $newHash = str_repeat('B', 40);
 
 $suite->test('begin refuses when the new hash already exists', function () use ($oldHash, $newHash) {
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash)); // torrentExists -> true
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());   // chk-msg write
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));      // torrentExists -> true
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));      // no chk-meta-old: not our stub
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());        // chk-msg write
     $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
     strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'the topic\'s current version is already present');
     strictAssertSame(0, count(rTorrent::$magnets), 'no magnet loaded');
-    // Who put it there is unknowable (the user, another automation, or an
-    // earlier incomplete run of this plugin), so the token records only the
-    // successor hash and the sentence says only that it is present.
+    // An unmarked item is not this plugin's stub (an abandoned stub still
+    // carries chk-meta-old, and is adopted instead -- see below). Who put it
+    // there is unknowable, so the token records only the successor hash and
+    // the sentence says only that it is present.
     strictAssertSame(1, count(ruTrackerChecker::$messages), 'exactly one chk-msg write');
     strictAssertSame(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
         ruTrackerChecker::$messages[0]['message'], 'superseded token carries the successor hash');
@@ -129,10 +135,7 @@ $suite->test('metadata that arrives while begin waits is harvested in the same c
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
     // ... which hands straight over to pump()'s own sequence.
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, true, array());
 
@@ -141,7 +144,7 @@ $suite->test('metadata that arrives while begin waits is harvested in the same c
     strictAssertSame(null, $state, 'the replacement completed inside this cycle, not next hour');
     strictAssertSame(1, count(ruTrackerChecker::$created), 'createTorrent ran without waiting for another cycle');
     strictAssertSame($oldHash, ruTrackerChecker::$created[0]['old_hash'], 'the old torrent is the one replaced');
-    unset($GLOBALS['rutrackerMetaWait']);
+    $GLOBALS['rutrackerMetaWait'] = 0; // back to the file-wide no-wait default
 });
 
 $suite->test('metadata that does not arrive in time still leaves the fetch pending', function () use ($oldHash, $newHash) {
@@ -165,7 +168,7 @@ $suite->test('metadata that does not arrive in time still leaves the fetch pendi
     strictAssertSame(ruTrackerChecker::STE_META_PENDING, $state, 'the slow case is left to the next cycle, as before');
     strictAssertSame(0, count(ruTrackerChecker::$created), 'nothing is replaced while the stub has no metainfo');
     strictAssertTrue((microtime(true) - $started) < 2, 'a zero wait must not sleep');
-    unset($GLOBALS['rutrackerMetaWait']);
+    $GLOBALS['rutrackerMetaWait'] = 0; // back to the file-wide no-wait default
 });
 
 $suite->test('begin fails closed when the load never materialises', function () use ($oldHash, $newHash) {
@@ -233,10 +236,24 @@ $suite->test('begin erases the stub and skips stamping when d.start fails', func
 
 // pump()/harvest(): begin() only stamps the old download with chk-meta-new
 // and chk-meta-until (markOldTorrent()); chk-meta-topic rides only on the
-// stub, per the load addition in begin() and the design doc's "the stub
+// stub, per the load addition in begin() -- "the stub
 // carries mirror labels" (4.4 point 2). So pump reads two fields off the old
 // hash, and -- only once metadata has actually arrived -- one more off the
 // stub itself.
+
+// The queue prefix shared by every test that walks pump() up to a stub whose
+// metadata has arrived: the old torrent's markers, the existence probe, the
+// ownership re-check, the metadata state and the stub's topic id.
+function mfQueueArrived($newHash)
+{
+    global $oldHash;
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+        array($newHash, '999999'));                                       // chk-meta-new, chk-meta-until (old torrent)
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // stub exists
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));  // still ours
+    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));          // metadata arrived
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823')); // chk-meta-topic (stub)
+}
 
 $suite->test('pump harvests in the mandated order once metadata arrived', function () use ($oldHash) {
     ruTrackerChecker::reset();
@@ -249,11 +266,7 @@ $suite->test('pump harvests in the mandated order once metadata arrived', functi
     $newHash = strtoupper($fixture->hash_info());
     rTorrent::$source = $fixture;
 
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
-        array($newHash, '999999'));                                       // chk-meta-new, chk-meta-until (old torrent)
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // stub exists
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));          // metadata arrived
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823')); // chk-meta-topic (stub)
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, true, array());                 // verify gone
 
@@ -262,7 +275,7 @@ $suite->test('pump harvests in the mandated order once metadata arrived', functi
     strictAssertSame(1, count(ruTrackerChecker::$created), 'createTorrent called once');
     $payload = new Torrent(ruTrackerChecker::$created[0]['payload']);
     strictAssertSame('https://rutracker.org/forum/viewtopic.php?t=6879823', $payload->comment(), 'comment restored');
-    // design doc 4.4-5в: comment lives outside the info dict, so patching it
+    // The comment lives outside the info dict, so patching it
     // must not change the hash createTorrent() is asked to replace with.
     strictAssertSame($newHash, strtoupper($payload->hash_info()), 'comment patch does not change info_hash');
     strictAssertSame($oldHash, ruTrackerChecker::$created[0]['old_hash'], 'replacement of the old torrent');
@@ -290,10 +303,7 @@ $suite->test('harvest backfills an empty announce from the old torrent before er
         $oldHash => new Torrent(strictTorrentRaw('Youjo Senki', 'http://bt.t-ru.org/ann?pk=s3cr3t')),
     );
 
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, true, array());
 
@@ -304,7 +314,7 @@ $suite->test('harvest backfills an empty announce from the old torrent before er
     strictAssertSame('https://rutracker.org/forum/viewtopic.php?t=6879823', $payload->comment(), 'comment still restored');
 });
 
-// design doc 4.4-5б: hash_info() of the harvested bytes must match the
+// hash_info() of the harvested bytes must match the
 // recorded chk-meta-new before they are ever handed to createTorrent(). A
 // mismatch (corrupt/foreign metadata at the same session slot) must drop the
 // stub and retry, never fall through to createTorrent()'s own legacy
@@ -317,10 +327,7 @@ $suite->test('harvest drops the stub and retries when the fetched bytes hash to 
     $mismatched = new Torrent(strictTorrentRaw('Wrong Metadata', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
     rTorrent::$source = $mismatched;
 
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // stub exists
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));          // metadata arrived
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823')); // chk-meta-topic
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // clearMarks
 
@@ -348,10 +355,7 @@ $suite->test('harvest stays pending when the erased stub is still present', func
     $newHash = strtoupper($fixture->hash_info());
     rTorrent::$source = $fixture;
 
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // stub exists
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));          // metadata arrived
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823')); // chk-meta-topic
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // still present after erase
 
@@ -364,6 +368,7 @@ $suite->test('pump aborts early when the tracker rejects the new hash', function
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));     // still a stub
     rXMLRPCRequest::queue('t.multicall', true, false, array('3')); // flat: one row, failed_counter=3
     rXMLRPCRequest::queue('d.erase', true, false, array());
@@ -381,6 +386,7 @@ $suite->test('pump enforces the deadline', function () use ($oldHash, $newHash) 
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
         array($newHash, '500'));          // deadline 500 < now 1000
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('t.multicall', true, false, array('0')); // flat: one row, failed_counter=0
     rXMLRPCRequest::queue('d.erase', true, false, array());
@@ -397,6 +403,7 @@ $suite->test('pump keeps waiting while the stub is healthy', function () use ($o
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
         array($newHash, '999999'));
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('t.multicall', true, false, array('0')); // flat: one row, failed_counter=0
     strictAssertSame(ruTrackerChecker::STE_META_PENDING,
@@ -437,6 +444,7 @@ $suite->test('the three metadata-fetch abort reasons are logged in English', fun
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('t.multicall', true, false, array('3'));
     rXMLRPCRequest::queue('d.erase', true, false, array());
@@ -452,6 +460,7 @@ $suite->test('the three metadata-fetch abort reasons are logged in English', fun
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '500'));
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('t.multicall', true, false, array('0'));
     rXMLRPCRequest::queue('d.erase', true, false, array());
@@ -467,10 +476,7 @@ $suite->test('the three metadata-fetch abort reasons are logged in English', fun
     ruTrackerChecker::reset();
     rTorrent::$sourcesByHash = array();
     rTorrent::$source = new Torrent(strictTorrentRaw('Wrong Metadata', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
     RuTrackerMetaFetch::pump($oldHash, 1000);
@@ -569,6 +575,7 @@ $suite->test('every begin exit logs its outcome', function () use ($oldHash, $ne
     // 2. The successor is already present.
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // unmarked: not our stub
     rXMLRPCRequest::queue('d.set_custom', true, false, array());
     strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
         RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000), 'already superseded');
@@ -665,10 +672,7 @@ function mfQueueHarvest($oldHash, $live, $runMark = null)
     $newHash = strtoupper($fixture->hash_info());
     rTorrent::$source = $fixture;
 
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
-    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));         // stub exists
-    rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));           // metadata arrived
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('6879823'));  // chk-meta-topic (stub)
+    mfQueueArrived($newHash);
     rXMLRPCRequest::queue('d.erase', true, false, array());
     rXMLRPCRequest::queue('d.hash', true, true, array());                  // the stub is gone
     // The commit-point read of the old torrent's run state; the first
@@ -738,9 +742,10 @@ $suite->test('a readable stopped state at commit time beats a was-running marker
         'a torrent the user had stopped must not be resurrected by its replacement');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')), 'not by a bare start either');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'and not even reopened');
-    // chk-meta-topic is the one d.get_custom of a harvest; a second one would
-    // be the marker, which a readable state must not even bother to consult.
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')),
+    // The ownership re-check and chk-meta-topic are the two d.get_custom of a
+    // harvest; a third would be the marker, which a readable state must not
+    // even bother to consult.
+    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.get_custom')),
         'the marker is not consulted at all while the live read answers');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'run state before the replacement',
         'the state the decision was made on is recorded');
@@ -753,7 +758,7 @@ $suite->test('the marker is the fallback when the old torrent can no longer be r
     rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // already running
 
     strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the replacement is committed');
-    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.get_custom')),
+    strictAssertSame(3, count(rXMLRPCRequest::requestsFor('d.get_custom')),
         'the marker is read only after the live read failed');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'run state before the replacement',
         'the state the decision was made on is recorded');
@@ -885,6 +890,7 @@ $suite->test('a healthy pending stub logs that it is still a stub, with the reas
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
     rXMLRPCRequest::queue('d.hash', true, false, array($newHash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash)); // still ours
     rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
     rXMLRPCRequest::queue('t.multicall', true, false, array('0'));
 
@@ -892,6 +898,64 @@ $suite->test('a healthy pending stub logs that it is still a stub, with the reas
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'still a metadata stub',
         'a waiting stub says so exactly once per cycle');
     strictAssertEnglish($line, 'the still-a-stub line');
+});
+
+
+// --- The successor hash is re-checked for ownership, both ways ---------------
+//
+// begin() must not declare its OWN abandoned stub a foreign successor (a
+// deferred load that landed after the wait loop gave up was never marked on
+// the old torrent, so nothing would ever pump it), and pump() must not erase
+// an item the user re-added by hand at the very hash the fetch waits on.
+
+$suite->test('begin adopts its own stub left by an earlier cycle', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));        // an item already sits there
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldHash));  // and it carries OUR marker
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // old torrent: seeding
+    rXMLRPCRequest::queue('d.start', true, false, array());
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+
+    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING, $state, 'the fetch resumes instead of aborting');
+    strictAssertSame(0, count(rTorrent::$magnets), 'no second magnet is loaded');
+    strictAssertSame(0, count(ruTrackerChecker::$messages), 'no superseded token for our own stub');
+    $stamps = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
+    strictAssertSame(1, count($stamps), 'the old torrent is claimed exactly as the normal path claims it');
+    strictAssertSame(array($oldHash, 'chk-meta-new', $newHash), $stamps[0]['commands'][0]->params,
+        'chk-meta-new names the adopted stub');
+    strictAssertSame(array($oldHash, 'chk-meta-run', 'started'), $stamps[0]['commands'][2]->params,
+        'the run state is read now, same as the normal path');
+    $starts = rXMLRPCRequest::requestsFor('d.start');
+    strictAssertSame(1, count($starts), 'the stub is started');
+    strictAssertSame($newHash, $starts[0]['commands'][0]->params, 'd.start targets the stub');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'adopted its own stub',
+        'the adoption is logged');
+    strictAssertEnglish($line, 'the adoption line');
+});
+
+$suite->test('pump leaves a foreign item at the successor hash alone and retires the fetch', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+        array($newHash, '999999'));                                            // chk-meta-new, chk-meta-until
+    rXMLRPCRequest::queue('d.hash', true, false, array($newHash));             // an item is there
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(str_repeat('C', 40))); // but it is not ours any more
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());               // chk-msg write
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // clearMarks
+
+    $state = RuTrackerMetaFetch::pump($oldHash, 1000);
+    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'a taken-over hash is a terminal outcome, not an error');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'the foreign item is never erased');
+    strictAssertSame(0, count(ruTrackerChecker::$created), 'and never harvested');
+    strictAssertSame(1, count(ruTrackerChecker::$messages), 'exactly one chk-msg write');
+    strictAssertSame(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
+        ruTrackerChecker::$messages[0]['message'], 'the superseded token carries the successor hash');
+    $clears = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+    strictAssertSame(1, count($clears), 'the fetch markers are cleared so nothing pumps this again');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'belongs to someone else',
+        'the hand-off is logged');
+    strictAssertEnglish($line, 'the hand-off line');
 });
 
 exit($suite->run());

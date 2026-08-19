@@ -43,7 +43,7 @@ $suite->test('classify follows the layer-1 rules', function () {
         'dht row ignored');
 });
 
-// design doc §2.2/§3: the original analysis treated a short announce interval
+// The original analysis treated a short announce interval
 // (t.normal_interval near its 300s clamp, seen right after first contact) as a
 // sign of a dead torrent; 29 live torrents measured at that same clamped
 // interval proved the rule wrong, so it was dropped rather than ported.

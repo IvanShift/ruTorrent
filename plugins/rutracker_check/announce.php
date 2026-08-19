@@ -30,10 +30,10 @@ class RuTrackerAnnounce
     // re-uploaded (deregistered) came back with exactly this text. Anything
     // else -- a rate-limit notice, a ban, a malformed-request complaint --
     // has NOT been confirmed to mean "deregistered" and must stay
-    // inconclusive; see classify()'s $expectedFailure parameter.
+    // inconclusive; classify() accepts no other text.
     const UNREGISTERED_FAILURE_REASON = 'Torrent not registered';
 
-    // Floor for the announce cap's window (allowProbe()/recordProbe()'s
+    // Floor for the announce cap's window (probeDecision()/recordProbe()'s
     // $window, seconds), mirroring RuTrackerCheckImpl::MIN_DELETE_INTERVAL
     // (trackers/rutracker.php): conf.php documents $updateInterval = 0 as
     // "disable the scheduler", but a manual batch_check.php click still
@@ -53,25 +53,12 @@ class RuTrackerAnnounce
     // batch_check.php per manual "check" click all share the same file, so
     // ten manual clicks share one window's budget instead of each buying
     // its own the way an in-memory-only counter used to.
-    //
-    // Formerly cleared an in-memory per-cycle counter, which was correct
-    // for the hourly update.php pass (one process per cycle) but meaningless
-    // for a manual click, where a fresh process meant a fresh counter every
-    // time. The windowed counter above replaces it: it expires itself once
-    // $window elapses, so there is nothing left here to reset. Kept as a
-    // no-op, rather than removed, so update.php's per-cycle call site does
-    // not need to change and so a test can assert directly that calling
-    // this no longer voids the cap.
-    static public function resetCycle()
-    {
-    }
 
     // Why this host may or may not be probed right now: 'allow', 'cooldown'
     // (a 403 cooldown is still running) or 'cap' (the window's budget is
-    // spent). allowProbe() is the boolean every caller used before and still
-    // uses for the decision itself; this is what the debug log names, so a
-    // skipped layer 2 says which of the two budgets stopped it instead of
-    // merely that something did.
+    // spent). A named answer rather than a boolean, because this is what the
+    // debug log prints: a skipped layer 2 says which of the two budgets
+    // stopped it instead of merely that something did.
     static public function probeDecision($host, $now, $cap, $window)
     {
         $window = max((int) $window, self::MIN_WINDOW);
@@ -84,11 +71,6 @@ class RuTrackerAnnounce
         $windowStart = (int) ($entry['window_start'] ?? 0);
         $count = ($windowStart !== 0 && $now - $windowStart < $window) ? (int) ($entry['window_count'] ?? 0) : 0;
         return $count < $cap ? 'allow' : 'cap';
-    }
-
-    static public function allowProbe($host, $now, $cap, $window)
-    {
-        return self::probeDecision($host, $now, $cap, $window) === 'allow';
     }
 
     static public function recordProbe($host, $now, $got403, $window)
@@ -147,7 +129,7 @@ class RuTrackerAnnounce
             . '&event=stopped&key=' . rawurlencode($key);
     }
 
-    static public function classify($status, $body, $expectedFailure = null)
+    static public function classify($status, $body)
     {
         if ((int) $status !== 200 || !is_string($body) || $body === '') return 'uncertain';
 
@@ -156,6 +138,11 @@ class RuTrackerAnnounce
         // ('le') and an empty dictionary ('de') both decode to the same PHP
         // array(), so the distinction can only be made on the raw bytes.
         if ($body[0] !== 'd') return 'uncertain';
+        // A legitimate announce reply is a few hundred bytes; the decoder is
+        // a recursive-descent parser with no depth or size bound of its own,
+        // and memory exhaustion is a fatal no catch below can stop. Anything
+        // this large is not a tracker answer worth trusting anyway.
+        if (strlen($body) > 65536) return 'uncertain';
 
         try {
             $decoded = (new RuTrackerBencodeDecoder())->decode($body);
@@ -176,8 +163,7 @@ class RuTrackerAnnounce
         if (!array_key_exists('failure reason', $decoded)) return 'registered';
 
         $reason = $decoded['failure reason'];
-        if (!is_string($reason) || $reason === '') return 'uncertain';
-        if ($expectedFailure !== null && $reason !== $expectedFailure) return 'uncertain';
+        if (!is_string($reason) || $reason !== self::UNREGISTERED_FAILURE_REASON) return 'uncertain';
         return 'unregistered';
     }
 }

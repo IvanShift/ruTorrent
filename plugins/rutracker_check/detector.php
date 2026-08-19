@@ -28,7 +28,7 @@ class RuTrackerDetector
         return $rows;
     }
 
-    // Layer-1 verdict for one torrent (design spec 4.1), driven only by the
+    // Layer-1 verdict for one torrent, driven only by the
     // RuTracker tracker row; dht:// and any other row are never consulted.
     // $dMessage (d.message) is download-global and holds only the most
     // recent tracker event of ANY row, so it may recognise a transport

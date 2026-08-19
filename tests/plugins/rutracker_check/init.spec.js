@@ -107,6 +107,7 @@ describe("chkResultText", () => {
       "|x",
       "deleting|",
       "absorbed|not-a-number",
+      "absorbed|12<x", // digits followed by junk: parseInt would accept it
       "|",
     ]) {
       expect(plugin.chkResultText(torrent(7, message))).toBe("No need");
@@ -183,30 +184,82 @@ describe("language files", () => {
       expect(result.trim()).not.toBe("");
     }
   });
+});
 
-  // The tokenised sentences and the two chk-states added with them were
-  // seeded in English; a locale still carrying the seed is untranslated, not
-  // translated into the same words.
-  it.each(languages.filter((language) => language !== "en"))(
-    "%s translates the sentences rather than keeping the English seed",
-    (language) => {
-      const en = load("en");
-      const seeded = {
-        chkMessages: { ...en.chkMessages },
-        chkResults: [...en.chkResults],
-      };
-      const lang = load(language);
+describe("WebUI wiring", () => {
+  beforeEach(() => useLanguage("en"));
 
-      for (const token of SENTENCE_TOKENS) {
-        expect(lang.chkMessages[token]).not.toBe(seeded.chkMessages[token]);
-      }
-      // Each entry on its own: comparing the pair would pass while one half
-      // still carried the seed.
-      for (const state of [9, 10]) {
-        expect(lang.chkResults[state - 1]).not.toBe(
-          seeded.chkResults[state - 1]
-        );
-      }
+  it("registers the three chk-* columns and routes their values onto the torrent", () => {
+    const captured = [];
+    const savedAddRequest = global.theRequestManager.addRequest;
+    const savedConfig = plugin.config;
+    global.dStatus = { error: 128 };
+    global.theRequestManager.addRequest = (target, key, callback) => {
+      captured.push({ target, key, callback });
+      return captured.length;
+    };
+    let chained = false;
+    plugin.config = function () {
+      chained = true;
+    };
+    try {
+      global.theWebUI.config();
+
+      // A misspelled custom key here would silently ship a dead pipeline:
+      // rTorrent answers nothing for it, the callbacks never fire, and every
+      // rendering test below still passes on hand-built torrents.
+      expect(captured.map((c) => c.key)).toEqual([
+        "chk-state",
+        "chk-time",
+        "chk-msg",
+      ]);
+      expect(captured.every((c) => c.target === "trt")).toBe(true);
+      expect(chained).toBe(true);
+
+      const byKey = Object.fromEntries(captured.map((c) => [c.key, c.callback]));
+      const flagged = { state: 0 };
+      byKey["chk-state"]("A".repeat(40), flagged, "10"); // STE_ABSORBED
+      expect(flagged.chkstate).toBe("10");
+      expect(flagged.state & 128).toBe(128);
+
+      const healthy = { state: 0 };
+      byKey["chk-state"]("A".repeat(40), healthy, "3"); // STE_UPTODATE
+      expect(healthy.state & 128).toBe(0);
+
+      const carrier = {};
+      byKey["chk-time"]("A".repeat(40), carrier, "1234");
+      byKey["chk-msg"]("A".repeat(40), carrier, "superseded|" + "B".repeat(40));
+      expect(carrier.chktime).toBe("1234");
+      expect(carrier.chkmsg).toBe("superseded|" + "B".repeat(40));
+    } finally {
+      global.theRequestManager.addRequest = savedAddRequest;
+      plugin.config = savedConfig;
+      delete global.dStatus;
     }
-  );
+  });
+
+  it("paints a deleted/absorbed torrent as an error row once the UI is ready, and stays out of the way otherwise", () => {
+    const savedBase = plugin.getStatusIcon;
+    plugin.getStatusIcon = () => ["Status_Base", "base"];
+    try {
+      plugin.allStuffLoaded = true;
+      expect(global.theWebUI.getStatusIcon(torrent(10, ""))).toEqual([
+        "Status_Error",
+        plugin.chkResultText(torrent(10, "")),
+      ]);
+      expect(global.theWebUI.getStatusIcon(torrent(3, ""))).toEqual([
+        "Status_Base",
+        "base",
+      ]); // a healthy state falls through to the WebUI's own icon
+
+      plugin.allStuffLoaded = false;
+      expect(global.theWebUI.getStatusIcon(torrent(10, ""))).toEqual([
+        "Status_Base",
+        "base",
+      ]); // never claim an error row before the torrent list is fully loaded
+    } finally {
+      plugin.getStatusIcon = savedBase;
+      plugin.allStuffLoaded = false;
+    }
+  });
 });

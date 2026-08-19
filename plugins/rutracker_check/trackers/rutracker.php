@@ -39,7 +39,7 @@ class RuTrackerCheckImpl
         return (int) $query['t'];
     }
 
-    // --- Absorption detection (design doc 4.5): dormant, kept as-is -------
+    // --- Absorption detection: dormant, kept as-is ------------------------
     //
     // Detects a topic absorbed into another one by parsing the forum thread
     // for a final moderator notice; the thread itself sits behind RuTracker's
@@ -185,7 +185,7 @@ class RuTrackerCheckImpl
         return null;
     }
 
-    // --- Post-API active flow (design doc 4.1-4.4) -------------------------
+    // --- Post-API active flow ----------------------------------------------
 
     // Shared chk-* custom-field boilerplate for the tiny helpers below: a
     // single read (null on any RPC failure or a genuinely unset field, so
@@ -215,7 +215,7 @@ class RuTrackerCheckImpl
         self::writeCustom($hash, "chk-topic", (string) $topicId);
     }
 
-    // Layer 1 (design doc 4.1): the torrent's own RuTracker tracker row plus
+    // Layer 1: the torrent's own RuTracker tracker row plus
     // d.get_message, fed straight into RuTrackerDetector::classify(). Uses
     // the same fields as update.php's embedded t.multicall, but addressed at
     // a single hash -- this handler is reached from both the scheduled pass
@@ -302,7 +302,7 @@ class RuTrackerCheckImpl
         self::writeCustom($hash, "chk-del", '');
     }
 
-    // Pure classification of a found dump row (design doc 4.3, rules 2-6);
+    // Pure classification of a found dump row;
     // null means the row is simply missing (rule 1), which needs more
     // context (the tracker-confirmation flag, the current time) than this
     // function is given, so that case is left for the caller to resolve.
@@ -321,11 +321,25 @@ class RuTrackerCheckImpl
         return array('verdict' => 'updated', 'status' => $status, 'newHash' => $row['info_hash']);
     }
 
-    // Two-independent-sources deletion confirmation (design doc 4.3):
+    // Two-independent-sources deletion confirmation:
     // chk-del holds "count:timestamp-of-last-increment". The increment is
     // capped at once per $interval regardless of how many times this runs,
     // so repeated manual batch_check.php clicks cannot fast-forward the
     // three required cycles.
+    // Whether confirmDeletion() ever reached its threshold for this torrent:
+    // the chk-del counter survives the verdict (only an alive/present row
+    // resets it), so it is the durable record that a full confirmation run
+    // happened, readable even after run() has overwritten chk-state with
+    // STE_INPROGRESS for the current dispatch.
+    static private function deletionConfirmedOnce($hash)
+    {
+        global $rutrackerDeleteCycles;
+        $cycles = isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3;
+        $stored = self::readCustom($hash, "chk-del");
+        return $stored !== null && preg_match('/^(\d+):/', (string) $stored, $m)
+            && (int) $m[1] >= $cycles;
+    }
+
     static private function confirmDeletion($hash, $now, $interval)
     {
         global $rutrackerDeleteCycles;
@@ -431,7 +445,7 @@ class RuTrackerCheckImpl
 
         self::rememberTopic($hash, $topicId);
 
-        // Layer 1: local, request-free verdict (design doc 4.1). Runs on
+        // Layer 1: local, request-free verdict. Runs on
         // every call -- including a manual batch_check.php click -- rather
         // than trusting a cached scheduler verdict.
         $verdict = self::layer1Verdict($hash);
@@ -454,13 +468,13 @@ class RuTrackerCheckImpl
         $announceUrl = is_object($oldTorrent) ? (string) $oldTorrent->announce() : '';
         $host = (string) @parse_url($announceUrl, PHP_URL_HOST);
 
-        // Layer 2: passkey-less announce confirmation (design doc 4.2).
-        // Optional and budgeted; the budget (allowProbe/recordProbe) is
+        // Layer 2: passkey-less announce confirmation.
+        // Optional and budgeted; the budget (probeDecision/recordProbe) is
         // consulted here too so repeated manual checks cannot outrun it --
         // the windowed cap is persisted (RuTrackerState, via announce.php),
         // so it holds across manual batch_check.php clicks just as much as
         // across the hourly update.php pass. $updateInterval*60 is the same
-        // window every other per-cycle knob in this plugin uses; allowProbe/
+        // window every other per-cycle knob in this plugin uses; probeDecision/
         // recordProbe floor it themselves so a disabled scheduler ($updateInterval=0)
         // cannot void the cap.
         $announceWindow = (int) $updateInterval * 60;
@@ -472,6 +486,14 @@ class RuTrackerCheckImpl
         $probeDecision = 'skipped';
         if (empty($rutrackerLayer2Enabled)) $skip = 'disabled in the configuration';
         elseif ($host === '') $skip = 'the torrent carries no announce host';
+        // The handler is dispatched by the topic COMMENT, and layer 1's verdict
+        // comes from the t-ru tracker ROW -- neither guarantees the torrent's
+        // primary announce is RuTracker's. An answer from some other tracker
+        // proves nothing about the RuTracker topic (and the probe itself would
+        // land on a tracker that never asked for it), so a foreign host is
+        // treated exactly like a missing one: fall through to layer 3.
+        elseif (!preg_match(RuTrackerDetector::TRACKER_PATTERN, $host))
+            $skip = 'the announce host ' . $host . ' is not RuTracker\'s';
         else {
             $probeDecision = RuTrackerAnnounce::probeDecision($host, time(), (int) $rutrackerAnnounceCap, $announceWindow);
             if ($probeDecision === 'cap') $skip = 'the per-host announce cap for ' . $host . ' is exhausted';
@@ -494,8 +516,7 @@ class RuTrackerCheckImpl
             } else {
                 $client = ruTrackerChecker::makeClient($probeUrl);
                 RuTrackerAnnounce::recordProbe($host, time(), (int) $client->status === 403, $announceWindow);
-                $answer = RuTrackerAnnounce::classify($client->status, $client->results,
-                    RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON);
+                $answer = RuTrackerAnnounce::classify($client->status, $client->results);
                 // The probe URL itself is never logged: buildUrl() strips the
                 // passkey, but the announce host is all a diagnosis needs.
                 ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 verdict=' . $answer
@@ -510,7 +531,7 @@ class RuTrackerCheckImpl
             }
         }
 
-        // Layer 3: classification from the forum's static dump (design doc 4.3).
+        // Layer 3: classification from the forum's static dump.
         $forumId = self::resolveForum($hash);
         if ($forumId === null) {
             RuTrackerForumIndex::queueTopic($topicId);
@@ -551,6 +572,22 @@ class RuTrackerCheckImpl
             self::forgetForum($hash);
             RuTrackerForumIndex::queueTopic($topicId);
             if (!$trackerConfirmed) {
+                // A budget-denied probe is no evidence either way: when the
+                // deletion was already fully confirmed once (chk-del at the
+                // threshold) and the row is still missing, keep the settled
+                // verdict -- only a probe that actually RAN may move it.
+                // Anything else here (a fresh answer of "registered" never
+                // reaches this branch) would downgrade DELETED to "can't
+                // reach" for the crime of a spent budget, un-settling the
+                // row into hourly re-litigation until the deletion is
+                // re-confirmed from scratch.
+                if (($probeDecision === 'cap' || $probeDecision === 'cooldown')
+                        && self::deletionConfirmedOnce($hash)) {
+                    ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                        . ' row still missing and the probe budget is spent:'
+                        . ' the settled DELETED verdict stands');
+                    return ruTrackerChecker::STE_DELETED;
+                }
                 // Nothing was decided, so there is nothing to report: clear
                 // chk-msg (an older token here would now be stale) and log.
                 ruTrackerChecker::setMessage($hash, '');

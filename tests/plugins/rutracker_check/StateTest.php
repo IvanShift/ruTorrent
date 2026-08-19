@@ -120,4 +120,105 @@ $suite->test('acquireCycleLock() admits one cycle and turns the next one away', 
     }
 });
 
+
+$suite->test('a state json_encode() cannot represent keeps the old document instead of truncating it', function () {
+    $tmp = sys_get_temp_dir() . '/chk-state-badjson-' . getmypid();
+    strictRemoveTree($tmp);
+    strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+
+    try {
+        RuTrackerState::save('demo', array('a' => 1));
+        // Invalid UTF-8 makes json_encode() return false; the write must be
+        // refused wholesale -- a stale document beats a truncated one.
+        RuTrackerState::update('demo', function ($state) {
+            $state['bad'] = "\xB0";
+            return $state;
+        });
+        strictAssertSame(array('a' => 1), RuTrackerState::load('demo'),
+            'the previous document survives an unencodable update');
+        RuTrackerState::save('demo', array('bad' => "\xB0"));
+        strictAssertSame(array('a' => 1), RuTrackerState::load('demo'),
+            'and an unencodable save');
+    } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
+$suite->test('update() replaces the document whole: no reader can ever see it empty or half-written', function () {
+    $tmp = sys_get_temp_dir() . '/chk-state-whole-' . getmypid();
+    strictRemoveTree($tmp);
+    strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+
+    try {
+        RuTrackerState::save('demo', array('a' => 1));
+        // load() takes no lock by design, so the only thing that keeps a
+        // concurrent reader safe is the document being replaced by rename
+        // rather than rewritten in place: in-place rewriting exposes an
+        // empty/partial file between the truncate and the write, and a
+        // writer killed there truncates the document for good.
+        clearstatcache();
+        $before = fileinode($tmp . '/demo.json');
+        RuTrackerState::update('demo', function ($state) use ($tmp) {
+            $raw = file_get_contents($tmp . '/demo.json');
+            strictAssertSame(array('a' => 1), json_decode($raw, true),
+                'mid-update, a lock-free reader still gets the complete old document');
+            $state['b'] = 2;
+            return $state;
+        });
+        strictAssertSame(array('a' => 1, 'b' => 2), RuTrackerState::load('demo'), 'the new document lands whole');
+        clearstatcache();
+        strictAssertTrue(fileinode($tmp . '/demo.json') !== $before,
+            'the document was replaced by rename, not rewritten in place');
+        // ... which is also why the write lock must live BESIDE the document:
+        // a lock on the replaced inode would serialise nothing.
+        strictAssertTrue(is_file($tmp . '/demo.lock'), 'the lock file sits beside the document');
+    } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
+
+$suite->test('update() really excludes a concurrent writer: two processes never lose an increment', function () {
+    $tmp = sys_get_temp_dir() . '/chk-state-mutex-' . getmypid();
+    strictRemoveTree($tmp);
+    mkdir($tmp, 0777, true);
+
+    // Everything above exercises update() single-process, which re-reads the
+    // file but would also pass with the flock deleted outright. Only two
+    // genuinely concurrent writers can pin the lock itself: without it the
+    // read-modify-write interleaves and increments vanish.
+    $rounds = 60;
+    $child = $tmp . '/child.php';
+    file_put_contents($child, '<?php
+        require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/state.php', true) . ';
+        $dir = new ReflectionProperty("RuTrackerState", "dir");
+        $dir->setAccessible(true);
+        $dir->setValue(null, ' . var_export($tmp, true) . ');
+        for ($i = 0; $i < ' . $rounds . '; $i++)
+            RuTrackerState::update("counter", function ($state) {
+                $state["n"] = ($state["n"] ?? 0) + 1;
+                return $state;
+            });
+    ');
+
+    try {
+        $spec = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+        $a = proc_open(PHP_BINARY . ' ' . escapeshellarg($child), $spec, $pipesA);
+        $b = proc_open(PHP_BINARY . ' ' . escapeshellarg($child), $spec, $pipesB);
+        strictAssertTrue(is_resource($a) && is_resource($b), 'both writers launched');
+        foreach (array($pipesA, $pipesB) as $pipes) {
+            stream_get_contents($pipes[1]); fclose($pipes[1]);
+            stream_get_contents($pipes[2]); fclose($pipes[2]);
+        }
+        strictAssertSame(0, proc_close($a), 'writer A exited cleanly');
+        strictAssertSame(0, proc_close($b), 'writer B exited cleanly');
+
+        strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+        strictAssertSame(2 * $rounds, RuTrackerState::load('counter')['n'],
+            'every increment survived: the side lock serialised the writers');
+    } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
 exit($suite->run());

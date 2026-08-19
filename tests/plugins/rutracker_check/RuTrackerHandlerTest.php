@@ -12,7 +12,7 @@
  * was reached with the right hash; its own internals are MetaFetchTest's job.
  *
  * detectAbsorbedTopic() and its helpers stay in rutracker.php, dormant
- * (design doc 4.5): the old download_torrent() no longer calls them, so the
+ * (dormant absorption detection): the old download_torrent() no longer calls them, so the
  * only coverage they get now is the direct strictInvoke tests below.
  */
 
@@ -61,10 +61,12 @@ function hReset()
     // clear the memo itself, or a later test reusing the same forum id would
     // be served an earlier test's stale dump instead of its own fixture.
     strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
-    RuTrackerAnnounce::resetCycle();
     $GLOBALS['updateInterval'] = 60;
     $GLOBALS['rutrackerDeleteCycles'] = 3;
-    $GLOBALS['rutrackerAnnouncePause'] = 0;
+    // -3: max(0, -3 + random_int(0, 3)) is always 0, so no probing test ever
+    // sleeps; 0 alone still sleeps up to 3 random seconds per probe.
+    $GLOBALS['rutrackerAnnouncePause'] = -3;
+    $GLOBALS['rutrackerMetaWait'] = 0;
     $GLOBALS['rutrackerAnnounceCap'] = 10;
     $GLOBALS['rutrackerLayer2Enabled'] = false;
 }
@@ -993,6 +995,98 @@ $suite->test('a transport failure is still reported as unreachable', function ()
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'an actual transport error is a real "cannot reach", unlike a cold torrent');
+});
+
+
+// Layer 2's verdict is only meaningful when the announce it probes IS
+// RuTracker's. The handler is dispatched by the topic comment and layer 1
+// judges the t-ru tracker ROW, so a torrent whose primary announce belongs to
+// another tracker gets this far too -- probing that host would both bother a
+// tracker that never asked for it and let its answer stand in for RuTracker's.
+$suite->test('layer 2 skips a torrent whose primary announce is not a RuTracker host', function () use ($hash, $topicId, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    $foreign = new Torrent(strictTorrentRaw('release name', 'http://tracker.example.org/ann?pk=SECRET', $topicUrl));
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());   // chk-msg
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $foreign);
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
+        'no layer may conclude anything from a foreign tracker');
+    strictAssertSame(array(), Snoopy::$requests, 'no announce probe reaches the foreign host');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'the skip is logged');
+    strictAssertEnglish($line, 'the layer-2 skip line');
+    strictAssertTrue(strpos($line, 'tracker.example.org') !== false, 'the foreign host is named: ' . $line);
+    strictAssertTrue(strpos($line, 'not RuTracker') !== false, 'and the reason says why: ' . $line);
+});
+
+// The only place a real 403 installs the persisted cooldown is the recordProbe
+// call in download_torrent() -- `(int) $client->status === 403`. Test 20's (c)
+// installs the cooldown by calling recordProbe(true) directly, which pins the
+// budget but not this wiring: hardcoding got403=false there would still pass
+// it. Drive an actual 403 response through the handler instead.
+$suite->test('a real 403 answer from the tracker installs the persisted cooldown', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    Snoopy::queueAny(403, '');
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());   // chk-msg
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'a 403 concludes nothing');
+    strictAssertSame('cooldown', RuTrackerAnnounce::probeDecision('bt.t-ru.org', time(), 10, 3600),
+        'the 403 landed in the persisted cooldown, exactly as recordProbe(got403=true) would');
+    $state = RuTrackerState::load('announce');
+    strictAssertTrue((int) $state['bt.t-ru.org']['cooldown_until'] > time(),
+        'and the persisted announce state carries cooldown_until in the future');
+});
+
+
+// The other half of verdict stability: on the recheck, a probe the BUDGET
+// refused proves nothing, and must not cost a fully-confirmed deletion its
+// verdict. chk-del is the durable record that the threshold was reached.
+$suite->test('a spent probe budget cannot downgrade a fully-confirmed DELETED verdict', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    $GLOBALS['rutrackerAnnounceCap'] = 0; // the recheck lands on an exhausted budget
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40))); // row still missing
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // forgetForum
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000'));  // chk-del: confirmed to the threshold
+
+    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_DELETED, $result,
+        'the settled verdict stands: only a probe that actually ran may move it');
+    strictAssertSame(0, count(ruTrackerChecker::$messages),
+        'and its deleting|3/3 message is left in place, not blanked');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'verdict stands', 'the hold is logged');
+    strictAssertEnglish($line, 'the verdict-stands line');
+
+    // Control: the same denial with the deletion NOT yet fully confirmed
+    // still reports "can't reach" -- the shortcut is for settled rows only.
+    hReset();
+    $GLOBALS['rutrackerLayer2Enabled'] = true;
+    $GLOBALS['rutrackerAnnounceCap'] = 0;
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(1106);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // forgetForum
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:1000'));  // one confirmation short
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // chk-msg clear
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+        'an unconfirmed deletion is still just unreachable');
 });
 
 $exitCode = $suite->run();

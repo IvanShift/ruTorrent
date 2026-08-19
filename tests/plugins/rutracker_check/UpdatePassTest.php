@@ -16,27 +16,6 @@
 
 require_once(__DIR__ . '/TestLib.php');
 
-function loadClassDefinition($filename, $className)
-{
-    $source = file_get_contents($filename);
-    $offset = strpos($source, 'class ' . $className);
-    if ($offset === false)
-        throw new RuntimeException("Class {$className} was not found in {$filename}");
-    // ruTrackerChecker is the final declaration in check.php.
-    return substr($source, $offset);
-}
-
-// getCmd() is identity in every existing rutracker_check test (CheckerTest.php
-// included): the real alias table (php/settings.php:302-312) only remaps a
-// handful of legacy names, none of which change the shape of what these
-// tests assert on, and every production call already goes through getCmd()
-// so the alias substitution itself is exercised by php/SnoopyTest.php-style
-// coverage elsewhere, not here.
-function getCmd($command)
-{
-    return $command;
-}
-
 eval(loadClassDefinition(
     testFindRepoRoot() . '/plugins/rutracker_check/check.php',
     'ruTrackerChecker'
@@ -89,9 +68,9 @@ $suite = new StrictTestSuite();
 
 // 9 columns in the current wire-format order (hash, state, time, stime,
 // label, message, chk-del, chk-msg, tracker blob).
-function upRow($hash, $failed, $host = 'bt.t-ru.org', $state = '3', $message = '', $label = '', $del = '', $msg = '')
+function upRow($hash, $failed, $host = 'bt.t-ru.org', $state = '3', $message = '', $label = '', $del = '', $msg = '', $time = '100')
 {
-    return array($hash, $state, '100', '100', $label, $message, $del, $msg,
+    return array($hash, $state, $time, '100', $label, $message, $del, $msg,
         "http://{$host}/ann?pk=x|1|{$failed}|" . ($failed ? '0' : '5') . '#');
 }
 
@@ -186,15 +165,21 @@ $suite->test('cold torrents are skipped entirely: no checker call, no state writ
     strictAssertSame(array(), rXMLRPCRequest::$requests, 'no state write for a torrent whose counters never moved');
 });
 
-$suite->test('a disabled tracker row (verdict none) is skipped entirely', function () {
+// A disabled t-ru row answers 'none' in classify() AND '' in hostOf(): the
+// torrent takes the same generic-dispatch path as one with no RuTracker row
+// at all. Anything else -- a verdict of 'none' with a reported host -- left
+// it stranded between the two paths, frozen at whatever chk-state it last
+// carried (a stale "checking..." included), with nothing ever touching it.
+$suite->test('a disabled tracker row is handed to the generic dispatch, never frozen between the paths', function () {
     $values = upRow(str_repeat('A', 40), 6);
     $values[8] = 'http://bt.t-ru.org/ann?pk=x|0|6|0#'; // enabled=0
     $rows = RuTrackerUpdatePass::parseMulticall($values);
-    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('must not run'); });
+    $ran = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$ran) { $ran[] = $hash; });
     rXMLRPCRequest::reset();
     $result = RuTrackerUpdatePass::run($rows);
-    strictAssertSame(array(), $result['checked'], 'none not checked');
-    strictAssertSame(array(), rXMLRPCRequest::$requests, 'no state write either');
+    strictAssertSame(array(str_repeat('A', 40)), $ran, 'the generic dispatch runs it, exactly like a no-t-ru-row torrent');
+    strictAssertSame(array(str_repeat('A', 40)), $result['checked'], 'and reports it checked');
 });
 
 $suite->test('a transport-error message marks CANT_REACH_TRACKER without running the checker', function () {
@@ -366,7 +351,7 @@ $suite->test('pollFeed sends If-None-Match from a cached ETag and treats 304 as 
     }
 });
 
-// reapOrphans (design doc 4.4 point 4, task 12): a service download stub
+// reapOrphans: a service download stub
 // carries chk-meta-old for as long as pump() manages it off the old
 // torrent's own markers. These tests drive the sweep directly against the
 // XMLRPC double: a "main" d.multicall scan (hash, chk-meta-old,
@@ -545,12 +530,12 @@ function sweepScan($rows)
 }
 
 // state, is_open, chunks_hashed, completed_bytes, complete, message, chk-stime, chk-state, directory_base
-function sweepDetail($state, $open, $hashed = 0, $bytes = 0, $complete = 0, $message = '', $stime = '0', $chkState = '2', $base = '')
+function sweepDetail($state, $open, $hashed = 0, $bytes = 0, $complete = 0, $message = '', $stime = '0', $chkState = '2')
 {
     rXMLRPCRequest::queue(
         array('d.get_state', 'd.is_open', 'd.get_chunks_hashed', 'd.get_completed_bytes', 'd.get_complete',
-            'd.get_message', 'd.get_custom', 'd.get_custom', 'd.get_directory_base'),
-        true, false, array($state, $open, $hashed, $bytes, $complete, $message, $stime, $chkState, $base));
+            'd.get_message', 'd.get_custom', 'd.get_custom'),
+        true, false, array($state, $open, $hashed, $bytes, $complete, $message, $stime, $chkState));
 }
 
 $suite->test('sweepReplacements scans main for exactly the hash, the marker and the record', function () {
@@ -660,24 +645,194 @@ $suite->test('sweepReplacements never resurrects a replacement whose predecessor
 });
 
 $suite->test('sweepReplacements does not restart a copy that has been opened since it was staged', function () {
+    // hashed chunks, bytes on disk, or the complete flag: each alone proves
+    // somebody opened the copy after the crash and stopped it again, so the
+    // current run state is their decision, not ours. One case per signal --
+    // a combined fixture would let any single disjunct be deleted unnoticed.
+    foreach (array(
+        'hashed chunks' => array(42, 0, 0),
+        'completed bytes' => array(0, 1024, 0),
+        'the complete flag' => array(0, 0, 1),
+    ) as $signal => $detail) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, $detail[0], $detail[1], $detail[2], '', '1000', '2');
+        // transport ok, daemon faults: torrentExists() reads that as "gone",
+        // whereas a dead transport is "unknowable" and must never be acted on.
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+            $signal . ' alone must stop the restart');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'nor may it be reopened');
+        $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+        strictAssertSame(1, count($writes), 'the transaction is closed all the same');
+        strictAssertSame(array($hash, 'chk-replacement', ''), $writes[0]['commands'][0]->params,
+            'by clearing the keys, not by labelling');
+    }
+});
+
+// The live-guard must fire on EITHER half of the reading: open-but-stopped
+// (ruTorrent's pause) is just as much somebody's run state as started.
+$suite->test('sweepReplacements retires the keys of a marked row that is open but not started', function () {
     rXMLRPCRequest::reset();
     $hash = str_repeat('A', 40);
     sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
-    // hashed chunks and bytes on disk: somebody opened it after the crash and
-    // stopped it again, so the current run state is their decision, not ours.
-    sweepDetail(0, 0, 42, 1024, 0, '', '1000', '2');
-    // transport ok, daemon faults: torrentExists() reads that as "gone",
-    // whereas a dead transport is "unknowable" and must never be acted on.
-    rXMLRPCRequest::queue('d.hash', true, true, array());
+    sweepDetail(0, 1, 0, 0, 0, '', '1000', '2');
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'a copy somebody has already handled is not restarted');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'nor reopened');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.hash')),
+        'an open row is already somebody\'s decision: the predecessor is not even probed');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+        'its keys are retired exactly like a running row\'s');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'and nothing is started');
+});
+
+// The activation verdict must be read from the column the record asks about:
+// a started-record row confirmed only by d.is_open is NOT done.
+$suite->test('sweepReplacements judges a started record on d.get_state, never on d.is_open alone', function () {
+    // Open but not started after the activation attempt: keep the keys.
+    // setState() and the key clear share the d.set_custom|d.set_custom
+    // pipeline, so every assertion below reads the PARAMS, never the count.
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array(0, 0));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1)); // opened, not started
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // the STE_ERROR label
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
     $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
-    strictAssertSame(1, count($writes), 'the transaction is closed all the same');
-    strictAssertSame(array($hash, 'chk-replacement', ''), $writes[0]['commands'][0]->params, 'by clearing the keys, not by labelling');
+    strictAssertSame(1, count($writes), 'exactly one write: the label');
+    strictAssertSame(array($hash, 'chk-state', (string) ruTrackerChecker::STE_ERROR),
+        $writes[0]['commands'][0]->params,
+        'open-but-not-started does not satisfy a started record: STE_ERROR, not a key clear');
+
+    // Started but still closed (a scheduler-queued start): that IS satisfied.
+    rXMLRPCRequest::reset();
+    sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array(0, 0));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 0)); // started, closed
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+    strictAssertSame(1, count($writes), 'exactly one write: the clear');
+    strictAssertSame(array($hash, 'chk-replacement', ''), $writes[0]['commands'][0]->params,
+        'd.get_state answering 1 is the confirmation the record asks for');
+});
+
+// The legacy (record-less) branch has its own age gate on chk-stime: a row
+// staged recently, or one with no stime at all, may simply be in flight.
+$suite->test('sweepReplacements leaves a young or stime-less legacy row unlabelled', function () {
+    foreach (array(
+        'no stime at all' => '0',
+        'staged just inside the window' => (string) (5000),
+    ) as $label => $stime) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', '')));
+        sweepDetail(0, 0, 0, 0, 0, '', $stime, '2');
+
+        RuTrackerUpdatePass::sweepReplacements(5000 + 10); // well inside MAX_LOCK_TIME of any stime > 0
+
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': nothing may be labelled');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            $label . ': and nothing cleared');
+    }
+});
+
+// --- The revive half of the stranded-transaction story -----------------------
+//
+// A crash BEFORE the commit erase leaves the predecessor in the client but
+// stopped and closed -- outside the seeding view, where no check will ever
+// find it. The sweep restores its recorded run state (once) so its own check
+// can redo the replacement; the staged copy's keys stay untouched throughout.
+
+$suite->test('sweepReplacements revives a stranded predecessor to its recorded state, write-once', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));                        // the predecessor is still there
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open', 'd.get_custom'), true, false, array(0, 0, '')); // stopped+closed, never revived
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array(0, 0));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1)); // measured back running
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());                       // the write-once flag
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    $act = rXMLRPCRequest::requestsFor('d.open|d.start');
+    strictAssertSame(1, count($act), 'the predecessor is revived');
+    strictAssertSame($old, $act[0]['commands'][0]->params, 'd.open targets the PREDECESSOR, not the staged copy');
+    strictAssertSame($old, $act[0]['commands'][1]->params, 'd.start too');
+    $flags = rXMLRPCRequest::requestsFor('d.set_custom');
+    strictAssertSame(1, count($flags), 'the revival is recorded');
+    strictAssertSame(array($old, 'chk-revived', '1000'), $flags[0]['commands'][0]->params,
+        'as a write-once flag on the predecessor itself');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+        'the staged copy keeps both keys: it must stay adoptable by the redo');
+});
+
+$suite->test('sweepReplacements leaves a once-revived predecessor alone: a re-stop is a decision', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open', 'd.get_custom'), true, false, array(0, 0, '1000')); // revived before
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'no second revival, ever');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'and nothing written');
+});
+
+$suite->test('sweepReplacements does not flag a revival the daemon did not actually perform', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open', 'd.get_custom'), true, false, array(0, 0, ''));
+    rXMLRPCRequest::queue(array('d.open', 'd.start'), true, false, array(0, 0)); // accepted...
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0)); // ...and ineffective
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+        'an unmeasured revival stays retryable: one flaky ack must not re-strand the pair');
+});
+
+$suite->test('sweepReplacements leaves a predecessor measured running to its own check', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
+    sweepDetail(0, 0);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue(array('d.get_state', 'd.is_open', 'd.get_custom'), true, false, array(1, 1, ''));
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'a running predecessor needs no help');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'and no flag');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'and keeps the staged keys');
 });
 
 $suite->test('sweepReplacements does not touch a row whose recorded predecessor still exists', function () {
@@ -866,5 +1021,34 @@ $suite->test('sweepReplacements writes nothing when the fleet scan itself fails'
     strictAssertSame(1, count(rXMLRPCRequest::$requests), 'it asks once and gives up');
 });
 
+
+// --- Settled verdicts rest instead of burning the probe budget hourly --------
+
+$suite->test('a settled DELETED/ABSORBED verdict is not re-litigated until its recheck clock runs out', function () {
+    foreach (array(ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED) as $settled) {
+        // Fresh verdict: skipped outright -- no dispatch, no state write, and
+        // most importantly no announce probe drawn from the shared budget.
+        $values = upRow(str_repeat('A', 40), 6, 'bt.t-ru.org', (string) $settled, '', '', '', '', (string) time());
+        $rows = RuTrackerUpdatePass::parseMulticall($values);
+        $ran = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$ran) { $ran[] = $hash; });
+        rXMLRPCRequest::reset();
+        $result = RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array(), $ran, 'state ' . $settled . ': a fresh settled verdict rests');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'and costs nothing at all');
+
+        // The same verdict past SETTLED_RECHECK: dispatched again, so a topic
+        // that was restored on the tracker (or judged wrongly) heals itself.
+        $values = upRow(str_repeat('A', 40), 6, 'bt.t-ru.org', (string) $settled, '', '', '', '',
+            (string) (time() - RuTrackerUpdatePass::SETTLED_RECHECK - 1));
+        $rows = RuTrackerUpdatePass::parseMulticall($values);
+        $ran = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$ran) { $ran[] = $hash; });
+        rXMLRPCRequest::reset();
+        RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array(str_repeat('A', 40)), $ran,
+            'state ' . $settled . ': past the recheck clock the full chain runs again');
+    }
+});
 
 exit($suite->run());

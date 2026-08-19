@@ -15,7 +15,9 @@ $rutrackerFuseFloor	??= 3;	// minimum absolute candidates before the fuse may tr
 $rutrackerDeleteCycles	??= 3;	// dump+tracker confirmations required for STE_DELETED
 $rutrackerMetaDeadline	??= 86400;	// seconds to wait for magnet metadata
 $rutrackerMetaWait	??= 10;		// seconds to wait for it inside the cycle, before deferring to the next one
-$rutrackerLayer2Enabled	??= true;	// announce confirmation layer
+$rutrackerLayer2Enabled	??= true;	// announce confirmation layer; disabling it also disables
+					// deleted-topic detection: the forum dump alone may only ever
+					// corroborate a deletion, never conclude one
 $rutrackerAnnouncePause	??= 5;	// seconds between probe announces
 $rutrackerAnnounceCap	??= 10;	// probe announces per cycle per announce host
 $rutrackerSweepCooldown	??= 86400;	// seconds between automatic full forum sweeps

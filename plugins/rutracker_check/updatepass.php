@@ -10,7 +10,7 @@ require_once("announce.php");
 // detector's verdict needs the expensive checker or can be resolved for free
 // (run()), and keeps the topic -> forum_id map fresh once per cycle
 // (pollFeed()). update.php itself stays a thin XMLRPC-building driver; every
-// branch worth testing lives here instead (design doc section 5).
+// branch worth testing lives here instead.
 class RuTrackerUpdatePass
 {
     const COLUMNS = 9;
@@ -70,9 +70,17 @@ class RuTrackerUpdatePass
     // the fuse groups candidates by the same host classify() judged them on.
     static private function hostOf($trackers)
     {
-        foreach ((array) $trackers as $row)
-            if (preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) ($row['url'] ?? '')))
-                return (string) @parse_url($row['url'], PHP_URL_HOST);
+        foreach ((array) $trackers as $row) {
+            if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) ($row['url'] ?? ''))) continue;
+            // Same first-matching-row semantics as classify(), including its
+            // 'none' for a disabled row: reporting a host here while the
+            // verdict says 'none' would strand the torrent between the two
+            // dispatch paths -- never a candidate, yet never handed to the
+            // generic path either -- frozen at whatever chk-state it last
+            // carried.
+            if (empty($row['enabled'])) return '';
+            return (string) @parse_url($row['url'], PHP_URL_HOST);
+        }
         return '';
     }
 
@@ -85,8 +93,6 @@ class RuTrackerUpdatePass
             : function ($hash, $row) {
                 ruTrackerChecker::run($hash, $row['state'], $row['time'], $row['stime'], $row['label']);
             };
-
-        RuTrackerAnnounce::resetCycle();
 
         // Pass 1: classify every row and tally per-host candidate share for
         // the fuse. A META_PENDING row is classified too (it still carries a
@@ -119,6 +125,13 @@ class RuTrackerUpdatePass
                 continue;
             }
 
+            // Settled is settled: see SETTLED_RECHECK.
+            if (($row['state'] === ruTrackerChecker::STE_DELETED
+                    || $row['state'] === ruTrackerChecker::STE_ABSORBED)
+                && $row['time'] > 0
+                && (time() - $row['time']) <= self::SETTLED_RECHECK)
+                continue;
+
             // check.php's run() has always honoured $ignoreLabels before
             // doing anything else; this pass's direct setState() writes
             // below must match, or an ignored torrent flaps between
@@ -138,9 +151,9 @@ class RuTrackerUpdatePass
             // judge and it answers 'none' -- which for those torrents means
             // "not my jurisdiction", NOT "no signal worth a request". They go
             // straight to their own handler, once per cycle, the way the
-            // pre-layer-1 pass dispatched them; hostOf() returns '' for
-            // exactly this case.
-            if (self::hostOf($row['trackers']) === '') {
+            // pre-layer-1 pass dispatched them; hostOf() answered '' for
+            // exactly this case in pass 1.
+            if ($hosts[$index] === '') {
                 call_user_func($checker, $row['hash'], $row);
                 $checked[] = $row['hash'];
                 continue;
@@ -155,6 +168,12 @@ class RuTrackerUpdatePass
             }
             if ($verdict === 'transport') {
                 ruTrackerChecker::setState($row['hash'], ruTrackerChecker::STE_CANT_REACH_TRACKER);
+                // The sentence under the state must change with it: a token
+                // an earlier cycle stored ('deleting|2/3', 'fuse|<host>')
+                // describes a different verdict, and init.js appends it to
+                // whatever state is current.
+                if ((string) $row['msg'] !== '')
+                    ruTrackerChecker::setMessage($row['hash'], '');
                 continue;
             }
             if ($verdict !== 'candidate') continue; // cold / none: no request-worthy signal yet
@@ -232,32 +251,28 @@ class RuTrackerUpdatePass
         $map = RuTrackerForumIndex::parseFeed($client->results);
         if (!count($map)) return;
 
-        $req = new rXMLRPCRequest(new rXMLRPCCommand("d.multicall", array("main",
-            getCmd("d.get_hash="),
-            getCmd("d.get_custom=") . "chk-topic",
-            getCmd("d.get_custom=") . "chk-forum")));
-        $req->important = false;
-        if (!$req->success()) return;
+        $awaiting = RuTrackerForumIndex::topicsAwaitingForum();
+        if ($awaiting === null) return;
 
-        for ($i = 0; $i + 3 <= count($req->val); $i += 3) {
-            $topic = intval($req->val[$i + 1]);
-            if (!$topic || !isset($map[$topic])) continue;
-            if ((string) $req->val[$i + 2] !== '') continue; // chk-forum already known
-
-            $write = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.set_custom"),
-                array($req->val[$i], "chk-forum", (string) $map[$topic]['forum'])));
-            $write->important = false;
-            $write->success();
-            // The other half of the handler's "layer3 forum=N from the
-            // chk-forum cache": this is where a cached id came from when the
-            // feed, rather than a sweep, resolved it. Bounded by the torrents
-            // whose forum is still unknown, never the whole fleet.
-            ruTrackerChecker::logDebug('pollFeed: ' . $req->val[$i] . ' forum=' . (int) $map[$topic]['forum']
-                . ' for topic ' . $topic . ', learned from the feed');
+        foreach ($awaiting as $topic => $hashes) {
+            if (!isset($map[$topic])) continue;
+            foreach ($hashes as $hash) {
+                $write = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.set_custom"),
+                    array($hash, "chk-forum", (string) $map[$topic]['forum'])));
+                $write->important = false;
+                $write->success();
+                // The other half of the handler's "layer3 forum=N from the
+                // chk-forum cache": this is where a cached id came from when
+                // the feed, rather than a sweep, resolved it. Bounded by the
+                // torrents whose forum is still unknown, never the whole
+                // fleet.
+                ruTrackerChecker::logDebug('pollFeed: ' . $hash . ' forum=' . (int) $map[$topic]['forum']
+                    . ' for topic ' . $topic . ', learned from the feed');
+            }
         }
     }
 
-    // Layer 4's orphan sweep (design doc 4.4 point 4, task 12). pump() only
+    // Layer 4's orphan sweep. pump() only
     // ever advances an old torrent whose chk-state is still META_PENDING,
     // addressing the service download by hash off that old torrent's own
     // markers -- never by scanning. If that link breaks (the old torrent was
@@ -309,6 +324,16 @@ class RuTrackerUpdatePass
             }
         }
     }
+
+    // How long a settled terminal verdict (DELETED/ABSORBED) rests before the
+    // cycle re-verifies it. Its announce keeps failing -- that is what the
+    // verdict MEANS -- so layer 1 calls it a candidate forever, and without
+    // this gate every dead topic costs a paced probe from the shared per-host
+    // budget every hour, for the rest of time. A mistaken verdict still has
+    // two ways back: a manual check bypasses this pass entirely, and the
+    // recheck itself resurrects the torrent the moment layer 2 answers
+    // "registered" (resetDeletion + STE_UPTODATE).
+    const SETTLED_RECHECK = 7 * 86400;
 
     // Columns of the sweep's own fleet scan: hash, ownership marker, record.
     const SWEEP_COLUMNS = 3;
@@ -362,13 +387,12 @@ class RuTrackerUpdatePass
             new rXMLRPCCommand(getCmd("d.get_message"), $hash),
             new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-stime")),
             new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
-            new rXMLRPCCommand(getCmd("d.get_directory_base"), $hash),
         ));
         $probe->important = false;
         // A faulting member injects its faultString into the flat value list
         // rather than shortening it, so the last slot must be present before
         // any of them is trusted.
-        if (!$probe->success() || !isset($probe->val[8])) {
+        if (!$probe->success() || !isset($probe->val[7])) {
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash . " could not be read, deferring to the next cycle");
             return;
         }
@@ -408,13 +432,101 @@ class RuTrackerUpdatePass
         if ($exists === null) return;                      // never act on an unknowable fact
         if ($exists === true) {
             // The commit never happened. The staged copy is still adoptable by
-            // a normal check of the predecessor, so nothing here may touch it.
-            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
-                . " was staged for " . $record['old'] . ", which is still in the client:"
-                . " the commit never happened, leaving both to the predecessor's own check");
+            // a normal check of the predecessor, so nothing here may touch it
+            // -- but that check may need help arriving: see below.
+            self::reviveStrandedPredecessor($hash, $record);
             return;
         }
         self::finishStrandedReplacement($hash, $record, $val, $now);
+    }
+
+    // A crash between createTorrent()'s stop/close multicall and its commit
+    // erase leaves the predecessor stopped AND closed -- outside the
+    // "seeding" view the hourly cycle scans -- so "the predecessor's own
+    // check redoes the replacement" never happens by itself. When the record
+    // says it was running or open at staging and it now measures exactly
+    // stopped+closed (the crash's own signature; any other reading is
+    // somebody's later decision), restore the recorded run state so the
+    // torrent re-enters the view and its own check adopts the staged copy.
+    //
+    // Write-once, keyed on the predecessor itself (chk-revived): a user who
+    // stops the torrent again after one revival has made a decision, and the
+    // sweep must not fight them for it. The flag is written only after the
+    // revival is MEASURED to have taken -- an accepted-but-ineffective open
+    // must stay retryable, or one flaky ack recreates the very strand this
+    // exists to fix. The staged copy's own keys stay untouched throughout:
+    // clearing them would make it foreign to the redo.
+    static private function reviveStrandedPredecessor($hash, $record)
+    {
+        $old = $record['old'];
+        $wantStarted = $record['run']['started'];
+        if (!$wantStarted && !$record['run']['open']) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " was staged for " . $old . ", which is still in the client:"
+                . " the commit never happened, leaving both to the predecessor's own check");
+            return;
+        }
+
+        $probe = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_state"), $old),
+            new rXMLRPCCommand(getCmd("d.is_open"), $old),
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($old, "chk-revived")),
+        ));
+        $probe->important = false;
+        if (!$probe->success() || !isset($probe->val[2])) return;
+        if (intval($probe->val[0]) !== 0 || intval($probe->val[1]) !== 0) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " was staged for " . $old . ", which is still in the client and running:"
+                . " leaving both to the predecessor's own check");
+            return;
+        }
+        if ((string) $probe->val[2] !== '') {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $old
+                . " was revived once already and is stopped again:"
+                . " that is a decision, not a strand, leaving it alone");
+            return;
+        }
+
+        if (!self::issueRunAndVerify($old, $wantStarted)) {
+            ruTrackerChecker::logDebug("sweepReplacements: " . $old
+                . " did not come back " . ($wantStarted ? "started" : "open")
+                . " when revived for its stranded replacement " . $hash
+                . ", keeping it retryable");
+            return;
+        }
+        $mark = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd("d.set_custom"), array($old, "chk-revived", (string) $record['staged'])));
+        $mark->important = false;
+        $mark->success();
+        ruTrackerChecker::logDebug("sweepReplacements: revived " . $old . " ("
+            . ($wantStarted ? "started" : "open") . ", as its record says) so its own check"
+            . " can redo the replacement its dead cycle staged at " . $hash);
+    }
+
+    // Issue the recorded run state and read back whether it took: d.open
+    // before d.start, because a bare d.start on a closed download can leave
+    // it closed (the measurement RuTrackerMetaFetch records) -- and believe
+    // only the measured reading, never the ack. A started download may still
+    // be waiting on a scheduler slot, so a 'started' wish is judged on
+    // d.get_state alone, exactly as activateReplacement() judges it.
+    static private function issueRunAndVerify($hash, $wantStarted, &$measured = null)
+    {
+        $commands = array(new rXMLRPCCommand(getCmd("d.open"), $hash));
+        if ($wantStarted)
+            $commands[] = new rXMLRPCCommand(getCmd("d.start"), $hash);
+        $issue = new rXMLRPCRequest($commands);
+        $issue->important = false;
+        $issue->success();
+
+        $check = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_state"), $hash),
+            new rXMLRPCCommand(getCmd("d.is_open"), $hash),
+        ));
+        $check->important = false;
+        $measured = ($check->success() && isset($check->val[1]))
+            ? array(intval($check->val[0]), intval($check->val[1])) : null;
+        return $measured !== null
+            && ($wantStarted ? $measured[0] === 1 : $measured[1] === 1);
     }
 
     // Reached only when the marker is set, the record decoded, the transaction
@@ -447,30 +559,11 @@ class RuTrackerUpdatePass
             return;
         }
 
-        $commands = array(new rXMLRPCCommand(getCmd("d.open"), $hash));
-        // d.open before d.start: a bare d.start on a closed download can leave
-        // it closed (the measurement RuTrackerMetaFetch records).
-        if ($record['run']['started'])
-            $commands[] = new rXMLRPCCommand(getCmd("d.start"), $hash);
-        $activate = new rXMLRPCRequest($commands);
-        $activate->important = false;
-        $activate->success();
-
-        // Believe the measured reading, never the ack. A started download may
-        // still be waiting on a scheduler slot, so it is judged on d.get_state
-        // exactly as activateReplacement() judges it.
-        $check = new rXMLRPCRequest(array(
-            new rXMLRPCCommand(getCmd("d.get_state"), $hash),
-            new rXMLRPCCommand(getCmd("d.is_open"), $hash),
-        ));
-        $check->important = false;
-        $satisfied = $check->success() && isset($check->val[1])
-            && ($record['run']['started'] ? intval($check->val[0]) === 1 : intval($check->val[1]) === 1);
-        if ($satisfied) {
+        if (self::issueRunAndVerify($hash, $record['run']['started'], $measured)) {
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " finished a replacement its own cycle never activated"
                 . " (wanted " . ($record['run']['started'] ? "started" : "open")
-                . ", measured state=" . intval($check->val[0]) . " open=" . intval($check->val[1]) . ")");
+                . ", measured state=" . $measured[0] . " open=" . $measured[1] . ")");
             ruTrackerChecker::clearReplacementRecord($hash);
             return;
         }

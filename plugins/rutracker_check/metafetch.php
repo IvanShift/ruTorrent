@@ -4,7 +4,7 @@
 // download. All markers ride inside the load command itself -- rTorrent
 // re-applies load-command additions to the real download it creates when
 // metadata arrives; customs set after load are lost in that transition
-// (design doc section 4.4, point 2).
+// (measured on rTorrent 0.9.8/0.16.20).
 class RuTrackerMetaFetch
 {
     const WAIT_ATTEMPTS = 40;
@@ -121,11 +121,13 @@ class RuTrackerMetaFetch
             . ' topic=' . (int) $topicId);
 
         // load silently swallows a hash it already knows, so an already
-        // present successor must be detected before loading. How it got
-        // there is unknowable -- the user, another automation, or an earlier
-        // incomplete run of this plugin -- so the token records only the
-        // hash, and rutracker.php's layer 0 reads it back to keep this
-        // terminal outcome from re-running the whole chain every cycle.
+        // present successor must be detected before loading. An earlier
+        // incomplete run of this plugin announces itself through the
+        // chk-meta-old marker and is adopted below; for anything else -- the
+        // user, another automation -- how it got there is unknowable, so the
+        // token records only the hash, and rutracker.php's layer 0 reads it
+        // back to keep this terminal outcome from re-running the whole chain
+        // every cycle.
         $exists = ruTrackerChecker::torrentExists($newHash);
         if ($exists === null) {
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash
@@ -133,6 +135,19 @@ class RuTrackerMetaFetch
             return ruTrackerChecker::STE_ERROR;
         }
         if ($exists === true) {
+            // Unless it is OUR stub from an earlier cycle: a deferred load
+            // that landed only after the wait loop below gave up was never
+            // marked on the old torrent, so nothing pumps it -- declaring it
+            // a successor would wedge the fetch behind a stub that cannot
+            // finish by itself. The marker begin() plants is what tells the
+            // two apart.
+            $marker = new rXMLRPCRequest(new rXMLRPCCommand(
+                getCmd("d.get_custom"), array($newHash, "chk-meta-old")));
+            $marker->important = false;
+            if ($marker->success() && isset($marker->val[0])
+                && (string) $marker->val[0] === (string) $oldHash)
+                return self::adoptStub($oldHash, $newHash, $deadline);
+
             ruTrackerChecker::setMessage($oldHash,
                 ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash);
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' aborted: ' . $newHash
@@ -154,7 +169,7 @@ class RuTrackerMetaFetch
             getCmd("d.set_custom") . "=chk-meta-until," . $deadline,
         );
         // Stopped, plain load: the meta stub's start=0 survives into the
-        // real download rTorrent creates once metadata arrives (§2.7).
+        // real download rTorrent creates once metadata arrives.
         $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), self::SERVICE_LABEL, $addition);
         if ($sent === false) {
             // The likeliest cause by far, and the one thing worth naming: a
@@ -211,13 +226,31 @@ class RuTrackerMetaFetch
         return ruTrackerChecker::STE_CANT_REACH_TRACKER;
     }
 
+    // Picks up a stub begin() loaded on an earlier cycle but never got to
+    // mark: start it, claim it on the old torrent, and let pump() take over.
+    // The run state is read now -- the old torrent is still the torrent the
+    // candidate was picked from, same as the normal path.
+    static private function adoptStub($oldHash, $newHash, $deadline)
+    {
+        $run = self::readRunState($oldHash);
+        $start = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.start"), $newHash));
+        $start->important = false;
+        $started = $start->success();
+        self::markOldTorrent($oldHash, $newHash, $deadline, $run);
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' adopted its own stub at '
+            . $newHash . ' left by an earlier cycle (start '
+            . ($started ? 'accepted' : 'refused') . '), waiting until ' . $deadline);
+        return ruTrackerChecker::STE_META_PENDING;
+    }
+
     // Advances a pending fetch by one cycle. Addressed by hash, straight off
     // the markers begin() left on the old download -- no re-classification,
-    // no re-detection (design doc 4.4 point 4).
+    // no re-detection.
     //
     // @return null on a completed replacement (createTorrent()'s own success
-    //         contract), STE_META_PENDING while still waiting, or
-    //         STE_CANT_REACH_TRACKER/STE_ERROR on a retryable/hard failure.
+    //         contract), STE_META_PENDING while still waiting,
+    //         STE_NOT_NEED when a foreign item took over the successor hash,
+    //         or STE_CANT_REACH_TRACKER/STE_ERROR on a retryable/hard failure.
     static public function pump($oldHash, $now)
     {
         $read = new rXMLRPCRequest(array(
@@ -239,6 +272,25 @@ class RuTrackerMetaFetch
         if ($exists === null) return ruTrackerChecker::STE_META_PENDING;
         if ($exists === false)
             return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER);
+
+        // The item may no longer be ours: the user can erase the stub and add
+        // the real torrent by hand between cycles, at the very hash this fetch
+        // is waiting on. Everything past this point ends in an erase of that
+        // item, so re-check ownership every cycle, exactly as begin() checks
+        // before touching a pre-existing item. The marker rides in the load
+        // command, so it survives the stub's transition into a real download.
+        $owner = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd("d.get_custom"), array($newHash, "chk-meta-old")));
+        $owner->important = false;
+        if (!$owner->success() || !isset($owner->val[0]))
+            return ruTrackerChecker::STE_META_PENDING;
+        if ((string) $owner->val[0] !== (string) $oldHash) {
+            ruTrackerChecker::setMessage($oldHash,
+                ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash);
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' stopped waiting: the item at '
+                . $newHash . ' belongs to someone else, leaving it alone');
+            return self::clearMarks($oldHash, ruTrackerChecker::STE_NOT_NEED);
+        }
 
         $meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $newHash));
         $meta->important = false;
@@ -282,7 +334,7 @@ class RuTrackerMetaFetch
         return self::harvest($oldHash, $newHash, intval($topic->val[0]));
     }
 
-    // Byte collection, strictly in this order (design doc 4.4 point 5): read
+    // Byte collection, strictly in this order: read
     // the stub's session file before it can be erased, validate before
     // trusting it to createTorrent()'s legacy "unparseable == deleted topic"
     // contract, patch announce/comment, THEN erase the stub and confirm it
