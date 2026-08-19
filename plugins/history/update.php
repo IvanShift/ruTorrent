@@ -34,9 +34,8 @@
 		);
 		// A magnet placeholder or a plugin's service download is not the
 		// user's own event: neither record it nor notify about it. The
-		// notification is skipped for the same reason the row is -- a push
-		// about a torrent named after its own hash tells the user nothing
-		// they did.
+		// notification is skipped for the same reason the row is -- the
+		// push would report an event the user never performed.
 		if(!rHistoryData::isServiceEntry($data["name"], $data["label"]))
 		{
 			if($mgr->log[$actions[$action]])

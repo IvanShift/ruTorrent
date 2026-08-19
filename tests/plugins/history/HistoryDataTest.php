@@ -165,11 +165,10 @@ $tests = array(
             historyAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
     },
 
-    // Fork-only layer over the test above. A plugin that loads a download for
-    // its own bookkeeping marks it with a dot-prefixed label; on a live
-    // instance the metadata fetcher's stub was logged as added, then deleted a
-    // cycle later under the same name as the real torrent, so a single
-    // replacement read as two deletions.
+    // A plugin that loads a download for its own bookkeeping marks it with a
+    // dot-prefixed label; on a live instance such a fetcher stub was logged
+    // as added, then deleted a cycle later under the same name as the real
+    // torrent, so a single replacement read as two deletions.
     'a dot-labelled service download is not the user\'s event either' => function () {
         $service = array(
             'a dot-labelled service download' => array('Some Release 1080p', '.chk-meta'),

@@ -114,18 +114,14 @@ class rHistoryData
 		return(preg_match('/^[0-9A-Fa-f]{40}\.meta$/', (string) $name) === 1);
 	}
 
-	// Fork-only, layered on top of the upstream test above: a dot-prefixed
-	// label marks a download a plugin loaded for its own bookkeeping rather
-	// than for the user (rutracker_check's metadata fetcher uses '.chk-meta').
-	// Such a stub inherits the real torrent's name once metadata arrives, so
-	// without this its removal reads as the user's own torrent being deleted
-	// twice. Upstream ships no producer of such labels yet; this travels with
-	// the metadata fetcher when that is submitted.
+	// A dot-prefixed label marks a download a plugin loaded for its own
+	// bookkeeping rather than for the user (e.g. a metadata fetcher's
+	// '.chk-meta'). Such a stub inherits the real torrent's name once
+	// metadata arrives, so without this its removal reads as the user's
+	// own torrent being deleted twice.
 	static public function isServiceEntry( $name, $label )
 	{
-		if(self::isMagnetPlaceholder($name))
-			return(true);
-		return(strncmp((string) $label, '.', 1) === 0);
+		return(self::isMagnetPlaceholder($name) || strncmp((string) $label, '.', 1) === 0);
 	}
 
 	public function add( $e, $limit )
