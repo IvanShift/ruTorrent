@@ -26,12 +26,7 @@ class TestCase
 
 	public function assertEquals($a, $b, $message = null): void
 	{
-		$message = $message ? $message : 'Expected '.json_encode($a).' == '.json_encode($b);
-		if ($a == $b) {
-			echo "Passed: {$message}\n";
-		} else {
-			echo "Failed: {$message}\n";
-		}
+		$this->assertTrue($a == $b, $message ? $message : 'Expected '.json_encode($a).' == '.json_encode($b));
 	}
 
 	public function assertTrue($bool, $message = null): void
