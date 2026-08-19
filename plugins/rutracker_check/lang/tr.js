@@ -19,7 +19,15 @@
  				  "İzleyiciye erişim hatası",
  				  "rTorrent ile etkileşim hatası",
  				  "Gerek yok",
- 				  "Yoksayılmış"
+ 				  "Yoksayılmış",
+ 				  "Üstveri bekleniyor",
+ 				  "Başka bir konuya dahil edildi — elle çözün"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Bu konunun güncel sürümü zaten istemcide mevcut: %s",
+ 				  "deleting":	"Konu forum listesinde yok; doğrulama döngüsü %s",
+ 				  "topic-status": "Konu durumu %s: kapalı, onaylanmamış veya yinelenen",
+ 				  "fuse":	"%s izleyicisi erişilemez görünüyor; kontrol ertelendi"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

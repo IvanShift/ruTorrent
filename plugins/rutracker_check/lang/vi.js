@@ -18,7 +18,15 @@
  				  "Lỗi truy cập máy theo dỗi",
  				  "Lỗi giao tiếp với rTorrent",
  				  "Không cần thiết",
- 				  "Bị bỏ qua"
+ 				  "Bị bỏ qua",
+ 				  "Đang chờ siêu dữ liệu",
+ 				  "Đã gộp vào chủ đề khác — cần xử lý thủ công"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Phiên bản hiện tại của chủ đề này đã có trong chương trình: %s",
+ 				  "deleting":	"Không thấy chủ đề trong danh sách diễn đàn; chu kỳ xác nhận %s",
+ 				  "topic-status": "Trạng thái chủ đề %s: đã đóng, chưa được duyệt hoặc trùng lặp",
+ 				  "fuse":	"Máy theo dõi %s có vẻ không truy cập được; đã hoãn kiểm tra"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

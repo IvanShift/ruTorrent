@@ -13,21 +13,6 @@
 
 require __DIR__ . '/TestLib.php';
 
-function loadClassDefinition($filename, $className)
-{
-	$source = file_get_contents($filename);
-	$offset = strpos($source, 'class ' . $className);
-	if($offset === false)
-		throw new RuntimeException("Class {$className} was not found in {$filename}");
-	// ruTrackerChecker is the final declaration in check.php.
-	return substr($source, $offset);
-}
-
-function getCmd($command)
-{
-	return $command;
-}
-
 class FileUtil
 {
 	public static $log = array();
@@ -110,6 +95,27 @@ class rTorrent
 	}
 }
 
+// Fake collaborator for run()'s STE_META_PENDING short-circuit. pump()'s own
+// ordered-harvest logic is exercised in full by MetaFetchTest.php; this
+// double only has to prove run() actually hands off to it (instead of
+// falling into the normal INPROGRESS transition) and persists whatever it
+// returns. It still issues one real XMLRPC read, so a test can tell "pump
+// ran" from "pump was a no-op stub".
+class RuTrackerMetaFetch
+{
+	public static $calls = array();
+	public static $result = null;
+
+	public static function pump($hash, $now)
+	{
+		self::$calls[] = array('hash' => $hash, 'now' => $now);
+		$probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'), array($hash, 'chk-meta-new')));
+		$probe->important = false;
+		$probe->success();
+		return self::$result;
+	}
+}
+
 eval(loadClassDefinition(
 	__DIR__ . '/../../../plugins/rutracker_check/check.php',
 	'ruTrackerChecker'
@@ -150,8 +156,8 @@ class CheckerTest
 {
 	const SNAPSHOT_KEY = 'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_state|d.is_open|d.stop|d.close';
 	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom|d.get_custom1';
-	const PREFLIGHT_KEY = 'd.get_custom|d.get_state|d.is_open';
-	const PREFLIGHT_KEY_COMMANDS = array('d.get_custom', 'd.get_state', 'd.is_open');
+	const PREFLIGHT_KEY = 'd.get_custom|d.get_state|d.is_open|d.get_custom';
+	const PREFLIGHT_KEY_COMMANDS = array('d.get_custom', 'd.get_state', 'd.is_open', 'd.get_custom');
 
 	private function resetFakes()
 	{
@@ -162,6 +168,8 @@ class CheckerTest
 		rTorrent::$sends = array();
 		rXMLRPCRequest::reset();
 		FileUtil::$log = array();
+		RuTrackerMetaFetch::$calls = array();
+		RuTrackerMetaFetch::$result = null;
 		strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
 		strictSetPrivateStatic('ruTrackerChecker', 'ANNOUNCES', array());
 	}
@@ -311,9 +319,10 @@ class CheckerTest
 		strictAssertTrue(count($waits) === 1 && $oldErases[0] > $waits[0], 'the old hash may be erased only after the staged copy is confirmed');
 		strictAssertSame(1, count($this->requestIndexes('d.start', 'NEW')), 'the replacement must be started after commit');
 
-		$clears = rXMLRPCRequest::requestsFor('d.set_custom');
-		strictAssertSame(1, count($clears), 'the replacement marker must be cleared exactly once');
+		$clears = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+		strictAssertSame(1, count($clears), 'the replacement transaction must be closed exactly once');
 		strictAssertSame(array('NEW', 'chk-replacement', ''), $clears[0]['commands'][0]->params, 'the marker clear must target the new hash');
+		strictAssertSame(array('NEW', 'chk-replaces', ''), $clears[0]['commands'][1]->params, 'the record is cleared with the marker, never apart from it');
 	}
 
 	// rTorrent runs a load command list inside ONE try block: the first
@@ -422,6 +431,37 @@ class CheckerTest
 			'and no membership command can be emitted either');
 	}
 
+	// The version rides along with the cycle counts so a log can be read
+	// against the rTorrent that produced it. rTorrentSettings::get() answers
+	// from the cached rtorrent.dat -- only a browser-driven get(true) ever
+	// refreshes it -- so after an upgrade and a restart it can report the old
+	// version for days, which is the one answer this diagnostic must not give.
+	public function testVersionLabelAsksTheDaemonAndSurvivesAFailedQuery()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			rXMLRPCRequest::queue('system.client_version|system.api_version', true, false, array('0.16.20', '11'));
+			strictAssertSame('client=0.16.20 api=11', ruTrackerChecker::liveVersionLabel(),
+				'the live daemon answers, not the cached settings singleton');
+			$asked = rXMLRPCRequest::requestsFor('system.client_version|system.api_version');
+			strictAssertSame(1, count($asked), 'one request per logged cycle');
+			strictAssertSame(false, $asked[0]['important'],
+				'a diagnostic may never sink the cycle it is describing');
+
+			// A failed query must still leave a readable line.
+			rXMLRPCRequest::reset();
+			strictAssertSame('client=? api=?', ruTrackerChecker::liveVersionLabel(),
+				'a failed version query degrades to a placeholder');
+		});
+
+		// And with the debug log off nothing is asked at all.
+		rXMLRPCRequest::reset();
+		strictAssertSame('client=? api=?', ruTrackerChecker::liveVersionLabel(),
+			'no version is claimed when no line will be written');
+		strictAssertSame(0, count(rXMLRPCRequest::$requests),
+			'the cost of the diagnostic stays behind the debug flag');
+	}
+
 	public function testStoppedOpenReplacementUsesOpen()
 	{
 		$this->resetFakes();
@@ -448,7 +488,8 @@ class CheckerTest
 			strictAssertSame(0, count($this->requestIndexes('d.start')), 'a fully stopped torrent must not be started');
 			strictAssertSame(0, count($this->requestIndexes('d.open')), 'a fully stopped torrent must not be opened');
 			strictAssertTrue(!file_exists($base . '/old.mkv'), 'cleanup must still run for a stopped replacement');
-			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'the marker must still be cleared for a stopped replacement');
+			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+				'a deliberately unstarted replacement is a finished transaction, so both keys are cleared');
 		}
 		finally
 		{
@@ -474,7 +515,7 @@ class CheckerTest
 		$this->resetFakes();
 		Torrent::$fixtures['new-torrent'] = array('hash' => 'NEW', 'info' => array('name' => 'new.mkv'));
 		rXMLRPCRequest::queue('d.hash', true, false, array('NEW'));
-		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
@@ -498,7 +539,7 @@ class CheckerTest
 		Torrent::$fixtures['new-torrent'] = array('hash' => 'NEW', 'info' => array('name' => 'new.mkv'));
 		rXMLRPCRequest::queue('d.hash', true, false, array('NEW'));
 		// A committed replacement whose final marker clear was lost: running.
-		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('stale-marker-from-dead-run', 1, 1));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('stale-marker-from-dead-run', 1, 1, ''));
 		rXMLRPCRequest::queue('d.set_custom', true, false, array());
 
 		strictAssertSame(
@@ -507,9 +548,33 @@ class CheckerTest
 			'a live torrent with a leftover marker must not be adopted'
 		);
 		$this->assertNoRequestKeyContains('d.erase', 'a live marked torrent must never be erased');
-		$clears = rXMLRPCRequest::requestsFor('d.set_custom');
-		strictAssertSame(1, count($clears), 'the stale marker must be repaired');
+		$clears = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+		strictAssertSame(1, count($clears), 'the stale transaction must be repaired');
 		strictAssertSame(array('NEW', 'chk-replacement', ''), $clears[0]['commands'][0]->params, 'the repair must clear the marker of the live torrent');
+		strictAssertSame(array('NEW', 'chk-replaces', ''), $clears[0]['commands'][1]->params, 'and its record with it, so the pair never disagrees');
+		strictAssertSame(null, rTorrent::$lastSend, 'no load may be enqueued');
+	}
+
+	// The pause button produces exactly this: state 0, open 1. Deleting the
+	// is_open half of the guard would erase a torrent the user merely paused.
+	public function testPausedTorrentWithStaleMarkerIsNotAdoptedEither()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['new-torrent'] = array('hash' => 'NEW', 'info' => array('name' => 'new.mkv'));
+		rXMLRPCRequest::queue('d.hash', true, false, array('NEW'));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('stale-marker-from-dead-run', 0, 1, ''));
+		rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+		strictAssertSame(
+			ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+			'an open marked torrent must not be adopted, started or not'
+		);
+		$this->assertNoRequestKeyContains('d.erase', 'a paused marked torrent must never be erased');
+		$clears = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+		strictAssertSame(1, count($clears), 'the stale transaction is repaired');
+		strictAssertSame(array('NEW', 'chk-replacement', ''), $clears[0]['commands'][0]->params,
+			'by clearing the marker, exactly as for a running one');
 		strictAssertSame(null, rTorrent::$lastSend, 'no load may be enqueued');
 	}
 
@@ -518,7 +583,7 @@ class CheckerTest
 		$this->resetFakes();
 		$this->stageTorrents();
 		rXMLRPCRequest::queue('d.hash', true, false, array('NEW'));
-		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('stale-marker-from-dead-run', 0, 0));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('stale-marker-from-dead-run', 0, 0, ''));
 		rXMLRPCRequest::queue('d.erase', true, false, array(0));
 		$this->queueViews();
 		$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
@@ -532,6 +597,49 @@ class CheckerTest
 		strictAssertSame(2, count($erases), 'the orphan and the old hash must each be erased once');
 		strictAssertSame('NEW', $erases[0]['commands'][0]->params, 'the orphaned staged copy must be erased first');
 		strictAssertSame('OLD', $erases[1]['commands'][0]->params, 'the old hash must be erased at commit');
+	}
+
+	// The dead run's own stop/close is what left the predecessor stopped and
+	// closed, so on the redo the live snapshot reports the crash, not the
+	// user. The staged copy's record is the one truthful account -- encoding
+	// the measured (0,0) forward instead would hand the replacement a stopped
+	// state nobody chose, which is precisely the strand this transaction's
+	// record exists to prevent.
+	public function testAdoptionInheritsTheRecordedRunStateOverTheDeadRunsOwnStop()
+	{
+		$this->resetFakes();
+		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
+		$GLOBALS['rutrackerCheckDebug'] = true;
+		$oldHash = str_repeat('A', 40);
+		$this->stageTorrents();
+		rXMLRPCRequest::queue('d.hash', true, false, array('NEW'));
+		// The staged copy carries the dead run's record: staged while STARTED.
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
+			array('stale-marker-from-dead-run', 0, 0, $oldHash . '-started-1786899620'));
+		rXMLRPCRequest::queue('d.erase', true, false, array(0));
+		$this->queueViews();
+		$this->queueSnapshot(sys_get_temp_dir(), 0, 0);	// the predecessor measures stopped+closed
+		$this->queueLoadConfirmed();
+		rXMLRPCRequest::queue('d.erase', true, false, array(0));
+		rXMLRPCRequest::queue('d.start', true, false, array(0));
+		rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+			'the redo of a crashed transaction must succeed');
+		strictAssertSame(1, count($this->requestIndexes('d.start', 'NEW')),
+			'the replacement is started, as the record says -- not left in the measured stop');
+		$addition = implode(' ', rTorrent::$lastSend['addition']);
+		strictAssertTrue(strpos($addition, '-started-') !== false,
+			'the re-staged record carries the recorded state forward: ' . $addition);
+		try {
+			strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'inheriting the recorded state') !== false,
+				'the override is logged with its reason');
+		} finally {
+			if($savedDebug === null)
+				unset($GLOBALS['rutrackerCheckDebug']);
+			else
+				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+		}
 	}
 
 	public function testRollbackRestoresOldTorrentEvenWhenStagedStatusUnknown()
@@ -607,6 +715,45 @@ class CheckerTest
 			else
 				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
 		}
+	}
+
+	public function testActivationEarlyReturnIsLogged()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			strictAssertSame(
+				true,
+				strictInvoke('ruTrackerChecker', 'activateReplacement', array('NEW', false, false)),
+				'a replacement whose predecessor was neither open nor started is still a success'
+			);
+			strictAssertSame(0, count(rXMLRPCRequest::$requests), 'the early return issues no command at all');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'activateReplacement',
+				'the branch that used to be silent now says it was taken');
+			strictAssertEnglish($line, 'the skipped-activation line');
+			strictAssertTrue(strpos($line, 'NEW') !== false, 'the line names the replacement: ' . $line);
+			strictAssertTrue(strpos($line, 'neither open nor started') !== false,
+				'the line says why activation was skipped: ' . $line);
+		});
+	}
+
+	public function testCommitPointRunStateIsLogged()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			$this->stageHappyReplacement(sys_get_temp_dir(), 0, 0);
+
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+				'a fully stopped replacement still commits');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'old run state at commit',
+				'the input to the activation decision is recorded');
+			strictAssertEnglish($line, 'the commit-point run-state line');
+			strictAssertTrue(strpos($line, 'started=0 open=0') !== false,
+				'the exact pair of values the decision was made on: ' . $line);
+			strictAssertTrue(strpos($line, 'OLD') !== false, 'the line names the old torrent: ' . $line);
+			// And the pair really is what silenced activation.
+			strictAssertSame(1, count(strictLogsMatching(FileUtil::$log, 'neither open nor started')),
+				'the two lines together explain a stopped replacement without guesswork');
+		});
 	}
 
 	public function testForeignMarkerAfterLoadIsNeverErased()
@@ -726,9 +873,8 @@ class CheckerTest
 			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'), 'activation trouble after commit must not fail the check');
 			strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.get_state|d.is_open')), 'activation must be attempted exactly twice');
 			strictAssertTrue(!file_exists($base . '/old.mkv'), 'cleanup must run even when activation fails');
-			$clears = rXMLRPCRequest::requestsFor('d.set_custom');
-			strictAssertSame(1, count($clears), 'the marker must be cleared even when activation fails');
-			strictAssertSame(array('NEW', 'chk-replacement', ''), $clears[0]['commands'][0]->params, 'the marker clear must target the new hash');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+				'an unconfirmed activation must keep both keys: they are the next cycle\'s only handle on this row');
 		}
 		finally
 		{
@@ -820,6 +966,97 @@ class CheckerTest
 			'a state-write race must not be reported as a check failure'
 		);
 		strictAssertSame(3, count(rXMLRPCRequest::$requests), 'the raced run must stop right after the confirming probe');
+	}
+
+	public function testNewStatusConstantsAreAppendedWithoutRenumbering()
+	{
+		strictAssertSame(9, ruTrackerChecker::STE_META_PENDING, 'META_PENDING value');
+		strictAssertSame(10, ruTrackerChecker::STE_ABSORBED, 'ABSORBED value');
+		strictAssertSame(4, ruTrackerChecker::STE_DELETED, 'existing values untouched');
+	}
+
+	// run()'s META_PENDING short-circuit (check.php ~603): a torrent parked
+	// mid-metadata-fetch must be handed to RuTrackerMetaFetch::pump(),
+	// never re-classified through the normal INPROGRESS transition.
+	// pump()'s own ordered harvest is covered exhaustively by
+	// MetaFetchTest.php; this only proves the wiring in run().
+	public function testMetaPendingStateCallsPumpInsteadOfInProgress()
+	{
+		$this->resetFakes();
+		RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+		rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+		rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+
+		$result = ruTrackerChecker::run('OLD', ruTrackerChecker::STE_META_PENDING, time(), 0, '');
+
+		strictAssertSame(true, $result, 'a still-pending pump keeps the check successful');
+		strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'run must hand the meta-pending state to pump exactly once');
+		strictAssertSame('OLD', RuTrackerMetaFetch::$calls[0]['hash'], 'pump must be called with the torrent hash');
+		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'pump must reach the XMLRPC layer, not a no-op stub');
+		$stateWrites = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+		strictAssertSame(1, count($stateWrites), 'run must persist the non-null pump result');
+		strictAssertSame(
+			array('OLD', 'chk-state', (string) ruTrackerChecker::STE_META_PENDING),
+			$stateWrites[0]['commands'][0]->params,
+			'the persisted state must be the pump result, never the INPROGRESS transition'
+		);
+	}
+
+	public function testMetaPendingCompletedReplacementSkipsStateWrite()
+	{
+		$this->resetFakes();
+		RuTrackerMetaFetch::$result = null; // createTorrent success: state already set by its own load additions
+		rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+
+		$result = ruTrackerChecker::run('OLD', ruTrackerChecker::STE_META_PENDING, time(), 0, '');
+
+		strictAssertSame(true, $result, 'a completed replacement is a successful check');
+		strictAssertSame(
+			0,
+			count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			'run must not write state on the now-erased old hash after a successful replacement'
+		);
+	}
+
+	public function testSetMessageWritesChkMsgCustom()
+	{
+		$this->resetFakes();
+		rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+		$token = ruTrackerChecker::CHKMSG_DELETING . '|2/3';
+		strictAssertTrue(
+			ruTrackerChecker::setMessage(str_repeat('A', 40), $token),
+			'setMessage should succeed'
+		);
+		$requests = rXMLRPCRequest::requestsFor('d.set_custom');
+		strictAssertSame(1, count($requests), 'one write request');
+		strictAssertSame(
+			array(str_repeat('A', 40), 'chk-msg', $token),
+			$requests[0]['commands'][0]->params,
+			'params'
+		);
+	}
+
+	// chk-msg is a token, never prose: the sentence is localised in the
+	// browser (init.js + theUILang.chkMessages), so the vocabulary itself is
+	// part of check.php's contract with every writer.
+	public function testChkMessageTokensAreDistinctBareIdentifiers()
+	{
+		$tokens = array(
+			ruTrackerChecker::CHKMSG_SUPERSEDED,
+			ruTrackerChecker::CHKMSG_DELETING,
+			ruTrackerChecker::CHKMSG_TOPIC_STATUS,
+			ruTrackerChecker::CHKMSG_FUSE,
+			ruTrackerChecker::CHKMSG_ABSORBED,
+		);
+		strictAssertSame(count($tokens), count(array_unique($tokens)), 'every token is distinct');
+		foreach($tokens as $token)
+			strictAssertTrue(
+				preg_match('/^[a-z][a-z-]*$/', $token) === 1,
+				'a token carries no separator and no prose: ' . $token
+			);
 	}
 
 	public function testSchedulerStateStillSkipsMissingHash()
@@ -922,6 +1159,62 @@ class CheckerTest
 				$calls,
 				$label . ': exactly the expected handler must run with the matched URL'
 			);
+		}
+	}
+
+	// A handler that answers STE_UNCHANGED has no data to judge by -- layer 1
+	// calls that 'cold', which is the normal answer for a stopped torrent whose
+	// tracker counters are still at zero. run() must then put back the verdict
+	// the torrent already carried instead of publishing the STE_INPROGRESS lock
+	// it wrote before dispatching, and instead of the error that lock decays to.
+	public function testUnchangedVerdictRestoresThePreviousState()
+	{
+		$rows = array(
+			'a stored verdict is put back' => array(
+				'previous' => ruTrackerChecker::STE_UPTODATE,
+				'expect'   => (string) ruTrackerChecker::STE_UPTODATE,
+			),
+			'a torrent that was never checked stays unchecked' => array(
+				'previous' => 0,
+				'expect'   => '0',
+			),
+		);
+
+		foreach($rows as $label => $row)
+		{
+			$this->resetFakes();
+			$dir = sys_get_temp_dir() . '/rut-cold-' . bin2hex(random_bytes(5)) . '/';
+			mkdir($dir, 0777, true);
+			$fname = $dir . 'OLD.torrent';
+			file_put_contents($fname, 'x');
+			rTorrentSettings::get()->session = $dir;
+
+			Torrent::$fixtures[$fname] = array(
+				'comment' => 'http://topic.cold-test.invalid/1',
+				'announce' => 'http://tracker.cold-test.invalid/announce',
+			);
+			ruTrackerChecker::registerTracker('/topic\.cold-test\.invalid/', '/tracker\.cold-test\.invalid/',
+				function($url) { return ruTrackerChecker::STE_UNCHANGED; });
+
+			rXMLRPCRequest::queue('d.hash', true, false, array('OLD'));
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the INPROGRESS lock
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the restore
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array()); // if it restores UPTODATE
+
+			$result = ruTrackerChecker::run('OLD', $row['previous'], time(), 0, '');
+
+			strictAssertSame(true, $result, $label . ': an unchanged verdict is not a failed check');
+			$writes = array();
+			foreach(rXMLRPCRequest::$requests as $request)
+				foreach($request['commands'] as $command)
+					if(($command->command === getCmd('d.set_custom')) && ($command->params[1] === 'chk-state'))
+						$writes[] = $command->params[2];
+			strictAssertSame(
+				array((string) ruTrackerChecker::STE_INPROGRESS, $row['expect']),
+				$writes,
+				$label . ': the lock is written, then the previous verdict is put back'
+			);
+			strictRemoveTree($dir);
 		}
 	}
 
@@ -1068,6 +1361,124 @@ class CheckerTest
 		{
 			strictRemoveTree($base);
 		}
+	}
+
+	// The (started, open) pair read at the commit point decides whether the
+	// replacement comes up running, and until now it lived only in PHP memory:
+	// a process that died between the commit and the activation took the answer
+	// with it, leaving a torrent nobody could explain. Recording it on the new
+	// copy -- the one thing that survives, since the predecessor is erased --
+	// is what lets a later cycle finish the job.
+	public function testReplacementRecordsTheInheritedRunState()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1);
+		rXMLRPCRequest::queue('d.start', true, false, array(0));
+		rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(1, 1));
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'), 'the replacement must succeed');
+		$addition = rTorrent::$lastSend['addition'];
+		$prefix = 'd.set_custom=chk-replaces,OLD-started-';
+		strictAssertTrue(strpos($addition[1], $prefix) === 0,
+			'the inheritance record must follow the marker, before any command that can abort the list');
+		$stamp = substr($addition[1], strlen($prefix));
+		strictAssertTrue(ctype_digit($stamp) && abs(intval($stamp) - time()) <= 5,
+			'the record must carry the staging time, so a sweep can tell a crashed transaction from a running one');
+		$value = substr($addition[1], strlen('d.set_custom=chk-replaces,'));
+		strictAssertSame(1, preg_match('/^[A-Za-z0-9-]+$/', $value),
+			'd.custom.set splits its arguments on commas, so the record must be comma-free by construction');
+	}
+
+	// ruTorrent's pause button issues d.stop alone, which leaves the download
+	// open. Restoring such a torrent with d.start would bring it back seeding,
+	// so the record keeps three values rather than a was-it-running flag.
+	public function testPausedPredecessorIsRecordedAsOpen()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir(), 0, 1);
+		rXMLRPCRequest::queue('d.open', true, false, array(0));
+		rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 1));
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'), 'the replacement must succeed');
+		strictAssertTrue(strpos(rTorrent::$lastSend['addition'][1], 'd.set_custom=chk-replaces,OLD-open-') === 0,
+			'a paused predecessor must be recorded as open, never as started');
+	}
+
+	public function testStoppedPredecessorIsRecordedAsStopped()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir(), 0, 0);
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'), 'the replacement must succeed');
+		strictAssertTrue(strpos(rTorrent::$lastSend['addition'][1], 'd.set_custom=chk-replaces,OLD-stopped-') === 0,
+			'a stopped predecessor must be recorded as stopped');
+	}
+
+	public function testInheritanceRecordRoundTrips()
+	{
+		$hash = str_repeat('A', 40);
+		foreach(array(
+			array(true, true, 'started', true, true),
+			array(false, true, 'open', false, true),
+			array(false, false, 'stopped', false, false),
+		) as $case)
+		{
+			$encoded = ruTrackerChecker::encodeInheritance($hash, $case[0], $case[1], 1786899620);
+			strictAssertSame($hash . '-' . $case[2] . '-1786899620', $encoded, 'the record grammar is hash-token-epoch');
+			$decoded = ruTrackerChecker::decodeInheritance($encoded);
+			strictAssertSame($hash, $decoded['old'], 'the predecessor hash must survive the round trip');
+			strictAssertSame($case[3], $decoded['run']['started'], 'the started flag must survive the round trip');
+			strictAssertSame($case[4], $decoded['run']['open'], 'the open flag must survive the round trip');
+			strictAssertSame(1786899620, $decoded['staged'], 'the staging time must survive the round trip');
+		}
+	}
+
+	// null is the legacy signal: a row that predates the record, or lost it
+	// because its load command list aborted. Every caller must route it to the
+	// branch that starts nothing -- guessing is what this whole record exists
+	// to avoid.
+	public function testMalformedInheritanceRecordDecodesToNull()
+	{
+		foreach(array(
+			'' => 'an absent record',
+			'not-a-record' => 'a value that is not the grammar',
+			'ZZZ-started-1786899620' => 'a predecessor that is not a hash',
+			'AAAA-started-1786899620' => 'a hash of the wrong length',
+			'0123456789012345678901234567890123456789-started' => 'a record missing the timestamp',
+			'0123456789012345678901234567890123456789-started-1786899620-extra' => 'a record with trailing extra fields',
+			'0123456789012345678901234567890123456789-started-x' => 'a timestamp that is not a number',
+			'0123456789012345678901234567890123456789-started-0' => 'a timestamp of zero',
+		) as $value => $label)
+			strictAssertSame(null, ruTrackerChecker::decodeInheritance($value), $label . ' must decode to null');
+	}
+
+	// Mirrors RuTrackerMetaFetch::decodeRunState: an unknown token is the
+	// safest of the three answers, never the one that resurrects a download.
+	public function testUnrecognisedRunTokenDecodesToStopped()
+	{
+		$decoded = ruTrackerChecker::decodeInheritance(str_repeat('b', 40) . '-seeding-1786899620');
+		strictAssertSame(false, $decoded['run']['started'], 'an unrecognised token must not start anything');
+		strictAssertSame(false, $decoded['run']['open'], 'an unrecognised token must not open anything');
+	}
+
+	// The marker is only useful as a retry hook if it survives the failure it
+	// is meant to record. Clearing it unconditionally -- what the code did
+	// before -- made an unactivated replacement indistinguishable from a
+	// finished one, which is exactly how a live torrent sat stopped for a day.
+	public function testActivationFailureAfterCommitKeepsTheTransactionKeys()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		for($attempt = 0; $attempt < 2; $attempt++)
+		{
+			rXMLRPCRequest::queue('d.start', true, false, array(0));
+			rXMLRPCRequest::queue(array('d.get_state', 'd.is_open'), true, false, array(0, 0));
+		}
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', 'OLD'),
+			'an unconfirmed activation must not change what createTorrent() returns to its seven handlers');
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			'an unconfirmed activation must leave both keys in place for the next cycle to find');
 	}
 }
 

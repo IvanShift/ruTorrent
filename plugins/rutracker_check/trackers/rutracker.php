@@ -1,18 +1,21 @@
 <?php
 
+require_once( __DIR__ . '/../detector.php' );
+require_once( __DIR__ . '/../announce.php' );
+require_once( __DIR__ . '/../forumindex.php' );
+require_once( __DIR__ . '/../metafetch.php' );
+
 class RuTrackerCheckImpl
 {
-    static private function looksLikeHtmlError($content)
-    {
-        if (!is_string($content) || trim($content) === '') return true;
-
-        // A valid metainfo dictionary starts with "d". Only classify leading
-        // text/markup as an HTTP error; arbitrary binary fields may themselves
-        // contain words such as "Error" or fragments that look like HTML.
-        $leading = ltrim($content, "\xEF\xBB\xBF \t\r\n");
-        return isset($leading[0]) && ($leading[0] === '<'
-            || preg_match('/^(?:Error:|attachment data not found\b)/i', $leading));
-    }
+    // conf.php documents $updateInterval = 0 as "disable the scheduler", but
+    // confirmDeletion()'s per-cycle cap is what stops repeated manual
+    // batch_check.php clicks from reaching STE_DELETED in three clicks
+    // instead of three real cycles -- with the scheduler disabled the
+    // passed-in interval would otherwise be 0 and the cap would never hold.
+    // Floors at the smallest legitimate non-zero scheduler interval
+    // (1 minute; see plugins/scheduler/conf.php's own "1-6,10,12,15,20,30 or
+    // 60" minutes).
+    const MIN_DELETE_INTERVAL = 60;
 
     static private function normalizeHash($value)
     {
@@ -35,6 +38,17 @@ class RuTrackerCheckImpl
         if (!isset($query['t']) || !is_scalar($query['t']) || !ctype_digit((string) $query['t'])) return null;
         return (int) $query['t'];
     }
+
+    // --- Absorption detection: dormant, kept as-is ------------------------
+    //
+    // Detects a topic absorbed into another one by parsing the forum thread
+    // for a final moderator notice; the thread itself sits behind RuTracker's
+    // Cloudflare challenge (toggled on/off repeatedly through 2026) and is no
+    // longer reachable from the active flow below. Nothing here is called
+    // from download_torrent() any more -- resolution is now decided by
+    // classifyDump()'s tor_status == 7 rule, which needs no HTML fetch at
+    // all. These functions are left wired up so they revive instantly if the
+    // challenge ever lifts; do not remove or "clean up" as dead code.
 
     // Decode CP1251 HTML to UTF-8 for reliable text search.
     static private function decodePage($content)
@@ -171,78 +185,447 @@ class RuTrackerCheckImpl
         return null;
     }
 
-    static public function download_torrent($url, $hash, $oldTorrent)
+    // --- Post-API active flow ----------------------------------------------
+
+    // Shared chk-* custom-field boilerplate for the tiny helpers below: a
+    // single read (null on any RPC failure or a genuinely unset field, so
+    // callers can tell "no data" from "empty string") and a fire-and-forget
+    // write, both routed through getCmd() like every other command here.
+    static private function readCustom($hash, $field)
     {
-        $topicId = self::extractTopicId($url);
-        if ($topicId === null && is_object($oldTorrent)) {
-            $topicId = self::extractTopicId($oldTorrent->comment());
+        $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, $field)));
+        $req->important = false;
+        if (!$req->success() || !isset($req->val[0])) return null;
+        return (string) $req->val[0];
+    }
+
+    static private function writeCustom($hash, $field, $value)
+    {
+        $req = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd("d.set_custom"), array($hash, $field, (string) $value)));
+        $req->important = false;
+        $req->success();
+    }
+
+    // chk-topic := $topicId, but only the first time (one read, conditional
+    // write) -- a later move/resolve must not clobber an already-known id.
+    static private function rememberTopic($hash, $topicId)
+    {
+        if (self::readCustom($hash, "chk-topic") !== '') return;
+        self::writeCustom($hash, "chk-topic", (string) $topicId);
+    }
+
+    // Layer 1: the torrent's own RuTracker tracker row plus
+    // d.get_message, fed straight into RuTrackerDetector::classify(). Uses
+    // the same fields as update.php's embedded t.multicall, but addressed at
+    // a single hash -- this handler is reached from both the scheduled pass
+    // and a manual batch_check.php click, so it must always re-derive its
+    // own verdict rather than trust a cached one.
+    static private function layer1Verdict($hash)
+    {
+        $req = new rXMLRPCRequest(array(
+            new rXMLRPCCommand("t.multicall", array($hash, "",
+                getCmd("t.get_url") . "=", getCmd("t.is_enabled") . "=",
+                getCmd("t.failed_counter") . "=", getCmd("t.success_counter") . "=")),
+            new rXMLRPCCommand(getCmd("d.get_message"), $hash),
+        ));
+        $req->important = false;
+        // A local RPC failure carries no tracker signal at all -- treat it
+        // the same as a transport failure (retryable), never as "none"
+        // (which would wrongly stop future checks of this torrent).
+        if (!$req->success()) return 'transport';
+
+        // The transport (php/xmlrpc.php rXMLRPCRequest::run()) never nests --
+        // this one request's answer is a single FLAT list: the tracker rows,
+        // 4 values each in order (url, enabled, failed, success), followed
+        // by the single d.get_message value tacked on at the end.
+        $values = $req->val;
+        $messageIndex = count($values) - 1;
+        // An answer that carried no values at all is no signal either.
+        if ($messageIndex < 0) return 'transport';
+        $message = (string) $values[$messageIndex];
+
+        $rows = array();
+        for ($i = 0; $i + 4 <= $messageIndex; $i += 4) {
+            $rows[] = array(
+                'url' => $values[$i], 'enabled' => (int) $values[$i + 1],
+                'failed' => (int) $values[$i + 2], 'success' => (int) $values[$i + 3],
+            );
         }
-        if ($topicId === null) return ruTrackerChecker::STE_NOT_NEED;
+        $verdict = RuTrackerDetector::classify($rows, $message);
+        // Candidates only. Layer 1 runs over every seeding torrent, and the
+        // healthy majority answers 'alive' -- logging those would put hundreds
+        // of lines an hour into the log and bury everything that matters.
+        if ($verdict === 'candidate')
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer1 verdict=candidate from '
+                . self::describeCounters($rows));
+        return $verdict;
+    }
 
-        $localHash = self::normalizeHash($hash);
-        $remoteHash = null;
-        $apiDeleted = false;
+    // The tracker counters layer 1's verdict was derived from. Hosts only,
+    // never the row's URL: a RuTracker announce URL carries the user's passkey
+    // in its query string, and no log line may ever contain it.
+    static private function describeCounters($rows)
+    {
+        $described = array();
+        foreach ($rows as $row) {
+            if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) $row['url'])) continue;
+            $host = (string) @parse_url($row['url'], PHP_URL_HOST);
+            $described[] = ($host !== '' ? $host : 'unknown host')
+                . ' enabled=' . (int) $row['enabled']
+                . ' failed=' . (int) $row['failed']
+                . ' success=' . (int) $row['success'];
+        }
+        return count($described) ? implode('; ', $described) : 'no RuTracker tracker row';
+    }
 
-        $apiUrl = 'https://api.rutracker.cc/v1/get_tor_hash?by=topic_id&val=' . $topicId;
-        $client = ruTrackerChecker::makeClient($apiUrl);
-        if ($client->status == 200) {
-            $response = @json_decode($client->results, true);
-            if (is_array($response) && isset($response['result']) && is_array($response['result'])
-                && array_key_exists($topicId, $response['result'])) {
-                $apiValue = $response['result'][$topicId];
-                if (is_array($apiValue)) {
-                    $remoteHash = self::normalizeHash(isset($apiValue['hash']) ? $apiValue['hash'] : null);
-                    $apiDeleted = ($remoteHash === null && isset($apiValue['error_code'])
-                        && (int) $apiValue['error_code'] === 1);
-                } else {
-                    $remoteHash = self::normalizeHash($apiValue);
-                }
+    // Layer 3's forum_id cache: chk-forum, written once resolved (feed or
+    // full crawl, both outside this handler) and read back here.
+    static private function resolveForum($hash)
+    {
+        $forum = self::readCustom($hash, "chk-forum");
+        if ($forum === null) return null;
+        $forum = trim($forum);
+        return ($forum !== '' && ctype_digit($forum)) ? (int) $forum : null;
+    }
 
-                if ($remoteHash !== null && $remoteHash === $localHash) {
-                    return ruTrackerChecker::STE_UPTODATE;
-                }
-            }
+    // Invalidates a stale chk-forum: the topic may simply have moved forum,
+    // so the cache is dropped and re-resolution is queued rather than
+    // treating a cache miss as proof of deletion.
+    static private function forgetForum($hash)
+    {
+        self::writeCustom($hash, "chk-forum", '');
+    }
+
+    static private function resetDeletion($hash)
+    {
+        self::writeCustom($hash, "chk-del", '');
+    }
+
+    // Pure classification of a found dump row;
+    // null means the row is simply missing (rule 1), which needs more
+    // context (the tracker-confirmation flag, the current time) than this
+    // function is given, so that case is left for the caller to resolve.
+    static private function classifyDump($rows, $topicId, $localHash)
+    {
+        if (!isset($rows[$topicId])) return null;
+
+        $row = $rows[$topicId];
+        $status = $row['tor_status'];
+
+        if ($status === 7) return array('verdict' => 'absorbed', 'status' => $status);
+        if (in_array($status, array(1, 4, 5), true)) return array('verdict' => 'closed', 'status' => $status);
+        if (!in_array($status, RuTrackerForumIndex::$VALID_STATUSES, true))
+            return array('verdict' => 'unknown', 'status' => $status);
+        if ($row['info_hash'] === $localHash) return array('verdict' => 'uptodate', 'status' => $status);
+        return array('verdict' => 'updated', 'status' => $status, 'newHash' => $row['info_hash']);
+    }
+
+    // Two-independent-sources deletion confirmation:
+    // chk-del holds "count:timestamp-of-last-increment". The increment is
+    // capped at once per $interval regardless of how many times this runs,
+    // so repeated manual batch_check.php clicks cannot fast-forward the
+    // three required cycles.
+    // Whether confirmDeletion() ever reached its threshold for this torrent:
+    // the chk-del counter survives the verdict (only an alive/present row
+    // resets it), so it is the durable record that a full confirmation run
+    // happened, readable even after run() has overwritten chk-state with
+    // STE_INPROGRESS for the current dispatch.
+    static private function deletionConfirmedOnce($hash)
+    {
+        global $rutrackerDeleteCycles;
+        $cycles = isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3;
+        $stored = self::readCustom($hash, "chk-del");
+        return $stored !== null && preg_match('/^(\d+):/', (string) $stored, $m)
+            && (int) $m[1] >= $cycles;
+    }
+
+    static private function confirmDeletion($hash, $now, $interval)
+    {
+        global $rutrackerDeleteCycles;
+        $cycles = isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3;
+        $interval = max((int) $interval, self::MIN_DELETE_INTERVAL);
+
+        $count = 0;
+        $lastIncrement = 0;
+        $stored = self::readCustom($hash, "chk-del");
+        if ($stored !== null && preg_match('/^(\d+):(\d+)$/', $stored, $m)) {
+            $count = (int) $m[1];
+            $lastIncrement = (int) $m[2];
         }
 
-        $client->setcookies();
-        $client->fetchComplex('https://rutracker.org/forum/dl.php?t=' . $topicId);
-        $directStatus = $client->status;
-        $directBody = $client->results;
-        $directParseError = false;
-        if ($directStatus == 200 && !self::looksLikeHtmlError($directBody)) {
-            $downloadedTorrent = @new Torrent($directBody);
-            if (!$downloadedTorrent->errors()
-                && self::normalizeHash($downloadedTorrent->hash_info()) !== null) {
-                // A valid payload reached the local replacement transaction.
-                // Its error must not trigger a second, potentially conflicting replacement.
-                return ruTrackerChecker::createTorrent($directBody, $hash);
-            }
-            $directParseError = true;
-        }
-
-        $absorbedTopicId = self::detectAbsorbedTopic($client, $topicId);
-        if ($absorbedTopicId !== null) {
-            $client->setcookies();
-            $client->fetchComplex('https://rutracker.org/forum/dl.php?t=' . $absorbedTopicId);
-            if ($client->status == 200 && !self::looksLikeHtmlError($client->results)) {
-                // createTorrent treats unparseable payloads as a deleted topic
-                // (legacy handler contract); for a replacement download that
-                // would be wrong, so validate the payload here.
-                $replacement = @new Torrent($client->results);
-                if ($replacement->errors()
-                    || self::normalizeHash($replacement->hash_info()) === null) {
-                    return ruTrackerChecker::STE_ERROR;
-                }
-                return ruTrackerChecker::createTorrent($client->results, $hash);
-            }
+        // The message is the same token throughout: "row missing, this is
+        // confirmation cycle N of M". At N == M the status label already says
+        // "probably deleted", and N/M then reads as what backed that verdict.
+        if ($count > 0 && ($now - $lastIncrement) < $interval) {
+            self::reportDeletionProgress($hash, $count, $cycles);
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
 
-        // Only a topic-specific API deletion is authoritative. Transport,
-        // login and unexpected payload failures must remain retryable.
-        if ($apiDeleted) return ruTrackerChecker::STE_DELETED;
-        if ($directParseError) return ruTrackerChecker::STE_ERROR;
-        return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        $count++;
+        self::writeCustom($hash, "chk-del", $count . ':' . $now);
+        self::reportDeletionProgress($hash, $count, $cycles);
+
+        return ($count >= $cycles)
+            ? ruTrackerChecker::STE_DELETED
+            : ruTrackerChecker::STE_CANT_REACH_TRACKER;
+    }
+
+    // The token is all the UI needs: the status label already says "probably
+    // deleted" and "deleting|N/M" already carries the count, so the sentence
+    // that used to spell this out belongs in the log, not in chk-msg.
+    static private function reportDeletionProgress($hash, $count, $cycles)
+    {
+        ruTrackerChecker::setMessage($hash,
+            ruTrackerChecker::CHKMSG_DELETING . '|' . $count . '/' . $cycles);
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' row missing from the dump for '
+            . $count . ' of ' . $cycles . ' consecutive cycles, with the tracker confirming the deletion');
+    }
+
+    // Fix A: "the topic's current version is already in the client" is a
+    // terminal outcome -- nothing about it can change until the user removes
+    // that successor -- yet the old code re-ran the whole chain every cycle,
+    // spending one of the host's ten announce probes and a forum dump fetch
+    // on a settled case, forever. The chk-msg token metafetch.php wrote IS
+    // the record (no new custom field), and one d.hash probe re-verifies it.
+    //
+    // check.php's run() writes STE_INPROGRESS immediately before dispatching
+    // to this handler, so that -- not the stored verdict -- is the state a
+    // scheduled or manual check actually sees here; a direct call still sees
+    // STE_NOT_NEED. Any other state means something else has judged this
+    // torrent since the token was written, so the token is stale.
+    //
+    // @return string|null the recorded successor hash, or null when there is
+    //         no usable record and the normal flow must run
+    static private function supersededBy($hash)
+    {
+        $req = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
+            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-msg")),
+        ));
+        $req->important = false;
+        if (!$req->success() || !isset($req->val[0], $req->val[1])) return null;
+
+        $state = (int) $req->val[0];
+        if ($state !== ruTrackerChecker::STE_NOT_NEED && $state !== ruTrackerChecker::STE_INPROGRESS)
+            return null;
+
+        $parts = explode('|', (string) $req->val[1], 2);
+        if (count($parts) !== 2 || $parts[0] !== ruTrackerChecker::CHKMSG_SUPERSEDED) return null;
+        return self::normalizeHash($parts[1]);
+    }
+
+    static public function download_torrent($url, $hash, $oldTorrent)
+    {
+        global $rutrackerLayer2Enabled, $rutrackerAnnouncePause, $rutrackerAnnounceCap, $updateInterval;
+
+        $topicId = self::extractTopicId($url);
+        if ($topicId === null && is_object($oldTorrent))
+            $topicId = self::extractTopicId($oldTorrent->comment());
+        if ($topicId === null) return ruTrackerChecker::STE_NOT_NEED;
+
+        $localHash = self::normalizeHash($hash);
+        if ($localHash === null) return ruTrackerChecker::STE_NOT_NEED;
+
+        // Layer 0: a settled "superseded" verdict is re-verified with one
+        // existence probe and nothing else (see supersededBy()), ahead of
+        // even the local bookkeeping below -- chk-topic was already recorded
+        // by the run that wrote the token. If the user has since removed the
+        // successor, the stale token is cleared and the normal flow decides
+        // again.
+        $successor = self::supersededBy($hash);
+        if ($successor !== null) {
+            // Only a definite "gone" reopens the question: a failed probe
+            // (null) is no evidence the user removed anything, and spending
+            // the whole chain on that guess is exactly what this avoids.
+            if (ruTrackerChecker::torrentExists($successor) !== false)
+                return ruTrackerChecker::STE_NOT_NEED;
+            ruTrackerChecker::setMessage($hash, '');
+        }
+
+        self::rememberTopic($hash, $topicId);
+
+        // Layer 1: local, request-free verdict. Runs on
+        // every call -- including a manual batch_check.php click -- rather
+        // than trusting a cached scheduler verdict.
+        $verdict = self::layer1Verdict($hash);
+        if ($verdict === 'alive') {
+            self::resetDeletion($hash);
+            ruTrackerChecker::setMessage($hash, '');
+            return ruTrackerChecker::STE_UPTODATE;
+        }
+        // 'cold' is not a failure: the torrent simply has not announced in this
+        // rTorrent session, which is the permanent state of a stopped one. There
+        // is nothing to judge by, so keep whatever verdict is already stored --
+        // the same call updatepass.php's fast pass makes when it skips a cold
+        // row without writing state. Reporting "cannot reach the tracker" here
+        // used to overwrite a perfectly good verdict, and a stopped torrent is
+        // outside the seeding view the hourly cycle walks, so it never recovered.
+        if ($verdict === 'cold') return ruTrackerChecker::STE_UNCHANGED;
+        if ($verdict === 'transport') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        if ($verdict !== 'candidate') return ruTrackerChecker::STE_NOT_NEED;
+
+        $announceUrl = is_object($oldTorrent) ? (string) $oldTorrent->announce() : '';
+        $host = (string) @parse_url($announceUrl, PHP_URL_HOST);
+
+        // Layer 2: passkey-less announce confirmation.
+        // Optional and budgeted; the budget (probeDecision/recordProbe) is
+        // consulted here too so repeated manual checks cannot outrun it --
+        // the windowed cap is persisted (RuTrackerState, via announce.php),
+        // so it holds across manual batch_check.php clicks just as much as
+        // across the hourly update.php pass. $updateInterval*60 is the same
+        // window every other per-cycle knob in this plugin uses; probeDecision/
+        // recordProbe floor it themselves so a disabled scheduler ($updateInterval=0)
+        // cannot void the cap.
+        $announceWindow = (int) $updateInterval * 60;
+        $trackerConfirmed = false;
+        // Named skip reasons, all of them logged: a cycle that concluded
+        // nothing must say whether layer 2 was off, out of budget, or cooling
+        // down after a 403 -- the three are indistinguishable from the verdict
+        // alone, and guessing between them is exactly what this log removes.
+        $probeDecision = 'skipped';
+        if (empty($rutrackerLayer2Enabled)) $skip = 'disabled in the configuration';
+        elseif ($host === '') $skip = 'the torrent carries no announce host';
+        // The handler is dispatched by the topic COMMENT, and layer 1's verdict
+        // comes from the t-ru tracker ROW -- neither guarantees the torrent's
+        // primary announce is RuTracker's. An answer from some other tracker
+        // proves nothing about the RuTracker topic (and the probe itself would
+        // land on a tracker that never asked for it), so a foreign host is
+        // treated exactly like a missing one: fall through to layer 3.
+        elseif (!preg_match(RuTrackerDetector::TRACKER_PATTERN, $host))
+            $skip = 'the announce host ' . $host . ' is not RuTracker\'s';
+        else {
+            $probeDecision = RuTrackerAnnounce::probeDecision($host, time(), (int) $rutrackerAnnounceCap, $announceWindow);
+            if ($probeDecision === 'cap') $skip = 'the per-host announce cap for ' . $host . ' is exhausted';
+            elseif ($probeDecision === 'cooldown') $skip = 'the 403 cooldown for ' . $host . ' is still active';
+            else $skip = null;
+        }
+        if ($skip !== null)
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 skipped: ' . $skip);
+
+        if ($probeDecision === 'allow') {
+            // A misconfigured non-positive pause must not turn into a
+            // negative sleep() argument; zero is a legitimate pause, so the
+            // floor is 0, not 1.
+            sleep(max(0, (int) $rutrackerAnnouncePause + random_int(0, 3)));
+            $probeUrl = RuTrackerAnnounce::buildUrl($announceUrl, $localHash,
+                RuTrackerAnnounce::makePeerId(), 63981, bin2hex(random_bytes(4)));
+            if ($probeUrl === null) {
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                    . ' layer2 skipped: the announce URL cannot be turned into a probe URL');
+            } else {
+                $client = ruTrackerChecker::makeClient($probeUrl);
+                RuTrackerAnnounce::recordProbe($host, time(), (int) $client->status === 403, $announceWindow);
+                $answer = RuTrackerAnnounce::classify($client->status, $client->results);
+                // The probe URL itself is never logged: buildUrl() strips the
+                // passkey, but the announce host is all a diagnosis needs.
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 verdict=' . $answer
+                    . ' http=' . (int) $client->status . ' host=' . $host);
+                if ($answer === 'registered') {
+                    self::resetDeletion($hash);
+                    ruTrackerChecker::setMessage($hash, '');
+                    return ruTrackerChecker::STE_UPTODATE;
+                }
+                if ($answer === 'uncertain') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+                $trackerConfirmed = true;
+            }
+        }
+
+        // Layer 3: classification from the forum's static dump.
+        $forumId = self::resolveForum($hash);
+        if ($forumId === null) {
+            RuTrackerForumIndex::queueTopic($topicId);
+            // Internal bookkeeping, not a verdict: the user is told nothing
+            // (and any stale token is cleared), the reason goes to the log.
+            ruTrackerChecker::setMessage($hash, '');
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' layer3 forum unknown for topic ' . $topicId . ', queued for a sweep');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 forum=' . $forumId
+            . ' from the chk-forum cache');
+
+        $rows = RuTrackerForumIndex::fetchDump($forumId);
+        if ($rows === 'unchanged') {
+            $rows = RuTrackerForumIndex::cachedDump($forumId);
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' unchanged, ' . (is_array($rows) ? count($rows) . ' rows from the cache' : 'nothing cached'));
+        } elseif (is_array($rows)) {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' fetched, ' . count($rows) . ' rows');
+        } else {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+                . ' unavailable');
+        }
+        if (!is_array($rows)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+
+        $decision = self::classifyDump($rows, $topicId, $localHash);
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 topic=' . $topicId . ' '
+            . ($decision === null
+                ? 'row missing from the dump'
+                : 'verdict=' . $decision['verdict'] . ' tor_status=' . $decision['status']));
+        if ($decision === null) {
+            // Row missing: could be a move to another forum, not proof of
+            // deletion on its own. Invalidate the cache and re-queue
+            // resolution; only count towards STE_DELETED when layer 2
+            // independently confirmed the hash is unregistered.
+            self::forgetForum($hash);
+            RuTrackerForumIndex::queueTopic($topicId);
+            if (!$trackerConfirmed) {
+                // A budget-denied probe is no evidence either way: when the
+                // deletion was already fully confirmed once (chk-del at the
+                // threshold) and the row is still missing, keep the settled
+                // verdict -- only a probe that actually RAN may move it.
+                // Anything else here (a fresh answer of "registered" never
+                // reaches this branch) would downgrade DELETED to "can't
+                // reach" for the crime of a spent budget, un-settling the
+                // row into hourly re-litigation until the deletion is
+                // re-confirmed from scratch.
+                if (($probeDecision === 'cap' || $probeDecision === 'cooldown')
+                        && self::deletionConfirmedOnce($hash)) {
+                    ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                        . ' row still missing and the probe budget is spent:'
+                        . ' the settled DELETED verdict stands');
+                    return ruTrackerChecker::STE_DELETED;
+                }
+                // Nothing was decided, so there is nothing to report: clear
+                // chk-msg (an older token here would now be stale) and log.
+                ruTrackerChecker::setMessage($hash, '');
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                    . ' row missing from the dump, but the tracker never confirmed deletion');
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
+            return self::confirmDeletion($hash, time(), (int) $updateInterval * 60);
+        }
+
+        // The row is present in the dump -- whatever its verdict below, that
+        // alone disproves "missing", so any deletion count built up over
+        // prior miss cycles is stale, and so is any "row missing, cycle
+        // n/3" message confirmDeletion() may have left behind.
+        self::resetDeletion($hash);
+        ruTrackerChecker::setMessage($hash, '');
+
+        // Layer 4: hand a genuinely new hash to the metadata fetch (design
+        // doc 4.4); every other verdict is terminal here.
+        switch ($decision['verdict']) {
+            case 'absorbed':
+                // The bare topic id: the status label already says "absorbed,
+                // resolve manually", so init.js only has to turn this into the
+                // topic URL -- no sentence to translate at all.
+                ruTrackerChecker::setMessage($hash,
+                    ruTrackerChecker::CHKMSG_ABSORBED . '|' . $topicId);
+                return ruTrackerChecker::STE_ABSORBED;
+            case 'closed':
+                ruTrackerChecker::setMessage($hash,
+                    ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|' . $decision['status']);
+                return ruTrackerChecker::STE_NOT_NEED;
+            case 'uptodate':
+                return ruTrackerChecker::STE_UPTODATE;
+            case 'updated':
+                return RuTrackerMetaFetch::begin($hash, $decision['newHash'], $topicId, $announceUrl, time());
+            default: // 'unknown': tor_status ambiguous, retry later
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
     }
 }
 

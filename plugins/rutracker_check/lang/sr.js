@@ -18,7 +18,15 @@
  				  "Error accessing the tracker",
  				  "Error interacting with rTorrent",
  				  "No need",
- 				  "Ignored"
+ 				  "Ignored",
+ 				  "Чекање на метаподатке",
+ 				  "Припојено другој теми — реши ручно"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Тренутна верзија ове теме је већ у клијенту: %s",
+ 				  "deleting":	"Теме нема на листи форума; циклус потврђивања %s",
+ 				  "topic-status": "Статус теме %s: затворена, неодобрена или дупликат",
+ 				  "fuse":	"Изгледа да је трекер %s недоступан; провера је одложена"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

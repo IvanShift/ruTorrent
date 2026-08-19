@@ -18,7 +18,15 @@
  				  "Error accessing the tracker",
  				  "Error interacting with rTorrent",
  				  "No need",
- 				  "Ignored"
+ 				  "Ignored",
+ 				  "Wachten op metadata",
+ 				  "Opgenomen in een ander onderwerp – handmatig oplossen"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"De huidige versie van dit onderwerp is al aanwezig in de client: %s",
+ 				  "deleting":	"Het onderwerp ontbreekt in de forumlijst; bevestigingsronde %s",
+ 				  "topic-status": "Onderwerpstatus %s: gesloten, niet goedgekeurd of een duplicaat",
+ 				  "fuse":	"Tracker %s lijkt niet beschikbaar; de controle is uitgesteld"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

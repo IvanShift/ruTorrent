@@ -18,7 +18,15 @@
  				  "Fel, uppstigning tracker",
  				  "Fel vid interaktivitet med rTorrent",
  				  "Behövs inte",
- 				  "Ignorerad"
+ 				  "Ignorerad",
+ 				  "Väntar på metadata",
+ 				  "Sammanslagen med ett annat ämne — åtgärda manuellt"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Den aktuella versionen av det här ämnet finns redan i klienten: %s",
+ 				  "deleting":	"Ämnet saknas i forumlistan; bekräftelseomgång %s",
+ 				  "topic-status": "Ämnesstatus %s: stängt, inte godkänt eller en dubblett",
+ 				  "fuse":	"Trackern %s verkar vara otillgänglig; kontrollen skjuts upp"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();

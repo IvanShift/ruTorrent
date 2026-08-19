@@ -18,7 +18,15 @@
  				  "Tilgangsfeil med trackeren oppstod",
  				  "Kommunikasjonsfeil med rTorrent oppstod",
  				  "Ikke nødvendig",
- 				  "Ignorert"
+ 				  "Ignorert",
+ 				  "Venter på metadata",
+ 				  "Slått sammen med et annet emne — løs det manuelt"
  				  ];
+ theUILang.chkMessages		= {
+ 				  "superseded":	"Den nåværende versjonen av dette emnet finnes allerede i klienten: %s",
+ 				  "deleting":	"Emnet mangler i forumlisten; bekreftelsesrunde %s",
+ 				  "topic-status": "Emnestatus %s: lukket, ikke godkjent eller et duplikat",
+ 				  "fuse":	"Trackeren %s ser ut til å være utilgjengelig; sjekken er utsatt"
+ 				  };
 
 thePlugins.get("rutracker_check").langLoaded();
