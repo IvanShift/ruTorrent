@@ -10,7 +10,10 @@ var theWebUI = {
 			obj: new dxSTable(),
 			columns: [
 				{ text: theUILang.Name, 		width: "200px", id: "name",		type: TYPE_STRING },
-				{ text: theUILang.Status, 		width: "100px",	id: "status",		type: TYPE_STRING },
+				// titled: rutracker_check writes its whole verdict into this
+				// column (its getStatusIcon override), and 100px holds about
+				// three words of it.
+				{ text: theUILang.Status, 		width: "100px",	id: "status",		type: TYPE_STRING, titled: true },
 				{ text: theUILang.Size, 		width: "70px",	id: "size", 		type: TYPE_NUMBER },
 				{ text: theUILang.Done, 		width: "100px",	id: "done",		type: TYPE_PROGRESS },
 				{ text: theUILang.Downloaded, 		width: "100px",	id: "downloaded",	type: TYPE_NUMBER },

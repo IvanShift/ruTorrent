@@ -48,7 +48,6 @@ $req =  new rXMLRPCRequest(
 			getCmd("d.get_hash="),
 			getCmd("d.get_custom=")."chk-state",
 			getCmd("d.get_custom=")."chk-time",
-			getCmd("d.get_custom=")."chk-stime",
 			getCmd("d.get_custom1="),
 			getCmd("d.get_message="),
 			getCmd("d.get_custom=")."chk-del",
@@ -71,13 +70,11 @@ if($req->success())
 		if(RuTrackerUpdatePass::isTrackerSupported($row['trackers'], $supported))
 			$rows[] = $row;
 
-	RuTrackerUpdatePass::pollFeed();
-	$result = RuTrackerUpdatePass::run($rows);
+	$forumChanged = RuTrackerUpdatePass::pollFeed();
+	$result = RuTrackerUpdatePass::run($rows, $forumChanged);
 	RuTrackerUpdatePass::reapOrphans(time());
 
-	if(count(RuTrackerForumIndex::takeQueuePeek()) && RuTrackerForumIndex::sweepAllowed(time()))
-		shell_exec( Utility::getPHP()." -f ".escapeshellarg(dirname(__FILE__)."/forumcrawl.php")
-			." ".escapeshellarg(User::getUser())." > /dev/null 2>&1 &" );
+	RuTrackerForumIndex::spawnCrawl();
 
 	ruTrackerChecker::logDebug("update: cycle done"
 		." checked=".count($result['checked'])

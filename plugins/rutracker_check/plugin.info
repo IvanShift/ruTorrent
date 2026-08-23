@@ -1,4 +1,4 @@
-plugin.description: This plugin checks the rutracker.org tracker for updated/deleted torrents.
+plugin.description: This plugin checks RuTracker, Kinozal, Tapochek, AniDUB, Tfile, Toloka, and NNMClub for updates; deletion detection is available for RuTracker, Kinozal, and Tapochek.
 plugin.author: Novik
 plugin.version: 6.0
 rtorrent.remote: error

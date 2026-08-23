@@ -24,13 +24,34 @@ class RuTrackerCheckImpl
         return preg_match('/^[0-9A-F]{40}$/', $value) ? $value : null;
     }
 
+    static private function parseNonnegativeInteger($value)
+    {
+        if (is_int($value)) return $value >= 0 ? $value : null;
+        if (!is_string($value)
+            || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $value)) {
+            return null;
+        }
+        $parsed = (int) $value;
+        return (string) $parsed === $value ? $parsed : null;
+    }
+
     static private function extractTopicId($url)
     {
         if (!is_string($url) || $url === '') return null;
         $parts = @parse_url(trim($url));
         if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) return null;
         if (!preg_match('/^https?$/i', $parts['scheme'])) return null;
-        if (!preg_match('/^rutracker\.(?:org|cr|net|nl)$/i', $parts['host'])) return null;
+        // The detector's list, not a fifth hand-written copy of it: this one
+        // was anchored at the START of the host and knew nothing of
+        // rutracker.cc, so 'https://www.rutracker.org/forum/viewtopic.php?t=N'
+        // -- the form the site's own links take -- and any .cc comment failed
+        // here, the handler answered STE_NOT_NEED, and the torrent was stamped
+        // "no need to check" for good.
+        // Being more permissive costs nothing: the host is not carried
+        // anywhere. Every URL built from the result uses the constant domain
+        // (see $topicUrl below and metafetch's comment write), so this decides
+        // recognition only, never where a request goes.
+        if (!RuTrackerDetector::isTrackerHost($parts['host'])) return null;
         if (strcasecmp($parts['path'], '/forum/viewtopic.php') !== 0) return null;
 
         $query = array();
@@ -191,20 +212,25 @@ class RuTrackerCheckImpl
     // single read (null on any RPC failure or a genuinely unset field, so
     // callers can tell "no data" from "empty string") and a fire-and-forget
     // write, both routed through getCmd() like every other command here.
-    static private function readCustom($hash, $field)
+    static private function readCustom($hash, $field, &$readable = null)
     {
+        $readable = false;
         $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, $field)));
         $req->important = false;
         if (!$req->success() || !isset($req->val[0])) return null;
+        $readable = true;
         return (string) $req->val[0];
     }
 
+    // @return bool -- whether the write landed. Most callers do not care, but
+    // the deletion counter does: a verdict that outruns its own durable record
+    // is a verdict nothing can back up later.
     static private function writeCustom($hash, $field, $value)
     {
         $req = new rXMLRPCRequest(new rXMLRPCCommand(
             getCmd("d.set_custom"), array($hash, $field, (string) $value)));
         $req->important = false;
-        $req->success();
+        return $req->success();
     }
 
     // chk-topic := $topicId, but only the first time (one read, conditional
@@ -221,9 +247,27 @@ class RuTrackerCheckImpl
     // a single hash -- this handler is reached from both the scheduled pass
     // and a manual batch_check.php click, so it must always re-derive its
     // own verdict rather than trust a cached one.
-    static private function layer1Verdict($hash)
+    // The URL of the torrent's own RuTracker announce row -- the row layer 1
+    // actually judged. announce() gives only the PRIMARY tracker, which for a
+    // torrent carrying RuTracker further down its announce-list is some other
+    // tracker entirely: probing that proves nothing about the topic, and a
+    // magnet built from it asks a stranger for RuTracker's metadata.
+    static private function ruTrackerRowUrl($rows)
     {
+        foreach ($rows as $row) {
+            if (empty($row['enabled'])) continue;
+            if (RuTrackerDetector::isTrackerRow((string) ($row['url'] ?? ''))) {
+                return (string) $row['url'];
+            }
+        }
+        return '';
+    }
+
+    static private function layer1Verdict($hash, &$trackerUrl = null)
+    {
+        $trackerUrl = '';
         $req = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd("d.get_tracker_size"), $hash),
             new rXMLRPCCommand("t.multicall", array($hash, "",
                 getCmd("t.get_url") . "=", getCmd("t.is_enabled") . "=",
                 getCmd("t.failed_counter") . "=", getCmd("t.success_counter") . "=")),
@@ -236,22 +280,39 @@ class RuTrackerCheckImpl
         if (!$req->success()) return 'transport';
 
         // The transport (php/xmlrpc.php rXMLRPCRequest::run()) never nests --
-        // this one request's answer is a single FLAT list: the tracker rows,
-        // 4 values each in order (url, enabled, failed, success), followed
-        // by the single d.get_message value tacked on at the end.
+        // this one request's answer is a single FLAT list: the authoritative
+        // tracker count, exactly 4 values per row (url, enabled, failed,
+        // success), then d.get_message. The count makes a positively parsed
+        // but truncated XMLRPC prefix distinguishable from a complete answer.
         $values = $req->val;
-        $messageIndex = count($values) - 1;
-        // An answer that carried no values at all is no signal either.
-        if ($messageIndex < 0) return 'transport';
-        $message = (string) $values[$messageIndex];
+        if (count($values) < 2) return 'transport';
+
+        $trackerCount = self::parseNonnegativeInteger($values[0]);
+        if ($trackerCount === null || $trackerCount > intdiv(PHP_INT_MAX - 2, 4)) {
+            return 'transport';
+        }
+
+        $expectedValues = 2 + 4 * $trackerCount;
+        if (count($values) !== $expectedValues) return 'transport';
+        $messageIndex = $expectedValues - 1;
+        if (!is_string($values[$messageIndex])) return 'transport';
+        $message = $values[$messageIndex];
 
         $rows = array();
-        for ($i = 0; $i + 4 <= $messageIndex; $i += 4) {
+        for ($i = 1; $i + 4 <= $messageIndex; $i += 4) {
+            if (!is_string($values[$i])) return 'transport';
+            $enabled = self::parseNonnegativeInteger($values[$i + 1]);
+            $failed = self::parseNonnegativeInteger($values[$i + 2]);
+            $success = self::parseNonnegativeInteger($values[$i + 3]);
+            if ($enabled === null || $failed === null || $success === null) {
+                return 'transport';
+            }
             $rows[] = array(
-                'url' => $values[$i], 'enabled' => (int) $values[$i + 1],
-                'failed' => (int) $values[$i + 2], 'success' => (int) $values[$i + 3],
+                'url' => $values[$i], 'enabled' => $enabled,
+                'failed' => $failed, 'success' => $success,
             );
         }
+        $trackerUrl = self::ruTrackerRowUrl($rows);
         $verdict = RuTrackerDetector::classify($rows, $message);
         // Candidates only. Layer 1 runs over every seeding torrent, and the
         // healthy majority answers 'alive' -- logging those would put hundreds
@@ -281,25 +342,28 @@ class RuTrackerCheckImpl
 
     // Layer 3's forum_id cache: chk-forum, written once resolved (feed or
     // full crawl, both outside this handler) and read back here.
-    static private function resolveForum($hash)
+    // null means "no usable forum id". $known separates the two reasons for
+    // that, which the caller must act on differently: a field that is unset or
+    // malformed is a topic whose forum nobody has resolved yet, and queueing a
+    // crawl for it is the point -- but a field that could not be READ says
+    // nothing at all, and queueing on it spends a tracker-wide walk on a
+    // torrent whose forum is very probably cached and fine.
+    static private function resolveForum($hash, &$known = null)
     {
         $forum = self::readCustom($hash, "chk-forum");
+        $known = ($forum !== null);
         if ($forum === null) return null;
         $forum = trim($forum);
         return ($forum !== '' && ctype_digit($forum)) ? (int) $forum : null;
     }
 
-    // Invalidates a stale chk-forum: the topic may simply have moved forum,
-    // so the cache is dropped and re-resolution is queued rather than
-    // treating a cache miss as proof of deletion.
-    static private function forgetForum($hash)
-    {
-        self::writeCustom($hash, "chk-forum", '');
-    }
-
+    // Clears the deletion counter. (The docblock here used to describe
+    // dropping chk-forum, which this has never done -- invalidating a stale
+    // forum id is the crawl's job, see RuTrackerForumIndex::queueTopic() and
+    // topicsAwaitingForum().)
     static private function resetDeletion($hash)
     {
-        self::writeCustom($hash, "chk-del", '');
+        return self::writeCustom($hash, "chk-del", '');
     }
 
     // Pure classification of a found dump row;
@@ -318,6 +382,13 @@ class RuTrackerCheckImpl
         if (!in_array($status, RuTrackerForumIndex::$VALID_STATUSES, true))
             return array('verdict' => 'unknown', 'status' => $status);
         if ($row['info_hash'] === $localHash) return array('verdict' => 'uptodate', 'status' => $status);
+        // The successor hash arrives from the forum dump, i.e. off the
+        // network, and from here it becomes a magnet target and a torrent
+        // the client is asked to load. Anything that is not a hash is not a
+        // verdict: say "unknown" and let a later cycle try again rather than
+        // chase it.
+        if (self::normalizeHash($row['info_hash']) === null)
+            return array('verdict' => 'unknown', 'status' => $status);
         return array('verdict' => 'updated', 'status' => $status, 'newHash' => $row['info_hash']);
     }
 
@@ -334,7 +405,9 @@ class RuTrackerCheckImpl
     static private function deletionConfirmedOnce($hash)
     {
         global $rutrackerDeleteCycles;
-        $cycles = isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3;
+        // >= 1: at zero or below, the very first confirmation would return
+        // STE_DELETED, and a settled deletion rests for a week.
+        $cycles = max(1, isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3);
         $stored = self::readCustom($hash, "chk-del");
         return $stored !== null && preg_match('/^(\d+):/', (string) $stored, $m)
             && (int) $m[1] >= $cycles;
@@ -343,15 +416,52 @@ class RuTrackerCheckImpl
     static private function confirmDeletion($hash, $now, $interval)
     {
         global $rutrackerDeleteCycles;
-        $cycles = isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3;
+        // >= 1: at zero or below, the very first confirmation would return
+        // STE_DELETED, and a settled deletion rests for a week.
+        $cycles = max(1, isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3);
         $interval = max((int) $interval, self::MIN_DELETE_INTERVAL);
 
         $count = 0;
         $lastIncrement = 0;
         $stored = self::readCustom($hash, "chk-del");
-        if ($stored !== null && preg_match('/^(\d+):(\d+)$/', $stored, $m)) {
+        if ($stored === null) {
+            // Unreadable is not "never counted". Treating it as zero would
+            // walk a torrent already at 2 of 3 back to 1 on nothing but a
+            // transport hiccup, and a torrent unlucky enough to hit one
+            // every few cycles could never finish confirming.
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' deletion counter unreadable, deferring rather than restarting the count');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
+        if (preg_match('/^(\d+):(\d+)$/', $stored, $m)) {
             $count = (int) $m[1];
             $lastIncrement = (int) $m[2];
+        }
+
+        // "N of M CONSECUTIVE cycles" is enforced by resetDeletion()'s three
+        // call sites alone, and until now that write was fire-and-forget: a
+        // clear that never landed left a counter for the next missing row to
+        // resume, so a single miss could finish a confirmation the tracker
+        // never gave consecutively. chk-stime is the independent record of
+        // the last up-to-date verdict -- setState() writes it alongside
+        // chk-state -- so a count whose last increment PREDATES it cannot be
+        // part of a consecutive run: a healthy cycle landed in between.
+        // Restarting here makes the clear an optimisation rather than
+        // something correctness depends on, and it also covers the layer-3
+        // reset site, which the scheduler's own clearStaleDeletion() guard
+        // never sees.
+        $successAtReadable = false;
+        $successAt = self::readCustom($hash, "chk-stime", $successAtReadable);
+        if ($count > 0 && !$successAtReadable) {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' deletion count ' . $count
+                . ' cannot be checked against an unreadable healthy-verdict timestamp; deferring');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
+        if ($count > 0 && $successAt !== null && (int) $successAt > $lastIncrement) {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' deletion count ' . $count
+                . ' predates the last up-to-date verdict at ' . (int) $successAt . ', restarting it');
+            $count = 0;
+            $lastIncrement = 0;
         }
 
         // The message is the same token throughout: "row missing, this is
@@ -363,7 +473,18 @@ class RuTrackerCheckImpl
         }
 
         $count++;
-        self::writeCustom($hash, "chk-del", $count . ':' . $now);
+        if (!self::writeCustom($hash, "chk-del", $count . ':' . $now)) {
+            // The verdict must not outrun its own record. STE_DELETED settles
+            // and rests for a week, while deletionConfirmedOnce() reads
+            // chk-del rather than this local count -- so a lost write at the
+            // threshold produces a settled verdict that a later budget-denied
+            // cycle then downgrades, un-settling the row into hourly
+            // re-litigation. Defer instead: the next cycle re-derives the
+            // same count from a chk-del that actually landed.
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' deletion counter could not be advanced, deferring the verdict');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         self::reportDeletionProgress($hash, $count, $cycles);
 
         return ($count >= $cycles)
@@ -422,7 +543,7 @@ class RuTrackerCheckImpl
         $topicId = self::extractTopicId($url);
         if ($topicId === null && is_object($oldTorrent))
             $topicId = self::extractTopicId($oldTorrent->comment());
-        if ($topicId === null) return ruTrackerChecker::STE_NOT_NEED;
+        if ($topicId === null) return ruTrackerChecker::STE_DECLINED;
 
         $localHash = self::normalizeHash($hash);
         if ($localHash === null) return ruTrackerChecker::STE_NOT_NEED;
@@ -448,7 +569,7 @@ class RuTrackerCheckImpl
         // Layer 1: local, request-free verdict. Runs on
         // every call -- including a manual batch_check.php click -- rather
         // than trusting a cached scheduler verdict.
-        $verdict = self::layer1Verdict($hash);
+        $verdict = self::layer1Verdict($hash, $trackerUrl);
         if ($verdict === 'alive') {
             self::resetDeletion($hash);
             ruTrackerChecker::setMessage($hash, '');
@@ -462,20 +583,43 @@ class RuTrackerCheckImpl
         // used to overwrite a perfectly good verdict, and a stopped torrent is
         // outside the seeding view the hourly cycle walks, so it never recovered.
         if ($verdict === 'cold') return ruTrackerChecker::STE_UNCHANGED;
-        if ($verdict === 'transport') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
-        if ($verdict !== 'candidate') return ruTrackerChecker::STE_NOT_NEED;
+        // The sentence goes with the state it explained: init.js appends
+        // chk-msg to whatever chk-state is current, so a token an earlier
+        // cycle stored ('deleting|2/3', 'fuse|<host>', 'topic-status|5')
+        // would render under a verdict it does not describe -- "No need --
+        // the topic is missing from the forum list; confirmation cycle 2/3".
+        // Two exits are deliberately NOT in this list. 'cold' returns
+        // STE_UNCHANGED, which puts the PREVIOUS verdict back, so that
+        // verdict's sentence is still the right one. And the inconclusive
+        // exits further down (layer 2 'uncertain', an unavailable dump) learn
+        // nothing at all: they leave the row untouched, token included,
+        // because the deletion counter the token names is untouched too.
+        //
+        // These two DID change the verdict, and to one no stored token
+        // describes.
+        if ($verdict === 'transport') {
+            ruTrackerChecker::setMessage($hash, '');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
+        if ($verdict !== 'candidate') {
+            ruTrackerChecker::setMessage($hash, '');
+            return ruTrackerChecker::STE_NOT_NEED;
+        }
 
-        $announceUrl = is_object($oldTorrent) ? (string) $oldTorrent->announce() : '';
+        // Only the enabled canonical row layer 1 actually judged may feed an
+        // outgoing action. Falling back to Torrent::announce() would let an
+        // unrelated primary tracker stand in for a missing RuTracker row.
+        $announceUrl = $trackerUrl;
         $host = (string) @parse_url($announceUrl, PHP_URL_HOST);
 
         // Layer 2: passkey-less announce confirmation.
-        // Optional and budgeted; the budget (probeDecision/recordProbe) is
+        // Optional and budgeted; the budget (reserveProbe/recordOutcome) is
         // consulted here too so repeated manual checks cannot outrun it --
         // the windowed cap is persisted (RuTrackerState, via announce.php),
         // so it holds across manual batch_check.php clicks just as much as
         // across the hourly update.php pass. $updateInterval*60 is the same
         // window every other per-cycle knob in this plugin uses; probeDecision/
-        // recordProbe floor it themselves so a disabled scheduler ($updateInterval=0)
+        // reserveProbe floor it themselves so a disabled scheduler ($updateInterval=0)
         // cannot void the cap.
         $announceWindow = (int) $updateInterval * 60;
         $trackerConfirmed = false;
@@ -492,12 +636,29 @@ class RuTrackerCheckImpl
         // proves nothing about the RuTracker topic (and the probe itself would
         // land on a tracker that never asked for it), so a foreign host is
         // treated exactly like a missing one: fall through to layer 3.
-        elseif (!preg_match(RuTrackerDetector::TRACKER_PATTERN, $host))
+        // TRACKER_HOST_PATTERN, not TRACKER_PATTERN: this decides whether to
+        // SEND a request, so it must match whole domain labels rather than a
+        // substring -- 'rutracker.evil.example' satisfies the latter.
+        elseif (!RuTrackerDetector::isTrackerHost($host))
             $skip = 'the announce host ' . $host . ' is not RuTracker\'s';
         else {
-            $probeDecision = RuTrackerAnnounce::probeDecision($host, time(), (int) $rutrackerAnnounceCap, $announceWindow);
+            // reserveProbe(), not probeDecision(): the slot must be taken in
+            // the same locked write that judges the budget, or two concurrent
+            // checks both spend the last one.
+            // One timestamp for the whole probe. releaseProbe() has to be
+            // able to tell whether the window it is refunding into is still
+            // the one the slot was taken from, and a fresh time() at release
+            // cannot say -- the paced sleep below can straddle the boundary.
+            $probeAt = time();
+            $probeDecision = RuTrackerAnnounce::reserveProbe($host, $probeAt,
+                RuTrackerAnnounce::probeCap($rutrackerAnnounceCap), $announceWindow);
             if ($probeDecision === 'cap') $skip = 'the per-host announce cap for ' . $host . ' is exhausted';
             elseif ($probeDecision === 'cooldown') $skip = 'the 403 cooldown for ' . $host . ' is still active';
+            // Anything that is not an explicit 'allow' skips, rather than the
+            // other way round: a reservation that could not be recorded (see
+            // reserveProbe()) must not buy a request, and neither must any
+            // answer added later that this branch has not been taught yet.
+            elseif ($probeDecision !== 'allow') $skip = 'the announce budget for ' . $host . ' could not be reserved';
             else $skip = null;
         }
         if ($skip !== null)
@@ -507,15 +668,18 @@ class RuTrackerCheckImpl
             // A misconfigured non-positive pause must not turn into a
             // negative sleep() argument; zero is a legitimate pause, so the
             // floor is 0, not 1.
-            sleep(max(0, (int) $rutrackerAnnouncePause + random_int(0, 3)));
+            sleep(RuTrackerAnnounce::probePause($rutrackerAnnouncePause) + random_int(0, 3));
             $probeUrl = RuTrackerAnnounce::buildUrl($announceUrl, $localHash,
                 RuTrackerAnnounce::makePeerId(), 63981, bin2hex(random_bytes(4)));
             if ($probeUrl === null) {
+                // The slot was reserved for a request that will not happen.
+                // Leaving it spent would shrink the budget for no traffic.
+                RuTrackerAnnounce::releaseProbe($host, $probeAt);
                 ruTrackerChecker::logDebug('download_torrent: ' . $hash
                     . ' layer2 skipped: the announce URL cannot be turned into a probe URL');
             } else {
                 $client = ruTrackerChecker::makeClient($probeUrl);
-                RuTrackerAnnounce::recordProbe($host, time(), (int) $client->status === 403, $announceWindow);
+                RuTrackerAnnounce::recordOutcome($host, time(), $client->status);
                 $answer = RuTrackerAnnounce::classify($client->status, $client->results);
                 // The probe URL itself is never logged: buildUrl() strips the
                 // passkey, but the announce host is all a diagnosis needs.
@@ -526,13 +690,27 @@ class RuTrackerCheckImpl
                     ruTrackerChecker::setMessage($hash, '');
                     return ruTrackerChecker::STE_UPTODATE;
                 }
+                // Deliberately writes NOTHING: an inconclusive answer taught
+                // this cycle nothing, and the stored token still describes
+                // something true -- the deletion counter it names is
+                // untouched. Clearing it here would throw away the most
+                // informative thing the row has.
                 if ($answer === 'uncertain') return ruTrackerChecker::STE_CANT_REACH_TRACKER;
                 $trackerConfirmed = true;
             }
         }
 
         // Layer 3: classification from the forum's static dump.
-        $forumId = self::resolveForum($hash);
+        $forumKnown = true;
+        $forumId = self::resolveForum($hash, $forumKnown);
+        if ($forumId === null && !$forumKnown) {
+            // Nothing was learned about this torrent's forum, so nothing is
+            // recorded about it either: no queue entry, and the stored token
+            // stands, exactly like layer 2's inconclusive answer.
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' layer3 could not read chk-forum; nothing is queued and nothing is concluded');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         if ($forumId === null) {
             RuTrackerForumIndex::queueTopic($topicId);
             // Internal bookkeeping, not a verdict: the user is told nothing
@@ -545,19 +723,20 @@ class RuTrackerCheckImpl
         ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 forum=' . $forumId
             . ' from the chk-forum cache');
 
-        $rows = RuTrackerForumIndex::fetchDump($forumId);
-        if ($rows === 'unchanged') {
-            $rows = RuTrackerForumIndex::cachedDump($forumId);
-            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
-                . ' unchanged, ' . (is_array($rows) ? count($rows) . ' rows from the cache' : 'nothing cached'));
-        } elseif (is_array($rows)) {
-            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
-                . ' fetched, ' . count($rows) . ' rows');
-        } else {
+        $dump = RuTrackerForumIndex::fetchDump($forumId);
+        // Same as layer 2's inconclusive answer: nothing was learned, so
+        // nothing is written and the stored token stands. An empty dump is NOT
+        // this case -- it is the forum answering that it lists nothing.
+        if ($dump === null) {
             ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
                 . ' unavailable');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
-        if (!is_array($rows)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        $rows = $dump['rows'];
+        ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
+            . (empty($dump['fresh'])
+                ? ' unchanged, ' . count($rows) . ' rows from the cache'
+                : ' fetched, ' . count($rows) . ' rows'));
 
         $decision = self::classifyDump($rows, $topicId, $localHash);
         ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 topic=' . $topicId . ' '
@@ -566,23 +745,36 @@ class RuTrackerCheckImpl
                 : 'verdict=' . $decision['verdict'] . ' tor_status=' . $decision['status']));
         if ($decision === null) {
             // Row missing: could be a move to another forum, not proof of
-            // deletion on its own. Invalidate the cache and re-queue
-            // resolution; only count towards STE_DELETED when layer 2
-            // independently confirmed the hash is unregistered.
-            self::forgetForum($hash);
+            // deletion on its own, so re-queue resolution -- a sweep that
+            // finds the topic elsewhere overwrites chk-forum with the new
+            // one. What it must NOT do is forget the forum now: layer 3
+            // cannot fetch a dump without it, so the next cycle would stop
+            // at "forum unknown" and the confirmation counter could never
+            // advance past 1 -- and a topic that really was deleted is
+            // exactly the one no crawl will ever resolve again, so
+            // STE_DELETED would be unreachable by construction. Only count
+            // towards it when layer 2 independently confirmed the hash is
+            // unregistered.
             RuTrackerForumIndex::queueTopic($topicId);
             if (!$trackerConfirmed) {
-                // A budget-denied probe is no evidence either way: when the
-                // deletion was already fully confirmed once (chk-del at the
-                // threshold) and the row is still missing, keep the settled
-                // verdict -- only a probe that actually RAN may move it.
-                // Anything else here (a fresh answer of "registered" never
-                // reaches this branch) would downgrade DELETED to "can't
-                // reach" for the crime of a spent budget, un-settling the
-                // row into hourly re-litigation until the deletion is
-                // re-confirmed from scratch.
-                if (($probeDecision === 'cap' || $probeDecision === 'cooldown')
-                        && self::deletionConfirmedOnce($hash)) {
+                // A probe that did not run is no evidence either way: when
+                // the deletion was already fully confirmed once (chk-del at
+                // the threshold) and the row is still missing, keep the
+                // settled verdict -- only a probe that actually RAN may move
+                // it. Downgrading DELETED to "can't reach" un-settles the row
+                // into hourly re-litigation until the deletion is re-confirmed
+                // from scratch, and with layer 2 switched off in the
+                // configuration it can never be re-confirmed at all.
+                //
+                // Tested as "not an allowance", not as a list of refusal
+                // labels: every path into this branch means no evidence was
+                // gathered (a probe that ran returns above -- 'registered'
+                // up to date, 'uncertain' retryable, 'unregistered' sets
+                // $trackerConfirmed), so enumerating 'cap' and 'cooldown'
+                // silently excluded the rest -- layer 2 disabled, no announce
+                // host, a foreign host, a budget that could not be recorded.
+                // Same rule, same reason, as the skip gate above.
+                if ($probeDecision !== 'allow' && self::deletionConfirmedOnce($hash)) {
                     ruTrackerChecker::logDebug('download_torrent: ' . $hash
                         . ' row still missing and the probe budget is spent:'
                         . ' the settled DELETED verdict stands');
@@ -602,7 +794,18 @@ class RuTrackerCheckImpl
         // alone disproves "missing", so any deletion count built up over
         // prior miss cycles is stale, and so is any "row missing, cycle
         // n/3" message confirmDeletion() may have left behind.
-        self::resetDeletion($hash);
+        //
+        // The clear has to LAND. confirmDeletion()'s own safety net compares
+        // the count against chk-stime, and setState() writes chk-stime only
+        // for STE_UPTODATE -- so on the closed, absorbed, updated and unknown
+        // verdicts below, a lost clear leaves a counter nothing will
+        // invalidate, and one later missing cycle finishes a confirmation the
+        // tracker never gave consecutively.
+        if (!self::resetDeletion($hash)) {
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                . ' the row is present but its stale deletion counter could not be cleared, deferring');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         ruTrackerChecker::setMessage($hash, '');
 
         // Layer 4: hand a genuinely new hash to the metadata fetch (design

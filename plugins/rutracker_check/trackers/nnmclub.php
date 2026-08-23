@@ -88,8 +88,6 @@ class NNMClubCheckImpl
     private const PASSKEY_CHARS = '[A-Za-z0-9]{32}';
 
     private const TOKEN_RE = '/^' . self::PASSKEY_CHARS . '$/D';
-    private const TRACKER_URL_RE = '`https?://[A-Za-z0-9.-]+(?::\d+)?/'
-        . '(?:' . self::PASSKEY_CHARS . '/)?announce(?:\?uk=' . self::PASSKEY_CHARS . ')?`i';
     /**
      * An announce path in either form. $matches[1] is the path prefix,
      * $matches[2] (when present) the path-form passkey.
@@ -99,6 +97,18 @@ class NNMClubCheckImpl
     private const SCRAPE_RESULT_UPTODATE = 1;
     private const SCRAPE_RESULT_NOT_FOUND = 2;
     private const SCRAPE_RESULT_FAILED = 3;
+
+    private const MAX_SCRAPE_BODY_BYTES = 1048576;
+    private const MAX_SCRAPE_DEPTH = 32;
+    private const MAX_SCRAPE_TOKENS = 4096;
+    private const MAX_SCRAPE_INTEGER_DIGITS = 19;
+    private const MAX_LENGTH_PREFIX_DIGITS = 7;
+
+    // Session metainfo is trusted only as a source of typed announce fields,
+    // but it is still local input that may be sparse, corrupt, or growing.
+    // Sixteen MiB covers ordinary multi-file torrents while bounding the
+    // memory one donor candidate can consume.
+    private const MAX_DONOR_TORRENT_BYTES = 16 * 1024 * 1024;
 
     /** @var false|null|array false = not looked up, null = absent, array = found */
     private static $donor = false;
@@ -119,9 +129,11 @@ class NNMClubCheckImpl
         return $client;
     }
 
-    private static function guestFetch($client, $url, $method = "GET", $contentType = "", $body = "")
+    // No $method/$contentType/$body: every call site is a plain GET, and the
+    // three arguments only ever carried Snoopy's own defaults through.
+    private static function guestFetch($client, $url)
     {
-        @$client->fetch($url, $method, $contentType, $body);
+        @$client->fetch($url);
         // Socket errors are negative; the https path stores curl's exit code,
         // which is below any real HTTP status.
         if ($client->status < 100) {
@@ -247,7 +259,7 @@ class NNMClubCheckImpl
     }
 
     /**
-     * Extract a typed credential from announce metadata or raw session bencode.
+     * Extract a typed credential from announce metadata.
      *
      * @param  string|array|null $announce
      * @param  string|null       $requiredMode Optional `path` or `query` filter
@@ -270,16 +282,80 @@ class NNMClubCheckImpl
         if ($auth !== null && ($requiredMode === null || $auth['mode'] === $requiredMode)) {
             return $auth;
         }
+        return null;
+    }
 
-        if (preg_match_all(self::TRACKER_URL_RE, $announce, $matches)) {
-            foreach ($matches[0] as $url) {
-                $auth = self::parseAuthUrl($url);
-                if ($auth !== null && ($requiredMode === null || $auth['mode'] === $requiredMode)) {
-                    return $auth;
+    /**
+     * Read one stable, regular session torrent without crossing the cap.
+     * $incomplete is true when this candidate could not be inspected safely;
+     * callers must then avoid caching a profile-wide "no donor" conclusion.
+     */
+    private static function readDonorTorrent($path, &$incomplete)
+    {
+        $incomplete = false;
+        clearstatcache(true, $path);
+        $pathStat = @stat($path);
+        if ($pathStat === false || !isset($pathStat['mode'], $pathStat['size'])
+            || (($pathStat['mode'] & 0170000) !== 0100000)
+            || !@is_readable($path)) {
+            $incomplete = true;
+            self::log("Could not read session torrent " . basename($path)
+                . " for reusable credential lookup: not a readable regular file");
+            return null;
+        }
+        $size = (int) $pathStat['size'];
+        if ($size < 0 || $size > self::MAX_DONOR_TORRENT_BYTES) {
+            $incomplete = true;
+            self::log("Skipping oversized session torrent " . basename($path)
+                . " for reusable credential lookup");
+            return null;
+        }
+
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            $incomplete = true;
+            self::log("Could not read session torrent " . basename($path)
+                . " for reusable credential lookup");
+            return null;
+        }
+
+        $raw = '';
+        $failed = false;
+        $openedStat = @fstat($handle);
+        if ($openedStat === false || !isset($openedStat['mode'], $openedStat['size'])
+            || (($openedStat['mode'] & 0170000) !== 0100000)
+            || (int) $openedStat['size'] !== $size
+            || (isset($pathStat['dev'], $openedStat['dev']) && $pathStat['dev'] !== $openedStat['dev'])
+            || (isset($pathStat['ino'], $openedStat['ino']) && $pathStat['ino'] !== $openedStat['ino'])) {
+            $failed = true;
+        } else {
+            $remaining = $size;
+            while ($remaining > 0) {
+                $chunk = @fread($handle, min(8192, $remaining));
+                if ($chunk === false || $chunk === '') {
+                    $failed = true;
+                    break;
                 }
+                $raw .= $chunk;
+                $remaining -= strlen($chunk);
+            }
+            $extra = $failed ? '' : @fread($handle, 1);
+            $closedStat = @fstat($handle);
+            if ($extra === false || $extra !== '' || $closedStat === false
+                || !isset($closedStat['size']) || (int) $closedStat['size'] !== $size
+                || strlen($raw) !== $size) {
+                $failed = true;
             }
         }
-        return null;
+        fclose($handle);
+
+        if ($failed) {
+            $incomplete = true;
+            self::log("Session torrent changed while being read: " . basename($path)
+                . "; reusable credential lookup will retry");
+            return null;
+        }
+        return $raw;
     }
 
     /**
@@ -296,34 +372,58 @@ class NNMClubCheckImpl
         if (self::$donor !== false) {
             return self::$donor;
         }
-        self::$donor = null;
 
         $sessionDir = rtrim((string) rTorrentSettings::get()->session, '/');
         if ($sessionDir === '') {
             self::log("No session directory, skipping reusable credential lookup");
-            return null;
+            return (self::$donor = null);
         }
-
         $files = @glob($sessionDir . '/*.torrent');
-        if (!$files) {
-            self::log("No session torrents found for reusable credential lookup");
+        if ($files === false) {
+            self::log("Could not list session torrents for reusable credential lookup");
             return null;
         }
+        if (!is_dir($sessionDir) || !is_readable($sessionDir)) {
+            self::log("Could not access session directory for reusable credential lookup");
+            return null;
+        }
+        if (empty($files)) {
+            self::log("No session torrents found for reusable credential lookup");
+            return (self::$donor = null);
+        }
 
+        $readFailure = false;
         foreach ($files as $path) {
-            // announce keys precede the info dict in bencode order, so a
-            // bounded head read finds any credential the file has.
-            $head = @file_get_contents($path, false, null, 0, 65536);
-            if ($head === false || !preg_match('/nnm-?club|searchtor/i', $head)) {
+            $incomplete = false;
+            $raw = self::readDonorTorrent($path, $incomplete);
+            if ($raw === null) {
+                if ($incomplete) $readFailure = true;
                 continue;
             }
-            $auth = self::extractAuth($head, 'query');
+            $torrent = @new Torrent($raw);
+            if ($torrent->errors()) {
+                // A session file may have been observed between rTorrent's
+                // truncate and rewrite. It is not evidence that the profile
+                // has no donor, so do not cache a negative scan from it.
+                $readFailure = true;
+                self::log("Could not parse session torrent " . basename($path)
+                    . " for reusable credential lookup; the scan will retry");
+                continue;
+            }
+            $announces = array();
+            if (method_exists($torrent, 'announce')) $announces[] = $torrent->announce();
+            if (method_exists($torrent, 'announce_list')) $announces[] = $torrent->announce_list();
+            $auth = self::extractAuth($announces, 'query');
             if ($auth !== null) {
                 return (self::$donor = $auth);
             }
         }
+        if ($readFailure) {
+            self::log("Reusable credential lookup was incomplete; unreadable candidates will be retried");
+            return null;
+        }
         self::log("Reusable profile credential not found in session torrents");
-        return null;
+        return (self::$donor = null);
     }
 
     private static function rebuildTrackerUrl($parts, $path, $query)
@@ -434,19 +534,238 @@ class NNMClubCheckImpl
     }
 
     /**
-     * Check whether a scrape response lists the given hash. Scrape bodies are
-     * tiny bencoded dicts keyed by raw 20-byte hashes, so finding the bencoded
-     * key is enough; phase 2 (guest download + hash comparison) independently
-     * re-verifies before any replacement happens.
+     * Bounded iterative (non-recursive) bencode parser for NNMClub scrape responses.
      *
+     * Validates that the response is a well-formed bencoded dictionary within explicit
+     * limits, containing a top-level 'files' dictionary.
+     *
+     * @param  string $payload    Scrape response body
      * @param  string $binaryHash Raw 20-byte hash
+     * @return int One of SCRAPE_RESULT_* constants
      */
-    private static function scrapeContainsHash($payload, $binaryHash)
+    private static function parseScrapeResult($payload, $binaryHash)
     {
-        return is_string($payload)
-            && is_string($binaryHash) && strlen($binaryHash) === 20
-            && isset($payload[0]) && $payload[0] === 'd'
-            && strpos($payload, '20:' . $binaryHash) !== false;
+        if (!is_string($binaryHash) || strlen($binaryHash) !== 20) {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+        if (!is_string($payload)) {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+        $len = strlen($payload);
+        if ($len === 0 || $len > self::MAX_SCRAPE_BODY_BYTES) {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+        if ($payload[0] !== 'd') {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        $pos = 0;
+        $tokens = 0;
+        $stack = array();
+        $seenFilesKey = false;
+        $expectingFilesDict = false;
+        $found = false;
+
+        while ($pos < $len) {
+            if (empty($stack)) {
+                if ($pos === 0 && $payload[0] === 'd') {
+                    $tokens++;
+                    if ($tokens > self::MAX_SCRAPE_TOKENS) {
+                        return self::SCRAPE_RESULT_FAILED;
+                    }
+                    $pos++;
+                    $stack[] = array(
+                        'type' => 'd',
+                        'state' => 'key',
+                        'is_files' => false,
+                    );
+                    continue;
+                }
+                return self::SCRAPE_RESULT_FAILED;
+            }
+
+            $frameIndex = count($stack) - 1;
+            $ch = $payload[$pos];
+
+            if ($ch === 'e') {
+                $pos++;
+                if ($stack[$frameIndex]['type'] === 'd' && $stack[$frameIndex]['state'] === 'value') {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                array_pop($stack);
+                if (!empty($stack)) {
+                    $parentIndex = count($stack) - 1;
+                    if ($stack[$parentIndex]['type'] === 'd') {
+                        $stack[$parentIndex]['state'] = 'key';
+                    }
+                }
+                continue;
+            }
+
+            if ($stack[$frameIndex]['type'] === 'd' && $stack[$frameIndex]['state'] === 'key') {
+                if (!ctype_digit($ch)) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $colonPos = strpos($payload, ':', $pos);
+                if ($colonPos === false) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $lenStr = substr($payload, $pos, $colonPos - $pos);
+                $lenStrLen = strlen($lenStr);
+                if ($lenStrLen === 0 || $lenStrLen > self::MAX_LENGTH_PREFIX_DIGITS || !ctype_digit($lenStr)) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                if ($lenStrLen > 1 && $lenStr[0] === '0') {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $strLen = (int) $lenStr;
+                if ($strLen < 0 || $strLen > $len) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $strStart = $colonPos + 1;
+                if ($strStart + $strLen > $len) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $keyStr = substr($payload, $strStart, $strLen);
+                $pos = $strStart + $strLen;
+
+                $tokens++;
+                if ($tokens > self::MAX_SCRAPE_TOKENS) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+
+                if (count($stack) === 1) {
+                    if ($keyStr === 'files') {
+                        if ($seenFilesKey) {
+                            return self::SCRAPE_RESULT_FAILED;
+                        }
+                        $seenFilesKey = true;
+                        $expectingFilesDict = true;
+                    } else {
+                        $expectingFilesDict = false;
+                    }
+                } elseif (!empty($stack[$frameIndex]['is_files'])) {
+                    if ($strLen === 20 && $keyStr === $binaryHash) {
+                        $found = true;
+                    }
+                }
+
+                $stack[$frameIndex]['state'] = 'value';
+                continue;
+            }
+
+            if ($ch === 'd') {
+                $isFilesDict = false;
+                if (count($stack) === 1 && $expectingFilesDict) {
+                    $isFilesDict = true;
+                    $expectingFilesDict = false;
+                }
+                $tokens++;
+                if ($tokens > self::MAX_SCRAPE_TOKENS || count($stack) >= self::MAX_SCRAPE_DEPTH) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $pos++;
+                $stack[] = array(
+                    'type' => 'd',
+                    'state' => 'key',
+                    'is_files' => $isFilesDict,
+                );
+                continue;
+            }
+
+            if (count($stack) === 1 && $expectingFilesDict) {
+                return self::SCRAPE_RESULT_FAILED;
+            }
+
+            if ($ch === 'l') {
+                $tokens++;
+                if ($tokens > self::MAX_SCRAPE_TOKENS || count($stack) >= self::MAX_SCRAPE_DEPTH) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $pos++;
+                $stack[] = array(
+                    'type' => 'l',
+                    'state' => 'item',
+                    'is_files' => false,
+                );
+                continue;
+            }
+
+            if ($ch === 'i') {
+                $endPos = strpos($payload, 'e', $pos);
+                if ($endPos === false) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $intStr = substr($payload, $pos + 1, $endPos - ($pos + 1));
+                $intStrLen = strlen($intStr);
+                if ($intStrLen === 0) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $digitsOnly = $intStr;
+                if ($intStr[0] === '-') {
+                    $digitsOnly = substr($intStr, 1);
+                    if ($digitsOnly === '' || $digitsOnly[0] === '0') {
+                        return self::SCRAPE_RESULT_FAILED;
+                    }
+                } else {
+                    if ($intStrLen > 1 && $intStr[0] === '0') {
+                        return self::SCRAPE_RESULT_FAILED;
+                    }
+                }
+                if (!ctype_digit($digitsOnly) || strlen($digitsOnly) > self::MAX_SCRAPE_INTEGER_DIGITS) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $pos = $endPos + 1;
+                $tokens++;
+                if ($tokens > self::MAX_SCRAPE_TOKENS) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                if ($stack[$frameIndex]['type'] === 'd') {
+                    $stack[$frameIndex]['state'] = 'key';
+                }
+                continue;
+            }
+
+            if (ctype_digit($ch)) {
+                $colonPos = strpos($payload, ':', $pos);
+                if ($colonPos === false) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $lenStr = substr($payload, $pos, $colonPos - $pos);
+                $lenStrLen = strlen($lenStr);
+                if ($lenStrLen === 0 || $lenStrLen > self::MAX_LENGTH_PREFIX_DIGITS || !ctype_digit($lenStr)) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                if ($lenStrLen > 1 && $lenStr[0] === '0') {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $strLen = (int) $lenStr;
+                if ($strLen < 0 || $strLen > $len) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $strStart = $colonPos + 1;
+                if ($strStart + $strLen > $len) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                $pos = $strStart + $strLen;
+                $tokens++;
+                if ($tokens > self::MAX_SCRAPE_TOKENS) {
+                    return self::SCRAPE_RESULT_FAILED;
+                }
+                if ($stack[$frameIndex]['type'] === 'd') {
+                    $stack[$frameIndex]['state'] = 'key';
+                }
+                continue;
+            }
+
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        if ($pos !== $len || !empty($stack) || !$seenFilesKey) {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        return $found ? self::SCRAPE_RESULT_UPTODATE : self::SCRAPE_RESULT_NOT_FOUND;
     }
 
     /** Derive a scrape URL without changing the credential's meaning or case. */
@@ -521,11 +840,16 @@ class NNMClubCheckImpl
             if ($client->status == 200
                 && is_string($client->results)
                 && $client->results !== '') {
-                if (self::scrapeContainsHash($client->results, $binary)) {
+                $scrapeResult = self::parseScrapeResult($client->results, $binary);
+                if ($scrapeResult === self::SCRAPE_RESULT_UPTODATE) {
                     return self::SCRAPE_RESULT_UPTODATE;
                 }
-                self::log("Scrape response OK on {$host}, hash {$hash} not found");
-                $sawNotFound = true;
+                if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
+                    self::log("Scrape response OK on {$host}, hash {$hash} not found");
+                    $sawNotFound = true;
+                    continue;
+                }
+                self::log("Scrape response malformed on {$host}");
                 continue;
             }
             self::log("Scrape failed on {$host}: status={$client->status}");
@@ -560,7 +884,10 @@ class NNMClubCheckImpl
             self::log("Start announce-only check for {$hash}; guest replacement will be unavailable");
         }
 
-        $announces = array($url);
+        // $url is dispatcher input: depending on how the handler matched it,
+        // it may be a comment or another free-form string. Credentials are
+        // accepted only from Torrent's typed announce metadata.
+        $announces = array();
         if (is_object($old_torrent)) {
             if (method_exists($old_torrent, 'announce')) $announces[] = $old_torrent->announce();
             if (method_exists($old_torrent, 'announce_list')) $announces[] = $old_torrent->announce_list();
@@ -590,6 +917,7 @@ class NNMClubCheckImpl
             }
             if ($scrapeResult === self::SCRAPE_RESULT_FAILED) {
                 self::log("All scrape hosts failed for {$hash}");
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
             if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
                 self::log("Scrape did not find hash {$hash}, falling back to guest download");
@@ -597,8 +925,13 @@ class NNMClubCheckImpl
         }
 
         if ($topicRef === null) {
+            // "I could not work out which topic this is" is not "this torrent
+            // needs no checking". STE_NOT_NEED is the scheduler's permanent
+            // answer -- the row stops being sent for a full check at all -- and
+            // the handler only gets here because the torrent IS nnmclub's, so
+            // the one thing that is certain is that somebody should look again.
             self::log("No topic reference for {$hash}; guest download and replacement are unavailable");
-            return ruTrackerChecker::STE_NOT_NEED;
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
         $siteDomain = $topicRef['host'];
         $topicQuery = $topicRef['query'];
@@ -633,9 +966,7 @@ class NNMClubCheckImpl
         self::guestFetch($client, "https://{$siteDomain}/forum/download.php?id=" . $downloadId);
         if ($client->status != 200 || empty($client->results)) {
             self::log("download.php failed: status={$client->status} id={$downloadId}");
-            return ($client->status < 0)
-                ? ruTrackerChecker::STE_CANT_REACH_TRACKER
-                : ruTrackerChecker::STE_ERROR;
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
 
         $guestData = $client->results;
@@ -665,7 +996,7 @@ class NNMClubCheckImpl
             return ruTrackerChecker::STE_ERROR;
         }
 
-        $replaceResult = ruTrackerChecker::createTorrent((string) $guestTorrent, $hash);
+        $replaceResult = ruTrackerChecker::createTorrent((string) $guestTorrent, $hash, $old_torrent);
         self::log("createTorrent result for {$hash}: " . var_export($replaceResult, true));
         return $replaceResult;
     }

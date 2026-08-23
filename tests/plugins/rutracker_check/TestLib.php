@@ -19,16 +19,30 @@ function testFindRepoRoot()
     throw new RuntimeException('Unable to locate the ruTorrent repository root');
 }
 
-// Identity command mapper. The real getCmd() (php/xmlrpc.php) resolves a
-// handful of legacy command names through rTorrentSettings' version-keyed
-// alias table; none of that table changes the shape of what any test in
-// this suite asserts on, so every rutracker_check test that needs getCmd()
-// uses plain identity instead of pulling in the real version-detection
-// machinery.
+// Identity command mapper by default. A focused test may install the real
+// production-shaped alias names in $testCommandAliases to prove that nested
+// rTorrent DSL remains valid after getCmd() rewrites legacy names.
 function getCmd($command)
 {
-    return $command;
+    $suffix = '';
+    if ($command !== '' && substr($command, -1) === '=') {
+        $command = substr($command, 0, -1);
+        $suffix = '=';
+    }
+    if (isset($GLOBALS['testCommandAliases'])
+        && is_array($GLOBALS['testCommandAliases'])
+        && array_key_exists($command, $GLOBALS['testCommandAliases'])) {
+        return $GLOBALS['testCommandAliases'][$command] . $suffix;
+    }
+    return $command . $suffix;
 }
+
+// The shared run-state primitive, loaded for real. It is a small standalone
+// file with no application dependencies, and the suites that eval() only the
+// ruTrackerChecker class body out of check.php (see loadClassDefinition below)
+// never execute that file's own require_once lines -- so without this the
+// class the checker calls would simply not exist under test.
+require_once(dirname(__FILE__) . '/../../../plugins/rutracker_check/runstate.php');
 
 // The source of one class out of a file the test must not require whole
 // (check.php would pull in util.php and half the application with it).
@@ -64,16 +78,42 @@ class StrictTestSuite
     public function run()
     {
         $failures = 0;
-        foreach ($this->tests as $test) {
-            list($name, $callback) = $test;
-            try {
-                call_user_func($callback);
-                echo "ok - {$name}\n";
-            } catch (Throwable $error) {
-                $failures++;
-                echo "not ok - {$name}\n";
-                echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
+        // A PHP warning is a failed test, not noise above a green summary.
+        // Round 3 shipped a case that printed four "Undefined array key"
+        // warnings and still said ok: its double handed an associative row to
+        // a helper the production code indexes numerically, so ZERO tracker
+        // rows were parsed and the expected verdict fell out of the empty
+        // values by accident. Nothing in the run said so -- the summary counts
+        // only thrown Throwables, and the habit of grepping a run for
+        // "not ok|Failed|Fatal" cannot see a warning by construction, which is
+        // exactly how it survived a commit and two review rounds.
+        //
+        // '@' is still honoured. The plugin suppresses deliberately in a dozen
+        // places (@json_decode, @parse_url, @new Torrent), and under the
+        // suppressor PHP 8 leaves a fixed mask in error_reporting() holding
+        // none of these bits, so the guard below re-raises exactly what was
+        // NOT suppressed and stays silent about what was.
+        set_error_handler(function ($errno, $message, $file, $line) {
+            if (!(error_reporting() & $errno)) return false;
+            throw new ErrorException($message, 0, $errno, $file, $line);
+        });
+        try {
+            foreach ($this->tests as $test) {
+                list($name, $callback) = $test;
+                try {
+                    call_user_func($callback);
+                    echo "ok - {$name}\n";
+                } catch (Throwable $error) {
+                    $failures++;
+                    echo "not ok - {$name}\n";
+                    echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
+                }
             }
+        } finally {
+            // Restored rather than left installed: a suite file may do work of
+            // its own after run(), and this handler is the loop's policy, not
+            // the process's.
+            restore_error_handler();
         }
         echo count($this->tests) . ' tests, ' . $failures . " failures\n";
         return $failures === 0 ? 0 : 1;
@@ -108,6 +148,19 @@ function strictAssertEnglish($text, $message)
     strictAssertTrue(is_string($text) && $text !== '', $message . '; not a non-empty string');
     strictAssertTrue(preg_match('/^[\x09\x20-\x7E]+$/', $text) === 1,
         $message . '; log line is not plain-ASCII English: ' . $text);
+}
+
+// Every recorded line is English AND carries no passkey. The pair is one rule,
+// asserted together in a dozen places: the log is developer-facing, so it is
+// written in English, and it is written to a file the user may hand to anyone,
+// so it must never contain the credential the request used.
+function strictAssertLogsClean($logs, $secret, $what)
+{
+    foreach ((array) $logs as $line) {
+        strictAssertEnglish($line, 'every ' . $what . ' log line');
+        strictAssertTrue(strpos((string) $line, $secret) === false,
+            'no ' . $what . ' log line carries the passkey: ' . $line);
+    }
 }
 
 // The recorded log lines containing $needle. Log assertions name the line they
@@ -152,6 +205,19 @@ function strictSetPrivateStatic($className, $property, $value)
     $reflection->setValue(null, $value);
 }
 
+// A per-forum dump exactly as RuTracker serves it. It lives here rather than in
+// a suite because the SCHEMA is the tracker's, not any one test's: two suites
+// need it (the parser's own, and the handler's end-to-end flow) and a schema
+// change had to be made in both copies or they would silently disagree.
+function fiDump($topicId, $status, $hash, $seeders = 7)
+{
+    return json_encode(array(
+        'format' => array('topic_id' => array('tor_status', 'seeders', 'reg_time', 'tor_size_bytes',
+            'keeping_priority', 'keepers', 'seeder_last_seen', 'info_hash', 'topic_poster', 'leechers')),
+        'result' => array((string) $topicId => array($status, $seeders, 1, 2, 0, array(), 3, $hash, 4, 0)),
+    ));
+}
+
 function strictInvoke($className, $method, $arguments = array())
 {
     $reflection = new ReflectionMethod($className, $method);
@@ -159,6 +225,21 @@ function strictInvoke($className, $method, $arguments = array())
         $reflection->setAccessible(true);
     }
     return $reflection->invokeArgs(null, $arguments);
+}
+
+function strictWithStateDir($prefix, $callback)
+{
+    $tmp = sys_get_temp_dir() . '/' . $prefix . '-' . bin2hex(random_bytes(4));
+    if (!mkdir($tmp, 0777, true)) {
+        throw new RuntimeException('Unable to create temporary state directory: ' . $tmp);
+    }
+    strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+    try {
+        return $callback($tmp);
+    } finally {
+        strictRemoveTree($tmp);
+        strictSetPrivateStatic('RuTrackerState', 'dir', null);
+    }
 }
 
 class rXMLRPCCommand
@@ -261,6 +342,21 @@ class rXMLRPCRequest
         // wasted work either way. Closure is the only callable this double
         // ever needs to recognise.
         $this->val = ($response[2] instanceof Closure) ? call_user_func($response[2], $this->commands) : $response[2];
+        // A successful d.set_custom returns one scalar per command in the real
+        // XMLRPC response. Most legacy fixtures used [] merely because they
+        // did not inspect those scalars; make that shorthand realistic while
+        // preserving every explicitly nonempty short list (e.g. [0] for a
+        // truncated two-command response).
+        if ($response[0] && !$response[1] && is_array($this->val) && !count($this->val)
+            && count($this->commands)) {
+            $settersOnly = true;
+            foreach ($this->commands as $command)
+                if ($command->command !== getCmd('d.set_custom')) {
+                    $settersOnly = false;
+                    break;
+                }
+            if ($settersOnly) $this->val = array_fill(0, count($this->commands), 0);
+        }
         return $response[0];
     }
 
@@ -278,6 +374,10 @@ class rXMLRPCRequest
 class rTorrentSettings
 {
     public $session = '/nonexistent/';
+    // The daemon's own default download directory (rTorrent's get_directory).
+    // Empty by default, which is what a settings object that never reached
+    // the daemon looks like; metafetch falls back to $topDirectory then.
+    public $directory = '';
     private static $instance;
 
     public static function get()
@@ -460,36 +560,17 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // Not a status but a handler answer: "no data to judge by, keep the
         // stored verdict". Mirrors check.php's own constant.
         const STE_UNCHANGED = -1;
-
-        const METADATA_POLL_US = 500000;
-        const METADATA_WAIT_DEFAULT = 10;
-
-        // Mirrors check.php's own awaitMetadata(): the real thing is a plain
-        // d.is_meta poll, and the tests drive it through the queued XMLRPC
-        // double exactly as production drives the real transport.
-        public static function awaitMetadata($hash, $seconds = null)
-        {
-            global $rutrackerMetaWait;
-            if (is_null($seconds))
-                $seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
-            $seconds = max(0, (int) $seconds);
-            $until = microtime(true) + $seconds;
-            for (;;) {
-                $meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
-                $meta->important = false;
-                if ($meta->success() && isset($meta->val[0]) && (intval($meta->val[0]) === 0))
-                    return true;
-                if (microtime(true) >= $until)
-                    return false;
-                usleep(self::METADATA_POLL_US);
-            }
-        }
+        const STE_DECLINED = -2;
 
         // Mirrors check.php's chk-msg token vocabulary; the tests assert on
         // these constants rather than on the literals, exactly like the
         // production call sites do.
         const CHKMSG_SUPERSEDED = 'superseded';
         const CHKMSG_DELETING = 'deleting';
+        // Mirrors check.php: metafetch reads it to tell an activation the
+        // replacement confirmed from one it left unfinished.
+        const REPLACEMENT_MARKER_KEY = 'chk-replacement';
+
         const CHKMSG_TOPIC_STATUS = 'topic-status';
         const CHKMSG_FUSE = 'fuse';
         const CHKMSG_ABSORBED = 'absorbed';
@@ -498,23 +579,50 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             . "AppleWebKit/537.36 (KHTML, like Gecko) "
             . "Chrome/120.0.0.0 Safari/537.36";
 
-        public static $created = array();
-        // $created only records payloads that parsed, so a handler that must
-        // not reach createTorrent() at all is asserted against this counter.
-        public static $createCalls = 0;
         public static $logs = array();
         public static $registrations = array();
-        public static $createResult = null;
         public static $messages = array();
+        public static $calls = array();
+        private static $results = array();
+
+        public static function queueResult($method, $result)
+        {
+            if (!array_key_exists($method, self::$results))
+                self::$results[$method] = array();
+            self::$results[$method][] = $result;
+        }
+
+        public static function callsFor($method)
+        {
+            return array_values(array_filter(self::$calls, function ($call) use ($method) {
+                return $call['method'] === $method;
+            }));
+        }
+
+        private static function answer($method, $arguments)
+        {
+            self::$calls[] = array(
+                'method' => $method,
+                'arguments' => $arguments,
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
+            );
+            if (!array_key_exists($method, self::$results) || !count(self::$results[$method]))
+                throw new RuntimeException('No TestLib result queued for ruTrackerChecker::' . $method);
+            return array_shift(self::$results[$method]);
+        }
+
+        public static function awaitMetadata($hash)
+        {
+            return self::answer(__FUNCTION__, array($hash));
+        }
 
         public static function reset()
         {
-            self::$created = array();
-            self::$createCalls = 0;
             self::$logs = array();
             self::$registrations = array();
-            self::$createResult = null;
             self::$messages = array();
+            self::$calls = array();
+            self::$results = array();
             Snoopy::reset();
             rXMLRPCRequest::reset();
         }
@@ -531,58 +639,50 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return $client;
         }
 
-        // Mirrors check.php:76-83 (now public there too -- RuTrackerMetaFetch
-        // is a separate class and needs to call this from outside).
         public static function torrentExists($hash)
         {
-            $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.hash'), $hash));
-            $req->important = false;
-            if (!$req->run())
-                return null;
-            return !$req->fault;
+            return self::answer(__FUNCTION__, array($hash));
         }
 
-        // Mirrors check.php:85-105's signature and null-on-missing-target
-        // fallback; tests assert on the d.set_custom writes it issues.
-        public static function setState($hash, $state)
-        {
-            $req = new rXMLRPCRequest(new rXMLRPCCommand(
-                getCmd('d.set_custom'), array($hash, 'chk-state', (string) $state)));
-            $req->important = false;
-            if ($req->success())
-                return true;
-            return self::torrentExists($hash) === false ? null : false;
-        }
+		public static function isPluginReplacementMarker($value)
+		{
+			return RuTrackerReplacementRecord::isPluginMarker($value);
+		}
 
-        // Mirrors check.php:108-114; records every call for tests to assert
-        // against.
+		public static function encodeInheritance($oldHash, $wasStarted, $wasOpen, $now)
+		{
+			return RuTrackerReplacementRecord::encode($oldHash, $wasStarted, $wasOpen, $now);
+		}
+
+		public static function decodeInheritance($value)
+		{
+			return RuTrackerReplacementRecord::decode($value);
+		}
+
         public static function setMessage($hash, $message)
         {
             self::$messages[] = array('hash' => $hash, 'message' => $message);
-            $req = new rXMLRPCRequest(new rXMLRPCCommand(
-                getCmd('d.set_custom'), array($hash, 'chk-msg', (string) $message)));
-            $req->important = false;
-            return $req->success();
+            self::$calls[] = array(
+                'method' => __FUNCTION__,
+                'arguments' => array($hash, $message),
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
+            );
+            return true;
         }
 
-        public static function createTorrent($payload, $oldHash)
+        public static function isMetainfo($payload)
         {
-            self::$createCalls++;
-            $parsed = @new Torrent($payload);
-            if ($parsed->errors() || strlen((string) $parsed->hash_info()) !== 40) {
-                return self::STE_ERROR;
-            }
-            // Captured at call time so a test can assert the erase genuinely
-            // preceded this replacement, not merely occurred somewhere in the
-            // run (real createTorrent() refuses a surviving new hash).
-            $newHash = (string) $parsed->hash_info();
-            $erasedFirst = false;
-            foreach (rXMLRPCRequest::$requests as $request)
-                foreach ($request['commands'] as $command)
-                    if ($command->command === getCmd('d.erase') && (string) $command->params === $newHash)
-                        $erasedFirst = true;
-            self::$created[] = array('payload' => $payload, 'old_hash' => $oldHash, 'erased_first' => $erasedFirst);
-            return self::$createResult;
+            return self::answer(__FUNCTION__, array($payload));
+        }
+
+        public static function createTorrentFromDownload($client, $hash, $oldTorrent = null)
+        {
+            return self::answer(__FUNCTION__, array($client, $hash, $oldTorrent));
+        }
+
+        public static function createTorrent($payload, $oldHash, $oldTorrent = null)
+        {
+            return self::answer(__FUNCTION__, array($payload, $oldHash, $oldTorrent));
         }
 
         public static function logDebug($message)

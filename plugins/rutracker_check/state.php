@@ -21,11 +21,30 @@ class RuTrackerState
     // strictSetPrivateStatic() in tests/plugins/rutracker_check/TestLib.php.
     private static $dir = null;
 
+    // The SHARED settings path, not the calling profile's. What these
+    // documents hold -- the per-host announce budget, the 403 cooldown, the
+    // forum sweep cooldown -- exists to bound outbound traffic to a tracker,
+    // and a tracker sees one installation however many ruTorrent profiles
+    // drive it. Keeping them per-profile multiplied every one of those caps
+    // by the number of profiles. Same path, and the same reasoning, as the
+    // cycle lock below.
+    //
+    // makeDirectory() rather than mkdir(): it wraps the call in umask(0) so
+    // the requested mode actually takes, and chmods a directory that already
+    // exists. A plain mkdir under the usual umask 022 leaves the directory
+    // 0755, and then the OTHER OS user of a split scheduler/web-server
+    // install cannot create the lock or temp files inside it -- which is
+    // exactly the failure the per-file chmod in replace() was added to
+    // prevent, undone one level up.
     static private function dir()
     {
-        global $profileMask;
-        $dir = self::$dir !== null ? self::$dir : FileUtil::getSettingsPath() . '/rutracker_check';
-        if (!is_dir($dir)) @mkdir($dir, (isset($profileMask) ? $profileMask : 0777) & 0777, true);
+        $dir = self::$dir !== null ? self::$dir
+            : FileUtil::getSettingsPathEx('') . '/rutracker_check';
+        // makeDirectory() also chmods an existing path. An older release may
+        // already have created it through umask 022 as 0755/0700, which keeps
+        // the other OS user of a split scheduler/web-server install from
+        // creating the lock and temporary files inside it.
+        FileUtil::makeDirectory($dir);
         return $dir;
     }
 
@@ -63,20 +82,45 @@ class RuTrackerState
     {
         global $scgi_host, $scgi_port, $XMLRPCMountPoint;
 
-        // The test override stands in for the whole storage location, this
-        // file included, so a run stays inside its own temporary directory.
-        $dir = self::$dir !== null ? self::$dir
-            : FileUtil::getSettingsPathEx('') . '/rutracker_check';
-        if (!is_dir($dir)) @mkdir($dir, 0777, true);
+        // dir() is that same shared location (and the test override stands in
+        // for it wholesale, so a run stays inside its own temporary tree).
+        $dir = self::dir();
         $daemon = md5((isset($scgi_host) ? $scgi_host : '')
             . ':' . (isset($scgi_port) ? $scgi_port : '')
             . ':' . (isset($XMLRPCMountPoint) ? $XMLRPCMountPoint : ''));
         return $dir . '/cycle-' . substr($daemon, 0, 8) . '.lock';
     }
 
+    // Open (creating if needed) a lock file that BOTH OS users can take.
+    // The umask is narrowed for the create itself so the file never exists
+    // with a mode the other user cannot open, and the chmod afterwards repairs
+    // a file an earlier version left too tight.
+    static private function openShared($path)
+    {
+        global $profileMask;
+        $mask = (isset($profileMask) ? $profileMask : 0777) & 0666;
+        $previous = @umask(~$mask & 0777);
+        $fp = @fopen($path, 'c');
+        @umask($previous);
+        if ($fp !== false) @chmod($path, $mask);
+        return $fp;
+    }
+
     static public function acquireCycleLock()
     {
-        $fp = @fopen(self::cycleLockPath(), 'c');
+        global $profileMask;
+        $path = self::cycleLockPath();
+        // Whichever OS user gets here first creates the file; the guard is
+        // worth nothing unless the other one can open it too, and this
+        // function fails OPEN, so a permission problem here would silently let
+        // both cycles run -- the exact thing the lock exists to stop.
+        //
+        // The mask is set for the CREATE rather than chmod'ed afterwards:
+        // between fopen() and a later chmod the file exists with whatever the
+        // process umask allowed, and the second user arriving inside that
+        // window is turned away. The chmod stays as well, for a file an older
+        // version already created too tightly.
+        $fp = self::openShared($path);
         if ($fp === false) return true;
         if (!@flock($fp, LOCK_EX | LOCK_NB)) {
             @fclose($fp);
@@ -85,16 +129,73 @@ class RuTrackerState
         return $fp;
     }
 
-    static public function load($name)
+    /**
+     * A short cross-process lock for one logical resource. Unlike the cycle
+     * lock, this one blocks: feed and crawl write the same per-torrent forum
+     * mapping, and the loser must re-read after the winner rather than make a
+     * decision from a snapshot taken before it acquired the lock.
+     *
+     * The returned handle owns the lock until releaseScopedLock() is called.
+     * false means no guard could be established, so callers must fail closed
+     * and leave their durable obligation intact.
+     */
+    static public function acquireScopedLock($scope, $key)
     {
-        $raw = @file_get_contents(self::dir() . '/' . $name . '.json');
-        $state = is_string($raw) ? @json_decode($raw, true) : null;
+        $scope = preg_replace('/[^a-z0-9_-]+/i', '-', (string) $scope);
+        $path = self::dir() . '/guard-' . trim($scope, '-') . '-'
+            . substr(hash('sha256', (string) $key), 0, 16) . '.lock';
+        $fp = self::openShared($path);
+        if ($fp === false) return false;
+        if (!@flock($fp, LOCK_EX)) {
+            @fclose($fp);
+            return false;
+        }
+        return $fp;
+    }
+
+    static public function releaseScopedLock($fp)
+    {
+        if (!is_resource($fp)) return;
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+    }
+
+    /**
+     * The stored document, and whether it could actually be READ.
+     *
+     * @param bool|null $readable out: false only when a document IS there and
+     *   could not be read or parsed. An ABSENT document is a readable answer --
+     *   "nothing has been stored yet" is a fact, not a failure -- and so is an
+     *   empty one written by a previous save().
+     *
+     * The distinction exists because update() is a read-modify-write over the
+     * whole document: handed an empty array for a document it merely failed to
+     * read, it wrote back the mutator's single key and destroyed every other
+     * one -- announce cooldowns, the crawl queue, the miss backoff, the
+     * per-hash claims. Callers that only READ can keep ignoring the flag; the
+     * safe direction for them is already "nothing cached, fetch again".
+     */
+    static public function load($name, &$readable = null)
+    {
+        $path = self::dir() . '/' . $name . '.json';
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
+            $readable = !@file_exists($path);
+            return array();
+        }
+        $state = @json_decode($raw, true);
+        // Every document this class writes is valid JSON produced by
+        // json_encode, so bytes that do not decode are a truncated or
+        // corrupted write, never a legitimate state.
+        $readable = is_array($state);
         return is_array($state) ? $state : array();
     }
 
+    // @return bool -- whether the document on disk now holds $state. Callers
+    // that act on the strength of a write having landed must consult it.
     static public function save($name, $state)
     {
-        self::replace(self::dir(), $name, $state);
+        return self::replace(self::dir(), $name, $state);
     }
 
     // Complete-file replacement, following the trafic precedent named in the
@@ -107,21 +208,35 @@ class RuTrackerState
     // beats a truncated one. This is also what keeps the lock-free load()
     // safe: a reader always sees a complete old or complete new document,
     // and a writer killed mid-write leaves the old one intact.
+    //
+    // @return bool -- true only once the rename has published the document.
     static private function replace($dir, $name, $state)
     {
         global $profileMask;
         $json = json_encode($state);
-        if ($json === false) return;
+        if ($json === false) return false;
         $tmp = @tempnam($dir, $name);
-        if ($tmp === false) return;
+        if ($tmp === false) return false;
         if (@file_put_contents($tmp, $json) === false) {
             @unlink($tmp);
-            return;
+            return false;
         }
-        if (@rename($tmp, $dir . '/' . $name . '.json'))
-            @chmod($dir . '/' . $name . '.json', (isset($profileMask) ? $profileMask : 0777) & 0666);
-        else
+        // The mode is set on the TEMP file, before the rename publishes it.
+        // Doing it afterwards left the live document at tempnam's 0600 for the
+        // window in between, and a second OS user reading in that window gets
+        // nothing -- which load() cannot tell apart from "no document at all".
+        // A failure here still publishes: the data matters more than the mode,
+        // and losing it would be the worse outcome. But it is no longer
+        // silent.
+        if (!@chmod($tmp, (isset($profileMask) ? $profileMask : 0777) & 0666)
+            && class_exists('ruTrackerChecker'))
+            ruTrackerChecker::logDebug('state: could not open ' . $name . '.json to the profile mask;'
+                . ' another OS user may not be able to read it');
+        if (!@rename($tmp, $dir . '/' . $name . '.json')) {
             @unlink($tmp);
+            return false;
+        }
+        return true;
     }
 
     // Atomic read-modify-write: opens <name>.json (creating it if missing),
@@ -150,6 +265,9 @@ class RuTrackerState
         @unlink($dir . '/' . $name . '.lock');
     }
 
+    // @return bool -- whether the mutated state reached the disk. A caller
+    // whose next step assumes the write landed (the announce budget spends a
+    // slot this way) has to fail closed on false rather than carry on.
     static public function update($name, $mutator)
     {
         global $profileMask;
@@ -162,19 +280,29 @@ class RuTrackerState
         // on the same inode; it is opened up to the profile mask for the
         // same cross-user reason replace() documents.
         $lock = $dir . '/' . $name . '.lock';
-        $fp = @fopen($lock, 'c');
+        $fp = self::openShared($lock);
         if ($fp === false) {
             if (class_exists('ruTrackerChecker'))
                 ruTrackerChecker::logDebug('state: cannot open ' . $lock . ', the ' . $name . ' update is lost');
-            return;
+            return false;
         }
-        @chmod($lock, (isset($profileMask) ? $profileMask : 0777) & 0666);
 
         try {
-            if (!flock($fp, LOCK_EX)) return;
+            if (!flock($fp, LOCK_EX)) return false;
             try {
-                $state = call_user_func($mutator, self::load($name));
-                self::replace($dir, $name, $state);
+                $readable = true;
+                $current = self::load($name, $readable);
+                // Fail closed. Rebuilding the document from an empty array is
+                // indistinguishable from a legitimate first write, and it
+                // silently discards everything the file held.
+                if (!$readable) {
+                    if (class_exists('ruTrackerChecker'))
+                        ruTrackerChecker::logDebug('state: the ' . $name . ' document is present but could'
+                            . ' not be read; the update is abandoned rather than written over it');
+                    return false;
+                }
+                $state = call_user_func($mutator, $current);
+                return self::replace($dir, $name, $state);
             } finally {
                 flock($fp, LOCK_UN);
             }

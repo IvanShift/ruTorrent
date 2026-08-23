@@ -36,7 +36,11 @@ class KinozalCheckImpl
     // thirty, and a blink no longer skips the cycle.
     const GUEST_TOLERANCE = 2;
 
-    static private $guestAnswers = 0;
+    // The details and download endpoints are separate hosts and can wall the
+    // session independently. A healthy details answer must therefore not
+    // erase a guest streak reported by dl.kinozal.guru.
+    static private $detailsGuestAnswers = 0;
+    static private $downloadGuestAnswers = 0;
 
     // get_srv_details.php is served as UTF-8 while the rest of the site is
     // windows-1251, so a needle is looked up in both encodings rather than
@@ -52,21 +56,24 @@ class KinozalCheckImpl
         return false;
     }
 
+    static private function isMissingAnswer($body)
+    {
+        if (!is_string($body) || $body === '') return false;
+        $plain = trim(preg_replace('/[ \t\r\n\f\v]+/', ' ', strip_tags($body)));
+        $needle = self::MISSING_MARKER;
+        if ($plain === $needle || $plain === $needle . '.') return true;
+        if (function_exists('iconv')) {
+            $legacy = @iconv('UTF-8', 'CP1251//IGNORE', $needle);
+            if (is_string($legacy) && $legacy !== ''
+                && ($plain === $legacy || $plain === $legacy . '.'))
+                return true;
+        }
+        return false;
+    }
+
     static private function isGuestAnswer($body)
     {
         return self::bodyHas($body, self::GUEST_MARKER);
-    }
-
-    // createTorrent() treats an unparseable payload as proof that the topic is
-    // gone (check.php's legacy contract), so nothing reaches it before it is
-    // known to be metainfo -- the same order rutracker.php's metadata harvest
-    // validates in.
-    static private function isMetainfo($payload)
-    {
-        if (!is_string($payload) || $payload === '') return false;
-        // PHP 7.4 warns when Torrent probes binary metainfo as a filename.
-        $torrent = @new Torrent($payload);
-        return !$torrent->errors() && strlen((string) $torrent->hash_info()) === 40;
     }
 
     // The state constant carries the whole user-facing verdict: init.js renders
@@ -83,9 +90,12 @@ class KinozalCheckImpl
     // Once they stop being isolated the session is declared gone for the whole
     // run: it is one session, so what the tracker just refused it will refuse
     // for every remaining topic too.
-    static private function guestAnswer($log)
+    static private function guestAnswer($log, $endpoint)
     {
-        if (++self::$guestAnswers < self::GUEST_TOLERANCE)
+        $answers = ($endpoint === 'download')
+            ? ++self::$downloadGuestAnswers
+            : ++self::$detailsGuestAnswers;
+        if ($answers < self::GUEST_TOLERANCE)
             return self::cantReach($log);
         self::$sessionDead = true;
         return self::cantReach($log . ', the rest of this cycle is skipped');
@@ -94,10 +104,10 @@ class KinozalCheckImpl
     static public function download_torrent($url, $hash, $old_torrent)
     {
         if (!preg_match('`^https?://kinozal\.(tv|me|guru)/details\.php\?id=(?P<id>\d+)$`', $url, $matches))
-            return ruTrackerChecker::STE_NOT_NEED;
+            return ruTrackerChecker::STE_DECLINED;
 
         // Checked after the URL match, so a topic this handler does not own
-        // still falls through to STE_NOT_NEED exactly as before.
+        // still falls through to STE_DECLINED exactly as before.
         if (self::$sessionDead)
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
@@ -108,22 +118,26 @@ class KinozalCheckImpl
 
         $details = (string) $client->results;
         if (self::isGuestAnswer($details))
-            return self::guestAnswer("get_srv_details answered a guest page, check the loginmgr account: id=".$id);
+            return self::guestAnswer("get_srv_details answered a guest page, check the loginmgr account: id=".$id,
+                'details');
         // An authenticated answer clears the count: only guest answers that
         // run together mean a lost session, and isolated ones must not add up
         // across an otherwise healthy cycle.
-        self::$guestAnswers = 0;
-
-        if (self::bodyHas($details, self::MISSING_MARKER))
-            return ruTrackerChecker::STE_DELETED;
+        self::$detailsGuestAnswers = 0;
 
         // Strict comparison: loose == reads a hex hash shaped like scientific
         // notation as a number -- '1E' followed by 38 zeros == '00...01'
         // (both are numerically 1) -- so two different 40-char hashes could
         // pass as equal.
-        if (preg_match('`<li>.*(?P<hash>[0-9A-Fa-f]{40})</li>`', $details, $matches1)
-            && strtoupper($matches1["hash"]) === strtoupper((string) $hash))
-            return ruTrackerChecker::STE_UPTODATE;
+        $hasHash = preg_match('`<li>.*(?P<hash>[0-9A-Fa-f]{40})</li>`', $details, $matches1);
+        if ($hasHash) {
+            if (strtoupper($matches1["hash"]) === strtoupper((string) $hash))
+                return ruTrackerChecker::STE_UPTODATE;
+        } else {
+            if (self::isMissingAnswer($details))
+                return ruTrackerChecker::STE_DELETED;
+            return self::cantReach("get_srv_details returned unrecognised content: id=".$id." bytes=".strlen($details));
+        }
 
         $client->setcookies();
         $client->fetchComplex("https://dl.kinozal.guru/download.php?id=".$id);
@@ -137,10 +151,14 @@ class KinozalCheckImpl
         // Metainfo first: bytes that parse ARE the torrent, whatever text they
         // happen to contain, so a torrent is never mistaken for a login wall.
         $payload = (string) $client->results;
-        if (self::isMetainfo($payload))
-            return ruTrackerChecker::createTorrent($payload, $hash);
+        if (ruTrackerChecker::isMetainfo($payload)) {
+            self::$downloadGuestAnswers = 0;
+            return ruTrackerChecker::createTorrent($payload, $hash, $old_torrent);
+        }
         if (self::isGuestAnswer($payload))
-            return self::guestAnswer("download.php answered a guest page, check the loginmgr account: id=".$id);
+            return self::guestAnswer("download.php answered a guest page, check the loginmgr account: id=".$id,
+                'download');
+        self::$downloadGuestAnswers = 0;
         return self::cantReach("download.php returned no metainfo: id=".$id." bytes=".strlen($payload));
     }
 }

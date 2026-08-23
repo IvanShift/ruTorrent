@@ -135,6 +135,77 @@ describe("chkResultText", () => {
 });
 
 /**
+ * The assertions above are about the STRING. What makes the string safe is the
+ * sink it goes into: `$("#chkresult").text(...)` escapes, `.html(...)` would
+ * not, and a change from one to the other leaves every string assertion green.
+ * These drive the wiring instead.
+ */
+describe("the details pane and the row wiring", () => {
+  beforeEach(() => {
+    useLanguage("en");
+    document.body.innerHTML =
+      '<span id="chktime"></span><span id="chkresult"></span>';
+    global.theConverter = { time: () => "just now" };
+    global.iv = (v) => parseInt(v, 10) || 0;
+    theWebUI.deltaTime = 0;
+  });
+
+  it("puts the result into the DOM through a text sink, so markup cannot render", () => {
+    theWebUI.dID = "H";
+    theWebUI.torrents = { H: { chkstate: 5, chktime: "1700000000", chkmsg: "fuse|<img src=x onerror=1>" } };
+
+    theWebUI.updateDetails();
+
+    // Escaped in the markup means it was written with .text(): .html() would
+    // have left the tag intact and jQuery would have built a real element.
+    expect($("#chkresult").html()).toContain("&lt;img");
+    expect($("#chkresult").find("img").length).toBe(0);
+    expect($("#chkresult").text()).toContain("<img src=x onerror=1>");
+  });
+
+  it("clears the two fields for a torrent that was never checked", () => {
+    theWebUI.dID = "H";
+    theWebUI.torrents = { H: { chkstate: 0, chktime: "" } };
+
+    theWebUI.updateDetails();
+
+    expect($("#chkresult").text()).toBe("");
+    expect($("#chktime").text()).toBe("");
+  });
+
+  it("marks BOTH terminal verdicts with the error row, not just the absorbed one", () => {
+    plugin.allStuffLoaded = true;
+    // 4 is STE_DELETED, 10 is STE_ABSORBED (check.php). Only the second was
+    // covered, so dropping 4 from the condition reddened nothing.
+    for (const state of [4, 10]) {
+      const icon = theWebUI.getStatusIcon({ chkstate: state, chkmsg: "" });
+      expect(icon[0]).toBe("Status_Error");
+      expect(icon[1]).toBe(plugin.chkResultText({ chkstate: state, chkmsg: "" }));
+    }
+    // And a verdict that is not terminal falls through to the WebUI's own icon.
+    expect(theWebUI.getStatusIcon({ chkstate: 3, chkmsg: "" })).toBeUndefined();
+  });
+
+  it("onRemove takes back all three requests and every field it added", () => {
+    const removed = [];
+    global.theRequestManager.removeRequest = (kind, id) => removed.push([kind, id]);
+    plugin.reqId1 = 11;
+    plugin.reqId2 = 22;
+    plugin.reqId3 = 33;
+    theWebUI.torrents = { H: { chkstate: 3, chktime: "1", chkmsg: "fuse|x", other: "kept" } };
+
+    plugin.onRemove();
+
+    expect(removed).toEqual([
+      ["trt", 11],
+      ["trt", 22],
+      ["trt", 33],
+    ]);
+    expect(theWebUI.torrents.H).toEqual({ other: "kept" });
+  });
+});
+
+/**
  * The sentences above are only renderable if every language file supplies the
  * whole vocabulary in the shape init.js expects: chkMessages keyed by the
  * CHKMSG_* tokens that need a sentence (absorbed does not -- init.js builds a
@@ -261,5 +332,75 @@ describe("WebUI wiring", () => {
       plugin.getStatusIcon = savedBase;
       plugin.allStuffLoaded = false;
     }
+  });
+});
+
+/**
+ * The manual-check path. init.spec.js hard-codes canChangeMenu to false, so the
+ * whole block that adds the context-menu entry and defines the checktorrent
+ * request was executed by nothing -- although it is the only way a user ever
+ * triggers a check by hand, and the request it builds is what action.php reads.
+ */
+describe("the manual check", () => {
+  let menuPlugin;
+  let added;
+  let stub;
+
+  beforeAll(() => {
+    added = [];
+    global.theContextMenu = {
+      get: (label) => ({ label: label }),
+      add: (after, entry) => added.push([after, entry]),
+    };
+    global.theUILang.Force_recheck = "Force re-check";
+    global.rTorrentStub = function () {};
+    global.rTorrentStub.prototype = {};
+    menuPlugin = {
+      loadLang: () => {},
+      canChangeMenu: () => true,
+      enabled: true,
+    };
+    new Function("plugin", initCode)(menuPlugin);
+    stub = new rTorrentStub();
+  });
+
+  it("posts every selected hash to the plugin's own endpoint", () => {
+    stub.hashes = ["A".repeat(40), "B".repeat(40)];
+    rTorrentStub.prototype.checktorrent.call(stub);
+
+    expect(stub.mountPoint).toBe("plugins/rutracker_check/action.php");
+    expect(stub.contentType).toBe("application/x-www-form-urlencoded");
+    // action.php splits on '&' and takes every hash= pair; one cmd, then one
+    // pair per selected torrent.
+    expect(stub.content).toBe(
+      "cmd=check&hash=" + "A".repeat(40) + "&hash=" + "B".repeat(40)
+    );
+  });
+
+  it("hangs the entry off Force re-check, and greys it out when the command is disabled", () => {
+    added.length = 0;
+    const webUI = {
+      getTable: () => ({ selCount: 1 }),
+      getHashes: () => [],
+      isTorrentCommandEnabled: () => false,
+    };
+    theWebUI.createMenu.call(webUI, {}, "H");
+
+    expect(added.length).toBe(1);
+    expect(added[0][0].label).toBe("Force re-check");
+    expect(added[0][1][0]).toBe(theUILang.checkTorrent);
+    expect(added[0][1][1]).toBeNull();
+  });
+
+  it("enables the entry when the command is available for the selection", () => {
+    added.length = 0;
+    const webUI = {
+      getTable: () => ({ selCount: 1 }),
+      getHashes: () => [],
+      isTorrentCommandEnabled: () => true,
+    };
+    theWebUI.createMenu.call(webUI, {}, "H");
+
+    expect(added[0][1][1]).toBe("theWebUI.perform( 'checktorrent' )");
   });
 });
