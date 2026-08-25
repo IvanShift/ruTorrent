@@ -2,6 +2,7 @@
 
 require_once( 'util.php' );
 require_once( 'settings.php' );
+require_once( 'scgitransport.php' );
 
 class rXMLRPCParam
 {
@@ -77,6 +78,7 @@ class rXMLRPCRequest
 	public $val = array();
 	public $fault = false;
 	public $faultString = '';
+	public $rawFaultString = null;
 	public $parseByTypes = false;
 	public $important = true;
 
@@ -98,22 +100,20 @@ class rXMLRPCRequest
 		if($rpcLogCalls)
 			FileUtil::toLog($data);
 		$result = false;
-		$contentlength = strlen($data);
-		if($contentlength>0)
+		if(strlen((string) $data) > 0)
 		{
 			global $rpcTimeOut;
 			global $scgi_host;
 			global $scgi_port;
-			$socket = @fsockopen($scgi_host, $scgi_port, $errno, $errstr, $rpcTimeOut);
-			if($socket)
+			$err = null;
+			$res = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted, $rpcTimeOut, $err);
+			if($res !== null)
 			{
-				$reqheader = "CONTENT_LENGTH\x0".$contentlength."\x0"."CONTENT_TYPE\x0"."text/xml\x0"."SCGI\x0"."1\x0UNTRUSTED_CONNECTION\x0".($trusted ? "0" : "1")."\x0";
-				$tosend = strlen($reqheader).":{$reqheader},{$data}";
-				@fwrite($socket,$tosend,strlen($tosend));
-				$result = '';
-				while($data = fread($socket, 65536))
-					$result .= $data;
-				fclose($socket);
+				$result = $res['raw'];
+			}
+			elseif($err !== null)
+			{
+				FileUtil::toLog('rXMLRPCRequest: ' . $err);
 			}
 		}
 		if($rpcLogCalls)
@@ -224,7 +224,8 @@ class rXMLRPCRequest
 					if(strstr($answer,"faultCode")!==false)
 					{
 						$this->fault = true;
-						$this->faultString = self::parseFaultString($answer);
+						$this->rawFaultString = self::parseRawFaultString($answer);
+						$this->faultString = trim($this->rawFaultString);
 						global $rpcLogFaults;
 						if($rpcLogFaults && $this->important)
 						{
@@ -247,9 +248,15 @@ class rXMLRPCRequest
 	// matches a fault nested in a system.multicall array.
 	static protected function parseFaultString($answer)
 	{
+		return(trim(self::parseRawFaultString($answer)));
+	}
+
+	// Keep the decoded pre-trim text for consumers that require exact boundaries.
+	static protected function parseRawFaultString($answer)
+	{
 		if(preg_match("/<name>faultString<\/name>\s*<value>\s*(?:<string>)?(.*?)(?:<\/string>)?\s*<\/value>/s",
 			$answer,$matches))
-			return(trim(html_entity_decode($matches[1],ENT_COMPAT,"UTF-8")));
+			return(html_entity_decode($matches[1],ENT_COMPAT,"UTF-8"));
 		return('');
 	}
 	public function success($trusted = true)

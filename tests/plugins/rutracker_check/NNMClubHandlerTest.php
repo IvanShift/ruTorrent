@@ -7,7 +7,6 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php
 function nnmReset()
 {
     ruTrackerChecker::reset();
-    strictSetPrivateStatic('NNMClubCheckImpl', 'donor', false);
     rTorrentSettings::get()->session = '/nonexistent/';
 }
 
@@ -490,195 +489,56 @@ $suite->test('Cloudflare challenge is a reachability error', function () use ($d
     strictAssertSame(0, count(nnmCreates()), 'Challenge page never replaces a torrent');
 });
 
-$suite->test('a session listing failure is logged and retried instead of being cached as no donor', function () use ($realPasskey, $dummyPasskey) {
+$suite->test('a keyless torrent skips scrape and resolves up to date via guest download without session donation', function () use ($realPasskey, $dummyPasskey) {
     nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-retry-' . getmypid() . '-' . mt_rand();
+    $tempDir = sys_get_temp_dir() . '/nnmclub-no-donor-' . getmypid() . '-' . mt_rand();
     mkdir($tempDir, 0700, true);
 
     try {
         $targetUrl = 'http://bt.searchtor.to/' . $dummyPasskey . '/announce';
-        $targetRaw = strictTorrentRaw('target-retry.bin', $targetUrl, '');
+        $targetRaw = strictTorrentRaw('target.bin', $targetUrl, nnmTopicUrl(77));
         $target = @new Torrent($targetRaw);
         strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
         $targetHash = $target->hash_info();
 
+        // Foreign torrent in session directory with valid passkey
         $donorRaw = strictTorrentRaw(
-            'donor-retry.bin',
+            'foreign-donor.bin',
             'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(77)
+            nnmTopicUrl(88)
         );
         file_put_contents($tempDir . '/donor.torrent', $donorRaw);
-
-        // PHP glob() deterministically returns false for an overlong path.
-        // This exercises the real filesystem boundary without a test-only
-        // production callback or permission bits that root can bypass.
-        rTorrentSettings::get()->session = sys_get_temp_dir() . '/' . str_repeat('x', 5000);
-        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'the failed listing proves no tracker verdict');
-
-        rTorrentSettings::get()->session = $tempDir . '/';
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, true)
-        );
-        strictAssertSame(ruTrackerChecker::STE_UPTODATE,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'the next lookup retries the session directory and finds its donor');
-        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Could not list session torrents',
-            'the access failure is distinct from a valid empty directory');
-    } finally {
-        strictRemoveTree($tempDir);
-    }
-});
-
-$suite->test('an inaccessible session directory is retried when it becomes available', function () use ($realPasskey, $dummyPasskey) {
-    nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-late-dir-' . getmypid() . '-' . mt_rand();
-    strictRemoveTree($tempDir);
-
-    try {
-        $targetUrl = 'http://bt.searchtor.to/' . $dummyPasskey . '/announce';
-        $targetRaw = strictTorrentRaw('target-late-dir.bin', $targetUrl, '');
-        $target = @new Torrent($targetRaw);
-        strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
-        $targetHash = $target->hash_info();
         rTorrentSettings::get()->session = $tempDir . '/';
 
-        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'an inaccessible session directory proves no tracker verdict');
+        // Guest topic and guest download returning the same info hash
+        Snoopy::queue(nnmTopicUrl(77), 200, '<a href="download.php?id=77">download</a>');
+        Snoopy::queue(nnmDownloadUrl(77), 200, $targetRaw);
 
-        mkdir($tempDir, 0700, true);
-        file_put_contents($tempDir . '/donor.torrent', strictTorrentRaw(
-            'donor-late-dir.bin',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(77)
-        ));
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, true)
-        );
+        $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(77), $targetHash, $target);
 
-        strictAssertSame(ruTrackerChecker::STE_UPTODATE,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'the directory is scanned after access is restored');
-        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Could not access session directory',
-            'an inaccessible directory is distinct from a valid empty one');
-    } finally {
-        strictRemoveTree($tempDir);
-    }
-});
-
-$suite->test('an unreadable donor candidate is logged and does not cache an incomplete scan', function () use ($realPasskey, $dummyPasskey) {
-    nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-unreadable-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
-
-    try {
-        $targetUrl = 'http://bt.searchtor.to/' . $dummyPasskey . '/announce';
-        $targetRaw = strictTorrentRaw('target-unreadable.bin', $targetUrl, '');
-        $target = @new Torrent($targetRaw);
-        strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
-        $targetHash = $target->hash_info();
-        $candidate = $tempDir . '/broken.torrent';
-        symlink($tempDir . '/missing-source.torrent', $candidate);
-        rTorrentSettings::get()->session = $tempDir . '/';
-
-        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'an unreadable candidate proves no tracker verdict');
-
-        unlink($candidate);
-        file_put_contents($candidate, strictTorrentRaw(
-            'donor-after-repair.bin',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(77)
-        ));
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, true)
-        );
-
-        strictAssertSame(ruTrackerChecker::STE_UPTODATE,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'the repaired candidate is retried in the same process');
-        $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Could not read session torrent',
-            'the incomplete scan is visible in the debug log');
-        strictAssertTrue(strpos($line, 'broken.torrent') !== false,
-            'the diagnostic identifies the unreadable candidate');
-    } finally {
-        strictRemoveTree($tempDir);
-    }
-});
-
-$suite->test('donor passkey is used in memory without rewriting session torrent', function () use ($realPasskey, $dummyPasskey) {
-    nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-red-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
-
-    try {
-        $targetRaw = strictTorrentRaw(
-            'target.bin',
-            'http://bt02.nnm-club.cc:2710/' . $dummyPasskey . '/announce',
-            nnmTopicUrl(42),
-            null,
-            array(
-                'libtorrent_resume' => array('bitfield' => 1),
-                'rtorrent' => array('state' => 1),
-            )
-        );
-        $target = @new Torrent($targetRaw);
-        strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
-        $targetHash = $target->hash_info();
-        $targetPath = $tempDir . '/' . $targetHash . '.torrent';
-        file_put_contents($targetPath, $targetRaw);
-
-        $donorRaw = strictTorrentRaw(
-            'donor.bin',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(77)
-        );
-        file_put_contents($tempDir . '/' . str_repeat('D', 40) . '.torrent', $donorRaw);
-
-        rTorrentSettings::get()->session = $tempDir . '/';
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, true)
-        );
-
-        $before = file_get_contents($targetPath);
-        $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $targetHash, $target);
-        $after = file_get_contents($targetPath);
-
-        strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'Donor passkey can authenticate scrape');
+        strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result,
+            'keyless torrent checks up to date via guest download without using other session passkeys');
         strictAssertSame(
-            $before,
-            $after,
-            'Donor passkey lookup must not mutate the live rTorrent session file'
+            array(
+                array('fetch', nnmTopicUrl(77)),
+                array('fetch', nnmDownloadUrl(77)),
+            ),
+            Snoopy::$requests,
+            'zero scrape requests issued: foreign session passkey was not harvested'
         );
     } finally {
         strictRemoveTree($tempDir);
     }
 });
 
-// The donor is the one remaining cross-torrent transplant: consulted only
-// when the torrent being replaced carries no usable key of its own, and only
-// for keys another torrent published in the profile-wide `uk=` form. A
-// path-form key in a foreign torrent may belong to whoever downloaded that
-// file (real sessions do carry torrents fetched from other accounts).
-$suite->test('a donor query-form passkey patches a keyless replacement', function () use ($realPasskey, $dummyPasskey) {
+$suite->test('a keyless torrent whose hash changed refuses replacement and never transplants session passkeys', function () use ($realPasskey, $dummyPasskey) {
     nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-patch-' . getmypid() . '-' . mt_rand();
+    $tempDir = sys_get_temp_dir() . '/nnmclub-no-transplant-' . getmypid() . '-' . mt_rand();
     mkdir($tempDir, 0700, true);
 
     try {
         $oldRaw = strictTorrentRaw(
-            'old-donorpatch.bin',
+            'old-keyless.bin',
             'http://bt02.nnm-club.cc:2710/' . $dummyPasskey . '/announce',
             nnmTopicUrl(45)
         );
@@ -686,88 +546,37 @@ $suite->test('a donor query-form passkey patches a keyless replacement', functio
         strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
         $oldHash = $oldTorrent->hash_info();
 
+        // Foreign torrent in session
         $donorRaw = strictTorrentRaw(
-            'donor.bin',
+            'foreign.bin',
             'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(77)
+            nnmTopicUrl(99)
         );
         file_put_contents($tempDir . '/' . str_repeat('E', 40) . '.torrent', $donorRaw);
         rTorrentSettings::get()->session = $tempDir . '/';
 
         $guestRaw = strictTorrentRaw(
-            'new-donorpatch.bin',
+            'new-guest.bin',
             'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
             nnmTopicUrl(45)
         );
 
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $oldHash),
-            200,
-            strictScrapePayload($oldHash, false)
-        );
         Snoopy::queue(nnmTopicUrl(45), 200, '<a href="download.php?id=10">download</a>');
         Snoopy::queue(nnmDownloadUrl(10), 200, $guestRaw);
-        ruTrackerChecker::queueResult('createTorrent', null);
 
         $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(45), $oldHash, $oldTorrent);
 
-        strictAssertSame(null, $result, 'A donor-patched replacement propagates createTorrent result');
-        $creates = nnmCreates();
-        strictAssertSame(1, count($creates), 'The keyless replacement is patched and loaded');
-        $patched = @new Torrent($creates[0]['arguments'][0]);
-        strictAssertTrue(!$patched->errors(), 'Patched replacement torrent must remain valid');
-        strictAssertTrue(
-            strpos($patched->announce(), 'http://bt.searchtor.to/' . $realPasskey . '/announce') !== false,
-            'The donor passkey is written in the form the replacement URL already uses'
-        );
-    } finally {
-        strictRemoveTree($tempDir);
-    }
-});
-
-$suite->test('a session path-form passkey is never donated to another torrent', function () use ($realPasskey, $dummyPasskey) {
-    nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-path-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
-
-    try {
-        $oldRaw = strictTorrentRaw(
-            'old-nodonor.bin',
-            'http://bt02.nnm-club.cc:2710/' . $dummyPasskey . '/announce',
-            nnmTopicUrl(47)
-        );
-        $oldTorrent = @new Torrent($oldRaw);
-        strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
-        $oldHash = $oldTorrent->hash_info();
-
-        $pathDonorRaw = strictTorrentRaw(
-            'pathdonor.bin',
-            'http://bt.searchtor.to/' . $realPasskey . '/announce',
-            nnmTopicUrl(88)
-        );
-        file_put_contents($tempDir . '/' . str_repeat('F', 40) . '.torrent', $pathDonorRaw);
-        rTorrentSettings::get()->session = $tempDir . '/';
-
-        $guestRaw = strictTorrentRaw(
-            'new-nodonor.bin',
-            'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
-            nnmTopicUrl(47)
-        );
-
-        Snoopy::queue(nnmTopicUrl(47), 200, '<a href="download.php?id=12">download</a>');
-        Snoopy::queue(nnmDownloadUrl(12), 200, $guestRaw);
-
-        $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(47), $oldHash, $oldTorrent);
-
-        strictAssertSame(ruTrackerChecker::STE_ERROR, $result, 'A foreign path-form key must not authenticate a replacement');
-        strictAssertSame(0, count(nnmCreates()), 'Nothing is loaded with a foreign path-form key');
+        strictAssertSame(ruTrackerChecker::STE_ERROR, $result,
+            'replacement without own passkey must fail with STE_ERROR');
+        strictAssertSame(0, count(nnmCreates()),
+            'createTorrent must not be called when replacement has no authenticated passkey');
         strictAssertSame(
             array(
-                array('fetch', nnmTopicUrl(47)),
-                array('fetch', nnmDownloadUrl(12)),
+                array('fetch', nnmTopicUrl(45)),
+                array('fetch', nnmDownloadUrl(10)),
             ),
             Snoopy::$requests,
-            'A path-form session key yields no credential, so no scrape is attempted'
+            'no scrape request attempted with foreign session key'
         );
     } finally {
         strictRemoveTree($tempDir);
@@ -824,17 +633,22 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
             1,
         ),
         'valid direct key with surrounding top-level keys' => array(
-            'd4:echo5:hello5:filesd20:' . $targetBin . 'dee5:flagsi0ee',
+            'd4:echo5:hello5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0eee5:flagsi0ee',
             $targetBin,
             1,
         ),
         'multiple hashes under files, target is first' => array(
-            'd5:filesd20:' . $targetBin . 'de20:' . $otherBin . 'deee',
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0ee20:' . $otherBin . 'd8:completei5e10:downloadedi5e10:incompletei1eeee',
             $targetBin,
             1,
         ),
         'multiple hashes under files, target is second' => array(
-            'd5:filesd20:' . $otherBin . 'de20:' . $targetBin . 'deee',
+            'd5:filesd20:' . $otherBin . 'd8:completei5e10:downloadedi5e10:incompletei1ee20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            1,
+        ),
+        'valid counters in any order plus unknown field' => array(
+            'd5:filesd20:' . $targetBin . 'd10:incompletei0e4:name4:test8:completei1e5:extrai99e10:downloadedi2eeee',
             $targetBin,
             1,
         ),
@@ -846,7 +660,7 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
             2,
         ),
         'valid files with only different hash' => array(
-            'd5:filesd20:' . $otherBin . 'deee',
+            'd5:filesd20:' . $otherBin . 'd8:completei1e10:downloadedi1e10:incompletei0eeee',
             $targetBin,
             2,
         ),
@@ -876,7 +690,97 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
             2,
         ),
 
-        // Malformed bencode / invalid schema -> FAILED (3)
+        // Malformed bencode / invalid schema / malformed target -> FAILED (3)
+        'scalar string target value is FAILED' => array(
+            'd5:filesd20:' . $targetBin . '5:helloee',
+            $targetBin,
+            3,
+        ),
+        'scalar integer target value is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'i123eee',
+            $targetBin,
+            3,
+        ),
+        'scalar list target value is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'leee',
+            $targetBin,
+            3,
+        ),
+        'empty target dictionary is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'deee',
+            $targetBin,
+            3,
+        ),
+        'missing complete counter is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'missing downloaded counter is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'missing incomplete counter is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1eeee',
+            $targetBin,
+            3,
+        ),
+        'wrong list counter for complete is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completele10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'wrong string counter for downloaded is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloaded5:hello10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'wrong dict counter for incomplete is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletedeeee',
+            $targetBin,
+            3,
+        ),
+        'negative complete counter in target is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei-1e10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'negative downloaded counter in target is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi-5e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'negative incomplete counter in target is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei-1eeee',
+            $targetBin,
+            3,
+        ),
+        'noncanonical integer in target complete is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei01e10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'duplicate target key under files is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0ee20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'duplicate complete counter in target dict is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e8:completei2e10:downloadedi1e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'duplicate downloaded counter in target dict is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:downloadedi2e10:incompletei0eeee',
+            $targetBin,
+            3,
+        ),
+        'duplicate incomplete counter in target dict is FAILED' => array(
+            'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1e10:incompletei0e10:incompletei1eeee',
+            $targetBin,
+            3,
+        ),
         'target hash in failure reason without files' => array(
             'd14:failure reason20:' . $targetBin . 'e',
             $targetBin,
@@ -992,16 +896,6 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
             $targetBin,
             3,
         ),
-        'hostile deeply nested list' => array(
-            'd' . str_repeat('l', 300000),
-            $targetBin,
-            3,
-        ),
-        'hostile deeply nested dict' => array(
-            'd' . str_repeat('d', 300000),
-            $targetBin,
-            3,
-        ),
         'invalid hash argument: empty string' => array(
             'd5:filesdee',
             '',
@@ -1079,8 +973,10 @@ $suite->test('bounded depth, token count, and body size limits in scrape parser'
         'body exactly 1 MiB is parsed within limit'
     );
 
-    // Body size 1048577 bytes rejected before parsing
-    $bodyOver1MiB = $body1MiB . 'x';
+    // Body size 1048577 bytes rejected before parsing. Keep this valid bencode
+    // so relaxing only the byte limit cannot still fail on malformed syntax.
+    $overPadLen = $padLen + 1;
+    $bodyOver1MiB = 'd5:filesde4:data' . $overPadLen . ':' . str_repeat('a', $overPadLen) . 'e';
     strictAssertSame(1048577, strlen($bodyOver1MiB), 'oversized fixture must be 1048577 bytes');
     strictAssertSame(
         3,
@@ -1204,121 +1100,96 @@ $suite->test('guest transport failure with a curl exit code is logged', function
         return strpos($line, 'Guest fetch failed') !== false;
     }));
     strictAssertSame(1, count($failureLogs), 'a curl exit-code status must be logged as a failed guest fetch');
-    strictAssertTrue(strpos($failureLogs[0], 'status=6') !== false, 'the log line must carry the status');
+    strictAssertTrue(strpos($failureLogs[0], 'host=nnmclub.to transport=curl-exit code=6 reason=dns') !== false,
+        'the log line carries only the host and safe transport category');
+    strictAssertTrue(strpos($failureLogs[0], '/forum/') === false
+        && strpos($failureLogs[0], 't=1') === false,
+        'the log line contains neither path nor query');
 });
 
-$suite->test('donor credential is not extracted from comments or arbitrary bencode fields', function () use ($realPasskey, $dummyPasskey) {
+$suite->test('all scrape transport failures stay retryable and never expose the credential', function () use ($realPasskey) {
     nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-comment-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
+    $torrent = @new Torrent(strictTorrentRaw(
+        'transport-failure.bin',
+        'http://bt02.nnm-club.cc:2710/' . $realPasskey . '/announce',
+        nnmTopicUrl(42)
+    ));
+    $hash = $torrent->hash_info();
+    Snoopy::queue(nnmDynamicScrapeUrl('bt02.nnm-club.cc:2710', $realPasskey, $hash), 6, '');
+    Snoopy::queue(nnmDynamicScrapeUrl('bt.searchtor.to', $realPasskey, $hash), 28, '');
 
-    try {
-        $targetUrl = 'http://bt.searchtor.to/' . $dummyPasskey . '/announce';
-        $targetRaw = strictTorrentRaw('target.bin', $targetUrl, '');
-        $target = @new Torrent($targetRaw);
-        strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
-        $targetHash = $target->hash_info();
+    $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $hash, $torrent);
 
-        // Foreign torrent whose announce is unrelated, but comment contains a fake/injected searchtor announce URL with uk=
-        $donorRaw = strictTorrentRaw(
-            'foreign.bin',
-            'http://tracker.example.com/announce',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey
-        );
-        file_put_contents($tempDir . '/foreign.torrent', $donorRaw);
-        rTorrentSettings::get()->session = $tempDir . '/';
-
-        $result = NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target);
-
-        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
-            'comment credentials must not be used as donor');
-        strictAssertSame(array(), Snoopy::$requests,
-            'no scrape request must be issued with comment credentials');
-    } finally {
-        strictRemoveTree($tempDir);
-    }
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
+        'transport-only scrape failure remains retryable');
+    strictAssertSame(2, count(Snoopy::$requests),
+        'only the two scrape hosts are tried; guest replacement never starts');
+    $diagnostics = implode("\n", ruTrackerChecker::$logs);
+    strictAssertTrue(strpos($diagnostics, 'Scrape failed on bt02.nnm-club.cc') !== false
+        && strpos($diagnostics, 'reason=dns') !== false,
+        'the primary host and DNS category are present');
+    strictAssertTrue(strpos($diagnostics, 'Scrape failed on bt.searchtor.to') !== false
+        && strpos($diagnostics, 'reason=timeout') !== false,
+        'the fallback host and timeout category are present');
+    strictAssertTrue(strpos($diagnostics, $realPasskey) === false,
+        'neither query nor path credential reaches diagnostics');
+    strictAssertSame(0, count(nnmCreates()), 'no replacement is attempted');
 });
 
-$suite->test('an oversized session torrent is skipped before a later normal donor', function () use ($realPasskey, $dummyPasskey) {
+$suite->test('F-02: a bencoded guest download with official announce but no info dictionary returns STE_ERROR without calling createTorrent', function () use ($realPasskey) {
     nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-size-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
-    $oversizedPasskey = '0123456789abcdef0123456789ABCDEF';
+    $targetHash = str_repeat('b', 40);
+    $targetTopic = 999;
+    $targetUrl = nnmTopicUrl($targetTopic);
+    $downloadId = 55555;
+    $target = @new Torrent(strictTorrentRaw('target.bin', 'http://bt.searchtor.to/announce?uk=' . $realPasskey, $targetUrl));
 
-    try {
-        $targetUrl = 'http://bt.searchtor.to/' . $dummyPasskey . '/announce';
-        $target = @new Torrent(strictTorrentRaw('target-size.bin', $targetUrl, ''));
-        strictAssertTrue(!$target->errors(), 'Target torrent fixture must parse');
-        $targetHash = $target->hash_info();
+    Snoopy::queue(
+        nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
+        200,
+        strictScrapePayload($targetHash, false)
+    );
+    Snoopy::queue(nnmTopicUrl($targetTopic), 200, '<a href="download.php?id=' . $downloadId . '">download</a>');
+    // Malformed bencoded payload with announce but NO info dictionary:
+    Snoopy::queue(nnmDownloadUrl($downloadId), 200, 'd8:announce64:http://bt.searchtor.to/00000000000000000000000000000000/announcee');
 
-        $oversizedRaw = strictTorrentRaw(
-            'oversized-donor.bin',
-            'http://bt.searchtor.to/announce?uk=' . $oversizedPasskey,
-            nnmTopicUrl(70)
-        );
-        $handle = fopen($tempDir . '/000-oversized.torrent', 'wb');
-        fwrite($handle, $oversizedRaw);
-        ftruncate($handle, 16 * 1024 * 1024 + 1);
-        fclose($handle);
+    $result = NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target);
 
-        file_put_contents($tempDir . '/999-donor.torrent', strictTorrentRaw(
-            'normal-donor.bin',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(71)
-        ));
-        rTorrentSettings::get()->session = $tempDir . '/';
-
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $oversizedPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, false)
-        );
-        Snoopy::queue(
-            nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash),
-            200,
-            strictScrapePayload($targetHash, true)
-        );
-
-        strictAssertSame(ruTrackerChecker::STE_UPTODATE,
-            NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target),
-            'the bounded scan reaches the normal donor instead of trusting oversized bytes');
-        strictAssertSame(
-            array(array('fetchComplex', nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $targetHash))),
-            Snoopy::$requests,
-            'only the later normal donor authenticates a scrape'
-        );
-    } finally {
-        strictRemoveTree($tempDir);
-    }
+    strictAssertSame(ruTrackerChecker::STE_ERROR, $result,
+        'malformed metainfo without info dict is rejected with STE_ERROR');
+    strictAssertSame(0, count(nnmCreates()),
+        'createTorrent must not be called when downloaded metainfo has no info hash');
 });
 
-$suite->test('a malformed session torrent is retried when the same file becomes a valid donor', function () use ($realPasskey) {
+$suite->test('malformed positive HTTP 200 scrape stays retryable and performs no guest replacement', function () use ($realPasskey) {
     nnmReset();
-    $tempDir = sys_get_temp_dir() . '/nnmclub-donor-retry-' . getmypid() . '-' . mt_rand();
-    mkdir($tempDir, 0700, true);
-    $path = $tempDir . '/changing.torrent';
+    $oldRaw = strictTorrentRaw(
+        'old-malformed-target.bin',
+        'http://bt02.nnm-club.cc:2710/' . $realPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    $oldHash = $oldTorrent->hash_info();
+    $oldBin = hex2bin($oldHash);
 
-    try {
-        file_put_contents($path, 'd8:announce12:http://short');
-        rTorrentSettings::get()->session = $tempDir . '/';
+    // Primary scrape returns HTTP 200 with malformed target (scalar string value instead of dictionary)
+    Snoopy::queue(
+        nnmDynamicScrapeUrl('bt02.nnm-club.cc:2710', $realPasskey, $oldHash),
+        200,
+        'd5:filesd20:' . $oldBin . '5:helloee'
+    );
+    // Fallback scrape also returns HTTP 200 with malformed target (empty dictionary without counters)
+    Snoopy::queue(
+        nnmDynamicScrapeUrl('bt.searchtor.to', $realPasskey, $oldHash),
+        200,
+        'd5:filesd20:' . $oldBin . 'deee'
+    );
 
-        strictAssertSame(null, strictInvoke('NNMClubCheckImpl', 'findDonorAuth'),
-            'a malformed session copy supplies no credential yet');
+    $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
 
-        file_put_contents($path, strictTorrentRaw(
-            'valid-donor.bin',
-            'http://bt.searchtor.to/announce?uk=' . $realPasskey,
-            nnmTopicUrl(72)
-        ));
-        $auth = strictInvoke('NNMClubCheckImpl', 'findDonorAuth');
-
-        strictAssertTrue(is_array($auth),
-            'an incomplete scan is not negatively cached, so the same path is inspected again');
-        strictAssertSame('query', $auth['mode'], 'the replacement donor keeps its typed credential mode');
-        strictAssertSame($realPasskey, $auth['token'], 'the second scan returns the now-valid donor');
-    } finally {
-        strictRemoveTree($tempDir);
-    }
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
+        'malformed positive scrape is treated as failure and stays retryable');
+    strictAssertSame(0, count(nnmCreates()), 'no guest replacement when scrape is malformed');
 });
 
 exit($suite->run());

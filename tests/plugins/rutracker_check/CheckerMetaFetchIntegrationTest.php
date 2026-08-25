@@ -14,6 +14,41 @@ $checkerMetaFetchPreviousCwd = getcwd();
 chdir($checkerMetaFetchRoot . '/php');
 require_once($checkerMetaFetchRoot . '/php/Torrent.php');
 chdir($checkerMetaFetchPreviousCwd);
+require_once($checkerMetaFetchRoot . '/php/xmlrpc_path.php');
+
+class CheckerMetaFetchErasedata
+{
+    public static $calls = array();
+
+    public static function reset()
+    {
+        self::$calls = array();
+    }
+
+    public static function record($name, $arguments)
+    {
+        self::$calls[] = array('name' => $name, 'arguments' => $arguments);
+    }
+}
+
+function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $base, array $entries)
+{
+    CheckerMetaFetchErasedata::record(__FUNCTION__, func_get_args());
+    return array('old_hash' => $oldHash, 'new_hash' => $newHash, 'marker' => $marker,
+        'replacement_record' => $record, 'base' => $base, 'entries' => $entries);
+}
+
+function erasedataPublishObsoleteCleanup(&$job)
+{
+    CheckerMetaFetchErasedata::record(__FUNCTION__, array($job));
+    return true;
+}
+
+function erasedataKickCollector($oldHash)
+{
+    CheckerMetaFetchErasedata::record(__FUNCTION__, func_get_args());
+    return true;
+}
 
 class CheckerMetaFetchTorrentEncoder extends Torrent
 {
@@ -30,6 +65,7 @@ class rTorrent
     public static $sends = array();
     public static $replacementMarker = '';
     public static $sourceReads = array();
+    public static $sourceSequences = array();
 
     public static function reset()
     {
@@ -38,6 +74,7 @@ class rTorrent
         self::$sends = array();
         self::$replacementMarker = '';
         self::$sourceReads = array();
+        self::$sourceSequences = array();
     }
 
     public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
@@ -63,6 +100,8 @@ class rTorrent
             foreach ($request['commands'] as $command)
                 if (self::commandErasesHash($command, $hash))
                     return false;
+        if (isset(self::$sourceSequences[$hash]) && count(self::$sourceSequences[$hash]))
+            return array_shift(self::$sourceSequences[$hash]);
         return array_key_exists($hash, self::$sources) ? self::$sources[$hash] : false;
     }
 
@@ -127,6 +166,7 @@ function cmfReset()
 {
     rXMLRPCRequest::reset();
     rTorrent::reset();
+    CheckerMetaFetchErasedata::reset();
     rTorrentSettings::get()->directory = '/data';
     $GLOBALS['topDirectory'] = '/data/';
     $GLOBALS['rutrackerMetaWait'] = 0;
@@ -247,6 +287,28 @@ $suite->test('real begin bounds a zero-wait metadata fetch as pending', function
     cmfAssertNoQueuedResponses();
 });
 
+$suite->test('real readiness waits through stale session bytes until the expected hash is durable', function () {
+    cmfReset();
+    $GLOBALS['rutrackerMetaWait'] = 1;
+    $stale = cmfTorrent('readiness-stale.bin', 'http://bt.t-ru.org/ann?pk=redacted');
+    $expected = cmfTorrent('readiness-expected.bin', 'http://bt.t-ru.org/ann?pk=redacted');
+    $expectedHash = strtoupper((string) $expected->hash_info());
+    rTorrent::$sources[$expectedHash] = $expected;
+    rTorrent::$sourceSequences[$expectedHash] = array($stale, $expected);
+    rXMLRPCRequest::queue('d.is_meta', true, false, array(0));
+    rXMLRPCRequest::queue('d.is_meta', true, false, array(0));
+
+    strictAssertSame(true, ruTrackerChecker::awaitMetadata($expectedHash),
+        'readiness observes the asynchronous stale-to-valid session transition');
+    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.is_meta')),
+        'the bounded loop polls live state again after stale bytes');
+    strictAssertSame(2, count(rTorrent::$sourceReads),
+        'each arrived state is paired with a fresh session read');
+    strictAssertSame($expectedHash, rTorrent::$sourceReads[0]['hash'],
+        'the session reads target only the expected successor');
+    cmfAssertNoQueuedResponses();
+});
+
 $suite->test('immediate metadata is harvested and committed by both real classes', function () {
     cmfReset();
     $announce = 'http://bt.t-ru.org/ann?pk=integration-secret';
@@ -258,6 +320,11 @@ $suite->test('immediate metadata is harvested and committed by both real classes
     strictAssertTrue($oldHash !== $newHash, 'the fixture describes an actual replacement');
     rTorrent::$sources[$oldHash] = $oldTorrent;
     rTorrent::$sources[$newHash] = $newTorrent;
+    $base = sys_get_temp_dir() . '/rut-check-cmf-' . bin2hex(random_bytes(5));
+    mkdir($base, 0777, true);
+    file_put_contents($base . '/integration-old.bin', 'old');
+
+    try {
 
     cmfQueueBegin($oldHash, 42, 87400);
     rXMLRPCRequest::queue('d.is_meta', true, false, array(0));
@@ -272,7 +339,7 @@ $suite->test('immediate metadata is harvested and committed by both real classes
     rXMLRPCRequest::queue(array(
         'd.get_directory_base', 'd.get_custom1', 'd.get_throttle_name',
         'd.get_connection_seed', 'd.get_custom', 'd.get_custom',
-    ), true, false, array('/data', 'integration-label', '', 'seed', '42', '1106'));
+    ), true, false, array($base, 'integration-label', '', 'seed', '42', '1106'));
     rXMLRPCRequest::queue('branch', true, false, function ($commands) use ($oldHash, $newHash) {
         strictAssertSame(1, count($commands), 'run state is selected in one daemon command');
         strictAssertSame($oldHash, $commands[0]->params[0],
@@ -306,6 +373,15 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'the staged Torrent is the harvested successor');
     strictAssertTrue(preg_match('/^[0-9a-f]{32}$/', rTorrent::$replacementMarker) === 1,
         'the real transaction generated and sent one ownership nonce');
+    strictAssertSame(array(
+        'erasedataPrepareObsoleteCleanup',
+        'erasedataPublishObsoleteCleanup',
+        'erasedataKickCollector',
+    ), array_column(CheckerMetaFetchErasedata::$calls, 'name'),
+        'the real checker composes the exact durable cleanup producer lifecycle');
+    strictAssertSame($base . '/integration-old.bin',
+        CheckerMetaFetchErasedata::$calls[0]['arguments'][5][0]['path'],
+        'the composed producer receives the exact old-minus-new path');
 
     $sourceReadAt = null;
     foreach (rTorrent::$sourceReads as $read)
@@ -353,6 +429,9 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'd.get_custom|d.get_custom|d.get_state|d.is_open',
     ), cmfRequestKeys(), 'the full composition completes without an unexpected fallback branch');
     cmfAssertNoQueuedResponses();
+    } finally {
+        strictRemoveTree($base);
+    }
 });
 
 $suite->test('real download guards reject non-200 and malformed bodies before mutation', function () {

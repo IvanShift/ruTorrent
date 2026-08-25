@@ -80,6 +80,8 @@ class XMLRPCProxy
 		'session.path.set',
 		'directory.default.set',
 		'catch',                  // evaluates its argument
+		'branch',                 // evaluates its arguments
+		'if',                     // evaluates its arguments
 		'system.env',
 		'system.shutdown',        // and .normal / .quick -- answered by the xmlrpc-c
 		                          // registry, not rtorrent's command map, so rtorrent's
@@ -128,6 +130,10 @@ class XMLRPCProxy
 	// httprpc's own settings branch. This path skipped it.
 	private static $directoryCommands = array(
 		'd.directory.set', 'd.directory_base.set',
+	);
+
+	private static $multiArgCommands = array(
+		'd.custom.set' => 2,
 	);
 
 	private static $multicallMethods = array(
@@ -211,7 +217,6 @@ class XMLRPCProxy
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
 	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
 	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
-	 *                                 filesystem in load.start / load.normal.
 	 *                                 Off by default: a remote client has no way
 	 *                                 to know what is on that filesystem, and the
 	 *                                 path it names becomes the download's tied
@@ -248,12 +253,17 @@ class XMLRPCProxy
 
 		if(in_array($methodName, self::$sanitizeMethods, true))
 		{
-			if(!$allowLocalPaths && in_array($methodName, self::$uriLoadMethods, true))
+			$localPath = null;
+			if(in_array($methodName, self::$uriLoadMethods, true))
 			{
 				$uri = self::loadUri($xml);
 				if(($uri !== null) && !preg_match(self::$networkUri, $uri))
-					return self::reject("rejected (load from a local path): ".
-						$methodName." ".self::logValue($uri));
+				{
+					if(!$allowLocalPaths)
+						return self::reject("rejected (load from a local path): ".
+							$methodName." ".self::logValue($uri));
+					$localPath = $uri;
+				}
 			}
 
 			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams, $directory);
@@ -274,6 +284,10 @@ class XMLRPCProxy
 			else
 				$line = $state.": ".$methodName." (".$rebuilt['kept']." params)";
 
+			if($localPath !== null)
+				$line = "WARNING: operator-enabled local path forwarded: ".
+					$methodName." ".self::logValue($localPath).
+					"; rtorrent resolves it after proxy checks; ".$line;
 			return self::forward($rebuilt['xml'], $trusted, $line);
 		}
 
@@ -596,16 +610,25 @@ class XMLRPCProxy
 		if(!in_array($command, $safeParams, true))
 			return null;
 
-		// A caller that states no boundary is not policed here, which is the
-		// behaviour every caller had before this existed. rpc2.php always states
-		// one and refuses to start without it; the httprpc plugin does not, and
-		// its door needs a ruTorrent session rather than a machine credential.
+		// Both shipped endpoints provide boundary options. rpc2.php refuses to
+		// serve without a usable boundary (or the explicit root opt-in); httprpc
+		// keeps serving with an empty boundary but strips directory setters.
 		if(($directory !== null) && in_array($command, self::$directoryCommands, true) &&
 			!self::directoryIsAllowed(trim(substr($paramValue, $separator + 1)), $directory))
 			return null;
 
+		$rawPayload = substr($paramValue, $separator + 1);
+		if(isset(self::$multiArgCommands[$command]))
+		{
+			$rawArguments = explode(',', $rawPayload, self::$multiArgCommands[$command]);
+		}
+		else
+		{
+			$rawArguments = array($rawPayload);
+		}
+
 		$arguments = array();
-		foreach(explode(',', substr($paramValue, $separator + 1)) as $argument)
+		foreach($rawArguments as $argument)
 		{
 			// rtorrent trims an unquoted argument, so trim before anything else
 			// is decided about it — quoting a trimmed value must not turn a

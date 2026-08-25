@@ -77,16 +77,22 @@ class RuTrackerDetector
 
     // Splits the '#'-terminated, '|'-joined tracker blob an embedded
     // t.multicall assembles (see Task 8). A row whose field count is wrong
-    // (e.g. a literal '|' inside its URL broke the framing) is dropped
-    // rather than guessed at.
+    // (e.g. a literal '|' inside its URL broke the framing) or whose counter
+    // fields are non-numeric is dropped rather than guessed at.
     static public function parseTrackerBlob($blob, &$complete = null)
     {
         $complete = true;
         $rows = array();
-        foreach (explode('#', (string) $blob) as $chunk) {
+        if (!is_string($blob) || $blob === '') {
+            return $rows;
+        }
+        if (substr($blob, -1) !== '#') {
+            $complete = false;
+        }
+        foreach (explode('#', $blob) as $chunk) {
             if ($chunk === '') continue;
             $fields = explode('|', $chunk);
-            if (count($fields) !== 4) {
+            if (count($fields) !== 4 || !is_numeric($fields[1]) || !is_numeric($fields[2]) || !is_numeric($fields[3])) {
                 $complete = false;
                 continue;
             }

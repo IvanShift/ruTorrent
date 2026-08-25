@@ -42,6 +42,8 @@ if(!isset($_SERVER['RUTORRENT_XMLRPC_ENDPOINT']) ||
 }
 
 require_once(dirname(__FILE__).'/conf/config.php');
+require_once(dirname(__FILE__).'/php/scgitransport.php');
+require_once(dirname(__FILE__).'/php/xmlrpc_path.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_proxy.php');
 
 $policyFile = dirname(__FILE__).'/conf/xmlrpc_proxy.php';
@@ -53,31 +55,6 @@ $logging = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
 $safeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
 $allowLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
 $allowRootDirectory = isset($XMLRPCProxyAllowRootDirectory) ? $XMLRPCProxyAllowRootDirectory : false;
-
-/**
- * Resolve as much of a path as exists, so a symlink cannot be the difference
- * between where a caller says a download goes and where it lands. The path
- * usually does not exist yet, so realpath() alone answers nothing: walk up to
- * the deepest ancestor that does exist, resolve that, and re-attach the rest.
- */
-function rpc2_resolve_path($path)
-{
-	$real = @realpath($path);
-	if($real !== false)
-		return $real;
-
-	$parts = explode('/', trim($path, '/'));
-	$tail = array();
-	while(count($parts) > 0)
-	{
-		array_unshift($tail, array_pop($parts));
-		$base = '/'.implode('/', $parts);
-		$real = @realpath(($base === '') ? '/' : $base);
-		if($real !== false)
-			return rtrim($real, '/').'/'.implode('/', $tail);
-	}
-	return '';
-}
 
 /**
  * Written here rather than through FileUtil so that this file needs nothing
@@ -117,35 +94,15 @@ function rpc2_fault($status, $message)
 function rpc2_send($payload, $trusted)
 {
 	global $scgi_host, $scgi_port, $rpcTimeOut;
-
-	$timeout = empty($rpcTimeOut) ? 30 : $rpcTimeOut;
-	$socket = @fsockopen($scgi_host, $scgi_port, $errno, $errstr, $timeout);
-	if(!$socket)
+	$err = null;
+	$res = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted, $rpcTimeOut, $err);
+	if($res === null)
 	{
-		rpc2_log('cannot reach rtorrent at '.$scgi_host.': '.$errstr);
+		if($err !== null)
+			rpc2_log($err);
 		return null;
 	}
-
-	$header = "CONTENT_LENGTH\x00".strlen($payload)."\x00CONTENT_TYPE\x00text/xml\x00"
-		."SCGI\x001\x00UNTRUSTED_CONNECTION\x00".($trusted ? '0' : '1')."\x00";
-	$request = strlen($header).':'.$header.','.$payload;
-
-	stream_set_timeout($socket, $timeout);
-	@fwrite($socket, $request, strlen($request));
-
-	$response = '';
-	while(!feof($socket))
-	{
-		$chunk = fread($socket, 65536);
-		if($chunk === false)
-			break;
-		$response .= $chunk;
-	}
-	fclose($socket);
-
-	// rtorrent answers with its own headers; the body is what the client asked for.
-	$split = strpos($response, "\r\n\r\n");
-	return ($split === false) ? $response : substr($response, $split + 4);
+	return $res['body'];
 }
 
 if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST'))
@@ -184,7 +141,7 @@ if($raw === false || ($raw === ''))
 $decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, array(
 	'directory' => array(
 		'root'    => ($topDirectory === '') ? '/' : $topDirectory,
-		'resolve' => 'rpc2_resolve_path',
+		'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 	),
 ));
 foreach($decision['log'] as $line)

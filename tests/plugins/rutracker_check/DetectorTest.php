@@ -28,6 +28,20 @@ $suite->test('parseTrackerBlob drops a row whose field count is wrong', function
     strictAssertSame(array(), RuTrackerDetector::parseTrackerBlob('http://bt.t-ru.org/ann|1|2#'), 'too few fields');
 });
 
+$suite->test('parseTrackerBlob marks incomplete on truncated blob without trailing delimiter', function () {
+    $complete = true;
+    $rows = RuTrackerDetector::parseTrackerBlob('http://bt.t-ru.org/ann?pk=x|1|2|5', $complete);
+    strictAssertSame(false, $complete, 'blob without trailing hash delimiter is incomplete');
+    strictAssertSame(1, count($rows), 'valid row parsed despite missing trailing hash');
+});
+
+$suite->test('parseTrackerBlob drops rows with non-numeric counter fields and marks incomplete', function () {
+    $complete = true;
+    $rows = RuTrackerDetector::parseTrackerBlob('http://bt.t-ru.org/ann?pk=x|foo|2|5#', $complete);
+    strictAssertSame(false, $complete, 'row with non-numeric field is incomplete');
+    strictAssertSame(0, count($rows), 'row with non-numeric field is dropped');
+});
+
 $suite->test('a dropped tracker row makes the download-global message unattributable', function () {
     $complete = true;
     $rows = RuTrackerDetector::parseTrackerBlob(

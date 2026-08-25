@@ -27,6 +27,14 @@ if(plugin.canChangeMenu())
 		this.mountPoint = "plugins/rutracker_check/action.php";
 		this.dataType = "json";
 	}
+
+	rTorrentStub.prototype.checktorrentResponse = function( data )
+	{
+		if( data && data.status === "queued" )
+			log( theUILang.checkTorrent + ": " + theUILang.Queued );
+		else
+			log( theUILang.checkTorrent + ": " + theUILang.cantFetchInfo );
+	}
 }
 
 plugin.config = theWebUI.config;

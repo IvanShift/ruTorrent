@@ -24,6 +24,59 @@ eval(loadClassDefinition(
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/detector.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/forumindex.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/announce.php');
+
+if (!defined('ERASEDATA_CLEANUP_NONE')) define('ERASEDATA_CLEANUP_NONE', 'none');
+if (!defined('ERASEDATA_CLEANUP_READY')) define('ERASEDATA_CLEANUP_READY', 'ready');
+if (!defined('ERASEDATA_CLEANUP_RETRY')) define('ERASEDATA_CLEANUP_RETRY', 'retry');
+
+class UpdatePassErasedataFake
+{
+    public static $recoverResults = array();
+    public static $cancelResults = array();
+    public static $kickResults = array();
+    public static $recoverCalls = array();
+    public static $cancelCalls = array();
+    public static $kickCalls = array();
+    public static $events = array();
+
+    public static function reset()
+    {
+        self::$recoverResults = array();
+        self::$cancelResults = array();
+        self::$kickResults = array();
+        self::$recoverCalls = array();
+        self::$cancelCalls = array();
+        self::$kickCalls = array();
+        self::$events = array();
+    }
+
+    public static function next(&$results, $default)
+    {
+        return count($results) ? array_shift($results) : $default;
+    }
+}
+
+function erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord, &$reason = null)
+{
+    UpdatePassErasedataFake::$recoverCalls[] = array($oldHash, $newHash, $marker, $replacementRecord);
+    UpdatePassErasedataFake::$events[] = 'recover:' . $oldHash;
+    return UpdatePassErasedataFake::next(UpdatePassErasedataFake::$recoverResults, ERASEDATA_CLEANUP_NONE);
+}
+
+function erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $replacementRecord)
+{
+    UpdatePassErasedataFake::$cancelCalls[] = array($oldHash, $newHash, $marker, $replacementRecord);
+    UpdatePassErasedataFake::$events[] = 'cancel:' . $oldHash;
+    return UpdatePassErasedataFake::next(UpdatePassErasedataFake::$cancelResults, ERASEDATA_CLEANUP_NONE);
+}
+
+function erasedataKickCollector($oldHash)
+{
+    UpdatePassErasedataFake::$kickCalls[] = $oldHash;
+    UpdatePassErasedataFake::$events[] = 'kick:' . $oldHash;
+    return UpdatePassErasedataFake::next(UpdatePassErasedataFake::$kickResults, true);
+}
+
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/updatepass.php');
 
 // The real checker delegates META_PENDING rows to this collaborator. Its own
@@ -84,6 +137,7 @@ $suite = new StrictTestSuite();
 function upTest($suite, $name, $callback)
 {
     $suite->test($name, function () use ($callback) {
+        UpdatePassErasedataFake::reset();
         return strictWithStateDir('chk-updatepass', $callback);
     });
 }
@@ -833,11 +887,14 @@ upTest($suite, 'a durable forum correction survives when checker dispatch fails 
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
 
+    $thrown = null;
     try {
         RuTrackerUpdatePass::run($rows);
     } catch (RuntimeException $e) {
-        // expected
+        $thrown = $e;
     }
+    strictAssertTrue($thrown instanceof RuntimeException, 'checker exception must be propagated');
+    strictAssertSame('simulated dispatch failure', $thrown->getMessage(), 'exception message matches');
 
     // Verify the obligation is still present in state
     strictAssertSame($record,
@@ -1124,6 +1181,118 @@ upTest($suite, 'a torrent from another supported tracker still reaches its handl
         'a dispatched row gets no scheduler-side state write -- its own handler decides');
 });
 
+upTest($suite, 'F-01: foreign authoritative comment with RuTracker cross-seed announce is dispatched to foreign handler', function () {
+    $kinozalMixed = str_repeat('K', 40);
+    $nnmclubMixed = str_repeat('M', 40);
+    $rutracker = str_repeat('A', 40);
+
+    // Kinozal torrent with a RuTracker announce row that is 'alive' (0 failed)
+    $kinozalTrackers = "http://tr2.torrent4me.com/ann?pk=x|1|0|5#http://bt.t-ru.org/ann?pk=x|1|0|5#";
+    // NNMClub torrent with a RuTracker announce row that is in transport error (6 failed)
+    $nnmclubTrackers = "http://bt.nnmclub.to/ann?pk=x|1|0|5#http://bt.t-ru.org/ann?pk=x|1|6|0#";
+
+    $rows = array(
+        array(
+            'hash' => $kinozalMixed,
+            'state' => 3,
+            'time' => 100,
+            'label' => '',
+            'message' => '',
+            'del' => '',
+            'msg' => '',
+            'trackers' => RuTrackerDetector::parseTrackerBlob($kinozalTrackers),
+            'trackers_complete' => true,
+            'comment' => 'http://kinozal.tv/details.php?id=12345',
+        ),
+        array(
+            'hash' => $nnmclubMixed,
+            'state' => 3,
+            'time' => 100,
+            'label' => '',
+            'message' => 'Tracker: [Could not resolve hostname]',
+            'del' => '',
+            'msg' => '',
+            'trackers' => RuTrackerDetector::parseTrackerBlob($nnmclubTrackers),
+            'trackers_complete' => true,
+            'comment' => 'http://nnmclub.to/forum/viewtopic.php?t=67890',
+        ),
+        array(
+            'hash' => $rutracker,
+            'state' => 3,
+            'time' => 100,
+            'label' => '',
+            'message' => '',
+            'del' => '',
+            'msg' => '',
+            'trackers' => RuTrackerDetector::parseTrackerBlob("http://bt.t-ru.org/ann?pk=x|1|0|5#"),
+            'trackers_complete' => true,
+            'comment' => 'http://rutracker.org/forum/viewtopic.php?t=11111',
+        ),
+    );
+
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+
+    upQueueUnchanged($rows);
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(array($kinozalMixed, $nnmclubMixed), $result['checked'],
+        'both mixed-tracker foreign-comment torrents are dispatched to checker');
+    strictAssertSame(array($kinozalMixed, $nnmclubMixed), $checked, 'checker received both foreign-comment hashes');
+    strictAssertSame(1, $result['uptodate'], 'only the genuine RuTracker row took the alive fast path');
+});
+
+upTest($suite, 'F-01: production scheduler rows resolve foreign ownership from the session torrent', function () {
+    $repo = testFindRepoRoot();
+    $code = '$repo=' . var_export($repo, true) . ';'
+        . 'require $repo."/tests/plugins/rutracker_check/TestLib.php";'
+        . '$previous=getcwd();chdir($repo."/php");require_once $repo."/php/Torrent.php";chdir($previous);'
+        . 'class UpdatePassSessionTorrentEncoder extends Torrent {'
+        . 'public static function raw($value){return self::encode($value);}}'
+        . 'eval(loadClassDefinition($repo."/plugins/rutracker_check/check.php","ruTrackerChecker"));'
+        . 'foreach(array("rutracker","anidub","kinozal","nnmclub","tapocheknet","tfile","toloka") as $tracker)'
+        . '{require_once $repo."/plugins/rutracker_check/trackers/".$tracker.".php";}'
+        . 'require_once $repo."/plugins/rutracker_check/updatepass.php";'
+        . 'strictWithStateDir("chk-updatepass-session",function($tmp){'
+        . '$hash=str_repeat("B",40);$kinozal="http://tr2.torrent4me.com/ann?pk=x";'
+        . '$rutracker="http://bt.t-ru.org/ann?pk=x";'
+        . '$raw=UpdatePassSessionTorrentEncoder::raw(array('
+        . '"announce"=>$kinozal,"announce-list"=>array(array($kinozal),array($rutracker)),'
+        . '"comment"=>"http://kinozal.tv/details.php?id=12345",'
+        . '"info"=>array("length"=>1,"name"=>"mixed-owner.bin","piece length"=>16384,'
+        . '"pieces"=>str_repeat("\\0",20))));'
+        . 'rTorrentSettings::get()->session=$tmp."/";file_put_contents($tmp."/".$hash.".torrent",$raw);'
+        . '$torrent=new Torrent($tmp."/".$hash.".torrent");'
+        . 'strictAssertSame(false,$torrent->errors(),"the session torrent is readable by production Torrent");'
+        . 'strictAssertSame(7,count(ruTrackerChecker::supportedTrackers()),"all production tracker registrations are loaded");'
+        . '$values=array($hash,"3","100","","","","",'
+        . '$kinozal."|1|0|5#".$rutracker."|1|0|5#");'
+        . '$rows=RuTrackerUpdatePass::parseMulticall($values);'
+        . 'strictAssertSame(1,count($rows),"one actual eight-field scheduler row is parsed");'
+        . 'strictAssertTrue(!array_key_exists("comment",$rows[0]),"the scheduler row has no synthetic comment field");'
+        . '$checked=array();strictSetPrivateStatic("RuTrackerUpdatePass","checker",'
+        . 'function($seen)use(&$checked){$checked[]=$seen;});'
+        . '$GLOBALS["rutrackerFuseShare"]=0.2;$GLOBALS["rutrackerFuseFloor"]=3;'
+        . 'rXMLRPCRequest::reset();'
+        . 'rXMLRPCRequest::queue(array("d.set_custom","d.set_custom","d.set_custom"),true,false,array());'
+        . 'rXMLRPCRequest::queue("d.multicall",true,false,array($hash,"3","100","",""));'
+        . '$result=RuTrackerUpdatePass::run($rows);'
+        . 'strictAssertSame(array($hash),$result["checked"],'
+        . '"the production session-file owner bypasses the RuTracker alive path");'
+        . 'strictAssertSame(array($hash),$checked,"the foreign owner is dispatched exactly once");'
+        . '});echo "production session fallback dispatched foreign owner\\n";';
+
+    $output = array();
+    $status = 0;
+    exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -r '.escapeshellarg($code).' 2>&1', $output, $status);
+    strictAssertSame(0, $status,
+        'the production registration/session fallback scheduler route passes: '.implode("\n", $output));
+    strictAssertTrue(in_array('production session fallback dispatched foreign owner', $output, true),
+        'the subprocess reached the real session-file dispatch assertion');
+});
+
 upTest($suite, 'an ignored label still short-circuits a foreign-tracker torrent', function () {
     $GLOBALS['ignoreLabels'] = array('tv-sonarr');
     try {
@@ -1214,7 +1383,266 @@ function sweepAssertNoStandaloneOwnershipMutation($message)
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), $message . ': no standalone erase');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), $message . ': no standalone open');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), $message . ': no standalone open/start');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+        $message . ': no standalone paired custom write');
 }
+
+upTest($suite, 'testSweepPublishesCommittedTmpBeforeActivationOrClear', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    UpdatePassErasedataFake::$recoverResults = array(ERASEDATA_CLEANUP_READY);
+    UpdatePassErasedataFake::$kickResults = array(false);
+    sweepScan(array(array($hash, 'nonce', $record)));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('branch', true, false, function () use ($hash) {
+        UpdatePassErasedataFake::$events[] = 'activate:' . $hash;
+        return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+    });
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array(
+        'recover:' . $old,
+        'kick:' . $old,
+        'activate:' . $hash,
+    ), UpdatePassErasedataFake::$events,
+        'committed cleanup is recovered and kicked before activation may clear ownership');
+    strictAssertSame(array(array($old, $hash, sweepFixtureMarker('nonce'), $record)),
+        UpdatePassErasedataFake::$recoverCalls, 'recovery receives the exact marked generation');
+});
+
+upTest($suite, 'testSweepPublishRetryKeepsReplacementKeys', function () {
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    foreach (array('documented retry' => ERASEDATA_CLEANUP_RETRY, 'unexpected status' => 'unexpected') as $label => $status) {
+        rXMLRPCRequest::reset();
+        UpdatePassErasedataFake::reset();
+        UpdatePassErasedataFake::$recoverResults = array($status);
+        sweepScan(array(array($hash, 'nonce', $record)));
+        sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+        strictAssertSame(array('recover:' . $old), UpdatePassErasedataFake::$events,
+            $label . ': a retained cleanup stops this row before activation or collector kick');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': every non-ready/non-none cleanup result keeps both successor ownership keys intact');
+    }
+});
+
+upTest($suite, 'testSweepCancelsPreparedTmpBeforePredecessorRevival', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_READY);
+    sweepScan(array(array($hash, 'nonce', $record)));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue('branch', true, false, function () use ($old) {
+        UpdatePassErasedataFake::$events[] = 'revive:' . $old;
+        return array(RuTrackerAtomicOwnership::SENTINEL_REVIVED);
+    });
+    rXMLRPCRequest::queue('branch', true, false, function () use ($hash) {
+        UpdatePassErasedataFake::$events[] = 'discard:' . $hash;
+        return array(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+    });
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array(
+        'cancel:' . $old,
+        'revive:' . $old,
+        'discard:' . $hash,
+    ), UpdatePassErasedataFake::$events,
+        'prepared cleanup is cancelled before predecessor revival and staged discard');
+});
+
+upTest($suite, 'testSweepCancelRetryKeepsBothGenerations', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_RETRY);
+    sweepScan(array(array($hash, 'nonce', $record)));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array('cancel:' . $old), UpdatePassErasedataFake::$events,
+        'cancellation RETRY stops before predecessor or staged generation mutation');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'both exact replacement generations remain retryable');
+});
+
+upTest($suite, 'testAlreadyLiveMarkedRowStillReconcilesCleanup', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    UpdatePassErasedataFake::$recoverResults = array(ERASEDATA_CLEANUP_READY);
+    sweepScan(array(array($hash, 'nonce', $record)));
+    sweepDetail(1, 1, 100, 500, 1, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('branch', true, false, function () use ($hash) {
+        UpdatePassErasedataFake::$events[] = 'clear:' . $hash;
+        return array(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+    });
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array(
+        'recover:' . $old,
+        'kick:' . $old,
+        'clear:' . $hash,
+    ), UpdatePassErasedataFake::$events,
+        'an already-live successor reconciles durable cleanup before its final key clear');
+});
+
+upTest($suite, 'testSweepWithoutCleanupArtifactPreservesExistingBehavior', function () {
+    rXMLRPCRequest::reset();
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $record = $old . '-started-1000';
+    UpdatePassErasedataFake::$recoverResults = array(ERASEDATA_CLEANUP_NONE);
+    sweepScan(array(array($hash, 'nonce', $record)));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('branch', true, false, function () use ($hash) {
+        UpdatePassErasedataFake::$events[] = 'activate:' . $hash;
+        return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+    });
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array('recover:' . $old, 'activate:' . $hash), UpdatePassErasedataFake::$events,
+        'NONE follows the pre-existing activation path without a collector kick');
+    strictAssertSame(array(), UpdatePassErasedataFake::$kickCalls, 'no artifact means there is nothing to kick');
+});
+
+upTest($suite, 'testOneRetainedCleanupDoesNotStopFollowingRows', function () {
+    rXMLRPCRequest::reset();
+    $firstHash = str_repeat('A', 40);
+    $firstOld = str_repeat('B', 40);
+    $secondHash = str_repeat('C', 40);
+    $secondOld = str_repeat('D', 40);
+    $firstRecord = $firstOld . '-started-1000';
+    $secondRecord = $secondOld . '-started-1000';
+    UpdatePassErasedataFake::$recoverResults = array(ERASEDATA_CLEANUP_RETRY, ERASEDATA_CLEANUP_NONE);
+    sweepScan(array(
+        array($firstHash, 'nonce-a', $firstRecord),
+        array($secondHash, 'nonce-b', $secondRecord),
+    ));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce-a', $firstRecord);
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce-b', $secondRecord);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array($firstOld, $secondOld), array_map(function ($call) { return $call[0]; },
+        UpdatePassErasedataFake::$recoverCalls), 'each marked row gets its own cleanup decision');
+    $branches = sweepBranchRequestsForHash($secondHash);
+    strictAssertSame(1, count($branches), 'a retained first cleanup does not suppress the following row');
+    strictAssertSame(0, count(sweepBranchRequestsForHash($firstHash)), 'the retained row itself keeps its keys');
+});
+
+upTest($suite, 'testReplacingRowCannotClearRecoveryKeyBeforeCleanupCancel', function () {
+    $old = str_repeat('A', 40);
+    $successor = str_repeat('B', 40);
+    $encoded = $successor . '-started-1000';
+    $marker = sweepFixtureMarker('nonce');
+    $record = $old . '-started-1000';
+
+    rXMLRPCRequest::reset();
+    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_RETRY);
+    sweepScan(array(array($old, '', '', $encoded)));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
+        array($encoded, 0, 0));
+    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
+        array($successor, $marker, $record));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array(array($old, $successor, $marker, $record)), UpdatePassErasedataFake::$cancelCalls,
+        'the coherent successor generation is passed to cleanup cancellation');
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'cancellation RETRY keeps the predecessor recovery key');
+
+    rXMLRPCRequest::reset();
+    UpdatePassErasedataFake::reset();
+    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_READY);
+    sweepScan(array(array($old, '', '', $encoded)));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
+        array($encoded, 0, 0));
+    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
+        array($successor, $marker, $record));
+    rXMLRPCRequest::queue('branch', true, false, function () use ($old) {
+        UpdatePassErasedataFake::$events[] = 'clear:' . $old;
+        return array(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+    });
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array('cancel:' . $old, 'clear:' . $old), UpdatePassErasedataFake::$events,
+        'READY cancellation precedes the exact predecessor-key clear');
+});
+
+function sweepAssertNoncanonicalReplacingPairRetained($label, $encoded, $successorRecord)
+{
+    rXMLRPCRequest::reset();
+    $old = str_repeat('A', 40);
+    $successor = str_repeat('B', 40);
+    $marker = sweepFixtureMarker('nonce');
+    sweepScan(array(array($old, '', '', $encoded)));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
+        array($encoded, 0, 0));
+    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
+        array($successor, $marker, $successorRecord));
+
+    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+    strictAssertSame(array(), UpdatePassErasedataFake::$cancelCalls,
+        $label . ': decoded noncanonical bytes cannot cancel the cleanup generation');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        $label . ': neither generation may be cleared, revived, or discarded');
+    sweepAssertNoStandaloneOwnershipMutation($label . ': both generations remain intact');
+}
+
+upTest($suite, 'testReplacingRowRetainsLowercaseHashPredecessorRecord', function () {
+    sweepAssertNoncanonicalReplacingPairRetained('lowercase predecessor hash',
+        strtolower(str_repeat('B', 40)) . '-started-1000',
+        str_repeat('A', 40) . '-started-1000');
+});
+
+upTest($suite, 'testReplacingRowRetainsLeadingZeroEpochPredecessorRecord', function () {
+    sweepAssertNoncanonicalReplacingPairRetained('leading-zero predecessor epoch',
+        str_repeat('B', 40) . '-started-01000',
+        str_repeat('A', 40) . '-started-1000');
+});
+
+upTest($suite, 'testReplacingRowRetainsLowercaseHashSuccessorRecord', function () {
+    sweepAssertNoncanonicalReplacingPairRetained('lowercase successor hash',
+        str_repeat('B', 40) . '-started-1000',
+        strtolower(str_repeat('A', 40)) . '-started-1000');
+});
+
+upTest($suite, 'testReplacingRowRetainsLeadingZeroEpochSuccessorRecord', function () {
+    sweepAssertNoncanonicalReplacingPairRetained('leading-zero successor epoch',
+        str_repeat('B', 40) . '-started-1000',
+        str_repeat('A', 40) . '-started-01000');
+});
 
 upTest($suite, 'sweepReplacements scans main for the hash, both markers and the record', function () {
     rXMLRPCRequest::reset();
@@ -1717,12 +2145,13 @@ upTest($suite, 'a row that already answers its record is retired', function () {
     $record = str_repeat('B', 40) . '-open-1000';
     sweepScan(array(array($hash, 'nonce', $record)));
     sweepDetail(0, 1, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.hash')),
-        'a satisfied record needs no predecessor probe');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.hash')),
+        'a satisfied record still proves commit state before reconciling cleanup');
     strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
         'its keys are retired exactly like a running row\'s');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'and nothing is started');
@@ -1732,6 +2161,7 @@ upTest($suite, 'a row that already answers its record is retired', function () {
     rXMLRPCRequest::reset();
     sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
     sweepDetail(1, 1, 0, 0, 0, '', '1000', '2');
+    rXMLRPCRequest::queue('d.hash', true, true, array());
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
@@ -1796,25 +2226,6 @@ upTest($suite, 'sweepReplacements leaves a young or stime-less legacy row unlabe
 // stopped and closed -- outside the seeding view, where no check will ever
 // find it. The sweep restores its recorded run state (once) so its own check
 // can redo the replacement; the staged copy's keys stay untouched throughout.
-
-upTest($suite, 'sweepReplacements revives a stranded predecessor to its recorded state, write-once', function () {
-    rXMLRPCRequest::reset();
-    $hash = str_repeat('A', 40);
-    $old = str_repeat('B', 40);
-    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
-    sweepDetail(0, 0);
-    rXMLRPCRequest::queue('d.hash', true, false, array($old));                        // the predecessor is still there
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
-
-    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-
-    strictAssertSame(1, count(sweepBranchRequestsForHash($old)),
-        'the predecessor is revived and stamped once under its exact generation');
-    strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
-        'the staged copy is then discarded under its exact marker+record generation');
-    sweepAssertNoStandaloneOwnershipMutation('stranded predecessor revival');
-});
 
 // The flag is the whole protection, so losing it costs the user's next stop:
 // unmarked, that stop reads as the crash signature and gets revived over. A
@@ -1893,11 +2304,6 @@ upTest($suite, 'sweepReplacements does not flag a revival the daemon did not act
 // BLOCKS that redo: begin() finds an item already at the hash it means to
 // fetch, sees the replacement marker and hands the transaction back to this
 // sweep, which hands it back to the predecessor's check. Neither ever acts.
-// The third branch of the same rule. A record saying the predecessor was
-// already stopped means there is nothing to revive -- but the staged copy must
-// still go, because it sits at the hash the redo means to fetch and begin()
-// answers a marker there by handing the transaction back to this sweep. Left
-// in place, the two defer to each other for ever.
 upTest($suite, 'a staged copy is discarded even when its record says the predecessor was stopped', function () {
     rXMLRPCRequest::reset();
     $hash = str_repeat('A', 40);
@@ -1950,20 +2356,6 @@ upTest($suite, 'a staged copy whose predecessor is up is discarded, so the redo 
             $label . ': the exact staged copy is discarded either way');
         sweepAssertNoStandaloneOwnershipMutation($label);
     }
-});
-
-upTest($suite, 'sweepReplacements does not touch a row whose recorded predecessor still exists', function () {
-    rXMLRPCRequest::reset();
-    $hash = str_repeat('A', 40);
-    sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
-    sweepDetail(0, 0);
-    rXMLRPCRequest::queue('d.hash', true, false, array(str_repeat('B', 40)));   // still there
-
-    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'the commit never happened, so there is nothing to activate');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'nothing is started');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'and the keys stay, because the row is still adoptable');
 });
 
 upTest($suite, 'sweepReplacements defers when the predecessor probe cannot be answered', function () {
@@ -2055,6 +2447,7 @@ upTest($suite, 'sweepReplacements clears the keys of a marked row that is alread
     $record = $old . '-started-1000';
     sweepScan(array(array($hash, 'nonce', $record)));
     sweepDetail(1, 1, 100, 500, 1, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
@@ -2352,6 +2745,20 @@ upTest($suite, 'the settled gate does not freeze another tracker\'s torrent', fu
 
     strictAssertSame(array(str_repeat('A', 40)), $ran,
         'a non-RuTracker torrent goes to its own handler, settled state or not');
+});
+
+upTest($suite, 'the settled gate rests foreign tracker torrent when superseded', function () {
+    $values = upRow(str_repeat('A', 40), 6, 'tracker.nnmclub.to',
+        (string) ruTrackerChecker::STE_NOT_NEED, '', '', '',
+        ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40), (string) time());
+    $rows = RuTrackerUpdatePass::parseMulticall($values);
+    $ran = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$ran) { $ran[] = $hash; });
+    rXMLRPCRequest::reset();
+    RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(array(), $ran,
+        'a superseded foreign tracker torrent rests instead of repeating requests hourly');
 });
 
 upTest($suite, 'an ignored label clears the sentence the previous verdict left behind', function () {
@@ -2921,6 +3328,28 @@ upTest($suite, 'unknown stranded activation never falls back to standalone run c
         'stranded activation has one conditional run attempt');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
         'unknown activation performs no standalone retry');
+});
+
+upTest($suite, 'a case may poison scheduler singletons and statics', function () {
+    rTorrentSettings::get()->session = '/task-5-poisoned-session/';
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+        throw new RuntimeException('poisoned checker must not survive its case');
+    });
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'foreignAuthoritativeResolver', function () {
+        return true;
+    });
+});
+
+upTest($suite, 'the next case receives fresh scheduler singletons and statics', function () {
+    strictAssertSame('/nonexistent/', rTorrentSettings::get()->session,
+        'rTorrentSettings singleton state is isolated per case');
+
+    foreach (array('checker', 'foreignAuthoritativeResolver') as $property) {
+        $reflection = new ReflectionProperty('RuTrackerUpdatePass', $property);
+        if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
+        strictAssertSame(null, $reflection->getValue(),
+            'RuTrackerUpdatePass::$' . $property . ' is isolated per case');
+    }
 });
 
 exit($suite->run());

@@ -142,12 +142,15 @@ class rRatio
 	// execute would block rtorrent while the helper waits for rtorrent to answer.
 	public function getEraseWithDataCommand($force)
 	{
+		if(!is_string($force) || ($force !== "1" && $force !== "2"))
+			return(getCmd("cat="));
 		$prefix = getCmd("d.stop=")."; ".getCmd("d.close=")."; ";
 		$helper = dirname(dirname(__FILE__))."/erasedata/erase.php";
 		if(!is_file($helper))
-			return($prefix.getCmd("d.set_custom5=").$force."; ".getCmd("d.erase="));
+			return(getCmd("cat="));
+		$user = preg_replace('/[^\w\.\-]/', '', (string)User::getUser());
 		return($prefix.'execute.nothrow.bg={'.Utility::getPHP().','.$helper.
-			',$'.getCmd("d.get_hash").'=,'.$force.','.User::getUser().'}');
+			',$'.getCmd("d.get_hash").'=,'.$force.','.$user.'}');
 	}
 
 	public function correct()

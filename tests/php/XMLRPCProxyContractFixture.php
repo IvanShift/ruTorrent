@@ -1,7 +1,7 @@
 <?php
 
-// The observable result of XMLRPCProxy::process() for every branch it has:
-// what it returned, what it sent, on what trust, and what it logged.
+// Representative observable outcomes of XMLRPCProxy::process(): what it
+// returned, what it sent, on what trust, and what it logged.
 //
 // Generated from the implementation, then frozen. It is not a description of
 // what the proxy should do — the suite next to it covers that — it is a record
@@ -721,7 +721,7 @@ return array(
 			"xmlrpc-proxy: rejected (load from a local path): load.normal /srv/watch/x.torrent",
 		),
 	),
-	"the 0.9.x name is rejected the same way" => array(
+	"the 0.9.x name is forwarded trusted as an ordinary command" => array(
 		"request" => "<?xml version=\"1.0\"?><methodCall><methodName>load_start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
 		"mode" => "sanitize",
 		"enableLog" => true,
@@ -898,7 +898,7 @@ return array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (2 params)",
+			"xmlrpc-proxy: WARNING: operator-enabled local path forwarded: load.start /srv/watch/x.torrent; rtorrent resolves it after proxy checks; trusted: load.start (2 params)",
 		),
 	),
 	"execute.capture is refused" => array(

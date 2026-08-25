@@ -450,4 +450,17 @@ $suite->test('invalid grammar parameters fail closed with UNKNOWN and zero reque
     }
 });
 
+$suite->test('RuTrackerReplacementRecord::encode rejects invalid or non-40-hex hashes', function () {
+    $badHashes = array('', 'short', str_repeat('G', 40), '0', null, false, 12345);
+    foreach ($badHashes as $bad) {
+        $threw = false;
+        try {
+            RuTrackerReplacementRecord::encode($bad, true, true, 1234567890);
+        } catch (InvalidArgumentException $e) {
+            $threw = true;
+        }
+        strictAssertTrue($threw, 'encode must throw InvalidArgumentException for invalid hash: ' . var_export($bad, true));
+    }
+});
+
 exit($suite->run());

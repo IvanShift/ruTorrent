@@ -284,11 +284,14 @@ fiStateTest($suite, 'fetchDump caches by ETag and serves 304 from state', functi
         'the first fetch has no ETag to condition on');
     strictAssertSame('"abc123"', RuTrackerState::load('forumindex')['etags'][921],
         'the answered ETag is persisted for the next cycle');
-    $doc = RuTrackerState::load('forumdump-921');
+    $dumpState = RuTrackerState::load('forumindex');
+    $doc = RuTrackerState::load($dumpState['dump_documents'][921]);
     strictAssertSame(1, count($doc['rows']),
         'the rows live in their own per-forum document');
     strictAssertSame('"abc123"', $doc['etag'],
         'and carry the ETag that names them, published by the same write');
+    strictAssertSame(1, $doc['generation'],
+        'the document carries the durable generation that names it');
     strictAssertTrue(!isset(RuTrackerState::load('forumindex')['dumps']),
         'never inside forumindex.json, whose every small mutation would rewrite them');
     // Age the retention clock almost to expiry: only an actual touch on
@@ -318,19 +321,21 @@ fiStateTest($suite, 'fetchDump caches by ETag and serves 304 from state', functi
 });
 
 fiStateTest($suite, 'fetchDump publishes no ETag hint when the dump document did not land', function ($tmp) {
-    // rename(file, directory) fails even for root, while forumindex.json can
-    // still be written beside it. This isolates the dump write from the hint.
-    mkdir($tmp . '/forumdump-921.json', 0777, true);
-    Snoopy::reset();
+    $hadMask = array_key_exists('profileMask', $GLOBALS);
+    $savedMask = $hadMask ? $GLOBALS['profileMask'] : null;
+    $client = new ForumIndexScripted200Client(45, 'F', '"cannot-land"', '', function () {
+        $GLOBALS['profileMask'] = 0555;
+    });
+    try {
+        $answer = RuTrackerForumIndex::fetchDump(921, $client);
+    } finally {
+        if ($hadMask) $GLOBALS['profileMask'] = $savedMask;
+        else unset($GLOBALS['profileMask']);
+        @chmod($tmp, 0777);
+    }
 
-    $url = RuTrackerForumIndex::DUMP_URL . '921';
-    Snoopy::queue($url, 200, fiDump(6868321, 0, str_repeat('F', 40), 45),
-        array('ETag: "cannot-land"'));
-
-    $answer = RuTrackerForumIndex::fetchDump(921);
-
-    strictAssertSame(45, $answer['rows'][6868321]['seeders'],
-        'the current caller may still use the rows it read from the wire');
+    strictAssertSame(null, $answer,
+        'wire rows are not returned when no dump document reached durable storage');
     strictAssertTrue(!isset(RuTrackerState::load('forumindex')['etags'][921]),
         'a conditional-GET hint is published only for a dump document that reached disk');
 });
@@ -441,15 +446,95 @@ class ForumIndexStale304Client
 
     public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
     {
-        RuTrackerState::save('forumdump-921', array('etag' => '"genB"', 'rows' =>
-            array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('B', 40), 'seeders' => 46))));
-        RuTrackerState::update('forumindex', function ($state) {
-            $state['etags'][921] = '"genB"';
-            $state['dump_touched'][921] = time();
-            return $state;
-        });
+        RuTrackerForumIndex::fetchDump(921,
+            new ForumIndexScripted200Client(46, 'B', '"genB"', '"genA"'));
         return true;
     }
+}
+
+// Models request A receiving a late HTTP 200 after request B has already replaced
+// both the cached body and its cheap ETag hint with a newer generation.
+class ForumIndexStale200Client
+{
+    public $status = 200;
+    public $results = '';
+    public $headers = array('ETag: "genA_new"');
+    public $rawheaders = array('If-None-Match' => '"genA"');
+
+    public function __construct()
+    {
+        $this->results = fiDump(6868321, 0, str_repeat('A', 40), 40);
+    }
+
+    public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
+    {
+        RuTrackerForumIndex::fetchDump(921,
+            new ForumIndexScripted200Client(50, 'B', '"genB"', '"genA"'));
+        return true;
+    }
+}
+
+// Models request A receiving a late HTTP 200 without ETags after request B has already bumped
+// the generation and stored newer rows without ETags.
+class ForumIndexStale200NoEtagClient
+{
+    public $status = 200;
+    public $results = '';
+    public $headers = array();
+    public $rawheaders = array();
+
+    public function __construct()
+    {
+        $this->results = fiDump(6868321, 0, str_repeat('A', 40), 40);
+    }
+
+    public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
+    {
+        RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(50, 'B'));
+        return true;
+    }
+}
+
+// A real fetchDump() boundary double: the HTTP answer is literal, while the
+// callback models another process or a filesystem fault occurring only after
+// this request has durably reserved its generation and released the state
+// lock. Assertions inspect persisted state, not this double's internals.
+class ForumIndexScripted200Client
+{
+    public $status = 200;
+    public $results;
+    public $headers = array();
+    public $rawheaders = array();
+    public $fetches = 0;
+    private $duringFetch;
+
+    public function __construct($seeders, $hashChar = 'A', $etag = '', $sent = '', $duringFetch = null)
+    {
+        $this->results = fiDump(6868321, 0, str_repeat($hashChar, 40), (int) $seeders);
+        if ($etag !== '') $this->headers = array('ETag: ' . $etag);
+        if ($sent !== '') $this->rawheaders = array('If-None-Match' => $sent);
+        $this->duringFetch = $duringFetch;
+    }
+
+    public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
+    {
+        $this->fetches++;
+        if ($this->duringFetch !== null) call_user_func($this->duringFetch);
+        return true;
+    }
+}
+
+function fiPoisonForumIndexForReplaceFailure($tmp)
+{
+    $path = $tmp . '/forumindex.json';
+    $json = file_get_contents($path);
+    strictAssertTrue(is_string($json) && substr($json, -1) === '}',
+        'the durable forumindex document exists before failure injection');
+    // PHP accepts this JSON as INF, but json_encode() cannot write INF back.
+    // update() therefore runs its mutator and then fails in replace(), which
+    // deterministically models the post-promotion persistence boundary.
+    file_put_contents($path, substr($json, 0, -1) . ',"fi_replace_failure":1e400}');
+    return $json;
 }
 
 fiStateTest($suite, 'fetchDump does not hold the state lock across the HTTP fetch: a concurrent write during fetchComplex() survives', function ($tmp) {
@@ -471,7 +556,8 @@ fiStateTest($suite, 'fetchDump does not hold the state lock across the HTTP fetc
         $state = RuTrackerState::load('forumindex');
         strictAssertSame(999999, $state['last_sweep'] ?? null,
             'the concurrent write that ran during fetchComplex() was not erased by fetchDump()\'s own write');
-        strictAssertSame(45, RuTrackerState::load('forumdump-921')['rows'][6868321]['seeders'],
+        $state = RuTrackerState::load('forumindex');
+        strictAssertSame(45, RuTrackerState::load($state['dump_documents'][921])['rows'][6868321]['seeders'],
             'and fetchDump() still persisted its own dump on top of that');
     } finally {
         if ($hadConcurrentDir) $GLOBALS['fiConcurrentDir'] = $savedConcurrentDir;
@@ -627,6 +713,30 @@ $suite->test('sweep returns null, not empty array, when the forum tree itself ca
     strictAssertSame(null, RuTrackerForumIndex::sweep(array(111), function ($url) {
         return json_encode(array('result' => array('f' => array()))); // empty 'f' map
     }), 'empty forum tree returns transient null');
+});
+
+$suite->test('tree transport and malformed responses expose distinct safe crawl reasons', function () {
+    $reason = null;
+    strictAssertSame(null, RuTrackerForumIndex::sweep(array(111), function ($url) {
+        return null;
+    }, $reason), 'transport failure remains transient');
+    strictAssertSame('tree-transport', $reason,
+        'a missing tree response is classified without exposing a URL or body');
+
+    $reason = null;
+    strictAssertSame(null, RuTrackerForumIndex::sweep(array(111), function ($url) {
+        return '<html>credential=do-not-log</html>';
+    }, $reason), 'malformed tree remains transient');
+    strictAssertSame('tree-malformed', $reason,
+        'a non-tree body is classified without reflecting its content');
+
+    Snoopy::reset();
+    Snoopy::queue(RuTrackerForumIndex::TREE_URL, 6, '');
+    $reason = null;
+    strictAssertSame(null, RuTrackerForumIndex::sweep(array(111), null, $reason),
+        'the production fetcher reports cURL transport failure');
+    strictAssertSame('tree-transport statuses=transport=curl-exit code=6 reason=dns', $reason,
+        'known transport status is aggregated as a safe category');
 });
 
 $suite->test('sweep fail-closed validates forum tree keys and never issues requests to invalid or f/0 URLs', function () {
@@ -788,19 +898,23 @@ $suite->test('a run of consecutive fetch failures aborts the sweep as transient 
     // Every dump fetch is REFUSED: the crawl must stop at the abort threshold
     // and conclude nothing, not walk all 20 forums.
     $fetches = 0;
+    $reason = null;
     $result = RuTrackerForumIndex::sweep(array(111), function ($url, &$refused = null) use ($tree, &$fetches) {
         if (strpos($url, 'cat_forum_tree') !== false) return $tree;
         $fetches++;
         $refused = true;
         return null;
-    });
+    }, $reason);
     strictAssertSame(null, $result, 'a refusing tracker ends the crawl with nothing concluded');
+    strictAssertSame('dump-refused', $reason,
+        'the abort names the safe dump-stage reason');
     strictAssertSame(RuTrackerForumIndex::SWEEP_FAILURE_ABORT, $fetches,
         'the crawl stopped at the abort threshold, not at the end of the tree');
 
     // Scattered refusals reset the run: one short of the threshold, then a
     // success, over and over -- the crawl must complete.
     $fetches = 0;
+    $reason = null;
     $result = RuTrackerForumIndex::sweep(array(999999), function ($url, &$refused = null) use ($tree, &$fetches) {
         if (strpos($url, 'cat_forum_tree') !== false) return $tree;
         $fetches++;
@@ -814,9 +928,11 @@ $suite->test('a run of consecutive fetch failures aborts the sweep as transient 
             ));
         $refused = true;
         return null;
-    });
+    }, $reason);
     strictAssertSame(array('resolved' => array(), 'complete' => false), $result,
         'scattered refusals do not abort the crawl -- but they DO mark it incomplete');
+    strictAssertSame('dump-refused', $reason,
+        'the incomplete crawl carries the same safe stage reason');
     strictAssertSame(20, $fetches, 'every forum was still visited');
 
     // Most of RuTracker's ~1500-forum tree is categories and archives that
@@ -879,7 +995,8 @@ fiStateTest($suite, 'runCrawl requeues the whole wanted set when the crawl fails
     $line = RuTrackerForumIndex::runCrawl($at, function ($wanted) {
         throw new RuntimeException('boom');
     });
-    strictAssertSame('wanted 2, crawl failed: boom', $line, 'the exception is named');
+    strictAssertSame('wanted 2, crawl failed reason=crawl-exception', $line,
+        'the exception class is named without reflecting arbitrary exception text');
 
     // Completed crawl: 777 resolves and is written back to its hash, 555
     // (queued, no torrent carries it) is recorded as a miss, not requeued.
@@ -903,6 +1020,24 @@ fiStateTest($suite, 'runCrawl requeues the whole wanted set when the crawl fails
         'the topic the completed crawl proved absent is marked missed');
     strictAssertTrue(!isset(RuTrackerState::load('forumindex')['misses'][777]),
         'the resolved topic is not');
+});
+
+fiStateTest($suite, 'production crawl failure line carries the safe tree transport reason', function () {
+    RuTrackerForumIndex::queueTopic(555);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array());
+    Snoopy::reset();
+    Snoopy::queue(RuTrackerForumIndex::TREE_URL, 6, 'credential=do-not-log');
+
+    $line = RuTrackerForumIndex::runCrawl(time());
+
+    strictAssertSame(
+        'wanted 1, crawl failed reason=tree-transport statuses=transport=curl-exit code=6 reason=dns',
+        $line,
+        'the driver receives a stage and transport category, not a URL or response body'
+    );
+    strictAssertSame(array(555), RuTrackerForumIndex::takeQueuePeek(),
+        'the transient failure preserves the explicit queue');
 });
 
 // spawnCrawl() is the composition BOTH entry points call -- update.php's hourly
@@ -1212,6 +1347,8 @@ fiStateTest($suite, 'runCrawl does not retire a same-topic request queued during
 
     strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
         'completion removes only the queue generation it actually observed');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'resolved topic does not become a miss');
 });
 
 fiStateTest($suite, 'a stale crawl cannot overwrite a forum mapping corrected while it was sweeping', function () {
@@ -1261,6 +1398,8 @@ fiStateTest($suite, 'a partial multi-hash forum writeback keeps the topic queued
         'a topic is not counted resolved while one torrent still lacks its forum');
     strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
         'the failed hash keeps the topic obligation durable for the next crawl');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'a partial failed write is not evidence the topic is absent');
 });
 
 fiStateTest($suite, 'a crawl that loses the cooldown claim does not bump an existing queue generation', function () {
@@ -1364,7 +1503,8 @@ fiStateTest($suite, 'a 304 whose cached dump is not the generation the ETag name
     strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
     Snoopy::queue($url, 200, fiDump(6868321, 0, str_repeat('F', 40), 45), array('ETag: "genC"'));
     strictAssertSame(1, count(RuTrackerForumIndex::fetchDump(921)['rows']), 'the refetch repopulates the cache');
-    $doc = RuTrackerState::load('forumdump-921');
+    $state = RuTrackerState::load('forumindex');
+    $doc = RuTrackerState::load($state['dump_documents'][921]);
     strictAssertSame('"genC"', $doc['etag'], 'the rows carry the ETag that names them');
     strictAssertSame('"genC"', RuTrackerState::load('forumindex')['etags'][921], 'and the hint agrees again');
 
@@ -1388,8 +1528,222 @@ fiStateTest($suite, 'a late 304 may drop only the ETag it sent, never a newer co
         'request A cannot serve request B\'s body as the answer to A\'s 304');
     strictAssertSame('"genB"', RuTrackerState::load('forumindex')['etags'][921] ?? null,
         'request A removes its own stale hint only when that same hint still stands');
-    strictAssertSame(46, RuTrackerState::load('forumdump-921')['rows'][6868321]['seeders'],
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(46, RuTrackerState::load($state['dump_documents'][921])['rows'][6868321]['seeders'],
         'the newer cached document survives alongside its hint');
+});
+
+fiStateTest($suite, 'a late HTTP 200 may not overwrite a newer concurrent ETag and dump document', function () {
+    RuTrackerState::save('forumdump-921', array('etag' => '"genA"', 'rows' =>
+        array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 45))));
+    RuTrackerState::save('forumindex', array(
+        'etags' => array(921 => '"genA"'),
+        'dump_touched' => array(921 => time()),
+    ));
+
+    $result = RuTrackerForumIndex::fetchDump(921, new ForumIndexStale200Client());
+    strictAssertSame(true, is_array($result), 'request A returns parsed rows');
+    strictAssertSame(50, $result['rows'][6868321]['seeders'],
+        'request A discards its stale rows (45) and returns request B\'s newer rows (50)');
+    strictAssertSame('"genB"', RuTrackerState::load('forumindex')['etags'][921] ?? null,
+        'request A does not overwrite request B\'s newer ETag hint');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(50, RuTrackerState::load($state['dump_documents'][921])['rows'][6868321]['seeders'],
+        'the newer cached document survives on disk without being clobbered');
+});
+
+fiStateTest($suite, 'two concurrent HTTP 200 responses without ETag use generation counter to prevent stale clobbering', function () {
+    RuTrackerState::save('forumdump-921', array('etag' => '', 'rows' =>
+        array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 45))));
+    RuTrackerState::save('forumindex', array(
+        'dump_gen' => array(921 => 1),
+        'dump_touched' => array(921 => time()),
+    ));
+
+    $result = RuTrackerForumIndex::fetchDump(921, new ForumIndexStale200NoEtagClient());
+    strictAssertSame(true, is_array($result), 'request A returns parsed rows');
+    strictAssertSame(50, $result['rows'][6868321]['seeders'],
+        'request A discards its stale rows (40) and returns request B\'s newer rows (50)');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(50, RuTrackerState::load($state['dump_documents'][921])['rows'][6868321]['seeders'],
+        'the newer cached document survives on disk without being clobbered');
+});
+
+fiStateTest($suite, 'two no-ETag requests reserve distinct durable generations before either fetch', function () {
+    $seen = array();
+    $inner = new ForumIndexScripted200Client(50, 'B', '', '', function () use (&$seen) {
+        $state = RuTrackerState::load('forumindex');
+        $seen[] = $state['dump_reservations'][921] ?? null;
+    });
+    $outer = new ForumIndexScripted200Client(40, 'A', '', '', function () use (&$seen, $inner) {
+        $state = RuTrackerState::load('forumindex');
+        $seen[] = $state['dump_reservations'][921] ?? null;
+        RuTrackerForumIndex::fetchDump(921, $inner);
+    });
+
+    $answer = RuTrackerForumIndex::fetchDump(921, $outer);
+    $state = RuTrackerState::load('forumindex');
+
+    strictAssertSame(array(1, 2), $seen,
+        'request A owns generation 1 before I/O and nested request B owns generation 2 before its I/O');
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'late request A returns the durable winner, never its own stale wire rows');
+    strictAssertSame(false, $answer['fresh'], 'a superseded requester did not publish a fresh answer');
+    strictAssertSame(2, $state['dump_generations'][921] ?? null, 'generation 2 is the durable winner');
+    strictAssertSame('forumdump-921-2', $state['dump_documents'][921] ?? null,
+        'durable state names the winner\'s immutable versioned document');
+});
+
+fiStateTest($suite, 'a late HTTP 200 loses even when both generations carry the identical ETag', function () {
+    RuTrackerState::save('forumdump-921-5', array(
+        'generation' => 5,
+        'etag' => '"same"',
+        'rows' => array(6868321 => array(
+            'tor_status' => 0, 'info_hash' => str_repeat('F', 40), 'seeders' => 30)),
+    ));
+    RuTrackerState::save('forumindex', array(
+        'dump_reservations' => array(921 => 5),
+        'dump_generations' => array(921 => 5),
+        'dump_documents' => array(921 => 'forumdump-921-5'),
+        'etags' => array(921 => '"same"'),
+        'dump_touched' => array(921 => time()),
+    ));
+
+    $seen = array();
+    $inner = new ForumIndexScripted200Client(50, 'B', '"same"', '"same"', function () use (&$seen) {
+        $state = RuTrackerState::load('forumindex');
+        $seen[] = $state['dump_reservations'][921] ?? null;
+    });
+    $outer = new ForumIndexScripted200Client(40, 'A', '"same"', '"same"', function () use (&$seen, $inner) {
+        $state = RuTrackerState::load('forumindex');
+        $seen[] = $state['dump_reservations'][921] ?? null;
+        RuTrackerForumIndex::fetchDump(921, $inner);
+    });
+
+    $answer = RuTrackerForumIndex::fetchDump(921, $outer);
+    strictAssertSame(array(6, 7), $seen, 'equal ETags do not collapse two reserved generations');
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'the later generation wins independently of the repeated ETag text');
+    strictAssertSame(false, $answer['fresh'], 'request A returned durable rows, not a fresh publication');
+});
+
+fiStateTest($suite, 'a reservation that cannot open or replace state issues no HTTP request', function ($tmp) {
+    // Open failure: a directory at the stable lock pathname cannot be opened
+    // as the cross-process lock file.
+    mkdir($tmp . '/forumindex.lock', 0777, true);
+    $openFailure = new ForumIndexScripted200Client(40, 'A');
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $openFailure),
+        'an unrecorded reservation has no network side effect');
+    strictAssertSame(0, $openFailure->fetches, 'open failure stops before fetchComplex()');
+
+    strictRemoveTree($tmp . '/forumindex.lock');
+    // Replace failure: json_decode accepts 1e400 as INF, while json_encode
+    // cannot persist it. The reservation mutator runs, but its replacement
+    // fails, so that captured token is not authority to make a request.
+    file_put_contents($tmp . '/forumindex.json', '{"fi_replace_failure":1e400}');
+    $replaceFailure = new ForumIndexScripted200Client(41, 'B');
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $replaceFailure),
+        'a reservation whose state replacement failed is not used');
+    strictAssertSame(0, $replaceFailure->fetches, 'replace failure also stops before fetchComplex()');
+});
+
+fiStateTest($suite, 'staging failure after another winner returns only the durable winner', function ($tmp) {
+    $hadMask = array_key_exists('profileMask', $GLOBALS);
+    $savedMask = $hadMask ? $GLOBALS['profileMask'] : null;
+    $inner = new ForumIndexScripted200Client(50, 'B');
+    $outer = new ForumIndexScripted200Client(40, 'A', '', '', function () use ($inner) {
+        RuTrackerForumIndex::fetchDump(921, $inner);
+        // RuTrackerState::dir() reapplies this mask immediately before the
+        // outer request tries to create its staged document.
+        $GLOBALS['profileMask'] = 0555;
+    });
+
+    try {
+        $answer = RuTrackerForumIndex::fetchDump(921, $outer);
+    } finally {
+        if ($hadMask) $GLOBALS['profileMask'] = $savedMask;
+        else unset($GLOBALS['profileMask']);
+        @chmod($tmp, 0777);
+    }
+
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'failed staging cannot leak request A\'s wire rows over request B');
+    strictAssertSame(false, $answer['fresh'], 'only durable winner B is returned');
+});
+
+fiStateTest($suite, 'state-lock open failure after another winner returns only the durable winner', function ($tmp) {
+    $inner = new ForumIndexScripted200Client(50, 'B');
+    $outer = new ForumIndexScripted200Client(40, 'A', '', '', function () use ($inner, $tmp) {
+        RuTrackerForumIndex::fetchDump(921, $inner);
+        @unlink($tmp . '/forumindex.lock');
+        mkdir($tmp . '/forumindex.lock', 0777, true);
+    });
+
+    $answer = RuTrackerForumIndex::fetchDump(921, $outer);
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'a publication update that cannot open its lock returns B, not wire rows A');
+    strictAssertSame(false, $answer['fresh'], 'the returned winner is durable, not fresh from A');
+});
+
+fiStateTest($suite, 'state replace failure after another winner returns only the durable winner', function ($tmp) {
+    $inner = new ForumIndexScripted200Client(50, 'B');
+    $outer = new ForumIndexScripted200Client(40, 'A', '', '', function () use ($inner, $tmp) {
+        RuTrackerForumIndex::fetchDump(921, $inner);
+        fiPoisonForumIndexForReplaceFailure($tmp);
+    });
+
+    $answer = RuTrackerForumIndex::fetchDump(921, $outer);
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'failed state replacement cannot make requester A authoritative');
+    strictAssertSame(false, $answer['fresh'], 'request A returns B as a durable cached answer');
+});
+
+fiStateTest($suite, 'failed state persistence after promotion preserves the winner and consumes the reservation', function ($tmp) {
+    $winner = array(
+        'generation' => 5,
+        'etag' => '"winner"',
+        'rows' => array(6868321 => array(
+            'tor_status' => 0, 'info_hash' => str_repeat('B', 40), 'seeders' => 50)),
+    );
+    RuTrackerState::save('forumdump-921-5', $winner);
+    // Legacy mirror makes the pre-fix implementation exercise its destructive
+    // shared-name promotion too; the desired implementation never writes it.
+    RuTrackerState::save('forumdump-921', $winner);
+    RuTrackerState::save('forumindex', array(
+        'dump_reservations' => array(921 => 5),
+        'dump_generations' => array(921 => 5),
+        'dump_documents' => array(921 => 'forumdump-921-5'),
+        'etags' => array(921 => '"winner"'),
+        'dump_touched' => array(921 => time()),
+    ));
+
+    $reservedJson = null;
+    $failed = new ForumIndexScripted200Client(60, 'C', '"failed"', '"winner"',
+        function () use ($tmp, &$reservedJson) {
+            $reservedJson = fiPoisonForumIndexForReplaceFailure($tmp);
+        });
+    $answer = RuTrackerForumIndex::fetchDump(921, $failed);
+
+    strictAssertSame(50, $answer['rows'][6868321]['seeders'],
+        'a promoted document whose state pointer did not persist cannot replace the durable winner');
+    strictAssertSame(false, $answer['fresh'], 'failed publication returns only the durable winner');
+    strictAssertSame(50, RuTrackerState::load('forumdump-921-5')['rows'][6868321]['seeders'],
+        'the immutable winner document was never overwritten');
+    strictAssertSame(array(), RuTrackerState::load('forumdump-921-6'),
+        'the failed requester\'s unreferenced promoted document is removed');
+
+    // Repair only the injected fault. The first reservation remains durable,
+    // so a later request must take generation 7 rather than reuse generation 6.
+    file_put_contents($tmp . '/forumindex.json', $reservedJson);
+    $later = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(70, 'D', '"later"', '"winner"'));
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(70, $later['rows'][6868321]['seeders'], 'the later request publishes normally');
+    strictAssertSame(7, $state['dump_reservations'][921] ?? null,
+        'the failed publication consumed generation 6 before its HTTP request');
+    strictAssertSame(7, $state['dump_generations'][921] ?? null,
+        'generation 7 is the later durable winner');
+    strictAssertSame('forumdump-921-7', $state['dump_documents'][921] ?? null,
+        'state points only at the later immutable document');
 });
 
 // A topic no completed crawl can ever find -- a deleted one, exactly what the
@@ -1415,24 +1769,6 @@ fiStateTest($suite, 'the fleet half of the wanted set honours the miss backoff',
         return array('resolved' => array(), 'complete' => true);
     });
     strictAssertSame(array(777), $seen, 'once the window elapses the topic is crawled again');
-});
-
-// A resolution nobody could write down is not a resolution: the crawl that
-// produced it would be spent for nothing and the topic left in limbo.
-fiStateTest($suite, 'a resolution whose write-back fails is requeued, not counted', function () {
-    rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '777', ''));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());   // the write-back fails
-
-    $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
-        return array('resolved' => array(777 => 1106), 'complete' => true);
-    });
-    strictAssertSame('wanted 1, resolved 0', $line, 'it does not count as resolved');
-    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
-        'and it goes back in the queue instead of being marked missed');
-    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
-        'a failed write is not evidence the topic is absent');
 });
 
 fiStateTest($suite, 'a resolved topic forgets an old miss only after its forum write-back lands', function () {

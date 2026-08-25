@@ -909,6 +909,8 @@ var theWebUI = {
 
 	addPeers: function(data, hash)
 	{
+		if (!Object.prototype.hasOwnProperty.call(this.torrents, hash))
+			return;
 		const table = this.getTable("prs");
 		for (const peer of Object.values(data))
 		{
@@ -921,10 +923,8 @@ var theWebUI = {
 			};
 		}
 		this.peers[hash] = data;
-		if (this.dID == hash)
+		if (this.dID && this.dID == hash)
 			table.updateRows(this.peers[hash]);
-		else
-			table.clearRows();
 	},
 
 	prsSelect: function(e, id)
@@ -1666,18 +1666,20 @@ var theWebUI = {
 				}
 
 				// update details page
-				const detailsTorrent = dataTorrents[theWebUI.dID];
-				const oldDetailsTorrent = this.torrents[theWebUI.dID];
-				if(theWebUI.activeView === 'FileList' &&
-				   detailsTorrent &&
-				   detailsTorrent.downloaded !== oldDetailsTorrent?.downloaded)
-					theWebUI.updateFiles(theWebUI.dID);
+				if (theWebUI.dID) {
+					const detailsTorrent = dataTorrents[theWebUI.dID];
+					const oldDetailsTorrent = this.torrents[theWebUI.dID];
+					if(theWebUI.activeView === 'FileList' &&
+					   detailsTorrent &&
+					   detailsTorrent.downloaded !== oldDetailsTorrent?.downloaded)
+						theWebUI.updateFiles(theWebUI.dID);
 
-				if(theWebUI.activeView === 'TrackerList')
-					theWebUI.updateTrackers(theWebUI.dID);
+					if(theWebUI.activeView === 'TrackerList')
+						theWebUI.updateTrackers(theWebUI.dID);
 
-				if(theWebUI.activeView === 'PeerList')
-					theWebUI.updatePeers(theWebUI.dID);
+					if(theWebUI.activeView === 'PeerList')
+						theWebUI.updatePeers(theWebUI.dID);
+				}
 
 				// Cleanup removed torrents
 				for (const hash in this.torrents) {

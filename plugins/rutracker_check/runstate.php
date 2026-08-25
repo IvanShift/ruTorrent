@@ -23,7 +23,10 @@ class RuTrackerReplacementRecord
 
     static public function encode($hash, $wasStarted, $wasOpen, $now)
     {
-        return $hash . '-'
+        if (!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)) {
+            throw new InvalidArgumentException('Invalid hash in replacement record: ' . var_export($hash, true));
+        }
+        return strtoupper($hash) . '-'
             . ($wasStarted ? self::RUN_STARTED : ($wasOpen ? self::RUN_OPEN : self::RUN_STOPPED))
             . '-' . intval($now);
     }
@@ -72,6 +75,25 @@ class RuTrackerRpcValue
         }
         $parsed = (int) $value;
         return (string) $parsed === $value ? $parsed : null;
+    }
+
+    /**
+     * Parse a value as a canonical positive 32-bit integer (e.g. topic ID or forum ID).
+     * Accepts positive integer in range 1..2147483647 or exact canonical decimal string.
+     *
+     * @param mixed $value
+     * @return int|null Positive int32 or null if invalid
+     */
+    static public function canonicalPositiveInt32($value)
+    {
+        if (is_int($value)) {
+            return ($value > 0 && $value <= 2147483647) ? $value : null;
+        }
+        if (!is_string($value) || !preg_match('/^[1-9][0-9]{0,9}$/D', $value)) {
+            return null;
+        }
+        $parsed = (int) $value;
+        return ($parsed > 0 && $parsed <= 2147483647 && (string) $parsed === $value) ? $parsed : null;
     }
 }
 

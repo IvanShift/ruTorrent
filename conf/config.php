@@ -36,7 +36,9 @@
 	$do_diagnostic = true;			// Diagnose ruTorrent. Recommended to keep enabled, unless otherwise required.
 	$al_diagnostic = true;			// Diagnose auto-loader. Set to "false" to make composer plugins work.
 
-	$log_file = $_ENV['RU_LOG_FILE'] ?? '/tmp/errors.log'; // path to log file (comment or leave blank to disable logging)
+	// Shared application log for errors, operational notices and explicitly
+	// enabled plugin diagnostics. The historical filename remains the default.
+	$log_file = $_ENV['RU_LOG_FILE'] ?? '/tmp/errors.log'; // comment or leave blank to disable logging
 
 	$saveUploadedTorrents = true;		// Save uploaded torrents to profile/torrents directory or not
 	$overwriteUploadedTorrents = false;	// Overwrite existing uploaded torrents in profile/torrents directory or make unique name

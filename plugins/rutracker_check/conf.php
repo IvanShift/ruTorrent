@@ -8,7 +8,7 @@ $ignoreLabels 	= ['tv-sonarr', 'radarr'];	// list of labels to ignore
 // runs it in global scope after conf/config.php has already been loaded,
 // so a plain assignment silently discards a value the administrator set
 // there. The default applies only when nothing else has set the variable.
-$rutrackerCheckDebug ??= false;	// write diagnostic messages to the configured ruTorrent log
+$rutrackerCheckDebug ??= false;	// opt in to diagnostics in ruTorrent's shared application log
 
 // Out-of-range values are clamped where they are read rather than trusted:
 // a fuse share written as 20 instead of 0.2 would make the fuse inert, and

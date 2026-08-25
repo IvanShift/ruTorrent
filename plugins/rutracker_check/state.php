@@ -265,6 +265,22 @@ class RuTrackerState
         @unlink($dir . '/' . $name . '.lock');
     }
 
+    // Atomically promotes a staged document to the target name.
+    static public function promote($stagedName, $targetName)
+    {
+        $dir = self::dir();
+        $source = $dir . '/' . $stagedName . '.json';
+        $target = $dir . '/' . $targetName . '.json';
+        if (!is_file($source)) return false;
+        $renamed = @rename($source, $target);
+        if ($renamed) {
+            global $profileMask;
+            $mask = (isset($profileMask) ? $profileMask : 0777) & 0666;
+            @chmod($target, $mask);
+        }
+        return $renamed;
+    }
+
     // @return bool -- whether the mutated state reached the disk. A caller
     // whose next step assumes the write landed (the announce budget spends a
     // slot this way) has to fail closed on false rather than carry on.

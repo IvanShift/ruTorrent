@@ -91,9 +91,119 @@ class Torrent
 	}
 }
 
+require_once(testFindRepoRoot() . '/php/xmlrpc_path.php');
+
+if(!defined('ERASEDATA_CLEANUP_NONE')) define('ERASEDATA_CLEANUP_NONE', 'none');
+if(!defined('ERASEDATA_CLEANUP_READY')) define('ERASEDATA_CLEANUP_READY', 'ready');
+if(!defined('ERASEDATA_CLEANUP_RETRY')) define('ERASEDATA_CLEANUP_RETRY', 'retry');
+
+// The checker owns transaction ordering, while erasedata owns durable queue
+// mutation and collection. This fake keeps that boundary explicit and records
+// the exact producer calls without copying queue or deletion behavior here.
+class ErasedataFake
+{
+	public static $calls = array();
+	public static $prepareResult = true;
+	public static $publishResult = true;
+	public static $cancelResult = true;
+	public static $recoverResult = ERASEDATA_CLEANUP_NONE;
+	public static $generationCancelResult = ERASEDATA_CLEANUP_NONE;
+	public static $kickResult = true;
+
+	public static function reset()
+	{
+		self::$calls = array();
+		self::$prepareResult = true;
+		self::$publishResult = true;
+		self::$cancelResult = true;
+		self::$recoverResult = ERASEDATA_CLEANUP_NONE;
+		self::$generationCancelResult = ERASEDATA_CLEANUP_NONE;
+		self::$kickResult = true;
+	}
+
+	public static function record($name, $arguments)
+	{
+		self::$calls[] = array(
+			'name' => $name,
+			'arguments' => $arguments,
+			'request_count' => count(rXMLRPCRequest::$requests),
+		);
+	}
+}
+
+function erasedataPathContains($parent, $path)
+{
+	$parent = $parent === '/' ? '/' : rtrim((string) $parent, '/');
+	$path = $path === '/' ? '/' : rtrim((string) $path, '/');
+	return($parent !== '' && $path !== ''
+		&& ($parent === $path || ($parent !== '/' && strpos($path, $parent . '/') === 0)));
+}
+
+function erasedataPathsOverlap($left, $right)
+{
+	if(erasedataPathContains($left, $right) || erasedataPathContains($right, $left))
+		return(true);
+	$leftIdentity = XMLRPCPathResolver::filesystemIdentity($left);
+	$rightIdentity = XMLRPCPathResolver::filesystemIdentity($right);
+	if($leftIdentity === false || $rightIdentity === false)
+		return(true);
+	if(!empty($leftIdentity['exists']) && !empty($rightIdentity['exists'])
+		&& $leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
+		&& $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino'])
+		return(true);
+	return(erasedataPathContains($leftIdentity['path'], $rightIdentity['path'])
+		|| erasedataPathContains($rightIdentity['path'], $leftIdentity['path']));
+}
+
+function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $base, array $entries)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	if(ErasedataFake::$prepareResult !== true)
+		return(ErasedataFake::$prepareResult);
+	return(array(
+		'old_hash' => strtoupper($oldHash),
+		'new_hash' => strtoupper($newHash),
+		'marker' => $marker,
+		'replacement_record' => $record,
+		'base' => $base,
+		'entries' => $entries,
+	));
+}
+
+function erasedataPublishObsoleteCleanup(&$job)
+{
+	ErasedataFake::record(__FUNCTION__, array($job));
+	return(ErasedataFake::$publishResult);
+}
+
+function erasedataCancelObsoleteCleanup(&$job)
+{
+	ErasedataFake::record(__FUNCTION__, array($job));
+	return(ErasedataFake::$cancelResult);
+}
+
+function erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $record)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	return(ErasedataFake::$recoverResult);
+}
+
+function erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $record)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	return(ErasedataFake::$generationCancelResult);
+}
+
+function erasedataKickCollector($oldHash)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	return(ErasedataFake::$kickResult);
+}
+
 class rTorrent
 {
 	public static $source = false;
+	public static $sourceQueue = array();
 	public static $sourceReads = 0;
 	public static $sendResult = false;
 	public static $lastSend = null;
@@ -102,6 +212,7 @@ class rTorrent
 	public static function getSource($hash)
 	{
 		self::$sourceReads++;
+		if(count(self::$sourceQueue)) return array_shift(self::$sourceQueue);
 		return self::$source;
 	}
 
@@ -210,6 +321,7 @@ class CheckerTest
 	{
 		Torrent::$fixtures = array();
 		rTorrent::$source = false;
+		rTorrent::$sourceQueue = array();
 		rTorrent::$sourceReads = 0;
 		rTorrent::$sendResult = false;
 		rTorrent::$lastSend = null;
@@ -218,6 +330,7 @@ class CheckerTest
 		FileUtil::$log = array();
 		RuTrackerMetaFetch::$calls = array();
 		RuTrackerMetaFetch::$result = null;
+		ErasedataFake::reset();
 		strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
 		strictSetPrivateStatic('ruTrackerChecker', 'ANNOUNCES', array());
 		// A fresh claim store per test: the meta-pump claim is keyed by hash
@@ -230,9 +343,21 @@ class CheckerTest
 
 	private $stateDir = null;
 
+	private function realisticInfo($info)
+	{
+		if(is_array($info) && array_key_exists('name', $info)
+			&& !array_key_exists('length', $info) && !array_key_exists('files', $info))
+			$info['length'] = 1;
+		return($info);
+	}
+
 	// Fixtures for a replacement of hash OLD by hash NEW.
 	private function stageTorrents($oldInfo = array(), $newInfo = array())
 	{
+		if($oldInfo === array() && $newInfo === array())
+			$oldInfo = $newInfo = array('name' => 'unchanged.mkv');
+		$oldInfo = $this->realisticInfo($oldInfo);
+		$newInfo = $this->realisticInfo($newInfo);
 		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => $newInfo);
 		rTorrent::$source = new Torrent(array('hash' => self::OLD_HASH, 'info' => $oldInfo));
 		rTorrent::$sendResult = self::NEW_HASH;
@@ -390,6 +515,714 @@ class CheckerTest
 			else
 				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
 		}
+	}
+
+	private function cleanupEntries($oldInfo, $newInfo, $base)
+	{
+		$oldInfo = $this->realisticInfo($oldInfo);
+		$newInfo = $this->realisticInfo($newInfo);
+		$old = new Torrent(array('hash' => self::OLD_HASH, 'info' => $oldInfo));
+		$new = new Torrent(array('hash' => self::NEW_HASH, 'info' => $newInfo));
+		return(strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array($old, $new, $base)));
+	}
+
+	private function erasedataCalls($name)
+	{
+		return(array_values(array_filter(ErasedataFake::$calls, function($call) use ($name) {
+			return($call['name'] === $name);
+		})));
+	}
+
+	private function queueExistingGeneration($state, $open, $oldPresence)
+	{
+		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH,
+			'info' => array('name' => 'new.mkv', 'length' => 1));
+		rTorrent::$source = new Torrent(array('hash' => self::OLD_HASH,
+			'info' => array('name' => 'old.mkv', 'length' => 1)));
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array(
+			self::PLUGIN_MARKER, $state, $open, self::OLD_HASH . '-started-1787587200'));
+		if($oldPresence === true)
+			rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+		elseif($oldPresence === false)
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+	}
+
+	public function testObsoleteDiffOwnsOnlyOldFileInSharedDirectory()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-owned-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old-film.mkv', 'old');
+		file_put_contents($base . '/new-film.mkv', 'new');
+		file_put_contents($base . '/another-film.mkv', 'neighbor');
+		file_put_contents($base . '/personal.txt', 'personal');
+		try
+		{
+			$entries = $this->cleanupEntries(array('name' => 'old-film.mkv'), array('name' => 'new-film.mkv'), $base);
+			strictAssertSame(1, count($entries), 'the shared directory contributes exactly one owned obsolete file');
+			strictAssertSame(realpath($base . '/old-film.mkv'), $entries[0]['path'],
+				'the job owns only the exact old metainfo path');
+			strictAssertTrue($entries[0]['path'] !== $base && is_file($base . '/another-film.mkv')
+				&& is_file($base . '/personal.txt'), 'the shared base and unrelated files are never ownership entries');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffIsEmptyForUnchangedPaths()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-unchanged-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/same.mkv', 'same');
+		try
+		{
+			strictAssertSame(null, $this->cleanupEntries(array('name' => 'same.mkv'), array('name' => 'same.mkv'), $base),
+				'an unchanged exact path creates no cleanup obligation');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffRejectsUnsafeMetainfoComponents()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-components-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		try
+		{
+			foreach(array('', '.', '..', "bad\0name", 'bad/name', 'bad\\name') as $component)
+				strictAssertSame(false, $this->cleanupEntries(
+					array('files' => array(array('path' => array('nested', $component)))),
+					array('files' => array(array('path' => array('nested', 'new.mkv')))), $base),
+					'unsafe metainfo components abort the complete cleanup build');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffRequiresExactlyOneMetainfoFileDiscriminator()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-discriminator-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		try
+		{
+			$ambiguous = new Torrent(array('info' => array(
+				'name' => 'ambiguous.mkv', 'length' => 1,
+				'files' => array(array('path' => array('ambiguous.mkv'))),
+			)));
+			$missing = new Torrent(array('info' => array('name' => 'missing-discriminator.mkv')));
+			strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($ambiguous)),
+				'metainfo with both length and files is unsafe');
+			strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($missing)),
+				'metainfo with neither length nor files is unsafe');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	private function assertAmbiguousReplacementAborts($oldInfo, $newInfo, $label)
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-ambiguous-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents($oldInfo, $newInfo);
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), $label . ' aborts replacement');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataPrepareObsoleteCleanup')),
+				$label . ' creates no cleanup entry');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases), $label . ' never reaches predecessor commit');
+			strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
+				$label . ' only discards the staged successor');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testAmbiguousOldMetainfoCreatesNoCleanupEntryOrCommit()
+	{
+		$this->assertAmbiguousReplacementAborts(
+			array('name' => 'old.mkv', 'length' => 3,
+				'files' => array(array('path' => array('old.mkv')))),
+			array('name' => 'new.mkv'), 'ambiguous OLD metainfo');
+	}
+
+	public function testAmbiguousNewMetainfoCreatesNoCleanupEntryOrCommit()
+	{
+		$this->assertAmbiguousReplacementAborts(
+			array('name' => 'old.mkv'),
+			array('name' => 'new.mkv', 'length' => 3,
+				'files' => array(array('path' => array('new.mkv')))),
+			'ambiguous NEW metainfo');
+	}
+
+	public function testPaddingEntriesAreExcludedFromPhysicalOwnership()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-padding-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/padding.bin', 'neighbor');
+		file_put_contents($base . '/new.bin', 'new');
+		try
+		{
+			strictAssertSame(null, $this->cleanupEntries(
+				array('files' => array(array('path' => array('padding.bin'), 'attr' => 'px'))),
+				array('files' => array(array('path' => array('new.bin'), 'attr' => 'x'))), $base),
+				'an OLD padding entry never owns an existing neighboring file');
+			$entries = $this->cleanupEntries(
+				array('files' => array(array('path' => array('padding.bin'), 'attr' => 'x'))),
+				array('files' => array(
+					array('path' => array('padding.bin'), 'attr' => 'p'),
+					array('path' => array('new.bin'), 'attr' => ''),
+				)), $base);
+			strictAssertSame(1, count($entries), 'a NEW padding name does not protect an ordinary OLD file');
+			strictAssertSame($base . '/padding.bin', $entries[0]['path'],
+				'valid non-padding attr strings remain physical ownership');
+			strictAssertSame(false, $this->cleanupEntries(
+				array('files' => array(array('path' => array('padding.bin'), 'attr' => 1))),
+				array('files' => array(array('path' => array('new.bin')))), $base),
+				'a non-string attr fails closed');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffRejectsUnusableBaseOrSymlinkEscape()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-base-' . bin2hex(random_bytes(5));
+		$outside = sys_get_temp_dir() . '/rut-check-outside-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		mkdir($outside, 0777, true);
+		file_put_contents($outside . '/old.mkv', 'outside');
+		symlink($outside, $base . '/escape');
+		try
+		{
+			strictAssertSame(false, $this->cleanupEntries(array('name' => 'old.mkv'), array('name' => 'new.mkv'), $base . '/missing'),
+				'a missing base is unusable');
+			strictAssertSame(false, $this->cleanupEntries(array('name' => 'old.mkv'), array('name' => 'new.mkv'), '/'),
+				'the filesystem root is never a cleanup boundary');
+			strictAssertSame(false, $this->cleanupEntries(
+				array('files' => array(array('path' => array('escape', 'old.mkv')))),
+				array('files' => array(array('path' => array('safe', 'new.mkv')))), $base),
+				'an existing old target through a symlinked parent aborts the build');
+		}
+		finally
+		{
+			strictRemoveTree($base);
+			strictRemoveTree($outside);
+		}
+	}
+
+	public function testObsoleteDiffRejectsUnsafeSuccessorCandidates()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-new-candidates-' . bin2hex(random_bytes(5));
+		$outside = sys_get_temp_dir() . '/rut-check-new-outside-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		mkdir($outside, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		file_put_contents($outside . '/existing.mkv', 'outside');
+		symlink($outside, $base . '/escape');
+		symlink($base . '/missing-target.mkv', $base . '/dangling.mkv');
+		try
+		{
+			foreach(array('existing.mkv', 'missing.mkv') as $leaf)
+				strictAssertSame(false, $this->cleanupEntries(
+					array('name' => 'old.mkv'),
+					array('files' => array(array('path' => array('escape', $leaf)))), $base),
+					'a successor through an external symlink parent is unsafe: ' . $leaf);
+			strictAssertSame(false, $this->cleanupEntries(array('name' => 'old.mkv'),
+				array('name' => 'dangling.mkv'), $base), 'a dangling exact successor is unsafe');
+
+			$this->stageTorrents(array('name' => 'old.mkv'),
+				array('files' => array(array('path' => array('escape', 'missing.mkv')))));
+			$this->queueTransactionStart($base);
+			$this->queueLoadConfirmed();
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				'an unsafe successor candidate aborts the staged replacement');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataPrepareObsoleteCleanup')),
+				'an unsafe successor creates no cleanup generation');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases), 'an unsafe successor never reaches predecessor commit');
+			strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
+				'only the unsafe staged successor is discarded');
+		}
+		finally
+		{
+			strictRemoveTree($base);
+			strictRemoveTree($outside);
+		}
+	}
+
+	public function testObsoleteDiffDistinguishesStructuralPathsFromExactAliases()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-structural-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/node', 'old blocker');
+		try
+		{
+			$entries = $this->cleanupEntries(array('name' => 'node'),
+				array('files' => array(array('path' => array('node', 'new.bin')))), $base);
+			strictAssertSame(1, count($entries),
+				'an OLD regular file that blocks a missing NEW descendant remains an exact deletion obligation');
+			strictAssertSame($base . '/node', $entries[0]['path'],
+				'lexical containment is not an exact-file alias');
+
+			unlink($base . '/node');
+			mkdir($base . '/node');
+			file_put_contents($base . '/node/old.bin', 'old child');
+			strictAssertSame(false, $this->cleanupEntries(
+				array('files' => array(array('path' => array('node', 'old.bin')))),
+				array('name' => 'node'), $base),
+				'an existing NEW exact target that is currently a directory fails closed');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffSkipsMissingOldTarget()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-missing-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/new.mkv', 'new');
+		try
+		{
+			strictAssertSame(null, $this->cleanupEntries(array('name' => 'already-gone.mkv'), array('name' => 'new.mkv'), $base),
+				'a missing obsolete object creates no durable obligation');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffRejectsDirectoryAndSpecialFileTargets()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-types-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		mkdir($base . '/directory');
+		try
+		{
+			strictAssertSame(false, $this->cleanupEntries(array('name' => 'directory'), array('name' => 'new.mkv'), $base),
+				'an obsolete directory is not an owned regular file');
+			if(function_exists('posix_mkfifo') && @posix_mkfifo($base . '/pipe', 0600))
+				strictAssertSame(false, $this->cleanupEntries(array('name' => 'pipe'), array('name' => 'new.mkv'), $base),
+					'an obsolete FIFO is not an owned regular file');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffProtectsCaseSymlinkAndHardlinkAliases()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-aliases-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old-case.mkv', 'case');
+		file_put_contents($base . '/old-link.mkv', 'link');
+		link($base . '/old-case.mkv', $base . '/OLD-CASE.mkv');
+		symlink($base . '/old-link.mkv', $base . '/new-link.mkv');
+		try
+		{
+			$oldInfo = array('files' => array(
+				array('path' => array('old-case.mkv')),
+				array('path' => array('old-link.mkv')),
+			));
+			$newInfo = array('files' => array(
+				array('path' => array('OLD-CASE.mkv')),
+				array('path' => array('new-link.mkv')),
+			));
+			strictAssertSame(null, $this->cleanupEntries($oldInfo, $newInfo, $base),
+				'case-different hardlinks and symlink successor aliases protect both old objects');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffCapturesPersistentIdentity()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-identity-' . bin2hex(random_bytes(5));
+		mkdir($base . '/nested', 0777, true);
+		file_put_contents($base . '/nested/old.bin', 'persistent bytes');
+		file_put_contents($base . '/nested/keep.bin', 'keep');
+		file_put_contents($base . '/nested/new.bin', 'new');
+		try
+		{
+			$entries = $this->cleanupEntries(
+				array('files' => array(array('path' => array('nested', 'old.bin')), array('path' => array('nested', 'keep.bin')))),
+				array('files' => array(array('path' => array('nested', 'new.bin')), array('path' => array('nested', 'keep.bin')))), $base);
+			$stat = stat($base . '/nested/old.bin');
+			$lstat = lstat($base . '/nested/old.bin');
+			strictAssertSame(array(
+				'canonical' => realpath($base . '/nested/old.bin'),
+				'lstat' => array('dev' => $lstat['dev'], 'ino' => $lstat['ino']),
+				'stat' => array('dev' => $stat['dev'], 'ino' => $stat['ino']),
+				'size' => $stat['size'],
+				'mtime' => $stat['mtime'],
+			), $entries[0]['identity'], 'the prepared entry captures the complete persistent identity contract');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupPrepareOccursAfterOwnedLoadBeforePredecessorErase()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-prepare-order-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		try
+		{
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the cleanup-backed replacement commits');
+			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
+			strictAssertSame(1, count($prepare), 'one exact durable cleanup generation is prepared');
+			$loadRead = $this->requestIndexes('d.get_custom', array(self::NEW_HASH, ruTrackerChecker::REPLACEMENT_MARKER_KEY));
+			$erase = $this->branchRequestsContaining('$d.erase=');
+			strictAssertTrue($loadRead[0] < $prepare[0]['request_count'], 'preparation follows confirmed ownership of the loaded successor');
+			strictAssertTrue($prepare[0]['request_count'] <= array_search($erase[0], rXMLRPCRequest::$requests, true),
+				'preparation completes before the predecessor erase request');
+			strictAssertSame($base . '/old.mkv', $prepare[0]['arguments'][5][0]['path'],
+				'the durable producer receives the exact obsolete entry');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupPrepareFailureAbortsBeforeCommit()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-prepare-fail-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		ErasedataFake::$prepareResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				'a failed durable prepare aborts the replacement');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases), 'only the staged successor is discarded after predecessor restore');
+			strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0], 'the predecessor is never erased after prepare failure');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testFailedCommitCancelsCleanupBeforeRollback()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-cancel-order-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic('', false, true);
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			$cancel = $this->erasedataCalls('erasedataCancelObsoleteCleanup');
+			$restores = $this->branchRequestsContaining('$d.start=');
+			strictAssertSame(1, count($cancel), 'the exact prepared job is cancelled once');
+			strictAssertTrue($cancel[0]['request_count'] <= array_search($restores[0], rXMLRPCRequest::$requests, true),
+				'cleanup cancellation precedes rollback state restoration');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testFailedCleanupCancelLeavesBothGenerationsRecoverable()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-cancel-fail-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic('', false, true);
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+		ErasedataFake::$cancelResult = false;
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				'uncertain cleanup cancellation remains retryable');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')), 'the predecessor recovery key is not cleared after cancel failure');
+			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'the marked successor is retained after cancel failure');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testUnknownCommitOutcomeRetainsPreparedTmpAndMarkers()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-commit-unknown-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic('', false, true);
+		try
+		{
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			strictAssertSame(0, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')), 'unknown OLD presence does not cancel the tmp');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')), 'unknown OLD presence does not publish the tmp');
+			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'neither generation marker is discarded after uncertainty');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testTorrentExistsMapsOnlyKnownMissingHashFaultToAbsent()
+	{
+		$this->resetFakes();
+		rXMLRPCRequest::queue('d.hash', true, true, array(), 'Method not found');
+		strictAssertSame(null, ruTrackerChecker::torrentExists(self::OLD_HASH),
+			'a generic parsed fault is unknown, not proof of absence');
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		strictAssertSame(false, ruTrackerChecker::torrentExists(self::OLD_HASH),
+			'the realistic missing-info-hash fault is absent');
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+		strictAssertSame(true, ruTrackerChecker::torrentExists(self::OLD_HASH),
+			'an exact returned hash is present');
+	}
+
+	public function testGenericCommitFaultRetainsPreparedTmpAndMarkers()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-commit-fault-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic('', false, true);
+		rXMLRPCRequest::queue('d.hash', true, true, array(), 'Permission denied');
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				'a generic OLD presence fault keeps the commit boundary retryable');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')),
+				'generic uncertainty never cancels the prepared tmp');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')),
+				'generic uncertainty never publishes the prepared tmp');
+			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')),
+				'generic uncertainty erases neither retained generation');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.set_custom=chk-replacement,')),
+				'generic uncertainty clears no replacement marker');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupPublishOccursBeforeActivation()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-publish-order-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		try
+		{
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			$publish = $this->erasedataCalls('erasedataPublishObsoleteCleanup');
+			$activation = $this->branchRequestsContaining('$d.start=');
+			strictAssertSame(1, count($publish), 'the exact prepared generation is published once');
+			strictAssertTrue($publish[0]['request_count'] <= array_search($activation[0], rXMLRPCRequest::$requests, true),
+				'publication precedes successor activation');
+			strictAssertSame(array('erasedataPrepareObsoleteCleanup', 'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
+				array_column(ErasedataFake::$calls, 'name'), 'the producer lifecycle has one prepare, publish and post-activation kick');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testFailedCleanupPublishActivatesWithoutClosingTransaction()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-publish-fail-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		ErasedataFake::$publishResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		try
+		{
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				'publish failure does not undo a committed replacement');
+			$activation = $this->branchRequestsContaining('$d.start=');
+			strictAssertSame(1, count($activation), 'run state is still restored after publish failure');
+			strictAssertTrue(strpos(implode('|', $activation[0]['commands'][0]->params), '$d.set_custom=chk-replacement,') === false,
+				'marker-retaining activation never clears the replacement marker');
+			strictAssertSame(0, count($this->erasedataCalls('erasedataKickCollector')), 'an unpublished job is never kicked');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testPublishedCleanupSurvivesActivationFailure()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-activation-published-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED);
+		try
+		{
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'activation uncertainty remains post-commit success');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')), 'the durable job remains published');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'published cleanup is kicked despite activation uncertainty');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'activation failure retains both transaction keys');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupKickFailureDoesNotRollbackCommittedReplacement()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-kick-fail-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		ErasedataFake::$kickResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		try
+		{
+			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a failed immediate kick leaves the committed replacement successful');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'the targeted kick is attempted once');
+			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'no rollback erase follows the committed predecessor erase');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testExistingStagedGenerationCancelsPreparedCleanupBeforeDiscard()
+	{
+		$this->resetFakes();
+		$this->queueExistingGeneration(0, 0, true);
+		ErasedataFake::$generationCancelResult = ERASEDATA_CLEANUP_READY;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		$this->queueViews();
+		$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
+		$this->queueLoadConfirmed();
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+		$cancel = $this->erasedataCalls('erasedataCancelObsoleteCleanupGeneration');
+		$erases = $this->branchRequestsContaining('$d.erase=');
+		strictAssertSame(1, count($cancel), 'the exact abandoned generation is cancelled');
+		strictAssertTrue($cancel[0]['request_count'] <= array_search($erases[0], rXMLRPCRequest::$requests, true),
+			'generation cancellation precedes stopped-successor discard');
+	}
+
+	public function testExistingStoppedCommittedGenerationRecoversCleanupBeforeFinish()
+	{
+		$this->resetFakes();
+		$this->queueExistingGeneration(0, 0, false);
+		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'an already committed stopped generation is finished in place');
+		strictAssertSame(array('erasedataRecoverObsoleteCleanup', 'erasedataKickCollector'),
+			array_column(ErasedataFake::$calls, 'name'), 'cleanup is recovered and kicked before transaction finish');
+		strictAssertSame(null, rTorrent::$lastSend, 'the committed successor is not discarded or loaded again');
+	}
+
+	public function testExistingLiveCommittedGenerationRecoversCleanupBeforeKeyClear()
+	{
+		$this->resetFakes();
+		$this->queueExistingGeneration(1, 1, false);
+		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+		ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+		$recover = $this->erasedataCalls('erasedataRecoverObsoleteCleanup');
+		$clear = $this->branchRequestsContaining('$d.set_custom=chk-replacement,');
+		strictAssertSame(1, count($recover), 'cleanup recovery is attempted for a live successor too');
+		strictAssertTrue($recover[0]['request_count'] <= array_search($clear[0], rXMLRPCRequest::$requests, true),
+			'recovery precedes transaction-key clear');
+		strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'a recovered durable job is kicked');
+	}
+
+	public function testExistingGenerationWithUnknownPredecessorPresenceRetainsEverything()
+	{
+		foreach(array('unknown' => null, 'recovery retry' => false, 'cancellation retry' => true) as $label => $oldPresence)
+		{
+			$this->resetFakes();
+			$this->queueExistingGeneration(0, 0, $oldPresence);
+			if($oldPresence === false)
+				ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_RETRY;
+			elseif($oldPresence === true)
+				ErasedataFake::$generationCancelResult = ERASEDATA_CLEANUP_RETRY;
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				$label . ' retains the transaction for retry');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.erase=')), $label . ' does not discard either generation');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.set_custom=chk-replacement,')), $label . ' does not clear successor keys');
+		}
+	}
+
+	public function testExistingGenerationGenericPredecessorFaultRetainsEverything()
+	{
+		$this->resetFakes();
+		$this->queueExistingGeneration(1, 1, null);
+		rXMLRPCRequest::queue('d.hash', true, true, array(), 'Internal XMLRPC fault');
+		strictAssertSame(ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			'a pre-existing generation cannot infer OLD absence from a generic fault');
+		strictAssertSame(array(), ErasedataFake::$calls,
+			'unknown OLD presence neither recovers nor cancels cleanup');
+		strictAssertSame(0, count($this->branchRequestsContaining('$d.erase=')),
+			'unknown OLD presence retains both generations');
+		strictAssertSame(0, count($this->branchRequestsContaining('$d.set_custom=chk-replacement,')),
+			'unknown OLD presence retains exact generation keys');
+	}
+
+	public function testCleanupPreparationLogsCountsWithoutPathList()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-log-counts-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		try
+		{
+			$this->withDebugLog(function() { ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH); });
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'cleanup prepare', 'one preparation summary is logged');
+			strictAssertTrue(strpos($line, 'old=1 new=1 obsolete=1 missing=0') !== false, 'the summary reports only bounded counts');
+			strictAssertTrue(strpos($line, $base . '/old.mkv') === false, 'the summary never logs the full cleanup path list');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupPreparationFailureIsVisible()
+	{
+		$this->resetFakes();
+		$GLOBALS['rutrackerCheckDebug'] = false;
+		$base = sys_get_temp_dir() . '/rut-check-log-failure-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		ErasedataFake::$prepareResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			strictAssertSame(1, count(strictLogsMatching(FileUtil::$log, 'durable cleanup preparation failed')),
+				'a commit-blocking prepare failure reaches the shared log with optional debug disabled');
+		}
+		finally { strictRemoveTree($base); }
 	}
 
 	// A staged copy at the successor hash may belong to somebody else's
@@ -633,7 +1466,13 @@ class CheckerTest
 			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a fully stopped replacement should still commit');
 			$this->assertNoRequestKeyContains('d.start', 'a fully stopped torrent must not be started');
 			$this->assertNoRequestKeyContains('d.open', 'a fully stopped torrent must not be opened');
-			strictAssertTrue(is_file($base . '/old.mkv'), 'obsolete files are safely retained for a stopped replacement');
+			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
+			strictAssertSame($base . '/old.mkv', $prepare[0]['arguments'][5][0]['path'],
+				'a stopped replacement prepares the exact obsolete path');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')),
+				'the stopped replacement publishes its cleanup obligation');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')),
+				'the stopped replacement kicks its published cleanup');
 			$clears = $this->branchRequestsContaining('chk-replacement');
 			strictAssertTrue(count($clears) >= 1,
 				'a deliberately unstarted replacement closes both keys in an ownership branch');
@@ -667,11 +1506,19 @@ class CheckerTest
 		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
+		rXMLRPCRequest::queue('d.set_custom', true, false, array());
 
 		strictAssertSame(
-			ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::STE_NOT_NEED,
 			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
-			'an unmarked pre-existing target hash must abort the replacement'
+			'an unmarked pre-existing target hash must mark old torrent superseded without touching either torrent'
+		);
+		$customWrites = rXMLRPCRequest::requestsFor('d.set_custom');
+		strictAssertTrue(count($customWrites) >= 1, 'setMessage must issue d.set_custom write');
+		strictAssertSame(
+			array(self::OLD_HASH, 'chk-msg', ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH),
+			$customWrites[0]['commands'][0]->params,
+			'setMessage must record superseded|<newHash> on the predecessor hash'
 		);
 		$probes = rXMLRPCRequest::requestsFor('d.hash');
 		strictAssertSame(1, count($probes), 'the preflight must issue exactly one hash probe');
@@ -682,6 +1529,21 @@ class CheckerTest
 		$this->assertNoRequestKeyContains('d.stop', 'a preflight conflict must not stop anything');
 		$this->assertNoRequestKeyContains('d.erase', 'a foreign target hash must never be erased');
 		strictAssertSame(null, rTorrent::$lastSend, 'a preflight conflict must not enqueue a load');
+	}
+
+	public function testPreExistingForeignHashReturnsErrorWhenSetMessageFails()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
+		rXMLRPCRequest::queue('d.set_custom', false, false, array());
+
+		strictAssertSame(
+			ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			'when setMessage fails to record superseded token, createTorrent must return STE_ERROR to allow later retry'
+		);
 	}
 
 	public function testOnlyAPluginNonceAndTrustworthyRecordAuthorizeExistingTargetRecovery()
@@ -736,6 +1598,7 @@ class CheckerTest
 		// with both halves of the ownership proof still naming this predecessor.
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 1, 1, $oldHash . '-started-1786899620'));
+		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
 
 		strictAssertSame(
@@ -761,6 +1624,7 @@ class CheckerTest
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 0, 1, $oldHash . '-open-1786899620'));
+		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
 
 		strictAssertSame(
@@ -779,10 +1643,12 @@ class CheckerTest
 		$this->resetFakes();
 		$oldHash = str_repeat('A', 40);
 		$this->stageTorrents();
-		rTorrent::$source = new Torrent(array('hash' => $oldHash, 'info' => array()));
+		rTorrent::$source = new Torrent(array('hash' => $oldHash,
+			'info' => array('name' => 'unchanged.mkv', 'length' => 1)));
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 0, 0, $oldHash . '-started-1786899620'));
+		rXMLRPCRequest::queue('d.hash', true, false, array($oldHash));
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueViews();
 		$this->queueSnapshot(sys_get_temp_dir(), 1, 1);
@@ -812,11 +1678,13 @@ class CheckerTest
 		$this->withDebugLog(function() {
 			$oldHash = str_repeat('A', 40);
 			$this->stageTorrents();
-			rTorrent::$source = new Torrent(array('hash' => $oldHash, 'info' => array()));
+			rTorrent::$source = new Torrent(array('hash' => $oldHash,
+				'info' => array('name' => 'unchanged.mkv', 'length' => 1)));
 			rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 			// The staged copy carries the dead run's record: staged while STARTED.
 			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 				array(self::PLUGIN_MARKER, 0, 0, $oldHash . '-started-1786899620'));
+			rXMLRPCRequest::queue('d.hash', true, false, array($oldHash));
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			$this->queueViews();
 			$this->queueSnapshot(sys_get_temp_dir(), 0, 0);	// the predecessor measures stopped+closed
@@ -972,8 +1840,8 @@ class CheckerTest
 				ruTrackerChecker::makeClient('https://tracker.test/scrape');
 				strictAssertSame(1, count(FileUtil::$log), 'a curl exit-code status must be logged as a failed fetch');
 				strictAssertTrue(
-					strpos(FileUtil::$log[0], 'Snoopy fetch failed: host=tracker.test status=6') !== false,
-					'the transport-failure log line must carry the host and status'
+					strpos(FileUtil::$log[0], 'Snoopy fetch failed: host=tracker.test transport=curl-exit code=6 reason=dns') !== false,
+					'the transport-failure log line must carry the host and safe cURL category'
 				);
 
 				FileUtil::$log = array();
@@ -986,6 +1854,26 @@ class CheckerTest
 				Snoopy::$nextStatus = 200;
 			}
 		});
+	}
+
+	public function testPluginDiagnosticsStayOffUnlessExplicitlyEnabled()
+	{
+		$this->resetFakes();
+		$GLOBALS['rutrackerCheckDebug'] = false;
+		try
+		{
+			ruTrackerChecker::logDebug('diagnostic marker');
+			strictAssertSame(array(), FileUtil::$log,
+				'diagnostics do not enter the shared application log by default');
+			$GLOBALS['rutrackerCheckDebug'] = true;
+			ruTrackerChecker::logDebug('diagnostic marker');
+			strictAssertSame(1, count(FileUtil::$log),
+				'an explicit opt-in writes to the configured shared sink');
+		}
+		finally
+		{
+			unset($GLOBALS['rutrackerCheckDebug']);
+		}
 	}
 
 	public function testActivationEarlyReturnIsLogged()
@@ -1190,7 +2078,13 @@ class CheckerTest
 			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'activation trouble after commit must not fail the check');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 				'an unconfirmed activation is attempted exactly once and deferred');
-			strictAssertTrue(is_file($base . '/old.mkv'), 'obsolete files are safely retained even when activation fails');
+			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
+			strictAssertSame($base . '/old.mkv', $prepare[0]['arguments'][5][0]['path'],
+				'activation uncertainty keeps the exact published cleanup obligation');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')),
+				'cleanup publication survives activation uncertainty');
+			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')),
+				'the published cleanup is still kicked after activation uncertainty');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
 				'an unconfirmed activation must keep both keys: they are the next cycle\'s only handle on this row');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
@@ -1390,6 +2284,19 @@ class CheckerTest
 		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'a parse failure must not touch rTorrent');
 	}
 
+	public function testMalformedMetainfoWithoutInfoHashReturnsErrorWithoutMutatingDaemon()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['no-info-hash-torrent'] = array('errors' => false, 'hash' => null);
+
+		strictAssertSame(
+			ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent('no-info-hash-torrent', self::OLD_HASH),
+			'metainfo without info hash must fail with STE_ERROR'
+		);
+		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'malformed info hash must not touch rTorrent');
+	}
+
 	public function testDifferentNumericLookingInfoHashesAreNotTreatedAsEqual()
 	{
 		$this->resetFakes();
@@ -1449,6 +2356,10 @@ class CheckerTest
 		// manual check got one cheaper.
 		strictAssertSame(2, count(rXMLRPCRequest::$requests),
 			'the stale worker pays a probe only after the read has already failed');
+		strictAssertSame(self::GETSTATE_KEY, rXMLRPCRequest::$requests[0]['key'],
+			'the scheduler snapshot is not trusted before the live state read');
+		strictAssertSame('d.hash', rXMLRPCRequest::$requests[1]['key'],
+			'the failed live read is resolved by a hash probe');
 	}
 
 	public function testTruncatedSuccessfulStateReadDefersInsteadOfInventingDefaults()
@@ -1883,6 +2794,20 @@ class CheckerTest
 			'the unrelated announce handler is never allowed to overwrite it');
 	}
 
+	public function testRuTrackerMentionDoesNotHideARegisteredForeignCommentOwner()
+	{
+		$this->resetFakes();
+		ruTrackerChecker::registerTracker('/rutracker\./', '/t-ru\.org/',
+			'RuTrackerCheckImpl::download_torrent');
+		ruTrackerChecker::registerTracker('/kinozal\./', '/kinozal\./',
+			'KinozalCheckImpl::download_torrent');
+
+		strictAssertSame(true,
+			ruTrackerChecker::isForeignComment(
+				'Originally published at rutracker.org; owner: https://kinozal.tv/details.php?id=12345'),
+			'a RuTracker mention must not hide the registered foreign comment owner');
+	}
+
 	// The mixed case, which is what decides the ORDER of the two answers: one
 	// A comment mention may be outside that handler's jurisdiction, while an
 	// announce identifies another handler that also cannot parse a topic. With
@@ -2196,22 +3121,6 @@ class CheckerTest
 				preg_match('/^[a-z][a-z-]*$/', $token) === 1,
 				'a token carries no separator and no prose: ' . $token
 			);
-	}
-
-	public function testSchedulerStateStillSkipsMissingHash()
-	{
-		$this->resetFakes();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, true, array());
-		rXMLRPCRequest::queue('d.hash', true, true, array());
-
-		strictAssertSame(
-			true,
-			ruTrackerChecker::run('MISSING', ruTrackerChecker::STE_UPTODATE, time(), ''),
-			'a stale scheduler row must be a successful no-op'
-		);
-		strictAssertSame(2, count(rXMLRPCRequest::$requests), 'a stale scheduler row is refreshed, then confirmed gone');
-		strictAssertSame(self::GETSTATE_KEY, rXMLRPCRequest::$requests[0]['key'], 'the scheduler snapshot is not trusted');
-		strictAssertSame('d.hash', rXMLRPCRequest::$requests[1]['key'], 'the failed live read is resolved by a hash probe');
 	}
 
 	public function testDispatchPrefersCommentMatchesAndFallsBackToAnnounce()
@@ -2643,30 +3552,47 @@ class CheckerTest
 		});
 	}
 
-	public function testAwaitMetadataAsksDIsMetaAndBelievesOnlyZero()
+	public function testAwaitMetadataRequiresLiveStateAndMatchingSessionHash()
 	{
 		$this->resetFakes();
 		$GLOBALS['rutrackerMetaWait'] = 0;   // poll once, never sleep
 		try
 		{
+			rTorrent::$source = new Torrent(array('hash' => self::NEW_HASH));
 			rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
-			strictAssertSame(true, ruTrackerChecker::awaitMetadata(self::NEW_HASH), 'is_meta 0 means the metainfo is there');
+			strictAssertSame(true, ruTrackerChecker::awaitMetadata(self::NEW_HASH),
+				'is_meta 0 plus matching session metainfo means the successor is durable');
 			$polls = rXMLRPCRequest::requestsFor('d.is_meta');
 			strictAssertSame(1, count($polls), 'exactly one poll when the answer arrives at once');
 			strictAssertSame(self::NEW_HASH, $polls[0]['commands'][0]->params, 'and it asks about the stub');
+			strictAssertSame(1, rTorrent::$sourceReads, 'readiness also reads the session source once');
+
+			// The daemon can flip is_meta before the session file replacement is
+			// durable. That transition is pending, not permission to harvest.
+			$this->resetFakes();
+			$GLOBALS['rutrackerMetaWait'] = 0;
+			rTorrent::$source = new Torrent(array('hash' => self::OLD_HASH));
+			rXMLRPCRequest::queue('d.is_meta', true, false, array('0'));
+			strictAssertSame(false, ruTrackerChecker::awaitMetadata(self::NEW_HASH),
+				'is_meta 0 with stale session bytes is not ready');
+			strictAssertSame(1, rTorrent::$sourceReads, 'the stale decision is based on one source read');
 
 			// Still a stub: with no budget left the answer is "not yet".
-			rXMLRPCRequest::reset();
+			$this->resetFakes();
+			$GLOBALS['rutrackerMetaWait'] = 0;
 			rXMLRPCRequest::queue('d.is_meta', true, false, array('1'));
 			strictAssertSame(false, ruTrackerChecker::awaitMetadata(self::NEW_HASH), 'is_meta 1 is not metadata');
+			strictAssertSame(0, rTorrent::$sourceReads, 'a live metadata stub has no session-read obligation yet');
 
 			// A failed read must not be mistaken for metadata.
-			rXMLRPCRequest::reset();
+			$this->resetFakes();
+			$GLOBALS['rutrackerMetaWait'] = 0;
 			rXMLRPCRequest::queue('d.is_meta', false, false, array());
 			strictAssertSame(false, ruTrackerChecker::awaitMetadata(self::NEW_HASH), 'an unreadable answer is not "arrived"');
 
 			// A fault carrying a value must not be either.
-			rXMLRPCRequest::reset();
+			$this->resetFakes();
+			$GLOBALS['rutrackerMetaWait'] = 0;
 			rXMLRPCRequest::queue('d.is_meta', true, true, array('0'));
 			strictAssertSame(false, ruTrackerChecker::awaitMetadata(self::NEW_HASH), 'a faulted 0 is not "arrived"');
 		}
@@ -2674,13 +3600,6 @@ class CheckerTest
 		{
 			unset($GLOBALS['rutrackerMetaWait']);
 		}
-	}
-
-	public function testUnrecognisedInheritanceRunTokenIsRejected()
-	{
-		strictAssertSame(null,
-			ruTrackerChecker::decodeInheritance(str_repeat('b', 40) . '-seeding-1786899620'),
-			'an unrecognised token is malformed, never an implicit stopped policy');
 	}
 
 	public function testUnknownOwnedStagedEraseNeverFallsBackToStandaloneErase()

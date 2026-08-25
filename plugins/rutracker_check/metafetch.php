@@ -546,18 +546,43 @@ class RuTrackerMetaFetch
     {
         $newHash = $stubTuple['hash'];
         $torrent = rTorrent::getSource($newHash);
-        if (!is_object($torrent)) {
-            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
-                . ' deferred: its session copy could not be read, which says nothing about the metadata');
-            return self::stillPending($oldHash, $stubTuple, $now, $deadline, $claim, true,
-                'the metadata arrived but its session copy could never be read', 0);
+        $readable = is_object($torrent) && !$torrent->errors();
+        $actualHash = $readable ? strtoupper((string) $torrent->hash_info()) : '(unreadable)';
+        $valid = $readable && $actualHash === $newHash;
+
+        // Session-file replacement is asynchronous with d.is_meta. Before the
+        // durable generation expires, give the shared condition-based wait one
+        // bounded chance to observe the expected bytes and then re-read them.
+        if (!$valid && $now <= $deadline && ruTrackerChecker::awaitMetadata($newHash)) {
+            $torrent = rTorrent::getSource($newHash);
+            $readable = is_object($torrent) && !$torrent->errors();
+            $actualHash = $readable ? strtoupper((string) $torrent->hash_info()) : '(unreadable)';
+            $valid = $readable && $actualHash === $newHash;
         }
-        $valid = (!$torrent->errors() && (string) $torrent->hash_info() === $newHash);
+
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
-            . ' hash matched=' . ($valid ? 'yes' : 'no'));
-        if (!$valid)
+            . ' hash matched=' . ($valid ? 'yes' : 'no')
+            . ' expected=' . $newHash . ' actual=' . $actualHash);
+        if (!$valid) {
+            if ($now <= $deadline) {
+                ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
+                    . ($readable
+                        ? ' deferred: reason=session-hash-stale'
+                        : ' deferred: reason=session-unreadable')
+                    . '; session replacement is not durable yet');
+                return ruTrackerChecker::STE_META_PENDING;
+            }
+            if (!$readable) {
+                // Even an exactly marked rTorrent row is not deletion authority
+                // when its session bytes cannot be inspected at all.
+                ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
+                    . ' outcome=deadline-timeout reason=session-unreadable');
+                return self::stillPending($oldHash, null, $now, $deadline, $claim, false,
+                    'the metadata arrived but its session copy could never be read', 0);
+            }
             return self::dropStub($oldHash, $stubTuple, $claim,
-                'the fetched metadata failed validation', 0);
+                'session-hash-timeout: the owned service item still had a stale session hash after the deadline', 0);
+        }
 
         if ((string) $torrent->announce() === '') {
             $old = rTorrent::getSource($oldHash);

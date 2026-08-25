@@ -23,25 +23,62 @@ abstract class commonAccount
 
 require_once(testFindRepoRoot() . '/plugins/loginmgr/accounts/KinozalTV.php');
 
-// isOK() reads exactly one field off the Snoopy client.
+// isOK() and login() test double.
 class KinozalFakeClient
 {
+    public $status = 200;
     public $results = '';
+    public $referer = '';
+    public $cookies = array();
+    public $responses = array();
 
-    public function __construct($results)
+    public function __construct($results = '', $status = 200)
     {
         $this->results = $results;
+        $this->status = $status;
+    }
+
+    public function fetch($url, $method = 'GET', $contentType = '', $body = '')
+    {
+        if (isset($this->responses[$url])) {
+            $resp = $this->responses[$url];
+            $this->status = $resp['status'] ?? 200;
+            $this->results = $resp['results'] ?? '';
+            return ($this->status >= 200 && $this->status < 400);
+        }
+        return true;
+    }
+
+    public function setcookies()
+    {
+        $this->cookies['uid'] = '12345';
+        $this->cookies['pass'] = 'abcde';
     }
 }
 
-function kinozalIsOK($body)
+function kinozalIsOK($body, $status = 200)
 {
     $account = new KinozalTVAccount();
     $method = new ReflectionMethod('KinozalTVAccount', 'isOK');
     if (PHP_VERSION_ID < 80100) {
         $method->setAccessible(true);
     }
-    return $method->invoke($account, new KinozalFakeClient($body));
+    return $method->invoke($account, new KinozalFakeClient($body, $status));
+}
+
+function kinozalLogin($client, $user = 'user', $pass = 'pass')
+{
+    $account = new KinozalTVAccount();
+    $method = new ReflectionMethod('KinozalTVAccount', 'login');
+    if (PHP_VERSION_ID < 80100) {
+        $method->setAccessible(true);
+    }
+    $url = '';
+    $httpMethod = 'GET';
+    $contentType = '';
+    $body = '';
+    $isFetched = false;
+    return $method->invokeArgs($account, array($client, $user, $pass, &$url, &$httpMethod, &$contentType, &$body, &$isFetched));
 }
 
 // Captured from https://kinozal.guru/login.php on 2026-08-07: type= carries no
@@ -115,6 +152,33 @@ $suite->test('torrent bytes read as a live session', function () {
         . '4:name9:movie.mkv12:piece lengthi16384e6:pieces20:' . str_repeat("\0", 20) . 'ee';
     strictAssertSame(true, kinozalIsOK($raw),
         'a downloaded torrent must never be mistaken for a login wall');
+});
+
+$suite->test('non-200 status or empty body is recognised as dead session', function () {
+    strictAssertSame(false, kinozalIsOK('OK page', 500), 'HTTP 500 is not OK');
+    strictAssertSame(false, kinozalIsOK('OK page', 302), 'HTTP 302 is not OK');
+    strictAssertSame(false, kinozalIsOK('', 200), 'empty body is not OK');
+});
+
+$suite->test('login returns false when takelogin returns invalid credentials or guest page', function () {
+    $client = new KinozalFakeClient();
+    $client->responses = array(
+        'https://kinozal.guru' => array('status' => 200, 'results' => '<html>main page</html>'),
+        'https://kinozal.guru/takelogin.php' => array('status' => 200, 'results' => kinozalLoginPage()),
+    );
+    strictAssertSame(false, kinozalLogin($client, 'baduser', 'badpass'),
+        'login must fail when takelogin returns login form');
+});
+
+$suite->test('login returns true when takelogin returns authenticated session', function () {
+    $client = new KinozalFakeClient();
+    $client->responses = array(
+        'https://kinozal.guru' => array('status' => 200, 'results' => '<html>main page</html>'),
+        'https://kinozal.guru/takelogin.php' => array('status' => 200, 'results' => '<div class="mn"><a href="/userdetails.php?id=123">user</a><a href="/logout.php">Выход</a></div>'),
+    );
+    strictAssertSame(true, kinozalLogin($client, 'gooduser', 'goodpass'),
+        'login succeeds when takelogin returns authenticated page');
+    strictAssertSame(true, isset($client->cookies['uid']), 'cookies set on login');
 });
 
 exit($suite->run());

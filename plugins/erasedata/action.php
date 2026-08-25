@@ -25,8 +25,9 @@ if(isset($HTTP_RAW_POST_DATA))
 $result = null;
 if($mode == "removewithdata" && count($hash))
 {
-	$forceDelete = isset($vs[0]) ? $vs[0] : "1";
-	$result = erasedataRemoveWithData($hash, $forceDelete);
+	$forceDelete = isset($vs[0]) ? $vs[0] : null;
+	if(!is_null(ErasedataManifestCodec::normalizeForce($forceDelete)))
+		$result = erasedataRemoveWithData($hash, $forceDelete);
 }
 
 if(is_null($result))

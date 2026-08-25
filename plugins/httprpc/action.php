@@ -2,6 +2,7 @@
 
 require_once( '../../php/xmlrpc.php' );
 require_once( '../../php/xmlrpc_proxy.php' );
+require_once( __DIR__ . '/../../php/xmlrpc_path.php' );
 require_once( 'rpccache.php' );
 
 $mode = "raw";
@@ -53,32 +54,6 @@ if(isset($HTTP_RAW_POST_DATA))
 			}
 		}
 	}
-}
-
-/**
- * Resolve as much of a path as exists. A download directory usually does not
- * exist yet, so realpath() on it answers nothing and only a lexical check is
- * left -- which one symlink inside the customer's own tree defeats, and the
- * customer can create symlinks over FTP. Walk up to the deepest ancestor that
- * does exist, resolve that, and re-attach the rest.
- */
-function httprpcResolvePath($path)
-{
-	$real = @realpath($path);
-	if($real !== false)
-		return $real;
-
-	$parts = explode('/', trim($path, '/'));
-	$tail = array();
-	while(count($parts) > 0)
-	{
-		array_unshift($tail, array_pop($parts));
-		$base = '/'.implode('/', $parts);
-		$real = @realpath(($base === '') ? '/' : $base);
-		if($real !== false)
-			return rtrim($real, '/').'/'.implode('/', $tail);
-	}
-	return '';
 }
 
 function makeMulticall($cmds,$hash,$add,$prefix)
@@ -426,24 +401,17 @@ switch($mode)
 	}
 	case "removewithdata":	/**/
 	{
-		$forceDelete = isset($vs[0]) ? $vs[0] : "1";
+		$forceDelete = isset($vs[0]) ? $vs[0] : null;
 		// Delegate to the shared erasedata helper so the httprpc and direct
 		// (plugins/erasedata/action.php) paths record the identical delete list.
-		// removewithdata only originates from the erasedata plugin, so its helper
-		// is present; guard anyway and fall back to a plain erase if it is not.
+		// Without that helper there is no durable data-deletion obligation, so
+		// fail closed instead of erasing the torrent by itself.
 		$helper = dirname(__FILE__)."/../erasedata/removewithdata.php";
-		if(file_exists($helper))
+		if(is_file($helper))
 		{
 			require_once($helper);
-			$result = erasedataRemoveWithData($hash, $forceDelete);
-		}
-		else
-		{
-			$req = new rXMLRPCRequest();
-			foreach($hash as $h)
-				$req->addCommand( new rXMLRPCCommand( getCmd("d.erase"), $h ) );
-			if($req->success())
-				$result = $req->val;
+			if(!is_null(ErasedataManifestCodec::normalizeForce($forceDelete)))
+				$result = erasedataRemoveWithData($hash, $forceDelete);
 		}
 		break;
 	}
@@ -684,22 +652,15 @@ switch($mode)
 			$proxyLog = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
 			$proxySafeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
 			$proxyLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
-			// d.directory.set names the directory rtorrent writes a download
-			// into, and the caller supplies the torrent, so it names the file
-			// too. Confine it to the same boundary the panel already holds
-			// itself to: correctDirectory() is applied to the directory in
-			// sendTorrent(), in addtorrent.php, and to sdirectory in the
-			// setsettings branch above. Raw XMLRPC reached rtorrent without it.
-			//
-			// $topDirectory is a global by now -- php/util.php requires
-			// conf/config.php, and php/xmlrpc.php requires util.php. Where it is
-			// "/" this permits everything, which is what the panel permits with
-			// that setting too; this makes the two doors agree rather than
-			// making one stricter.
+			$allowRootDirectory = isset($XMLRPCProxyAllowRootDirectory) ? $XMLRPCProxyAllowRootDirectory : false;
+			$topDir = (isset($topDirectory) && ($topDirectory !== '')) ? trim($topDirectory) : '';
+			$rootBoundary = (($topDir === '') || ($topDir === '/'))
+				? ($allowRootDirectory ? '/' : '')
+				: $topDir;
+
 			$proxyOptions = array('directory' => array(
-				'root' => (isset($topDirectory) && ($topDirectory !== ''))
-					? $topDirectory : '/',
-				'resolve' => 'httprpcResolvePath',
+				'root' => $rootBoundary,
+				'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 			));
 			$result = XMLRPCProxy::process($HTTP_RAW_POST_DATA, $proxyMode, $proxyLog, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
 			if(!empty($result))

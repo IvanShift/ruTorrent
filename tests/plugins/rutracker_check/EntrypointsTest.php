@@ -72,6 +72,336 @@ function epAssertOrder($calls, $before, $after, $why)
     strictAssertTrue($a < $b, $why . ' (' . $before . ' at ' . $a . ', ' . $after . ' at ' . $b . ')');
 }
 
+function epNamedFunctionCallIndices($path, $name)
+{
+    $tokens = token_get_all(file_get_contents($path));
+    $indices = array();
+    foreach ($tokens as $index => $token) {
+        if (!is_array($token) || $token[0] !== T_STRING || $token[1] !== $name) continue;
+        $previous = $index - 1;
+        while ($previous >= 0 && is_array($tokens[$previous])
+            && in_array($tokens[$previous][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $previous--;
+        if ($previous >= 0 && is_array($tokens[$previous]) && $tokens[$previous][0] === T_FUNCTION) continue;
+        $next = $index + 1;
+        while ($next < count($tokens) && is_array($tokens[$next])
+            && in_array($tokens[$next][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $next++;
+        if ($next < count($tokens) && $tokens[$next] === '(') $indices[] = $index;
+    }
+    return array($tokens, $indices);
+}
+
+function epFunctionCallArguments($path, $name)
+{
+    list($tokens, $indices) = epNamedFunctionCallIndices($path, $name);
+    $arguments = array();
+    foreach ($indices as $index) {
+        while ($tokens[$index] !== '(') $index++;
+        $depth = 1;
+        $text = '';
+        for ($index++; $index < count($tokens) && $depth > 0; $index++) {
+            $token = $tokens[$index];
+            if ($token === '(') $depth++;
+            elseif ($token === ')') {
+                $depth--;
+                if ($depth === 0) break;
+            }
+            if ($depth > 0) {
+                if (is_array($token)) {
+                    if (in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) continue;
+                    $text .= $token[1];
+                } else {
+                    $text .= $token;
+                }
+            }
+        }
+        $arguments[] = $text;
+    }
+    return $arguments;
+}
+
+function epCallIsInsideIfVariable($path, $function, $variable)
+{
+    list($tokens, $calls) = epNamedFunctionCallIndices($path, $function);
+    if (count($calls) !== 1) return null;
+    $call = $calls[0];
+    foreach ($tokens as $index => $token) {
+        if (!is_array($token) || $token[0] !== T_IF) continue;
+        $cursor = $index + 1;
+        while ($cursor < count($tokens) && $tokens[$cursor] !== '(') $cursor++;
+        if ($cursor >= count($tokens)) continue;
+        $conditionDepth = 1;
+        $mentionsVariable = false;
+        for ($cursor++; $cursor < count($tokens) && $conditionDepth > 0; $cursor++) {
+            if ($tokens[$cursor] === '(') $conditionDepth++;
+            elseif ($tokens[$cursor] === ')') $conditionDepth--;
+            elseif (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_VARIABLE
+                && $tokens[$cursor][1] === $variable) $mentionsVariable = true;
+        }
+        if (!$mentionsVariable) continue;
+        while ($cursor < count($tokens) && is_array($tokens[$cursor])
+            && in_array($tokens[$cursor][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $cursor++;
+        if ($cursor >= count($tokens) || $tokens[$cursor] !== '{') continue;
+        $bodyStart = $cursor;
+        $bodyDepth = 1;
+        for ($cursor++; $cursor < count($tokens) && $bodyDepth > 0; $cursor++) {
+            if ($tokens[$cursor] === '{') $bodyDepth++;
+            elseif ($tokens[$cursor] === '}') $bodyDepth--;
+        }
+        $bodyEnd = $cursor - 1;
+        if ($call > $bodyStart && $call < $bodyEnd) return true;
+    }
+    return false;
+}
+
+function epFunctionBodyCalls($path, $function, $called)
+{
+    $tokens = token_get_all(file_get_contents($path));
+    $start = null;
+    for ($index = 0; $index < count($tokens); $index++) {
+        if (!is_array($tokens[$index]) || $tokens[$index][0] !== T_FUNCTION) continue;
+        for ($cursor = $index + 1; $cursor < count($tokens); $cursor++) {
+            if (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_WHITESPACE) continue;
+            if (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_STRING
+                && $tokens[$cursor][1] === $function) $start = $cursor;
+            break;
+        }
+        if ($start !== null) break;
+    }
+    if ($start === null) return array();
+    while ($start < count($tokens) && $tokens[$start] !== '{') $start++;
+    if ($start >= count($tokens)) return array();
+    $depth = 1;
+    $calls = array();
+    for ($index = $start + 1; $index < count($tokens) && $depth > 0; $index++) {
+        if ($tokens[$index] === '{') $depth++;
+        elseif ($tokens[$index] === '}') $depth--;
+        elseif (is_array($tokens[$index]) && $tokens[$index][0] === T_STRING
+            && $tokens[$index][1] === $called) $calls[] = $called;
+    }
+    return $calls;
+}
+
+function epUnusedTcpPort()
+{
+    $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    if ($server === false) {
+        throw new RuntimeException('could not reserve an action-test port: ' . $error);
+    }
+    $address = stream_socket_get_name($server, false);
+    fclose($server);
+    $separator = strrpos($address, ':');
+    if ($separator === false) {
+        throw new RuntimeException('action-test port was not present in ' . $address);
+    }
+    return (int) substr($address, $separator + 1);
+}
+
+function epPostAction($port, $body, $username = null)
+{
+    $socket = @fsockopen('127.0.0.1', $port, $errno, $error, 3);
+    if ($socket === false) {
+        throw new RuntimeException('could not reach the action-test server: ' . $error);
+    }
+    stream_set_timeout($socket, 5);
+    $request = "POST /plugins/rutracker_check/action.php HTTP/1.0\r\n"
+        . "Host: 127.0.0.1\r\n"
+        . "Content-Type: application/x-www-form-urlencoded\r\n";
+    if($username !== null)
+        $request .= 'Authorization: Basic ' . base64_encode($username . ':fixture-password') . "\r\n";
+    $request .= 'Content-Length: ' . strlen($body) . "\r\n"
+        . "Connection: close\r\n\r\n"
+        . $body;
+    $written = 0;
+    while ($written < strlen($request)) {
+        $count = fwrite($socket, substr($request, $written));
+        if ($count === false || $count === 0) {
+            fclose($socket);
+            throw new RuntimeException('could not write the complete action-test request');
+        }
+        $written += $count;
+    }
+    $response = stream_get_contents($socket);
+    $metadata = stream_get_meta_data($socket);
+    fclose($socket);
+    if ($metadata['timed_out']) {
+        throw new RuntimeException('action-test response timed out');
+    }
+
+    $parts = explode("\r\n\r\n", $response, 2);
+    if (count($parts) !== 2 || !preg_match('/^HTTP\/1\.[01] ([0-9]{3})/D', strtok($parts[0], "\r\n"), $match)) {
+        throw new RuntimeException('malformed action-test response: ' . $response);
+    }
+    return array(
+        'status' => (int) $match[1],
+        'headers' => $parts[0],
+        'body' => $parts[1],
+        'json' => json_decode($parts[1], true),
+    );
+}
+
+function epWaitForActionInvocations($recordDirectory, $expectedCount, $timeoutSeconds = 3.0)
+{
+    $completeMarker = "\0\0RUTRACKER_ACTION_COMPLETE\0";
+    $deadline = microtime(true) + $timeoutSeconds;
+    do {
+        clearstatcache();
+        $recordPaths = glob($recordDirectory . '/invocation-*');
+        sort($recordPaths, SORT_STRING);
+        $records = array();
+        $allComplete = count($recordPaths) > 0;
+        foreach($recordPaths as $recordPath) {
+            $raw = file_get_contents($recordPath);
+            if($raw === false || substr($raw, -strlen($completeMarker)) !== $completeMarker) {
+                $allComplete = false;
+                break;
+            }
+            $argumentBytes = substr($raw, 0, -strlen($completeMarker));
+            $arguments = explode("\0", $argumentBytes);
+            if(end($arguments) === '') array_pop($arguments);
+            $records[] = $arguments;
+        }
+        if($allComplete && count($records) >= $expectedCount)
+            return $records;
+        usleep(10000);
+    } while(microtime(true) < $deadline);
+
+    throw new RuntimeException('timed out waiting for exactly ' . $expectedCount
+        . ' completed fake PHP invocation record(s)');
+}
+
+function epWaitForActionServerStop($port, $timeoutSeconds = 1.0)
+{
+    $deadline = microtime(true) + $timeoutSeconds;
+    do {
+        $probe = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
+        if($probe === false) return;
+        fclose($probe);
+        usleep(10000);
+    } while(microtime(true) < $deadline);
+
+    throw new RuntimeException('action-test server still accepted connections after termination');
+}
+
+function epWithActionServer($callback, $dispatchMode = 'refuse')
+{
+    $root = testFindRepoRoot();
+    $fixture = sys_get_temp_dir() . '/rt-action-endpoint-' . getmypid() . '-' . mt_rand();
+    $temp = $fixture . '/tmp';
+    $profile = $fixture . '/profile';
+    $customPath = $fixture . '/custom-path';
+    $log = $fixture . '/action-errors.log';
+    $recordDirectory = $fixture . '/invocations';
+    mkdir($temp, 0700, true);
+    mkdir($profile, 0700, true);
+    mkdir($customPath, 0700, true);
+    mkdir($recordDirectory, 0700, true);
+
+    if($dispatchMode !== 'refuse' && $dispatchMode !== 'accept') {
+        strictRemoveTree($fixture);
+        throw new InvalidArgumentException('unknown action-test dispatch mode');
+    }
+
+    if ($dispatchMode === 'accept') {
+        $fakePhpScript = $customPath . '/php';
+        $script = "#!/bin/sh\n"
+            . 'record=' . escapeshellarg($recordDirectory) . '/invocation-$$' . "\n"
+            . "for argument in \"\$@\"; do\n"
+            . "    printf '%s\\0' \"\$argument\" >> \"\$record\"\n"
+            . "done\n"
+            . "printf '\\0RUTRACKER_ACTION_COMPLETE\\0' >> \"\$record\"\n"
+            . "exit 0\n";
+        file_put_contents($fakePhpScript, $script);
+        chmod($fakePhpScript, 0755);
+    }
+
+    $port = epUnusedTcpPort();
+    $command = 'exec ' . escapeshellarg(PHP_BINARY)
+        . ' -d display_errors=1 -d variables_order=EGPCS -S 127.0.0.1:' . $port
+        . ' -t ' . escapeshellarg($root);
+    $spec = array(
+        0 => array('pipe', 'r'),
+        1 => array('pipe', 'w'),
+        2 => array('pipe', 'w'),
+    );
+    $environment = getenv();
+    $environment['PATH'] = $customPath;
+    $environment['RU_TEMP_DIRECTORY'] = $temp;
+    $environment['RU_PROFILE_PATH'] = $profile;
+    $environment['RU_LOG_FILE'] = $log;
+    $process = proc_open($command, $spec, $pipes, EP_DIR, $environment);
+    if (!is_resource($process)) {
+        strictRemoveTree($fixture);
+        throw new RuntimeException('could not start the action-test server');
+    }
+    fclose($pipes[0]);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+
+    try {
+        $ready = false;
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            $probe = @fsockopen('127.0.0.1', $port, $errno, $error, 0.1);
+            if ($probe !== false) {
+                fclose($probe);
+                $ready = true;
+                break;
+            }
+            $status = proc_get_status($process);
+            if (!$status['running']) break;
+            usleep(20000);
+        }
+        if (!$ready) {
+            throw new RuntimeException('action-test server did not start: ' . stream_get_contents($pipes[2]));
+        }
+        call_user_func($callback, $port, $temp, $log, $recordDirectory);
+    } finally {
+        proc_terminate($process);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+        try {
+            epWaitForActionServerStop($port);
+        } finally {
+            strictRemoveTree($fixture);
+        }
+    }
+}
+
+$suite->test('erasedata and rutracker_check register one identical collector schedule', function () {
+    $erasedataInit = dirname(EP_DIR) . '/erasedata/init.php';
+    $rutrackerInit = EP_DIR . '/init.php';
+    $erasedataCalls = epFunctionCallArguments($erasedataInit, 'erasedataCollectorScheduleCommand');
+    $rutrackerCalls = epFunctionCallArguments($rutrackerInit, 'erasedataCollectorScheduleCommand');
+
+    strictAssertSame(array('$theSettings,$garbageCheckInterval'), $erasedataCalls,
+        'erasedata registers exactly one collector schedule through the shared helper');
+    strictAssertSame($erasedataCalls, $rutrackerCalls,
+        'rutracker_check registers the identical key, interval, user, and collector command');
+});
+
+$suite->test('cleanup schedule is independent of rutracker update interval', function () {
+    $init = EP_DIR . '/init.php';
+    $source = file_get_contents($init);
+    strictAssertSame(false, epCallIsInsideIfVariable($init, 'erasedataCollectorScheduleCommand', '$updateInterval'),
+        'the cleanup schedule is registered even when the hourly checker interval is zero');
+    $removeAt = strpos($source, "require( 'done.php' )");
+    $cleanupRequestAt = strpos($source, '$req = new rXMLRPCRequest($commands)');
+    strictAssertTrue($removeAt !== false,
+        'zero checker interval still removes a stale hourly checker schedule');
+    strictAssertTrue($cleanupRequestAt !== false && $removeAt < $cleanupRequestAt,
+        'the stale checker schedule is removed before the independent cleanup schedule request is sent');
+});
+
+$suite->test('targeted kick and scheduled retry execute the same collector entrypoint', function () {
+    $helper = dirname(EP_DIR) . '/erasedata/removewithdata.php';
+    strictAssertSame(array('erasedataCollectorCommand'),
+        epFunctionBodyCalls($helper, 'erasedataKickCollector', 'erasedataCollectorCommand'),
+        'the targeted kick delegates shell construction to the shared collector builder');
+    strictAssertSame(array('erasedataCollectorCommand'),
+        epFunctionBodyCalls($helper, 'erasedataCollectorScheduleCommand', 'erasedataCollectorCommand'),
+        'the scheduled retry delegates to that same builder without a second entrypoint');
+});
+
 $suite->test('update.php still composes the whole cycle, in the order the cycle depends on', function () {
     $calls = epCalls('update.php');
 
@@ -179,6 +509,88 @@ $suite->test('the manual action delegates handover creation and launch to the te
     strictAssertTrue(epAt($calls, 'Utility::getPHP') >= 0, 'the checker is still spawned');
     strictAssertTrue(strpos($source, "array('FileUtil', 'toLog')") !== false,
         'observable dispatch failures are wired to the production log sink');
+});
+
+$suite->test('the manual action rejects empty or all-invalid body with HTTP 400 and no dispatch artifact', function () {
+    epWithActionServer(function ($port, $temp, $log) {
+        $emptyResponse = epPostAction($port, 'cmd=check');
+        strictAssertSame(400, $emptyResponse['status'], 'empty body returns HTTP 400');
+        strictAssertSame(array('status' => 'error', 'error' => 'no_valid_hashes', 'accepted' => 0), $emptyResponse['json'],
+            'empty body returns no_valid_hashes with 0 accepted');
+
+        $invalidResponse = epPostAction($port, 'cmd=check&hash=short&hash=123');
+        strictAssertSame(400, $invalidResponse['status'], 'all-invalid body returns HTTP 400');
+        strictAssertSame(array('status' => 'error', 'error' => 'no_valid_hashes', 'accepted' => 0), $invalidResponse['json'],
+            'all-invalid body returns no_valid_hashes with 0 accepted');
+
+        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'), 'no dispatch artifact created on empty/invalid batch');
+        strictAssertTrue(!is_file($log), 'no dispatch logged on empty/invalid batch');
+    });
+});
+
+$suite->test('the manual action returns HTTP 503 dispatch_failed when dispatch is refused', function () {
+    epWithActionServer(function ($port, $temp, $log) {
+        $response = epPostAction($port, 'hash=' . str_repeat('A', 40));
+
+        strictAssertSame(503, $response['status'], 'a launch refusal returns HTTP 503');
+        strictAssertSame(array('status' => 'error', 'error' => 'dispatch_failed', 'accepted' => 0), $response['json'],
+            'the action exposes the failed dispatch with error dispatch_failed');
+        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
+            'the failed dispatch leaves no child handover behind');
+        strictAssertTrue(is_file($log), 'the intentional launch refusal uses the fixture-local log');
+        strictAssertTrue(strpos((string) file_get_contents($log),
+            'manual batch command was not accepted by the shell') !== false,
+            'the fixture-local log records the intentional launch refusal');
+    });
+});
+
+$suite->test('the manual action returns queued after one exact detached handover', function () {
+    epWithActionServer(function ($port, $temp, $log, $recordDirectory) {
+        $h1 = str_repeat('A', 40);
+        $h2 = str_repeat('B', 40);
+        $body = 'cmd=check&hash=' . strtolower($h1) . '&hash=short&hash=' . $h1 . '&hash=' . $h2;
+
+        $response = epPostAction($port, $body, 'Endpoint User');
+
+        strictAssertSame(202, $response['status'], 'accepted dispatch returns HTTP 202');
+        strictAssertSame(array('status' => 'queued', 'accepted' => 2), $response['json'],
+            'accepted dispatch returns queued with count of unique valid hashes');
+
+        $handovers = glob($temp . '/rutorrent-prm-*');
+        strictAssertSame(1, count($handovers), 'accepted endpoint creates exactly one handover path');
+        strictAssertSame(array($h1, $h2),
+            unserialize(file_get_contents($handovers[0]), array('allowed_classes' => false)),
+            'handover payload contains the exact unique normalized hash set in first-seen order');
+
+        $records = epWaitForActionInvocations($recordDirectory, 1);
+        strictAssertSame(1, count($records), 'accepted endpoint launches the detached boundary exactly once');
+        strictAssertSame(array(
+            '-f',
+            realpath(EP_DIR . '/batch_check.php'),
+            $handovers[0],
+            'endpoint_user',
+        ), $records[0], 'fake PHP receives only -f, exact worker, exact handover, and normalized user');
+        strictAssertTrue(is_file($handovers[0]),
+            'the harmless detached boundary leaves the queued handover untouched for the real worker');
+        strictAssertTrue(!is_file($log),
+            'the accepted HTTP action queues work without executing XMLRPC inline or logging a worker failure');
+    }, 'accept');
+});
+
+$suite->test('the manual action rejects MAX_BODY_BYTES plus one with HTTP 413 before launch', function () {
+    epWithActionServer(function ($port, $temp, $log) {
+        $body = 'hash=' . str_repeat('B', 40) . '&pad=' . str_repeat('x', 262095);
+        strictAssertSame(262145, strlen($body), 'the endpoint fixture is exactly 256 KiB plus one byte');
+
+        $response = epPostAction($port, $body);
+
+        strictAssertSame(413, $response['status'], 'the endpoint rejects the first over-limit byte');
+        strictAssertSame(array('status' => 'error', 'error' => 'payload_too_large'), $response['json'],
+            'the over-limit response names the bounded-body refusal');
+        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
+            'an over-limit body cannot launch or leave a handover');
+        strictAssertTrue(!is_file($log), 'an over-limit body reaches neither dispatch nor its log sink');
+    });
 });
 
 $suite->test('the cycle asks for exactly the columns parseMulticall reads, in that order', function () {

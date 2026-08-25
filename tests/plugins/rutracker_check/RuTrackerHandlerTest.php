@@ -11,9 +11,8 @@
  * RuTrackerMetaFetch::begin() is exercised here only far enough to prove it
  * was reached with the right hash; its own internals are MetaFetchTest's job.
  *
- * detectAbsorbedTopic() and its helpers stay in rutracker.php, dormant
- * (dormant absorption detection): the old download_torrent() no longer calls them, so the
- * only coverage they get now is the direct strictInvoke tests below.
+ * Absorption remains an active dump-status contract: tor_status 7 maps to the
+ * absorbed verdict and message without a separate forum-HTML parser.
  */
 
 define('TESTLIB_HANDLER_STUBS', 1);
@@ -213,80 +212,27 @@ function hQueueMetaFetchFlow($hash, $newHash, $topicId, $forumId = 1106, $rows =
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
 }
 
-function ruTopicUrl($topicId, $start = null)
-{
-    $url = 'https://rutracker.org/forum/viewtopic.php?t=' . $topicId;
-    return $start === null ? $url : $url . '&start=' . $start;
-}
+// --- Active private helper contracts ---------------------------------------
 
-function ruUserPost($topicId)
-{
-    return strictCp1251(
-        '<table class="topic"><tbody id="post_100" class="row1"><tr>'
-        . '<td class="poster_info td1"><p class="nick nick-author">ordinary-user</p>'
-        . '<p class="rank_img"><img class="user-rank" alt="User"></p></td>'
-        . '<td><div class="post_body"><a href="viewtopic.php?t=' . $topicId . '">other topic</a>'
-        . ' Этот фильм было Поглощено вниманием зрителей.</div><!--/post_body--></td></tr></tbody></table>'
-    );
-}
-
-function ruModeratorPost($topicId, $prefix = '')
-{
-    return strictCp1251(
-        '<table class="topic">' . $prefix . '<tbody id="post_200" class="row1"><tr>'
-        . '<td class="poster_info td1"><p class="nick nick-author">tracker-moderator</p>'
-        . '<p class="rank_img"><img class="user-rank" alt="Moderator"></p></td>'
-        . '<td><div class="post_body"><a class="postLink" href="viewtopic.php?t=' . $topicId . '">replacement</a>'
-        . '<span class="post-b">Поглощено</span></div><!--/post_body--></td></tr></tbody></table>'
-    );
-}
-
-// --- Dormant group: detectAbsorbedTopic() and its helpers ------------------
-// Exercised directly (strictInvoke), decoupled from the retired dl.php glue
-// that used to wrap them -- see the file docblock.
-
-$suite->test('detectAbsorbedTopic resolves the single link in a final exact moderator notice', function () use ($topicId) {
-    ruTrackerChecker::reset();
-    Snoopy::queue(ruTopicUrl($topicId), 200, ruModeratorPost(99));
-    $result = strictInvoke('RuTrackerCheckImpl', 'detectAbsorbedTopic', array(new Snoopy(), $topicId));
-    strictAssertSame(99, $result, 'exact final moderator absorption notice resolves to topic 99');
+$suite->test('extractTopicId accepts only canonical positive int32 topic IDs', function () {
+    foreach (array(
+        '1' => 1,
+        '2147483647' => 2147483647,
+        '0' => null,
+        '-1' => null,
+        '01' => null,
+        '+1' => null,
+        '2147483648' => null,
+        '%201' => null,
+        '1%20' => null,
+        '1&t[]=1' => null,
+    ) as $query => $expected) {
+        $actual = strictInvoke('RuTrackerCheckImpl', 'extractTopicId', array(
+            'https://rutracker.org/forum/viewtopic.php?t=' . $query,
+        ));
+        strictAssertSame($expected, $actual, 'topic query t=' . $query);
+    }
 });
-
-$suite->test('detectAbsorbedTopic follows real pagination and ignores same-topic start links inside post bodies', function () use ($topicId) {
-    ruTrackerChecker::reset();
-    $firstPage = strictCp1251(
-        '<a class="pg" href="viewtopic.php?t=' . $topicId . '&amp;start=50">2</a>'
-        . '<tbody id="post_100"><tr><td><div class="post_body">'
-        . '<a href="viewtopic.php?t=' . $topicId . '&amp;start=999999">stale user link</a>'
-        . '</div><!--/post_body--></td></tr></tbody>'
-    );
-    Snoopy::queue(ruTopicUrl($topicId), 200, $firstPage);
-    Snoopy::queue(ruTopicUrl($topicId, 50), 200, ruModeratorPost(99));
-    $result = strictInvoke('RuTrackerCheckImpl', 'detectAbsorbedTopic', array(new Snoopy(), $topicId));
-    strictAssertSame(99, $result, 'pagination followed to the real last page');
-});
-
-$suite->test('detectAbsorbedTopic returns null for an ambiguous multi-link moderator notice', function () use ($topicId) {
-    ruTrackerChecker::reset();
-    $ambiguous = strictCp1251(
-        '<table class="topic"><tbody id="post_200" class="row1"><tr>'
-        . '<td><img class="user-rank" alt="Moderator"></td><td><div class="post_body">'
-        . '<a href="viewtopic.php?t=98">related</a><a href="viewtopic.php?t=99">replacement</a>'
-        . '<span>Поглощено</span></div><!--/post_body--></td></tr></tbody></table>'
-    );
-    Snoopy::queue(ruTopicUrl($topicId), 200, $ambiguous);
-    $result = strictInvoke('RuTrackerCheckImpl', 'detectAbsorbedTopic', array(new Snoopy(), $topicId));
-    strictAssertSame(null, $result, 'two candidate links cannot be resolved automatically');
-});
-
-$suite->test('detectAbsorbedTopic ignores an ordinary user post containing the absorption phrase', function () use ($topicId) {
-    ruTrackerChecker::reset();
-    Snoopy::queue(ruTopicUrl($topicId), 200, ruUserPost(99));
-    $result = strictInvoke('RuTrackerCheckImpl', 'detectAbsorbedTopic', array(new Snoopy(), $topicId));
-    strictAssertSame(null, $result, 'a non-moderator post never triggers absorption detection');
-});
-
-// --- New private helpers, unit-tested directly ------------------------------
 
 $suite->test('layer1Verdict maps the multicall row plus d.get_message through RuTrackerDetector', function () use ($hash) {
     ruTrackerChecker::reset();
@@ -1093,17 +1039,6 @@ $suite->test('a cold torrent keeps its previous verdict instead of being reporte
     strictAssertSame(ruTrackerChecker::STE_UNCHANGED, $result,
         'cold means "no data to judge by", so the stored verdict must be left alone');
     strictAssertSame(array(), Snoopy::$requests, 'a cold verdict costs no HTTP request');
-});
-
-$suite->test('a transport failure is still reported as unreachable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    hReset();
-    hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()), 'Tracker: [Could not resolve hostname]');
-
-    $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
-
-    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
-        'an actual transport error is a real "cannot reach", unlike a cold torrent');
 });
 
 

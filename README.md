@@ -26,6 +26,20 @@ This project is released under the GPLv3 license, for more details, take a look 
   * There's no installation routine or compilation necessary. The sources are cloned/unpacked into a directory which is setup as document root of a web server of your choice (for detailed instructions see the [webserver wiki article](https://github.com/Novik/ruTorrent/wiki/WebSERVER)).
   * After setting up the webserver `ruTorrent` itself needs to be configured. Instructions can be found in various articles in the [wiki](https://github.com/Novik/ruTorrent/wiki).
 
+### Application logging
+
+`RU_LOG_FILE` selects ruTorrent's shared application log. Its backward-compatible
+default remains `/tmp/errors.log`, but that historical filename does not make it
+an errors-only stream: operational notices and explicitly enabled plugin
+diagnostics use the same sink. Leave the configured path blank to disable file
+logging. Log routing and rotation remain deployment responsibilities.
+
+The bundled `rutracker_check` plugin keeps `$rutrackerCheckDebug` disabled by
+default. Enabling it intentionally sends sanitised diagnostics to the shared
+application log. A physically separate plugin debug file should be an explicit
+local opt-in customization; it is not required by, and must not silently replace,
+the existing `RU_LOG_FILE` behavior.
+
 ## Contributing
 
 Pull requests target **`master`**. There is no `develop` branch — it was retired,

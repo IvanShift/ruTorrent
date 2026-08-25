@@ -6,6 +6,8 @@ class KinozalTVAccount extends commonAccount
 
 	protected function isOK($client)
 	{
+		if(!is_object($client) || (int)$client->status !== 200 || !is_string($client->results) || $client->results === '')
+			return(false);
 		// Two independent markers of a guest answer, because Kinozal has two
 		// kinds of them. The login form is matched on the password field alone
 		// (like RUTracker/TapochekNet do): the previous two-attribute probe
@@ -19,16 +21,16 @@ class KinozalTVAccount extends commonAccount
 	}
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
 	{
-	        $is_result_fetched = false;
+		$is_result_fetched = false;
 		if($client->fetch( $this->url ))
 		{
-                        $client->setcookies();
+			$client->setcookies();
 			$client->referer = $this->url;
-        		if($client->fetch( $this->url."/takelogin.php","POST","application/x-www-form-urlencoded",
+			if($client->fetch( $this->url."/takelogin.php","POST","application/x-www-form-urlencoded",
 				"username=".rawurlencode($login)."&password=".rawurlencode($password) ))
 			{
 				$client->setcookies();
-				return(true);
+				return($this->isOK($client));
 			}
 		}
 		return(false);

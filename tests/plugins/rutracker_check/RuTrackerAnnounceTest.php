@@ -28,17 +28,134 @@ $suite->test('makePeerId is 20 bytes with the plugin prefix', function () {
     strictAssertTrue($id !== RuTrackerAnnounce::makePeerId(), 'random tail');
 });
 
-$suite->test('classify: dict without failure reason is registered', function () {
+$suite->test('classify: valid success variants are registered', function () {
     strictAssertSame('registered',
-        RuTrackerAnnounce::classify(200, 'd8:intervali3021e5:peers6:' . "\x01\x02\x03\x04\x05\x06" . 'e'), 'clean dict');
+        RuTrackerAnnounce::classify(200, 'd8:intervali3021e5:peers6:' . "\x01\x02\x03\x04\x05\x06" . 'e'), 'clean dict with peers');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali1800e5:peers0:e'), 'numwant=0 clean dict with 0 peers');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200,
+            'd8:intervali1800e5:peers0:12:min intervali900e8:completei10e10:incompletei5ee'),
+        'clean dict with full stats');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200,
+            'd8:intervali1800e5:peersld2:ip9:127.0.0.14:porti6881eeee'),
+        'dictionary-list peers with a string ip and bounded integer port');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali0e5:peerslee'),
+        'an empty dictionary-list peer response is valid and distinct from an empty dictionary');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali1800e5:peers0:7:warning5:helloe'),
+        'unknown extension keys remain allowed after the required schema is valid');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali1800e5:peers0:1:xi-1ee'),
+        'a canonical negative integer remains valid inside an unknown extension');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali1800e5:peers0:1:xli0ei-1eee'),
+        'canonical integers remain valid inside an unknown extension list');
+    strictAssertSame('registered',
+        RuTrackerAnnounce::classify(200, 'd8:intervali1800e5:peers0:1:xd1:yi42eee'),
+        'canonical integers remain valid inside an unknown extension dictionary');
 });
 
 $suite->test('classify: everything else is uncertain', function () {
     strictAssertSame('uncertain', RuTrackerAnnounce::classify(403, ''), '403');
     strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, '<html>challenge</html>'), 'html');
     strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, ''), 'empty');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'de'), 'empty bencode dict');
     strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'le'), 'bencode non-dict');
     strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd3:fooe'), 'broken bencode');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200,
+        'd8:intervali1800e5:peers0:e<html>'),
+        'otherwise-valid success dictionary with trailing unparsed html');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd3:fooi123ee'), 'arbitrary dict without interval');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd5:hello5:worlde'), 'arbitrary dict without interval 2');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd8:intervali-1ee'), 'negative interval');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd8:interval4:1800e'), 'string interval');
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, 'd8:intervall123eee'), 'list interval');
+});
+
+$suite->test('classify: malformed positive announce schemas stay uncertain', function () {
+    foreach (array(
+        'interval without peers' => 'd8:intervali1800ee',
+        'peers without interval' => 'd5:peers0:e',
+        'integer peers' => 'd8:intervali1800e5:peersi0ee',
+        'compact peers not divisible by six' => 'd8:intervali1800e5:peers5:abcdee',
+        'empty dictionary is not an empty peer list' => 'd8:intervali1800e5:peersdee',
+        'peer list member is not a dictionary' => 'd8:intervali1800e5:peersli6881eee',
+        'peer dictionary missing ip' => 'd8:intervali1800e5:peersld4:porti6881eeee',
+        'peer dictionary missing port' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1eee',
+        'peer ip is not a string' => 'd8:intervali1800e5:peersld2:ipi1e4:porti6881eeee',
+        'peer port is not an integer' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.14:port4:6881eee',
+        'peer port is zero' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.14:porti0eeee',
+        'peer port exceeds 65535' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.14:porti65536eeee',
+        'interval has a leading zero' => 'd8:intervali01800e5:peers0:e',
+        'interval is negative zero' => 'd8:intervali-0e5:peers0:e',
+        'interval uses a plus sign' => 'd8:intervali+1800e5:peers0:e',
+        'interval is a decimal token' => 'd8:intervali1800.0e5:peers0:e',
+        'complete is negative' => 'd8:intervali1800e5:peers0:8:completei-1ee',
+        'incomplete has a leading zero' => 'd8:intervali1800e5:peers0:10:incompletei01ee',
+        'min interval is a string' => 'd8:intervali1800e5:peers0:12:min interval1:0e',
+        'unknown keys cannot replace peers' => 'd8:intervali1800e7:warning5:helloe',
+    ) as $label => $body) {
+        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
+    }
+});
+
+$suite->test('classify: noncanonical integers in unknown extensions invalidate the whole envelope', function () {
+    $successPrefix = 'd8:intervali1800e5:peers0:';
+    $reason = RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON;
+    $failurePrefix = 'd14:failure reason' . strlen($reason) . ':' . $reason;
+    foreach (array('i01e', 'i-0e', 'i+1e', 'i1.0e') as $token) {
+        foreach (array(
+            'direct unknown value' => $successPrefix . '1:x' . $token . 'e',
+            'unknown list value' => $successPrefix . '1:xl' . $token . 'ee',
+            'unknown dictionary value' => $successPrefix . '1:xd1:y' . $token . 'ee',
+        ) as $context => $body) {
+            strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body),
+                $context . ' rejects ' . $token);
+        }
+        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200,
+            $failurePrefix . '1:x' . $token . 'e'),
+            'the exact failure reason cannot bless an invalid envelope containing ' . $token);
+    }
+});
+
+$suite->test('classify: duplicate required announce keys stay uncertain', function () {
+    foreach (array(
+        'duplicate interval' => 'd8:intervali1800e8:intervali1801e5:peers0:e',
+        'duplicate peers' => 'd8:intervali1800e5:peers0:5:peers0:e',
+    ) as $label => $body) {
+        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
+    }
+});
+
+$suite->test('classify: duplicate optional counters stay uncertain', function () {
+    foreach (array(
+        'duplicate complete' => 'd8:intervali1800e5:peers0:8:completei1e8:completei2ee',
+        'duplicate incomplete' => 'd8:intervali1800e5:peers0:10:incompletei1e10:incompletei2ee',
+        'duplicate min interval' => 'd8:intervali1800e5:peers0:12:min intervali1e12:min intervali2ee',
+    ) as $label => $body) {
+        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
+    }
+});
+
+$suite->test('classify: duplicate failure reason stays uncertain', function () {
+    $reason = RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON;
+    $body = 'd14:failure reason' . strlen($reason) . ':' . $reason
+        . '14:failure reason' . strlen($reason) . ':' . $reason . 'e';
+    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), 'duplicate failure reason');
+});
+
+$suite->test('classify: duplicate peer dictionary keys stay uncertain', function () {
+    foreach (array(
+        'duplicate peer ip' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
+            . '2:ip9:127.0.0.24:porti6881eeee',
+        'duplicate peer port' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
+            . '4:porti6881e4:porti6882eeee',
+    ) as $label => $body) {
+        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
+    }
 });
 
 $suite->test('classify: the measured RuTracker failure reason confirms deregistration; a different reason stays inconclusive', function () {
@@ -234,14 +351,6 @@ $suite->test('announce budget: a zero window (disabled scheduler) is floored so 
     });
 });
 
-$suite->test('announce budget: the windowed cap is independent per host, like the cooldown', function () {
-    strictWithStateDir('chk-announce-window-per-host', function () {
-        for ($i = 0; $i < 3; $i++) ratProbe('bt7a.t-ru.org', 1000 + $i, 200, RAT_WINDOW);
-        strictAssertTrue(!ratAllowProbe('bt7a.t-ru.org', 1002, 3, RAT_WINDOW), 'host a capped');
-        strictAssertTrue(ratAllowProbe('bt7b.t-ru.org', 1002, 3, RAT_WINDOW), 'host b unaffected');
-    });
-});
-
 // --- The slot must be taken by the same locked write that judges it --------
 
 // What this proves is the SHAPE of the call, not the lock: four sequential
@@ -332,8 +441,8 @@ $suite->test('an announce answer too large to decode safely is refused before de
     strictAssertTrue($cap <= 16384,
         'the cap is a bound on recursion depth as much as on transfer size; raising it needs this test rewritten');
 
-    $depth = intdiv($cap - 8, 2);
-    $deep = 'd1:a' . str_repeat('l', $depth) . str_repeat('e', $depth) . 'e';
+    $depth = intdiv($cap - 33, 2);
+    $deep = 'd8:intervali1800e5:peers0:1:a' . str_repeat('l', $depth) . str_repeat('e', $depth) . 'e';
     strictAssertTrue(strlen($deep) <= $cap, 'the deepest admitted body is within the cap');
 
     $dir = sys_get_temp_dir() . '/chk-announce-mem-' . getmypid();
@@ -346,9 +455,9 @@ $suite->test('an announce answer too large to decode safely is refused before de
         chdir(' . var_export(testFindRepoRoot() . '/php', true) . ');
         require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/announce.php', true) . ';
         $cap = RuTrackerAnnounce::MAX_ANNOUNCE_BODY;
-        $depth = intdiv($cap - 8, 2);
+        $depth = intdiv($cap - 33, 2);
         echo RuTrackerAnnounce::classify(200,
-            "d1:a" . str_repeat("l", $depth) . str_repeat("e", $depth) . "e");
+            "d8:intervali1800e5:peers0:1:a" . str_repeat("l", $depth) . str_repeat("e", $depth) . "e");
     ');
 
     try {

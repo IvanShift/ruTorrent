@@ -3,16 +3,183 @@
 require_once( __DIR__ . '/../../php/Torrent.php' );
 require_once( __DIR__ . '/state.php' );
 
-// Torrent::decode() (php/Torrent.php:185) is a public instance method, so
-// reaching it still needs an object. Torrent's own constructor does
-// unrelated file/folder detection on its argument, which is pointless (and
-// throws internally, caught, for a bare bencode string) for the sole purpose
-// of decoding a tracker reply. This subclass skips that constructor and
-// inherits decode() as-is.
+// Torrent::decode() loses two details the announce schema needs: integers are
+// converted to floats, and empty lists/dictionaries both become array(). This
+// subclass retains small typed metadata for the top-level schema and peer-list
+// entries while recursively validating the raw syntax of unknown extensions.
 class RuTrackerBencodeDecoder extends Torrent
 {
+    private $schema = array();
+    private $scanData = '';
+    private $scanPointer = 0;
+
     public function __construct()
     {
+    }
+
+    public function decodeComplete($string)
+    {
+        $this->scanData = $string;
+        $this->scanPointer = 0;
+        $this->schema = $this->scanTopDictionary();
+        if ($this->scanPointer !== strlen($string))
+            throw new Exception('Unconsumed trailing data in bencode schema scan');
+
+        $res = $this->decode($string);
+        if ($this->pointer !== strlen($string))
+            throw new Exception('Unconsumed trailing data in bencode stream');
+        return $res;
+    }
+
+    public function schema()
+    {
+        return $this->schema;
+    }
+
+    private function currentByte()
+    {
+        if ($this->scanPointer >= strlen($this->scanData))
+            throw new Exception('Unexpected end of bencode stream');
+        return $this->scanData[$this->scanPointer];
+    }
+
+    private function scanString()
+    {
+        $colon = strpos($this->scanData, ':', $this->scanPointer);
+        if ($colon === false)
+            throw new Exception('Missing bencode string delimiter');
+        $token = substr($this->scanData, $this->scanPointer, $colon - $this->scanPointer);
+        if (!preg_match('/^(?:0|[1-9][0-9]*)$/D', $token))
+            throw new Exception('Invalid bencode string length');
+        $length = (int) $token;
+        $start = $colon + 1;
+        if ($length < 0 || $start + $length > strlen($this->scanData))
+            throw new Exception('Truncated bencode string');
+        $this->scanPointer = $start + $length;
+        return substr($this->scanData, $start, $length);
+    }
+
+    private function scanIntegerToken()
+    {
+        if ($this->currentByte() !== 'i')
+            throw new Exception('Expected bencode integer');
+        $end = strpos($this->scanData, 'e', $this->scanPointer + 1);
+        if ($end === false)
+            throw new Exception('Unterminated bencode integer');
+        $token = substr($this->scanData, $this->scanPointer + 1, $end - $this->scanPointer - 1);
+        if (!preg_match('/^(?:0|-?[1-9][0-9]*)$/D', $token))
+            throw new Exception('Noncanonical bencode integer');
+        $this->scanPointer = $end + 1;
+        return $token;
+    }
+
+    private function scanValue()
+    {
+        $byte = $this->currentByte();
+        if ($byte === 'i') {
+            $this->scanIntegerToken();
+            return;
+        }
+        if ($byte === 'l') {
+            $this->scanPointer++;
+            while ($this->currentByte() !== 'e')
+                $this->scanValue();
+            $this->scanPointer++;
+            return;
+        }
+        if ($byte === 'd') {
+            $this->scanPointer++;
+            while ($this->currentByte() !== 'e') {
+                $this->scanString();
+                $this->scanValue();
+            }
+            $this->scanPointer++;
+            return;
+        }
+        if ($byte >= '0' && $byte <= '9') {
+            $this->scanString();
+            return;
+        }
+        throw new Exception('Invalid bencode value type');
+    }
+
+    private function scanTypedValue()
+    {
+        $byte = $this->currentByte();
+        if ($byte === 'i')
+            return array('type' => 'integer', 'token' => $this->scanIntegerToken());
+        if ($byte >= '0' && $byte <= '9')
+            return array('type' => 'string', 'value' => $this->scanString());
+
+        $type = $byte === 'l' ? 'list' : ($byte === 'd' ? 'dictionary' : 'invalid');
+        $this->scanValue();
+        return array('type' => $type);
+    }
+
+    private function scanPeerDictionary()
+    {
+        $this->scanPointer++;
+        $fields = array();
+        $duplicate = false;
+        while ($this->currentByte() !== 'e') {
+            $key = $this->scanString();
+            if ($key === 'ip' || $key === 'port') {
+                if (array_key_exists($key, $fields))
+                    $duplicate = true;
+                $fields[$key] = $this->scanTypedValue();
+            } else {
+                $this->scanValue();
+            }
+        }
+        $this->scanPointer++;
+        return array('type' => 'dictionary', 'fields' => $fields, 'duplicate' => $duplicate);
+    }
+
+    private function scanPeers()
+    {
+        $byte = $this->currentByte();
+        if ($byte !== 'l')
+            return $this->scanTypedValue();
+
+        $this->scanPointer++;
+        $items = array();
+        while ($this->currentByte() !== 'e') {
+            if ($this->currentByte() === 'd')
+                $items[] = $this->scanPeerDictionary();
+            else
+                $items[] = $this->scanTypedValue();
+        }
+        $this->scanPointer++;
+        return array('type' => 'peer-list', 'items' => $items);
+    }
+
+    private function scanTopDictionary()
+    {
+        if ($this->currentByte() !== 'd')
+            throw new Exception('Expected top-level bencode dictionary');
+        $this->scanPointer++;
+        $fields = array();
+        $known = array(
+            'failure reason' => true,
+            'interval' => true,
+            'peers' => true,
+            'complete' => true,
+            'incomplete' => true,
+            'min interval' => true,
+        );
+        while ($this->currentByte() !== 'e') {
+            $key = $this->scanString();
+            if (!isset($known[$key])) {
+                $this->scanValue();
+                continue;
+            }
+            $node = $key === 'peers' ? $this->scanPeers() : $this->scanTypedValue();
+            if (array_key_exists($key, $fields))
+                $node['duplicate'] = true;
+            $fields[$key] = $node;
+        }
+        $this->scanPointer++;
+        return $fields;
     }
 }
 
@@ -277,6 +444,61 @@ class RuTrackerAnnounce
             . '&event=stopped&key=' . rawurlencode($key);
     }
 
+    static private function isCanonicalNonnegativeInteger($node)
+    {
+        return is_array($node)
+            && ($node['type'] ?? '') === 'integer'
+            && empty($node['duplicate'])
+            && preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['token']) === 1;
+    }
+
+    static private function isValidPeerPort($node)
+    {
+        if (!is_array($node)
+            || ($node['type'] ?? '') !== 'integer'
+            || !preg_match('/^[1-9][0-9]*$/D', $node['token'])) {
+            return false;
+        }
+        if (strlen($node['token']) > 5
+            || (strlen($node['token']) === 5 && strcmp($node['token'], '65535') > 0)) {
+            return false;
+        }
+        return true;
+    }
+
+    static private function hasValidPeers($node)
+    {
+        if (!is_array($node) || !empty($node['duplicate'])) return false;
+        if (($node['type'] ?? '') === 'string')
+            return strlen($node['value']) % 6 === 0;
+        if (($node['type'] ?? '') !== 'peer-list') return false;
+
+        foreach ($node['items'] as $peer) {
+            if (($peer['type'] ?? '') !== 'dictionary'
+                || !empty($peer['duplicate'])
+                || !isset($peer['fields']['ip'], $peer['fields']['port'])
+                || ($peer['fields']['ip']['type'] ?? '') !== 'string'
+                || !self::isValidPeerPort($peer['fields']['port'])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static private function hasValidSuccessSchema($schema)
+    {
+        if (!isset($schema['interval'], $schema['peers'])
+            || !self::isCanonicalNonnegativeInteger($schema['interval'])
+            || !self::hasValidPeers($schema['peers'])) {
+            return false;
+        }
+
+        foreach (array('complete', 'incomplete', 'min interval') as $counter)
+            if (isset($schema[$counter]) && !self::isCanonicalNonnegativeInteger($schema[$counter]))
+                return false;
+        return true;
+    }
+
     static public function classify($status, $body)
     {
         if ((int) $status !== 200 || !is_string($body) || $body === '') return 'uncertain';
@@ -300,25 +522,22 @@ class RuTrackerAnnounce
         if (strlen($body) > self::MAX_ANNOUNCE_BODY) return 'uncertain';
 
         try {
-            $decoded = (new RuTrackerBencodeDecoder())->decode($body);
+            $decoder = new RuTrackerBencodeDecoder();
+            $decoded = $decoder->decodeComplete($body);
+            $schema = $decoder->schema();
         } catch (Exception $e) {
             return 'uncertain';
         }
-        if (!is_array($decoded)) return 'uncertain';
-        // Same 2026-08-07 measurement (see UNREGISTERED_FAILURE_REASON):
-        // the two never-before-seen hashes probed alongside the ones above
-        // ALSO came back with no failure reason -- just a short interval
-        // (328-479s, vs. 3600s for a known-good hash). So "no failure
-        // reason" alone does not prove the tracker has ever heard of this
-        // hash, only that it isn't reporting a failure for it right now.
-        // This never bites in production -- the plugin only ever probes
-        // hashes its own client is seeding, i.e. hashes the tracker already
-        // knows -- but classify() has no way to tell the two cases apart
-        // from the response body alone, so do not assume otherwise here.
-        if (!array_key_exists('failure reason', $decoded)) return 'registered';
+        if (!is_array($decoded) || empty($decoded)) return 'uncertain';
 
-        $reason = $decoded['failure reason'];
-        if (!is_string($reason) || $reason !== self::UNREGISTERED_FAILURE_REASON) return 'uncertain';
-        return 'unregistered';
+        if (array_key_exists('failure reason', $schema)) {
+            $reason = $schema['failure reason'];
+            if (($reason['type'] ?? '') !== 'string'
+                || !empty($reason['duplicate'])
+                || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) return 'uncertain';
+            return 'unregistered';
+        }
+
+        return self::hasValidSuccessSchema($schema) ? 'registered' : 'uncertain';
     }
 }

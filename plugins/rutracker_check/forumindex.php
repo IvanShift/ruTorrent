@@ -2,6 +2,7 @@
 
 require_once( __DIR__ . '/state.php' );
 require_once( __DIR__ . '/launcher.php' );
+require_once( __DIR__ . '/runstate.php' );
 
 // Layer 3 of the post-API design: topic_id -> forum_id resolution and the
 // per-forum static dump (api.rutracker.cc/v1/static/pvc/f/{forum_id}).
@@ -28,21 +29,6 @@ class RuTrackerForumIndex
     // static property rather than a const so other classes read it as
     // RuTrackerForumIndex::$VALID_STATUSES, matching this file's own style.
     static public $VALID_STATUSES = array(0, 2, 3, 8, 10);
-
-    /** Parse a canonical base-10 topic/forum id in the fixed signed-int32 positive domain. */
-    static private function parsePositiveId($value)
-    {
-        if (is_int($value)) {
-            return ($value >= 1 && $value <= 2147483647) ? $value : null;
-        }
-        if (!is_string($value) || !preg_match('/^[1-9][0-9]*$/D', $value)) {
-            return null;
-        }
-        if (strlen($value) > 10 || (strlen($value) === 10 && strcmp($value, '2147483647') > 0)) {
-            return null;
-        }
-        return (int) $value;
-    }
 
     /** Parse a canonical base-10 counter in the portable 0..INT32_MAX domain. */
     static private function parseNonnegativeCount($value)
@@ -111,14 +97,14 @@ class RuTrackerForumIndex
                 $parameters = array();
                 parse_str($query, $parameters);
                 if (isset($parameters['t'])) {
-                    $topic = self::parsePositiveId($parameters['t']);
+                    $topic = RuTrackerRpcValue::canonicalPositiveInt32($parameters['t']);
                     if ($topic !== null) break;
                 }
             }
             $forum = null;
             foreach ($entry->category as $category) {
                 if (preg_match('/^f-(.+)$/D', (string) $category->attributes()->term, $m)) {
-                    $forum = self::parsePositiveId($m[1]);
+                    $forum = RuTrackerRpcValue::canonicalPositiveInt32($m[1]);
                     if ($forum !== null) break;
                 }
             }
@@ -153,7 +139,7 @@ class RuTrackerForumIndex
 
         $rows = array();
         foreach ($data['result'] as $topicId => $row) {
-            $parsedTopic = self::parsePositiveId($topicId);
+            $parsedTopic = RuTrackerRpcValue::canonicalPositiveInt32($topicId);
             if ($parsedTopic === null || isset($rows[$parsedTopic]) || !is_array($row)
                 || count($row) !== count($format)
                 || array_keys($row) !== range(0, count($row) - 1)) {
@@ -239,20 +225,45 @@ class RuTrackerForumIndex
         if ($memoize && array_key_exists($forumId, self::$memo))
             return self::$memo[$forumId];
 
+        // Reserve before I/O. The reservation is the request's authority to
+        // publish: a later request advances it before either response can
+        // arrive, so response order and repeated/absent ETags cannot make an
+        // older body current again. A token that did not reach disk buys no
+        // request -- otherwise another process could reuse the same number.
+        $reservation = null;
+        $cachedEtag = '';
+        $reserved = RuTrackerState::update('forumindex', function ($state) use (
+            $forumId,
+            &$reservation,
+            &$cachedEtag
+        ) {
+            $latest = max(
+                (int) ($state['dump_reservations'][$forumId] ?? 0),
+                (int) ($state['dump_generations'][$forumId] ?? 0),
+                // Migration from the first incomplete generation attempt.
+                (int) ($state['dump_gen'][$forumId] ?? 0)
+            );
+            if ($latest < 0 || $latest >= PHP_INT_MAX) return $state;
+            $reservation = $latest + 1;
+            $state['dump_reservations'][$forumId] = $reservation;
+            $cachedEtag = is_string($state['etags'][$forumId] ?? null)
+                ? (string) $state['etags'][$forumId] : '';
+            return $state;
+        });
+        if (!$reserved || $reservation === null)
+            return self::remember($memoize, $forumId, null);
+
         if ($client === null) {
             $client = self::makeDumpClient();
-            // A plain read, not a locked update(): only the cached ETag is
-            // needed before the fetch, and this must not hold the state
-            // lock across the request below.
-            $cached = RuTrackerState::load('forumindex');
-            $etag = $cached['etags'][$forumId] ?? null;
-            if (is_string($etag) && $etag !== '')
-                $client->rawheaders = array('If-None-Match' => $etag);
+            if ($cachedEtag !== '')
+                $client->rawheaders = array('If-None-Match' => $cachedEtag);
         }
+        $sent = is_array($client->rawheaders)
+            ? (string) ($client->rawheaders['If-None-Match'] ?? '') : '';
 
         // The fetch -- up to 30s, see makeDumpClient() -- runs with NO
-        // state lock held. Only the plain read above and the short locked
-        // update() calls below bracket it; holding the lock across the
+        // state lock held. Only the short reservation/publication updates
+        // bracket it; holding the lock across the
         // fetch would block every other writer (update.php, its detached
         // forumcrawl.php, a concurrent batch_check.php) for the whole
         // request, and is exactly the window that used to let a stale
@@ -274,8 +285,6 @@ class RuTrackerForumIndex
             // would keep it from ever being pruned. The rows carry their own
             // ETag, published by the same rename, so the two can be compared;
             // a disagreement is treated exactly like a missing document.
-            $sent = is_array($client->rawheaders)
-                ? (string) ($client->rawheaders['If-None-Match'] ?? '') : '';
             // ONE load for both halves. They used to be two separate reads of
             // the same multi-megabyte document, and the handler then loaded it
             // a third time because 'unchanged' told it nothing but "go look
@@ -293,10 +302,21 @@ class RuTrackerForumIndex
                 });
                 return self::remember($memoize, $forumId, null);
             }
-            RuTrackerState::update('forumindex', function ($state) use ($forumId) {
-                return self::touchDump($state, $forumId);
+            $dropDocuments = array();
+            $touched = RuTrackerState::update('forumindex', function ($state) use (
+                $forumId,
+                $reservation,
+                $doc,
+                &$dropDocuments
+            ) {
+                if ((int) ($state['dump_reservations'][$forumId] ?? 0) !== $reservation)
+                    return $state;
+                if (self::stateDumpDocument($state, $forumId) !== $doc['document'])
+                    return $state;
+                return self::touchDump($state, $forumId, $dropDocuments);
             });
-            return self::remember($memoize, $forumId, array('rows' => $doc['rows'], 'fresh' => false));
+            if ($touched) self::dropDocuments($dropDocuments);
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
         }
         if ((int) $client->status !== 200 || !is_string($client->results) || $client->results === '')
             return self::remember($memoize, $forumId, null);
@@ -317,29 +337,61 @@ class RuTrackerForumIndex
         // small mutation there -- a queued topic, a miss, a sweep stamp --
         // rewrite and re-parse megabytes, with one oversized forum enough to
         // exhaust the default memory_limit on every load().
-        // The retention claim is staked BEFORE the document is written: a
-        // concurrent touchDump() prunes by dump_touched, and in the window
-        // between the save and the update that records it this forum would
-        // still look stale -- its brand-new document deleted, and the ETag
-        // written next left pointing at nothing, so every later 304 would be
-        // honoured against an empty cache.
-        RuTrackerState::update('forumindex', function ($state) use ($forumId) {
-            return self::touchDump($state, $forumId);
-        });
-        // The rows and the ETag that names them go into the document in one
-        // write, so no reader can ever see one without the other. The copy
-        // kept in forumindex.json below stays the cheap pre-fetch hint --
-        // reading it costs nothing, while loading a multi-megabyte dump just
-        // to build a conditional GET would cost plenty.
-        $stored = RuTrackerState::save(
-            self::dumpDocument($forumId), array('etag' => $etag, 'rows' => $rows));
-        // The hint licenses a 304 on the next cycle. Publish it only when the
-        // document that 304 must serve actually reached disk.
-        if ($stored)
-            RuTrackerState::update('forumindex', function ($state) use ($forumId, $etag) {
-                $state['etags'][$forumId] = $etag;
+        // The final name is unique to the durable reservation. Promotion may
+        // happen before forumindex.json is replaced, but it can never overwrite
+        // the stable winner. If the state replacement then fails, only this
+        // unreferenced generation is removed.
+        $document = self::versionedDumpDocument($forumId, $reservation);
+        $stagedKey = $document . '-staged-' . getmypid() . '-' . uniqid('', true);
+        $saved = RuTrackerState::save($stagedKey, array(
+            'generation' => $reservation,
+            'etag' => $etag,
+            'rows' => $rows,
+        ));
+        if (!$saved)
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+
+        $promoted = false;
+        $published = false;
+        $oldDocument = null;
+        $dropDocuments = array();
+        $stored = RuTrackerState::update('forumindex', function ($state) use (
+            $forumId,
+            $reservation,
+            $etag,
+            $stagedKey,
+            $document,
+            &$promoted,
+            &$published,
+            &$oldDocument,
+            &$dropDocuments
+        ) {
+            if ((int) ($state['dump_reservations'][$forumId] ?? 0) !== $reservation)
                 return $state;
-            });
+
+            $oldDocument = self::stateDumpDocument($state, $forumId);
+            if (!RuTrackerState::promote($stagedKey, $document)) return $state;
+            $promoted = true;
+            $state['dump_documents'][$forumId] = $document;
+            $state['dump_generations'][$forumId] = $reservation;
+            if ($etag !== '') $state['etags'][$forumId] = $etag;
+            else unset($state['etags'][$forumId]);
+            $state = self::touchDump($state, $forumId, $dropDocuments);
+            $published = true;
+            return $state;
+        });
+        RuTrackerState::drop($stagedKey);
+
+        if (!$stored) {
+            if ($promoted) RuTrackerState::drop($document);
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+        }
+        if (!$published)
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+
+        if ($oldDocument !== null && $oldDocument !== $document)
+            RuTrackerState::drop($oldDocument);
+        self::dropDocuments($dropDocuments, $document);
         return self::remember($memoize, $forumId, array('rows' => $rows, 'fresh' => true));
     }
 
@@ -363,14 +415,20 @@ class RuTrackerForumIndex
     // its own, so every caller applies it inside a RuTrackerState::update()
     // callback (see fetchDump()) and can never persist a snapshot older
     // than what is on disk at write time.
-    static private function touchDump($state, $forumId)
+    static private function touchDump($state, $forumId, &$dropDocuments = null)
     {
+        if (!is_array($dropDocuments)) $dropDocuments = array();
         $now = time();
         $state['dump_touched'][$forumId] = $now;
         foreach ((array) $state['dump_touched'] as $id => $touchedAt) {
             if ($now - (int) $touchedAt > self::DUMP_RETENTION) {
-                unset($state['dump_touched'][$id], $state['etags'][$id]);
-                RuTrackerState::drop(self::dumpDocument((int) $id));
+                $dropDocuments[] = self::stateDumpDocument($state, (int) $id);
+                unset(
+                    $state['dump_touched'][$id],
+                    $state['etags'][$id],
+                    $state['dump_documents'][$id],
+                    $state['dump_generations'][$id]
+                );
             }
         }
         // Dumps written before they moved to per-forum documents: the whole
@@ -390,9 +448,24 @@ class RuTrackerForumIndex
      */
     static private function cachedDocument($forumId)
     {
-        $doc = RuTrackerState::load(self::dumpDocument((int) $forumId));
+        $forumId = (int) $forumId;
+        $readable = true;
+        $state = RuTrackerState::load('forumindex', $readable);
+        if (!$readable) return null;
+        $document = self::stateDumpDocument($state, $forumId);
+        $doc = RuTrackerState::load($document, $readable);
+        if (!$readable) return null;
         if (!isset($doc['rows']) || !is_array($doc['rows'])) return null;
-        return array('rows' => $doc['rows'], 'etag' => (string) ($doc['etag'] ?? ''));
+        if (isset($state['dump_documents'][$forumId])) {
+            $generation = (int) ($state['dump_generations'][$forumId] ?? 0);
+            if ($generation < 1 || !isset($doc['generation']) || (int) $doc['generation'] !== $generation)
+                return null;
+        }
+        return array(
+            'rows' => $doc['rows'],
+            'etag' => (string) ($doc['etag'] ?? ''),
+            'document' => $document,
+        );
     }
 
     static public function cachedDump($forumId)
@@ -411,6 +484,31 @@ class RuTrackerForumIndex
     static private function dumpDocument($forumId)
     {
         return 'forumdump-' . (int) $forumId;
+    }
+
+    static private function versionedDumpDocument($forumId, $generation)
+    {
+        return self::dumpDocument($forumId) . '-' . (int) $generation;
+    }
+
+    static private function stateDumpDocument($state, $forumId)
+    {
+        $document = $state['dump_documents'][(int) $forumId] ?? null;
+        return is_string($document) && $document !== ''
+            ? $document : self::dumpDocument($forumId);
+    }
+
+    static private function durableDumpAnswer($forumId)
+    {
+        $doc = self::cachedDocument($forumId);
+        return $doc === null ? null : array('rows' => $doc['rows'], 'fresh' => false);
+    }
+
+    static private function dropDocuments($documents, $keep = null)
+    {
+        foreach (array_unique((array) $documents) as $document)
+            if (is_string($document) && $document !== '' && $document !== $keep)
+                RuTrackerState::drop($document);
     }
 
     // Queues $topicId for the next sweep, unless markMiss() already recorded
@@ -819,17 +917,24 @@ class RuTrackerForumIndex
         // stops retriggering sweeps forever (queueTopic() suppresses a
         // fresh miss on its own).
         $outcome = null;
-        $error = null;
+        $failureReason = null;
+        $threw = false;
         try {
-            $outcome = ($sweeper !== null) ? call_user_func($sweeper, $wanted) : self::sweep($wanted);
+            $outcome = ($sweeper !== null)
+                ? call_user_func($sweeper, $wanted)
+                : self::sweep($wanted, null, $failureReason);
         } catch (Throwable $failure) {
-            $error = $failure->getMessage();
+            // Exception messages may contain an HTTP target or response
+            // fragment. The stable class is enough for an operator and safe
+            // to place in the shared application log.
+            $threw = true;
         }
 
         if ($outcome === null) {
             foreach ($wanted as $topic) self::ensureQueued($topic);
             return 'wanted ' . count($wanted) . ', crawl failed'
-                . ($error !== null ? ': ' . $error : '');
+                . ($failureReason !== null ? ' reason=' . $failureReason
+                    : ($threw ? ' reason=crawl-exception' : ''));
         }
 
         $resolved = $outcome['resolved'];
@@ -887,7 +992,8 @@ class RuTrackerForumIndex
         foreach ($unresolved as $topic) self::ensureQueued($topic);
         self::settleQueue($queueSnapshot, array_merge($requeued, $unresolved));
         return 'wanted ' . count($wanted) . ', resolved ' . count($resolved)
-            . ', ' . count($unresolved) . ' requeued: some dumps went unread';
+            . ', ' . count($unresolved) . ' requeued: some dumps went unread'
+            . ($failureReason !== null ? ' reason=' . $failureReason : '');
     }
 
     // The full-forum crawl, layer 3's last resort: walk every
@@ -970,14 +1076,25 @@ class RuTrackerForumIndex
         return $status === 200 ? $body : null;
     }
 
-    static public function sweep($wantedTopics, $fetcher = null)
+    static private function crawlFailureReason($code, $statuses)
     {
+        $details = array();
+        foreach ((array) $statuses as $status) {
+            $detail = ruTrackerChecker::fetchStatusDetail($status);
+            if ($detail !== '') $details[$detail] = true;
+        }
+        return $code . (count($details) ? ' statuses=' . implode('|', array_keys($details)) : '');
+    }
+
+    static public function sweep($wantedTopics, $fetcher = null, &$failureReason = null)
+    {
+        $failureReason = null;
         $wanted = array();
         foreach ($wantedTopics as $topic) $wanted[(int) $topic] = true;
         if (!count($wanted)) return array('resolved' => array(), 'complete' => true);
 
         if ($fetcher === null) {
-            $fetcher = function ($url, &$refused = null) {
+            $fetcher = function ($url, &$refused = null, &$status = null) {
                 // Politeness: the sweep is the plugin's only bulk consumer --
                 // a full crawl is on the order of the tracker's whole forum
                 // list -- so each real request pays a small fixed pause. The
@@ -986,24 +1103,36 @@ class RuTrackerForumIndex
                 usleep(self::SWEEP_PAUSE_US);
                 $client = self::makeDumpClient();
                 @$client->fetchComplex($url);
+                $status = $client->status;
                 return self::dumpAnswer($client->status, $client->results, $refused);
             };
         }
 
-        $tree = @json_decode((string) $fetcher(self::TREE_URL), true);
-        if (!is_array($tree) || !isset($tree['result']['f']) || !is_array($tree['result']['f']))
+        $treeRefused = false;
+        $treeStatus = null;
+        $treeBody = $fetcher(self::TREE_URL, $treeRefused, $treeStatus);
+        if (!is_string($treeBody) || $treeBody === '') {
+            $failureReason = self::crawlFailureReason('tree-transport', array($treeStatus));
             return null;
+        }
+        $tree = @json_decode($treeBody, true);
+        if (!is_array($tree) || !isset($tree['result']['f']) || !is_array($tree['result']['f'])) {
+            $failureReason = self::crawlFailureReason('tree-malformed', array($treeStatus));
+            return null;
+        }
 
         $forumKeys = array_keys($tree['result']['f']);
         if (count($forumKeys) === 0) {
+            $failureReason = self::crawlFailureReason('tree-malformed', array($treeStatus));
             return null;
         }
 
         $validatedForumIds = array();
         $seenForumIds = array();
         foreach ($forumKeys as $key) {
-            $forumId = self::parsePositiveId($key);
+            $forumId = RuTrackerRpcValue::canonicalPositiveInt32($key);
             if ($forumId === null || isset($seenForumIds[$forumId])) {
+                $failureReason = self::crawlFailureReason('tree-malformed', array($treeStatus));
                 return null;
             }
             $seenForumIds[$forumId] = true;
@@ -1013,10 +1142,13 @@ class RuTrackerForumIndex
         $resolved = array();
         $failures = 0;
         $unread = 0;
+        $failureCodes = array();
+        $failureStatuses = array();
         foreach ($validatedForumIds as $forumId) {
             if (!count($wanted)) break;
             $refused = false;
-            $body = $fetcher(self::DUMP_URL . $forumId, $refused);
+            $status = null;
+            $body = $fetcher(self::DUMP_URL . $forumId, $refused, $status);
             if ($body === null) {
                 // A forum with no dump is FULLY KNOWN territory: most of the
                 // tree is categories and archives that have none, the tracker
@@ -1033,7 +1165,13 @@ class RuTrackerForumIndex
                 // run of them means the tracker is turning us away: abort as
                 // transient, and null tells the caller nothing was concluded.
                 if ($refused) {
-                    if (++$failures >= self::SWEEP_FAILURE_ABORT) return null;
+                    $failureCodes['dump-refused'] = true;
+                    $failureStatuses[] = $status;
+                    if (++$failures >= self::SWEEP_FAILURE_ABORT) {
+                        $failureReason = self::crawlFailureReason(
+                            implode('+', array_keys($failureCodes)), $failureStatuses);
+                        return null;
+                    }
                     $unread++;
                     continue;
                 }
@@ -1054,7 +1192,13 @@ class RuTrackerForumIndex
             $malformed = false;
             $rows = self::parseDump($body, $malformed);
             if ($malformed) {
-                if (++$failures >= self::SWEEP_FAILURE_ABORT) return null;
+                $failureCodes['dump-malformed'] = true;
+                $failureStatuses[] = $status;
+                if (++$failures >= self::SWEEP_FAILURE_ABORT) {
+                    $failureReason = self::crawlFailureReason(
+                        implode('+', array_keys($failureCodes)), $failureStatuses);
+                    return null;
+                }
                 $unread++;
                 continue;
             }
@@ -1065,6 +1209,10 @@ class RuTrackerForumIndex
                     unset($wanted[$topicId]);
                 }
             }
+        }
+        if ($unread > 0) {
+            $failureReason = self::crawlFailureReason(
+                implode('+', array_keys($failureCodes)), $failureStatuses);
         }
         return array('resolved' => $resolved, 'complete' => $unread === 0);
     }

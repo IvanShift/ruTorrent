@@ -5,6 +5,7 @@ require_once("detector.php");
 require_once("forumindex.php");
 require_once("announce.php");
 require_once(dirname(__FILE__) . "/runstate.php");
+require_once(dirname(__FILE__) . "/../erasedata/removewithdata.php");
 
 // The scheduler's per-cycle glue: turns update.php's raw d.multicall values
 // into per-torrent rows (parseMulticall), decides per row whether the local
@@ -23,6 +24,21 @@ class RuTrackerUpdatePass
     // capture dispatches without loading a real tracker handler. null means
     // "use the production default".
     private static $checker = null;
+    private static $foreignAuthoritativeResolver = null;
+
+    static public function isForeignAuthoritative($row)
+    {
+        if (self::$foreignAuthoritativeResolver !== null) {
+            return (bool) call_user_func(self::$foreignAuthoritativeResolver, $row);
+        }
+        if (isset($row['comment']) && is_string($row['comment']) && $row['comment'] !== '') {
+            return ruTrackerChecker::isForeignComment($row['comment']);
+        }
+        if (isset($row['hash'])) {
+            return ruTrackerChecker::hasForeignAuthoritativeComment($row['hash']);
+        }
+        return false;
+    }
 
     static private function forumCorrections()
     {
@@ -212,6 +228,11 @@ class RuTrackerUpdatePass
         $hosts = array();
         $hostStats = array();
         foreach ($rows as $index => $row) {
+            if (self::isForeignAuthoritative($row)) {
+                $verdicts[$index] = 'none';
+                $hosts[$index] = '';
+                continue;
+            }
             $verdict = RuTrackerDetector::classify(
                 $row['trackers'],
                 $row['message'],
@@ -284,6 +305,9 @@ class RuTrackerUpdatePass
             // pre-layer-1 pass dispatched them; hostOf() answered '' for
             // exactly this case in pass 1.
             if ($hosts[$index] === '') {
+                if (self::isSettled($row, true) && (time() - $row['time']) <= self::SETTLED_RECHECK)
+                    continue;
+
                 self::dispatchChecker($checker, $defaultChecker, $row);
                 $checked[] = $row['hash'];
                 continue;
@@ -506,7 +530,8 @@ class RuTrackerUpdatePass
             // across the fetch: load()+save() around a 5s request is exactly
             // the shape state.php's own docblock forbids, since a concurrent
             // writer's work would be erased by the stale snapshot.
-            $etag = RuTrackerState::load('updatepass')['feed_etag'] ?? null;
+            $state = RuTrackerState::load('updatepass');
+            $etag = (!empty($state['feed_applied'])) ? ($state['feed_etag'] ?? null) : null;
             $client = new Snoopy();
             $client->read_timeout = 5;
             $client->_fp_timeout = 5;
@@ -611,6 +636,7 @@ class RuTrackerUpdatePass
         if ($applied && isset($fresh) && $fresh !== '')
             RuTrackerState::update('updatepass', function ($state) use ($fresh) {
                 $state['feed_etag'] = $fresh;
+                $state['feed_applied'] = true;
                 return $state;
             });
         return $changed;
@@ -729,15 +755,15 @@ class RuTrackerUpdatePass
     // general-purpose STE_NOT_NEED, so it is recognised by the token the
     // handler wrote with it -- a bare NOT_NEED, which many transient paths
     // also write, keeps being checked.
-    static private function isSettled($row)
+    static private function isSettled($row, $foreign = false)
     {
         if ($row['time'] <= 0) return false;
-        if ($row['state'] === ruTrackerChecker::STE_DELETED
-            || $row['state'] === ruTrackerChecker::STE_ABSORBED) return true;
+        if (!$foreign && ($row['state'] === ruTrackerChecker::STE_DELETED
+            || $row['state'] === ruTrackerChecker::STE_ABSORBED)) return true;
         if ($row['state'] !== ruTrackerChecker::STE_NOT_NEED) return false;
         $token = explode('|', (string) $row['msg'], 2);
-        return $token[0] === ruTrackerChecker::CHKMSG_TOPIC_STATUS
-            || $token[0] === ruTrackerChecker::CHKMSG_SUPERSEDED;
+        if ($token[0] === ruTrackerChecker::CHKMSG_SUPERSEDED) return true;
+        return !$foreign && $token[0] === ruTrackerChecker::CHKMSG_TOPIC_STATUS;
     }
 
     // Columns of the sweep's own fleet scan: hash, ownership marker, record.
@@ -836,6 +862,25 @@ class RuTrackerUpdatePass
         return (string) $read->val[0] !== (string) $expected;
     }
 
+    static private function reconcileObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord, $oldExists)
+    {
+        if ($oldExists === true) {
+            $status = erasedataCancelObsoleteCleanupGeneration(
+                $oldHash, $newHash, $marker, $replacementRecord);
+            return $status === ERASEDATA_CLEANUP_NONE || $status === ERASEDATA_CLEANUP_READY;
+        }
+        if ($oldExists !== false) return false;
+
+        $status = erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord);
+        if ($status === ERASEDATA_CLEANUP_READY) {
+            if (!erasedataKickCollector($oldHash))
+                ruTrackerChecker::logDebug("sweepReplacements: cleanup collector kick for " . $oldHash
+                    . " was not confirmed; the scheduled collector will retry it");
+            return true;
+        }
+        return $status === ERASEDATA_CLEANUP_NONE;
+    }
+
     // A predecessor that createTorrent() stopped and closed for a replacement
     // that never got as far as staging anything. Nothing else can find it: it
     // is outside update.php's "seeding" view, it carries no replacement
@@ -858,6 +903,17 @@ class RuTrackerUpdatePass
                 ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                     . " carries an unreadable replacement record; retaining the recovery key"
                     . " because no run policy can be proved");
+                return;
+            }
+            $canonicalRecord = RuTrackerReplacementRecord::encode(
+                $record['old'],
+                $record['run']['started'],
+                $record['run']['open'],
+                $record['staged']
+            );
+            if ($canonicalRecord !== $encoded) {
+                ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                    . " carries a non-canonical replacement recovery record; retaining both generations");
                 return;
             }
             // Younger than the lock window: the transaction may simply be in
@@ -911,20 +967,37 @@ class RuTrackerUpdatePass
             } else {
                 if (strcasecmp((string) $succProbe->val[0], $successorHash) !== 0) return;
                 $succMarker = (string) $succProbe->val[1];
-                $succRecord = ruTrackerChecker::decodeInheritance((string) $succProbe->val[2]);
-                if (ruTrackerChecker::isPluginReplacementMarker($succMarker)
-                    && $succRecord !== null
-                    && strcasecmp($succRecord['old'], $hash) === 0
-                    && $succRecord['staged'] === $record['staged']
-                    && $succRecord['run']['started'] === $record['run']['started']
-                    && $succRecord['run']['open'] === $record['run']['open']) {
-                    $isOurSuccessor = true;
+                $rawSuccRecord = (string) $succProbe->val[2];
+                $succRecord = ruTrackerChecker::decodeInheritance($rawSuccRecord);
+                if (ruTrackerChecker::isPluginReplacementMarker($succMarker)) {
+                    if ($succRecord !== null) {
+                        $canonicalSuccRecord = RuTrackerReplacementRecord::encode(
+                            $succRecord['old'],
+                            $succRecord['run']['started'],
+                            $succRecord['run']['open'],
+                            $succRecord['staged']
+                        );
+                        if ($canonicalSuccRecord !== $rawSuccRecord) {
+                            ruTrackerChecker::logDebug("sweepReplacements: " . $successorHash
+                                . " carries a non-canonical successor recovery record; retaining both generations");
+                            return;
+                        }
+                    }
+                    $expectedSuccRecord = RuTrackerReplacementRecord::encode(
+                        $hash,
+                        $record['run']['started'],
+                        $record['run']['open'],
+                        $record['staged']
+                    );
+                    if ($rawSuccRecord === $expectedSuccRecord) $isOurSuccessor = true;
                 }
             }
 
             if ($isOurSuccessor) {
                 // It DID stage: the marked-row branch above owns that transaction
                 // and this key is a leftover from a rollback that could not finish.
+                if (!self::reconcileObsoleteCleanup($hash, $successorHash, $succMarker,
+                    (string) $succProbe->val[2], true)) return;
                 self::clearReplacingGeneration($hash, $encoded,
                     array('state' => $observedState, 'is_open' => $observedOpen));
                 return;
@@ -1091,6 +1164,14 @@ class RuTrackerUpdatePass
             return;
         $val[0] = $observedState;
         $val[1] = $observedOpen;
+
+        // Cleanup owns the same exact marker/record generation. Reconcile it
+        // before any branch can clear keys, revive the predecessor, discard the
+        // staged successor, or activate the committed replacement.
+        $exists = ruTrackerChecker::torrentExists($record['old']);
+        if (!self::reconcileObsoleteCleanup($record['old'], $hash, $rawMarker,
+            $rawRecord, $exists)) return;
+
         $live = $observedState !== 0 || $observedOpen !== 0;
         $satisfied = $record['run']['started']
             ? $observedState === 1
@@ -1118,8 +1199,6 @@ class RuTrackerUpdatePass
 
         // The recorded predecessor is read, and only ever read: it tells the
         // two halves of the transaction apart.
-        $exists = ruTrackerChecker::torrentExists($record['old']);
-        if ($exists === null) return;                      // never act on an unknowable fact
         if ($exists === true) {
             // The commit never happened. The staged copy is still adoptable by
             // a normal check of the predecessor, so nothing here may touch it

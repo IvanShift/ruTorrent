@@ -167,15 +167,15 @@ class XMLRPCProxyTest extends TestCase
 	public function testChainedCommandIsNotForwarded()
 	{
 		$sent = $this->sanitizeParam('d.custom1.set=A;d.custom2.set=(execute.capture,/bin/sh,-c,id)');
-		// The ';' and everything after it end up inside the first argument.
-		$this->assertTrue(strpos($sent, 'd.custom1.set="A;d.custom2.set=(execute.capture"') !== false,
+		// The ';' and everything after it end up inside the quoted argument.
+		$this->assertTrue(strpos($sent, 'd.custom1.set="A;d.custom2.set=(execute.capture,/bin/sh,-c,id)"') !== false,
 			'a chained command is forwarded as text inside an argument, not as a command');
 	}
 
 	public function testNestedCommandValueIsQuoted()
 	{
 		$sent = $this->sanitizeParam('d.custom2.set=(execute.capture,/bin/sh,-c,id)');
-		$this->assertTrue(strpos($sent, 'd.custom2.set="(execute.capture"') !== false,
+		$this->assertTrue(strpos($sent, 'd.custom2.set="(execute.capture,/bin/sh,-c,id)"') !== false,
 			'a parenthesised value must be forwarded quoted, as an argument');
 	}
 
@@ -199,6 +199,24 @@ class XMLRPCProxyTest extends TestCase
 		$sent = $this->sanitizeParam('d.custom1.set=Movies (2024)');
 		$this->assertTrue(strpos($sent, 'd.custom1.set="Movies (2024)"') !== false,
 			'parentheses and spaces survive as a quoted argument');
+	}
+
+	public function testSingleArgumentCommandsPreserveCommasInValues()
+	{
+		$sent1 = $this->sanitizeParam('d.custom1.set=Movies, Inc');
+		$this->assertTrue(strpos($sent1, 'd.custom1.set="Movies, Inc"') !== false,
+			'commas in single-argument commands are preserved inside the argument');
+
+		$sent2 = $this->sanitizeParam('d.directory.set=/data/Movies, Inc', array('d.directory.set'));
+		$this->assertTrue(strpos($sent2, 'd.directory.set="/data/Movies, Inc"') !== false,
+			'commas in directory path argument are preserved');
+	}
+
+	public function testMultiArgumentCommandsSplitProperly()
+	{
+		$sent = $this->sanitizeParam('d.custom.set=category,Movies, Inc', array('d.custom.set'));
+		$this->assertTrue(strpos($sent, 'd.custom.set="category","Movies, Inc"') !== false,
+			'd.custom.set splits key from value and preserves commas in the value');
 	}
 
 	public function testQuotesAndBackslashesAreEscaped()
@@ -552,11 +570,13 @@ class XMLRPCProxyTest extends TestCase
 			'load.raw_start carries the torrent itself, not a URI, so it is untouched');
 	}
 
-	public function testOperatorCanAllowLocalPaths()
+	public function testOperatorCanAllowLocalPathsWithAnExplicitRiskWarning()
 	{
 		$this->load('/srv/watch/x.torrent', true);
 		$this->assertTrue(rXMLRPCRequest::$sent === 1,
 			'the setting exists for automation that posts server-local paths');
+		$this->assertTrue(strpos($this->logText(), 'operator-enabled local path forwarded') !== false,
+			'the exceptional path mode is visible in the operational log');
 	}
 
 	public function testLoadUriListDoesNotCoverTheRawMethods()
@@ -712,19 +732,40 @@ class XMLRPCProxyTest extends TestCase
 	// forwarded trusted, that is an arbitrary file write as the rtorrent user —
 	// found by a tester writing a .php into a webroot and running it.
 
-	private function loadInto($dir, $policy = null, $command = 'd.directory.set')
+	private function loadInto($dir, $policy = null, $command = 'd.directory.set',
+		$uri = 'http://example.test/x.torrent', $allowLocalPaths = false)
 	{
 		$this->resetMocks();
 		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
 			. '<param><value><string></string></value></param>'
-			. '<param><value><string>http://example.test/x.torrent</string></value></param>'
+			. '<param><value><string>' . htmlspecialchars($uri, ENT_NOQUOTES) . '</string></value></param>'
 			. '<param><value><string>' . $command . '=' . htmlspecialchars($dir, ENT_NOQUOTES)
 			. '</string></value></param>'
 			. '</params></methodCall>';
 		$options = ($policy === null) ? array() : array('directory' => $policy);
 		XMLRPCProxy::process($xml, 'sanitize', true,
-			array('d.directory.set', 'd.directory_base.set'), false, $options);
+			array('d.directory.set', 'd.directory_base.set'), $allowLocalPaths, $options);
 		return strpos((string) rXMLRPCRequest::$lastPayload, $command . '=') !== false;
+	}
+
+	public function testRootBoundaryOptInDoesNotImplicitlyEnableLocalPaths()
+	{
+		$this->assertTrue(!$this->loadInto('/var/lib/downloads', array('root' => '/'),
+			'd.directory.set', '/srv/watch/x.torrent', false),
+			'an explicit root boundary does not bypass the independent local-path switch');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0,
+			'the local-path request remains fail-closed before reaching rtorrent');
+	}
+
+	public function testBothPathOptInsPreserveLocalPathAutomation()
+	{
+		$this->assertTrue($this->loadInto('/var/lib/downloads', array('root' => '/'),
+			'd.directory.set', '/srv/watch/x.torrent', true),
+			'an operator may combine local paths with an explicit root boundary');
+		$this->assertTrue(rXMLRPCRequest::$sent === 1,
+			'the explicitly enabled automation still reaches rtorrent');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true,
+			'the fully rebuilt request keeps the same trusted transport contract');
 	}
 
 	public function testADirectoryOutsideTheBoundaryIsDropped()
@@ -806,10 +847,9 @@ class XMLRPCProxyTest extends TestCase
 
 	public function testNoBoundaryStatedMeansNoBoundaryChecked()
 	{
-		// Every caller behaved this way before the check existed, and the
-		// httprpc plugin still does — its door needs a ruTorrent session, not a
-		// machine credential. rpc2.php always states a boundary and refuses to
-		// start without one.
+		// The library keeps this compatibility mode for callers that omit a
+		// policy. Both shipped endpoints now state a boundary; rpc2.php refuses
+		// to start when its configured boundary is empty or implicit root.
 		$this->assertTrue($this->loadInto('/anywhere/at/all', null),
 			'a caller that states no boundary is not policed here');
 	}
@@ -839,5 +879,495 @@ class XMLRPCProxyTest extends TestCase
 		XMLRPCProxy::process($xml, 'sanitize', true, array('d.custom1.set'));
 		$this->assertTrue(rXMLRPCRequest::$lastPayload === $xml, 'forwarded byte for byte');
 		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'and untrusted');
+	}
+
+	private function methodResponse($value = 'ok')
+	{
+		return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+			. htmlspecialchars($value, ENT_NOQUOTES) . '</string></value></param></params></methodResponse>';
+	}
+
+	private function runPhpChild($arguments)
+	{
+		$command = array(escapeshellarg(PHP_BINARY));
+		foreach($arguments as $argument)
+			$command[] = escapeshellarg($argument);
+		$proc = proc_open(implode(' ', $command), array(
+			0 => array('pipe', 'r'),
+			1 => array('pipe', 'w'),
+			2 => array('pipe', 'w'),
+		), $pipes);
+		if(!is_resource($proc))
+			throw new RuntimeException('failed to start PHP child process');
+		fclose($pipes[0]);
+		$stdout = stream_get_contents($pipes[1]);
+		fclose($pipes[1]);
+		$stderr = stream_get_contents($pipes[2]);
+		fclose($pipes[2]);
+		return array(
+			'exitCode' => proc_close($proc),
+			'stdout' => $stdout,
+			'stderr' => $stderr,
+		);
+	}
+
+	/**
+	 * Run one live TCP SCGI peer. It deliberately reads the request as tiny
+	 * fragments, so a successful response proves the complete netstring and
+	 * XML payload arrived rather than merely the first socket-buffer write.
+	 */
+	private function mockSCGIServer($behavior, $callback)
+	{
+		require_once(__DIR__ . '/../../php/scgitransport.php');
+		$encodedBehavior = base64_encode(serialize($behavior));
+		$code = '$behavior = unserialize(base64_decode(' . var_export($encodedBehavior, true) . '));' . <<<'PHP'
+function readExactFragmented($conn, $length, $chunkSize)
+{
+	$data = '';
+	while(strlen($data) < $length)
+	{
+		$part = @fread($conn, min($chunkSize, $length - strlen($data)));
+		if($part === false || $part === '')
+			return null;
+		$data .= $part;
+	}
+	return $data;
+}
+
+function readSCGIRequest($conn, $chunkSize)
+{
+	$lengthText = '';
+	while(strlen($lengthText) <= 20)
+	{
+		$char = readExactFragmented($conn, 1, $chunkSize);
+		if($char === null)
+			return false;
+		if($char === ':')
+			break;
+		if($char < '0' || $char > '9')
+			return false;
+		$lengthText .= $char;
+	}
+	if($lengthText === '' || strlen($lengthText) > 20)
+		return false;
+	$headerLength = (int) $lengthText;
+	$headers = readExactFragmented($conn, $headerLength, $chunkSize);
+	$comma = readExactFragmented($conn, 1, $chunkSize);
+	if($headers === null || $comma !== ',')
+		return false;
+	$parts = explode(chr(0), $headers);
+	$contentLength = null;
+	for($i = 0; $i + 1 < count($parts); $i += 2)
+	{
+		if($parts[$i] === 'CONTENT_LENGTH' && ctype_digit($parts[$i + 1]))
+			$contentLength = (int) $parts[$i + 1];
+	}
+	if($contentLength === null)
+		return false;
+	$payload = readExactFragmented($conn, $contentLength, $chunkSize);
+	return $payload !== null && strlen($payload) === $contentLength;
+}
+
+function writeFragmented($conn, $data, $fragmentSize, $delayMicros)
+{
+	$offset = 0;
+	while($offset < strlen($data))
+	{
+		$written = @fwrite($conn, substr($data, $offset, $fragmentSize));
+		if($written === false || $written === 0)
+			return;
+		$offset += $written;
+		if($delayMicros > 0)
+			usleep($delayMicros);
+	}
+}
+
+$server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+if($server === false)
+	exit(2);
+echo stream_socket_get_name($server, false) . "\n";
+flush();
+$conn = @stream_socket_accept($server, 5);
+if($conn === false)
+	exit(3);
+stream_set_timeout($conn, 2);
+if(isset($behavior['requestReadDelayMicros']))
+	usleep($behavior['requestReadDelayMicros']);
+$complete = readSCGIRequest($conn, isset($behavior['requestChunk']) ? $behavior['requestChunk'] : 7);
+if(isset($behavior['responseDelayMicros']))
+	usleep($behavior['responseDelayMicros']);
+if(!empty($behavior['reportRequestComplete']))
+{
+	$value = $complete ? 'complete' : 'incomplete';
+	$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+		. $value . '</string></value></param></params></methodResponse>';
+	$response = "Status: 200 OK\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+	writeFragmented($conn, $response, 11, 0);
+}
+elseif(isset($behavior['generatedBodyBytes']))
+{
+	writeFragmented($conn, "Status: 200 OK\r\nContent-Type: text/xml\r\n\r\n", 1024, 0);
+	$remaining = $behavior['generatedBodyBytes'];
+	$block = str_repeat('x', 1048576);
+	while($remaining > 0)
+	{
+		$size = min($remaining, strlen($block));
+		$written = @fwrite($conn, substr($block, 0, $size));
+		if($written === false || $written === 0)
+			break;
+		$remaining -= $written;
+	}
+}
+else
+{
+	writeFragmented($conn, $behavior['response'],
+		isset($behavior['responseChunk']) ? $behavior['responseChunk'] : strlen($behavior['response']),
+		isset($behavior['responseDelayBetweenChunks']) ? $behavior['responseDelayBetweenChunks'] : 0);
+}
+fclose($conn);
+fclose($server);
+PHP;
+		$proc = proc_open(PHP_BINARY . ' -r ' . escapeshellarg($code), array(
+			1 => array('pipe', 'w'),
+			2 => array('pipe', 'w'),
+		), $pipes);
+		if(!is_resource($proc))
+			throw new RuntimeException('failed to start mock SCGI peer');
+		$endpoint = trim((string) fgets($pipes[1]));
+		if(!preg_match('/^([^:]+):(\d+)$/', $endpoint, $match))
+			throw new RuntimeException('mock SCGI peer did not publish an endpoint');
+		try {
+			$callback($match[1], (int) $match[2]);
+		} finally {
+			$status = proc_get_status($proc);
+			if($status['running'])
+				proc_terminate($proc);
+			fclose($pipes[1]);
+			fclose($pipes[2]);
+			proc_close($proc);
+		}
+	}
+
+	public function testSCGITransportExactContentLengthXmlAccepted()
+	{
+		$body = $this->methodResponse('exact');
+		$response = "Status: 200 OK\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) use ($body, $response) {
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2);
+			$this->assertTrue(is_array($res), 'exact Content-Length XML accepted');
+			$this->assertTrue($res['body'] === $body, 'body is returned byte for byte');
+			$this->assertTrue($res['raw'] === $response, 'raw response is returned byte for byte');
+		});
+	}
+
+	public function testSCGITransportMixedCaseContentLengthAccepted()
+	{
+		$body = $this->methodResponse('mixed-case');
+		$response = "Status: 200 OK\r\ncOnTeNt-LeNgTh: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2);
+			$this->assertTrue(is_array($res), 'mixed-case Content-Length is recognized');
+		});
+		$oversized = "Status: 200 OK\r\ncOnTeNt-LeNgTh: 67108865\r\n\r\n";
+		$this->mockSCGIServer(array('response' => $oversized), function($host, $port) {
+			$err = null;
+			rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue(strpos($err, 'response body exceeds 67108864 bytes') !== false,
+				'mixed-case Content-Length enforces the same exact bound');
+		});
+	}
+
+	public function testSCGITransportMalformedHeaderFieldRejected()
+	{
+		$response = "Status: 200 OK\r\nBroken header field\r\n\r\n" . $this->methodResponse();
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'malformed header field is rejected');
+			$this->assertTrue(strpos($err, 'malformed response header') !== false, 'header error is classified');
+		});
+	}
+
+	public function testSCGITransportEveryDuplicateContentLengthRejected()
+	{
+		$body = $this->methodResponse();
+		$response = "Status: 200 OK\r\nContent-Length: " . strlen($body)
+			. "\r\ncontent-length: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'identical duplicate Content-Length is rejected');
+			$this->assertTrue(strpos($err, 'duplicate Content-Length') !== false, 'duplicate is classified');
+		});
+	}
+
+	public function testSCGITransportMalformedContentLengthRejected()
+	{
+		$response = "Status: 200 OK\r\nContent-Length: 12oops\r\n\r\n" . $this->methodResponse();
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'malformed Content-Length is rejected');
+			$this->assertTrue(strpos($err, 'malformed Content-Length') !== false, 'length error is classified');
+		});
+	}
+
+	public function testSCGITransportExactLengthNonXmlRejected()
+	{
+		$body = 'not XML despite the exact byte count';
+		$response = "Status: 200 OK\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'exact-length non-XML body is rejected');
+			$this->assertTrue(strpos($err, 'invalid XML methodResponse') !== false, 'XML error is classified');
+		});
+	}
+
+	public function testSCGITransportTruncatedBodyRejected()
+	{
+		$body = $this->methodResponse();
+		$response = "Status: 200 OK\r\nContent-Length: " . (strlen($body) + 10) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'truncated body is rejected');
+			$this->assertTrue(strpos($err, 'truncated response') !== false, 'truncation is classified');
+		});
+	}
+
+	public function testSCGITransportOverlongBodyRejected()
+	{
+		$body = $this->methodResponse();
+		$response = "Status: 200 OK\r\nContent-Length: " . (strlen($body) - 1) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'overlong body is rejected');
+			$this->assertTrue(strpos($err, 'overlong response') !== false, 'overlong response is classified');
+		});
+	}
+
+	public function testSCGITransportExactLengthTruncatedXmlRejected()
+	{
+		$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>cut';
+		$response = "Status: 200 OK\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'exact-length truncated XML is rejected');
+			$this->assertTrue(strpos($err, 'invalid XML methodResponse') !== false, 'XML truncation is classified');
+		});
+	}
+
+	public function testSCGITransportLengthlessTruncatedXmlRejected()
+	{
+		$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>cut';
+		$response = "Status: 200 OK\r\nContent-Type: text/xml\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'lengthless truncated XML is rejected');
+			$this->assertTrue(strpos($err, 'invalid XML methodResponse') !== false, 'XML truncation is classified');
+		});
+	}
+
+	public function testSCGITransportLengthlessValidXmlAccepted()
+	{
+		$body = $this->methodResponse('lengthless');
+		$response = "Status: 200 OK\r\nContent-Type: text/xml\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) use ($body) {
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2);
+			$this->assertTrue(is_array($res), 'valid lengthless XML response is accepted');
+			$this->assertTrue($res['body'] === $body, 'lengthless body is complete');
+		});
+	}
+
+	public function testSCGITransportFragmentedValidResponseAccepted()
+	{
+		$body = $this->methodResponse('fragmented');
+		$response = "Status: 200 OK\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+		$this->mockSCGIServer(array(
+			'response' => $response,
+			'responseChunk' => 1,
+			'responseDelayBetweenChunks' => 100,
+		), function($host, $port) use ($body) {
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2);
+			$this->assertTrue(is_array($res), 'one-byte response fragments are reassembled');
+			$this->assertTrue($res['body'] === $body, 'fragmented body is complete');
+		});
+	}
+
+	public function testSCGITransportReadTimeoutIsClassified()
+	{
+		$this->mockSCGIServer(array(
+			'response' => '',
+			'responseDelayMicros' => 1500000,
+		), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 1, $err);
+			$this->assertTrue($res === null, 'read timeout is rejected');
+			$this->assertTrue(strpos($err, 'timed out reading') !== false, 'timeout is classified before empty read');
+		});
+	}
+
+	public function testSCGITransportExactHeaderLimitSurvivesEveryDelimiterSplit()
+	{
+		$prefix = "Status: 200 OK\r\nX-Fill: ";
+		$headers = $prefix . str_repeat('h', 65536 - strlen($prefix));
+		$body = $this->methodResponse('header-limit');
+		$response = $headers . "\r\n\r\n" . $body;
+		foreach(array(1, 2, 3) as $delimiterBytesInFirstWrite)
+		{
+			$this->mockSCGIServer(array(
+				'response' => $response,
+				'responseChunk' => 65536 + $delimiterBytesInFirstWrite,
+				'responseDelayBetweenChunks' => 10000,
+			), function($host, $port) use ($body, $delimiterBytesInFirstWrite) {
+				$err = null;
+				$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+				$this->assertTrue(is_array($res), '65536-byte header accepted when delimiter splits after byte '
+					. $delimiterBytesInFirstWrite . ': ' . $err);
+				$this->assertTrue(is_array($res) && $res['body'] === $body,
+					'boundary response body is complete after delimiter split '
+					. $delimiterBytesInFirstWrite);
+			});
+		}
+	}
+
+	public function testSCGITransportHeaderOver64KiBRejected()
+	{
+		$prefix = "Status: 200 OK\r\nX-Fill: ";
+		$headers = $prefix . str_repeat('h', 65537 - strlen($prefix));
+		$response = $headers . "\r\n\r\n" . $this->methodResponse();
+		$this->mockSCGIServer(array(
+			'response' => $response,
+			'responseChunk' => 65540,
+			'responseDelayBetweenChunks' => 10000,
+		), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'a 65537-byte header is rejected across delimiter fragmentation');
+			$this->assertTrue(strpos($err, 'response headers exceed 65536 bytes') !== false, 'header bound is exact');
+		});
+	}
+
+	public function testSCGITransportLengthlessBodyOver64MiBRejected()
+	{
+		$this->mockSCGIServer(array('generatedBodyBytes' => 67108865), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 5, $err);
+			$this->assertTrue($res === null, 'lengthless body over 67108864 bytes is rejected');
+			$this->assertTrue(strpos($err, 'response body exceeds 67108864 bytes') !== false, 'body bound is exact');
+		});
+	}
+
+	public function testSCGITransportDeclaredBodyOver64MiBRejected()
+	{
+		$response = "Status: 200 OK\r\nContent-Length: 67108865\r\n\r\n";
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'declared body over 67108864 bytes is rejected');
+			$this->assertTrue(strpos($err, 'response body exceeds 67108864 bytes') !== false, 'declared bound is classified');
+		});
+	}
+
+	public function testSCGITransportMissingHeaderDelimiterRejected()
+	{
+		$response = 'Status: 200 OK Content-Length: 4 test';
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'missing header delimiter is rejected');
+			$this->assertTrue(strpos($err, 'missing header delimiter') !== false, 'framing error is classified');
+		});
+	}
+
+	public function testSCGITransportWritesCompleteRequestAcrossPartialWrites()
+	{
+		$this->mockSCGIServer(array(
+			'reportRequestComplete' => true,
+			'requestChunk' => 17,
+			'requestReadDelayMicros' => 1500000,
+		), function($host, $port) {
+			$payload = str_repeat('p', 32 * 1024 * 1024);
+			$res = rSCGITransport::send($host, $port, $payload, true, 5);
+			$this->assertTrue(is_array($res), 'peer returns a response after the large request');
+			$this->assertTrue(strpos($res['body'], '>complete<') !== false,
+				'complete netstring and payload arrive across partial socket writes');
+		});
+	}
+
+	public function testSCGITransportIgnoresXContentLengthHeader()
+	{
+		$body = $this->methodResponse('x-header');
+		$response = "Status: 200 OK\r\nX-Content-Length: 1\r\n\r\n" . $body;
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2);
+			$this->assertTrue(is_array($res), 'X-Content-Length is not mistaken for Content-Length');
+		});
+	}
+
+	public function testSCGITransportLengthlessNonXmlRpcRootRejected()
+	{
+		$response = "Status: 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body>error</body></html>";
+		$this->mockSCGIServer(array('response' => $response), function($host, $port) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 2, $err);
+			$this->assertTrue($res === null, 'non-methodResponse XML root is rejected');
+			$this->assertTrue(strpos($err, 'invalid XML methodResponse') !== false, 'root error is classified');
+		});
+	}
+
+	public function testSCGITransportFailsBeforeNetworkWhenSimpleXMLFunctionIsDisabled()
+	{
+		$script = <<<'PHP'
+$transportFile = $argv[1];
+require_once($transportFile);
+
+set_error_handler(function($severity, $message) {
+	throw new RuntimeException('transport attempted before dependency guard: ' . $message);
+});
+$err = null;
+$res = rSCGITransport::send('127.0.0.1', 1, '<methodCall/>', true, 1, $err);
+restore_error_handler();
+
+if($res !== null)
+	exit(2);
+if($err !== 'SimpleXML extension is required for SCGI response validation')
+	exit(3);
+echo "result=null\nerror=" . $err . "\n";
+PHP;
+
+		$transportPath = realpath(__DIR__ . '/../../php/scgitransport.php');
+		$child = $this->runPhpChild(array('-n', '-d',
+			'disable_functions=simplexml_load_string', '-r', $script, '--', $transportPath));
+
+		$this->assertEquals(0, $child['exitCode'],
+			'disabled-SimpleXML child exits cleanly before transport: stderr=' . $child['stderr']
+			. ', stdout=' . $child['stdout']);
+		$this->assertEquals('', $child['stderr'], 'disabled-SimpleXML child emits no fatal or warning');
+		$this->assertEquals("result=null\nerror=SimpleXML extension is required for SCGI response validation\n",
+			$child['stdout'], 'send() returns null with the exact dependency error before transport');
+	}
+
+	public function testEnvCheckRequiresTheAvailableSimpleXMLFunction()
+	{
+		$envCheckPath = realpath(__DIR__ . '/../../env_check.php');
+		$child = $this->runPhpChild(array('-n', '-d',
+			'disable_functions=simplexml_load_string', $envCheckPath));
+
+		$this->assertEquals(1, $child['exitCode'],
+			'env_check must exit 1 when the required SimpleXML function is disabled');
+		$this->assertEquals('', $child['stderr'], 'env_check emits no fatal or warning');
+		$this->assertTrue(strpos($child['stdout'], 'Required:') !== false, 'Required section present');
+		$reqSection = '';
+		if(preg_match('/Required:(.*?)(?:Recommended:|Configuration:|$)/s', $child['stdout'], $m)) {
+			$reqSection = $m[1];
+		}
+		$this->assertTrue(preg_match('/^  \[FAIL\] PHP extension: simplexml\s+'
+			. 'core SCGI XMLRPC response validation$/m', $reqSection) === 1,
+			'simplexml must be a required FAIL with the exact core-validation reason');
 	}
 }

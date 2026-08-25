@@ -1,7 +1,13 @@
 <?php
 
 require_once( "xmlrpc.php" );
+require_once(dirname(__FILE__).'/../erasedata/removewithdata.php');
 eval( FileUtil::getPluginConf( $plugin["name"] ) );
+$garbageCheckInterval = (function () {
+	$garbageCheckInterval = 15;
+	eval(FileUtil::getPluginConf('erasedata'));
+	return($garbageCheckInterval);
+})();
 
 $session = rTorrentSettings::get()->session;
 if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
@@ -10,6 +16,7 @@ if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
 }
 else
 {
+	$commands = array(erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval));
 	if($updateInterval)
 	{
 		// getScheduleCommand, not getAbsScheduleCommand: this file runs on every
@@ -21,16 +28,16 @@ else
 		// This form aligns the start to the next wall-clock boundary, which a
 		// reload recomputes to the same instant. Same choice as plugins/trafic;
 		// note it takes the interval in minutes rather than seconds.
-		$req = new rXMLRPCRequest( $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
-			getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' &}' ));
-		if($req->success())
-			$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
-		else
-			$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');";
+		$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
+			getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' &}' );
 	}
 	else
 	{
 		require( 'done.php' );
-		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	}
+	$req = new rXMLRPCRequest($commands);
+	if($req->success())
+		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
+	else
+		$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');";
 }

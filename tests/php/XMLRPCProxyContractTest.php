@@ -70,7 +70,7 @@ class XMLRPCProxyContractTest extends TestCase
 		);
 	}
 
-	public function testFixtureCoversEveryBranch()
+	public function testFixtureCoversRejectTrustedAndUntrustedOutcomes()
 	{
 		$this->assertTrue(count($this->cases) > 0, 'the contract fixture loaded');
 
@@ -87,6 +87,62 @@ class XMLRPCProxyContractTest extends TestCase
 		$this->assertTrue(isset($seen['reject']), 'a rejected request is covered');
 		$this->assertTrue(isset($seen['trusted']), 'a trusted forward is covered');
 		$this->assertTrue(isset($seen['untrusted']), 'an untrusted forward is covered');
+	}
+
+	public function testSharedPathResolverConfinesMissingTailsAcrossRealSymlinks()
+	{
+		$helper = __DIR__ . '/../../php/xmlrpc_path.php';
+		if(!is_file($helper))
+		{
+			$this->assertTrue(false, 'the standalone path resolver is available');
+			return;
+		}
+		require_once($helper);
+
+		$base = sys_get_temp_dir() . '/xmlrpc-path-' . getmypid() . '-' . bin2hex(random_bytes(6));
+		$root = $base . '/root';
+		$outside = $base . '/outside';
+		mkdir($root, 0700, true);
+		mkdir($outside, 0700, true);
+		$link = $root . '/escape';
+		$this->assertTrue(symlink($outside, $link), 'the real-filesystem symlink fixture was created');
+
+		try
+		{
+			$normalTail = $root . '/missing/child';
+			$escapedTail = $link . '/missing/child';
+			$this->assertTrue(
+				XMLRPCPathResolver::deepestExistingAncestor($normalTail)
+					=== realpath($root) . '/missing/child',
+				'a missing tail stays attached to its deepest existing root ancestor'
+			);
+			$this->assertTrue(
+				XMLRPCPathResolver::deepestExistingAncestor($escapedTail)
+					=== realpath($outside) . '/missing/child',
+				'a missing tail below a symlink resolves below the symlink target'
+			);
+
+			$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+				. '<param><value><string></string></value></param>'
+				. '<param><value><string>http://example.test/x.torrent</string></value></param>'
+				. '<param><value><string>d.directory.set=' . htmlspecialchars($escapedTail, ENT_NOQUOTES, 'UTF-8')
+				. '</string></value></param></params></methodCall>';
+			$decision = XMLRPCProxy::decide($xml, 'sanitize', array('d.directory.set'), false, array(
+				'directory' => array(
+					'root' => $root,
+					'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
+				),
+			));
+			$this->assertTrue(strpos($decision['payload'], 'd.directory.set=') === false,
+				'a symlink escape is removed before the request reaches rTorrent');
+		}
+		finally
+		{
+			@unlink($link);
+			@rmdir($root);
+			@rmdir($outside);
+			@rmdir($base);
+		}
 	}
 
 	public function testProcessDoesExactlyWhatItDidBefore()

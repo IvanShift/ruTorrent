@@ -52,8 +52,11 @@
 	//
 	// Turn it on only if something you run posts server-local paths through the
 	// proxy, and note that it lets that caller choose which file d.delete_tied
-	// removes. ruTorrent's own "add torrent" does not go through the proxy, so
-	// this does not affect it.
+	// removes. rTorrent resolves the path after PHP has made its policy decision,
+	// so a process that can also replace path components may race that decision;
+	// enabling this flag explicitly accepts that conditional risk. Each forwarded
+	// local path is logged. ruTorrent's own "add torrent" and rTorrent's internal
+	// watch scheduler do not go through this proxy, so this does not affect them.
 	$XMLRPCProxyAllowLocalPaths = false;
 
 	// Allow "/" as the boundary for where a caller may have a download written
@@ -71,4 +74,9 @@
 	// set this to true and accept that a caller may write anywhere the rtorrent
 	// user can. On a single-user box where the only caller is you, that may be
 	// exactly what you want -- but say it on purpose.
+	//
+	// This switch is independent of $XMLRPCProxyAllowLocalPaths. Set both to true
+	// only when the caller must use server-local .torrent paths and $topDirectory
+	// intentionally remains "/". sanitize mode still rejects dangerous RPC
+	// command families regardless of these two path switches.
 	$XMLRPCProxyAllowRootDirectory = false;

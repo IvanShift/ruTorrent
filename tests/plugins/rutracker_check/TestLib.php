@@ -37,6 +37,13 @@ function getCmd($command)
     return $command . $suffix;
 }
 
+if (!defined('ERASEDATA_TORRENT_PRESENT')) define('ERASEDATA_TORRENT_PRESENT', 1);
+if (!defined('ERASEDATA_TORRENT_ABSENT')) define('ERASEDATA_TORRENT_ABSENT', 0);
+if (!defined('ERASEDATA_TORRENT_UNKNOWN')) define('ERASEDATA_TORRENT_UNKNOWN', -1);
+if (!defined('ERASEDATA_FILE_ALIAS_SAME')) define('ERASEDATA_FILE_ALIAS_SAME', 1);
+if (!defined('ERASEDATA_FILE_ALIAS_DISTINCT')) define('ERASEDATA_FILE_ALIAS_DISTINCT', 0);
+if (!defined('ERASEDATA_FILE_ALIAS_UNKNOWN')) define('ERASEDATA_FILE_ALIAS_UNKNOWN', -1);
+
 // The shared run-state primitive, loaded for real. It is a small standalone
 // file with no application dependencies, and the suites that eval() only the
 // ruTrackerChecker class body out of check.php (see loadClassDefinition below)
@@ -100,6 +107,15 @@ class StrictTestSuite
         try {
             foreach ($this->tests as $test) {
                 list($name, $callback) = $test;
+                $savedGlobals = array(
+                    'rutrackerLayer2Enabled' => $GLOBALS['rutrackerLayer2Enabled'] ?? null,
+                    'rutrackerAnnounceCap' => $GLOBALS['rutrackerAnnounceCap'] ?? null,
+                    'ignoreLabels' => $GLOBALS['ignoreLabels'] ?? null,
+                    'rutrackerCheckDebug' => $GLOBALS['rutrackerCheckDebug'] ?? null,
+                    'rutrackerMetaWait' => $GLOBALS['rutrackerMetaWait'] ?? null,
+                    'rutrackerFuseShare' => $GLOBALS['rutrackerFuseShare'] ?? null,
+                    'rutrackerFuseFloor' => $GLOBALS['rutrackerFuseFloor'] ?? null,
+                );
                 try {
                     call_user_func($callback);
                     echo "ok - {$name}\n";
@@ -107,6 +123,31 @@ class StrictTestSuite
                     $failures++;
                     echo "not ok - {$name}\n";
                     echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
+                } finally {
+                    foreach ($savedGlobals as $k => $v) {
+                        if ($v === null) unset($GLOBALS[$k]);
+                        else $GLOBALS[$k] = $v;
+                    }
+                    if (class_exists('rXMLRPCRequest', false) && method_exists('rXMLRPCRequest', 'reset')) {
+                        rXMLRPCRequest::reset();
+                    }
+                    if (class_exists('ruTrackerChecker', false) && method_exists('ruTrackerChecker', 'reset')) {
+                        ruTrackerChecker::reset();
+                    }
+                    if (class_exists('Snoopy', false) && method_exists('Snoopy', 'reset')) {
+                        Snoopy::reset();
+                    }
+                    if (class_exists('rTorrentSettings', false)
+                        && property_exists('rTorrentSettings', 'instance')) {
+                        strictSetPrivateStatic('rTorrentSettings', 'instance', null);
+                    }
+                    if (class_exists('RuTrackerUpdatePass', false)) {
+                        foreach (array('checker', 'foreignAuthoritativeResolver') as $property) {
+                            if (property_exists('RuTrackerUpdatePass', $property)) {
+                                strictSetPrivateStatic('RuTrackerUpdatePass', $property, null);
+                            }
+                        }
+                    }
                 }
             }
         } finally {
@@ -267,6 +308,7 @@ class rXMLRPCRequest
     private $commands = array();
     public $important = true;
     public $fault = false;
+    public $faultString = '';
     public $val = array();
 
     public function __construct($commands = null)
@@ -288,7 +330,7 @@ class rXMLRPCRequest
         self::$requests = array();
     }
 
-    public static function queue($commands, $ok, $fault, $values = array())
+    public static function queue($commands, $ok, $fault, $values = array(), $faultString = null)
     {
         // The real transport (php/xmlrpc.php rXMLRPCRequest::run()) parses
         // the SCGI answer with one flat regex over the whole XML document,
@@ -312,7 +354,9 @@ class rXMLRPCRequest
             }
         }
         $key = is_array($commands) ? implode('|', $commands) : $commands;
-        self::$responses[$key][] = array($ok, $fault, $values);
+        if ($faultString === null)
+            $faultString = ($ok && $fault && $key === getCmd('d.hash')) ? 'info-hash not found' : '';
+        self::$responses[$key][] = array($ok, $fault, $values, $faultString);
     }
 
     public static function requestsFor($key)
@@ -330,8 +374,9 @@ class rXMLRPCRequest
         self::$requests[] = array('key' => $key, 'important' => $this->important, 'commands' => $this->commands);
         $response = (isset(self::$responses[$key]) && count(self::$responses[$key]))
             ? array_shift(self::$responses[$key])
-            : array(false, true, array());
+            : array(false, true, array(), '');
         $this->fault = $response[1];
+        $this->faultString = isset($response[3]) ? (string) $response[3] : '';
         // A lazily-computed value is queued as a Closure (see CheckerTest's
         // queueLoadConfirmed()); every other value is a plain literal, most
         // often a two-element array of strings. is_callable() would treat
@@ -368,6 +413,36 @@ class rXMLRPCRequest
     public function success($trusted = true)
     {
         return $this->execute() && !$this->fault;
+    }
+}
+
+if (!function_exists('erasedataTorrentPresence')) {
+    function erasedataTorrentPresence($hash)
+    {
+        $probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.hash'), $hash));
+        $probe->important = false;
+        if (!$probe->run()) return ERASEDATA_TORRENT_UNKNOWN;
+        if ($probe->fault)
+            return preg_match('/(?:info-hash\s+not\s+found|could\s+not\s+find\s+info-hash)/i',
+                $probe->faultString) === 1 ? ERASEDATA_TORRENT_ABSENT : ERASEDATA_TORRENT_UNKNOWN;
+        if (!is_array($probe->val) || count($probe->val) !== 1 || !is_string($probe->val[0]))
+            return ERASEDATA_TORRENT_UNKNOWN;
+        if ($probe->val[0] === '') return ERASEDATA_TORRENT_ABSENT;
+        return strcasecmp($probe->val[0], $hash) === 0
+            ? ERASEDATA_TORRENT_PRESENT : ERASEDATA_TORRENT_UNKNOWN;
+    }
+}
+
+if (!function_exists('erasedataExactFileAlias')) {
+    function erasedataExactFileAlias($leftIdentity, $rightIdentity)
+    {
+        if (!is_array($leftIdentity) || !is_array($rightIdentity)) return ERASEDATA_FILE_ALIAS_UNKNOWN;
+        if (empty($leftIdentity['exists']) || empty($rightIdentity['exists'])) return ERASEDATA_FILE_ALIAS_DISTINCT;
+        if (!isset($leftIdentity['stat']['dev'], $leftIdentity['stat']['ino'],
+            $rightIdentity['stat']['dev'], $rightIdentity['stat']['ino'])) return ERASEDATA_FILE_ALIAS_UNKNOWN;
+        return $leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
+            && $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino']
+            ? ERASEDATA_FILE_ALIAS_SAME : ERASEDATA_FILE_ALIAS_DISTINCT;
     }
 }
 
@@ -632,11 +707,55 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$registrations[] = array($commentFilter, $announceFilter, $handler);
         }
 
+        public static function isForeignComment($comment)
+        {
+            if ((string)$comment === '')
+                return false;
+            foreach (self::$registrations as $reg) {
+                if (preg_match($reg[0], (string)$comment)) {
+                    return $reg[2] !== 'RuTrackerCheckImpl::download_torrent';
+                }
+            }
+            if (preg_match('/kinozal\.|nnmclub\.|nnm-club\.|toloka\.|tfile\.|anidub\.|tapochek\./i', (string)$comment)) {
+                return true;
+            }
+            return false;
+        }
+
+        public static function hasForeignAuthoritativeComment($hash)
+        {
+            return false;
+        }
+
         public static function makeClient($url, $method = 'GET', $contentType = '', $body = '')
         {
             $client = new Snoopy();
             $client->fetchComplex($url, $method, $contentType, $body);
             return $client;
+        }
+
+        public static function transportFailureDetail($status)
+        {
+            $status = (int) $status;
+            if ($status < 0) {
+                $reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
+                $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
+                return 'transport=socket status=' . $status . ' reason=' . $reason;
+            }
+            $reasons = array(
+                5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
+                35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
+                56 => 'receive', 60 => 'tls-certificate',
+            );
+            $reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
+            return 'transport=curl-exit code=' . $status . ' reason=' . $reason;
+        }
+
+        public static function fetchStatusDetail($status)
+        {
+            if ($status === null || $status === '') return '';
+            $status = (int) $status;
+            return $status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status;
         }
 
         public static function torrentExists($hash)

@@ -12,6 +12,7 @@ require_once( "trackers/tapocheknet.php" );
 require_once( "trackers/tfile.php" );
 require_once( "trackers/toloka.php" );
 require_once( dirname(__FILE__) . "/runstate.php" );
+require_once( dirname(__FILE__) . "/../erasedata/removewithdata.php" );
 require_once( "metafetch.php" );
 
 eval(FileUtil::getPluginConf( "rutracker_check" ));
@@ -100,6 +101,12 @@ class ruTrackerChecker
 
 	private static $TRACKERS = array();
 	private static $ANNOUNCES = array();
+	private static $obsoleteCleanupSummary = array(
+		'old' => 0,
+		'new' => 0,
+		'obsolete' => 0,
+		'missing' => 0,
+	);
 
 	/**
 	 * Register a tracker handler.
@@ -125,19 +132,257 @@ class ruTrackerChecker
 		return(self::$ANNOUNCES);
 	}
 
+	static public function isForeignComment($comment)
+	{
+		if((string)$comment === '')
+			return false;
+		if(count(self::$TRACKERS) > 0)
+		{
+			foreach(self::$TRACKERS as $commentFilter => $tracker)
+			{
+				if($tracker['handler'] !== 'RuTrackerCheckImpl::download_torrent' &&
+					preg_match($commentFilter, (string)$comment))
+				{
+					return true;
+				}
+			}
+		}
+		if(preg_match('/kinozal\.|nnmclub\.|nnm-club\.|toloka\.|tfile\.|anidub\.|tapochek\./i', (string)$comment))
+		{
+			return true;
+		}
+		return false;
+	}
+
+	static public function hasForeignAuthoritativeComment($hash)
+	{
+		if(!class_exists('rTorrentSettings') || !method_exists('rTorrentSettings', 'get'))
+			return false;
+		$settings = rTorrentSettings::get();
+		if(!$settings || empty($settings->session))
+			return false;
+		$fname = $settings->session . $hash . ".torrent";
+		if(!is_file($fname))
+			return false;
+		$torrent = @new Torrent($fname);
+		if($torrent->errors())
+			return false;
+		return self::isForeignComment((string) $torrent->comment());
+	}
+
 	/**
 	 * Check whether rTorrent still knows a hash.
 	 *
 	 * @return bool|null true when present, false when the target is missing,
-	 *                   null when the XMLRPC request itself failed
+	 *                   null when presence cannot be proved either way
 	 */
 	static public function torrentExists( $hash )
 	{
-		$req = new rXMLRPCRequest( new rXMLRPCCommand( getCmd("d.hash"), $hash ) );
-		$req->important = false;
-		if(!$req->run())
+		$presence = erasedataTorrentPresence($hash);
+		if($presence === ERASEDATA_TORRENT_PRESENT)
+			return(true);
+		if($presence === ERASEDATA_TORRENT_ABSENT)
+			return(false);
+		return(null);
+	}
+
+	static private function makeSafeRelativePath($components)
+	{
+		if(!is_array($components) || !count($components))
 			return(null);
-		return(!$req->fault);
+		$normalized = array();
+		foreach($components as $component)
+		{
+			if(!is_string($component) && !is_numeric($component))
+				return(null);
+			$component = (string) $component;
+			if($component === '' || $component === '.' || $component === '..'
+				|| strpos($component, "\0") !== false || strpos($component, '/') !== false
+				|| strpos($component, '\\') !== false)
+				return(null);
+			$normalized[] = $component;
+		}
+		return(implode('/', $normalized));
+	}
+
+	static private function collectTorrentPaths($torrent)
+	{
+		if(!is_object($torrent) || !isset($torrent->info) || !is_array($torrent->info))
+			return(null);
+		$info = $torrent->info;
+		$single = array_key_exists('length', $info);
+		$multi = array_key_exists('files', $info);
+		if($single === $multi)
+			return(null);
+		$paths = array();
+		$seen = array();
+		if($multi)
+		{
+			if(!is_array($info['files']))
+				return(null);
+			foreach($info['files'] as $file)
+			{
+				if(!is_array($file) || !isset($file['path']) || !is_array($file['path']))
+					return(null);
+				$path = self::makeSafeRelativePath($file['path']);
+				if($path === null)
+					return(null);
+				if(array_key_exists('attr', $file))
+				{
+					if(!is_string($file['attr']))
+						return(null);
+					if(strpos($file['attr'], 'p') !== false)
+						continue;
+				}
+				$key = "p\0" . $path;
+				if(!isset($seen[$key]))
+				{
+					$seen[$key] = true;
+					$paths[] = $path;
+				}
+			}
+		}
+		elseif(array_key_exists('name', $info))
+		{
+			$path = self::makeSafeRelativePath(array($info['name']));
+			if($path === null)
+				return(null);
+			$paths[] = $path;
+		}
+		else
+			return(null);
+		return($paths);
+	}
+
+	static private function fileIdentityIndexKey($identity)
+	{
+		if(!is_array($identity) || empty($identity['exists'])
+			|| !isset($identity['stat']['dev'], $identity['stat']['ino']))
+			return(false);
+		return('i:' . $identity['stat']['dev'] . ':' . $identity['stat']['ino']);
+	}
+
+	static private function resolveSuccessorFileIdentity($candidate, $basePrefix)
+	{
+		$identity = XMLRPCPathResolver::filesystemIdentity($candidate);
+		if($identity === false || !isset($identity['path'], $identity['exists'])
+			|| !is_string($identity['path']) || strpos($identity['path'], $basePrefix) !== 0)
+			return(false);
+		if(empty($identity['exists']))
+			return($identity);
+
+		clearstatcache(true, $candidate);
+		$lstat = @lstat($candidate);
+		$stat = @stat($candidate);
+		if(!is_file($candidate) || !is_array($lstat) || !is_array($stat)
+			|| !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'])
+			|| !isset($identity['lstat']['dev'], $identity['lstat']['ino'],
+				$identity['stat']['dev'], $identity['stat']['ino'])
+			|| (($lstat['mode'] & 0170000) !== 0100000 && ($lstat['mode'] & 0170000) !== 0120000)
+			|| (($stat['mode'] & 0170000) !== 0100000)
+			|| $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
+			|| $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino'])
+			return(false);
+		return($identity);
+	}
+
+	static private function buildObsoleteCleanupFiles($oldTorrent, $newTorrent, $baseDir)
+	{
+		self::$obsoleteCleanupSummary = array('old' => 0, 'new' => 0, 'obsolete' => 0, 'missing' => 0);
+		$oldPaths = self::collectTorrentPaths($oldTorrent);
+		$newPaths = self::collectTorrentPaths($newTorrent);
+		if(!is_array($oldPaths) || !is_array($newPaths))
+			return(false);
+		$newPathSet = array();
+		foreach($newPaths as $path)
+			$newPathSet["p\0" . $path] = true;
+		$obsolete = array();
+		foreach($oldPaths as $path)
+			if(!isset($newPathSet["p\0" . $path]))
+				$obsolete[] = $path;
+		self::$obsoleteCleanupSummary = array(
+			'old' => count($oldPaths),
+			'new' => count($newPaths),
+			'obsolete' => count($obsolete),
+			'missing' => 0,
+		);
+		if(!count($obsolete))
+			return(null);
+
+		if(!is_string($baseDir) || $baseDir === '')
+			return(false);
+		$base = @realpath($baseDir);
+		if($base === false || !is_dir($base) || $base === DIRECTORY_SEPARATOR)
+			return(false);
+		$base = rtrim($base, DIRECTORY_SEPARATOR);
+		$basePrefix = $base . DIRECTORY_SEPARATOR;
+		$newIdentityIndex = array();
+		foreach($newPaths as $path)
+		{
+			$identity = self::resolveSuccessorFileIdentity($basePrefix . $path, $basePrefix);
+			if($identity === false)
+				return(false);
+			if(!empty($identity['exists']))
+			{
+				$key = self::fileIdentityIndexKey($identity);
+				if($key === false)
+					return(false);
+				$newIdentityIndex[$key] = $identity;
+			}
+		}
+
+		$entries = array();
+		foreach($obsolete as $path)
+		{
+			$candidate = $basePrefix . $path;
+			$identity = XMLRPCPathResolver::filesystemIdentity($candidate);
+			if($identity === false)
+				return(false);
+			if(empty($identity['exists']))
+			{
+				self::$obsoleteCleanupSummary['missing']++;
+				continue;
+			}
+			clearstatcache(true, $candidate);
+			$lstat = @lstat($candidate);
+			$stat = @stat($candidate);
+			if($identity['path'] !== $candidate || strpos($candidate, $basePrefix) !== 0
+				|| is_link($candidate) || !is_file($candidate)
+				|| !is_array($lstat) || !is_array($stat)
+				|| !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'], $stat['size'], $stat['mtime'])
+				|| (($lstat['mode'] & 0170000) !== 0100000) || (($stat['mode'] & 0170000) !== 0100000)
+				|| $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
+				|| $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino'])
+				return(false);
+
+			$key = self::fileIdentityIndexKey($identity);
+			if($key === false)
+				return(false);
+			if(isset($newIdentityIndex[$key]))
+			{
+				$alias = erasedataExactFileAlias($identity, $newIdentityIndex[$key]);
+				if($alias === ERASEDATA_FILE_ALIAS_UNKNOWN)
+					return(false);
+				if($alias === ERASEDATA_FILE_ALIAS_SAME)
+					continue;
+			}
+
+			$current = XMLRPCPathResolver::filesystemIdentity($candidate);
+			if($current === false || empty($current['exists']) || $current['path'] !== $candidate
+				|| $current['lstat'] !== $identity['lstat'] || $current['stat'] !== $identity['stat'])
+				return(false);
+			$entries[] = array(
+				'path' => $candidate,
+				'identity' => array(
+					'canonical' => $identity['path'],
+					'lstat' => $identity['lstat'],
+					'stat' => $identity['stat'],
+					'size' => $stat['size'],
+					'mtime' => $stat['mtime'],
+				),
+			);
+		}
+		return(count($entries) ? $entries : null);
 	}
 
 	static public function setState( $hash, $state )
@@ -227,9 +472,8 @@ class ruTrackerChecker
 		// gone" apart from "the daemon did not answer" -- it just no longer
 		// runs when nothing went wrong.
 		//
-		// The scheduler does not come through here at all: update.php hands
-		// run() a cached row, and run() does its own live existence check for
-		// exactly that path, where the snapshot really can be stale.
+		// Scheduler and manual checks both reach this live read under run()'s
+		// claim. A scheduler snapshot is only dispatch input and may be stale.
 		$req = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-state")  ),
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-time") ),
@@ -510,7 +754,8 @@ class ruTrackerChecker
 
 	// Runs after the commit point: failures are logged and the replacement is
 	// left stopped rather than reported as a failed check.
-	static private function activateReplacement($hash, $wasOpen, $wasStarted, $marker = null, $record = null)
+	static private function activateReplacement($hash, $wasOpen, $wasStarted, $marker = null, $record = null,
+		$closeTransaction = true)
 	{
 		if(!$wasOpen && !$wasStarted)
 		{
@@ -522,31 +767,61 @@ class ruTrackerChecker
 				. " left stopped and closed: the old torrent was neither open nor started");
 			if($marker === null || $record === null)
 				return(true);
+			if(!$closeTransaction)
+				return(true);
 			return(self::clearReplacementRecord($hash, $marker, $record,
 				array('state' => 0, 'is_open' => 0)));
 		}
 		if($marker === null || $record === null
 			|| (string) $marker === '' || (string) $record === '')
 			return(false);
-		$status = RuTrackerAtomicOwnership::runState(
-			$hash,
-			array(
-				self::REPLACEMENT_MARKER_KEY => (string) $marker,
-				self::INHERIT_KEY => (string) $record,
-			),
-			$wasStarted,
-			array('state' => 0, 'is_open' => 0),
-			array(
-				self::INHERIT_KEY => '',
-				self::REPLACEMENT_MARKER_KEY => '',
-			)
+		$expectedCustoms = array(
+			self::REPLACEMENT_MARKER_KEY => (string) $marker,
+			self::INHERIT_KEY => (string) $record,
 		);
+		$expectedValues = array('state' => 0, 'is_open' => 0);
+		$status = $closeTransaction
+			? RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues,
+				array(self::INHERIT_KEY => '', self::REPLACEMENT_MARKER_KEY => ''))
+			: RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues);
 		if($status === RuTrackerAtomicOwnership::ACTED)
 			return(true);
 		if($status === RuTrackerAtomicOwnership::SKIPPED)
 			self::logDebug("activateReplacement: Skipped activation of " . $hash . " due to ownership or state change");
 		self::logDebug("activateReplacement: Could not confirm activation of " . $hash);
 		return(false);
+	}
+
+	static private function logCleanupFailure($message)
+	{
+		FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
+	}
+
+	/**
+	 * Reconcile a transaction already present at NEW before mutating either
+	 * generation. OLD presence is the commit proof; successor run state is not.
+	 *
+	 * @return string|null 'rollback' | 'committed' | null for retained retry
+	 */
+	static private function reconcileExistingCleanup($oldHash, $newHash, $marker, $record)
+	{
+		$oldExists = self::torrentExists($oldHash);
+		if($oldExists === null)
+			return(null);
+		if($oldExists)
+		{
+			$status = erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $record);
+			return($status === ERASEDATA_CLEANUP_NONE || $status === ERASEDATA_CLEANUP_READY
+				? 'rollback' : null);
+		}
+
+		$status = erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $record);
+		if($status !== ERASEDATA_CLEANUP_NONE && $status !== ERASEDATA_CLEANUP_READY)
+			return(null);
+		if($status === ERASEDATA_CLEANUP_READY && !erasedataKickCollector($oldHash))
+			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . strtoupper($oldHash)
+				. '; the durable job remains scheduled for retry');
+		return('committed');
 	}
 
 	/**
@@ -658,16 +933,56 @@ class ruTrackerChecker
 	{
 		$seconds = self::metadataWaitSeconds();
 		$until = microtime(true) + $seconds;
+		$expectedHash = strtoupper((string) $hash);
+		$reason = 'metadata-pending';
+		$actualHash = '(not read)';
 		for(;;)
 		{
 			$meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
 			$meta->important = false;
-			// A failed read is not "metadata arrived": keep waiting and let
-			// the caller's own deadline settle it, the way the fetcher does.
-			if($meta->success() && isset($meta->val[0]) && (intval($meta->val[0]) === 0))
-				return(true);
+			$success = $meta->success();
+			// d.is_meta can turn zero before rTorrent atomically replaces the
+			// session file. Readiness therefore requires both the live state and
+			// parseable session bytes carrying the exact expected info-hash.
+			if($success && isset($meta->val[0])
+				&& ($meta->val[0] === 0 || $meta->val[0] === '0'))
+			{
+				$torrent = rTorrent::getSource($hash);
+				if(!is_object($torrent))
+				{
+					$reason = 'session-unreadable';
+					$actualHash = '(unreadable)';
+				}
+				else if($torrent->errors())
+				{
+					$reason = 'session-invalid';
+					$actualHash = '(invalid)';
+				}
+				else
+				{
+					$actualHash = strtoupper((string) $torrent->hash_info());
+					if($actualHash === $expectedHash)
+						return(true);
+					$reason = 'session-hash-stale';
+				}
+			}
+			else if(!$success || $meta->fault || !isset($meta->val[0]))
+			{
+				$reason = 'state-unreadable';
+				$actualHash = '(not read)';
+			}
+			else
+			{
+				$reason = 'metadata-pending';
+				$actualHash = '(not read)';
+			}
 			if(microtime(true) >= $until)
+			{
+				self::logDebug('metadata readiness: ' . $expectedHash
+					. ' outcome=wait-timeout reason=' . $reason
+					. ' expected=' . $expectedHash . ' actual=' . $actualHash);
 				return(false);
+			}
 			usleep(self::METADATA_POLL_US);
 		}
 	}
@@ -709,7 +1024,7 @@ class ruTrackerChecker
 
 	static private function quoteRtorrentArgument($value)
 	{
-		return('"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"');
+		return RuTrackerAtomicOwnership::quoteRtorrentArgument($value);
 	}
 
 	static private function replacementStopBody($marker)
@@ -753,7 +1068,13 @@ class ruTrackerChecker
 		if( $torrent->errors() ) return self::STE_DELETED;
 
 		$newHash = $torrent->hash_info();
-		if(strcasecmp((string) $newHash, (string) $hash) === 0) return self::STE_UPTODATE;
+		if(!is_string($newHash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $newHash))
+		{
+			self::logDebug("createTorrent: invalid or missing info_hash in replacement metainfo");
+			return self::STE_ERROR;
+		}
+		$newHash = strtoupper($newHash);
+		if(strcasecmp($newHash, (string) $hash) === 0) return self::STE_UPTODATE;
 
 		$exists = self::torrentExists($newHash);
 		if($exists === null) return self::STE_ERROR;
@@ -771,27 +1092,10 @@ class ruTrackerChecker
 				new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, self::INHERIT_KEY)),
 			) );
 			$markerReq->important = false;
-			// An unmarked existing hash is the very situation the RuTracker
-			// handler now diagnoses for itself before it ever gets here
-			// (CHKMSG_SUPERSEDED: the topic's current version is already in
-			// the client, so there is nothing to replace) -- and this is the
-			// one place every tracker handler passes through, so diagnosing
-			// it here would fix it for Kinozal, NNMClub, Toloka, tfile,
-			// AniDUB and TapochekNet too. Deliberately NOT done: this
-			// function is the transaction that stops, erases and reloads the
-			// user's torrents, and its return contract binds all seven
-			// handlers -- STE_ERROR is what every one of them expects here.
-			// Generalising it means giving createTorrent() a distinct return
-			// value (or an out-parameter) for "already present, unmarked",
-			// having each handler map that value to STE_NOT_NEED plus a
-			// setMessage(CHKMSG_SUPERSEDED), and re-testing all seven paths.
-			// One return value, two very different facts -- and until now the
-			// log conflated them as well, which is the half of this worth
-			// fixing without touching the contract above. "The marker could
-			// not be read" is a daemon that did not answer; "the marker is
-			// empty" is a torrent somebody else put there, i.e. work already
-			// done by another route. Both still abort, for the reason above,
-			// but a reader of the log can now tell which happened.
+			// When the newly downloaded torrent hash is already present in rTorrent
+			// but has no replacement marker, the predecessor has been superseded
+			// by external means. Mark the predecessor as STE_NOT_NEED with
+			// CHKMSG_SUPERSEDED so the scheduler will not retry the check endlessly.
 			if(!$markerReq->success() || !isset($markerReq->val[3]))
 			{
 				self::logDebug("createTorrent: " . $hash . " could not read the marker of the existing "
@@ -803,7 +1107,8 @@ class ruTrackerChecker
 				self::logDebug("createTorrent: " . $hash . " -> " . $newHash
 					. " is already in the client and is not this plugin's: there is nothing to"
 					. " replace, and neither torrent is touched");
-				return self::STE_ERROR;
+				$setMsgOk = self::setMessage($hash, self::CHKMSG_SUPERSEDED . '|' . $newHash);
+				return $setMsgOk ? self::STE_NOT_NEED : self::STE_ERROR;
 			}
 			if(!self::isPluginReplacementMarker((string) $markerReq->val[0]))
 			{
@@ -829,11 +1134,28 @@ class ruTrackerChecker
 					. " retaining the occupant and its recovery keys and leaving that transaction to the sweep");
 				return self::STE_ERROR;
 			}
+			$reconciled = self::reconcileExistingCleanup(
+				$hash, $newHash, (string) $markerReq->val[0], $rawStagedRecord);
+			if($reconciled === null)
+				return self::STE_ERROR;
+			if($reconciled === 'committed')
+			{
+				if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)
+				{
+					self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
+						array('state' => (int) $markerReq->val[1], 'is_open' => (int) $markerReq->val[2]));
+					return self::STE_ERROR;
+				}
+				else
+					self::activateReplacement($newHash, $stagedRecord['run']['open'], $stagedRecord['run']['started'],
+						(string) $markerReq->val[0], $rawStagedRecord);
+				return null;
+			}
 			if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)
 			{
-				// A running torrent carrying a matching marker+record is a
-				// committed replacement whose final clear was lost. Repair the
-				// owned keys, but never treat a live torrent as disposable.
+				// OLD presence has already selected cancellation or recovery.
+				// Only after that durable state is reconciled may a live successor
+				// retire the owned keys; it is never treated as disposable.
 				self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
 					array('state' => (int) $markerReq->val[1], 'is_open' => (int) $markerReq->val[2]));
 				return self::STE_ERROR;
@@ -994,6 +1316,28 @@ class ruTrackerChecker
 			return self::STE_ERROR;
 		}
 
+		$cleanupFiles = self::buildObsoleteCleanupFiles($oldTorrent, $torrent, $baseDir);
+		self::logDebug('createTorrent: cleanup prepare ' . $hash . ' -> ' . $newHash
+			. ' old=' . self::$obsoleteCleanupSummary['old']
+			. ' new=' . self::$obsoleteCleanupSummary['new']
+			. ' obsolete=' . self::$obsoleteCleanupSummary['obsolete']
+			. ' missing=' . self::$obsoleteCleanupSummary['missing']);
+		$cleanupJob = null;
+		if($cleanupFiles !== false && $cleanupFiles !== null)
+			$cleanupJob = erasedataPrepareObsoleteCleanup(
+				$hash, $newHash, $marker, $stagedRecordStr, realpath($baseDir), $cleanupFiles);
+		if($cleanupFiles === false || ($cleanupFiles !== null && !is_array($cleanupJob)))
+		{
+			self::logCleanupFailure('durable cleanup preparation failed for ' . $hash . ' -> ' . $newHash
+				. '; replacement was aborted before predecessor erase');
+			if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker))
+				self::eraseStaged($newHash, $marker, $stagedRecordStr);
+			else
+				self::logDebug('createTorrent: ' . $hash . ' could not be restored after cleanup preparation failed;'
+					. ' keeping staged copy ' . $newHash . ' for replacement sweep recovery');
+			return self::STE_ERROR;
+		}
+
 		// Commit point: erase the old torrent.
 		$eraseStatus = RuTrackerAtomicOwnership::erase(
 			$hash,
@@ -1006,6 +1350,12 @@ class ruTrackerChecker
 			$oldExists = self::torrentExists($hash);
 			if($oldExists === true)
 			{
+				if($cleanupJob !== null && !erasedataCancelObsoleteCleanup($cleanupJob))
+				{
+					self::logCleanupFailure('prepared obsolete cleanup cancellation failed for ' . $hash . ' -> ' . $newHash
+						. '; both generations and recovery markers were retained');
+					return self::STE_ERROR;
+				}
 				// Restore first, erase second, and only on a verified
 				// restore -- the same order and the same reason as the
 				// staging rollback above. Erasing the staged copy first
@@ -1031,13 +1381,30 @@ class ruTrackerChecker
 			// The old torrent is gone despite the failed erase: proceed.
 		}
 
-		$activated = self::activateReplacement($newHash, $wasOpen, $wasStarted, $marker, $stagedRecordStr);
+		$published = false;
+		$closeTransaction = true;
+		if($cleanupJob !== null)
+		{
+			$published = erasedataPublishObsoleteCleanup($cleanupJob);
+			if(!$published)
+			{
+				$closeTransaction = false;
+				self::logCleanupFailure('durable obsolete cleanup publish failed for ' . $hash . ' -> ' . $newHash
+					. '; successor recovery markers were retained');
+			}
+		}
+
+		$activated = self::activateReplacement(
+			$newHash, $wasOpen, $wasStarted, $marker, $stagedRecordStr, $closeTransaction);
 		// The transaction is closed only once the daemon has been seen in the
 		// intended state. An unconfirmed activation keeps both keys, so the
 		// next cycle's sweep finds the row instead of a torrent that merely
 		// looks finished -- which is how a replacement sat stopped for a day.
 		if(!$activated)
 			self::logDebug("createTorrent: ".$newHash." keeps its replacement record: activation was not confirmed");
+		if($published && !erasedataKickCollector($hash))
+			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . $hash
+				. '; the published job remains scheduled for retry');
 		return null;
 	}
 
@@ -1176,6 +1543,31 @@ class ruTrackerChecker
 			FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
 	}
 
+	static public function transportFailureDetail($status)
+	{
+		$status = (int) $status;
+		if($status < 0)
+		{
+			$reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
+			$reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
+			return('transport=socket status=' . $status . ' reason=' . $reason);
+		}
+		$reasons = array(
+			5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
+			35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
+			56 => 'receive', 60 => 'tls-certificate',
+		);
+		$reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
+		return('transport=curl-exit code=' . $status . ' reason=' . $reason);
+	}
+
+	static public function fetchStatusDetail($status)
+	{
+		if($status === null || $status === '') return('');
+		$status = (int) $status;
+		return($status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status);
+	}
+
 	static public function makeClient( $url, $method="GET", $content_type="", $body="" )
 	{
 		$client = new Snoopy();
@@ -1192,7 +1584,8 @@ class ruTrackerChecker
 		if($client->status < 100)
 		{
 			$host = @parse_url($url, PHP_URL_HOST);
-			self::logDebug("Snoopy fetch failed: host=".(is_string($host) ? $host : 'unknown')." status=".$client->status);
+			self::logDebug("Snoopy fetch failed: host=".(is_string($host) ? $host : 'unknown')." "
+				. self::transportFailureDetail($client->status));
 		}
 
 		return $client;
