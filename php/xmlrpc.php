@@ -103,10 +103,16 @@ class rXMLRPCRequest
 		if(strlen((string) $data) > 0)
 		{
 			global $rpcTimeOut;
+			global $rpcTransferTimeOut;
 			global $scgi_host;
 			global $scgi_port;
 			$err = null;
-			$res = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted, $rpcTimeOut, $err);
+			// isset(), not a bare read: a deployment edits conf/config.php in
+			// place and carries its own copy across upgrades, so one written
+			// before this knob existed must fall back to the transport's own
+			// default rather than warn into the response.
+			$res = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted, $rpcTimeOut, $err,
+				isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null);
 			if($res !== null)
 			{
 				$result = $res['raw'];

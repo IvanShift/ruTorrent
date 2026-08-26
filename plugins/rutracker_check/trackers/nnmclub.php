@@ -96,6 +96,27 @@ class NNMClubCheckImpl
     private const SCRAPE_RESULT_UPTODATE = 1;
     private const SCRAPE_RESULT_NOT_FOUND = 2;
     private const SCRAPE_RESULT_FAILED = 3;
+    // A host answered -- HTTP 200, non-empty body -- and the answer could not
+    // be read. That is NOT the same as a tracker we could not reach, and the
+    // two used to be collapsed into SCRAPE_RESULT_FAILED, which made the
+    // caller report an unreachable tracker and give up for the cycle. A
+    // tracker whose answer we cannot parse is still a tracker that is up, and
+    // a format we do not understand does not get better by waiting: collapsing
+    // the two meant one unreadable field could stop a torrent from ever being
+    // checked again, silently. Reaching the tracker but not understanding it
+    // only costs us the fast path, so it falls through to the ordinary
+    // forum check instead. Transport failures keep SCRAPE_RESULT_FAILED.
+    //
+    // This departs from remediation item F07's "malformed HTTP 200 stays
+    // retryable uncertainty and is not destructive replacement authority".
+    // The concern behind that line is honoured: an unreadable scrape is not
+    // treated as evidence of anything, and it authorises nothing. The forum
+    // check that follows is the authority, exactly as it is for a scrape that
+    // reports the hash absent, and NNMClub has no deletion detection for that
+    // path to reach a destructive conclusion with (see plugin.info). What F07
+    // did not anticipate is a shape the tracker sends on EVERY answer, where
+    // "retry next cycle" means never checking the torrent again.
+    private const SCRAPE_RESULT_UNREADABLE = 4;
 
     private const MAX_SCRAPE_BODY_BYTES = 1048576;
     private const MAX_SCRAPE_DEPTH = 32;
@@ -484,10 +505,43 @@ class NNMClubCheckImpl
                     return self::SCRAPE_RESULT_FAILED;
                 }
                 if (!empty($stack[$frameIndex]['is_target'])) {
-                    if (count($stack[$frameIndex]['required_seen']) !== 3
-                        || !isset($stack[$frameIndex]['required_seen']['complete'])
-                        || !isset($stack[$frameIndex]['required_seen']['downloaded'])
-                        || !isset($stack[$frameIndex]['required_seen']['incomplete'])) {
+                    // No individual counter is mandatory -- only that the row
+                    // carries at least one, which is what separates a tracker
+                    // answering about this hash from an empty dictionary that
+                    // says nothing. Demanding all three of complete,
+                    // downloaded and incomplete was a regression: the live
+                    // NNMClub trackers (bt02.nnm-club.cc and bt.searchtor.to,
+                    // captured 2026-08-26) answer in 67 bytes with complete
+                    // and incomplete and no downloaded key at all, and
+                    // opentracker-derived trackers commonly omit it. BEP-48
+                    // does not oblige one either. The effect was worse than a
+                    // missed optimisation: an unambiguous "159 seeders hold
+                    // this" became SCRAPE_RESULT_FAILED, which download_torrent()
+                    // below reports as a tracker it cannot reach, so every
+                    // NNMClub torrent silently stopped being checked -- visible
+                    // only with $rutrackerCheckDebug on.
+                    //
+                    // Provenance, so this is not reinstated: the three-counter
+                    // mandate came from remediation item F07, which was written
+                    // to fix the opposite fault -- a scalar or empty target row
+                    // being read as UPTODATE and suppressing a real update. Its
+                    // wording ("exactly one canonical nonnegative integer
+                    // complete, downloaded, incomplete") was derived from the
+                    // BEP, never checked against an answer this tracker sends.
+                    // Rejecting a scalar or empty row is the part that was
+                    // right, and it is kept; demanding all three was not.
+                    //
+                    // This mirrors the announce layer, which has always had the
+                    // rule right: RuTrackerAnnounceProbe::hasValidSuccessSchema()
+                    // in announce.php requires only what the protocol
+                    // guarantees and validates each optional counter that IS
+                    // present. Keep the two in step.
+                    //
+                    // Relaxed is WHICH keys must appear, not how a key that
+                    // appears is read: the type, canonicity, sign and
+                    // no-duplicates checks above still apply to every counter
+                    // the row does carry.
+                    if (!count($stack[$frameIndex]['required_seen'])) {
                         return self::SCRAPE_RESULT_FAILED;
                     }
                     $targetValid = true;
@@ -748,6 +802,7 @@ class NNMClubCheckImpl
         if (!count($urls)) return self::SCRAPE_RESULT_FAILED;
 
         $sawNotFound = false;
+        $sawUnreadable = false;
 
         foreach ($urls as $url) {
             $host = @parse_url($url, PHP_URL_HOST);
@@ -768,15 +823,18 @@ class NNMClubCheckImpl
                     continue;
                 }
                 self::log("Scrape response malformed on {$host}");
+                $sawUnreadable = true;
                 continue;
             }
             self::log("Scrape failed on {$host}: "
                 . ruTrackerChecker::fetchStatusDetail($client->status));
         }
 
-        return $sawNotFound
-            ? self::SCRAPE_RESULT_NOT_FOUND
-            : self::SCRAPE_RESULT_FAILED;
+        // Precedence: a host that answered readably outranks one that did not,
+        // and any answer at all outranks a transport failure.
+        if ($sawNotFound) return self::SCRAPE_RESULT_NOT_FOUND;
+        if ($sawUnreadable) return self::SCRAPE_RESULT_UNREADABLE;
+        return self::SCRAPE_RESULT_FAILED;
     }
 
     /**
@@ -830,8 +888,14 @@ class NNMClubCheckImpl
                 return ruTrackerChecker::STE_UPTODATE;
             }
             if ($scrapeResult === self::SCRAPE_RESULT_FAILED) {
+                // Nothing answered at all -- DNS, connect, timeout, a 5xx.
+                // The tracker really is out of reach, so conclude nothing and
+                // come back next cycle rather than asking the forum instead.
                 self::log("All scrape hosts failed for {$hash}");
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
+            if ($scrapeResult === self::SCRAPE_RESULT_UNREADABLE) {
+                self::log("No scrape host answered readably for {$hash}, falling back to guest download");
             }
             if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
                 self::log("Scrape did not find hash {$hash}, falling back to guest download");

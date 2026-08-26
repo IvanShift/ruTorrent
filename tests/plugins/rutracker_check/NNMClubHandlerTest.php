@@ -711,20 +711,29 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
             $targetBin,
             3,
         ),
-        'missing complete counter is FAILED' => array(
+        // No single counter is mandatory. A row that carries any one of them is
+        // a tracker saying "I hold this hash", which is the only thing the
+        // caller asks. The live NNMClub tracker answers with complete and
+        // incomplete and no downloaded at all -- see the dedicated test below.
+        'complete missing, others present, is UPTODATE' => array(
             'd5:filesd20:' . $targetBin . 'd10:downloadedi1e10:incompletei0eeee',
             $targetBin,
-            3,
+            1,
         ),
-        'missing downloaded counter is FAILED' => array(
+        'downloaded missing, others present, is UPTODATE' => array(
             'd5:filesd20:' . $targetBin . 'd8:completei1e10:incompletei0eeee',
             $targetBin,
-            3,
+            1,
         ),
-        'missing incomplete counter is FAILED' => array(
+        'incomplete missing, others present, is UPTODATE' => array(
             'd5:filesd20:' . $targetBin . 'd8:completei1e10:downloadedi1eeee',
             $targetBin,
-            3,
+            1,
+        ),
+        'a lone counter is enough' => array(
+            'd5:filesd20:' . $targetBin . 'd10:downloadedi1eeee',
+            $targetBin,
+            1,
         ),
         'wrong list counter for complete is FAILED' => array(
             'd5:filesd20:' . $targetBin . 'd8:completele10:downloadedi1e10:incompletei0eeee',
@@ -924,6 +933,43 @@ $suite->test('structural parseScrapeResult enforces bencode schema and direct fi
     }
 });
 
+$suite->test('the live NNMClub scrape answer is accepted verbatim', function () {
+    nnmReset();
+    // Captured 2026-08-26 from bt02.nnm-club.cc and bt.searchtor.to, which
+    // answer byte for byte alike: HTTP 200, Content-Type application/octet-stream,
+    // 67 bytes, not compressed. The per-hash row carries complete and incomplete
+    // and NO downloaded key -- opentracker-derived trackers commonly omit it, and
+    // BEP-48 does not oblige one. A parser that demanded all three turned this
+    // unambiguous "yes, 159 seeders hold it" into SCRAPE_RESULT_FAILED, which
+    // download_torrent() reported as a tracker it could not reach, so the torrent
+    // silently stopped being checked at all. The bytes are spelled out here rather
+    // than assembled from a helper so that a future tightening of the schema has to
+    // confront the real answer.
+    $targetBin = hex2bin('8E0999F72AD56B77C6F30B77FFA3A492A6BEBC8E');
+    $live = 'd5:filesd20:' . $targetBin . 'd8:completei159e10:incompletei1eeee';
+    strictAssertSame(67, strlen($live), 'the captured answer is 67 bytes');
+    strictAssertSame(
+        1,
+        strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($live, $targetBin)),
+        'the live answer means the hash is on the tracker'
+    );
+
+    // The counters that ARE present stay fully validated: this is a relaxation of
+    // which keys must appear, not of how a key that appears is read.
+    $negative = 'd5:filesd20:' . $targetBin . 'd8:completei-1e10:incompletei1eeee';
+    strictAssertSame(
+        3,
+        strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($negative, $targetBin)),
+        'a negative counter is still malformed'
+    );
+    $empty = 'd5:filesd20:' . $targetBin . 'deee';
+    strictAssertSame(
+        3,
+        strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($empty, $targetBin)),
+        'a row with no counter at all is still malformed'
+    );
+});
+
 $suite->test('bounded depth, token count, and body size limits in scrape parser', function () {
     nnmReset();
     $targetHex = '0123456789ABCDEF0123456789ABCDEF01234567';
@@ -985,7 +1031,7 @@ $suite->test('bounded depth, token count, and body size limits in scrape parser'
     );
 });
 
-$suite->test('malformed primary scrape plus malformed or unavailable fallback is retryable with zero guest replacement', function () use ($realPasskey) {
+$suite->test('an unreadable primary answer plus an unavailable fallback still reaches guest download', function () use ($realPasskey, $dummyPasskey) {
     nnmReset();
     $oldRaw = strictTorrentRaw(
         'old-malformed.bin',
@@ -996,6 +1042,12 @@ $suite->test('malformed primary scrape plus malformed or unavailable fallback is
     strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
     $oldHash = $oldTorrent->hash_info();
     $oldBin = hex2bin($oldHash);
+
+    $guestRaw = strictTorrentRaw(
+        'guest-malformed.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
 
     // Primary scrape returns the review probe: echo containing hash without files dict (malformed)
     Snoopy::queue(
@@ -1009,13 +1061,18 @@ $suite->test('malformed primary scrape plus malformed or unavailable fallback is
         503,
         '<html>service unavailable</html>'
     );
+    Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
+    Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    ruTrackerChecker::queueResult('createTorrent', null);
 
+    // One host answered and could not be understood; that is enough to say the
+    // tracker is up, so the fast path is abandoned rather than the whole check.
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
 
-    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
-        'malformed primary plus unavailable fallback is retryable');
-    strictAssertSame(0, count(nnmCreates()), 'no replacement is made when scrape fails');
-    strictAssertSame(2, count(Snoopy::$requests), 'only scrape requests are issued, no guest fetch');
+    strictAssertSame(null, $result, 'an unreadable answer falls through to the ordinary check');
+    strictAssertSame(1, count(nnmCreates()), 'the guest path runs exactly once');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'No scrape host answered readably',
+        'the fall-through is stated in the log');
 });
 
 $suite->test('malformed primary scrape plus valid NOT_FOUND fallback proceeds to guest download', function () use ($realPasskey, $dummyPasskey) {
@@ -1161,7 +1218,7 @@ $suite->test('F-02: a bencoded guest download with official announce but no info
         'createTorrent must not be called when downloaded metainfo has no info hash');
 });
 
-$suite->test('malformed positive HTTP 200 scrape stays retryable and performs no guest replacement', function () use ($realPasskey) {
+$suite->test('a malformed answer from every scrape host falls through to guest download', function () use ($realPasskey, $dummyPasskey) {
     nnmReset();
     $oldRaw = strictTorrentRaw(
         'old-malformed-target.bin',
@@ -1171,6 +1228,12 @@ $suite->test('malformed positive HTTP 200 scrape stays retryable and performs no
     $oldTorrent = @new Torrent($oldRaw);
     $oldHash = $oldTorrent->hash_info();
     $oldBin = hex2bin($oldHash);
+
+    $guestRaw = strictTorrentRaw(
+        'guest-malformed-target.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
 
     // Primary scrape returns HTTP 200 with malformed target (scalar string value instead of dictionary)
     Snoopy::queue(
@@ -1184,12 +1247,17 @@ $suite->test('malformed positive HTTP 200 scrape stays retryable and performs no
         200,
         'd5:filesd20:' . $oldBin . 'deee'
     );
+    Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
+    Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    ruTrackerChecker::queueResult('createTorrent', null);
 
+    // Both hosts are demonstrably up. A shape neither of them will stop sending
+    // must not remove this torrent from the checking rotation for good; that is
+    // exactly how the missing 'downloaded' counter went unnoticed.
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
 
-    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
-        'malformed positive scrape is treated as failure and stays retryable');
-    strictAssertSame(0, count(nnmCreates()), 'no guest replacement when scrape is malformed');
+    strictAssertSame(null, $result, 'an unreadable scrape does not end the check');
+    strictAssertSame(1, count(nnmCreates()), 'the guest path runs exactly once');
 });
 
 exit($suite->run());

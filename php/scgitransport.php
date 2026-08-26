@@ -11,10 +11,15 @@ class rSCGITransport
 	/**
 	 * Send one XML-RPC request and return one complete XML-RPC methodResponse.
 	 *
+	 * @param  int|float      $timeout         seconds to wait for the CONNECTION
+	 * @param  int|float|null $transferTimeout seconds to wait on the request and
+	 *                        the reply once connected; null defers to PHP's
+	 *                        default_socket_timeout
 	 * @return array|null array('headers' => string, 'body' => string,
 	 *                    'raw' => string), or null on any transport/framing error
 	 */
-	public static function send($host, $port, $payload, $trusted = true, $timeout = 30, &$errorLog = null)
+	public static function send($host, $port, $payload, $trusted = true, $timeout = 30, &$errorLog = null,
+		$transferTimeout = null)
 	{
 		$errorLog = null;
 		if(!function_exists('simplexml_load_string'))
@@ -30,30 +35,72 @@ class rSCGITransport
 			return null;
 		}
 
-		$timeout = (int) $timeout;
-		if($timeout <= 0)
-			$timeout = 30;
-		$socket = @fsockopen($host, $port, $errno, $errstr, $timeout);
+		// Two budgets, because they answer two different questions.
+		//
+		// The connect budget measures the HOST: rtorrent is listening or it is
+		// not, and a local socket settles that in microseconds, so a tight
+		// value is right and a daemon that is down must fail fast -- during a
+		// container restart the panel should say so at once, not hang.
+		//
+		// The transfer budget measures rtorrent's ANSWER. rtorrent computes a
+		// whole multicall before it writes its first byte, so first-byte
+		// latency IS the computation time; over a large session, or one still
+		// loading from disk after a restart, tens of seconds is ordinary.
+		//
+		// These were one number, and that number was $rpcTimeOut, which
+		// conf/config.php has documented and shipped as a connect timeout since
+		// long before this transport existed. Reusing it for the reply cut
+		// every answer off at five seconds and reported a healthy rtorrent as
+		// 'timed out reading from rtorrent after 5s'. Covered by
+		// testSCGITransportSlowReplySurvivesATightConnectTimeout.
+		$connectTimeout = (float) $timeout;
+		if(!($connectTimeout > 0))
+			$connectTimeout = 30;
+		// null means "whatever PHP would have waited", which is exactly what
+		// this transport inherited before the budget became explicit. Resolving
+		// the ini at runtime rather than freezing a literal leaves an operator
+		// who has already tuned default_socket_timeout in charge of it.
+		if($transferTimeout === null || $transferTimeout === '')
+			$transferTimeout = ini_get('default_socket_timeout');
+		$transferTimeout = (float) $transferTimeout;
+		if(!($transferTimeout > 0))
+			$transferTimeout = 60;
+		// Deliberately NOT clamped to the connect budget. The two are
+		// independent, and raising $rpcTimeOut never raised the reply budget
+		// anyway -- before this transport existed it bounded fsockopen() and
+		// nothing else, so an operator who had set it to 120 still read under
+		// default_socket_timeout. Clamping would hand that install 120s of
+		// per-read idle budget where it always had 60, and since the read
+		// budget is an idle timeout rather than an overall deadline, a wedged
+		// rtorrent would hold a php-fpm worker twice as long while the panel
+		// keeps polling.
+		// Whole seconds plus a remainder: stream_set_timeout() takes the two
+		// separately, and the (int) cast this replaced turned a legitimate
+		// fractional $rpcTimeOut of 0.5 into 0, which the guard above then
+		// promoted to the 30s default -- sixty times what was asked for.
+		$transferSeconds = (int) floor($transferTimeout);
+		$transferMicroseconds = (int) round(($transferTimeout - $transferSeconds) * 1000000);
+
+		$socket = @fsockopen($host, $port, $errno, $errstr, $connectTimeout);
 		if($socket === false)
 		{
 			$errorLog = 'cannot reach rtorrent at ' . $host . ': ' . $errstr;
 			return null;
 		}
-		stream_set_timeout($socket, $timeout);
 
 		$scgiHeaders = "CONTENT_LENGTH\x00" . $contentLength . "\x00CONTENT_TYPE\x00text/xml\x00"
 			. "SCGI\x001\x00UNTRUSTED_CONNECTION\x00" . ($trusted ? '0' : '1') . "\x00";
 		$request = strlen($scgiHeaders) . ':' . $scgiHeaders . ',' . $payload;
 		$totalLength = strlen($request);
 		$written = 0;
-		$writeDeadline = microtime(true) + $timeout;
+		$writeDeadline = microtime(true) + $transferTimeout;
 		stream_set_blocking($socket, false);
 		while($written < $totalLength)
 		{
 			$remainingTime = $writeDeadline - microtime(true);
 			if($remainingTime <= 0)
 			{
-				$errorLog = 'timed out writing to rtorrent after ' . $timeout . 's ('
+				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
 					. $written . ' of ' . $totalLength . ' bytes written)';
 				fclose($socket);
 				return null;
@@ -72,7 +119,7 @@ class rSCGITransport
 			}
 			if($ready === 0)
 			{
-				$errorLog = 'timed out writing to rtorrent after ' . $timeout . 's ('
+				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
 					. $written . ' of ' . $totalLength . ' bytes written)';
 				fclose($socket);
 				return null;
@@ -81,7 +128,7 @@ class rSCGITransport
 			$meta = stream_get_meta_data($socket);
 			if(!empty($meta['timed_out']))
 			{
-				$errorLog = 'timed out writing to rtorrent after ' . $timeout . 's ('
+				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
 					. $written . ' of ' . $totalLength . ' bytes written)';
 				fclose($socket);
 				return null;
@@ -96,7 +143,7 @@ class rSCGITransport
 			$written += $count;
 		}
 		stream_set_blocking($socket, true);
-		stream_set_timeout($socket, $timeout);
+		stream_set_timeout($socket, $transferSeconds, $transferMicroseconds);
 
 		$headerBuffer = '';
 		$responseHeaders = null;
@@ -123,7 +170,7 @@ class rSCGITransport
 			$meta = stream_get_meta_data($socket);
 			if(!empty($meta['timed_out']))
 			{
-				$errorLog = 'timed out reading from rtorrent after ' . $timeout . 's';
+				$errorLog = 'timed out reading from rtorrent after ' . $transferTimeout . 's';
 				fclose($socket);
 				return null;
 			}

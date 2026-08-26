@@ -93,9 +93,15 @@ function rpc2_fault($status, $message)
  */
 function rpc2_send($payload, $trusted)
 {
-	global $scgi_host, $scgi_port, $rpcTimeOut;
+	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut;
 	$err = null;
-	$res = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted, $rpcTimeOut, $err);
+	// isset() on the transfer budget only. $rpcTimeOut is assigned
+	// unconditionally by the conf/config.php required above, but a deployment
+	// edits that file in place and carries its own copy across upgrades, so the
+	// newer global may simply not be there; null makes the transport apply its
+	// own default.
+	$res = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted, $rpcTimeOut, $err,
+		isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null);
 	if($res === null)
 	{
 		if($err !== null)

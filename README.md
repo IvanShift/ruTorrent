@@ -40,6 +40,29 @@ application log. A physically separate plugin debug file should be an explicit
 local opt-in customization; it is not required by, and must not silently replace,
 the existing `RU_LOG_FILE` behavior.
 
+### Talking to rtorrent
+
+Two separate budgets in `conf/config.php` govern one XML-RPC call, because they
+answer different questions.
+
+`$rpcTimeOut` (default `5`, seconds) is the **connect** timeout: how long to wait
+for rtorrent to accept a socket. A local SCGI socket answers in microseconds, so
+a tight value is right here — when rtorrent is down, the panel should say so at
+once rather than hang.
+
+`$rpcTransferTimeOut` (default `null`) is how long to wait for rtorrent to
+**answer**, once connected. rtorrent computes a whole multicall before it writes
+its first byte, so on a large session — or one still loading from disk after a
+restart — a reply can legitimately take far longer than opening the socket did.
+`null` means PHP's `default_socket_timeout`, usually 60 seconds. Set a number to
+override it without touching `php.ini`. It is independent of `$rpcTimeOut`: the
+two bound different phases, and neither constrains the other.
+
+Note that the browser gives up independently: `webui.reqtimeout` (Settings →
+Interface, default 10 seconds) aborts the request no matter how patient PHP is.
+Raising `$rpcTransferTimeOut` past that only helps the paths the browser is not
+waiting on, such as the plugins rtorrent runs on a schedule.
+
 ## Contributing
 
 Pull requests target **`master`**. There is no `develop` branch — it was retired,

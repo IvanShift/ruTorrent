@@ -1205,9 +1205,103 @@ PHP;
 			'responseDelayMicros' => 1500000,
 		), function($host, $port) {
 			$err = null;
-			$res = rSCGITransport::send($host, $port, '<xml/>', true, 1, $err);
+			// The 7th argument is the one that bounds the reply now. Passing only
+			// the 5th would bound the CONNECT and leave the read on PHP's
+			// default_socket_timeout, so this test would sit for a minute and
+			// then pass for the wrong reason.
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 1, $err, 1);
 			$this->assertTrue($res === null, 'read timeout is rejected');
 			$this->assertTrue(strpos($err, 'timed out reading') !== false, 'timeout is classified before empty read');
+		});
+	}
+
+	public function testSCGITransportSlowReplySurvivesATightConnectTimeout()
+	{
+		// The regression this guards: one number used to bound both phases, so
+		// $rpcTimeOut = 5 -- documented and shipped as a CONNECT timeout -- also
+		// cut off any rtorrent that needed longer than five seconds to answer.
+		// rtorrent computes a whole multicall before writing its first byte, so
+		// on a large session at startup that is ordinary, not pathological.
+		foreach(array(5, null) as $transfer)
+		{
+			$this->mockSCGIServer(array(
+				'reportRequestComplete' => true,
+				'responseDelayMicros' => 1500000,
+			), function($host, $port) use ($transfer) {
+				$err = null;
+				$res = rSCGITransport::send($host, $port, '<xml/>', true, 1, $err, $transfer);
+				$this->assertTrue(is_array($res),
+					'a 1.5s reply survives a 1s connect budget (transfer='
+					. var_export($transfer, true) . '): ' . var_export($err, true));
+			});
+		}
+	}
+
+	public function testSCGITransportBudgetsDoNotConstrainEachOther()
+	{
+		// The connect budget is not a floor for the transfer budget. Clamping
+		// them together would give an install that had raised $rpcTimeOut a
+		// LONGER per-read idle budget than it ever had, and that budget has no
+		// overall deadline behind it.
+		$this->mockSCGIServer(array(
+			'response' => '',
+			'responseDelayMicros' => 1500000,
+		), function($host, $port) {
+			$err = null;
+			$started = microtime(true);
+			$res = rSCGITransport::send($host, $port, '<xml/>', true, 90, $err, 1);
+			$elapsed = microtime(true) - $started;
+			$this->assertTrue($res === null, 'a transfer budget below the connect budget is honoured');
+			$this->assertTrue(strpos((string) $err, 'timed out reading') !== false,
+				'the small transfer budget is what fires: ' . var_export($err, true));
+			$this->assertTrue($elapsed < 3,
+				'the large connect budget does not raise the reply budget, took '
+				. round($elapsed, 2) . 's');
+		});
+	}
+
+	public function testSCGITransportWriteFollowsTheTransferBudgetNotTheConnectBudget()
+	{
+		// No write-timeout test existed at all, so moving the write deadline off
+		// the connect knob was unverified in either direction. Both directions
+		// are checked here. The peer accepts the connection and then does not
+		// read for three seconds, so a payload larger than the socket buffers
+		// cannot drain and it is the write deadline that decides.
+		//
+		// rtorrent stalls a write for the same reason it stalls a reply: its
+		// SCGI listener does not drain the request until the main loop services
+		// that socket, so a busy or starting daemon leaves a large multicall
+		// sitting in the buffers. Charging that to the connect budget would
+		// reinstate the five-second abort in the write phase right after it was
+		// removed from the read phase.
+		$payload = '<xml>' . str_repeat('x', 16 * 1024 * 1024) . '</xml>';
+
+		// Generous transfer budget, tight connect budget: the write must survive.
+		$this->mockSCGIServer(array(
+			'reportRequestComplete' => true,
+			'requestReadDelayMicros' => 3000000,
+		), function($host, $port) use ($payload) {
+			$err = null;
+			$res = rSCGITransport::send($host, $port, $payload, true, 1, $err, 15);
+			$this->assertTrue(is_array($res),
+				'a peer that starts reading after 3s is not cut off by a 1s connect budget: '
+				. var_export($err, true));
+		});
+
+		// Both budgets tight: the write timeout still fires and is still named.
+		$this->mockSCGIServer(array(
+			'reportRequestComplete' => true,
+			'requestReadDelayMicros' => 3000000,
+		), function($host, $port) use ($payload) {
+			$err = null;
+			$started = microtime(true);
+			$res = rSCGITransport::send($host, $port, $payload, true, 1, $err, 1);
+			$elapsed = microtime(true) - $started;
+			$this->assertTrue($res === null, 'a write that cannot drain in time is rejected');
+			$this->assertTrue(strpos((string) $err, 'timed out writing') !== false,
+				'the write timeout is classified: ' . var_export($err, true));
+			$this->assertTrue($elapsed < 2.5,
+				'the write deadline fires on the transfer budget, took ' . round($elapsed, 2) . 's');
 		});
 	}
 

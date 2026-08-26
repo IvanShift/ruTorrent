@@ -23,7 +23,15 @@
 	$httpPrivateNetworkAllowlist = array();
 
 	// for xmlrpc actions
-	$rpcTimeOut = 5;			// in seconds
+	$rpcTimeOut = 5;			// connect timeout, in seconds
+	// How long to wait for rtorrent to ANSWER, once the connection is up.
+	// rtorrent builds a whole multicall before it writes its first byte, so on
+	// a large session -- or one still loading after a restart -- an answer can
+	// legitimately take far longer than it takes to open the socket. Keeping
+	// both on $rpcTimeOut cut every reply off at five seconds.
+	// null = PHP's default_socket_timeout (usually 60), which is what ruTorrent
+	// waited before this budget became explicit.
+	$rpcTransferTimeOut = null;
 	$rpcLogCalls = false;
 	$rpcLogFaults = true;
 
