@@ -31,22 +31,30 @@ class RuTrackerReplacementRecord
             . '-' . intval($now);
     }
 
-    static public function decode($value)
+    // $shaped answers the weaker question -- does this use the record grammar
+    // at all -- because a caller that mistakes corruption for absence goes on
+    // to bulldoze the generation it could not read.
+    static public function decode($value, &$shaped = null)
     {
+        $shaped = false;
         if (!is_string($value)) return null;
         $parts = explode('-', $value);
         if (count($parts) !== 3) return null;
         if (!preg_match('/^[0-9a-fA-F]{40}$/D', $parts[0])) return null;
         if (!in_array($parts[1], array(self::RUN_STARTED, self::RUN_OPEN, self::RUN_STOPPED), true))
             return null;
-        if (!ctype_digit($parts[2]) || intval($parts[2]) <= 0) return null;
+        if (!preg_match('/^[0-9]+$/D', $parts[2])) return null;
+        $shaped = true;
+        // "03" is not the epoch 3: it is a record encode() cannot reproduce.
+        $staged = RuTrackerRpcValue::canonicalNonnegativeInteger($parts[2]);
+        if ($staged === null || $staged <= 0) return null;
         return array(
             'old' => $parts[0],
             'run' => array(
                 'started' => $parts[1] === self::RUN_STARTED,
                 'open' => $parts[1] === self::RUN_STARTED || $parts[1] === self::RUN_OPEN,
             ),
-            'staged' => intval($parts[2]),
+            'staged' => $staged,
         );
     }
 }
@@ -94,6 +102,26 @@ class RuTrackerRpcValue
         }
         $parsed = (int) $value;
         return ($parsed > 0 && $parsed <= 2147483647 && (string) $parsed === $value) ? $parsed : null;
+    }
+
+    /** Canonical int32 counter domain, 0..2147483647; else null. */
+    static public function canonicalNonnegativeInt32($value)
+    {
+        $parsed = self::canonicalNonnegativeInteger($value);
+        return ($parsed !== null && $parsed <= 2147483647) ? $parsed : null;
+    }
+
+    /** Canonical signed int32, -2147483648..2147483647; else null. "-0" is not it. */
+    static public function canonicalSignedInt32($value)
+    {
+        if (is_int($value)) return ($value >= -2147483648 && $value <= 2147483647) ? $value : null;
+        if (!is_string($value) || $value === '') return null;
+        $negative = $value[0] === '-';
+        $magnitude = self::canonicalNonnegativeInteger($negative ? substr($value, 1) : $value);
+        if ($magnitude === null) return null;
+        if (!$negative) return $magnitude <= 2147483647 ? $magnitude : null;
+        // "-0" is a second spelling of zero, so it is not the canonical form.
+        return ($magnitude > 0 && $magnitude <= 2147483648) ? -$magnitude : null;
     }
 }
 
@@ -272,7 +300,9 @@ class RuTrackerAtomicOwnership
             $conditions[] = 'equal=' . getCmd('d.get_custom=') . $k . ',cat=' . $v;
         }
         foreach ($expectedValues as $k => $v) {
-            $intVal = (int) $v;
+            // Through the one canonical parser, not a second weaker cast.
+            $intVal = RuTrackerRpcValue::canonicalNonnegativeInteger($v);
+            if (!in_array($intVal, array(0, 1), true)) return null;
             if ($k === 'state') {
                 $conditions[] = 'equal=' . getCmd('d.get_state=') . ',value=' . $intVal;
             } elseif ($k === 'is_open') {

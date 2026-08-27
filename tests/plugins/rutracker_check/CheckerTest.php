@@ -47,7 +47,15 @@ class FileUtil
 class Torrent
 {
 	public static $fixtures = array();
+	// Every construction is counted. "The bytes are decoded once" is a claim
+	// about what runs, and only a counter can settle it; reading the source
+	// cannot. A test that hands createTorrent() an already parsed object and
+	// finds this unchanged has proved there is no second decode.
+	public static $constructions = 0;
 	public $info = array();
+	// The real Torrent records a filename when it was constructed from a path,
+	// and rTorrent::sendTorrent() reads that as "a file this plugin owns".
+	protected $filename = null;
 	private $hash = '';
 	private $hasErrors = false;
 	private $announceUrl = '';
@@ -56,6 +64,7 @@ class Torrent
 
 	public function __construct($source)
 	{
+		self::$constructions++;
 		$fixture = is_array($source) ? $source : (self::$fixtures[$source] ?? array('errors' => true));
 		$this->hash = $fixture['hash'] ?? '';
 		$this->info = $fixture['info'] ?? array();
@@ -68,6 +77,27 @@ class Torrent
 	public function errors()
 	{
 		return $this->hasErrors;
+	}
+
+	public function getFileName()
+	{
+		return $this->filename;
+	}
+
+	// Mirrors the real Torrent::name(), which reads $info['name'] and answers
+	// null when the key is absent. parseMetainfo() refuses an empty name
+	// because rTorrent 0.16.20 aborts on one, so the double has to be able to
+	// carry a name for the accepted cases to stay accepted.
+	public function name()
+	{
+		return isset($this->info['name']) ? $this->info['name'] : null;
+	}
+
+	// Stands in for constructing the real Torrent from a path.
+	public function backedByFile($filename)
+	{
+		$this->filename = $filename;
+		return $this;
 	}
 
 	public function hash_info()
@@ -89,6 +119,14 @@ class Torrent
 	{
 		return $this->commentUrl;
 	}
+}
+
+// The replacement boundary takes an already parsed Torrent -- exactly the
+// object a production caller receives from parseMetainfo(). Tests name a
+// fixture and resolve it here, at the call site, so the decode is visible.
+function checkerParsed($name)
+{
+	return(new Torrent($name));
 }
 
 require_once(testFindRepoRoot() . '/php/xmlrpc_path.php');
@@ -264,10 +302,12 @@ class CheckerProbe extends ruTrackerChecker
 	}
 }
 
-// Minimal double for makeClient(): only the status matters to the tests.
+// Minimal double for makeClient(): the status, and the body the download
+// guard has to classify.
 class Snoopy
 {
 	public static $nextStatus = 200;
+	public static $nextResults = '';
 
 	public $status = 0;
 	public $results = '';
@@ -278,6 +318,7 @@ class Snoopy
 	public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
 	{
 		$this->status = self::$nextStatus;
+		$this->results = self::$nextResults;
 		return true;
 	}
 }
@@ -320,6 +361,9 @@ class CheckerTest
 	private function resetFakes()
 	{
 		Torrent::$fixtures = array();
+		Torrent::$constructions = 0;
+		Snoopy::$nextStatus = 200;
+		Snoopy::$nextResults = '';
 		rTorrent::$source = false;
 		rTorrent::$sourceQueue = array();
 		rTorrent::$sourceReads = 0;
@@ -517,6 +561,28 @@ class CheckerTest
 		}
 	}
 
+	// The other half of withDebugLog(), and the only setting under which the
+	// two log channels are distinguishable: conf.php's shipped
+	// $rutrackerCheckDebug = false. logDebug() writes nothing here, so
+	// anything that still reaches FileUtil::toLog() came out the ungated
+	// channel -- which is what "an operator is told" means in production.
+	private function withoutDebugLog($body)
+	{
+		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
+		$GLOBALS['rutrackerCheckDebug'] = false;
+		try
+		{
+			$body();
+		}
+		finally
+		{
+			if($savedDebug === null)
+				unset($GLOBALS['rutrackerCheckDebug']);
+			else
+				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+		}
+	}
+
 	private function cleanupEntries($oldInfo, $newInfo, $base)
 	{
 		$oldInfo = $this->realisticInfo($oldInfo);
@@ -633,7 +699,7 @@ class CheckerTest
 		try
 		{
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), $label . ' aborts replacement');
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), $label . ' aborts replacement');
 			strictAssertSame(0, count($this->erasedataCalls('erasedataPrepareObsoleteCleanup')),
 				$label . ' creates no cleanup entry');
 			$erases = $this->branchRequestsContaining('$d.erase=');
@@ -746,7 +812,7 @@ class CheckerTest
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'an unsafe successor candidate aborts the staged replacement');
 			strictAssertSame(0, count($this->erasedataCalls('erasedataPrepareObsoleteCleanup')),
 				'an unsafe successor creates no cleanup generation');
@@ -880,7 +946,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the cleanup-backed replacement commits');
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the cleanup-backed replacement commits');
 			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
 			strictAssertSame(1, count($prepare), 'one exact durable cleanup generation is prepared');
 			$loadRead = $this->requestIndexes('d.get_custom', array(self::NEW_HASH, ruTrackerChecker::REPLACEMENT_MARKER_KEY));
@@ -908,7 +974,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		try
 		{
-			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a failed durable prepare aborts the replacement');
 			$erases = $this->branchRequestsContaining('$d.erase=');
 			strictAssertSame(1, count($erases), 'only the staged successor is discarded after predecessor restore');
@@ -932,7 +998,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		try
 		{
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 			$cancel = $this->erasedataCalls('erasedataCancelObsoleteCleanup');
 			$restores = $this->branchRequestsContaining('$d.start=');
 			strictAssertSame(1, count($cancel), 'the exact prepared job is cancelled once');
@@ -956,7 +1022,7 @@ class CheckerTest
 		ErasedataFake::$cancelResult = false;
 		try
 		{
-			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'uncertain cleanup cancellation remains retryable');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')), 'the predecessor recovery key is not cleared after cancel failure');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'the marked successor is retained after cancel failure');
@@ -976,7 +1042,7 @@ class CheckerTest
 		$this->queueAtomic('', false, true);
 		try
 		{
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 			strictAssertSame(0, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')), 'unknown OLD presence does not cancel the tmp');
 			strictAssertSame(0, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')), 'unknown OLD presence does not publish the tmp');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'neither generation marker is discarded after uncertainty');
@@ -1012,7 +1078,7 @@ class CheckerTest
 		try
 		{
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a generic OLD presence fault keeps the commit boundary retryable');
 			strictAssertSame(0, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')),
 				'generic uncertainty never cancels the prepared tmp');
@@ -1036,7 +1102,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		try
 		{
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 			$publish = $this->erasedataCalls('erasedataPublishObsoleteCleanup');
 			$activation = $this->branchRequestsContaining('$d.start=');
 			strictAssertSame(1, count($publish), 'the exact prepared generation is published once');
@@ -1059,7 +1125,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'publish failure does not undo a committed replacement');
 			$activation = $this->branchRequestsContaining('$d.start=');
 			strictAssertSame(1, count($activation), 'run state is still restored after publish failure');
@@ -1080,7 +1146,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED);
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'activation uncertainty remains post-commit success');
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'activation uncertainty remains post-commit success');
 			strictAssertSame(1, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')), 'the durable job remains published');
 			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'published cleanup is kicked despite activation uncertainty');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'activation failure retains both transaction keys');
@@ -1099,7 +1165,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a failed immediate kick leaves the committed replacement successful');
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a failed immediate kick leaves the committed replacement successful');
 			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'the targeted kick is attempted once');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')), 'no rollback erase follows the committed predecessor erase');
 		}
@@ -1117,7 +1183,7 @@ class CheckerTest
 		$this->queueLoadConfirmed();
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
-		ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+		ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 		$cancel = $this->erasedataCalls('erasedataCancelObsoleteCleanupGeneration');
 		$erases = $this->branchRequestsContaining('$d.erase=');
 		strictAssertSame(1, count($cancel), 'the exact abandoned generation is cancelled');
@@ -1131,7 +1197,7 @@ class CheckerTest
 		$this->queueExistingGeneration(0, 0, false);
 		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'an already committed stopped generation is finished in place');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'an already committed stopped generation is finished in place');
 		strictAssertSame(array('erasedataRecoverObsoleteCleanup', 'erasedataKickCollector'),
 			array_column(ErasedataFake::$calls, 'name'), 'cleanup is recovered and kicked before transaction finish');
 		strictAssertSame(null, rTorrent::$lastSend, 'the committed successor is not discarded or loaded again');
@@ -1143,7 +1209,7 @@ class CheckerTest
 		$this->queueExistingGeneration(1, 1, false);
 		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
-		ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+		ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 		$recover = $this->erasedataCalls('erasedataRecoverObsoleteCleanup');
 		$clear = $this->branchRequestsContaining('$d.set_custom=chk-replacement,');
 		strictAssertSame(1, count($recover), 'cleanup recovery is attempted for a live successor too');
@@ -1162,7 +1228,7 @@ class CheckerTest
 				ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_RETRY;
 			elseif($oldPresence === true)
 				ErasedataFake::$generationCancelResult = ERASEDATA_CLEANUP_RETRY;
-			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				$label . ' retains the transaction for retry');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.erase=')), $label . ' does not discard either generation');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.set_custom=chk-replacement,')), $label . ' does not clear successor keys');
@@ -1175,7 +1241,7 @@ class CheckerTest
 		$this->queueExistingGeneration(1, 1, null);
 		rXMLRPCRequest::queue('d.hash', true, true, array(), 'Internal XMLRPC fault');
 		strictAssertSame(ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'a pre-existing generation cannot infer OLD absence from a generic fault');
 		strictAssertSame(array(), ErasedataFake::$calls,
 			'unknown OLD presence neither recovers nor cancels cleanup');
@@ -1195,7 +1261,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		try
 		{
-			$this->withDebugLog(function() { ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH); });
+			$this->withDebugLog(function() { ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH); });
 			$line = strictAssertOneLogMatching(FileUtil::$log, 'cleanup prepare', 'one preparation summary is logged');
 			strictAssertTrue(strpos($line, 'old=1 new=1 obsolete=1 missing=0') !== false, 'the summary reports only bounded counts');
 			strictAssertTrue(strpos($line, $base . '/old.mkv') === false, 'the summary never logs the full cleanup path list');
@@ -1218,7 +1284,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		try
 		{
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH);
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
 			strictAssertSame(1, count(strictLogsMatching(FileUtil::$log, 'durable cleanup preparation failed')),
 				'a commit-blocking prepare failure reaches the shared log with optional debug disabled');
 		}
@@ -1247,7 +1313,7 @@ class CheckerTest
 					ruTrackerChecker::encodeInheritance($stranger, true, true, 1000)));
 
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'the replacement stands down rather than stepping on another transaction');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
 				'the other transaction keeps its only recovery marker');
@@ -1268,7 +1334,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a started replacement should succeed');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a started replacement should succeed');
 		strictAssertSame(false, rTorrent::$lastSend['isStart'], 'the replacement must be staged stopped');
 		strictAssertSame(sys_get_temp_dir(), rTorrent::$lastSend['directory'], 'the staged copy must reuse the old base directory');
 		strictAssertSame('label', rTorrent::$lastSend['label'], 'the staged copy must reuse the old label');
@@ -1330,7 +1396,7 @@ class CheckerTest
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a missing view must cost nothing but the visible membership');
 			strictAssertSame(
 				array(
@@ -1365,7 +1431,7 @@ class CheckerTest
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'an unreadable view list must not abort the replacement');
 			strictAssertSame(
 				array('d.views.push_back_unique=rat_2', 'd.views.push_back_unique=rat_9'),
@@ -1396,7 +1462,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'a replacement without ratio groups must succeed without a view list read');
 		$keys = array_map(function($request) { return $request['key']; }, rXMLRPCRequest::$requests);
 		strictAssertTrue(!in_array('view_list', $keys, true),
@@ -1442,7 +1508,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir(), 0, 1);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a stopped-but-open replacement should succeed');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a stopped-but-open replacement should succeed');
 		strictAssertSame(1, count($this->branchRequestsContaining('$d.open=')),
 			'a stopped-but-open torrent is reopened in one ownership branch');
 		strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')),
@@ -1463,7 +1529,7 @@ class CheckerTest
 
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a fully stopped replacement should still commit');
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a fully stopped replacement should still commit');
 			$this->assertNoRequestKeyContains('d.start', 'a fully stopped torrent must not be started');
 			$this->assertNoRequestKeyContains('d.open', 'a fully stopped torrent must not be opened');
 			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
@@ -1492,7 +1558,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a started-but-closed replacement is an activation success');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a started-but-closed replacement is an activation success');
 		$activation = $this->branchRequestsContaining('$d.start=');
 		strictAssertSame(1, count($activation), 'a scheduler-queued start is one atomic attempt');
 		strictAssertTrue(strpos(implode('|', $activation[0]['commands'][0]->params),
@@ -1510,7 +1576,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_NOT_NEED,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'an unmarked pre-existing target hash must mark old torrent superseded without touching either torrent'
 		);
 		$customWrites = rXMLRPCRequest::requestsFor('d.set_custom');
@@ -1541,7 +1607,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'when setMessage fails to record superseded token, createTorrent must return STE_ERROR to allow later retry'
 		);
 	}
@@ -1576,7 +1642,7 @@ class CheckerTest
 			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
 
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 				$label . ': ownership is refused retryably');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
 				$label . ': the existing target is never erased');
@@ -1603,7 +1669,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 			'a live torrent with a leftover marker must not be adopted'
 		);
 		$this->assertNoRequestKeyContains('d.erase', 'a live marked torrent must never be erased');
@@ -1629,7 +1695,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 			'an open marked torrent must not be adopted, started or not'
 		);
 		$this->assertNoRequestKeyContains('d.erase', 'a paused marked torrent must never be erased');
@@ -1656,7 +1722,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 			'an orphaned marked staged copy must be discarded and replaced');
 		$erases = $this->branchRequestsContaining('$d.erase=');
 		strictAssertSame(2, count($erases), 'the orphan and predecessor are each erased once atomically');
@@ -1692,7 +1758,7 @@ class CheckerTest
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', $oldHash),
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 				'the redo of a crashed transaction must succeed');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 				'the replacement is started, as the record says -- not left in the measured stop');
@@ -1735,7 +1801,7 @@ class CheckerTest
 			array('/data', 'label', '', '', '-501', 'Method not found', '', ''));
 
 		strictAssertSame(ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'a faulted snapshot aborts');
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a faulted snapshot aborts');
 		$this->assertNoRequestKeyContains('d.start', 'nothing is started from shifted values');
 		$this->assertNoRequestKeyContains('d.open', 'and nothing is opened either');
 		strictAssertSame(null, rTorrent::$lastSend, 'no load is enqueued');
@@ -1771,7 +1837,7 @@ class CheckerTest
 					$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED);
 
 				strictAssertSame(ruTrackerChecker::STE_ERROR,
-					ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), $label . ': the replacement aborts');
+					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), $label . ': the replacement aborts');
 				strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
 					$label . ': the staged copy is KEPT -- it carries the only marker the sweep can find');
 				strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'so the sweep can finish') !== false,
@@ -1790,7 +1856,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'an unconfirmed staged copy must abort the replacement'
 		);
 		strictAssertSame(
@@ -1815,7 +1881,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'an unknowable commit outcome must abort the replacement'
 		);
 		$erases = $this->branchRequestsContaining('$d.erase=');
@@ -1901,7 +1967,7 @@ class CheckerTest
 		$this->withDebugLog(function() {
 			$this->stageHappyReplacement(sys_get_temp_dir(), 0, 0);
 
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a fully stopped replacement still commits');
 				$line = strictAssertOneLogMatching(FileUtil::$log, 'daemon-selected run state at stop',
 					'the commit-boundary input to activation is recorded');
@@ -1925,7 +1991,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'a staged hash owned by another worker must abort the replacement'
 		);
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'a foreign marker must be recognised on the first poll');
@@ -1950,7 +2016,7 @@ class CheckerTest
 		{
 			strictAssertSame(
 				ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a synchronous load failure must abort the replacement'
 			);
 			strictAssertTrue(is_file($base . '/old.mkv'), 'a failed load must not clean up any files');
@@ -1974,7 +2040,7 @@ class CheckerTest
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'an already-gone old hash means the replacement is committed');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'an already-gone old hash means the replacement is committed');
 		$erases = $this->branchRequestsContaining('$d.erase=');
 		strictAssertSame(1, count($erases), 'only the raced commit ownership branch may erase');
 		strictAssertSame(self::OLD_HASH, $erases[0]['commands'][0]->params[0], 'the commit branch targets the old hash');
@@ -2001,7 +2067,7 @@ class CheckerTest
 		{
 			strictAssertSame(
 				ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a failed commit erase with the old hash still present must roll back'
 			);
 			strictAssertTrue(is_file($base . '/old.mkv'), 'an aborted commit must not clean up any files');
@@ -2047,7 +2113,7 @@ class CheckerTest
 
 			strictAssertSame(
 				ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'a failed commit erase with an unrestorable predecessor must roll back'
 			);
 			$erases = $this->branchRequestsContaining('$d.erase=');
@@ -2075,7 +2141,7 @@ class CheckerTest
 
 		try
 		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'activation trouble after commit must not fail the check');
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'activation trouble after commit must not fail the check');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 				'an unconfirmed activation is attempted exactly once and deferred');
 			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
@@ -2104,7 +2170,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'replacement needs the old metainfo for a safe post-commit recovery'
 		);
 		strictAssertSame(1, count(rXMLRPCRequest::$requests), 'missing old metainfo must abort right after the preflight probe');
@@ -2120,7 +2186,7 @@ class CheckerTest
 		rTorrent::$source = false;
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH, $provided),
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH, $provided),
 			'a parsed predecessor with the expected hash removes the second source read');
 		strictAssertSame(0, rTorrent::$sourceReads,
 			'the validated caller-owned Torrent is used directly');
@@ -2132,7 +2198,7 @@ class CheckerTest
 		$wrong = new Torrent(array('hash' => 'SOME-OTHER-HASH', 'info' => array('name' => 'wrong.mkv')));
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH, $wrong),
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH, $wrong),
 			'a mismatched optional object falls back to the daemon-owned predecessor');
 		strictAssertSame(1, rTorrent::$sourceReads,
 			'a hash mismatch is never trusted for post-replacement cleanup');
@@ -2144,7 +2210,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the happy path should succeed');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the happy path should succeed');
 		$snapshots = rXMLRPCRequest::requestsFor(self::SNAPSHOT_KEY);
 		strictAssertSame(1, count($snapshots), 'exactly one non-run metadata snapshot request');
 		$stops = $this->branchRequestsContaining('$d.stop=');
@@ -2198,7 +2264,7 @@ class CheckerTest
 			else
 				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
 
-			strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), $label);
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), $label);
 			$addition = rTorrent::$lastSend['addition'];
 			strictAssertTrue(strpos($addition[1], 'd.set_custom=chk-replaces,' . self::OLD_HASH
 				. '-' . $case['selected'] . '-') === 0,
@@ -2230,7 +2296,7 @@ class CheckerTest
 			rXMLRPCRequest::queue('branch', $response[0], $response[1], $response[2]);
 			$this->withDebugLog(function() use ($label) {
 				strictAssertSame(ruTrackerChecker::STE_ERROR,
-					ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 					$label . ': the marker/stop boundary fails closed');
 			});
 			strictAssertSame(null, rTorrent::$lastSend,
@@ -2264,24 +2330,181 @@ class CheckerTest
 			});
 
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH),
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				$mode . ': malformed positive stop reply fails closed');
 			strictAssertSame(null, rTorrent::$lastSend,
 				$mode . ': no replacement is staged from an untrustworthy reply shape');
 		}
 	}
 
-	public function testInvalidPayloadIsReportedAsDeletedTopic()
+	// Metainfo that does not parse is a bad payload and nothing more. It is not
+	// the tracker saying the topic is gone: a login wall, a challenge page and a
+	// truncated download all look exactly like this, and reading any of them as
+	// a deletion retires a live torrent. The verdict is therefore an error the
+	// next cycle retries, and no XMLRPC command is sent on the way to it.
+	public function testUnparseableMetainfoIsARetryableErrorNotADeletion()
 	{
 		$this->resetFakes();
 		Torrent::$fixtures['not-a-torrent'] = array('errors' => true);
 
 		strictAssertSame(
-			ruTrackerChecker::STE_DELETED,
-			ruTrackerChecker::createTorrent('not-a-torrent', self::OLD_HASH),
-			'legacy handlers rely on an unparseable payload meaning a removed topic'
+			ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent(checkerParsed('not-a-torrent'), self::OLD_HASH),
+			'malformed metainfo is an error to retry, never evidence that a topic was removed'
 		);
 		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'a parse failure must not touch rTorrent');
+	}
+
+	// The boundary takes a parsed Torrent, so anything else is a caller bug and
+	// is refused with the same retryable verdict, before a single command.
+	public function testCreateTorrentRefusesAnythingThatIsNotParsedMetainfo()
+	{
+		foreach(array('raw bytes' => 'd8:announce', 'null' => null, 'an array' => array()) as $label => $payload)
+		{
+			$this->resetFakes();
+
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent($payload, self::OLD_HASH),
+				$label . ' is not parsed metainfo and must fail as a retryable error');
+			strictAssertSame(0, count(rXMLRPCRequest::$requests),
+				$label . ' must not touch rTorrent');
+		}
+	}
+
+	// A replacement harvested through rTorrent::getSource() arrives backed by
+	// rTorrent's own session file -- or, when getSource() falls back to
+	// d.get_tied_to_file, by a .torrent that belongs to the user. sendTorrent()
+	// reads a non-null filename as "mine to delete and reuse": it unlinks it
+	// when $saveUploadedTorrents is off, reuses its path for metainfo too large
+	// for one packet, and advertises it as x-filename. None of that may happen
+	// to a file this plugin did not create, and none of it did before metainfo
+	// was parsed once, because the replacement used to be rebuilt from bytes.
+	public function testTheReplacementHandedToRTorrentClaimsNoFileOnDisk()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$session = sys_get_temp_dir().'/session/'.self::OLD_HASH.'.torrent';
+		$parsed = checkerParsed('new-torrent')->backedByFile($session);
+		strictAssertSame($session, $parsed->getFileName(),
+			'the fixture starts out backed by a file, the way getSource() hands it over');
+		Torrent::$constructions = 0;
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent($parsed, self::OLD_HASH),
+			'a file-backed replacement still commits');
+		strictAssertSame(0, Torrent::$constructions,
+			'disowning the file must not decode the metainfo a second time');
+		strictAssertTrue(rTorrent::$lastSend !== null, 'the replacement was staged');
+		strictAssertSame(null, rTorrent::$lastSend['torrent']->getFileName(),
+			'the object handed to sendTorrent claims no file, so sendTorrent cannot unlink or reuse one');
+	}
+
+	// One decode, at one boundary. Counted, not read out of the source:
+	// createTorrent() gets the object its caller already parsed and must not
+	// build a second one from the same bytes.
+	public function testCreateTorrentNeverDecodesTheMetainfoASecondTime()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$parsed = checkerParsed('new-torrent');
+		Torrent::$constructions = 0;
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent($parsed, self::OLD_HASH),
+			'the already parsed replacement commits');
+		strictAssertSame(0, Torrent::$constructions,
+			'createTorrent must not decode the replacement metainfo a second time');
+		strictAssertTrue(rTorrent::$lastSend !== null, 'the replacement was staged');
+		strictAssertSame($parsed, rTorrent::$lastSend['torrent'],
+			'the very object the caller parsed is the one staged in the client');
+	}
+
+	// End to end through the shared download guard: the response body is
+	// decoded exactly once, by parseMetainfo(), and the object travels on.
+	public function testDownloadGuardDecodesTheResponseBodyExactlyOnce()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		Snoopy::$nextStatus = 200;
+		Snoopy::$nextResults = 'new-torrent';
+		$client = new Snoopy();
+		$client->fetchComplex('https://tracker.test/download.php?id=1');
+		Torrent::$constructions = 0;
+
+		strictAssertSame(null, ruTrackerChecker::createTorrentFromDownload($client, self::OLD_HASH),
+			'a valid downloaded body commits the replacement');
+		strictAssertSame(1, Torrent::$constructions,
+			'the downloaded bytes are decoded exactly once, at the single parse boundary');
+	}
+
+	// And the answers that are not metainfo: retryable, decided before anything
+	// reaches rTorrent, and never a deletion.
+	public function testDownloadGuardClassifiesNon200AndMalformedBodiesAsUnreachable()
+	{
+		foreach(array(
+			'a non-200 answer' => array(503, 'new-torrent'),
+			'an HTTP-200 login wall' => array(200, 'not-a-torrent'),
+			'an empty HTTP-200 body' => array(200, ''),
+		) as $label => $fixture)
+		{
+			$this->resetFakes();
+			Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
+			Torrent::$fixtures['not-a-torrent'] = array('errors' => true);
+			Snoopy::$nextStatus = $fixture[0];
+			Snoopy::$nextResults = $fixture[1];
+			$client = new Snoopy();
+			$client->fetchComplex('https://tracker.test/download.php?id=1');
+
+			strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+				ruTrackerChecker::createTorrentFromDownload($client, self::OLD_HASH),
+				$label . ' proves nothing about the topic and stays retryable');
+			strictAssertSame(0, count(rXMLRPCRequest::$requests),
+				$label . ' is classified before any XMLRPC read or mutation');
+			strictAssertSame(null, rTorrent::$lastSend, $label . ' cannot stage a replacement');
+		}
+	}
+
+	// parseMetainfo() is the only decode: it answers with the Torrent or with
+	// null, and null is the whole vocabulary for "these bytes are not metainfo".
+	public function testParseMetainfoReturnsTheTorrentOrNullAndDecodesOnce()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
+		Torrent::$fixtures['not-a-torrent'] = array('errors' => true);
+		Torrent::$fixtures['no-info-hash-torrent'] = array('errors' => false, 'hash' => null);
+		Torrent::$fixtures['short-hash-torrent'] = array('errors' => false, 'hash' => 'ABCD');
+		Torrent::$fixtures['non-hex-hash-torrent'] = array('errors' => false, 'hash' => str_repeat('Z', 40));
+		// The shape every other fixture here misses, and the one the errors()
+		// check exists for: reported errors BESIDE a perfectly good info hash.
+		// The real Torrent produces it. Torrent::notify_err() RETURNS rather
+		// than throwing, so a non-canonical integer anywhere outside the info
+		// dict -- 'creation date' => i0123456789e is enough -- records an error
+		// and still finishes decoding, leaving hash_info() valid and the info
+		// dict byte-identical to a clean torrent.
+		//
+		// Nothing else could catch it: this suite's other fixtures never pair
+		// the two, and the integration fixtures are built by Torrent::encode(),
+		// whose encode_integer() is structurally incapable of emitting a
+		// non-canonical integer. Without this row, deleting the errors() check
+		// leaves the whole harness green while NNMClub starts answering
+		// STE_UPTODATE -- a terminal "this torrent is fine" -- for a body that
+		// is currently refused as retryable.
+		Torrent::$fixtures['errors-beside-a-valid-hash'] = array('errors' => true, 'hash' => self::NEW_HASH);
+
+		Torrent::$constructions = 0;
+		$parsed = ruTrackerChecker::parseMetainfo('new-torrent');
+		strictAssertTrue($parsed instanceof Torrent, 'valid metainfo comes back as the parsed Torrent');
+		strictAssertSame(self::NEW_HASH, $parsed->hash_info(), 'and it is the torrent those bytes describe');
+		strictAssertSame(1, Torrent::$constructions, 'valid metainfo is decoded exactly once');
+
+		foreach(array('not-a-torrent', 'no-info-hash-torrent', 'short-hash-torrent', 'non-hex-hash-torrent',
+			'errors-beside-a-valid-hash', '', null, array()) as $rejected)
+		{
+			strictAssertSame(null, ruTrackerChecker::parseMetainfo($rejected),
+				var_export($rejected, true) . ' is not metainfo and must answer null');
+		}
+		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'classifying bytes never touches rTorrent');
 	}
 
 	public function testMalformedMetainfoWithoutInfoHashReturnsErrorWithoutMutatingDaemon()
@@ -2291,7 +2514,7 @@ class CheckerTest
 
 		strictAssertSame(
 			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('no-info-hash-torrent', self::OLD_HASH),
+			ruTrackerChecker::createTorrent(checkerParsed('no-info-hash-torrent'), self::OLD_HASH),
 			'metainfo without info hash must fail with STE_ERROR'
 		);
 		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'malformed info hash must not touch rTorrent');
@@ -2308,7 +2531,7 @@ class CheckerTest
 		rXMLRPCRequest::queue('d.hash', false, false, array());
 
 		strictAssertSame(ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent('numeric-hash-torrent', $oldHash),
+			ruTrackerChecker::createTorrent(checkerParsed('numeric-hash-torrent'), $oldHash),
 			'different 40-hex hashes stay different even when PHP parses both as the number one');
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.hash')),
 			'a distinct successor reaches the normal preflight');
@@ -2380,6 +2603,75 @@ class CheckerTest
 			'no missing field may be coerced into an invented state zero');
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.hash')),
 			'the fallback probe confirms that the torrent is present rather than gone');
+	}
+
+	// A truncated read (above) heals: the next cycle asks again and the daemon
+	// answers. A chk-state that will not PARSE does not. Nothing in the plugin
+	// ever rewrites it -- run() returns before setState(), parseMulticall()
+	// drops the row from the snapshot, and flushVerdicts() leaves it out of
+	// the fresh scan -- so every one of the three readers refuses the same
+	// bytes for ever and the torrent is never checked again. Reported through
+	// logDebug(), gated on conf.php's shipped $rutrackerCheckDebug = false,
+	// that permanent wedge said nothing at all, on any of the three.
+	//
+	// Asserted with the flag EXPLICITLY false: with it on, the ungated channel
+	// and the gated one are indistinguishable.
+	public function testAnUnparseableStoredStateIsReportedWithDebuggingAtItsShippedDefault()
+	{
+		foreach(array(
+			'state with a leading zero' => array('01', '1700'),
+			'state that is not a number' => array('never', '1700'),
+			'negative state'             => array('-1', '1700'),
+			'time with a leading zero'   => array('2', '01700'),
+			'time that is not a number'  => array('2', 'yesterday'),
+		) as $label => $stored)
+		{
+			$this->resetFakes();
+			$this->withoutDebugLog(function() use ($label, $stored) {
+				rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+					array($stored[0], $stored[1], 'lbl'));
+				FileUtil::$log = array();
+				$state = null;
+				$time = null;
+				$label2 = null;
+
+				strictAssertSame(false,
+					CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label2),
+					$label . ': the refusal itself is unchanged');
+				strictAssertSame(ruTrackerChecker::STE_INPROGRESS, $state,
+					$label . ': and no unreadable field is coerced into an invented state zero');
+
+				$line = strictAssertOneLogMatching(FileUtil::$log, 'malformed chk-state',
+					$label . ': and an operator is told, at the shipped $rutrackerCheckDebug = false');
+				strictAssertTrue(strpos($line, self::OLD_HASH) !== false,
+					$label . ': the line names the torrent that can never be checked again');
+			});
+		}
+
+		// Control: a well-formed pair still reads, and says nothing. The
+		// legacy on-disk spelling of "never checked" is an UNSET custom, which
+		// reads back as '' -- that must keep parsing, not join the wedge.
+		foreach(array(
+			'a checked torrent'          => array('2', '1700'),
+			'the unset legacy shape'     => array('', ''),
+		) as $label => $stored)
+		{
+			$this->resetFakes();
+			$this->withoutDebugLog(function() use ($label, $stored) {
+				rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+					array($stored[0], $stored[1], 'lbl'));
+				FileUtil::$log = array();
+				$state = null;
+				$time = null;
+				$label2 = null;
+
+				strictAssertSame(true,
+					CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label2),
+					$label . ': well-formed input must not fail');
+				strictAssertSame(array(), FileUtil::$log,
+					$label . ': and a read that worked is nobody\'s problem');
+			});
+		}
 	}
 
 	public function testStateWriteRaceReportsMissingHashWithoutAnError()
@@ -2908,7 +3200,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the replacement commits');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the replacement commits');
 		$addition = implode("\n", rTorrent::$lastSend['addition']);
 
 		strictAssertTrue(strpos($addition, 'chk-topic,6879823') !== false,
@@ -2926,7 +3218,7 @@ class CheckerTest
 		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1, array(), array(), '', '');
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the replacement commits');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the replacement commits');
 		$addition = implode("\n", rTorrent::$lastSend['addition']);
 		strictAssertTrue(strpos($addition, 'chk-topic') === false,
 			'nothing is invented for a predecessor that had no topic recorded');
@@ -2940,7 +3232,7 @@ class CheckerTest
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 
 		$before = time();
-		strictAssertSame(null, ruTrackerChecker::createTorrent('new-torrent', self::OLD_HASH), 'the replacement commits');
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the replacement commits');
 		$addition = rTorrent::$lastSend['addition'];
 
 		$state = null;
@@ -3657,6 +3949,265 @@ class CheckerTest
 				$label . ' has one atomic attempt');
 			$this->assertNoRequestKeyContains('d.open', $label . ' issues no standalone open');
 			$this->assertNoRequestKeyContains('d.start', $label . ' issues no standalone start');
+		}
+	}
+
+
+	// --- Persisted/RPC integers at the checker's own boundaries -------------
+	//
+	// intval() answers 0 for everything it cannot read, and at all three of
+	// these boundaries 0 is the DANGEROUS reading: state 0 is "never checked"
+	// and buys a full destructive check, a claim taken at the epoch is always
+	// expired, and a staged copy reported stopped-and-closed is the one that
+	// may be erased.
+
+	public function testMalformedLiveStateOrTimeDefersInsteadOfBeingReadAsZero()
+	{
+		foreach(array(
+			'leading zero state'   => array('03', '1700'),
+			'padded state'         => array(' 3', '1700'),
+			'plus-signed state'    => array('+3', '1700'),
+			'state with letters'   => array('3oops', '1700'),
+			'leading zero time'    => array('3', '01700'),
+			'negative time'        => array('3', '-1'),
+			'float time'           => array('3', '1700.0'),
+		) as $label => $reply)
+		{
+			$this->resetFakes();
+			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+				array($reply[0], $reply[1], 'lbl'));
+			$state = null;
+			$time = null;
+			$label2 = null;
+			strictAssertSame(false,
+				CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label2),
+				$label . ': an unreadable live reading must defer the check');
+			strictAssertSame(ruTrackerChecker::STE_INPROGRESS, $state,
+				$label . ': and must never be coerced into state zero');
+			strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.hash'),
+				$label . ': a read that answered proves presence; no probe is spent');
+		}
+
+		// ...and run() takes its existing "could not be read" branch: no
+		// handler, no lock write, nothing at all beyond the one read.
+		$this->resetFakes();
+		ruTrackerChecker::registerTracker('/topic\.rpcint\.invalid/', '/tracker\.rpcint\.invalid/',
+			function() { throw new RuntimeException('an unreadable state must never dispatch a handler'); });
+		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array('03', '1700', ''));
+		$performed = null;
+		strictAssertSame(false,
+			ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 1700, '', $performed),
+			'the check is reported as deferred, not as a successful no-op');
+		strictAssertSame(false, $performed, 'and nothing durable was consumed');
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			'no INPROGRESS lock is written over a state nobody could read');
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+			'and no single custom write either');
+
+		// Control: the same shape with canonical values still runs.
+		$this->resetFakes();
+		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			array((string) ruTrackerChecker::STE_UPTODATE, '1700', 'lbl'));
+		$state = null;
+		$time = null;
+		$label2 = null;
+		strictAssertSame(true, CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label2),
+			'a canonical reading is still read');
+		strictAssertSame(ruTrackerChecker::STE_UPTODATE, $state, 'as the int it is');
+		strictAssertSame(1700, $time, 'and so is chk-time');
+		strictAssertSame('lbl', $label2, 'the label is untouched by any of this');
+
+		// An UNSET custom comes back as the empty string. That, and only that,
+		// is the never-checked reading.
+		$this->resetFakes();
+		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array('', '', ''));
+		$state = null;
+		$time = null;
+		$label2 = null;
+		strictAssertSame(true, CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label2),
+			'a torrent that was never checked is readable, not malformed');
+		strictAssertSame(0, $state, 'an unset chk-state reads as never checked');
+		strictAssertSame(0, $time, 'and an unset chk-time as never stamped');
+	}
+
+	// A claim whose timestamp cannot be read is not an expired claim. Read as
+	// zero it was worse than no claim at all: it was pruned on sight by every
+	// worker that walked past it, so the process really holding the hash --
+	// possibly mid-replacement -- kept being joined by another.
+	public function testAMalformedClaimTimestampIsRetainedAndBlocksACompetingWorker()
+	{
+		foreach(array(
+			'legacy bare leading zero' => '01',
+			'legacy bare float'        => 1.5,
+			'legacy bare text'         => 'held-since-forever',
+			'legacy bare negative'     => '-1',
+			'owned entry leading zero' => array('since' => '01', 'token' => 'aabbccdd'),
+			'owned entry float'        => array('since' => 1.5, 'token' => 'aabbccdd'),
+			'owned entry text'         => array('since' => 'held-since-forever', 'token' => 'aabbccdd'),
+			'owned entry unstamped'    => array('token' => 'aabbccdd'),
+		) as $label => $entry)
+		{
+			$this->resetFakes();
+			RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+
+			// Far past any lease: a readable stamp of this age WOULD be pruned.
+			$now = 1000 + ruTrackerChecker::MAX_LOCK_TIME * 10;
+			strictAssertSame(false,
+				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),
+				$label . ': a claim nobody can date is not a claim nobody holds');
+			$claims = RuTrackerState::load('meta-claims');
+			strictAssertTrue(isset($claims[self::OLD_HASH]),
+				$label . ': and the entry is retained exactly as it was found');
+			strictAssertSame(array(self::OLD_HASH), array_keys($claims),
+				$label . ': nothing else is invented in its place');
+		}
+
+		// The diagnostic names the hash and never the unreadable value itself.
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			RuTrackerState::save('meta-claims',
+				array(self::OLD_HASH => array('since' => 'zzsecretzz', 'token' => 'aabbccdd')));
+			FileUtil::$log = array();
+			strictInvoke('ruTrackerChecker', 'claimCheck',
+				array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME * 10));
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'unreadable timestamp',
+				'the retained claim is reported once');
+			strictAssertTrue(strpos($line, self::OLD_HASH) !== false,
+				'the diagnostic names the hash it is about');
+			strictAssertTrue(strpos($line, 'zzsecretzz') === false,
+				'and never echoes the unreadable stored value back into the log');
+		});
+
+		// Control: a readable stamp of the same age still expires, and a
+		// readable fresh one still blocks -- neither behaviour moved.
+		$this->resetFakes();
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => 1000));
+		strictAssertTrue(
+			strictInvoke('ruTrackerChecker', 'claimCheck',
+				array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1)) !== false,
+			'a readable expired claim is still taken over');
+
+		$this->resetFakes();
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccdd')));
+		strictAssertSame(false,
+			strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1001)),
+			'and a readable live claim still blocks');
+	}
+
+	// And it is retained FOR EVER. A readable claim ages out of the loop above
+	// after MAX_LOCK_TIME; an unreadable one has no age to measure, and the
+	// only other way an entry leaves meta-claims is releaseCheck(), which runs
+	// solely for a worker holding the claim's own token -- a token no worker
+	// can ever be granted, because claimCheck() refuses this hash before
+	// issuing one. So the hash it names is never checked again and nothing
+	// repairs the entry. Reported through logDebug(), gated on conf.php's
+	// shipped $rutrackerCheckDebug = false, that permanent wedge said nothing
+	// at all: the fault two earlier rounds of this work were rejected for.
+	//
+	// The flag is set EXPLICITLY false here rather than left unset, because
+	// "the shipped default" is the claim being made, and because with it ON
+	// the two channels are indistinguishable -- which is how the sibling test
+	// above passed while production stayed silent.
+	public function testTheRetainedClaimIsReportedWithDebuggingAtItsShippedDefault()
+	{
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			RuTrackerState::save('meta-claims',
+				array(self::OLD_HASH => array('since' => 'zzsecretzz', 'token' => 'aabbccdd')));
+			FileUtil::$log = array();
+
+			// The control first, and in this very block: the gate really is
+			// shut, so nothing below arrives by accident.
+			ruTrackerChecker::logDebug('a self-healing refusal says this');
+			strictAssertSame(array(), FileUtil::$log,
+				'a refusal that recovers on its own is silent at the shipped default, as it should be');
+
+			strictAssertSame(false,
+				strictInvoke('ruTrackerChecker', 'claimCheck',
+					array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME * 10)),
+				'the refusal itself is unchanged');
+
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'unreadable timestamp',
+				'but the permanently blocking claim reaches the application log anyway');
+			strictAssertTrue(strpos($line, self::OLD_HASH) !== false,
+				'and the line names the hash it is about, so an operator can clear it');
+			strictAssertTrue(strpos($line, 'zzsecretzz') === false,
+				'and still never echoes the unreadable stored value back into the log');
+		});
+
+		// A corrupt claim on SOMEBODY ELSE'S hash is not this caller's problem,
+		// and must not be reported to it. The loop visits every claim in the
+		// document on every call, and flushVerdicts() calls claimCheck() once
+		// per deferred verdict -- so reporting each corrupt entry it walks past
+		// turns one wedged hash into a flood of identical lines per cycle.
+		// Silence and noise are both ways of not being read.
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			RuTrackerState::save('meta-claims', array(
+				self::OLD_HASH => array('since' => 'zzsecretzz', 'token' => 'aabbccdd'),
+			));
+			FileUtil::$log = array();
+			$other = str_repeat('C', 40);
+			strictInvoke('ruTrackerChecker', 'claimCheck',
+				array($other, 1000 + ruTrackerChecker::MAX_LOCK_TIME * 10));
+			strictAssertSame(array(), FileUtil::$log,
+				'a claim wedged on another hash is reported to the caller it blocks, not to every passer-by');
+		});
+
+		// Control: a readable claim -- live or expired -- writes nothing at
+		// the shipped default either way.
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			RuTrackerState::save('meta-claims',
+				array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccdd')));
+			FileUtil::$log = array();
+			strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1001));
+			strictAssertSame(array(), FileUtil::$log,
+				'an ordinary contended claim is not an operator\'s problem and says nothing');
+		});
+	}
+
+	// d.get_state and d.is_open are 0/1 and nothing else. Anything else used
+	// to intval() to 0, which reads as "stopped and closed" -- the single
+	// reading that authorises erasing the occupant of the successor hash.
+	public function testAStagedSuccessorWhoseRunStateIsUnreadableIsRetainedWhole()
+	{
+		foreach(array(
+			'leading zero state' => array('01', 0),
+			'leading zero open'  => array(0, '01'),
+			'state out of range' => array(2, 0),
+			'open out of range'  => array(0, 2),
+			'state with letters' => array('0oops', 0),
+			'float open'         => array(0, 1.0),
+			'negative state'     => array('-1', 0),
+			'padded open'        => array(0, ' 1'),
+		) as $label => $runState)
+		{
+			$this->resetFakes();
+			$oldHash = str_repeat('A', 40);
+			Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
+			rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
+				array(self::PLUGIN_MARKER, $runState[0], $runState[1],
+					$oldHash . '-started-1786899620'));
+			// Everything the coercive reading WOULD have gone on to consume is
+			// queued and waiting, so a run state read as 0/1 by intval() really
+			// does reach the atomic clear/activate below. Reaching it is the
+			// failure this case exists to prevent.
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+
+			strictAssertSame(
+				ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
+				$label . ': an unreadable run state abandons the replacement with nothing changed'
+			);
+			$this->assertNoRequestKeyContains('d.erase',
+				$label . ': the occupant of the successor hash is never erased on it');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+				$label . ': and no atomic clear, revive or activation is attempted either');
+			strictAssertSame(null, rTorrent::$lastSend, $label . ': no load may be enqueued');
 		}
 	}
 

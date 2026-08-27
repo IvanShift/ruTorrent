@@ -1,5 +1,7 @@
 <?php
 
+require_once( __DIR__ . '/../bencode.php' );
+
 /**
  * NNMClub handler, resilient to the Cloudflare Turnstile that now blocks
  * loginmgr-based authentication (an unauthenticated topic page has no btih
@@ -104,25 +106,44 @@ class NNMClubCheckImpl
     // a format we do not understand does not get better by waiting: collapsing
     // the two meant one unreadable field could stop a torrent from ever being
     // checked again, silently. Reaching the tracker but not understanding it
-    // only costs us the fast path, so it falls through to the ordinary
-    // forum check instead. Transport failures keep SCRAPE_RESULT_FAILED.
+    // only costs us the fast path, so it falls through to the ordinary forum
+    // check instead. Transport failures keep SCRAPE_RESULT_FAILED.
     //
     // This departs from remediation item F07's "malformed HTTP 200 stays
-    // retryable uncertainty and is not destructive replacement authority".
-    // The concern behind that line is honoured: an unreadable scrape is not
-    // treated as evidence of anything, and it authorises nothing. The forum
-    // check that follows is the authority, exactly as it is for a scrape that
-    // reports the hash absent, and NNMClub has no deletion detection for that
-    // path to reach a destructive conclusion with (see plugin.info). What F07
-    // did not anticipate is a shape the tracker sends on EVERY answer, where
-    // "retry next cycle" means never checking the torrent again.
+    // retryable uncertainty and is not destructive replacement authority", as
+    // owner decision D009 amending F07 directs. The concern behind that line
+    // is honoured: an unreadable scrape is not treated as evidence of
+    // anything, and it authorises nothing. The forum check that follows is the
+    // authority, exactly as it is for a scrape that reports the hash absent,
+    // and NNMClub has no deletion detection for that path to reach a
+    // destructive conclusion with (see plugin.info). What F07 did not
+    // anticipate is a shape the tracker sends on EVERY answer, where "retry
+    // next cycle" means never checking the torrent again.
     private const SCRAPE_RESULT_UNREADABLE = 4;
 
-    private const MAX_SCRAPE_BODY_BYTES = 1048576;
-    private const MAX_SCRAPE_DEPTH = 32;
-    private const MAX_SCRAPE_TOKENS = 4096;
-    private const MAX_SCRAPE_INTEGER_DIGITS = 19;
-    private const MAX_LENGTH_PREFIX_DIGITS = 7;
+    /**
+     * The ceilings a scrape answer is decoded under. A scrape body is a
+     * tracker-controlled response to a request this handler makes on its own
+     * schedule, so every dimension of it is bounded before any of it is
+     * believed: total bytes, nesting depth, token count, integer magnitude and
+     * the length prefix of a string. These are the exact values this handler
+     * has always enforced -- they now reach ONE grammar (bencode.php) instead
+     * of a stack machine that carried the schema check woven through it.
+     */
+    private const BENCODE_LIMITS = [
+        'max_bytes' => 1048576,
+        'max_depth' => 32,
+        'max_tokens' => 4096,
+        'max_integer_digits' => 19,
+        'max_length_digits' => 7,
+    ];
+
+    /**
+     * The counters a scrape row may carry. None of them is individually
+     * mandatory -- see hasValidTargetStats() -- but every one that IS present
+     * is validated, and a row carrying none of them proves nothing.
+     */
+    private const TARGET_COUNTERS = ['complete', 'downloaded', 'incomplete'];
 
     private static function log($message)
     {
@@ -406,45 +427,21 @@ class NNMClubCheckImpl
     }
 
     /**
-     * Parse a bounded bencode string token prefix (length:string).
+     * Decide what a scrape answer says about ONE info hash.
      *
-     * @param  string $payload  Bencode payload
-     * @param  int    $pos      Current offset pointing to first digit of length prefix
-     * @param  int    $len      Total payload length
-     * @param  int    &$strStart Output start offset of string content
-     * @param  int    &$strLen   Output string length
-     * @return bool True if valid string token prefix and boundaries, false otherwise
-     */
-    private static function parseBencodeStringToken($payload, $pos, $len, &$strStart, &$strLen)
-    {
-        $colonPos = strpos($payload, ':', $pos);
-        if ($colonPos === false) {
-            return false;
-        }
-        $lenStr = substr($payload, $pos, $colonPos - $pos);
-        $lenStrLen = strlen($lenStr);
-        if ($lenStrLen === 0 || $lenStrLen > self::MAX_LENGTH_PREFIX_DIGITS || !ctype_digit($lenStr)) {
-            return false;
-        }
-        if ($lenStrLen > 1 && $lenStr[0] === '0') {
-            return false;
-        }
-        $strLen = (int) $lenStr;
-        if ($strLen < 0 || $strLen > $len) {
-            return false;
-        }
-        $strStart = $colonPos + 1;
-        if ($strStart + $strLen > $len) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Bounded iterative (non-recursive) bencode parser for NNMClub scrape responses.
+     * The grammar work belongs to `RuTrackerBencode` (plugins/rutracker_check/
+     * bencode.php); this reads the typed tree it returns. The three verdicts
+     * are deliberately distinct, and the distinction is what keeps a bad
+     * answer from deleting a torrent:
      *
-     * Validates that the response is a well-formed bencoded dictionary within explicit
-     * limits, containing a top-level 'files' dictionary.
+     *   UPTODATE  the hash is a direct key of the top-level `files`
+     *             dictionary and its row carries at least one valid counter
+     *   NOT_FOUND the document is valid and `files` simply does not list it
+     *   FAILED    anything else -- malformed bencode, no `files` dictionary,
+     *             or a target row that holds no counter at all. The caller
+     *             turns this into SCRAPE_RESULT_UNREADABLE when the host that
+     *             produced it answered at all; it must never be read as "the
+     *             tracker forgot it".
      *
      * @param  string $payload    Scrape response body
      * @param  string $binaryHash Raw 20-byte hash
@@ -455,289 +452,86 @@ class NNMClubCheckImpl
         if (!is_string($binaryHash) || strlen($binaryHash) !== 20) {
             return self::SCRAPE_RESULT_FAILED;
         }
-        if (!is_string($payload)) {
-            return self::SCRAPE_RESULT_FAILED;
-        }
-        $len = strlen($payload);
-        if ($len === 0 || $len > self::MAX_SCRAPE_BODY_BYTES) {
-            return self::SCRAPE_RESULT_FAILED;
-        }
-        if ($payload[0] !== 'd') {
+
+        $root = RuTrackerBencode::decode($payload, self::BENCODE_LIMITS);
+        if ($root === false || $root['type'] !== 'dictionary') {
             return self::SCRAPE_RESULT_FAILED;
         }
 
-        $pos = 0;
-        $tokens = 0;
-        $stack = array();
-        $seenFilesKey = false;
-        $expectingFilesDict = false;
-        $seenTargetKey = false;
-        $expectingTargetDict = false;
-        $targetValid = false;
-
-        while ($pos < $len) {
-            if (empty($stack)) {
-                if ($pos === 0 && $payload[0] === 'd') {
-                    $tokens++;
-                    if ($tokens > self::MAX_SCRAPE_TOKENS) {
-                        return self::SCRAPE_RESULT_FAILED;
-                    }
-                    $pos++;
-                    $stack[] = array(
-                        'type' => 'd',
-                        'state' => 'key',
-                        'is_files' => false,
-                        'is_target' => false,
-                        'required_seen' => array(),
-                        'current_key' => null,
-                    );
-                    continue;
-                }
-                return self::SCRAPE_RESULT_FAILED;
-            }
-
-            $frameIndex = count($stack) - 1;
-            $ch = $payload[$pos];
-
-            if ($ch === 'e') {
-                $pos++;
-                if ($stack[$frameIndex]['type'] === 'd' && $stack[$frameIndex]['state'] === 'value') {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                if (!empty($stack[$frameIndex]['is_target'])) {
-                    // No individual counter is mandatory -- only that the row
-                    // carries at least one, which is what separates a tracker
-                    // answering about this hash from an empty dictionary that
-                    // says nothing. Demanding all three of complete,
-                    // downloaded and incomplete was a regression: the live
-                    // NNMClub trackers (bt02.nnm-club.cc and bt.searchtor.to,
-                    // captured 2026-08-26) answer in 67 bytes with complete
-                    // and incomplete and no downloaded key at all, and
-                    // opentracker-derived trackers commonly omit it. BEP-48
-                    // does not oblige one either. The effect was worse than a
-                    // missed optimisation: an unambiguous "159 seeders hold
-                    // this" became SCRAPE_RESULT_FAILED, which download_torrent()
-                    // below reports as a tracker it cannot reach, so every
-                    // NNMClub torrent silently stopped being checked -- visible
-                    // only with $rutrackerCheckDebug on.
-                    //
-                    // Provenance, so this is not reinstated: the three-counter
-                    // mandate came from remediation item F07, which was written
-                    // to fix the opposite fault -- a scalar or empty target row
-                    // being read as UPTODATE and suppressing a real update. Its
-                    // wording ("exactly one canonical nonnegative integer
-                    // complete, downloaded, incomplete") was derived from the
-                    // BEP, never checked against an answer this tracker sends.
-                    // Rejecting a scalar or empty row is the part that was
-                    // right, and it is kept; demanding all three was not.
-                    //
-                    // This mirrors the announce layer, which has always had the
-                    // rule right: RuTrackerAnnounceProbe::hasValidSuccessSchema()
-                    // in announce.php requires only what the protocol
-                    // guarantees and validates each optional counter that IS
-                    // present. Keep the two in step.
-                    //
-                    // Relaxed is WHICH keys must appear, not how a key that
-                    // appears is read: the type, canonicity, sign and
-                    // no-duplicates checks above still apply to every counter
-                    // the row does carry.
-                    if (!count($stack[$frameIndex]['required_seen'])) {
-                        return self::SCRAPE_RESULT_FAILED;
-                    }
-                    $targetValid = true;
-                }
-                array_pop($stack);
-                if (!empty($stack)) {
-                    $parentIndex = count($stack) - 1;
-                    if ($stack[$parentIndex]['type'] === 'd') {
-                        $stack[$parentIndex]['state'] = 'key';
-                        $stack[$parentIndex]['current_key'] = null;
-                    }
-                }
-                continue;
-            }
-
-            if ($stack[$frameIndex]['type'] === 'd' && $stack[$frameIndex]['state'] === 'key') {
-                if (!ctype_digit($ch)) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $strStart = 0;
-                $strLen = 0;
-                if (!self::parseBencodeStringToken($payload, $pos, $len, $strStart, $strLen)) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $keyStr = substr($payload, $strStart, $strLen);
-                $pos = $strStart + $strLen;
-
-                $tokens++;
-                if ($tokens > self::MAX_SCRAPE_TOKENS) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-
-                if (!empty($stack[$frameIndex]['is_target'])) {
-                    if (in_array($keyStr, array('complete', 'downloaded', 'incomplete'), true)) {
-                        if (isset($stack[$frameIndex]['required_seen'][$keyStr])) {
-                            return self::SCRAPE_RESULT_FAILED;
-                        }
-                        $stack[$frameIndex]['current_key'] = $keyStr;
-                    } else {
-                        $stack[$frameIndex]['current_key'] = null;
-                    }
-                } elseif (count($stack) === 1) {
-                    if ($keyStr === 'files') {
-                        if ($seenFilesKey) {
-                            return self::SCRAPE_RESULT_FAILED;
-                        }
-                        $seenFilesKey = true;
-                        $expectingFilesDict = true;
-                    } else {
-                        $expectingFilesDict = false;
-                    }
-                } elseif (!empty($stack[$frameIndex]['is_files'])) {
-                    if ($strLen === 20 && $keyStr === $binaryHash) {
-                        if ($seenTargetKey) {
-                            return self::SCRAPE_RESULT_FAILED;
-                        }
-                        $seenTargetKey = true;
-                        $expectingTargetDict = true;
-                    } else {
-                        $expectingTargetDict = false;
-                    }
-                }
-
-                $stack[$frameIndex]['state'] = 'value';
-                continue;
-            }
-
-            if ($expectingFilesDict || $expectingTargetDict) {
-                if ($ch !== 'd') {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-            }
-
-            if (!empty($stack[$frameIndex]['is_target']) && $stack[$frameIndex]['current_key'] !== null) {
-                if ($ch !== 'i') {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-            }
-
-            if ($ch === 'd') {
-                $isFilesDict = false;
-                if (count($stack) === 1 && $expectingFilesDict) {
-                    $isFilesDict = true;
-                    $expectingFilesDict = false;
-                }
-                $isTargetDict = false;
-                if (!empty($stack[$frameIndex]['is_files']) && $expectingTargetDict) {
-                    $isTargetDict = true;
-                    $expectingTargetDict = false;
-                }
-                $tokens++;
-                if ($tokens > self::MAX_SCRAPE_TOKENS || count($stack) >= self::MAX_SCRAPE_DEPTH) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $pos++;
-                $stack[] = array(
-                    'type' => 'd',
-                    'state' => 'key',
-                    'is_files' => $isFilesDict,
-                    'is_target' => $isTargetDict,
-                    'required_seen' => array(),
-                    'current_key' => null,
-                );
-                continue;
-            }
-
-            if ($ch === 'l') {
-                $tokens++;
-                if ($tokens > self::MAX_SCRAPE_TOKENS || count($stack) >= self::MAX_SCRAPE_DEPTH) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $pos++;
-                $stack[] = array(
-                    'type' => 'l',
-                    'state' => 'item',
-                    'is_files' => false,
-                    'is_target' => false,
-                    'required_seen' => array(),
-                    'current_key' => null,
-                );
-                continue;
-            }
-
-            if ($ch === 'i') {
-                $endPos = strpos($payload, 'e', $pos);
-                if ($endPos === false) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $intStr = substr($payload, $pos + 1, $endPos - ($pos + 1));
-                $intStrLen = strlen($intStr);
-                if ($intStrLen === 0) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $digitsOnly = $intStr;
-                if ($intStr[0] === '-') {
-                    $digitsOnly = substr($intStr, 1);
-                    if ($digitsOnly === '' || $digitsOnly[0] === '0') {
-                        return self::SCRAPE_RESULT_FAILED;
-                    }
-                } else {
-                    if ($intStrLen > 1 && $intStr[0] === '0') {
-                        return self::SCRAPE_RESULT_FAILED;
-                    }
-                }
-                if (!ctype_digit($digitsOnly) || strlen($digitsOnly) > self::MAX_SCRAPE_INTEGER_DIGITS) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                if (!empty($stack[$frameIndex]['is_target']) && $stack[$frameIndex]['current_key'] !== null) {
-                    if ($intStr[0] === '-') {
-                        return self::SCRAPE_RESULT_FAILED;
-                    }
-                    $stack[$frameIndex]['required_seen'][$stack[$frameIndex]['current_key']] = true;
-                    $stack[$frameIndex]['current_key'] = null;
-                }
-                $pos = $endPos + 1;
-                $tokens++;
-                if ($tokens > self::MAX_SCRAPE_TOKENS) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                if ($stack[$frameIndex]['type'] === 'd') {
-                    $stack[$frameIndex]['state'] = 'key';
-                    $stack[$frameIndex]['current_key'] = null;
-                }
-                continue;
-            }
-
-            if (ctype_digit($ch)) {
-                $strStart = 0;
-                $strLen = 0;
-                if (!self::parseBencodeStringToken($payload, $pos, $len, $strStart, $strLen)) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                $pos = $strStart + $strLen;
-                $tokens++;
-                if ($tokens > self::MAX_SCRAPE_TOKENS) {
-                    return self::SCRAPE_RESULT_FAILED;
-                }
-                if ($stack[$frameIndex]['type'] === 'd') {
-                    $stack[$frameIndex]['state'] = 'key';
-                    $stack[$frameIndex]['current_key'] = null;
-                }
-                continue;
-            }
-
+        // Only a DIRECT top-level `files` dictionary counts. The hash is 20
+        // arbitrary bytes and a tracker answer may echo it anywhere -- in a
+        // failure reason, in another row's peer list -- so a search that did
+        // not care where it found the key would read an error page as proof
+        // the torrent is alive.
+        $files = RuTrackerBencode::entry($root, 'files');
+        if (!is_array($files) || $files['type'] !== 'dictionary') {
             return self::SCRAPE_RESULT_FAILED;
         }
 
-        if ($pos !== $len || !empty($stack) || !$seenFilesKey) {
-            return self::SCRAPE_RESULT_FAILED;
+        $target = RuTrackerBencode::entry($files, $binaryHash);
+        if ($target === null) {
+            return self::SCRAPE_RESULT_NOT_FOUND;
         }
 
-        if ($seenTargetKey) {
-            return $targetValid ? self::SCRAPE_RESULT_UPTODATE : self::SCRAPE_RESULT_FAILED;
-        }
+        return self::hasValidTargetStats($target)
+            ? self::SCRAPE_RESULT_UPTODATE
+            : self::SCRAPE_RESULT_FAILED;
+    }
 
-        return self::SCRAPE_RESULT_NOT_FOUND;
+    /**
+     * Whether a `files` row is a real scrape row for the hash it is keyed by.
+     *
+     * A present-but-malformed row is the dangerous case: it is a positive
+     * answer with nothing behind it, so it is refused rather than becoming
+     * either "up to date" or "deleted". A scalar or empty row is exactly that
+     * case, and refusing it is why remediation item F07 was written.
+     *
+     * No individual counter is mandatory -- only that the row carries at least
+     * one, which is what separates a tracker answering about this hash from an
+     * empty dictionary that says nothing. Demanding all three of complete,
+     * downloaded and incomplete was a regression: the live NNMClub trackers
+     * (bt02.nnm-club.cc and bt.searchtor.to, captured 2026-08-26) answer in 67
+     * bytes with complete and incomplete and no downloaded key at all,
+     * opentracker-derived trackers commonly omit it, and BEP-48 does not
+     * oblige one. The effect was worse than a missed optimisation: an
+     * unambiguous "159 seeders hold this" became SCRAPE_RESULT_FAILED, which
+     * download_torrent() reported as a tracker it could not reach, so every
+     * NNMClub torrent silently stopped being checked -- visible only with
+     * $rutrackerCheckDebug on.
+     *
+     * Provenance, so this is not reinstated: the three-counter mandate came
+     * from F07, whose wording was derived from the BEP and never checked
+     * against an answer this tracker sends. Owner decision D009 amends it.
+     * Rejecting a scalar or empty row is the part that was right and is kept;
+     * demanding all three was not.
+     *
+     * This is the same shape the announce layer has always had:
+     * RuTrackerAnnounceProbe::hasValidSuccessSchema() in announce.php requires
+     * only what the protocol guarantees and validates each optional counter
+     * that IS present. Keep the two in step.
+     *
+     * Relaxed is WHICH keys must appear, not how a key that appears is read:
+     * type, canonicity and sign are still enforced on every counter the row
+     * does carry, a duplicate key was already refused by the grammar, and
+     * unknown extra fields are ignored the way the tracker's own extensions
+     * require.
+     */
+    private static function hasValidTargetStats($target)
+    {
+        if (!is_array($target) || $target['type'] !== 'dictionary') return false;
+
+        $seen = 0;
+        foreach (self::TARGET_COUNTERS as $counter) {
+            $node = RuTrackerBencode::entry($target, $counter);
+            if ($node === null) continue;
+            if (!is_array($node)
+                || $node['type'] !== 'integer'
+                || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['value'])) {
+                return false;
+            }
+            $seen++;
+        }
+        return $seen > 0;
     }
 
     /** Derive a scrape URL without changing the credential's meaning or case. */
@@ -895,6 +689,9 @@ class NNMClubCheckImpl
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
             if ($scrapeResult === self::SCRAPE_RESULT_UNREADABLE) {
+                // A host is up and we cannot read what it said. Waiting will
+                // not make the format legible, so lose the fast path only and
+                // let the ordinary forum check below decide.
                 self::log("No scrape host answered readably for {$hash}, falling back to guest download");
             }
             if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
@@ -951,19 +748,31 @@ class NNMClubCheckImpl
 
         $guestData = $client->results;
 
-        // Suppress PHP 7.4's filename-probe warning for binary metainfo.
-        $guestTorrent = @new Torrent($guestData);
-        if ($guestTorrent->errors()) {
-            self::log("Failed to parse downloaded torrent for {$topicQuery}");
+        // The one place downloaded bytes become metainfo, the same route
+        // kinozal.php takes. This handler used to spell the owner's three
+        // checks out again -- the decode, hash_info() being a string, and it
+        // being forty hex digits -- which made two metainfo parses in a tree
+        // that is supposed to have one, and two rules that could drift apart
+        // without anything noticing.
+        //
+        // Deliberately parseMetainfo() and not createTorrentFromDownload():
+        // that tail ends these same shapes at STE_CANT_REACH_TRACKER, and this
+        // handler answers STE_ERROR. It has already resolved NNMClub's login
+        // wall and its challenge page by this point, so bytes that arrive here
+        // and still are not metainfo are a topic page this plugin no longer
+        // understands -- a fault to look at, not a tracker to retry. That
+        // difference is the only one kept from the inline version; measured
+        // over a valid torrent, a truncated one, a non-torrent body and an
+        // empty one, the verdicts are otherwise identical.
+        $guestTorrent = ruTrackerChecker::parseMetainfo($guestData);
+        if ($guestTorrent === null) {
+            self::log("Failed to parse downloaded torrent for {$topicQuery}: no usable metainfo");
             return ruTrackerChecker::STE_ERROR;
         }
-
-        $guestHash = $guestTorrent->hash_info();
-        if (!is_string($guestHash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $guestHash)) {
-            self::log("Downloaded torrent for {$topicQuery} has missing or invalid info hash");
-            return ruTrackerChecker::STE_ERROR;
-        }
-        $guestHash = strtoupper($guestHash);
+        // Already validated as forty hex digits by the owner, and hash_info()
+        // upper-cases its own answer; the strtoupper() stays because the
+        // comparison below is against a hash from elsewhere.
+        $guestHash = strtoupper($guestTorrent->hash_info());
         if ($guestHash === $hash) {
             self::log("Guest torrent hash matches current hash for {$topicQuery}");
             return ruTrackerChecker::STE_UPTODATE;
@@ -981,7 +790,10 @@ class NNMClubCheckImpl
             return ruTrackerChecker::STE_ERROR;
         }
 
-        $replaceResult = ruTrackerChecker::createTorrent((string) $guestTorrent, $hash, $old_torrent);
+        // The patched object itself, not its bytes: it was decoded once above,
+        // and re-encoding it only to have it decoded again would parse the
+        // same metainfo a second time.
+        $replaceResult = ruTrackerChecker::createTorrent($guestTorrent, $hash, $old_torrent);
         self::log("createTorrent result for {$hash}: " . var_export($replaceResult, true));
         return $replaceResult;
     }

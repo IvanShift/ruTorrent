@@ -102,23 +102,6 @@ if(!function_exists('erasedataReleaseHashLock'))
 	}
 }
 
-if(!function_exists('erasedataPublishManifest'))
-{
-	function erasedataPublishManifest($tmpPath, $hash)
-	{
-		$listFile = substr($tmpPath, -4) === '.tmp'
-			? substr($tmpPath, 0, -4).'.list' : '';
-		if($listFile === '' || file_exists($listFile) || is_link($listFile) ||
-			!is_file($tmpPath) || !@rename($tmpPath, $listFile))
-		{
-			FileUtil::toLog("erasedata: failed to publish manifest for ".$hash.", staging retained");
-			return(false);
-		}
-		erasedataRepairFileMode($listFile);
-		return(true);
-	}
-}
-
 if(!function_exists('erasedataLoadTorrentSource'))
 {
 	// Keep the metainfo lookup replaceable in the collector regression harness.
@@ -356,6 +339,7 @@ if(!function_exists('erasedataCollectPaths'))
 
 require_once(dirname(__FILE__)."/manifest.php");
 require_once(dirname(__FILE__)."/../../php/xmlrpc_path.php");
+require_once(dirname(__FILE__)."/filesystem.php");
 
 if(!function_exists('erasedataCanonicalHash'))
 {
@@ -418,36 +402,25 @@ if(!function_exists('erasedataParseCollectorCandidate'))
 
 if(!function_exists('erasedataUnlinkExactStagedFile'))
 {
-	if(!function_exists('erasedataBeforeUnlinkExactStagedFile'))
+	function erasedataUnlinkExactStagedFile($path, $expectedStat, $revalidate = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
-		function erasedataBeforeUnlinkExactStagedFile($path, $expectedStat)
-		{
-			return(true);
-		}
-	}
-
-	function erasedataUnlinkExactStagedFile($path, $expectedStat, $revalidate = null)
-	{
-		clearstatcache(true, $path);
-		$current = @lstat($path);
+		if($filesystem === null)
+			$filesystem = new ErasedataFilesystemOps();
+		$identity = $filesystem->entryIdentity($path);
+		$current = $identity === false ? false : $identity['lstat'];
 		if(is_link($path) || !is_array($current) || !is_array($expectedStat)
 			|| !isset($current['dev'], $current['ino'], $current['mode'], $expectedStat['dev'], $expectedStat['ino'])
 			|| $current['dev'] !== $expectedStat['dev'] || $current['ino'] !== $expectedStat['ino']
 			|| (($current['mode'] & 0170000) !== 0100000))
 			return(false);
-		global $erasedataBeforeUnlinkExactStagedFileOverride;
-		$allowed = is_callable($erasedataBeforeUnlinkExactStagedFileOverride)
-			? call_user_func($erasedataBeforeUnlinkExactStagedFileOverride, $path, $expectedStat)
-			: erasedataBeforeUnlinkExactStagedFile($path, $expectedStat);
-		if(!$allowed)
-			return(false);
 		if(is_callable($revalidate) && !call_user_func($revalidate, $path, $expectedStat))
 			return(false);
-		clearstatcache(true, $path);
-		$current = @lstat($path);
+		$identity = $filesystem->entryIdentity($path);
+		$current = $identity === false ? false : $identity['lstat'];
 		if(is_link($path) || !is_array($current) || !erasedataSameStatIdentity($current, $expectedStat))
 			return(false);
-		return(@unlink($path));
+		return($filesystem->unlink($path));
 	}
 }
 
@@ -467,30 +440,24 @@ if(!function_exists('erasedataWriteStagedManifest'))
 
 		$name = $canonicalHash.($tag === '' ? '.' : '.'.$tag.'.').getmypid().'.'.uniqid('', true).'.tmp';
 		$path = $listPath.'/'.$name;
-		global $erasedataManifestWriteOverride;
-		if(is_callable($erasedataManifestWriteOverride))
-			$written = call_user_func($erasedataManifestWriteOverride, $path, $contents);
+		$written = 0;
+		$handle = @fopen($path, 'x');
+		if($handle === false)
+			$written = false;
 		else
 		{
-			$written = 0;
-			$handle = @fopen($path, 'x');
-			if($handle === false)
-				$written = false;
-			else
+			$length = strlen($contents);
+			while($written < $length)
 			{
-				$length = strlen($contents);
-				while($written < $length)
+				$part = @fwrite($handle, substr($contents, $written));
+				if($part === false || $part === 0)
 				{
-					$part = @fwrite($handle, substr($contents, $written));
-					if($part === false || $part === 0)
-					{
-						$written = false;
-						break;
-					}
-					$written += $part;
+					$written = false;
+					break;
 				}
-				@fclose($handle);
+				$written += $part;
 			}
+			@fclose($handle);
 		}
 		clearstatcache(true, $path);
 		$stat = @lstat($path);
@@ -592,27 +559,26 @@ if(!function_exists('erasedataSameStatIdentity'))
 
 if(!function_exists('erasedataReadExactCleanupArtifact'))
 {
-	function erasedataReadExactCleanupFile($candidate, $type, &$reason = null)
+	function erasedataReadExactCleanupFile($candidate, $type, &$reason = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'unreadable-manifest';
+		if($filesystem === null)
+			$filesystem = new ErasedataFilesystemOps();
 		if(!is_array($candidate) || !isset($candidate['operation'], $candidate['type'], $candidate['path'], $candidate['stat'])
 			|| $candidate['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE
 			|| $candidate['type'] !== $type || empty($candidate['regular']))
-			return(false);
-		global $erasedataBeforeReadExactCleanupFile;
-		if(is_callable($erasedataBeforeReadExactCleanupFile)
-			&& !call_user_func($erasedataBeforeReadExactCleanupFile, $candidate))
 			return(false);
 		$handle = @fopen($candidate['path'], 'rb');
 		if($handle === false)
 			return(false);
 		$handleStat = @fstat($handle);
-		clearstatcache(true, $candidate['path']);
-		$pathStat = @lstat($candidate['path']);
-		$bytes = @stream_get_contents($handle);
+		$pathIdentity = $filesystem->entryIdentity($candidate['path']);
+		$pathStat = $pathIdentity === false ? false : $pathIdentity['lstat'];
+		$bytes = ErasedataManifestCodec::readBoundedHandle($handle);
 		$afterHandleStat = @fstat($handle);
-		clearstatcache(true, $candidate['path']);
-		$afterPathStat = @lstat($candidate['path']);
+		$afterIdentity = $filesystem->entryIdentity($candidate['path']);
+		$afterPathStat = $afterIdentity === false ? false : $afterIdentity['lstat'];
 		@fclose($handle);
 		if(is_link($candidate['path']) || !is_array($handleStat) || !is_array($pathStat) || !is_array($afterHandleStat)
 			|| !is_array($afterPathStat) || !is_string($bytes)
@@ -627,12 +593,13 @@ if(!function_exists('erasedataReadExactCleanupArtifact'))
 		return(array('candidate' => $candidate, 'bytes' => $bytes));
 	}
 
-	function erasedataReadExactCleanupArtifact($candidate, $hash = null, &$reason = null)
+	function erasedataReadExactCleanupArtifact($candidate, $hash = null, &$reason = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'unreadable-manifest';
 		if(!is_string($hash))
 			return(false);
-		$read = erasedataReadExactCleanupFile($candidate, 'tmp', $reason);
+		$read = erasedataReadExactCleanupFile($candidate, 'tmp', $reason, $filesystem);
 		if($read === false)
 			return(false);
 		$manifest = ErasedataManifestCodec::decodeBytes($read['bytes'], $hash);
@@ -651,10 +618,11 @@ if(!function_exists('erasedataReadExactCleanupArtifact'))
 
 if(!function_exists('erasedataReadExactCleanupToken'))
 {
-	function erasedataReadExactCleanupToken($candidate, &$reason = null)
+	function erasedataReadExactCleanupToken($candidate, &$reason = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'unreadable-manifest';
-		$read = erasedataReadExactCleanupFile($candidate, 'list', $reason);
+		$read = erasedataReadExactCleanupFile($candidate, 'list', $reason, $filesystem);
 		if($read === false || $read['bytes'] !== '' || !isset($read['candidate']['stat']['size'])
 			|| $read['candidate']['stat']['size'] != 0)
 			return(false);
@@ -678,11 +646,13 @@ if(!function_exists('erasedataCleanupArtifactMatchesGeneration'))
 
 if(!function_exists('erasedataCleanupArtifactStillMatches'))
 {
-	function erasedataCleanupArtifactStillMatches($artifact, $hash = null)
+	function erasedataCleanupArtifactStillMatches($artifact, $hash = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		if(!is_array($artifact) || !isset($artifact['candidate']))
 			return(false);
-		$current = erasedataReadExactCleanupArtifact($artifact['candidate'], $hash);
+		$reason = null;
+		$current = erasedataReadExactCleanupArtifact($artifact['candidate'], $hash, $reason, $filesystem);
 		if($current === false)
 			return(false);
 		return(!isset($artifact['manifest']) || (isset($artifact['bytes'])
@@ -692,11 +662,12 @@ if(!function_exists('erasedataCleanupArtifactStillMatches'))
 
 if(!function_exists('erasedataCleanupTokenStillMatches'))
 {
-	function erasedataCleanupTokenStillMatches($token)
+	function erasedataCleanupTokenStillMatches($token, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		if(!is_array($token) || !isset($token['candidate']))
 			return(false);
-		return(erasedataReadExactCleanupToken($token['candidate']) !== false);
+		$reason = null;
+		return(erasedataReadExactCleanupToken($token['candidate'], $reason, $filesystem) !== false);
 	}
 }
 
@@ -721,60 +692,56 @@ if(!function_exists('erasedataRepairExactCleanupTokenMode'))
 
 if(!function_exists('erasedataCleanupCommittedPairStillMatches'))
 {
-	function erasedataCleanupCommittedPairStillMatches($tmp, $token, $hash)
+	function erasedataCleanupCommittedPairStillMatches($tmp, $token, $hash,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		return(is_array($tmp) && is_array($token) && isset($tmp['candidate']['stem'], $token['candidate']['stem'])
 			&& $tmp['candidate']['stem'] === $token['candidate']['stem']
-			&& erasedataCleanupArtifactStillMatches($tmp, $hash)
-			&& erasedataCleanupTokenStillMatches($token));
-	}
-}
-
-if(!function_exists('erasedataCleanupPublicationPhase'))
-{
-	function erasedataCleanupPublicationPhase($phase, $context)
-	{
-		global $erasedataCleanupPublicationPhaseOverride;
-		return(is_callable($erasedataCleanupPublicationPhaseOverride)
-			? call_user_func($erasedataCleanupPublicationPhaseOverride, $phase, $context) : true);
+			&& erasedataCleanupArtifactStillMatches($tmp, $hash, $filesystem)
+			&& erasedataCleanupTokenStillMatches($token, $filesystem));
 	}
 }
 
 if(!function_exists('erasedataPublishExactStagedFile'))
 {
-	function erasedataPublishExactStagedFile($tmpPath, $expectedStat, $listPath, $expectedManifest = null)
+	function erasedataPublishExactStagedFile($tmpPath, $expectedStat, $listPath,
+		$expectedManifest = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
+		if($filesystem === null)
+			$filesystem = new ErasedataFilesystemOps();
 		$listDirectory = dirname($tmpPath);
 		$tmpCandidate = erasedataParseCollectorCandidate($listDirectory, basename($tmpPath));
 		if($tmpCandidate === false || $tmpCandidate['type'] !== 'tmp' || $tmpCandidate['path'] !== $tmpPath
 			|| $listPath !== substr($tmpPath, 0, -4).'.list')
 			return(false);
-		$tmp = erasedataReadExactCleanupArtifact($tmpCandidate, $tmpCandidate['hash']);
+		$reason = null;
+		$tmp = erasedataReadExactCleanupArtifact($tmpCandidate, $tmpCandidate['hash'], $reason, $filesystem);
 		if($tmp === false || !erasedataSameStatIdentity($tmp['candidate']['stat'], $expectedStat)
 			|| ($expectedManifest !== null && $tmp['manifest'] !== $expectedManifest))
 			return(false);
-		$context = array('tmp' => $tmpPath, 'list' => $listPath);
 		$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
 		if($listCandidate !== false && is_array($listCandidate['stat']))
 		{
-			$token = erasedataReadExactCleanupToken($listCandidate);
+			$token = erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
 			if($token === false)
 				return(false);
 			if(!erasedataRepairExactCleanupTokenMode($listPath, $token['candidate']['stat']))
 				return(false);
 			$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
-			$token = $listCandidate === false ? false : erasedataReadExactCleanupToken($listCandidate);
-			return($token !== false && erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash']));
+			$token = $listCandidate === false ? false
+				: erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
+			return($token !== false && erasedataCleanupCommittedPairStillMatches(
+				$tmp, $token, $tmpCandidate['hash'], $filesystem));
 		}
-		if(@lstat($listPath) !== false || !erasedataCleanupPublicationPhase('before-token', $context)
-			|| !erasedataCleanupArtifactStillMatches($tmp, $tmpCandidate['hash']))
+		if($filesystem->entryIdentity($listPath) !== false
+			|| !erasedataCleanupArtifactStillMatches($tmp, $tmpCandidate['hash'], $filesystem))
 			return(false);
 		$handle = @fopen($listPath, 'x');
 		if($handle === false)
 			return(false);
 		$tokenStat = @fstat($handle);
-		clearstatcache(true, $listPath);
-		$tokenPathStat = @lstat($listPath);
+		$tokenIdentity = $filesystem->entryIdentity($listPath);
+		$tokenPathStat = $tokenIdentity === false ? false : $tokenIdentity['lstat'];
 		@fclose($handle);
 		if(is_link($listPath) || !is_array($tokenStat) || !is_array($tokenPathStat)
 			|| !erasedataSameStatIdentity($tokenStat, $tokenPathStat)
@@ -785,12 +752,13 @@ if(!function_exists('erasedataPublishExactStagedFile'))
 			return(false);
 		clearstatcache(true, $listPath);
 		$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
-		$token = $listCandidate === false ? false : erasedataReadExactCleanupToken($listCandidate);
+		$token = $listCandidate === false ? false
+			: erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
 		if($token === false || !erasedataSameStatIdentity($token['candidate']['stat'], $tokenStat)
-			|| !erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash']))
+			|| !erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash'], $filesystem))
 			return(false);
-		$ret = erasedataCleanupPublicationPhase('after-token', $context)
-			&& erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash']);
+		$ret = erasedataCleanupCommittedPairStillMatches(
+			$tmp, $token, $tmpCandidate['hash'], $filesystem);
 		clearstatcache(true, $listPath);
 		return($ret);
 	}
@@ -913,13 +881,14 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 
 if(!function_exists('erasedataPublishObsoleteCleanup'))
 {
-	function erasedataPublishObsoleteCleanup(&$job)
+	function erasedataPublishObsoleteCleanup(&$job, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		try {
 			$manifest = erasedataReadExactCleanupJob($job);
 			if($manifest === false)
 				return(false);
-			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata', $job['old_hash']);
+			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata',
+				$job['old_hash'], $filesystem);
 			$reason = null;
 			$artifacts = erasedataCleanupGenerationArtifacts($index, $job['old_hash'], $job['new_hash'], $job['marker'],
 				$job['replacement_record'], $reason);
@@ -927,8 +896,10 @@ if(!function_exists('erasedataPublishObsoleteCleanup'))
 				|| !erasedataSameStatIdentity($artifacts['tmp']['candidate']['stat'], $job['tmp_stat']))
 				return(false);
 			if($artifacts['token'] !== null)
-				return(erasedataCleanupCommittedPairStillMatches($artifacts['tmp'], $artifacts['token'], $job['old_hash']));
-			return(erasedataPublishExactStagedFile($job['tmp_path'], $job['tmp_stat'], $job['list_path'], $manifest));
+				return(erasedataCleanupCommittedPairStillMatches($artifacts['tmp'], $artifacts['token'],
+					$job['old_hash'], $filesystem));
+			return(erasedataPublishExactStagedFile($job['tmp_path'], $job['tmp_stat'],
+				$job['list_path'], $manifest, $filesystem));
 		} finally {
 			erasedataReleaseObsoleteCleanupJob($job);
 		}
@@ -937,25 +908,19 @@ if(!function_exists('erasedataPublishObsoleteCleanup'))
 
 if(!function_exists('erasedataCancelObsoleteCleanup'))
 {
-	function erasedataCancelObsoleteCleanup(&$job)
+	function erasedataCancelObsoleteCleanup(&$job, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		try {
 			if(erasedataReadExactCleanupJob($job) === false)
 				return(false);
-			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata', $job['old_hash']);
+			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata',
+				$job['old_hash'], $filesystem);
 			return(erasedataCancelObsoleteCleanupGenerationLocked(FileUtil::getSettingsPath().'/erasedata',
-				$job['old_hash'], $job['new_hash'], $job['marker'], $job['replacement_record'], $index) === ERASEDATA_CLEANUP_READY);
+				$job['old_hash'], $job['new_hash'], $job['marker'], $job['replacement_record'],
+				$index, $filesystem) === ERASEDATA_CLEANUP_READY);
 		} finally {
 			erasedataReleaseObsoleteCleanupJob($job);
 		}
-	}
-}
-
-if(!function_exists('erasedataCollectorIndexBuilt'))
-{
-	function erasedataCollectorIndexBuilt($listPath)
-	{
-		return(true);
 	}
 }
 
@@ -972,7 +937,7 @@ if(!function_exists('erasedataAnalyzeCleanupIndex'))
 {
 	// Decode each staged cleanup generation once while building the queue view.
 	// Later operations re-read only their selected stem immediately before use.
-	function erasedataAnalyzeCleanupIndex($index)
+	function erasedataAnalyzeCleanupIndex($index, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		if(!is_array($index))
 			return(false);
@@ -992,7 +957,8 @@ if(!function_exists('erasedataAnalyzeCleanupIndex'))
 				if(count($tmpItems) === 1)
 				{
 					$artifactReason = null;
-					$artifact = erasedataReadExactCleanupArtifact($tmpItems[0], $hash, $artifactReason);
+					$artifact = erasedataReadExactCleanupArtifact(
+						$tmpItems[0], $hash, $artifactReason, $filesystem);
 					if($artifact !== false && ($key = erasedataCleanupTransactionKey($artifact['manifest'])) !== false)
 					{
 						$analysis['transaction_key'] = $key;
@@ -1017,13 +983,21 @@ if(!function_exists('erasedataAnalyzeCleanupIndex'))
 
 if(!function_exists('erasedataBuildCollectorIndex'))
 {
-	function erasedataBuildCollectorIndex($listPath, $onlyHash = null)
+	function erasedataBuildCollectorIndex($listPath, $onlyHash = null,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
+		if($filesystem === null)
+			$filesystem = new ErasedataFilesystemOps();
 		$ret = array();
-		if(!is_string($listPath) || !is_dir($listPath) || !($handle = @opendir($listPath)))
+		if(!is_string($listPath) || !is_dir($listPath))
 			return(false);
-		erasedataCollectorIndexBuilt($listPath);
-		while(false !== ($file = readdir($handle)))
+		// Exactly one enumeration of the queue directory per index build, and it
+		// goes through the operations seam so a test can observe and script it
+		// without production carrying a probe of its own.
+		$files = $filesystem->scanDirectory($listPath);
+		if(!is_array($files))
+			return(false);
+		foreach($files as $file)
 		{
 			$malformed = null;
 			$candidate = erasedataParseCollectorCandidate($listPath, $file, $malformed);
@@ -1056,8 +1030,7 @@ if(!function_exists('erasedataBuildCollectorIndex'))
 			}
 			$ret[$hash]['legacy'][] = $candidate;
 		}
-		@closedir($handle);
-		return(erasedataAnalyzeCleanupIndex($ret));
+		return(erasedataAnalyzeCleanupIndex($ret, $filesystem));
 	}
 }
 
@@ -1208,10 +1181,11 @@ if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 
 if(!function_exists('erasedataCancelObsoleteCleanupGenerationLocked'))
 {
-	function erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash, $marker, $replacementRecord, $index = null)
+	function erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash,
+		$marker, $replacementRecord, $index = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		if($index === null)
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash);
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
 		$reason = null;
 		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker, $replacementRecord, $reason);
 		if($artifacts === false)
@@ -1222,10 +1196,11 @@ if(!function_exists('erasedataCancelObsoleteCleanupGenerationLocked'))
 			return(ERASEDATA_CLEANUP_RETRY);
 		$tmp = $artifacts['tmp'];
 		return(erasedataUnlinkExactStagedFile($tmp['candidate']['path'], $tmp['candidate']['stat'],
-			function() use ($tmp, $oldHash) {
+			function() use ($tmp, $oldHash, $filesystem) {
 				$listPathname = substr($tmp['candidate']['path'], 0, -4).'.list';
-				return(erasedataCleanupArtifactStillMatches($tmp, $oldHash) && @lstat($listPathname) === false);
-			}) ? ERASEDATA_CLEANUP_READY : ERASEDATA_CLEANUP_RETRY);
+				return(erasedataCleanupArtifactStillMatches($tmp, $oldHash, $filesystem)
+					&& @lstat($listPathname) === false);
+			}, $filesystem) ? ERASEDATA_CLEANUP_READY : ERASEDATA_CLEANUP_RETRY);
 	}
 }
 
@@ -1405,7 +1380,7 @@ if(!function_exists('erasedataRemoveWithData'))
 			$tmpPath = $tmpMap[$h];
 			if($eraseSucceeded)
 			{
-				if(!erasedataPublishManifest($tmpPath, $h))
+				if(!ErasedataManifestCodec::publishStaging($tmpPath, $h))
 					$published = false;
 			}
 			else
@@ -1418,7 +1393,7 @@ if(!function_exists('erasedataRemoveWithData'))
 				}
 				elseif($presence === ERASEDATA_TORRENT_ABSENT)
 				{
-					if(erasedataPublishManifest($tmpPath, $h))
+					if(ErasedataManifestCodec::publishStaging($tmpPath, $h))
 						FileUtil::toLog("erasedata: RPC erase unconfirmed but torrent ".$h." is gone, manifest published");
 					else
 						$published = false;

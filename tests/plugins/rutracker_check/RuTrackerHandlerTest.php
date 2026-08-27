@@ -110,17 +110,19 @@ function hQueueLayer1($rows, $message = '')
     rXMLRPCRequest::queue('d.get_tracker_size|t.multicall|d.get_message', true, false, $flat);
 }
 
-function hQueueTruncatedLayer1()
+// A positive system.multicall response cut after four scalars. The first value
+// is the tracker-count prefix the hardened request will carry; the remaining
+// three values are only a prefix of its first tracker row. Returned rather than
+// queued: two tests need this exact reply, and a second spelling of it could
+// drift away from the first.
+function hTruncatedLayer1Reply()
 {
-    // A positive system.multicall response cut after four scalars. The first
-    // value is the tracker-count prefix the hardened request will carry; the
-    // remaining three values are only a prefix of its first tracker row.
-    rXMLRPCRequest::queue('d.get_tracker_size|t.multicall|d.get_message', true, false, array(
+    return array(
         1,
         'http://bt.t-ru.org/ann?pk=x',
         1,
         0,
-    ));
+    );
 }
 
 function hQueueRawLayer1($values)
@@ -257,26 +259,33 @@ $suite->test('layer1Verdict treats a failed XMLRPC request as retryable, not as 
         'a local RPC failure must not be mistaken for a disabled tracker row');
 });
 
-$suite->test('layer1Verdict rejects a successful four-value truncated reply as transport', function () use ($hash) {
-    ruTrackerChecker::reset();
-    hQueueTruncatedLayer1();
+// Two rows, one guard: both replies are refused because their LENGTH
+// contradicts the tracker count they declare, at the single
+// `count($values) !== $expectedValues` return. Every other 'transport' verdict
+// in this file leaves layer1Verdict() at a different statement -- the RPC
+// fault, the count that is not canonical, the message that is not a string,
+// the row URL that is not a string, the counter that will not parse -- so each
+// of those stays a case of its own rather than joining this table.
+$suite->test('layer1Verdict rejects a reply whose length contradicts its declared tracker count', function () use ($hash) {
+    foreach (array(
+        'a positively parsed reply cut after four scalars' => array(
+            hTruncatedLayer1Reply(),
+            'A positive transport status cannot make an incomplete tracker projection authoritative',
+        ),
+        'a count of one followed immediately by the message' => array(
+            array(1, ''),
+            'A count of one followed immediately by a message is missing its declared tracker row',
+        ),
+    ) as $label => $case) {
+        ruTrackerChecker::reset();
+        hQueueRawLayer1($case[0]);
 
-    strictAssertSame(
-        'transport',
-        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-        'A positive transport status cannot make an incomplete tracker projection authoritative'
-    );
-});
-
-$suite->test('layer1Verdict enforces the declared tracker count, not only a modulo-shaped reply', function () use ($hash) {
-    ruTrackerChecker::reset();
-    hQueueRawLayer1(array(1, ''));
-
-    strictAssertSame(
-        'transport',
-        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-        'A count of one followed immediately by a message is missing its declared tracker row'
-    );
+        strictAssertSame(
+            'transport',
+            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+            $label . ': ' . $case[1]
+        );
+    }
 });
 
 $suite->test('layer1Verdict rejects a noncanonical declared tracker count', function () use ($hash) {
@@ -300,7 +309,7 @@ $suite->test('layer1Verdict rejects a noncanonical declared tracker count', func
 $suite->test('download_torrent keeps a successful truncated layer1 reply retryable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueTruncatedLayer1();
+    hQueueRawLayer1(hTruncatedLayer1Reply());
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(
@@ -309,24 +318,6 @@ $suite->test('download_torrent keeps a successful truncated layer1 reply retryab
         'A truncated local RPC answer must retry instead of permanently stamping STE_NOT_NEED'
     );
     strictAssertSame(array(), Snoopy::$requests, 'No network layer runs from an incomplete local projection');
-});
-
-$suite->test('layer1Verdict rejects noncanonical tracker counters instead of casting them into a verdict', function () use ($hash) {
-    ruTrackerChecker::reset();
-    hQueueRawLayer1(array(
-        1,
-        'http://bt.t-ru.org/ann?pk=x',
-        1,
-        '6oops',
-        0,
-        '',
-    ));
-
-    strictAssertSame(
-        'transport',
-        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-        'Malformed daemon counters are incomplete local evidence, not a candidate tracker verdict'
-    );
 });
 
 $suite->test('layer1Verdict rejects a non-string tracker URL', function () use ($hash) {
@@ -363,6 +354,32 @@ $suite->test('resolveForum reads chk-forum, treating blank or non-numeric as unk
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue('d.get_custom', true, false, array('not-a-number'));
     strictAssertSame(null, strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)), 'garbage -> unknown');
+});
+
+// chk-forum is the persisted RPC custom layer 3 fetches a dump BY, and those
+// dump rows are what decide whether the torrent is deleted. ctype_digit() plus
+// a bare (int) read "007" as the forum 7 and "0" as the forum 0 -- a dump
+// fetched from a forum the stored value never named. A spelling this plugin
+// could not have written names no forum, so the crawl is queued instead.
+$suite->test('a non-canonical chk-forum names no forum and fetches no dump', function () use ($hash) {
+    foreach (array('leading zero' => '007', 'zero' => '0', 'plus sign' => '+7',
+        'negative' => '-7', 'trailing text' => '7abc', 'overflow' => '2147483648',
+        'float' => '7.0', 'hex' => '0x7') as $label => $stored) {
+        ruTrackerChecker::reset();
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored));
+        strictAssertSame(null,
+            strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)),
+            $label . ': ' . var_export($stored, true) . ' is not a forum id');
+    }
+
+    // The control: canonical ids across the whole domain still resolve.
+    foreach (array('1', '1106', '2147483647') as $stored) {
+        ruTrackerChecker::reset();
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored));
+        strictAssertSame((int) $stored,
+            strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)),
+            'a canonical forum id still resolves: ' . $stored);
+    }
 });
 
 $suite->test('rememberTopic writes chk-topic only when it was blank', function () use ($hash, $topicId) {
@@ -430,6 +447,63 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
     strictAssertTrue(strpos($line, 'tracker confirming the deletion') !== false,
         'so does the tracker confirmation: ' . $line);
     strictAssertTrue(strpos($line, $hash) !== false, 'the line names the torrent');
+});
+
+// chk-del is "count:timestamp", and the count alone decides whether a torrent
+// reaches STE_DELETED. Read with a bare (int) behind /^(\d+):/, "03" was the
+// count 3 -- a non-canonical spelling this plugin never writes, arriving at the
+// threshold with fewer real cycles behind it than the count claims. A count
+// that cannot be believed restarts rather than counting toward a deletion.
+$suite->test('a non-canonical deletion counter reaches no deletion verdict', function () use ($hash) {
+    $now = 1000000;
+    $GLOBALS['rutrackerDeleteCycles'] = 3;
+    foreach (array('leading zero' => '03:1000', 'padded count' => ' 3:1000',
+        'padded stamp' => '3: 1000', 'leading zero stamp' => '3:01000') as $label => $stored) {
+        ruTrackerChecker::reset();
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
+        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));      // no healthy verdict yet
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());        // the restart
+
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+            $label . ': a counter nobody can read is not three consecutive cycles');
+        $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+        strictAssertSame(1, count($writes), $label . ': the counter is rewritten canonically');
+        strictAssertSame(array($hash, 'chk-del', '1:' . $now), $writes[0]['commands'][0]->params,
+            $label . ': and it restarts at one rather than resuming a number it could not read');
+    }
+
+    // Control: the canonical spelling of the same count still reaches the cap.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:1000'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictAssertSame(ruTrackerChecker::STE_DELETED,
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        'a canonical count still reaches the third consecutive cycle');
+});
+
+// The same counter, read by the OTHER function: deletionConfirmedOnce() is the
+// durable record that a full confirmation run happened, and a settled DELETED
+// verdict is held on its word alone when the probe budget is spent.
+$suite->test('a non-canonical deletion counter is not a settled deletion either',
+    function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    foreach (array('leading zero' => '03:1000', 'padded' => ' 3:1000',
+        'plus sign' => '+3:1000') as $label => $stored) {
+        hReset();
+        $GLOBALS['rutrackerLayer2Enabled'] = true;
+        $GLOBALS['rutrackerAnnounceCap'] = 0; // the recheck lands on an exhausted budget
+        hQueueTopicKnown($topicId);
+        hQueueLayer1(array(hCandidateRow()));
+        hQueueForum(1106);
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());        // forgetForum
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
+
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+            $label . ': an unreadable count is no proof the threshold was ever reached');
+    }
 });
 
 // Finding 3: conf.php documents $updateInterval = 0 as "disable the
@@ -1347,6 +1421,43 @@ $suite->test('a deletion count older than the last healthy verdict is restarted,
     }
 });
 
+// chk-stime is the independent record the consecutiveness guard rests on, and
+// a bare (int) answered 0 for every spelling it could not read -- which is
+// smaller than any real last-increment stamp, so the guard silently passed and
+// the count stood. A stamp that will not read cannot prove a run consecutive.
+$suite->test('a non-canonical healthy-verdict timestamp restarts the deletion count', function () use ($hash) {
+    $GLOBALS['rutrackerDeleteCycles'] = 3;
+    foreach (array('text' => 'garbage', 'leading zero' => '02000', 'padded' => ' 2000',
+        'float' => '2000.0', 'plus sign' => '+2000', 'negative' => '-2000') as $label => $stime) {
+        ruTrackerChecker::reset();
+        rXMLRPCRequest::queue('d.get_custom', true, false, array('2:3000')); // chk-del at the door
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($stime));   // chk-stime
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());         // the restart
+
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, 5000, 1000)),
+            $label . ': an unreadable guard is never a deletion verdict');
+        $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+        strictAssertSame(1, count($writes), $label . ': the count is rewritten');
+        strictAssertSame('1:5000', $writes[0]['commands'][0]->params[2],
+            $label . ': and it starts over rather than reaching the third cycle');
+        strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'restarting it',
+            $label . ': the restart is logged'), $label . ': the restart line');
+        foreach (ruTrackerChecker::$logs as $line)
+            strictAssertTrue(strpos($line, $stime) === false,
+                $label . ': the unreadable value itself is never echoed back: ' . $line);
+    }
+
+    // Control: a canonical stamp older than the count leaves the run standing.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:3000'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array('2000'));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictAssertSame(ruTrackerChecker::STE_DELETED,
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, 5000, 1000)),
+        'a canonical older stamp still leaves an unbroken run alone');
+});
+
 $suite->test('an unreadable healthy-verdict timestamp cannot advance an existing deletion count', function () use ($hash) {
     $GLOBALS['rutrackerDeleteCycles'] = 3;
     rXMLRPCRequest::reset();
@@ -1470,6 +1581,43 @@ $suite->test('ruTrackerRowUrl returns empty when every enabled row is a lookalik
 
     strictAssertSame('', strictInvoke('RuTrackerCheckImpl', 'ruTrackerRowUrl', array($rows)),
         'no noncanonical URL may leave the row-selection boundary');
+});
+
+// The per-row counters are read through the same one canonical parser the
+// declared row count is, so a non-canonical spelling of a number in range is
+// still no evidence at all -- never a counter this handler invents for it.
+// Malformed daemon counters are incomplete local evidence, not a candidate
+// tracker verdict. The reply array(1, 'http://bt.t-ru.org/ann?pk=x', 1, '6oops',
+// 0, '') that used to say so in a case of its own is the 'failed as a digits
+// then letters' row below, byte for byte.
+$suite->test('layer1Verdict rejects a noncanonical counter in any tracker-row column', function () use ($hash) {
+    $bad = array('leading zero' => '01', 'leading plus' => '+1', 'minus zero' => '-0',
+        'negative' => '-1', 'padded' => ' 1', 'trailing space' => '1 ',
+        'digits then letters' => '6oops', 'decimal string' => '1.0', 'float' => 1.0,
+        'bool' => true, 'null' => null, 'object' => new stdClass());
+    // enabled, failed, success are values 2, 3 and 4 of a one-row reply.
+    foreach (array('enabled' => 2, 'failed' => 3, 'success' => 4) as $column => $slot) {
+        foreach ($bad as $label => $value) {
+            $reply = array(1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, '');
+            $reply[$slot] = $value;
+            ruTrackerChecker::reset();
+            hQueueRawLayer1($reply);
+            strictAssertSame('transport',
+                strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+                $column . ' as a ' . $label . ': an unreadable counter is not a verdict');
+        }
+    }
+
+    // Control: the canonical int and canonical string spellings of the very
+    // same reply still produce the real verdict.
+    foreach (array('ints' => array(1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, ''),
+                   'strings' => array('1', 'http://bt.t-ru.org/ann?pk=x', '1', '6', '0', '')) as $label => $reply) {
+        ruTrackerChecker::reset();
+        hQueueRawLayer1($reply);
+        strictAssertSame('candidate',
+            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+            $label . ': a canonical reply still yields the real layer 1 verdict');
+    }
 });
 
 $exitCode = $suite->run();

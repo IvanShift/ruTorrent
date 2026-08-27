@@ -162,8 +162,8 @@ $suite->test('the download guest streak resets on metainfo and then latches inde
     // The old implementation reaches this response and returns UPTODATE. The
     // correct latch leaves it untouched; the request count guards that too.
     Snoopy::queue($oldE['details_url'], 200, kinozalDetailsBody($oldE['hash']));
-    foreach (array(false, true, false, false) as $isMetainfo)
-        ruTrackerChecker::queueResult('isMetainfo', $isMetainfo);
+    foreach (array(null, $newB['torrent'], null, null) as $parsed)
+        ruTrackerChecker::queueResult('parseMetainfo', $parsed);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -183,7 +183,7 @@ $suite->test('the download guest streak resets on metainfo and then latches inde
         'the rest of the cycle is skipped with the same retryable verdict');
     strictAssertSame(8, count(Snoopy::$requests),
         'healthy details do not erase the download streak, and the fifth topic costs no request');
-    $classified = ruTrackerChecker::callsFor('isMetainfo');
+    $classified = ruTrackerChecker::callsFor('parseMetainfo');
     strictAssertSame(4, count($classified), 'each downloaded 200 body is classified exactly once');
     strictAssertSame($newB['raw'], $classified[1]['arguments'][0],
         'the valid body occupies its FIFO position between guest pages');
@@ -293,7 +293,7 @@ $suite->test('a changed info hash hands valid metainfo to the replacement', func
 
     Snoopy::queue($old['details_url'], 200, kinozalDetailsBody($new['hash']));
     Snoopy::queue($old['download_url'], 200, $new['raw']);
-    ruTrackerChecker::queueResult('isMetainfo', true);
+    ruTrackerChecker::queueResult('parseMetainfo', $new['torrent']);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = KinozalCheckImpl::download_torrent($old['topic_url'], $old['hash'], $old['torrent']);
@@ -301,12 +301,13 @@ $suite->test('a changed info hash hands valid metainfo to the replacement', func
     strictAssertSame(null, $result, 'a successful replacement propagates createTorrent\'s result');
     $creates = ruTrackerChecker::callsFor('createTorrent');
     strictAssertSame(1, count($creates), 'the new torrent is handed over once');
-    strictAssertSame($new['raw'], $creates[0]['arguments'][0], 'the downloaded bytes are passed through');
+    strictAssertSame($new['torrent'], $creates[0]['arguments'][0],
+        'the parsed metainfo object is passed through, so the bytes are decoded only once');
     strictAssertSame($old['hash'], $creates[0]['arguments'][1], 'the replacement targets the old hash');
     strictAssertSame($old['torrent'], $creates[0]['arguments'][2],
         'the handler reuses the predecessor it already parsed');
-    strictAssertSame(array($new['raw']), ruTrackerChecker::callsFor('isMetainfo')[0]['arguments'],
-        'the downloaded bytes are delegated to the metainfo seam');
+    strictAssertSame(array($new['raw']), ruTrackerChecker::callsFor('parseMetainfo')[0]['arguments'],
+        'the downloaded bytes are delegated to the single parse boundary');
 });
 
 $suite->test('a download redirected to the login page is a reachability error', function () {
@@ -333,14 +334,14 @@ $suite->test('a login page instead of a torrent is a reachability error', functi
 
     Snoopy::queue($old['details_url'], 200, kinozalDetailsBody($new['hash']));
     Snoopy::queue($old['download_url'], 200, kinozalLoginPage());
-    ruTrackerChecker::queueResult('isMetainfo', false);
+    ruTrackerChecker::queueResult('parseMetainfo', null);
 
     $result = KinozalCheckImpl::download_torrent($old['topic_url'], $old['hash'], $old['torrent']);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'HTML where metainfo was expected is not proof of deletion');
     strictAssertSame(0, count(ruTrackerChecker::callsFor('createTorrent')),
-        'createTorrent\'s "unparseable means deleted" contract is never invoked');
+        'the replacement boundary is never reached: bytes that do not parse are a retryable error');
 });
 
 $suite->test('an unparseable download body is a reachability error', function () {
@@ -349,7 +350,7 @@ $suite->test('an unparseable download body is a reachability error', function ()
 
     Snoopy::queue($old['details_url'], 200, kinozalDetailsBody($new['hash']));
     Snoopy::queue($old['download_url'], 200, 'not a torrent at all');
-    ruTrackerChecker::queueResult('isMetainfo', false);
+    ruTrackerChecker::queueResult('parseMetainfo', null);
 
     $result = KinozalCheckImpl::download_torrent($old['topic_url'], $old['hash'], $old['torrent']);
 
@@ -364,7 +365,7 @@ $suite->test('an empty download body is a reachability error', function () {
 
     Snoopy::queue($old['details_url'], 200, kinozalDetailsBody($new['hash']));
     Snoopy::queue($old['download_url'], 200, '');
-    ruTrackerChecker::queueResult('isMetainfo', false);
+    ruTrackerChecker::queueResult('parseMetainfo', null);
 
     $result = KinozalCheckImpl::download_torrent($old['topic_url'], $old['hash'], $old['torrent']);
 

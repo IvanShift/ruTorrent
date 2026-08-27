@@ -150,10 +150,12 @@ class KinozalCheckImpl
 
         // Metainfo first: bytes that parse ARE the torrent, whatever text they
         // happen to contain, so a torrent is never mistaken for a login wall.
+        // The one decode happens here and its result is what gets replaced.
         $payload = (string) $client->results;
-        if (ruTrackerChecker::isMetainfo($payload)) {
+        $parsed = ruTrackerChecker::parseMetainfo($payload);
+        if ($parsed !== null) {
             self::$downloadGuestAnswers = 0;
-            return ruTrackerChecker::createTorrent($payload, $hash, $old_torrent);
+            return ruTrackerChecker::createTorrent($parsed, $hash, $old_torrent);
         }
         if (self::isGuestAnswer($payload))
             return self::guestAnswer("download.php answered a guest page, check the loginmgr account: id=".$id,

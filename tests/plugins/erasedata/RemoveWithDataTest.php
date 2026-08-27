@@ -1,109 +1,9 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
-
-// Stub the dependencies the production callers (httprpc/action.php,
-// plugins/erasedata/action.php) load before invoking the helper. The RPC layer
-// is scripted per command so the helper's own logic is what gets exercised.
-if(!class_exists('FileUtil'))
-{
-	class FileUtil
-	{
-		public static $settingsPath = null;
-		public static $log = array();
-		public static function getSettingsPath() { return self::$settingsPath; }
-		public static function makeDirectory($dir) { return @mkdir($dir, 0777, true); }
-		public static function toLog($msg) { self::$log[] = $msg; }
-		public static function getPluginConf($plugin) { return('$enableForceDeletion = true; $erasedebug_enabled = false;'); }
-	}
-}
-if(!class_exists('rXMLRPCCommand'))
-{
-	class rXMLRPCCommand
-	{
-		public $command;
-		public $params;
-		public function __construct($command, $params = null)
-		{
-			$this->command = $command;
-			$this->params = $params;
-		}
-	}
-}
-if(!class_exists('rXMLRPCRequest'))
-{
-	class rXMLRPCRequest
-	{
-		public static $responses = array();	// first command name => array(runResult, fault, val, faultString, faultCode)
-		public static $requested = array();	// first command name of each request, in order
-		public static $erased = array();	// hashes passed to d.erase
-		public static $commandCalls = array();
-
-		public $val = array();
-		public $fault = false;
-		public $faultString = '';
-		public $rawFaultString = null;
-		public $faultCode = 0;
-		public $important = true;
-		private $commands = array();
-
-		public function __construct($commands = null)
-		{
-			if(is_array($commands))
-				$this->commands = $commands;
-			else if(!is_null($commands))
-				$this->commands = array($commands);
-		}
-		public function addCommand($command)
-		{
-			$this->commands[] = $command;
-		}
-		public function run($trusted = true)
-		{
-			if(!count($this->commands))
-				return(false);
-			$first = $this->commands[0]->command;
-			self::$requested[] = $first;
-			self::$commandCalls[] = $this->commands;
-			foreach($this->commands as $c)
-				if($c->command == "d.erase")
-					self::$erased[] = $c->params;
-			if(!array_key_exists($first, self::$responses))
-				return(false);
-			$response = self::$responses[$first];
-			if(isset($response['byHash']) && isset($this->commands[0]->params)
-				&& array_key_exists((string)$this->commands[0]->params, $response['byHash']))
-				$response = $response['byHash'][(string)$this->commands[0]->params];
-			if(isset($response["callback"]) && is_callable($response["callback"]))
-				call_user_func($response["callback"], $this->commands);
-			$this->val = isset($response["val"]) ? $response["val"] : array();
-			$this->fault = isset($response["fault"]) ? $response["fault"] : false;
-			$this->faultString = isset($response["faultString"]) ? $response["faultString"] : '';
-			$this->rawFaultString = array_key_exists("rawFaultString", $response)
-				? $response["rawFaultString"] : null;
-			$this->faultCode = isset($response["faultCode"]) ? $response["faultCode"] : 0;
-			if(isset($response["runResult"]))
-				return($response["runResult"]);
-			return(isset($response["ok"]) ? $response["ok"] : true);
-		}
-		public function success($trusted = true)
-		{
-			return($this->run($trusted) && !$this->fault);
-		}
-	}
-}
-if(!function_exists('getCmd'))
-{
-	function getCmd($cmd) { return($cmd); }
-}
-if(!class_exists('Utility'))
-{
-	class Utility { public static function getPHP() { return(PHP_BINARY); } }
-}
-if(!class_exists('User'))
-{
-	class User { public static function getUser() { return('rutorrent'); } }
-}
+// One shared collector environment: FileUtil/RPC stubs, the replaceable
+// metainfo source and the scripted ErasedataFilesystemOps subclass.
+require_once(__DIR__ . '/CollectorFixture.php');
 
 class ErasedataScheduleSettingsFake
 {
@@ -117,14 +17,128 @@ class ErasedataScheduleSettingsFake
 }
 
 $profileMask = 0777;
-require_once(__DIR__ . '/../../../plugins/erasedata/filesystem.php');
 require_once(__DIR__ . '/../../../plugins/erasedata/manifest.php');
 require_once(__DIR__ . '/../../../plugins/erasedata/removewithdata.php');
+require_once(__DIR__ . '/../../../plugins/erasedata/collector.php');
+require_once(__DIR__ . '/../../../plugins/erasedata/update.php');
+
+// A payload far larger than the manifest ceiling that counts exactly how many
+// bytes a reader consumes, so "bounded while reading" is an observable fact
+// rather than a claim about the source.
+if(!class_exists('ErasedataOversizeStream'))
+{
+	class ErasedataOversizeStream
+	{
+		const TOTAL_BYTES = 134217728; // 2 x ErasedataManifestCodec::MAX_MANIFEST_BYTES
+		public static $served = 0;
+		public static $total = self::TOTAL_BYTES;
+		public $context;
+		private $offset = 0;
+
+		public static function register($total = self::TOTAL_BYTES)
+		{
+			self::$served = 0;
+			self::$total = $total;
+			if(!in_array('erasedataoversize', stream_get_wrappers(), true))
+				stream_wrapper_register('erasedataoversize', 'ErasedataOversizeStream');
+		}
+		public function stream_open($path, $mode, $options, &$openedPath) { return(true); }
+		public function stream_read($count)
+		{
+			$remaining = self::$total - $this->offset;
+			if($remaining <= 0)
+				return('');
+			$size = $count < $remaining ? $count : $remaining;
+			$this->offset += $size;
+			self::$served += $size;
+			return(str_repeat('x', $size));
+		}
+		public function stream_eof() { return($this->offset >= self::$total); }
+		public function stream_stat() { return(array()); }
+		public function stream_close() {}
+		public function url_stat($path, $flags) { return(array()); }
+	}
+}
+
+// A queue-directory wrapper that writes part of the first chunk and then
+// stalls, so a genuinely partial staged manifest reaches the production writer.
+if(!class_exists('ErasedataPartialWriteStream'))
+{
+	class ErasedataPartialWriteStream
+	{
+		const SCHEME = 'erasedatapartial';
+		public $context;
+		private $handle = null;
+		private $wrote = false;
+
+		public static function register()
+		{
+			if(!in_array(self::SCHEME, stream_get_wrappers(), true))
+				stream_wrapper_register(self::SCHEME, 'ErasedataPartialWriteStream');
+		}
+		public static function real($path)
+		{
+			return(substr($path, strlen(self::SCHEME.'://')));
+		}
+		public function stream_open($path, $mode, $options, &$openedPath)
+		{
+			$this->handle = @fopen(self::real($path), $mode);
+			return($this->handle !== false);
+		}
+		public function stream_write($data)
+		{
+			if($this->wrote || !is_resource($this->handle))
+				return(0);
+			$this->wrote = true;
+			$half = strlen($data) > 1 ? intdiv(strlen($data), 2) : 1;
+			$written = @fwrite($this->handle, substr($data, 0, $half));
+			return($written === false ? 0 : $written);
+		}
+		public function stream_flush() { return(true); }
+		public function stream_eof() { return(true); }
+		public function stream_stat() { return(@fstat($this->handle)); }
+		public function stream_close()
+		{
+			if(is_resource($this->handle))
+				@fclose($this->handle);
+		}
+		public function url_stat($path, $flags)
+		{
+			$real = self::real($path);
+			return(($flags & STREAM_URL_STAT_LINK) ? @lstat($real) : @stat($real));
+		}
+		public function unlink($path) { return(@unlink(self::real($path))); }
+	}
+}
+
+// A removal seam that takes a directory even when it still holds bytes. The
+// production seam is rmdir(), which refuses one, so only a greedy seam can show
+// that the emptiness check in erasedataResumeCapturedEntries() is a decision of
+// its own rather than rmdir()'s refusal restated.
+if(!class_exists('ErasedataGreedyRemovalFilesystem'))
+{
+	class ErasedataGreedyRemovalFilesystem extends ErasedataFilesystemOps
+	{
+		public function removeDirectory($path)
+		{
+			$entries = @scandir($path);
+			if(is_array($entries))
+				foreach(array_diff($entries, array('.', '..')) as $entry)
+				{
+					$child = $path.'/'.$entry;
+					if(is_dir($child) && !is_link($child))
+						$this->removeDirectory($child);
+					else
+						@unlink($child);
+				}
+			return(@rmdir($path));
+		}
+	}
+}
 
 class RemoveWithDataTest extends TestCase
 {
 	private $dir;
-	private $filesystemScenario = array();
 
 	public function setUp()
 	{
@@ -136,11 +150,11 @@ class RemoveWithDataTest extends TestCase
 	// setUp() runs once per class, so each test starts from a clean slate here.
 	private function reset()
 	{
-		global $profileMask, $erasedataCleanupPublicationPhaseOverride,
-			$erasedataBeforeUnlinkExactStagedFileOverride;
+		global $profileMask;
 		$profileMask = 0777;
-		$erasedataCleanupPublicationPhaseOverride = null;
-		$erasedataBeforeUnlinkExactStagedFileOverride = null;
+		ErasedataCollectorTestState::$source = false;
+		ErasedataCollectorTestState::$indexCountFile = null;
+		ErasedataCollectorTestState::$indexBuilds = 0;
 		foreach(array_diff(scandir($this->dir), array('.', '..', 'erasedata')) as $entry)
 			$this->removePath($this->dir.'/'.$entry);
 		@mkdir($this->dir.'/erasedata', 0777, true);
@@ -150,7 +164,6 @@ class RemoveWithDataTest extends TestCase
 		rXMLRPCRequest::$responses = array();
 		rXMLRPCRequest::$requested = array();
 		rXMLRPCRequest::$erased = array();
-		$this->filesystemScenario = array();
 		rXMLRPCRequest::$commandCalls = array();
 	}
 
@@ -223,10 +236,18 @@ class RemoveWithDataTest extends TestCase
 			.'class rSCGITransport{public static $raw="";'
 			.'public static function send($host,$port,$data,$trusted,$timeout,&$error)'
 			.'{return array("raw"=>self::$raw);}}');
-		$code = 'set_include_path('.var_export($fixture, true).');'
-			.'require '.var_export($fixture.'/xmlrpc.php', true).';'
-			.'$fault=base64_decode('.var_export(base64_encode($faultString), true).');'
-			.'$escaped=htmlspecialchars($fault,ENT_NOQUOTES,"UTF-8");'
+		// The production XMLRPC parser needs its own include tree, so it runs in
+		// a real script that receives one absolute JSON scenario filename.
+		$scenario = $fixture.'/scenario.json';
+		file_put_contents($scenario, json_encode(array(
+			'fixture' => $fixture, 'fault' => $faultString)));
+		file_put_contents($fixture.'/run.php', "<?php\n"
+			.'$scenario=json_decode(@file_get_contents($argv[1]),true);'
+			.'if(!is_array($scenario)||!isset($scenario["fixture"],$scenario["fault"])'
+			.'||!is_string($scenario["fixture"])||!is_string($scenario["fault"]))exit(2);'
+			.'set_include_path($scenario["fixture"]);'
+			.'require($scenario["fixture"]."/xmlrpc.php");'
+			.'$escaped=htmlspecialchars($scenario["fault"],ENT_NOQUOTES,"UTF-8");'
 			.'rSCGITransport::$raw="<methodResponse><fault><value><struct>".'
 			.'"<member><name>faultCode</name><value><i4>-501</i4></value></member>".'
 			.'"<member><name>faultString</name><value><string>".$escaped."</string></value></member>".'
@@ -235,10 +256,11 @@ class RemoveWithDataTest extends TestCase
 			.'$request=new rXMLRPCRequest(new rXMLRPCCommand("d.hash",str_repeat("A",40)));'
 			.'$run=$request->run();echo json_encode(array("run"=>$run,"fault"=>$request->fault,'
 			.'"faultString"=>$request->faultString,"rawFaultString"=>property_exists($request,"rawFaultString")'
-			.'?$request->rawFaultString:null));';
+			.'?$request->rawFaultString:null));');
 		$output = array();
 		$status = 0;
-		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -r '.escapeshellarg($code).' 2>&1', $output, $status);
+		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -f '.escapeshellarg($fixture.'/run.php')
+			.' -- '.escapeshellarg($scenario).' 2>&1', $output, $status);
 		return(array($status, implode("\n", $output), json_decode(implode("\n", $output), true)));
 	}
 
@@ -364,12 +386,23 @@ class RemoveWithDataTest extends TestCase
 				.'function erasedataRemoveWithData($hashes,$force) { rXMLRPCRequest::$commands[]="helper:".'
 				.'(is_string($force)?$force:gettype($force)); return array(); }');
 		}
-		$code = '$HTTP_RAW_POST_DATA='.var_export($rawBody, true).';chdir('.var_export($actionDir, true).');'
-			.'require '.var_export($actionDir.'/action.php', true).';file_put_contents('
-			.var_export($commandLog, true).',json_encode(rXMLRPCRequest::$commands));';
+		// The copied production action needs its own include tree, so it runs in
+		// a real script that receives one absolute JSON scenario filename.
+		$scenario = $fixture.'/scenario.json';
+		file_put_contents($scenario, json_encode(array(
+			'body' => $rawBody, 'action' => $actionDir.'/action.php', 'log' => $commandLog)));
+		file_put_contents($fixture.'/run.php', "<?php\n"
+			.'$scenario=json_decode(@file_get_contents($argv[1]),true);'
+			.'if(!is_array($scenario)||!isset($scenario["body"],$scenario["action"],$scenario["log"])'
+			.'||!is_string($scenario["body"])||!is_string($scenario["action"])'
+			.'||!is_string($scenario["log"]))exit(2);'
+			.'$HTTP_RAW_POST_DATA=$scenario["body"];chdir(dirname($scenario["action"]));'
+			.'require($scenario["action"]);'
+			.'file_put_contents($scenario["log"],json_encode(rXMLRPCRequest::$commands));');
 		$output = array();
 		$status = 0;
-		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -r '.escapeshellarg($code).' 2>&1', $output, $status);
+		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -f '.escapeshellarg($fixture.'/run.php')
+			.' -- '.escapeshellarg($scenario).' 2>&1', $output, $status);
 		$commands = is_file($commandLog) ? json_decode(file_get_contents($commandLog), true) : null;
 		return(array($status, implode("\n", $output), $commands));
 	}
@@ -421,290 +454,270 @@ class RemoveWithDataTest extends TestCase
 		return($fixture);
 	}
 
-	private function runCollector($ok, $fault, $val, $swap = null, $owned = null,
-		$rmdirFail = null, $rmdirSwap = null, $rmdirCrash = null, $restoreCollision = null,
-		$reservedSwap = null, $forceTargetSwap = null, $forceTargetRecreate = null,
-		$forceTraverseSwap = null, $cleanupCrash = null, $forceCaptureCollision = null,
-		$reservationInitCrash = null, $forceCaptureInitCrash = null,
-		$containerRemovalFail = null, $faultString = '', $generation = null, $onlyHash = null,
-		$debug = false, $cleanupUnlinkFail = null, $cleanupPublicationPhase = null,
-		$captureLogs = false, $indexCountFile = null, $commitTokenUnlinkFail = null,
-		$artifactReadCountFile = null, $successorOverride = null, $successorTransition = null,
-		$successorObservationCountFile = null, $publicCollectorHash = null)
+	// -- collector harness --------------------------------------------------
+
+	// Every collector run is described by one structured scenario array. The
+	// named seam options below are translated into scripted operations of the
+	// ErasedataCollectorFixture, which is the only injection point.
+	private function collectorDefaults()
+	{
+		return(array(
+			'ok' => true, 'fault' => false, 'val' => array(''), 'faultString' => '',
+			'swap' => null, 'owned' => null, 'generation' => null,
+			'successorOverride' => null, 'onlyHash' => null, 'debug' => false,
+			'captureLogs' => false, 'indexCountFile' => null,
+			'publicCollectorHash' => null, 'filesystem' => array(),
+			'rmdirFail' => null, 'rmdirSwap' => null, 'rmdirCrash' => null,
+			'restoreCollision' => null, 'reservedSwap' => null,
+			'forceTargetSwap' => null, 'forceTargetRecreate' => null,
+			'forceTraverseSwap' => null, 'cleanupCrash' => null,
+			'forceCaptureCollision' => null, 'reservationInitCrash' => null,
+			'forceCaptureInitCrash' => null, 'containerRemovalFail' => null,
+			'cleanupUnlinkFail' => null, 'commitTokenUnlinkFail' => null,
+			'artifactReadCountFile' => null, 'successorTransition' => null,
+			'successorObservationCountFile' => null,
+		));
+	}
+
+	private function collectorInode($path)
+	{
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+		return(is_array($stat)
+			? array('dev' => (string)$stat['dev'], 'ino' => (string)$stat['ino'])
+			: array('dev' => 'absent', 'ino' => 'absent'));
+	}
+
+	// The visible recovery link points at the private backing directory the
+	// force branch works on.
+	private function collectorRecoveryTarget($path)
+	{
+		$target = @readlink($path);
+		return(is_string($target) ? $target : $path);
+	}
+
+	private function collectorScriptedOperations(array $options)
+	{
+		$scenario = $options['filesystem'];
+		if($options['rmdirFail'] !== null)
+			$scenario['removeDirectory:*'] = array(
+				'inode' => $this->collectorInode($options['rmdirFail']), 'result' => false);
+		if($options['rmdirSwap'] !== null)
+			$scenario['rename:*'] = array(
+				'inode' => $this->collectorInode($options['rmdirSwap']), 'action' => 'swap-source');
+		if($options['rmdirCrash'] !== null)
+			$scenario['removeDirectory:*'] = array(
+				'inode' => $this->collectorInode($options['rmdirCrash']), 'action' => 'exit',
+				'content' => array('name' => 'crash-data.bin', 'bytes' => 'reserved-bytes'));
+		if($options['restoreCollision'] !== null)
+			$scenario['makeSymlink:*'] = array(
+				'path' => $options['restoreCollision'], 'action' => 'collide');
+		if($options['reservedSwap'] !== null)
+			$scenario['rename:*'] = array(
+				'inode' => $this->collectorInode($options['reservedSwap']),
+				'action' => 'swap-destination', 'at' => 'after');
+		if($options['forceTargetSwap'] !== null)
+			$scenario['rename:*'] = array(
+				'path' => $this->collectorRecoveryTarget($options['forceTargetSwap']),
+				'action' => 'swap-source',
+				'content' => array('name' => 'replacement.bin', 'bytes' => 'replacement'));
+		if($options['forceTargetRecreate'] !== null)
+			$scenario['removeDirectory:*'] = array(
+				'inode' => $this->collectorInode(
+					$this->collectorRecoveryTarget($options['forceTargetRecreate'])),
+				'action' => 'recreate', 'at' => 'after',
+				'content' => array('name' => 'recreated.bin', 'bytes' => 'recreated'));
+		if($options['forceTraverseSwap'] !== null)
+		{
+			$traverse = array(
+				'inode' => $this->collectorInode(
+					$this->collectorRecoveryTarget($options['forceTraverseSwap'])),
+				'action' => 'swap-source', 'at' => 'after', 'record_inode' => true);
+			if($options['forceTraverseSwap'] !== 'empty')
+				$traverse['content'] = array('name' => 'replacement.bin', 'bytes' => 'replacement');
+			$scenario['openDirectoryReference:*'] = $traverse;
+		}
+		if($options['cleanupCrash'] === 'tombstone')
+			$scenario['unlinkCapturedEntry:*'] = array('basename' => 'directory',
+				'contains' => '.force-', 'action' => 'exit', 'at' => 'after');
+		if($options['cleanupCrash'] === 'bridge')
+			$scenario['unlinkCapturedEntry:*'] = array('basename' => 'directory',
+				'not_contains' => '.force-', 'action' => 'exit', 'at' => 'after');
+		if($options['cleanupCrash'] === 'container')
+			$scenario['removePrivateContainer:*'] = array(
+				'basename_prefix' => '.erasedata-rmdir-', 'action' => 'exit', 'at' => 'after');
+		if($options['forceCaptureCollision'] !== null)
+			$scenario['makeDirectory:*'] = array('contains' => '.force-', 'action' => 'collide');
+		if($options['reservationInitCrash'] === 'created')
+			$scenario['makeDirectory:*'] = array('basename_prefix' => '.erasedata-rmdir-',
+				'action' => 'exit', 'at' => 'after');
+		if($options['reservationInitCrash'] === 'initialized')
+			$scenario['rename:*'] = array('to_contains' => '/.erasedata-rmdir-', 'action' => 'exit');
+		if($options['forceCaptureInitCrash'] === 'created')
+			$scenario['makeDirectory:*'] = array('contains' => '.force-',
+				'action' => 'exit', 'at' => 'after');
+		if($options['forceCaptureInitCrash'] === 'initialized')
+			$scenario['rename:*'] = array('to_contains' => '.force-', 'action' => 'exit');
+		if($options['containerRemovalFail'] !== null)
+			$scenario['removePrivateContainer:*'] = array('result' => false);
+		if($options['cleanupUnlinkFail'] !== null)
+			$scenario['unlinkCapturedEntry:*'] = array(
+				'path' => $options['cleanupUnlinkFail'], 'result' => false);
+		if($options['commitTokenUnlinkFail'] !== null)
+			$scenario['unlink:*'] = array(
+				'path' => $options['commitTokenUnlinkFail'], 'result' => false);
+		if($options['artifactReadCountFile'] !== null)
+			$scenario['entryIdentity:*'] = array('contains' => '.cleanup.',
+				'count_file' => $options['artifactReadCountFile']);
+		if($options['successorObservationCountFile'] !== null)
+			$scenario['entryIdentity:*'] = array(
+				'paths' => is_array($options['owned']) && isset($options['owned']['files'])
+					? array_values($options['owned']['files']) : array(),
+				'count_file' => $options['successorObservationCountFile']);
+		// The second observation of the successor name is the batch revalidation
+		// that runs after every obsolete-file seam and before the first unlink.
+		if(is_array($options['successorTransition']))
+			$scenario['entryIdentity:2'] = array(
+				'path' => $options['successorTransition']['new'],
+				'action' => 'transition',
+				'kind' => $options['successorTransition']['kind'],
+				'old' => $options['successorTransition']['old'],
+				'new' => $options['successorTransition']['new']);
+		return($scenario);
+	}
+
+	private function collectorCrashes(array $scenario)
+	{
+		foreach($scenario as $entry)
+			if(is_array($entry) && isset($entry['action']) && $entry['action'] === 'exit')
+				return(true);
+		return(false);
+	}
+
+	private function runCollector(array $scenario)
+	{
+		$defaults = $this->collectorDefaults();
+		$unknown = array_diff_key($scenario, $defaults);
+		if(count($unknown))
+			throw new InvalidArgumentException(
+				'Unknown collector scenario keys: '.implode(', ', array_keys($unknown)));
+		$options = $scenario + $defaults;
+		$options = $this->collectorResponse($options['ok'], $options['fault'],
+			$options['val'], $options['faultString']) + $options;
+		$options['filesystem'] = $this->collectorScriptedOperations($options);
+		$successor = $this->cleanupSuccessorFixture(
+			$options['val'], $options['owned'], $options['successorOverride']);
+		$responses = array(
+			'd.hash' => array('ok'=>$options['ok'], 'fault'=>$options['fault'],
+				'val'=>$options['val'], 'swap'=>$options['swap'],
+				'faultString'=>$options['faultString'], 'byHash'=>$options['generation']),
+			'd.get_base_path' => is_array($successor) && isset($successor['frozen'])
+				? $successor['frozen'] + array('swap'=>null)
+				: array('ok'=>false, 'fault'=>false, 'val'=>array(), 'swap'=>null),
+			'd.get_directory' => is_array($successor) && isset($successor['stored'])
+				? $successor['stored'] + array('swap'=>null)
+				: array('ok'=>false, 'fault'=>false, 'val'=>array(), 'swap'=>null),
+		);
+		$source = is_array($successor) && array_key_exists('source', $successor)
+			? $successor['source'] : false;
+		return($this->collectorCrashes($options['filesystem'])
+			? $this->runCollectorSubprocess($options, $responses, $source)
+			: $this->runCollectorInProcess($options, $responses, $source));
+	}
+
+	// Normal cases drive the extracted service directly.
+	private function runCollectorInProcess(array $options, array $responses, $source)
+	{
+		global $erasedebug_enabled, $argv;
+		$saved = array(
+			'responses' => rXMLRPCRequest::$responses,
+			'requested' => rXMLRPCRequest::$requested,
+			'erased' => rXMLRPCRequest::$erased,
+			'calls' => rXMLRPCRequest::$commandCalls,
+			'source' => ErasedataCollectorTestState::$source,
+			'countFile' => ErasedataCollectorTestState::$indexCountFile,
+			'debug' => isset($erasedebug_enabled) ? $erasedebug_enabled : false,
+			'argv' => $argv,
+			'log' => count(FileUtil::$log),
+		);
+		rXMLRPCRequest::$responses = $responses;
+		ErasedataCollectorTestState::$source = $source;
+		ErasedataCollectorTestState::$indexCountFile = $options['indexCountFile'];
+		$erasedebug_enabled = (bool)$options['debug'];
+		$argv = array('update.php', 'rutorrent');
+		if($options['onlyHash'] !== null)
+			$argv[] = $options['onlyHash'];
+		$output = '';
+		ob_start();
+		try {
+			if($options['publicCollectorHash'] !== null)
+				erasedataRunCollector(FileUtil::getSettingsPath().'/erasedata',
+					$options['publicCollectorHash']);
+			else
+				erasedataCollectorMain(new ErasedataCollectorFixture($options['filesystem']));
+		} catch(Throwable $e) {
+			echo 'Uncaught '.get_class($e).': '.$e->getMessage()."\n";
+		} finally {
+			$output = ob_get_clean();
+		}
+		$logs = array_slice(FileUtil::$log, $saved['log']);
+		rXMLRPCRequest::$responses = $saved['responses'];
+		rXMLRPCRequest::$requested = $saved['requested'];
+		rXMLRPCRequest::$erased = $saved['erased'];
+		rXMLRPCRequest::$commandCalls = $saved['calls'];
+		ErasedataCollectorTestState::$source = $saved['source'];
+		ErasedataCollectorTestState::$indexCountFile = $saved['countFile'];
+		$erasedebug_enabled = $saved['debug'];
+		$argv = $saved['argv'];
+		clearstatcache();
+		$status = preg_match('/(Fatal|Parse) error|Uncaught/', $output) === 1 ? 255 : 0;
+		if($options['debug'] || $options['captureLogs'])
+			$output .= '__ERASEDATA_LOG__'.json_encode($logs);
+		return(array($status, $output));
+	}
+
+	// Only genuinely crash-only cases need their own process. The runner takes
+	// exactly one argument: an absolute JSON scenario filename it validates.
+	private function runCollectorSubprocess(array $options, array $responses, $source)
 	{
 		global $profileMask;
-		// Existing filesystem scenarios use this tuple as semantic absence.
-		// Exercise it through the production-observed fault, never clean empty.
-		if($ok === true && $fault === false && $val === array('') && $faultString === '')
-		{
-			$fault = true;
-			$val = array();
-			$faultString = 'invalid parameters: info-hash not found';
-		}
-		$successor = $this->cleanupSuccessorFixture($val, $owned, $successorOverride);
-		$state = base64_encode(serialize(array(
+		$token = bin2hex(random_bytes(6));
+		$scenarioFile = sys_get_temp_dir().'/erasedata-scenario-'.$token.'.json';
+		$logFile = sys_get_temp_dir().'/erasedata-log-'.$token.'.json';
+		$payload = array(
+			'mode' => 'collect',
 			'settings' => $this->dir,
-			'profileMask' => $profileMask,
-			'filesystemScenario' => $this->filesystemScenario,
-			'debug' => $debug,
-			'source' => is_array($successor) && array_key_exists('source', $successor)
-				? $successor['source'] : false,
-			'responses' => array(
-				'd.hash' => array('ok'=>$ok, 'fault'=>$fault, 'val'=>$val, 'swap'=>$swap, 'faultString'=>$faultString, 'byHash'=>$generation),
-				'd.get_base_path' => is_array($successor) && isset($successor['frozen'])
-					? $successor['frozen'] + array('swap'=>null)
-					: array('ok'=>false, 'fault'=>false, 'val'=>array(), 'swap'=>null),
-				'd.get_directory' => is_array($successor) && isset($successor['stored'])
-					? $successor['stored'] + array('swap'=>null)
-					: array('ok'=>false, 'fault'=>false, 'val'=>array(), 'swap'=>null),
-			),
-		)));
-		$update = realpath(__DIR__.'/../../../plugins/erasedata/update.php');
-		$code = '$state=unserialize(base64_decode('.var_export($state, true).'));'.
-			'$cleanupPublicationPhase='.var_export($cleanupPublicationPhase, true).';'.
-			'$successorTransition='.var_export($successorTransition, true).';'.
-			'$successorObservationCountFile='.var_export($successorObservationCountFile, true).';'.
-			'$erasedataCleanupSuccessorObservationOverride='.
-				var_export($successorObservationCountFile === null
-					? null : 'erasedataCleanupSuccessorObservationRecorded', true).';'.
-			'function erasedataCleanupSuccessorObservationRecorded($path){global $successorObservationCountFile;'.
-				'if($successorObservationCountFile!==null)@file_put_contents($successorObservationCountFile,"1\n",FILE_APPEND);}'.
-			'$indexCountFile='.var_export($indexCountFile, true).';'.
-			'$artifactReadCountFile='.var_export($artifactReadCountFile, true).';'.
-			'$erasedataBeforeReadExactCleanupFile='.var_export(
-				$artifactReadCountFile === null ? null : 'erasedataBeforeReadExactCleanupFile', true).';'.
-			'function erasedataCleanupPublicationPhase($phase,$context){global $cleanupPublicationPhase;'.
-				'if($cleanupPublicationPhase!==null&&$phase===$cleanupPublicationPhase)exit(0);return true;}'.
-			'function erasedataCollectorIndexBuilt($path){global $indexCountFile;'.
-				'if($indexCountFile!==null)@file_put_contents($indexCountFile,"1\\n",FILE_APPEND);return true;}'.
-			'function erasedataBeforeReadExactCleanupFile($candidate){global $artifactReadCountFile;'.
-				'if($artifactReadCountFile!==null)@file_put_contents($artifactReadCountFile,"1\\n",FILE_APPEND);return true;}'.
-			($rmdirFail !== null || $rmdirSwap !== null || $rmdirCrash !== null
-				|| $restoreCollision !== null || $reservedSwap !== null
-				|| $forceTargetSwap !== null || $forceTargetRecreate !== null
-				|| $forceTraverseSwap !== null || $cleanupCrash !== null
-				|| $forceCaptureCollision !== null || $reservationInitCrash !== null
-				|| $forceCaptureInitCrash !== null || $containerRemovalFail !== null || $cleanupUnlinkFail !== null
-				|| $successorTransition !== null
-				|| $commitTokenUnlinkFail !== null
-				? '$rmdirFail='.var_export($rmdirFail, true).';$rmdirSwap='.var_export($rmdirSwap, true).';'.
-					'$rmdirCrash='.var_export($rmdirCrash, true).';$restoreCollision='.var_export($restoreCollision, true).';'.
-					'$reservedSwap='.var_export($reservedSwap, true).';'.
-					'$forceTargetSwap='.var_export($forceTargetSwap, true).';'.
-					'$forceTargetRecreate='.var_export($forceTargetRecreate, true).';'.
-					'$forceTraverseSwap='.var_export($forceTraverseSwap, true).';'.
-					'$cleanupCrash='.var_export($cleanupCrash, true).';'.
-					'$forceCaptureCollision='.var_export($forceCaptureCollision, true).';'.
-					'$reservationInitCrash='.var_export($reservationInitCrash, true).';'.
-					'$forceCaptureInitCrash='.var_export($forceCaptureInitCrash, true).';'.
-					'$containerRemovalFail='.var_export($containerRemovalFail, true).';'.
-					'$cleanupUnlinkFail='.var_export($cleanupUnlinkFail, true).';'.
-					'$commitTokenUnlinkFail='.var_export($commitTokenUnlinkFail, true).';'.
-					'function erasedataDirectoryRemovalOverride($path,$reserved){global $rmdirFail,$rmdirCrash,$reservedSwap;'.
-					'if($path===$rmdirCrash){@file_put_contents($reserved."/crash-data.bin","reserved-bytes");exit(0);}'.
-					'if($path===$reservedSwap){@rename($reserved,$reserved.".checked");@mkdir($reserved);}'.
-					'return $path===$rmdirFail?false:null;}'.
-					'function erasedataBeforeReserveDirectory($path){global $rmdirSwap;'.
-					'if($rmdirSwap!==null&&$path===$rmdirSwap){@rename($path,$path.".checked");@mkdir($path);}return true;}'.
-					'function erasedataBeforeRestoreDirectory($reserved,$path){global $restoreCollision;'.
-					'if($restoreCollision!==null&&$path===$restoreCollision){@mkdir($path);$stat=@lstat($path);'.
-					'if(is_array($stat))@file_put_contents($path.".collision-inode",(string)$stat["ino"]);}return true;}'.
-					'function erasedataBeforeDeleteRecoveryDirectory($path){global $forceTargetSwap;'.
-					'if($forceTargetSwap!==null){@rename($path,$path.".checked");@mkdir($path);'.
-					'@file_put_contents($path."/replacement.bin","replacement");}return true;}'.
-					'function erasedataAfterDeleteRecoveryDirectory($path){global $forceTargetRecreate;'.
-					'if($forceTargetRecreate!==null){@mkdir($path);'.
-					'@file_put_contents($path."/recreated.bin","recreated");}return true;}'.
-					'function erasedataBeforeTraverseCapturedRecoveryDirectory($path){global $forceTraverseSwap;'.
-					'if($forceTraverseSwap!==null){@rename($path,$path.".checked");@mkdir($path);'.
-					'if($forceTraverseSwap!=="empty")@file_put_contents($path."/replacement.bin","replacement");'.
-					'$stat=@lstat($path);if(is_array($stat))@file_put_contents($path.".collision-inode",(string)$stat["ino"]);}return true;}'.
-					'function erasedataBeforeCreateRecoveryCapture($path){global $forceCaptureCollision;'.
-					'if($forceCaptureCollision!==null){@mkdir($path);$stat=@lstat($path);'.
-					'if(is_array($stat))@file_put_contents($path.".collision-inode",(string)$stat["ino"]);}return true;}'.
-					'function erasedataAfterCreateDirectoryReservation($path){global $reservationInitCrash;'.
-					'if($reservationInitCrash==="created")exit(0);return true;}'.
-					'function erasedataAfterInitializeDirectoryReservation($path){global $reservationInitCrash;'.
-					'if($reservationInitCrash==="initialized")exit(0);return true;}'.
-					'function erasedataAfterCreateRecoveryCapture($path){global $forceCaptureInitCrash;'.
-					'if($forceCaptureInitCrash==="created")exit(0);return true;}'.
-					'function erasedataAfterInitializeRecoveryCapture($path){global $forceCaptureInitCrash;'.
-					'if($forceCaptureInitCrash==="initialized")exit(0);return true;}'.
-					'function erasedataContainerRemovalOverride($path){global $containerRemovalFail;'.
-					'return $containerRemovalFail!==null?false:null;}'.
-					'function erasedataAfterUnlinkRecoveryTombstone($path){global $cleanupCrash;'.
-					'if($cleanupCrash==="tombstone")exit(0);return true;}'.
-					'function erasedataAfterUnlinkRecoveryBridge($path){global $cleanupCrash;'.
-					'if($cleanupCrash==="bridge")exit(0);return true;}'.
-					'function erasedataAfterRemoveRecoveryContainer($path){global $cleanupCrash;'.
-					'if($cleanupCrash==="container")exit(0);return true;}'.
-					'function erasedataBeforeCleanupUnlink($path,$expected){global $cleanupUnlinkFail,$successorTransition;'.
-						'if(is_array($successorTransition)&&isset($successorTransition["kind"],$successorTransition["new"],$successorTransition["old"])'.
-						'&&(!isset($successorTransition["trigger"])||$successorTransition["trigger"]===$path)){' .
-						'$new=$successorTransition["new"];$old=$successorTransition["old"];'.
-						'if($successorTransition["kind"]==="missing-to-symlink")@symlink($old,$new);'.
-						'else if($successorTransition["kind"]==="missing-to-hardlink")@link($old,$new);'.
-						'else if($successorTransition["kind"]==="alias-to-distinct"){@unlink($new);@file_put_contents($new,"distinct");}'.
-						'else if($successorTransition["kind"]==="alias-to-missing")@unlink($new);'.
-						'$successorTransition=null;}'.
-						'return $path===$cleanupUnlinkFail?false:true;}'.
-					'function erasedataBeforeUnlinkExactStagedFile($path,$expected){global $commitTokenUnlinkFail;'.
-						'return $path===$commitTokenUnlinkFail?false:true;}'
-				: '').
-			'class FileUtil { public static $settingsPath; public static $log=array();'.
-			'public static function getSettingsPath(){return self::$settingsPath;}'.
-			'public static function getProfilePath(){return dirname(self::$settingsPath);}'.
-			'public static function getConfFile($name){return false;}'.
-			'public static function getPluginConf($plugin){return '.var_export('$enableForceDeletion=true;$erasedebug_enabled='
-				.($debug ? 'true' : 'false').';', true).';}'.
-			'public static function makeDirectory($dir){return @mkdir($dir,0777,true);}'.
-			'public static function toLog($msg){self::$log[]=$msg;}}'.
-			'class rXMLRPCCommand { public $command; public $params;'.
-			'public function __construct($command,$params=null){$this->command=$command;$this->params=$params;}}'.
-			'class rXMLRPCRequest { public static $responses; public $val=array(); public $fault=false; public $faultString=""; public $important=true; private $commands=array();'.
-			'public function __construct($commands=null){if(is_array($commands))$this->commands=$commands;else if($commands!==null)$this->commands=array($commands);}'.
-			'public function run($trusted=true){$first=count($this->commands)?$this->commands[0]->command:"";'.
-			'$response=isset(self::$responses[$first])?self::$responses[$first]:array("ok"=>false,"fault"=>false,"val"=>array(),"swap"=>null,"faultString"=>"");'.
-			'if($first==="d.hash"&&isset($response["byHash"])&&isset($this->commands[0]->params)&&array_key_exists((string)$this->commands[0]->params,$response["byHash"])){'.
-				'$entry=$response["byHash"][(string)$this->commands[0]->params];'.
-				'if(isset($entry["presence"])||isset($entry["generation"])){$generationRequest=count($this->commands)>1&&$this->commands[1]->command==="d.get_custom";'.
-				'$response=$generationRequest?(isset($entry["generation"])?$entry["generation"]:$response):(isset($entry["presence"])?$entry["presence"]:$response);}'.
-				'else $response=$entry;}'.
-			'if($first==="d.hash"&&isset($response["swap"])&&$response["swap"]!==null){'.
-			'if(isset($response["swap"][2])&&$response["swap"][2]==="rewrite"){@file_put_contents($response["swap"][0],@file_get_contents($response["swap"][1]));}'.
-			'else{@unlink($response["swap"][0]);if(isset($response["swap"][2])&&$response["swap"][2]==="rename"){@rename($response["swap"][1],$response["swap"][0]);}'.
-			'else{@symlink($response["swap"][1],$response["swap"][0]);}}}'.
-			'$this->val=$response["val"];$this->fault=$response["fault"];$this->faultString=isset($response["faultString"])?$response["faultString"]:"";return $response["ok"];}'.
-			'public function success($trusted=true){return $this->run($trusted) && !$this->fault;}}'.
-			'class ErasedataCleanupTestSource { public $info; private $hash;'.
-			'public function __construct($source){$this->info=$source["info"];$this->hash=$source["hash"];}public function hash_info(){return $this->hash;}}'.
-			'function erasedataLoadTorrentSource($hash){global $state;return is_array($state["source"])?new ErasedataCleanupTestSource($state["source"]):false;}'.
-			'function getCmd($cmd){return $cmd;}'.
-			'$profileMask=$state["profileMask"];FileUtil::$settingsPath=$state["settings"];rXMLRPCRequest::$responses=$state["responses"];'.
-			($onlyHash === null ? '' : '$argv=array("update.php","rutorrent",'.var_export($onlyHash, true).');').
-			'require '.var_export($update, true).';'.
-			'class ScriptedErasedataFilesystemOps extends ErasedataFilesystemOps {' .
-			'private $scenario;private $triggered=false;private $scanned=false;'.
-			'public function __construct($scenario){$this->scenario=is_array($scenario)?$scenario:array();}'.
-			'private function action(){return isset($this->scenario["action"])?$this->scenario["action"]:"";}'.
-			'private function pathMatches($path){if(isset($this->scenario["path"])&&$path===$this->scenario["path"])return true;'.
-			'return $this->scanned&&isset($this->scenario["child"])&&basename($path)===$this->scenario["child"];}'.
-			'private function injectSwap($path){if($this->triggered)return;'.
-			'$backup=isset($this->scenario["backup"])?$this->scenario["backup"]:"";'.
-			'if($backup===""||!parent::rename($path,$backup))return;'.
-			'$ok=false;if(isset($this->scenario["symlinkTarget"]))'.
-			'$ok=parent::symlink($this->scenario["symlinkTarget"],$path);'.
-			'else if(isset($this->scenario["replacement"]))'.
-			'$ok=parent::rename($this->scenario["replacement"],$path);'.
-			'if(!$ok){parent::rename($backup,$path);return;}$this->triggered=true;'.
-			'if(isset($this->scenario["marker"]))@file_put_contents($this->scenario["marker"],"triggered");}'.
-			'private function injectPublicReplacement(){if($this->triggered'.
-			'||!isset($this->scenario["path"])||!isset($this->scenario["replacement"]))return;'.
-			'$path=$this->scenario["path"];$replacement=$this->scenario["replacement"];'.
-			'if(is_link($path)&&!parent::unlink($path))return;'.
-			'if(file_exists($path)||is_link($path)||!parent::rename($replacement,$path))return;'.
-			'$this->triggered=true;if(isset($this->scenario["marker"]))'.
-			'@file_put_contents($this->scenario["marker"],"triggered");}'.
-			'public function scanDirectory($path){$entries=parent::scanDirectory($path);'.
-			'if(is_array($entries)&&isset($this->scenario["child"])&&in_array($this->scenario["child"],$entries,true))'.
-			'$this->scanned=true;return $entries;}'.
-			'public function rename($from,$to){$action=$this->action();'.
-			'if(in_array($action,array("swap_before_capture","swap_to_symlink_before_capture","nested_swap_after_scan",'.
-			'"swap_manifest_before_mutation"),true)'.
-			'&&$this->pathMatches($from))$this->injectSwap($from);'.
-			'$result=parent::rename($from,$to);'.
-			'if($result&&$action==="recreate_public_after_capture"&&$this->pathMatches($from)){'.
-			'@mkdir($from,0777,true);if(isset($this->scenario["sentinel"]))'.
-			'@file_put_contents($from."/sentinel.bin",$this->scenario["sentinel"]);'.
-			'if(isset($this->scenario["marker"]))@file_put_contents($this->scenario["marker"],"triggered");}'.
-			'if($result&&$action==="crash_after_capture"&&$this->pathMatches($from)){'.
-			'if(isset($this->scenario["marker"]))@file_put_contents($this->scenario["marker"],"triggered");exit(0);}return $result;}'.
-			'public function unlink($path){$action=$this->action();'.
-			'if(in_array($action,array("swap_before_capture","nested_swap_after_scan",'.
-			'"swap_manifest_before_mutation"),true)'.
-			'&&$this->pathMatches($path))$this->injectSwap($path);return parent::unlink($path);}'.
-			'public function rmdir($path){if($this->action()==="swap_recovery_before_rmdir")'.
-			'{if($this->pathMatches($path))$this->injectSwap($path);'.
-			'else if(basename($path)==="entry"&&strpos(dirname($path),"/.erasedata-entry-")!==false)'.
-			'$this->injectPublicReplacement();}return parent::rmdir($path);}'.
-			'public function openDirectoryReference($path,$expectedIdentity){'.
-			'if($this->action()==="directory_reference_unavailable")'.
-			'{if(isset($this->scenario["marker"]))@file_put_contents($this->scenario["marker"],"triggered");return false;}'.
-			'return parent::openDirectoryReference($path,$expectedIdentity);}'.
-			'}'.
-			($publicCollectorHash === null
-				? 'erasedataCollectorMain(new ScriptedErasedataFilesystemOps($state["filesystemScenario"]));'
-				: 'erasedataRunCollector(FileUtil::getSettingsPath()."/erasedata",'.
-					var_export($publicCollectorHash, true).');').
-			($debug || $captureLogs ? 'echo "__ERASEDATA_LOG__".json_encode(FileUtil::$log);' : '');
+			'profileMask' => isset($profileMask) ? (int)$profileMask : 0777,
+			'debug' => (bool)$options['debug'],
+			'onlyHash' => $options['onlyHash'],
+			'publicCollectorHash' => $options['publicCollectorHash'],
+			'indexCountFile' => $options['indexCountFile'],
+			'source' => $source,
+			'responses' => $responses,
+			'scenario' => $options['filesystem'],
+			'logFile' => $logFile,
+		);
+		$encoded = json_encode($payload);
+		$this->assertTrue(is_string($encoded), 'the crash scenario must be JSON encodable');
+		file_put_contents($scenarioFile, $encoded);
+		$runner = realpath(__DIR__.'/CollectorFixture.php');
 		$output = array();
 		$status = 0;
-		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -r '.escapeshellarg($code).' 2>&1', $output, $status);
+		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -f '.escapeshellarg($runner)
+			.' -- '.escapeshellarg($scenarioFile).' 2>&1', $output, $status);
 		clearstatcache();
-		return(array($status, implode("\n", $output)));
+		$text = implode("\n", $output);
+		if($options['debug'] || $options['captureLogs'])
+			$text .= '__ERASEDATA_LOG__'.(is_file($logFile) ? file_get_contents($logFile) : '[]');
+		@unlink($scenarioFile);
+		@unlink($logFile);
+		return(array($status, $text));
 	}
 
-	private function runCollectorWithFilesystem(array $scenario, $ok = true,
-		$fault = false, $val = array(''))
-	{
-		$this->filesystemScenario = $scenario;
-		try {
-			return($this->runCollector($ok, $fault, $val));
-		} finally {
-			$this->filesystemScenario = array();
-		}
-	}
-
-	private function runCollectorWithOptions($ok, $fault, $val, $options)
-	{
-		$defaults = array(
-			'swap' => null,
-			'owned' => null,
-			'rmdirFail' => null,
-			'rmdirSwap' => null,
-			'rmdirCrash' => null,
-			'restoreCollision' => null,
-			'reservedSwap' => null,
-			'forceTargetSwap' => null,
-			'forceTargetRecreate' => null,
-			'forceTraverseSwap' => null,
-			'cleanupCrash' => null,
-			'forceCaptureCollision' => null,
-			'reservationInitCrash' => null,
-			'forceCaptureInitCrash' => null,
-			'containerRemovalFail' => null,
-			'faultString' => '',
-			'generation' => null,
-			'onlyHash' => null,
-			'debug' => false,
-			'cleanupUnlinkFail' => null,
-			'cleanupPublicationPhase' => null,
-			'captureLogs' => false,
-			'indexCountFile' => null,
-			'commitTokenUnlinkFail' => null,
-			'artifactReadCountFile' => null,
-			'successorOverride' => null,
-			'successorTransition' => null,
-			'successorObservationCountFile' => null,
-			'publicCollectorHash' => null,
-		);
-		$unknown = array_diff_key($options, $defaults);
-		if(count($unknown))
-			throw new InvalidArgumentException('Unknown collector options: '.implode(', ', array_keys($unknown)));
-		$options += $defaults;
-		return($this->runCollector($ok, $fault, $val, $options['swap'], $options['owned'],
-			$options['rmdirFail'], $options['rmdirSwap'], $options['rmdirCrash'],
-			$options['restoreCollision'], $options['reservedSwap'], $options['forceTargetSwap'],
-			$options['forceTargetRecreate'], $options['forceTraverseSwap'], $options['cleanupCrash'],
-			$options['forceCaptureCollision'], $options['reservationInitCrash'],
-			$options['forceCaptureInitCrash'], $options['containerRemovalFail'], $options['faultString'],
-			$options['generation'], $options['onlyHash'], $options['debug'], $options['cleanupUnlinkFail'],
-			$options['cleanupPublicationPhase'], $options['captureLogs'], $options['indexCountFile'],
-			$options['commitTokenUnlinkFail'], $options['artifactReadCountFile'],
-			$options['successorOverride'], $options['successorTransition'],
-			$options['successorObservationCountFile'], $options['publicCollectorHash']));
-	}
-
+	// Existing scenarios use ok/no-fault/array('') as semantic absence. The
+	// single place that turns it into the fault rTorrent actually answers with,
+	// so that runCollector() and a hand-written generation response cannot drift
+	// apart.
 	private function collectorResponse($ok, $fault, $val, $faultString = '')
 	{
 		if($ok === true && $fault === false && $val === array('') && $faultString === '')
@@ -1059,7 +1072,7 @@ class RemoveWithDataTest extends TestCase
 		chmod($list, 0600);
 		chmod($hashLock, 0600);
 		chmod($schedulerLock, 0600);
-		list($status, $output) = $this->runCollector(false, false, array());
+		list($status, $output) = $this->runCollector(array('ok' => false, 'val' => array()));
 		$this->assertEquals(0, $status, 'collector exits normally while repairing shared modes: '.$output);
 		$this->assertEquals(0660, $this->modeOf($schedulerLock), 'the persistent scheduler lock is repaired to the shared profile mode');
 		$this->assertEquals(0660, $this->modeOf($hashLock), 'the persistent hash lock is repaired to the shared profile mode');
@@ -1077,7 +1090,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifest($hash.'.list', $target);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'failed first deletion pass exits normally: '.$output);
 		$this->assertTrue(is_dir($target), 'a failed unlink leaves the required target in place');
 		$this->assertTrue(is_file($list), 'the deletion obligation survives the failed pass');
@@ -1086,10 +1099,44 @@ class RemoveWithDataTest extends TestCase
 
 		rmdir($target);
 		file_put_contents($target, 'retry');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'successful retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($target), 'the next collector pass retries and deletes the target');
 		$this->assertTrue(!file_exists($list), 'the manifest is consumed only after required deletion completes');
+	}
+
+	// collectHash() is the plan's single-hash entry point, and it had no caller
+	// anywhere -- production or tests -- so nothing pinned it and a regression in
+	// it would have been invisible. It must collect exactly the hash it is
+	// handed, building that hash's own index, and leave every other queued hash
+	// and its data untouched.
+	public function testCollectHashCollectsOnlyTheHashItIsHanded()
+	{
+		$this->reset();
+		$target = $this->hash('A');
+		$other = $this->hash('B');
+		$targetData = $this->dir.'/collect-hash-target.bin';
+		$otherData = $this->dir.'/collect-hash-other.bin';
+		file_put_contents($targetData, 'target');
+		file_put_contents($otherData, 'other');
+		$this->writeManifest($target.'.list', $targetData);
+		$this->writeManifest($other.'.list', $otherData);
+		// Both hashes are confirmed gone from rTorrent, so both are collectable;
+		// only the argument may decide which one actually is.
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+
+		$service = erasedataCollectorService(new ErasedataFilesystemOps());
+		$service->collectHash($this->dir.'/erasedata', $target);
+
+		clearstatcache();
+		$this->assertTrue(!file_exists($this->dir.'/erasedata/'.$target.'.list'),
+			'collectHash consumes the manifest of the hash it was handed');
+		$this->assertTrue(!file_exists($targetData),
+			'collectHash deletes the data of the hash it was handed');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$other.'.list'),
+			'collectHash leaves every other queued manifest alone');
+		$this->assertEquals('other', is_file($otherData) ? file_get_contents($otherData) : null,
+			'collectHash deletes no byte belonging to another queued hash');
 	}
 
 	public function testCollectorTreatsMissingTargetAsComplete()
@@ -1100,7 +1147,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->dir.'/erasedata/'.$hash.'.list';
 		$this->writeManifest($hash.'.list', $missing);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'missing-target collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($list), 'an already-missing required target completes its obligation');
 	}
@@ -1118,7 +1165,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($unrelated, 'unrelated');
 		$this->writeManifestLines($hash.'.list', array($listed), $base, 1, 1);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'non-force collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($listed), 'every listed file is removed');
 		$this->assertTrue(is_file($unrelated), 'unlisted data keeps the non-empty base directory alive');
@@ -1135,14 +1182,14 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null, $base);
+		list($status, $output) = $this->runCollector(array('rmdirFail' => $base));
 		$this->assertEquals(0, $status, 'fail-first collector exits normally: '.$output);
 		$this->assertTrue(is_dir($base), 'the injected empty-directory failure leaves the base in place');
 		$this->assertTrue(is_file($list), 'the exact retry obligation survives the transient rmdir failure');
 		$this->assertEquals($exact, is_file($list) ? file_get_contents($list) : null,
 			'the retained manifest bytes are unchanged');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'succeed-next collector exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'the next pass retries and removes the empty base');
 		$this->assertTrue(!file_exists($list), 'the manifest is consumed only after successful retry');
@@ -1158,12 +1205,12 @@ class RemoveWithDataTest extends TestCase
 		mkdir($nested, 0777, true);
 		$this->writeManifestLines($hash.'.list', array($nested.'/already-gone.bin'), $base, 1, 1);
 
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null, $nested);
+		list($status, $output) = $this->runCollector(array('rmdirFail' => $nested));
 		$this->assertEquals(0, $status, 'nested fail-first collector exits normally: '.$output);
 		$this->assertTrue(is_dir($nested), 'the injected nested-directory failure leaves it in place');
 		$this->assertTrue(is_file($list), 'the nested retry obligation survives');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'nested succeed-next collector exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'retry removes nested directories and their base');
 		$this->assertTrue(!file_exists($list), 'nested manifest is consumed after retry');
@@ -1180,7 +1227,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('rmdirSwap' => $base));
 		$this->assertEquals(0, $status, 'identity-swap collector exits normally: '.$output);
 		$this->assertTrue(is_dir($base), 'a replacement directory is not removed after the identity swap');
 		$this->assertTrue(is_dir($moved), 'the originally checked directory remains outside the swapped name');
@@ -1196,7 +1243,7 @@ class RemoveWithDataTest extends TestCase
 			$this->removePath($reserved);
 		if(is_dir($moved))
 			rename($moved, $base);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'identity-swap retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'retry removes the restored original directory');
 		$this->assertTrue(!file_exists($list), 'retry consumes the obligation only after the original directory is removed');
@@ -1212,7 +1259,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('rmdirCrash' => $base));
 		$this->assertEquals(0, $status, 'reservation-crash worker exits at the deterministic seam: '.$output);
 		$reservations = glob($this->dir.'/.erasedata-rmdir-*');
 		$this->assertTrue(!file_exists($base), 'the interrupted worker exits after moving the checked directory');
@@ -1226,7 +1273,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals($exact, is_file($list) ? file_get_contents($list) : null,
 			'the exact manifest survives the interrupted pass');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'reservation recovery pass exits normally: '.$output);
 		$this->assertEquals('reserved-bytes', is_file($base.'/crash-data.bin')
 			? file_get_contents($base.'/crash-data.bin') : null,
@@ -1261,21 +1308,173 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null,
-			null, null, null, null, null, $phase);
+		list($status, $output) = $this->runCollector(array('reservationInitCrash' => $phase));
 		$this->assertEquals(0, $status, $phase.' reservation crash exits at the deterministic seam: '.$output);
 		$this->assertTrue(is_dir($base), $phase.' crash happens before the checked directory is renamed');
 		$this->assertEquals(1, count(glob($this->dir.'/.erasedata-rmdir-*')),
 			$phase.' crash leaves one discoverable private reservation');
 		$this->assertTrue(is_file($list), $phase.' crash retains the exact manifest');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, $phase.' reservation retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'retry removes the original empty directory');
 		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
 			'retry removes the abandoned initialization root');
 		$this->assertTrue(!file_exists($list), 'retry completes the retained manifest');
+	}
+
+	// A crash inside erasedataCreateCapturedEntryRoot(), in the window between
+	// makeDirectory() and the .name/.initialized writes, leaves ONE empty
+	// directory behind in the QUEUE directory. It used to make
+	// erasedataResumeCapturedEntries() refuse, and run() returns on that refusal
+	// before it reads a single hash: for EVERY torrent, payload undeleted and
+	// manifest retained, for ever, and not one log line at any
+	// $erasedebug_enabled setting. rmdir() is the whole heal -- it is atomic and
+	// it refuses a directory that holds anything -- so the residue the collector
+	// can prove empty is swept and the queue behind it runs.
+	public function testCollectorSweepsEmptyCrashResidueInsteadOfStoppingEveryHash()
+	{
+		$this->reset();
+		$hash = $this->hash('6');
+		$base = $this->dir.'/residue-empty-base';
+		$payload = $base.'/payload.bin';
+		$list = $this->dir.'/erasedata/'.$hash.'.list';
+		mkdir($base);
+		file_put_contents($payload, 'payload');
+		$this->writeManifestLines($hash.'.list', array($payload), $base, 1, 1);
+		$residue = erasedataCapturedEntryPrefix($list, 'manifest-consumption')
+			.'1-2-f-'.str_repeat('a', 32);
+		mkdir($residue, 0700);
+
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'an empty crash-residue root must not crash the collector: '.$output);
+		$this->assertTrue(!file_exists($residue), 'the empty crash residue is swept');
+		$this->assertTrue(!file_exists($payload), 'and every hash behind it runs');
+		$this->assertTrue(!file_exists($list), 'the manifest it blocked is retired');
+		$this->assertEquals(array(), $this->collectorLogs($output),
+			'a residue the collector can prove empty needs no operator');
+	}
+
+	// The sweep above at its own level, on the three shapes the collector can
+	// meet and on the one it names when it cannot even look. rmdir() refusing a
+	// non-empty directory is not the guard -- removeDirectory() is a seam, and
+	// the guard has to hold against a seam that would take the directory
+	// anyway. This also pins the $blocker contract: a refusal names the one
+	// leftover the caller could not get past, which is the only reason run()
+	// has something to print.
+	public function testResumeSweepsOnlyProvablyEmptyRootsAndNamesTheRest()
+	{
+		$this->reset();
+		$queue = $this->dir.'/erasedata';
+		$greedy = new ErasedataGreedyRemovalFilesystem();
+
+		$empty = $queue.'/.erasedata-entry-'.str_repeat('c', 64).'-1-2-f-'.str_repeat('c', 32);
+		mkdir($empty, 0700);
+		$blocker = null;
+		$this->assertTrue(erasedataResumeCapturedEntries(
+			$queue, 'manifest-consumption', $greedy, $blocker),
+			'the crash-window residue is provably empty, so it is swept');
+		$this->assertTrue(!file_exists($empty), 'and the directory is gone');
+		$this->assertEquals(null, $blocker, 'a swept root blocks nobody and names nothing');
+
+		$occupied = $queue.'/.erasedata-entry-'.str_repeat('d', 64).'-1-2-f-'.str_repeat('d', 32);
+		mkdir($occupied, 0700);
+		file_put_contents($occupied.'/entry', 'bytes nobody may guess at');
+		$blocker = null;
+		$this->assertTrue(!erasedataResumeCapturedEntries(
+			$queue, 'manifest-consumption', $greedy, $blocker),
+			'a root that still holds bytes is refused by a seam that would remove it');
+		$this->assertEquals('bytes nobody may guess at', is_file($occupied.'/entry')
+			? file_get_contents($occupied.'/entry') : null, 'and its bytes are untouched');
+		$this->assertEquals($occupied, $blocker, 'the refusal names exactly what to remove');
+		$this->removePath($occupied);
+
+		// TWO roots in one parent, the healable one sorting FIRST. Every case
+		// above has a single root, so the sweep's `continue` could be a
+		// `return(true)` and nothing would notice -- and that mutant is worse
+		// than useless: it heals the first root and then silently skips the
+		// shell behind it, suppressing the very diagnostic this sweep exists
+		// to emit. 'a' sorts before 'b', so the order is the one that matters.
+		$firstEmpty = $queue.'/.erasedata-entry-'.str_repeat('a', 64).'-1-2-f-'.str_repeat('a', 32);
+		$secondHeld = $queue.'/.erasedata-entry-'.str_repeat('b', 64).'-1-2-f-'.str_repeat('b', 32);
+		mkdir($firstEmpty, 0700);
+		mkdir($secondHeld, 0700);
+		file_put_contents($secondHeld.'/entry', 'the shell behind the healed one');
+		$blocker = null;
+		$this->assertTrue(!erasedataResumeCapturedEntries(
+			$queue, 'manifest-consumption', $greedy, $blocker),
+			'healing one root does not end the sweep: the one behind it is still refused');
+		$this->assertTrue(!file_exists($firstEmpty), 'the empty root ahead of it is still swept');
+		$this->assertEquals($secondHeld, $blocker,
+			'and the refusal names the root behind it, which a sweep that stopped early would never see');
+		$this->assertEquals('the shell behind the healed one', is_file($secondHeld.'/entry')
+			? file_get_contents($secondHeld.'/entry') : null, 'with its bytes untouched');
+		$this->removePath($secondHeld);
+
+		// A root that reads back a name but whose entry cannot be resumed: the
+		// suffix is not the dev-ino-type-token shape, so it is invisible to
+		// erasedataCapturedEntryRoots() and the visible manifest is still there.
+		$hash = $this->hash('8');
+		$list = $queue.'/'.$hash.'.list';
+		$this->writeManifestLines($hash.'.list', array($this->dir.'/unresumable.bin'),
+			$this->dir.'/unresumable.bin', 0, 1);
+		$unresumable = erasedataCapturedEntryPrefix($list, 'manifest-consumption').'not-the-shape';
+		mkdir($unresumable, 0700);
+		file_put_contents($unresumable.'/.name', base64_encode($hash.'.list'));
+		$this->assertTrue(erasedataCreatePrivateMarker($unresumable),
+			'the unresumable root is a well-formed private container');
+		$blocker = null;
+		$this->assertTrue(!erasedataResumeCapturedEntries(
+			$queue, 'manifest-consumption', $greedy, $blocker),
+			'a named root that cannot be resumed is refused');
+		$this->assertEquals($unresumable, $blocker,
+			'and that refusal names the root too, not the manifest behind it');
+		$this->removePath($unresumable);
+
+		$blocker = null;
+		$missing = $this->dir.'/queue-that-is-not-there';
+		$this->assertTrue(!erasedataResumeCapturedEntries(
+			$missing, 'manifest-consumption', $greedy, $blocker),
+			'an unreadable queue directory is a refusal of the whole pass');
+		$this->assertEquals($missing, $blocker,
+			'and it names the directory it could not read');
+	}
+
+	// The same refusal on a leftover the collector CANNOT prove empty: it still
+	// stops every hash, deliberately, because sweeping a directory that still
+	// holds bytes would be guessing. What changed is that it now says so, once,
+	// through the unconditional channel the shipped $erasedebug_enabled = false
+	// cannot silence, and it names the exact directory to remove.
+	public function testCollectorNamesTheCrashResidueThatStopsEveryHash()
+	{
+		$this->reset();
+		$hash = $this->hash('7');
+		$base = $this->dir.'/residue-blocked-base';
+		$payload = $base.'/payload.bin';
+		$list = $this->dir.'/erasedata/'.$hash.'.list';
+		mkdir($base);
+		file_put_contents($payload, 'payload');
+		$this->writeManifestLines($hash.'.list', array($payload), $base, 1, 1);
+		$residue = erasedataCapturedEntryPrefix($list, 'manifest-consumption')
+			.'1-2-f-'.str_repeat('b', 32);
+		mkdir($residue, 0700);
+		file_put_contents($residue.'/entry', 'bytes the collector may not guess at');
+
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'an unreadable entry root must not crash the collector: '.$output);
+		$this->assertTrue(is_file($payload) && is_file($list),
+			'one unreadable entry root really does stop every job in the queue');
+		$logs = $this->collectorLogs($output);
+		$named = array();
+		foreach($logs as $line)
+			if(strpos($line, $residue) !== false)
+				$named[] = $line;
+		$this->assertEquals(1, count($named),
+			'the run that did nothing names the directory to remove, once: '.json_encode($logs));
+		$this->assertTrue(count($named) === 1
+			&& strpos($named[0], 'no manifest was collected for any torrent') !== false,
+			'and says the whole run was refused, not merely that one path was skipped: '
+			.json_encode($named));
 	}
 
 	public function testCollectorRetriesAfterTransientReservationContainerFailure()
@@ -1287,16 +1486,14 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null,
-			null, null, null, null, null, null, null, true);
+		list($status, $output) = $this->runCollector(array('containerRemovalFail' => true));
 		$this->assertEquals(0, $status, 'transient container failure exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'the checked empty directory was already removed');
 		$this->assertEquals(1, count(glob($this->dir.'/.erasedata-rmdir-*')),
 			'the empty private container remains discoverable for retry');
 		$this->assertTrue(is_file($list), 'container cleanup failure retains the exact manifest');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'transient container retry exits normally: '.$output);
 		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
 			'retry removes the empty private container');
@@ -1313,8 +1510,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('rmdirCrash' => $base));
 		$this->assertEquals(0, $status, 'collision setup exits after reserving the checked directory: '.$output);
 		$reservations = glob($this->dir.'/.erasedata-rmdir-*');
 		$this->assertEquals(1, is_array($reservations) ? count($reservations) : 0,
@@ -1322,8 +1518,7 @@ class RemoveWithDataTest extends TestCase
 		$reserved = is_array($reservations) && count($reservations) ? $reservations[0] : '';
 		$reservedData = $this->reservationDataPath($reserved);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('restoreCollision' => $base));
 		$this->assertEquals(0, $status, 'colliding recovery pass exits normally: '.$output);
 		$collisionInode = is_file($base.'.collision-inode')
 			? trim(file_get_contents($base.'.collision-inode')) : '';
@@ -1347,8 +1542,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, $base, $base);
+		list($status, $output) = $this->runCollector(array('restoreCollision' => $base, 'reservedSwap' => $base));
 		$this->assertEquals(0, $status, 'post-reservation identity collision exits normally: '.$output);
 		$collisionInode = is_file($base.'.collision-inode')
 			? trim(file_get_contents($base.'.collision-inode')) : '';
@@ -1379,10 +1573,9 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('rmdirCrash' => $base));
 		$this->assertEquals(0, $status, 'force-recovery setup exits at the reservation seam: '.$output);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'force-recovery publication exits normally: '.$output);
 		$recovery = glob($this->dir.'/.erasedata-rmdir-*');
 		$target = is_link($base) ? @readlink($base) : '';
@@ -1393,7 +1586,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'second-generation force collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($base) && !is_link($base),
 			'force removal deletes the internal recovery link');
@@ -1413,16 +1606,15 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$recovery = glob($this->dir.'/.erasedata-rmdir-*');
 		$target = is_link($base) ? @readlink($base) : '';
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 		$exact = file_get_contents($secondList);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('forceTargetSwap' => $base));
 		$this->assertEquals(0, $status, 'force backing-swap pass exits normally: '.$output);
 		$this->assertEquals('replacement', is_file($target.'/replacement.bin')
 			? file_get_contents($target.'/replacement.bin') : null,
@@ -1444,14 +1636,13 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 		$exact = file_get_contents($secondList);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('forceTargetRecreate' => $base));
 		$this->assertEquals(0, $status, 'force backing-recreation pass exits normally: '.$output);
 		$this->assertEquals('recreated', is_file($base.'/recreated.bin')
 			? file_get_contents($base.'/recreated.bin') : null,
@@ -1470,14 +1661,13 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 		$exact = file_get_contents($secondList);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('forceTraverseSwap' => $base));
 		$this->assertEquals(0, $status, 'post-validation traversal swap exits normally: '.$output);
 		$this->assertEquals('replacement', is_file($base.'/replacement.bin')
 			? file_get_contents($base.'/replacement.bin') : null,
@@ -1512,21 +1702,20 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 		$exact = file_get_contents($secondList);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null, null, null, null, $phase);
+		list($status, $output) = $this->runCollector(array('cleanupCrash' => $phase));
 		$this->assertEquals(0, $status, $phase.' cleanup worker exits at the deterministic seam: '.$output);
 		$this->assertTrue(is_link($base),
 			$phase.' cleanup crash keeps the visible recovery link discoverable');
 		$this->assertEquals($exact, is_file($secondList) ? file_get_contents($secondList) : null,
 			$phase.' cleanup crash retains the exact force manifest');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, $phase.' cleanup retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base) && !is_link($base),
 			$phase.' cleanup retry removes the visible recovery link last');
@@ -1546,16 +1735,15 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$recovery = glob($this->dir.'/.erasedata-rmdir-*');
 		$target = is_link($base) ? @readlink($base) : '';
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 		$exact = file_get_contents($secondList);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null, null, null, null, null, $base);
+		list($status, $output) = $this->runCollector(array('forceCaptureCollision' => $base));
 		$this->assertEquals(0, $status, 'force capture-collision pass exits normally: '.$output);
 		$collisionFiles = glob($target.'.force-*.collision-inode');
 		$collisionFile = is_array($collisionFiles) && count($collisionFiles) === 1
@@ -1573,7 +1761,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals($exact, is_file($secondList) ? file_get_contents($secondList) : null,
 			'capture collision retains the exact force manifest');
 		@unlink($collisionFile);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'capture collision retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base) && !is_link($base),
 			'capture collision retry removes the visible recovery link');
@@ -1604,19 +1792,17 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$this->writeManifestLines(
 			$secondHash.'.list', array($base.'/crash-data.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollector(
-			true, false, array(''), null, null, null, null, null, null, null,
-			null, null, null, null, null, null, $phase);
+		list($status, $output) = $this->runCollector(array('forceCaptureInitCrash' => $phase));
 		$this->assertEquals(0, $status, $phase.' capture crash exits at the deterministic seam: '.$output);
 		$this->assertTrue(is_link($base), $phase.' capture crash keeps recovered data visible');
 		$this->assertTrue(is_file($secondList), $phase.' capture crash retains the exact force manifest');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, $phase.' capture retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base) && !is_link($base),
 			'capture initialization retry removes the visible recovery link');
@@ -1635,8 +1821,8 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		$this->writeManifestLines(
 			$firstHash.'.list', array($base.'/already-gone.bin'), $base, 1, 1);
-		$this->runCollector(true, false, array(''), null, null, null, null, $base);
-		$this->runCollector(true, false, array(''));
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
 		$recovery = glob($this->dir.'/.erasedata-rmdir-*');
 		$target = is_link($base) ? @readlink($base) : '';
 		@unlink($base.'/crash-data.bin');
@@ -1649,13 +1835,13 @@ class RemoveWithDataTest extends TestCase
 			$secondHash.'.list', array($base.'/already-gone-again.bin'), $base, 1, 1);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_recovery_before_rmdir',
-			'path' => $target,
-			'replacement' => $replacement,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('path' => $target, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'removeDirectory:1' => array('basename' => 'entry',
+				'contains' => '/.erasedata-entry-', 'action' => 'replace-public',
+				'public_path' => $target, 'replacement' => $replacement, 'marker' => $marker),
+		)));
 		$this->assertEquals(0, $status, 'non-force post-validation swap exits normally: '.$output);
 		$current = @lstat($target);
 		$this->assertTrue(is_file($marker),
@@ -1676,7 +1862,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/child.bin'), $base, 1, 2);
 		$exact = file_get_contents($list);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'failed forced collection exits normally: '.$output);
 		$this->assertTrue(is_file($base), 'failed recursive deletion leaves its target in place');
 		$this->assertTrue(is_file($list), 'the forced deletion obligation survives while its target remains');
@@ -1699,7 +1885,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($oldBase.'/jump/active.bin'), $oldBase, 1, 2);
 		$owned = array('base'=>$activeBase, 'multi'=>1, 'files'=>array($activeFile));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'forced symlink collector exits normally: '.$output);
 		$this->assertEquals('active-bytes', is_file($activeFile) ? file_get_contents($activeFile) : null,
 			'forced recursion never follows a nested symlink into active data');
@@ -1728,7 +1914,7 @@ class RemoveWithDataTest extends TestCase
 			'a produced obligation has staging-derived generation identity');
 
 		$owned = array('base'=>$newBase, 'multi'=>1, 'files'=>array($newFile));
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'present-generation reconciliation exits normally: '.$output);
 		$this->assertTrue(!file_exists($oldFile), 'old non-overlapping data is collected while the hash is present again');
 		$this->assertTrue(is_file($newFile), 'the active generation data is untouched');
@@ -1738,7 +1924,7 @@ class RemoveWithDataTest extends TestCase
 		$this->eraseOk();
 		erasedataRemoveWithData(array($hash), '1');
 		$this->assertEquals(1, count($this->manifestFiles($hash)), 'the second erase publishes its own generation');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-second-erase collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($newFile), 'the second generation is collected after confirmed absence');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'the second obligation is consumed');
@@ -1765,7 +1951,7 @@ class RemoveWithDataTest extends TestCase
 		erasedataRemoveWithData(array($hash), '1');
 
 		$this->assertEquals(2, count($this->manifestFiles($hash)), 'a second erase never overwrites an older pending generation');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'multi-generation absent collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($oldFile), 'the older generation is collected after absence');
 		$this->assertTrue(!file_exists($newFile), 'the newer generation is collected after absence');
@@ -1788,7 +1974,7 @@ class RemoveWithDataTest extends TestCase
 		$exact = is_file($first) ? file_get_contents($first) : null;
 
 		$owned = array('base'=>$base, 'multi'=>1, 'files'=>array($file));
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'overlapping present-generation reconciliation exits normally: '.$output);
 		$this->assertTrue(is_file($file), 'an overlapping active path is never deleted');
 		$this->assertTrue(is_file($first), 'the overlapping deletion obligation remains pending');
@@ -1799,7 +1985,7 @@ class RemoveWithDataTest extends TestCase
 		$this->eraseOk();
 		erasedataRemoveWithData(array($hash), '1');
 		$this->assertEquals(2, count($this->manifestFiles($hash)), 'the overlapping second erase has a distinct generation');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'overlapping generations collect after absence: '.$output);
 		$this->assertTrue(!file_exists($file), 'the overlapping data is deleted after the live generation is absent');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'both overlapping obligations complete after absence');
@@ -1819,7 +2005,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->onlyManifest($hash);
 		$owned = array('base'=>$alias, 'multi'=>1, 'files'=>array($alias.'/same.bin'));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'real-to-alias reconciliation exits normally: '.$output);
 		$this->assertEquals('active', is_file($file) ? file_get_contents($file) : null,
 			'the active physical file bytes survive through the real name');
@@ -1827,7 +2013,7 @@ class RemoveWithDataTest extends TestCase
 			'the active physical file survives through both names');
 		$this->assertTrue(is_file($list), 'the overlapping real-path obligation stays pending');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-active real-path collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($file), 'the old file is deleted after confirmed active absence');
 		$this->assertTrue(!file_exists($list), 'the old obligation then completes');
@@ -1847,7 +2033,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->onlyManifest($hash);
 		$owned = array('base'=>$real, 'multi'=>1, 'files'=>array($file));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'alias-to-real reconciliation exits normally: '.$output);
 		$this->assertEquals('active', is_file($file) ? file_get_contents($file) : null,
 			'the active physical file bytes survive through the real name');
@@ -1855,7 +2041,7 @@ class RemoveWithDataTest extends TestCase
 			'the alias cannot authorize deletion of the active real file');
 		$this->assertTrue(is_file($list), 'the overlapping alias obligation stays pending');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-active alias collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($file), 'the aliased old file is deleted after confirmed absence');
 		$this->assertTrue(!file_exists($list), 'the alias obligation completes without looping on the symlink');
@@ -1875,7 +2061,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->onlyManifest($hash);
 		$owned = array('base'=>$activeBase, 'multi'=>1, 'files'=>array($activeFile));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'active-parent reconciliation exits normally: '.$output);
 		$this->assertTrue(is_file($oldFile), 'active directory ownership protects a manifest file below it');
 		$this->assertTrue(is_file($list), 'the parent overlap retains the obligation');
@@ -1896,14 +2082,14 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->onlyManifest($hash);
 		$owned = array('base'=>$activeBase, 'multi'=>1, 'files'=>array($activeFile));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'manifest-parent reconciliation exits normally: '.$output);
 		$this->assertTrue(is_file($activeFile), 'the active child is untouched');
 		$this->assertTrue(is_file($list), 'the parent directory overlap keeps the obligation pending');
 
 		unlink($activeFile);
 		rmdir($activeBase);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-active parent collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($oldBase), 'the old parent completes after active data disappears');
 		$this->assertTrue(!file_exists($list), 'the retained parent obligation is consumed');
@@ -1918,7 +2104,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->onlyManifest($hash);
 		$owned = array('base'=>dirname($missing), 'multi'=>1, 'files'=>array($missing));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'missing-path reconciliation exits normally: '.$output);
 		$this->assertTrue(!file_exists($list), 'an already absent old file creates no permanent obligation');
 	}
@@ -1935,7 +2121,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($ownedFile, 'active');
 		$owned = array('base'=>$ownedFile, 'multi'=>0, 'files'=>array($ownedFile));
 
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'unresolvable-path reconciliation exits normally: '.$output);
 		$this->assertTrue(is_link($dangling), 'an existing path with unresolvable identity is not deleted');
 		$this->assertTrue(is_file($list), 'fail-closed resolution retains the exact obligation');
@@ -1950,7 +2136,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifest($hash.'.list', $data);
 		$this->writeManifest($hash.'.123.stranded.tmp', $data);
 		$owned = array('base'=>$data, 'multi'=>0, 'files'=>array($data));
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'collector exits normally for a present torrent: '.$output);
 		$this->assertTrue(is_file($data), 'collector never deletes active torrent data');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'), 'an overlapping legacy list remains an obligation');
@@ -1965,7 +2151,7 @@ class RemoveWithDataTest extends TestCase
 		$data = $this->dir.'/unknown.bin';
 		file_put_contents($data, 'unknown');
 		$this->writeManifest($hash.'.list', $data);
-		list($status, $output) = $this->runCollector(false, false, array());
+		list($status, $output) = $this->runCollector(array('ok' => false, 'val' => array()));
 		$this->assertEquals(0, $status, 'collector exits normally when rTorrent is unreachable: '.$output);
 		$this->assertTrue(is_file($data), 'unknown presence leaves every data byte untouched');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'), 'unknown presence retains the manifest for a later pass');
@@ -1979,7 +2165,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($data, 'stranded');
 		$tmp = $hash.'.123.stranded.tmp';
 		$this->writeManifest($tmp, $data);
-		list($status, $output) = $this->runCollector(true, false, array(""));
+		list($status, $output) = $this->runCollector(array('val' => array("")));
 		$this->assertEquals(0, $status, 'collector exits normally for confirmed absence: '.$output);
 		$this->assertTrue(!file_exists($data), 'confirmed absence permits deletion from recovered staging');
 		$this->assertTrue(!file_exists($this->dir.'/erasedata/'.$tmp), 'consumed staging path is removed');
@@ -1995,7 +2181,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifest($hash.'.list', $data);
 		$lock = fopen($this->dir.'/erasedata/'.$hash.'.lock', 'c');
 		$this->assertTrue($lock !== false && flock($lock, LOCK_EX | LOCK_NB), 'test holds the stable hash lock');
-		list($status, $output) = $this->runCollector(true, false, array(""));
+		list($status, $output) = $this->runCollector(array('val' => array("")));
 		$this->assertEquals(0, $status, 'locked collector pass exits normally: '.$output);
 		$this->assertTrue(is_file($data), 'locked hash data is not consumed by another process');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'), 'locked hash manifest remains for a later pass');
@@ -2025,7 +2211,7 @@ class RemoveWithDataTest extends TestCase
 		$data = $this->dir.'/noncanonical.bin';
 		file_put_contents($data, 'noncanonical');
 		$this->writeManifest('not-a-hash.list', $data);
-		list($status, $output) = $this->runCollector(true, false, array(""));
+		list($status, $output) = $this->runCollector(array('val' => array("")));
 		$this->assertEquals(0, $status, 'collector exits normally with an unrelated file: '.$output);
 		$this->assertTrue(is_file($data), 'non-canonical filenames can never authorize data deletion');
 		$this->assertTrue(is_file($this->dir.'/erasedata/not-a-hash.list'), 'non-canonical manifest is ignored');
@@ -2040,7 +2226,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($data, 'symlink-target-data');
 		file_put_contents($manifest, $data."\n".$data."\n0\n1\n");
 		symlink($manifest, $this->dir.'/erasedata/'.$hash.'.list');
-		list($status, $output) = $this->runCollector(true, false, array(""));
+		list($status, $output) = $this->runCollector(array('val' => array("")));
 		$this->assertEquals(0, $status, 'collector exits normally with a symlinked candidate: '.$output);
 		$this->assertTrue(is_file($data), 'a symlink cannot supply paths that authorize data deletion');
 		$this->assertTrue(is_link($this->dir.'/erasedata/'.$hash.'.list'), 'symlinked candidate is ignored');
@@ -2056,7 +2242,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($data, 'swap-target-data');
 		file_put_contents($external, $data."\n".$data."\n0\n1\n");
 		file_put_contents($list, "ignored\nignored\n0\n1\n");
-		list($status, $output) = $this->runCollector(true, false, array(""), array($list, $external));
+		list($status, $output) = $this->runCollector(array('val' => array(""), 'swap' => array($list, $external)));
 		$this->assertEquals(0, $status, 'collector exits normally after a manifest inode swap: '.$output);
 		$this->assertTrue(is_file($data), 'post-scan symlink swap cannot authorize data deletion');
 		$this->assertTrue(is_link($list), 'swapped manifest is retained rather than consumed as the scanned inode');
@@ -2072,7 +2258,8 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($data, 'regular-swap-target-data');
 		file_put_contents($replacement, $data."\n".$data."\n0\n1\n");
 		file_put_contents($list, "ignored\nignored\n0\n1\n");
-		list($status, $output) = $this->runCollector(true, false, array(""), array($list, $replacement, 'rename'));
+		list($status, $output) = $this->runCollector(array(
+			'val' => array(""), 'swap' => array($list, $replacement, 'rename')));
 		$this->assertEquals(0, $status, 'collector exits normally after a regular manifest inode swap: '.$output);
 		$this->assertTrue(is_file($data), 'post-scan regular inode swap cannot authorize data deletion');
 		$this->assertTrue(is_file($list), 'replacement inode is retained for a later freshly-probed pass');
@@ -2209,6 +2396,173 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
+	// -- S01 single-source characterization ---------------------------------
+
+	private function codecHandleFor($bytes)
+	{
+		$handle = fopen('php://memory', 'r+b');
+		fwrite($handle, $bytes);
+		rewind($handle);
+		return($handle);
+	}
+
+	public function testEveryManifestGenerationDecodesToOneNormalizedRecordShape()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/normalized-base';
+		$file = $base.'/payload.bin';
+		@mkdir($base, 0777, true);
+		file_put_contents($file, 'payload');
+
+		$v2 = ErasedataManifestCodec::encode($hash,
+			array('files' => array($file), 'base' => $file, 'multi' => false), "1");
+		$this->assertTrue(is_string($v2), 'the codec must produce v2 bytes for a valid single-file payload');
+		$cleanup = ErasedataManifestCodec::encodeCleanupObsolete($oldHash, $newHash,
+			'0123456789abcdef0123456789abcdef', $oldHash.'-started-1787587200', $base,
+			array($this->cleanupEntry($file)));
+		$this->assertTrue(is_string($cleanup), 'the codec must produce v3 cleanup bytes');
+
+		$generations = array(
+			'legacy v1' => array($file."\n".$file."\n0\n1\n", $hash, 1, 'remove_payload', true),
+			'v2' => array($v2, $hash, 2, 'remove_payload', false),
+			'v3 cleanup' => array($cleanup, $oldHash, 3, 'cleanup_obsolete', false),
+		);
+		foreach($generations as $label => $case)
+		{
+			list($bytes, $expectedHash, $version, $operation, $legacy) = $case;
+			$record = ErasedataManifestCodec::decodeBytes($bytes, $expectedHash);
+			$this->assertTrue(is_array($record), $label.' must decode through the one codec');
+			// Every consumer reads these normalized keys, so no consumer has to
+			// know which physical generation produced the bytes.
+			foreach(array('version', 'operation', 'hash', 'files', 'base', 'multi',
+				'force', 'keep_base', 'legacy') as $key)
+				$this->assertTrue(array_key_exists($key, $record),
+					$label.' record must expose the normalized key '.$key);
+			$this->assertEquals($version, $record['version'], $label.' must report its exact version');
+			$this->assertEquals($operation, $record['operation'], $label.' must report its exact operation');
+			$this->assertEquals($legacy, $record['legacy'], $label.' must report its exact legacy flag');
+
+			$handle = $this->codecHandleFor($bytes);
+			$streamed = ErasedataManifestCodec::decodeStream($handle, $expectedHash);
+			fclose($handle);
+			$this->assertEquals($record, $streamed,
+				$label.' must decode identically through the byte and stream entrypoints');
+		}
+	}
+
+	public function testEveryCodecEntrypointSharesOneRejectionPolicy()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$file = $this->dir.'/rejection.bin';
+		$valid = ErasedataManifestCodec::encode($hash,
+			array('files' => array($file), 'base' => $file, 'multi' => false), "1");
+		$this->assertTrue(is_string($valid), 'the rejection matrix needs a valid v2 baseline');
+
+		$rejected = array(
+			'empty bytes' => '',
+			'bare open brace' => '{',
+			'truncated v2 JSON' => substr($valid, 0, strlen($valid) - 8),
+			'v2 with a non-canonical base64 path' => str_replace(
+				base64_encode($file), rtrim(base64_encode($file), '=').'=====', $valid),
+			'legacy with a missing force line' => $file."\n".$file."\n0\n",
+			'legacy with a non-canonical force token' => $file."\n".$file."\n0\n01\n",
+			'legacy ambiguity: a JSON body without a version' => "{\"files\":[]}\n",
+			'oversize declared through the byte limit' => str_repeat('x',
+				ErasedataManifestCodec::MAX_PATH_BYTES + 1),
+		);
+		foreach($rejected as $label => $bytes)
+		{
+			$this->assertTrue(ErasedataManifestCodec::decodeBytes($bytes, $hash) === false,
+				'decodeBytes must reject '.$label);
+			$handle = $this->codecHandleFor($bytes);
+			$streamed = ErasedataManifestCodec::decodeStream($handle, $hash);
+			fclose($handle);
+			$this->assertTrue($streamed === false, 'decodeStream must reject '.$label);
+		}
+
+		// One hash policy, not one per entrypoint.
+		foreach(array('', 'not-a-hash', str_repeat('A', 39), str_repeat('G', 40)) as $badHash)
+		{
+			$this->assertTrue(ErasedataManifestCodec::decodeBytes($valid, $badHash) === false,
+				'decodeBytes must reject the expected hash "'.$badHash.'"');
+			$handle = $this->codecHandleFor($valid);
+			$streamed = ErasedataManifestCodec::decodeStream($handle, $badHash);
+			fclose($handle);
+			$this->assertTrue($streamed === false,
+				'decodeStream must reject the expected hash "'.$badHash.'"');
+		}
+	}
+
+	public function testEveryManifestReadBoundaryStopsAtTheByteCeiling()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$ceiling = ErasedataManifestCodec::MAX_MANIFEST_BYTES
+			+ ErasedataManifestCodec::READ_CHUNK_BYTES;
+
+		// The production ceiling is 64 MiB, so exercising it buffers 64 MiB and
+		// PHP needs headroom to grow that string. A stock 128M limit is not
+		// enough, and a fatal here would fail the whole harness, so raise the
+		// limit for this one test and restore whatever the environment had.
+		$previousLimit = ini_get('memory_limit');
+		$raised = false;
+		if(is_string($previousLimit) && $previousLimit !== '' && $previousLimit !== '-1')
+			$raised = (ini_set('memory_limit', '512M') !== false);
+
+		try
+		{
+			ErasedataOversizeStream::register();
+			$handle = fopen('erasedataoversize://payload', 'rb');
+			$this->assertTrue(is_resource($handle), 'the oversize fixture stream must open');
+			$bytes = ErasedataManifestCodec::readBoundedHandle($handle);
+			fclose($handle);
+			$this->assertTrue($bytes === false, 'a handle past the ceiling must be refused');
+			$this->assertTrue(ErasedataOversizeStream::$served <= $ceiling,
+				'readBoundedHandle must stop at the ceiling, but consumed '
+					.ErasedataOversizeStream::$served.' of '.ErasedataOversizeStream::$total.' bytes');
+			unset($bytes);
+
+			ErasedataOversizeStream::register();
+			$this->assertTrue(ErasedataManifestCodec::readBoundedFile('erasedataoversize://payload') === false,
+				'a file past the ceiling must be refused');
+			$this->assertTrue(ErasedataOversizeStream::$served <= $ceiling,
+				'readBoundedFile must stop at the ceiling, but consumed '
+					.ErasedataOversizeStream::$served.' bytes');
+
+			ErasedataOversizeStream::register();
+			$handle = fopen('erasedataoversize://payload', 'rb');
+			$this->assertTrue(ErasedataManifestCodec::decodeStream($handle, $hash) === false,
+				'decodeStream must refuse a payload past the ceiling');
+			fclose($handle);
+			$this->assertTrue(ErasedataOversizeStream::$served <= $ceiling,
+				'decodeStream must stop at the ceiling, but consumed '
+					.ErasedataOversizeStream::$served.' bytes');
+
+			// A payload at the exact ceiling is still read in full, so the bound
+			// is a ceiling and not an off-by-one truncation.
+			ErasedataOversizeStream::register(ErasedataManifestCodec::MAX_MANIFEST_BYTES);
+			$exact = fopen('erasedataoversize://payload', 'rb');
+			$atLimit = ErasedataManifestCodec::readBoundedHandle($exact);
+			fclose($exact);
+			$this->assertTrue(is_string($atLimit)
+				&& strlen($atLimit) === ErasedataManifestCodec::MAX_MANIFEST_BYTES,
+				'a payload of exactly the ceiling must still be read in full');
+			unset($atLimit);
+		}
+		catch(Exception $e)
+		{
+			if($raised)
+				ini_set('memory_limit', $previousLimit);
+			throw $e;
+		}
+		if($raised)
+			ini_set('memory_limit', $previousLimit);
+	}
+
 	public function testCleanupObsoleteManifestRoundTripsStrictIdentity()
 	{
 		$this->reset();
@@ -2307,6 +2661,34 @@ class RemoveWithDataTest extends TestCase
 			'"ino":'.$identity['lstat']['ino'].',"ino":'.$identity['lstat']['ino'].'},"stat"', $manifest);
 		$this->assertEquals(false, ErasedataManifestCodec::decodeBytes($duplicateIno, $oldHash),
 			'duplicate serialized cleanup identity members must be rejected');
+	}
+
+	// The deliberate mirror of the test above: the serialized-member rule
+	// guards the cleanup version only. A v2 payload manifest has one writer --
+	// encode(), which serializes a PHP array and so cannot emit a repeated key
+	// -- and one reader, the json_decode inside decodeBytes(), which takes the
+	// last value. No second reader of those bytes exists to disagree with it,
+	// so there is nothing for the rule to prevent. This pins that reading, and
+	// pins that the manifest a real installation has on disk still decodes, so
+	// a later change to decodeBytes() has to argue with the decision rather
+	// than drift into it.
+	public function testPayloadManifestTakesTheLastValueForDuplicateSerializedMembers()
+	{
+		$this->reset();
+		$hash = $this->hash('D');
+		$base = $this->dir.'/payload-duplicates';
+		$file = $base.'/payload.bin';
+		$manifest = ErasedataManifestCodec::encode($hash,
+			array('files' => array($file), 'base' => $base, 'multi' => true), 1);
+		$this->assertTrue(is_string($manifest) && strpos($manifest, '"force":1') !== false,
+			'the v2 manifest this pins is the one encode() actually produces');
+		$decoded = ErasedataManifestCodec::decodeBytes($manifest, $hash);
+		$this->assertEquals(1, is_array($decoded) ? $decoded['force'] : null,
+			'the well-formed v2 manifest decodes, unchanged');
+		$duplicateForce = str_replace('"force":1', '"force":1,"force":2', $manifest);
+		$decoded = ErasedataManifestCodec::decodeBytes($duplicateForce, $hash);
+		$this->assertEquals(2, is_array($decoded) ? $decoded['force'] : null,
+			'a repeated v2 member is not refused: json_decode takes the last value');
 	}
 
 	public function testCleanupObsoleteManifestRejectsWrongGeneration()
@@ -2551,7 +2933,7 @@ class RemoveWithDataTest extends TestCase
 		foreach(array($old => 'old', $new => 'new', $neighbor => 'neighbor', $personal => 'personal') as $path => $bytes)
 			file_put_contents($path, $bytes);
 		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'the cleanup collector must finish without a PHP error');
 		$this->assertTrue(!file_exists($old), 'a matching persisted obsolete object must be deleted');
 		$this->assertTrue(is_file($new) && is_file($neighbor) && is_file($personal) && is_dir($base),
@@ -2570,7 +2952,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($file, 'old');
 		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($file));
 		unlink($file);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'missing cleanup targets must not crash the collector');
 		$this->assertEquals(false, $this->onlyManifest($oldHash), 'a missing obsolete object completes its durable obligation');
 		$this->assertTrue(is_dir($base), 'the cleanup collector must not remove a shared empty base');
@@ -2591,11 +2973,10 @@ class RemoveWithDataTest extends TestCase
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'crash_after_capture',
-			'path' => $old,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $old, 'action' => 'exit',
+				'at' => 'after', 'marker' => $marker),
+		)));
 		$this->assertEquals(0, $status, 'the scripted cleanup capture crash must exit at its boundary: '.$output);
 		$this->assertTrue(is_file($marker) && !file_exists($old),
 			'the first pass must stop only after moving the obsolete file out of its public name');
@@ -2604,7 +2985,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_file($tmp) && is_file($token) && is_file($neighbor),
 			'the interrupted pass must retain its exact job and unrelated neighbor');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'the captured cleanup retry must exit normally: '.$output);
 		$this->assertEquals(array(), glob($base.'/.erasedata-entry-*'),
 			'the retry must reconcile the exact payload-side capture instead of stranding hidden data');
@@ -2630,11 +3011,10 @@ class RemoveWithDataTest extends TestCase
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'crash_after_capture',
-			'path' => $old,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $old, 'action' => 'exit',
+				'at' => 'after', 'marker' => $marker),
+		)));
 		$this->assertEquals(0, $status, 'the alias fixture must stop after OLD capture: '.$output);
 		$captures = glob($base.'/.erasedata-entry-*');
 		$this->assertEquals(1, count($captures), 'the interrupted cleanup must expose one exact capture for the retry fixture');
@@ -2643,7 +3023,8 @@ class RemoveWithDataTest extends TestCase
 			'the NEW successor fixture must physically alias the captured OLD entry');
 		$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned,
 		));
 		$this->assertEquals(0, $status, 'a captured successor alias retry must exit normally: '.$output);
@@ -2655,7 +3036,7 @@ class RemoveWithDataTest extends TestCase
 			'an aliased capture must retain its job and unrelated neighbor without partial consumption');
 
 		$this->assertTrue(@unlink($new), 'the fixture must remove the successor alias before convergence');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a retry after successor alias removal must exit normally: '.$output);
 		$this->assertEquals(array(), glob($base.'/.erasedata-entry-*'),
 			'the later retry must safely reconcile the no-longer-aliased capture');
@@ -2677,7 +3058,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($file));
 		unlink($file);
 		file_put_contents($file, 'replacement');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'replacement-object cleanup must not crash the collector');
 		$this->assertEquals('replacement', file_get_contents($file), 'a replacement object at the obsolete name must survive');
 		$this->assertEquals(false, $this->onlyManifest($oldHash), 'a confirmed replacement object completes the old obligation');
@@ -2708,7 +3089,7 @@ class RemoveWithDataTest extends TestCase
 			file_put_contents($old, 'old');
 			$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old), 'tmp');
 			$generation = $this->cleanupGenerationResponses($oldHash, $newHash, $case[1], $case[2]);
-			list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+			list($status, $output) = $this->runCollector(array(
 				'generation' => $generation, 'debug' => true));
 			$this->assertEquals(0, $status, 'the collector must exit normally for '.$case[0].': '.$output);
 			$this->assertTrue(is_file($tmp) && is_file($old),
@@ -2733,14 +3114,14 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'cleanupUnlinkFail' => $old, 'debug' => true));
 		$this->assertEquals(0, $status, 'an injected cleanup unlink failure must not crash the collector: '.$output);
 		$this->assertTrue(is_file($old) && is_file($tmp) && is_file($token),
 			'a cleanup unlink failure must retain the target, manifest, and commit token');
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' unlink-failure', $this->collectorLogs($output), true),
 			'a cleanup unlink failure must retain the unlink-failure reason');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'the retry after a cleanup unlink failure must not crash: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && !file_exists($token),
 			'a successful retry must consume the manifest first and then its exact token');
@@ -2762,7 +3143,7 @@ class RemoveWithDataTest extends TestCase
 		$handle = fopen($secondToken, 'x');
 		$this->assertTrue(is_resource($handle), 'the duplicate generation fixture must create a second token exclusively');
 		if(is_resource($handle)) fclose($handle);
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'two ambiguous cleanup jobs must not crash the collector: '.$output);
 		$expected = 'erasedata: cleanup retained '.$oldHash.' generation-mismatch';
 		$this->assertEquals(2, count(array_filter($this->collectorLogs($output), function($line) use ($expected) {
@@ -2777,7 +3158,7 @@ class RemoveWithDataTest extends TestCase
 		$old = $base.'/old.bin';
 		file_put_contents($old, 'old');
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'cleanupUnlinkFail' => $old, 'debug' => true));
 		$this->assertEquals(0, $status, 'one retained committed job must not crash the collector: '.$output);
 		$expected = 'erasedata: cleanup retained '.$oldHash.' unlink-failure';
@@ -2797,7 +3178,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('val' => array($newHash), 'debug' => true));
 		$this->assertEquals(0, $status, 'a present successor with unreadable paths must not crash the collector: '.$output);
 		$this->assertTrue(is_file($old) && is_file($list),
 			'a present successor with unreadable path metadata must retain the cleanup obligation');
@@ -2814,7 +3195,7 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-		list($status, $output) = $this->runCollector(true, false, array($newHash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($newHash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'a physical successor alias must not crash the collector: '.$output);
 		$this->assertEquals('shared-generation-object', is_file($old) ? file_get_contents($old) : null,
 			'a successor hard-link alias must protect the obsolete path from unlink');
@@ -2835,7 +3216,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$owned = array('base' => $base, 'multi' => 1, 'files' => array($new));
 
-		list($status, $output) = $this->runCollector(true, false, array($newHash), null, $owned);
+		list($status, $output) = $this->runCollector(array('val' => array($newHash), 'owned' => $owned));
 		$this->assertEquals(0, $status, 'a missing successor descendant must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($old),
 			'an OLD regular file that blocks a missing NEW descendant is deleted, not mistaken for an alias');
@@ -2851,7 +3232,8 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'debug' => true));
 		$this->assertEquals(0, $status, 'an existing successor directory must not crash the collector: '.$output);
 		$this->assertTrue(is_file($old) && is_file($list),
@@ -2874,7 +3256,8 @@ class RemoveWithDataTest extends TestCase
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'debug' => true));
 		$this->assertEquals(0, $status, 'a dangling successor alias must not crash the collector: '.$output);
 		$this->assertTrue(is_file($old) && is_file($list),
@@ -2897,7 +3280,7 @@ class RemoveWithDataTest extends TestCase
 			$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 			$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-			list($status, $output) = $this->runCollector(true, false, array($newHash), null, $owned);
+			list($status, $output) = $this->runCollector(array('val' => array($newHash), 'owned' => $owned));
 			$this->assertEquals(0, $status, $kind.' successor alias must not crash the collector: '.$output);
 			$this->assertEquals('shared alias', is_file($old) ? file_get_contents($old) : null,
 				$kind.' resolves to the same exact ordinary file and protects it');
@@ -2932,7 +3315,8 @@ class RemoveWithDataTest extends TestCase
 				'val' => array($base, 1, 'padding.bin', 'real.bin')),
 		);
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'successorOverride' => $successor));
 		$this->assertEquals(0, $status, 'stopped mixed padding cleanup must not crash: '.$output);
 		$this->assertTrue(!file_exists($old),
@@ -2965,7 +3349,8 @@ class RemoveWithDataTest extends TestCase
 			'stored' => array('ok' => true, 'fault' => false, 'val' => array($base, 1, 'padding.bin')),
 		);
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'successorOverride' => $successor));
 		$this->assertEquals(0, $status, 'all-padding cleanup must not crash: '.$output);
 		$this->assertTrue(!file_exists($old),
@@ -3001,7 +3386,8 @@ class RemoveWithDataTest extends TestCase
 					'val' => array($base, 1, 'shared.bin', 'shared.bin')),
 			);
 
-			list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+			list($status, $output) = $this->runCollector(array(
+				'val' => array($newHash),
 				'owned' => $owned, 'debug' => true, 'successorOverride' => $successor));
 			$this->assertEquals(0, $status, $order.' duplicate mask rows must not crash: '.$output);
 			$this->assertEquals('successor-owned', is_file($shared) ? file_get_contents($shared) : null,
@@ -3044,7 +3430,8 @@ class RemoveWithDataTest extends TestCase
 			$token = substr($tmp, 0, -4).'.list';
 			$owned = array('base' => $base, 'multi' => 1, 'files' => array($new));
 
-			list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+			list($status, $output) = $this->runCollector(array(
+				'val' => array($newHash),
 				'owned' => $owned, 'debug' => true, 'successorOverride' => $override));
 			$this->assertEquals(0, $status, $label.' must not crash the collector: '.$output);
 			$this->assertTrue(is_file($old) && is_file($tmp) && is_file($token),
@@ -3070,7 +3457,8 @@ class RemoveWithDataTest extends TestCase
 			$token = substr($tmp, 0, -4).'.list';
 			$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-			list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+			list($status, $output) = $this->runCollector(array(
+				'val' => array($newHash),
 				'owned' => $owned, 'debug' => true,
 				'successorTransition' => array('kind' => $kind, 'old' => $old, 'new' => $new)));
 			$this->assertEquals(0, $status, $kind.' must not crash the collector: '.$output);
@@ -3099,7 +3487,8 @@ class RemoveWithDataTest extends TestCase
 		$token = substr($tmp, 0, -4).'.list';
 		$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'debug' => true, 'successorTransition' => array(
 				'kind' => 'missing-to-hardlink', 'old' => $second, 'new' => $new, 'trigger' => $second)));
 		$this->assertEquals(0, $status, 'a transition at the second cleanup seam must not crash: '.$output);
@@ -3133,7 +3522,8 @@ class RemoveWithDataTest extends TestCase
 		$owned = array('base' => $base, 'multi' => 1, 'files' => $newFiles);
 		$countFile = $this->dir.'/successor-observations.count';
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+		list($status, $output) = $this->runCollector(array(
+			'val' => array($newHash),
 			'owned' => $owned, 'successorObservationCountFile' => $countFile));
 		$this->assertEquals(0, $status, 'linear successor revalidation must not crash: '.$output);
 		$this->assertEquals(6, is_file($countFile) ? count(file($countFile)) : 0,
@@ -3163,7 +3553,8 @@ class RemoveWithDataTest extends TestCase
 			$token = substr($tmp, 0, -4).'.list';
 			$owned = array('base' => $new, 'multi' => 0, 'files' => array($new));
 
-			list($status, $output) = $this->runCollectorWithOptions(true, false, array($newHash), array(
+			list($status, $output) = $this->runCollector(array(
+				'val' => array($newHash),
 				'owned' => $owned, 'debug' => true,
 				'successorTransition' => array('kind' => $kind, 'old' => $old, 'new' => $new)));
 			$this->assertEquals(0, $status, $kind.' must not crash the collector: '.$output);
@@ -3189,7 +3580,7 @@ class RemoveWithDataTest extends TestCase
 		unlink($old);
 		symlink($base.'/missing-target.bin', $old);
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'an unresolved cleanup identity must not crash the collector: '.$output);
 		$this->assertTrue(is_link($old) && is_file($list),
 			'an unresolved existing cleanup target must remain together with its manifest');
@@ -3204,7 +3595,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'rmdirFail' => $nested, 'debug' => true));
 		$this->assertEquals(0, $status, 'an injected cleanup rmdir failure must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($old) && is_file($list),
@@ -3212,7 +3603,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' rmdir-failure', $this->collectorLogs($output), true),
 			'a cleanup rmdir failure must retain the rmdir-failure reason');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'the cleanup nested-parent retry must exit normally: '.$output);
 		$this->assertTrue(!file_exists($nested) && !file_exists($base.'/one') && is_dir($base),
 			'a retry must remove empty target-derived parents deepest-first and never remove the shared base');
@@ -3235,7 +3626,7 @@ class RemoveWithDataTest extends TestCase
 		$malformed = $this->dir.'/erasedata/'.$oldHash.'.cleanup.bad.safeToken.tmp';
 		file_put_contents($malformed, 'foreign');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'a malformed same-hash cleanup artifact must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($list) && is_file($malformed),
 			'a malformed cleanup artifact on another stem must not block a valid committed generation');
@@ -3253,7 +3644,7 @@ class RemoveWithDataTest extends TestCase
 		$firstList = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($first));
 		$secondList = $this->writeCleanupCollectorManifest($otherHash, $newHash, $base, array($second));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'onlyHash' => 'not-a-valid-hash', 'debug' => true));
 		$this->assertEquals(0, $status, 'an invalid targeted hash must exit without a PHP error: '.$output);
 		$this->assertTrue(is_file($first) && is_file($second) && is_file($firstList) && is_file($secondList),
@@ -3274,7 +3665,7 @@ class RemoveWithDataTest extends TestCase
 		$malformed = substr($tmp, 0, -4).'.unknown';
 		file_put_contents($malformed, 'foreign');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'a same-stem malformed artifact must not crash collection: '.$output);
 		$this->assertTrue(is_file($tmp) && is_file($token) && is_file($malformed) && is_file($old),
 			'a malformed artifact bound to the exact stem must retain only that generation');
@@ -3295,7 +3686,7 @@ class RemoveWithDataTest extends TestCase
 		$untagged = $this->dir.'/erasedata/'.$oldHash.'.123.safeToken.tmp';
 		rename($tagged, $untagged);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a v3 manifest under an untagged tmp name must not crash collection: '.$output);
 		$this->assertTrue(is_file($untagged) && !file_exists(substr($untagged, 0, -4).'.list') && is_file($old),
 			'a v3 manifest under an untagged tmp name must remain untouched instead of entering legacy promotion');
@@ -3312,7 +3703,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('rmdirFail' => $base));
+		list($status, $output) = $this->runCollector(array('rmdirFail' => $base));
 		$this->assertEquals(0, $status, 'a shared-base rmdir seam must not crash cleanup collection: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($list) && is_dir($base),
 			'cleanup must finish despite a base rmdir failure seam because base is never a cleanup target');
@@ -3334,7 +3725,7 @@ class RemoveWithDataTest extends TestCase
 		$foreign = $this->dir.'/foreign-list';
 		file_put_contents($foreign, 'foreign-list');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'swap' => array($tmp, $foreign, 'rename'), 'debug' => true));
 		$this->assertEquals(0, $status, 'a manifest swap during cleanup consumption must not crash the collector: '.$output);
 		$this->assertEquals('foreign-list', is_file($tmp) ? file_get_contents($tmp) : null,
@@ -3361,7 +3752,7 @@ class RemoveWithDataTest extends TestCase
 		$foreign = $this->dir.'/same-inode-foreign-list';
 		file_put_contents($foreign, 'foreign-list-bytes');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'swap' => array($tmp, $foreign, 'rewrite'), 'debug' => true));
 		$this->assertEquals(0, $status, 'a same-inode manifest rewrite must not crash the collector: '.$output);
 		$after = @lstat($tmp);
@@ -3409,7 +3800,7 @@ class RemoveWithDataTest extends TestCase
 		$untagged = $this->dir.'/erasedata/'.$oldHash.'.123.safeToken.list';
 		rename($v3, $untagged);
 		$this->writeManifestLines($oldHash.'.cleanup.124.safeToken.list', array($v2File), $v2File, 0, 1);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'operation-mismatched manifests must not crash the collector');
 		$this->assertTrue(is_file($v3File) && is_file($v2File), 'v3 under an untagged name and v2 under a tagged name must not be consumed');
 		$this->assertTrue(is_file($untagged) && is_file($this->dir.'/erasedata/'.$oldHash.'.cleanup.124.safeToken.list'),
@@ -3498,7 +3889,7 @@ class RemoveWithDataTest extends TestCase
 		$malformed = dirname($tmp).'/'.$oldHash.'.cleanup.345.'.$unique.'.unknown';
 		file_put_contents($malformed, 'foreign suffix');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'a production-shaped dotted malformed suffix must not crash collection: '.$output);
 		$this->assertTrue(is_file($old) && is_file($tmp) && is_file($token) && is_file($malformed),
 			'a malformed final suffix on the exact dotted stem must retain only that durable generation');
@@ -3513,7 +3904,7 @@ class RemoveWithDataTest extends TestCase
 		$malformed = dirname($tmp).'/'.$oldHash.'.cleanup.345.69cfed.87654321.unknown';
 		file_put_contents($malformed, 'foreign suffix');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'a different dotted malformed stem must not crash collection: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && !file_exists($token) && is_file($malformed),
 			'a malformed dotted sibling must not block a valid exact generation');
@@ -3539,7 +3930,7 @@ class RemoveWithDataTest extends TestCase
 				(string)(400 + $i), '69cfed'.($i + 1).'.12345678');
 		}
 		$counter = $this->dir.'/cleanup-artifact-reads';
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'generation' => $generation, 'artifactReadCountFile' => $counter, 'debug' => true));
 		$reads = is_file($counter) ? count(file($counter, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
 		$this->assertEquals(0, $status, 'several prepared generations under one old hash must not crash: '.$output);
@@ -3562,7 +3953,7 @@ class RemoveWithDataTest extends TestCase
 		$token = substr($tmp, 0, -4).'.list';
 		$generation = array($newHash => array('presence' => $this->collectorResponse(false, false, array())));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'generation' => $generation, 'debug' => true));
 		$this->assertEquals(0, $status, 'a committed successor RPC uncertainty must not crash the collector: '.$output);
 		$this->assertTrue(is_file($old) && is_file($tmp) && is_file($token),
@@ -3570,7 +3961,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' rpc-unknown', $this->collectorLogs($output), true),
 			'a committed successor presence RPC uncertainty must keep its rpc-unknown reason');
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'the successful successor retry must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && !file_exists($token),
 			'a successful successor retry must converge the previously committed cleanup job');
@@ -3609,24 +4000,26 @@ class RemoveWithDataTest extends TestCase
 
 	public function testCleanupCancelRetainsTmpSwappedImmediatelyBeforeUnlink()
 	{
-		global $erasedataBeforeUnlinkExactStagedFileOverride;
 		$this->reset();
 		$oldHash = $this->hash('A');
 		$job = $this->prepareCleanupJob($oldHash);
 		$tmp = $job['tmp_path'];
 		$replacement = $this->dir.'/replacement-tmp';
+		$marker = $this->dir.'/cancel-tmp-swap.triggered';
 		file_put_contents($replacement, 'replacement');
-		$erasedataBeforeUnlinkExactStagedFileOverride = function($path) use ($replacement) {
-			@rename($path, $path.'.original');
-			@rename($replacement, $path);
-			return(true);
-		};
-		try {
-			$this->assertEquals(false, erasedataCancelObsoleteCleanup($job), 'a tmp swapped after validation must not be unlinked');
-			$this->assertEquals('replacement', file_get_contents($tmp), 'the replacement tmp must survive the cancellation race');
-		} finally {
-			$erasedataBeforeUnlinkExactStagedFileOverride = null;
-		}
+		// The sixth identity read of the staged manifest is the last one before
+		// the unlink, so the swap lands inside the comparison-to-unlink window.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:6' => array('path' => $tmp, 'action' => 'replace-entry',
+				'backup' => $tmp.'.original', 'replacement' => $replacement,
+				'marker' => $marker),
+		));
+		$this->assertEquals(false, erasedataCancelObsoleteCleanup($job, $fixture),
+			'a tmp swapped after validation must not be unlinked');
+		$this->assertTrue(is_file($marker),
+			'the scripted swap reaches the final comparison-to-unlink boundary');
+		$this->assertEquals('replacement', file_get_contents($tmp),
+			'the replacement tmp must survive the cancellation race');
 	}
 
 	public function testCleanupCancellationRetainsUnreadablePreparedTmp()
@@ -3657,7 +4050,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($c, 'c');
 		$this->writeCleanupCollectorManifest($oldA, $newHash, $base, array($a));
 		$this->writeCleanupCollectorManifest($oldC, $newHash, $base, array($c));
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('onlyHash' => $oldA));
+		list($status, $output) = $this->runCollector(array('onlyHash' => $oldA));
 		$this->assertEquals(0, $status, 'targeted collector execution must succeed');
 		$this->assertTrue(!file_exists($a) && is_file($c), 'a targeted collector must not touch another old hash');
 		$this->assertEquals(false, $this->onlyManifest($oldA), 'the requested hash must be collected');
@@ -3679,7 +4072,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeCleanupCollectorManifest($oldA, $newHash, $base, array($a));
 		$this->writeCleanupCollectorManifest($oldC, $newHash, $base, array($c));
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'publicCollectorHash' => $oldA,
 		));
 		$this->assertEquals(0, $status,
@@ -3857,78 +4250,70 @@ class RemoveWithDataTest extends TestCase
 
 	public function testCleanupTokenPublicationRetainsSwappedTmpAndToken()
 	{
-		global $erasedataCleanupPublicationPhaseOverride;
 		$this->reset();
 		$oldHash = $this->hash('A');
 		$job = $this->prepareCleanupJob($oldHash);
 		$tmp = $job['tmp_path'];
 		$list = $job['list_path'];
 		$foreignTmp = $this->dir.'/foreign-publication-tmp';
+		$marker = $this->dir.'/publication-tmp-swap.triggered';
 		file_put_contents($foreignTmp, 'foreign-tmp');
-		$erasedataCleanupPublicationPhaseOverride = function($phase) use ($tmp, $foreignTmp) {
-			if($phase === 'before-token')
-			{
-				@rename($tmp, $tmp.'.owned');
-				@rename($foreignTmp, $tmp);
-			}
-			return(true);
-		};
-		try {
-			$this->assertEquals(false, erasedataPublishObsoleteCleanup($job),
-				'a tmp swapped before O_EXCL token creation must keep publication retryable');
-			$this->assertEquals('foreign-tmp', file_get_contents($tmp),
-				'a tmp replacement must survive publication validation');
-			$this->assertTrue(!file_exists($list),
-				'a swapped tmp must not create a token for a foreign transaction');
-		} finally {
-			$erasedataCleanupPublicationPhaseOverride = null;
-		}
+		// The first token identity read happens immediately before the O_EXCL
+		// token creation, so the staged manifest is swapped inside that window.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:1' => array('path' => $list, 'action' => 'replace-entry',
+				'target' => $tmp, 'backup' => $tmp.'.owned', 'replacement' => $foreignTmp,
+				'marker' => $marker),
+		));
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $fixture),
+			'a tmp swapped before O_EXCL token creation must keep publication retryable');
+		$this->assertTrue(is_file($marker),
+			'the scripted tmp swap reaches the pre-token publication window');
+		$this->assertEquals('foreign-tmp', file_get_contents($tmp),
+			'a tmp replacement must survive publication validation');
+		$this->assertTrue(!file_exists($list),
+			'a swapped tmp must not create a token for a foreign transaction');
 
 		$this->reset();
 		$job = $this->prepareCleanupJob($oldHash);
 		$tmp = $job['tmp_path'];
 		$list = $job['list_path'];
 		$foreignToken = $this->dir.'/foreign-publication-token';
+		$marker = $this->dir.'/publication-token-swap.triggered';
 		file_put_contents($foreignToken, 'foreign-token');
-		$erasedataCleanupPublicationPhaseOverride = function($phase) use ($list, $foreignToken) {
-			if($phase === 'after-token')
-			{
-				@rename($list, $list.'.owned');
-				@rename($foreignToken, $list);
-			}
-			return(true);
-		};
-		try {
-			$this->assertEquals(false, erasedataPublishObsoleteCleanup($job),
-				'a token swapped after O_EXCL creation must keep publication retryable');
-			$this->assertEquals('foreign-token', file_get_contents($list),
-				'a token replacement must survive publication validation');
-			$this->assertTrue(is_file($tmp),
-				'a swapped token must retain the strict tmp for a later safe retry');
-		} finally {
-			$erasedataCleanupPublicationPhaseOverride = null;
-		}
+		// The second token identity read validates the token O_EXCL just
+		// created, so the swap lands immediately after creation.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:2' => array('path' => $list, 'action' => 'replace-entry',
+				'backup' => $list.'.owned', 'replacement' => $foreignToken,
+				'marker' => $marker),
+		));
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $fixture),
+			'a token swapped after O_EXCL creation must keep publication retryable');
+		$this->assertTrue(is_file($marker),
+			'the scripted token swap reaches the post-token publication window');
+		$this->assertEquals('foreign-token', file_get_contents($list),
+			'a token replacement must survive publication validation');
+		$this->assertTrue(is_file($tmp),
+			'a swapped token must retain the strict tmp for a later safe retry');
 	}
 
 	public function testCleanupTokenStateMachineConvergesAcrossInterruptedFinalization()
 	{
-		global $erasedataCleanupPublicationPhaseOverride;
 		$this->reset();
 		$oldHash = $this->hash('A');
 		$job = $this->prepareCleanupJob($oldHash);
 		$tmp = $job['tmp_path'];
 		$list = $job['list_path'];
-		$erasedataCleanupPublicationPhaseOverride = function($phase) {
-			return($phase !== 'before-token');
-		};
-		try {
-			$this->assertEquals(false, erasedataPublishObsoleteCleanup($job),
-				'an interruption before token creation must retain only the prepared strict tmp');
-			$this->assertTrue(is_file($tmp) && !file_exists($list),
-				'a PREPARED cleanup state must not expose any partial commit token');
-		} finally {
-			$erasedataCleanupPublicationPhaseOverride = null;
-		}
+		// An occupied token name is observed before creation, so publication
+		// stops while the queue still holds only the prepared manifest.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:1' => array('path' => $list, 'result' => array('exists' => true)),
+		));
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $fixture),
+			'an interruption before token creation must retain only the prepared strict tmp');
+		$this->assertTrue(is_file($tmp) && !file_exists($list),
+			'a PREPARED cleanup state must not expose any partial commit token');
 
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -3937,18 +4322,16 @@ class RemoveWithDataTest extends TestCase
 			$input['replacement_record'], $input['base'], $input['entries']);
 		$tmp = $job['tmp_path'];
 		$list = $job['list_path'];
-		$erasedataCleanupPublicationPhaseOverride = function($phase) {
-			return($phase !== 'after-token');
-		};
-		try {
-			$this->assertEquals(false, erasedataPublishObsoleteCleanup($job),
-				'an interruption immediately after token creation must retain the committed pair');
-			$this->assertTrue(is_file($tmp) && is_file($list) && filesize($list) === 0,
-				'the interrupted commit must have no partial-content publication artifact');
-		} finally {
-			$erasedataCleanupPublicationPhaseOverride = null;
-		}
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		// The post-creation token validation cannot read the token it just
+		// created, so publication stops with the committed pair on disk.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:2' => array('path' => $list, 'result' => false),
+		));
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $fixture),
+			'an interruption immediately after token creation must retain the committed pair');
+		$this->assertTrue(is_file($tmp) && is_file($list) && filesize($list) === 0,
+			'the interrupted commit must have no partial-content publication artifact');
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a committed tmp-plus-token retry must not crash: '.$output);
 		$this->assertTrue(!file_exists($tmp) && !file_exists($list),
 			'a successful collector must unlink the manifest before its token');
@@ -3963,7 +4346,7 @@ class RemoveWithDataTest extends TestCase
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$list = substr($tmp, 0, -4).'.list';
 		unlink($tmp);
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a token-only finalization retry must not crash: '.$output);
 		$this->assertTrue(!file_exists($list) && is_file($old),
 			'a token-only FINALIZING state must converge without deleting an unproven target');
@@ -3980,12 +4363,12 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'commitTokenUnlinkFail' => $token, 'debug' => true));
 		$this->assertEquals(0, $status, 'a token-unlink interruption must not crash collection: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && is_file($token),
 			'the post-tmp-unlink crash window must retain only the exact FINALIZING token');
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a FINALIZING token retry must not crash: '.$output);
 		$this->assertTrue(!file_exists($token),
 			'a repeated collector run must converge the token-only finalization state');
@@ -4004,7 +4387,7 @@ class RemoveWithDataTest extends TestCase
 		$token = substr($tmp, 0, -4).'.list';
 		unlink($tmp);
 
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array('debug' => true));
+		list($status, $output) = $this->runCollector(array('debug' => true));
 		$this->assertEquals(0, $status, 'a token-only finalization must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($token) && is_file($old),
 			'a token-only finalization must consume only its exact commit token');
@@ -4026,7 +4409,7 @@ class RemoveWithDataTest extends TestCase
 		$list = substr($tmp, 0, -4).'.list';
 		$foreign = $this->dir.'/foreign-token';
 		file_put_contents($foreign, 'foreign-token');
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'swap' => array($list, $foreign, 'rename'), 'debug' => true));
 		$this->assertEquals(0, $status, 'a token swap during cleanup must not crash: '.$output);
 		$this->assertEquals('foreign-token', file_get_contents($list),
@@ -4057,13 +4440,16 @@ class RemoveWithDataTest extends TestCase
 		$otherTmp = $this->writeCleanupCollectorManifest($otherOldHash, $otherNewHash, $otherBase, array($otherOld), 'tmp');
 		$generation[$otherOldHash] = array('presence' => $unknown);
 		$indexCount = $this->dir.'/index-count';
-		list($status, $output) = $this->runCollectorWithOptions(true, false, array(''), array(
+		list($status, $output) = $this->runCollector(array(
 			'generation' => $generation, 'captureLogs' => true, 'indexCountFile' => $indexCount));
 		$this->assertEquals(0, $status, 'a default-visible retained cleanup job must not crash: '.$output);
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' rpc-unknown', $this->collectorLogs($output), true),
 			'a retained cleanup reason must remain visible with shipped debug logging disabled');
-		$this->assertEquals(array('1'), is_file($indexCount) ? file($indexCount, FILE_IGNORE_NEW_LINES) : array(),
-			'one collector invocation must build exactly one queue index instead of rescanning two jobs');
+		// Two enumerations of the queue directory per pass and no more: one to
+		// resume captured entries, one to build the index. Rebuilding the index
+		// per job -- the regression this pins -- would add one line per job.
+		$this->assertEquals(array('1', '1'), is_file($indexCount) ? file($indexCount, FILE_IGNORE_NEW_LINES) : array(),
+			'one collector invocation enumerates the queue directory exactly twice instead of rescanning it per job');
 		$this->assertTrue(is_file($tmp) && is_file($otherTmp),
 			'every rpc-unknown prepared generation must remain durable after the single indexed scan');
 	}
@@ -4082,7 +4468,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($neighbor, 'keep');
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$list = substr($tmp, 0, -4).'.list';
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'a nonempty cleanup parent must not crash completion: '.$output);
 		$this->assertTrue(!file_exists($old) && is_file($neighbor) && is_dir($nested)
 			&& !file_exists($tmp) && !file_exists($list),
@@ -4158,7 +4544,6 @@ class RemoveWithDataTest extends TestCase
 
 	public function testSharedWriterRemovesPartialWriteArtifact()
 	{
-		global $erasedataManifestWriteOverride;
 		$this->reset();
 		$hash = $this->hash('A');
 		$contents = $this->cleanupWriterContents($hash);
@@ -4166,18 +4551,13 @@ class RemoveWithDataTest extends TestCase
 			'the shared staged writer must clean up incomplete writes');
 		if(!function_exists('erasedataWriteStagedManifest'))
 			return;
-		$erasedataManifestWriteOverride = function($path, $bytes) {
-			file_put_contents($path, $bytes);
-			return(strlen($bytes) - 1);
-		};
-		try {
-			$this->assertEquals(false, erasedataWriteStagedManifest($this->dir.'/erasedata', $hash, $contents, 'cleanup'),
-				'a short write must fail staging');
-			$this->assertEquals(array(), glob($this->dir.'/erasedata/'.$hash.'.cleanup.*.tmp'),
-				'a failed short write must remove only its partial artifact');
-		} finally {
-			$erasedataManifestWriteOverride = null;
-		}
+		// The stalling queue wrapper leaves a real partial artifact behind.
+		ErasedataPartialWriteStream::register();
+		$stalling = ErasedataPartialWriteStream::SCHEME.'://'.$this->dir.'/erasedata';
+		$this->assertEquals(false, erasedataWriteStagedManifest($stalling, $hash, $contents, 'cleanup'),
+			'a short write must fail staging');
+		$this->assertEquals(array(), glob($this->dir.'/erasedata/'.$hash.'.cleanup.*.tmp'),
+			'a failed short write must remove only its partial artifact');
 	}
 
 	private function cleanupJobInput($oldHash, $newHash = null)
@@ -4397,26 +4777,26 @@ class RemoveWithDataTest extends TestCase
 
 	public function testCleanupPrepareFailureReleasesLockWithoutArtifact()
 	{
-		global $erasedataManifestWriteOverride;
 		$this->reset();
 		$oldHash = $this->hash('A');
 		$this->assertTrue(function_exists('erasedataPrepareObsoleteCleanup'),
 			'cleanup preparation must release its lock after a staging failure');
 		if(!function_exists('erasedataPrepareObsoleteCleanup'))
 			return;
-		$erasedataManifestWriteOverride = function($path, $bytes) {
-			file_put_contents($path, $bytes);
-			return(0);
-		};
+		// A read-only queue directory refuses the staged write while the
+		// pre-created persistent hash lock still opens.
+		file_put_contents($this->dir.'/erasedata/'.$oldHash.'.lock', '');
+		@chmod($this->dir.'/erasedata', 0555);
 		try {
 			$this->assertEquals(false, $this->prepareCleanupJob($oldHash), 'a failed staged write must fail preparation');
 			$this->assertEquals(array(), glob($this->dir.'/erasedata/'.$oldHash.'.cleanup.*.tmp'), 'failed preparation must not retain a partial cleanup artifact');
+			@chmod($this->dir.'/erasedata', 0777);
 			$contender = erasedataAcquireHashLock($this->dir.'/erasedata', $oldHash, true);
 			$this->assertTrue(is_resource($contender), 'failed preparation must release the old-hash lock');
 			if(is_resource($contender))
 				erasedataReleaseHashLock($contender);
 		} finally {
-			$erasedataManifestWriteOverride = null;
+			@chmod($this->dir.'/erasedata', 0777);
 		}
 	}
 
@@ -4494,7 +4874,7 @@ class RemoveWithDataTest extends TestCase
 		@mkdir($base, 0777, true);
 		file_put_contents($file, 'data');
 		$this->writeLegacyManifestLines($hash.'.list', array($file), $base, 1, 1);
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null);
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'collector must exit 0: '.$output);
 		$this->assertTrue(!file_exists($file), 'listed file must be deleted');
 		$this->assertEquals(false, $this->onlyManifest($hash), 'legacy manifest must be consumed');
@@ -4511,7 +4891,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($listed, 'data');
 		file_put_contents($unlisted, 'unlisted-data');
 		$this->writeLegacyManifestLines($hash.'.list', array($listed), $base, 1, 2);
-		list($status, $output) = $this->runCollector(true, false, array(''), null, null);
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'collector must exit 0: '.$output);
 		$this->assertTrue(!file_exists($listed), 'listed file must be deleted');
 		$this->assertTrue(file_exists($unlisted), 'unlisted file under legacy force 2 must survive (no whole-tree recursion)');
@@ -4526,7 +4906,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($data, 'keep-me');
 		$badJson = "{\n/victim\n1\n2\n";
 		file_put_contents($this->dir.'/erasedata/'.$hash.'.list', $badJson);
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, null);
+		list($status, $output) = $this->runCollector(array('val' => array($hash)));
 		$this->assertEquals(0, $status, 'collector must exit 0: '.$output);
 		$this->assertTrue(file_exists($data), 'data must not be deleted by malformed JSON');
 		$this->assertEquals($badJson, file_get_contents($this->dir.'/erasedata/'.$hash.'.list'), 'malformed manifest must be preserved byte-for-byte');
@@ -4546,7 +4926,7 @@ class RemoveWithDataTest extends TestCase
 			'force' => 1
 		))."\n";
 		file_put_contents($this->dir.'/erasedata/'.$hash.'.list', $badManifest);
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, null);
+		list($status, $output) = $this->runCollector(array('val' => array($hash)));
 		$this->assertEquals(0, $status, 'collector exits 0: '.$output);
 		$this->assertEquals($badManifest, file_get_contents($this->dir.'/erasedata/'.$hash.'.list'), 'non-canonical base64 manifest retained byte-for-byte');
 	}
@@ -4562,7 +4942,7 @@ class RemoveWithDataTest extends TestCase
 			'files' => array('/d/single.bin'),
 		), "1");
 		file_put_contents($this->dir.'/erasedata/'.$hash.'.list', $manifest);
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, null);
+		list($status, $output) = $this->runCollector(array('val' => array($hash)));
 		$this->assertEquals(0, $status, 'collector exits 0: '.$output);
 		$this->assertEquals($manifest, file_get_contents($this->dir.'/erasedata/'.$hash.'.list'), 'hash mismatch manifest retained byte-for-byte');
 	}
@@ -4583,7 +4963,7 @@ class RemoveWithDataTest extends TestCase
 		$noncanonical = json_encode($decoded, JSON_UNESCAPED_SLASHES)."\n";
 		file_put_contents($this->dir.'/erasedata/'.$hash.'.list', $noncanonical);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'collector exits normally for noncanonical hash: '.$output);
 		$this->assertEquals('keep-me', is_file($data) ? file_get_contents($data) : null,
 			'lowercase manifest hash cannot authorize deletion');
@@ -4607,16 +4987,15 @@ class RemoveWithDataTest extends TestCase
 			'force' => 1
 		))."\n";
 		file_put_contents($this->dir.'/erasedata/'.$hash.'.list', $hugeManifest);
-		list($status, $output) = $this->runCollector(true, false, array($hash), null, null);
+		list($status, $output) = $this->runCollector(array('val' => array($hash)));
 		$this->assertEquals(0, $status, 'collector exits 0: '.$output);
 		$this->assertEquals($hugeManifest, file_get_contents($this->dir.'/erasedata/'.$hash.'.list'), 'oversize manifest retained byte-for-byte');
 	}
 
 	private function runCollectorWithFault($ok, $fault, $val, $faultString = '')
 	{
-		return($this->runCollector(
-			$ok, $fault, $val, null, null, null, null, null, null,
-			null, null, null, null, null, null, null, null, null, $faultString));
+		return($this->runCollector(array(
+			'ok' => $ok, 'fault' => $fault, 'val' => $val, 'faultString' => $faultString)));
 	}
 
 	public function testConfirmedMissingHashFaultIsAbsentAndPermitsCollection()
@@ -4639,7 +5018,7 @@ class RemoveWithDataTest extends TestCase
 		$data = $this->dir.'/data-transport-fail.bin';
 		file_put_contents($data, 'keep-me');
 		$this->writeManifest($hash.'.list', $data);
-		list($status, $output) = $this->runCollector(false, false, array());
+		list($status, $output) = $this->runCollector(array('ok' => false, 'val' => array()));
 		$this->assertEquals(0, $status, 'collector exits 0 on transport failure: '.$output);
 		$this->assertTrue(file_exists($data), 'data must be retained on transport failure');
 		$this->assertTrue(is_file($this->onlyManifest($hash)), 'manifest must be retained on transport failure');
@@ -4679,7 +5058,7 @@ class RemoveWithDataTest extends TestCase
 		$data = $this->dir.'/data-malformed-clean.bin';
 		file_put_contents($data, 'keep-me');
 		$this->writeManifest($hash.'.list', $data);
-		list($status, $output) = $this->runCollector(true, false, array($hash, 'EXTRA_CARDINALITY'));
+		list($status, $output) = $this->runCollector(array('val' => array($hash, 'EXTRA_CARDINALITY')));
 		$this->assertEquals(0, $status, 'collector exits 0 on malformed cardinality: '.$output);
 		$this->assertTrue(file_exists($data), 'data must be retained on malformed clean response');
 		$this->assertTrue(is_file($this->onlyManifest($hash)), 'manifest must be retained on malformed clean response');
@@ -4693,7 +5072,7 @@ class RemoveWithDataTest extends TestCase
 		$data = $this->dir.'/data-wrong-clean.bin';
 		file_put_contents($data, 'keep-me');
 		$this->writeManifest($hash.'.list', $data);
-		list($status, $output) = $this->runCollector(true, false, array($wrong));
+		list($status, $output) = $this->runCollector(array('val' => array($wrong)));
 		$this->assertEquals(0, $status, 'collector exits 0 on wrong clean hash: '.$output);
 		$this->assertTrue(file_exists($data), 'data must be retained on wrong clean hash');
 		$this->assertTrue(is_file($this->onlyManifest($hash)), 'manifest must be retained on wrong clean hash');
@@ -4825,13 +5204,12 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($replacement, 'replacement-bytes');
 		$this->writeManifest($hash.'.list', $path);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_before_capture',
-			'path' => $path,
-			'replacement' => $replacement,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $path, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'unlink:1' => array('path' => $path, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'regular-file race collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted regular-file swap reached the production mutation boundary');
@@ -4857,13 +5235,12 @@ class RemoveWithDataTest extends TestCase
 		$original = file_get_contents($manifest);
 		file_put_contents($replacement, 'replacement-obligation');
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_manifest_before_mutation',
-			'path' => $manifest,
-			'replacement' => $replacement,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $manifest, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'unlink:1' => array('path' => $manifest, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'manifest race collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker),
@@ -4890,13 +5267,12 @@ class RemoveWithDataTest extends TestCase
 
 		$this->writeManifestLines($hash.'.list', array($base.'/orig.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_before_capture',
-			'path' => $base,
-			'replacement' => $replacement,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'unlink:1' => array('path' => $base, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'forced-root race collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted root swap reached the production capture boundary');
@@ -4921,13 +5297,10 @@ class RemoveWithDataTest extends TestCase
 
 		$this->writeManifestLines($hash.'.list', array($base.'/orig.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_to_symlink_before_capture',
-			'path' => $base,
-			'symlinkTarget' => $external,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+				'backup' => $backup, 'symlink_target' => $external, 'marker' => $marker),
+		)));
 		$this->assertEquals(0, $status, 'forced symlink race collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted symlink swap reached the production capture boundary');
 		$this->assertTrue(file_exists($external.'/sentinel.txt'), 'external sentinel must survive symlinked forced root');
@@ -4950,7 +5323,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->writeManifest($hash.'.list', $dangling);
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'collector exits 0: '.$output);
 		$this->assertTrue(!is_link($dangling), 'dangling symlink entry must be unlinked');
 		$this->assertEquals(false, $this->onlyManifest($hash), 'manifest must be consumed after unlinking dangling symlink');
@@ -4970,13 +5343,14 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($replacement, 'replacement-child');
 		$this->writeManifestLines($hash.'.list', array($child), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'nested_swap_after_scan',
-			'child' => basename($child),
-			'replacement' => $replacement,
-			'backup' => $backup,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('basename' => basename($child),
+				'after_scan' => basename($child), 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'unlink:1' => array('basename' => basename($child),
+				'after_scan' => basename($child), 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'nested-child race collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted child swap happened after its parent scan');
@@ -4999,12 +5373,11 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($base.'/original.bin', 'original');
 		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'recreate_public_after_capture',
-			'path' => $base,
-			'sentinel' => 'recreated-public',
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $base, 'action' => 'recreate', 'at' => 'after',
+				'content' => array('name' => 'sentinel.bin', 'bytes' => 'recreated-public'),
+				'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'public-recreation collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted recreation happened after atomic root capture');
@@ -5028,12 +5401,12 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($replacement.'/replacement.bin', 'replacement');
 		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'swap_before_capture',
-			'path' => $base,
-			'replacement' => $replacement,
-			'backup' => $backup,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement),
+			'unlink:1' => array('path' => $base, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement),
+		)));
 
 		$this->assertEquals(0, $status, 'capture-mismatch collector exits normally: '.$output);
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
@@ -5055,11 +5428,10 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($base.'/data.bin', 'captured-data');
 		$this->writeManifestLines($hash.'.list', array($base.'/data.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'crash_after_capture',
-			'path' => $base,
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $base, 'action' => 'exit',
+				'at' => 'after', 'marker' => $marker),
+		)));
 		$this->assertEquals(0, $status, 'capture-crash worker exits at the scripted boundary: '.$output);
 		$this->assertTrue(is_file($marker), 'the worker exited only after atomic capture completed');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
@@ -5067,7 +5439,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(1, count(glob($this->dir.'/.erasedata-rmdir-*')),
 			'capture crash leaves one discoverable reservation');
 
-		list($status, $output) = $this->runCollector(true, false, array(''));
+		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'capture-crash retry exits normally: '.$output);
 		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
 			'retry removes the exact captured tree and private reservation');
@@ -5087,10 +5459,9 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($base.'/data.bin', 'reference-data');
 		$this->writeManifestLines($hash.'.list', array($base.'/data.bin'), $base, 1, 2);
 
-		list($status, $output) = $this->runCollectorWithFilesystem(array(
-			'action' => 'directory_reference_unavailable',
-			'marker' => $marker,
-		));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'openDirectoryReference:*' => array('result' => false, 'marker' => $marker),
+		)));
 
 		$this->assertEquals(0, $status, 'unavailable-reference collector exits normally: '.$output);
 		$this->assertTrue(is_file($marker), 'the scripted safe-reference refusal reached production traversal');
@@ -5099,5 +5470,673 @@ class RemoveWithDataTest extends TestCase
 			'no data is deleted without an identity-bound directory reference');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
 			'safe-reference uncertainty retains the manifest');
+	}
+	// -- S02 characterization: import safety and scripted operations --------
+
+	// Requiring collector.php must define symbols and nothing else, so the
+	// probe runs in a fresh process and reports every observable effect.
+	public function testContainmentRefusesEveryPathThatCouldClimbOutOfItsBase()
+	{
+		// isUnderBase() compares STRINGS. It never resolves the path, so its
+		// whole soundness rests on isValidAbsolutePath() having already refused
+		// any component that could climb -- and that refusal was covered by
+		// nothing: deleting the '..' half left the entire harness green.
+		//
+		// The escape it lets through is not subtle. A manifest naming
+		// base=/data/torrents/movie with a file of
+		// /data/torrents/movie/../../../etc/shadow passes a lexical prefix test
+		// exactly, and the collector is then handed a path outside the base it
+		// was told to stay inside.
+		$base = '/data/torrents/movie';
+		$escape = $base.'/../../../etc/shadow';
+		$this->assertTrue(!ErasedataManifestCodec::isValidAbsolutePath($escape),
+			'a path with a climbing component is not a valid absolute path');
+		$this->assertTrue(!ErasedataManifestCodec::isUnderBase($escape, $base),
+			'and containment refuses it, even though its string prefix matches');
+
+		foreach(array(
+			'climb at the end' => $base.'/..',
+			'climb in the middle' => $base.'/../movie/file.mkv',
+			'climb first' => '/../etc/shadow',
+			'self-reference' => $base.'/./file.mkv',
+			'self-reference alone' => $base.'/.',
+			'double climb' => $base.'/../../file.mkv',
+		) as $label => $path)
+			$this->assertTrue(!ErasedataManifestCodec::isUnderBase($path, $base),
+				'containment refuses '.$label.': '.$path);
+
+		// The other half of the pair: ordinary paths must still be admitted, or
+		// a guard that refuses everything would pass the rows above and delete
+		// nothing for anybody.
+		foreach(array(
+			'a file directly under the base' => $base.'/file.mkv',
+			'a file in a subdirectory' => $base.'/season 1/file.mkv',
+			'a name that merely contains dots' => $base.'/file..mkv',
+			'a name that is three dots' => $base.'/.../file.mkv',
+			'a hidden file' => $base.'/.nfo',
+			'the base itself' => $base,
+		) as $label => $path)
+			$this->assertTrue(ErasedataManifestCodec::isUnderBase($path, $base),
+				'containment admits '.$label.': '.$path);
+
+		// And a sibling whose name merely starts with the base is not under it.
+		$this->assertTrue(!ErasedataManifestCodec::isUnderBase($base.'-other/file.mkv', $base),
+			'a sibling directory sharing the base as a name prefix is not contained');
+
+		// Admitted, and correctly so: an empty component and a trailing slash
+		// both resolve to the same file, so neither escapes anything. Written
+		// down because the obvious guess is that they are refused -- I made it
+		// myself, and the test corrected me rather than the code.
+		foreach(array(
+			'an empty component' => $base.'//file.mkv',
+			'a trailing slash' => $base.'/file.mkv/',
+		) as $label => $path)
+			$this->assertTrue(ErasedataManifestCodec::isUnderBase($path, $base),
+				'containment admits '.$label.', which resolves to the same file: '.$path);
+	}
+
+	public function testOnlyACliInvocationOfTheEntryPointItselfMayStartTheCollector()
+	{
+		// The SAPI half of this guard is the headline of the commit that added
+		// it -- plugins live under the document root, so an unauthenticated
+		// request for /plugins/erasedata/update.php satisfies the path test
+		// exactly -- and no test could reach it while it was an inline
+		// condition, because the suite has no non-CLI SAPI to run under.
+		// Measured: deleting `PHP_SAPI === 'cli' &&` left the whole harness
+		// green.
+		$file = realpath(__DIR__.'/../../../plugins/erasedata/update.php');
+		$this->assertTrue(is_string($file) && $file !== '',
+			'the entry point this predicate defends must exist to be defended');
+
+		$this->assertTrue(erasedataMayStartCollector('cli', $file, $file),
+			'the scheduler, which is CLI and names this file, is admitted');
+
+		foreach(array('cli-server', 'fpm-fcgi', 'cgi-fcgi', 'apache2handler',
+			'litespeed', 'phpdbg', '', 'CLI') as $sapi)
+			$this->assertTrue(!erasedataMayStartCollector($sapi, $file, $file),
+				'the '.($sapi === '' ? 'empty' : $sapi)
+					.' SAPI may not start the collector even naming this file');
+
+		$other = realpath(__DIR__.'/../../../plugins/erasedata/removewithdata.php');
+		$this->assertTrue(!erasedataMayStartCollector('cli', $other, $file),
+			'a CLI script that merely requires this file does not start the collector');
+		foreach(array(null, '', false, 0, array(), $file.'.missing') as $script)
+			$this->assertTrue(!erasedataMayStartCollector('cli', $script, $file),
+				'an absent or unresolvable SCRIPT_FILENAME starts nothing');
+	}
+
+	private function collectorImportProbe()
+	{
+		$token = bin2hex(random_bytes(6));
+		$scenarioFile = sys_get_temp_dir().'/erasedata-import-'.$token.'.json';
+		$logFile = sys_get_temp_dir().'/erasedata-import-log-'.$token.'.json';
+		file_put_contents($scenarioFile, json_encode(array(
+			'mode' => 'import',
+			'settings' => $this->dir,
+			'profileMask' => 0777,
+			'debug' => true,
+			'onlyHash' => null,
+			'publicCollectorHash' => null,
+			'indexCountFile' => null,
+			'source' => false,
+			'responses' => array(),
+			'scenario' => array(),
+			'logFile' => $logFile,
+		)));
+		$runner = realpath(__DIR__.'/CollectorFixture.php');
+		$output = array();
+		$status = 0;
+		exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 -f '.escapeshellarg($runner)
+			.' -- '.escapeshellarg($scenarioFile).' 2>&1', $output, $status);
+		$observed = is_file($logFile) ? json_decode(file_get_contents($logFile), true) : null;
+		@unlink($scenarioFile);
+		@unlink($logFile);
+		clearstatcache();
+		return(array('status' => $status, 'output' => implode("\n", $output),
+			'observed' => $observed));
+	}
+
+	public function testRequiringTheCollectorSourcePerformsNoWork()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$data = $this->dir.'/import-safety.bin';
+		$list = $this->dir.'/erasedata/'.$hash.'.list';
+		file_put_contents($data, 'import-safety');
+		$this->writeManifest($hash.'.list', $data);
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+
+		$probe = $this->collectorImportProbe();
+		$observed = $probe['observed'];
+
+		$this->assertEquals(0, $probe['status'],
+			'requiring the collector source must not fail: '.$probe['output']);
+		$this->assertTrue(is_array($observed),
+			'the import probe must report observations: '.$probe['output']);
+		if(!is_array($observed))
+			return;
+		$this->assertTrue(!empty($observed['collector']),
+			'requiring collector.php defines the importable ErasedataCollector service');
+		$this->assertEquals(array(), $observed['rpc'],
+			'requiring collector.php performs zero XMLRPC work');
+		$this->assertEquals(array(), $observed['erased'],
+			'requiring collector.php erases nothing');
+		$this->assertEquals(array(), $observed['log'],
+			'requiring collector.php writes no log line even with debug logging enabled');
+		$this->assertTrue($observed['lock'] === false,
+			'requiring collector.php acquires no scheduler lock');
+		$this->assertEquals($observed['before'], $observed['after'],
+			'requiring collector.php mutates no queue entry');
+		$this->assertEquals('import-safety', is_file($data) ? file_get_contents($data) : null,
+			'requiring collector.php deletes no payload byte');
+		$this->assertTrue(is_file($list), 'requiring collector.php consumes no manifest');
+	}
+
+	public function testScriptedOperationOrdinalAndForcedResultAreExact()
+	{
+		$this->reset();
+		$first = $this->dir.'/ordinal-first.bin';
+		$second = $this->dir.'/ordinal-second.bin';
+		file_put_contents($first, 'first');
+		file_put_contents($second, 'second');
+
+		$fixture = new ErasedataCollectorFixture(array(
+			'unlink:2' => array('result' => false),
+		));
+		$this->assertTrue($fixture->unlink($first) === true,
+			'the first scripted unlink ordinal reaches the real filesystem');
+		$this->assertTrue($fixture->unlink($second) === false,
+			'the second scripted unlink ordinal returns its forced result');
+		$this->assertTrue(!file_exists($first) && is_file($second),
+			'only the unscripted ordinal deletes, so the scenario is exact per ordinal');
+	}
+
+	public function testScriptedOperationsReproduceTheIdentitySwapRefusal()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$path = $this->dir.'/scripted-race.bin';
+		$replacement = $this->dir.'/scripted-replacement.bin';
+		$backup = $this->dir.'/scripted-original.checked';
+		$marker = $this->dir.'/scripted-race.triggered';
+		file_put_contents($path, 'original-bytes');
+		file_put_contents($replacement, 'replacement-bytes');
+		$this->writeManifest($hash.'.list', $path);
+
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $path, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+			'unlink:1' => array('path' => $path, 'action' => 'replace-entry',
+				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
+		)));
+
+		$this->assertEquals(0, $status, 'the scripted operation run exits normally: '.$output);
+		$this->assertTrue(is_file($marker),
+			'the scripted swap reaches the production mutation boundary');
+		$this->assertEquals('replacement-bytes', is_file($path) ? file_get_contents($path) : null,
+			'identity-bound deletion refuses the replacement installed at the public name');
+		$this->assertEquals('original-bytes', is_file($backup) ? file_get_contents($backup) : null,
+			'the captured inode stays isolated outside the public name');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the scripted identity swap retains the exact manifest');
+	}
+
+	// -- S03 equivalence matrices -------------------------------------------
+	//
+	// Each matrix asserts the observable answer of one primitive family on a
+	// fixed table of rows: the return value plus what survives on disk. No row
+	// names the function that produced the answer, so a consolidated
+	// implementation is accepted only when it reproduces the whole table.
+
+	// Owned-path overlap.
+	private function ownershipAnswers($path, $ownedPaths)
+	{
+		return(array(
+			'erasedataPathTouchesOwnedPaths'
+				=> erasedataPathTouchesOwnedPaths($path, $ownedPaths),
+		));
+	}
+
+	private function assertOwnershipRow($label, $path, $ownedPaths, $expected)
+	{
+		foreach($this->ownershipAnswers($path, $ownedPaths) as $name => $answer)
+			$this->assertTrue($answer === $expected, $label.': '.$name.' answers '
+				.($expected ? 'touches an owned path' : 'touches no owned path'));
+	}
+
+	private function ownedSet($files, $base)
+	{
+		return(array('files' => $files, 'base' => $base));
+	}
+
+	public function testOwnedPathOverlapMatrix()
+	{
+		$this->reset();
+		$root = $this->dir.'/ownership';
+		mkdir($root.'/tree/nested', 0777, true);
+		mkdir($root.'/name');
+		mkdir($root.'/name2');
+		$file = $root.'/tree/nested/payload.bin';
+		file_put_contents($file, 'payload');
+		file_put_contents($root.'/name/keep.bin', 'keep');
+		file_put_contents($root.'/name2/other.bin', 'other');
+		symlink($root.'/tree', $root.'/tree-alias');
+		symlink($root.'/absent-target', $root.'/dangling-alias');
+
+		$this->assertOwnershipRow('file/file', $file,
+			$this->ownedSet(array($file), $root.'/name2'), true);
+		$this->assertOwnershipRow('directory contains file', $file,
+			$this->ownedSet(array(), $root.'/tree'), true);
+		$this->assertOwnershipRow('file under directory', $root.'/tree',
+			$this->ownedSet(array($file), $root.'/name2'), true);
+		$this->assertOwnershipRow('component prefix collision', $root.'/name2/other.bin',
+			$this->ownedSet(array(), $root.'/name'), false);
+		$this->assertOwnershipRow('component prefix collision, directories',
+			$root.'/name2', $this->ownedSet(array($root.'/name/keep.bin'), $root.'/name'),
+			false);
+		$this->assertOwnershipRow('symlink path aliases an owned real directory',
+			$root.'/tree-alias', $this->ownedSet(array(), $root.'/tree'), true);
+		$this->assertOwnershipRow('real path aliases an owned symlink',
+			$root.'/tree', $this->ownedSet(array($root.'/tree-alias'), $root.'/name2'), true);
+		$this->assertOwnershipRow('unresolved existing path is fail-closed',
+			$root.'/dangling-alias', $this->ownedSet(array(), $root.'/name'), true);
+		$this->assertOwnershipRow('no owned candidate', $file, array(), false);
+		$this->assertOwnershipRow('non-string base is not a candidate', $file,
+			$this->ownedSet(array(), null), false);
+		$this->assertOwnershipRow('unrelated tree', $root.'/tree',
+			$this->ownedSet(array(), $root.'/name2'), false);
+	}
+
+	// Identity-bound deletion of one captured entry.
+	private function unlinkImplementations($withUnknownIdentity)
+	{
+		return(array(
+			'unlinkCapturedEntry' => function($path, $identity, $filesystem) {
+				return($filesystem->unlinkCapturedEntry(
+					$path, $identity, 'manifest-consumption'));
+			},
+		));
+	}
+
+	private function assertUnlinkRow($label, $build, $identityOf, $expected,
+		$survivingBytes, $retainedRoots = 0)
+	{
+		$ordinal = 0;
+		foreach($this->unlinkImplementations($identityOf === null) as $name => $unlink)
+		{
+			$ordinal++;
+			$root = $this->dir.'/unlink-row-'.$ordinal;
+			$this->removePath($root);
+			mkdir($root, 0777, true);
+			$filesystem = new ErasedataCollectorFixture(array());
+			$path = $build($root, $filesystem);
+			$identity = $identityOf === null ? null : $identityOf($path, $filesystem);
+			$result = $unlink($path, $identity, $filesystem);
+			$this->assertTrue($result === $expected, $label.': '.$name.' returns '
+				.($expected ? 'true' : 'false'));
+			$this->assertEquals($survivingBytes,
+				is_file($path) ? file_get_contents($path) : null,
+				$label.': '.$name.' leaves exactly the expected bytes at the public name');
+			$roots = glob($root.'/.erasedata-entry-*');
+			$this->assertEquals($retainedRoots, is_array($roots) ? count($roots) : 0,
+				$label.': '.$name.' leaves exactly '.$retainedRoots
+				.' private capture root(s) behind');
+			$this->removePath($root);
+		}
+	}
+
+	public function testCapturedEntryUnlinkMatrix()
+	{
+		$captured = function($path, $filesystem) {
+			return($filesystem->entryIdentity($path));
+		};
+		$this->reset();
+
+		$this->assertUnlinkRow('captured identity', function($root, $filesystem) {
+			$path = $root.'/payload.bin';
+			file_put_contents($path, 'payload');
+			return($path);
+		}, $captured, true, null);
+
+		$this->assertUnlinkRow('replaced inode', function($root, $filesystem) {
+			$path = $root.'/replaced.bin';
+			file_put_contents($path, 'original');
+			return($path);
+		}, function($path, $filesystem) {
+			$stale = $filesystem->entryIdentity($path);
+			// Allocate the impostor WHILE the victim is still alive, then move
+			// it over the name. Unlinking first and recreating frees the inode,
+			// and an idle filesystem hands the same number straight back -- the
+			// container image does exactly that on /config, /data and /tmp,
+			// which made this row pass on a busy host and fail everywhere else.
+			// Production never has that ambiguity: the capture protocol renames
+			// the entry into its private root, so the captured inode stays
+			// alive and a replacement cannot collide with it.
+			$impostor = $path.'.impostor';
+			file_put_contents($impostor, 'replacement');
+			@unlink($path);
+			rename($impostor, $path);
+			$fresh = $filesystem->entryIdentity($path);
+			$this->assertTrue(is_array($fresh) && is_array($stale)
+				&& erasedataEntryIdentityParts($fresh) !== erasedataEntryIdentityParts($stale),
+				'replaced inode: the fixture really did install a different inode');
+			return($stale);
+		}, false, 'replacement', 1);
+
+		$this->assertUnlinkRow('unknown identity, absent name',
+			function($root, $filesystem) {
+				return($root.'/absent.bin');
+			}, null, true, null);
+
+		$this->assertUnlinkRow('unknown identity, existing name',
+			function($root, $filesystem) {
+				$path = $root.'/present.bin';
+				file_put_contents($path, 'present');
+				return($path);
+			}, null, false, 'present');
+	}
+
+	// Private-container cleanup.
+	private function cleanupRemovers()
+	{
+		return(array(
+			'removePrivateContainer' => function($root, $allowed, $filesystem) {
+				return($filesystem->removePrivateContainer($root, $allowed));
+			},
+			'recovery capture container' => function($root, $allowed, $filesystem) {
+				return($this->removeRecoveryCaptureContainer($root, $filesystem));
+			},
+			'recovery reservation container' => function($root, $allowed, $filesystem) {
+				return($this->removeRecoveryReservationContainer($root, $filesystem));
+			},
+		));
+	}
+
+	// Builds one private protocol container. $entries maps a name to 'file',
+	// 'directory' or a symlink target.
+	private function makePrivateContainer($name, $marker = 'file', array $entries = array())
+	{
+		$root = $this->dir.'/'.$name;
+		$this->removePath($root);
+		mkdir($root, 0700);
+		if($marker === 'file')
+			file_put_contents($root.'/.initialized', '');
+		else if($marker === 'symlink')
+			symlink($this->dir.'/marker-victim.bin', $root.'/.initialized');
+		foreach($entries as $entry => $kind)
+		{
+			if($kind === 'file')
+				file_put_contents($root.'/'.$entry, 'unexpected');
+			else if($kind === 'directory')
+				mkdir($root.'/'.$entry);
+			else
+				symlink($kind, $root.'/'.$entry);
+		}
+		return($root);
+	}
+
+	private function containerEntries($root)
+	{
+		clearstatcache();
+		$entries = @scandir($root);
+		if(!is_array($entries))
+			return(false);
+		$entries = array_values(array_diff($entries, array('.', '..')));
+		sort($entries, SORT_STRING);
+		return($entries);
+	}
+
+	// $survivors is null when the row must remove the container outright.
+	private function assertCleanupRow($label, $marker, array $entries, $expected,
+		$survivors, array $scenario = array())
+	{
+		$ordinal = 0;
+		foreach($this->cleanupRemovers() as $name => $remover)
+		{
+			$ordinal++;
+			$root = $this->makePrivateContainer('cleanup-row-'.$ordinal, $marker, $entries);
+			$filesystem = new ErasedataCollectorFixture($scenario);
+			$result = $remover($root, array('.', '..', '.initialized'), $filesystem);
+			$this->assertTrue($result === $expected, $label.': '.$name.' returns '
+				.($expected ? 'true' : 'false'));
+			$this->assertTrue(erasedataPathExists($root) === ($survivors !== null),
+				$label.': '.$name.' '.($survivors === null ? 'removes' : 'retains')
+				.' the container');
+			if($survivors !== null)
+			{
+				$expectedEntries = $survivors;
+				sort($expectedEntries, SORT_STRING);
+				$this->assertEquals($expectedEntries, $this->containerEntries($root),
+					$label.': '.$name.' leaves exactly the entries it may not delete');
+			}
+			$this->removePath($root);
+		}
+	}
+
+	public function testPrivateContainerCleanupMatrix()
+	{
+		$this->reset();
+		$victim = $this->dir.'/marker-victim.bin';
+		file_put_contents($victim, 'victim-bytes');
+
+		$this->assertCleanupRow('marker only', 'file', array(), true, null);
+		$this->assertCleanupRow('unknown entry', 'file',
+			array('unexpected.bin' => 'file'), false,
+			array('.initialized', 'unexpected.bin'));
+		$this->assertCleanupRow('unknown directory entry', 'file',
+			array('payload' => 'directory'), false,
+			array('.initialized', 'payload'));
+		$this->assertCleanupRow('marker collision', 'symlink', array(), false,
+			array('.initialized'));
+		$this->assertCleanupRow('removal failure', 'file', array(), false, array(),
+			array('removeDirectory:*' => array('result' => false)));
+		$this->assertCleanupRow('marker unlink failure', 'file', array(), false,
+			array('.initialized'), array('unlink:*' => array('result' => false)));
+
+		$this->assertEquals('victim-bytes', is_file($victim) ? file_get_contents($victim) : null,
+			'private cleanup never follows a planted marker symlink');
+	}
+
+	public function testPrivateContainerAllowlistNeverAuthorizesDeletion()
+	{
+		$this->reset();
+		$filesystem = new ErasedataCollectorFixture(array());
+
+		$tombstoneRoot = $this->makePrivateContainer('cleanup-tombstone', 'file',
+			array('.bridge-1-2' => $this->dir.'/bridge-target'));
+		$this->assertTrue($filesystem->removePrivateContainer($tombstoneRoot,
+			array('.', '..', '.initialized', '.bridge-1-2')) === false,
+			'allowed tombstone: an allowlisted entry still blocks the container removal');
+		$this->assertEquals(array('.bridge-1-2'), $this->containerEntries($tombstoneRoot),
+			'allowed tombstone: the allowlisted entry is never unlinked');
+
+		$bridgeRoot = $this->makePrivateContainer('cleanup-bridge', 'file',
+			array('directory' => 'directory'));
+		$this->assertTrue($filesystem->removePrivateContainer($bridgeRoot,
+			array('.', '..', '.initialized', 'directory')) === false,
+			'allowed bridge: an allowlisted data entry still blocks the container removal');
+		$this->assertEquals(array('directory'), $this->containerEntries($bridgeRoot),
+			'allowed bridge: the allowlisted data entry is never removed');
+	}
+
+	public function testAbsentPrivateContainerCleanupIsIdempotentForRecovery()
+	{
+		$this->reset();
+		$filesystem = new ErasedataCollectorFixture(array());
+		$absent = $this->dir.'/cleanup-absent';
+
+		// The owner itself stays fail-closed: it cannot enumerate a name that is
+		// not there. The recovery layout treats an absent shell as finished.
+		$this->assertTrue($filesystem->removePrivateContainer(
+			$absent, array('.', '..', '.initialized')) === false,
+			'the container owner refuses a name it cannot enumerate');
+		$this->assertTrue($this->removeRecoveryCaptureContainer($absent, $filesystem) === true,
+			'an absent capture root completes the recovery cleanup');
+		$this->assertTrue($this->removeRecoveryReservationContainer($absent, $filesystem) === true,
+			'an absent reservation root completes the recovery cleanup');
+		$this->assertTrue($this->removeRecoveryReservationContainer(null, $filesystem) === true,
+			'a recovery layout without a reservation root completes the cleanup');
+		$this->assertTrue(!erasedataPathExists($absent),
+			'the absent container is never created by the cleanup');
+	}
+
+	private function removeRecoveryCaptureContainer($root, $filesystem)
+	{
+		return(erasedataRemoveRecoveryContainers(
+			array('captureRoot' => $root, 'reservationRoot' => null), $filesystem));
+	}
+
+	private function removeRecoveryReservationContainer($root, $filesystem)
+	{
+		return(erasedataRemoveRecoveryContainers(array(
+			'captureRoot' => $this->dir.'/recovery-capture-absent',
+			'reservationRoot' => $root), $filesystem));
+	}
+
+	// The captured-entry name record: bounded, canonical base64 only, and never
+	// a path.
+	private function captureNameRoot($name, $encoded)
+	{
+		$root = $this->dir.'/'.$name;
+		$this->removePath($root);
+		mkdir($root, 0700);
+		file_put_contents($root.'/.initialized', '');
+		file_put_contents($root.'/.name', $encoded);
+		return($root);
+	}
+
+	public function testCapturedEntryNameRecordMatrix()
+	{
+		$this->reset();
+		$rows = array(
+			'canonical name' => array(base64_encode('payload.bin'), 'payload.bin'),
+			'exact ceiling' => array(
+				base64_encode(str_repeat('a', 3072)), str_repeat('a', 3072)),
+			'over the ceiling' => array(
+				base64_encode(str_repeat('a', 4096)), false),
+			'non-canonical base64' => array(base64_encode('payload.bin')."\n", false),
+			'not base64 at all' => array('payload.bin', false),
+			'empty record' => array('', false),
+			'separator in the name' => array(base64_encode('a/b'), false),
+			'nul in the name' => array(base64_encode("a\0b"), false),
+			'dot name' => array(base64_encode('.'), false),
+			'dotdot name' => array(base64_encode('..'), false),
+		);
+		$ordinal = 0;
+		foreach($rows as $label => $row)
+		{
+			$ordinal++;
+			$root = $this->captureNameRoot('capture-name-'.$ordinal, $row[0]);
+			$this->assertTrue(erasedataCapturedEntryName($root) === $row[1],
+				'captured name record, '.$label.': the decoded name is exact');
+			$this->removePath($root);
+		}
+
+		$root = $this->captureNameRoot('capture-name-unmarked', base64_encode('payload.bin'));
+		@unlink($root.'/.initialized');
+		$this->assertTrue(erasedataCapturedEntryName($root) === false,
+			'captured name record: an unmarked root has no readable name');
+		$this->removePath($root);
+	}
+
+	// Staging publication: one canonical .tmp -> .list promotion.
+	private function publishStagingUnderTest($tmpPath, $hash)
+	{
+		return(ErasedataManifestCodec::publishStaging($tmpPath, $hash));
+	}
+
+	private function stagedManifest($hash, $suffix, $contents)
+	{
+		$path = $this->dir.'/erasedata/'.$hash.'.'.$suffix;
+		file_put_contents($path, $contents);
+		@chmod($path, 0600);
+		return($path);
+	}
+
+	public function testStagingPublicationMatrix()
+	{
+		global $profileMask;
+		$this->reset();
+		$profileMask = 0777;
+		$hash = $this->hash('C');
+		$queue = $this->dir.'/erasedata';
+
+		$tmp = $this->stagedManifest($hash, '1.aaaa.tmp', 'canonical-bytes');
+		$this->assertTrue($this->publishStagingUnderTest($tmp, $hash) === true,
+			'canonical tmp: the staged manifest is published');
+		$list = $queue.'/'.$hash.'.1.aaaa.list';
+		$this->assertTrue(!file_exists($tmp) && is_file($list),
+			'canonical tmp: the staging name is consumed and the list name appears');
+		$this->assertEquals('canonical-bytes', file_get_contents($list),
+			'canonical tmp: the published bytes are the staged bytes');
+		$this->assertEquals(0666, $this->modeOf($list),
+			'canonical tmp: publication repairs the shared file mode');
+		@unlink($list);
+
+		$tmp = $this->stagedManifest($hash, '2.bbbb.tmp', 'staged-bytes');
+		$list = $this->stagedManifest($hash, '2.bbbb.list', 'published-bytes');
+		$this->assertTrue($this->publishStagingUnderTest($tmp, $hash) === false,
+			'existing list: publication refuses to replace a published generation');
+		$this->assertEquals('staged-bytes', is_file($tmp) ? file_get_contents($tmp) : null,
+			'existing list: the staged bytes are retained');
+		$this->assertEquals('published-bytes', is_file($list) ? file_get_contents($list) : null,
+			'existing list: the published bytes are untouched');
+		@unlink($tmp);
+		@unlink($list);
+
+		$victim = $this->dir.'/publish-victim.bin';
+		file_put_contents($victim, 'victim-bytes');
+		$tmp = $this->stagedManifest($hash, '3.cccc.tmp', 'staged-bytes');
+		$list = $queue.'/'.$hash.'.3.cccc.list';
+		symlink($victim, $list);
+		$this->assertTrue($this->publishStagingUnderTest($tmp, $hash) === false,
+			'symlink list: publication refuses a planted list symlink');
+		$this->assertEquals('staged-bytes', is_file($tmp) ? file_get_contents($tmp) : null,
+			'symlink list: the staged bytes are retained');
+		$this->assertTrue(is_link($list),
+			'symlink list: the planted link is neither followed nor replaced');
+		$this->assertEquals('victim-bytes', file_get_contents($victim),
+			'symlink list: the link target keeps its exact bytes');
+		@unlink($list);
+		@unlink($tmp);
+
+		$tmp = $this->stagedManifest($hash, '4.dddd.tmp', 'staged-bytes');
+		@chmod($queue, 0500);
+		$published = $this->publishStagingUnderTest($tmp, $hash);
+		@chmod($queue, 0777);
+		$this->assertTrue($published === false,
+			'rename failure: an unpublishable staging file reports failure');
+		$this->assertEquals('staged-bytes', is_file($tmp) ? file_get_contents($tmp) : null,
+			'rename failure: the staged bytes are retained for retry');
+		$this->assertTrue(!file_exists($queue.'/'.$hash.'.4.dddd.list'),
+			'rename failure: no list name is created');
+		@unlink($tmp);
+
+		$first = $this->stagedManifest($hash, '5.eeee.tmp', 'first-generation');
+		$second = $this->stagedManifest($hash, '6.ffff.tmp', 'second-generation');
+		$this->assertTrue($this->publishStagingUnderTest($first, $hash) === true
+			&& $this->publishStagingUnderTest($second, $hash) === true,
+			'same-hash generations: every generation publishes under its own name');
+		$this->assertEquals('first-generation',
+			file_get_contents($queue.'/'.$hash.'.5.eeee.list'),
+			'same-hash generations: the first generation keeps its own bytes');
+		$this->assertEquals('second-generation',
+			file_get_contents($queue.'/'.$hash.'.6.ffff.list'),
+			'same-hash generations: the second generation keeps its own bytes');
+		@unlink($queue.'/'.$hash.'.5.eeee.list');
+		@unlink($queue.'/'.$hash.'.6.ffff.list');
+
+		$list = $this->stagedManifest($hash, '7.gggg.list', 'published-bytes');
+		$this->assertTrue($this->publishStagingUnderTest($list, $hash) === false,
+			'non-staging name: only a .tmp name can be promoted');
+		$this->assertEquals('published-bytes', file_get_contents($list),
+			'non-staging name: the inspected file is untouched');
+		@unlink($list);
+
+		$absent = $queue.'/'.$hash.'.8.hhhh.tmp';
+		$this->assertTrue($this->publishStagingUnderTest($absent, $hash) === false,
+			'absent staging file: publication reports failure');
+		$this->assertTrue(!file_exists($queue.'/'.$hash.'.8.hhhh.list'),
+			'absent staging file: no list name is created');
 	}
 }

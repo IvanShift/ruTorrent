@@ -28,6 +28,32 @@ $suite->test('makePeerId is 20 bytes with the plugin prefix', function () {
     strictAssertTrue($id !== RuTrackerAnnounce::makePeerId(), 'random tail');
 });
 
+// classify() decodes through the one shared grammar (plugins/rutracker_check/
+// bencode.php), and the ceilings it passes are load-bearing in BOTH
+// directions. Tighten one and an answer the 8192-byte body cap already admits
+// silently stops being decodable; loosen one and the body cap stops being the
+// bound on decoding cost it exists to be. So they are pinned as exact numbers
+// rather than left to be re-derived by whoever edits the decoder next.
+$suite->test('the announce body is decoded under exactly the pinned ceilings', function () {
+    strictAssertSame(
+        array(
+            'max_bytes' => 8192,
+            'max_depth' => 4096,
+            'max_tokens' => 4096,
+            'max_integer_digits' => 8192,
+            'max_length_digits' => 4,
+        ),
+        RuTrackerAnnounce::BENCODE_LIMITS,
+        'the announce ceilings are exactly 8192 / 4096 / 4096 / 8192 / 4'
+    );
+
+    // One number, not two that can drift: the byte ceiling the grammar
+    // enforces IS the announce body cap the probe refuses answers past.
+    strictAssertSame(RuTrackerAnnounce::MAX_ANNOUNCE_BODY,
+        RuTrackerAnnounce::BENCODE_LIMITS['max_bytes'],
+        'the grammar is bounded by the announce body cap itself');
+});
+
 $suite->test('classify: valid success variants are registered', function () {
     strictAssertSame('registered',
         RuTrackerAnnounce::classify(200, 'd8:intervali3021e5:peers6:' . "\x01\x02\x03\x04\x05\x06" . 'e'), 'clean dict with peers');
@@ -121,37 +147,26 @@ $suite->test('classify: noncanonical integers in unknown extensions invalidate t
     }
 });
 
-$suite->test('classify: duplicate required announce keys stay uncertain', function () {
-    foreach (array(
-        'duplicate interval' => 'd8:intervali1800e8:intervali1801e5:peers0:e',
-        'duplicate peers' => 'd8:intervali1800e5:peers0:5:peers0:e',
-    ) as $label => $body) {
-        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
-    }
-});
-
-$suite->test('classify: duplicate optional counters stay uncertain', function () {
-    foreach (array(
-        'duplicate complete' => 'd8:intervali1800e5:peers0:8:completei1e8:completei2ee',
-        'duplicate incomplete' => 'd8:intervali1800e5:peers0:10:incompletei1e10:incompletei2ee',
-        'duplicate min interval' => 'd8:intervali1800e5:peers0:12:min intervali1e12:min intervali2ee',
-    ) as $label => $body) {
-        strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
-    }
-});
-
-$suite->test('classify: duplicate failure reason stays uncertain', function () {
+// One table, because there is one rule and one place it is enforced: a
+// repeated key -- required, optional, the failure reason that would otherwise
+// be believed on its own, or one container deeper inside a peer dictionary --
+// makes RuTrackerBencode::decode() refuse the document, and classify() returns
+// 'uncertain' at the `$root === false` line without reading a single field.
+// The label names which key was repeated, so a failure still says which shape
+// broke without anyone counting rows.
+$suite->test('classify: a duplicate key anywhere in the envelope stays uncertain', function () {
     $reason = RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON;
-    $body = 'd14:failure reason' . strlen($reason) . ':' . $reason
-        . '14:failure reason' . strlen($reason) . ':' . $reason . 'e';
-    strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), 'duplicate failure reason');
-});
-
-$suite->test('classify: duplicate peer dictionary keys stay uncertain', function () {
+    $failureReason = '14:failure reason' . strlen($reason) . ':' . $reason;
     foreach (array(
-        'duplicate peer ip' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
+        'required key: duplicate interval' => 'd8:intervali1800e8:intervali1801e5:peers0:e',
+        'required key: duplicate peers' => 'd8:intervali1800e5:peers0:5:peers0:e',
+        'optional counter: duplicate complete' => 'd8:intervali1800e5:peers0:8:completei1e8:completei2ee',
+        'optional counter: duplicate incomplete' => 'd8:intervali1800e5:peers0:10:incompletei1e10:incompletei2ee',
+        'optional counter: duplicate min interval' => 'd8:intervali1800e5:peers0:12:min intervali1e12:min intervali2ee',
+        'duplicate failure reason' => 'd' . $failureReason . $failureReason . 'e',
+        'peer dictionary: duplicate peer ip' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
             . '2:ip9:127.0.0.24:porti6881eeee',
-        'duplicate peer port' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
+        'peer dictionary: duplicate peer port' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
             . '4:porti6881e4:porti6882eeee',
     ) as $label => $body) {
         strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
@@ -281,9 +296,9 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
     strictRemoveTree($tmp);
     mkdir($tmp, 0777, true);
 
-    // announce.php reaches php/Torrent.php, whose own requires are relative,
-    // so the child has to run with its cwd inside php/ -- the same bootstrap
-    // TestLib performs.
+    // announce.php requires php/util.php, whose autoloader includes utility/
+    // files through a path relative to the cwd, so the child has to run with
+    // its cwd inside php/ -- the same bootstrap TestLib performs.
     $child = $tmp . '/child.php';
     file_put_contents($child, '<?php
         chdir(' . var_export(testFindRepoRoot() . '/php/utility', true) . ');
@@ -407,12 +422,12 @@ $suite->test('a success cannot clear a cooldown installed while it was in flight
     });
 });
 
-// The size cap on an announce answer is really a bound on the decoder's
-// recursion depth: the parser inherits Torrent's recursive descent and has no
-// depth limit, so a body that is nothing but nesting costs about one stack
-// frame per two bytes. Exhausting memory there is a FATAL error -- classify()'s
-// catch(Exception) cannot see it -- so the cap has to be small enough that the
-// worst body it admits is still cheap.
+// The size cap on an announce answer is where the decoder's ceilings come
+// from: a body that is nothing but nesting costs one stack entry per two bytes,
+// so the cap is what makes max_depth and max_tokens of 4096 non-restrictive.
+// The decoder is iterative, so this is no longer an interpreter-stack question,
+// but the cap still has to be small enough that the worst body it admits is
+// cheap to decode.
 $suite->test('an announce answer too large to decode safely is refused before decoding', function () {
     $cap = RuTrackerAnnounce::MAX_ANNOUNCE_BODY;
 
@@ -439,7 +454,7 @@ $suite->test('an announce answer too large to decode safely is refused before de
     // grind through a pathological body: the worst case grows with the cap and
     // stops being cheap to reason about long before it stops being decodable.
     strictAssertTrue($cap <= 16384,
-        'the cap is a bound on recursion depth as much as on transfer size; raising it needs this test rewritten');
+        'the cap is where the decoder ceilings come from as much as a transfer bound; raising it needs this test rewritten');
 
     $depth = intdiv($cap - 33, 2);
     $deep = 'd8:intervali1800e5:peers0:1:a' . str_repeat('l', $depth) . str_repeat('e', $depth) . 'e';
@@ -622,6 +637,216 @@ $suite->test('the probe budget and pause are bounded at BOTH ends, not just floo
         'a pause past a minute spends the whole cycle on one host');
     strictAssertSame(0, RuTrackerAnnounce::probePause(-1), 'a negative pause is not a negative sleep');
     strictAssertSame(5, RuTrackerAnnounce::probePause(5), 'the shipped default passes through');
+});
+
+// --- The persisted budget is four canonical integers, or it is nothing ------
+//
+// Every direction the old (int) casts rounded a corrupted field in was the
+// dangerous one: a cooldown_until of "abc" became 0 and read as LAPSED, a
+// window_start of 1.5 became 0 and opened a FRESH window, a window_count of
+// "01" became a SMALLER counter. All three hand out probes to a host that
+// answered 403, which is the one thing the budget exists to stop.
+
+// The four fields, each in turn given a value that is not a canonical
+// nonnegative integer while the other three stay perfectly ordinary.
+function ratCorruptEntries()
+{
+    $sane = array('cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5,
+        'cooldown_length' => 0);
+    $bad = array('leading zero' => '01', 'plus sign' => '+1', 'negative' => '-1',
+        'minus zero' => '-0', 'padded' => ' 1', 'float' => 1.5,
+        'bool' => true, 'text' => 'whenever', 'null' => null, 'array' => array(1));
+    $cases = array();
+    foreach (array('cooldown_until', 'window_start', 'window_count', 'cooldown_length') as $field)
+        foreach ($bad as $label => $value) {
+            $entry = $sane;
+            $entry[$field] = $value;
+            $cases[$field . ' is a ' . $label] = $entry;
+        }
+    return $cases;
+}
+
+$suite->test('a corrupted persisted budget entry is never an available slot', function () {
+    strictWithStateDir('chk-announce-corrupt-reserve', function () {
+        foreach (ratCorruptEntries() as $label => $entry) {
+            RuTrackerState::save('announce', array('bt.t-ru.org' => $entry));
+
+            // The cap is generous and the window long: on a READABLE entry
+            // shaped like this the answer would be 'allow'.
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                $label . ': the reservation returns the fail-closed refusal verdict');
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::probeDecision('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                $label . ': and the read-only view agrees');
+            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+                $label . ': the corrupted entry is left byte for byte as it was found');
+        }
+    });
+});
+
+// "Left byte for byte as it was found" is the whole problem with saying it
+// quietly. Nothing in this file ever rewrites an entry it could not read --
+// reserveProbe() returns the document untouched, releaseProbe() and
+// recordOutcome() both bail on the same null -- so the host is refused every
+// probe from here to the end of time, and no cycle repairs it. Reported
+// through logDebug(), gated on conf.php's shipped $rutrackerCheckDebug =
+// false, that permanent refusal said nothing at all.
+//
+// Deliberately NOT the sibling below it, and the difference is the rule: a
+// budget that could not be WRITTEN is an unwritable settings directory or a
+// full disk, the very next cycle succeeds the moment the machine is fixed,
+// nothing is corrupt on disk, and a line per cycle for that is noise. That one
+// stays gated; this one cannot heal, so it has to be visible.
+$suite->test('a budget entry nobody can read reaches the application log at the shipped default', function () {
+    strictWithStateDir('chk-announce-corrupt-visible', function () {
+        ruTrackerChecker::reset();
+        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+            'cooldown_until' => 0, 'window_start' => 1000,
+            'window_count' => 'whenever', 'cooldown_length' => 0)));
+
+        $written = testCapturedAppLog(function () {
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                'the refusal itself is unchanged');
+        });
+
+        strictAssertSame(1, substr_count($written, 'is not readable'),
+            'an operator is told exactly once, with $rutrackerCheckDebug at its shipped default of false');
+        strictAssertTrue(strpos($written, 'bt.t-ru.org') !== false,
+            'and the line names the host whose budget is wedged, so it can be cleared');
+        strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'is not readable')),
+            'and it no longer goes out the debug-gated channel, which says nothing in production');
+    });
+});
+
+// The other half of that rule, pinned: the transient sibling stays quiet.
+$suite->test('a budget that could not be written stays on the gated channel', function () {
+    $tmp = sys_get_temp_dir() . '/chk-announce-unwritable-' . getmypid();
+    strictRemoveTree($tmp);
+    if (!mkdir($tmp, 0777, true)) throw new RuntimeException('Unable to create ' . $tmp);
+    try {
+        ruTrackerChecker::reset();
+        // Same ENOTDIR trick as the reservation test above: a path UNDER a
+        // regular file, which even root cannot open.
+        $blocked = $tmp . '/not-a-directory';
+        file_put_contents($blocked, 'x');
+        strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/store');
+
+        $written = testCapturedAppLog(function () {
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                'an unrecordable slot is still refused rather than spent unrecorded');
+        });
+
+        strictAssertSame('', $written,
+            'a refusal that succeeds again the moment the store does writes nothing to the shared log');
+        strictAssertTrue(count(strictLogsMatching(ruTrackerChecker::$logs, 'could not be written')) > 0,
+            'it is still said, on the channel a debugging operator turns on');
+    } finally {
+        strictSetPrivateStatic('RuTrackerState', 'dir', null);
+        strictRemoveTree($tmp);
+    }
+});
+
+$suite->test('a corrupted persisted budget entry is never an elapsed cooldown or a smaller counter', function () {
+    strictWithStateDir('chk-announce-corrupt-outcome', function () {
+        foreach (ratCorruptEntries() as $label => $entry) {
+            // A success would normally CLEAR a lapsed cooldown, and a 403
+            // would normally DOUBLE the stored backoff. Neither may act on a
+            // record it could not read.
+            RuTrackerState::save('announce', array('bt.t-ru.org' => $entry));
+            RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 200);
+            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+                $label . ': a success neither clears nor rewrites what it cannot read');
+
+            RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 403);
+            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+                $label . ': and a refusal does not restart the backoff at one hour either');
+
+            // Handing a slot back must not invent a counter to decrement.
+            RuTrackerAnnounce::releaseProbe('bt.t-ru.org', 100000);
+            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+                $label . ': and a released slot is not refunded into it');
+        }
+    });
+});
+
+// The shape the matrix above never spelled: a host PRESENT whose value is not
+// an entry at all. isset()+is_array() read that as "no fields yet" -- four
+// ABSENT fields, i.e. a fresh allowance -- so the one stored shape carrying no
+// budget whatsoever bought a full one, and the reservation then overwrote the
+// very bytes it could not read.
+function ratNonEntryValues()
+{
+    return array('string' => 'garbage', 'integer' => 42, 'true' => true,
+        'false' => false, 'float' => 1.5, 'null' => null);
+}
+
+$suite->test('a host stored as something other than an entry is never an available slot', function () {
+    strictWithStateDir('chk-announce-corrupt-shape', function () {
+        foreach (ratNonEntryValues() as $label => $value) {
+            $document = array('bt.t-ru.org' => $value);
+            RuTrackerState::save('announce', $document);
+
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                $label . ': the reservation refuses instead of opening a fresh budget');
+            strictAssertSame($document, RuTrackerState::load('announce'),
+                $label . ': and the reservation left the document exactly as it found it');
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::probeDecision('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                $label . ': the read-only view agrees');
+
+            RuTrackerAnnounce::releaseProbe('bt.t-ru.org', 1000);
+            strictAssertSame($document, RuTrackerState::load('announce'),
+                $label . ': a released slot is not refunded into it');
+            RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 200);
+            strictAssertSame($document, RuTrackerState::load('announce'),
+                $label . ': a success neither clears nor rewrites what it cannot read');
+            RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 403);
+            strictAssertSame($document, RuTrackerState::load('announce'),
+                $label . ': and a refusal does not restart the backoff at one hour either');
+        }
+    });
+});
+
+// The control: everything above must be a rejection of the BYTES, not of the
+// code path. The same four fields, canonically spelled, still behave exactly
+// as they always did.
+$suite->test('a canonically spelled persisted budget still allows, caps, cools down and refunds', function () {
+    strictWithStateDir('chk-announce-canonical', function () {
+        // Absent fields are the fresh host, not corruption.
+        RuTrackerState::save('announce', array('bt.t-ru.org' => array()));
+        strictAssertSame('allow', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 2, RAT_WINDOW),
+            'an entry with no fields yet is a fresh allowance');
+
+        // A canonical count at the cap still caps.
+        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5, 'cooldown_length' => 0)));
+        strictAssertSame('cap', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 5, RAT_WINDOW),
+            'a canonical count still reaches the cap');
+
+        // Canonical string spellings are read exactly the same way ints are:
+        // this is what a hand-edited or JSON-round-tripped store looks like.
+        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+            'cooldown_until' => '2000', 'window_start' => '900', 'window_count' => '0',
+            'cooldown_length' => '3600')));
+        strictAssertSame('cooldown', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 5, RAT_WINDOW),
+            'a canonical decimal string cooldown is still a cooldown');
+        strictAssertSame('allow', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 2001, 5, RAT_WINDOW),
+            'and it still lapses on time');
+
+        // A canonical entry still doubles, and still refunds.
+        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 3, 'cooldown_length' => 3600)));
+        RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 1000, 403);
+        strictAssertSame(7200, RuTrackerState::load('announce')['bt.t-ru.org']['cooldown_length'],
+            'a readable backoff still doubles');
+        RuTrackerAnnounce::releaseProbe('bt.t-ru.org', 1000);
+        strictAssertSame(2, RuTrackerState::load('announce')['bt.t-ru.org']['window_count'],
+            'and a readable counter still gives a slot back');
+    });
 });
 
 exit($suite->run());

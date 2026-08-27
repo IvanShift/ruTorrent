@@ -38,8 +38,10 @@ class tolokaCheckImpl
             // be downloaded. With them joined, a page that proved the torrent
             // current but carried no download link (a guest view of a
             // login-gated tracker, an interstitial, any markup change) fell
-            // through to fetching download.php?id=0, whose unparseable answer
-            // createTorrent() turns into "probably deleted".
+            // through to fetching download.php?id=0 and spending a check on an
+            // answer that could never parse. Toloka has no deletion signal of
+            // its own, so an unparseable answer is a retryable error here and
+            // the question is simply not asked.
             if ($hash_now !== '' && strtoupper($hash_now) === $hash) {
                 return ruTrackerChecker::STE_UPTODATE;
             }

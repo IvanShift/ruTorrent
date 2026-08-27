@@ -9,6 +9,8 @@ final class ErasedataManifestCodec
 	const MAX_MANIFEST_BYTES = 67108864; // 64 MiB
 	const MAX_FILES = 1000000;
 	const MAX_PATH_BYTES = 1048576; // 1 MiB
+	const READ_CHUNK_BYTES = 65536;
+	const MAX_CAPTURED_NAME_BYTES = 4096;
 
 	public static function normalizeForce($value)
 	{
@@ -267,7 +269,10 @@ final class ErasedataManifestCodec
 		return(true);
 	}
 
-	private static function decodeCanonicalBase64($value)
+	// The one canonical-base64 rule of this plugin: a value must decode and
+	// re-encode to exactly the bytes it arrived as, so no alternative encoding
+	// of the same payload is ever accepted.
+	public static function decodeCanonicalBase64($value)
 	{
 		if(!is_string($value))
 			return(false);
@@ -471,6 +476,22 @@ final class ErasedataManifestCodec
 			$json = json_decode($bytes, true);
 			if(!is_array($json))
 				return(false);
+			// Serialized member names are required to be unique for the
+			// cleanup version only, and that asymmetry is deliberate.
+			// hasUniqueJSONObjectMembers() is a second, hand-written parser run
+			// over the whole document, and it earns that only where the bytes
+			// are a capability: a v3 artifact is re-read and re-matched against
+			// its token repeatedly within one run and authorizes deletion under
+			// ANOTHER torrent's base, so one serialization must mean one thing.
+			// A v2 payload manifest has a single writer -- encode(), which
+			// serializes a PHP array and cannot emit a repeated key -- and a
+			// single reader, the json_decode above, which takes the last value.
+			// No second reader exists to disagree with it, and whoever could
+			// put a repeated "force" in the queue directory could as easily
+			// write "force":2 once, so the rule would prevent nothing there
+			// while costing roughly four times the whole decode on the path
+			// every erase takes. See
+			// testPayloadManifestTakesTheLastValueForDuplicateSerializedMembers.
 			if(isset($json['version']) && $json['version'] === self::CLEANUP_VERSION
 				&& !self::hasUniqueJSONObjectMembers($bytes))
 				return(false);
@@ -649,25 +670,83 @@ final class ErasedataManifestCodec
 		));
 	}
 
-	public static function decodeStream($handle, $expectedHash)
+	// The only reader of manifest-protocol bytes. Every consumer goes through
+	// this so the byte ceiling is enforced while reading instead of after the
+	// allocation. $limit bounds one specific artifact and is never raised above
+	// the manifest ceiling by a caller that omits it.
+	public static function readBoundedHandle($handle, $limit = self::MAX_MANIFEST_BYTES)
 	{
-		if(!is_resource($handle))
+		if(!is_resource($handle) || !is_int($limit) || $limit < 0)
 			return(false);
 
 		$bytes = '';
 		$readTotal = 0;
 		while(!feof($handle))
 		{
-			$chunk = fread($handle, 65536);
+			$chunk = fread($handle, self::READ_CHUNK_BYTES);
 			if($chunk === false)
 				return(false);
 			if(strlen($chunk) === 0)
 				break;
 			$readTotal += strlen($chunk);
-			if($readTotal > self::MAX_MANIFEST_BYTES)
+			if($readTotal > $limit)
 				return(false);
 			$bytes .= $chunk;
 		}
+		return($bytes);
+	}
+
+	public static function readBoundedFile($path, $limit = self::MAX_MANIFEST_BYTES)
+	{
+		if(!is_string($path) || $path === '')
+			return(false);
+		$handle = @fopen($path, 'rb');
+		if($handle === false)
+			return(false);
+		$bytes = self::readBoundedHandle($handle, $limit);
+		@fclose($handle);
+		return($bytes);
+	}
+
+	public static function decodeStream($handle, $expectedHash)
+	{
+		$bytes = self::readBoundedHandle($handle);
+		if($bytes === false)
+			return(false);
 		return(self::decodeBytes($bytes, $expectedHash));
+	}
+
+	// The only promotion of a staged manifest to its published name. The list
+	// name is derived from the staging name, never guessed, and an existing or
+	// symlinked list name is refused instead of replaced, so one generation can
+	// never overwrite another. $filesystem is the collector's mutation seam;
+	// the producer has none and gets the plain one.
+	// This file requires nothing, because erase.php loads it alone for its force
+	// pre-check and requiring filesystem.php here would make a cycle. Publishing
+	// therefore borrows two symbols from files it cannot name. Every caller
+	// loads them; a future one that does not gets a refusal it can read instead
+	// of a fatal on an undefined symbol.
+	public static function publishStaging($tmpPath, $hash,
+		?ErasedataFilesystemOps $filesystem = null)
+	{
+		if(!class_exists('ErasedataFilesystemOps', false)
+			|| !function_exists('erasedataRepairFileMode'))
+		{
+			FileUtil::toLog('erasedata: publishStaging needs filesystem.php and'
+				.' removewithdata.php loaded, refusing to publish '.$hash);
+			return(false);
+		}
+		$listFile = is_string($tmpPath) && substr($tmpPath, -4) === '.tmp'
+			? substr($tmpPath, 0, -4).'.list' : '';
+		if($filesystem === null)
+			$filesystem = new ErasedataFilesystemOps();
+		if($listFile === '' || file_exists($listFile) || is_link($listFile)
+			|| !is_file($tmpPath) || !$filesystem->rename($tmpPath, $listFile))
+		{
+			FileUtil::toLog("erasedata: failed to publish manifest for ".$hash.", staging retained");
+			return(false);
+		}
+		erasedataRepairFileMode($listFile);
+		return(true);
 	}
 }

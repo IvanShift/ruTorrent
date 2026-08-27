@@ -142,10 +142,20 @@ class rRatio
 	// execute would block rtorrent while the helper waits for rtorrent to answer.
 	public function getEraseWithDataCommand($force)
 	{
+		// $force is interpolated into a shell-ish command line below, so only
+		// the two exact literals the UI can ask for are accepted; anything else
+		// degrades to a no-op instead of building a command out of it.
 		if(!is_string($force) || ($force !== "1" && $force !== "2"))
 			return(getCmd("cat="));
 		$prefix = getCmd("d.stop=")."; ".getCmd("d.close=")."; ";
 		$helper = dirname(dirname(__FILE__))."/erasedata/erase.php";
+		// Deliberately a no-op, not the legacy "d.set_custom5=<force>; d.erase="
+		// fallback: nothing reads custom5 as a delete-data flag any more (the
+		// web UI reuses that field as the message column), so that fallback
+		// would erase the download and strand its data on disk -- and once the
+		// download is gone its file list can no longer be read over RPC, so the
+		// data could never be collected. A missing helper means a broken
+		// install; fail closed and keep the download so the erase stays possible.
 		if(!is_file($helper))
 			return(getCmd("cat="));
 		$user = preg_replace('/[^\w\.\-]/', '', (string)User::getUser());

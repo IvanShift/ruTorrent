@@ -463,4 +463,62 @@ $suite->test('real download guards reject non-200 and malformed bodies before mu
     }
 });
 
+// The real parse boundary, with the real Torrent class behind it: bytes in,
+// a Torrent or null out, and nothing in between that a caller has to repeat.
+$suite->test('the real parse boundary answers with a Torrent or with null', function () {
+    cmfReset();
+    $announce = 'http://bt.t-ru.org/ann?pk=integration-secret';
+    $raw = cmfTorrentRaw('parse-boundary.bin', $announce);
+
+    $parsed = ruTrackerChecker::parseMetainfo($raw);
+    strictAssertTrue($parsed instanceof Torrent, 'valid metainfo comes back as the parsed Torrent');
+    strictAssertTrue(!$parsed->errors(), 'and it carries no decode error');
+    strictAssertSame(40, strlen((string) $parsed->hash_info()), 'with a canonical info hash');
+
+    foreach (array(
+        'an HTML login wall' => '<html><head><title>Вход</title></head></html>',
+        'truncated bencode' => 'd8:announce',
+        'bencode without an info dictionary' => 'd8:announce5:helloe',
+        'an empty body' => '',
+        'a non-string' => null,
+        // rTorrent 0.16.20 does not reject a torrent whose info.name is the
+        // empty string -- it ABORTS. Proven on a bench container: the same
+        // payload that 0.16.21 declines gracefully terminates 0.16.20
+        // outright, taking every torrent on the daemon down with it. The
+        // handlers fetch .torrent bytes from trackers, so this arrives from
+        // outside; refuse it here, where the bytes are first classified,
+        // rather than hand it to a daemon that cannot survive it.
+        'metainfo whose name is empty' =>
+            'd8:announce26:http://tracker.invalid/ann4:infod6:lengthi100e4:name0:'
+            . '12:piece lengthi16384e6:pieces20:' . str_repeat('P', 20) . 'ee',
+    ) as $label => $payload) {
+        strictAssertSame(null, ruTrackerChecker::parseMetainfo($payload),
+            $label . ' is not metainfo and answers null');
+    }
+    strictAssertSame(array(), cmfRequestKeys(), 'classifying bytes touches no daemon state');
+});
+
+// Malformed metainfo is an error to retry. It is not the tracker's word that a
+// topic is gone, and it must never stop, close or erase anything.
+$suite->test('the real replacement boundary refuses anything that is not parsed metainfo', function () {
+    cmfReset();
+    $announce = 'http://bt.t-ru.org/ann?pk=integration-secret';
+    $oldTorrent = cmfTorrent('refuse-old.bin', $announce);
+    $oldHash = strtoupper((string) $oldTorrent->hash_info());
+
+    foreach (array(
+        'raw bytes that do parse' => cmfTorrentRaw('refuse-new.bin', $announce),
+        'raw bytes that do not' => '<html>not metainfo</html>',
+        'nothing at all' => null,
+    ) as $label => $payload) {
+        cmfReset();
+        strictAssertSame(ruTrackerChecker::STE_ERROR,
+            ruTrackerChecker::createTorrent($payload, $oldHash, $oldTorrent),
+            $label . ' is refused as a retryable error, never as a deletion');
+        strictAssertSame(array(), cmfRequestKeys(), $label . ' causes no XMLRPC read or mutation');
+        strictAssertSame(0, count(rTorrent::$sends), $label . ' cannot stage a replacement');
+        cmfAssertNoQueuedResponses();
+    }
+});
+
 exit($suite->run());

@@ -482,8 +482,26 @@ class ruTrackerChecker
 		$req->important = false;
 		if($req->success() && isset($req->val[0], $req->val[1], $req->val[2]))
 		{
-			$state = intval($req->val[0]);
-			$time = intval($req->val[1]);
+			// An UNSET custom reads back as '' -- that alone is the absent 0.
+			// A reading that will not parse is NOT state 0 ("never checked"),
+			// on which run() dispatches a full destructive check.
+			$readState = $req->val[0] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
+			$readTime = $req->val[1] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[1]);
+			if($readState === null || $readTime === null)
+			{
+				// Ungated: this one never heals. A read that merely FAILED is
+				// answered again next cycle, but bytes that will not parse are
+				// still there next cycle, and nothing rewrites them -- run()
+				// returns below before setState(), parseMulticall() drops the
+				// row out of the scheduler snapshot, and flushVerdicts() leaves
+				// it out of the fresh scan. The torrent is simply never checked
+				// again. See logUnrepairable().
+				self::logUnrepairable("getState: " . $hash . " answered with a malformed chk-state/chk-time;"
+					. " nothing rewrites it, so this torrent will not be checked again until it is cleared");
+				return(false);
+			}
+			$state = $readState;
+			$time = $readTime;
 			$label = $req->val[2];
 			return(true);
 		}
@@ -625,7 +643,7 @@ class ruTrackerChecker
 	// Compare-and-swap on a check, keyed by hash. chk-state cannot do this:
 	// d.set_custom is an unconditional write, so two processes can both read
 	// the old state and both write STE_INPROGRESS. That is not merely wasted
-	// work -- a check erases stubs, hands bytes to createTorrent(), and stops
+	// work -- a check erases stubs, hands parsed metainfo to createTorrent(), and stops
 	// and reloads the user's torrent.
 	//
 	// The window is wider than the two statements around the write, because
@@ -638,14 +656,24 @@ class ruTrackerChecker
 	// Claims expire after MAX_LOCK_TIME, the same allowance the chk-state lock
 	// gets, so a process killed mid-check does not wedge the torrent: the next
 	// cycle takes the claim and re-derives everything from the stored markers.
-	// Expired entries are pruned on every write, mirroring touchDump()'s
-	// prune-on-write, so the document stays bounded.
+	// A claim whose timestamp READS is pruned on the next write once it is past
+	// that allowance, mirroring touchDump()'s prune-on-write. One whose
+	// timestamp does not read has no expiry path at all -- that is the point of
+	// retaining it, see claimSince() -- so MAX_LOCK_TIME never ages it out and
+	// only its own token holder (or an untokened release) can remove it. The
+	// document is therefore bounded by the claims in flight plus however many
+	// unreadable entries the store has accumulated, which is the price of never
+	// handing a live replacement's claim to a competing worker.
 	// The stored entry's timestamp, whichever shape it is in. Entries written
 	// before claims carried an owner are a bare integer, and one can still be
-	// on disk when this version starts; it ages out within MAX_LOCK_TIME.
+	// on disk when this version starts; it ages out within MAX_LOCK_TIME when it
+	// reads at all.
+	// null when the stored timestamp cannot be believed -- deliberately NOT
+	// zero, which every lease comparison reads as expired, so a corrupted
+	// claim used to be the one claim nobody could hold.
 	static private function claimSince($entry)
 	{
-		return(is_array($entry) ? (int) ($entry['since'] ?? 0) : (int) $entry);
+		return(RuTrackerRpcValue::canonicalNonnegativeInteger(is_array($entry) ? ($entry['since'] ?? null) : $entry));
 	}
 
 	// Returns the owner token on success and false when the hash is already
@@ -658,7 +686,34 @@ class ruTrackerChecker
 		$granted = false;
 		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $token, &$granted) {
 			foreach($claims as $held => $entry)
-				if(($now - self::claimSince($entry)) > self::MAX_LOCK_TIME) unset($claims[$held]);
+			{
+				// An unreadable claim is RETAINED and goes on blocking: its
+				// holder may still be mid-replacement. The hash is named, the value never is.
+				//
+				// Ungated, because retained here means retained for ever: a
+				// readable stamp ages out on the next line, an unreadable one
+				// has no age to measure, and the only other exit from this
+				// document is releaseCheck() -- which runs solely for a worker
+				// holding this entry's own token, a token no worker can be
+				// granted while the entry blocks. The hash it names is never
+				// checked again. See logUnrepairable().
+				$since = self::claimSince($entry);
+				if($since === null)
+				{
+					// Only the entry blocking THIS caller. The loop walks every
+					// claim in the document, and flushVerdicts() calls in here
+					// once per deferred verdict, so reporting each corrupt one
+					// it passes turns a single wedged hash into a flood of
+					// identical lines every cycle. Silence and noise are both
+					// ways of not being read; the caller who is actually
+					// refused is the one who needs telling.
+					if($held === $hash)
+						self::logUnrepairable("claimCheck: the claim on " . $held
+							. " carries an unreadable timestamp; it is kept and keeps blocking,"
+							. " and nothing will retire it");
+				}
+				elseif(($now - $since) > self::MAX_LOCK_TIME) unset($claims[$held]);
+			}
 			if(isset($claims[$hash])) return($claims);
 			$granted = true;
 			$claims[$hash] = array('since' => (int) $now, 'token' => $token);
@@ -792,9 +847,37 @@ class ruTrackerChecker
 		return(false);
 	}
 
-	static private function logCleanupFailure($message)
+	/**
+	 * THE ungated channel, and the only one in this plugin.
+	 *
+	 * logDebug() below is gated on $rutrackerCheckDebug, which conf.php ships
+	 * as false, so everything reported there says nothing at all at the
+	 * shipped default. That is RIGHT for a refusal that repairs itself: a line
+	 * per cycle for every corrupt value would be noise in ruTorrent's shared
+	 * application log, and the next cycle fixes it anyway. It is wrong for a
+	 * refusal that never heals, which then wedges something for good and
+	 * announces it to nobody -- the fault two earlier rounds of this work were
+	 * rejected for. A refusal must be self-healing or visible; anything that
+	 * cannot be the first has to be the second, and this is how.
+	 *
+	 * Public, and not one copy per file: the refusals that qualify live in
+	 * forumindex.php, announce.php, metafetch.php and here, and four copies of
+	 * one three-line writer is exactly the duplication this branch exists to
+	 * remove. announce.php calls it behind class_exists() because that file is
+	 * also loaded standalone.
+	 */
+	static public function logUnrepairable($message)
 	{
 		FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
+	}
+
+	// A cleanup that could not be confirmed leaves a durable inconsistency
+	// between the two generations behind it, so it reports on the same ungated
+	// channel for the same reason. Kept as its own name because that is what
+	// its call sites are about, not because it is a second channel.
+	static private function logCleanupFailure($message)
+	{
+		self::logUnrepairable($message);
 	}
 
 	/**
@@ -885,9 +968,9 @@ class ruTrackerChecker
 	 * non-empty but malformed (fail closed). Unknown run tokens are malformed:
 	 * silently converting one to stopped can authorize an erase or key clear.
 	 */
-	static public function decodeInheritance($value)
+	static public function decodeInheritance($value, &$shaped = null)
 	{
-		return(RuTrackerReplacementRecord::decode($value));
+		return(RuTrackerReplacementRecord::decode($value, $shaped));
 	}
 
 	/**
@@ -988,38 +1071,58 @@ class ruTrackerChecker
 	}
 
 	/**
-	 * Whether these bytes are torrent metainfo at all.
+	 * The one place downloaded bytes become torrent metainfo.
 	 *
-	 * createTorrent() below reads an unparseable payload as proof the topic is
-	 * gone -- legacy handlers rely on that, feeding it HTTP-200 "topic removed"
-	 * pages. The corollary is that nothing else may reach it: a login wall, a
-	 * ratio gate or a protection page served with 200 is not a removed topic,
-	 * and calling it one flags a live torrent as deleted. Lifted from
-	 * KinozalCheckImpl, which has always guarded its own payload this way.
+	 * Answers with the parsed Torrent, or null when the bytes are not metainfo
+	 * at all. Null says nothing about the topic: a login wall, a ratio gate, a
+	 * protection page and a truncated download all arrive here as HTTP 200 and
+	 * all come back null, so every caller has to treat that as "could not
+	 * check" and retry. Whoever needs the torrent afterwards takes the object
+	 * returned here; decoding the same bytes twice is both wasted work and a
+	 * chance for two callers to disagree about what they hold.
 	 */
-	static public function isMetainfo($payload)
+	static public function parseMetainfo($payload)
 	{
-		if(!is_string($payload) || $payload === '') return(false);
+		if(!is_string($payload) || $payload === '') return(null);
 		// PHP 7.4 warns when Torrent probes binary metainfo as a filename.
 		$torrent = @new Torrent($payload);
-		return(!$torrent->errors() && strlen((string) $torrent->hash_info()) === 40);
+		if($torrent->errors()) return(null);
+		$hash = $torrent->hash_info();
+		if(!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)) return(null);
+		// An empty info.name is refused here, before the bytes can reach
+		// load.raw_start. rTorrent 0.16.20 does not decline such a torrent --
+		// it ABORTS: proven on a bench container, where the payload 0.16.21
+		// declines gracefully terminates 0.16.20 outright and takes every
+		// torrent on the daemon with it. These bytes come from a tracker, so
+		// one malformed response would be a fleet-wide outage.
+		//
+		// Deliberately NOT gated on the daemon version. On 0.16.21 the torrent
+		// is still not inserted, only quietly, so refusing it early is right
+		// there too -- and a version gate would fail OPEN exactly when the
+		// version probe is stale or unanswered, which is when it is needed.
+		// hash_info() above proves the info dictionary parsed, so a missing
+		// name is a genuinely nameless torrent, not a decode failure.
+		$name = $torrent->name();
+		if(!is_string($name) || $name === '') return(null);
+		return($torrent);
 	}
 
 	/**
 	 * Common validated replacement tail for HTTP download clients.
 	 *
-	 * Reusable across sibling handlers: validates HTTP 200 and metainfo validity
-	 * before handing bytes to createTorrent(). Returns STE_CANT_REACH_TRACKER on
-	 * non-200 or non-metainfo responses.
+	 * Reusable across sibling handlers: validates HTTP 200 and parses the body
+	 * once, then hands the parsed Torrent to createTorrent(). Returns
+	 * STE_CANT_REACH_TRACKER on non-200 or non-metainfo responses, both of
+	 * which are retryable and neither of which proves a topic was removed.
 	 */
 	static public function createTorrentFromDownload($client, $hash, $oldTorrent = null)
 	{
 		if(!is_object($client) || intval($client->status) !== 200)
 			return(self::STE_CANT_REACH_TRACKER);
-		$payload = (string) $client->results;
-		if(!self::isMetainfo($payload))
+		$torrent = self::parseMetainfo((string) $client->results);
+		if($torrent === null)
 			return(self::STE_CANT_REACH_TRACKER);
-		return(self::createTorrent($payload, $hash, $oldTorrent));
+		return(self::createTorrent($torrent, $hash, $oldTorrent));
 	}
 
 	static private function quoteRtorrentArgument($value)
@@ -1058,14 +1161,75 @@ class ruTrackerChecker
 		)));
 	}
 
+	/**
+	 * Replace $hash with an already parsed replacement.
+	 *
+	 * $torrent is the Torrent parseMetainfo() returned, or the one a handler
+	 * downloaded and patched itself -- never bytes. Metainfo is decoded at one
+	 * boundary and the object travels from there, so this never decodes again.
+	 *
+	 * Anything else is a caller that could not produce metainfo, and the answer
+	 * is STE_ERROR: an error to retry next cycle, with nothing changed. It is
+	 * not a deletion. A tracker that really has removed a topic says so in its
+	 * own words, and each handler recognises that signal for itself, well
+	 * before it gets here.
+	 */
+	/**
+	 * Hand rTorrent::sendTorrent() a replacement that claims no file on disk.
+	 *
+	 * sendTorrent() reads Torrent::getFileName() as "a file this plugin owns":
+	 * it unlinks it when $saveUploadedTorrents is off, reuses its path for a
+	 * torrent too large for one XMLRPC packet, and advertises it as x-filename.
+	 * A replacement handed to us by a tracker handler carries no filename, but
+	 * one harvested through rTorrent::getSource() carries rTorrent's own
+	 * session copy -- or, when getSource() falls back to d.get_tied_to_file, a
+	 * .torrent that belongs to the user. None of those are ours to delete or
+	 * reuse, and before metainfo was parsed once none of them ever reached
+	 * sendTorrent(), because the replacement was rebuilt from bytes here.
+	 *
+	 * Clearing the field is deliberate: rebuilding the object would decode the
+	 * same metainfo a second time, which is exactly what parsing it once exists
+	 * to prevent. Torrent exposes no setter, so this reaches the protected
+	 * field directly rather than re-parsing.
+	 *
+	 * It mutates the object it is given and hands the SAME instance back -- it
+	 * is not a copy, whatever an earlier name suggested. Anything still holding
+	 * that reference sees the cleared field, which is what the caller wants and
+	 * what every present caller relies on. Returns null if the field could not
+	 * actually be cleared.
+	 */
+	static private function disownFile($torrent)
+	{
+		if(!($torrent instanceof Torrent) || $torrent->getFileName() === null)
+			return($torrent);
+		$disown = Closure::bind(function () {
+			$this->filename = null;
+		}, $torrent, 'Torrent');
+		$disown();
+		// Verify, do not assume. The closure names a protected field by string,
+		// so if Torrent ever renames it this quietly creates a DYNAMIC property
+		// instead and getFileName() keeps returning the path -- the guard would
+		// fail open, and no test can see it because the suite substitutes its
+		// own Torrent. Reading the field back turns that into a refusal.
+		if($torrent->getFileName() !== null)
+		{
+			self::logCleanupFailure('createTorrent: the replacement still claims '
+				. 'a file on disk after being disowned, so it was not handed to '
+				. 'rTorrent; Torrent::$filename has probably been renamed');
+			return(null);
+		}
+		return($torrent);
+	}
+
 	static public function createTorrent($torrent, $hash, $oldTorrent = null){
 		global $saveUploadedTorrents;
-		// PHP 7.4 warns when Torrent probes binary metainfo as a filename.
-		$torrent = @new Torrent( $torrent );
 
-		// Legacy handlers feed HTTP-200 "topic removed" HTML pages straight in
-		// here and rely on a parse failure meaning the topic is gone.
-		if( $torrent->errors() ) return self::STE_DELETED;
+		if(!($torrent instanceof Torrent) || $torrent->errors())
+		{
+			self::logDebug("createTorrent: " . $hash . " was handed metainfo that is not a parsed"
+				. " torrent; nothing is changed and the check stays retryable");
+			return self::STE_ERROR;
+		}
 
 		$newHash = $torrent->hash_info();
 		if(!is_string($newHash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $newHash))
@@ -1134,16 +1298,28 @@ class ruTrackerChecker
 					. " retaining the occupant and its recovery keys and leaving that transaction to the sweep");
 				return self::STE_ERROR;
 			}
+			// d.get_state and d.is_open are 0/1 and nothing else, proved BEFORE
+			// any branch below erases the occupant, retires its keys or
+			// activates the replacement: intval() turned every unreadable
+			// answer into the "stopped and closed" that authorises the erase.
+			$stagedState = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[1]);
+			$stagedOpen = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[2]);
+			if(!in_array($stagedState, array(0, 1), true) || !in_array($stagedOpen, array(0, 1), true))
+			{
+				self::logDebug("createTorrent: " . $hash . " found " . $newHash
+					. " reporting an unreadable run state; the occupant and its keys are retained");
+				return self::STE_ERROR;
+			}
 			$reconciled = self::reconcileExistingCleanup(
 				$hash, $newHash, (string) $markerReq->val[0], $rawStagedRecord);
 			if($reconciled === null)
 				return self::STE_ERROR;
 			if($reconciled === 'committed')
 			{
-				if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)
+				if($stagedState !== 0 || $stagedOpen !== 0)
 				{
 					self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
-						array('state' => (int) $markerReq->val[1], 'is_open' => (int) $markerReq->val[2]));
+						array('state' => $stagedState, 'is_open' => $stagedOpen));
 					return self::STE_ERROR;
 				}
 				else
@@ -1151,13 +1327,13 @@ class ruTrackerChecker
 						(string) $markerReq->val[0], $rawStagedRecord);
 				return null;
 			}
-			if(intval($markerReq->val[1]) !== 0 || intval($markerReq->val[2]) !== 0)
+			if($stagedState !== 0 || $stagedOpen !== 0)
 			{
 				// OLD presence has already selected cancellation or recovery.
 				// Only after that durable state is reconciled may a live successor
 				// retire the owned keys; it is never treated as disposable.
 				self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
-					array('state' => (int) $markerReq->val[1], 'is_open' => (int) $markerReq->val[2]));
+					array('state' => $stagedState, 'is_open' => $stagedOpen));
 				return self::STE_ERROR;
 			}
 			// The record the dead run wrote at ITS commit point, read before
@@ -1286,8 +1462,17 @@ class ruTrackerChecker
 			$topic, $forum
 		);
 
+		// Nothing is handed over until the replacement provably claims no file
+		// on disk: rTorrent::sendTorrent() unlinks whatever filename the object
+		// carries, and getSource() may have filled that in with the user's own
+		// tied .torrent. A refusal here costs one retryable cycle; getting it
+		// wrong costs a file that was never ours.
+		$disowned = self::disownFile($torrent);
+		if($disowned === null)
+			return self::STE_ERROR;
+
 		// Stage stopped: a failed pre-commit replacement cannot write shared data.
-		$loadedHash = rTorrent::sendTorrent($torrent, false, false, $baseDir,
+		$loadedHash = rTorrent::sendTorrent($disowned, false, false, $baseDir,
 			$label, $saveUploadedTorrents, false, true, $addition);
 		$owner = self::waitForLoad($newHash, $marker);
 		if(!$loadedHash || strcasecmp((string) $loadedHash, (string) $newHash) !== 0 || $owner !== 'ours')

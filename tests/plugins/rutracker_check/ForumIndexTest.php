@@ -380,10 +380,12 @@ fiStateTest($suite, 'fetchDump prunes dump entries untouched for 30 days', funct
     // its own forumdump-N document. Seeding the removed legacy field made
     // cachedDump(999) answer null before any pruning ran, so the
     // assertion below held however the code behaved.
-    RuTrackerState::save('forumdump-999', array('etag' => '"stale"', 'rows' =>
+    RuTrackerState::save('forumdump-999-4', array('generation' => 4, 'etag' => '"stale"', 'rows' =>
         array(1 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 1))));
     RuTrackerState::save('forumindex', array(
         'etags' => array(999 => '"stale"'),
+        'dump_documents' => array(999 => 'forumdump-999-4'),
+        'dump_generations' => array(999 => 4),
         'dump_touched' => array(999 => time() - 31 * 86400),
     ));
     strictAssertTrue(RuTrackerForumIndex::cachedDump(999) !== null,
@@ -1484,10 +1486,16 @@ fiStateTest($suite, 'a 304 whose cached dump is not the generation the ETag name
     Snoopy::reset();
 
     // What the interleaving leaves behind: body from generation A, hint
-    // from generation B.
-    RuTrackerState::save('forumdump-921', array('etag' => '"genA"', 'rows' =>
+    // from generation B. Seeded the way a publication actually reaches disk --
+    // a document the state NAMES, under the generation it published -- so the
+    // ETag comparison below is what refuses it and not the cross-check that
+    // guards a forum with no published generation at all.
+    RuTrackerState::save('forumdump-921-1', array('generation' => 1, 'etag' => '"genA"', 'rows' =>
         array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 45))));
     RuTrackerState::save('forumindex', array(
+        'dump_reservations' => array(921 => 1),
+        'dump_generations' => array(921 => 1),
+        'dump_documents' => array(921 => 'forumdump-921-1'),
         'etags' => array(921 => '"genB"'),
         'dump_touched' => array(921 => time()),
     ));
@@ -1771,6 +1779,49 @@ fiStateTest($suite, 'the fleet half of the wanted set honours the miss backoff',
     strictAssertSame(array(777), $seen, 'once the window elapses the topic is crawled again');
 });
 
+fiStateTest($suite, 'a misses book that is not an array leaves the fleet half of the wanted set alone', function () {
+    // The crawl reads the miss book TWICE, at two different times, and each
+    // read has its own guard. This pins the first one: the unlocked snapshot
+    // runCrawl() takes before it decides what to want.
+    //
+    // Without it, indexing a string book one yields a single character, which
+    // missSuppresses() reads as a miss whose stamp will not parse -- so the
+    // topic is dropped from the wanted set, a bogus record is proposed for it,
+    // and a topic nobody is looking for is a topic that is never checked
+    // again. Measured on the parent of this work: the same shape fatals with
+    // "Array to string conversion" once the repair is written back.
+    //
+    // The second read, inside the update() callback, is guarded separately and
+    // deliberately not pinned: update() re-reads the document under its lock,
+    // so only another PROCESS can corrupt the book in that window, and no
+    // single-process test can produce one.
+    $now = time();
+    $corrupt = 'abcdefghijklmnopqrst';
+    RuTrackerState::save('forumindex', array('misses' => $corrupt));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '5', ''));
+
+    $seen = null;
+    RuTrackerForumIndex::runCrawl($now, function ($wanted) use (&$seen) {
+        $seen = $wanted;
+        return array('resolved' => array(), 'complete' => true);
+    });
+
+    strictAssertSame(array(5), $seen,
+        'a book that holds no record suppresses nothing, so the topic is still wanted');
+    strictAssertSame(0, count(array_filter(ruTrackerChecker::$logs, function ($line) {
+        return strpos($line, 'carries no readable stamp') !== false;
+    })), 'and no character out of a string is reported as an undatable miss');
+    // The book does get repaired, but by the completing crawl's own write-back
+    // through the same normalising read -- not by indexing a character out of
+    // it. So the corrupt string is DISCARDED and topic 5 is recorded as the
+    // miss it actually is, with a stamp that will parse next cycle.
+    $after = RuTrackerState::load('forumindex')['misses'] ?? null;
+    strictAssertTrue(is_array($after), 'the completing crawl leaves a book, not a string');
+    strictAssertTrue(is_int($after[5]['at'] ?? null),
+        'and topic 5 is stamped as a real miss, so its backoff can expire');
+});
+
 fiStateTest($suite, 'a resolved topic forgets an old miss only after its forum write-back lands', function () {
     $now = time();
     RuTrackerState::save('forumindex', array(
@@ -1879,6 +1930,1225 @@ $suite->test('a dump missing the column nobody reads is still a dump', function 
             'result' => array('1' => array_fill(0, count($columns), 0)),
         )), $malformed);
         strictAssertSame(true, $malformed, 'a dump without ' . $required . ' cannot be read');
+    }
+});
+
+// tor_status and seeders are read through RuTrackerRpcValue's signed and
+// nonnegative int32 domains. The exact edges of those two domains are what
+// keeps a 64-bit PHP from accepting a dump value a 32-bit daemon could never
+// carry, and what keeps a negative status readable at all.
+$suite->test('parseDump reads tor_status and seeders at the exact int32 boundaries', function () {
+    $accepted = array(
+        'status INT32_MIN' => array('-2147483648', -2147483648),
+        'status INT32_MAX' => array('2147483647', 2147483647),
+        'status negative'  => array('-7', -7),
+        'status int form'  => array(-7, -7),
+        'status zero'      => array('0', 0),
+    );
+    foreach ($accepted as $label => $case) {
+        $malformed = true;
+        $rows = RuTrackerForumIndex::parseDump(json_encode(array(
+            'format' => array('topic_id' => array('tor_status', 'info_hash')),
+            'result' => array('1' => array($case[0], str_repeat('A', 40))),
+        )), $malformed);
+        strictAssertSame(false, $malformed, $label . ': a canonical status is readable');
+        strictAssertSame($case[1], $rows[1]['tor_status'], $label . ': and read exactly');
+    }
+
+    foreach (array('status past INT32_MAX' => '2147483648',
+                   'status past INT32_MIN' => '-2147483649',
+                   'status PHP_INT_MAX' => (string) PHP_INT_MAX,
+                   'status padded' => ' 0',
+                   'status trailing space' => '0 ') as $label => $bad) {
+        $malformed = false;
+        $rows = RuTrackerForumIndex::parseDump(json_encode(array(
+            'format' => array('topic_id' => array('tor_status', 'info_hash')),
+            'result' => array('1' => array($bad, str_repeat('A', 40))),
+        )), $malformed);
+        strictAssertSame(array(), $rows, $label . ': rejected');
+        strictAssertSame(true, $malformed, $label . ': and the whole dump is marked malformed');
+    }
+
+    // Seeders are the NONNEGATIVE int32 domain: no negatives at all, and the
+    // same ceiling.
+    foreach (array('seeders zero' => array('0', 0),
+                   'seeders int32 max' => array('2147483647', 2147483647),
+                   'seeders int form' => array(12, 12)) as $label => $case) {
+        $malformed = true;
+        $rows = RuTrackerForumIndex::parseDump(json_encode(array(
+            'format' => array('topic_id' => array('tor_status', 'info_hash', 'seeders')),
+            'result' => array('1' => array(0, str_repeat('A', 40), $case[0])),
+        )), $malformed);
+        strictAssertSame(false, $malformed, $label . ': a canonical seeder count is readable');
+        strictAssertSame($case[1], $rows[1]['seeders'], $label . ': and read exactly');
+    }
+
+    foreach (array('seeders INT32_MIN' => '-2147483648',
+                   'seeders PHP_INT_MAX' => (string) PHP_INT_MAX,
+                   'seeders padded' => ' 1',
+                   'seeders minus zero' => '-0') as $label => $bad) {
+        $malformed = false;
+        $rows = RuTrackerForumIndex::parseDump(json_encode(array(
+            'format' => array('topic_id' => array('tor_status', 'info_hash', 'seeders')),
+            'result' => array('1' => array(0, str_repeat('A', 40), $bad)),
+        )), $malformed);
+        strictAssertSame(array(), $rows, $label . ': rejected');
+        strictAssertSame(true, $malformed, $label . ': and the whole dump is marked malformed');
+    }
+});
+
+// --- Persisted and RPC integers at the forum index's own boundaries ---------
+//
+// Every counter below steers something irreversible: whether a tracker-wide
+// crawl runs at all, which generation of a multi-megabyte body is current,
+// which queued request a completing crawl may retire, and which chk-forum
+// value is written onto a torrent. A bare (int) answered 0 for every spelling
+// it could not read, and 0 was the dangerous reading at all four.
+
+// The spellings that are NOT a canonical nonnegative integer, in the shapes a
+// hand-edited or half-written JSON document actually produces.
+function fiCorruptCounters()
+{
+    return array('leading zero' => '05', 'plus sign' => '+5', 'negative' => '-5',
+        'minus zero' => '-0', 'padded' => ' 5', 'trailing text' => '5abc',
+        'float' => 5.5, 'bool' => true, 'text' => 'five', 'null' => null,
+        'array' => array(5));
+}
+
+// The same matrix one level UP. fiCorruptCounters() corrupts the ENTRY inside
+// a per-forum book; these corrupt the BOOK ITSELF, which nothing above ever
+// did -- and that gap is exactly what let a book that is not an array
+// through. Every READ in forumindex.php goes through storedCount(), which
+// answers null for one; a WRITE has no such refusal. On the php85 runtime
+// production uses, `$state[$book][$id] = ...` into a scalar book is an
+// uncaught Error; on the PHP 7.4 target a STRING book swallows the first byte
+// of the value and pads itself to length in complete silence; and unset() on
+// either shape is an Error on both.
+//
+// ABSENT and NULL are deliberately NOT here. Both are the clean empty book --
+// every reader already reads them as empty and PHP vivifies both on write --
+// so repairing either would be the mistake in the other direction. They are
+// asserted as controls instead.
+function fiCorruptContainers()
+{
+    return array('scalar' => 7, 'zero' => 0, 'float' => 5.5, 'string' => 'corrupt',
+        'empty string' => '', 'true' => true, 'false' => false);
+}
+
+// Every per-forum book fetchDump() and touchDump() read an entry out of or
+// write an entry into.
+function fiForumBooks()
+{
+    return array('dump_reservations', 'dump_generations', 'dump_gen', 'dump_tokens',
+        'dump_documents', 'dump_touched', 'etags');
+}
+
+fiStateTest($suite, 'a sweep stamp that will not parse is repaired instead of wedging the crawl for ever', function () {
+    // markSweep() is last_sweep's ONLY writer, and it was gated behind the
+    // same read, so refusing an unreadable stamp disabled the tracker-wide
+    // forum crawl for the WHOLE installation, silently and permanently:
+    // sweepAllowed() false for ever, markSweep() false for ever, and nothing
+    // able to put either back. last_sweep is a pure cooldown STAMP, not an
+    // audit value, so writing $now over one nobody can read is strictly
+    // conservative -- it hands out at most the single crawl below and it
+    // heals the document on the way.
+    foreach (fiCorruptCounters() as $label => $stamp) {
+        ruTrackerChecker::reset();
+        RuTrackerState::save('forumindex', array('last_sweep' => $stamp, 'queue' => array(777)));
+
+        strictAssertSame(true, RuTrackerForumIndex::sweepAllowed(2000000),
+            $label . ': one unreadable byte does not disable the crawl for the whole installation');
+        strictAssertSame(true, RuTrackerForumIndex::markSweep(2000000),
+            $label . ': the window is claimed exactly once');
+        strictAssertSame(2000000, RuTrackerState::load('forumindex')['last_sweep'] ?? null,
+            $label . ': and the stamp is repaired to a value every later reader can use');
+        strictAssertSame(array(777), RuTrackerState::load('forumindex')['queue'] ?? null,
+            $label . ': nothing else in the document is touched');
+        strictAssertSame(false, RuTrackerForumIndex::sweepAllowed(2000001),
+            $label . ': so the repair costs at most the one crawl it just granted');
+        strictAssertSame(false, RuTrackerForumIndex::markSweep(2000001),
+            $label . ': and a second claim is refused by the repaired stamp');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'one crawl is allowed through to restamp it',
+            $label . ': the cooldown that cannot be judged is visible to an operator');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'it is restamped to now',
+            $label . ': and so is the repair itself');
+    }
+
+    // The control: a canonical stamp still holds the cooldown and still lapses.
+    RuTrackerState::save('forumindex', array('last_sweep' => 1000));
+    strictAssertSame(false, RuTrackerForumIndex::sweepAllowed(1000 + 86400), 'the cooldown holds');
+    strictAssertSame(true, RuTrackerForumIndex::sweepAllowed(1000 + 86401), 'and still expires on time');
+    strictAssertSame(true, RuTrackerForumIndex::markSweep(1000 + 86401), 'and the window is claimable');
+});
+
+fiStateTest($suite, 'a generation counter that will not parse fetches nothing this time and is retired, not wedged', function () {
+    // Every writer of these counters is gated behind the same read, so an
+    // unreadable entry meant that forum's dump could never be fetched again
+    // -- and cachedDocument() refuses the cached body for the same reason, so
+    // the forum went permanently and silently dark. The counters are pure
+    // publication bookkeeping for a CACHE, not an audit trail: this fetch is
+    // still refused (nothing may be counted from a number nobody can read),
+    // but the forum's corrupt bookkeeping and the body it named are retired
+    // so the NEXT fetch starts from a clean, absent state.
+    Snoopy::reset();
+    foreach (array('dump_reservations', 'dump_generations', 'dump_gen') as $field) {
+        foreach (fiCorruptCounters() as $label => $value) {
+            $where = $field . '/' . $label;
+            ruTrackerChecker::reset();
+            RuTrackerState::save('forumindex', array(
+                $field => array(921 => $value, 42 => 3),
+                'dump_touched' => array(42 => 1234567890),
+            ));
+            strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+            Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '921', 200,
+                fiDump(6868321, 0, str_repeat('F', 40), 45));
+
+            strictAssertSame(null, RuTrackerForumIndex::fetchDump(921),
+                $where . ': a reservation that cannot be counted from buys no request');
+            strictAssertSame(0, count(Snoopy::$requests),
+                $where . ': and no dump is fetched at all');
+            $after = RuTrackerState::load('forumindex');
+            strictAssertSame(false, array_key_exists(921, $after[$field] ?? array()),
+                $where . ': the unreadable entry is retired rather than left to wedge the forum');
+            strictAssertSame(3, $after[$field][42] ?? null,
+                $where . ': and no other forum is touched by the repair');
+            strictAssertOneLogMatching(ruTrackerChecker::$logs, $field,
+                $where . ': and the refusal names the document and the key');
+
+            // The self-heal: the very next call reserves generation 1 and
+            // publishes, which the wedged version could never do again.
+            strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+            Snoopy::reset();
+            Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '921', 200,
+                fiDump(6868321, 0, str_repeat('F', 40), 45));
+            $fetched = RuTrackerForumIndex::fetchDump(921);
+            strictAssertSame(true, is_array($fetched) && !empty($fetched['fresh']),
+                $where . ': the next fetch succeeds instead of refusing for ever');
+            strictAssertSame(1, RuTrackerState::load('forumindex')['dump_generations'][921] ?? null,
+                $where . ': and publishes under a generation nothing older can claim');
+            Snoopy::reset();
+        }
+    }
+
+    // The control: a canonical counter still reserves the next generation.
+    RuTrackerState::save('forumindex', array('dump_generations' => array(921 => 5)));
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '921', 200, fiDump(6868321, 0, str_repeat('F', 40), 45));
+    $fetched = RuTrackerForumIndex::fetchDump(921);
+    strictAssertSame(true, $fetched['fresh'], 'a canonical generation still fetches');
+    strictAssertSame(6, RuTrackerState::load('forumindex')['dump_generations'][921],
+        'and publishes as the next generation after it');
+});
+
+// The reservation counter's own contract is that a number is handed out once
+// (see storedCount()'s comment). Retiring a forum's corrupt counters
+// necessarily FREES the numbers those counters were holding, so an integer
+// alone stopped being evidence of anything -- and both publish gates compared
+// only that integer. This is the interleaving that opened, run through the
+// real fetchDump() inside the lock-free 30s window makeDumpClient() sizes:
+// A reserves and goes in flight, one byte of a counter goes bad, B refuses
+// and retires, C starts clean and publishes a NEWER body, and only then does
+// A's own response arrive holding a reservation the retirement made reusable.
+// This dump is what decides STE_DELETED.
+fiStateTest($suite, 'a request in flight across a counter retirement cannot republish its older body', function () {
+    // book that goes bad => the generation C is handed once the retirement ran.
+    foreach (array(
+        // The reservation book ITSELF is the unreadable one, so the number A
+        // is holding cannot be recovered from anything on disk and C is handed
+        // exactly the same integer again. Only the reservation's IDENTITY can
+        // separate the two requests here.
+        'dump_reservations' => 1,
+        // These leave A's reservation readable, so the retirement seeds the
+        // counter above it and the number is never reused at all.
+        'dump_generations' => 2,
+        'dump_gen' => 2,
+    ) as $book => $expected) {
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        RuTrackerState::save('forumindex', array());
+        foreach (array('forumdump-921', 'forumdump-921-1', 'forumdump-921-2') as $document)
+            RuTrackerState::drop($document);
+
+        $interleaved = function () use ($book) {
+            // One byte of the book goes bad while A is in flight.
+            RuTrackerState::update('forumindex', function ($state) use ($book) {
+                $state[$book][921] = '01';
+                return $state;
+            });
+            // B finds it, refuses, and retires the forum's bookkeeping --
+            // including the entry A's live reservation was recorded in.
+            $refused = new ForumIndexScripted200Client(0, 'X');
+            strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $refused),
+                $book . ': nothing may be counted from a number nobody can read');
+            strictAssertSame(0, $refused->fetches,
+                $book . ': so that request is not even made');
+            // C then starts from the clean state and publishes a newer body.
+            $newer = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(222, 'C'));
+            strictAssertSame(true, $newer['fresh'],
+                $book . ': the next request starts clean and publishes, rather than being wedged');
+        };
+
+        $answer = RuTrackerForumIndex::fetchDump(921,
+            new ForumIndexScripted200Client(111, 'A', '', '', $interleaved));
+
+        $state = RuTrackerState::load('forumindex');
+        strictAssertSame(222, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+            $book . ': the older in-flight body cannot republish over the newer one');
+        strictAssertSame(222, RuTrackerState::load($state['dump_documents'][921])['rows'][6868321]['seeders'],
+            $book . ': and the document the state names still holds the newer body');
+        strictAssertSame(false, $answer['fresh'],
+            $book . ': the request that crossed the retirement publishes nothing');
+        strictAssertSame(222, $answer['rows'][6868321]['seeders'],
+            $book . ': it answers with the durable winner instead of its own stale wire rows');
+        strictAssertSame($expected, $state['dump_generations'][921] ?? null,
+            $book . ': and no generation still readable on disk is handed out a second time');
+        strictAssertSame('forumdump-921-' . $expected, $state['dump_documents'][921] ?? null,
+            $book . ': so two bodies can never share one document name');
+    }
+
+    // Every witness the retirement counts from, one at a time. The floor is
+    // only a floor if it saw all of them.
+    foreach (array(
+        // dump_gen -- the migration path from the first incomplete generation
+        // attempt -- is scanned LAST, so a floor taken from the prefix before
+        // the unreadable entry would miss the only number there is.
+        'the last book scanned' => array(array(
+            'dump_reservations' => array(921 => '05'),
+            'dump_gen' => array(921 => 5),
+        ), 6),
+        // Both counter books are unreadable; the document the state published
+        // is then the only thing left that still names a generation, and
+        // versionedDumpDocument() is the only writer of that name.
+        'the published document name' => array(array(
+            'dump_reservations' => array(921 => '05'),
+            'dump_generations' => array(921 => ' 5'),
+            'dump_documents' => array(921 => 'forumdump-921-5'),
+        ), 6),
+    ) as $label => $case) {
+        list($seed, $expected) = $case;
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        foreach (array('forumdump-921', 'forumdump-921-1', 'forumdump-921-2',
+            'forumdump-921-5', 'forumdump-921-6') as $document)
+            RuTrackerState::drop($document);
+        RuTrackerState::save('forumdump-921-5', array('generation' => 5, 'etag' => '"g5"', 'rows' =>
+            array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 5))));
+        RuTrackerState::save('forumindex', $seed + array('dump_touched' => array(921 => time())));
+
+        $refused = new ForumIndexScripted200Client(0, 'X');
+        strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $refused),
+            $label . ': the unreadable counter still buys no request');
+        strictAssertSame(0, $refused->fetches, $label . ': and no dump is fetched at all');
+        $after = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(66, 'F'));
+        strictAssertSame(true, $after['fresh'], $label . ': and the forum is not left wedged');
+        strictAssertSame($expected, RuTrackerState::load('forumindex')['dump_generations'][921] ?? null,
+            $label . ': the next reservation is above the generation that witness proves');
+    }
+
+    // The control: with nothing corrupt anywhere a reservation still
+    // publishes, and the next one still supersedes it.
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    RuTrackerState::save('forumindex', array());
+    foreach (array('forumdump-921', 'forumdump-921-1', 'forumdump-921-2') as $document)
+        RuTrackerState::drop($document);
+    $first = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(333, 'D'));
+    strictAssertSame(true, $first['fresh'], 'control: a normal reservation still publishes');
+    strictAssertSame(333, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+        'control: and its body becomes the cache');
+    $second = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(444, 'E'));
+    strictAssertSame(true, $second['fresh'], 'control: the next reservation still supersedes it');
+    strictAssertSame(444, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+        'control: with its own newer body');
+});
+
+// cachedDocument() ran its generation cross-check only while
+// dump_documents[$forumId] was there, and fell back to the legacy unversioned
+// name when it was not. The retirement erases that pointer, so a body left
+// under the legacy name -- written before dumps were versioned, or by a drop
+// that could not remove it -- became "the cache" for a forum whose whole
+// bookkeeping had just been retired, with nothing checking which generation it
+// was. Layer 3 answers "this topic is not in this forum" from that body.
+fiStateTest($suite, 'a retired forum serves no cached body, not even one left under the legacy name', function () {
+    RuTrackerState::save('forumdump-921', array('etag' => '"legacy"', 'rows' =>
+        array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 111))));
+    RuTrackerState::save('forumdump-921-3', array('generation' => 3, 'etag' => '"g3"', 'rows' =>
+        array(6868321 => array('tor_status' => 0, 'info_hash' => str_repeat('B', 40), 'seeders' => 33))));
+    RuTrackerState::save('forumindex', array(
+        'dump_reservations' => array(921 => 3),
+        'dump_generations' => array(921 => 3),
+        'dump_gen' => array(921 => '03'),
+        'dump_documents' => array(921 => 'forumdump-921-3'),
+        'etags' => array(921 => '"g3"'),
+        'dump_touched' => array(921 => time()),
+    ));
+
+    $refused = new ForumIndexScripted200Client(0, 'X');
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $refused),
+        'the unreadable counter retires the forum');
+    strictAssertSame(0, $refused->fetches, 'and buys no request');
+
+    strictAssertSame(null, RuTrackerForumIndex::cachedDump(921),
+        'a retired forum has no cached body, so no absence can be confirmed from one');
+
+    // The control: the very next fetch republishes, and THAT body is served.
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    $published = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(55, 'C'));
+    strictAssertSame(true, $published['fresh'], 'control: the next fetch publishes normally');
+    strictAssertSame(55, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+        'control: and the body it published is the one served');
+});
+
+fiStateTest($suite, 'a cached document whose generation is not canonical is not the current body', function () {
+    // The state names generation 5; the document spells it "05". Read through
+    // a bare (int) the two agreed, and a body nothing published as current was
+    // served -- and confirmed by every later 304.
+    foreach (array('leading zero' => '05', 'padded' => ' 5', 'float' => 5.5,
+        'text' => 'five', 'bool' => true) as $label => $spelling) {
+        RuTrackerState::save('forumdump-921-5', array(
+            'generation' => $spelling, 'etag' => '"e"',
+            'rows' => array(1 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 1)),
+        ));
+        RuTrackerState::save('forumindex', array(
+            'dump_documents' => array(921 => 'forumdump-921-5'),
+            'dump_generations' => array(921 => 5),
+            'dump_touched' => array(921 => time()),
+        ));
+        strictAssertSame(null, RuTrackerForumIndex::cachedDump(921),
+            $label . ': a generation that will not parse is not the one the state names');
+    }
+
+    // The control: the canonical spelling of the same generation IS current.
+    RuTrackerState::save('forumdump-921-5', array(
+        'generation' => 5, 'etag' => '"e"',
+        'rows' => array(1 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 1)),
+    ));
+    strictAssertSame(1, count(RuTrackerForumIndex::cachedDump(921)),
+        'the canonical generation still serves the cached body');
+});
+
+fiStateTest($suite, 'a retention stamp that will not parse drops no cached dump', function () {
+    Snoopy::reset();
+    RuTrackerState::save('forumdump-999-4', array('generation' => 4, 'etag' => '"stale"', 'rows' =>
+        array(1 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 1))));
+    RuTrackerState::save('forumindex', array(
+        'etags' => array(999 => '"stale"'),
+        'dump_documents' => array(999 => 'forumdump-999-4'),
+        'dump_generations' => array(999 => 4),
+        'dump_touched' => array(999 => 'whenever'),
+    ));
+
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '921', 200, fiDump(6868321, 0, str_repeat('F', 40), 45));
+    RuTrackerForumIndex::fetchDump(921);
+
+    strictAssertTrue(RuTrackerForumIndex::cachedDump(999) !== null,
+        'a stamp nobody can read is not evidence the body is 30 days stale');
+    strictAssertSame('"stale"', RuTrackerState::load('forumindex')['etags'][999] ?? null,
+        'and its conditional-GET hint survives with it');
+});
+
+// Restamping an undatable miss record is right; throwing away the part of it
+// that DID read is not. The repair wrote the cap over a count that read
+// cleanly as 1, so a topic on its first miss came back at eight cooldowns
+// instead of one -- seven cooldowns in which no crawl looks for it, its
+// chk-forum cannot be corrected, and layer 3 keeps reading the wrong forum.
+fiStateTest($suite, 'a miss record with an unreadable stamp keeps the count that did read', function () {
+    $cooldown = 86400;
+    foreach (array(
+        // stored record => the count the repair must leave behind.
+        'readable first miss' => array(array('at' => 'whenever', 'n' => 1), 1),
+        'readable third miss' => array(array('at' => 'whenever', 'n' => 3), 3),
+        // The legacy shape is a bare stamp with no count at all, which
+        // missCount() has always read as a first miss.
+        'legacy bare stamp' => array('whenever', 1),
+        // Only a count nobody can read takes the cap.
+        'unreadable count' => array(array('at' => 'whenever', 'n' => '01'), RuTrackerForumIndex::MISS_WINDOW_CAP),
+    ) as $label => $case) {
+        list($stored, $expected) = $case;
+        ruTrackerChecker::reset();
+        RuTrackerState::save('forumindex', array('misses' => array(777 => $stored)));
+
+        RuTrackerForumIndex::queueTopic(777);
+
+        strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': the undatable record still suppresses this attempt, so no crawl is granted');
+        $repaired = RuTrackerState::load('forumindex')['misses'][777] ?? null;
+        strictAssertSame($expected, $repaired['n'] ?? null,
+            $label . ': and the repair keeps the count it could read rather than raising it');
+
+        // The window that count earns, and not a wider one: age the repaired
+        // stamp past its own window and the topic must be queueable again.
+        $window = $cooldown * min(RuTrackerForumIndex::MISS_WINDOW_CAP, 1 << ($expected - 1));
+        RuTrackerState::update('forumindex', function ($state) use ($window) {
+            $state['misses'][777]['at'] = (int) $state['misses'][777]['at'] - $window - 1;
+            return $state;
+        });
+        RuTrackerForumIndex::queueTopic(777);
+        strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': one window after the repair the topic is crawled for again');
+
+        // And not before that window is out.
+        RuTrackerState::save('forumindex', array('misses' => array(888 => $stored)));
+        RuTrackerForumIndex::queueTopic(888);
+        RuTrackerState::update('forumindex', function ($state) use ($window) {
+            $state['misses'][888]['at'] = (int) $state['misses'][888]['at'] - $window + 1;
+            return $state;
+        });
+        RuTrackerForumIndex::queueTopic(888);
+        strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': and the window it earned is held right up to its end');
+    }
+});
+
+fiStateTest($suite, 'a queue serial that will not parse is reseeded above every live generation, not wedged', function () {
+    // Refusing this outright wedged the EXPLICIT half of the crawl for the
+    // whole installation, permanently: storeQueuedTopic() is queue_serial's
+    // only writer and is gated behind this same read, and a MOVED topic (one
+    // that already carries a chk-forum) reaches a crawl through nothing but
+    // this queue. So its chk-forum could never be corrected again, layer 3
+    // kept reading the wrong forum's dump, and with layer 2 confirming
+    // "unregistered" for the re-uploaded topic that path ends in DELETED.
+    // The guard is not the number, it is "no generation a running crawl has
+    // already observed may be handed out again" -- and queue_versions holds
+    // every generation any crawl can be holding, so seeding above the highest
+    // READABLE one restores exactly that guarantee.
+    foreach (fiCorruptCounters() as $label => $serial) {
+        ruTrackerChecker::reset();
+        RuTrackerState::save('forumindex', array(
+            'queue_serial' => $serial,
+            'queue' => array(555, 666),
+            'queue_versions' => array(555 => 9, 666 => '07'),
+        ));
+
+        RuTrackerForumIndex::queueTopic(777);
+
+        $state = RuTrackerState::load('forumindex');
+        strictAssertSame(array(555, 666, 777), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': the topic is queued, so a moved topic can still be re-resolved');
+        strictAssertSame(10, $state['queue_serial'] ?? null,
+            $label . ': under a serial above every generation a running crawl can be holding');
+        strictAssertSame(10, $state['queue_versions'][777] ?? null,
+            $label . ': which is the generation this request carries');
+        strictAssertSame('07', $state['queue_versions'][666] ?? null,
+            $label . ': a generation nobody can read is left exactly as it is, never counted from');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'forumindex.json queue_serial',
+            $label . ': and the repair names the document and the key');
+    }
+
+    // The control: a canonical serial still queues and still advances.
+    RuTrackerState::save('forumindex', array('queue_serial' => 5));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(), 'a canonical serial still queues');
+    strictAssertSame(6, RuTrackerState::load('forumindex')['queue_serial'], 'and still advances');
+});
+
+// The reseed above is only safe while it stays ABOVE what a crawl already
+// observed. Restarting at one -- which is what (int) would have done -- hands
+// a request made DURING a sweep the very generation that sweep is holding, and
+// settleQueue() then retires a request nobody made, which is the ordering
+// failure the serial exists to prevent.
+fiStateTest($suite, 'a reseeded queue serial cannot hand a running crawl its own observed generation', function () {
+    $hash = str_repeat('A', 40);
+    ruTrackerChecker::reset();
+    RuTrackerState::save('forumindex', array(
+        'queue' => array(777),
+        'queue_versions' => array(777 => 1),
+        'queue_serial' => '01',
+    ));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
+        // Another request discovers that the same topic needs a fresh crawl
+        // while this one is in flight -- and finds the serial unreadable.
+        RuTrackerForumIndex::queueTopic(777);
+        return array('resolved' => array(777 => 2222), 'complete' => true);
+    });
+
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'the request made during the sweep survives it: completion retires only what it observed');
+    strictAssertSame(2, RuTrackerState::load('forumindex')['queue_serial'] ?? null,
+        'because the repaired serial was seeded above the generation the crawl was holding');
+});
+
+fiStateTest($suite, 'a queue generation that will not parse is never retired by a completing crawl', function () {
+    foreach (array('leading zero' => '01', 'padded' => ' 1', 'float' => 1.5,
+        'text' => 'first', 'bool' => true, 'negative' => -1) as $label => $version) {
+        RuTrackerState::save('forumindex', array(
+            'queue' => array(777),
+            'queue_versions' => array(777 => $version),
+        ));
+        rXMLRPCRequest::reset();
+        // Nothing is awaiting a forum, so the crawl has only the queue.
+        rXMLRPCRequest::queue('d.multicall', true, false, array());
+
+        RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
+            return array('resolved' => array(), 'complete' => true);
+        });
+
+        strictAssertSame(array(777), RuTrackerState::load('forumindex')['queue'],
+            $label . ': a request whose generation will not read is kept, not retired');
+    }
+});
+
+fiStateTest($suite, 'a miss stamp that will not parse keeps suppressing and is restamped, not left for ever', function () {
+    // The miss record is a per-topic SUPPRESSION cooldown and markMiss() is
+    // its only writer -- and markMiss() only ever runs for a topic that was
+    // crawled for, which an undatable record can never be again. So the topic
+    // was silently and permanently un-crawlable. Restamping to now grants NO
+    // crawl and leaves a record the reader can age out; the undatable one
+    // could never expire or even be pruned. The window it is restamped at is
+    // the one its own count earns -- see the count case beside this one.
+    foreach (array('leading zero' => '01000', 'padded' => ' 1000', 'text' => 'never',
+        'float' => 1000.5, 'bool' => true, 'null' => null) as $label => $at) {
+        ruTrackerChecker::reset();
+        $now = time();
+        RuTrackerState::save('forumindex', array('misses' => array(777 => array('at' => $at, 'n' => 1))));
+
+        RuTrackerForumIndex::queueTopic(777);
+        strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': a miss nobody can date is not a lapsed suppression window');
+        strictAssertSame(array('at' => $now, 'n' => 1),
+            RuTrackerState::load('forumindex')['misses'][777] ?? null,
+            $label . ': and it is restamped, under the count it could read, instead of'
+                . ' suppressing for ever');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, '777',
+            $label . ': and the repair is visible to an operator');
+
+        // markMiss() prunes on every write; a fresh restamp must survive it.
+        RuTrackerForumIndex::markMiss(888, $now);
+        strictAssertTrue(isset(RuTrackerState::load('forumindex')['misses'][777]),
+            $label . ': and the record itself survives the prune-on-write');
+    }
+
+    // The repaired shape is one the reader can actually age out, which is the
+    // recovery path the undatable record never had.
+    $aged = time() - 86400 * RuTrackerForumIndex::MISS_WINDOW_CAP - 1;
+    RuTrackerState::save('forumindex', array('misses' => array(
+        777 => array('at' => $aged, 'n' => RuTrackerForumIndex::MISS_WINDOW_CAP))));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'the widest window still lapses, so the repair is a delay and not a wedge');
+
+    // The control: a canonical, genuinely stale miss still lets the topic queue.
+    RuTrackerState::save('forumindex', array('misses' => array(777 => array('at' => 1000, 'n' => 1))));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'a canonical stale miss still lets the topic be queued again');
+});
+
+fiStateTest($suite, 'markMiss counts up from an unreadable count to the widest window, not the narrowest', function () {
+    // missCount() answers null for a count nobody can read, and null + 1 is 1
+    // in PHP -- the NARROWEST window, written immediately after missWindow()
+    // deliberately chose the widest for the very same record.
+    foreach (array('leading zero' => '05', 'text' => 'many', 'float' => 1.5,
+        'bool' => true, 'negative' => -1, 'padded' => ' 5') as $label => $count) {
+        $now = time();
+        RuTrackerState::save('forumindex', array(
+            'misses' => array(777 => array('at' => $now - 10, 'n' => $count)),
+        ));
+
+        RuTrackerForumIndex::markMiss(777, $now);
+
+        strictAssertSame(RuTrackerForumIndex::MISS_WINDOW_CAP,
+            RuTrackerState::load('forumindex')['misses'][777]['n'] ?? null,
+            $label . ': a count nobody can read counts up to the widest window, not down to the narrowest');
+    }
+
+    // The controls: a readable count still counts up by exactly one, a first
+    // miss is still one, and the legacy bare-timestamp shape is still a first.
+    $now = time();
+    RuTrackerState::save('forumindex', array('misses' => array(777 => array('at' => $now - 10, 'n' => 4))));
+    RuTrackerForumIndex::markMiss(777, $now);
+    strictAssertSame(5, RuTrackerState::load('forumindex')['misses'][777]['n'] ?? null,
+        'control: a canonical 4 still becomes 5');
+    RuTrackerState::save('forumindex', array());
+    RuTrackerForumIndex::markMiss(777, $now);
+    strictAssertSame(1, RuTrackerState::load('forumindex')['misses'][777]['n'] ?? null,
+        'control: a first miss is still one');
+    RuTrackerState::save('forumindex', array('misses' => array(777 => $now - 10)));
+    RuTrackerForumIndex::markMiss(777, $now);
+    strictAssertSame(2, RuTrackerState::load('forumindex')['misses'][777]['n'] ?? null,
+        'control: the legacy bare-timestamp record is still read as a first miss');
+});
+
+fiStateTest($suite, 'a miss count that will not parse suppresses for the longest window, not the shortest', function () {
+    // A count of "01" read as 1 gave the SHORTEST window (one cooldown), so a
+    // topic that has missed eight sweeps could be re-queued after one -- a
+    // full tracker-wide crawl bought by a number nobody could read. The stamp
+    // below sits between the narrowest window (86400) and the widest
+    // (86400 * MISS_WINDOW_CAP), so the two readings disagree about it.
+    $between = time() - 200000;
+    foreach (array('leading zero' => '01', 'text' => 'many', 'float' => 1.5,
+        'bool' => true, 'negative' => -1) as $label => $count) {
+        RuTrackerState::save('forumindex', array(
+            'misses' => array(777 => array('at' => $between, 'n' => $count)),
+        ));
+        RuTrackerForumIndex::queueTopic(777);
+        strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': the widest suppression window applies, not the narrowest');
+    }
+
+    // The control: the canonical spelling of the shortest count still lets the
+    // same stamp through, so this is a rejection of the bytes, not of the path.
+    RuTrackerState::save('forumindex', array(
+        'misses' => array(777 => array('at' => $between, 'n' => 1)),
+    ));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'a canonical count of one still lapses after one cooldown');
+});
+
+// The third reader of the same miss record, and the one that decides whether a
+// tracker-wide crawl is worth running at all: the FLEET half of the wanted
+// set. Read through (int), an undatable miss was "long ago" here too, so a
+// topic no completed crawl can ever resolve bought a full walk every cooldown.
+fiStateTest($suite, 'a fleet topic whose miss cannot be dated is not crawled for, and its record is repaired', function () {
+    foreach (array('text' => 'never', 'leading zero' => '01000', 'float' => 1000.5,
+        'bool' => true, 'no stamp at all' => null) as $label => $at) {
+        RuTrackerState::save('forumindex', array(
+            'misses' => array(777 => array('at' => $at, 'n' => 1)),
+        ));
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '777', ''));
+
+        $swept = null;
+        $now = time();
+        $line = RuTrackerForumIndex::runCrawl($now, function ($wanted) use (&$swept) {
+            $swept = $wanted;
+            return array('resolved' => array(), 'complete' => true);
+        });
+
+        strictAssertSame(null, $line, $label . ': nothing is wanted, so nothing is reported');
+        strictAssertSame(null, $swept, $label . ': and no tracker-wide sweep is run for it');
+        strictAssertSame(null, RuTrackerState::load('forumindex')['last_sweep'] ?? null,
+            $label . ': the cooldown window is not even claimed');
+        // ...but the record is left in a shape that can expire, so this topic
+        // is not un-crawlable for the rest of the installation's life.
+        strictAssertSame(array('at' => $now, 'n' => 1),
+            RuTrackerState::load('forumindex')['misses'][777] ?? null,
+            $label . ': the undatable record is restamped under the count it could read');
+    }
+
+    // The control: a canonical, genuinely stale miss still puts the fleet
+    // topic back in the wanted set.
+    RuTrackerState::save('forumindex', array(
+        'misses' => array(777 => array('at' => 1000, 'n' => 1)),
+    ));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '777', ''));
+    $swept = null;
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use (&$swept) {
+        $swept = $wanted;
+        return array('resolved' => array(), 'complete' => true);
+    });
+    strictAssertSame(array(777), $swept, 'a canonical stale miss is still crawled for');
+});
+
+fiStateTest($suite, 'a chk-topic the fleet scan cannot parse resolves no torrent', function () {
+    foreach (array('leading zero' => '007', 'padded' => ' 7', 'trailing text' => '7abc',
+        'plus sign' => '+7', 'negative' => '-7', 'zero' => '0',
+        'overflow' => '2147483648', 'float' => '7.0') as $label => $stored) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), $stored, ''));
+
+        strictAssertSame(array(), RuTrackerForumIndex::topicsAwaitingForum(),
+            $label . ': ' . $stored . ' names no topic, so no crawl resolution can land on it');
+    }
+
+    // The control: a canonical id is still scanned, and still carries its hash.
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '7', ''));
+    strictAssertSame(array(7 => array(str_repeat('A', 40))), RuTrackerForumIndex::topicsAwaitingForum(),
+        'a canonical chk-topic is still resolved for');
+});
+
+fiStateTest($suite, 'a chk-topic that will not parse authorises no chk-forum write', function () {
+    // The read sits between a scoped lock and a d.set_custom. (int) made "007"
+    // equal to the topic 7 the crawl resolved, so the mapping was written onto
+    // a row whose chk-topic never said 7.
+    foreach (array('leading zero' => '007', 'trailing text' => '7abc', 'padded' => ' 7',
+        'plus sign' => '+7', 'empty' => '', 'text' => 'seven') as $label => $stored) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($stored, ''));
+
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_OBSOLETE,
+            RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, 2222),
+            $label . ': the row does not provably carry the topic this mapping is about');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': and nothing is written to it');
+    }
+
+    // The control: the canonical spelling still writes.
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', ''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, 2222),
+        'a canonical chk-topic still authorises the mapping');
+    strictAssertSame(array(str_repeat('A', 40), 'chk-forum', '2222'),
+        rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+        'and writes exactly the resolved forum');
+});
+
+fiStateTest($suite, 'a forum id that will not parse authorises no chk-forum write', function () {
+    // The value this function WRITES was the one value it never checked: it
+    // canonicalises the row's chk-topic and the caller's topic, and then wrote
+    // $forumId through as it came. Every caller had already coerced its own
+    // copy, so the guard compared a coerced value against itself. chk-forum is
+    // what layer 3 fetches a dump BY, and resolveForum() accepts only a
+    // canonical positive int32 -- so '0' and '-22' installed a mapping the
+    // reader can never accept, this function then answered FORUM_WRITE_CURRENT
+    // for it for ever, and the obligation behind it was never cleared.
+    foreach (array('leading zero' => '022', 'trailing text' => '22abc', 'padded' => ' 22',
+        'plus sign' => '+22', 'float' => 22.9, 'bool' => true, 'hex' => '0x16',
+        'negative' => '-22', 'zero' => '0', 'zero string' => 0, 'empty' => '',
+        'array' => array(22), 'null' => null,
+        'overflow' => '2147483648') as $label => $forum) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', '55'));
+
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_OBSOLETE,
+            RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, $forum),
+            $label . ': a forum id no reader can accept is an impossible obligation, not a stale one');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': and no chk-forum is written for it');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
+            $label . ': the row is not even read for a write that can never land');
+    }
+
+    // And the wedge it left behind: a live chk-forum of "0" -- what the old
+    // path installed -- is never answered CURRENT for a "0" the caller asks
+    // for again, so forumCorrectionReady() cannot keep saying "ready".
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', '0'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_OBSOLETE,
+        RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, '0'),
+        'the installed-but-unreadable mapping is retired instead of confirmed for ever');
+
+    // Controls: both canonical spellings of the same id still write, and an
+    // id already current is still CURRENT.
+    foreach (array('int' => 2222, 'canonical string' => '2222',
+        'widest positive int32' => 2147483647) as $label => $forum) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', ''));
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+            RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, $forum),
+            'control ' . $label . ': a canonical forum id still writes');
+        strictAssertSame(array(str_repeat('A', 40), 'chk-forum', (string) (int) $forum),
+            rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+            'control ' . $label . ': and writes exactly that id');
+    }
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', '2222'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, '2222'),
+        'control: an id already installed is still recognised as current');
+});
+
+fiStateTest($suite, 'a retention key that does not name a forum retires only itself', function () {
+    // The prune read the persisted map KEY through (int). json_decode() keeps
+    // a non-canonical key like "0921" the string it was written as, and
+    // (int) "0921" is 921 -- so the prune deleted forum 921's cached document
+    // while unsetting the "0921" bookkeeping, and 921 was then left naming a
+    // file that is gone.
+    $rows = array(1 => array('tor_status' => 0, 'info_hash' => str_repeat('A', 40), 'seeders' => 1));
+    foreach (array('leading zero' => '0921', 'trailing text' => '921abc',
+        'padded' => ' 921', 'plus sign' => '+921', 'text' => 'nine') as $label => $key) {
+        Snoopy::reset();
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        RuTrackerState::save('forumdump-921-1', array('generation' => 1, 'etag' => '"e"', 'rows' => $rows));
+        RuTrackerState::save('forumindex', array(
+            'dump_documents' => array(921 => 'forumdump-921-1'),
+            'dump_generations' => array(921 => 1),
+            'dump_reservations' => array(921 => 1),
+            'dump_touched' => array(921 => time(), $key => 1),
+        ));
+
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '42', 200,
+            fiDump(6868321, 0, str_repeat('F', 40), 45));
+        RuTrackerForumIndex::fetchDump(42);
+
+        strictAssertTrue(RuTrackerForumIndex::cachedDump(921) !== null,
+            $label . ': the prune of a key that names no forum keeps forum 921 cached');
+        $after = RuTrackerState::load('forumindex');
+        strictAssertSame('forumdump-921-1', $after['dump_documents'][921] ?? null,
+            $label . ': and leaves the bookkeeping that names the surviving body alone');
+        strictAssertSame(false, array_key_exists($key, $after['dump_touched'] ?? array()),
+            $label . ': while the stale key that named nothing is retired');
+    }
+
+    // The control: a CANONICAL stale key still drops the body it names.
+    Snoopy::reset();
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    RuTrackerState::save('forumdump-921-1', array('generation' => 1, 'etag' => '"e"', 'rows' => $rows));
+    RuTrackerState::save('forumindex', array(
+        'dump_documents' => array(921 => 'forumdump-921-1'),
+        'dump_generations' => array(921 => 1),
+        'dump_reservations' => array(921 => 1),
+        'dump_touched' => array(921 => 1),
+    ));
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '42', 200,
+        fiDump(6868321, 0, str_repeat('F', 40), 45));
+    RuTrackerForumIndex::fetchDump(42);
+    strictAssertSame(null, RuTrackerForumIndex::cachedDump(921),
+        'a canonical key 30 days stale still drops the document it names');
+});
+
+// --- Per-forum BOOKS, not the entries inside them ---------------------------
+
+fiStateTest($suite, 'a per-forum book that is not an array is discarded and started again, never a fatal and never a dark forum', function () {
+    // Measured at 3bea1aa5 before this test existed, driving fetchDump()
+    // exactly as production does. dump_reservations = 7 and dump_tokens = 7
+    // each ended in an uncaught Error ("Cannot use a scalar value as an
+    // array") on php85 -- the runtime production runs; dump_documents,
+    // dump_touched and etags did the same on both commits. dump_tokens =
+    // "corrupt" was worse than a fatal: on PHP 7.4 the token wrote its first
+    // BYTE into the string, the publish gate read that byte back, and the
+    // measured cycle was httpFetches=1 answer=null cachedDump=null
+    // pluginLogLines=0, for ever. A whole multi-megabyte dump fetched and
+    // thrown away every cycle, layer 3 answering STE_CANT_REACH_TRACKER for
+    // every torrent in that forum, and not one line saying so.
+    //
+    // Nothing below may raise, either cycle: the suite's error handler makes
+    // a PHP warning a failure, and an uncaught Error is a failure by itself.
+    foreach (fiForumBooks() as $book) {
+        foreach (fiCorruptContainers() as $label => $container) {
+            $where = $book . '/' . $label;
+            ruTrackerChecker::reset();
+            strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+            foreach (array('forumdump-921', 'forumdump-921-1', 'forumdump-921-2') as $document)
+                RuTrackerState::drop($document);
+            RuTrackerState::save('forumindex', array($book => $container));
+
+            // Two cycles, because a book the reservation preamble READS --
+            // the three counters -- legitimately spends the first one
+            // retiring the forum, exactly as an unreadable entry does.
+            $first = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(11, 'A'));
+            if ($first === null)
+                strictAssertTrue(count(ruTrackerChecker::$logs) > 0,
+                    $where . ': a cycle that answers nothing at all says why');
+
+            strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+            $second = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(22, 'B'));
+            strictAssertSame(true, is_array($second) && !empty($second['fresh']),
+                $where . ': the forum publishes rather than staying dark for ever');
+            strictAssertSame(22, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+                $where . ': and the body it published is the one the cache serves');
+
+            $after = RuTrackerState::load('forumindex');
+            strictAssertSame(true, is_array($after[$book] ?? null),
+                $where . ': the book itself is left in a shape an entry can be written into');
+            strictAssertOneLogMatching(ruTrackerChecker::$logs, $book . ' is not an array',
+                $where . ': and the repair names the document, the key and the consequence');
+        }
+    }
+
+    // The controls, and they are the half this task has already shipped
+    // wrong twice: WELL-FORMED input must not fail. An absent book and a null
+    // one are the clean empty book, and a book that IS an array holding a
+    // wrong-shaped ENTRY is not a container problem at all -- the entry-level
+    // matrix owns that, and the book must be left standing either way.
+    $wrongEntry = array(921 => array('deep' => 1));
+    foreach (array(
+        'absent' => array(),
+        'null books' => array('dump_reservations' => null, 'dump_generations' => null,
+            'dump_gen' => null, 'dump_tokens' => null, 'dump_documents' => null,
+            'dump_touched' => null, 'etags' => null),
+        'array books holding a wrong-shaped entry' => array('dump_tokens' => $wrongEntry,
+            'dump_documents' => $wrongEntry, 'dump_touched' => $wrongEntry,
+            'etags' => $wrongEntry),
+    ) as $label => $seed) {
+        ruTrackerChecker::reset();
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        foreach (array('forumdump-921', 'forumdump-921-1', 'forumdump-921-2') as $document)
+            RuTrackerState::drop($document);
+        RuTrackerState::save('forumindex', $seed);
+
+        $answer = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(33, 'C'));
+        strictAssertSame(true, is_array($answer) && !empty($answer['fresh']),
+            $label . ': publishes on the FIRST cycle, with nothing to repair');
+        strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'is not an array')),
+            $label . ': and no book is reported as repaired, because none was corrupt');
+    }
+});
+
+fiStateTest($suite, 'a dump_tokens book that is not an array costs one repaired document, not a forum that refetches for ever and says nothing', function () {
+    // The blocking shape on its own, asserted as the HAZARD rather than as a
+    // return value: the first cycle must publish, the cache must be able to
+    // answer, the book must hold a real token afterwards, and the repair must
+    // be visible. Before the fix the scalar book was an uncaught Error on
+    // php85 at forumindex.php:319 and the string book was silent on 7.4.
+    foreach (array('string' => 'corrupt', 'scalar' => 7) as $label => $container) {
+        ruTrackerChecker::reset();
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        foreach (array('forumdump-921', 'forumdump-921-1') as $document)
+            RuTrackerState::drop($document);
+        RuTrackerState::save('forumindex', array('dump_tokens' => $container));
+
+        $answer = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(45, 'F'));
+        strictAssertSame(true, is_array($answer) && !empty($answer['fresh']),
+            $label . ': the very first cycle publishes instead of discarding its own dump');
+        strictAssertSame(45, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+            $label . ': so layer 3 has a cached body to answer absence from');
+        $after = RuTrackerState::load('forumindex');
+        strictAssertSame(true, is_array($after['dump_tokens'] ?? null),
+            $label . ': the book holds tokens rather than one byte of one');
+        strictAssertSame(true, is_string($after['dump_tokens'][921] ?? null)
+            && strlen($after['dump_tokens'][921]) > 1,
+            $label . ': including this request\'s own, whole');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dump_tokens is not an array',
+            $label . ': and the repair names the document, the key and what it would have cost');
+    }
+});
+
+fiStateTest($suite, 'the reseeded floor reaches a reservations book that is not an array, and the number space still only goes up', function () {
+    // The exact measured input, {"dump_reservations":7,"dump_generations":{"921":3}}:
+    // 011c24e3 logged a refusal and stayed recoverable, 8fa4f56f raised an
+    // uncaught Error at forumindex.php:312 on php85 -- the floor seed writes
+    // into the very book storedCount() had just answered null for, two lines
+    // after a loop that guards its own unset with is_array().
+    ruTrackerChecker::reset();
+    RuTrackerState::save('forumindex', array(
+        'dump_reservations' => 7,
+        'dump_generations' => array(921 => 3),
+    ));
+
+    $refused = new ForumIndexScripted200Client(0, 'X');
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $refused),
+        'a counter that cannot be counted from still buys no request');
+    strictAssertSame(0, $refused->fetches, 'and no dump is fetched at all');
+    strictAssertSame(3, RuTrackerState::load('forumindex')['dump_reservations'][921] ?? null,
+        'the floor the readable books prove still lands, in a book that can now take it');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dump_reservations is not an array',
+        'and discarding the book is named, not merely survived');
+
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    $published = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(88, 'D'));
+    strictAssertSame(true, $published['fresh'], 'the next request publishes rather than being wedged');
+    strictAssertSame(4, RuTrackerState::load('forumindex')['dump_generations'][921] ?? null,
+        'above every generation still readable on disk, so no two bodies can share one name');
+});
+
+fiStateTest($suite, 'a retirement leaves every per-forum book in a shape the next reservation can be written into', function () {
+    // The retirement's whole promise is that the next call starts clean, and
+    // its unset was skipped for precisely the books that most needed it: one
+    // that is not an array cannot be unset (an Error on both target runtimes)
+    // and cannot take the reseeded floor either. dump_tokens is the one that
+    // matters most, because an erased token is what stops a request already
+    // inside the lock-free fetch window from republishing across the
+    // retirement.
+    ruTrackerChecker::reset();
+    RuTrackerState::save('forumindex', array(
+        'dump_reservations' => array(921 => '05'),
+        'dump_generations' => 7,
+        'dump_gen' => 'g',
+        'dump_documents' => 5.5,
+        'dump_touched' => true,
+        'etags' => 'x',
+        'dump_tokens' => 'corrupt',
+    ));
+
+    $refused = new ForumIndexScripted200Client(0, 'X');
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, $refused),
+        'the unreadable counter still buys no request');
+    strictAssertSame(0, $refused->fetches, 'and no dump is fetched at all');
+
+    $after = RuTrackerState::load('forumindex');
+    foreach (fiForumBooks() as $book) {
+        strictAssertSame(true, is_array($after[$book] ?? null),
+            $book . ': the retirement leaves a book the next request can write into');
+        strictAssertSame(false, array_key_exists(921, $after[$book]),
+            $book . ': holding nothing at all for the retired forum');
+    }
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'dump_tokens is not an array',
+        'and the token book being started again is named, since that is what a'
+        . ' request in flight loses the forum on');
+
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    $published = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(66, 'C'));
+    strictAssertSame(true, $published['fresh'], 'and the very next request publishes');
+    strictAssertSame(66, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'],
+        'with a body the cache can serve');
+});
+
+$suite->test('the publish gate compares the token for identity and the number for the reservation the book still records', function () {
+    $pid = getmypid();
+    $token = $pid . '-6a8f0a7af2b551.05220170';
+    $gate = function ($state, $reservation, $held) {
+        return strictInvoke('RuTrackerForumIndex', 'holdsReservation',
+            array($state, 921, $reservation, $held));
+    };
+
+    strictAssertSame(true, $gate(array('dump_reservations' => array(921 => 3),
+        'dump_tokens' => array(921 => $token)), 3, $token),
+        'the pair this request actually reserved still licenses its publish');
+
+    // The NUMBER half, which no test reached before: the token says WHICH
+    // request this is, the number says which generation its body is published
+    // AS and which document name it takes. A book that no longer records that
+    // number -- replaced underneath the request, hand-edited, or an entry one
+    // byte of which stopped reading -- cannot license naming a document after
+    // it, and the token cannot see any of those.
+    strictAssertSame(false, $gate(array('dump_reservations' => array(921 => 4),
+        'dump_tokens' => array(921 => $token)), 3, $token),
+        'a matching token does not publish under a number the book no longer holds');
+    strictAssertSame(false, $gate(array('dump_reservations' => array(921 => '03'),
+        'dump_tokens' => array(921 => $token)), 3, $token),
+        'nor under an entry nobody can read');
+    strictAssertSame(false, $gate(array('dump_reservations' => 7,
+        'dump_tokens' => array(921 => $token)), 3, $token),
+        'nor out of a book that is not a book');
+    strictAssertSame(false, $gate(array('dump_tokens' => array(921 => $token)), 3, $token),
+        'nor with no reservation recorded at all');
+
+    // The TOKEN half, and it is IDENTITY. == accepts every one of these. On
+    // the PHP 7.4 target a stored INTEGER equal to getmypid() is == to a token
+    // beginning "<pid>-", because PHP 7 casts the non-numeric string to an int
+    // for that comparison and gets the pid back; true == any non-empty string
+    // on every version. Either would hand a request the forum on a value that
+    // is not its token.
+    foreach (array(
+        'the pid the token begins with' => $pid,
+        'that pid as a float' => (float) $pid,
+        'true' => true,
+        'the token inside an array' => array($token),
+        'the one byte a corrupt book left behind' => substr($token, 0, 1),
+        'nothing recorded' => null,
+    ) as $label => $stored) {
+        $state = array('dump_reservations' => array(921 => 3));
+        if ($stored !== null) $state['dump_tokens'] = array(921 => $stored);
+        strictAssertSame(false, $gate($state, 3, $token),
+            $label . ': only the token itself licenses a publish, never a value merely equal to it');
+    }
+});
+
+// Captures what reaches the SHARED APPLICATION LOG with $rutrackerCheckDebug
+// deliberately FALSE -- the shipped default. TestLib's stub for
+// ruTrackerChecker::logDebug is ungated and records into a static array, so a
+// test that asserts on that array cannot tell the two channels apart, which is
+// exactly how a permanent wedge stayed silent at default settings while its
+// test passed. Only the file can tell them apart.
+// TestLib's capture, at the shipped default. Four suites now read this same
+// channel back and there is one capture between them, not one per file.
+function fiCapturedAppLog($body)
+{
+    return testCapturedAppLog($body, false);
+}
+
+fiStateTest($suite, 'a forum already at the highest generation this platform can count to says so, instead of stalling in silence for ever', function () {
+    // Measured before the fix: dump_reservations[921] = PHP_INT_MAX gave
+    // answer=null fetches=0 logs=0, every cycle, for ever. The guard predates
+    // this work but 8fa4f56f widened its reach -- a hand-edited document NAME
+    // now seeds the floor from the same ceiling, and that shape published
+    // normally at 011c24e3.
+    //
+    // It does not recover, deliberately -- and not because recovery is
+    // impossible. One exists and keeps monotonicity: the retirement the
+    // unreadable-counter branch runs, without the floor reseed. It is not
+    // taken because PHP_INT_MAX is unreachable by counting (one fetch per
+    // forum per cycle needs about 10^12 years), so the only way in is a hand
+    // edit, and repairing that automatically would paper over a document
+    // somebody edited by hand instead of telling them.
+    //
+    // Which is why this test asserts on the APPLICATION LOG with the debug
+    // flag off, not on ruTrackerChecker::$logs. This is the one refusal in the
+    // file that cannot heal itself, so it is the one that has to be visible at
+    // the shipped default. Asserting the stubbed debug channel passed happily
+    // while production said nothing at all.
+    foreach (array(
+        'the counter' => array('dump_reservations' => array(921 => PHP_INT_MAX)),
+        'a hand-edited document name' => array(
+            'dump_documents' => array(921 => 'forumdump-921-' . PHP_INT_MAX)),
+    ) as $label => $seed) {
+        ruTrackerChecker::reset();
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        RuTrackerState::save('forumindex', $seed);
+
+        $refused = new ForumIndexScripted200Client(1, 'A');
+        $answer = 'unset';
+        $written = fiCapturedAppLog(function () use ($refused, &$answer) {
+            $answer = RuTrackerForumIndex::fetchDump(921, $refused);
+        });
+        strictAssertSame(null, $answer,
+            $label . ': nothing can be counted past the ceiling, so no dump is fetched');
+        strictAssertSame(0, $refused->fetches, $label . ': and no request is made at all');
+        strictAssertSame(1, substr_count($written, 'highest generation'),
+            $label . ': and an operator is told exactly once, in the application log,'
+            . ' with $rutrackerCheckDebug at its shipped default of false');
+        foreach (array('921', 'dump_reservations', 'forumdump-921-') as $needle)
+            strictAssertTrue(strpos($written, $needle) !== false,
+                $label . ': the line names ' . $needle . ', so the operator knows what to clear');
+    }
+
+    // The control: one below the ceiling still reserves and still publishes.
+    ruTrackerChecker::reset();
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    RuTrackerState::save('forumindex', array('dump_reservations' => array(921 => PHP_INT_MAX - 1)));
+    $published = RuTrackerForumIndex::fetchDump(921, new ForumIndexScripted200Client(9, 'B'));
+    strictAssertSame(true, $published['fresh'], 'one below the ceiling still publishes');
+    strictAssertSame(PHP_INT_MAX, RuTrackerState::load('forumindex')['dump_generations'][921] ?? null,
+        'as the last generation the counter can name');
+});
+
+fiStateTest($suite, 'a misses book that is not an array does not wedge the queue and does not fatal a completing crawl', function () {
+    foreach (fiCorruptContainers() as $label => $container) {
+        ruTrackerChecker::reset();
+        RuTrackerState::save('forumindex', array('misses' => $container));
+
+        RuTrackerForumIndex::queueTopic(777);
+
+        strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': a book nobody can read suppresses no topic');
+        strictAssertSame(true, is_array(RuTrackerState::load('forumindex')['misses'] ?? null),
+            $label . ': and it is left able to hold a real miss record');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'misses is not an array',
+            $label . ': naming the document and the key');
+    }
+
+    // And the crawl's own write site. Forgetting a miss for a topic the crawl
+    // just resolved is an unset(), which is an Error on BOTH target runtimes
+    // when the book is a string -- taken after the tracker-wide sweep has
+    // already been spent.
+    ruTrackerChecker::reset();
+    $hash = str_repeat('A', 40);
+    RuTrackerState::save('forumindex', array('queue' => array(777), 'misses' => 'corrupt'));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+    $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
+        return array('resolved' => array(777 => 2222), 'complete' => true);
+    });
+
+    strictAssertSame('wanted 1, resolved 1', $line,
+        'the crawl completes and reports its resolution instead of dying on the book');
+    strictAssertSame(array($hash, 'chk-forum', '2222'),
+        rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+        'and the forum it resolved still reaches the torrent that wanted it');
+    strictAssertSame(true, is_array(RuTrackerState::load('forumindex')['misses'] ?? null),
+        'with the book it had to clear a record out of left a book');
+});
+
+fiStateTest($suite, 'a queue_versions book that is not an array is started again rather than counted from', function () {
+    // queue_versions is the one per-forum-shaped book already read through
+    // isset() && is_array() at every site, so it neither fatals nor wedges:
+    // it is discarded and rebuilt. This pins that, so a later change cannot
+    // quietly make it the same shape as the books above.
+    foreach (fiCorruptContainers() as $label => $container) {
+        ruTrackerChecker::reset();
+        RuTrackerState::save('forumindex', array('queue_versions' => $container));
+
+        RuTrackerForumIndex::queueTopic(777);
+
+        $state = RuTrackerState::load('forumindex');
+        strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+            $label . ': the topic is queued, so a moved topic can still be re-resolved');
+        strictAssertSame(true, is_array($state['queue_versions'] ?? null),
+            $label . ': and the generations book is a book again');
+        strictAssertSame(1, $state['queue_versions'][777] ?? null,
+            $label . ': carrying this request\'s own generation, counted from nothing readable');
     }
 });
 

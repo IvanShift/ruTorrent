@@ -410,8 +410,19 @@ class RuTrackerMetaFetch
         $deadline = RuTrackerRpcValue::canonicalNonnegativeInteger($rawDeadline);
         if (!preg_match('/^[0-9A-Fa-f]{40}$/D', $rawNewHash)
             || $deadline === null || $deadline <= 0) {
-            ruTrackerChecker::logDebug('metafetch: ' . $oldHash
-                . ' has a malformed durable fetch generation; keeping it untouched for diagnosis');
+            // Ungated, unlike every other refusal in this file: they are all
+            // bounded by the deadline they just read, and past it
+            // stillPending() hands over to clearMarks() and releases the old
+            // torrent. This one refuses BECAUSE the generation will not read,
+            // so the deadline that ends every other wait is the very thing
+            // missing. reapOrphans() reaps the stub and never touches the
+            // predecessor's own marks, so the old torrent stays META_PENDING
+            // re-reading these same bytes for ever -- and "for diagnosis" is
+            // not a diagnosis if it is said on a channel conf.php ships off.
+            // See ruTrackerChecker::logUnrepairable().
+            ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
+                . ' has a malformed durable fetch generation; keeping it untouched for diagnosis,'
+                . ' and nothing else will clear it');
             return ruTrackerChecker::STE_META_PENDING;
         }
         // Policy may use canonical values, but ownership keeps the exact bytes
@@ -599,6 +610,8 @@ class RuTrackerMetaFetch
             if (is_array($tiers) && count($tiers)) $torrent->announce_list($tiers);
         }
         $torrent->comment('https://rutracker.org/forum/viewtopic.php?t=' . (int) $stubTuple['topic']);
+        // Only for the size in the diagnostic below: the replacement itself
+        // travels as the object, already decoded and already patched.
         $bytes = (string) $torrent;
 
         $expectedCustoms = array(
@@ -614,7 +627,7 @@ class RuTrackerMetaFetch
             return self::stillPending($oldHash, $stubTuple, $now, $deadline, $claim, true,
                 'the service item could never be erased, so the replacement could not be committed', 0);
 
-        $result = ruTrackerChecker::createTorrent($bytes, $oldHash);
+        $result = ruTrackerChecker::createTorrent($torrent, $oldHash);
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' replacement by ' . $newHash
             . ' returned ' . self::describeResult($result));
         if ($result === null) self::restoreReplacement($oldHash, $newHash);

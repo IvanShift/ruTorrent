@@ -24,17 +24,6 @@ class RuTrackerCheckImpl
         return preg_match('/^[0-9A-F]{40}$/', $value) ? $value : null;
     }
 
-    static private function parseNonnegativeInteger($value)
-    {
-        if (is_int($value)) return $value >= 0 ? $value : null;
-        if (!is_string($value)
-            || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $value)) {
-            return null;
-        }
-        $parsed = (int) $value;
-        return (string) $parsed === $value ? $parsed : null;
-    }
-
     static private function extractTopicId($url)
     {
         if (!is_string($url) || $url === '') return null;
@@ -141,7 +130,7 @@ class RuTrackerCheckImpl
         $values = $req->val;
         if (count($values) < 2) return 'transport';
 
-        $trackerCount = self::parseNonnegativeInteger($values[0]);
+        $trackerCount = RuTrackerRpcValue::canonicalNonnegativeInteger($values[0]);
         if ($trackerCount === null || $trackerCount > intdiv(PHP_INT_MAX - 2, 4)) {
             return 'transport';
         }
@@ -155,9 +144,9 @@ class RuTrackerCheckImpl
         $rows = array();
         for ($i = 1; $i + 4 <= $messageIndex; $i += 4) {
             if (!is_string($values[$i])) return 'transport';
-            $enabled = self::parseNonnegativeInteger($values[$i + 1]);
-            $failed = self::parseNonnegativeInteger($values[$i + 2]);
-            $success = self::parseNonnegativeInteger($values[$i + 3]);
+            $enabled = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 1]);
+            $failed = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 2]);
+            $success = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 3]);
             if ($enabled === null || $failed === null || $success === null) {
                 return 'transport';
             }
@@ -187,9 +176,11 @@ class RuTrackerCheckImpl
             if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) $row['url'])) continue;
             $host = (string) @parse_url($row['url'], PHP_URL_HOST);
             $described[] = ($host !== '' ? $host : 'unknown host')
-                . ' enabled=' . (int) $row['enabled']
-                . ' failed=' . (int) $row['failed']
-                . ' success=' . (int) $row['success'];
+                // Already canonical ints: layer1Verdict() rejects the whole
+                // reply when any counter fails RuTrackerRpcValue.
+                . ' enabled=' . $row['enabled']
+                . ' failed=' . $row['failed']
+                . ' success=' . $row['success'];
         }
         return count($described) ? implode('; ', $described) : 'no RuTracker tracker row';
     }
@@ -207,8 +198,12 @@ class RuTrackerCheckImpl
         $forum = self::readCustom($hash, "chk-forum");
         $known = ($forum !== null);
         if ($forum === null) return null;
-        $forum = trim($forum);
-        return ($forum !== '' && ctype_digit($forum)) ? (int) $forum : null;
+        // Canonical or nothing: ctype_digit() plus a bare (int) read "007" as
+        // the forum 7 and "0" as the forum 0, and layer 3 then fetched a dump
+        // from a forum the stored value never named -- whose rows go on to
+        // decide whether this torrent is deleted. trim() stays: transport
+        // whitespace is not the question, the spelling of the id is.
+        return RuTrackerRpcValue::canonicalPositiveInt32(trim($forum));
     }
 
     // Clears the deletion counter. (The docblock here used to describe
@@ -263,8 +258,11 @@ class RuTrackerCheckImpl
         // STE_DELETED, and a settled deletion rests for a week.
         $cycles = max(1, isset($rutrackerDeleteCycles) ? (int) $rutrackerDeleteCycles : 3);
         $stored = self::readCustom($hash, "chk-del");
-        return $stored !== null && preg_match('/^(\d+):/', (string) $stored, $m)
-            && (int) $m[1] >= $cycles;
+        if ($stored === null || !preg_match('/^([0-9]+):/', (string) $stored, $m)) return false;
+        // "03" is not the count 3: it is a spelling confirmDeletion() cannot
+        // have written, so it is no record of a completed confirmation run.
+        $count = RuTrackerRpcValue::canonicalNonnegativeInteger($m[1]);
+        return $count !== null && $count >= $cycles;
     }
 
     static private function confirmDeletion($hash, $now, $interval)
@@ -287,9 +285,19 @@ class RuTrackerCheckImpl
                 . ' deletion counter unreadable, deferring rather than restarting the count');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
-        if (preg_match('/^(\d+):(\d+)$/', $stored, $m)) {
-            $count = (int) $m[1];
-            $lastIncrement = (int) $m[2];
+        if (preg_match('/^([0-9]+):([0-9]+)$/D', $stored, $m)) {
+            // Both halves canonical or neither counts. A bare (int) read "03"
+            // as three consecutive cycles the tracker never gave, and the
+            // third of those is the settled STE_DELETED verdict.
+            $count = RuTrackerRpcValue::canonicalNonnegativeInteger($m[1]);
+            $lastIncrement = RuTrackerRpcValue::canonicalNonnegativeInteger($m[2]);
+            if ($count === null || $lastIncrement === null) {
+                ruTrackerChecker::logDebug('download_torrent: ' . $hash
+                    . ' deletion counter is not canonically spelled; the count starts over'
+                    . ' rather than counting toward a deletion verdict');
+                $count = 0;
+                $lastIncrement = 0;
+            }
         }
 
         // "N of M CONSECUTIVE cycles" is enforced by resetDeletion()'s three
@@ -311,9 +319,18 @@ class RuTrackerCheckImpl
                 . ' cannot be checked against an unreadable healthy-verdict timestamp; deferring');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
-        if ($count > 0 && $successAt !== null && (int) $successAt > $lastIncrement) {
+        // An UNSET chk-stime reads back as '' -- no healthy verdict on record,
+        // nothing to compare against. Any other spelling that will not parse
+        // cannot prove the run consecutive, and (int) answered 0 for all of
+        // them: smaller than any real stamp, so the guard passed and the count
+        // stood. The value itself never reaches the log.
+        $successStamp = ($successAt === null || $successAt === '')
+            ? null : RuTrackerRpcValue::canonicalNonnegativeInteger($successAt);
+        $stampUnusable = $successAt !== null && $successAt !== '' && $successStamp === null;
+        if ($count > 0 && ($stampUnusable || ($successStamp !== null && $successStamp > $lastIncrement))) {
             ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' deletion count ' . $count
-                . ' predates the last up-to-date verdict at ' . (int) $successAt . ', restarting it');
+                . ' predates the last up-to-date verdict at '
+                . ($stampUnusable ? 'a stamp that will not parse' : $successStamp) . ', restarting it');
             $count = 0;
             $lastIncrement = 0;
         }
@@ -381,7 +398,7 @@ class RuTrackerCheckImpl
         $req->important = false;
         if (!$req->success() || !isset($req->val[0], $req->val[1])) return null;
 
-        $state = (int) $req->val[0];
+        $state = RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
         if ($state !== ruTrackerChecker::STE_NOT_NEED && $state !== ruTrackerChecker::STE_INPROGRESS)
             return null;
 

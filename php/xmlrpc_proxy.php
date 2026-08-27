@@ -217,6 +217,7 @@ class XMLRPCProxy
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
 	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
 	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
+	 *                                 filesystem in load.start / load.normal.
 	 *                                 Off by default: a remote client has no way
 	 *                                 to know what is on that filesystem, and the
 	 *                                 path it names becomes the download's tied
@@ -224,6 +225,8 @@ class XMLRPCProxy
 	 * @return array  'action'  => "send" or "reject"
 	 *                'payload' => the bytes to send, empty when rejecting
 	 *                'trusted' => whether the connection carrying them may be trusted
+	 *                'method'  => the command a refusal refused, null when forwarding
+	 *                             or when the refusal names no single command
 	 *                'log'     => what happened, in the order it happened
 	 */
 	public static function decide($rawData, $mode = 'sanitize', $safeParams = array(), $allowLocalPaths = false, $options = array())
@@ -247,7 +250,7 @@ class XMLRPCProxy
 
 		if(self::isDenied($methodName, $deny))
 			return self::reject("rejected (not allowed on this connection): ".
-				self::logValue($methodName));
+				self::logValue($methodName), $methodName);
 
 		$directory = isset($options['directory']) ? $options['directory'] : null;
 
@@ -261,7 +264,7 @@ class XMLRPCProxy
 				{
 					if(!$allowLocalPaths)
 						return self::reject("rejected (load from a local path): ".
-							$methodName." ".self::logValue($uri));
+							$methodName." ".self::logValue($uri), $methodName);
 					$localPath = $uri;
 				}
 			}
@@ -305,11 +308,26 @@ class XMLRPCProxy
 					$command = self::commandName($value);
 					if(($command !== null) && self::isDenied($command, $deny))
 						return self::reject("rejected (not allowed on this connection): ".
-							$methodName." carrying ".self::logValue($command));
+							$methodName." carrying ".self::logValue($command), $command);
 				}
 
-				return self::forward($rawData, false, "untrusted: ".$methodName." (".
-					count($rebuilt['stripped'])." command parameters this side does not rebuild)");
+				// Name the members, not just how many there are. rTorrent
+				// refuses a multicall WHOLE if any member is outside its own
+				// rpc.mark_safe list, so the outcome here is all-or-nothing:
+				// the allowed setters in the same batch do not run either.
+				// "N command parameters this side does not rebuild" reads like
+				// a partial degradation and sent more than one diagnosis of an
+				// external client (Prowlarr, Sonarr, Radarr, Transdroid) down
+				// the wrong path.
+				$names = array();
+				foreach($rebuilt['stripped'] as $value)
+				{
+					$command = self::commandName($value);
+					$names[] = ($command !== null) ? $command : '?';
+				}
+				return self::forward($rawData, false, "untrusted: ".$methodName." carrying ".
+					implode(', ', $names)." (forwarded as the caller's own bytes; rtorrent ".
+					"refuses the whole multicall if any of them is not safe there)");
 			}
 
 			$trusted = $rebuilt['rebuiltAll'];
@@ -337,7 +355,7 @@ class XMLRPCProxy
 			foreach(self::multicallMemberNames($xml) as $member)
 				if(self::isDenied($member, $deny))
 					return self::reject("rejected (not allowed on this connection): ".
-						"system.multicall carrying ".self::logValue($member));
+						"system.multicall carrying ".self::logValue($member), $member);
 		}
 
 		// Unknown method — pass through as untrusted.
@@ -574,13 +592,49 @@ class XMLRPCProxy
 	private static function forward($payload, $trusted, $line)
 	{
 		return array('action' => 'send', 'payload' => $payload,
-			'trusted' => $trusted, 'log' => array($line));
+			'trusted' => $trusted, 'method' => null, 'log' => array($line));
 	}
 
-	private static function reject($line)
+	/**
+	 * A refusal. $method names the command that was refused, when the refusal
+	 * has one to name — a door renders it back to the caller so the client is
+	 * told what it may not do, instead of being left to guess.
+	 */
+	private static function reject($line, $method = null)
 	{
 		return array('action' => 'reject', 'payload' => '',
-			'trusted' => false, 'log' => array($line));
+			'trusted' => false, 'method' => $method, 'log' => array($line));
+	}
+
+	/**
+	 * The sentence a door reports when this filter refuses a call. rtorrent
+	 * never saw the call, so it says this server refused it rather than
+	 * blaming rtorrent for an outage that did not happen. Both doors render
+	 * this one string -- httprpc through rejectionFault(), rpc2.php into its
+	 * own fault envelope -- so a refusal cannot read as two different answers
+	 * depending on which door took it.
+	 */
+	public static function rejectionMessage($method)
+	{
+		return (($method !== null) && ($method !== ''))
+			? "The command '".$method."' was rejected by this server."
+			: "This XMLRPC call was rejected by this server.";
+	}
+
+	/**
+	 * The XMLRPC fault body the httprpc door returns for a refusal: -501 and
+	 * the rejectionMessage() sentence naming the command.
+	 */
+	public static function rejectionFault($method)
+	{
+		$faultString = self::rejectionMessage($method);
+		return '<?xml version="1.0" encoding="UTF-8"?>'."\n"
+			.'<methodResponse><fault><value><struct>'
+			.'<member><name>faultCode</name><value><i4>-501</i4></value></member>'
+			.'<member><name>faultString</name><value><string>'
+			.htmlspecialchars($faultString, ENT_NOQUOTES, 'UTF-8')
+			.'</string></value></member>'
+			.'</struct></value></fault></methodResponse>';
 	}
 
 	/**

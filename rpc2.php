@@ -154,7 +154,15 @@ foreach($decision['log'] as $line)
 	rpc2_log($line);
 
 if($decision['action'] !== 'send')
-	rpc2_fault('403 Forbidden', 'This XMLRPC call is not allowed on this endpoint.');
+{
+	// The filter refused this call; rtorrent never saw it. Name the command so
+	// the caller is told what it may not do, in the same words the httprpc door
+	// renders from XMLRPCProxy::rejectionFault() for the same refusal -- one
+	// refusal must not read as two different answers depending on which door
+	// took it.
+	$refused = isset($decision['method']) ? $decision['method'] : null;
+	rpc2_fault('403 Forbidden', XMLRPCProxy::rejectionMessage($refused));
+}
 
 $result = rpc2_send($decision['payload'], $decision['trusted']);
 if($result === null)

@@ -142,7 +142,7 @@ describe("xmlrpc calls", () => {
       expect(theRequestManager.map("port_open")).toBe("network.port_open");
     });
 
-    for (const version of [0x1012, 0x1013]) {
+    for (const version of [0x1012, 0x1013, 0x1015]) {
       withRtorrentVersion(version, () => {
         expect(theRequestManager.map("get_port_range")).toBe(
           "network.listen.port.range"
@@ -206,6 +206,11 @@ describe("xmlrpc calls", () => {
         "d.is_partially_done="
       );
     });
+    withRtorrentVersion(0x1015, () => {
+      expect(theRequestManager.map("d.is_partially_done=")).toBe(
+        "d.is_partially_done="
+      );
+    });
     // 0 is the sentinel php/getplugins.php emits while the daemon is
     // unreachable. The alias covers it on purpose: cat is understood by every
     // daemon generation, so an unknown version degrades to the no-op instead
@@ -213,6 +218,90 @@ describe("xmlrpc calls", () => {
     withRtorrentVersion(0, () => {
       expect(theRequestManager.map("d.is_partially_done=")).toBe("cat=");
     });
+  });
+
+  // js/content.js keeps a second, hand-written copy of the alias tables in
+  // php/methods-*.php, and only a handful of its entries were asserted by
+  // name above -- 23 across both halves of the suite, out of 317 here.
+  // Nothing checked that a target is a command the daemon actually has, so
+  // the tests below walk the whole map instead of sampling it.
+  //
+  // The registry to hold it against is the 982-name system.listMethods
+  // answer from the live 0.16.20 daemon, which the PHP suite already carries
+  // as a fixture. Read it out of that file rather than keeping a second
+  // copy here, so the two halves of the suite cannot drift apart.
+  function stockDaemonMethods() {
+    const suite = readFileSync("php/RtorrentCompatibilityTest.php", {
+      encoding: "utf-8",
+    });
+    const names = /<<<'LISTMETHODS'\n([\s\S]*?)\nLISTMETHODS/
+      .exec(suite)[1]
+      .split("\n");
+    expect(names).toHaveLength(982);
+    return new Set(names);
+  }
+
+  function effectiveTargets(version) {
+    let aliases, targets;
+    withRtorrentVersion(version, () => {
+      aliases = Object.keys(theRequestManager.aliases);
+      targets = new Set(aliases.map((alias) => theRequestManager.map(alias)));
+    });
+    return { keys: aliases.length, targets };
+  }
+
+  it("maps every alias to a name the daemon registers", () => {
+    // rtorrent registers dht.throttle.name, its setter and throttle.ip only
+    // inside if(method.use_deprecated == 1) (src/main.cc:388-433), and since
+    // 0.16.14 that can only be turned on with the -D launch option. A stock
+    // daemon answers "Method not defined" to all three. They are dormant
+    // rather than broken -- nothing sends get_dht_throttle, set_dht_throttle
+    // or throttle_ip -- but the set is pinned exactly, so a fourth one, or a
+    // first caller, fails here instead of in a user's settings panel.
+    //
+    // The empty entry is content.js's own (:563): an identity mapping that
+    // keeps an empty command name empty. It is not a daemon method and is
+    // listed here for that reason, not as a fault.
+    const unregistered = [
+      "",
+      "dht.throttle.name",
+      "dht.throttle.name.set",
+      "throttle.ip",
+    ];
+    const registry = stockDaemonMethods();
+
+    // Only 0.16.18 and later are held against this registry: 0.16.16 and
+    // below map the port commands to network.port_range and friends, which
+    // 0.16.18 removed, so the live daemon's list is the wrong oracle there.
+    for (const version of [0x1012, 0x1015]) {
+      const { targets } = effectiveTargets(version);
+      expect([...targets].filter((t) => !registry.has(t)).sort()).toEqual(
+        unregistered
+      );
+    }
+  });
+
+  it("keeps the alias table the same size at every version gate", () => {
+    // The walk above would assert nothing at all over an empty map, and the
+    // JS tables are gated by hand in correctContent(), so pin what each gate
+    // is expected to produce. A count that moves means a table was edited --
+    // deliberately or by a bad merge -- and wants looking at.
+    const expected = [
+      [0x809, 4, 4],
+      [0x908, 299, 285],
+      [0x0a02, 314, 298],
+      [0x1000, 314, 298],
+      [0x1010, 317, 299],
+      [0x1012, 317, 297],
+      [0x1015, 317, 297],
+    ];
+    for (const [version, keys, targets] of expected) {
+      const effective = effectiveTargets(version);
+      const seen = [effective.keys, effective.targets.size];
+      expect({ [version.toString(16)]: seen }).toEqual({
+        [version.toString(16)]: [keys, targets],
+      });
+    }
   });
 
   it("should parse getprops response", () => {
@@ -333,6 +422,37 @@ describe("xmlrpc calls", () => {
       expect(ret.torrents[hash].label).toBe(label);
       expect(ret.torrents[hash].comment).toBe(comment);
     }
+  });
+
+  // The server diffs against a cached copy of the previous answer. When it has
+  // none -- first poll, or the cache was evicted or could not be written -- it
+  // sends the whole list and no deletions, and says so with "full".
+  function seedListState() {
+    const stub = new rTorrentStub("?list=1");
+    stub.getResponse(loadXML(stub.action));
+    return stub;
+  }
+
+  it("drops torrents a full list does not mention", () => {
+    const stub = seedListState();
+    expect(Object.keys(theRequestManager.torrents)).toHaveLength(4);
+
+    const kept = { [h("A")]: theRequestManager.torrents[h("A")] };
+    const ret = stub.listResponse({ t: kept, cid: 7, full: 1 });
+
+    expect(Object.keys(theRequestManager.torrents)).toEqual([h("A")]);
+    expect(Object.keys(ret.torrents)).toEqual([h("A")]);
+  });
+
+  it("keeps torrents a partial list does not mention", () => {
+    const stub = seedListState();
+    const changed = { [h("A")]: theRequestManager.torrents[h("A")] };
+
+    stub.listResponse({ t: changed, cid: 8 });
+
+    expect(Object.keys(theRequestManager.torrents).sort()).toEqual(
+      [h("A"), h("B"), h("C"), h("D")].sort()
+    );
   });
 
   it("reads the partially done flag from the list response", () => {

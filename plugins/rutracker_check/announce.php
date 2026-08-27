@@ -1,187 +1,14 @@
 <?php
 
-require_once( __DIR__ . '/../../php/Torrent.php' );
+// The settings directory RuTrackerState writes the announce budget into is
+// resolved through FileUtil, which php/util.php's autoloader supplies. This
+// file used to pick that up by accident -- its bencode decoder inherited from
+// php/Torrent.php, which requires util.php -- and the decoder is gone, so the
+// dependency is stated instead of inherited.
+require_once( __DIR__ . '/../../php/util.php' );
+require_once( __DIR__ . '/bencode.php' );
 require_once( __DIR__ . '/state.php' );
-
-// Torrent::decode() loses two details the announce schema needs: integers are
-// converted to floats, and empty lists/dictionaries both become array(). This
-// subclass retains small typed metadata for the top-level schema and peer-list
-// entries while recursively validating the raw syntax of unknown extensions.
-class RuTrackerBencodeDecoder extends Torrent
-{
-    private $schema = array();
-    private $scanData = '';
-    private $scanPointer = 0;
-
-    public function __construct()
-    {
-    }
-
-    public function decodeComplete($string)
-    {
-        $this->scanData = $string;
-        $this->scanPointer = 0;
-        $this->schema = $this->scanTopDictionary();
-        if ($this->scanPointer !== strlen($string))
-            throw new Exception('Unconsumed trailing data in bencode schema scan');
-
-        $res = $this->decode($string);
-        if ($this->pointer !== strlen($string))
-            throw new Exception('Unconsumed trailing data in bencode stream');
-        return $res;
-    }
-
-    public function schema()
-    {
-        return $this->schema;
-    }
-
-    private function currentByte()
-    {
-        if ($this->scanPointer >= strlen($this->scanData))
-            throw new Exception('Unexpected end of bencode stream');
-        return $this->scanData[$this->scanPointer];
-    }
-
-    private function scanString()
-    {
-        $colon = strpos($this->scanData, ':', $this->scanPointer);
-        if ($colon === false)
-            throw new Exception('Missing bencode string delimiter');
-        $token = substr($this->scanData, $this->scanPointer, $colon - $this->scanPointer);
-        if (!preg_match('/^(?:0|[1-9][0-9]*)$/D', $token))
-            throw new Exception('Invalid bencode string length');
-        $length = (int) $token;
-        $start = $colon + 1;
-        if ($length < 0 || $start + $length > strlen($this->scanData))
-            throw new Exception('Truncated bencode string');
-        $this->scanPointer = $start + $length;
-        return substr($this->scanData, $start, $length);
-    }
-
-    private function scanIntegerToken()
-    {
-        if ($this->currentByte() !== 'i')
-            throw new Exception('Expected bencode integer');
-        $end = strpos($this->scanData, 'e', $this->scanPointer + 1);
-        if ($end === false)
-            throw new Exception('Unterminated bencode integer');
-        $token = substr($this->scanData, $this->scanPointer + 1, $end - $this->scanPointer - 1);
-        if (!preg_match('/^(?:0|-?[1-9][0-9]*)$/D', $token))
-            throw new Exception('Noncanonical bencode integer');
-        $this->scanPointer = $end + 1;
-        return $token;
-    }
-
-    private function scanValue()
-    {
-        $byte = $this->currentByte();
-        if ($byte === 'i') {
-            $this->scanIntegerToken();
-            return;
-        }
-        if ($byte === 'l') {
-            $this->scanPointer++;
-            while ($this->currentByte() !== 'e')
-                $this->scanValue();
-            $this->scanPointer++;
-            return;
-        }
-        if ($byte === 'd') {
-            $this->scanPointer++;
-            while ($this->currentByte() !== 'e') {
-                $this->scanString();
-                $this->scanValue();
-            }
-            $this->scanPointer++;
-            return;
-        }
-        if ($byte >= '0' && $byte <= '9') {
-            $this->scanString();
-            return;
-        }
-        throw new Exception('Invalid bencode value type');
-    }
-
-    private function scanTypedValue()
-    {
-        $byte = $this->currentByte();
-        if ($byte === 'i')
-            return array('type' => 'integer', 'token' => $this->scanIntegerToken());
-        if ($byte >= '0' && $byte <= '9')
-            return array('type' => 'string', 'value' => $this->scanString());
-
-        $type = $byte === 'l' ? 'list' : ($byte === 'd' ? 'dictionary' : 'invalid');
-        $this->scanValue();
-        return array('type' => $type);
-    }
-
-    private function scanPeerDictionary()
-    {
-        $this->scanPointer++;
-        $fields = array();
-        $duplicate = false;
-        while ($this->currentByte() !== 'e') {
-            $key = $this->scanString();
-            if ($key === 'ip' || $key === 'port') {
-                if (array_key_exists($key, $fields))
-                    $duplicate = true;
-                $fields[$key] = $this->scanTypedValue();
-            } else {
-                $this->scanValue();
-            }
-        }
-        $this->scanPointer++;
-        return array('type' => 'dictionary', 'fields' => $fields, 'duplicate' => $duplicate);
-    }
-
-    private function scanPeers()
-    {
-        $byte = $this->currentByte();
-        if ($byte !== 'l')
-            return $this->scanTypedValue();
-
-        $this->scanPointer++;
-        $items = array();
-        while ($this->currentByte() !== 'e') {
-            if ($this->currentByte() === 'd')
-                $items[] = $this->scanPeerDictionary();
-            else
-                $items[] = $this->scanTypedValue();
-        }
-        $this->scanPointer++;
-        return array('type' => 'peer-list', 'items' => $items);
-    }
-
-    private function scanTopDictionary()
-    {
-        if ($this->currentByte() !== 'd')
-            throw new Exception('Expected top-level bencode dictionary');
-        $this->scanPointer++;
-        $fields = array();
-        $known = array(
-            'failure reason' => true,
-            'interval' => true,
-            'peers' => true,
-            'complete' => true,
-            'incomplete' => true,
-            'min interval' => true,
-        );
-        while ($this->currentByte() !== 'e') {
-            $key = $this->scanString();
-            if (!isset($known[$key])) {
-                $this->scanValue();
-                continue;
-            }
-            $node = $key === 'peers' ? $this->scanPeers() : $this->scanTypedValue();
-            if (array_key_exists($key, $fields))
-                $node['duplicate'] = true;
-            $fields[$key] = $node;
-        }
-        $this->scanPointer++;
-        return $fields;
-    }
-}
+require_once( __DIR__ . '/runstate.php' );
 
 // Layer 2 of the post-API design: passkey-less announce confirmation.
 // The probe identity MUST differ from rTorrent's own peer_id/port/key —
@@ -211,10 +38,12 @@ class RuTrackerAnnounce
     // own "1-6,10,12,15,20,30 or 60" minutes).
     const MIN_WINDOW = 60;
 
-    // The largest announce answer classify() will decode. See the reasoning
-    // where it is applied: this is a bound on the decoder's recursion depth
-    // as much as on the transfer, so it cannot be raised on transfer grounds
-    // alone. Over a hundred times the size of any answer this probe asks for.
+    // The largest announce answer classify() will decode, and the source of
+    // the decoder's byte and integer-digit ceilings (see BENCODE_LIMITS). The
+    // decoder in bencode.php is iterative and bounds depth and token count
+    // itself, so this caps transfer and decode cost rather than stack depth,
+    // but the ceilings are derived from it and move with it.
+    // Over a hundred times the size of any answer this probe asks for.
     const MAX_ANNOUNCE_BODY = 8192;
 
     // The per-host announce budget -- a windowed probe count (window_start +
@@ -245,9 +74,45 @@ class RuTrackerAnnounce
         return strtolower(rtrim((string) $host, '.'));
     }
 
+    // The host's four budget fields through the one canonical parser, or null
+    // when the stored entry cannot be believed. An ABSENT field is the fresh
+    // host, so zero is the reading rather than a guess; one that is present
+    // but not canonical is corruption, and every direction the old casts
+    // rounded it was dangerous -- "abc" a lapsed cooldown, "01" a smaller
+    // counter, 1.5 a fresh window.
     static private function entryFor($state, $host)
     {
-        return isset($state[$host]) && is_array($state[$host]) ? $state[$host] : array();
+        // A host PRESENT whose value is not an entry is corruption, not
+        // absence: read as four absent fields it became a fresh allowance and
+        // the reservation overwrote the bytes nobody could read.
+        // array_key_exists(), because a stored null is present too.
+        if (!is_array($state) || (array_key_exists($host, $state) && !is_array($state[$host])))
+            return null;
+        $entry = isset($state[$host]) ? $state[$host] : array();
+        $read = array();
+        foreach (array('cooldown_until', 'window_start', 'window_count', 'cooldown_length') as $f) {
+            $v = array_key_exists($f, $entry) ? RuTrackerRpcValue::canonicalNonnegativeInteger($entry[$f]) : 0;
+            if ($v === null) return null;
+            $read[$f] = $v;
+        }
+        return $read;
+    }
+
+    // Ungated, and deliberately not the same channel as the write failure in
+    // reserveProbe() below. Nothing here ever rewrites an entry it could not
+    // read -- the reservation returns the document untouched, releaseProbe()
+    // and recordOutcome() both bail on this same null -- so the host is
+    // refused every probe from now to the end of time and no cycle repairs
+    // it. A budget that could not be WRITTEN is the opposite: an unwritable
+    // settings directory or a full disk, nothing corrupt on disk, and the
+    // very next cycle succeeds the moment the machine is fixed. That one
+    // stays on the debug channel; this one cannot heal, so it has to be
+    // visible. See ruTrackerChecker::logUnrepairable().
+    static private function logCorruptBudget($host, $what)
+    {
+        if (class_exists('ruTrackerChecker'))
+            ruTrackerChecker::logUnrepairable('announce: the stored budget for ' . $host
+                . ' is not readable, so ' . $what . ', and nothing will rewrite it');
     }
 
     // THE budget rule, in one place. It takes an entry that has already been
@@ -290,12 +155,16 @@ class RuTrackerAnnounce
         return min(self::PROBE_PAUSE_MAX, max(0, (int) $configured));
     }
 
-    static private function judge($entry, $now, $cap, $window)
+    // Takes entryFor()'s already-canonical reading, and answers 'unstorable'
+    // when that reading is null: a budget that cannot be READ is a budget of
+    // zero, exactly as one that cannot be WRITTEN is.
+    static private function judge($read, $now, $cap, $window)
     {
-        if ($now <= (int) ($entry['cooldown_until'] ?? 0)) return array('cooldown', 0, 0);
+        if ($read === null) return array('unstorable', 0, 0);
+        if ($now <= $read['cooldown_until']) return array('cooldown', 0, 0);
 
-        $windowStart = (int) ($entry['window_start'] ?? 0);
-        $count = (int) ($entry['window_count'] ?? 0);
+        $windowStart = $read['window_start'];
+        $count = $read['window_count'];
         if ($windowStart === 0 || $now - $windowStart >= $window) {
             $windowStart = $now;
             $count = 0;
@@ -313,6 +182,7 @@ class RuTrackerAnnounce
         $host = self::hostKey($host);
         $window = max((int) $window, self::MIN_WINDOW);
         $judged = self::judge(self::entryFor(RuTrackerState::load('announce'), $host), $now, $cap, $window);
+        if ($judged[0] === 'unstorable') self::logCorruptBudget($host, 'no probe is authorised');
         return $judged[0];
     }
 
@@ -354,6 +224,10 @@ class RuTrackerAnnounce
                     . ' could not be written, so the slot is refused rather than spent unrecorded');
             return 'unstorable';
         }
+        // judge() refused an unreadable entry and the closure returned $state
+        // untouched, so the corrupted record is still on disk as it was.
+        if ($decision === 'unstorable')
+            self::logCorruptBudget($host, 'the slot is refused rather than taken against it');
         return $decision;
     }
 
@@ -371,9 +245,12 @@ class RuTrackerAnnounce
         $host = self::hostKey($host);
         RuTrackerState::update('announce', function ($state) use ($host, $reservedAt) {
             if (!isset($state[$host]) || !is_array($state[$host])) return $state;
-            if ((int) ($state[$host]['window_start'] ?? 0) > (int) $reservedAt) return $state;
-            $count = (int) ($state[$host]['window_count'] ?? 0);
-            if ($count > 0) $state[$host]['window_count'] = $count - 1;
+            // Refunding into an entry nobody can read would overwrite the
+            // corruption with a smaller number invented here, so it is not.
+            $read = self::entryFor($state, $host);
+            if ($read === null) return $state;
+            if ($read['window_start'] > (int) $reservedAt) return $state;
+            if ($read['window_count'] > 0) $state[$host]['window_count'] = $read['window_count'] - 1;
             return $state;
         });
     }
@@ -396,14 +273,19 @@ class RuTrackerAnnounce
         // host's record exactly as it was -- including untouched on disk.
         if ($status !== 403 && $status !== 200) return;
         RuTrackerState::update('announce', function ($state) use ($host, $now, $status) {
-            $entry = isset($state[$host]) && is_array($state[$host]) ? $state[$host] : array();
+            // The 403 branch DOUBLES the stored backoff and the 200 branch
+            // CLEARS it; both need the current one to be true. An entry that
+            // will not read is left as it is, not restarted at one hour.
+            $entry = self::entryFor($state, $host);
+            if ($entry === null) return $state;
+            $read = $entry;
 
             if ($status === 403) {
-                $previous = (int) ($entry['cooldown_length'] ?? 0);
+                $previous = $read['cooldown_length'];
                 $length = min(86400, max(3600, $previous * 2));
                 $entry['cooldown_until'] = $now + $length;
                 $entry['cooldown_length'] = $length;
-            } elseif ($now > (int) ($entry['cooldown_until'] ?? 0)) {
+            } elseif ($now > $read['cooldown_until']) {
                 // A success resets the doubling -- but only against a cooldown
                 // that has already lapsed. One installed while this probe was
                 // in flight belongs to a 403 the tracker answered LATER than
@@ -444,23 +326,43 @@ class RuTrackerAnnounce
             . '&event=stopped&key=' . rawurlencode($key);
     }
 
+    // The announce schema reads ONE typed tree from the shared grammar
+    // (bencode.php). The ceilings below are chosen so the grammar admits every
+    // shape the 8192-byte body cap already admits, and nothing more: a token
+    // costs at least two bytes ('le', 'de', '0:') and so does a level of
+    // nesting, so 8192 bytes can spell at most 4096 of either, and an integer
+    // may consume nearly the whole body. Four length digits are likewise the
+    // most a string inside the cap can need -- a five-digit length is 10000
+    // bytes the body does not have. Tightening any of these would quietly
+    // narrow what counts as a decodable answer; loosening them would let the
+    // body cap stop being the bound on decoding cost that it exists to be.
+    const BENCODE_LIMITS = array(
+        'max_bytes' => self::MAX_ANNOUNCE_BODY,
+        'max_depth' => 4096,
+        'max_tokens' => 4096,
+        'max_integer_digits' => self::MAX_ANNOUNCE_BODY,
+        'max_length_digits' => 4,
+    );
+
+    // Duplicate keys no longer need checking here: the shared grammar rejects
+    // a repeated raw key outright, so a node that reached this point is the
+    // only one the answer spelled under that name.
     static private function isCanonicalNonnegativeInteger($node)
     {
         return is_array($node)
-            && ($node['type'] ?? '') === 'integer'
-            && empty($node['duplicate'])
-            && preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['token']) === 1;
+            && $node['type'] === 'integer'
+            && preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['value']) === 1;
     }
 
     static private function isValidPeerPort($node)
     {
         if (!is_array($node)
-            || ($node['type'] ?? '') !== 'integer'
-            || !preg_match('/^[1-9][0-9]*$/D', $node['token'])) {
+            || $node['type'] !== 'integer'
+            || !preg_match('/^[1-9][0-9]*$/D', $node['value'])) {
             return false;
         }
-        if (strlen($node['token']) > 5
-            || (strlen($node['token']) === 5 && strcmp($node['token'], '65535') > 0)) {
+        if (strlen($node['value']) > 5
+            || (strlen($node['value']) === 5 && strcmp($node['value'], '65535') > 0)) {
             return false;
         }
         return true;
@@ -468,34 +370,35 @@ class RuTrackerAnnounce
 
     static private function hasValidPeers($node)
     {
-        if (!is_array($node) || !empty($node['duplicate'])) return false;
-        if (($node['type'] ?? '') === 'string')
-            return strlen($node['value']) % 6 === 0;
-        if (($node['type'] ?? '') !== 'peer-list') return false;
+        if (!is_array($node)) return false;
+        // compact=1 asks for the packed form -- six bytes per peer -- but the
+        // tracker is free to answer with the dictionary list instead, and an
+        // EMPTY list is a valid answer to numwant=0. An empty dictionary is
+        // not: that is a different type, which is why the grammar has to keep
+        // 'le' and 'de' apart.
+        if ($node['type'] === 'string') return strlen($node['value']) % 6 === 0;
+        if ($node['type'] !== 'list') return false;
 
-        foreach ($node['items'] as $peer) {
-            if (($peer['type'] ?? '') !== 'dictionary'
-                || !empty($peer['duplicate'])
-                || !isset($peer['fields']['ip'], $peer['fields']['port'])
-                || ($peer['fields']['ip']['type'] ?? '') !== 'string'
-                || !self::isValidPeerPort($peer['fields']['port'])) {
-                return false;
-            }
+        foreach ($node['value'] as $peer) {
+            if ($peer['type'] !== 'dictionary') return false;
+            $ip = RuTrackerBencode::entry($peer, 'ip');
+            if (!is_array($ip) || $ip['type'] !== 'string') return false;
+            if (!self::isValidPeerPort(RuTrackerBencode::entry($peer, 'port'))) return false;
         }
         return true;
     }
 
-    static private function hasValidSuccessSchema($schema)
+    static private function hasValidSuccessSchema($root)
     {
-        if (!isset($schema['interval'], $schema['peers'])
-            || !self::isCanonicalNonnegativeInteger($schema['interval'])
-            || !self::hasValidPeers($schema['peers'])) {
+        if (!self::isCanonicalNonnegativeInteger(RuTrackerBencode::entry($root, 'interval'))
+            || !self::hasValidPeers(RuTrackerBencode::entry($root, 'peers'))) {
             return false;
         }
 
-        foreach (array('complete', 'incomplete', 'min interval') as $counter)
-            if (isset($schema[$counter]) && !self::isCanonicalNonnegativeInteger($schema[$counter]))
-                return false;
+        foreach (array('complete', 'incomplete', 'min interval') as $counter) {
+            $node = RuTrackerBencode::entry($root, $counter);
+            if ($node !== null && !self::isCanonicalNonnegativeInteger($node)) return false;
+        }
         return true;
     }
 
@@ -505,39 +408,35 @@ class RuTrackerAnnounce
 
         // Bencode dictionaries start with 'd'. Reject any other top-level
         // type (lists, ints, raw strings) before decoding: an empty list
-        // ('le') and an empty dictionary ('de') both decode to the same PHP
-        // array(), so the distinction can only be made on the raw bytes.
+        // ('le') and an empty dictionary ('de') both mean "nothing here" to a
+        // reader that has thrown the types away, and only the raw bytes -- or
+        // the typed tree below -- can tell them apart.
         if ($body[0] !== 'd') return 'uncertain';
         // A legitimate announce reply to THIS probe is a few hundred bytes:
         // numwant=0 and compact=1 mean no peer list, so the answer is a
-        // handful of integers or a failure reason. The decoder is a
-        // recursive-descent parser inheriting Torrent's, with no depth bound
-        // of its own, and its worst case is a body that is nothing but
-        // nesting -- roughly one frame per two bytes. Memory exhaustion there
-        // is a fatal error, which the catch below cannot stop, so the size
-        // cap IS the depth bound and has to be set as one: 8 KiB admits at
-        // most ~4k levels, a few megabytes of frames, which survives even the
-        // 8M memory_limit of a small install. The previous 64 KiB allowed
-        // ~32k levels and did not.
+        // handful of integers or a failure reason. The cap is a bound on the
+        // cost of decoding as much as on the transfer: the worst body it
+        // admits is nothing but nesting, roughly one container per two bytes,
+        // and 8 KiB admits at most ~4k of them -- a few megabytes of nodes,
+        // which survives even the 8M memory_limit of a small install. The
+        // previous 64 KiB allowed ~32k levels and did not. It is checked here
+        // as well as inside the grammar so an oversized answer is refused
+        // without being read at all.
         if (strlen($body) > self::MAX_ANNOUNCE_BODY) return 'uncertain';
 
-        try {
-            $decoder = new RuTrackerBencodeDecoder();
-            $decoded = $decoder->decodeComplete($body);
-            $schema = $decoder->schema();
-        } catch (Exception $e) {
-            return 'uncertain';
-        }
-        if (!is_array($decoded) || empty($decoded)) return 'uncertain';
+        $root = RuTrackerBencode::decode($body, self::BENCODE_LIMITS);
+        // One decode, one tree. This used to be two passes over the same
+        // bytes -- a schema scanner and an inherited Torrent::decode() -- and
+        // the pair had to agree about what "valid" meant to be worth anything.
+        if ($root === false || $root['type'] !== 'dictionary' || empty($root['value'])) return 'uncertain';
 
-        if (array_key_exists('failure reason', $schema)) {
-            $reason = $schema['failure reason'];
-            if (($reason['type'] ?? '') !== 'string'
-                || !empty($reason['duplicate'])
+        $reason = RuTrackerBencode::entry($root, 'failure reason');
+        if ($reason !== null) {
+            if ($reason['type'] !== 'string'
                 || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) return 'uncertain';
             return 'unregistered';
         }
 
-        return self::hasValidSuccessSchema($schema) ? 'registered' : 'uncertain';
+        return self::hasValidSuccessSchema($root) ? 'registered' : 'uncertain';
     }
 }

@@ -15,6 +15,17 @@ function nnmCreates()
     return ruTrackerChecker::callsFor('createTorrent');
 }
 
+// The handler patches the guest torrent it downloaded and hands that very
+// object across the replacement boundary. Re-serialising it and decoding the
+// bytes again would be a second parse of metainfo already in memory, so this
+// insists on the object and never rebuilds one from a string.
+function nnmHandedOverTorrent($create)
+{
+    strictAssertTrue($create['arguments'][0] instanceof Torrent,
+        'the already patched guest Torrent is handed over, not re-serialised bytes');
+    return $create['arguments'][0];
+}
+
 function nnmDynamicScrapeUrl($host, $passkey, $hash)
 {
     return 'http://' . $host . '/' . $passkey
@@ -35,6 +46,18 @@ function nnmTopicUrl($topicId)
 function nnmDownloadUrl($downloadId)
 {
     return 'https://nnmclub.to/forum/download.php?id=' . $downloadId;
+}
+
+// The guest download's bytes become metainfo in exactly one place --
+// ruTrackerChecker::parseMetainfo() -- and TestLib scripts that method, so
+// every test that gets as far as the download has to say what the owner
+// answers, exactly as KinozalHandlerTest does. The queued object is a fresh
+// Torrent over the very bytes the download serves, which is what the owner
+// would have returned; the handler then patches THAT object and hands it
+// across the replacement boundary, as it does in production.
+function nnmQueueGuestParse($raw)
+{
+    ruTrackerChecker::queueResult('parseMetainfo', @new Torrent($raw));
 }
 
 $suite = new StrictTestSuite();
@@ -189,17 +212,27 @@ $suite->test('scrape miss downloads guest torrent and patches real passkey', fun
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
 
     strictAssertSame(null, $result, 'Successful replacement propagates createTorrent result');
+    // The downloaded bytes become metainfo in the one place that owns that --
+    // the same route kinozal.php takes -- and not a second time here. This is
+    // the assertion that fails if the three checks ever move back inline: the
+    // owner would simply never be asked.
+    $parses = ruTrackerChecker::callsFor('parseMetainfo');
+    strictAssertSame(1, count($parses),
+        'the guest bytes are handed to the owner of the metainfo parse exactly once');
+    strictAssertSame(array($guestRaw), $parses[0]['arguments'],
+        'and it is handed the bytes the download served, unaltered');
     $creates = nnmCreates();
     strictAssertSame(1, count($creates), 'Changed guest torrent is replaced once');
     strictAssertSame($oldTorrent, $creates[0]['arguments'][2],
         'the handler reuses the predecessor it already parsed');
     strictAssertSame($oldHash, $creates[0]['arguments'][1], 'the replacement targets the old hash');
-    $patched = @new Torrent($creates[0]['arguments'][0]);
+    $patched = nnmHandedOverTorrent($creates[0]);
     strictAssertTrue(!$patched->errors(), 'Patched replacement torrent must remain valid');
     strictAssertSame($guestHash, $patched->hash_info(), 'Passkey patch must not change info hash');
     strictAssertTrue(
@@ -252,6 +285,7 @@ $suite->test('a torrent path-form passkey is reused for its own replacement', fu
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
@@ -259,7 +293,7 @@ $suite->test('a torrent path-form passkey is reused for its own replacement', fu
     strictAssertSame(null, $result, 'Successful replacement propagates createTorrent result');
     $creates = nnmCreates();
     strictAssertSame(1, count($creates), 'Changed guest torrent is replaced once');
-    $patched = @new Torrent($creates[0]['arguments'][0]);
+    $patched = nnmHandedOverTorrent($creates[0]);
     strictAssertTrue(!$patched->errors(), 'Patched replacement torrent must remain valid');
     $patchedRaw = (string) $patched;
     strictAssertTrue(
@@ -310,6 +344,7 @@ $suite->test('the query form is preserved when the tracker still serves it', fun
     );
     Snoopy::queue(nnmTopicUrl(43), 200, '<a href="download.php?id=8">download</a>');
     Snoopy::queue(nnmDownloadUrl(8), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(43), $oldHash, $oldTorrent);
@@ -327,7 +362,7 @@ $suite->test('the query form is preserved when the tracker still serves it', fun
     );
     $creates = nnmCreates();
     strictAssertSame(1, count($creates), 'A legacy-form replacement is still replaced');
-    $patchedRaw = (string) @new Torrent($creates[0]['arguments'][0]);
+    $patchedRaw = (string) nnmHandedOverTorrent($creates[0]);
     strictAssertTrue(
         strpos($patchedRaw, 'announce?uk=' . $realPasskey) !== false,
         'A query-form announce keeps that form and carries the account passkey'
@@ -367,6 +402,7 @@ $suite->test('a replacement already carrying the account passkey is accepted', f
     );
     Snoopy::queue(nnmTopicUrl(46), 200, '<a href="download.php?id=11">download</a>');
     Snoopy::queue(nnmDownloadUrl(11), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(46), $oldHash, $oldTorrent);
@@ -374,7 +410,7 @@ $suite->test('a replacement already carrying the account passkey is accepted', f
     strictAssertSame(null, $result, 'An already-authenticated replacement is loaded, not refused');
     $creates = nnmCreates();
     strictAssertSame(1, count($creates), 'The replacement is loaded exactly once');
-    $patched = @new Torrent($creates[0]['arguments'][0]);
+    $patched = nnmHandedOverTorrent($creates[0]);
     strictAssertTrue(!$patched->errors(), 'Loaded replacement torrent must remain valid');
     strictAssertSame($guestHash, $patched->hash_info(), 'An unchanged payload keeps its info hash');
     strictAssertSame(
@@ -400,6 +436,7 @@ $suite->test('a changed torrent without any passkey anywhere is refused', functi
     );
     Snoopy::queue(nnmTopicUrl(44), 200, '<a href="download.php?id=9">download</a>');
     Snoopy::queue(nnmDownloadUrl(9), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(44), $oldHash, $oldTorrent);
 
@@ -513,6 +550,7 @@ $suite->test('a keyless torrent skips scrape and resolves up to date via guest d
         // Guest topic and guest download returning the same info hash
         Snoopy::queue(nnmTopicUrl(77), 200, '<a href="download.php?id=77">download</a>');
         Snoopy::queue(nnmDownloadUrl(77), 200, $targetRaw);
+        nnmQueueGuestParse($targetRaw);
 
         $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(77), $targetHash, $target);
 
@@ -563,6 +601,7 @@ $suite->test('a keyless torrent whose hash changed refuses replacement and never
 
         Snoopy::queue(nnmTopicUrl(45), 200, '<a href="download.php?id=10">download</a>');
         Snoopy::queue(nnmDownloadUrl(10), 200, $guestRaw);
+        nnmQueueGuestParse($guestRaw);
 
         $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(45), $oldHash, $oldTorrent);
 
@@ -615,6 +654,25 @@ $suite->test('injectAuthIntoUrl updates every credential form and defaults to th
         null,
         strictInvoke('NNMClubCheckImpl', 'injectAuthIntoUrl', array('https://nnmclub.to/forum/viewtopic.php?t=42', $realPasskey)),
         'a non-announce URL is not patchable'
+    );
+});
+
+// The scrape parser moved onto the shared grammar (plugins/rutracker_check/
+// bencode.php). Its ceilings did not change, and the two tests that follow
+// measure them behaviourally -- this one states them, so a refactor cannot
+// quietly hand the grammar a different set and still look green.
+$suite->test('a scrape body is decoded under exactly the ceilings this handler has always enforced', function () {
+    $limits = (new ReflectionClass('NNMClubCheckImpl'))->getConstant('BENCODE_LIMITS');
+    strictAssertSame(
+        array(
+            'max_bytes' => 1048576,
+            'max_depth' => 32,
+            'max_tokens' => 4096,
+            'max_integer_digits' => 19,
+            'max_length_digits' => 7,
+        ),
+        $limits,
+        'the scrape ceilings are exactly 1048576 / 32 / 4096 / 19 / 7'
     );
 });
 
@@ -954,6 +1012,17 @@ $suite->test('the live NNMClub scrape answer is accepted verbatim', function () 
         'the live answer means the hash is on the tracker'
     );
 
+    // Control: the three-counter answer the specification described is read
+    // exactly as it always was. Relaxing WHICH keys are mandatory took nothing
+    // away from the answer that carries all of them.
+    $threeCounter = 'd5:filesd20:' . $targetBin
+        . 'd8:completei159e10:downloadedi7e10:incompletei1eeee';
+    strictAssertSame(
+        1,
+        strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($threeCounter, $targetBin)),
+        'a well-formed three-counter answer is still accepted'
+    );
+
     // The counters that ARE present stay fully validated: this is a relaxation of
     // which keys must appear, not of how a key that appears is read.
     $negative = 'd5:filesd20:' . $targetBin . 'd8:completei-1e10:incompletei1eeee';
@@ -967,6 +1036,12 @@ $suite->test('the live NNMClub scrape answer is accepted verbatim', function () 
         3,
         strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($empty, $targetBin)),
         'a row with no counter at all is still malformed'
+    );
+    $scalar = 'd5:filesd20:' . $targetBin . '5:helloee';
+    strictAssertSame(
+        3,
+        strictInvoke('NNMClubCheckImpl', 'parseScrapeResult', array($scalar, $targetBin)),
+        'a scalar row is still malformed'
     );
 });
 
@@ -1063,6 +1138,7 @@ $suite->test('an unreadable primary answer plus an unavailable fallback still re
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     // One host answered and could not be understood; that is enough to say the
@@ -1073,6 +1149,22 @@ $suite->test('an unreadable primary answer plus an unavailable fallback still re
     strictAssertSame(1, count(nnmCreates()), 'the guest path runs exactly once');
     strictAssertOneLogMatching(ruTrackerChecker::$logs, 'No scrape host answered readably',
         'the fall-through is stated in the log');
+
+    // Control: the well-formed three-counter answer still short-circuits on the
+    // fast path and never touches the forum. Only the unreadable case moved.
+    nnmReset();
+    Snoopy::queue(
+        nnmDynamicScrapeUrl('bt02.nnm-club.cc:2710', $realPasskey, $oldHash),
+        200,
+        'd5:filesd20:' . $oldBin . 'd8:completei9e10:downloadedi4e10:incompletei2eeee'
+    );
+    strictAssertSame(
+        ruTrackerChecker::STE_UPTODATE,
+        NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent),
+        'a well-formed three-counter answer is still up to date'
+    );
+    strictAssertSame(0, count(nnmCreates()), 'the control makes no replacement');
+    strictAssertSame(1, count(Snoopy::$requests), 'the control issues the scrape and nothing else');
 });
 
 $suite->test('malformed primary scrape plus valid NOT_FOUND fallback proceeds to guest download', function () use ($realPasskey, $dummyPasskey) {
@@ -1105,6 +1197,7 @@ $suite->test('malformed primary scrape plus valid NOT_FOUND fallback proceeds to
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
@@ -1138,6 +1231,7 @@ $suite->test('valid scrape with empty files and target hash in unrelated value p
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
@@ -1209,6 +1303,7 @@ $suite->test('F-02: a bencoded guest download with official announce but no info
     Snoopy::queue(nnmTopicUrl($targetTopic), 200, '<a href="download.php?id=' . $downloadId . '">download</a>');
     // Malformed bencoded payload with announce but NO info dictionary:
     Snoopy::queue(nnmDownloadUrl($downloadId), 200, 'd8:announce64:http://bt.searchtor.to/00000000000000000000000000000000/announcee');
+    ruTrackerChecker::queueResult('parseMetainfo', null); // no info dictionary: the owner answers null
 
     $result = NNMClubCheckImpl::download_torrent($targetUrl, $targetHash, $target);
 
@@ -1216,6 +1311,51 @@ $suite->test('F-02: a bencoded guest download with official announce but no info
         'malformed metainfo without info dict is rejected with STE_ERROR');
     strictAssertSame(0, count(nnmCreates()),
         'createTorrent must not be called when downloaded metainfo has no info hash');
+    strictAssertSame(1, count(ruTrackerChecker::callsFor('parseMetainfo')),
+        'and the refusal is the owner\'s verdict, not a second rule spelled out here');
+});
+
+// Which rule decides, proved by making the two disagree. The bytes below are a
+// perfectly good torrent: a handler carrying its own copy of the three checks
+// would parse them, find a differing hash and go on to replace. Routed through
+// the owner, the owner's answer is the only one that counts -- so when it
+// refuses, so does this handler, and nothing is replaced. That is what "one
+// metainfo parse" has to mean to be worth anything.
+$suite->test('the owner\'s verdict is the one that decides, even against bytes that would parse here', function () use ($realPasskey, $dummyPasskey) {
+    nnmReset();
+    $oldRaw = strictTorrentRaw(
+        'old-owner-decides.bin',
+        'http://bt.searchtor.to/' . $realPasskey . '/announce',
+        nnmTopicUrl(51)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    $oldHash = $oldTorrent->hash_info();
+    $guestRaw = strictTorrentRaw(
+        'new-owner-decides.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(51)
+    );
+    // The control first: these very bytes DO parse, and are a different torrent.
+    $wouldParse = @new Torrent($guestRaw);
+    strictAssertTrue(!$wouldParse->errors(), 'the fixture is genuinely valid metainfo');
+    strictAssertTrue(strtoupper($wouldParse->hash_info()) !== strtoupper($oldHash),
+        'and genuinely a replacement, so an inline parse would have gone on to make one');
+
+    // A scrape miss, so the fast path falls through to the guest download.
+    Snoopy::queue(nnmDynamicScrapeUrl('bt.searchtor.to', $realPasskey, $oldHash),
+        200, strictScrapePayload($oldHash, false));
+    Snoopy::queue(nnmTopicUrl(51), 200, '<a href="download.php?id=51">download</a>');
+    Snoopy::queue(nnmDownloadUrl(51), 200, $guestRaw);
+    ruTrackerChecker::queueResult('parseMetainfo', null); // the owner refuses them
+
+    $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(51), $oldHash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_ERROR, $result,
+        'the handler refuses because the owner did, not because it looked itself');
+    strictAssertSame(0, count(nnmCreates()),
+        'and no replacement is built out of bytes the owner would not vouch for');
+    strictAssertSame(array($guestRaw), ruTrackerChecker::callsFor('parseMetainfo')[0]['arguments'],
+        'the owner was asked, with the served bytes');
 });
 
 $suite->test('a malformed answer from every scrape host falls through to guest download', function () use ($realPasskey, $dummyPasskey) {
@@ -1249,15 +1389,37 @@ $suite->test('a malformed answer from every scrape host falls through to guest d
     );
     Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
     Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
     ruTrackerChecker::queueResult('createTorrent', null);
 
     // Both hosts are demonstrably up. A shape neither of them will stop sending
     // must not remove this torrent from the checking rotation for good; that is
-    // exactly how the missing 'downloaded' counter went unnoticed.
+    // exactly how the missing 'downloaded' counter went unnoticed. The scalar
+    // and empty rows above are still refused as scrape evidence -- the half of
+    // F07 that was right -- they simply no longer masquerade as an unreachable
+    // tracker, and the forum check that follows remains the authority.
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
 
     strictAssertSame(null, $result, 'an unreadable scrape does not end the check');
     strictAssertSame(1, count(nnmCreates()), 'the guest path runs exactly once');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'No scrape host answered readably',
+        'the fall-through is stated in the log');
+
+    // Control: a well-formed three-counter answer from the primary host is
+    // still believed on the spot, with no forum traffic at all.
+    nnmReset();
+    Snoopy::queue(
+        nnmDynamicScrapeUrl('bt02.nnm-club.cc:2710', $realPasskey, $oldHash),
+        200,
+        'd5:filesd20:' . $oldBin . 'd8:completei3e10:downloadedi2e10:incompletei1eeee'
+    );
+    strictAssertSame(
+        ruTrackerChecker::STE_UPTODATE,
+        NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent),
+        'a well-formed three-counter answer is still up to date'
+    );
+    strictAssertSame(0, count(nnmCreates()), 'the control makes no replacement');
+    strictAssertSame(1, count(Snoopy::$requests), 'the control issues the scrape and nothing else');
 });
 
 exit($suite->run());

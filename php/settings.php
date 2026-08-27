@@ -159,6 +159,14 @@ class rTorrentSettings
 
 	public function store()
 	{
+		// Only obtain() sets linkExist, and only getplugins.php and
+		// initplugins.php call it. Every other entry point reads this cache
+		// and takes it at its word, so caching an object whose probe failed
+		// makes one unanswered request speak for the install: the alias map is
+		// empty, and getCommand() then hands back the pre-0.9 spelling of every
+		// renamed command until something probes again.
+		if(!$this->linkExist)
+			return(false);
 		$cache = new rCache();
 		return($cache->set($this));
 	}
@@ -373,18 +381,34 @@ class rTorrentSettings
 		$startAt = $interval+rand(0,$schedule_rand);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
-	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null)	// $interval in minutes
+	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null,$now = null)	// $interval in minutes
 	{
-		global $schedule_rand;
-		if(!isset($schedule_rand))
-			$schedule_rand = 10;
-		$tm = getdate();
-		$startAt = mktime($tm["hours"],
-			((int)($tm["minutes"]/$interval))*$interval+$interval,
-			0,$tm["mon"],$tm["mday"],$tm["year"])-$tm[0]+rand(0,$schedule_rand);
-		if($startAt<0)
-			$startAt = 0;
+		// The start has to be deterministic, not jittered with rand().
+		// php/getplugins.php re-runs every enabled plugin's init.php on each
+		// full load of the web interface, and rTorrent's scheduler replaces an
+		// entry that reuses a key, restarting its countdown at now+start
+		// (CommandScheduler::insert). With a random offset a reload landing in
+		// the jitter window -- after the wall-clock boundary, before the task
+		// actually fired -- recomputed to the *next* boundary, so a user who
+		// kept refreshing cost the plugin a whole interval each time.
+		// getAlignedStart spreads the tasks over that same window by the crc32
+		// of their key instead, so every re-registration of one plugin resolves
+		// to the same instant; it counts in seconds, hence the conversion
+		// first. It also never returns 0, so a reload cannot fire the task at
+		// once, and $startAt stays the seconds-until-fire that callers such as
+		// plugins/rss report as the next update time.
+		//
+		// $now is the same clock seam getAlignedStart already carries, and it
+		// exists for the same reason: what this function has to promise is that
+		// two registrations made at *different* instants resolve to the same
+		// absolute fire time, and a caller that can only read the clock itself
+		// can only ever sample one instant. The window where the promise is
+		// broken -- between the boundary and the task's own slot within the
+		// jitter spread -- is a handful of seconds out of an interval, so
+		// without the seam a test would have to catch that window by chance.
+		// Production callers pass nothing and get time().
 		$interval = $interval*60;
+		$startAt = self::getAlignedStart($name,$interval,$now);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
 	static public function getAlignedStart($name,$interval,$now = null)	// $interval in seconds
@@ -432,10 +456,15 @@ class rTorrentSettings
 	// min_alloc and max_alloc, followed by a system.sockets.adjust_alloc
 	// recompute -- nothing takes effect until adjust_alloc runs.
 	//
-	// Restricted to 0.16.19+. Earlier versions abort the process on an
-	// over-budget adjust_alloc, and the budget cannot be checked beforehand
-	// because its reserve and min_generic terms are not exposed over RPC.
-	// 0.16.19 reports a regular XMLRPC fault instead.
+	// Restricted to 0.16.19+, because earlier versions abort the process on an
+	// over-budget adjust_alloc while 0.16.19 reports a regular XMLRPC fault
+	// instead. On 0.16.19 that fault is the only warning available: the terms
+	// of the budget are not exposed over RPC there, so the request cannot be
+	// weighed before it is sent. 0.16.20 added system.sockets.reserved_alloc
+	// and system.sockets.available_alloc alongside the generic category's own
+	// min_alloc, which between them are enough to pre-flight the request; we
+	// still do not, and keep leaning on the fault, so that one code path serves
+	// both versions.
 	public function getSocketAllocCategory( $name )
 	{
 		if($this->iVersion<0x1013)

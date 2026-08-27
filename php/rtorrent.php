@@ -72,7 +72,7 @@ class rTorrent
 				if(!rTorrentSettings::get()->correctDirectory($directory))
 					return(false);
 				$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
-				$cmd->addParameter( ($isAddPath ? getCmd("d.set_directory=")."\"" : getCmd("d.set_directory_base=")."\"").$directory."\"" );
+				$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
 			}
 			$comment = $torrent->comment();
 			if($comment)
@@ -97,7 +97,24 @@ class rTorrent
 					$cmd->addParameter($prm,'string');
 			$req->addCommand( $cmd );
 			if($req->run() && !$req->fault)
+			{
+				// DISPATCHED, not loaded. rtorrent answers a load command
+				// before DownloadFactory has parsed the payload, so a torrent
+				// it later refuses -- an empty name, duplicate or nested
+				// paths, a duplicate infohash -- can never come back as a
+				// fault. The hash below is computed locally from the metainfo
+				// this process already holds; nothing here has asked the
+				// daemon whether the download exists.
+				//
+				// Say so in the log. Without this line a lost load is
+				// indistinguishable from a successful one after the fact:
+				// $rpcLogFaults only fires on a real fault, and there is no
+				// other record of the outcome anywhere. Callers that must
+				// KNOW have to confirm -- see waitForLoad() in
+				// plugins/rutracker_check/check.php for the shape.
 				$hash = $torrent->hash_info();
+				FileUtil::toLog('rtorrent: load dispatched, not confirmed: '.$hash);
+			}
 		}
 		return($hash);
 	}
@@ -124,7 +141,7 @@ class rTorrent
 				{
 					if(!rTorrentSettings::get()->correctDirectory($directory))
 						return(false);
-					$cmd->addParameter( ($isAddPath ? getCmd("d.set_directory=")."\"" : getCmd("d.set_directory_base=")."\"").$directory."\"" );
+					$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
 					$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
 				}
 				if($label && (strlen($label)>0))
@@ -219,6 +236,29 @@ class rTorrent
 			return($torrent);
 		}
 		return(false);
+	}
+
+	/**
+	 * Quote a value for use inside an rtorrent command string.
+	 *
+	 * The commands handed to load/load_raw are not typed parameters: rtorrent
+	 * parses them itself (src/rpc/parse.cc), ending a quoted argument at the
+	 * first unescaped '"' and reading '\' as an escape. A value wrapped in
+	 * quotes without escaping therefore ends the argument early -- a download
+	 * directory holding a quote silently loses everything from that quote on,
+	 * and the command around it stops parsing.
+	 *
+	 * Mirrors the escaping XMLRPCProxy::rebuildSafeLoadParam() applies to the
+	 * command strings it rebuilds.
+	 */
+	static public function quoteCommandArg($value)
+	{
+		// The order of the pairs is what makes this correct, and it must not be
+		// changed: str_replace() works through the arrays left to right and can
+		// revisit a value an earlier pair inserted. Escaping the quote first
+		// would double the backslash that escaping just added, leaving a live
+		// quote behind it -- so the backslash pair has to come first.
+		return('"'.str_replace(array('\\', '"'), array('\\\\', '\\"'), $value).'"');
 	}
 
 	static protected function parseDirectory($directory, $isAddPath)

@@ -843,6 +843,123 @@ upTest($suite, 'a durable feed correction repairs an old mapping left behind by 
         'the durable feed target, not the stale mapping, is restored');
 });
 
+upTest($suite, 'a corrupt durable correction writes no forum and dispatches nothing', function () {
+    // The fixture above with ONLY the stored spelling changed. Read through a
+    // bare (int) every one of these authorised a real d.set_custom of
+    // chk-forum: '22abc', '022' and 22.9 all became the forum 22, true became
+    // 1, '0x16' became 0 and '-22' stayed -22 -- and 0 and -22 are ids
+    // resolveForum() can never accept, so the chk-forum they installed made
+    // writeForumMapping() answer FORUM_WRITE_CURRENT for ever and bought a
+    // full destructive checker run every cycle with nothing ever clearing it.
+    $malformed = array(
+        'forum-trailing-text' => array('topic' => 200, 'forum' => '22abc'),
+        'forum-leading-zero' => array('topic' => 200, 'forum' => '022'),
+        'forum-float' => array('topic' => 200, 'forum' => 22.9),
+        'forum-bool' => array('topic' => 200, 'forum' => true),
+        'forum-hex' => array('topic' => 200, 'forum' => '0x16'),
+        'forum-negative' => array('topic' => 200, 'forum' => '-22'),
+        'forum-zero' => array('topic' => 200, 'forum' => '0'),
+        'forum-array' => array('topic' => 200, 'forum' => array(22)),
+        'topic-leading-zero' => array('topic' => '0200', 'forum' => 22),
+        'topic-float' => array('topic' => 200.7, 'forum' => 22),
+        'topic-trailing-text' => array('topic' => '200abc', 'forum' => 22),
+        'at-leading-zero' => array('topic' => 200, 'forum' => 22, 'at' => '0100'),
+        'at-text' => array('topic' => 200, 'forum' => 22, 'at' => 'recently'),
+        'at-null' => array('topic' => 200, 'forum' => 22, 'at' => null),
+    );
+    foreach ($malformed as $label => $stored) {
+        // Every case but the two about 'at' carries a perfectly good stamp,
+        // so the refusal is provably about the field under test.
+        if (!array_key_exists('at', $stored)) $stored['at'] = time();
+        $hash = str_repeat('C', 40);
+        RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $stored)));
+        $rows = RuTrackerUpdatePass::parseMulticall(upRow(
+            $hash,
+            6,
+            'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_DELETED,
+            '',
+            '',
+            '',
+            ruTrackerChecker::CHKMSG_DELETING . '|3/3',
+            (string) time()
+        ));
+        $checked = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($candidate) use (&$checked) {
+            $checked[] = $candidate;
+        });
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+
+        RuTrackerUpdatePass::run($rows);
+
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': a stored spelling no reader accepts writes no chk-forum');
+        strictAssertSame(array(), $checked,
+            $label . ': and buys no destructive checker run');
+        strictAssertSame($stored,
+            RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+            $label . ': and the bytes nobody could read are RETAINED, byte for byte');
+    }
+
+    // The bytes stay because deleting them buys nothing and costs the only
+    // copy of the evidence. Nothing is dispatched and nothing is written
+    // before this branch, so a retained row costs one log line per cycle
+    // rather than a checker run, and rememberForumCorrection()'s prune drops
+    // an unreadable row the next time the feed applies anything at all. The
+    // same rule the checker's claim store already follows: the hash and the
+    // document are named, the value never is.
+    $hash = str_repeat('C', 40);
+    $log = upCapturedLog(function () use ($hash) {
+        RuTrackerState::save('updatepass', array('forum_corrections' => array(
+            $hash => array('topic' => 200, 'forum' => '22abc', 'at' => time()),
+        )));
+        $rows = RuTrackerUpdatePass::parseMulticall(upRow(
+            $hash, 6, 'bt.t-ru.org', (string) ruTrackerChecker::STE_DELETED, '', '', '',
+            ruTrackerChecker::CHKMSG_DELETING . '|3/3', (string) time()));
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+            throw new RuntimeException('a row no reader accepts must dispatch nothing');
+        });
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        RuTrackerUpdatePass::run($rows);
+    });
+    strictAssertTrue(strpos($log, 'updatepass.json') !== false,
+        'the refusal names the document the unreadable row is in');
+    strictAssertTrue(strpos($log, $hash) !== false, 'and the hash it is stored under');
+    strictAssertTrue(strpos($log, '22abc') === false,
+        'and never the stored value itself, which is not the log\'s to render');
+    strictAssertSame(array('topic' => 200, 'forum' => '22abc', 'at' => (int) RuTrackerState::load(
+            'updatepass')['forum_corrections'][$hash]['at'],),
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'and the row an operator would need to diagnose it is still there');
+
+    // Control: the canonical spelling of the same obligation still repairs
+    // the stale mapping and still dispatches.
+    $hash = str_repeat('C', 40);
+    RuTrackerState::save('updatepass', array('forum_corrections' => array(
+        $hash => array('topic' => 200, 'forum' => 22, 'at' => time()),
+    )));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow(
+        $hash, 6, 'bt.t-ru.org', (string) ruTrackerChecker::STE_DELETED, '', '', '',
+        ruTrackerChecker::CHKMSG_DELETING . '|3/3', (string) time()));
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($candidate) use (&$checked) {
+        $checked[] = $candidate;
+    });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array($hash), $checked, 'control: the well-formed obligation still dispatches');
+    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    strictAssertSame(1, count($writes), 'control: the well-formed obligation still repairs the mapping');
+    strictAssertSame(array($hash, 'chk-forum', '22'), $writes[0]['commands'][0]->params,
+        'control: with the id the feed actually named');
+});
+
 upTest($suite, 'an older durable correction cannot overwrite a newer one while it becomes ready', function () {
     $hash = str_repeat('D', 40);
     $old = array('topic' => 200, 'forum' => 22, 'at' => 100);
@@ -855,7 +972,7 @@ upTest($suite, 'an older durable correction cannot overwrite a newer one while i
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
 
     strictAssertSame(false,
-        strictInvoke('RuTrackerUpdatePass', 'forumCorrectionReady', array($hash, $old)),
+        strictInvoke('RuTrackerUpdatePass', 'installForumCorrection', array($hash, $old)),
         'a superseded obligation is not ready for dispatch');
     strictAssertSame(array(), rXMLRPCRequest::$requests,
         'the stale generation is rejected while holding the shared mapping lock');
@@ -1368,6 +1485,27 @@ function sweepDetail($state, $open, $hashed = 0, $bytes = 0, $complete = 0, $mes
             'd.get_message', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom'),
         true, false, array($state, $open, $hashed, $bytes, $complete, $message, $stime, $chkState,
             $marker, $record));
+}
+
+// The record-less branch writes nothing at all -- its only observable effect
+// is a debug line -- so reading the line back is the only way to prove it
+// still fires. ruTrackerChecker::logDebug() goes through the real
+// FileUtil::toLog(), which appends to $log_file when debugging is on.
+function upCapturedLog($body)
+{
+    return testCapturedAppLog($body, true);
+}
+
+// Which of the two irreversible outcomes the branch carries: runState() puts
+// d.open (and d.start) in its true body, clearCustoms() only ever puts
+// d.set_custom there. Counting branch requests alone cannot tell "the
+// replacement was activated" from "its keys were retired and its run state
+// left alone", which is exactly the difference this guard decides.
+function sweepBranchOpens($hash)
+{
+    $requests = sweepBranchRequestsForHash($hash);
+    if (!count($requests)) return null;
+    return strpos((string) $requests[0]['commands'][0]->params[2], 'd.open') !== false;
 }
 
 function sweepBranchRequestsForHash($hash)
@@ -2130,6 +2268,64 @@ upTest($suite, 'sweepReplacements does not restart a copy that has been opened s
         strictAssertSame(1, count($writes), 'the transaction is closed all the same');
         strictAssertTrue(strpos($writes[0]['commands'][0]->params[1], 'chk-replacement') !== false,
             'by atomically clearing the exact keys, not by labelling');
+    }
+});
+
+// A d.get_completed_bytes above PHP_INT_MAX is a WELL-FORMED reading, not a
+// corrupt one: on a 32-bit build that is every torrent past 2 GiB, and every
+// $req->val slot arrives as a string. Funnelled through the canonical
+// nonnegative parser its roundtrip check failed, inspectMarkedRow() returned
+// before any branch ran, and the staged row's keys were never retired --
+// cycle after cycle, for ever. S06 makes MALFORMED input fail closed; it must
+// not make a legitimate byte counter fail at all.
+upTest($suite, 'a byte counter wider than the platform integer still finishes the transaction', function () {
+    foreach (array(
+        'just past a 32-bit signed counter' => '2147483648',
+        'just past a 64-bit signed counter' => '9223372036854775808',
+        'a genuinely huge library file'     => '18446744073709551615',
+    ) as $label => $bytes) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, 0, $bytes, 0, '', '1000', '2');
+        // transport ok, daemon faults: torrentExists() reads that as "gone".
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
+
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+            $label . ': bytes on disk still prove somebody opened the copy');
+        strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
+            $label . ': and the staged replacement keys are retired rather than left for ever');
+    }
+});
+
+// The record-less branch's whole effect is one diagnostic line, and the case
+// it exists for is a row whose readings an operator cannot interpret alone.
+// Hoisting the canonical parse of every counter ABOVE that branch silenced it
+// exactly then: the sweep returned before the only thing it had to say.
+upTest($suite, 'the record-less diagnostic still fires for a row whose counters do not parse', function () {
+    foreach (array(
+        'an unparsable run state'         => array('state' => 'what', 'bytes' => 0),
+        'an unparsable chunk count'       => array('state' => 0, 'bytes' => 0, 'hashed' => '01'),
+        'a byte counter past PHP_INT_MAX' => array('state' => 0, 'bytes' => '9223372036854775808'),
+    ) as $label => $case) {
+        $hash = str_repeat('A', 40);
+        $log = upCapturedLog(function () use ($hash, $case) {
+            rXMLRPCRequest::reset();
+            sweepScan(array(array($hash, 'nonce', '')));
+            sweepDetail($case['state'], 0, isset($case['hashed']) ? $case['hashed'] : 0,
+                $case['bytes'], 0, '', '1000', '2', 'nonce', '');
+            RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+        });
+
+        strictAssertTrue(strpos($log, 'carries a replacement marker with no record') !== false,
+            $label . ': the operator still gets the line, saw: ' . $log);
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': and it is still only a line -- nothing is written');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            $label . ': nothing is cleared either');
     }
 });
 
@@ -3349,6 +3545,209 @@ upTest($suite, 'the next case receives fresh scheduler singletons and statics', 
         if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
         strictAssertSame(null, $reflection->getValue(),
             'RuTrackerUpdatePass::$' . $property . ' is isolated per case');
+    }
+});
+
+// --- Persisted chk-state / chk-time are canonical integers or nothing -------
+//
+// intval() used to turn every unreadable reading into 0 -- which is exactly
+// the value that means "never checked", the state that buys a full
+// destructive check. A row whose snapshot cannot be read is now dropped
+// WHOLE, before classification, dispatch or any write.
+
+upTest($suite, 'testParseMulticallDropsARowWhoseStoredStateOrTimeIsNotCanonical', function () {
+    $hash = str_repeat('A', 40);
+    $bad = array('leading zero' => '01', 'leading plus' => '+1', 'negative' => '-1',
+        'minus zero' => '-0', 'padded' => ' 3', 'trailing space' => '3 ',
+        'digits then letters' => '3oops', 'float string' => '3.0', 'float' => 3.0,
+        'bool' => true, 'array' => array(3));
+    foreach ($bad as $label => $value) {
+        strictAssertSame(array(),
+            RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org', $value)),
+            $label . ': a malformed chk-state drops the whole row');
+        strictAssertSame(array(),
+            RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '', '', $value)),
+            $label . ': a malformed chk-time drops the whole row');
+    }
+
+    // ...while the two well-formed readings a real daemon produces are still
+    // read exactly: an UNSET custom comes back as the empty string, and that
+    // is the only spelling of "never checked".
+    $never = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org', '', '', '', '', '', ''));
+    strictAssertSame(1, count($never), 'an unset chk-state/chk-time is still a readable row');
+    strictAssertSame(0, $never[0]['state'], 'an unset chk-state reads as never checked');
+    strictAssertSame(0, $never[0]['time'], 'an unset chk-time reads as never checked');
+    $set = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '', '', '100'));
+    strictAssertSame(3, $set[0]['state'], 'a canonical chk-state is read as the int it is');
+    strictAssertSame(100, $set[0]['time'], 'a canonical chk-time is read as the int it is');
+});
+
+upTest($suite, 'testAMalformedSnapshotRowIsNeverDispatchedAndNeverWritten', function () {
+    $hash = str_repeat('A', 40);
+    // A 6-failure RuTracker row is the ordinary 'candidate' that WOULD be
+    // dispatched; only the unreadable chk-state stops it.
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org', '01'));
+    strictAssertSame(array(), $rows, 'the row never becomes a row at all');
+
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+        throw new RuntimeException('a row whose snapshot could not be read must never be dispatched');
+    });
+    rXMLRPCRequest::reset();
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(array(), $result['checked'], 'nothing is checked');
+    strictAssertSame(0, $result['uptodate'], 'nothing is counted');
+    strictAssertSame(array(), rXMLRPCRequest::$requests,
+        'and not one XMLRPC request is made on its behalf');
+});
+
+upTest($suite, 'testTheFreshCasScanRefusesToCompareAgainstAnUnreadableRow', function () {
+    foreach (array('leading zero state' => array('03', '100'),
+                   'leading zero time' => array('3', '0100'),
+                   'padded state' => array(' 3', '100'),
+                   'letters in time' => array('3', '100x')) as $label => $live) {
+        $hash = str_repeat('A', 40);
+        // An 'alive' row: the free fast path that buffers an UPTODATE verdict
+        // and flushes it behind one fresh scan.
+        $rows = RuTrackerUpdatePass::parseMulticall(
+            upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '2:100', 'deleting|2/3', '100'));
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+            throw new RuntimeException('the alive fast path must not dispatch the checker');
+        });
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue('d.multicall', true, false,
+            array($hash, $live[0], $live[1], '2:100', 'deleting|2/3'));
+
+        $result = RuTrackerUpdatePass::run($rows);
+
+        strictAssertSame(0, $result['uptodate'], $label . ': an uncomparable row is not counted');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+            $label . ': and nothing is written over it');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            $label . ': not even the state pair');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor(
+            'd.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom')),
+            $label . ': and no complete verdict bundle');
+        // The claim the buffer took is still given back, so the next cycle can
+        // try again rather than waiting out the lease.
+        $after = ruTrackerChecker::claimCheckForWorker($hash, time());
+        strictAssertTrue($after !== false, $label . ': the scheduler claim is released');
+        ruTrackerChecker::releaseCheckForWorker($hash, $after);
+    }
+
+    // Control: the very same row with a canonical fresh reading does land.
+    $hash = str_repeat('A', 40);
+    $rows = RuTrackerUpdatePass::parseMulticall(
+        upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '2:100', 'deleting|2/3', '100'));
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+        throw new RuntimeException('the alive fast path must not dispatch the checker');
+    });
+    rXMLRPCRequest::reset();
+    upQueueUnchanged($rows);
+    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false, array(0, 0, 0, 0, 0));
+    strictAssertSame(1, RuTrackerUpdatePass::run($rows)['uptodate'],
+        'a canonical fresh reading still lets the buffered verdict through');
+});
+
+// The staged copy's own progress counters are read over XMLRPC too, and they
+// are what tells "nobody ever opened this" from "somebody did". A reading that
+// will not parse authorises neither a blind start nor retiring the ownership
+// keys: the exact generation is kept for a later cycle.
+// The two progress counters with a genuine int32 domain. d.get_completed_bytes
+// is NOT one of them -- see the wider-than-PHP_INT_MAX case above -- so it is
+// read with intval() at its use site the way it always was, and the fail-closed
+// guard rests on the two columns beside it, which report the same fact
+// (somebody opened this copy) and can be parsed exactly.
+upTest($suite, 'testMalformedStagedProgressCountersNeverStartOrRetireAReplacement', function () {
+    foreach (array('hashed' => 2, 'complete' => 4) as $label => $slot) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        $detail = array(0, 0, 0, 0, 0);
+        $detail[$slot] = '0oops';
+        sweepDetail($detail[0], $detail[1], $detail[2], $detail[3], $detail[4], '', '1000');
+        rXMLRPCRequest::queue('d.hash', true, true, array());   // the predecessor is provably gone
+
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+        strictAssertSame(0, count(sweepBranchRequestsForHash($hash)),
+            $label . ': an unreadable counter authorises no atomic activation or key clear');
+        sweepAssertNoStandaloneOwnershipMutation($label . ': malformed staged progress counters');
+    }
+
+    // And the column with no int32 bound is judged in the STRING domain.
+    // intval() read every counter it could not parse as 0, which is the
+    // fail-OPEN direction for a guard that asks "was this copy ever opened?"
+    // -- a wrong "no" starts a download somebody deliberately left stopped.
+    // Exactly canonical zero is the only reading that means "never opened",
+    // and that also accepts an arbitrarily wide well-formed counter, which is
+    // why this column is not funnelled through the int32 parser.
+    //
+    // It DEFERS on a reading it cannot make, exactly like the four columns
+    // beside it, rather than retiring the transaction's ownership keys: that
+    // retire is irreversible and it is the only durable handle the next cycle
+    // has. A faulting multicall member injects its faultString into the flat
+    // value list, so the same transient fault one slot earlier is simply
+    // retried while this one used to give up automatic activation for good.
+    foreach (array('trailing text' => '0oops', 'leading zero' => '00', 'empty' => '',
+        'text' => 'lots', 'float' => 0.0, 'bool' => false, 'negative' => '-0',
+        'padded' => ' 0',
+        'fault string' => 'Method \'d.get_completed_bytes\' does not exist') as $label => $bytes) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, 0, $bytes, 0, '', '1000');
+        rXMLRPCRequest::queue('d.hash', true, true, array());   // the predecessor is provably gone
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+
+        strictAssertSame(0, count(sweepBranchRequestsForHash($hash)),
+            $label . ': a byte counter that does not read as a count is no evidence the copy was'
+                . ' never opened, so nothing is started -- and the ownership keys the next cycle'
+                . ' needs are kept rather than retired on that same unreadable byte');
+        sweepAssertNoStandaloneOwnershipMutation($label . ': unreadable completed bytes');
+    }
+
+    // The refusal says which reading it could not make, rather than blaming
+    // the operator for opening a torrent nobody opened.
+    $log = upCapturedLog(function () {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, 0, '0oops', 0, '', '1000');
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    });
+    strictAssertTrue(strpos($log, 'does not read as a count') !== false,
+        'the unreadable byte counter is named rather than reported as a human decision');
+
+    // Controls: canonical zero -- in either spelling rTorrent may answer with
+    // -- still finishes the stranded replacement, and a well-formed counter
+    // far past int32 is simply not zero and needs no int32 parser to say so.
+    foreach (array('int zero' => 0, 'string zero' => '0') as $label => $bytes) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, 0, $bytes, 0, '', '1000');
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+        strictAssertSame(true, sweepBranchOpens($hash),
+            'control ' . $label . ': canonical zero counters still finish the stranded replacement');
+    }
+    foreach (array('5 GiB' => '5368709120',
+        'past PHP_INT_MAX' => '9223372036854775808') as $label => $bytes) {
+        rXMLRPCRequest::reset();
+        $hash = str_repeat('A', 40);
+        sweepScan(array(array($hash, 'nonce', str_repeat('B', 40) . '-started-1000')));
+        sweepDetail(0, 0, 0, $bytes, 0, '', '1000');
+        rXMLRPCRequest::queue('d.hash', true, true, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+        strictAssertSame(false, sweepBranchOpens($hash),
+            'control ' . $label . ': a well-formed counter wider than int32 is read, not refused');
     }
 });
 

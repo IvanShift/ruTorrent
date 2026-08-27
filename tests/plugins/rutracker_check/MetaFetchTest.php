@@ -92,6 +92,17 @@ function mfCreates()
     return ruTrackerChecker::callsFor('createTorrent');
 }
 
+// The harvest already holds the successor's decoded metainfo -- it patched the
+// announce and comment on it -- so that object is what crosses the replacement
+// boundary. Serialising it and decoding the bytes again would parse the same
+// metainfo twice, so this insists on the object itself.
+function mfHandedOverTorrent($create)
+{
+    strictAssertTrue($create['arguments'][0] instanceof Torrent,
+        'the harvested Torrent is handed over, not re-serialised bytes');
+    return $create['arguments'][0];
+}
+
 function mfPluginMarker()
 {
     return '0123456789abcdef0123456789abcdef';
@@ -390,7 +401,9 @@ $suite->test('pump harvests in the mandated order once metadata arrived', functi
     strictAssertSame(null, $state, 'createTorrent success passthrough');
     $creates = mfCreates();
     strictAssertSame(1, count($creates), 'createTorrent called once');
-    $payload = @new Torrent($creates[0]['arguments'][0]);
+    $payload = mfHandedOverTorrent($creates[0]);
+    strictAssertSame($fixture, $payload,
+        'the very object the harvest patched is the one handed to createTorrent');
     strictAssertSame('https://rutracker.org/forum/viewtopic.php?t=6879823', $payload->comment(), 'comment restored');
     strictAssertSame($newHash, strtoupper($payload->hash_info()), 'comment patch does not change info_hash');
     strictAssertSame($oldHash, $creates[0]['arguments'][1], 'replacement of the old torrent');
@@ -412,7 +425,7 @@ $suite->test('harvest backfills an empty announce from the old torrent before er
 
     $state = RuTrackerMetaFetch::pump($oldHash, 1000);
     strictAssertSame(null, $state, 'harvest still succeeds with a backfilled announce');
-    $payload = @new Torrent(mfCreates()[0]['arguments'][0]);
+    $payload = mfHandedOverTorrent(mfCreates()[0]);
     strictAssertSame('http://bt.t-ru.org/ann?pk=s3cr3t', $payload->announce(), 'announce backfilled from the old torrent');
     strictAssertSame('https://rutracker.org/forum/viewtopic.php?t=6879823', $payload->comment(), 'comment still restored');
 });
@@ -533,7 +546,7 @@ $suite->test('harvest carries the old announce-list across, not just the single 
 
     $state = RuTrackerMetaFetch::pump($oldHash, 1000);
     strictAssertSame(null, $state, 'harvest still succeeds');
-    $payload = @new Torrent(mfCreates()[0]['arguments'][0]);
+    $payload = mfHandedOverTorrent(mfCreates()[0]);
     strictAssertSame('http://bt.t-ru.org/ann?pk=s3cr3t', $payload->announce(), 'announce preserved');
     strictAssertSame(array(
         array('http://bt.t-ru.org/ann?pk=s3cr3t', 'http://bt2.t-ru.org/ann'),
@@ -710,6 +723,53 @@ $suite->test('pump leaves a malformed durable generation retryable and untouched
         'pump stops after reading the malformed generation');
     strictAssertSame(0, count(mfRequestsForClear()),
         'malformed bytes never authorize an ownerless clear');
+});
+
+// The refusal above is the one in this file that CANNOT heal. Every other
+// pump() refusal is bounded by the deadline it just read -- past it,
+// stillPending() hands over to clearMarks() and the old torrent is released --
+// but this one refuses BECAUSE the generation will not read, so the deadline
+// that ends every other wait is the very thing missing. reapOrphans() reaps
+// the stub and never touches the predecessor's own chk-meta-new/chk-meta-until,
+// so nothing else rewrites them either: the old torrent stays META_PENDING,
+// re-reading the same bytes, for ever. logDebug() is gated on
+// $rutrackerCheckDebug, which conf.php ships as false, so "keeping it
+// untouched for diagnosis" produced no diagnosis at all.
+//
+// Asserted on the APPLICATION LOG with the flag EXPLICITLY false, and against
+// ruTrackerChecker::$logs staying empty of it: TestLib stubs logDebug()
+// UNGATED into that array, so it is the only pair of assertions that can tell
+// the two channels apart.
+$suite->test('the malformed durable generation reaches the application log at the shipped default', function () use ($oldHash) {
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('NOT-A-HASH', '999999'));
+
+    $written = testCapturedAppLog(function () use ($oldHash) {
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING, RuTrackerMetaFetch::pump($oldHash, 1000),
+            'the refusal itself is unchanged');
+    });
+
+    strictAssertSame(1, substr_count($written, 'malformed durable fetch generation'),
+        'an operator is told exactly once, with $rutrackerCheckDebug at its shipped default of false');
+    strictAssertTrue(strpos($written, $oldHash) !== false,
+        'and the line names the torrent whose fetch is wedged, so it can be cleared');
+    strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'malformed durable fetch generation')),
+        'and it no longer goes out the debug-gated channel, which says nothing in production');
+
+    // The control that proves the capture is not simply catching everything:
+    // the sibling refusals in this file DO heal -- the deadline they read ends
+    // them -- so they stay gated, and the same capture sees nothing from one.
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(str_repeat('A', 40), '999999'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        false, true, array());
+    ruTrackerChecker::queueResult('torrentExists', true); // the stub is there, the read just failed
+    $quiet = testCapturedAppLog(function () use ($oldHash) {
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING, RuTrackerMetaFetch::pump($oldHash, 1000),
+            'an unreadable owner is retryable, and heals as soon as the read succeeds');
+    });
+    strictAssertSame('', $quiet,
+        'a refusal that recovers on its own stays on the gated channel and writes nothing here');
 });
 
 $suite->test('harvest gives a paused old torrent a paused replacement', function () use ($oldHash) {

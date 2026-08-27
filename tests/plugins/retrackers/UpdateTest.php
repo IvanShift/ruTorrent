@@ -504,6 +504,14 @@ $tests['happy path loads candidate once without rollback'] = function () {
     rtAssertSame(2, count(rXMLRPCRequest::$requests), 'initial read and erase are issued');
     rtAssertSame(1, count(rTorrent::$sends), 'the candidate torrent is loaded once');
     rtAssertSame(array('d.set_custom3=1'), rTorrent::$sends[0]['addition'], 'loop suppression preserved');
+    // Same reason the initial read is non-important: this detached worker may
+    // wake after another plugin replaced the hash, and rtorrent answers any
+    // command naming a download it no longer has with -500 "invalid
+    // parameters: info-hash not found" (measured against the live daemon).
+    // With $rpcLogFaults shipped as true, an important request would put the
+    // whole request and the raw XML answer in the log for an expected race.
+    rtAssertSame(false, rXMLRPCRequest::$requests[1]['important'],
+        'the erase is non-important, so an expected stale-hash fault logs no raw XML');
 };
 
 $tests['started argv snapshot overrides stopped custom4 for candidate load'] = function () {
@@ -889,6 +897,13 @@ $tests['private and legacy meta-name exclusions only restore prior run state'] =
         rtAssertSame(2, count(rXMLRPCRequest::$requests), $label . ': only read and restart');
         rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
             $label . ': the stopped user torrent is restored');
+        // The trailing d.start is the MOST frequently issued hash-naming request
+        // in this worker -- every path that changes nothing reaches it -- so it
+        // is the likeliest of all of them to meet a hash another plugin has
+        // replaced. Its sibling retrackersRestoreStartedInitialState() issues
+        // the identical command and has always kept its fault local.
+        rtAssertSame(false, rXMLRPCRequest::$requests[1]['important'],
+            $label . ': the restart is non-important, so an expected stale-hash fault logs no raw XML');
         rtAssertSame(array(), rTorrent::$sends, $label . ': no reload');
     }
 };

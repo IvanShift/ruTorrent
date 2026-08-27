@@ -377,13 +377,25 @@ rTorrentStub.prototype.recheck = function()
 
 rTorrentStub.prototype.setsettings = function()
 {
-	var adjustAlloc = false;
+	var socketCategories = [];
 	for(var i=0; i<this.vs.length; i++)
 	{
 		var prmType = "string";
-		if(this.ss[i].charAt(0)=='n')
-			prmType = "i8";
 		var prm = this.vs[i];
+		if(this.ss[i].charAt(0)=='n')
+		{
+			prmType = "i8";
+			// A numeric field the user cleared reaches this door as an
+			// empty value, and <i8></i8> carries no number for rtorrent to
+			// decode. It refuses the whole request over a member it cannot
+			// decode instead of faulting that one member, so a single
+			// cleared field would cost every other setting pressed with it.
+			// The door in plugins/httprpc/action.php never emits one -- it
+			// puts every "n" value through floatval() first, which answers
+			// an empty value with 0 -- so do here what it does.
+			if(prm==="")
+				prm = 0;
+		}
 		var cmd = null;
 		var socketAlloc = theRequestManager.getSocketAllocCategory(this.ss[i]);
 		if(this.ss[i]=="ndht")
@@ -405,7 +417,8 @@ rTorrentStub.prototype.setsettings = function()
 			this.commands.push( minCmd );
 			cmd = new rXMLRPCCommand("system.sockets."+socketAlloc+".max_alloc.set");
 			cmd.addParameter("string",'');
-			adjustAlloc = true;
+			if(socketCategories.indexOf(socketAlloc)<0)
+				socketCategories.push(socketAlloc);
 		}
 		else
 			cmd = new rXMLRPCCommand('set_'+this.ss[i].substr(1));
@@ -414,8 +427,92 @@ rTorrentStub.prototype.setsettings = function()
 	}
 	// The staged min_alloc/max_alloc values only take effect once the socket
 	// manager recomputes its allocation. Send it once per batch.
-	if(adjustAlloc)
+	//
+	// A recompute rtorrent refuses leaves the staged values behind, and staged
+	// values break every later recompute too, so the bounds in effect are read
+	// before anything touches them and put back when the answer comes back
+	// faulted. Faulted means the request, not the recompute: any faulted member
+	// puts the bounds back, so a press that changes a socket setting rtorrent
+	// accepts together with some other setting it refuses rolls the socket
+	// change back as well. That is exactly what getSocketAlloc() /
+	// restoreSocketAlloc() do to the batch that goes through
+	// plugins/httprpc/action.php -- they hang off the success of the whole
+	// request -- and the two doors have to answer the same request the same
+	// way, so this one does not narrow the test on its own.
+	//
+	// Reading the bounds at the head of this batch rather than in a request of
+	// its own is enough: a multicall runs its members in order, so the values
+	// that come back are the ones that were in effect when the batch started.
+	if(socketCategories.length)
+	{
+		var reads = [];
+		for(var c=0; c<socketCategories.length; c++)
+		{
+			reads.push(new rXMLRPCCommand("system.sockets."+socketCategories[c]+".min_alloc"));
+			reads.push(new rXMLRPCCommand("system.sockets."+socketCategories[c]+".max_alloc"));
+		}
+		this.socketAllocCategories = socketCategories;
+		this.commands = reads.concat(this.commands);
 		this.commands.push( new rXMLRPCCommand("system.sockets.adjust_alloc") );
+	}
+}
+
+rTorrentStub.prototype.setsettingsParseXML = function(xml)
+{
+	if(this.socketAllocCategories)
+	{
+		var categories = this.socketAllocCategories;
+		if(!this.savedSocketAlloc)
+		{
+			// A batch long enough to be split over several requests can fault in
+			// a response that no longer carries the reads, so the bounds are kept
+			// for as long as the batch runs rather than looked up on refusal.
+			var values = this.getXMLValues(xml, 2, 1)[0];
+			if(values && (values.length>=2*categories.length))
+			{
+				var bounds = values.slice(0,2*categories.length);
+				// A read that faults answers with a struct instead of a number
+				// and shifts everything behind it as well, so a bound that did
+				// not come back as one means there is nothing here worth
+				// putting back.
+				if(!bounds.some(function(bound) { return(!(/^\d+$/).test(bound)); }))
+					this.savedSocketAlloc = bounds;
+			}
+		}
+		if(this.isError() && this.savedSocketAlloc)
+		{
+			var restore = "";
+			for(var i=0; i<categories.length; i++)
+				restore+=("&s="+categories[i]+"&v="+this.savedSocketAlloc[2*i]+
+					","+this.savedSocketAlloc[2*i+1]);
+			// Once per batch: the fault stays recorded on the stub for whatever
+			// is left of it.
+			this.socketAllocCategories = null;
+			Ajax("?action=restoresocketalloc"+restore);
+		}
+	}
+	return(xml);
+}
+
+// Puts back the socket allocation bounds a faulted batch left staged, one
+// "category" parameter per category and its two bounds as its value. These were
+// in effect moments ago, so this recompute has to be accepted in turn; there is
+// nothing further to fall back to if it is not.
+rTorrentStub.prototype.restoresocketalloc = function()
+{
+	for(var i=0; i<this.ss.length; i++)
+	{
+		var bounds = this.vs[i].split(",");
+		var minCmd = new rXMLRPCCommand("system.sockets."+this.ss[i]+".min_alloc.set");
+		minCmd.addParameter("string",'');
+		minCmd.addParameter("i8",bounds[0]);
+		this.commands.push( minCmd );
+		var maxCmd = new rXMLRPCCommand("system.sockets."+this.ss[i]+".max_alloc.set");
+		maxCmd.addParameter("string",'');
+		maxCmd.addParameter("i8",bounds[1]);
+		this.commands.push( maxCmd );
+	}
+	this.commands.push( new rXMLRPCCommand("system.sockets.adjust_alloc") );
 }
 
 rTorrentStub.prototype.getsettings = function()
@@ -1162,6 +1259,13 @@ rTorrentStub.prototype.listResponse = function(data)
 	/** @type {ListResponseType} */
 	var ret = { labels: {}, labels_size: {}, torrents: {} };
 	theRequestManager.cid = data.cid;
+	// A full answer lists every torrent there is, so anything held that it does
+	// not mention is gone. Deletions are reported against a previous state the
+	// server no longer has, and would otherwise never arrive.
+	if(data.full)
+		for( var hash in theRequestManager.torrents )
+			if(!(hash in data.t))
+				delete theRequestManager.torrents[hash];
 	if(data.d)
 		$.each( data.d, function( ndx, hash )
 		{

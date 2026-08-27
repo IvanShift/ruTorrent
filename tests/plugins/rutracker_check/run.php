@@ -7,6 +7,7 @@ $tests = array(
     __DIR__ . '/AtomicOwnershipTest.php',
     __DIR__ . '/CheckerMetaFetchIntegrationTest.php',
     __DIR__ . '/RuTrackerHandlerTest.php',
+    __DIR__ . '/BencodeDecoderTest.php',
     __DIR__ . '/RuTrackerAnnounceTest.php',
     __DIR__ . '/ForumIndexTest.php',
     __DIR__ . '/DetectorTest.php',

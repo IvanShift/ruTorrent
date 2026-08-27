@@ -46,6 +46,45 @@ class RuTrackerUpdatePass
         return is_array($stored) ? $stored : array();
     }
 
+    // One persisted correction, or null when the stored row is not one. The
+    // row authorises a d.set_custom of chk-forum AND a full destructive
+    // checker run, and every field was read through a bare (int): '22abc',
+    // '022' and 22.9 wrote the forum 22, true wrote 1, '0x16' wrote 0 and
+    // '-22' wrote -22 -- and 0 and -22 are ids resolveForum() can never
+    // accept, so the mapping installed made writeForumMapping() answer
+    // FORUM_WRITE_CURRENT for ever while nothing cleared the obligation. The
+    // topic half went the same way: '0200', 200.7 and '200abc' all matched a
+    // live chk-topic of "200".
+    static private function forumCorrectionRecord($record)
+    {
+        if (!is_array($record)) return null;
+        $topic = RuTrackerRpcValue::canonicalPositiveInt32($record['topic'] ?? null);
+        $forum = RuTrackerRpcValue::canonicalPositiveInt32($record['forum'] ?? null);
+        // The retention bound. ABSENT is the legacy row that predates the
+        // stamp and reads as 0 -- immediately prunable, exactly as it always
+        // was. PRESENT but unreadable is corruption: it can never age out, so
+        // the row would outlive every window it was meant to be kept for.
+        $at = array_key_exists('at', $record)
+            ? RuTrackerRpcValue::canonicalNonnegativeInteger($record['at']) : 0;
+        return ($topic === null || $forum === null || $at === null)
+            ? null : array('topic' => $topic, 'forum' => $forum, 'at' => $at);
+    }
+
+    // There is no canonicalising guard here, and there deliberately is not.
+    // The row's topic and forum are the feed's own: parseFeed() admits an
+    // entry only through canonicalPositiveInt32() and rejects the whole
+    // document when any entry fails (forumindex.php parseFeed()), and the only
+    // caller -- pollFeed(), below -- passes that value straight through. So a
+    // re-check here was unreachable by construction, and a guard no input can
+    // reach is not a guard: weakening it back to (int) changed no test in this
+    // suite, because no test could construct the input it refuses.
+    //
+    // The defence that does the work is at the READ sites, since the threat is
+    // bytes already on disk -- hand-edited, half-written, or left by an older
+    // release -- which no write-time check can reach at all.
+    // forumCorrectionRecord() reads topic, forum and 'at' canonically at every
+    // one of those sites, and each of them has a test that dies when it is
+    // weakened.
     static private function rememberForumCorrection($hash, $topic, $forum)
     {
         $hash = strtoupper((string) $hash);
@@ -53,10 +92,15 @@ class RuTrackerUpdatePass
         return RuTrackerState::update('updatepass', function ($state) use ($hash, $topic, $forum, $now) {
             $pending = isset($state['forum_corrections']) && is_array($state['forum_corrections'])
                 ? $state['forum_corrections'] : array();
-            foreach ($pending as $storedHash => $record)
-                if (!is_array($record) || $now - (int) ($record['at'] ?? 0) > self::FORUM_CORRECTION_MAX_AGE)
+            foreach ($pending as $storedHash => $record) {
+                // A row nobody can read can never be honoured either, so
+                // keeping it is an obligation nothing is able to retire.
+                $canonical = self::forumCorrectionRecord($record);
+                if ($canonical === null
+                    || $now - $canonical['at'] > self::FORUM_CORRECTION_MAX_AGE)
                     unset($pending[$storedHash]);
-            $pending[$hash] = array('topic' => (int) $topic, 'forum' => (int) $forum, 'at' => $now);
+            }
+            $pending[$hash] = array('topic' => $topic, 'forum' => $forum, 'at' => $now);
             $state['forum_corrections'] = $pending;
             return $state;
         });
@@ -65,15 +109,22 @@ class RuTrackerUpdatePass
     static private function clearForumCorrection($hash, $expected)
     {
         $hash = strtoupper((string) $hash);
+        $expected = self::forumCorrectionRecord($expected);
         RuTrackerState::update('updatepass', function ($state) use ($hash, $expected) {
             $pending = isset($state['forum_corrections']) && is_array($state['forum_corrections'])
                 ? $state['forum_corrections'] : array();
-            $current = $pending[$hash] ?? null;
+            // false is ABSENT, null is present-but-unreadable: the two need
+            // different answers below, and (int) told them apart as 0 and 0.
+            $current = array_key_exists($hash, $pending)
+                ? self::forumCorrectionRecord($pending[$hash]) : false;
             // A newer feed generation may have replaced the obligation while
-            // this check ran. Clear only the exact topic/forum pair observed.
-            if (is_array($current)
-                && (int) ($current['topic'] ?? 0) === (int) ($expected['topic'] ?? 0)
-                && (int) ($current['forum'] ?? 0) === (int) ($expected['forum'] ?? 0))
+            // this check ran. Clear only the exact topic/forum pair observed
+            // -- or a stored row no parser can read, which nothing can ever
+            // honour and which would otherwise hold this hash for ever.
+            if ($current === null
+                || ($current !== false && $expected !== null
+                    && $current['topic'] === $expected['topic']
+                    && $current['forum'] === $expected['forum']))
                 unset($pending[$hash]);
             if (count($pending)) $state['forum_corrections'] = $pending;
             else unset($state['forum_corrections']);
@@ -81,26 +132,58 @@ class RuTrackerUpdatePass
         });
     }
 
-    // Returns true only when the durable target is actually installed on the
-    // same topic. A process may die after recording the obligation but before
-    // writing chk-forum; that record must survive without dispatching a check
-    // against the old mapping.
-    static private function forumCorrectionReady($hash, $record)
+    /**
+     * Installs the durable feed correction on the torrent and answers whether
+     * it is now actually in place, so the caller may dispatch a check against
+     * it. A COMMAND that answers a question, not a predicate: it writes
+     * chk-forum through writeForumMapping() (which is the point -- a check
+     * dispatched against the old mapping is worse than no check), and it
+     * retires an obligation writeForumMapping() reports as impossible. It was
+     * called forumCorrectionReady(), which read as a pure question and hid
+     * both of those. The name says what it does now.
+     *
+     * A process may die after recording the obligation but before writing
+     * chk-forum; that record must survive without dispatching a check against
+     * the old mapping, which is why "installed" is answered from the row that
+     * is actually on the torrent rather than from the durable record.
+     */
+    static private function installForumCorrection($hash, $record)
     {
         if (!is_array($record)) return false;
         $hash = strtoupper((string) $hash);
-        $topic = (int) ($record['topic'] ?? 0);
-        $forum = (int) ($record['forum'] ?? 0);
+        $canonical = self::forumCorrectionRecord($record);
+        if ($canonical === null) {
+            // Nothing is dispatched, nothing is written, and this returns
+            // BEFORE writeForumMapping(), so a retained row costs one log line
+            // per cycle -- not the checker run per cycle that made dropping it
+            // look necessary. Both call sites dispatch nothing on false.
+            //
+            // So the bytes stay. Deleting them destroyed the only copy of the
+            // evidence while this diagnostic names the document and the hash
+            // but never the value, which leaves an operator with a report of
+            // corruption and nothing to look at; and the row is bounded
+            // anyway, since rememberForumCorrection()'s prune drops every
+            // unreadable row the next time the feed applies anything at all.
+            // Same rule as a malformed checker claim, which is likewise
+            // RETAINED with a sanitised diagnostic (check.php claimCheck()).
+            ruTrackerChecker::logDebug('updatepass: the stored forum correction for ' . $hash
+                . ' in updatepass.json is not a canonical topic/forum/at record, so no chk-forum'
+                . ' is written and no check is dispatched; the row is kept for inspection and the'
+                . ' next feed application prunes it');
+            return false;
+        }
+        $topic = $canonical['topic'];
+        $forum = $canonical['forum'];
         // The record was loaded before the per-hash mapping lock. Revalidate
         // its generation under that lock: a newer feed response may have
         // replaced the durable target while this cycle was deciding what to
         // dispatch. Topic/forum identify the obligation; its timestamp only
         // bounds retention and does not make an otherwise equal target new.
         $stillCurrent = function () use ($hash, $topic, $forum) {
-            $current = self::forumCorrections()[$hash] ?? null;
-            return is_array($current)
-                && (int) ($current['topic'] ?? 0) === $topic
-                && (int) ($current['forum'] ?? 0) === $forum;
+            $current = self::forumCorrectionRecord(self::forumCorrections()[$hash] ?? null);
+            return $current !== null
+                && $current['topic'] === $topic
+                && $current['forum'] === $forum;
         };
         $status = RuTrackerForumIndex::writeForumMapping(
             $hash,
@@ -143,16 +226,35 @@ class RuTrackerUpdatePass
     // reset a stale deletion counter without a per-torrent XMLRPC round
     // trip. Drops a trailing partial group the same way parseTrackerBlob
     // drops a malformed tracker row -- unknowable rather than guessed at.
+    // A chk-* counter as the daemon hands it back. An UNSET custom reads back
+    // as '' -- the only spelling of the absent 0; the rest is canonical or
+    // corruption.
+    static private function storedCounter($value)
+    {
+        if ($value === '') return 0;
+        return RuTrackerRpcValue::canonicalNonnegativeInteger($value);
+    }
+
     static public function parseMulticall($values)
     {
         $rows = array();
         for ($i = 0; $i + self::COLUMNS <= count($values); $i += self::COLUMNS) {
+            // The whole row is rejected before anything reads it: chk-state
+            // and chk-time steer dispatch and the fresh-scan comparison, and
+            // zero looks exactly like a never-checked row.
+            $state = self::storedCounter($values[$i + 1]);
+            $time = self::storedCounter($values[$i + 2]);
+            if ($state === null || $time === null) {
+                ruTrackerChecker::logDebug('parseMulticall: a row carries a malformed'
+                    . ' chk-state/chk-time and is dropped rather than read as never checked');
+                continue;
+            }
             $trackersComplete = true;
             $trackers = RuTrackerDetector::parseTrackerBlob($values[$i + 7], $trackersComplete);
             $rows[] = array(
                 'hash' => $values[$i],
-                'state' => intval($values[$i + 1]),
-                'time' => intval($values[$i + 2]),
+                'state' => $state,
+                'time' => $time,
                 'label' => $values[$i + 3],
                 'message' => $values[$i + 4],
                 'del' => $values[$i + 5],
@@ -267,7 +369,7 @@ class RuTrackerUpdatePass
             $correction = $corrections[strtoupper((string) $row['hash'])] ?? null;
             if ($row['state'] === ruTrackerChecker::STE_META_PENDING) {
                 self::dispatchChecker($checker, $defaultChecker, $row,
-                    self::forumCorrectionReady($row['hash'], $correction) ? $correction : null);
+                    self::installForumCorrection($row['hash'], $correction) ? $correction : null);
                 $checked[] = $row['hash'];
                 continue;
             }
@@ -319,7 +421,7 @@ class RuTrackerUpdatePass
             // it ahead of even the free alive path: that path buffers its write
             // until the end of the cycle, so clearing the obligation there
             // could lose it if the flush or the process then failed.
-            $correctionReady = self::forumCorrectionReady($row['hash'], $correction);
+            $correctionReady = self::installForumCorrection($row['hash'], $correction);
             if ($correctionReady
                 || isset($forumChangedSet[strtoupper((string) $row['hash'])])) {
                 self::dispatchChecker($checker, $defaultChecker, $row,
@@ -399,8 +501,8 @@ class RuTrackerUpdatePass
             'state' => $state,
             'msg' => $message,
             'counts' => $counts,
-            'seenState' => (int) $row['state'],
-            'seenTime' => (int) $row['time'],
+            'seenState' => $row['state'],   // parseMulticall() made these ints
+            'seenTime' => $row['time'],
             'clearDeletion' => (bool) $clearDeletion,
             'del' => (string) (isset($row['del']) ? $row['del'] : ''),
             'rawMsg' => (string) (isset($row['msg']) ? $row['msg'] : ''),
@@ -464,13 +566,23 @@ class RuTrackerUpdatePass
             if (!$scan->success()) return 0;
 
             $live = array();
-            for ($i = 0; $i + 5 <= count($scan->val); $i += 5)
+            for ($i = 0; $i + 5 <= count($scan->val); $i += 5) {
+                // A fresh reading that will not parse is not comparable with
+                // the snapshot, so it is left out of $live -- "not seen".
+                $liveState = self::storedCounter($scan->val[$i + 1]);
+                $liveTime = self::storedCounter($scan->val[$i + 2]);
+                if ($liveState === null || $liveTime === null) {
+                    ruTrackerChecker::logDebug('flushVerdicts: a row answered the fresh'
+                        . ' scan with a malformed chk-state/chk-time; its verdict is dropped');
+                    continue;
+                }
                 $live[(string) $scan->val[$i]] = array(
-                    'state' => (int) $scan->val[$i + 1],
-                    'time' => (int) $scan->val[$i + 2],
+                    'state' => $liveState,
+                    'time' => $liveTime,
                     'del' => (string) $scan->val[$i + 3],
                     'msg' => (string) $scan->val[$i + 4],
                 );
+            }
 
             $applied = 0;
             foreach ($claimableVerdicts as $verdict) {
@@ -598,7 +710,13 @@ class RuTrackerUpdatePass
                 // ETag moves would be a request per fleet topic per cycle for
                 // nothing.
                 if ($was === (string) $map[$topic]['forum']) continue;
-                $forum = (int) $map[$topic]['forum'];
+                // Not (int): parseFeed() already admits this id only through
+                // canonicalPositiveInt32(), so the cast normalises nothing --
+                // and if that ever stopped being true, a cast would coerce the
+                // bad value into a row that LOOKS valid, while passing it on
+                // unchanged leaves every reader (forumCorrectionRecord(),
+                // writeForumMapping()) free to refuse it.
+                $forum = $map[$topic]['forum'];
                 // Persist the reason for a recheck BEFORE the mapping. A crash
                 // in between leaves an unready obligation that will be retried
                 // with the uncommitted feed ETag, never a silent settled row.
@@ -711,7 +829,7 @@ class RuTrackerUpdatePass
                 ? max($until, $predecessorUntil) : $until;
             if ($claimRead && isset($claim->val[0], $claim->val[1])
                 && (string) $claim->val[0] === $hash
-                && (int) $claim->val[1] === ruTrackerChecker::STE_META_PENDING
+                && RuTrackerRpcValue::canonicalNonnegativeInteger($claim->val[1]) === ruTrackerChecker::STE_META_PENDING
                 && $now <= $claimedUntil)
                 continue; // still claimed AND still live: pump() owns this item
 
@@ -968,8 +1086,16 @@ class RuTrackerUpdatePass
                 if (strcasecmp((string) $succProbe->val[0], $successorHash) !== 0) return;
                 $succMarker = (string) $succProbe->val[1];
                 $rawSuccRecord = (string) $succProbe->val[2];
-                $succRecord = ruTrackerChecker::decodeInheritance($rawSuccRecord);
+                $succShaped = false;
+                $succRecord = ruTrackerChecker::decodeInheritance($rawSuccRecord, $succShaped);
                 if (ruTrackerChecker::isPluginReplacementMarker($succMarker)) {
+                    // Record-shaped bytes that will not decode are as unproved
+                    // as ones that decode non-canonically: clear nothing.
+                    if ($succRecord === null && $succShaped) {
+                        ruTrackerChecker::logDebug("sweepReplacements: " . $successorHash
+                            . " carries an unreadable successor recovery record; retaining both generations");
+                        return;
+                    }
                     if ($succRecord !== null) {
                         $canonicalSuccRecord = RuTrackerReplacementRecord::encode(
                             $succRecord['old'],
@@ -1142,8 +1268,12 @@ class RuTrackerUpdatePass
             // are unproved, so even a diagnostic state write could land on a
             // same-hash torrent re-added after this probe. Log the legacy row,
             // but never write, clear, erase, open or start from this branch.
-            $stime = intval($val[6]);
-            if ($stime <= 0 || ($now - $stime) <= ruTrackerChecker::MAX_LOCK_TIME) return;
+            // The canonical reads below are deliberately NOT hoisted above
+            // this: the branch's only effect is the line, and the readings an
+            // operator most needs it for are precisely the ones no integer
+            // parse can make sense of.
+            $stime = RuTrackerRpcValue::canonicalNonnegativeInteger($val[6]);
+            if ($stime === null || $stime <= 0 || ($now - $stime) <= ruTrackerChecker::MAX_LOCK_TIME) return;
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " carries a replacement marker with no record: the predecessor and its run state"
                 . " cannot be recovered, so it is logged and left untouched"
@@ -1154,16 +1284,24 @@ class RuTrackerUpdatePass
 
         // Does the row already answer what its record asked for? That one
         // question separates a finished transaction from an unfinished one,
-        // and it is asked of the RECORD, never of a label. Keep the exact
-        // canonical state/open projection for every ownership-sensitive
-        // branch below; malformed positive replies authorize no mutation.
-        $observedState = RuTrackerRpcValue::canonicalNonnegativeInteger($val[0]);
-        $observedOpen = RuTrackerRpcValue::canonicalNonnegativeInteger($val[1]);
-        if (!in_array($observedState, array(0, 1), true)
-            || !in_array($observedOpen, array(0, 1), true))
-            return;
-        $val[0] = $observedState;
-        $val[1] = $observedOpen;
+        // and it is asked of the RECORD, never of a label. Every RPC integer
+        // the branches below act on is read canonically HERE, ahead of all of
+        // them: an unparsable reading authorises nothing at all, and the exact
+        // state/open projection guards every ownership-sensitive branch.
+        // d.get_completed_bytes (slot 3) is deliberately not among them. It is
+        // the one column with no int32 bound, and a canonical PHP-integer
+        // roundtrip refuses everything past PHP_INT_MAX -- on a 32-bit build
+        // every torrent past 2 GiB, all of it WELL-FORMED input the sweep
+        // would then never finish for. It keeps the predecessor's intval() at
+        // its single use site below, beside the two genuinely int32 counters
+        // that carry the guard.
+        foreach (array(0, 1, 2, 4) as $slot) {
+            $val[$slot] = RuTrackerRpcValue::canonicalNonnegativeInt32($val[$slot]);
+            if ($val[$slot] === null) return;
+        }
+        if (!in_array($val[0], array(0, 1), true) || !in_array($val[1], array(0, 1), true)) return;
+        $observedState = $val[0];
+        $observedOpen = $val[1];
 
         // Cleanup owns the same exact marker/record generation. Reconcile it
         // before any branch can clear keys, revive the predecessor, discard the
@@ -1399,7 +1537,7 @@ class RuTrackerUpdatePass
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " inherited a stopped predecessor, so the transaction is complete as it stands");
             ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
-                array('state' => (int) $val[0], 'is_open' => (int) $val[1]));
+                array('state' => $val[0], 'is_open' => $val[1]));
             return;
         }
         if ((string) $val[5] !== '') {
@@ -1407,7 +1545,34 @@ class RuTrackerUpdatePass
                 . " will not be started blind, the daemon already reports: " . (string) $val[5]);
             return;
         }
-        if (!$resuming && (intval($val[2]) > 0 || intval($val[3]) > 0 || intval($val[4]) !== 0)) {
+        // d.get_completed_bytes has no int32 bound, so it is judged in the
+        // STRING domain: exactly canonical zero is the only reading that means
+        // "never opened", which accepts an arbitrarily wide well-formed counter
+        // (a 32-bit build must not refuse every torrent past 2 GiB) without an
+        // int32 parser. intval() answered 0 for everything it could not read,
+        // and 0 is the fail-OPEN direction: a wrong "never opened" starts a
+        // download somebody deliberately left stopped.
+        // int or decimal string only: (string) 0.0 and (string) false are "0"
+        // and "", which would hide a reading that is not a count at all.
+        $bytes = (is_int($val[3]) || is_string($val[3])) ? (string) $val[3] : '';
+        if (preg_match('/^(?:0|[1-9][0-9]*)$/D', $bytes) !== 1) {
+            // DEFER, exactly like slots 0/1/2/4 do for the same reason
+            // (inspectMarkedRow()): a reading nobody made authorises nothing,
+            // and clearing the keys here is irreversible -- they are the only
+            // durable handle the next cycle has on this transaction, so the
+            // replacement would stay stopped for good with nothing able to
+            // finish it. A faulting multicall member injects its faultString
+            // into the flat value list rather than shortening it, so a
+            // transient fault in THIS slot used to give up automatic
+            // activation permanently while the same fault one slot earlier was
+            // simply retried.
+            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                . " reports a completed-byte counter that does not read as a count, which is no"
+                . " evidence either way about whether it was ever opened; its exact ownership"
+                . " keys are kept for the next cycle");
+            return;
+        }
+        if (!$resuming && ($val[2] > 0 || $bytes !== '0' || $val[4] !== 0)) {
             // It was opened at some point and is stopped now: that is a
             // decision somebody made after the crash, not one to undo. The
             // exception is this sweep's own half-done activation ($resuming),
@@ -1415,7 +1580,7 @@ class RuTrackerUpdatePass
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " has been opened since it was staged, leaving its run state alone");
             ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
-                array('state' => (int) $val[0], 'is_open' => (int) $val[1]));
+                array('state' => $val[0], 'is_open' => $val[1]));
             return;
         }
         $status = RuTrackerAtomicOwnership::runState(
@@ -1426,8 +1591,8 @@ class RuTrackerUpdatePass
             ),
             $record['run']['started'],
             array(
-                'state' => (int) $val[0],
-                'is_open' => (int) $val[1],
+                'state' => $val[0],
+                'is_open' => $val[1],
             ),
             array(
                 ruTrackerChecker::INHERIT_KEY => '',

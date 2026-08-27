@@ -283,6 +283,44 @@ function strictWithStateDir($prefix, $callback)
     }
 }
 
+// What ruTorrent's shared APPLICATION LOG actually received while $body ran.
+//
+// The only capture that can tell this plugin's two log channels apart.
+// ruTrackerChecker::logDebug() is gated on $rutrackerCheckDebug, which
+// conf.php ships as FALSE; ruTrackerChecker::logUnrepairable() is not. Both
+// end at FileUtil::toLog(), which writes whenever $log_file is set -- so a
+// body run at the shipped default reaches this file through the ungated
+// channel and no other.
+//
+// Which is load-bearing, and not a stylistic preference: the handler stub's
+// own logDebug() below records into ruTrackerChecker::$logs UNGATED, so a
+// test that asserts on that array cannot tell a line that reaches an operator
+// from one that says nothing at all in production. That is exactly how a
+// permanently wedged refusal stayed silent at the shipped default while its
+// test passed.
+//
+// $debug defaults to that shipped false. Pass true only to read back a line
+// that is SUPPOSED to be debug-gated.
+function testCapturedAppLog($body, $debug = false)
+{
+    $file = tempnam(sys_get_temp_dir(), 'chk-app-log');
+    $savedFile = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
+    $savedDebug = array_key_exists('rutrackerCheckDebug', $GLOBALS)
+        ? $GLOBALS['rutrackerCheckDebug'] : null;
+    $GLOBALS['log_file'] = $file;
+    $GLOBALS['rutrackerCheckDebug'] = $debug;
+    try {
+        $body();
+        return (string) @file_get_contents($file);
+    } finally {
+        @unlink($file);
+        if ($savedFile === null) unset($GLOBALS['log_file']);
+        else $GLOBALS['log_file'] = $savedFile;
+        if ($savedDebug === null) unset($GLOBALS['rutrackerCheckDebug']);
+        else $GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+    }
+}
+
 class rXMLRPCCommand
 {
     public $command;
@@ -789,7 +827,10 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return true;
         }
 
-        public static function isMetainfo($payload)
+        // Torrent|null, exactly like the real one: the single place downloaded
+        // bytes are decoded. A handler under test queues the parsed object it
+        // expects to travel on, or null for "these bytes are not metainfo".
+        public static function parseMetainfo($payload)
         {
             return self::answer(__FUNCTION__, array($payload));
         }
@@ -799,14 +840,27 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return self::answer(__FUNCTION__, array($client, $hash, $oldTorrent));
         }
 
-        public static function createTorrent($payload, $oldHash, $oldTorrent = null)
+        // $torrent is an already parsed Torrent, never bytes.
+        public static function createTorrent($torrent, $oldHash, $oldTorrent = null)
         {
-            return self::answer(__FUNCTION__, array($payload, $oldHash, $oldTorrent));
+            return self::answer(__FUNCTION__, array($torrent, $oldHash, $oldTorrent));
         }
 
         public static function logDebug($message)
         {
             self::$logs[] = $message;
+        }
+
+        // Deliberately NOT recorded beside logDebug() above, and deliberately
+        // the real ungated write: this is the channel whose whole purpose is
+        // reaching ruTorrent's application log at conf.php's shipped
+        // $rutrackerCheckDebug = false. Recording it into the same array as
+        // the gated one would make the two indistinguishable to every test
+        // that reads it -- which is the fault this stub already caused once.
+        // testCapturedAppLog() is how a test reads this channel back.
+        public static function logUnrepairable($message)
+        {
+            FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
         }
     }
 }

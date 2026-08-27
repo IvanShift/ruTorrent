@@ -6,7 +6,13 @@ function retrackersHasValidPreStopState($arguments)
 		&& ($arguments[3] === '0' || $arguments[3] === '1');
 }
 
-if(!defined('RETRACKERS_TEST_MODE') && !retrackersHasValidPreStopState($argv))
+// isset, because under a web SAPI $argv does not exist and reading it bare
+// emits a warning before this fails closed. It DOES fail closed either way --
+// retrackersHasValidPreStopState() starts with is_array() - but a guard that
+// announces itself with an "Undefined variable" notice on the way is not the
+// diagnostic anybody wants. Same shape as plugins/erasedata/update.php:8.
+if(!defined('RETRACKERS_TEST_MODE')
+	&& !retrackersHasValidPreStopState(isset($argv) ? $argv : null))
 	return;
 
 if(!defined('RETRACKERS_TEST_MODE'))
@@ -253,6 +259,12 @@ function retrackersRunWorker($arguments)
 							if(isset($torrent->{'rtorrent'}))
 								unset($torrent->{'rtorrent'});
 							$eReq = new rXMLRPCRequest( new rXMLRPCCommand("d.erase", $hash ) );
+							// Same reason as the read above: this detached worker may wake
+							// after another plugin replaced the hash, and rtorrent answers
+							// a command naming a download it no longer has with a fault.
+							// The failure is already handled below; keeping it important
+							// only dumps the raw XML for an expected race.
+							$eReq->important = false;
 							$eraseIssued = true;
 							if($eReq->success())
 							{
@@ -290,6 +302,13 @@ function retrackersRunWorker($arguments)
 	if(!$processed && !$eraseIssued && $isStart)
 	{
 		$req = new rXMLRPCRequest( new rXMLRPCCommand("d.start", $hash ) );
+		// Every path that changes nothing arrives here, so this is the request
+		// this worker issues against the old hash most often -- and therefore
+		// the one most likely to meet a hash another plugin has replaced.
+		// retrackersRestoreStartedInitialState() issues the identical command
+		// and has always kept that fault local; this one was the last that did
+		// not.
+		$req->important = false;
 		$req->run();
 	}
 	return($processed);

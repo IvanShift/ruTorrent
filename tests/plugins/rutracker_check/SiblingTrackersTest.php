@@ -248,6 +248,12 @@ $suite->test('handlers delegate HTTP-200 payload validation and propagate its re
                 $name . ' / ' . $why . ': the predecessor hash is preserved');
             strictAssertSame($old, $calls[0]['arguments'][2],
                 $name . ' / ' . $why . ': the already-known predecessor object is preserved');
+            // These handlers own no parse of their own. They hand the raw
+            // client to the shared guard, which is the only place the bytes
+            // are decoded, and never call the replacement boundary -- that one
+            // takes an already parsed Torrent.
+            strictAssertSame(0, count(ruTrackerChecker::callsFor('createTorrent')),
+                $name . ' / ' . $why . ': the parsed-metainfo boundary is never called directly');
         }
     }
 });
