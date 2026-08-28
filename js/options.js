@@ -179,13 +179,6 @@ const theOptionsWindow = {
 			),
 			$("<fieldset>").append(
 				$("<legend>").text(theUILang.Other_Limiting),
-				// theWebUI.setSettings() reads the prefix of every setsettings key
-				// off the element it came from, and only a checkbox, a select or
-				// the num class earn the "n" prefix. An input[type=number] is none
-				// of those on its own, so without num these five would go to
-				// rtorrent as <string> under an "s" key -- which also hides them
-				// from the socket-allocation shim, since both that shim and its PHP
-				// twin match on "nmax_open_files" / "nmax_open_http" alone.
 				...[
 					["max_uploads_global", theUILang.Number_ul_slots],
 					["max_downloads_global", theUILang.Number_dl_slots],
