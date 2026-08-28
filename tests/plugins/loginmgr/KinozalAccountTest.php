@@ -31,6 +31,7 @@ class KinozalFakeClient
     public $referer = '';
     public $cookies = array();
     public $responses = array();
+    public $unreachable = null;
 
     public function __construct($results = '', $status = 200)
     {
@@ -40,12 +41,18 @@ class KinozalFakeClient
 
     public function fetch($url, $method = 'GET', $contentType = '', $body = '')
     {
+        if ($this->unreachable !== null && $url === $this->unreachable) {
+            return false;
+        }
         if (isset($this->responses[$url])) {
             $resp = $this->responses[$url];
             $this->status = $resp['status'] ?? 200;
             $this->results = $resp['results'] ?? '';
-            return ($this->status >= 200 && $this->status < 400);
         }
+        // Snoopy::fetch() returns the transport result, not a verdict on the
+        // status: it answers true for a 500 as readily as for a 200. A double
+        // that refused 4xx/5xx here would do the rejecting that the code under
+        // test is supposed to do, and a reverted fix would still pass.
         return true;
     }
 
@@ -154,31 +161,40 @@ $suite->test('torrent bytes read as a live session', function () {
         'a downloaded torrent must never be mistaken for a login wall');
 });
 
-$suite->test('non-200 status or empty body is recognised as dead session', function () {
-    strictAssertSame(false, kinozalIsOK('OK page', 500), 'HTTP 500 is not OK');
-    strictAssertSame(false, kinozalIsOK('OK page', 302), 'HTTP 302 is not OK');
-    strictAssertSame(false, kinozalIsOK('', 200), 'empty body is not OK');
+$suite->test('a torrent whose comment names the signup page is still a torrent', function () {
+    // The registration link is a marker of a guest PAGE. A torrent is payload
+    // and may carry any bytes at all, so reading the marker out of one would
+    // cost a re-login, and the cached session, on every download of it.
+    $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment28:see /signup.php to register'
+        . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384eee';
+    strictAssertSame(true, kinozalIsOK($torrent),
+        'a torrent must not be read as a login wall because of its comment');
 });
 
-$suite->test('login returns false when takelogin returns invalid credentials or guest page', function () {
+$suite->test('login reports whether the exchange happened, not whether it was accepted', function () {
+    // The verdict belongs to commonAccount::fetch()/check(), which apply it to
+    // this same answer the moment login() returns; the other twenty-four
+    // accounts report the exchange and nothing more, and a login() that judged
+    // for itself would make "false" mean both "the tracker did not answer" and
+    // "the credentials were refused", which the caller cannot tell apart.
     $client = new KinozalFakeClient();
     $client->responses = array(
         'https://kinozal.guru' => array('status' => 200, 'results' => '<html>main page</html>'),
         'https://kinozal.guru/takelogin.php' => array('status' => 200, 'results' => kinozalLoginPage()),
     );
-    strictAssertSame(false, kinozalLogin($client, 'baduser', 'badpass'),
-        'login must fail when takelogin returns login form');
+    strictAssertSame(true, kinozalLogin($client, 'baduser', 'badpass'),
+        'both requests went through, which is all login() is asked');
+    strictAssertSame(false, kinozalIsOK($client->results),
+        'and the guest form it came back with is what the caller then refuses');
+    strictAssertSame(true, isset($client->cookies['uid']), 'cookies are captured either way');
 });
 
-$suite->test('login returns true when takelogin returns authenticated session', function () {
+$suite->test('login fails when the tracker cannot be reached at all', function () {
     $client = new KinozalFakeClient();
-    $client->responses = array(
-        'https://kinozal.guru' => array('status' => 200, 'results' => '<html>main page</html>'),
-        'https://kinozal.guru/takelogin.php' => array('status' => 200, 'results' => '<div class="mn"><a href="/userdetails.php?id=123">user</a><a href="/logout.php">Выход</a></div>'),
-    );
-    strictAssertSame(true, kinozalLogin($client, 'gooduser', 'goodpass'),
-        'login succeeds when takelogin returns authenticated page');
-    strictAssertSame(true, isset($client->cookies['uid']), 'cookies set on login');
+    $client->responses = array('https://kinozal.guru' => array('status' => 200, 'results' => ''));
+    $client->unreachable = 'https://kinozal.guru/takelogin.php';
+    strictAssertSame(false, kinozalLogin($client, 'user', 'pass'),
+        'a request that did not go through is a failed login');
 });
 
 exit($suite->run());
