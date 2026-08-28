@@ -549,20 +549,33 @@ class Snoopy
 			if(function_exists("gzinflate"))
 			{
 				$results = substr($results, 10);
+				// A body whose gzip header carries FNAME or FEXTRA does not
+				// start its deflate stream at byte 10, and gzinflate() answers
+				// that with false rather than a string.
 				$results = gzinflate($results);
+				if($results===false)
+					$results = "";
 			}
 			else
 			{
 				$randName = FileUtil::getTempFilename('answer');
 				file_put_contents($randName.".gz",$results);
-				exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
+				// exec()'s output parameter REPLACES what it is handed with the
+				// command's output lines, so $results must not be passed to it:
+				// gzip -d prints nothing, and the empty array it left behind
+				// reached $this->results whenever the decompressed file was
+				// missing. Every consumer of ->results reads it with strpos(),
+				// strlen() or preg_*, all fatal on an array in PHP 8.
+				$gzipOutput = array();
+				exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$gzipOutput,$gzipStatus);
 				if(is_file($randName))
 				{
-					$results = file_get_contents($randName);
+					$results = (string) @file_get_contents($randName);
 					unlink($randName);
 				}
 				else
 				{
+					$results = "";
 					unlink($randName.".gz");
 				}
 			}
@@ -710,19 +723,29 @@ class Snoopy
 				{
 					$results = substr($results, 10);
 					$results = gzinflate($results);
+					if($results===false)
+						$results = "";
 				}
 				else
 				{
 					$randName = FileUtil::getTempFilename('answer');
 					file_put_contents($randName.".gz",$results);
-					exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
+					// Neither $results nor $return may be handed to exec()
+					// here. $results would come back as the command's output
+					// array, and $return is curl's exit code, which the
+					// return(!$return) at the end of this method still needs:
+					// a gzip that exits non-zero used to make a successful
+					// fetch report failure.
+					$gzipOutput = array();
+					exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$gzipOutput,$gzipStatus);
 					if(is_file($randName))
 					{
-						$results = file_get_contents($randName);
+						$results = (string) @file_get_contents($randName);
 						unlink($randName);
 					}
 					else
 					{
+						$results = "";
 						unlink($randName.".gz");
 					}
 				}
