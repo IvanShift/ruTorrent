@@ -47,21 +47,21 @@
 | ветка | коммит | объём | что мешает |
 |---|---|---|---|
 | `up/history-service-labels` | `4cf3bd69` | +37/−5, 3 файла | **НЕ ОТПРАВЛЯТЬ.** Достижимая потеря истории/Pushbullet для пользовательских `.private`-меток; producer отсутствует в upstream; тест не держит production-gate. Разбор: `REVIEW-history-service-labels.md` |
-| `up/test-harness` | `8231d2eb` | +3/−17, 3 файла | **ЗАБЛОКИРОВАНА.** Две обязательные правки — ниже |
+| `up/test-harness` | `64778267` | +49/−17, 4 файла | **ГОТОВА.** Обе обязательные правки сделаны; 1421/0 на PHP 8.5 и root PHP 8.1; семь мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
-### Почему заблокирована `up/test-harness`
+### Что исправлено в `up/test-harness`
 
-Половина про `TestCase.php` верна и измерена (падающий тест печатал `Passed:` при
-`zend.assertions=-1`, после правки печатает `Failed:`; 1419/0 во всех трёх конфигурациях).
-Но до отправки нужно:
+Половина про `TestCase.php` подтверждена: падающий test печатал `Passed:` при
+`zend.assertions=-1`, после правки печатает `Failed:`. Два прежних блокера закрыты:
 
-1. Удаление `php-test.ini` + `-c` рас-пинивает гораздо больше, чем `zend.assertions`:
-   `error_reporting` 30719→22527, `display_errors` on→off, `memory_limit` 128M→−1, а число
-   `Deprecated` в прогоне падает с 14 до 2. Заменить удаление на
-   `-d zend.assertions=1 -d error_reporting=-1 -d display_errors=1`.
-2. Сообщение коммита ссылается на `php -f php/CacheTest.php`, которая выдаёт 0 байт и
-   exit 0, потому что драйвер живёт в `php-test.sh`. Утверждение ложно, переписать.
+1. Runner явно передаёт `-d zend.assertions=1 -d error_reporting=-1
+   -d display_errors=1`; системный php.ini больше не меняет видимость diagnostics.
+2. Ложная команда `php -f php/CacheTest.php` удалена из commit message и заменена
+   реальным standalone probe.
+
+Добавлен `TestCaseTest.php`, который держит и поведение при выключенных assertions,
+и все три effective runner settings. Полный разбор: `REVIEW-test-harness.md`.
 
 ---
 
@@ -116,10 +116,12 @@
 
 ## Что делать дальше
 
-1. Дождаться перепроверки `../2026-08-28-fileutil-defects/` другой моделью.
+1. ~~Дождаться перепроверки `../2026-08-28-fileutil-defects/`.~~ Завершено и
+   зафиксировано в той задаче.
 2. ~~Проверить адверсально `up/history-service-labels`.~~ Проверена и отвергнута;
    безопасную marker-based логику сложить с producer-ом в PR 11. Разбор:
    `REVIEW-history-service-labels.md`.
-3. Починить и отправить `up/test-harness` (две правки выше) — **текущий шаг**.
+3. ~~Починить `up/test-harness`.~~ Готова как `64778267`; осталось push/PR по
+   `PR-test-harness.md`.
 4. Удалить `up/loginmgr-account-selection` — влита.
 5. Взяться за очередь 5-11, начиная с независимой #8 (`up/setsettings-socket-alloc`).
