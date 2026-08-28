@@ -247,12 +247,7 @@ class FileUtil
 				touch( $log_file );
 				chmod( $log_file, (isset($profileMask) ? $profileMask : 0777) & 0666 );
 			}
-			// Suppressed on purpose: the very next line already treats failure
-			// as "skip this line", and this IS the logger -- a warning here has
-			// nowhere to go but the response, once per call, for as long as the
-			// log stays unwritable. A read-only log file is the ordinary way to
-			// reach it, which is exactly what LogFileModeTest does.
-			$w = @fopen( $log_file, "ab+" );
+			$w = fopen( $log_file, "ab+" );
 			if( $w )
 			{
 				fputs( $w, "[".date_create()->format('Y-m-d H:i:s')."] {$str}\n" );

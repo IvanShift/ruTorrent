@@ -152,4 +152,32 @@ class LogFileModeTest extends TestCase
 			'Both lines are appended to the log'
 		);
 	}
+
+	public function testAnOpenFailureStaysOutOfTheResponseButReachesThePhpErrorLog()
+	{
+		$errorLog = $this->dir . '/php-errors.log';
+		$oldDisplayErrors = ini_get('display_errors');
+		$oldLogErrors = ini_get('log_errors');
+		$oldErrorLog = ini_get('error_log');
+		ini_set('display_errors', false);
+		ini_set('log_errors', true);
+		ini_set('error_log', $errorLog);
+		$GLOBALS['log_file'] = '/proc/version';
+		ob_start();
+		try {
+			FileUtil::toLog('probe');
+			$response = ob_get_contents();
+		} finally {
+			ob_end_clean();
+			ini_set('display_errors', $oldDisplayErrors);
+			ini_set('log_errors', $oldLogErrors);
+			ini_set('error_log', $oldErrorLog);
+		}
+		$errors = is_file($errorLog) ? file_get_contents($errorLog) : '';
+		$this->assertEquals('', $response, 'An unwritable log emits no response output');
+		$this->assertTrue(
+			strpos($errors, 'fopen(/proc/version)') !== false,
+			'An unwritable log remains visible in the PHP error log'
+		);
+	}
 }
