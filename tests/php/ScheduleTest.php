@@ -159,16 +159,18 @@ $tests = array(
     'a reload inside the jitter window does not move a getScheduleCommand fire time' => function () {
         global $schedule_rand;
 
-        // 'rutracker_check', not 'trafic': the window this test exists to walk
-        // runs from the interval boundary up to the plugin's own second within
-        // the jitter spread, and 'trafic' and 'rss' both hash to offset 0, so
-        // for them that window is empty and the walk proves nothing.
-        // 'rutracker_check' hashes to 5 of 0..10.
-        $name = 'rutracker_check';
+        // The window this case exists to walk runs from the interval boundary
+        // up to the key's own second within the jitter spread, so it needs a
+        // key whose offset is not 0 or there is nothing between the two to
+        // walk. getScheduleCommand's own callers cannot supply one -- 'trafic'
+        // and 'rss' both happen to hash to 0 -- so 'ratio' is borrowed here for
+        // its offset of 9; the alignment is a pure function of the key, so any
+        // key exercises the same code.
+        $name = 'ratio';
         $offset = scheduleJitterOffset($name);
         scheduleAssertTrue($offset > 0, "{$name} hashes to offset 0, so this test walks an empty window");
 
-        $intervalMinutes = 60;                  // what plugins/rutracker_check hands over
+        $intervalMinutes = 60;
         $interval = $intervalMinutes * 60;
         $boundary = 1755198000;                 // a multiple of $interval, so the slot is $boundary+$offset
         scheduleAssertSame(0, $boundary % $interval, 'The chosen instant is not an interval boundary');
@@ -178,8 +180,9 @@ $tests = array(
         // jitter spread. Up to the slot the answer must be the slot; from the
         // slot on it must be the next one, one whole interval later and not a
         // fresh countdown. An implementation that jumps to the *next* boundary
-        // as soon as this one passes -- the bug the deterministic alignment
-        // replaced -- reports slot+$interval for the seconds in between.
+        // as soon as this one passes -- the behaviour the deterministic
+        // alignment replaced -- reports slot+$interval for the seconds in
+        // between.
         for ($now = $boundary - 1; $now <= $boundary + $schedule_rand; $now++) {
             $sample = scheduleCommandAt($name, $intervalMinutes, $now);
             $expected = ($now < $slot) ? $slot : $slot + $interval;
@@ -199,12 +202,12 @@ $tests = array(
             scheduleAssertSame((string) $interval, $sample['interval'], 'The interval reached rTorrent in minutes');
             scheduleAssertTrue(
                 $sample['startAt'] >= 1 && $sample['startAt'] <= $interval,
-                "Start {$sample['startAt']} is outside 1..{$interval}, so a reload could fire the plugin at once"
+                "Start {$sample['startAt']} is outside 1..{$interval}, so a reload could fire the task at once"
             );
         }
     },
     'a getScheduleCommand fire time holds for a whole interval of reloads' => function () {
-        $name = 'rutracker_check';
+        $name = 'ratio';
         $intervalMinutes = 60;
         $interval = $intervalMinutes * 60;
         $slot = 1755198000 + scheduleJitterOffset($name);
@@ -225,14 +228,14 @@ $tests = array(
             'The slot after a fire is not one interval later'
         );
     },
-    'each scheduled plugin gets its own getScheduleCommand slot' => function () {
+    'each scheduled task gets its own getScheduleCommand slot' => function () {
         global $schedule_rand;
 
         $intervalMinutes = 5;
         $interval = $intervalMinutes * 60;
         $now = 1755198000;
         $offsets = array();
-        foreach (array('trafic', 'rss', 'rutracker_check', 'ratio', 'loginmgr') as $name) {
+        foreach (array('trafic', 'rss', 'ratio', 'loginmgr', 'scheduler') as $name) {
             $sample = scheduleCommandAt($name, $intervalMinutes, $now);
             $offsets[$name] = $sample['firesAt'] % $interval;
 
@@ -248,18 +251,18 @@ $tests = array(
             );
             scheduleAssertSame($name . User::getUser(), $sample['key'], "{$name} registered under the wrong key");
         }
-        scheduleAssertTrue(count(array_unique($offsets)) > 1, 'Every plugin landed on the same second');
-        scheduleAssertTrue(max($offsets) <= $schedule_rand, 'A plugin landed outside the jitter window');
+        scheduleAssertTrue(count(array_unique($offsets)) > 1, 'Every task landed on the same second');
+        scheduleAssertTrue(max($offsets) <= $schedule_rand, 'A task landed outside the jitter window');
     },
     'the clock seam is optional' => function () {
-        // Production callers -- plugins/trafic:7, plugins/rss/rss.php:794,
-        // plugins/rutracker_check/init.php:31 -- pass four arguments and get
-        // time(). Retried until the second holds still across the call, since a
-        // tick underneath it would move the answer for an honest reason.
+        // Production callers -- plugins/trafic/init.php and
+        // plugins/rss/rss.php -- pass four arguments and get time(). Retried
+        // until the second holds still across the call, since a tick
+        // underneath it would move the answer for an honest reason.
         for ($attempt = 0; $attempt < 20; $attempt++) {
             $startAt = 0;
             $now = time();
-            $command = rTorrentSettings::get()->getScheduleCommand('rutracker_check', 60, 'print=noop', $startAt);
+            $command = rTorrentSettings::get()->getScheduleCommand('ratio', 60, 'print=noop', $startAt);
             if (time() !== $now) {
                 continue;
             }
@@ -269,7 +272,7 @@ $tests = array(
                 'The out-parameter and the command disagree'
             );
             scheduleAssertSame(
-                scheduleCommandAt('rutracker_check', 60, $now)['firesAt'],
+                scheduleCommandAt('ratio', 60, $now)['firesAt'],
                 $now + $startAt,
                 'Reading the clock and being handed the same instant give different answers'
             );

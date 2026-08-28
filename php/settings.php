@@ -388,25 +388,21 @@ class rTorrentSettings
 		// full load of the web interface, and rTorrent's scheduler replaces an
 		// entry that reuses a key, restarting its countdown at now+start
 		// (CommandScheduler::insert). With a random offset a reload landing in
-		// the jitter window -- after the wall-clock boundary, before the task
-		// actually fired -- recomputed to the *next* boundary, so a user who
-		// kept refreshing cost the plugin a whole interval each time.
+		// the jitter window -- after the wall-clock boundary but before the
+		// task actually fired -- recomputed to the *next* boundary, so a user
+		// who kept refreshing cost the task a whole interval each time.
 		// getAlignedStart spreads the tasks over that same window by the crc32
-		// of their key instead, so every re-registration of one plugin resolves
-		// to the same instant; it counts in seconds, hence the conversion
-		// first. It also never returns 0, so a reload cannot fire the task at
-		// once, and $startAt stays the seconds-until-fire that callers such as
-		// plugins/rss report as the next update time.
+		// of their key instead, so every re-registration of one task resolves
+		// to the same absolute instant; it counts in seconds, hence the
+		// conversion first. It also never returns 0, so a reload cannot fire
+		// the task at once, and $startAt stays the seconds-until-fire that
+		// callers such as plugins/rss report as the next update time.
 		//
 		// $now is the same clock seam getAlignedStart already carries, and it
-		// exists for the same reason: what this function has to promise is that
-		// two registrations made at *different* instants resolve to the same
-		// absolute fire time, and a caller that can only read the clock itself
-		// can only ever sample one instant. The window where the promise is
-		// broken -- between the boundary and the task's own slot within the
-		// jitter spread -- is a handful of seconds out of an interval, so
-		// without the seam a test would have to catch that window by chance.
-		// Production callers pass nothing and get time().
+		// is here for the same reason: what this function has to promise is
+		// that two registrations made at *different* instants resolve to the
+		// same fire time, and a caller that can only read the clock samples a
+		// single instant. Production callers pass nothing and get time().
 		$interval = $interval*60;
 		$startAt = self::getAlignedStart($name,$interval,$now);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );

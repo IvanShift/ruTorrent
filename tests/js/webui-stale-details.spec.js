@@ -204,5 +204,6 @@ describe("webui stale details", () => {
     expect(theWebUI.peers[unselectedHash]).toBeDefined();
     expect(theWebUI.peers[unselectedHash].p1.name).toBe("5.6.7.8:51413");
     expect(table.updateRows).not.toHaveBeenCalled();
+    expect(table.clearRows).not.toHaveBeenCalled();
   });
 });
