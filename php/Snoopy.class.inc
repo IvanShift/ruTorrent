@@ -543,43 +543,8 @@ class Snoopy
 			if( strlen($results) > $this->maxlength )
 			        break;
 		}
-		// gunzip
 		if ( $is_gzipped )
-		{
-			if(function_exists("gzinflate"))
-			{
-				$results = substr($results, 10);
-				// A body whose gzip header carries FNAME or FEXTRA does not
-				// start its deflate stream at byte 10, and gzinflate() answers
-				// that with false rather than a string.
-				$results = gzinflate($results);
-				if($results===false)
-					$results = "";
-			}
-			else
-			{
-				$randName = FileUtil::getTempFilename('answer');
-				file_put_contents($randName.".gz",$results);
-				// exec()'s output parameter REPLACES what it is handed with the
-				// command's output lines, so $results must not be passed to it:
-				// gzip -d prints nothing, and the empty array it left behind
-				// reached $this->results whenever the decompressed file was
-				// missing. Every consumer of ->results reads it with strpos(),
-				// strlen() or preg_*, all fatal on an array in PHP 8.
-				$gzipOutput = array();
-				exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$gzipOutput,$gzipStatus);
-				if(is_file($randName))
-				{
-					$results = (string) @file_get_contents($randName);
-					unlink($randName);
-				}
-				else
-				{
-					$results = "";
-					unlink($randName.".gz");
-				}
-			}
-		}
+			$results = $this->inflateBody($results);
 
 		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 		{
@@ -716,45 +681,62 @@ class Snoopy
 					$is_gzipped = true;
 				$this->headers[] = $header;
 			}
-			// gunzip
 			if ( $is_gzipped )
-			{
-				if(function_exists("gzinflate"))
-				{
-					$results = substr($results, 10);
-					$results = gzinflate($results);
-					if($results===false)
-						$results = "";
-				}
-				else
-				{
-					$randName = FileUtil::getTempFilename('answer');
-					file_put_contents($randName.".gz",$results);
-					// Neither $results nor $return may be handed to exec()
-					// here. $results would come back as the command's output
-					// array, and $return is curl's exit code, which the
-					// return(!$return) at the end of this method still needs:
-					// a gzip that exits non-zero used to make a successful
-					// fetch report failure.
-					$gzipOutput = array();
-					exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$gzipOutput,$gzipStatus);
-					if(is_file($randName))
-					{
-						$results = (string) @file_get_contents($randName);
-						unlink($randName);
-					}
-					else
-					{
-						$results = "";
-						unlink($randName.".gz");
-					}
-				}
-			}
+				$results = $this->inflateBody($results);
 			$this->results = $results;
 		}
 		@unlink($headerfile);
 		@unlink($contfile);
 		return(!$return);
+	}
+
+	// Both request paths decompressed identically, in two verbatim copies, and
+	// both copies got it wrong the same way: exec()'s output parameter REPLACES
+	// what it is handed, so passing $results to it left the command's output
+	// there -- an empty array, since gzip -d prints nothing -- and that array
+	// reached $this->results whenever the decompressed file did not appear.
+	// Every consumer reads ->results with strpos(), strlen() or preg_*, all
+	// fatal on an array in PHP 8, so a body gzip could not unpack took the
+	// request down instead of being reported as an empty answer.
+	//
+	// The curl copy also handed exec() the variable holding curl's own exit
+	// code, which the return(!$return) at the end of _httpsrequest still needs:
+	// a gzip that exited non-zero made a successful fetch report failure. One
+	// copy, with exec() given variables of its own, removes both faults.
+	//
+	// gzinflate() answers false rather than a string for a body whose gzip
+	// header carries FNAME or FEXTRA, because the substr($results,10) here does
+	// not skip those fields. "" is the honest reading of a body that could not
+	// be unpacked, either way.
+	//
+	// $hasInflate is the seam, and exists so a test can walk the shell branch
+	// on a build that does have gzinflate(). Callers pass nothing.
+	protected function inflateBody($results,$hasInflate = null)
+	{
+		if($hasInflate===null)
+			$hasInflate = function_exists("gzinflate");
+		if($hasInflate)
+		{
+			$inflated = gzinflate(substr($results, 10));
+			return($inflated===false ? "" : $inflated);
+		}
+		$randName = FileUtil::getTempFilename('answer');
+		file_put_contents($randName.".gz",$results);
+		$gzipOutput = array();
+		$gzipStatus = 0;
+		// stderr is dropped on purpose: a body gzip cannot read is reported to
+		// the caller by the empty return below, and this is a library -- its
+		// diagnostic has nowhere to go but the response body or the server log,
+		// once per failed fetch.
+		exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz 2>/dev/null",$gzipOutput,$gzipStatus);
+		if(is_file($randName))
+		{
+			$results = (string) @file_get_contents($randName);
+			unlink($randName);
+			return($results);
+		}
+		unlink($randName.".gz");
+		return("");
 	}
 
 	function setcookies()

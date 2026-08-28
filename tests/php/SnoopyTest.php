@@ -23,6 +23,17 @@ function snoopyAssertSame($expected, $actual, $message)
     }
 }
 
+// inflateBody() is protected: it is an internal of the two request paths, and
+// the seam it exposes exists for this test.
+function snoopyInflate($body, $hasInflate)
+{
+    $method = new ReflectionMethod('Snoopy', 'inflateBody');
+    if (PHP_VERSION_ID < 80100) {
+        $method->setAccessible(true);
+    }
+    return $method->invoke(new Snoopy(), $body, $hasInflate);
+}
+
 function snoopyCurlArgs()
 {
     return file(getenv('SNOOPY_TEST_ARGS'), FILE_IGNORE_NEW_LINES);
@@ -89,6 +100,41 @@ class SnoopyResolvesToPublic extends Snoopy
 }
 
 $tests = array(
+    // ---- gzipped bodies ----------------------------------------------------
+    //
+    // Both branches are driven explicitly rather than left to whichever the
+    // build happens to have: the shell one runs only where gzinflate() is
+    // missing, which is no longer any ordinary build, and it is the branch
+    // that used to hand $this->results something that was not a string.
+
+    'a gzipped body is unpacked by either branch' => function () {
+        $text = '<html><body>the decompressed body, marker</body></html>';
+        $gzipped = gzencode($text);
+        foreach (array(true, false) as $hasInflate) {
+            snoopyAssertSame($text, snoopyInflate($gzipped, $hasInflate),
+                'the body must come back whole, gzinflate=' . var_export($hasInflate, true));
+        }
+    },
+
+    'a body that cannot be unpacked comes back as an empty string' => function () {
+        // Not as an array, and not as false. exec()'s output parameter replaces
+        // what it is handed, so the shell branch used to leave the command's
+        // own output -- an empty array, gzip -d prints nothing -- in
+        // $this->results; gzinflate() answers false for a header carrying
+        // FNAME or FEXTRA, which substr($results, 10) does not skip. Every
+        // consumer of ->results reads it with strpos(), strlen() or preg_*,
+        // and all three are fatal on an array in PHP 8.
+        $notGzip = 'this is not gzip at all, but the header said it was';
+        foreach (array(true, false) as $hasInflate) {
+            $out = @snoopyInflate($notGzip, $hasInflate);
+            $where = 'gzinflate=' . var_export($hasInflate, true);
+            snoopyAssertTrue(is_string($out), 'the answer must be a string, ' . $where);
+            snoopyAssertSame('', $out, 'and an empty one, ' . $where);
+            // What a consumer then does with it, which is the point.
+            snoopyAssertSame(false, strpos($out, 'marker'), 'a strpos() consumer survives, ' . $where);
+        }
+    },
+
     'explicit HTTPS POST forwards -X POST to curl' => function () {
         $client = new Snoopy();
         snoopyAssertTrue(
