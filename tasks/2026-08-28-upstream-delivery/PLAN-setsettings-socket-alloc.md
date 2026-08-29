@@ -7,6 +7,9 @@
 
 ## Статус после финальной перепроверки — 2026-08-29
 
+Independent verdict: **APPROVED design / `ad0dd8e4` NOT READY**. Полный
+evidence: `REVIEW-setsettings-socket-alloc-2026-08-29.md`.
+
 Текущая вершина `ad0dd8e4` ещё **не готова** и остаётся на старой базе
 `fde9863b`. После завершения rTorrent batch/reconciliation она снимает
 `settingsSavePending` до terminal-состояния отложенного `setuisettings`.
@@ -19,12 +22,13 @@ unlocked interval.
 
 1. держать Save-lock до terminal outcome отложенного UI-запроса;
 2. вызывать reload-capable success callback, пока lock ещё удерживается, и
-   только затем завершать lock;
+   только затем завершать lock через `finally`-equivalent release;
 3. при UI error/timeout/status 0 показать штатную ошибку, снять lock и не
    перезагружать страницу;
 4. тестом доказать, что повторный Save/click во время UI request не отправляет
    новый `/RPC2`, а failure снимает lock без reload;
-5. после RED/fix/mutations и повторного review перебазировать один commit на
+5. early `save()` no-op обязан быть terminal и не оставлять held lock;
+6. после RED/fix/mutations и повторного review перебазировать один commit на
    `755404f3`, затем перемерить точный scope и полные матрицы.
 
 До этого нельзя использовать старые focused/full counts как финальный handoff
@@ -42,8 +46,9 @@ setsettings/socket-allocation контракт:
 - targeted request-state хунки `js/webui.js`
 - `tests/js/setsettings.spec.js`
 
-Размер новой чистой посылки измеряется после реализации: прежние `+431/-9`
-описывали только fork-state и не включали найденные при перепроверке safety fixes.
+Размер новой чистой посылки измеряется после реализации. Current 4-path branch
+snapshot равен `+910/-15`; прежние `+431/-9` описывали неполный fork-state и не
+включали найденные при перепроверке safety fixes.
 Явно исключены существующие tracker/stale-details хунки `js/webui.js`, весь
 `tests/js/rtorrent.spec.js` и свойство `chkmsg` в JSDoc `js/rtorrent.js`.
 
@@ -70,8 +75,11 @@ setsettings/socket-allocation контракт:
 6. После отказа и завершения rollback WebUI перечитывает `getsettings` и обновляет
    model/controls фактическими значениями. HTTP-fault httprpc-пути делает тот же
    refresh после того, как серверный rollback уже завершён.
-7. Повторный Save не может уйти, пока setsettings, возможный rollback и итоговый
-   refresh не закончены. Это закрывает stale restore из того же UI; внешний клиент
+7. Повторный Save не может уйти, пока setsettings, возможный rollback, итоговый
+   refresh и deferred `setuisettings` не достигли terminal outcome. Success/reload
+   callback исполняется при held lock и release происходит после callback;
+   UI error/timeout/status 0 release-ят без reload. Early UI-save no-op также
+   terminal. Это закрывает stale restore/reload из того же UI; внешний клиент
    остаётся вне транзакционной гарантии rTorrent и явно документируется как residual.
 8. Поведение фиксируется в `tests/js/setsettings.spec.js` для 0.16.19 и 0.16.21:
    wire keys/types, очищенное число, reads-before-writes и все ветки restore.
@@ -89,9 +97,12 @@ setsettings/socket-allocation контракт:
 4. Запустить полный PHP runner на локальном PHP 8.5 и root `php:8.1-cli` без
    `--user`, как требует актуальный delivery README.
 5. Мутационно доказать независимые границы: убрать `num`; убрать empty-to-zero;
-   отключить snapshot/restore; вернуть прежний parse/log order; отключить refresh или
-   pending-save guard. Каждая мутация должна уронить названный focused test, после
-   чего исходное состояние полностью восстанавливается.
+   отключить snapshot/restore; вернуть прежний parse/log order; отключить refresh
+   или pending-save guard; release до deferred UI request; release до success
+   callback; убрать release отдельно из каждой UI failure branch; вызвать reload
+   на failure; оставить early UI-save no-op без release. Каждая мутация должна
+   уронить названный focused test, после чего исходное состояние полностью
+   восстанавливается.
 6. Проверить `git diff --check`, точный name-status/numstat и отсутствие всех
    исключённых хунков. Сделать один upstream-коммит с объяснением причины и
    измеренной проверкой.

@@ -128,6 +128,10 @@ SCGI transport сохраняет exact 7-path boundary, но возвращён
 trust bit, PHP 7.4 runtime, UNIX socket и neutral endpoint wording не были
 заморожены. Brief: `REVIEW-scgi-transport-2026-08-29.md`.
 
+Socket lock-through-terminal design independently одобрен, но текущий
+`ad0dd8e4` всё ещё воспроизводит Save-B/reload-A race. Четыре replacement tests
+RED; exact 4-path brief: `REVIEW-setsettings-socket-alloc-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-
