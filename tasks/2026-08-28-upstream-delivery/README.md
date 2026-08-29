@@ -119,6 +119,10 @@ tests ложнозелёные, потому что local `sendTorrent()` hash �
 confirmation. Исправленный 4-path brief:
 `REVIEW-retrackers-recovery-2026-08-29.md`.
 
+Erasedata A design independently одобрен на exact границе 8 production + 2
+test paths. Если carve дробится, безопасен только порядок reader/collector A1,
+затем producer A2. Brief: `REVIEW-erasedata-remove-payload-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-
