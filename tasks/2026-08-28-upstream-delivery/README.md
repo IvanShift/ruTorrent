@@ -94,21 +94,25 @@ behavior snapshot `511ed13f` в origin/local master меняют только ta
 Полный current crosswalk: `CROSSWALK-remaining-divergence-2026-08-29.md`;
 исполняемый план: `PLAN-remaining-queue-2026-08-29.md`.
 
-Точный текущий счёт:
+Точный текущий счёт после завершения всех пяти disposition-аудитов:
 
-- **13 обязательных реализационных пакетов**: PHP 7.4, final socket,
-  httprpc, SCGI, retrackers, erasedata A, httprpc-erasedata consumer, Ratio B,
-  erasedata C и P0–P3;
-- **5 carve/verdict-аудитов**: residual rTorrent command surface, proxy policy,
-  generic `sendTorrent()` diagnostic, manual rutracker entrypoints, foreign
-  tracker handlers;
-- итого **18 открытых workstream** до полного disposition всех 139 fork-intent
-  путей. Это не обещание 18 PR: отдельный аудит может закончиться no-send.
+- **19 обязательных реализационных пакетов**;
+- **0 неразобранных carve/verdict-аудитов**;
+- четыре уже готовых owner handoff в это число не входят.
+
+Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
+`13 + 6 audited successors = 19`. Successors: rTorrent alias surface, XMLRPC
+proxy policy, manual rutracker entrypoints и три foreign-handler packages.
+Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
+dispatch-vs-load граница реальна, но unconditional log одинаков для будущего
+успеха и отказа и потому ничего не диагностирует.
 
 Уже измеренные новые границы: httprpc — 5 файлов, около `+190..230/-3`;
 SCGI — 7 файлов, около `+850/-45`; retrackers — 4 файла без честного final
 numstat; erasedata разбита на A/B/C, где только B пока имеет exact `+168/-2`;
-70-путевый rutracker snapshot заменён P0/P1/P2/P3.
+70-путевый rutracker snapshot заменён P0/P1/P2/P3, manual entrypoints и тремя
+foreign-handler packages. Полный синтез: `REVIEW-disposition-wave-2026-08-29.md`;
+foreign brief: `REVIEW-foreign-tracker-handlers-2026-08-29.md`.
 
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
@@ -146,5 +150,5 @@ fallback consumer boundary.
    exact команды и lease в `REVIEW-ready-branches-2026-08-29.md`.
 5. После явного design approval параллельно реализовать PHP74, final socket и
    httprpc RED->GREEN; агент push не выполняет.
-6. Продолжить dependency graph и пять disposition-аудитов строго по
-   `PLAN-remaining-queue-2026-08-29.md`; текущий счёт 18 open workstream.
+6. Продолжить 19-package dependency graph строго по
+   `PLAN-remaining-queue-2026-08-29.md`; pending disposition audits больше нет.

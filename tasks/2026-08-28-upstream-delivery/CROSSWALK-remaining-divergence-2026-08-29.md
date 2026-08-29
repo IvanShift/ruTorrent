@@ -18,9 +18,9 @@ level.
 |---|---:|---:|---|
 | `rutracker_check` | 70 | +29,869/-1,655 | P0/P1, P2/P3, manual entrypoints, foreign handlers; dead registry не отправлять |
 | erasedata + Ratio | 12 | +11,347/-210 | A/B/C и httprpc consumer contract |
-| SCGI/XMLRPC/httprpc/path | 17 | +1,533/-825 | httprpc, SCGI, consumer integration, proxy-policy audit; whole-file copy запрещён |
+| SCGI/XMLRPC/httprpc/path | 17 | +1,533/-825 | httprpc, SCGI, consumer integration, 7-path proxy-policy package; whole-file copy запрещён |
 | fork task/tooling | 12 | +1,568/-0 | не отправлять |
-| rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + residual audit |
+| rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + 3-path alias-surface package |
 | retrackers | 5 | +1,540/-45 | recovery carve + P3 marker |
 | Kinozal/loginmgr | 5 | +636/-28 | готовая локальная ветка/open PR |
 | socket/settings | 4 | +450/-22 | отдельная исправляемая ветка; её upstream carve сейчас больше |
@@ -43,16 +43,15 @@ SHA, integration merges и последующие remediation.
 
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **18 рабочих потоков**:
+До полного закрытия divergence остаётся **19 implementation packages** из
+`PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
+Четыре уже готовые ветки в этот счёт не входят.
 
-- 13 обязательных реализационных пакетов из
-  `PLAN-remaining-queue-2026-08-29.md`;
-- 5 отдельных carve/verdict-аудитов: residual rTorrent command surface,
-  proxy policy, generic `sendTorrent()` diagnostic, rutracker manual
-  entrypoints, foreign tracker handlers.
-
-Если какой-то из пяти аудитов даст no-send, он закроется вердиктом, а не PR.
-Поэтому 18 — число открытых workstream, но не обещание 18 новых upstream PR.
+Переход от прежних 18 workstream проверен арифметически:
+`18 - 5 завершённых audits + 6 successor packages = 19`. Residual rTorrent,
+proxy policy и manual entrypoints дали по одному package; foreign bucket — три;
+generic `sendTorrent() +17/-0` закрыт no-send. Полный evidence crosswalk:
+`REVIEW-disposition-wave-2026-08-29.md`.
 
 ## Ownership corrections
 
@@ -64,6 +63,9 @@ resolver остаётся в двух proxy doors; filesystem identity прин�
 без владельца `removewithdata` branch в `plugins/httprpc/action.php`. Его scope:
 production hunk `+6/-13` в этом файле и новый copied-entrypoint test. Он должен
 запретить implicit force, missing helper и fallback на plain `d.erase`.
+Поскольку proxy-policy владеет соседними hunks того же production file,
+consumer строится после **обоих** `up/xmlrpc-proxy-policy` и erasedata A, а не
+параллельно с proxy package.
 
 ## Current-base shields
 
@@ -72,7 +74,7 @@ production hunk `+6/-13` в этом файле и новый copied-entrypoint 
 - не копировать stale retrackers suite: upstream #3212 содержит 12 sequence
   tests, которые fork snapshot визуально удаляет;
 - shared paths режутся по hunks после final prerequisite tip;
-- exact P0/P1, erasedata A/C, retrackers и пяти pending-аудитов нельзя заявлять
-  до carve-а;
+- exact P0/P1, erasedata A/C, retrackers и новые manual/foreign packages нельзя
+  заявлять до RED-first carve-а на их final prerequisite tips;
 - PHP 7.4 defect #3213 не входит в 139 fork paths, но учитывается отдельным
   обязательным compatibility package.

@@ -10,7 +10,7 @@ copy из fork master запрещён там, где upstream уже менял
 rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафиксированы в
 `REVIEW-ready-branches-2026-08-29.md`. Push выполняет только владелец.
 
-## 13 обязательных реализационных пакетов
+## 19 обязательных реализационных пакетов
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
@@ -20,13 +20,19 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 | 4 | `up/scgi-transport` | 7 файлов, около `+850/-45` | после 3 из-за общего `rpc2.php` | design approval; новый bounded accumulator, не fork-copy |
 | 5 | `up/retrackers-recovery` | 4 файла, final numstat после реализации | независимо; P3 зависит от него | design approval; daemon confirmation/rollback, invalid guard исключён |
 | 6 | `up/erasedata-remove-payload` (A) | 8 production + 2 test paths | после 3 по delivery order; **не зависит от SCGI API** | carve A1/A2, identity owner, no-fd и visible-retention RED |
-| 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 3 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
+| 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 15 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | 2 пути, `+168/-2` | после A | helper absence и username hardening должны получить RED либо быть исключены |
 | 9 | `up/erasedata-obsolete-jobs` (C) | 5 production + 2 test paths; numstat после carve | после A | dormant API approval либо fold только в P0 |
 | 10 | P0 `up/rutracker-check-replacement-transaction` | exact hunk scope после prerequisites | после C | generic destructive transaction, ownership/recovery mutations |
 | 11 | P1 `up/rutracker-post-api` | exact hunk scope после P0 | после P0 | одобрение P0->P1 split и live-capture/lab evidence |
 | 12 | P2 `up/rutracker-meta-history-marker` | 3 history paths + entrypoint evidence | после P1 и event-order capture | только producer-owned marker; dot-label запрещён |
 | 13 | P3 `up/rutracker-meta-retrackers-marker` | retrackers marker integration | после P1 и package 5 | real-daemon command-shape test; current guard запрещён |
+| 14 | `up/rtorrent-alias-surface` | 3 paths; existing-hunk snapshot `+1351/-4` до wording fix | после готового `up/rtorrent-0-16-21` | characterization, natural RED нет; mutation gates обязательны |
+| 15 | `up/xmlrpc-proxy-policy` | exact 7 paths; numstat после prerequisite | после 3 | common policy/root/local warning/`branch`/mixed diagnostic; сохранить #3209/#3211 |
+| 16 | `up/rutracker-manual-entrypoints` | exact 6 focused paths; final numstat после реализации | независим от P0/P1 | collision/short-write/launch/body/worker/UI RED; без crawler/503/raw text |
+| 17 | `up/kinozal-checker-resilience` | 2 paths, current snapshot `+260/-146` | после final P1 | endpoint streaks, exact deletion и parsed-object seam |
+| 18 | `up/nnmclub-checker-live-contract` | 2 paths, current snapshot `+1142/-231` | после final P1 | captured 67-byte scrape, current-torrent credential, bounded schema |
+| 19 | `up/sibling-tracker-verdicts` | 5 paths; current snapshot `+606/-32`, final изменится | после final P1 | safe verdicts плюс AniDUB/Tfile canonical HTTPS/session RED |
 
 ### Исправленная схема зависимостей
 
@@ -34,34 +40,44 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 test-harness
   -> httprpc-refusals
        -> scgi-transport
+       -> xmlrpc-proxy-policy
        -> erasedata A
-            -> httprpc-erasedata-contract
             -> ratio B
             -> erasedata C -> P0 -> P1 -> P2
+xmlrpc-proxy-policy + erasedata A
+       -> httprpc-erasedata-contract
 retrackers-recovery ---------------------------> P3
                                      P1 -------> P3
+                                     P1 -------> Kinozal checker
+                                     P1 -------> NNMClub checker
+                                     P1 -------> sibling trackers
 
 php74-torrent-properties   (independent compatibility lane)
 setsettings/socket         (independent browser lane)
+rutracker-manual-entrypoints (independent manual lane)
+rtorrent-0-16-21 ---------> rtorrent-alias-surface
 ```
 
 `php/xmlrpc_path.php` не является пакетом/зависимостью. A владеет filesystem
 identity в `plugins/erasedata/filesystem.php`; SCGI и A функционально siblings.
 
-## 5 обязательных carve/verdict-аудитов
+## Пять disposition-аудитов завершены
 
-Они не считаются готовыми PR и не могут hitchhike в P0/P1:
+Неразобранных carve/verdict workstream больше нет:
 
-1. residual rTorrent command surface: 4 пути, `+1,355/-4`;
-2. XMLRPC proxy-policy follow-up: 9 пересекающихся путей, размер пока нельзя
-   использовать как PR estimate;
-3. generic `sendTorrent()` dispatch diagnostic: `php/rtorrent.php`, `+17/-0`;
-4. rutracker manual entrypoints: 4 пути, `+1,270/-23`;
-5. foreign tracker handlers: 9 путей, `+2,008/-409` current snapshot.
+1. residual rTorrent surface стал package 14; production incompatibility не
+   найдена, три `-D`-only/no-sender alias target недостижимы в stock production;
+2. proxy policy сужен до package 15, а `if`, shared resolver и parser rewrite
+   получили no-send/refuted verdict;
+3. generic `sendTorrent() +17/-0` опровергнут как diagnostic и закрыт no-send;
+4. manual entrypoints пересобраны как package 16 вместо старого mixed 4-path
+   snapshot;
+5. foreign handlers разделены на packages 17–19; независимая HTTPS/session
+   поправка включена в те же пять sibling paths.
 
-Каждый получает independent current-base audit и затем либо scoped package,
-либо полноценный no-send/недостижим verdict. До этого буквальный статус —
-**13 mandatory implementations + 5 disposition workstreams = 18 open**.
+Точная арифметика: `18 - 5 audits + 6 successors = 19 open`, из них все 19 —
+конкретные implementation packages, pending audits — 0. Доказательства:
+`REVIEW-disposition-wave-2026-08-29.md`.
 
 ## Уже принятые design decisions
 
@@ -82,10 +98,13 @@ identity в `plugins/erasedata/filesystem.php`; SCGI и A функциональ
    designs; реализовать их RED->GREEN параллельно, где worktree не пересекается.
 2. Повторно review socket, rebase на current upstream, затем перенести только
    финальные fork-owned hunks в `master` отдельным commit.
-3. После httprpc построить SCGI и A как отдельные successor branches; затем
-   consumer integration, B и C.
-4. Параллельно завершить retrackers recovery и пять disposition-аудитов.
-5. После C построить P0, затем P1; только после runtime evidence — P2/P3.
+3. После httprpc сначала построить proxy-policy; SCGI и A остаются отдельными
+   successor branches. Consumer integration строить только после A и
+   proxy-policy; B/C зависят от A по таблице.
+4. Параллельно строить retrackers recovery, rTorrent alias surface, manual
+   entrypoints и proxy-policy после его httprpc prerequisite.
+5. После C построить P0, затем P1; от final P1 параллельно строить три foreign
+   handler packages, и только после runtime evidence — P2/P3.
 6. Для каждой ветки: named RED, production mutation, focused/full матрицы,
    PHPStan/Jest где применимо, exact scope/diff-check, independent whole-file
    review, task text и отдельный commit. Push не выполнять.

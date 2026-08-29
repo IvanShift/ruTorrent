@@ -1,0 +1,180 @@
+# Итог пяти disposition-аудитов — 2026-08-29
+
+База перепроверки: `upstream/master=755404f3`. Fork behavior snapshot:
+`511ed13f`; более поздние commits в `origin/master`/локальном `master` меняли
+только task-документы.
+
+Аудиты выполнялись независимо от исторических выводов: каждый donor hunk
+сопоставлялся с current upstream, реальным production entrypoint и собственным
+тестовым/исходным доказательством. Репозиторий, remotes и live service в ходе
+этих пяти аудитов не мутировались.
+
+## Финальный счёт
+
+Старый ledger был:
+
+```text
+13 обязательных implementation packages + 5 disposition audits = 18 open
+```
+
+Все пять аудитов завершены. Четыре дали шесть successor-пакетов, один закрыт
+как no-send:
+
+```text
+18 - 5 завершённых аудитов + 6 successor packages = 19 open
+
+19 обязательных implementation packages
+ 0 неразобранных disposition audits
+```
+
+Четыре уже готовых owner handoff — FileUtil, test harness, rTorrent 0.16.21 и
+Kinozal session — в 19 не входят, как не входили в прежние 18.
+
+| Исходный аудит | Финальный вердикт | Successor |
+|---|---|---|
+| residual rTorrent command surface | upstreamable characterization; production incompatibility не найдена | `up/rtorrent-alias-surface` |
+| XMLRPC proxy policy | подтверждён в суженном 7-путевом scope | `up/xmlrpc-proxy-policy` |
+| generic `sendTorrent()` diagnostic | exact `php/rtorrent.php +17/-0` опровергнут как fix, no-send | нет |
+| manual `rutracker_check` entrypoints | подтверждены семь reachable boundary defects; старый 4-path carve отвергнут | `up/rutracker-manual-entrypoints` |
+| foreign tracker handlers | 9-path bucket разделён на три sibling-пакета | Kinozal, NNMClub, siblings |
+
+## 1. `up/rtorrent-alias-surface`
+
+После вычитания готового `up/rtorrent-0-16-21` residual равен четырём путям,
+`+1355/-4`, но `js/content.js +4/-0` — comment-only no-send. Финальный exact
+scope successor-а:
+
+1. `php/settings.php` — подтверждённое comment correction `+9/-4`;
+2. `tests/js/rtorrent.spec.js` — residual alias-map characterization;
+3. `tests/php/RtorrentCompatibilityTest.php` — seed/full-map/dormancy tests.
+
+Existing-hunk snapshot — `+1351/-4`; это не финальный numstat: текст fixture
+должен честно называть 982 имени полным capture 0.16.20 и проверенным subset
+свежего 1027-name 0.16.21 answer. В production несовместимость не найдена.
+
+Три отсутствующих на stock 0.16.21 target-а — `dht.throttle.name`,
+`dht.throttle.name.set`, `throttle.ip` — регистрируются только с `-D`, не имеют
+production sender и получают verdict **недостижимы в штатном production /
+no-send**. Они сохраняются как допустимая 0.9.8 mapping baseline.
+
+Пакет строится после готового `up/rtorrent-0-16-21` из-за пересечения тестов,
+но не зависит от socket branch. Natural RED на current base отсутствует;
+честный gate — named mutation каждого load-bearing теста.
+
+## 2. `up/xmlrpc-proxy-policy`
+
+Подтверждённый exact scope — семь путей:
+
+- `conf/xmlrpc_proxy.php`;
+- `php/xmlrpc_proxy.php`;
+- `plugins/httprpc/action.php`;
+- `plugins/httprpc/conf.php`;
+- `tests/php/XMLRPCProxyTest.php`;
+- `tests/php/XMLRPCProxyContractFixture.php`;
+- `tests/php/XMLRPCProxyEntrypointTest.php`.
+
+Пакет следует непосредственно после `up/httprpc-refusals` и содержит только:
+
+- common-config import/default precedence для httprpc;
+- httprpc root-directory opt-in;
+- classified warning при явно разрешённом local torrent path;
+- отказ исполняющего `branch`;
+- version-neutral named diagnostic для mixed multicall, который честно говорит,
+  что proxy переслал caller payload целиком и ничего внутри не вырезал.
+
+На поддерживаемом rTorrent 0.9.8 `branch` действительно исполняет выбранную
+строку и production-reachable. Аналогичный запрет `if` опровергнут: XMLRPC не
+может передать нужный исполняемый тип, а строковая ветвь возвращается как data.
+
+No-send: shared resolver, `d.custom.set` arity/parser rewrite, broad fixture
+replacement, `if` denial и fork-wide copy. Они либо не меняют policy, либо
+регрессируют уже принятые #3209/#3211 quote/escaped-comma contracts.
+
+`up/httprpc-erasedata-contract` тоже меняет
+`plugins/httprpc/action.php`, поэтому он строится позже и ждёт одновременно
+этот proxy-policy tip и erasedata A. Это ordering edge, а не перенос erasedata
+behavior в proxy package.
+
+## 3. Generic `sendTorrent()` — no-send
+
+Семантический разрыв подтверждён: `sendTorrent()` возвращает локально
+вычисленный hash после успешной доставки XMLRPC, а rTorrent завершает load
+асинхронно и ещё может отклонить torrent.
+
+Однако exact donor hunk `php/rtorrent.php +17/-0` пишет одинаковое
+`load dispatched, not confirmed` и для будущего успеха, и для будущего отказа.
+Он не отличает потерю, шумит при каждом нормальном add и ссылается на fork-only
+plugin. Поэтому предложенный fix **опровергнут / no-send**, отдельного пакета
+нет.
+
+Confirmation принадлежит caller-у, который знает транзакцию и последствия;
+для replacement/retrackers она уже входит в их владельцев. Новый проект по
+универсальному UI/RSS/watch confirmation из этого аудита не выводится.
+
+## 4. `up/rutracker-manual-entrypoints`
+
+Старый snapshot `4 paths, +1270/-23` отвергнут как пакет: aggregate test
+смешивал восемь чужих owners, `batch_check.php` заранее тянул P1 crawler, HTTP
+503 обходил action callback и ложно помечал rTorrent offline, а JS использовал
+несуществующий `cantFetchInfo`.
+
+Подтверждены production-reachable границы:
+
+1. same-second handover collision;
+2. ignored false/short write;
+3. unquoted/unobserved detached launch;
+4. unbounded и невалидированный raw body;
+5. один `Throwable` обрывает остаток batch и cleanup;
+6. invalid handover/cleanup refusal не имеют classified lifecycle;
+7. `{}` не различает queued и handled dispatch refusal.
+
+PHP object injection через `unserialize(..., allowed_classes => false)`
+опровергнута. Cross-user permission protocol недостижим в штатном manual route,
+поскольку producer/worker запускаются под одной OS identity.
+
+Successor имеет ровно шесть focused paths:
+
+- `plugins/rutracker_check/action.php`;
+- `plugins/rutracker_check/batch_check.php`;
+- новый `plugins/rutracker_check/launcher.php`;
+- manual-response hunk в `plugins/rutracker_check/init.js`;
+- новый `tests/plugins/rutracker_check/ManualEntrypointsTest.php`;
+- новый focused `tests/plugins/rutracker_check/init.spec.js`.
+
+Пакет функционально независим от P0/P1. P1 может позже reuse launcher и добавить
+собственный crawl hunk. Exclude: `MAX_HASHES=4096`, raw exception text,
+`spawnCrawl()`, HTTP 503, aggregate test, run registry и upstream #3218
+`init.php`.
+
+## 5. Foreign tracker handlers
+
+Итоговый independently approved split:
+
+```text
+Kinozal   2 paths   +260/-146 current snapshot
+NNMClub   2 paths  +1142/-231 current snapshot
+siblings  5 paths   +606/-32  current snapshot
+aggregate 9 paths  +2008/-409 current snapshot
+```
+
+Это три sibling-пакета от final P1 tip, а не serial chain. P0/P1 владеют
+`STE_DECLINED`, bounded bencode, одной metainfo parse и replacement
+transaction. Handler packages не копируют эти owners.
+
+Independent review нашёл пропущенную production boundary: AniDUB/Tfile
+handlers используют HTTP, тогда как loginmgr accounts намеренно HTTPS-only.
+Из-за этого session не прикладывается, а topic/download/metainfo допускают
+подмену на пути. Поправка принята в том же 5-путевом sibling-пакете:
+canonical outbound HTTPS для обоих hosts, canonical HTTPS AniDUB input и RED
+для любого возврата к HTTP. Четвёртого пакета и loginmgr path не добавляется;
+финальный sibling numstat поэтому ещё не известен.
+
+Полный handler brief и independent evidence вынесены в
+`REVIEW-foreign-tracker-handlers-2026-08-29.md`.
+
+## Итоговый вердикт
+
+Все пять audit slots имеют полноценную disposition. Очередь больше не содержит
+`pending carve/verdict audit`: остаётся 19 конкретных implementation packages.
+Любой новый scope появляется только из отдельного current-base finding и не
+может быть добавлен пересчётом исторического fork diff.
