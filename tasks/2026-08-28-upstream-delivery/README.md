@@ -136,6 +136,11 @@ PHP74 design independently одобрен: оба base defects, exact 3 files `+
 full PHP 7.4/8.1 harness и mutations подтверждены. Implementation branch ещё
 не создана; brief: `REVIEW-php74-torrent-properties.md`.
 
+Httprpc corrected 5-path design одобрен после реальных PHP 7.4/8.5 probes:
+read failure и empty body разделены, `post_max_size` explanation удалено,
+transport 500 использует neutral text без ложного log promise. Brief:
+`REVIEW-httprpc-refusals-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-

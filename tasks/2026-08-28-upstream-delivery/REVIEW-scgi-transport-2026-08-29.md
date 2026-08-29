@@ -17,7 +17,7 @@ budgets, mandatory response framing и разные raw/body consumer contracts.
    ответы до 100 MiB; policy надо выбрать и документировать;
 4. PHP 7.4 нужен как runtime, а не lint-only;
 5. нужен real UNIX-socket success case;
-6. client-facing headerless/timeout failure должен иметь neutral endpoint
+6. predecessor httprpc и этот пакет должны сохранить exact neutral endpoint
    wording, а не ложное «rTorrent unreachable».
 
 ## Reachability
@@ -120,13 +120,11 @@ Fork cap 67,108,864 bytes bounded, но не protocol-derived и не гаран
 Transport log может точно классифицировать failure, но current httprpc и rpc2
 для любого false/null сообщают клиенту, что rTorrent unreachable.
 
-- `up/httprpc-refusals` должен дать httprpc neutral wording вроде
-  «Could not complete the rTorrent XMLRPC request; see server log»;
-- SCGI package даёт тот же neutral outcome в принадлежащем ему `rpc2.php`;
+- `up/httprpc-refusals` даёт httprpc exact neutral wording
+  `Could not complete the rTorrent XMLRPC request.` без обещания server log;
+- SCGI package сохраняет этот action contract и даёт такой же neutral outcome
+  в принадлежащем ему `rpc2.php`;
 - точная transport classification остаётся server log owner.
-
-Если neutral wording откладывается, PR может заявлять только protocol/log
-classification и обязан оставить client-facing false wording открытым.
 
 ## Honest RED/mutation evidence
 

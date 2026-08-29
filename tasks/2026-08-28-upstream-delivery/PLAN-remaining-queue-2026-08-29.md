@@ -16,7 +16,7 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 |---:|---|---|---|---|
 | 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | design independently APPROVED; explicit user approval, затем two-stage RED/TDD/mutations |
 | 2 | final `up/setsettings-socket-alloc` | exact 4 paths; current `+910/-15`, final после fix | независим | design APPROVED / branch NOT READY; 4 terminal RED, fix/mutations/review/rebase |
-| 3 | `up/httprpc-refusals` | 5 файлов, около `+190..230/-3` | test-harness как evidence gate | одобрение дизайна; copied-entrypoint RED; neutral transport-failure wording |
+| 3 | `up/httprpc-refusals` | exact 5 paths; final numstat после tests | test-harness как evidence gate | corrected design APPROVED; split false/empty 400, terminal 403/500, exact neutral text, copied-entrypoint RED |
 | 4 | `up/scgi-transport` | exact 7 paths, около `+850/-45` | после 3 из-за общего `rpc2.php` | **CHANGES REQUIRED:** response-cap policy, deterministic short-write, trust bit, PHP74 runtime, UNIX socket |
 | 5 | `up/retrackers-recovery` | exact 4 paths, final numstat после реализации | независимо; P3 после final P1+5 | **CHANGES REQUIRED:** marker-based bounded confirmation/rollback; false-green stub rewrite; guard исключён |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; **не зависит от SCGI API** | design APPROVED; one cohesive A, либо stacked A1 reader → A2 producer; identity/no-fd/retained RED |
