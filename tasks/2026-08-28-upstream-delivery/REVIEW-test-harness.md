@@ -1,12 +1,14 @@
 # Перепроверка и исправление `up/test-harness`
 
-Дата: 2026-08-28. Итоговая вершина на `upstream/master` (`fde9863b`) —
-`64778267`.
+Первичная проверка выполнена 2026-08-28. 2026-08-29 единственный commit
+перебазирован без изменения патча на текущий `upstream/master` (`755404f3`):
+`64778267` -> `8eafb529`.
 
 ## Вердикт
 
 **Готова к отправке.** Обе проблемы исходной ветки исправлены, каждая production-
-строка держится отдельной мутацией, полные матрицы PHP 8.5 и 8.1 зелёные.
+строка держится отдельной мутацией, полные матрицы PHP 8.5 и 8.1 зелёные на
+текущем upstream. Ветка состоит из одного commit с прямым parent `755404f3`.
 
 ## Что было подтверждено
 
@@ -75,13 +77,21 @@ Visible warning/deprecation по прежнему сами по себе не м
 
 ## Итоговая проверка
 
-- local PHP 8.5.4: 31 test file, 1421 `Passed:`, 0 failure markers, exit 0;
-- root `php:8.1-cli` 8.1.34: 31 test file, 1421 `Passed:`, 0 failure markers,
-  exit 0;
+Первичный прогон на старой базе дал 31 test file и 1421 `Passed:`. После
+перебазирования suite расширился, поэтому финальной handoff-матрицей являются
+свежие результаты на `755404f3`:
+
+- local PHP 8.5.4: 47 test files, 287 named start/end, 1781 `Passed:`,
+  0 failure markers, exit 0;
+- root `php:8.1-cli` 8.1.34 с RW bind mount, без `--user`: те же 47 файлов,
+  287/287 start/end и 1781 `Passed:`, exit 0;
 - оба новых test method исполнились: совокупно два start и два end marker в
   каждой матрице;
 - `bash -n tests/php-test.sh` и PHP lint обоих PHP-файлов зелёные;
 - direct probe при `zend.assertions=-1` печатает `Failed: ONE IS NOT TWO`;
+- все семь полных мутаций завершились exit 1, дошли до всех 287 end-markers,
+  дали ровно ожидаемую именованную ошибку и не упали fatal-ом;
+- stable patch-id до/после rebase совпадает;
 - diff против upstream — один commit, ровно четыре test-файла, `+49/-17`;
 - рабочее дерево чистое, root-owned artifacts после container-run отсутствуют;
 - независимый read-only review blocker/important findings не нашёл.

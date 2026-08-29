@@ -1,8 +1,10 @@
 # Задача: заливка форка в upstream — что залито, что осталось, где проблемы
 
-Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, форковый `master` =
-`511ed13f` (`origin/master`), 91 commit впереди и 12 позади. Подробный старый
-план: `../2026-08-28-upstream-rebuild/PLAN.md`.
+Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, опубликованный
+`origin/master` = `b186341c`, 92 commit впереди и 12 позади. Commit после
+behavior snapshot `511ed13f` в origin/local master меняют только task-
+документы; production-состояние не менялось. Подробный старый план:
+`../2026-08-28-upstream-rebuild/PLAN.md`.
 
 ## Цель
 
@@ -39,7 +41,7 @@
 
 | PR | ветка | состояние |
 |---|---|---|
-| **#3198** | `up/kinozal-session` (`0d1da02f`) | Открыт. Переписан в один коммит, ответ на ревью xirvik готов в `../2026-08-28-upstream-rebuild/REPLY-3198.md`. Содержимого в upstream пока нет (проверено: `classifyAnswer` там отсутствует). +636/−28, 5 файлов |
+| **#3198** | `up/kinozal-session` (local `de98a49a`, remote `4cf74c52`) | Открыт. Локальный один commit перебазирован на `755404f3`, 5 файлов, +636/−28; focused 35/35, обе полные PHP-матрицы и PHPStan зелёные. Remote намеренно не менялся и требует owner-only force-with-lease. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
 
 ---
 
@@ -47,9 +49,11 @@
 
 | ветка | коммит | объём | что мешает |
 |---|---|---|---|
+| `up/fileutil-defects` | `79190927` | +514/−10, 7 файлов | **ГОТОВА.** Один commit прямо на `755404f3`, patch после rebase идентичен; PHP 8.5/8.1 — 48 файлов, 303 теста, 1815 assertions; PHPStan и direct probes зелёные. PHP 7.4 qualification: `../2026-08-28-fileutil-defects/VERIFICATION.md` |
 | `up/history-service-labels` | `4cf3bd69` | +37/−5, 3 файла | **НЕ ОТПРАВЛЯТЬ.** Достижимая потеря истории/Pushbullet для пользовательских `.private`-меток; producer отсутствует в upstream; тест не держит production-gate. Разбор: `REVIEW-history-service-labels.md` |
-| `up/test-harness` | `64778267` | +49/−17, 4 файла | **ГОТОВА.** Обе обязательные правки сделаны; 1421/0 на PHP 8.5 и root PHP 8.1; семь мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
+| `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/rtorrent-0-16-21` | `48bc6d4b` | +9/−4, 3 test-файла | **ГОТОВА.** Один commit прямо на `755404f3`; обе полные PHP-матрицы 46/285/1790, Jest 20/196, независимые spec/quality reviews зелёные. Тексты: `REVIEW-rtorrent-0-16-21.md`, `PR-rtorrent-0-16-21.md` |
+| `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
 ### Что исправлено в `up/test-harness`
@@ -83,37 +87,48 @@
 
 ---
 
-## Очередь: в работе и не начато (PR 5-11)
+## Актуальная очередь
 
-Из `PLAN.md`, по порядку зависимостей. Это основной объём расхождения — 91 commit
-форка сидят в основном здесь.
+Старые PR 5–11 больше не являются допустимой декомпозицией: whole-file оценки
+смешивали независимые fixes и в некоторых случаях удаляли новые upstream tests.
+Полный current crosswalk: `CROSSWALK-remaining-divergence-2026-08-29.md`;
+исполняемый план: `PLAN-remaining-queue-2026-08-29.md`.
 
-| # | ветка | объём | зависит от |
-|---|---|---|---|
-| 5 | `up/rtorrent-0-16-21` | **+9/−4, 3 test-файла; готова как `48bc6d4b`** | — |
-| 6 | `up/httprpc-refusals` | +182/−170, ~9 файлов | 2 |
-| 7 | `up/scgi-transport` | +1100/−15, ~8 файлов | 2, 6 |
-| 8 | `up/setsettings-socket-alloc` | +910/−15, 4 файла до последней review-поправки | — |
-| 9 | `up/retrackers-recovery` | +1540/−45, 5 файлов | 2 |
-| 10 | `up/erasedata-collector` | +11347/−210, 12 файлов | 2 |
-| 11 | `up/rutracker-post-api` | +29869/−1655, 70 файлов | 2, 10 |
+Точный текущий счёт:
 
-Ветки #5 и #8 уже нарезаны. #5 готова; #8 проходит последний fix/review cycle.
-Ветки #6, #7 и #9-11 ещё не нарезаны — старые оценки для них не считаются
-доказательством и должны быть перемерены от текущего upstream.
+- **13 обязательных реализационных пакетов**: PHP 7.4, final socket,
+  httprpc, SCGI, retrackers, erasedata A, httprpc-erasedata consumer, Ratio B,
+  erasedata C и P0–P3;
+- **5 carve/verdict-аудитов**: residual rTorrent command surface, proxy policy,
+  generic `sendTorrent()` diagnostic, manual rutracker entrypoints, foreign
+  tracker handlers;
+- итого **18 открытых workstream** до полного disposition всех 139 fork-intent
+  путей. Это не обещание 18 PR: отдельный аудит может закончиться no-send.
+
+Уже измеренные новые границы: httprpc — 5 файлов, около `+190..230/-3`;
+SCGI — 7 файлов, около `+850/-45`; retrackers — 4 файла без честного final
+numstat; erasedata разбита на A/B/C, где только B пока имеет exact `+168/-2`;
+70-путевый rutracker snapshot заменён P0/P1/P2/P3.
+
+Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
+erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
+2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-
+fallback consumer boundary.
 
 ---
 
 ## Правила, которые нельзя нарушать
 
-- Ветки режутся от `upstream/master`, называются `up/<имя>`, несут состояние файлов из
-  форкового `master`.
+- Ветки режутся от финального prerequisite tip и называются `up/<имя>`.
+  Fork `master` служит источником intent, но shared files переносятся только
+  замороженными hunks поверх текущего upstream; whole-file copy запрещён.
 - **Никогда `git add -A` на ветке `up/*`** — в `.gitignore` upstream нет строк про
   `tasks/`, `docs/`, `.claude/`, `.agents/`, `.codex/`, `.superpowers/`, `backup/`,
   и весь этот мусор уедет в PR.
 - Никакого PHPUnit и composer — в upstream их нет.
-- Обе матрицы PHP перед отправкой: локальный 8.5 и контейнер 8.1
-  **по команде из README, без `--user`**.
+- Обязательные матрицы PHP перед отправкой: локальный 8.5 и root-container 8.1
+  **по команде из README, без `--user`**; после PHP74 compatibility PR также
+  реальный 7.4 для путей, которые могут затронуть runtime floor.
 - Мутационная проверка каждой правки.
 - **Мерить посылку до того, как писать аргумент.** Три ветки за один день сгорели
   ровно на этом.
@@ -125,13 +140,11 @@
 2. ~~Проверить адверсально `up/history-service-labels`.~~ Проверена и отвергнута;
    безопасную marker-based логику сложить с producer-ом в PR 11. Разбор:
    `REVIEW-history-service-labels.md`.
-3. ~~Починить `up/test-harness`.~~ Готова как `64778267`; осталось push/PR по
+3. ~~Починить `up/test-harness`.~~ Готова как `8eafb529`; осталось push/PR по
    `PR-test-harness.md`.
-4. Удалить `up/loginmgr-account-selection` — влита.
-5. Отправить готовую test-only ветку `up/rtorrent-0-16-21` по тексту
-   `PR-rtorrent-0-16-21.md`.
-6. Закрыть последнюю review-находку в `up/setsettings-socket-alloc`, заново
-   проверить её на текущем upstream и только затем переносить исправление в
-   форковый `master`.
-7. Продолжить очередь с независимо перемеренной `up/httprpc-refusals`, затем
-   `up/scgi-transport` и plugin-пакетами.
+4. Owner-only handoff готовых FileUtil/test-harness/rTorrent/Kinozal веток —
+   exact команды и lease в `REVIEW-ready-branches-2026-08-29.md`.
+5. После явного design approval параллельно реализовать PHP74, final socket и
+   httprpc RED->GREEN; агент push не выполняет.
+6. Продолжить dependency graph и пять disposition-аудитов строго по
+   `PLAN-remaining-queue-2026-08-29.md`; текущий счёт 18 open workstream.

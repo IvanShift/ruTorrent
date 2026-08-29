@@ -38,12 +38,19 @@ fatal/parse errors, and uncaught exceptions fail the suite.
 cd tests && bash php-test.sh
 ```
 
-- PHP 8.5.4: 31 test files, 1421 passed, 0 failure markers, exit 0.
-- PHP 8.1.34 as root: 31 test files, 1421 passed, 0 failure markers, exit 0.
+- PHP 8.5.4 on current upstream: 47 test files, 287 named tests,
+  1781 `Passed:`, 0 failure markers, exit 0.
+- PHP 8.1.34 as root with a read-write bind mount and no `--user`: the same
+  47 files, 287/287 start/end markers, and 1781 `Passed:`, exit 0.
 - Returning `TestCase` to the legacy `assert()` implementation fails the new
   child-process test while the runner flags remain unchanged.
 - Removing or weakening any one of the three command-line settings fails the
   runner-contract test.
+- All seven full-suite mutations reached every named end marker without a
+  fatal or parse error.
+
+The branch is one commit, `8eafb529`, directly on current upstream
+`755404f3`; its exact diff is four test-harness paths and `+49/-17`.
 
 The direct regression probe is now executable on its own:
 
