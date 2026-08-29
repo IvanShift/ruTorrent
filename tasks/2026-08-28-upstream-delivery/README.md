@@ -132,6 +132,10 @@ Socket lock-through-terminal design independently одобрен, но теку�
 `ad0dd8e4` всё ещё воспроизводит Save-B/reload-A race. Четыре replacement tests
 RED; exact 4-path brief: `REVIEW-setsettings-socket-alloc-2026-08-29.md`.
 
+PHP74 design independently одобрен: оба base defects, exact 3 files `+14/-9`,
+full PHP 7.4/8.1 harness и mutations подтверждены. Implementation branch ещё
+не создана; brief: `REVIEW-php74-torrent-properties.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-

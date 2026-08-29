@@ -14,7 +14,7 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
-| 1 | `up/php74-torrent-properties` | 3 файла, `+14/-9` | независим | явное одобрение 3-файлового дизайна, затем TDD/mutations |
+| 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | design independently APPROVED; explicit user approval, затем two-stage RED/TDD/mutations |
 | 2 | final `up/setsettings-socket-alloc` | exact 4 paths; current `+910/-15`, final после fix | независим | design APPROVED / branch NOT READY; 4 terminal RED, fix/mutations/review/rebase |
 | 3 | `up/httprpc-refusals` | 5 файлов, около `+190..230/-3` | test-harness как evidence gate | одобрение дизайна; copied-entrypoint RED; neutral transport-failure wording |
 | 4 | `up/scgi-transport` | exact 7 paths, около `+850/-45` | после 3 из-за общего `rpc2.php` | **CHANGES REQUIRED:** response-cap policy, deterministic short-write, trust bit, PHP74 runtime, UNIX socket |

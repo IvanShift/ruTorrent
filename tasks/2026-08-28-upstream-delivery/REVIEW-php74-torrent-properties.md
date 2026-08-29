@@ -4,7 +4,8 @@
 
 ## Вердикт
 
-**Подтверждена upstream-регрессия #3213, состоящая из двух дефектов.** README и
+**APPROVED design: подтверждена upstream-регрессия #3213, состоящая из двух
+дефектов.** README и
 `Requirements::MIN_PHP` обещают PHP 7.4, но текущий upstream не выполняет этот
 контракт.
 
@@ -22,9 +23,9 @@
 
 Отдельная ветка прямо от `755404f3`, ровно три файла, ожидаемо `+14/-9`:
 
-- `php/Torrent.php`, `+9/-8`: оставить семь properties объявленными, но
-  untyped с `@var mixed`; в начале `setMeta()` один раз привести `$key` к
-  string;
+- `php/Torrent.php`, `+9/-8`: оставить семь properties объявленными как
+  однострочные `/** @var mixed */ public $... = null;`; в начале `setMeta()`
+  один раз привести `$key` к string;
 - `phpstan.neon`, `+1`: задать `phpVersion: 70400`;
 - `.github/workflows/tests.yml`, `+4/-1`: запускать прежний PHP job в matrix
   7.4/8.1, с теми же extensions и `bash php-test.sh`.
@@ -57,3 +58,24 @@ string-normalization. Первая обязана уронить lint/PHPStan fl
 
 Результат доказывает дизайн, но не заменяет TDD/mutations и финальный review
 реальной upstream-ветки.
+
+## Финальная независимая перепроверка
+
+На свежем disposable export exact candidate повторно дал:
+
+- 383/383 PHP/INC lint на PHP 7.4 и 8.1;
+- full harness 46 files / 412 cases / 1906 assertions на обоих runtime;
+- PHPStan 2.2.9 level 0 с `phpVersion: 70400`, 0 errors;
+- exact `3 files, +14/-9` и clean whitespace;
+- PHP 7.4 natural numeric-key RED после снятия `mixed`, при GREEN PHP 8.1;
+- native-`mixed` и string-normalization mutations независимо RED.
+
+Однострочный PHPDoc сохраняет exact `+9/-8`; PHP 7.4 reflection подтвердил,
+что каждый из семи комментариев прикреплён к своему property. Если tags
+намеренно исключаются, это остаётся runtime-correct, но данный scope/brief надо
+сначала перемерить и переписать.
+
+Current upstream по-прежнему `755404f3`; локальной ветки
+`up/php74-torrent-properties` пока нет. Следующий gate — явное user approval,
+затем два последовательных RED, implementation, обе mutations и whole-commit
+review. Push выполняет только владелец.
