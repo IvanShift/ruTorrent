@@ -3122,6 +3122,35 @@ upTest($suite, 'flushVerdicts skips overwriting a row claimed by a concurrent wo
     }
 });
 
+upTest($suite, 'flushVerdicts never treats claim storage failure as an acquired token', function () {
+    $blocked = sys_get_temp_dir() . '/chk-fast-blocked-' . bin2hex(random_bytes(4));
+    file_put_contents($blocked, 'not a directory');
+    strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/rutracker_check');
+    try {
+        rXMLRPCRequest::reset();
+        $deferred = array(array(
+            'hash' => str_repeat('A', 40),
+            'seenState' => 2,
+            'seenTime' => 100,
+            'state' => ruTrackerChecker::STE_UPTODATE,
+            'msg' => null,
+            'rawMsg' => '',
+            'del' => '',
+            'clearDeletion' => false,
+            'counts' => true,
+        ));
+
+        strictAssertSame(0,
+            strictInvoke('RuTrackerUpdatePass', 'flushVerdicts', array($deferred)),
+            'a verdict without a durable claim is left for the next cycle');
+        strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.multicall'),
+            'the scheduler performs no fresh scan after claim storage failed');
+    } finally {
+        @unlink($blocked);
+        strictSetPrivateStatic('RuTrackerState', 'dir', null);
+    }
+});
+
 upTest($suite, 'flushVerdicts skips clearing stale deletion when row moved since snapshot', function () {
     $hash = str_repeat('A', 40);
     $values = upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '2:100', 'deleting|2/3', '100'); // alive

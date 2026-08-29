@@ -251,7 +251,11 @@ class rTorrent
 	{
 		self::$sourceReads++;
 		if(count(self::$sourceQueue)) return array_shift(self::$sourceQueue);
-		return self::$source;
+		if(self::$source !== false) return self::$source;
+		$fname = rTorrentSettings::get()->session . $hash . '.torrent';
+		if(!is_readable($fname)) return false;
+		$torrent = new Torrent($fname);
+		return $torrent->errors() ? false : $torrent;
 	}
 
 	public static function sendTorrent($torrent, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null)
@@ -377,6 +381,7 @@ class CheckerTest
 		ErasedataFake::reset();
 		strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
 		strictSetPrivateStatic('ruTrackerChecker', 'ANNOUNCES', array());
+		strictSetPrivateStatic('ruTrackerChecker', 'claimStoreFailureLogged', false);
 		// A fresh claim store per test: the meta-pump claim is keyed by hash
 		// and several tests reuse the same one.
 		if($this->stateDir !== null) strictRemoveTree($this->stateDir);
@@ -2945,6 +2950,24 @@ class CheckerTest
 			'the holder releasing its own claim leaves nothing behind');
 	}
 
+	public function testWorkerReleaseRefusesAnythingThatIsNotAnOwnerToken()
+	{
+		$this->resetFakes();
+		$owner = ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, 1000);
+		strictAssertTrue(is_string($owner), 'the control worker owns a real token');
+
+		strictAssertSame(false,
+			ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, null),
+			'a storage-failure result cannot become an untokened release');
+		strictAssertSame(false,
+			ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, 1001),
+			'the original owner remains protected after the refused release');
+
+		strictAssertSame(true,
+			ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, $owner),
+			'the actual owner token still releases normally');
+	}
+
 	// The wait happens inside the per-hash claim, whose lease is MAX_LOCK_TIME,
 	// so an unbounded value lets a worker outlive its own claim -- which is
 	// exactly the ABA the owner token above had to be added for. conf.php
@@ -3178,6 +3201,71 @@ class CheckerTest
 		});
 	}
 
+	public function testMetadataOnlySourceWaitsForTrackerIdentityInsteadOfSettling()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			// A raw BEP-9 info dictionary has the name and file tree, but its
+			// announce/comment live outside that dictionary. getSource() can use
+			// it for replacement harvest, while ordinary dispatch still has no
+			// evidence that no registered tracker owns it.
+			Torrent::$fixtures['metadata-only'] = array(
+				'hash' => self::OLD_HASH,
+				'info' => array('name' => 'metadata-only.bin', 'length' => 1),
+				'comment' => '',
+				'announce' => '',
+				'announce_list' => array(),
+			);
+
+			strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+				ruTrackerChecker::run_ex(self::OLD_HASH, 'metadata-only'),
+				'a metadata-only source remains retryable until tracker identity is readable');
+			strictAssertOneLogMatching(FileUtil::$log, 'no tracker identity',
+				'the missing envelope fields are classified explicitly');
+		});
+	}
+
+	public function testRunUsesTheDaemonSourceWhileTheSessionTorrentIsStillPending()
+	{
+		$this->resetFakes();
+		$calls = 0;
+		ruTrackerChecker::registerTracker('/topic\.fresh-source\.invalid/',
+			'/tracker\.fresh-source\.invalid/',
+			function($url, $hash, $torrent) use (&$calls) {
+				$calls++;
+				strictAssertSame(CheckerTest::OLD_HASH, $hash,
+					'the daemon source is dispatched for the requested hash');
+				strictAssertSame('fresh.bin', $torrent->name(),
+					'the handler receives the already parsed daemon source');
+				return ruTrackerChecker::STE_UPTODATE;
+			});
+		rTorrent::$source = new Torrent(array(
+			'hash' => self::OLD_HASH,
+			'info' => array('name' => 'fresh.bin', 'length' => 1),
+			'comment' => 'http://topic.fresh-source.invalid/42',
+			'announce' => 'http://tracker.fresh-source.invalid/announce',
+		));
+		// There is intentionally no <session>/<hash>.torrent. load_raw is
+		// asynchronous and the daemon can expose its tied source first.
+		rTorrentSettings::get()->session = '/session-copy-not-written-yet/';
+		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
+		rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+		rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
+
+		$performed = null;
+		strictAssertSame(true,
+			ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE,
+				time(), '', $performed),
+			'the checker does not wait an hour for the session file to appear');
+		strictAssertSame(1, rTorrent::$sourceReads,
+			'the checker asks the daemon-aware source resolver exactly once');
+		strictAssertSame(1, $calls,
+			'the owning tracker handler runs in the same check');
+		strictAssertSame(true, $performed,
+			'the completed handler is acknowledged after its verdict is stored');
+	}
+
 	// The chk-state INPROGRESS lock: both halves of it -- honouring a fresh one
 	// and expiring a stale one after MAX_LOCK_TIME -- were executed by no test
 	// at all. It is what stops two workers running the destructive check over
@@ -3299,14 +3387,10 @@ class CheckerTest
 	// cannot persist the claim, the next process reads the same free slot and
 	// both go on to the destructive check.
 	//
-	// What this pins is the OUTCOME -- an unusable store yields no claim -- and
-	// not which of the two guards produced it. claimCheck() refuses both when
-	// the update never ran and when it ran but could not be written, and only
-	// the first is reachable from a test: isolating the second needs a
-	// filesystem that permits reading and flock while denying create and
-	// rename, and the container the 8.1 matrix runs in is root, where
-	// permissions do not deny anything at all. Defence in depth, pinned at the
-	// depth a test can reach.
+	// The refusal is not contention: no other worker exists, and reporting one
+	// made a whole failed scheduler cycle look like normal cooperative locking.
+	// A plain file where the state directory belongs makes openShared() fail
+	// under root as well, so this branch is deterministic in every test image.
 	public function testAClaimThatCouldNotBeWrittenIsRefused()
 	{
 		$this->resetFakes();
@@ -3316,8 +3400,36 @@ class CheckerTest
 		strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/rutracker_check');
 		try
 		{
-			strictAssertSame(false, strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1000)),
-				'a claim that could not be recorded is refused, not granted');
+			strictAssertSame(null, strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1000)),
+				'a storage failure is distinct from a live competing claim');
+		}
+		finally
+		{
+			@unlink($blocked);
+		}
+	}
+
+	public function testRunRetriesAClaimStorageFailureWithoutCallingItContention()
+	{
+		$this->resetFakes();
+		$blocked = sys_get_temp_dir() . '/chk-run-blocked-' . bin2hex(random_bytes(4));
+		file_put_contents($blocked, 'not a directory');
+		strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/rutracker_check');
+		try
+		{
+			$this->withoutDebugLog(function() {
+				FileUtil::$log = array();
+				strictAssertSame(false,
+					ruTrackerChecker::run(self::OLD_HASH, 0, 0, ''),
+					'a check whose claim cannot be stored is deferred for retry');
+				strictAssertSame(false,
+					ruTrackerChecker::run(str_repeat('C', 40), 0, 0, ''),
+					'later hashes in the failed cycle are deferred too');
+				strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'already being checked'),
+					'a storage failure is never reported as another live worker');
+				strictAssertOneLogMatching(FileUtil::$log, 'claim storage is unavailable',
+					'the outage is classified once and remains visible with debugging disabled');
+			});
 		}
 		finally
 		{

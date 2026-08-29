@@ -101,6 +101,9 @@ class ruTrackerChecker
 
 	private static $TRACKERS = array();
 	private static $ANNOUNCES = array();
+	// One operator-visible line per uninterrupted storage outage. A successful
+	// update resets the latch, so a later independent outage is reported too.
+	private static $claimStoreFailureLogged = false;
 	private static $obsoleteCleanupSummary = array(
 		'old' => 0,
 		'new' => 0,
@@ -676,8 +679,9 @@ class ruTrackerChecker
 		return(RuTrackerRpcValue::canonicalNonnegativeInteger(is_array($entry) ? ($entry['since'] ?? null) : $entry));
 	}
 
-	// Returns the owner token on success and false when the hash is already
-	// claimed. The token is what makes releasing safe: a timestamp alone
+	// Returns the owner token on success, false when the hash is already
+	// claimed, and null when the claim store could not be updated. The token
+	// is what makes releasing safe: a timestamp alone
 	// cannot tell "my claim" from "the claim that replaced mine after I
 	// overran the lease", and releaseCheck() used to drop whichever it found.
 	static private function claimCheck($hash, $now)
@@ -720,8 +724,21 @@ class ruTrackerChecker
 			return($claims);
 		});
 		// A claim nobody could write down is not a claim: the next process
-		// would read the same free slot and pump too.
-		return(($granted && $stored) ? $token : false);
+		// would read the same free slot and pump too. Keep this distinguishable
+		// from contention so callers do not report a live worker that does not
+		// exist or accidentally release an untokened claim.
+		if(!$stored)
+		{
+			if(!self::$claimStoreFailureLogged)
+			{
+				self::logUnrepairable("claimCheck: claim storage is unavailable for meta-claims;"
+					. " torrent checks are deferred until the document and its lock are writable");
+				self::$claimStoreFailureLogged = true;
+			}
+			return(null);
+		}
+		self::$claimStoreFailureLogged = false;
+		return($granted ? $token : false);
 	}
 
 	// $token null releases whatever is there, which is only correct for a
@@ -750,7 +767,10 @@ class ruTrackerChecker
 
 	static public function releaseCheckForWorker($hash, $token)
 	{
+		if(!is_string($token) || $token === '')
+			return(false);
 		self::releaseCheck($hash, $token);
+		return(true);
 	}
 
 	// Erase a hash that was verified to carry our replacement marker.
@@ -1604,9 +1624,9 @@ class ruTrackerChecker
 			$urls[] = $value;
 	}
 
-	static public function run_ex($hash, $fname, &$performed = null){
+	static public function run_ex($hash, $source, &$performed = null){
 		$performed = false;
-		$torrent = new Torrent( $fname );
+		$torrent = ($source instanceof Torrent) ? $source : new Torrent( $source );
 		// Two facts, and they used to leave through the same STE_NOT_NEED at
 		// the bottom. "The session copy does not parse" is a torrent nobody
 		// could look at -- transient in principle, since rTorrent rewrites
@@ -1617,7 +1637,8 @@ class ruTrackerChecker
 		if($torrent->errors())
 		{
 			self::logDebug("run_ex: " . $hash . " has a session copy that does not parse ("
-				. $fname . "); nothing could be read from it, so nothing is concluded");
+				. (is_string($source) ? $source : 'daemon source')
+				. "); nothing could be read from it, so nothing is concluded");
 			return self::STE_CANT_REACH_TRACKER;
 		}
 		$comment = (string) $torrent->comment();
@@ -1690,6 +1711,16 @@ class ruTrackerChecker
 		{
 			self::logDebug("run_ex: " . $hash . " is claimed by a registered tracker but no handler could"
 				. " identify its topic from the comment or the announce; nothing is concluded");
+			return self::STE_CANT_REACH_TRACKER;
+		}
+		// A BEP-9 .meta source is only the info dictionary: announce and
+		// comment belong to the missing outer metainfo envelope. An empty pair
+		// therefore proves no tracker ownership either way. Wait for the full
+		// source instead of permanently settling it as "not our business".
+		if($comment === '' && !count($announces))
+		{
+			self::logDebug("run_ex: " . $hash
+				. " has no tracker identity in its current source; nothing is concluded");
 			return self::STE_CANT_REACH_TRACKER;
 		}
 		// No registered filter claimed either input. A handler that reached a
@@ -1808,6 +1839,8 @@ class ruTrackerChecker
 		// claim so the branch below is chosen from one live reading. A second
 		// claim inside either branch would deadlock against our own token.
 		$claimToken = self::claimCheck($hash, time());
+		if($claimToken === null)
+			return(false);
 		if($claimToken === false)
 		{
 			self::logDebug("run: " . $hash . " is already being checked by another process; leaving it to that one");
@@ -1870,17 +1903,17 @@ class ruTrackerChecker
 				if($stateWrite === null) return(true);
 				if(!$stateWrite) return(false);
 
-				$fname = rTorrentSettings::get()->session.$hash.".torrent";
-
 				$handlerPerformed = false;
 				$handlerVerdict = null;
-				if(is_readable($fname))
+				$source = rTorrent::getSource($hash);
+				if($source !== false)
 				{
-					$handlerVerdict = self::run_ex($hash, $fname, $handlerPerformed);
+					$handlerVerdict = self::run_ex($hash, $source, $handlerPerformed);
 					$state = $handlerVerdict;
 				}
-				else self::logDebug("run: " . $hash . " has no readable session copy at " . $fname
-					. "; nothing can be checked and the torrent is flagged");
+				else self::logDebug("run: " . $hash
+					. " has no readable session copy or tied daemon source;"
+					. " nothing can be checked and the torrent is flagged");
 				if($state===self::STE_UNCHANGED) $state = $previous;
 				if($state==self::STE_INPROGRESS) $state=self::STE_ERROR;
 

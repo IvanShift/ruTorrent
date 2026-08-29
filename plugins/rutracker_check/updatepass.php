@@ -543,7 +543,7 @@ class RuTrackerUpdatePass
         foreach ($deferred as $verdict) {
             $hash = $verdict['hash'];
             $token = ruTrackerChecker::claimCheckForWorker($hash, $now);
-            if ($token !== false) {
+            if (is_string($token)) {
                 $heldClaims[$hash] = $token;
                 $claimableVerdicts[] = $verdict;
             }
@@ -1008,9 +1008,10 @@ class RuTrackerUpdatePass
     static private function sweepReplacingRow($hash, $encoded, $now)
     {
         $token = ruTrackerChecker::claimCheckForWorker($hash, $now);
-        if ($token === false) {
-            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
-                . " is claimed by a live check; skipping sweep");
+        if (!is_string($token)) {
+            if ($token === false)
+                ruTrackerChecker::logDebug("sweepReplacements: " . $hash
+                    . " is claimed by a live check; skipping sweep");
             return;
         }
 
@@ -1205,9 +1206,10 @@ class RuTrackerUpdatePass
 
         $predecessor = $record['old'];
         $token = ruTrackerChecker::claimCheckForWorker($predecessor, $now);
-        if ($token === false) {
-            ruTrackerChecker::logDebug("sweepReplacements: " . $hash . " predecessor "
-                . $predecessor . " is claimed by a live check; skipping marked-row sweep");
+        if (!is_string($token)) {
+            if ($token === false)
+                ruTrackerChecker::logDebug("sweepReplacements: " . $hash . " predecessor "
+                    . $predecessor . " is claimed by a live check; skipping marked-row sweep");
             return;
         }
         try {

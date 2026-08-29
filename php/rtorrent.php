@@ -178,7 +178,28 @@ class rTorrent
 			}
 			if($fname)
 			{
-				$torrent = new Torrent( $fname );
+				// rTorrent 0.16 stores BEP-9 magnet metadata as the raw
+				// bencoded info dictionary in <hash>.meta. Passing that path to
+				// Torrent builds a new torrent *of the .meta file*, producing a
+				// stable but unrelated hash. Accept only the daemon's canonical
+				// metadata filename, prove the raw bytes against the requested
+				// info hash, then restore the missing metainfo envelope.
+				if(strcasecmp(basename($fname), $hash . '.meta') === 0)
+				{
+					$raw = @file_get_contents($fname);
+					if($raw === false || $raw === ''
+						|| !preg_match('/^[0-9a-f]{40}$/i', $hash)
+						|| !hash_equals(strtoupper($hash), strtoupper(sha1($raw))))
+						return(false);
+					$torrent = new Torrent('d4:info' . $raw . 'e');
+					// Torrent re-encodes info when calculating hash_info(). This
+					// second equality therefore also rejects non-canonical input
+					// that could not be sent back without changing its hash.
+					if($torrent->errors() || $torrent->hash_info() !== strtoupper($hash))
+						return(false);
+				}
+				else
+					$torrent = new Torrent( $fname );
 				if( !$torrent->errors() )
 				{
 					if(isset($torrent->{'libtorrent_resume'}))
