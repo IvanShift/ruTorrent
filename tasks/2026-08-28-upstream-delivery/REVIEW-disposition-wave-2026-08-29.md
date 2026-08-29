@@ -1,15 +1,17 @@
 # Итог пяти disposition-аудитов — 2026-08-29
 
-База перепроверки: `upstream/master=755404f3`. Fork behavior snapshot:
-`511ed13f`; более поздние commits в `origin/master`/локальном `master` меняли
-только task-документы.
+База перепроверки: `upstream/master=755404f3`. Historical fork behavior
+snapshot: `511ed13f`. Current published fork — `24891da9`; его последующие
+claim/sweep production hunks уже отнесены к existing P0, а
+magnet-source/parsed-Torrent hunks — к P1. Они не создают новый package и не
+меняют итоговый счёт 18.
 
 Аудиты выполнялись независимо от исторических выводов: каждый donor hunk
 сопоставлялся с current upstream, реальным production entrypoint и собственным
 тестовым/исходным доказательством. Репозиторий, remotes и live service в ходе
 этих пяти аудитов не мутировались.
 
-## Финальный счёт
+## Счёт disposition wave и последующий C fold
 
 Старый ledger был:
 
@@ -21,14 +23,21 @@
 как no-send:
 
 ```text
-18 - 5 завершённых аудитов + 6 successor packages = 19 open
+18 - 5 завершённых аудитов + 6 successor packages = 19 after disposition
+19 - 1 standalone erasedata C folded into P0 = 18 current open
 
-19 обязательных implementation packages
+18 обязательных implementation packages
  0 неразобранных disposition audits
 ```
 
 Четыре уже готовых owner handoff — FileUtil, test harness, rTorrent 0.16.21 и
-Kinozal session — в 19 не входят, как не входили в прежние 18.
+Kinozal session — в текущие 18 не входят, как не входили в прежний ledger.
+
+Disposition-аудиты сами создали 19-package result. Последующий независимый
+review C доказал, что C-only API недостижим до P0 и не отключает active inline
+cleanup, поэтому C и P0 являются одним delivery package. Это не новая находка
+disposition wave, а dependency correction, подтверждённая в
+`REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
 | Исходный аудит | Финальный вердикт | Successor |
 |---|---|---|
@@ -73,22 +82,30 @@ no-send**. Они сохраняются как допустимая 0.9.8 mappi
 - `tests/php/XMLRPCProxyContractFixture.php`;
 - `tests/php/XMLRPCProxyEntrypointTest.php`.
 
-Пакет следует непосредственно после `up/httprpc-refusals` и содержит только:
+Пакет следует непосредственно после `up/httprpc-refusals`, сохраняет exact
+seven-path boundary и остаётся `CHANGES REQUIRED`, пока не построены RED для
+полного corrected contract:
 
-- common-config import/default precedence для httprpc;
-- httprpc root-directory opt-in;
-- classified warning при явно разрешённом local torrent path;
-- отказ исполняющего `branch`;
-- version-neutral named diagnostic для mixed multicall, который честно говорит,
-  что proxy переслал caller payload целиком и ничего внутри не вырезал.
+- common-config precedence, независимые root/local-path opt-ins и bounded
+  classified diagnostics без caller path/raw arguments;
+- единый rebuild owner для восьми registered dot-load methods, включая четыре
+  verbose variants; ни один load carrier не уходит в unknown raw fallback;
+- exact deny set `catch`, `branch`, `try`, `and`, `or`, `less`, `greater`,
+  `equal`, `match`, независимо от operator safe-name configuration;
+- whole-call fail-closed для direct d/t/f/p mixed command grammar, если хотя бы
+  один member не rebuilt; raw payload не пересылается;
+- отказ nested load/mixed/wrapper members через `system.multicall`, zero-send;
+- сохранение полного #3209/#3211 quote/escaped-comma parser SET.
 
-На поддерживаемом rTorrent 0.9.8 `branch` действительно исполняет выбранную
-строку и production-reachable. Аналогичный запрет `if` опровергнут: XMLRPC не
-может передать нужный исполняемый тип, а строковая ветвь возвращается как data.
+На поддерживаемом rTorrent 0.9.8 все перечисленные evaluators исполняют XMLRPC
+strings/list operands без trust gate. `if`, `not`, `compare` calls достижимы,
+но их executable subpaths требуют internal types, недостижимых через XMLRPC, и
+остаются characterization/no-overblock gates. Modern 0.16 trust checks не
+заменяют proxy denial для legacy и deterministic behavior двух proxy doors.
 
 No-send: shared resolver, `d.custom.set` arity/parser rewrite, broad fixture
-replacement, `if` denial и fork-wide copy. Они либо не меняют policy, либо
-регрессируют уже принятые #3209/#3211 quote/escaped-comma contracts.
+replacement, `if`/`not`/`compare` denial и fork-wide copy. Они либо не меняют
+policy, либо регрессируют уже принятые #3209/#3211 contracts.
 
 `up/httprpc-erasedata-contract` тоже меняет
 `plugins/httprpc/action.php`, поэтому он строится позже и ждёт одновременно
@@ -175,6 +192,6 @@ canonical outbound HTTPS для обоих hosts, canonical HTTPS AniDUB input �
 ## Итоговый вердикт
 
 Все пять audit slots имеют полноценную disposition. Очередь больше не содержит
-`pending carve/verdict audit`: остаётся 19 конкретных implementation packages.
+`pending carve/verdict audit`: остаётся 18 конкретных implementation packages.
 Любой новый scope появляется только из отдельного current-base finding и не
 может быть добавлен пересчётом исторического fork diff.

@@ -1,9 +1,11 @@
 # Задача: заливка форка в upstream — что залито, что осталось, где проблемы
 
 Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, опубликованный
-`origin/master` = `b186341c`, 92 commit впереди и 12 позади. Commit после
-behavior snapshot `511ed13f` в origin/local master меняют только task-
-документы; production-состояние не менялось. Подробный старый план:
+`origin/master` = `24891da9`, 101 commit впереди и 12 позади. Исторические
+fork-divergence deltas ниже заморожены на behavior snapshot `511ed13f`;
+последующий `24891da9` меняет 6 production/test paths. Его claim/sweep hunks
+уже классифицированы в existing P0, а magnet-source/parsed-Torrent hunks — в
+P1; нового package и изменения счёта 18 нет. Подробный старый план:
 `../2026-08-28-upstream-rebuild/PLAN.md`.
 
 ## Цель
@@ -96,20 +98,22 @@ behavior snapshot `511ed13f` в origin/local master меняют только ta
 
 Точный текущий счёт после завершения всех пяти disposition-аудитов:
 
-- **19 обязательных реализационных пакетов**;
+- **18 обязательных реализационных пакетов**;
 - **0 неразобранных carve/verdict-аудитов**;
 - четыре уже готовых owner handoff в это число не входят.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
-`13 + 6 audited successors = 19`. Successors: rTorrent alias surface, XMLRPC
-proxy policy, manual rutracker entrypoints и три foreign-handler packages.
+`13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
+P0: `19 - 1 = 18`. Successors: rTorrent alias surface, XMLRPC proxy policy,
+manual rutracker entrypoints и три foreign-handler packages.
 Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
 dispatch-vs-load граница реальна, но unconditional log одинаков для будущего
 успеха и отказа и потому ничего не диагностирует.
 
-Уже измеренные новые границы: httprpc — 5 файлов, около `+190..230/-3`;
+Уже измеренные новые границы: httprpc — exact 5 paths;
 SCGI — 7 файлов, около `+850/-45`; retrackers — 4 файла без честного final
-numstat; erasedata разбита на A/B/C, где только B пока имеет exact `+168/-2`;
+numstat; erasedata A/B остаются самостоятельными, а C сложен внутрь P0. B donor
+`+168/-2` подтверждён только как snapshot и опровергнут как final estimate;
 70-путевый rutracker snapshot заменён P0/P1/P2/P3, manual entrypoints и тремя
 foreign-handler packages. Полный синтез: `REVIEW-disposition-wave-2026-08-29.md`;
 foreign brief: `REVIEW-foreign-tracker-handlers-2026-08-29.md`.
@@ -119,9 +123,43 @@ tests ложнозелёные, потому что local `sendTorrent()` hash �
 confirmation. Исправленный 4-path brief:
 `REVIEW-retrackers-recovery-2026-08-29.md`.
 
-Erasedata A design independently одобрен на exact границе 8 production + 2
-test paths. Если carve дробится, безопасен только порядок reader/collector A1,
-затем producer A2. Brief: `REVIEW-erasedata-remove-payload-2026-08-29.md`.
+Erasedata A сохраняет exact границу 8 production + 2 test paths. После Ratio
+audit пользователь утвердил durable option 2; corrected detail проходит
+независимый approval: pre-erase generation + fixed repeating schedule + real
+PHP child ack, один NB worker owner, blocking drain scheduler/hash locks,
+exact batch set/cardinality, settle-before-remove, prepared/erase-started
+journal и A/B restart rearm. Periodic pass остаётся NB,
+worker-per-hash/invocation fan-out запрещён; реализация ещё не начата. Brief:
+`REVIEW-erasedata-remove-payload-2026-08-29.md`.
+
+Ratio B сохраняет exact two-path scope: missing-helper fallback достижим, но
+donor test его не удерживает и отказ невидим; username filter опровергнут, а
+Ratio exact-force direct call недостижим в prod. После corrected A B также
+re-arms pending drain на Ratio startup/reload, когда erasedata disabled и
+runtime schedule потерян при restart. Corrected B design independently
+approved; реализация ещё не начата. Brief:
+`REVIEW-ratio-erasedata-contract-2026-08-29.md`.
+
+Standalone erasedata C запрещён и сложен внутрь P0: без P0 все v3 producers
+недостижимы в prod, а active inline cleanup остаётся. Fresh base probe удалил
+и genuine orphan, и shared path третьего torrent (`requests=0`); combined P0+C
+design independently approved на exact 20-path boundary: OLD/NEW-aware
+lexical+physical tri-state ownership, no-bridge quarantine с post-capture scan,
+token/false/null claim gate, pre-erase A drain acknowledgement и restart rearm.
+Shared `getSource`/parsed-Torrent hunks зафиксированы как P1 и не протекают в
+P0 только из-за общего filename. Реализация ещё не начата.
+Brief:
+`REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
+
+Container checkpoint выполнен на immutable exports с `--network none` и
+read-only mounts. A donor: 204/1305, B donor: 10/61, rutracker focused: 312/0
+на initial donor и **317/0** на current `24891da9` во всех PHP 7.4/8.1/8.5
+compatibility containers; current broader rutracker runner: **700/0**.
+Exact-base C probes независимо воспроизвели cross-owner deletion и
+silent non-root unlink failure. Это baseline/reachability evidence, не GREEN
+ещё не реализованных durable-drain/rearm/no-bridge сценариев; их tests и код
+должны появиться RED-first. Exact commands/results/limitations:
+`VERIFICATION-erasedata-contracts-2026-08-29.md`.
 
 SCGI transport сохраняет exact 7-path boundary, но возвращён в
 `CHANGES REQUIRED`: прежний single-write RED недетерминирован, а response cap,
@@ -141,10 +179,38 @@ read failure и empty body разделены, `post_max_size` explanation уд�
 transport 500 использует neutral text без ложного log promise. Brief:
 `REVIEW-httprpc-refusals-2026-08-29.md`.
 
+XMLRPC proxy policy сохраняет exact 7-path boundary, но independently возвращён
+в `CHANGES REQUIRED`: `branch` — не единственный reachable evaluator на 0.9.8,
+а raw mixed payload прячет executable grammar внутри `$command=...`,
+`(command,...)` и `system.multicall`; четыре registered verbose `load.*` также
+обходят current sanitizer. Minimal no-parser contract fail closed
+отклоняет весь direct multicall, если хотя бы один member нельзя безопасно
+пересобрать; raw payload не пересылается.
+Brief: `REVIEW-xmlrpc-proxy-policy-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-
 fallback consumer boundary.
+
+## Stop checkpoint: A, B и combined C+P0
+
+По явному stop gate работа остановлена после независимого approval трёх
+контрактов и container baseline:
+
+- A — corrected design approved, exact 8 production + 2 tests;
+- B — corrected design approved, exact 2 paths, строится после final A;
+- combined C+P0 — design approved, exact 11 production + 9 tests, строится
+  после final A;
+- production implementation этих трёх packages не начиналась;
+- proxy-policy audit уже сохранён отдельно как `CHANGES REQUIRED`, но дальше в
+  этой сессии не развивался;
+- push не выполнялся.
+
+Resume point: не считать donor GREEN закрытием packages. Следующий A/B/C шаг —
+named natural RED на frozen scope, затем container GREEN/mutations/whole-file
+review; dependency order остаётся A → B и A → combined C+P0. Общая очередь —
+18 implementation packages, pending carve/verdict audits — 0.
 
 ---
 
@@ -177,5 +243,5 @@ fallback consumer boundary.
    exact команды и lease в `REVIEW-ready-branches-2026-08-29.md`.
 5. После явного design approval параллельно реализовать PHP74, final socket и
    httprpc RED->GREEN; агент push не выполняет.
-6. Продолжить 19-package dependency graph строго по
+6. Продолжить 18-package dependency graph строго по
    `PLAN-remaining-queue-2026-08-29.md`; pending disposition audits больше нет.

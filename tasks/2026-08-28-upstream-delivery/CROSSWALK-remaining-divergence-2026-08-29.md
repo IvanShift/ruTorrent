@@ -1,23 +1,25 @@
 # Crosswalk оставшегося fork divergence — 2026-08-29
 
-Срез: fork behavior snapshot `511ed13f` плюс локальные docs-only commits;
-текущий upstream `755404f3`; последний уже слитый в fork upstream-tip
-`fde9863b`.
+Исторический file-level срез: fork behavior snapshot `511ed13f`; текущий
+upstream `755404f3`; последний уже слитый в snapshot upstream-tip `fde9863b`.
+Current published fork — `24891da9`. Его более поздние 6 production/test paths
+не включены в старые delta-числа таблицы: claim/sweep hunks классифицированы в
+existing P0, magnet-source/parsed-Torrent hunks — в P1, нового package нет.
 
 ## Метод и полный объём
 
 Прямой diff `755404f3..master` непригоден: он показывает 12 ещё не слитых
-upstream-commit как удаления форка. Чистый fork-intent измерен как
-`fde9863b..master`, а пересекающиеся пути затем перепроверены по current-base
+upstream-commit как удаления форка. Чистый исторический fork-intent измерен как
+`fde9863b..511ed13f`, а пересекающиеся пути затем перепроверены по current-base
 carve-аудитам.
 
-Итог: **139 путей, `+48,448/-2,816`**, без неклассифицированного пути на file
-level.
+Итог historical snapshot: **139 путей, `+48,448/-2,816`**, без
+неклассифицированного пути на file level. Это не numstat current `24891da9`.
 
 | Группа | Пути | Delta от `fde9863b` | Диспозиция |
 |---|---:|---:|---|
 | `rutracker_check` | 70 | +29,869/-1,655 | P0/P1, P2/P3, manual entrypoints, foreign handlers; dead registry не отправлять |
-| erasedata + Ratio | 12 | +11,347/-210 | A/B/C и httprpc consumer contract |
+| erasedata + Ratio | 12 | +11,347/-210 | A/B, C folded into P0 и httprpc consumer contract |
 | SCGI/XMLRPC/httprpc/path | 17 | +1,533/-825 | httprpc, SCGI, consumer integration, 7-path proxy-policy package; whole-file copy запрещён |
 | fork task/tooling | 12 | +1,568/-0 | не отправлять |
 | rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + 3-path alias-surface package |
@@ -43,15 +45,17 @@ SHA, integration merges и последующие remediation.
 
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **19 implementation packages** из
+До полного закрытия divergence остаётся **18 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
 Четыре уже готовые ветки в этот счёт не входят.
 
 Переход от прежних 18 workstream проверен арифметически:
-`18 - 5 завершённых audits + 6 successor packages = 19`. Residual rTorrent,
-proxy policy и manual entrypoints дали по одному package; foreign bucket — три;
-generic `sendTorrent() +17/-0` закрыт no-send. Полный evidence crosswalk:
-`REVIEW-disposition-wave-2026-08-29.md`.
+`18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
+сложен внутрь P0: `19 - 1 = 18`. Residual rTorrent, proxy policy и manual
+entrypoints дали по одному package; foreign bucket — три; generic
+`sendTorrent() +17/-0` закрыт no-send. Evidence:
+`REVIEW-disposition-wave-2026-08-29.md` и
+`REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
 ## Ownership corrections
 
