@@ -16,8 +16,8 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 |---:|---|---|---|---|
 | 1 | `up/php74-torrent-properties` | 3 файла, `+14/-9` | независим | явное одобрение 3-файлового дизайна, затем TDD/mutations |
 | 2 | final `up/setsettings-socket-alloc` | 4 файла; до последней правки `+910/-15` | независим | одобрение lock-through-UI-terminal, RED/fix/re-review/rebase |
-| 3 | `up/httprpc-refusals` | 5 файлов, около `+190..230/-3` | test-harness как evidence gate | одобрение дизайна, copied-entrypoint RED |
-| 4 | `up/scgi-transport` | 7 файлов, около `+850/-45` | после 3 из-за общего `rpc2.php` | design approval; новый bounded accumulator, не fork-copy |
+| 3 | `up/httprpc-refusals` | 5 файлов, около `+190..230/-3` | test-harness как evidence gate | одобрение дизайна; copied-entrypoint RED; neutral transport-failure wording |
+| 4 | `up/scgi-transport` | exact 7 paths, около `+850/-45` | после 3 из-за общего `rpc2.php` | **CHANGES REQUIRED:** response-cap policy, deterministic short-write, trust bit, PHP74 runtime, UNIX socket |
 | 5 | `up/retrackers-recovery` | exact 4 paths, final numstat после реализации | независимо; P3 после final P1+5 | **CHANGES REQUIRED:** marker-based bounded confirmation/rollback; false-green stub rewrite; guard исключён |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; **не зависит от SCGI API** | design APPROVED; one cohesive A, либо stacked A1 reader → A2 producer; identity/no-fd/retained RED |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 15 и A | copied real entrypoint; exact force/helper/no-fallback mutations |

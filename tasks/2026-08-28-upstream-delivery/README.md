@@ -123,6 +123,11 @@ Erasedata A design independently одобрен на exact границе 8 prod
 test paths. Если carve дробится, безопасен только порядок reader/collector A1,
 затем producer A2. Brief: `REVIEW-erasedata-remove-payload-2026-08-29.md`.
 
+SCGI transport сохраняет exact 7-path boundary, но возвращён в
+`CHANGES REQUIRED`: прежний single-write RED недетерминирован, а response cap,
+trust bit, PHP 7.4 runtime, UNIX socket и neutral endpoint wording не были
+заморожены. Brief: `REVIEW-scgi-transport-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-
