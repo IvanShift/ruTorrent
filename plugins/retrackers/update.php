@@ -1,24 +1,36 @@
 <?php
 
-function retrackersHasValidPreStopState($arguments)
+function retrackersParseOriginalHandoff($arguments)
 {
-	return is_array($arguments) && count($arguments)>3 && is_string($arguments[3])
-		&& ($arguments[3] === '0' || $arguments[3] === '1');
+	if(!is_array($arguments) || array_keys($arguments) !== array(0, 1, 2, 3)
+		|| !is_string($arguments[0]) || !is_string($arguments[1])
+		|| !is_string($arguments[2]) || !is_string($arguments[3])
+		|| preg_match('/^[0-9A-F]{40}$/D', $arguments[1]) !== 1
+		|| preg_match('/^[a-z0-9_-]*$/D', $arguments[2]) !== 1
+		|| preg_match('/^v1:original:([01]):([0-9A-F]{40})$/D', $arguments[3], $matches) !== 1)
+		return(false);
+	return array(
+		'hash' => $arguments[1],
+		'user' => $arguments[2],
+		'state' => $matches[1],
+		'local_id' => $matches[2],
+		'marker' => $arguments[3],
+	);
 }
 
 // isset, because under a web SAPI $argv does not exist and reading it bare
 // emits a warning before this fails closed. It DOES fail closed either way --
-// retrackersHasValidPreStopState() starts with is_array() - but a guard that
+// retrackersParseOriginalHandoff() starts with is_array() - but a guard that
 // announces itself with an "Undefined variable" notice on the way is not the
 // diagnostic anybody wants. Same shape as plugins/erasedata/update.php:8.
 if(!defined('RETRACKERS_TEST_MODE')
-	&& !retrackersHasValidPreStopState(isset($argv) ? $argv : null))
+	&& retrackersParseOriginalHandoff(isset($argv) ? $argv : null) === false)
 	return;
 
 if(!defined('RETRACKERS_TEST_MODE'))
 {
-	if(count($argv)>2)
-		$_SERVER['REMOTE_USER'] = $argv[2];
+	$retrackersHandoff = retrackersParseOriginalHandoff($argv);
+	$_SERVER['REMOTE_USER'] = $retrackersHandoff['user'];
 
 	require_once( 'retrackers.php' );
 	require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
@@ -92,6 +104,79 @@ function retrackersLogReloadFailure($hash, $reason)
 	FileUtil::toLog('retrackers: ' . retrackersSafeHashForLog($hash) . ' ' . $reason);
 }
 
+function retrackersInitialOwnershipMatches($values, $handoff)
+{
+	return is_array($values) && count($values) === 12
+		&& isset($values[7], $values[8], $values[9], $values[10], $values[11])
+		&& is_string($values[7]) && is_string($values[8])
+		&& is_string($values[9]) && is_string($values[10]) && is_string($values[11])
+		&& $values[7] === $handoff['marker'] && $values[8] === ''
+		&& $values[9] === $handoff['state'] && $values[10] === '0'
+		&& $values[11] === $handoff['local_id'];
+}
+
+function retrackersBuildOwnershipCondition($handoff, $state, $quiesced)
+{
+	$predicates = array(
+		'equal=d.custom=' . RETRACKERS_RECOVERY_MARKER . ',cat=' . $handoff['marker'],
+		'equal=d.custom=' . RETRACKERS_RECOVERY_ACK . ',cat=',
+		'equal=d.local_id=,cat=' . $handoff['local_id'],
+		'equal=d.state=,value=' . $state,
+		'equal=d.hashing_failed=,value=0',
+	);
+	if($quiesced)
+	{
+		$predicates[] = 'equal=d.is_active=,value=0';
+		$predicates[] = 'equal=d.is_open=,value=0';
+	}
+	return 'and=' . implode(',', array_map(function($predicate)
+	{
+		return rTorrent::quoteCommandArg($predicate);
+	}, $predicates));
+}
+
+function retrackersBuildEraseCommit($hash, $handoff)
+{
+	$q = function($value)
+	{
+		return rTorrent::quoteCommandArg($value);
+	};
+	$postQuiesce = retrackersBuildOwnershipCondition($handoff, '0', true);
+	$erase = 'cat=' . $q('$d.erase=') . ',RETRACKERS_ERASED';
+	$inner = 'branch=' . $q($postQuiesce) . ',' . $q($erase)
+		. ',' . $q('cat=RETRACKERS_QUIESCE_CHANGED');
+	$steps = $handoff['state'] === '1'
+		? array('$d.stop=', '$d.close=', '$' . $inner)
+		: array('$d.close=', '$' . $inner);
+	$trueBody = 'cat=' . implode(',', array_map($q, $steps));
+	return new rXMLRPCCommand('branch', array(
+		$hash,
+		retrackersBuildOwnershipCondition($handoff, $handoff['state'], false),
+		$trueBody,
+		'cat=RETRACKERS_SKIPPED',
+	));
+}
+
+function retrackersCommitErase($hash, $handoff)
+{
+	$req = new rXMLRPCRequest(retrackersBuildEraseCommit($hash, $handoff));
+	$req->important = false;
+	if(!$req->success() || $req->fault || !is_array($req->val)
+		|| count($req->val) !== 1 || !is_string($req->val[0]))
+	{
+		retrackersLogReloadFailure($hash, 'commit-unknown');
+		return(false);
+	}
+	if($req->val[0] === 'RETRACKERS_ERASED')
+		return(true);
+	$reason = $req->val[0] === 'RETRACKERS_SKIPPED'
+		? 'commit-skipped'
+		: ($req->val[0] === 'RETRACKERS_QUIESCE_CHANGED'
+			? 'commit-quiesce-changed' : 'commit-unknown');
+	retrackersLogReloadFailure($hash, $reason);
+	return(false);
+}
+
 // Rollback needs decoded Torrent state for validation and sendTorrent metadata,
 // but its load payload must remain the exact bytes captured before d.erase.
 final class RetrackersRawMetainfoTorrent extends Torrent
@@ -110,28 +195,13 @@ final class RetrackersRawMetainfoTorrent extends Torrent
 	}
 }
 
-function retrackersRestoreStartedInitialState($hash, $snapshot)
-{
-	if($snapshot !== '1')
-		return(true);
-	$req = new rXMLRPCRequest( new rXMLRPCCommand("d.start", $hash) );
-	$req->important = false;
-	$runResult = $req->run();
-	if(!$runResult || $req->fault)
-	{
-		FileUtil::toLog('retrackers: ' . retrackersSafeHashForLog($hash)
-			. ' state-recovery-failed reason=' . (!$runResult ? 'transport-failure' : 'rpc-fault'));
-		return(false);
-	}
-	return(true);
-}
-
 function retrackersRunWorker($arguments)
 {
-	if(!retrackersHasValidPreStopState($arguments))
+	$handoff = retrackersParseOriginalHandoff($arguments);
+	if($handoff === false)
 		return(false);
-	$hash = count($arguments)>1 ? $arguments[1] : '';
-	$preStopState = $arguments[3];
+	$hash = $handoff['hash'];
+	$preStopState = $handoff['state'];
 	$processed = false;
 	$trks = rRetrackers::load();
 	if(count($arguments)<=1)
@@ -145,6 +215,11 @@ function retrackersRunWorker($arguments)
 		new rXMLRPCCommand("d.is_private",$hash),
 		new rXMLRPCCommand("d.get_name",$hash),
 		new rXMLRPCCommand("d.get_custom",array($hash, RETRACKERS_SERVICE_MARKER)),
+		new rXMLRPCCommand("d.get_custom",array($hash, RETRACKERS_RECOVERY_MARKER)),
+		new rXMLRPCCommand("d.get_custom",array($hash, RETRACKERS_RECOVERY_ACK)),
+		new rXMLRPCCommand("d.get_state",$hash),
+		new rXMLRPCCommand("d.get_hashing_failed",$hash),
+		new rXMLRPCCommand("d.get_local_id",$hash),
 		) );
 	// This detached worker may wake after another plugin replaced the hash.
 	// Keep the expected stale-hash fault local so XMLRPC never dumps raw XML.
@@ -154,23 +229,23 @@ function retrackersRunWorker($arguments)
 	{
 		$confirmedMissing = $runResult && $req->fault && retrackersIsCompleteMissingHashFault($req);
 		if(!$confirmedMissing)
-		{
 			retrackersLogInitialFailure($hash, !$runResult ? 'transport-failure' : 'rpc-fault');
-			retrackersRestoreStartedInitialState($hash, $preStopState);
-		}
 		return(false);
 	}
-	if(!is_array($req->val) || count($req->val)<7)
+	if(!is_array($req->val) || count($req->val) !== 12)
 	{
 		retrackersLogInitialFailure($hash, 'malformed-response');
-		retrackersRestoreStartedInitialState($hash, $preStopState);
+		return(false);
+	}
+	if(!retrackersInitialOwnershipMatches($req->val, $handoff))
+	{
+		retrackersLogReloadFailure($hash, 'ownership-mismatch');
 		return(false);
 	}
 	if(retrackersIsServiceTorrent($req->val[2], $req->val[6]))
 		return(false);
 
 	$isStart = ($preStopState === '1');
-	$eraseIssued = false;
 	if((count($trks->list) || count($trks->todelete)) && !($req->val[4] && $trks->dontAddPrivate) &&
 		($req->val[5]!=$hash.".meta"))
 	{
@@ -258,15 +333,7 @@ function retrackersRunWorker($arguments)
 						{
 							if(isset($torrent->{'rtorrent'}))
 								unset($torrent->{'rtorrent'});
-							$eReq = new rXMLRPCRequest( new rXMLRPCCommand("d.erase", $hash ) );
-							// Same reason as the read above: this detached worker may wake
-							// after another plugin replaced the hash, and rtorrent answers
-							// a command naming a download it no longer has with a fault.
-							// The failure is already handled below; keeping it important
-							// only dumps the raw XML for an expected race.
-							$eReq->important = false;
-							$eraseIssued = true;
-							if($eReq->success())
+							if(retrackersCommitErase($hash, $handoff))
 							{
 								$label = rawurldecode($req->val[2]);
 								$candidateResult = rTorrent::sendTorrent($torrent, $isStart, false, $req->val[3], $label, false, false, false,
@@ -298,18 +365,6 @@ function retrackersRunWorker($arguments)
 				}
 			}
 		}
-	}
-	if(!$processed && !$eraseIssued && $isStart)
-	{
-		$req = new rXMLRPCRequest( new rXMLRPCCommand("d.start", $hash ) );
-		// Every path that changes nothing arrives here, so this is the request
-		// this worker issues against the old hash most often -- and therefore
-		// the one most likely to meet a hash another plugin has replaced.
-		// retrackersRestoreStartedInitialState() issues the identical command
-		// and has always kept that fault local; this one was the last that did
-		// not.
-		$req->important = false;
-		$req->run();
 	}
 	return($processed);
 }

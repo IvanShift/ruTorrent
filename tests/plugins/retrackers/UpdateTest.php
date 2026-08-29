@@ -327,6 +327,15 @@ class rTorrent
         self::$sendResponses[] = $result;
     }
 
+    public static function quoteCommandArg($value)
+    {
+        return '"' . str_replace(
+            array('\\', '"'),
+            array('\\\\', '\\"'),
+            $value
+        ) . '"';
+    }
+
     public static function sendTorrent($torrent, $isStart, $isAddPath, $directory, $label,
         $saveTorrent, $isFast, $isNew = true, $addition = null)
     {
@@ -438,35 +447,16 @@ function rtWriteSource($bytes)
     return rtSourcePath();
 }
 
-function rtInitialValues($hash, $label = 'Movies', $marker = '', $private = 0, $name = 'movie.mkv')
+function rtInitialValues($hash, $label = 'Movies', $serviceMarker = '', $private = 0,
+    $name = 'movie.mkv', $state = '1', $localId = null, $recoveryMarker = null,
+    $ack = '', $hashingFailed = 0)
 {
     $source = rtWriteSource(rtTorrentBytes());
-    return array('', $source, $label, '/downloads', $private, $name, $marker);
-}
-
-function rtInitialValuesByCommand($storedState, $label = 'Movies', $marker = '', $private = 0,
-    $name = 'movie.mkv')
-{
-    $source = rtWriteSource(rtTorrentBytes());
-    $values = array(
-        'get_session' => '',
-        'd.get_custom4' => $storedState,
-        'd.get_tied_to_file' => $source,
-        'd.get_custom1' => $label,
-        'd.get_directory_base' => '/downloads',
-        'd.is_private' => $private,
-        'd.get_name' => $name,
-        'd.get_custom' => $marker,
-    );
-    return function ($commands) use ($values) {
-        $response = array();
-        foreach ($commands as $command) {
-            if (!array_key_exists($command->command, $values))
-                throw new RuntimeException('Unexpected initial command ' . $command->command);
-            $response[] = $values[$command->command];
-        }
-        return $response;
-    };
+    if ($localId === null) $localId = str_repeat('F', 40);
+    if ($recoveryMarker === null)
+        $recoveryMarker = 'v1:original:' . $state . ':' . $localId;
+    return array('', $source, $label, '/downloads', $private, $name, $serviceMarker,
+        $recoveryMarker, $ack, (string) $state, (string) $hashingFailed, $localId);
 }
 
 function rtInitialValuesFromBytes($hash, $bytes)
@@ -485,6 +475,12 @@ function rtCommandNames()
     return $commands;
 }
 
+function rtWorkerArgs($hash, $state = '1', $user = 'alice', $localId = null)
+{
+    if ($localId === null) $localId = str_repeat('F', 40);
+    return array('update.php', $hash, $user, 'v1:original:' . $state . ':' . $localId);
+}
+
 $root = realpath(__DIR__ . '/../../..');
 require_once($root . '/plugins/retrackers/guard.php');
 require_once($root . '/plugins/retrackers/update.php');
@@ -496,9 +492,9 @@ $tests['happy path loads candidate once without rollback'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend($hash);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(true, $result, 'happy path returns true');
     rtAssertSame(2, count(rXMLRPCRequest::$requests), 'initial read and erase are issued');
@@ -514,53 +510,76 @@ $tests['happy path loads candidate once without rollback'] = function () {
         'the erase is non-important, so an expected stale-hash fault logs no raw XML');
 };
 
-$tests['started argv snapshot overrides stopped custom4 for candidate load'] = function () {
+$tests['erase is one generation-checked daemon commit'] = function () {
     rtResetWorker();
     $hash = rtFixtureHash();
     rTorrent::queueSend($hash);
-    rXMLRPCRequest::queue(true, false, rtInitialValuesByCommand(0));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED'));
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    rtAssertSame(true, retrackersRunWorker(rtWorkerArgs($hash, '1')),
+        'confirmed conditional erase permits candidate load');
 
-    rtAssertSame(true, $result, 'candidate load succeeds with the immutable started snapshot');
-    rtAssertSame(true, rTorrent::$sends[0]['isStart'], 'candidate start state follows argv, not stopped custom4');
-    rtAssertTrue(!in_array('d.get_custom4', rtCommandNames(), true),
-        'worker RPC never re-reads the mutable saved state');
+    $commit = rXMLRPCRequest::$requests[1]['commands'][0];
+    rtAssertSame('branch', $commit->command, 'stop close and erase share one daemon request');
+    rtAssertSame($hash, $commit->params[0], 'branch targets only the expected hash');
+    foreach (array('retrackers-recovery', 'retrackers-recovery-ack', 'd.local_id',
+        'd.state', 'd.hashing_failed') as $predicate)
+        rtAssertTrue(strpos($commit->params[1], $predicate) !== false,
+            'outer ownership condition includes ' . $predicate);
+    rtAssertTrue(strpos($commit->params[2], 'd.stop') < strpos($commit->params[2], 'd.close')
+        && strpos($commit->params[2], 'd.close') < strpos($commit->params[2], 'd.erase'),
+        'started commit quiesces before erase');
+    rtAssertTrue(substr_count($commit->params[2], 'd.local_id') >= 1,
+        'inner branch rechecks generation after quiesce');
+    rtAssertTrue(strpos($commit->params[3], 'RETRACKERS_SKIPPED') !== false,
+        'ownership mismatch returns an exact non-mutating sentinel');
 };
 
-$tests['stopped argv snapshot overrides started custom4 for candidate load'] = function () {
+$tests['started handoff rejects a stopped live generation'] = function () {
     rtResetWorker();
     $hash = rtFixtureHash();
     rTorrent::queueSend($hash);
-    rXMLRPCRequest::queue(true, false, rtInitialValuesByCommand(1));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, rtInitialValues($hash, 'Movies', '', 0, 'movie.mkv', '0'));
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '0'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-    rtAssertSame(true, $result, 'candidate load succeeds with the immutable stopped snapshot');
-    rtAssertSame(false, rTorrent::$sends[0]['isStart'], 'candidate start state follows argv, not started custom4');
-    rtAssertTrue(!in_array('d.get_custom4', rtCommandNames(), true),
-        'worker RPC never re-reads the mutable saved state');
+    rtAssertSame(false, $result, 'changed live state invalidates ownership');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'state mismatch stops after the snapshot');
+    rtAssertSame(array(), rTorrent::$sends, 'state mismatch never reloads metainfo');
 };
 
-$tests['rollback start state follows argv when custom4 diverges'] = function () {
+$tests['stopped handoff rejects a started live generation'] = function () {
+    rtResetWorker();
+    $hash = rtFixtureHash();
+    rTorrent::queueSend($hash);
+    rXMLRPCRequest::queue(true, false, rtInitialValues($hash, 'Movies', '', 0, 'movie.mkv', '1'));
+
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '0'));
+
+    rtAssertSame(false, $result, 'changed live state invalidates ownership');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'state mismatch stops after the snapshot');
+    rtAssertSame(array(), rTorrent::$sends, 'state mismatch never reloads metainfo');
+};
+
+$tests['candidate and rollback start state follows the immutable handoff'] = function () {
     $hash = rtFixtureHash();
     foreach (array(
-        'started argv and stopped custom4' => array('1', 0, true),
-        'stopped argv and started custom4' => array('0', 1, false),
+		'started' => array('1', true),
+		'stopped' => array('0', false),
     ) as $label => $case) {
         rtResetWorker();
         rTorrent::queueSend(false); // candidate send fails
         rTorrent::queueSend($hash); // rollback send succeeds
-        rXMLRPCRequest::queue(true, false, rtInitialValuesByCommand($case[1]));
-        rXMLRPCRequest::queue(true, false, array()); // d.erase
+        rXMLRPCRequest::queue(true, false,
+            rtInitialValues($hash, 'Movies', '', 0, 'movie.mkv', $case[0]));
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
         rXMLRPCRequest::queue(true, true, array(), 'info-hash not found'); // presence: absent
 
-        retrackersRunWorker(array('update.php', $hash, 'alice', $case[0]));
+        retrackersRunWorker(rtWorkerArgs($hash, $case[0]));
 
         rtAssertSame(2, count(rTorrent::$sends), $label . ': candidate and rollback are attempted');
-        rtAssertSame($case[2], rTorrent::$sends[1]['isStart'],
+        rtAssertSame($case[1], rTorrent::$sends[1]['isStart'],
             $label . ': rollback start state follows the immutable argv snapshot');
     }
 };
@@ -571,10 +590,10 @@ $tests['candidate send false is not processed'] = function () {
     rTorrent::queueSend(false); // candidate send fails
     rTorrent::queueSend($hash); // rollback send succeeds
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // presence probe: absent
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'failed candidate is not processed even after rollback');
     rtAssertSame(2, count(rTorrent::$sends), 'candidate send and rollback send both attempted');
@@ -587,10 +606,10 @@ $tests['candidate wrong hash is not processed'] = function () {
     rTorrent::queueSend($wrong); // wrong hash returned
     rTorrent::queueSend($hash); // rollback send
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'info-hash not found'); // probe: absent
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'wrong hash is not processed');
     rtAssertSame(2, count(rTorrent::$sends), 'rollback issued after wrong hash');
@@ -601,10 +620,10 @@ $tests['candidate confirmation requires exact canonical hash'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend(strtolower($hash));
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, false, array($hash)); // presence: exact matching hash
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'case-folded candidate confirmation is rejected');
     rtAssertSame(1, count(rTorrent::$sends), 'an unconfirmed candidate is not loaded twice');
@@ -615,11 +634,11 @@ $tests['source hash mismatch fails before erase'] = function () {
     $hash = rtFixtureHash();
     rXMLRPCRequest::queue(true, false, rtInitialValuesFromBytes($hash,
         rtTorrentBytes('http://tracker.example/announce', null, 'wrong.mkv')));
-    rXMLRPCRequest::queue(true, false, array()); // pre-erase recovery d.start
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'a source carrying another info hash is rejected');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'source mismatch stops after the read');
     rtAssertTrue(!in_array('d.erase', rtCommandNames(), true), 'source mismatch never erases a torrent');
     rtAssertSame(array(), rTorrent::$sends, 'source mismatch never loads metainfo');
 };
@@ -629,11 +648,11 @@ $tests['candidate hash mismatch fails before erase'] = function () {
     $hash = rtFixtureHash();
     Torrent::$hashAfterTrackerMutation = str_repeat('D', 40);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // pre-erase recovery d.start
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'a candidate carrying another info hash is rejected');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'candidate mismatch stops before mutation');
     rtAssertTrue(!in_array('d.erase', rtCommandNames(), true), 'candidate mismatch never erases a torrent');
     rtAssertSame(array(), rTorrent::$sends, 'candidate mismatch never loads metainfo');
 };
@@ -642,11 +661,11 @@ $tests['malformed metainfo fails before erase'] = function () {
     rtResetWorker();
     $hash = rtFixtureHash();
     rXMLRPCRequest::queue(true, false, rtInitialValuesFromBytes($hash, 'not-metainfo'));
-    rXMLRPCRequest::queue(true, false, array()); // pre-erase recovery d.start
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'malformed metainfo is rejected');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'decode failure stops before mutation');
     rtAssertTrue(!in_array('d.erase', rtCommandNames(), true), 'malformed metainfo never erases a torrent');
     rtAssertSame(array(), rTorrent::$sends, 'malformed metainfo never loads a torrent');
 };
@@ -657,11 +676,13 @@ $tests['unconfirmed erase never falls through to d.start'] = function () {
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
     rXMLRPCRequest::queue(false, false, array()); // d.erase transport uncertainty
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'unconfirmed erase is not processed');
     rtAssertSame(array('get_session', 'd.get_tied_to_file', 'd.get_custom1',
-        'd.get_directory_base', 'd.is_private', 'd.get_name', 'd.get_custom', 'd.erase'), rtCommandNames(),
+        'd.get_directory_base', 'd.is_private', 'd.get_name', 'd.get_custom',
+        'd.get_custom', 'd.get_custom', 'd.get_state', 'd.get_hashing_failed',
+        'd.get_local_id', 'branch'), rtCommandNames(),
         'no blind d.start follows an issued erase');
     rtAssertSame(array(), rTorrent::$sends, 'candidate is not loaded after unconfirmed erase');
 };
@@ -672,10 +693,10 @@ $tests['confirmed absence rolls back immutable original once'] = function () {
     rTorrent::queueSend(false);
     rTorrent::queueSend($hash);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash, 'Label1'));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // probe: absent
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(2, count(rTorrent::$sends), 'rollback load is sent');
     rtAssertSame('Label1', rTorrent::$sends[1]['label'], 'rollback preserves label');
@@ -688,10 +709,10 @@ $tests['confirmed present after unconfirmed send does not blind-load'] = functio
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, false, array($hash)); // probe: clean matching (present!)
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'unconfirmed send is not processed');
     rtAssertSame(1, count(rTorrent::$sends), 'no second load when hash is present');
@@ -702,10 +723,10 @@ $tests['unknown presence does not blind-load'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(false, false, array()); // probe: transport failure (unknown!)
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'unknown presence is not processed');
     rtAssertSame(1, count(rTorrent::$sends), 'no blind load on unknown presence');
@@ -716,10 +737,10 @@ $tests['clean empty presence is unknown and does not rollback'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, false, array('')); // probe: clean empty is unknown
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'clean empty presence is not processed');
     rtAssertSame(1, count(rTorrent::$sends), 'clean empty presence does not authorize rollback');
@@ -732,10 +753,10 @@ $tests['missing fault after transport failure is unknown'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(false, true, array(), 'Could not find info-hash.');
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'failed transport cannot confirm absence');
     rtAssertSame(1, count(rTorrent::$sends), 'failed transport does not authorize rollback');
@@ -746,10 +767,10 @@ $tests['partial missing-hash fault is unknown'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Permission denied: info-hash not found');
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'an unrelated fault containing missing-hash text is unknown');
     rtAssertSame(1, count(rTorrent::$sends), 'partial missing-hash text does not authorize rollback');
@@ -761,10 +782,10 @@ $tests['rollback failure remains unsuccessful'] = function () {
     rTorrent::queueSend(false);
     rTorrent::queueSend(false); // rollback send also fails
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // probe: absent
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'rollback failure is not processed');
 };
@@ -775,10 +796,10 @@ $tests['rollback confirmation requires exact canonical hash'] = function () {
     rTorrent::queueSend(false);
     rTorrent::queueSend(strtolower($hash));
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.');
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'case-folded rollback confirmation remains unsuccessful');
     rtAssertTrue(strpos(implode("\n", FileUtil::$logs), 'rollback-load-failed') !== false,
@@ -790,10 +811,10 @@ $tests['unknown presence after erase issues neither rollback load nor d.start'] 
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(false, false, array()); // probe: transport failure
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(1, count(rTorrent::$sends), 'only candidate send was attempted');
     $commands = array();
@@ -811,10 +832,10 @@ $tests['failed rollback never starts an unconfirmed hash'] = function () {
     rTorrent::queueSend(false);
     rTorrent::queueSend(false); // rollback fails
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // probe: absent
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     $commands = array();
     foreach (rXMLRPCRequest::$requests as $req) {
@@ -830,10 +851,10 @@ $tests['confirmed-present unconfirmed send does not issue redundant d.start'] = 
     $hash = rtFixtureHash();
     rTorrent::queueSend(false);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, false, array($hash)); // probe: clean matching
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     $commands = array();
     foreach (rXMLRPCRequest::$requests as $req) {
@@ -859,11 +880,13 @@ $tests['one immutable byte snapshot survives source replacement and rollback'] =
     };
     rTorrent::queueSend(false);
     rTorrent::queueSend($hash);
-    rXMLRPCRequest::queue(true, false, array('', rtSourcePath(), 'Movies', '/downloads', 0, 'movie.mkv', ''));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('', rtSourcePath(), 'Movies', '/downloads', 0,
+        'movie.mkv', '', 'v1:original:1:' . str_repeat('F', 40), '', '1', '0',
+        str_repeat('F', 40)));
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // probe: absent
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(0, Torrent::$pathReads, 'Torrent objects are never constructed from the mutable path');
     rtAssertSame(array($originalBytes, $originalBytes), Torrent::$constructorInputs,
@@ -877,12 +900,12 @@ $tests['one immutable byte snapshot survives source replacement and rollback'] =
     rtAssertTrue(in_array(array('http://retracker.example/announce'), $candidateList, true),
         'candidate alone receives the retracker mutation');
     rtAssertSame($originalBytes, rTorrent::$sends[1]['bytes'], 'rollback bytes are identical to the immutable source snapshot');
-    rtAssertSame(array('rpc:get_session,d.get_tied_to_file,d.get_custom1,d.get_directory_base,d.is_private,d.get_name,d.get_custom',
-        'torrent:1', 'torrent:2', 'rpc:d.erase', 'send:1', 'rpc:d.hash', 'send:2'), RetrackersTrace::$events,
+    rtAssertSame(array('rpc:get_session,d.get_tied_to_file,d.get_custom1,d.get_directory_base,d.is_private,d.get_name,d.get_custom,d.get_custom,d.get_custom,d.get_state,d.get_hashing_failed,d.get_local_id',
+        'torrent:1', 'torrent:2', 'rpc:branch', 'send:1', 'rpc:d.hash', 'send:2'), RetrackersTrace::$events,
         'snapshot parsing, erase, candidate, probe, and rollback retain exact ordering');
 };
 
-$tests['private and legacy meta-name exclusions only restore prior run state'] = function () {
+$tests['private and legacy meta-name exclusions leave the live torrent untouched'] = function () {
     $hash = str_repeat('D', 40);
     foreach (array(
         'private' => rtInitialValues($hash, 'Movies', '', 1),
@@ -890,20 +913,11 @@ $tests['private and legacy meta-name exclusions only restore prior run state'] =
     ) as $label => $values) {
         rtResetWorker();
         rXMLRPCRequest::queue(true, false, $values);
-        rXMLRPCRequest::queue(true, false, array());
+        retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-        retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
-
-        rtAssertSame(2, count(rXMLRPCRequest::$requests), $label . ': only read and restart');
-        rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
-            $label . ': the stopped user torrent is restored');
-        // The trailing d.start is the MOST frequently issued hash-naming request
-        // in this worker -- every path that changes nothing reaches it -- so it
-        // is the likeliest of all of them to meet a hash another plugin has
-        // replaced. Its sibling retrackersRestoreStartedInitialState() issues
-        // the identical command and has always kept its fault local.
-        rtAssertSame(false, rXMLRPCRequest::$requests[1]['important'],
-            $label . ': the restart is non-important, so an expected stale-hash fault logs no raw XML');
+        rtAssertSame(1, count(rXMLRPCRequest::$requests), $label . ': only the read is issued');
+        rtAssertTrue(!in_array('d.start', rtCommandNames(), true),
+            $label . ': exclusion never changes user run state');
         rtAssertSame(array(), rTorrent::$sends, $label . ': no reload');
     }
 };
@@ -918,11 +932,11 @@ $tests['malformed and unexpected failed reads are sanitised early exits'] = func
         rtResetWorker();
         rXMLRPCRequest::queue($case[0], $case[1], $case[2], $case[3]);
 
-        retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+        retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-        rtAssertSame(2, count(rXMLRPCRequest::$requests), $label . ': only initial read and state recovery');
-        rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
-            $label . ': the saved started state is restored');
+        rtAssertSame(1, count(rXMLRPCRequest::$requests), $label . ': only initial read is attempted');
+        rtAssertTrue(!in_array('d.start', rtCommandNames(), true),
+            $label . ': an early read failure cannot change run state');
         rtAssertSame(1, count(FileUtil::$logs), $label . ': one concise diagnostic');
         rtAssertTrue(strpos(FileUtil::$logs[0], $case[4]) !== false,
             $label . ': safe reason code is present');
@@ -931,7 +945,7 @@ $tests['malformed and unexpected failed reads are sanitised early exits'] = func
     }
 };
 
-$tests['hook stores custom4 before stop and launches worker only after stop'] = function () use ($root) {
+$tests['one hook hands immutable state and generation to the worker without stopping'] = function () use ($root) {
     rXMLRPCRequest::reset();
     $theSettings = new RetrackersSettingsFixture();
     $rootPath = '/srv/rutorrent';
@@ -948,17 +962,21 @@ $tests['hook stores custom4 before stop and launches worker only after stop'] = 
     }
 
     $commands = $theSettings->insertCommands;
-    rtAssertSame(2, count($commands), 'both on-insert hooks are installed');
-    $cmd1 = $commands[0]->params[1];
-    $cmd2 = $commands[1]->params[1];
-    rtAssertTrue(strpos($cmd1, 'd.set_custom4=$cat=$d.get_state=') !== false,
-        'hook 1 saves trustworthy pre-stop state into custom4');
-    rtAssertTrue(strpos($cmd2, 'd.stop') < strpos($cmd2, 'execute'),
-        'hook 2 stops torrent before detached execute');
-    rtAssertTrue(strpos($cmd2, '$d.get_custom4=') !== false,
-        'hook 2 passes saved custom4 to execute');
-    rtAssertTrue(strpos($cmd2, '$d.get_state=') === false,
-        'hook 2 never re-reads live state after stop');
+    rtAssertSame(1, count($commands), 'one on-insert hook owns the complete handoff');
+    rtAssertSame('tadd_trackers1alice', $commands[0]->params[0],
+        'the surviving historical key keeps stable ordering');
+    $action = $commands[0]->params[1];
+    rtAssertTrue(strpos($action, '$cat=v1:original:,$d.state=,:,$d.local_id=') !== false,
+        'hook snapshots state and immutable generation identity together');
+    rtAssertTrue(strpos($action, 'd.custom.set=retrackers-recovery') !== false,
+        'hook stores the immutable handoff before launch');
+    rtAssertTrue(strpos($action, '$d.custom=retrackers-recovery') !== false,
+        'worker receives the exact live handoff marker');
+    rtAssertTrue(strpos($action, 'execute.throw.bg') !== false,
+        'ordinary torrents launch the detached worker');
+    foreach (array('d.stop', 'd.close', 'd.erase', 'd.custom4') as $forbidden)
+        rtAssertTrue(strpos($action, $forbidden) === false,
+            'insert hook contains no unsafe or obsolete command ' . $forbidden);
 };
 
 $tests['run.sh executes worker with exact argv handover'] = function () use ($root) {
@@ -978,12 +996,13 @@ SH;
     rtAssertTrue(chmod($fakePhp, 0700), 'fake PHP executable is executable');
     $hash = str_repeat('A', 40);
     $user = 'alice user;$(false)';
+    $handoff = 'v1:original:1:' . str_repeat('F', 40);
     $command = 'RETRACKERS_ARGV_CAPTURE=' . escapeshellarg($capture)
         . ' ' . escapeshellarg($root . '/plugins/retrackers/run.sh')
         . ' ' . escapeshellarg($fakePhp)
         . ' ' . escapeshellarg($hash)
         . ' ' . escapeshellarg($user)
-        . ' ' . escapeshellarg('1');
+        . ' ' . escapeshellarg($handoff);
     $output = array();
     $status = 0;
     exec($command . ' 2>&1', $output, $status);
@@ -991,7 +1010,7 @@ SH;
     try {
         rtAssertSame(0, $status, 'run.sh accepts the exact four-argument contract');
         rtAssertTrue(is_file($capture), 'detached fake worker records argv');
-        rtAssertSame("4\n<update.php>\n<" . $hash . ">\n<" . $user . ">\n<1>\n",
+        rtAssertSame("4\n<./update.php>\n<" . $hash . ">\n<" . $user . ">\n<" . $handoff . ">\n",
             file_get_contents($capture), 'run.sh preserves each worker argument without reinterpretation');
     } finally {
         @unlink($capture);
@@ -1000,79 +1019,70 @@ SH;
     }
 };
 
-$tests['started snapshot restarts once after transport fault'] = function () {
+$tests['started handoff remains untouched after initial transport fault'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(false, false, array()); // initial read transport failure
-    rXMLRPCRequest::queue(true, false, array()); // recovery d.start
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'transport failure is not processed');
-    rtAssertSame(2, count(rXMLRPCRequest::$requests), 'initial read and recovery d.start issued');
-    rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command, 'd.start was issued');
-    rtAssertSame($hash, rXMLRPCRequest::$requests[1]['commands'][0]->params,
-        'd.start restores the exact worker hash');
-    rtAssertSame(false, rXMLRPCRequest::$requests[1]['important'], 'recovery start is non-important');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'only the uncertain read is issued');
+    rtAssertTrue(!in_array('d.start', rtCommandNames(), true),
+        'worker never starts a torrent it did not stop');
 };
 
-$tests['started snapshot reports failed recovery transport'] = function () {
+$tests['initial transport failure has one classified diagnostic'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(false, false, array()); // initial read transport failure
-    rXMLRPCRequest::queue(false, false, array()); // recovery d.start transport failure
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-    rtAssertSame(false, $result, 'failed state recovery never reports worker success');
-    rtAssertSame(2, count(rXMLRPCRequest::$requests), 'recovery start is attempted exactly once');
-    rtAssertTrue(strpos(implode("\n", FileUtil::$logs), 'state-recovery-failed reason=transport-failure') !== false,
-        'failed recovery transport is logged with a safe reason');
+    rtAssertSame(false, $result, 'initial transport uncertainty never reports success');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'no recovery mutation follows uncertainty');
+    rtAssertTrue(strpos(implode("\n", FileUtil::$logs), 'initial-read-failed reason=transport-failure') !== false,
+        'initial transport failure is logged with a safe reason');
 };
 
-$tests['recovery transport failure outranks attached fault'] = function () {
+$tests['initial transport failure outranks an attached fault'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
-    rXMLRPCRequest::queue(false, false, array()); // initial read transport failure
     rXMLRPCRequest::queue(false, true, array(), 'info-hash not found');
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     $logs = implode("\n", FileUtil::$logs);
-    rtAssertTrue(strpos($logs, 'state-recovery-failed reason=transport-failure') !== false,
-        'failed recovery transport is diagnosed before fault contents');
-    rtAssertTrue(strpos($logs, 'state-recovery-failed reason=rpc-fault') === false,
-        'failed recovery transport is never misreported as an RPC fault');
+    rtAssertTrue(strpos($logs, 'initial-read-failed reason=transport-failure') !== false,
+        'transport outcome is diagnosed before attached fault contents');
+    rtAssertTrue(strpos($logs, 'initial-read-failed reason=rpc-fault') === false,
+        'transport outcome is never misreported as an RPC fault');
 };
 
-$tests['started snapshot reports failed recovery fault without secret'] = function () {
+$tests['initial RPC fault is classified without its secret'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
-    rXMLRPCRequest::queue(false, false, array()); // initial read transport failure
     rXMLRPCRequest::queue(true, true, array(), 'Permission denied token=do-not-log');
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-    rtAssertSame(false, $result, 'faulting state recovery never reports worker success');
-    rtAssertSame(2, count(rXMLRPCRequest::$requests), 'faulting recovery start is attempted exactly once');
+    rtAssertSame(false, $result, 'faulting initial read never reports worker success');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'no mutation follows the fault');
     $logs = implode("\n", FileUtil::$logs);
-    rtAssertTrue(strpos($logs, 'state-recovery-failed reason=rpc-fault') !== false,
-        'faulting recovery is logged with a safe reason');
-    rtAssertTrue(strpos($logs, 'do-not-log') === false, 'recovery log excludes raw fault text');
+    rtAssertTrue(strpos($logs, 'initial-read-failed reason=rpc-fault') !== false,
+        'faulting read is logged with a safe reason');
+    rtAssertTrue(strpos($logs, 'do-not-log') === false, 'initial log excludes raw fault text');
 };
 
-$tests['mixed missing-hash fault restores started snapshot'] = function () {
+$tests['mixed missing-hash fault leaves started generation untouched'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(true, true, array(), 'Permission denied: info-hash not found');
-    rXMLRPCRequest::queue(true, false, array()); // recovery d.start
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'mixed fault is unexpected and never reports success');
-    rtAssertSame(2, count(rXMLRPCRequest::$requests), 'mixed fault triggers one recovery request');
-    rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
-        'mixed fault restores the saved started state');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'mixed fault triggers no mutation');
     rtAssertTrue(strpos(implode("\n", FileUtil::$logs), 'initial-read-failed reason=rpc-fault') !== false,
         'mixed fault is logged only by its safe reason');
 };
@@ -1089,7 +1099,7 @@ $tests['only exact known missing-hash faults skip recovery'] = function () {
         rtResetWorker();
         rXMLRPCRequest::queue(true, true, array(), $message);
 
-        $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
         rtAssertSame(false, $result, $message . ': missing hash remains an unsuccessful early exit');
         rtAssertSame(1, count(rXMLRPCRequest::$requests), $message . ': exact missing hash does not restart');
@@ -1097,22 +1107,19 @@ $tests['only exact known missing-hash faults skip recovery'] = function () {
     }
 };
 
-$tests['exact missing-hash fault on failed transport still restores'] = function () {
+$tests['failed transport with attached missing-hash text stays non-mutating'] = function () {
     rtResetWorker();
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(false, true, array(), 'info-hash not found');
-    rXMLRPCRequest::queue(true, false, array()); // recovery d.start
 
-    retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-    rtAssertSame(2, count(rXMLRPCRequest::$requests), 'transport uncertainty triggers one recovery request');
-    rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
-        'transport uncertainty restores the saved started state');
+    rtAssertSame(1, count(rXMLRPCRequest::$requests), 'transport uncertainty triggers no mutation');
     rtAssertTrue(strpos(implode("\n", FileUtil::$logs), 'initial-read-failed reason=transport-failure') !== false,
         'initial transport uncertainty is diagnosed truthfully');
 };
 
-$tests['decorated missing-hash faults remain uncertain and restore'] = function () {
+$tests['decorated missing-hash faults remain uncertain and non-mutating'] = function () {
     $hash = str_repeat('E', 40);
     foreach (array(
         'Access denied: info-hash not found',
@@ -1124,13 +1131,13 @@ $tests['decorated missing-hash faults remain uncertain and restore'] = function 
     ) as $message) {
         rtResetWorker();
         rXMLRPCRequest::queue(true, true, array(), $message);
-        rXMLRPCRequest::queue(true, false, array());
 
-        retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+        retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
-        rtAssertSame(2, count(rXMLRPCRequest::$requests), var_export($message, true) . ': uncertainty restores once');
-        rtAssertSame('d.start', rXMLRPCRequest::$requests[1]['commands'][0]->command,
-            var_export($message, true) . ': uncertainty restores the exact hash');
+        rtAssertSame(1, count(rXMLRPCRequest::$requests),
+            var_export($message, true) . ': uncertainty triggers no mutation');
+        rtAssertTrue(!in_array('d.start', rtCommandNames(), true),
+            var_export($message, true) . ': uncertain fault leaves run state untouched');
     }
 };
 
@@ -1139,7 +1146,7 @@ $tests['stopped snapshot does not start after transport fault'] = function () {
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(false, false, array()); // initial read transport failure
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '0'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '0'));
 
     rtAssertSame(false, $result, 'transport failure is not processed');
     rtAssertSame(1, count(rXMLRPCRequest::$requests), 'no recovery d.start for stopped snapshot');
@@ -1200,7 +1207,7 @@ $tests['missing hash snapshot remains quiet'] = function () {
     $hash = str_repeat('E', 40);
     rXMLRPCRequest::queue(true, true, array(), 'Could not find info-hash.'); // missing hash
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(false, $result, 'missing hash is not processed');
     rtAssertSame(1, count(rXMLRPCRequest::$requests), 'no recovery mutation on missing hash');
@@ -1212,16 +1219,16 @@ $tests['successful flow has no extra restart'] = function () {
     $hash = rtFixtureHash();
     rTorrent::queueSend($hash);
     rXMLRPCRequest::queue(true, false, rtInitialValues($hash));
-    rXMLRPCRequest::queue(true, false, array()); // d.erase
+    rXMLRPCRequest::queue(true, false, array('RETRACKERS_ERASED')); // conditional erase
 
-    $result = retrackersRunWorker(array('update.php', $hash, 'alice', '1'));
+    $result = retrackersRunWorker(rtWorkerArgs($hash, '1'));
 
     rtAssertSame(true, $result, 'happy path returns true');
     rtAssertSame(2, count(rXMLRPCRequest::$requests), 'only read and erase');
     rtAssertSame(1, count(rTorrent::$sends), 'candidate loaded once');
 };
 
-$tests['hook wraps both mutations in label and marker guards'] = function () use ($root) {
+$tests['single hook preserves transaction legacy and service branches'] = function () use ($root) {
     rXMLRPCRequest::reset();
     $theSettings = new RetrackersSettingsFixture();
     $rootPath = '/srv/rutorrent';
@@ -1238,17 +1245,23 @@ $tests['hook wraps both mutations in label and marker guards'] = function () use
     }
 
     $commands = $theSettings->insertCommands;
-    rtAssertSame(2, count($commands), 'both on-insert hooks are installed');
-    foreach ($commands as $index => $command) {
-        $action = $command->params[1];
-        $mutation = $index === 0 ? 'd.set_custom4' : 'd.stop';
-        rtAssertTrue(strpos($action, 'd.get_custom1') < strpos($action, $mutation),
-            'label guard precedes hook mutation ' . $index);
-        rtAssertTrue(strpos($action, 'd.get_custom=chk-meta-old') < strpos($action, $mutation),
-            'durable marker guard precedes hook mutation ' . $index);
-    }
-    rtAssertTrue(strpos($commands[1]->params[1], 'execute') !== false,
-        'ordinary torrents retain the detached worker action');
+    rtAssertSame(1, count($commands), 'obsolete second hook is not registered');
+    $action = $commands[0]->params[1];
+    $ack = strpos($action, 'd.custom.set=retrackers-recovery-ack');
+    $legacy = strpos($action, '$equal=d.custom3=,cat=1');
+    $serviceLabel = strpos($action, '$equal=d.custom1=,cat=.chk-meta');
+    $serviceMarker = strpos($action, 'd.custom=chk-meta-old');
+    $launch = strpos($action, 'execute.throw.bg');
+    rtAssertTrue($ack !== false && $legacy !== false && $serviceLabel !== false
+        && $serviceMarker !== false && $launch !== false,
+        'all transaction, legacy, service and ordinary branches are present');
+    rtAssertTrue($ack < $legacy && $legacy < $serviceLabel && $serviceLabel < $serviceMarker
+        && $serviceMarker < $launch,
+        'transaction acknowledgement wins before legacy and guarded ordinary launch');
+
+    $done = file_get_contents($root . '/plugins/retrackers/done.php');
+    rtAssertTrue(strpos($done, 'tadd_trackers2') === false,
+        'plugin shutdown no longer carries the removed historical key');
 };
 
 $failures = 0;
