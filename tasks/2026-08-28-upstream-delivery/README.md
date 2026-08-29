@@ -114,6 +114,11 @@ numstat; erasedata разбита на A/B/C, где только B пока и�
 foreign-handler packages. Полный синтез: `REVIEW-disposition-wave-2026-08-29.md`;
 foreign brief: `REVIEW-foreign-tracker-handlers-2026-08-29.md`.
 
+Retrackers recovery independently возвращён в `CHANGES REQUIRED`: 41/41 donor
+tests ложнозелёные, потому что local `sendTorrent()` hash принят за daemon
+confirmation. Исправленный 4-path brief:
+`REVIEW-retrackers-recovery-2026-08-29.md`.
+
 Отдельная ветка `php/xmlrpc_path.php` не нужна: filesystem identity принадлежит
 erasedata A, а SCGI и A являются siblings после httprpc. Отдельно добавлен
 2-путевый `up/httprpc-erasedata-contract`, закрывающий exact-force/helper/no-

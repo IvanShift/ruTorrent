@@ -18,7 +18,7 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 | 2 | final `up/setsettings-socket-alloc` | 4 файла; до последней правки `+910/-15` | независим | одобрение lock-through-UI-terminal, RED/fix/re-review/rebase |
 | 3 | `up/httprpc-refusals` | 5 файлов, около `+190..230/-3` | test-harness как evidence gate | одобрение дизайна, copied-entrypoint RED |
 | 4 | `up/scgi-transport` | 7 файлов, около `+850/-45` | после 3 из-за общего `rpc2.php` | design approval; новый bounded accumulator, не fork-copy |
-| 5 | `up/retrackers-recovery` | 4 файла, final numstat после реализации | независимо; P3 зависит от него | design approval; daemon confirmation/rollback, invalid guard исключён |
+| 5 | `up/retrackers-recovery` | exact 4 paths, final numstat после реализации | независимо; P3 после final P1+5 | **CHANGES REQUIRED:** marker-based bounded confirmation/rollback; false-green stub rewrite; guard исключён |
 | 6 | `up/erasedata-remove-payload` (A) | 8 production + 2 test paths | после 3 по delivery order; **не зависит от SCGI API** | carve A1/A2, identity owner, no-fd и visible-retention RED |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 15 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | 2 пути, `+168/-2` | после A | helper absence и username hardening должны получить RED либо быть исключены |
