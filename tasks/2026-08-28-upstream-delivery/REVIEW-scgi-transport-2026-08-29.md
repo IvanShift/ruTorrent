@@ -1,56 +1,28 @@
-# `up/scgi-transport` — independent current-base review
+# `up/scgi-transport` — закрытый технический контракт
 
-Дата: 2026-08-29. База: `upstream/master=755404f3`. Fork использован только
-как donor гипотез; repository, Docker и live service не мутировались.
+Дата: 2026-08-29. База исследования: `upstream/master=755404f3`; immediate
+parent будущей ветки — final `up/httprpc-refusals`. Fork использован только как
+donor гипотез. Поведение и protocol limits независимо перепроверены по rTorrent
+0.9.8 и 0.16.21, а PHP-совместимость — в immutable containers.
 
-## Verdict: CHANGES REQUIRED
+## Verdict: DESIGN APPROVED — implementation pending
 
-Production defect и семипутевая transport boundary подтверждены. Направление
-верное: один shared transport, complete writes, separate connect/transfer
-budgets, mandatory response framing и разные raw/body consumer contracts.
+Один shared transport владеет SCGI framing, complete writes, response framing,
+connect/write/read budgets и memory bounds. Открытых design-решений больше нет:
 
-До реализации обязательны поправки:
+- client protection default — 67,108,864 bytes;
+- operator ceiling — 104,857,600 bytes, равный supported daemon wire ceiling;
+- core consumer получает raw headers + delimiter + body;
+- `rpc2.php` получает body only;
+- XML validation остаётся consumer responsibility;
+- transport failures имеют stable classified codes, а endpoints — neutral text.
 
-1. прежний baseline RED для blocking single `fwrite()` недетерминирован;
-2. request tests не держат security boundary `UNTRUSTED_CONNECTION`;
-3. fixed 64 MiB limit не выведен из protocol: оба supported daemon допускают
-   ответы до 100 MiB; policy надо выбрать и документировать;
-4. PHP 7.4 нужен как runtime, а не lint-only;
-5. нужен real UNIX-socket success case;
-6. predecessor httprpc и этот пакет должны сохранить exact neutral endpoint
-   wording, а не ложное «rTorrent unreachable».
-
-## Reachability
-
-Current `php/xmlrpc.php::rXMLRPCRequest::send()`:
-
-- делает один `fwrite()` и игнорирует byte count;
-- читает до false/empty без framing или size bound;
-- не классифицирует timeout metadata;
-- может вернуть partial response как non-false string.
-
-Это основной core path для settings, startup/plugin discovery, httprpc и
-scheduled bundled plugins, то есть широко production-reachable.
-
-Optional `rpc2.php::rpc2_send()` повторяет one-write assumption, использует
-connect timeout как read timeout и также принимает partial/malformed answer.
-Он production-reachable при включённом documented filtered `/RPC2` endpoint.
-
-## Supported-daemon ground truth
-
-Source tags rTorrent 0.9.8 и 0.16.21 независимо подтверждают:
-
-- response всегда содержит `Status`, `Content-Type`, `Content-Length`;
-- обе версии отвергают только output больше `100 << 20`;
-- 0.16.21 имеет hard-coded 60-second absolute request timer, который нельзя
-  изменить registered command.
-
-Следовательно, missing `Content-Length` — не compatibility case и должен fail
-closed. Headerless EOF означает «socket connected, response closed before
-headers», но transport не может без контекста назвать причиной именно deadline:
-это также restart/close.
+Код контракта ещё не реализован. Текущие fork tests — characterization, не
+GREEN нового API.
 
 ## Exact seven-path scope
+
+От final `up/httprpc-refusals` пакет меняет ровно семь путей:
 
 1. `conf/config.php`;
 2. новый `php/scgitransport.php`;
@@ -60,110 +32,286 @@ headers», но transport не может без контекста назват
 6. новый `tests/php/SCGITransportTest.php`;
 7. `README.md`.
 
-Оценка около `+850/-45` не является final numstat до нового accumulator/tests.
+Raw fork/upstream aggregate равен `+1027/-69`, но это не package delta: final
+numstat считается только от exact final httprpc tip после удаления чужих
+logging/fault/refusal hunks.
 
-Exclude: `php/xmlrpc_path.php`, `php/rtorrent.php`, proxy policy, erasedata,
-trackers, `env_check.php`, `tests/php/XMLRPCProxyTest.php`, SimpleXML/env-check
-requirement, Docker/runtime config и task artifacts.
+Не входят: `php/xmlrpc_path.php`, `php/rtorrent.php`, proxy policy, erasedata,
+trackers, `env_check.php`, SimpleXML requirement, Docker/runtime config и task
+artifacts. #3209/#3211 proxy parser tests не меняются.
 
-Пакет строится после final `up/httprpc-refusals` из-за shared `rpc2.php` и не
-повторяет predecessor refusal/empty-body/helper hunks. #3209/#3211 proxy parser
-tests не трогаются.
+## Production reachability and independent verdicts
 
-## Required transport contract
+Current `rXMLRPCRequest::send()` делает один unchecked blocking `fwrite()`,
+читает до EOF и может принять partial reply. Это core path settings,
+startup/plugin discovery, httprpc и scheduled plugins — defect
+**ПОДТВЕРЖДЁН, production-reachable**.
 
-- `$rpcTimeOut` остаётся positive-float connect budget.
-- Новый `$rpcTransferTimeOut = null` наследует `default_socket_timeout` с
-  documented fallback для non-positive ini; fractional seconds сохраняются.
-- Один absolute deadline покрывает все request writes, read timeout является
-  idle budget.
-- SCGI prefix/header/payload отправляются без второго concatenated full request;
-  short writes loop через remaining slice; false/zero/select failure/expiry —
-  classified failure.
-- Точно сохранить request fields и `UNTRUSTED_CONNECTION=0` для trusted,
-  `=1` для untrusted calls.
-- Header bound 65,536 bytes; ровно один case-insensitive syntactically valid
-  **positive** `Content-Length`. Missing/duplicate/malformed/overflow/zero/
-  over-policy отвергаются до body read.
-- `fread()` получает не больше remaining bytes. EOF раньше count — truncation;
-  exact count завершает frame без ожидания redundant EOF.
-- Перед append incoming length сверяется с remaining/policy; rejected chunk не
-  должен менять accumulator.
-- Один implementation даёт explicit raw и body-only modes: core
-  `rXMLRPCRequest::send()` сохраняет legacy header+body bytes, `rpc2_send()`
-  возвращает только body. Два full response representation одновременно
-  запрещены.
-- XML parsing остаётся consumer responsibility; transport не требует
-  SimpleXML.
-- Logs содержат classified connect/write/read/header/truncation/closed-before-
-  headers reason без raw remote payload.
+Optional `rpc2.php::rpc2_send()` дублирует one-write/EOF assumptions и смешивает
+connect/read timeout. При опубликованном `/RPC2` defect также
+**ПОДТВЕРЖДЁН, production-reachable**.
 
-## Response-limit policy: user decision before code
+| Гипотеза | Вердикт | Основание |
+|---|---|---|
+| один `fwrite()` гарантирует весь SCGI request | **ОПРОВЕРГНУТО** | PHP возвращает byte count; short write разрешён API. Конкретный blocking repro не детерминирован и не годится как RED. |
+| EOF нужен для конца ответа | **ОПРОВЕРГНУТО** | Supported daemon всегда даёт `Content-Length`; exact count завершает frame. |
+| missing `Content-Length` — compatibility case | **ОПРОВЕРГНУТО** | 0.9.8 и 0.16.21 всегда emit-ят его. |
+| 64 MiB — daemon protocol limit | **ОПРОВЕРГНУТО** | Обе версии reject-ят только output `> 100 << 20`. |
+| 64 MiB полезен как PHP client cap | **ПОДТВЕРЖДЕНО** | Это явная worker-protection policy, configurable до daemon ceiling. |
+| SimpleXML обязан быть в transport | **ОПРОВЕРГНУТО** | Framing не зависит от XML parser; XML валидирует consumer. |
+| headerless EOF точно означает daemon deadline | **ОПРОВЕРГНУТО** | Причина также может быть restart/close; transport знает только framing outcome. |
+| blocking large-write experiment доказывает defect | **ОПРОВЕРГНУТО** | 4/16/32 MiB writes на measured host завершались целиком; нужен deterministic seam. |
+| UNIX SCGI path можно считать эквивалентным без runtime | **ОПРОВЕРГНУТО** | Нужен отдельный real UNIX-socket success gate с port `0`. |
 
-Fork cap 67,108,864 bytes bounded, но не protocol-derived и не гарантирует
-отсутствие OOM при common 128 MiB PHP limit плюс XML parse.
+Source ground truth:
 
-Допустимы два честных контракта:
+- rTorrent 0.9.8 и 0.16.21 отвечают `Status`, `Content-Type`,
+  `Content-Length`, затем `\r\n\r\n` и body;
+- wire body длиной ровно 104,857,600 допустим; больше — daemon reject;
+- 0.16.21 ставит absolute 60-second deadline при open и один раз re-arm-ит его
+  после полного чтения request для processing/response phase. Это две
+  phase-local границы, не idle timeout; registered command surface их не
+  настраивает. Client contract не обещает превысить вторую границу.
 
-1. hard cap 100 MiB, совпадающий с supported rTorrent wire ceiling, с явным
-   требованием достаточного PHP memory;
-2. меньший/configurable client cap как сознательная PHP-worker protection,
-   operator-visible classified rejection и документация, что supported daemon
-   способен выдать больше.
+## Public API and configuration
 
-Предпочтителен второй вариант с консервативным default и upper bound 100 MiB,
-но exact config name/default/normalization требуют явного design approval.
-Нельзя называть 64 MiB protocol limit или OOM guarantee.
+```php
+rSCGITransport::send(
+    $host,
+    $port,
+    $payload,
+    $trusted = true,
+    $connectTimeout = 30,
+    &$failure = null,
+    $transferTimeout = null,
+    $maxResponseBytes = null,
+    $responseMode = rSCGITransport::RESPONSE_RAW
+): ?string
+```
 
-## Endpoint diagnostic ownership
+PHP 7.4-compatible implementation объявляет:
 
-Transport log может точно классифицировать failure, но current httprpc и rpc2
-для любого false/null сообщают клиенту, что rTorrent unreachable.
+```php
+const RESPONSE_RAW = 'raw';
+const RESPONSE_BODY = 'body';
+const MAX_HEADER_BYTES = 65536;
+const MAX_WRITE_BYTES = 65536;
+const DEFAULT_MAX_RESPONSE_BYTES = 67108864;
+const MAX_WIRE_RESPONSE_BYTES = 104857600;
+```
 
-- `up/httprpc-refusals` даёт httprpc exact neutral wording
-  `Could not complete the rTorrent XMLRPC request.` без обещания server log;
-- SCGI package сохраняет этот action contract и даёт такой же neutral outcome
-  в принадлежащем ему `rpc2.php`;
-- точная transport classification остаётся server log owner.
+`conf/config.php` сохраняет `$rpcTimeOut` как connect budget и добавляет:
 
-## Honest RED/mutation evidence
+```php
+$rpcTransferTimeOut = null;
+$rpcMaxResponseBytes = 67108864;
+```
 
-Старый natural RED «large delayed reader + one blocking fwrite» запрещён.
-Direct reproduction на current algorithm с 4/16/32 MiB и 1.5-second delayed
-peer вернула полный write каждый раз. Это не доказывает корректность one-write,
-но опровергает честность гарантированного baseline RED.
+`null` transfer timeout наследует positive `default_socket_timeout`; если ini
+не даёт positive value, fallback — 60 seconds. Fractional positive seconds не
+округляются до integer. Connect и transfer budget независимы:
 
-Required evidence:
+- один absolute transfer deadline покрывает все request writes;
+- response read использует transfer value как idle timeout;
+- tight connect timeout не сокращает slow but progressing reply.
 
-1. source/current-behavior characterization двух duplicated callers;
-2. deterministic short-write seam или nonblocking socket-pair: one-write
-   mutation RED, full-write loop GREEN;
-3. transfer-budget→connect-budget mutation RED на slow reply;
-4. trust-bit removal/inversion RED для trusted и untrusted request с exact
-   netstring/header/payload capture;
-5. case-sensitive, duplicate/malformed/missing/zero/oversize length mutations;
-6. append-before-check mutation через small deterministic policy seam;
-7. raw/body mode swap/collapse через real consumer contracts;
-8. timeout-metadata/headerless-EOF classification mutations;
-9. missing legacy transfer global fallback без warning;
-10. real UNIX-domain socket success плюс TCP.
+Response limit принимает только integer или decimal-string в диапазоне
+`1..104857600`. Missing/null использует `DEFAULT_MAX_RESPONSE_BYTES`. Bool,
+float, sign, whitespace, exponent, empty/non-digit и out-of-range дают
+`invalid-response-limit` **до socket connect**. Decimal сравнивается с ceiling
+по normalized string length/lexicographic value до integer cast, поэтому
+32-bit PHP не переполняется.
 
-Fixture обязан возвращать parsed request headers/payload, а не только boolean
-`complete`; иначе trust flag остаётся непроверенным.
+Response mode принимает только exact `raw`/`body`; иное значение даёт
+`invalid-response-mode` до connect. Empty request аналогично даёт
+`empty-request`.
+
+## Request framing and write contract
+
+SCGI request fields сохраняются exactly:
+
+```text
+CONTENT_LENGTH\0<decimal payload bytes>\0
+CONTENT_TYPE\0text/xml\0
+SCGI\0 + ASCII `1` + \0
+UNTRUSTED_CONNECTION\0<0 trusted | 1 untrusted>\0
+```
+
+То есть bytes поля `SCGI` — exact hex `53 43 47 49 00 31 00`; запись не должна
+превратиться в octal escape `\01`.
+
+Wire request — netstring header length, `:`, header bytes, `,`, payload. Header
+и payload отправляются segmented; второй concatenated full request запрещён.
+Каждый `fwrite()` получает slice не больше `MAX_WRITE_BYTES` (65,536 bytes),
+включая первый payload offer. Нельзя передавать `substr($payload, $offset)` без
+length и тем самым копировать почти весь remaining payload. Partial positive
+count продвигает offset; false/zero не считается success.
+
+Socket переводится в режим, подходящий для `stream_select`; failure настройки —
+`socket-config-failed`. Один monotonic absolute write deadline не
+перезапускается после progress. Select false/expiry и write false/zero получают
+разные codes. После полной отправки socket получает blocking idle read timeout.
+
+## Response framing and memory contract
+
+Transport ищет только exact `\r\n\r\n`. До delimiter разрешено максимум 65,536
+header bytes; partial delimiter на boundary учитывается отдельно. Каждый header
+line имеет exact grammar `field-name ":" field-value`: `field-name` — один или
+больше RFC tchar bytes ``[!#$%&'*+.^_`|~0-9A-Za-z-]``; bare LF, obs-fold и line
+без colon отвергаются.
+
+Captured verbatim на disposable rTorrent 0.16.21 для
+`system.client_version`:
+
+```text
+Status: 200 OK\r\n
+Content-Type: text/xml\r\n
+Content-Length: 125\r\n
+\r\n
+```
+
+`Content-Length` contract:
+
+- ровно один case-insensitive field;
+- после colon снимаются только outer OWS bytes SP/HTAB;
+- оставшееся value — non-empty `[0-9]+` без sign/internal whitespace;
+- leading zeros допустимы и удаляются только при numeric normalization;
+- normalized value strictly positive;
+- value не превышает selected client limit;
+- duplicate/missing/malformed/zero/overflow fail closed до body accumulation.
+
+После parse каждый следующий `fread()` запрашивает не больше remaining declared
+bytes. Tail, уже coalesced с header delimiter в одном предыдущем read,
+разделяется **до append**: только первые remaining bytes входят в response,
+излишек не накапливается и не возвращается. EOF раньше exact count —
+`truncated-body`; exact count немедленно завершает frame без ожидания EOF и без
+нового `fread()`.
+
+Memory ownership различается по mode:
+
+- `RESPONSE_RAW` возвращает exact received header bytes + delimiter + body;
+- `RESPONSE_BODY` возвращает только body;
+- transport не хранит одновременно две полные response representations;
+- rejected chunk не изменяет accumulator;
+- XML parse/`methodResponse` validation выполняет consumer после успешного
+  framing и не является transport failure.
+
+## Stable failures and diagnostics
+
+`$failure` содержит ровно один stable code или `null` при success:
+
+```text
+empty-request
+invalid-response-mode
+invalid-response-limit
+connect-failed
+socket-config-failed
+write-wait-failed
+write-timeout
+write-failed
+read-timeout
+read-failed
+closed-before-headers
+truncated-headers
+headers-too-large
+malformed-header
+missing-content-length
+duplicate-content-length
+malformed-content-length
+zero-content-length
+response-too-large
+truncated-body
+```
+
+Transport сам не пишет log и возвращает code owner-у. На каждый failure consumer
+обязан записать ровно одну строку: core — `rXMLRPCRequest: <code>`, `rpc2.php` —
+`rpc2: <code>`. Никаких raw response, XML payload, request arguments, remote
+fault text или guessed daemon outcome. Consumer XML/fault logging остаётся у
+`rXMLRPCRequest` и существующих `$rpcLogCalls`/`$rpcLogFaults`.
+
+Consumer adaptation фиксирована:
+
+- `rXMLRPCRequest::send()` вызывает `RESPONSE_RAW`, передаёт connect,
+  transfer и response-limit globals через legacy-safe `isset` defaults;
+  transport `null` отображает строго в прежний `false`;
+- `rpc2_send()` вызывает `RESPONSE_BODY`, передаёт те же три policy values;
+  transport `null` отображает в `null` для endpoint failure branch;
+- успешный core response сохраняет exact raw headers+delimiter+body, успешный
+  rpc2 response — exact body only;
+- один failure нельзя залогировать повторно transport и consumer слоями.
+
+Endpoint contract:
+
+- `plugins/httprpc/action.php` остаётся owner predecessor и при transport
+  failure сохраняет HTTP 500 + exact neutral
+  `Could not complete the rTorrent XMLRPC request.`;
+- `rpc2.php` отвечает HTTP 502 с той же exact sentence;
+- никакой endpoint не утверждает, что rTorrent «unreachable», потому что
+  framing/timeout/config failure не доказывает outage.
+
+## RED, GREEN and mutations
+
+Natural/current characterization на exact predecessor фиксирует два
+duplicated one-write/EOF callers. Protocol RED обязан быть детерминирован:
+
+1. fixture отправляет complete declared frame и держит peer open; corrected
+   client возвращает exact frame до release signal, EOF-driven baseline — нет;
+2. injectable writer/nonblocking socket-pair принудительно возвращает short
+   counts; one-write mutation теряет bytes, loop даёт exact captured netstring;
+3. parsed request fixture проверяет payload и `UNTRUSTED_CONNECTION` для обоих
+   trust values, не только boolean `complete`;
+4. slow first/progressing reply переживает tight connect budget, но idle read
+   получает `read-timeout`;
+5. TCP и real UNIX-domain socket (`port=0`) возвращают exact raw/body outputs;
+6. missing/duplicate/case-varied/malformed/zero/oversize/truncated framing
+   покрыты отдельными named cases;
+7. legacy config без новых globals работает без warning с defaults;
+8. invalid response mode/limit/empty payload доказывают zero connect attempts.
+9. captured `Content-Length: 125` принимается verbatim; OWS/leading-zero matrix
+   отделена от sign/internal-whitespace/obs-fold rejects;
+10. coalesced header + exact body + suffix при held-open peer возвращает только
+    framed response и не делает второго read;
+11. injected writer доказывает, что каждый offered slice `<= 65,536` bytes;
+12. core `null -> false` и rpc2 `null -> null`, mode/config forwarding и ровно
+    одна exact classified log line закреплены consumer tests.
+
+Mandatory mutations, каждая с named executed RED, no preceding fatal и fresh
+GREEN after restore:
+
+- single write вместо partial-write loop;
+- reset write deadline после progress;
+- transfer budget заменить connect budget;
+- убрать/invert trust bit;
+- сделать `Content-Length` case-sensitive, optional или first-wins duplicate;
+- разрешить malformed/zero/out-of-range length;
+- append chunk до remaining/cap check;
+- ждать EOF после exact count;
+- перепутать/collapse raw и body mode;
+- перепутать timeout metadata с EOF/read error;
+- обратиться к отсутствующему legacy global без `isset`/default;
+- вернуть XML/SimpleXML validation в transport.
 
 ## Verification gate
 
-- focused transport + оба consumer-contract tests на PHP 8.5/8.1;
-- focused suite **runtime** на PHP 7.4;
-- full harness 8.5/8.1 и после PHP74 prerequisite — full 7.4;
-- PHPStan 2.2.9 level 0 и lint всех changed PHP;
-- exact seven-path diff, `git diff --check`, no task/agent artifacts;
-- disposable `tasks/rt-lab.sh` read-only call через real UNIX SCGI socket,
-  желательно на 0.9.8 и 0.16.21;
-- никакого mutating live probe и никакого 65-second CI sleep.
+На exact implementation tip обязательны:
 
-## Approval condition
+- focused transport и оба consumer contracts runtime на PHP 7.4/8.1/8.5;
+- full harness 8.1/8.5; full 7.4 после `up/php74-torrent-properties`, иначе
+  identical prerequisite fatal фиксируется отдельно;
+- PHPStan 2.2.9 level 0 и lint exact changed PHP;
+- exact seven-path diff, `git diff --check`, test-name/count guard;
+- disposable real UNIX SCGI call через `tasks/rt-lab.sh` на supported oldest и
+  0.16.21;
+- whole-file independent review; никакого mutating live probe и 65-second CI
+  sleep.
 
-Seven-path ownership approved. Implementation начинается только после явного
-одобрения response-limit policy и внесения deterministic short-write,
-trust-bit, neutral wording, PHP 7.4 runtime и UNIX-socket gates в design.
+Container characterization уже показала на PHP 7.4 и 8.5 одинаковый current
+donor результат `25 methods / 58 assertions / 0 failures`; это compatibility
+baseline, не GREEN перечисленных новых RED/mutation cases.
+
+## Approval boundary
+
+Design, API, limits, ownership и evidence gate утверждены. Implementation branch
+ещё нет. Package нельзя называть готовым до witnessed natural RED, deterministic
+short-write RED, corrected GREEN, mutations, exact predecessor range и
+independent whole-file review.
