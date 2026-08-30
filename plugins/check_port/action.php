@@ -1,6 +1,7 @@
 <?php
 require_once(dirname(__FILE__) . "/../../php/settings.php");
 require_once(dirname(__FILE__) . "/../../php/Snoopy.class.inc");
+require_once(dirname(__FILE__) . "/parse.php");
 
 // Load the plugin's configuration settings from conf.php
 eval(FileUtil::getPluginConf('check_port'));
@@ -59,16 +60,33 @@ function check_port_yougetsignal($ip, $port, $timeout) {
 	$client = new Snoopy();
 	$client->read_timeout = (int)$timeout;
 	$client->proxy_host = ""; // Do not use a proxy for this check
-	$post_data = "remoteAddress=" . urlencode($ip) . "&portNumber=" . urlencode($port);
 
-	// Make a POST request to the port checking service
-	@$client->fetch("https://ports.yougetsignal.com/check-port.php", "POST", "application/x-www-form-urlencoded", $post_data);
+	// The API is the one the site's own front end calls, and it is reached
+	// with the headers a browser on that site would send.
+	$client->rawheaders['Origin'] = "https://www.yougetsignal.com";
+	$client->referer = "https://www.yougetsignal.com/";
 
-	// Parse the response to determine port status
+	// Obtain a session device ID cookie required by the API
+	@$client->fetch("https://api.connected.app/deviceId");
+	if ($client->status != 204 && $client->status != 200) {
+		error_log("check_port: Failed to obtain yougetsignal device ID. Status: {$client->status}");
+		return 0;
+	}
+	$client->setcookies();
+
+	// Run the port check via the GraphQL API
+	$query = 'mutation NetworkToolRunPortCheck($input: NetworkToolPortCheckInput!) { networkToolRunPortCheck(input: $input) { output } }';
+	$post_data = json_encode([
+		'query' => $query,
+		'variables' => ['input' => ['host' => $ip, 'port' => (int)$port]],
+	]);
+	@$client->fetch("https://api.connected.app/graphql", "POST", "application/json", $post_data);
+
 	if ($client->status == 200) {
-		if (stripos($client->results, "is closed") !== false) return 1; // Port is closed
-		if (stripos($client->results, "is open") !== false) return 2; // Port is open
-		error_log("check_port: yougetsignal response indicators not found for IP {$ip}. Response: " . substr($client->results, 0, 500));
+		$status = check_port_parse_yougetsignal($client->results);
+		if ($status)
+			return $status;
+		error_log("check_port: yougetsignal unexpected response for IP {$ip}. Response: " . substr($client->results, 0, 500));
 	} else {
 		error_log("check_port: Failed fetch from yougetsignal for IP {$ip}. Status: {$client->status}, Error: {$client->error}");
 	}
