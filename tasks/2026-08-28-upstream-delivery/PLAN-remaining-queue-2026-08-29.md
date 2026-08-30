@@ -1,8 +1,9 @@
 # Актуальный план оставшейся upstream-очереди — 2026-08-29
 
 Этот документ заменяет старую очередь 5–11 из
-`../2026-08-28-upstream-rebuild/PLAN.md`. Текущая база — `755404f3`; whole-file
-copy из fork master запрещён там, где upstream уже менял общий файл.
+`../2026-08-28-upstream-rebuild/PLAN.md`. Текущая upstream-база — `f19c9d86`;
+historical estimates ниже сохраняют собственные refs. Whole-file copy из fork
+master запрещён там, где upstream уже менял общий файл.
 
 ## Post-sync execution checkpoint — 2026-08-30
 
@@ -21,18 +22,37 @@ package 1 и требует отдельной implementation authority; оно 
 RED/TDD либо другого явно выбранного пакета по его dependency gate. Push не
 разрешён.
 
+## Implementation progress checkpoint — 2026-08-30
+
+Packages 1 и 2 реализованы отдельными approved ветками:
+
+- package 1: historical `up/php74-torrent-properties` = `286dd24b`, exact 3
+  paths `+14/-9`, локальная fork integration `acbf5691`, принят upstream как
+  #3224; follow-up #3225 также принят;
+- package 2: `up/setsettings-socket-alloc` = `d548016b`, direct parent current
+  upstream `f19c9d86`, exact 4 paths `+1229/-19`; локальная fork integration
+  `f547b2f3` после prerequisite sync `ed71bee5`.
+
+Обе package-ветки прошли independent whole-branch review. PHP74 принят upstream;
+socket branch не push-илась. Accepted #3224/#3225/#3226 refresh зафиксирован в
+fork как `7a78c606`. Текущая очередь: **16 open implementations / 0 audits / 5
+ready or locally integrated handoffs + 1 accepted upstream closure**.
+Evidence package 2:
+`VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
+
 ## Уже готовые handoff
 
-Четыре однокоммитные ветки готовы на current upstream: FileUtil, test harness,
-rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафиксированы в
-`REVIEW-ready-branches-2026-08-29.md`. Push выполняет только владелец.
+Пять веток готовы или уже локально интегрированы: FileUtil, test harness,
+rTorrent 0.16.21, Kinozal и setsettings/socket. PHP74 уже принят upstream. Их
+SHA, scope и проверки зафиксированы в `REVIEW-ready-branches-2026-08-29.md`.
+Push выполняет только владелец.
 
-## 18 обязательных реализационных пакетов
+## Реестр 18 пакетов — 16 ещё открыты
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
-| 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | design independently APPROVED; explicit user approval, затем two-stage RED/TDD/mutations |
-| 2 | final `up/setsettings-socket-alloc` | exact 4 paths; current `+910/-15`, final после fix | независим | design APPROVED / branch NOT READY; 4 terminal RED, fix/mutations/review/rebase |
+| 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED #3224**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3225 follow-up included in `7a78c606` |
+| 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED**: `d548016b`, direct parent `f19c9d86`; integrated `f547b2f3`; no push |
 | 3 | `up/httprpc-refusals` | exact 5 paths; final numstat после tests | test-harness как evidence gate | corrected design APPROVED; split false/empty 400, terminal 403/500, exact neutral text, copied-entrypoint RED |
 | 4 | `up/scgi-transport` | exact 7 paths; historical donor estimate около `+850/-45`, final numstat only from final httprpc tip | после 3 из-за общего `rpc2.php` | DESIGN APPROVED — implementation pending; nine-arg transport, deterministic short-write/framing, trust, PHP74, TCP/UNIX and 64/100 MiB gates |
 | 5 | `up/retrackers-recovery` | exact 5 paths; final numstat after RED/implementation | после final 4; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; B5+EPOCH production capture BLOCKED until real five-path producers, without blocking design approval |
@@ -93,8 +113,9 @@ Retrackers recovery имеет final SCGI как immediate implementation parent
 5. foreign handlers разделены на packages 16–18; независимая HTTPS/session
    поправка включена в те же пять sibling paths.
 
-Точная арифметика: `18 - 5 audits + 6 successors - 1 standalone C fold = 18
-open`, из них все 18 — конкретные implementation packages, pending audits — 0.
+Историческая арифметика реестра: `18 - 5 audits + 6 successors - 1 standalone
+C fold = 18 packages`. После closure packages 1 и 2: `18 - 2 = 16 open`;
+pending audits — 0.
 Standalone C удалён из счёта, потому что без P0 он production-unreachable и
 оставляет active inline cleanup; доказательства:
 `REVIEW-disposition-wave-2026-08-29.md` и
@@ -119,13 +140,12 @@ Standalone C удалён из счёта, потому что без P0 он pr
 
 ## Рабочий порядок
 
-1. Record the completed design approvals; begin no implementation without the
-   separate explicit implementation instruction and exact final predecessor.
-   Post-sync merge `4b3cd799` хранить на task branch до closure package 1 либо
-   отдельного решения владельца принять PHP 7.4 regression; не продвигать им
-   `master` молча.
-2. Повторно review socket, rebase на current upstream, затем перенести только
-   финальные fork-owned hunks в `master` отдельным commit.
+1. ~~Реализовать package 1 на exact final predecessor.~~ Завершено:
+   `286dd24b`, fork integration `acbf5691`, upstream #3224; follow-up #3225.
+2. ~~Повторно review socket, rebase на current upstream и перенести финальные
+   fork-owned hunks в `master`.~~ Завершено: final `d548016b` на `f19c9d86`;
+   prerequisite sync `ed71bee5`; package integration `f547b2f3`; accepted
+   upstream refresh `7a78c606`.
 3. After final httprpc, build SCGI, XMLRPC policy and A as separate sibling
    branches. Build the consumer only after XMLRPC + A; B and P0+C only after A.
 4. Build retrackers only after final SCGI. Alias surface and manual entrypoints

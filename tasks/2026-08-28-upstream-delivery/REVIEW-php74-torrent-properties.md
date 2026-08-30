@@ -6,8 +6,8 @@
 
 **APPROVED design: подтверждена upstream-регрессия #3213, состоящая из двух
 дефектов.** README и
-`Requirements::MIN_PHP` обещают PHP 7.4, но текущий upstream не выполняет этот
-контракт.
+`Requirements::MIN_PHP` обещали PHP 7.4, но audited upstream `755404f3` не
+выполнял этот контракт.
 
 1. Семь свойств вида `public mixed $announce = null` не компилируются на
    PHP 7.4. Чистый parent #3213 проходит lint, сам #3213 и `755404f3` падают.
@@ -75,7 +75,14 @@ string-normalization. Первая обязана уронить lint/PHPStan fl
 намеренно исключаются, это остаётся runtime-correct, но данный scope/brief надо
 сначала перемерить и переписать.
 
-Current upstream по-прежнему `755404f3`; локальной ветки
-`up/php74-torrent-properties` пока нет. Следующий gate — явное user approval,
-затем два последовательных RED, implementation, обе mutations и whole-commit
-review. Push выполняет только владелец.
+## Implementation closure — 2026-08-30
+
+Ветка `up/php74-torrent-properties` реализована как
+`286dd24b06f5c12bb5d0861926bd0499a9209ca2`, one commit с historical direct
+parent `eeae9f3a`, exact three files `+14/-9`. Два RED и обе mutations,
+PHP 7.4/8.1 harness, PHPStan floor и workflow matrix выполнены. Fork integration
+зафиксирована commit `acbf5691`. Upstream принял реализацию как #3224
+(`66fb2669`), затем принял numeric-key follow-up #3225 (`19c2283f`); оба
+содержатся в fork refresh `7a78c606`. Current upstream — `f19c9d86`.
+
+Verdict: **IMPLEMENTED / APPROVED / UPSTREAM ACCEPTED**.

@@ -16,9 +16,11 @@ Exact post-755 upstream delta — только #3220/#3202 в трёх package-l
 paths; прямого пересечения с шестью approved contract scopes нет. Conflict
 resolutions сохраняют #3209/#3211 XMLRPC parser semantics, byte-exact #3212
 retrackers predecessor и #3218 anchored init paths. Все шесть контрактов
-повторно квалифицированы как **DESIGN APPROVED — implementation pending**;
-очередь остаётся **18 implementations / 0 audits / 4 ready handoffs outside
-count**. Полная запись: `VERIFICATION-upstream-sync-contracts-2026-08-30.md`.
+повторно квалифицированы как **DESIGN APPROVED — implementation pending**. На
+этом историческом checkpoint очередь была **18 implementations / 0 audits / 4
+ready handoffs outside count**; последующий implementation checkpoint ниже
+заменяет текущий счёт. Полная запись:
+`VERIFICATION-upstream-sync-contracts-2026-08-30.md`.
 
 Adversarial review отдельно подтвердил production-reachable PHP 7.4 parse
 failure в upstream `php/Torrent.php` из-за native `mixed`. Это не новая находка
@@ -28,6 +30,29 @@ failure в upstream `php/Torrent.php` из-за native `mixed`. Это не но
 публикуется**. Контрактная синхронизация зафиксирована только на task branch;
 `master`/`origin/master` остаются на `5da21546`.
 
+## Implementation checkpoint — 2026-08-30
+
+Предыдущий абзац остаётся историческим contract checkpoint. После отдельной
+implementation authority packages 1 и 2 завершены:
+
+- `up/php74-torrent-properties` = `286dd24b`, exact 3 paths `+14/-9`, historical
+  direct parent `eeae9f3a`; ветка опубликована владельцем, принята upstream как
+  #3224 и локально интегрирована в fork как `acbf5691`;
+- `up/setsettings-socket-alloc` = `d548016b`, exact 4 paths `+1229/-19`, один
+  commit на current upstream `f19c9d86`; scoped, whole-branch и
+  master-integration reviews APPROVED, push не выполнялся.
+
+Read-only `git ls-remote` подтвердил `f19c9d86` как текущий
+`Novik/ruTorrent:master`. Перед socket package fork `master` получил недостающий
+exact upstream delta #3196/#3222/#3223 как `ed71bee5`, сам package — как
+`f547b2f3`, а принятые #3224/#3225/#3226 — как `7a78c606`. Последний product
+commit локального `master` — `7a78c606`; `origin/master` остаётся `acbf5691`;
+push/deploy не выполнялись. Полный evidence:
+`VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
+
+Текущий счёт: **16 implementations / 0 audits / 5 ready or locally integrated
+owner handoffs outside count + 1 accepted upstream closure**.
+
 ## Цель
 
 Отправить в upstream **все** расхождения форка, корректно оформленными PR. Это решение
@@ -35,7 +60,7 @@ failure в upstream `php/Torrent.php` из-за native `mixed`. Это не но
 
 ---
 
-## Залито и принято (14 PR)
+## Залито и принято (15 PR)
 
 | PR | тема |
 |---|---|
@@ -53,9 +78,14 @@ failure в upstream `php/Torrent.php` из-за native `mixed`. Это не но
 | #3199 | `getScheduleCommand` — детерминированный старт |
 | #3200 | Up/small UI |
 | **#3205** | **loginmgr: выбор аккаунта по хосту URL, и никогда ниже его схемы** — security |
+| **#3224** | **PHP 7.4 Torrent metadata compatibility** |
 
 Отдельно: **#3206** (`fde9863b`) — xirvik сам расширил нашу работу из #3205 на NNMClub.
 То есть подход принят и мейнтейнер на нём строит.
+
+После #3224 upstream также принял follow-up **#3225** для чтения numeric torrent
+key по обеим формам. **#3226** — отдельная upstream FileUtil brace/test правка;
+она не закрывает полный семипутевой FileUtil package этого плана.
 
 ---
 
@@ -76,6 +106,7 @@ failure в upstream `php/Torrent.php` из-за native `mixed`. Это не но
 | `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/rtorrent-0-16-21` | `48bc6d4b` | +9/−4, 3 test-файла | **ГОТОВА.** Один commit прямо на `755404f3`; обе полные PHP-матрицы 46/285/1790, Jest 20/196, независимые spec/quality reviews зелёные. Тексты: `REVIEW-rtorrent-0-16-21.md`, `PR-rtorrent-0-16-21.md` |
 | `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
+| `up/setsettings-socket-alloc` | `d548016b` | +1229/−19, 4 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на current `f19c9d86`; independent reviews APPROVED, локальная fork integration `f547b2f3`, push не выполнялся. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
 ### Что исправлено в `up/test-harness`
@@ -118,13 +149,15 @@ failure в upstream `php/Torrent.php` из-за native `mixed`. Это не но
 
 Точный текущий счёт после завершения всех пяти disposition-аудитов:
 
-- **18 обязательных реализационных пакетов**;
+- **16 незакрытых реализационных пакетов**;
 - **0 неразобранных carve/verdict-аудитов**;
-- четыре уже готовых owner handoff в это число не входят.
+- пять готовых или локально интегрированных owner handoff в это число не входят;
+- package 1 уже принят upstream как #3224 и учитывается отдельно как closure.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
 `13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
-P0: `19 - 1 = 18`. Successors: rTorrent alias surface, XMLRPC proxy policy,
+P0: `19 - 1 = 18`. После реализации packages 1 и 2: `18 - 2 = 16`.
+Successors: rTorrent alias surface, XMLRPC proxy policy,
 manual rutracker entrypoints и три foreign-handler packages.
 Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
 dispatch-vs-load граница реальна, но unconditional log одинаков для будущего
@@ -135,8 +168,9 @@ paths; retrackers recovery — exact 5 paths; erasedata A — exact 8 production
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
 estimate остаётся около `+850/-45`; final numstat каждого package измеряется
 только от его exact final predecessor tip после natural RED и реализации.
-Design approvals не закрыли ни одного из 18 implementation packages; pending
-carve/verdict audits — 0, а четыре ready owner handoff остаются вне счёта.
+Design approvals сами по себе не закрыли packages; отдельные реализации 1 и 2
+закрыли две строки. Pending carve/verdict audits — 0, пять ready/integrated
+owner handoff остаются вне счёта, а PHP74 уже принят upstream.
 Erasedata A/B остаются самостоятельными, а C сложен внутрь P0. B donor
 `+168/-2` подтверждён только как snapshot и опровергнут как final estimate;
 70-путевый rutracker snapshot заменён P0/P1/P2/P3, manual entrypoints и тремя
@@ -151,7 +185,7 @@ donor tests остаются characterization, не closure. HistoricalBindingSa
 B5+EPOCH production capture остаётся BLOCKED до появления реальных five-path
 producers `rr.receipts.v1`, `pf`/`pv`, extended owner, paired actions и
 canonical four-field marker. Это post-implementation acceptance gate, а не
-prerequisite design approval; общий счёт остаётся 18.
+prerequisite design approval; текущий общий счёт остаётся 16.
 
 Authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, approved contract SHA-256
@@ -210,13 +244,19 @@ client cap and 100 MiB operator/wire ceiling. Current donor tests remain
 characterization; final numstat and GREEN belong to the implementation tip.
 Brief: `REVIEW-scgi-transport-2026-08-29.md`.
 
-Socket lock-through-terminal design independently одобрен, но текущий
-`ad0dd8e4` всё ещё воспроизводит Save-B/reload-A race. Четыре replacement tests
-RED; exact 4-path brief: `REVIEW-setsettings-socket-alloc-2026-08-29.md`.
+Socket package **implemented and APPROVED** как `d548016b` на `f19c9d86`:
+patch-identical predecessor `b3e36835` прошёл независимый review. Save-lock держится
+через terminal `setuisettings`, scoped 401 диагностирует и unlock-ит без reload,
+а ordinary 401 сохраняет global auth navigation. Candidate 59/59 focused и
+263/263 full Jest; локальная интеграция `f547b2f3` прошла 310/310 Jest и
+baseline-equal PHP comparison. Exact evidence:
+`VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
 
-PHP74 design independently одобрен: оба base defects, exact 3 files `+14/-9`,
-full PHP 7.4/8.1 harness и mutations подтверждены. Implementation branch ещё
-не создана; brief: `REVIEW-php74-torrent-properties.md`.
+PHP74 package **implemented и принят upstream как #3224**: historical candidate
+`286dd24b`, exact 3 files `+14/-9`, direct parent `eeae9f3a`; full PHP 7.4/8.1
+harness и mutations подтверждены. Fork integration commit — `acbf5691`;
+upstream follow-up #3225 также включён в локальный `7a78c606`. Design brief:
+`REVIEW-php74-torrent-properties.md`.
 
 Httprpc corrected 5-path design одобрен после реальных PHP 7.4/8.5 probes:
 read failure и empty body разделены, `post_max_size` explanation удалено,
@@ -259,13 +299,14 @@ implementation pending, а retrackers contract после двух CLEAN reviews
 `14683d93bc54dbab89d6abce636d2e749e8492ba`. Позднее exact container cleanup
 получил GREEN и был зафиксирован commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`; это runtime cleanup, не
-implementation/capture acceptance. Ни один implementation package не закрыт,
-B5 production capture остаётся post-implementation BLOCKED.
+implementation/capture acceptance. С тех пор packages 1 и 2 закрыты отдельной
+реализацией; B5 production capture остаётся post-implementation BLOCKED.
 
 Resume point: не считать donor GREEN закрытием packages. A → B и A → combined
 C+P0 сохраняются; SCGI, XMLRPC и A начинаются только от final httprpc;
-retrackers — только от final SCGI. Общая очередь — 18 implementation packages,
-pending carve/verdict audits — 0, ready handoffs outside count — 4.
+retrackers — только от final SCGI. Общая очередь — 16 implementation packages,
+pending carve/verdict audits — 0, ready/integrated handoffs outside count — 5;
+ещё один закрытый package уже принят upstream.
 
 ---
 
@@ -294,8 +335,10 @@ pending carve/verdict audits — 0, ready handoffs outside count — 4.
    `REVIEW-history-service-labels.md`.
 3. ~~Починить `up/test-harness`.~~ Готова как `8eafb529`; осталось push/PR по
    `PR-test-harness.md`.
-4. Owner-only handoff готовых FileUtil/test-harness/rTorrent/Kinozal веток —
-   exact команды и lease в `REVIEW-ready-branches-2026-08-29.md`.
+4. Owner-only handoff пяти готовых/integrated packages —
+   FileUtil/test-harness/rTorrent/Kinozal/socket; PHP74 уже принят upstream;
+   exact состояние в
+   `REVIEW-ready-branches-2026-08-29.md`.
 5. Design approvals зафиксированы отдельно от implementation authority. После
    нового явного указания реализовывать packages RED->GREEN только от exact
    final predecessors; approval контракта сам по себе не является командой на
@@ -303,5 +346,5 @@ pending carve/verdict audits — 0, ready handoffs outside count — 4.
 6. После final httprpc SCGI, XMLRPC policy и erasedata A являются sibling
    branches. Retrackers строится только после final SCGI; consumer — после
    XMLRPC policy + A; B и P0+C — после final A; P3 — после final P1 +
-   retrackers. Продолжить все 18 packages по PLAN; pending audits = 0, ready
-   owner handoffs outside count = 4.
+   retrackers. Продолжить оставшиеся 16 packages по PLAN; pending audits = 0,
+   ready/integrated owner handoffs outside count = 5, accepted closure = 1.

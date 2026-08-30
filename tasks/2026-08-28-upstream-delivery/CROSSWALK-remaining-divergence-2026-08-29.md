@@ -21,6 +21,22 @@ native `mixed`. Это уже учтённый package 1, а не новая с�
 Следовательно, task merge не является master-ready до реализации package 1
 или явного решения владельца изменить runtime floor; никакой push не выполнен.
 
+## Implementation closure — 2026-08-30
+
+Предыдущая граница описывает исторический contract checkpoint. Packages 1 и 2
+после отдельной implementation authority закрыты:
+
+- PHP74: historical `up/php74-torrent-properties` = `286dd24b`, exact `+14/-9`
+  в трёх paths, integrated fork commit `acbf5691`, принят upstream как #3224;
+- socket/settings: `up/setsettings-socket-alloc` = `d548016b`, exact
+  `+1229/-19` в четырёх paths, direct parent current upstream `f19c9d86`,
+  integrated fork commit `f547b2f3` после exact sync `ed71bee5`.
+
+Current upstream `f19c9d86` подтверждён `git ls-remote`; #3224/#3225/#3226
+refresh integrated as `7a78c606`. Package and integration reviews are APPROVED;
+no push/deploy was performed for socket. Current count: **16 implementations /
+0 audits / 5 ready or locally integrated handoffs + 1 accepted closure**.
+
 ## Метод и полный объём
 
 Прямой diff `755404f3..master` непригоден: он показывает 12 ещё не слитых
@@ -40,7 +56,7 @@ carve-аудитам.
 | rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + 3-path alias-surface package |
 | retrackers | 5 | +1,540/-45 | exact five-path recovery design APPROVED and implementation pending; later P3 marker package separate |
 | Kinozal/loginmgr | 5 | +636/-28 | готовая локальная ветка/open PR |
-| socket/settings | 4 | +450/-22 | отдельная исправляемая ветка; её upstream carve сейчас больше |
+| socket/settings | 4 | +450/-22 | historical fork delta; final approved carve `d548016b` is `+1229/-19`, ready and locally integrated |
 | test harness | 3 | +3/-17 | готовая ветка также добавляет новый test-файл |
 | history dot-label | 3 | +37/-5 | текущий код отвергнут, заменяется exact-marker P2 |
 | cache guard/tests | 2 | +73/-1 | подтверждённый no-op, не отправлять |
@@ -52,8 +68,11 @@ SHA, integration merges и последующие remediation.
 
 ## Закрыто или готово
 
-- готово локально, не отправлено агентом: FileUtil `79190927`, test harness
-  `8eafb529`, rTorrent 0.16.21 `48bc6d4b`, Kinozal `de98a49a`;
+- готово или локально интегрировано: FileUtil `79190927`, test harness
+  `8eafb529`, rTorrent 0.16.21 `48bc6d4b`, Kinozal `de98a49a`, socket
+  `d548016b`/`f547b2f3`;
+- PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-up #3225 также
+  принят и включён в fork refresh `7a78c606`;
 - standalone history dot-label branch отвергнута и не отправляется;
 - cache `unserialize`, fork tooling, `.gitignore`, `AGENTS.md`, dead run registry,
   Snoopy gzip и старый log-unwritable имеют явный no-send/rejected verdict.
@@ -77,22 +96,24 @@ and does not make retrackers production B5+EPOCH or successor behavior GREEN.
 
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **18 implementation packages** из
+До полного закрытия divergence остаётся **16 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
-Четыре уже готовые ветки в этот счёт не входят.
+Пять ready/integrated handoff в этот счёт не входят; ещё один закрытый package
+уже принят upstream.
 
 Переход от прежних 18 workstream проверен арифметически:
 `18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
-сложен внутрь P0: `19 - 1 = 18`. Residual rTorrent, proxy policy и manual
+сложен внутрь P0: `19 - 1 = 18`. Packages 1 и 2 затем реализованы:
+`18 - 2 = 16`. Residual rTorrent, proxy policy и manual
 entrypoints дали по одному package; foreign bucket — три; generic
 `sendTorrent() +17/-0` закрыт no-send. Evidence:
 `REVIEW-disposition-wave-2026-08-29.md` и
 `REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
-Design approval decrements neither the 18 implementations nor fork divergence;
-only accepted implementation/disposition evidence can change this arithmetic.
-The current count remains 18 implementations / 0 audits / 4 ready owner
-handoffs outside the count.
+Design approval itself decrements neither implementations nor fork divergence;
+accepted implementation evidence for packages 1 and 2 changed the arithmetic.
+The current count is 16 implementations / 0 audits / 5 ready or locally
+integrated owner handoffs outside the count + 1 accepted upstream closure.
 
 ## Ownership corrections
 

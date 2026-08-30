@@ -3,12 +3,13 @@
 Дата: 2026-08-29. Current upstream: `755404f3`. Reviewed branch:
 `ad0dd8e4`, parent `fde9863b`.
 
-## Verdict
+## Historical verdict for `ad0dd8e4`
 
-**APPROVED design / current branch NOT READY.** Lock-through-terminal design
+**APPROVED design / reviewed donor NOT READY.** Lock-through-terminal design
 correct и остаётся в exact 4-path scope. Tip `ad0dd8e4` всё ещё содержит
 воспроизведённую race и не должен отправляться до RED/fix/mutations, rebase и
-final verification.
+final verification. Superseding implementation `d548016b` закрыла эти gates;
+актуальный verdict приведён в конце документа.
 
 ## Independently reproduced race
 
@@ -97,3 +98,21 @@ socket paths exit 0.
 трёх production JS, full PHP 8.5/8.1, exact four-path diff, current-upstream
 rebase, independent whole-file review и свежие counts. Push выполняет только
 владелец.
+
+## Implementation closure — 2026-08-30
+
+Все gates выше выполнены superseding branch `d548016b`, one commit on current
+upstream `f19c9d86`, exact four paths `+1229/-19`. Она является patch-identical
+rebase independently approved `b3e36835`. Дополнительная scoped
+перепроверка обнаружила и затем закрыла HTTP-401 terminal branch: только
+deferred lock-owning UI request opt-in-ится в diagnostic/unlock без reload,
+обычные 401 сохраняют global auth navigation.
+
+Candidate verification: focused 59/59, full Jest 263/263, Node checks и full
+PHP 8.5/root 8.1 green. Fix-5 scoped и final whole-branch reviews APPROVED.
+Fork integration: prerequisite upstream sync `ed71bee5`, package `f547b2f3`,
+accepted #3224/#3225/#3226 refresh `7a78c606`; independent integration review
+APPROVED. Exact commands, baseline-equal fork PHP limitations and residuals:
+`VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
+
+Verdict: **IMPLEMENTED / APPROVED / locally integrated**. Push не выполнялся.

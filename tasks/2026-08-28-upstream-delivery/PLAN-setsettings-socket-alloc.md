@@ -1,38 +1,38 @@
 # План: чистый upstream carve для setsettings/socket allocation
 
 **Дата:** 2026-08-28
-**База:** `upstream/master` = `fde9863b`
+**Финальная база:** `upstream/master` = `f19c9d86`
 **Ветка:** `up/setsettings-socket-alloc`
 **Рабочее дерево:** `.worktrees/up-setsettings-socket-alloc`
 
-## Статус после финальной перепроверки — 2026-08-29
+## Implementation closure — 2026-08-30
 
-Independent verdict: **APPROVED design / `ad0dd8e4` NOT READY**. Полный
-evidence: `REVIEW-setsettings-socket-alloc-2026-08-29.md`.
+**APPROVED / implemented / locally integrated.** Upstream-clean branch
+`up/setsettings-socket-alloc` points to
+`d548016babea5ba557fad2c13afc0234a335a420`, one commit with direct parent
+`f19c9d86df72ad6b1720f31252297340049e5eab`. Its exact scope is four paths,
+`+1229/-19`; neither merge commits nor excluded tracker/stale-details hunks are
+present.
 
-Текущая вершина `ad0dd8e4` ещё **не готова** и остаётся на старой базе
-`fde9863b`. После завершения rTorrent batch/reconciliation она снимает
-`settingsSavePending` до terminal-состояния отложенного `setuisettings`.
-Пользователь успевает начать Save B, после чего поздний success Save A может
-перезагрузить страницу во время `/RPC2` B. Production-flow probe воспроизвёл
-эту же браузерную гонку; существующий тест ошибочно фиксирует небезопасный
-unlocked interval.
+The former `ad0dd8e4` Save-B/reload-A race is closed. The lock now spans the
+deferred `setuisettings` terminal outcome, including callback exceptions,
+non-reload success, HTTP error, timeout, status zero, early no-op and scoped
+HTTP 401. Ordinary unrelated 401 requests retain the global authentication
+reload; initial rTorrent write/restore timeout or status zero remains
+intentionally indeterminate and locked for manual recovery.
 
-Обязательная последняя поправка:
+Fresh candidate evidence: package/upstream focused Jest 59/59, full Jest
+263/263, three Node checks, host PHP 8.5 and root `php:8.1-cli` exit 0. Both the
+fix-5 scoped re-review and final whole-branch review are APPROVED with no
+Critical/Important/Minor findings. Full record:
+`VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
 
-1. держать Save-lock до terminal outcome отложенного UI-запроса;
-2. вызывать reload-capable success callback, пока lock ещё удерживается, и
-   только затем завершать lock через `finally`-equivalent release;
-3. при UI error/timeout/status 0 показать штатную ошибку, снять lock и не
-   перезагружать страницу;
-4. тестом доказать, что повторный Save/click во время UI request не отправляет
-   новый `/RPC2`, а failure снимает lock без reload;
-5. early `save()` no-op обязан быть terminal и не оставлять held lock;
-6. после RED/fix/mutations и повторного review перебазировать один commit на
-   `755404f3`, затем перемерить точный scope и полные матрицы.
-
-До этого нельзя использовать старые focused/full counts как финальный handoff
-и нельзя отправлять ветку.
+The fork `master` first received upstream #3196/#3222/#3223 baseline as
+`ed71bee5`, then the four-path package as `f547b2f3`, and finally accepted
+#3224/#3225/#3226 delta as `7a78c606`. Independent integration review is
+APPROVED and the later package rebase has an equal range-diff/patch hash. No
+push or deployment was performed; backup ref
+`backup/master-before-setsettings-integration-20260830` remains at `acbf5691`.
 
 ## Граница
 
@@ -46,9 +46,9 @@ setsettings/socket-allocation контракт:
 - targeted request-state хунки `js/webui.js`
 - `tests/js/setsettings.spec.js`
 
-Размер новой чистой посылки измеряется после реализации. Current 4-path branch
-snapshot равен `+910/-15`; прежние `+431/-9` описывали неполный fork-state и не
-включали найденные при перепроверке safety fixes.
+Финальная чистая посылка измерена как `+1229/-19`. Прежние `+910/-15` и
+`+431/-9` были промежуточными snapshot и не включали все найденные при
+перепроверке terminal/401 safety fixes.
 Явно исключены существующие tracker/stale-details хунки `js/webui.js`, весь
 `tests/js/rtorrent.spec.js` и свойство `chkmsg` в JSDoc `js/rtorrent.js`.
 
