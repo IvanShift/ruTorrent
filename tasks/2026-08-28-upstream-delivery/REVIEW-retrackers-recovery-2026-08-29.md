@@ -1,4 +1,4 @@
-# `up/retrackers-recovery` — кандидат технического контракта
+# `up/retrackers-recovery` — закрытый технический контракт
 
 Дата: 2026-08-29. База исследования: `upstream/master=755404f3`; immediate
 implementation parent — final `up/scgi-transport`. Опубликованный fork baseline
@@ -6,16 +6,20 @@ implementation parent — final `up/scgi-transport`. Опубликованны�
 `Fix retrackers replacement handoff`, и исторический `FINDINGS.md`
 использованы только как donor гипотез; каждый race и daemon primitive
 перепроверен независимо по исходникам и в disposable rTorrent 0.9.8 и 0.16.21
-labs.
+labs. Current base всё ещё содержит predecessor
+seven-argument/array-returning `rSCGITransport::send()`; frozen implementation
+и runtime interface ниже относятся только к approved final
+nine-argument/string-returning `up/scgi-transport` parent и не считаются
+доказанными current base.
 
-## Verdict: CANDIDATE DESIGN — independent review pending
+## Verdict: DESIGN APPROVED — implementation pending
 
 Пятипутевой recovery package нужен, но current donor переносить нельзя. Его
 главная ошибка — трактовать return `rTorrent::sendTorrent()` как daemon
 acknowledgement. Return вычисляется локально после XMLRPC dispatch; actual
 `DownloadFactory` load завершается позже и может быть отвергнут.
 
-Candidate design поэтому разделяет четыре доказательства:
+Approved design поэтому разделяет четыре доказательства:
 
 1. old-object ownership: native `d.local_id` + exact dedicated marker + state;
 2. erase commit: один daemon-side conditional stop/erase с surviving subkeys в
@@ -34,6 +38,9 @@ surviving receipts, armed scheduler fences, exact candidate acknowledgement,
 owned partial cleanup или multi-profile gate этого контракта. Поэтому package
 ещё не реализован, а current `42 tests / 0 failures` остаётся false-green
 characterization, не closure.
+Design approval не закрывает ни один из frozen **18 implementation packages**,
+не даёт authority на implementation или push; все 18 остаются pending до их
+отдельного RED→GREEN исполнения.
 
 ## Exact five-path scope
 
@@ -235,71 +242,154 @@ Install protocol имеет один frozen total order. Каждый variable-s
 `rTorrentSettings::maxContentSize()` и отправляется одним unsplittable
 `system.multicall`; implicit chunking `rXMLRPCRequest` запрещён.
 
-1. До event-map mutation `init.php` создаёт/валидирует private ledger по
-   правилам ниже и делает два stable scans: exact event-key/action map и
-   downloads с recovery marker/ack. Любой pre-existing own или foreign
-   retrackers action, не byte-equal текущей `ma/ta`-aware frozen grammar, либо
-   noncanonical historical marker/old-worker evidence означает
-   `historical-hook-restart-required`; live upgrade дальше не идёт. Старый hook
-   мог начать foreground action непосредственно перед scan, и пяти target paths
-   не могут атомарно остановить чужой historical PHP request. Plain rTorrent
-   restart недостаточен: upstream `run.sh` background-ит hash-only PHP worker,
-   который может пережить daemon и затем erase-нуть новую generation. Поэтому
-   upgrade с upstream/`43484fba` требует full service/container/process-namespace
-   stop, proof zero historical `plugins/retrackers/update.php` workers, quiesced
-   web plugin init/done и только затем fresh daemon start. После такого boundary
-   event map/ledger empty, а concurrent current-version init-ы уже обязаны
-   использовать mutex ниже.
-2. Init генерирует fresh lifecycle token и отправляет acquire **ровно один
-   раз**. Один non-yielding daemon callback при simultaneous absence `ta:1` и
-   всех `to:*` последовательно ставит `to:<token>`, `ta:1` и в том же true body
-   overwrites оба known own keys exact `deferOnly`, затем возвращает exact typed
-   `ACQUIRED`; false body возвращает `BUSY`. Так safety-disable own predecessor
-   линейризуется вместе с mutex, без acquire-to-neutralize window. Fault,
-   malformed или transport-unknown acquire никогда не retry-ится, не release-ит
-   token и не мутирует hooks другим request: dropped request оставляет plugin
-   disabled, accepted/delayed request оставляет sticky `ta+to+deferOnly`.
-   Оба исхода требуют daemon restart и дают
-   `lifecycle-acquire-unconfirmed`; это намеренная ABA-safe one-shot граница.
-3. После exact `ACQUIRED` init повторяет stable action/marker scans. Newly found
-   historical/noncanonical action или evidence означает sticky refusal and
-   restart; current-version foreign action допустим только если byte-equal
-   frozen grammar. Каждая последующая hook-map mutation имеет condition
-   `ta:1 && to:<token>`; delayed callback после release no-op. Functional
-   ordinary branch сначала проверяет `ma:1`, затем `ta:1`: `ma` даёт no-op,
-   `ta` durable-queue-ит `dq/di`, absence обоих запускает ordinary worker.
-   Transaction-marker ack и legacy clear расположены раньше flags и остаются
-   active.
-4. При current-version multi-profile ambiguity один owner-CAS callback
-   **сначала** ставит `ma:1`, затем overwrites все exact current retrackers keys
-   `safetyOnly` и подтверждает map. `ma` sticky до daemon restart и запрещает
-   новых producers/adopts. Containment никогда не удаляет live `wh` или `wa`:
-   оно ждёт disappearance всех `wh`, затем fresh rounds drain-ят `di/dq` и
-   atomically resolve каждый `wp`. Для exact present original
-   marker=ack+local-id callback clear-ит ack, marker и только затем pending key;
-   absent/changed generation только теряет `wp` с visible quarantine reason.
-   Adopt-before-`ma` оставляет `wa`, и owner ждёт его terminal cleanup;
-   `ma`-before-adopt запрещает worker mutation, а owner cancellation выше не
-   оставляет permanent quarantine marker. Unknown `wh`, `wa`, containment или
-   oversized request оставляет `ma+ta+to+safetyOnly` и требует restart; live
-   `wh` не delete-ится. Pre-`ma` drain запрещён.
-5. При single profile owner-CAS ставит functional action в first key и
-   `safetyOnly` во second. Каждая drain round clear-ит `dq` **ровно один раз**;
-   только exact acknowledged absence разрешает fresh `di` scan и canonical
-   replay ниже. Unknown clear не retry-ится и оставляет sticky lifecycle,
-   иначе delayed first clear мог бы стереть новый dirty bit. После zero `di`,
-   absent `dq` и clean profile scan final non-yielding callback ещё раз требует
-   `dq` absent, повторно ставит functional+safety actions и удаляет сначала
-   `to:<token>`, затем `ta:1`. Event до final callback reinstates `dq`; event
-   после него видит installed functional hook. Delayed owner callbacks after
-   release no-op по token predicate. Crash/unknown оставляет `ta+to` sticky,
-   plugin не register-ится и требует daemon restart.
-6. Transaction/original-marker ack и legacy `custom3=1` clear остаются active
-   при `ma`/`ta`, чтобы уже начатая transaction terminally classify-ла себя.
+Каждый упомянутый ниже historical stable scan означает один и тот же private
+`HistoricalBindingSampleV2`: два **отдельных** complete RPC back-to-back,
+каждый — один unsplittable ordered five-member `system.multicall`, который в
+одном non-yielding daemon turn читает event list/map, RecoveryRows4 и private
+ledger list/map. Это не две copies в одном request и не four-RPC bracket.
+Sample 1 fully consumed/validated, его RAW освобождается, остаются только
+bounded digest/count/phase/decision fields; затем sample 2 independently
+проходит те же gates. Нельзя смешивать rounds, выдавать partial slots либо
+вызывать consumer после первого success/второго failure. Только sample 2
+достигает init/done после same codec-owned family, digest, counts, membership,
+phase, owner, epoch и recovery decisions. Exact request/digest/bounds заморожены
+в codec section ниже.
+
+Этот protocol начинается только на **fresh full-service generation**. Operator
+останавливает весь service/container/process namespace, доказывает zero old
+`plugins/retrackers/update.php`/`run.sh` workers и quiesced web init/done,
+запускает fresh daemon, доказывает zero retrackers event names, recovery
+marker/ack evidence и отсутствие `rr.receipts.v1`, затем один раз inserts empty
+private `multi` ledger, validates privacy/empty list+map и берёт BOOTSTRAP pair.
+Plain rTorrent restart недостаточен: historical hash-only PHP worker мог
+пережить daemon. `rr.receipts.v1` сохраняет name только потому, что никакой Task
+1 ledger schema ещё не deployed/committed и fresh boundary исключает old object
+storage; package никогда не erase/recreate-ит его. Если несовместимый v1 когда-
+либо deployed, следующий package обязан взять новое method name и explicit
+migration.
+
+После boundary действует visible **exclusive current writer** prerequisite:
+только callbacks этих пяти paths могут менять reserved
+`tadd_trackers1*|tadd_trackers2*`, `pf:*`, `pv:*`, `ma:1`, `ta:1` и extended
+`to:*`. HTTP XMLRPC не может вызвать private ledger, но trusted SCGI сам по себе
+не защищает от другого local writer. Self-consistent trusted overwrite action +
+matching claim + epoch недетектируем и является
+`profile-binding-writer-untrusted`, не обещанной attack detection. При
+невозможности обеспечить exclusivity plugin visibly disables и требует новый
+full-service boundary.
+
+Canonical profile bytes и persistent binding:
+
+```text
+canonical user  = ^[a-z0-9_-]*$
+H(U)            = lowercase SHA-256 exact canonical-user bytes
+key1(U)         = tadd_trackers1 || U
+key2(U)         = tadd_trackers2 || U
+pf:H(U):H(F(U)) = explicit string "1"
+pv:<epoch32>    = explicit string "1"
+to:<token32>:(i|d|c):H(U) = explicit string "1"
+```
+
+`F(U)` — exact once-decoded production functional action bytes, generated
+owning profile's frozen builder with its own `Utility::getPHP()`; foreign
+reader never loads foreign config and never parses command AST. `H(F)` hashes
+entire action string. At most one `pf` per user hash; every claim has exactly
+one complete same-suffix pair. Stable IDLE claim hashes visible key1. The only
+exceptions: prepared `pf` under owner `i` while key1/key2 are `D/D`, и retained
+`pf` under owner `d` while pair is `S/S`. Containment deletes all claims.
+Malformed/singleton/extra pair, suffix/hash collision, orphan/duplicate claim or
+action-only/claim-only drift is corruption.
+
+Exactly one persistent `pv:<32 lowercase hex CSPRNG epoch>` exists after first
+bootstrap acquire, including zero-profile idle after done. Every callback that
+creates/changes/deletes retrackers action, `pf`, lifecycle owner, `ta` or `ma`
+rotates it. Non-bootstrap callback freezes sample-2 `oldPv` and fresh
+`newPv=bin2hex(random_bytes(16))`, requires old present/new absent/new unequal,
+installs any missing safety gate first, then **deletes old pv before setting new
+pv and before first protected mutation**. Every later profile/lifecycle callback
+CASes its sampled pv; cooperating mutation therefore makes delayed callback
+no-op. Zero pv after old delete or fresh pv after new set is safe/sticky under
+`ta|ma`, never retried/released. A callback never deliberately sets `newPv`
+equal to its sampled current `oldPv`. No epoch history set exists: reuse of any
+earlier now-absent value is unobservable and is excluded only by the explicit
+negligible 128-bit CSPRNG non-reuse assumption. Stable self-consistent trusted
+forgery remains the exclusive-writer violation above. Operational receipt-only
+callbacks do not rotate pv, but retain their existing exact owner/receipt
+predicates.
+
+Single owner key is authoritative; no second owner alias exists. `ta:1` present
+iff exactly one extended owner exists. Modes `i` and `d` require no `ma`; `c`
+requires `ma`. Completed contained state has `ma` but no `ta`/owner. Old
+token-only owner names are invalid migration residue.
+
+Six and only six stable semantic phases:
+
+| Phase | `pv/ma/ta/owner` | Exact profile/claim state | Result |
+|---|---|---|---|
+| `BOOTSTRAP` | no pv/ma/ta/owner | zero profiles/pf, empty ledger/recovery evidence | first init may bootstrap-acquire |
+| `IDLE_CURRENT` | one pv; no ma/ta/owner | zero or one `F/S` pair; exact one pf iff pair exists | init/done may proceed; absent-own done no-op |
+| `INIT_OWNER` | one pv; no ma; ta + exact `to:T:i:H(U)` | owner `D/D` + prepared pf; zero or one foreign exact `F/S` + pf | foreign caller BUSY; owner final-installs or contains |
+| `DONE_OWNER` | one pv; no ma; ta + exact `to:T:d:H(U)` | exactly one owner `S/S` + retained pf; no foreign profile | foreign caller BUSY; owner drains/deletes |
+| `CONTAIN_OWNER` | one pv; ma+ta+exact `to:T:c:H(U)` | at least two profiles, all `S/S`, zero pf | owner drains; no acquire |
+| `CONTAINED` | one pv+ma; no ta/owner | at least two profiles, all `S/S`, zero pf | sticky disabled; full-service restart |
+
+Stable idle never accepts two functional profiles: second-profile init first
+creates its own `D/D` INIT_OWNER, then containment makes every pair `S/S`,
+deletes all `pf`, transitions to `c+ma`, drains and releases to CONTAINED.
+`i+ma`, `d+ma`, `c` without ma, claims under c/contained, foreign profile during
+done, two idle functional profiles, incomplete/unbound pair and missing/multiple
+epoch are invalid, not alternate phases.
+
+Refusal precedence is exact: transport/full-document/schema/bound failure;
+ledger grammar/value/privacy => `receipt-ledger-corrupt`; family or pair drift =>
+`profile-binding-unstable`; stable valid foreign owner => `lifecycle-busy`;
+stable phase/claim/action violation => `historical-hook-restart-required`; valid
+CONTAINED => visible contained/restart-required. BUSY никогда не mask-ит
+malformed ledger или unbound action.
+
+Frozen profile callback order and crash prefixes:
+
+1. BOOTSTRAP acquire predicates absent pv/pf/ma/ta/owner and own pair, then in
+   one callback sets `ta`, fresh pv, `to:T:i:H(U)`, prepared pf, key1=`D`,
+   key2=`D`, returns typed `ACQUIRED`. A competing bootstrap loses on ta/pv.
+2. Current init acquire from IDLE predicates sampled pv plus absent ma/ta/owner,
+   sets ta, deletes old pv, sets fresh pv, sets i owner, sets new prepared pf,
+   deletes changed old pf, then writes D/D. Same-pv loser is BUSY/STALE with
+   zero mutation. Per-user config rotation is claim+future action binding, not
+   foreign config read.
+3. Final init under exact i owner/ta/pv and zero dirty/worker predicates deletes
+   old pv, sets fresh pv, writes exact claimed F then S, deletes owner and
+   deletes ta last. Fault prefix keeps functional action gated by ta.
+4. Done acquire only from own IDLE F/S predicates sampled pv/no ma/ta/owner,
+   sets ta, rotates pv, sets d owner, writes S/S and retains old pf. Absent-own
+   done is no-op. After exact zero-active/clean gates final done rotates pv,
+   deletes key1, key2, exact pf, owner, then ta last.
+5. Multi-profile containment only from INIT_OWNER with one foreign F/S. With ta
+   already gating, it rotates pv, sets ma **before any overwrite**, changes i
+   owner to c, overwrites every detected pair S/S, deletes every pf and returns
+   exact names/counts. Any fault prefix is safe/sticky and
+   `shared-daemon-owner-ambiguous-uncontained`; no `i+ma` prefix is accepted.
+   After wh/wa/wp/dq/di drain, c cleanup predicates exact phase/current pv,
+   rotates pv, deletes c owner and ta last; ma and all S/S pairs remain.
+
+Every unknown state-writing reply is one-shot: no retry, revoke, blind release
+or functional activation. `ta` is the only allowed operation before epoch
+deletion on acquire and immediately makes functional hooks defer; `ma` is set
+before containment overwrite. Crash after ta-only, old-pv delete, new-pv set,
+owner/claim/action change or owner-delete-before-ta leaves a sticky invalid/busy
+prefix which old-pv callbacks cannot pass. Transaction marker ack and legacy
+`custom3=1` clear remain earlier than ma/ta and active so an already-started
+transaction can terminally classify itself.
 
 `di:<LOCAL_ID>` хранит только literal `1`; profile user/config остаются у init,
-а hash находится fresh `d.multicall2` scan-ом по immutable local id. Для exact
-match owner-CAS replay требует empty recovery marker и current
+а hash находится fresh **direct**
+`d.multicall2("", "main", "d.hash=", "d.local_id=")` scan-ом по immutable
+local id. Его restricted plan принимает `N >= 0` rows ровно из двух explicit
+uppercase 40-hex strings `(hash, local-id)`: zero matches означает stale,
+ровно один match даёт paired hash, multiple matches fail-closed. Подмена на
+`d.multicall` является named 0.9.8 RED; `system.multicall`-member envelope для
+этого scan не используется и отвергается. Для exact match owner-CAS replay
+требует empty recovery marker и current
 non-suppression `custom3`, ставит
 `wh`, затем `wp`, ack, marker, удаляет own `di`, launch-ит canonical argv и
 tail-delete-ит `wh`. Absent или
@@ -315,12 +405,11 @@ release; event после callback видит fully installed functional hook и
 `inserted_new` в arbitrarily long init window не теряется.
 
 `done.php` не использует `getOnInsertCommand(..., cat=)`: такой call лишь
-overwrite-ит value. После тех же historical scans и ledger validation он fresh
-token-ом отправляет тот же **one-shot acquire+own-neutralize** callback, только
-с `safetyOnly` вместо `deferOnly`. Unknown acquire никогда не retry-ится;
-plugin teardown остаётся disabled/sticky до daemon restart. Exact acquire
-сразу запрещает новые ordinary launch/defer, сохраняя marker/ack branch уже
-активным workers.
+overwrite-ит value. Он берёт complete HistoricalBindingSampleV2 pair; absent-
+own IDLE — no-op, own F/S — exact d-acquire order выше, valid foreign owner —
+BUSY, а stable malformed/unbound state refuse-ится по frozen precedence.
+Unknown acquire никогда не retry-ится; exact d owner сразу запрещает новые
+ordinary launch/defer, сохраняя marker/ack branch уже active workers.
 
 Done сначала ждёт absence всех `wh`: hook, зависший между launch и tail, нельзя
 erase-ить или подменять предположением. Затем owner-CAS drain-ит `di/dq` без
@@ -332,22 +421,22 @@ original marker=ack+local-id clear-ит ack, marker, затем `wp`, и delayed
 `wp`, а done не стирает live `wh`/`wa`.
 
 После cancellation done repeatedly валидирует ledger и может delete-ить hooks
-только при zero worker/transaction keys `wa|ea`…`rf`; lifecycle `ta/to` и sticky
-`ma` в этот count не входят. Последний zero check, двухаргументный delete обоих
-`tadd_trackers1<user>`/`tadd_trackers2<user>` и lifecycle release находятся в
-одном owner-CAS non-yielding callback: hooks удаляются, затем `to:<token>`, затем
-`ta:1`, а typed readback доказывает absence всех четырёх names. Delayed callback
-другого token no-op.
+только при zero worker/transaction keys `wa|ea`…`rf`; lifecycle owner/ta в этот
+count не входят. Последний zero check и profile deletion используют exact
+d-owner/current-pv callback order выше: rotate pv; двухаргументно delete key1,
+key2 и pf; затем owner; `ta:1` last. Typed readback доказывает exact
+IDLE_CURRENT zero-profile + one fresh pv. Delayed old-token/old-pv callback
+no-op.
 
 Done прекращает новые polling rounds после 5 seconds cumulative monotonic
 poll/pause budget с 50 ms pause; каждый начатый RPC имеет отдельные transport
 budgets ниже, поэтому literal wall-clock `<=5s` не обещается. Если `wh`, `wa` или любой
 phase receipt не исчез, он не удаляет ack-capable hooks и не release-ит mutex:
-остаются exact `safetyOnly+ta+to`, пишется visible
+остаются exact `safetyOnly+ta+extended-owner`, пишется visible
 `hook-teardown-pending; daemon restart required after active recovery finishes`.
 Это finite polling web path и safe sticky shutdown state. Crash/unknown
-даёт `hook-teardown-unconfirmed`; genuine multi-profile `ma` done не очищает.
-Explicit cross-profile owner/coordinator принадлежит future P3.
+даёт `hook-teardown-unconfirmed`; stable contained state не допускает done до
+full-service restart.
 
 Nested grammar и production argv builder заморожены полностью. `Q(value)` — это
 ровно существующий `rTorrent::quoteCommandArg(value)` из `php/rtorrent.php`,
@@ -430,7 +519,8 @@ Capability exact равна complete ready marker, поэтому unrelated live
 делит arguments и обе daemon families
 fault-ят вместо создания full local-id key. Both-daemon runtime gate читает
 exact resulting `wh:<LOCAL_ID>`/`wp:<LOCAL_ID>`/`di:<LOCAL_ID>` через
-`method.list_keys` и требует `wh` absent после known launch tail.
+coherent ordered ledger multicall (`list_keys`, `get`, required `has_key`) и
+требует `wh` absent после known launch tail.
 `safetyOnly` не содержит profile path/user/launch и поэтому может одинаково
 overwrite-нуть каждый detected retrackers key. Оба target builder-а находятся
 в side-effect-free importable части `update.php`. Ongoing transaction ack и
@@ -513,18 +603,25 @@ Invalid argv завершает entrypoint без log/include side effects. Cano
 production diagnostic.
 
 После этого worker устанавливает `REMOTE_USER`, загружает dependencies и
-получает initial stable snapshot: session/tied source, `d.loaded_file`,
-directory и global daemon default directory, `custom1`…`custom5`, priority,
-throttle name, оба dedicated keys, private/name guards, live state,
-`d.is_active`, `d.is_open`, `d.hashing`, `d.hashing_failed`, `d.local_id` и
-полный generic `d.custom` key/value map, а также typed `t.multicall` rows exact
-URL/group/type/extra/enabled и global `trackers.use_udp` wire integer `0|1`
+получает initial stable snapshot. Frozen ordered scalar-only
+`system.multicall` request plan покрывает
+session/tied source, `d.loaded_file`, directory и global daemon default
+directory, `custom1`…`custom5`, priority, throttle name, оба dedicated keys,
+private/name guards, live state, `d.is_active`, `d.is_open`, `d.hashing`,
+`d.hashing_failed`, `d.local_id` и global `trackers.use_udp` wire integer `0|1`
 (`0.16.21` обязан вернуть fixed `1`). Snapshot принимается только при exact
 count/types,
 exact equal original marker/ack, exact `hashing_failed=0` и
 ownership tuple. Missing hash, already hashing-failed object, foreign
 marker/local id, changed mutable field, malformed/fault/transport outcome не
 вызывают stop/erase/start.
+
+Полный generic `d.custom` map и exact URL/group/type/extra/enabled tracker rows
+не подменяются scalar members этого plan: каждый specialised snapshot читается
+своей direct stable pair ниже. Initial snapshot принимается только когда эти
+request-specific components и scalar tuple относятся к одной stable
+generation; drift запускает fresh bounded round, а не смешивает ответы разных
+форм.
 
 Initial lifecycle eligibility exact и fail-closed. При `hashing=0` и
 `hashing_failed=0` принимаются только measured обеими families tuples
@@ -538,15 +635,20 @@ one-shot scheduler-fenced probes pin-ят все три allowed формы, paus
 обычный `d.stop=(0,0,1)`.
 
 Generic map freeze двухфазный и bounded. Worker читает canonical
-`d.custom.items` через отдельный strict raw-XML struct decoder: единственная
-accepted shape — one XMLRPC value/struct, unique `<member>`, exact decoded
-`<name>` и value с explicit `<string>`; integer/array/nested/missing type,
-DTD/entity declaration, duplicate member, malformed UTF-8 или trailing node
-отвергаются. Empty string является валидным value и его key presence обязана
-сохраниться. Это нужно потому, что обычный ruTorrent regex parser теряет struct
-keys, а per-key `d.custom` getter превращает wrong-type bencode value в empty
-string. Worker затем читает второй `d.custom.items`; две canonical sorted
-key/value sequences обязаны быть byte-identical. Допускается ровно три
+`d.custom.items` direct stable pair только через named iterative restricted
+RAW-response codec
+`retrackersDecodeRestrictedRawResponse()` в его exact request-schema mode:
+единственная accepted result shape — direct success с одним XMLRPC
+`value/struct`; каждый child exact `member/name + value/string`, decoded member
+names unique, value type explicit `<string>`, member order arbitrary. Empty
+string является валидным present value и его key presence обязана сохраниться.
+Integer/boolean/array/nested/missing value type, duplicate name или extra node
+отвергаются codec-ом до map use. Current ruTorrent regex parser используется
+только как historical reason для нового boundary: package никогда не потребляет
+его output, потому что он теряет struct keys и принимает shapes вне frozen
+grammar. `system.multicall`-member форма `d.custom.items` не используется и
+отвергается. Worker затем читает второй direct `d.custom.items`; две canonical
+sorted key/value sequences обязаны быть byte-identical. Допускается ровно три
 двухчтенных round; первый stable pair принимается, а drift во всех трёх даёт
 `runtime-map-unstable` без mutation. Recovery marker/ack входят в map count
 и CAS, но в candidate/rollback заменяются transaction values; все прочие keys,
@@ -563,17 +665,27 @@ runtime подтвердили эту границу: exact frozen count predica
 запрещён: он передаёт empty argument в zero-argument command и fault-ит на обеих
 supported families. Ordinary `d.custom` для membership запрещён.
 
-Tracker snapshot использует отдельный typed
+Tracker snapshot использует отдельную direct stable pair typed
 `t.multicall(hash,"","t.url=","t.group=","t.type=","t.is_extra_tracker=","t.is_enabled=")`.
-Accepted result имеет N rows, ровно N strings и 4N
-canonical wire integers; URL strings проходят тот же strict inverse adapter.
-Group/type — non-negative canonical integers, enabled и extra — exact `0|1`;
-counts/types обязаны совпасть. Как generic map,
+Каждый direct result имеет `N >= 0` rows; каждая row — nested array ровно из
+пяти cells в requested order: explicit URL string, затем четыре explicit
+canonical `i8` для group/type/extra/enabled. Tracker numeric cells — `i8` на
+обеих daemon families, не family-dependent scalar union. Group/type —
+non-negative characterized integers, enabled и extra — exact `0|1`; missing,
+extra, reordered, nested или wrong-tag cell отвергает весь ответ. URL —
+once-decoded string bytes. `system.multicall`-member форма этого specialised
+snapshot не используется и отвергается. Как generic map,
 tracker rows читаются парами не больше трёх rounds и принимаются только при
 stable canonical result. Intra-group row order не identity: libtorrent
 0.16.21 рандомизировал один и тот же `[B,C]` tier как B,C и C,B. Canonical
 topology поэтому является multiset `(group, exact decoded URL, type, extra)` с
 multiplicity; enabled map keyed только exact decoded URL.
+
+Zero tracker rows — valid direct empty array, но missing target всегда direct
+fault, никогда empty row set. Both-family zero-row gate использует captured
+0.9.8 trackerless object и captured **private** trackerless 0.16.21 fixture:
+non-private 0.16.21 metainfo может синтезировать `dht://` и не является zero-row
+evidence.
 
 До mutation worker сравнивает source tracker semantics с live topology. Source
 announce/announce-list нормализуется по тем же правилам, что обе daemon
@@ -635,33 +747,447 @@ ordinary row на runtime extra с теми же URL/group/state/count, поэт
 который один `math.min` пропустил бы. Nested grammar и zero-row predicate frozen
 runtime gate-ом ниже.
 
-`Q()` является command-layer escaper, но не literalizes leading `$`: следующий
-rTorrent parser layer исполнил бы такую строку как command. Поэтому every
-dynamic value/key, который попадёт в nested CAS/load grammar — directory,
-tied/loaded guard, `custom1`…`custom5`, throttle name и generic keys/values —
-обязан не содержать NUL/CR/LF и **не начинаться с `$`**. Нарушение даёт visible
-`runtime-value-unrepresentable`, conditional terminal handoff release и zero
-old-object mutation. Это frozen fail-closed eligibility narrowing; никакого
-"почти literal" encoder контракт не обещает.
+`Q()` является escaper-ом ровно одного rTorrent command-parser boundary; он
+защищает delimiter bytes, но не literalizes leading `$`, который следующий
+parser layer исполнил бы как eager command. Two-family recursive-CAS и real
+fresh-path `load.normal` capture измерили exact generic-map boundary:
 
-Typed reads не используют untyped `$req->val`: ruTorrent PHP складывает и XML
-`<string>`, и `<i4>/<i8>` туда как PHP strings. Каждый safety snapshot включает
-`setParseByTypes(true)`, группирует commands в заранее известные string/integer
-части и требует exact counts в `$strings` и `$i8s`. Поэтому далее «wire integer
-`0|1`» означает одновременно integer XML tag и canonical decimal lexeme
-`"0"|"1"` в `$i8s`; PHP integer `0|1` от этого transport не ожидается. Sentinel
-requests, напротив, требуют ровно один XML string и zero integer values.
+```text
+left = d.custom_throw=Q(key)
+right = cat=Q(value)
+condition = equal=Q(left),Q(right)
+recreation = d.custom.set=Q(key),Q(value)
+```
 
-`$strings` при этом **не raw daemon values**: existing parser после XML entity
-decode сохраняет legacy command-escaped representation — каждый raw `\`
-становится `\\`, каждый raw `"` становится `\"`. До freeze/CAS/`Q()` target
-adapter строго декодирует этот prefix code ровно один раз: `\\ -> \`,
-`\" -> "`; одиночный `\`, bare `"` и любой иной escape отвергаются. После
-decode adapter повторно применяет existing transform и требует byte-identical
-round trip с исходным элементом `$strings`. Только decoded values входят в
-snapshot и command builder. Disposable 0.9.8/0.16.21 raw response для exact
-`left\middle"right&tail` и typed result `left\\middle\"right&tail` подтвердили
-эту границу; без inverse path double-escaping ломает directory/custom CAS.
+Поэтому generic keys/values принимают и byte-exact сохраняют empty, literal LF,
+backslash, quote и comma. Это включает ordinary captured `addtime`, заканчивающийся
+LF. One-layer equality без recursive quoting является named RED. Leading `$`, CR
+и NUL остаются `runtime-value-unrepresentable`: `$` измеренно eager-evaluate-ится,
+CR не имеет общего byte-exact 0.9.8/0.16.21 round trip, а NUL invalid/truncated.
+Та же граница не обобщается на другую unmeasured command shape: directory,
+tied/loaded guard, `custom1`…`custom5` и throttle сохраняют conservative
+NUL/CR/LF/leading-`$` refusal до отдельного exact-shape evidence. Refusal
+происходит до old-object mutation и conditional terminally release-ит exact own
+handoff.
+
+### Restricted RAW XMLRPC response codec
+
+`retrackersDecodeRestrictedRawResponse()` в side-effect-free definitions
+`update.php` — единственный typed response/API seam этого contract. Он получает
+один bounded `RESPONSE_RAW` string от direct adapter,
+находит ровно один already transport-validated SCGI delimiter `\r\n\r\n`,
+проверяет exact body boundary/declared `Content-Length` и разбирает BODY
+iteratively по offsets/cursor в исходном string. `substr()`/другая вторая
+full-size BODY copy запрещена. Decoder обязан consumed-нуть весь BODY и XML
+document, включая permitted measured structural whitespace; 0.9.8 final CRLF
+принимается именно как captured XML whitespace. Prefix, suffix, second root,
+extra node и любой byte вне frozen document grammar запрещены.
+
+Request plan заранее передаёт codec-у exact expected schema, command/member count,
+scalar types и order. Разрешены только captured на disposable supported families
+envelopes:
+
+1. direct success — exact
+   `methodResponse/params/param/value/ResultNode`, с одним `params`, одним
+   `param` и одним result value;
+2. direct fault — exact `methodResponse/fault/value/struct`;
+3. `system.multicall` — one outer `array/data`, где каждый requested member в
+   request order есть либо exact one-value success
+   `value/array/data/value/ResultNode`, либо member fault `value/struct`
+   непосредственно в этом outer data slot. Success wrapper содержит ровно один
+   inner result value; empty wrapper и два result values запрещены;
+4. `d.custom.items` — direct `StringStruct(generic-map)` grammar, frozen выше.
+
+`ResultNode` — не recursive arbitrary XMLRPC union. Plan выбирает ровно один
+named node: `Scalar(plan)`, `FlatList(plan)`, `RowList(plan)` либо
+`StringStruct(plan)`, а wrapper выбирается отдельно; private
+`HistoricalBindingSampleV2` выбирает свой closed five-member composite и не превращает
+эти nodes в generic union. Exhaustive application-container inventory:
+
+```text
+download-local-id-rows = RowList(N rows, width 2):
+  explicit string ^[0-9A-F]{40}$, explicit string ^[0-9A-F]{40}$
+
+tracker-five-column-rows = RowList(N rows, width 5):
+  explicit string URL,
+  explicit i8 canonical non-negative group,
+  explicit i8 canonical non-negative characterized type,
+  explicit i8 exactly 0|1,
+  explicit i8 exactly 0|1
+
+ledger-key-list = FlatList(N unique explicit strings matching exact ledger union)
+
+historical-event-key-list = FlatList(N unique explicit strings)
+historical-event-action-map = EventActionMap(N unique names => explicit
+  string or family-bounded recursive array action)
+historical-recovery-rows = RecoveryRows4(N rows, width 4)
+historical-ledger-key-list = FlatList(0..4096 unique exact ledger keys)
+historical-ledger-one-map = StringStruct(same names => explicit string "1")
+```
+
+`method.get` whole-ledger result остаётся
+`ledger-string-one-map = StringStruct` с `N` unique decoded member names из той
+же ledger union и explicit `<string>1</string>` values. Wire member order не
+authoritative; после parse exact name set обязан совпасть с
+`method.list_keys`. Empty map — exact empty struct. `d.custom.items` остаётся
+другим request-specific string struct с arbitrary order, unique names и
+present-empty string preservation. `method.has_key` —
+`ledger-own-has = Scalar(explicit i8 exactly 0|1)`; targeted result является
+единственной receipt-outcome authority. Daemon-internal nested `t.multicall`,
+результат которых PHP получает только как scalar predicate/sentinel, не
+добавляют PHP-visible array plan. Historical `EventActionMap`, its foreign
+recursive opaque arrays (и family-0x02 nested structs) и `RecoveryRows4` —
+отдельные private producers, а не broadened ledger/generic-map structs либо
+width-2/width-5 rows.
+
+Frozen final request modes:
+
+- fresh deferred local-id scan — direct `d.multicall2` +
+  `download-local-id-rows`;
+- tracker snapshot — каждый read direct `t.multicall` +
+  `tracker-five-column-rows`, exact direct stable pair;
+- generic-map snapshot — каждый read direct `d.custom.items` + exact direct
+  stable pair `StringStruct(generic-map)`;
+- initial/final scalar batches — exact ordered `system.multicall` с frozen
+  member count/order и только request-specific `Scalar(plan)` inner results;
+  outer/success arrays являются protocol wrappers, не отдельным application
+  producer-ом;
+- coherent ledger validation/read — один exact ordered
+  `system.multicall(method.list_keys, method.get, required method.has_key...)`.
+  Outer result count exact `2+K`; slots 1/2 являются соответственно member
+  `ledger-key-list`/member `ledger-string-one-map`, следующие `K` slots — member
+  `ledger-own-has` в exact requested own-key order. Empty ledger всё равно
+  возвращает exact `2+K` slots: empty flat list, empty struct и exact i8 `0` для
+  каждого requested absent key;
+- direct `method.has_key` разрешён только отдельно named targeted receipt либо
+  modifiability probe, не как whole-ledger substitute.
+- historical binding — exact ordered replacement-five
+  `HistoricalBindingSampleV2` below; no scalar presence tail.
+
+#### HistoricalBindingSampleV2
+
+Historical lifecycle scan — единственное additional composite member mode.
+Один sample является exact ordered `system.multicall` только из этих пяти
+members:
+
+```text
+1 method.list_keys("", "event.download.inserted_new")
+2 method.get("",       "event.download.inserted_new")
+3 d.multicall2("", "main",
+      "d.hash=", "d.local_id=",
+      "d.custom=retrackers-recovery",
+      "d.custom=retrackers-recovery-ack")
+4 method.list_keys("", "rr.receipts.v1")
+5 method.get("",       "rr.receipts.v1")
+```
+
+Exact 1,820-byte request serialization has SHA-256
+`ae96a2e5264798d84e4a35e981bbe99d8337820a93a07ff989e480b329b44210`.
+Ни optional `K`, tail, sixth slot, split, reorder, direct substitute или extra
+member нет. Response outer array имеет ровно five slots in request order.
+Каждый success — exact one-result member
+`value/array/data/value/ResultNode`; empty/two-result wrapper запрещён. Member
+fault — direct fault struct в соответствующем outer slot. Любой member fault
+отвергает весь sample после full document consumption; соседние successes не
+authorizes/exposes.
+
+Exact success plans:
+
+```text
+1 EventKeyList    = 0..4096 unique explicit strings
+2 EventActionMap  = 0..4096 unique decoded names => EventAction
+3 RecoveryRows4   = 0..16384 exact width-four explicit-string rows
+4 LedgerKeyListV1 = 0..4096 unique explicit strings
+5 LedgerOneMapV1  = same unique names => explicit exact string "1"
+```
+
+Event list/map и ledger list/map decoded name sets независимо сортируются
+unsigned bytewise `strcmp` и обязаны exact совпасть. Own key1/key2 membership
+derived только из validated event set after equality; scalar presence tails
+отсутствуют. Event/ledger names и recovery rows canonicalize-ятся as unordered
+sets; array child order, row cell order, XMLRPC tag, canonical integer lexeme и
+once-decoded bytes significant.
+
+`EventActionMap` top-level value допускает только explicit string либо array.
+Любое exact `tadd_trackers1|2` name проходит canonical suffix/user/pair grammar,
+его value обязан быть explicit string, а complete pair bind-ится к same-sample
+`pf:H(user):H(functional)` claim, epoch, owner mode and six-row phase table.
+Caller-injected action allow-map не существует. IDLE exact functional bytes
+hash claim; i-owner D/D uses prepared future functional hash; d-owner S/S uses
+retained prior hash; c/contained S/S has zero claims. Unknown prefix shape,
+noncanonical suffix, incomplete/extra pair, non-string value, claim/action drift
+или phase mismatch даёт `historical-hook-restart-required` after full sample.
+Exact S/D compare-ятся frozen global bytes; no foreign config is loaded.
+
+Unrelated action consumed-ится только iterative `OpaqueAction` typed projector;
+он не parse-ит/normalizes/rebuilds/executes command AST и не передаёт foreign
+value другому plan:
+
+```text
+family 0x01: explicit string | canonical i4 | canonical i8 | array recursively
+family 0x02: explicit string | canonical i8 | array/struct recursively
+top-level EventAction: explicit string | array only in both families
+```
+
+Family `0x01` запрещает struct на opaque depth; family `0x02` разрешает
+unique-name struct, но запрещает nested i4. Boolean, `<int>`, double, base64,
+nil, implicit string и unknown type запрещены. Opaque depth начинает unrelated
+top-level action array как depth 1. Projector хранит offsets, bounded stack/
+counters/hash contexts, no node/action AST. Struct name decode-ится once,
+duplicate rejects, bounded `(name,digest)` pairs сортируются по **full decoded
+name bytes** binary `strcmp`, never entry/child digest.
+
+Family byte выбирает сам HistoricalBindingSampleV2 до first application value
+по exact BODY declaration и затем complete measured layout:
+
+```text
+0x01 RT098_XMLRPCC: exact encoding="UTF-8" declaration + CRLF/final-CRLF
+0x02 RT01621_TINYXML2: exact compact declaration + compact/self-closing layout
+```
+
+Caller flag, settings, SCGI header и heuristic запрещены; mixed declaration/
+layout rejects. Source owners: Debian rTorrent 0.9.8 upstream `6154d169` plus
+`xmlrpc-c 1.33.14-11`, and pinned rTorrent
+`109a20c09c3cab9eb13c2d96ea79362ac6c318fc` built-in TinyXML2. Verbatim BODY
+remains wire authority, not source inference.
+
+Typed child hashes are self-contained binary SHA-256 streams:
+
+```text
+StringDigest = SHA256("HS1-S\0" || U32(len(bytes)) || bytes)
+I4Digest     = SHA256("HS1-4\0" || U32(len(lexeme)) || lexeme)
+I8Digest     = SHA256("HS1-8\0" || U32(len(lexeme)) || lexeme)
+ArrayDigest  = SHA256("HS1-A\0" || U32(child-count) ||
+                      SHA256("HS1-AC\0" || raw32(child-digest)...))
+StructDigest = SHA256("HS1-O\0" || U32(member-count) ||
+                      SHA256("HS1-OC\0" ||
+                        (U32(len(name)) || name || raw32(child-digest))...
+                        sorted by full decoded name bytes))
+EventKeyDigestV1 = SHA256("HS1-K\0" || U32(key-count) ||
+                          (U32(len(name)) || name)... sorted)
+EventMapDigestV1 = StructDigest(complete EventActionMap)
+RecoveryRowDigestV1 = SHA256("HS1-R\0" || U32(len(hash)) || hash ||
+  U32(len(local-id)) || local-id || U32(len(marker)) || marker ||
+  U32(len(ack)) || ack)
+RecoveryRowsDigestV1 = SHA256("HS1-RS\0" || U32(row-count) ||
+                              raw32(row-digest)... sorted by (hash,local-id))
+```
+
+`SHA256(stream)` returns the raw 32-byte digest whenever it is composed into
+another stream; hexadecimal text is display-only. `U32(n)` is exactly four-byte
+unsigned big-endian `pack('N', n)`. `raw32(x)` is the raw 32 bytes of digest
+`x`, never its hexadecimal representation. Every length is the byte length of
+the exact adjacent sequence and every count is the exact validated
+cardinality. `FamilyTag` below is exactly one raw byte, `0x01` or `0x02`.
+
+String `bytes` are exact once-decoded explicit-string bytes. Integer `lexeme`
+is the exact validated decimal byte sequence inside its explicit i4/i8 tag:
+grammar `0|-?[1-9][0-9]*` and signed i4/i8 range validate lexically before
+hashing, without PHP integer cast, so the tag remains digest-significant. Array
+children remain in exact wire order. Struct members cover the complete
+validated struct exactly once and sort by full decoded name bytes before their
+length-prefixed name/raw-child-digest tuples are hashed. Event keys use the
+same full decoded-name byte sort; `EventMapDigestV1` covers the complete
+top-level `EventActionMap`. Recovery row fields are the exact validated bytes
+defined below; row digests sort by binary `(hash,local-id)` order. No
+implementation helper or earlier unstated definition is required to
+reconstruct any stream.
+
+`RecoveryRows4` remains distinct from width-2 deferred scan:
+
+```text
+0..16384 rows; each row array/data exactly four values
+1 explicit string ^[0-9A-F]{40}$ hash
+2 explicit string ^[0-9A-F]{40}$ local-id
+3 explicit string marker, empty allowed
+4 explicit string ack, empty allowed
+```
+
+Entire row validates before cell use/marker semantics; then unique hash and
+unique local-id, frozen marker/ack union, binary `(hash,local-id)` row order and
+fixed cell order. Captured 0.16.21 partial row is schema failure; analogous
+0.9.8 killed/no-response is transport unknown, never empty. Empty outer rows
+valid; empty row, width 0/1/2/3/5, wrong tag/order/identity/duplicate/marker
+rejects.
+
+V2 ledger/sample digest exact:
+
+```text
+LedgerKeyDigestV1 = SHA256("HB2-LK\0" || U32(key-count) ||
+  (U32(name-length) || name)... in sorted decoded-name order)
+LedgerMapDigestV1 = SHA256("HB2-LM\0" || U32(member-count) ||
+  (U32(name-length) || name || 0x01)... in sorted decoded-name order)
+LedgerDigestV1 = SHA256("HB2-L\0" || raw32(LedgerKeyDigestV1) ||
+  raw32(LedgerMapDigestV1))
+HistoricalBindingDigestV2 = SHA256("HistoricalBindingSampleV2\0" || FamilyTag ||
+  raw32(EventKeyDigestV1) || raw32(EventMapDigestV1) ||
+  raw32(RecoveryRowsDigestV1) || raw32(LedgerDigestV1))
+```
+
+`0x01` in ledger-map stream encodes already validated literal string `1`, not
+unchecked input. Both samples independently pass full schema/bounds/profile/
+claim/epoch/owner/recovery/full-RAW checks. Compare same family, raw digest,
+event key/action/row/ledger counts, profile/claim counts, derived caller
+membership, phase, owner fields and every retained recovery decision, never
+digest alone. Any drift is `profile-binding-unstable`; only bounded sample-2
+projection reaches lifecycle and its exact pv becomes next mutation CAS.
+
+Old production plan `HistoricalSampleV1`, its two scalar tails and all four
+BODY identities below are **serializer-shape provenance and explicit V2 RED**,
+never accepted production samples:
+
+```text
+b9a8f7504aa9c2112a2591df8f97d153936bcdeaa393d256b944e96e791b2ac4
+e0fd0e152f473c2cde4d4c5f309460f288e00f0a025eb208fafa0eb67f88c6cb
+db548d9f026175cc87107b07ae79c79b3dfa4203b53c27bf35b5e488a7ab9f34
+3a3592dbb52793745ec458fc81301b607ba7dc02d5222e10e525f37b7886f723
+```
+
+Old populated fixtures additionally have absent-tail inconsistency, synthetic
+action strings and noncanonical synthetic marker. They must fail complete V2
+plan; no old hash may be labelled accepted.
+
+Measured current reachable B5 boundary is also rejection evidence, not
+BOOTSTRAP: exact request above returned two byte-identical reads on both
+families with slots 1–3 success and slots 4–5 natural `rr.receipts.v1` missing-
+key faults because current tracked tree has no producer. Rejected BODY evidence:
+
+```text
+0.9.8   1563 bytes  505031b6aa974f339343ab70778eb4430fb9d0e4eed702ecdb6fec32baed04ac
+0.16.21 3412 bytes  f32032540fe36d6a0b5e6a024174da67f6d25d31742b16a159b3e8307b45f927
+```
+
+No phase/digest/partial projection follows those faults. Manual
+`method.set_key` can prove serializer shape only and remains synthetic/RED; it
+cannot prove production builder/action/marker/epoch/callback provenance.
+
+Captured, но final-plan-unused формы отвергаются: member `t.multicall`, member
+`d.custom.items`, direct `method.list_keys`, direct `method.get`, а также любая
+direct/member перестановка named node. Member `method.list_keys`, `method.get`
+и `d.multicall2` разрешены только в своих exact slots frozen ledger/historical
+plans; historical member `d.multicall2` нельзя использовать как width-2 scan,
+а ledger member `method.get` нельзя использовать как EventActionMap. Direct
+`d.multicall2` остаётся единственным deferred width-2 mode. `d.multicall`
+вместо cross-family `d.multicall2` запрещён. Codec не имеет untyped fallback,
+unknown row width или surplus/reordered cell acceptance.
+
+`Scalar(plan)` допускает только explicit `<string>`, `<i4>` или `<i8>` в
+соответствии с exact request plan. Captured family difference explicit:
+mutating zero и fault code приходят как i4 на rTorrent 0.9.8 и i8 на 0.16.21;
+ordinary numeric getters были i8 на обеих families. Такой scalar integer plan
+принимает только measured request-specific tag, а не глобальный speculative
+union. Lexeme canonical `0|-?[1-9][0-9]*`; i4 дополнительно в signed 32-bit
+range, i8 — в exact contract-specific signed/range/schema boundary до PHP
+numeric conversion. Caller затем требует exact semantic range. Tracker cells и
+`method.has_key` требуют i8 на обеих families. `<ix>`, implicit/missing type,
+plus, leading zero, whitespace и exponent запрещены.
+
+`N` определяется числом exact children соответствующего container и может быть
+zero только у планов, допускающих empty collection. Нельзя игнорировать child:
+parsed count обязан равняться числу полностью consumed rows/elements/members,
+каждая row имеет frozen width. Empty direct array на 0.9.8 имеет measured
+`<data>\r\n</data>` и final structural CRLF, на 0.16.21 — `<data/>` без
+structural whitespace. Empty member array сохраняет one-result wrapper и empty
+inner `array/data`; это не success wrapper с zero values. Empty ledger map
+аналогично имеет 0.9.8 `<struct>\r\n</struct>` и 0.16.21 `<struct/>` внутри
+one-result member wrapper. Empty direct `d.custom.items` использует те же две
+family-specific struct forms непосредственно в `DirectSuccess`. Другой
+whitespace/sibling layout отвергается.
+
+Verbatim BODY captures остаются единственной wire-byte authority. Exact source
+audit только связывает их с deterministic owners: disposable-oldest использует
+Debian `rtorrent 0.9.8-1` (audited rTorrent files byte-equal upstream
+`6154d169`) и Debian `xmlrpc-c 1.33.14-11`; его единственный relevant Debian
+patch меняет только help typo. Там rTorrent строит typed result objects, а
+xmlrpc-c registry владеет `system.multicall` wrappers и response serialization.
+Pinned 0.16.21 использует rTorrent
+`109a20c09c3cab9eb13c2d96ea79362ac6c318fc`; его built-in TinyXML2 path владеет
+и `system.multicall` shim, и serializer. Source совпал со всеми captures, но не
+заменяет BODY length/SHA/layout proof.
+
+Source ownership дополнительно freeze-ит fail-closed branches. На 0.9.8
+`d.multicall2` — единственная unconditional registration; на 0.16.21 canonical
+`d.multicall` имеет unconditional `d.multicall2` redirect **до** и вне
+`method.use_deprecated`, поэтому legacy name остаётся exact cross-family call.
+0.16.21 `d_multicall` может прекратить заполнение row, если requested command
+erase-ит current download: даже source-reachable partial row отвергается width-2
+plan-ом. 0.16.21 `t_multicall` allocates row до invalid-wrapper check и может
+вернуть empty row: width-5 plan также отвергает её. Captured stable fixtures не
+входили в эти branches, поэтому это rejection provenance, не новый accepted
+wire shape. В обоих owners ordinary numeric application results — i8;
+family-specific i4/i8 остаётся только exact void/fault request plans.
+
+Fault struct содержит ровно два unique decoded names: `faultCode` с explicit
+i4|i8 canonical integer и `faultString` с explicit string; member order может
+различаться. Generic struct требует unique names, explicit string values и
+present-empty preservation. Attributes, namespaces, comments, CDATA, DTD/entity
+declarations, processing instructions после declaration, unknown/nested types,
+malformed UTF-8, malformed entity/reference или tag, duplicate
+member и partial parse отвергаются. Decoder принимает только две measured XML
+1.0 declarations/layouts: 0.9.8 `encoding="UTF-8"` + structural CRLF и compact
+0.16.21 declaration/body; BOM не принимается.
+
+Fault placement также request-specific: direct call принимает fault только как
+direct root `methodResponse/fault`, а ledger/HistoricalBindingSampleV2 multicall —
+только как one member `value/struct` в exact requested slot; fault заменяет
+результат этого slot и не добавляет/удаляет outer member. Captured missing-target direct `t.multicall`
+имеет exact code/tag `i4 -501` на 0.9.8 и `i8 -500` на 0.16.21 и никогда не
+интерпретируется как empty tracker rows. Любой ledger member fault отвергает
+весь coherent read, а любой historical member fault — весь complete sample до
+использования соседних success slots.
+
+XML predefined/numeric references decode-ятся ровно один раз в UTF-8 bytes; old
+regex-parser prefix escaping не является wire rule и не имеет inverse/round-trip
+adapter. Literal LF внутри `<string>` сохраняется, включая LF непосредственно
+перед closing tag, и не trim-ится как structural whitespace. Raw scan обязан
+reject/flag literal или referenced CR/NUL в string/member-name character data до
+XML normalization/typed output, чтобы daemon value не мог silently измениться;
+captured structural CRLF 0.9.8 остаётся разрешённым только вне scalar text. Only
+codec output становится typed input request-specific consumer; fallback в
+current regexp parser запрещён.
+
+HistoricalBindingSampleV2 freeze-ит отдельные decimal application bounds:
+
+```text
+historical XML BODY bytes                    67108864
+opaque array/struct depth                          32
+all XML <value> elements                       262144
+foreign opaque <value> subset                    65536
+HIST_MAX_XML_STRUCT_MEMBERS: all XML <member>   12288
+event-key list cardinality                       4096
+event-action map cardinality                      4096
+HIST_MAX_LEDGER_KEYS: ledger list/map             4096
+HIST_MAX_PROFILE_CLAIMS: profile claims           2048
+recovery rows                                    16384
+one decoded name bytes                            4096
+one decoded scalar/lexeme bytes                 1048576
+total decoded text bytes                       8388608
+retained name bytes                            2097152
+projected semantic output bytes                8388608
+```
+
+Counters monotonic per complete response и не уменьшаются при close/free child.
+Global `<value>` counter включает outer multicall value, outer slots,
+one-result wrappers, event/ledger list-map values, every row/cell, nested
+opaque value и direct/member fault values. Global `<member>` включает event,
+ledger, opaque struct и оба fault members. `12288` сохраняет прежний aggregate
+8192-member event/opaque/fault budget и добавляет максимум 4096 ledger members.
+Fault, уже сделавший sample doomed, всё равно fully
+consumed и charged. Opaque value counter — дополнительный subset global counter;
+opaque depth начинается только с foreign top-level action array, а protocol
+wrappers/event struct/recovery rows его не расходуют.
+
+Каждое counter/byte/depth увеличение gated subtract-before-add **до** frame,
+hash, name, scalar, pair, action, row, stack или output allocation: сначала BODY
+length до XML cursor state; затем global/opaque values; member count до
+name/pair; depth до push; action/ledger/profile/row cardinality до record;
+one-name/one-scalar, decoded-text и retained-name totals до каждого append/
+retention; projected output до consumer byte. Ledger names charge value/text/
+retained totals в list и map appearances; profile records charge projected
+output. Entities decode-ятся incrementally ровно один раз и
+каждый resulting chunk проверяется до append. Нет second full BODY copy,
+XML/action AST или unchecked add; numeric validation остаётся lexical и
+32-bit-safe.
 
 До lifecycle acquire, acknowledged historical neutralization и любой другой
 event-map mutation `init.php` idempotently обеспечивает один daemon-local
@@ -679,29 +1205,40 @@ method.insert = "", rr.receipts.v1, multi|private
 является receipt cleanup ни при каких тестовых ожиданиях.
 
 После успешной вставки или exact `Invalid key` от concurrent/repeated init он
-обязан заново доказать через trusted SCGI, что существующий object:
+обязан заново доказать через trusted SCGI, что существующий object. Каждый
+coherent ledger validation/read является одним exact ordered
+`system.multicall(list_keys,get,required has_key...)`; member count/order и
+requested own-key tail фиксируются до serialization, fault в любом slot
+отвергает весь set:
 
 1. принимает `method.list_keys`, `method.get` и `method.has_key` как `multi`;
-2. `list_keys` содержит только unique exact `ma:1`/`ta:1`, lifecycle owner
-   `^to:[0-9a-f]{32}$`, deferred dirty flag `dq:1`, synchronous launch/defer
-   keys `^(wh|wp|di):[0-9A-F]{40}$` либо strings
+2. `list_keys` содержит не более 4096 unique names: exact `ma:1`/`ta:1`,
+   persistent epoch `^pv:[0-9a-f]{32}$`, не более 2048 action-bound claims
+   `^pf:[0-9a-f]{64}:[0-9a-f]{64}$`, единственный authoritative owner
+   `^to:[0-9a-f]{32}:(i|d|c):[0-9a-f]{64}$`, deferred dirty flag `dq:1`,
+   synchronous launch/defer keys `^(wh|wp|di):[0-9A-F]{40}$` либо strings
    формы `^(wa|ea|eb|ed|ex|la|lb|lf|ca|cb|cd|cx|ra|rb|rf):[0-9a-f]{32}$`
    либо exact marker-capabilities
    `^v1:(candidate|rollback)-ready:[0-9a-f]{32}$`;
-   `method.get` возвращает ровно столько же values и **каждое** value
-   является exact string `1`;
+   `method.get` возвращает unordered unique-name struct, exact name set которого
+   равен `list_keys`, и **каждое** member value является explicit exact string
+   `1`; это не positional value list;
 3. только после этого safe value check direct XMLRPC invocation
    `rr.receipts.v1` даёт exact normalized method-not-defined `-506`, то есть
    dynamic command действительно private. Public collision может попытаться
    исполнить только уже проверенные literal `1`, которые не являются command и
    не имеют side effect; любой его не-`-506` outcome отвергается;
-4. lifecycle invariant exact: `ta:1` absent требует zero `to:*`; `ta:1`
-   present требует ровно один `to:<token>`. Любая другая комбинация —
-   `receipt-ledger-corrupt`, а valid `ta+to` означает sticky `lifecycle-busy`
-   до daemon restart; его нельзя автоматически clear-ить;
+4. lifecycle invariant exact: `ta:1` absent требует zero owner, `ta:1` present
+   требует ровно один extended owner. Modes i/d требуют ma absent, c требует
+   ma present; completed ma has no ta/owner. Outside attested BOOTSTRAP exactly
+   one pv обязателен. Claim/profile/action relation затем обязана match-ить одну
+   из six phase rows; structural owner/pv/key failure —
+   `receipt-ledger-corrupt`, stable valid foreign owner — `lifecycle-busy`,
+   stable semantic mismatch — `historical-hook-restart-required`;
 5. modifiable: init генерирует отдельный random 32-hex token, требует absence
-   exact `eb:<probe>`, затем exact set/has/delete/reuse adapters доказывают
-   set/has/delete/reuse/**final delete+absence**, не затрагивая другой subkey.
+   exact `eb:<probe>`, затем exact set/targeted-direct-has/delete/reuse adapters
+   доказывают set/has/delete/reuse/**final delete+absence**, не затрагивая другой
+   subkey.
 
 Wrong type, public/callable/const object, malformed/duplicate/foreign key или
 иной fault disable-ит plugin до functional activation с visible
@@ -710,8 +1247,8 @@ recreate-ит и не clear-ит существующий ledger: его valid k
 принадлежать concurrent worker или пережившему reload transaction. Межключевые
 комбинации **transaction receipts** не валидируются — crash или
 последовательный cleanup легально оставляет любую subset одного transaction;
-обязательная `ta/to` lifecycle relation выше является единственным
-cross-key structural invariant.
+transaction-receipt subsets не подменяют обязательные cross-key `pv/pf/ta/
+owner/ma` и event-pair phase relations выше.
 
 Worker генерирует один transaction token `bin2hex(random_bytes(16))`, exact 32
 lowercase hex, и получает до семнадцати exact собственных subkeys:
@@ -790,11 +1327,13 @@ validation проверяет grammar/value, но допускает expected re
 phases. Каждый later arm отдельно требует absence только keys своей phase и
 exact допустимую prior-receipt subset; candidate/cleanup/rollback поэтому не
 противоречат surviving erase evidence. Каждый receipt записывается
-`method.set_key` с fixed value `1`, а proof читается только отдельным
-`method.has_key` для exact own key. Whole-map
-`method.get` используется лишь для count + homogeneous safe-value validation:
-ruTorrent PHP parser теряет map keys, поэтому он никогда не связывает values с
-конкретным concurrent subkey и не определяет receipt outcome. Collision,
+`method.set_key` с fixed value `1`, а outcome proof читается только targeted
+`method.has_key` для exact own key: как required tail соответствующего coherent
+ledger multicall либо как отдельно named direct receipt probe. Whole-map
+`method.get` используется для exact key-to-value grammar validation: его
+unordered member names обязаны exact совпасть с `method.list_keys`, а каждое
+associated value обязано быть literal string `1`; он всё равно не определяет
+receipt outcome. Collision,
 unknown key/value,
 transport, malformed или иной fault останавливает package до mutation.
 `method.*` доступен только через trusted internal SCGI и запрещён HTTP XMLRPC
@@ -804,56 +1343,162 @@ Worker остаётся importable без production `TEST_MODE` branch. Side ef
 принадлежат явному CLI entrypoint; clock/RPC/filesystem/sender/logger задаются
 обычными dependency objects/overridable methods в tests.
 
-Production RPC dependency — утверждённый `rSCGITransport` immediate parent, не
-несуществующая на `755404f3` timeout-семантика старого `rXMLRPCRequest::send()`.
-Узкий injected worker adapter использует shared framing once с `trusted=true`,
-explicit connect `0.25s`, approved configured `$rpcTransferTimeOut` для общего
-write-deadline/read-idle budget, raw-response mode и configured shared
-`$rpcMaxResponseBytes`; XMLRPC typed parsing остаётся в existing consumer layer.
-Default `null` transfer наследует positive `default_socket_timeout`/60-second
-fallback final SCGI contract; он намеренно не заменяется `0.25s`, потому что
-first-byte latency включает whole daemon multicall. Init/done finite calls
-используют тот же adapter. Package не
-реализует второй socket/framing parser и не ходит через HTTP proxy. Individual
-call bounded; worker reconciliation при unknown остаётся unbounded по числу
-read-only polls и потому не получает ложный overall wall-clock deadline.
+Production RPC dependency — approved final `rSCGITransport` immediate parent,
+не timeout-семантика старого `rXMLRPCRequest::send()`. Узкий injected adapter в
+side-effect-free/importable definitions `update.php` используется всеми direct
+retrackers RPC, включая finite init/done calls. Один logical RPC строит один
+payload и делает ровно один final-parent call с exact nine arguments:
 
-Source protocol:
+```php
+global $scgi_host, $scgi_port, $rpcTransferTimeOut, $rpcMaxResponseBytes;
 
-1. выбрать canonical session `<HASH>.torrent` или readable tied source;
-2. `file_get_contents()` ровно один раз;
-3. один iterative raw-bencode scanner без PHP recursion/numeric conversion
-   принимает source/final candidate не больше exact `64 * 1024 * 1024` bytes,
-   depth не больше `128` containers и не больше `1_000_000` total values/keys.
-   Он валидирует full consumption и grammar: integer только
-   `i0e|i-?[1-9][0-9]*e` (arbitrary-length raw lexeme, `-0`/leading zero/plus
-   запрещены); string length только `0:|[1-9][0-9]*:` с overflow-safe decimal
-   bound against remaining bytes; dictionary key только byte string, unique в
-   своём dictionary. Empty strings разрешены. Unsorted dictionaries,
-   которые принимают current Torrent/rTorrent, не сужают eligibility; scanner
-   сохраняет их raw slices, а только новый top-level envelope canonical-sort-ит
-   output keys. Он сохраняет
-   exact raw key/value byte slices, требует ровно один `info` и exact
-   `SHA1(raw info value)==expected hash`;
-4. из тех же immutable bytes создаётся `Torrent` только для существующей
-   tracker-list semantic logic. Parse должен быть error-free, но decoded object
-   никогда не сериализует `info`, `libtorrent_resume` или unknown entries;
-5. tracker mutation выполняется на object, после чего narrow canonical encoder
-   принимает только resulting `announce` string/null и nested list-of-strings
-   `announce-list`/null. Integer/object input этому encoder-у запрещён;
-6. raw-envelope rewriter один раз собирает candidate top-level dictionary:
-   переносит exact source key/value slices для **всех** keys кроме
-   `announce`, `announce-list`, `rtorrent`; `rtorrent` удаляет, а два tracker
-   keys заменяет/добавляет/удаляет narrow encoded values и сортирует keys по
-   decoded dictionary-key payload bytes (bencode order), не по raw
-   `<decimal-length>:` slices. Поэтому `info`, `libtorrent_resume` и unknown top-level values
-   сохраняются byte-for-byte, независимо от float behavior `Torrent`;
-7. final candidate повторно проходит тот же strict scanner: `rtorrent` absent,
-   tracker semantics exact ожидаемым, raw `info` и присутствующий/отсутствующий
-   `libtorrent_resume` exact equal source slices, hash exact expected. Эти
-   candidate bytes freeze-ятся один раз; rollback payload остаётся captured
-   source bytes byte-for-byte и никогда не re-encode-ится;
-8. до old-object mutation worker создаёт private per-transaction directory под
+$failure = null;
+$raw = rSCGITransport::send(
+    $scgi_host,
+    $scgi_port,
+    $payload,
+    true,
+    0.25,
+    $failure,
+    isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
+    isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
+    rSCGITransport::RESPONSE_RAW
+);
+```
+
+Оба `isset` independent и остаются непосредственно на call boundary. Legacy
+config без обоих symbols передаёт literal `null,null`; final transport применяет
+approved default transfer timeout и response cap без notice. Present configured
+values forwarding-ятся unchanged и валидируются transport-ом. `$rpcTimeOut`,
+private response cap и hardcoded transfer timeout не заменяют optional globals.
+Default null transfer сохраняет positive `default_socket_timeout`/60-second
+fallback final contract; connect `0.25s` намеренно не становится read budget,
+потому что first-byte latency включает whole daemon multicall.
+
+`$raw === null` — один classified transport failure из `$failure`, без retry и
+raw third-party text в routine log. Non-null output ровно один раз получает
+`retrackersDecodeRestrictedRawResponse()`; malformed RAW или XMLRPC fault body
+не вызывают second send и не fall back в `rXMLRPCRequest::run()`/`send()`.
+Package не реализует socket/SCGI framing и не ходит через HTTP proxy. Current
+base predecessor interface не является execution proof этой final API;
+implementation/runtime gates начинаются только на approved final parent.
+Individual call bounded; worker reconciliation при unknown остаётся unbounded
+по числу read-only polls и потому не получает ложный overall wall-clock deadline.
+
+Approved transport response cap и historical application BODY cap имеют разных
+owners. Argument 8 остаётся exact independently forwarded
+`isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null`; configured operator
+value `1..104857600` передаётся type/value-unchanged, а `null` выбирает transport
+default `67108864`. Historical codec **не** подставляет `min`, private cap или
+hardcoded argument 8. Transport первым отвергает declared `Content-Length` выше
+своего selected cap. После successful RAW HistoricalBindingSampleV2 проверяет normalized
+decimal Content-Length/actual BODY against application `67108864` lexical и
+32-bit-safe до XML cursor/hash/stack/container/output/consumer allocation:
+
+- configured cap меньше 64 MiB выигрывает на своей границе и не widening-ится;
+- default 64 MiB отвергает BODY `67108865` при transport header handling;
+- configured cap выше 64 MiB может allocate/return RAW с BODY
+  `67108865..cap`; только затем application gate отвергает его до decoder
+  allocations и consumer use.
+
+Последний case не обещает избежать transport RAW allocation. Accepted-boundary
+decoder не делает second BODY copy. PHP 7.4 `memory_limit=128M` retained-state
+gate использует application-accepted BODY не больше 64 MiB, никогда не держит
+оба RAW: после sample 1 остаются digest/bounded decision, RAW освобождается,
+затем посылается sample 2; sample-2 RAW освобождается до передачи bounded
+projection lifecycle logic. Struct entries retained как bounded name+32-byte
+digest, recovery output как packed bounded records, не nested zval/XML AST.
+
+Source protocol использует exact PHP integer constant
+`RETRACKERS_METAINFO_CAP = 64 * 1024 * 1024 = 67108864`; source и candidate
+имеют independent CAP:
+
+1. Уже выбранный canonical session `<HASH>.torrent` либо tied-source pathname
+   resolve-ится ровно один раз и ровно один раз открывается
+   `fopen($path, 'rb')`. Open failure — `source-unreadable`. `filesize`,
+   pre-sized buffer и second pathname read запрещены.
+2. Сразу после open descriptor проходит `fstat`. Failure либо mode, отличный от
+   regular file (`($mode & 0170000) === 0100000`), —
+   `source-not-regular` с zero `fread`: FIFO, socket, character/block device,
+   directory и unknown wrapper запрещены. Symlink допустим только когда уже
+   opened target regular. Descriptor, а не `is_file(path)`, authoritative;
+   `stat` size advisory и не является preallocation/acceptance proof.
+3. Один initially empty capture string заполняется reads не больше 64 KiB.
+   Перед каждым read exact request равен
+   `min(65536, (CAP + 1) - strlen(capture))`; никогда не запрашивается и не
+   сохраняется byte CAP+2. `fread === false` — `source-read-error`. Empty result
+   принимается только при `feof(handle) === true`; empty с false EOF —
+   `source-short-read`. Positive short result normal только если `feof` уже true,
+   иначе `source-short-read` без retry. Handle закрывается на каждом outcome.
+4. Capture exact CAP обязан сделать final one-byte EOF probe и принимается
+   только при true EOF. Как только retained length равна CAP+1, worker даёт
+   `source-too-large` до scanner, `Torrent`, hash, RPC, temp file, arm и любой
+   old-object mutation. Zero-length regular source доходит до scanner и
+   классифицируется bencode-invalid, не read failure.
+5. Accepted capture string становится единственным immutable byte authority.
+   Никакая subsequent operation не reread-ит pathname и не передаёт pathname в
+   `Torrent`. Raw scanner хранит `(offset,length)` descriptors в capture, а не
+   eager full `substr()` values; source capture никогда не меняется. Это
+   descriptor-bound capture + scanner/hash guarantee, не недоказанное обещание
+   atomic filesystem snapshot при concurrent pathname writer.
+6. Один iterative raw-bencode scanner без PHP recursion/numeric conversion
+   принимает source не больше CAP, depth не больше `128` containers и не больше
+   `1_000_000` total values/keys. Он валидирует full consumption и grammar:
+   integer только `i0e|i-?[1-9][0-9]*e` (arbitrary-length raw lexeme,
+   `-0`/leading zero/plus запрещены); string length только
+   `0:|[1-9][0-9]*:` с overflow-safe decimal bound against remaining bytes;
+   dictionary key только byte string, unique в своём dictionary. Empty strings
+   разрешены. Unsorted dictionaries, которые принимают current Torrent/rTorrent,
+   не сужают eligibility; scanner сохраняет exact raw key/value offset spans, а
+   только новый top-level envelope canonical-sort-ит output keys. Он требует
+   ровно один `info` и exact `SHA1(raw info value)==expected hash`.
+7. Ровно один semantic `Torrent` construction получает captured bytes только
+   после raw scanner/raw-info hash gate и используется только для существующей
+   tracker-list semantic logic. Parse error-free; path запрещён, а decoded object
+   никогда не сериализует `info`, `libtorrent_resume` или unknown entries.
+   Tracker mutation выполняется на object; narrow logical replacement принимает
+   только resulting `announce` string/null и nested list-of-strings
+   `announce-list`/null. Integer/object input запрещён.
+8. Rewriter сначала строит logical ordered output plan: opening `d`, sorted
+   encoded key/value pairs и closing `e`. Exact source key/value остаётся
+   `(offset,length)` reference; tracker replacement остаётся logical narrow
+   string/list, не pre-concatenated bencode. Plan переносит source spans для всех
+   keys кроме `announce`, `announce-list`, `rtorrent`; `rtorrent` omit-ится, два
+   tracker keys replace/add/delete-ятся, а keys сортируются по decoded payload
+   bytes (bencode order), не raw `<decimal-length>:` prefix.
+9. До candidate allocation exact encoded length каждого delimiter, key prefix/
+   payload, raw span, narrow value/list delimiter/member рассчитывается checked
+   arithmetic. Каждый component — non-negative PHP integer не больше CAP; digit
+   counts вычисляются только для checked `0..CAP`. Каждое сложение имеет exact
+   subtract-before-add order:
+
+   ```php
+   if ($part < 0 || $part > RETRACKERS_METAINFO_CAP
+       || $total > RETRACKERS_METAINFO_CAP - $part) {
+       return false; // candidate-too-large
+   }
+   $total += $part;
+   ```
+
+   Comparison предшествует addition, поэтому intermediate sum не overflow-ится
+   на 32-bit PHP даже для hostile many-component plan. Exact CAP valid, CAP+1 —
+   `candidate-too-large`. Measurement через recursive string build, `implode`
+   либо `(string) Torrent` запрещён.
+10. Только successful exact preflight разрешает один candidate output и один
+    bounded append primitive. Перед каждым append он повторяет
+    `length(chunk) <= CAP - currentLength` и при отказе сохраняет prior output
+    unchanged; raw spans и generated payload подаются slices не больше 64 KiB.
+    Full segment array/`implode`, complete-envelope concatenation-before-check и
+    second source read запрещены. Final candidate не больше CAP и до temp file,
+    arm, RPC или old mutation повторно проходит тот же strict scanner:
+    `rtorrent` absent, tracker semantics exact, raw `info`, present/absent
+    `libtorrent_resume` и unknown protected spans byte-identical capture, hash
+    expected. Failure preflight/append — `candidate-too-large`; partial output
+    уничтожается, immutable capture остаётся rollback payload. Valid source и
+    candidate strings могут одновременно существовать до CAP каждый; offset
+    descriptors запрещают avoidable full raw copies, но PHP COW/reallocation не
+    выдаётся за hard RSS ceiling.
+11. До old-object mutation worker создаёт private per-transaction directory под
    `FileUtil::getTempDirectory()` через fresh 128-bit component, temporary
    `umask(0077)` и `mkdir`; directory обязана быть new, non-symlink и без
    group/other bits. В ней `x+b` открываются два distinct files с exact
@@ -882,12 +1527,12 @@ Source protocol:
    `execute.capture` или mismatch — pre-commit refusal, original нетронут.
    После unlink нет pathname, который cleanup мог бы перепутать с файлом
    другого torrent;
-9. builder до old-object mutation создаёт exact candidate/rollback
+12. Builder до old-object mutation создаёт exact candidate/rollback
    conditional `load.normal`/`load.start` command strings, one-shot arm/dispatch и
    scheduler-fence requests со всеми creation commands. Actual full XML
    каждого request не больше `rTorrentSettings::maxContentSize()`;
    failure — visible `load-command-too-large`, original нетронут;
-10. pre-event restoration baseline заморожен exact: directory,
+13. Pre-event restoration baseline заморожен exact: directory,
    `custom1`…`custom5`, priority, throttle name, полный generic custom key/value
    map (включая transaction-owned marker/ack), URL-keyed tracker enabled state
    и intended
@@ -901,8 +1546,9 @@ Source protocol:
    обеих daemon versions. На 0.9.8 он не экспортирован через
    `system.listMethods`, но реальный `load` creation list успешно clear-ит и
    повторно читает поле; worker не вызывает setter как direct XMLRPC method.
-   Every frozen generic key/value проходит один strict inverse adapter и один
-   `Q()`; count + per-key old-object CAS запрещает потерю concurrent new key.
+   Every frozen generic key/value является once-decoded output restricted RAW
+   codec-а и проходит exact recursive parser-boundary `Q()` construction выше;
+   count + per-key old-object CAS запрещает потерю concurrent new key.
    Все baseline setters стоят до ready-last. Ready доказывает exact применение
    baseline **до** `event.download.inserted_new`; после ready synchronous event
    hooks, их asynchronous descendants и user/plugin RPC принадлежат уже новой
@@ -911,17 +1557,21 @@ Source protocol:
    Protected
    metainfo slices (`info`, `libtorrent_resume`, unknown top-level
    values) никогда не decode/re-encode-ятся; только tracker keys проходят
-   semantic decode и narrow encode. Typed snapshot strings
-   проходят ровно один strict inverse adapter выше и затем ровно один `Q()`;
-   повторный decode либо quoting уже escaped transport value запрещён.
+   semantic decode и narrow encode. Snapshot strings decode-ятся XML codec-ом
+   ровно один раз; command construction получает decoded bytes и применяет
+   `Q()` рекурсивно ровно на каждом actually measured parser boundary. Повторный
+   XML/entity decode либо quoting legacy-parser escaped artefact запрещён.
 
-Upstream private/name eligibility behavior сохраняется. Metainfo больше 64 MiB,
+Upstream private/name eligibility behavior сохраняется. Opened non-regular
+source, read error/short-read, source CAP+1, candidate preflight/append CAP+1,
 depth >128, >1,000,000 nodes, duplicate keys или non-canonical integer/length
-grammar теперь явно **недостижимы для mutation target по contract gate**:
-worker до `ea` пишет classified `source-too-large|source-too-deep|
+grammar теперь явно **недостижимы для mutation target по contract gate**.
+Worker до `ea` пишет classified `source-not-regular|source-read-error|
+source-short-read|source-too-large|candidate-too-large|source-too-deep|
 source-too-complex|source-duplicate-key|source-bencode-invalid` и оставляет
 original нетронутым. Это осознанное fail-closed narrowing вместо unbounded
-CPU/memory parser. P3 service label/marker guards не встраиваются сюда.
+CPU/memory parser/output allocation. P3 service label/marker guards не
+встраиваются сюда.
 
 ## Atomic old-object commit, arm and surviving receipt
 
@@ -1037,8 +1687,10 @@ commit = branch=Q(outerCondition),Q(capturedState == 1 ? startedTrue : stoppedTr
 predicates выше; every dynamic string operand проходит `Q()` на своём
 parser layer. В nested command grammar перед ledger name нет XMLRPC
 target placeholder.
-Top-level PHP calls к `method.insert/list_keys/has_key/set_key` используют
-canonical empty global-method target. Private flag запрещает direct invocation
+PHP-built direct calls и `system.multicall` members к
+`method.insert/list_keys/get/has_key/set_key` используют canonical empty
+global-method target; wrapper mode для каждого остаётся ровно frozen plan выше.
+Private flag запрещает direct invocation
 ledger command через XMLRPC; trusted `method.has_key` при этом читает его
 object storage. Это одинаково зарегистрировано в 0.9.8 и 0.16.21.
 
@@ -1536,8 +2188,11 @@ hook-teardown-pending
 hook-teardown-unconfirmed
 lifecycle-busy
 receipt-ledger-corrupt
+profile-binding-unstable
+profile-binding-writer-untrusted
 shared-daemon-owner-ambiguous
 shared-daemon-owner-ambiguous-uncontained
+shared-daemon-contained
 initial-absent
 initial-transport
 initial-fault
@@ -1547,6 +2202,9 @@ lifecycle-unsupported
 ownership-mismatch
 receipt-preflight-failed
 source-unreadable
+source-not-regular
+source-read-error
+source-short-read
 source-decode-failed
 source-hash-mismatch
 source-too-large
@@ -1554,6 +2212,7 @@ source-too-deep
 source-too-complex
 source-duplicate-key
 source-bencode-invalid
+candidate-too-large
 runtime-map-unstable
 runtime-map-invalid
 runtime-value-unrepresentable
@@ -1641,46 +2300,102 @@ Current-base RED/mutation suite обязана доказать:
    Обе daemon families исполняют
    marker/ack comparison только в exact command-form
    `equal=d.custom=retrackers-recovery-ack,d.custom=retrackers-recovery`;
-3. full-service historical upgrade boundary pin-ит zero old PHP workers. Current
-   acquire atomically ставит `to+ta+own defer|safety` и является one-shot:
-   accepted-response-lost не retry/release-ится; real `43484fba`/upstream hook
-   между hypothetical split acquire-neutralize является named RED;
+3. full-service historical boundary pin-ит zero old PHP workers, zero reserved
+   retrackers names/recovery evidence/ledger object, fresh one-time private
+   `rr.receipts.v1` insert и exclusive-current-writer inventory. Post-producer
+   exact V2 pair validates one of six phases, action-bound `pf`, persistent `pv`
+   and extended single owner. BOOTSTRAP/current acquire atomically safety-gate,
+   rotate/create
+   epoch, create `to:T:i:H(U)` + prepared claim + D/D; final init rotates epoch,
+   writes claimed F/S and releases owner/ta last. Accepted-response-lost never
+   retries/releases. Missing/multiple pv, `newPv == sampled current oldPv`, old
+   owner, injected action map, action-only/claim-only drift and every callback
+   crash prefix are named RED. Mandatory profile ABA evidence uses three
+   explicit pairwise-distinct epochs `A`, `B`, `C` across `F/S@A → D/D@B →
+   F/S@C` and fails when the middle protected transition omits its required
+   rotation. Reuse of an earlier now-absent epoch is unobservable without a
+   history store and remains only the negligible 128-bit CSPRNG non-reuse
+   assumption; stable self-consistent trusted forgery is only
+   `profile-binding-writer-untrusted`, not claimed detectable;
 4. `dq` ставится before `di`, consumer one-shot clear-ит `dq` before fresh scan.
    Empty-scan/producer/late-clear ABA, delayed response-lost clear и event на
    final release boundary не теряют deferred local id;
-5. multi-profile containment ставит `ma` first, ждёт `wh`, не delete-ит `wa`,
-   drain-ит `di/dq`, а каждый `wp` cancel-ит вместе с conditional ack→marker
-   release. Adopt-before/after-`ma`, delayed CLI и future restart/reinsert не
-   оставляют permanent quarantine marker;
-6. done one-shot acquire сразу ставит safety hooks, ждёт `wh`, atomically
-   linearizes `wp` cancel против adopt, ждёт active `wa|phase`, затем direct-
-   delete-ит оба keys и lifecycle token в одном zero-check callback; `cat=`
-   overwrite, missing one key и delete при active receipt — named RED;
+5. second-profile INIT_OWNER containment rotates pv, ставит `ma` before action
+   overwrite, changes i owner to c, rewrites every pair S/S and deletes all pf;
+   waits `wh`, не delete-ит `wa`, drains `di/dq`, conditionally releases each
+   `wp`, then c-cleanup rotates pv and releases owner/ta last. `i+ma`, c without
+   ma, surviving claim, functional/defer under ma, pre-ma drain, adopt races and
+   every epoch/owner/action/claim prefix are RED;
+6. done only from own sole IDLE F/S atomically gates ta, rotates pv, sets exact d
+   owner, S/S and retains pf; absent-own is no-op, foreign DONE_OWNER invalid.
+   It waits `wh`, linearizes `wp` cancel/adopt, waits active `wa|phase`, then
+   final callback rotates pv and direct-deletes key1/key2/pf/owner, ta last.
+   `cat=` overwrite, DONE_OWNER+ma, missing pair/claim, foreign profile or delete
+   при active receipt — named RED;
 7. private modifiable ledger set/has/delete/reuse/final-delete не затрагивает
    чужие valid keys. Adopt response-loss попадает в idempotent `wa=1/wp=0`
    case; exact no-adopt absent/foreign terminal очищает только `wp`, unknown
    сохраняет его. Initial collision preflight отдельно pin-ит каждую из
    семнадцати own keys, включая pre-existing `wa`: ни одна не позволяет
    initial adopt создать или принять lease;
-8. production adapter на final SCGI prerequisite делает ровно один
-   `rSCGITransport::send()` на RPC с `trusted=true`, connect/transfer budgets
-   `0.25s`/exact configured `$rpcTransferTimeOut`, configured shared
-   `$rpcMaxResponseBytes` и `RESPONSE_RAW`; default null transfer сохраняет
-   approved socket-timeout fallback, а large delayed-first-byte multicall не
-   получает hardcoded 0.25-second read budget. Named static RED
-   сканирует все пять target paths и запрещает `fsockopen`, `stream_socket*`,
-   private SCGI framing и `rXMLRPCRequest::send()`. Fake-adapter tests и
-   real-adapter disposable call доказывают один и тот же typed consumer;
-9. source/RPC/decode/hash/procfd/full-XML failures predate mutation;
-   daemon-launched no-shell probe open/read/hash-ит обе anonymous capabilities,
-   candidate FD живёт до `lf`, original — до terminal no-rollback/`rf`;
-10. raw scanner rejects duplicate/malformed/depth/size/complexity before mutation;
-   candidate drops only `rtorrent`, changes tracker keys, preserves raw `info`,
-   resume and unknown slices, while rollback equals source bytes exactly;
-11. typed XML strings/integers, stable strict `d.custom.items`, present-empty,
-    count + `d.custom_throw` membership and leading `$`/NUL/CR/LF refusal pin-ят
-    exact generic-map CAS and one decode/quote path;
-12. source/live tracker projection covers N=0, DHT on/off/private, shuffled tier,
+8. production adapter на exact final-parent interface делает ровно один
+   `rSCGITransport::send()` с nine ordered arguments: host, port, payload,
+   `true`, `0.25`, by-reference failure, independent
+   `isset($rpcTransferTimeOut) ? ... : null`, independent
+   `isset($rpcMaxResponseBytes) ? ... : null`, `RESPONSE_RAW`. PHP 7.4 child с
+   warnings-as-exceptions доказывает configs: neither symbol, only transfer,
+   only response cap и both present; values занимают только positions 7/8.
+   Success, null transport, malformed RAW и XMLRPC fault делают exactly one send
+   и используют `retrackersDecodeRestrictedRawResponse()` без legacy fallback.
+   Large delayed-first-byte multicall не получает hardcoded 0.25-second read
+   budget. Static RED всех пяти paths запрещает `fsockopen`, `stream_socket*`,
+   private SCGI framing и `rXMLRPCRequest::send()`;
+9. failed open, non-regular descriptor, false/empty/positive-short read,
+   source CAP+1, scanner/hash и candidate CAP+1/preflight/append failures
+   происходят до **all** temp-file, arm, RPC dispatch и old-object mutation
+   side effects. Procfd/full-XML request и direct RPC/codec failures также
+   происходят до arm/old-object mutation. FIFO/socket/device fake имеет zero
+   reads; exact CAP доказывает final one-byte EOF probe;
+10. scanner хранит raw `(offset,length)` в одном immutable capture, never rereads
+    pathname/не передаёт path в `Torrent`; raw source hash остаётся unchanged.
+    Exact 32-bit subtract-before-add preflight выполняется до allocation, exact
+    CAP accepts/CAP+1 rejects, bounded append checks every crossing and slices
+    raw/generated payload не больше 64 KiB. Final scanner предшествует staging,
+    candidate drops only `rtorrent`, changes tracker keys, preserves raw `info`,
+    resume and unknown spans, while rollback equals capture bytes exactly;
+11. request-schema codec matrix на literal two-family captures принимает все
+    final-plan modes: direct empty/non-empty two-uppercase-40-hex-string
+    `d.multicall2` rows,
+    direct empty/non-empty five-column `t.multicall` rows, direct
+    `d.custom.items` present/empty struct, ordered populated/empty
+    `system.multicall(list_keys,get,has_key...)`, targeted direct `has_key`,
+    request-specific scalar i4/i8, direct fault и member fault. Он требует exact
+    wrapper nesting, outer/member/row/flat-list counts, row width/cell order,
+    list/map key-set equality, string-`1` map values, i8 `has_key=0|1` и full
+    consumption; unused direct/member permutations are RED. Separate empty
+    captures pin-ят 0.9.8 explicit CRLF containers и 0.16.21 self-closing
+    containers. Source-reachable partial `d.multicall2` row и empty
+    `t.multicall` invalid-wrapper row отвергаются exact width до consumer use;
+    capture остаётся authority accepted shapes. Missing-target fault never
+    becomes zero rows. Named adversarial
+    RED отвергают missing/extra/reordered row/cell/member, flat-vs-row/struct
+    confusion, wrong success/fault wrapper/tag/nesting/count, attributes,
+    namespaces, DTD/entity declarations, malformed UTF-8/entities/tags, `<ix>`,
+    implicit/nested types, duplicate member, extra node и prefix/suffix/trailing
+    bytes. Entity decode выполняется once; literal LF у closing tag сохраняется.
+    Generic CAS pin-ит recursive
+    `left/right/condition`, recreation, empty/LF/backslash/quote/comma round trip
+    на обеих families и ordinary LF-terminated `addtime`; one-layer equality,
+    leading `$`, literal/referenced CR и NUL — named RED. Historical binding
+    branch принимает только exact replacement-five same-family pair with event
+    list/map, width-4 rows and ledger list/string-`1` map; validates exact
+    profile/claim/epoch/owner phase and derives membership from event set before
+    exposing only sample 2. Any-slot fault, slot 4/5 mismatch, sixth tail,
+    missing/extra/reordered/direct swap, family/event/row/ledger/count/digest
+    drift, injected action allow-map, 0.9.8 struct, 0.16.21 i4, partial row,
+    consumer before full pair and every old V1 BODY identity are named RED;
+12. source/live tracker projection covers N=0 (including captured private
+    0.16.21 trackerless fixture), DHT on/off/private, shuffled tier,
     total/multiplicity/group/extra/enabled drift, uniform duplicates and mixed
     duplicate refusal. `d.tracker.insert` extra row and URL/group/enabled-only
     false green remain RED; resume-extra URL deleted by candidate refuses before
@@ -1764,10 +2479,73 @@ GREEN after restore:
   `wh|wp|wa` в done;
 - заменить shared production adapter на `rXMLRPCRequest::send`, `fsockopen`,
   `stream_socket*` или private SCGI framing; сделать больше одного transport
-  send на logical RPC, изменить `trusted=true`/connect `0.25s`, заменить exact
-  configured `$rpcTransferTimeOut` на hardcoded `0.25s`/иной budget, изменить
-  configured `$rpcMaxResponseBytes` или `RESPONSE_RAW`, либо дать fake и
-  production adapters разные typed-consumer paths;
+  send на logical RPC, изменить `trusted=true`/connect `0.25s`/`RESPONSE_RAW`,
+  заменить любой independent `isset` bare global read-ом, swap-нуть positions
+  7/8, подставить `$rpcTimeOut`/private cap/hardcoded value, добавить retry либо
+  дать fake и production adapters разные restricted-codec paths;
+- вернуть unbounded `file_get_contents`; читать только до CAP без CAP+1 EOF
+  probe; принять empty/positive short non-EOF как EOF; допустить non-regular FD;
+  preallocate из `fstat` size; reread pathname или передать path в `Torrent`;
+  concatenate candidate до preflight; заменить subtract-before-add unchecked
+  addition; принять CAP+1; убрать append guard; eagerly copy full raw span. Каждая
+  mutation обязана дать named RED до scanner/Torrent/RPC/arm/old mutation, без
+  preceding fatal, и fresh GREEN после restore;
+- вернуть obsolete `setParseByTypes(true)` + `$strings`/`$i8s` typed-regex
+  consumer, regexp `i.` или current-parser fallback; принять partial parse/
+  trailing root child, attributes/namespaces/
+  DTD/entity declaration, duplicate struct member, implicit string, `<ix>`,
+  wrong i4/i8 range/schema, entity double decode, extra scalar/member/order либо
+  reject/trim literal LF; заменить direct/member wrapper, принять unused
+  member `t.multicall|d.custom.items`, member `d.multicall2` вне exact
+  `HistoricalBindingSampleV2` slot 3/с width-4 plan, member `method.get` вне exact
+  ledger/historical slot либо direct `list_keys|get`,
+  убрать/double-ить one-result member wrapper, принять missing/extra/reordered
+  row/cell, wrong row width/count/tag, lowercase/non-40-hex download cell,
+  negative tracker group/type, non-`0|1` extra/enabled, tracker i4, nested cell,
+  implicit string, flat list как rows/struct, duplicate/foreign ledger key,
+  list/map count или set mismatch,
+  duplicate struct name, non-string/non-`1` ledger value, `has_key` вне
+  canonical i8 `0|1`, extra/missing/reordered outer member, unexpected
+  success/fault slot, incomplete document, arbitrary 0.9.8 empty whitespace или
+  sibling у 0.16.21 self-closing empty; принять missing target как empty rows,
+  `d.multicall` как cross-family scan или non-private 0.16.21 synthetic `dht://`
+  fixture как zero trackers; принять source-reachable early-terminated
+  `d.multicall2` partial row или invalid-wrapper `t.multicall` empty row. Каждая
+  mutation обязана попасть в named executed codec test, доказать что именно этот
+  case выполнился и упал, затем fresh GREEN;
+- для `HistoricalBindingSampleV2` split-ить один five-slot request между daemon
+  turns, объединить два mandatory stable reads в один request, смешать их slots
+  либо выдать first/partial projection; принять outer не из exact пяти slots,
+  any-slot fault, mismatch event list/map, mismatch ledger list/map, шестой
+  scalar tail, orphan/duplicate `pf`, неверный action hash, missing/multiple
+  `pv`, `newPv == sampled current oldPv`, epoch drift between reads, incomplete
+  profile pair, malformed suffix, два steady functional profiles, legacy short
+  owner, wrong owner mode
+  либо любую invalid phase/claim/action combination; принять action-only или
+  claim-only callback prefix, пропустить epoch rotation перед protected mutation
+  либо принять ABA mutation с тремя pairwise-distinct epochs после omitted
+  middle rotation. Earlier now-absent epoch reuse не является observable RED и
+  исключается только frozen negligible 128-bit CSPRNG assumption; требовать для
+  него history store или считать stable forged valid state detectably
+  trustworthy при нарушенном exclusive-writer prerequisite запрещено. Принять
+  stale/non-string/unknown namespace
+  action, foreign top-level integer/struct, 0.9.8 nested struct или 0.16.21
+  nested i4; выбрать family caller flag, header/settings/heuristic, принять mixed
+  declaration/layout, сортировать struct по digest вместо full decoded name
+  bytes или не включить family/tag/lexeme/order в digest; принять RecoveryRows4
+  width 0/1/2/3/5, wrong tag/order, duplicate hash/local-id, partial 0.16.21 row
+  либо назвать 0.9.8 killed/no-response empty snapshot; удержать оба RAW/second
+  BODY/AST или increment после allocation. Exact boundaries depth 32/33, opaque
+  values 65536/65537, global values 262144/262145, XML struct members
+  12288/12289, each event container 4096/4097, receipt-ledger keys 4096/4097,
+  profile claims 2048/2049, rows 16384/16385, name 4096/4097, scalar
+  1048576/1048577, decoded text 8388608/8388609, retained names
+  2097152/2097153 и output 8388608/8388609 обязаны дать named
+  before-allocation RED и fresh GREEN;
+- изменить transport argument 8, widen-ить smaller cap, при default пропустить
+  BODY 67108865 до application codec, утверждать no transport allocation при
+  operator cap 104857600 или запускать PHP 7.4 128M retained-state fixture на
+  application BODY >67108864;
 - retry/revoke state-writing arm, dispatch phase повторно, убрать live-`wa`
   predicate, писать `ex/cx` из outer false или считать unknown+begin-absent
   terminal;
@@ -1814,7 +2592,8 @@ GREEN after restore:
   после уже доказанного `wa=0`;
 - разрешить finite exit до fence/pending reconciliation, убрать frozen
   connect/transfer budgets либо назвать unbounded poll hard deadline;
-- dispatch-ить повторно сериализованный/непроверенный XML;
+- dispatch-ить повторно сериализованный XML либо использовать RAW response, не
+  fully accepted `retrackersDecodeRestrictedRawResponse()` exact request mode;
 - re-encode raw rollback либо использовать `(string) Torrent` как candidate
   envelope;
 - удалить/пересериализовать candidate `libtorrent_resume`, изменить raw `info`
@@ -1836,18 +2615,122 @@ Verification на exact implementation tip:
 - PHP lint/runtime 7.4/8.1/8.5, full harness 8.1/8.5, PHPStan 2.2.9 level 0,
   `sh -n`;
 - exact five-path diff и whole-file review;
-- final-SCGI-prerequisite production-adapter test: ровно один
-  `rSCGITransport::send()` с `trusted=true`, connect `0.25s`, exact configured
-  `$rpcTransferTimeOut`, configured `$rpcMaxResponseBytes` и `RESPONSE_RAW`,
-  затем existing typed consumer; null/default и delayed-first-byte fixture
-  доказывают отсутствие hardcoded 0.25-second transfer budget;
-  static forbidden-primitive scan всех пяти target paths не находит
-  `fsockopen`, `stream_socket*`, private SCGI framing или
+- final-parent static/fake adapter test на PHP 7.4 с warnings-as-exceptions:
+  ровно один nine-argument `rSCGITransport::send()` с `trusted=true`, connect
+  `0.25s`, by-reference failure, independent transfer/response-cap positions и
+  `RESPONSE_RAW`. Neither/only-transfer/only-cap/both-present configs дают exact
+  `null`/configured forwarding без notice; success/null/malformed/fault cases
+  дают exactly one send и один restricted-codec path. Delayed-first-byte fixture
+  доказывает отсутствие hardcoded 0.25-second transfer budget; static scan всех
+  пяти paths не находит `fsockopen`, `stream_socket*`, private SCGI framing или
   `rXMLRPCRequest::send()`;
+- deterministic bounded-reader/candidate tests на PHP 7.4/8.1/8.5: regular
+  CAP-1/CAP/CAP+1, required final EOF probe, false/empty/positive-short reads,
+  normal short true-EOF, FIFO/socket/device zero-read refusal, one open/path
+  read, immutable capture hash, offset spans и no pathname-to-`Torrent`.
+  Candidate exact-CAP/CAP+1 by raw span/narrow value, hostile 32-bit-safe
+  arithmetic plan, inconsistent post-preflight bounded append и <=64 KiB slices
+  происходят до side effects; actual 32-bit PHP 7.4 runtime запускается where
+  available, а subtract-before-add остаётся portable proof;
+- capture-backed restricted-codec suite на обеих serializer families принимает
+  direct string, measured request-specific i4/i8 integer, direct fault,
+  targeted direct i8 `has_key=0|1`, direct empty/non-empty
+  two-uppercase-40-hex-string `d.multicall2` rows, direct empty/non-empty
+  string+four-i8 `t.multicall` rows,
+  direct `d.custom.items` present-empty/LF struct и exact ordered
+  `system.multicall(list_keys,get,has_key...)` with empty/populated flat list,
+  empty/populated unordered string-`1` struct, scalar i8 slot and member fault.
+  Exact count/order/width/key-set/fault-placement checks include 0.9.8 explicit
+  CRLF empties, 0.16.21 self-closing empties, captured missing-target faults and
+  private trackerless 0.16.21 zero-row fixture. Source-owned branch fixtures
+  отдельно подтверждают rejection partial-width `d.multicall2` и empty-row
+  `t.multicall` без расширения capture-backed accepted grammar. Adversarial
+  suite отвергает
+  unused direct/member modes, every frozen wrapper/row/flat-vs-struct/count/cell/
+  slot/attribute/namespace/DTD/entity/type/range/duplicate/`<ix>`/extra/prefix/
+  suffix/partial boundary и доказывает full RAW/body consumption без second full
+  BODY copy. Every named mutation fails after the named case ran and returns
+  fresh GREEN after restore;
+- dedicated `HistoricalBindingSampleV2` suite на PHP 7.4/8.1/8.5 pins exact
+  five-slot request body SHA-256
+  `ae96a2e5264798d84e4a35e981bbe99d8337820a93a07ff989e480b329b44210`,
+  and these hard-coded pure-codec semantic-empty known answers:
+
+  ```text
+  EventKeyDigestV1       6be78367aeebc5a5291678a69df08c1851c8146d292574dbbd6444bd4cf8adf4
+  EventMapDigestV1       e161a0c9b4fa03bde365367c3dad2e241612c5051f57ec679599eecc69509fb6
+  RecoveryRowsDigestV1   6ff9698fefb3ae39bf1df57c2bc88ef40b372e6a053bc1a3ef0d776ca067b7a6
+  LedgerKeyDigestV1      94b79f8e5caa8e944b32c7f23990dd2b226133255041e62ec8791907760cfa3c
+  LedgerMapDigestV1      4d728a8a6967ca2b7abeaa3722e6bac56b59d6ddcf7f354fb6148c8c33b37d1f
+  LedgerDigestV1         184b1f3b0661242c459bf97ae031874af765bd0b79c9a9a766414e3cb878729b
+  V2 family 0x01         4a2991f206fbd40e09a4bbb54f586013f7d99b2a2a7468a5d6e80b818a848336
+  V2 family 0x02         1605e0cd8fb833a0757fd866fa150230c6b1bf3532e382c86b6860a5b95962c2
+  ```
+
+  Here empty means zero event keys/members, zero recovery rows and zero ledger
+  keys/members; the V2 rows compose those raw child digests with the indicated
+  one-byte `FamilyTag`. These vectors are not response BODY identities, valid
+  BOOTSTRAP captures or a substitute for the post-implementation manifest.
+  Expected bytes must remain hard-coded from an implementation independent of
+  the codec helper under test; computing expected and actual through two calls
+  to that same helper is forbidden. The suite also pins
+  exact one-result wrappers, event list/map equality, ledger list/map equality,
+  six valid phases, extended owner modes, same-sample `pf` binding, persistent
+  `pv` which rejects `newPv == sampled current oldPv` and never deliberately
+  restores that sampled epoch. It does not claim detection of reuse of an
+  earlier now-absent epoch; that remains solely the negligible 128-bit CSPRNG
+  assumption. The suite pins refusal precedence, foreign family/type matrix, full
+  decoded-name sorting, typed/order-sensitive digest и `RecoveryRows4`
+  complete-before-use. It rejects every same-family/action/key/epoch/phase/row
+  drift, any slot fault, a sixth tail and all limit+1 fixtures before allocation.
+  Exact disposable 0.9.8/xmlrpc-c and 0.16.21/TinyXML2 first preserve the
+  measured reachable B5 boundary as RED: slots 1--3 succeed, slots 4--5 are
+  missing-ledger faults and two reads are byte-identical, but neither result is
+  `BOOTSTRAP`. Four old combined BODY SHA-256 values
+  `b9a8f7504aa9c2112a2591df8f97d153936bcdeaa393d256b944e96e791b2ac4`,
+  `e0fd0e152f473c2cde4d4c5f309460f288e00f0a025eb208fafa0eb67f88c6cb`,
+  `db548d9f026175cc87107b07ae79c79b3dfa4203b53c27bf35b5e488a7ab9f34`,
+  `3a3592dbb52793745ec458fc81301b607ba7dc02d5222e10e525f37b7886f723`
+  remain RED/provenance-only fixtures and are never accepted by V2. After the
+  real producers and callbacks exist, both daemon families must emit an exact
+  post-implementation manifest for `BOOTSTRAP`, `IDLE_EMPTY_CURRENT`,
+  `IDLE_CURRENT`, `FIRST_INIT_OWNER`, `SECOND_INIT_OWNER`, `DONE_OWNER`,
+  `CONTAIN_OWNER` and `CONTAINED`: two independent byte-identical reads per
+  state, isolated slot-4/slot-5 faults, concrete request/BODY hashes, actual
+  epoch/token/local-id, exact builder/action bytes, canonical marker, phase,
+  digest/count and provenance. The production callback seam must be imported;
+  manual `method.set_key` population is shape-only RED evidence and cannot
+  satisfy acceptance. PHP 7.4 `memory_limit=128M` maximum retained-state fixture
+  with accepted BODY <=64 MiB проходит или bounded-fail-ится без OOM, second
+  BODY/AST and simultaneous RAW. Transport fixtures pin smaller/default/
+  104857600 caps: argument 8 unchanged, default BODY 67108865 header-reject,
+  high-cap BODY 67108865 application-reject after RAW allocation but before
+  XML/hash/stack/container/output/consumer;
+- на exact final parent disposable rTorrent 0.9.8 и 0.16.21 с legacy config без
+  обоих optional globals доказывают one raw-mode send, default/configured budget
+  forwarding, no warning и тот же restricted codec. Two-family exact generic
+  CAS/fresh-path load gates принимают empty/LF/backslash/quote/comma через
+  recursive `left/right/condition` и recreation forms, включая LF-terminated
+  `addtime`; one-layer quoting, leading `$`, CR и NUL остаются RED. Current base
+  predecessor transport не может быть runtime proof этой final interface;
 - disposable supported-oldest и 0.16.21: private modifiable multi-ledger
   init/reload, privacy/const/wrong-type/unknown-key refusal, exact init и worker
   subkey preflight/delete/reuse/final-delete и preservation other valid
-  transaction keys; ta/to same-profile/cross-profile/delayed-request lifecycle,
+  transaction keys; fresh full-service boundary proves no prior ledger, creates
+  one persistent `pv` under the current-sample/CSPRNG non-reuse boundary, then
+  exercises extended `ta`/owner `i|d|c`, bound
+  `pf`, same-profile/cross-profile/delayed-request lifecycle and all six valid
+  phases. Every protected callback first installs only a missing safety gate,
+  then rotates epoch before its first profile/action/claim/owner mutation;
+  delayed callbacks CAS the sampled epoch. A three-epoch `A/B/C` fixture with
+  pairwise-distinct values rejects omission of the middle protected rotation;
+  it does not assert detection of earlier absent-history reuse. Injected crash
+  prefixes never expose
+  an accepted action-only, claim-only, owner-only or mixed-epoch state. A second
+  functional profile cannot become steady idle: its `INIT_OWNER` path reaches
+  containment, zero claims, `c+ma`, then `CONTAINED`; `DONE_OWNER` has exactly
+  one owner profile and no foreign profile. The eight manifest capture states
+  are reached only through the production callback seam, never manual setters;
   ta-window `dq/di` enqueue, replay, dirty-final-release fence,
   multi-profile `ma`/`wh` drain and conditional `wp` release, hook-side exact
   quoted `wh/wp`, idempotent atomic `wp->wa`, delayed-CLI and
@@ -1856,13 +2739,14 @@ Verification на exact implementation tip:
   live-marker-capability-to-ack без clobber wrong non-empty/`"0"`,
   post-cleanup replay no-write с preserved
   `custom3=1`/custom2, empty-marker legacy clear и
-  ordinary non-1 preserve, CAS quoting comma/quote/backslash, raw generic-map
+  ordinary non-1 preserve, recursive CAS quoting LF/comma/quote/backslash, raw
+  generic-map
   type/count/value proof, exact custom1…5/priority/throttle/map pre-event
   restoration baseline и authoritative seedingtime/extratio/autolabel/user
-  post-event mutation survival,
-  unrepresentable-value refusal, lifecycle tuple matrix, started/stopped commit,
+  post-event mutation survival, exact leading-`$`/CR/NUL refusal,
+  lifecycle tuple matrix, started/stopped commit,
   one-shot arm/dispatch `eb/ed/ex` and `cb/cd/cx` orderings, same-hash stale
-  generation, typed response parsing, outer-false `SKIPPED` same-generation
+  generation, restricted request-schema codec, outer-false `SKIPPED` same-generation
   release с preserved concurrent drift, daemon-launched open/read/hash
   preflight и anonymous procfd
   load on same uid/PID namespace, +1-second
@@ -1889,9 +2773,72 @@ ack model в proof.
 
 ## Approval boundary
 
-Candidate design, identity, state machine, constants, scope и evidence gates
-сформулированы; independent re-review ещё должен снять этот candidate marker.
-Implementation branch ещё нет. Package нельзя называть готовым до witnessed
-natural RED, corrected GREEN, mandatory mutations, both-daemon runtime,
-byte-for-byte 12-test preservation, exact predecessor range и independent
-whole-file review.
+**DESIGN / CONTRACT APPROVAL** основан на reviewed pre-approval commit
+`38dd46e3073c6d102b867169c96f8dd9ed1770cd` и candidate SHA-256
+`5f44b73cd7fd4f1cb33d481165faece3c2f2076b02a06fa2451bf3fc6b3c8014`.
+Round-5 immutable package имеет SHA-256
+`57b05a70622596d155345959c4313326e1ccde22a434047b6563c20d09f27840`;
+specification `CLEAN` report —
+`d0256a456b8b0068555d2726e148e53eb80db96c9d5dd479d139ccf18b59441d`,
+adversarial `CLEAN` report —
+`b311a75677c82f2df1379173d8b0c1a867adff616cf2c261f8237b0057d31f19`.
+Этот approval commit меняет только status/evidence и не изменяет и не
+инвалидирует reviewed technical bytes, formulas, state transitions, scope,
+resource limits или acceptance gates.
+
+Natural B5 missing-ledger result остаётся честным post-implementation
+`BLOCKED` gate до появления real five-path producers. Он не отменяет design
+approval и не является `GREEN`.
+
+**IMPLEMENTATION / CAPTURE ACCEPTANCE** является отдельным более поздним gate.
+До него implementation branch ещё нет, все 18 implementation packages остаются
+pending и package нельзя называть mergeable/ready. Acceptance требует real
+producers and callbacks, witnessed natural RED, corrected GREEN, mandatory
+mutations, exact two-family/eight-state/two-read manifest, PHP 7.4 128M bounds,
+both-daemon runtime, byte-for-byte 12-test preservation, exact predecessor range
+и independent whole-file review. Только этот второй gate подтверждает, что
+реализация соответствует уже approved contract.
+
+## Post-sync revalidation — 2026-08-30
+
+Final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` использует upstream
+`529033335e66e1acd4084b73030f5880035ce1c0`; historical
+`755404f3e38af98b6901852b35be10fb9659ffd3` baselines, B5 vectors и approval
+hashes остаются frozen. Exact delta `755404f3..52903333` содержит только
+#3220/#3202 и три package-lock/filedrop path; пересечение с exact five-path
+retrackers scope пусто. Pre-755 #3218 plugin-relative init-path shield сохранён,
+а #3212 predecessor test не был адаптирован под fork.
+
+Current `tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` byte-exact
+upstream: SHA-256
+`47c0ad870214e5a8056c20c5a008fd35173732bd50ffae5a1b45c9e975a4eb13`.
+Registration-aware 12-name SET имеет SHA-256
+`0ee7b35f9cda898d00e963b7e23aff02351e3653db21bbf2e99e31a34d5c7044`:
+
+```text
+testASessionTorrentThatNeedsNothingKeepsItsRtorrentKey
+testATorrentThatNeedsNothingIsNotRewritten
+testATrackerAlreadyPresentIsNotAddedTwice
+testATrackerlessTorrentGetsAnnounceAndAnnounceList
+testAddToBeginPutsTheAdditionFirst
+testAdditionAndDeletionTogetherOnASessionTorrent
+testAnEmptyConfigurationChangesNothing
+testAnnounceOnlyTorrentGainsAnAnnounceListEndingWithTheAddition
+testClearTrackerDropsAGroupItEmpties
+testDeleteTrackersMatchesOnASubstringCaseInsensitively
+testDeletingEveryTrackerInAGroupRemovesTheGroup
+testTheScriptsHelpersAreTheRealOnes
+```
+
+Fresh current-fork run остаётся honest natural RED: raw exit 255, только 2/12
+methods начаты, 2 assertions `Passed`, затем named failure
+`the plugin configuration class is loadable too` и uncaught fatal
+`Class "rRetrackers" not found`. Это implementation gate: test не изменяется,
+RED не называется regression closure или readiness. Literal PHP 7.4
+`memory_limit=128M` combined consumer bounds также остаются будущим acceptance,
+не predecessor GREEN.
+
+Статус остаётся **DESIGN APPROVED — implementation pending**. Five-path scope,
+dependencies и общий счёт неизменны: все 18 implementation packages общей
+очереди остаются pending, retrackers recovery является одним из них и не ready/
+mergeable.

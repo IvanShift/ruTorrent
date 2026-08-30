@@ -6,6 +6,21 @@ Current published fork — `24891da9`. Его более поздние 6 produc
 не включены в старые delta-числа таблицы: claim/sweep hunks классифицированы в
 existing P0, magnet-source/parsed-Torrent hunks — в P1, нового package нет.
 
+## Post-sync ref boundary — 2026-08-30
+
+Historical divergence arithmetic ниже остаётся frozen на своих refs. Отдельная
+contract task branch теперь содержит merge `4b3cd799` с
+`upstream/master=52903333`; exact `755404f3..52903333` добавляет только #3220
+и #3202 в трёх package-lock/filedrop paths и не меняет ownership ни одного из
+18 packages. Шесть approved contracts получили post-sync appendices; полный
+evidence — `VERIFICATION-upstream-sync-contracts-2026-08-30.md`.
+
+Локальный/published `master` остаётся `5da21546`: merged upstream
+`php/Torrent.php` production-reachable и parse-fails на обещанном PHP 7.4 из-за
+native `mixed`. Это уже учтённый package 1, а не новая строка crosswalk.
+Следовательно, task merge не является master-ready до реализации package 1
+или явного решения владельца изменить runtime floor; никакой push не выполнен.
+
 ## Метод и полный объём
 
 Прямой diff `755404f3..master` непригоден: он показывает 12 ещё не слитых
@@ -23,7 +38,7 @@ carve-аудитам.
 | SCGI/XMLRPC/httprpc/path | 17 | +1,533/-825 | httprpc, SCGI, consumer integration, 7-path proxy-policy package; whole-file copy запрещён |
 | fork task/tooling | 12 | +1,568/-0 | не отправлять |
 | rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + 3-path alias-surface package |
-| retrackers | 5 | +1,540/-45 | recovery carve + P3 marker |
+| retrackers | 5 | +1,540/-45 | exact five-path recovery design APPROVED and implementation pending; later P3 marker package separate |
 | Kinozal/loginmgr | 5 | +636/-28 | готовая локальная ветка/open PR |
 | socket/settings | 4 | +450/-22 | отдельная исправляемая ветка; её upstream carve сейчас больше |
 | test harness | 3 | +3/-17 | готовая ветка также добавляет новый test-файл |
@@ -43,6 +58,23 @@ SHA, integration merges и последующие remediation.
 - cache `unserialize`, fork tooling, `.gitignore`, `AGENTS.md`, dead run registry,
   Snoopy gzip и старый log-unwritable имеют явный no-send/rejected verdict.
 
+## Current approved contract status
+
+Packages 4 SCGI, 5 retrackers and 6 erasedata A are DESIGN APPROVED —
+implementation pending; package 14 XMLRPC proxy policy has the same status.
+Their exact scopes are 7, 5, 8 production + 2 test and 7 paths respectively.
+Retrackers uses final SCGI as immediate parent; P3 waits final retrackers +
+final P1. Approved retrackers authority is commit
+`14683d93bc54dbab89d6abce636d2e749e8492ba` / contract SHA-256
+`922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`.
+Final verification and cleanup authority is commit
+`f1e6d4ed7ee5c1095b24dab27adde72493f76cc0` / archive SHA-256
+`f2a08d8b1f36b43d2490f87da8d859916c804e8396ac09b7c3600f34d64bee16`;
+cleanup report SHA-256 is
+`c416448e396b1a96424aa791a5211dcb3cb78b4ec5ae3cd6cd67c9d1b75f1bea`.
+Exact eight-container cleanup is GREEN, but it closes no implementation package
+and does not make retrackers production B5+EPOCH or successor behavior GREEN.
+
 ## Открытый счёт
 
 До полного закрытия divergence остаётся **18 implementation packages** из
@@ -57,19 +89,25 @@ entrypoints дали по одному package; foreign bucket — три; gener
 `REVIEW-disposition-wave-2026-08-29.md` и
 `REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
+Design approval decrements neither the 18 implementations nor fork divergence;
+only accepted implementation/disposition evidence can change this arithmetic.
+The current count remains 18 implementations / 0 audits / 4 ready owner
+handoffs outside the count.
+
 ## Ownership corrections
 
 Отдельный `php/xmlrpc_path.php` в critical chain не нужен. Endpoint-local
-resolver остаётся в двух proxy doors; filesystem identity принадлежит
-`plugins/erasedata/filesystem.php` в A. SCGI и A — siblings после httprpc.
+resolver остаётся в proxy doors; filesystem identity принадлежит A. После
+final httprpc SCGI, XMLRPC proxy policy и A — sibling packages. Retrackers
+имеет immediate parent final SCGI и не является sibling implementation from
+httprpc.
 
-Отдельный `up/httprpc-erasedata-contract` обязателен: прежние планы оставляли
-без владельца `removewithdata` branch в `plugins/httprpc/action.php`. Его scope:
-production hunk `+6/-13` в этом файле и новый copied-entrypoint test. Он должен
-запретить implicit force, missing helper и fallback на plain `d.erase`.
-Поскольку proxy-policy владеет соседними hunks того же production file,
-consumer строится после **обоих** `up/xmlrpc-proxy-policy` и erasedata A, а не
-параллельно с proxy package.
+Отдельный `up/httprpc-erasedata-contract` остаётся обязательным, сохраняет exact
+two-path scope и historical production hunk `+6/-13` в
+`plugins/httprpc/action.php` плюс новый copied-entrypoint test. Он строится
+после обоих final XMLRPC policy + A и запрещает implicit force, missing helper
+и fallback на plain `d.erase`. P3 строится после обоих final retrackers + P1.
+Эти edges не расширяют scopes предшественников.
 
 ## Current-base shields
 
@@ -78,7 +116,10 @@ consumer строится после **обоих** `up/xmlrpc-proxy-policy` и 
 - не копировать stale retrackers suite: upstream #3212 содержит 12 sequence
   tests, которые fork snapshot визуально удаляет;
 - shared paths режутся по hunks после final prerequisite tip;
-- exact P0/P1, erasedata A/C, retrackers и новые manual/foreign packages нельзя
-  заявлять до RED-first carve-а на их final prerequisite tips;
+- exact P0/P1, erasedata A/C и новые manual/foreign packages нельзя называть
+  ready до RED-first carve-а на их final prerequisite tips;
+- approved retrackers design остаётся действующим, но implementation branch
+  нельзя называть ready до RED-first five-path carve от final SCGI, полных B5
+  producer/capture gates и exact predecessor test-set preservation;
 - PHP 7.4 defect #3213 не входит в 139 fork paths, но учитывается отдельным
   обязательным compatibility package.

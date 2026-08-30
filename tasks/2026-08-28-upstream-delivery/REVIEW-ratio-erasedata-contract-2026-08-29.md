@@ -217,3 +217,22 @@ GREEN, все mutations, focused PHP 7.4/8.1/8.5, full harness, PHPStan, exact
 two-path diff/final numstat, whitespace и independent whole-file review.
 Runtime command-shape smoke выполняется только в disposable lab, не live.
 Agent не push.
+
+## Post-sync revalidation — 2026-08-30
+
+Final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` основан на upstream
+`529033335e66e1acd4084b73030f5880035ce1c0`; историческая база
+`755404f3e38af98b6901852b35be10fb9659ffd3` и все утверждённые baseline/
+approval hashes остаются frozen. Exact delta `755404f3..52903333` — только
+#3220/#3202 и три package-lock/filedrop path — не пересекает exact two-path
+scope B.
+
+Relevant pre-755 #3218 shield также сохранён: `plugins/ratio/init.php` требует
+`ratio.php` относительно каталога самого init-файла, а upstream
+`tests/php/PluginInitPathsTest.php` сохранён byte-for-byte (SHA-256
+`75731ac6eefb7a190ede59c568145d9cc3be148ff0d41a8faa6e25ab1ee576d2`).
+Этот init/test shield остаётся dependency evidence и не расширяет two-path B.
+
+Статус остаётся **DESIGN APPROVED — implementation pending**. Scope,
+prerequisite final A и счёт общей очереди неизменны: все 18 implementation
+packages общей очереди остаются pending, B является одним из них.

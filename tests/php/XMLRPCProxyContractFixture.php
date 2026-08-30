@@ -218,14 +218,14 @@ $cases = array(
 			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: d.custom1.set=\$execute.capture=/bin/hostname)",
 		),
 	),
-	"a value the client quoted itself is dropped" => array(
+	"a value the client quoted itself is kept as one argument" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("d.custom1.set=&quot;Movies, Inc&quot;")),
 		"returned" => "SCGI-REPLY",
 		"sends" => 1,
 		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=\"Movies, Inc\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: d.custom1.set=\"Movies, Inc\")",
+			"xmlrpc-proxy: trusted: load.start (3 params)",
 		),
 	),
 	"a long stripped value is truncated in the log" => array(

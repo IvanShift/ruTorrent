@@ -315,3 +315,29 @@ Design, API, limits, ownership и evidence gate утверждены. Implementa
 ещё нет. Package нельзя называть готовым до witnessed natural RED, deterministic
 short-write RED, corrected GREEN, mutations, exact predecessor range и
 independent whole-file review.
+
+## Post-sync revalidation — 2026-08-30
+
+Final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` основан на upstream
+`529033335e66e1acd4084b73030f5880035ce1c0`; historical
+`755404f3e38af98b6901852b35be10fb9659ffd3` baselines и approval hashes
+остаются frozen. Exact delta `755404f3..52903333` — только #3220/#3202 и три
+package-lock/filedrop path — имеет пустое пересечение с exact seven-path SCGI
+scope. Pre-755 #3209/#3211 parser shield сохранён в sibling XMLRPC surface и,
+как требует этот контракт, не перенесён в SCGI ownership.
+
+Container qualifications не меняют verdict. PHP 7.4 full harness всё ещё
+зависит от known package #1 `up/php74-torrent-properties`; predecessor SCGI на
+default `128M` имеет уже зафиксированный nondeterministic OOM и не является
+successor GREEN. На PHP 8.1 один fresh default-`128M` run также исчерпал память
+после 44 assertions, затем три немедленных fresh raw repeats того же immutable
+image прошли `58/58`; значит predecessor memory cell недетерминирован и не
+может считаться stronger GREEN. Test-only rerun с `512M` прошёл `58/58`;
+отдельное повышение до `512M` в `RemoveWithDataTest` также не относится к SCGI
+production limit. Literal PHP 7.4 `128M` accepted-body/bounded-failure остаётся
+combined final-parent/retrackers-consumer gate, а не ретроактивно выполненная
+гарантия этого predecessor.
+
+Статус остаётся **DESIGN APPROVED — implementation pending**. API, exact scope,
+dependencies и общий счёт неизменны: все 18 implementation packages общей
+очереди остаются pending, SCGI transport является одним из них.

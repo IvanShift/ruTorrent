@@ -638,6 +638,114 @@ class XMLRPCProxy
 	}
 
 	/**
+	 * Split command arguments up to the command's known arity. Before the final
+	 * argument, commas separate values the way rtorrent expects; the final one
+	 * keeps raw commas so existing labels and paths remain one value. A
+	 * double-quoted string is one argument even when it contains commas.
+	 * Unquoted arguments are trimmed; quoted ones are not. An unclosed quote,
+	 * or text after a quoted argument that is not a comma, is malformed and
+	 * returns null so the whole parameter is dropped.
+	 *
+	 * Clients such as cross-seed quote every value (d.custom1.set="cross-seed").
+	 * Splitting on ',' first would cut inside those quotes; dropping them left
+	 * torrents unlabeled and in the default directory. Unquoting here, then
+	 * re-quoting in rebuildSafeLoadParam, keeps the value as one argument.
+	 */
+	private static function splitLoadArguments($value, $maxArguments)
+	{
+		if(!is_int($maxArguments) || $maxArguments < 1)
+			return null;
+
+		$arguments = array();
+		$len = strlen($value);
+		$i = 0;
+		while(true)
+		{
+			while($i < $len && ($value[$i] === ' ' || $value[$i] === "\t"))
+				$i++;
+			$isLastArgument = (count($arguments) + 1 >= $maxArguments);
+
+			if($i < $len && $value[$i] === '"')
+			{
+				$i++;
+				$argument = '';
+				$closed = false;
+				while($i < $len)
+				{
+					$c = $value[$i];
+					if($c === '\\' && $i + 1 < $len)
+					{
+						$argument .= $value[$i + 1];
+						$i += 2;
+						continue;
+					}
+					if($c === '"')
+					{
+						$closed = true;
+						$i++;
+						break;
+					}
+					$argument .= $c;
+					$i++;
+				}
+				if(!$closed)
+					return null;
+				$arguments[] = $argument;
+			}
+			else
+			{
+				// Only one escape changes where an argument ends: rtorrent reads
+				// '\\,' as a comma inside the value rather than a separator
+				// (parse_string, src/rpc/parse.cc), so splitting on every comma
+				// cut such a value in two and delivered a second argument the
+				// client never sent.
+				//
+				// Its other escapes are deliberately left alone. rtorrent would
+				// read '\\' as an escape everywhere, which turns C:\\downloads
+				// into C:downloads -- but this side re-quotes the value, so the
+				// backslash reaches rtorrent intact, and clients have been
+				// sending paths and labels through here on that basis. Matching
+				// rtorrent exactly would eat those backslashes.
+				$argument = '';
+				$keep = 0;
+				while($i < $len)
+				{
+					$c = $value[$i];
+					if($c === ',' && !$isLastArgument)
+						break;
+					if(($c === '\\') && ($i + 1 < $len) && ($value[$i + 1] === ','))
+					{
+						$argument .= ',';
+						$i += 2;
+						$keep = strlen($argument);
+						continue;
+					}
+					$argument .= $c;
+					$i++;
+					// Trailing whitespace is trimmed as rtorrent trims it.
+					if(($c !== ' ') && ($c !== "\t"))
+						$keep = strlen($argument);
+				}
+				$arguments[] = substr($argument, 0, $keep);
+			}
+
+			while($i < $len && ($value[$i] === ' ' || $value[$i] === "\t"))
+				$i++;
+			if($i < $len)
+			{
+				if($value[$i] !== ',')
+					return null;
+				if(count($arguments) >= $maxArguments)
+					return null;
+				$i++;
+			}
+			else
+				break;
+		}
+		return $arguments;
+	}
+
+	/**
 	 * Rebuild one command parameter, or return null to drop it.
 	 *
 	 * A parameter is not a single command: rtorrent ends a command at ';' or a
@@ -646,13 +754,12 @@ class XMLRPCProxy
 	 * command name is therefore compared for equality, and each argument is
 	 * quoted so that whatever it contains stays an argument.
 	 *
-	 * Arguments are split on ',' first, exactly as rtorrent would split them,
-	 * so a command that takes several keeps them, and each is trimmed as
-	 * rtorrent trims an unquoted argument.
-	 *
-	 * Values are taken literally: a client sends d.custom1.set=Movies, Inc,
-	 * not a pre-quoted d.custom1.set="Movies, Inc", since the quoting is added
-	 * here and a quote in the value is escaped rather than interpreted.
+	 * Arguments are split with the command's known arity. Quoted strings and
+	 * escaped commas follow rtorrent's parser, while the final argument keeps
+	 * raw commas for compatibility with labels and directories such as
+	 * "Movies, Inc". A value the client already quoted is unquoted here, then
+	 * re-quoted, rather than dropped: cross-seed and others send
+	 * d.custom1.set="label".
 	 */
 	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null)
 	{
@@ -664,40 +771,30 @@ class XMLRPCProxy
 		if(!in_array($command, $safeParams, true))
 			return null;
 
+		$maxArguments = isset(self::$multiArgCommands[$command])
+			? self::$multiArgCommands[$command] : 1;
+		$parts = self::splitLoadArguments(substr($paramValue, $separator + 1), $maxArguments);
+		if($parts === null)
+			return null;
+
 		// Both shipped endpoints provide boundary options. rpc2.php refuses to
 		// serve without a usable boundary (or the explicit root opt-in); httprpc
 		// keeps serving with an empty boundary but strips directory setters.
-		if(($directory !== null) && in_array($command, self::$directoryCommands, true) &&
-			!self::directoryIsAllowed(trim(substr($paramValue, $separator + 1)), $directory))
-			return null;
-
-		$rawPayload = substr($paramValue, $separator + 1);
-		if(isset(self::$multiArgCommands[$command]))
+		if(($directory !== null) && in_array($command, self::$directoryCommands, true))
 		{
-			$rawArguments = explode(',', $rawPayload, self::$multiArgCommands[$command]);
-		}
-		else
-		{
-			$rawArguments = array($rawPayload);
+			$path = isset($parts[0]) ? $parts[0] : '';
+			if(!self::directoryIsAllowed($path, $directory))
+				return null;
 		}
 
 		$arguments = array();
-		foreach($rawArguments as $argument)
+		foreach($parts as $argument)
 		{
-			// rtorrent trims an unquoted argument, so trim before anything else
-			// is decided about it — quoting a trimmed value must not turn a
-			// leading space into a leading '$'.
-			$argument = trim($argument);
-
 			// An argument whose first character is '$' is parsed and called as a
 			// command after quoting is undone, so quoting cannot make it safe.
+			// Unquoted values are already trimmed by the split; trimming again
+			// here would not turn a leading space into a leading '$'.
 			if(isset($argument[0]) && $argument[0] === '$')
-				return null;
-
-			// A client that quoted the value itself gets dropped and logged
-			// rather than quietly mangled: the quoting is added here, and the
-			// split would fall inside the client's quotes.
-			if(isset($argument[0]) && $argument[0] === '"')
 				return null;
 
 			$arguments[] = '"'.str_replace(array('\\', '"'), array('\\\\', '\\"'), $argument).'"';

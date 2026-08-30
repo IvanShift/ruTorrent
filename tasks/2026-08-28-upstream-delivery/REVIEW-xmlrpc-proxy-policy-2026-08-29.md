@@ -377,3 +377,43 @@ Design и exact ownership scope утверждены. Implementation branch ещ
 Нельзя называть package готовым до witnessed natural RED, corrected GREEN,
 mutations, exact range `<final-httprpc-tip>..HEAD`, full test-name/fixture-key
 checks и independent whole-file review.
+
+## Post-sync revalidation — 2026-08-30
+
+Final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` использует upstream
+`529033335e66e1acd4084b73030f5880035ce1c0`; историческая база
+`755404f3e38af98b6901852b35be10fb9659ffd3` и утверждённые на ней baselines/
+hashes остаются frozen. Exact `755404f3..52903333` состоит только из
+#3220/#3202 и трёх package-lock/filedrop paths, поэтому не пересекает exact
+seven-path XMLRPC scope.
+
+Relevant pre-755 #3209/#3211 parser shield сохранён. Registration-aware
+extractor использовал ровно механизм runner: `get_class_methods()` над
+`XMLRPCProxyTest`, оставил prefix `test`, потребовал unique/non-empty names и
+отсортировал их `SORT_STRING`. Current результат — **84 unique methods**, SET
+SHA-256 `477b6b1d9e0f0e256f57469b15e59755a462dca884866b9c401b5fa41c870fee`.
+Fixture измерена исполнением `require` и `array_keys($cases)`, затем unique/
+`SORT_STRING`: **70 unique top-level cases**, SET SHA-256
+`8465a6ba8fb755ba74f7bee3a472fed0bb4806788bfac8a68749538a4b306ebd`.
+Text grep count 71 был ложным: он принял `$defaults['safeParams']` за case.
+
+Все десять обязательных #3209/#3211 names присутствуют:
+
+```text
+testPreQuotedValueIsKeptAsOneArgument
+testCrossSeedQuotedLoadParamsAreKept
+testQuotedDollarPrefixedArgumentIsDropped
+testUnclosedQuoteIsDropped
+testQuotedDirectoryInsideTheBoundaryIsKept
+testAnEscapedCommaDoesNotSeparateArguments
+testAnEscapedCommaAtTheEndOfAValueIsKept
+testAnUnescapedCommaStillSeparates
+testABackslashThatIsNotBeforeACommaIsKept
+testATrailingBackslashIsStillJustAValue
+```
+
+PHP 7.4 full-harness gate остаётся qualified known prerequisite package #1
+`up/php74-torrent-properties`; focused XMLRPC evidence не закрывает этот
+prerequisite. Статус остаётся **DESIGN APPROVED — implementation pending**.
+Exact scope/dependencies и общий счёт неизменны: все 18 implementation packages
+общей очереди остаются pending, XMLRPC policy является одним из них.

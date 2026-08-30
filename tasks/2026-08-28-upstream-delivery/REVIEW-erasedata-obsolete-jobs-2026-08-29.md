@@ -454,3 +454,27 @@ Plan-2 refactors, rejected core identity owner и unrelated fixes.
 
 Independent approval выполнен. Combined P0+C готов к RED-first implementation
 handoff после A; production implementation ещё не начиналась.
+
+## Post-sync revalidation — 2026-08-30
+
+На final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` с upstream
+`529033335e66e1acd4084b73030f5880035ce1c0` historical
+`755404f3e38af98b6901852b35be10fb9659ffd3` baselines и approval hashes
+остаются frozen. Exact delta `755404f3..52903333` содержит только #3220/#3202
+и три package-lock/filedrop path; пересечение с exact 20-path combined P0+C
+scope пусто.
+
+Relevant pre-755 #3218 shield сохранён в `plugins/rutracker_check/init.php`, а
+`tests/php/PluginInitPathsTest.php` byte-identical upstream (SHA-256
+`75731ac6eefb7a190ede59c568145d9cc3be148ff0d41a8faa6e25ab1ee576d2`).
+Container exceptions остаются квалифицированными: shipped PHP 8.5 image не
+имеет `tokenizer` и потому даёт восемь `token_get_all()` failures в
+`EntrypointsTest`; те же bytes закрыты 22/0 в official PHP 8.5. Кроме того,
+included `RemoveWithDataTest` повышает `memory_limit` до `512M` только внутри
+одного byte-ceiling test и затем восстанавливает его; PHP 8.1 SCGI
+characterization при default `128M` — отдельное evidence.
+
+Статус combined P0+C остаётся **DESIGN APPROVED — implementation pending**.
+Exact scope, ownership/dependencies и счёт общей очереди неизменны: все 18
+implementation packages общей очереди остаются pending, combined P0+C является
+одним из них.

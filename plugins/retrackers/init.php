@@ -1,7 +1,7 @@
 <?php
 
 if(!defined('RETRACKERS_TEST_MODE'))
-	require_once( '../plugins/retrackers/retrackers.php');
+	require_once( dirname(__FILE__).'/retrackers.php');
 if(!class_exists('rTorrent', false))
 	require_once( dirname(__FILE__).'/../../php/rtorrent.php');
 require_once( dirname(__FILE__).'/guard.php');

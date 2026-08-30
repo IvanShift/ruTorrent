@@ -446,3 +446,26 @@ A получил явное user approval варианта 2. RED-first реал
 после выполненного independent approval этого arm/ack/retirement контракта.
 Merge/handoff возможен только без v3/C, httprpc consumer, Ratio, SCGI и
 `php/xmlrpc_path.php` hunks. Агент push не выполняет.
+
+## Post-sync revalidation — 2026-08-30
+
+На final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` с upstream
+`529033335e66e1acd4084b73030f5880035ce1c0` историческая база
+`755404f3e38af98b6901852b35be10fb9659ffd3` и все принятые на ней evidence/
+approval hashes остаются frozen. Exact delta `755404f3..52903333` состоит
+только из #3220 и #3202 (`tests/package-lock.json`, `plugins/filedrop/init.js`,
+`tests/plugins/filedrop/init.spec.js`) и имеет пустое пересечение с frozen
+8+2 scope A.
+
+Relevant pre-755 shield #3218 сохранён: plugin-relative requires в
+`plugins/erasedata/init.php` остаются anchored к каталогу самого файла, а
+current `tests/php/PluginInitPathsTest.php` byte-identical upstream
+(SHA-256 `75731ac6eefb7a190ede59c568145d9cc3be148ff0d41a8faa6e25ab1ee576d2`).
+Container qualifier не меняет acceptance: PHP 8.1 SCGI characterization шёл
+при default `memory_limit=128M`, тогда как A-owned
+`testEveryManifestReadBoundaryStopsAtTheByteCeiling` поднимает лимит до `512M`
+только внутри этого test и восстанавливает его; это не SCGI GREEN.
+
+Статус остаётся **DESIGN APPROVED — implementation pending**. Scope A,
+dependencies и счёт общей очереди неизменны: все 18 implementation packages
+общей очереди остаются pending, A является одним из них.

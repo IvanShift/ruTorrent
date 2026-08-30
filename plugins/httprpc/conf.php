@@ -22,6 +22,14 @@ if(!isset($XMLRPCProxyAllowLocalPaths))
 
 if(!isset($XMLRPCProxySafeParams))
 {
+	// Command names allowed as load.* parameters in sanitize mode.
+	// External clients (Prowlarr, Sonarr, Radarr, Transdroid, cross-seed)
+	// attach these to load.start / load.raw_start to set labels, directories,
+	// priorities, etc. Quoted values (d.custom1.set="cross-seed") are accepted.
+	// Entries are full command names and are matched exactly: 'd.custom' does
+	// NOT cover 'd.custom1.set'. A param whose command name is not listed is
+	// stripped and logged. Add entries here if your external client needs
+	// additional commands.
 	$XMLRPCProxySafeParams = array(
 		'd.custom1.set',            // label
 		'd.custom2.set',            // custom field

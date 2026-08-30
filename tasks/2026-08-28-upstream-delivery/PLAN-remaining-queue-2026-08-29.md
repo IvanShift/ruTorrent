@@ -4,6 +4,23 @@
 `../2026-08-28-upstream-rebuild/PLAN.md`. Текущая база — `755404f3`; whole-file
 copy из fork master запрещён там, где upstream уже менял общий файл.
 
+## Post-sync execution checkpoint — 2026-08-30
+
+Research/contracts branch синхронизирована с
+`upstream/master=529033335e66e1acd4084b73030f5880035ce1c0` merge-коммитом
+`4b3cd79925e7b73ea25feb1658a34e6b698c9855`; backup pre-sync tip —
+`backup/retrackers-contract-pre-upstream-20260830` на `329bcc8f`. Шесть
+approved contracts повторно проверены, их scopes/dependencies не изменились и
+ни одна строка таблицы ниже не закрыта.
+
+Этот merge остаётся task-branch checkpoint. Он не fast-forward-ится в
+локальный `master`, потому что exact upstream `Torrent.php` нарушает
+документированный PHP 7.4 floor native типом `mixed`. Исправление уже является
+package 1 и требует отдельной implementation authority; оно не подмешивается в
+контрактный commit. Следующая допустимая кодовая работа начинается с package 1
+RED/TDD либо другого явно выбранного пакета по его dependency gate. Push не
+разрешён.
+
 ## Уже готовые handoff
 
 Четыре однокоммитные ветки готовы на current upstream: FileUtil, test harness,
@@ -17,17 +34,17 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 | 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | design independently APPROVED; explicit user approval, затем two-stage RED/TDD/mutations |
 | 2 | final `up/setsettings-socket-alloc` | exact 4 paths; current `+910/-15`, final после fix | независим | design APPROVED / branch NOT READY; 4 terminal RED, fix/mutations/review/rebase |
 | 3 | `up/httprpc-refusals` | exact 5 paths; final numstat после tests | test-harness как evidence gate | corrected design APPROVED; split false/empty 400, terminal 403/500, exact neutral text, copied-entrypoint RED |
-| 4 | `up/scgi-transport` | exact 7 paths, около `+850/-45` | после 3 из-за общего `rpc2.php` | **CHANGES REQUIRED:** response-cap policy, deterministic short-write, trust bit, PHP74 runtime, UNIX socket |
-| 5 | `up/retrackers-recovery` | exact 4 paths, final numstat после реализации | независимо; P3 после final P1+5 | **CHANGES REQUIRED:** marker-based bounded confirmation/rollback; false-green stub rewrite; guard исключён |
-| 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; **не зависит от SCGI API** | corrected design independently **APPROVED**; durable generation, pre-erase fixed repeating arm, real child ack, exact batch sets, settle-before-remove, restart rearm |
+| 4 | `up/scgi-transport` | exact 7 paths; historical donor estimate около `+850/-45`, final numstat only from final httprpc tip | после 3 из-за общего `rpc2.php` | DESIGN APPROVED — implementation pending; nine-arg transport, deterministic short-write/framing, trust, PHP74, TCP/UNIX and 64/100 MiB gates |
+| 5 | `up/retrackers-recovery` | exact 5 paths; final numstat after RED/implementation | после final 4; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; B5+EPOCH production capture BLOCKED until real five-path producers, without blocking design approval |
+| 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | exact 2 paths; final numstat после copied-real RED | после final A drain/rearm seam | corrected design independently **APPROVED**; missing-helper no-op/log + Ratio-startup rearm pending A wake; username filter/Ratio force guard исключены |
 | 9 | P0+C `up/rutracker-check-replacement-transaction` | exact 20 paths: 11 production + 9 tests | после A | design independently **APPROVED**; C folded, OLD/NEW-aware no-bridge ownership, token/false/null claim gate, pre-erase A drain ack, restart rearm |
 | 10 | P1 `up/rutracker-post-api` | exact hunk scope после P0+C | после P0+C | одобрение P0->P1 split и live-capture/lab evidence |
 | 11 | P2 `up/rutracker-meta-history-marker` | 3 history paths + entrypoint evidence | после P1 и event-order capture | только producer-owned marker; dot-label запрещён |
-| 12 | P3 `up/rutracker-meta-retrackers-marker` | retrackers marker integration | после P1 и package 5 | real-daemon command-shape test; current guard запрещён |
+| 12 | P3 `up/rutracker-meta-retrackers-marker` | retrackers marker integration | после final P1 и final package 5 | real-daemon command-shape test; current guard запрещён |
 | 13 | `up/rtorrent-alias-surface` | 3 paths; existing-hunk snapshot `+1351/-4` до wording fix | после готового `up/rtorrent-0-16-21` | characterization, natural RED нет; mutation gates обязательны |
-| 14 | `up/xmlrpc-proxy-policy` | exact 7 paths; numstat после prerequisite | после 3 | **CHANGES REQUIRED:** full 8-method load matrix, evaluator exact-deny, fail-closed direct/system mixed grammar; сохранить #3209/#3211 |
+| 14 | `up/xmlrpc-proxy-policy` | exact 7 paths; final numstat only from final httprpc tip | после 3 | DESIGN APPROVED — implementation pending; eight loads, exact evaluator/carrier deny, six direct-multicall all-or-nothing rebuild, system.multicall refusal, preserve #3209/#3211 |
 | 15 | `up/rutracker-manual-entrypoints` | exact 6 focused paths; final numstat после реализации | независим от P0/P1 | collision/short-write/launch/body/worker/UI RED; без crawler/503/raw text |
 | 16 | `up/kinozal-checker-resilience` | 2 paths, current snapshot `+260/-146` | после final P1 | endpoint streaks, exact deletion и parsed-object seam |
 | 17 | `up/nnmclub-checker-live-contract` | 2 paths, current snapshot `+1142/-231` | после final P1 | captured 67-byte scrape, current-torrent credential, bounded schema |
@@ -39,17 +56,17 @@ rTorrent 0.16.21 и Kinozal. Их SHA, scope и проверки зафикси�
 test-harness
   -> httprpc-refusals
        -> scgi-transport
+            -> retrackers-recovery ---------------------> P3
        -> xmlrpc-proxy-policy
        -> erasedata A
             -> ratio B
             -> combined P0+C -> P1 -> P2
 xmlrpc-proxy-policy + erasedata A
        -> httprpc-erasedata-contract
-retrackers-recovery ---------------------------> P3
-                                     P1 -------> P3
-                                     P1 -------> Kinozal checker
-                                     P1 -------> NNMClub checker
-                                     P1 -------> sibling trackers
+                                      P1 ---------------> P3
+                                      P1 ---------------> Kinozal checker
+                                      P1 ---------------> NNMClub checker
+                                      P1 ---------------> sibling trackers
 
 php74-torrent-properties   (independent compatibility lane)
 setsettings/socket         (independent browser lane)
@@ -59,6 +76,8 @@ rtorrent-0-16-21 ---------> rtorrent-alias-surface
 
 `php/xmlrpc_path.php` не является пакетом/зависимостью. A владеет filesystem
 identity в `plugins/erasedata/filesystem.php`; SCGI и A функционально siblings.
+Retrackers recovery имеет final SCGI как immediate implementation parent; P3
+ждёт both final retrackers and final P1.
 
 ## Пять disposition-аудитов завершены
 
@@ -100,16 +119,18 @@ Standalone C удалён из счёта, потому что без P0 он pr
 
 ## Рабочий порядок
 
-1. Получить явное подтверждение уже представленных PHP74, socket и httprpc
-   designs; реализовать их RED->GREEN параллельно, где worktree не пересекается.
+1. Record the completed design approvals; begin no implementation without the
+   separate explicit implementation instruction and exact final predecessor.
+   Post-sync merge `4b3cd799` хранить на task branch до closure package 1 либо
+   отдельного решения владельца принять PHP 7.4 regression; не продвигать им
+   `master` молча.
 2. Повторно review socket, rebase на current upstream, затем перенести только
    финальные fork-owned hunks в `master` отдельным commit.
-3. После httprpc сначала построить proxy-policy; SCGI и A остаются отдельными
-   successor branches. Consumer integration строить только после A и
-   proxy-policy; B строить только после A durable-drain/rearm gate, combined
-   P0+C — после final A и frozen ownership design.
-4. Параллельно строить retrackers recovery, rTorrent alias surface, manual
-   entrypoints и proxy-policy после его httprpc prerequisite.
+3. After final httprpc, build SCGI, XMLRPC policy and A as separate sibling
+   branches. Build the consumer only after XMLRPC + A; B and P0+C only after A.
+4. Build retrackers only after final SCGI. Alias surface and manual entrypoints
+   remain independent; after final P1 build foreign handlers, then P2/P3 under
+   their exact dual prerequisites.
 5. После combined P0+C построить P1; от final P1 параллельно строить три foreign
    handler packages, и только после runtime evidence — P2/P3.
 6. Для каждой ветки: named RED, production mutation, focused/full матрицы,
