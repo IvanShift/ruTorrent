@@ -1,5 +1,11 @@
 # Задача: заливка форка в upstream — что залито, что осталось, где проблемы
 
+> **Текущий авторитетный срез:**
+> [`STATUS-18-PACKAGES-2026-08-31.md`](STATUS-18-PACKAGES-2026-08-31.md).
+> В нём зафиксированы все 18 пакетов, актуальные refs/PR, merge #3229 и
+> resume-order. Числа ниже относятся к историческим checkpoint на момент их
+> создания.
+
 Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, опубликованный
 `origin/master` = `24891da9`, 101 commit впереди и 12 позади. Исторические
 fork-divergence deltas ниже заморожены на behavior snapshot `511ed13f`;
@@ -74,8 +80,10 @@ Focused endpoint/helper matrix прошла на PHP 7.4/8.1/8.5; PHPStan и Jes
 test, а `76b0c0f5` защищает три PHP 7.4 path probe от binary metainfo с NUL.
 Для второго владелец опубликовал upstream-clean branch
 `up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`,
-и открыл upstream PR #3229. На 2026-08-31 PR остаётся `OPEN`, а
-`upstream/master` по-прежнему равен `f19c9d86`.
+и открыл upstream PR #3229. PR принят как
+`upstream/master=781cee4e`; локальный ancestry-only merge `d06e0651`
+добавляет его историю без изменения дерева fork, а `origin/master` пока
+остаётся `f2a6ac50`.
 Полный fork harness после обеих правок проходит 65 files / 4152 success signals
 на PHP 7.4, 8.1 и 8.5. Raw-metainfo fix является follow-up package 1, а test
 bootstrap не меняет production; поэтому счёт очереди не уменьшается. Evidence:
@@ -112,6 +120,13 @@ two-family × eight-state × two-read manifest остаются недостиж
 реальных package producers и обязательны после реализации. Evidence:
 `VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
 
+После этого package 5 реализован до конца Task 4 включительно. Clean local
+branch `up/retrackers-recovery=9fef4d66` содержит cumulative exact-six-path
+implementation; Task 4B подтверждён literal rTorrent 0.9.8/0.16.21 captures,
+PHP 7.4/8.1/8.5 и independent final review `APPROVED`. Ветка не входит в
+`master`, не push и остаётся partial до Tasks 5–8. Следующий resume point —
+Task 5 init/done hook install protocol.
+
 ## Цель
 
 Отправить в upstream **все** расхождения форка, корректно оформленными PR. Это решение
@@ -119,7 +134,7 @@ two-family × eight-state × two-read manifest остаются недостиж
 
 ---
 
-## Залито и принято (15 PR)
+## Исторически залито и принято
 
 | PR | тема |
 |---|---|
@@ -144,7 +159,8 @@ two-family × eight-state × two-read manifest остаются недостиж
 
 После #3224 upstream также принял follow-up **#3225** для чтения numeric torrent
 key по обеим формам. **#3226** — отдельная upstream FileUtil brace/test правка;
-она не закрывает полный семипутевой FileUtil package этого плана.
+она не закрывает полный семипутевой FileUtil package этого плана. Binary
+metainfo follow-up **#3229** также принят и завершает upstream-lane package 1.
 
 ---
 
@@ -152,11 +168,9 @@ key по обеим формам. **#3226** — отдельная upstream File
 
 | PR | ветка | состояние |
 |---|---|---|
-| **#3198** | `up/kinozal-session` (local `de98a49a`, remote `4cf74c52`) | Открыт. Локальный один commit перебазирован на `755404f3`, 5 файлов, +636/−28; focused 35/35, обе полные PHP-матрицы и PHPStan зелёные. Remote намеренно не менялся и требует owner-only force-with-lease. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
-| **#3227** | `up/setsettings-socket-alloc` (`a8b60bea`) | Открыт владельцем. GitHub выявил один package-owned ESLint `no-redeclare` в `js/rtorrent.js`; one-file follow-up `a8b60bea` исправляет только индекс fault-loop. Владелец опубликовал fix, remote/local совпадают; все восемь GitHub checks и local focused Jest 66/66 зелёные. Тот же patch интегрирован и опубликован в fork `master` как `fe5313fa`. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
+| **#3198** | `up/kinozal-session` (`c39d499d`) | Открыт. Исправленная commonAccount-реализация опубликована одним commit на `781cee4e`, 5 файлов, +653/−28. Свежий independent review `APPROVED`; полный PHP 7.4/8.1/8.5, focused suites, lint и adversarial mutations зелёные. GitHub: clean merge и 8/8 checks GREEN. Последний отсутствующий fork fragment интегрирован как `377de777`. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
+| **#3227** | `up/setsettings-socket-alloc` (`938ff6ff`) | Открыт владельцем. Blank socket fields теперь пропускаются, indeterminate-lock имеет постоянное сообщение, локализация восстановлена; maintainer fixes опубликованы. Ожидается повторный review. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
 | **#3228** | `up/httprpc-refusals` (`c7a431aa`) | Открыт владельцем. Exact 5 paths `+437/-14` на `f19c9d86`; candidate и fork integration independently APPROVED. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
-| **#3229** | `up/php74-binary-metainfo` (`a1e60e69`) | Открыт владельцем; все восемь GitHub checks зелёные. Узкая PHP 7.4 защита не передаёт binary metainfo bytes в filesystem path probes. |
-| **#3230** | `up/rtorrent-0-16-21-f19` (`cbacef8e`) | Открыт владельцем; все восемь GitHub checks зелёные. Runtime не меняется, добавлена явная compatibility coverage rTorrent 0.16.21. Handoff: `PR-rtorrent-0-16-21.md`. |
 
 ---
 
@@ -168,7 +182,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 | `up/history-service-labels` | `4cf3bd69` | +37/−5, 3 файла | **НЕ ОТПРАВЛЯТЬ.** Достижимая потеря истории/Pushbullet для пользовательских `.private`-меток; producer отсутствует в upstream; тест не держит production-gate. Разбор: `REVIEW-history-service-labels.md` |
 | `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/rtorrent-0-16-21-f19` | `cbacef8e` | +9/−4, 3 test-файла | **ОПУБЛИКОВАНА КАК #3230.** Один non-merge commit прямо на `upstream/master=f19c9d86`; exact diff идентичен donor `48bc6d4b`. Все восемь GitHub checks и focused PHP 7.4/8.1/8.5 зелёные; independent review без findings. Runtime-код не меняется. Handoff: `PR-rtorrent-0-16-21.md` |
-| `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
+| `up/kinozal-session` | `c39d499d` | +653/−28, 5 файлов | **ОПУБЛИКОВАНА В #3198.** Один commit прямо на `781cee4e`; fresh independent review APPROVED, GitHub clean merge и 8/8 checks GREEN. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
 | `up/scgi-transport` | `33934444` | +1584/−51, 7 paths | **ГОТОВА ЛОКАЛЬНО.** Runtime `4682a761` прямо на final httprpc `c7a431aa` плюс test-only complete-HTTP and real-200 readiness fixes; reviews, PHP 7.4/8.1/8.5 и real 0.9.8/0.16.21 UNIX probes APPROVED. Fork integration `19086b5f` + `3ff4860c`; push не выполнялся. Evidence: `VERIFICATION-scgi-transport-2026-08-31.md`, PR text: `PR-scgi-transport.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
@@ -210,10 +224,11 @@ key по обеим формам. **#3226** — отдельная upstream File
 Полный current crosswalk: `CROSSWALK-remaining-divergence-2026-08-29.md`;
 исполняемый план: `PLAN-remaining-queue-2026-08-29.md`.
 
-Точный текущий счёт после завершения всех пяти disposition-аудитов и packages
-1–4:
+Точный текущий счёт после завершения всех пяти disposition-аудитов, packages
+1–4 и partial Tasks 1–4 package 5:
 
-- **14 незакрытых реализационных пакетов**;
+- **14 незакрытых реализационных пакетов**: package 5 partial, packages 6–18
+  ещё не начаты;
 - **0 неразобранных carve/verdict-аудитов**;
 - семь готовых или локально интегрированных owner handoff в это число не входят;
 - package 1 уже принят upstream как #3224 и учитывается отдельно как closure.
@@ -240,7 +255,8 @@ Erasedata A/B остаются самостоятельными, а C сложе
 foreign-handler packages. Полный синтез: `REVIEW-disposition-wave-2026-08-29.md`;
 foreign brief: `REVIEW-foreign-tracker-handlers-2026-08-29.md`.
 
-Retrackers recovery: DESIGN APPROVED — implementation pending. Scope — ровно
+Retrackers recovery: **PARTIAL IMPLEMENTATION**, Tasks 1–4 из 8 завершены на
+`up/retrackers-recovery=9fef4d66`; Task 4B independently APPROVED. Scope — ровно
 `init.php`, `done.php`, `run.sh`, `update.php`, `UpdateTest.php` и
 `RetrackersUpdateSequenceTest.php`; `guard.php` и P3 service policy исключены.
 В шестом path разрешён только import/bootstrap preamble; 12 methods и class
@@ -256,9 +272,9 @@ post-implementation acceptance gate, а не prerequisite design approval;
 Historical five-path authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, contract SHA-256
 `922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`.
-Он не является authority исправленного six-path scope; текущий commit/SHA
-зафиксирован после двух independent APPROVED reviews. Current six-path
-authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
+Он не является authority исправленного six-path scope; текущий design
+commit/SHA зафиксирован после двух independent APPROVED reviews. Six-path
+design authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
 `6232b0cf6e5d9c36eaed49648cdd372e579c305b58d90cbefe631cf5ad59a535`,
 pre-code verification SHA-256
 `cc7de16b20b1752dd95464a6a98ca034bd22aceaceacf03cdae3bb3d8a21acef`.

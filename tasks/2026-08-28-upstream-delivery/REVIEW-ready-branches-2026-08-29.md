@@ -1,16 +1,19 @@
-# Готовые upstream-ветки: контрольный срез 2026-08-29
+# Готовые upstream-ветки: контрольный срез 2026-08-31
+
+Текущий общий реестр: `STATUS-18-PACKAGES-2026-08-31.md`.
 
 Историческая контрольная база первых четырёх веток: `upstream/master` =
 `755404f3`. PHP74 candidate был построен на `eeae9f3a` и уже принят upstream как
-#3224. Socket handoff перебазирован на current upstream `f19c9d86`, повторно
-подтверждённый read-only через `git ls-remote`. Агент не выполнял push.
+#3224. Socket handoff перебазирован на current upstream `f19c9d86`. Kinozal
+повторно перебазирован на `upstream/master=781cee4e`; его patch-id до/после
+rebase совпадает. Владелец опубликовал Kinozal candidate как `c39d499d`.
 
 | Ветка | Вершина | Точный scope | Свежая проверка | Статус |
 |---|---|---:|---|---|
 | `up/fileutil-defects` | `79190927` | 7 файлов, `+514/-10` | PHP 8.5/8.1: 48 файлов, 303 теста, 1815 assertions; PHPStan; mutations/direct probes | готова |
 | `up/test-harness` | `8eafb529` | 4 test-файла, `+49/-17` | PHP 8.5/8.1: 47 файлов, 287 тестов, 1781 `Passed:`; 7/7 mutations RED | готова |
 | `up/rtorrent-0-16-21` | `48bc6d4b` | 3 test-файла, `+9/-4` | Jest 20/196; PHP 8.5/8.1: 46 файлов, 285 методов, 1790 assertions; 2 независимых review | готова |
-| `up/kinozal-session` | `de98a49a` | 5 файлов, `+636/-28` | focused 35/35; PHP 8.5/8.1: 47 файлов, 1779 `Passed:`, 147 `ok`; PHPStan; mutation | готова локально, remote устарел |
+| `up/kinozal-session` | `c39d499d` | 5 файлов, `+653/-28` | Full PHP 7.4/8.1/8.5; focused 5/5 + 18/18 + 9/9; пять lint; 3 mutations RED; fresh independent review APPROVED; GitHub 8/8 GREEN | опубликована в #3198, clean merge, ждёт maintainer |
 | `up/php74-torrent-properties` | `286dd24b` | 3 файла, `+14/-9` | PHP 7.4/8.1 full harness; PHPStan floor; two RED/mutations; GitHub matrix | **accepted upstream #3224**; integrated `acbf5691`; #3225 follow-up in `7a78c606` |
 | `up/setsettings-socket-alloc` | `d548016b` | 4 файла, `+1229/-19` | focused 59/59; full Jest 263/263; PHP 8.5/8.1; mutations; scoped/final reviews | готова локально на `f19c9d86`, no push; integrated `f547b2f3` |
 
@@ -33,14 +36,16 @@ FileUtil отдельно прошёл PHP 7.4 lint на всех семи из�
 
 ## Remote handoff
 
-FileUtil, test-harness, rTorrent 0.16.21 и socket локальны и не отправлялись.
-PHP74 уже принят upstream. Открытая Kinozal-ветка на `origin`
-остаётся на `4cf74c52`, поэтому владельцу нужен только explicit lease:
+FileUtil принят как #3231, rTorrent 0.16.21 как #3230; test harness опубликован
+как #3232, socket как #3227. PHP74 lane принят upstream, включая #3229.
+Kinozal-ветка опубликована как
+`origin/up/kinozal-session=c39d499d`; exact lease ниже уже успешно использован
+и повторно выполнять его не нужно:
 
 ```sh
 cd /home/dev/Documents/my_projects/.rutorrent-worktrees/pr-loginmgr
 git push --force-with-lease=refs/heads/up/kinozal-session:4cf74c52447bf7b044c57d8b903c57efe35f0c85 \
-  origin up/kinozal-session:up/kinozal-session
+  origin refs/heads/up/kinozal-session:refs/heads/up/kinozal-session
 ```
 
 При отказе lease сначала fetch и inspection; не заменять его обычным force.

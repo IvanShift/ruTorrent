@@ -1,5 +1,9 @@
 # Crosswalk оставшегося fork divergence — 2026-08-29
 
+Текущие refs, package gates и upstream PR находятся в
+`STATUS-18-PACKAGES-2026-08-31.md`; этот файл сохраняет историческую
+file-level декомпозицию и ownership границы.
+
 Исторический file-level срез: fork behavior snapshot `511ed13f`; текущий
 upstream `755404f3`; последний уже слитый в snapshot upstream-tip `fde9863b`.
 Current published fork — `24891da9`. Его более поздние 6 production/test paths
@@ -74,8 +78,9 @@ B5 и 2×8×2 manifest остаются post-implementation gate. Evidence:
 `c4fef63f` — test-only retrackers bootstrap, `76b0c0f5` — PHP 7.4 NUL-safe
 Torrent path probes. Для второго готова upstream-clean branch
 `up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`;
-владелец опубликовал её как upstream PR #3229. На 2026-08-31 PR `OPEN`,
-а `upstream/master=f19c9d86`. Fork full harness последовательно GREEN на PHP
+владелец опубликовал её как upstream PR #3229; PR теперь **merged** как
+`upstream/master=781cee4e`, а ancestry-only sync fork master — `d06e0651`.
+Fork full harness последовательно GREEN на PHP
 7.4/8.1/8.5: 65 files,
 4152 success signals, zero failures. Это package-1 follow-up, не новая
 implementation line. Evidence:
@@ -113,20 +118,22 @@ SHA, integration merges и последующие remediation.
 ## Закрыто или готово
 
 - готово или локально интегрировано: FileUtil `76485317` (#3231), test harness
-  `8eafb529`, rTorrent 0.16.21 `cbacef8e` (#3230), Kinozal `de98a49a`, socket
+  `8eafb529`, rTorrent 0.16.21 `cbacef8e` (#3230), Kinozal `c39d499d`, socket
   `d548016b`/`f547b2f3`, httprpc `c7a431aa`/`48825583`, SCGI
   `33934444` (runtime `4682a761`)/`19086b5f` + `3ff4860c`;
-- PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-up #3225 также
-  принят и включён в fork refresh `7a78c606`;
+- PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-ups #3225 и
+  #3229 также приняты, а #3229 входит в local ancestry sync `d06e0651`;
 - standalone history dot-label branch отвергнута и не отправляется;
 - cache `unserialize`, fork tooling, `.gitignore`, `AGENTS.md`, dead run registry,
   Snoopy gzip и старый log-unwritable имеют явный no-send/rejected verdict.
 
 ## Current approved contract status
 
-Package 4 SCGI is implemented and independently APPROVED from final package 3;
-packages 5 retrackers, 6 erasedata A and 14 XMLRPC proxy policy are
-DESIGN APPROVED — implementation pending.
+Package 4 SCGI is implemented and independently APPROVED from final package 3.
+Package 5 retrackers is partially implemented through Task 4B at `9fef4d66`
+and independently APPROVED at that boundary; Tasks 5–8 remain. Packages 6
+erasedata A and 14 XMLRPC proxy policy are DESIGN APPROVED — implementation
+pending.
 Their exact scopes are 7, 6, 8 production + 2 test and 7 paths respectively.
 Retrackers uses final SCGI as immediate parent; P3 waits final retrackers +
 final P1. Historical retrackers approval authority is commit

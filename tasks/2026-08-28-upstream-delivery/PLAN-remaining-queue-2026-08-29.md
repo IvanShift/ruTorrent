@@ -1,5 +1,9 @@
 # Актуальный план оставшейся upstream-очереди — 2026-08-29
 
+Текущий статус исполнения, refs и PR вынесен в
+`STATUS-18-PACKAGES-2026-08-31.md`. Исторические checkpoint и оценки ниже
+сохраняются как provenance контракта.
+
 Этот документ заменяет старую очередь 5–11 из
 `../2026-08-28-upstream-rebuild/PLAN.md`. Текущая upstream-база — `f19c9d86`;
 historical estimates ниже сохраняют собственные refs. Whole-file copy из fork
@@ -67,8 +71,9 @@ Post-package harness follow-ups не создают новых строк рее
 production `76b0c0f5` не передаёт binary bencode с NUL в три filesystem probes
 на PHP 7.4. Clean upstream branch второго fix —
 `up/php74-binary-metainfo=a1e60e69`, exact 2 paths на `f19c9d86`; владелец
-опубликовал её и открыл upstream PR #3229. На 2026-08-31 PR остаётся
-`OPEN`, а `upstream/master=f19c9d86`. Последовательный clean full harness PHP
+опубликовал её и открыл upstream PR #3229. PR **merged** как `781cee4e`, а
+локальный ancestry-only sync зафиксирован merge-коммитом `d06e0651` без
+изменения дерева fork. Последовательный clean full harness PHP
 7.4/8.1/8.5 теперь GREEN
 `65 files / 4152 success signals / 0 failures` для fork. Это follow-up package
 1 и test correction, поэтому current queue остаётся **14**. Evidence:
@@ -85,13 +90,20 @@ missing-ledger B5. Production-success B5 и full 2×8×2 manifest ждут produ
 authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
 `6232b0cf6e5d9c36eaed49648cdd372e579c305b58d90cbefe631cf5ad59a535`.
 
+Implementation checkpoint package 5: Tasks 1–4 из 8 завершены на clean local
+branch `up/retrackers-recovery=9fef4d66`; Task 4B прошёл PHP 7.4/8.1/8.5,
+literal rTorrent 0.9.8/0.16.21 capture checks и независимый финальный review
+`APPROVED`. Ветка не включена в `master`, не push и не готова к handoff до
+Tasks 5–8. Следующий шаг — Task 5 init/done hook install protocol.
+
 ## Уже готовые handoff
 
 Семь веток готовы или уже локально интегрированы: FileUtil, test harness,
 rTorrent 0.16.21, Kinozal, setsettings/socket, httprpc refusals и SCGI
 transport; FileUtil опубликована как #3231, httprpc — как #3228. PHP74 уже
-принят upstream, а отдельная binary-metainfo follow-up branch опубликована как
-PR #3229 и остаётся частью той же lane. Первые
+принят upstream, а отдельный binary-metainfo follow-up #3229 также merged и
+остаётся частью той же lane. Kinozal опубликован как #3198 на `c39d499d`.
+Первые
 пять handoff зафиксированы в `REVIEW-ready-branches-2026-08-29.md`, httprpc и
 SCGI — в `VERIFICATION-httprpc-refusals-2026-08-31.md` и
 `VERIFICATION-scgi-transport-2026-08-31.md`.
@@ -101,11 +113,11 @@ Push выполняет только владелец.
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
-| 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED #3224**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3225 follow-up included in `7a78c606` |
-| 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED**: `d548016b`, direct parent `f19c9d86`; integrated `f547b2f3`; no push |
+| 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3224/#3225 и binary follow-up #3229 merged |
+| 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED / PR #3227 OPEN**: final branch `938ff6ff`; integrated в fork; maintainer fixes опубликованы, ожидается re-review |
 | 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / APPROVED / PR #3228 OPEN**: `c7a431aa`, direct parent `f19c9d86`; integrated `48825583`; branch published by owner |
 | 4 | `up/scgi-transport` | exact 7 paths, `+1584/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: runtime `4682a761`, test-only delivery head `33934444`; direct parent `c7a431aa`; fork integration `19086b5f` + `3ff4860c`; no push |
-| 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; reachable RAW and missing-ledger B5 captured; production-success B5+EPOCH 2×8×2 manifest waits real producers |
+| 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | **PARTIAL IMPLEMENTATION**: Tasks 1–4 complete, Task 4B APPROVED at `9fef4d66`; Tasks 5–8 pending; не в master/no push |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | exact 2 paths; final numstat после copied-real RED | после final A drain/rearm seam | corrected design independently **APPROVED**; missing-helper no-op/log + Ratio-startup rearm pending A wake; username filter/Ratio force guard исключены |
