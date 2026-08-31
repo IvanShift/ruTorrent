@@ -1,36 +1,73 @@
+# Title
+
+Harden FileUtil log paths and permission handling
+
+# Body
+
 ## Summary
 
 - parse `RU_PROFILE_MASK` as validated octal at the configuration boundary;
-- preserve existing non-regular log targets and choose append mode by target type;
-- require stable absolute filesystem log paths while retaining registered stream URI support;
-- make `env_check.php` distinguish filesystem paths, `file://` targets, available streams, and invalid wrappers.
+- preserve existing FIFO and device permissions while using write-only append
+  for regular logs;
+- require stable absolute filesystem log paths while retaining `file://` and
+  registered stream support;
+- make `env_check.php` report invalid paths and unavailable stream wrappers
+  correctly.
 
 ## Why
 
-Official PHP FPM images populate `$_ENV` (`variables_order=EGPCS`). An empty
-`RU_PROFILE_MASK` therefore reached permission expressions as a string and made a
-real FastCGI request fail with `TypeError: Unsupported operand types: string & int`.
-String octal values also produced incorrect permission bits.
+Official PHP FPM images populate `$_ENV`. Previously, an empty
+`RU_PROFILE_MASK` reached filesystem operations as a string and could terminate
+a real request with a `TypeError`; octal strings also produced incorrect
+permission bits.
 
-`FileUtil::toLog()` used `is_file()` as an existence check, so each write touched
-and re-chmodded an existing FIFO or device. It also opened every target with
-`ab+`, unnecessarily requiring read access for regular append-only logs. Finally,
-a relative `$log_file` resolved differently from web and scheduler entry points.
+`FileUtil::toLog()` used `is_file()` as an existence check, so an existing FIFO
+or device could be touched and re-chmodded on every write. Regular logs were
+opened with `ab+`, unnecessarily requiring read access. Relative log paths could
+also resolve to different files depending on the entry point's working
+directory.
 
-## Verification
+## Before / after
 
-- current-upstream full `tests/php-test.sh`: PHP 8.5.4 and PHP 8.1.34 root
-  container, 48 files / 303 named tests / 1815 `Passed:` in each matrix;
-- all seven changed paths lint cleanly on PHP 7.4.33; a full current-base 7.4
-  run is blocked by upstream's unrelated `php/Torrent.php` native `mixed`
-  properties, while the earlier pre-#3213 base completed the full 7.4 suite;
-- regression mutations independently restore and detect each permission, mode, path, and wrapper defect;
-- real PHP 8.1 FPM request with empty `RU_PROFILE_MASK`: base returns HTTP 500, this branch returns HTTP 200;
-- real FIFO retains mode `0600`; write-only regular target receives the log line; relative target is not created;
-- disposable `ivanshift/rutorrent:latest` lab with this working tree: `/php/getplugins.php` returns HTTP 200 with no PHP fatal/type error in the container log.
+Before:
 
-The lab smoke used a disposable container rather than a personal production torrent workload.
+- an empty environment mask could return HTTP 500;
+- string masks produced incorrect modes;
+- existing non-regular log targets could have their permissions widened;
+- write-only regular logs could not receive entries;
+- one relative setting could create logs in multiple directories.
 
-The final handoff commit is `79190927`, one commit directly on
-`upstream/master` `755404f3`. Its exact scope remains seven files and
-`+514/-10`; `range-diff` confirms that the rebase did not change the patch.
+After:
+
+- environment masks are validated and converted to octal integers;
+- existing FIFO and device permissions are preserved;
+- regular logs use write-only append while FIFO behavior remains non-blocking;
+- filesystem logs must use stable absolute paths;
+- stream and `file://` targets are validated according to their actual
+  behavior.
+
+## Tests
+
+- full PHP suite on PHP 7.4, 8.1, and 8.5: 50 files, 318 methods, 1843 passing
+  assertions and 127 TAP checks per runtime;
+- PHPStan 2.2.9;
+- syntax checks for all seven changed paths on all three PHP versions;
+- focused RED/GREEN checks and ten targeted regression mutations;
+- real PHP 8.1 FPM request with empty `RU_PROFILE_MASK`: current base returns
+  HTTP 500, this branch returns HTTP 200;
+- direct FIFO, write-only regular-file, and relative-path probes.
+
+# Handoff
+
+- upstream base: `f19c9d86df72ad6b1720f31252297340049e5eab`;
+- local branch: `up/fileutil-defects-f19`;
+- commit: `76485317b414b435a4cecb752fa6d769f67149b3`;
+- exact diff: seven upstream-owned paths, `+514/-10`;
+- upstream #3226 is the direct parent and is preserved, not duplicated;
+- independent review: `APPROVED`, no findings.
+
+Publish:
+
+```sh
+git push -u origin up/fileutil-defects-f19
+```

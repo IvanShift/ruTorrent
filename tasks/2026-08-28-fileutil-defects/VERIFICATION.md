@@ -436,3 +436,41 @@ Disposable `rt-lab` с overlay финального upstream-кода на
 - fork `master`, отдельный D0: `d78c6070`.
 
 Текст upstream PR сохранён рядом в `PR_BODY.md`.
+
+## Актуализация на `upstream/master` после #3226 — 2026-08-31
+
+Финальный publish-кандидат пересобран прямо поверх
+`f19c9d86df72ad6b1720f31252297340049e5eab`:
+
+```text
+76485317b414b435a4cecb752fa6d769f67149b3 Validate FileUtil log paths and permissions
+parent: f19c9d86df72ad6b1720f31252297340049e5eab
+branch: up/fileutil-defects-f19
+diff:   7 paths, +514/-10
+```
+
+#3226 менял только braces в `FileUtil::makeDirectory()` и добавил
+`MakeDirectoryTest.php`. Новый кандидат сохраняет эти braces, не меняет
+`MakeDirectoryTest.php` и не содержит собственного delta в `makeDirectory()`.
+Шесть из семи файлов byte-identical прежнему donor; единственное отличие
+`fileutil.php` — уже принятая upstream brace-форма.
+
+Fresh clean matrix на финальном SHA:
+
+```text
+PHP 7.4: 50 files, 318 methods, 1843 Passed, 127 ok, failures 0
+PHP 8.1: 50 files, 318 methods, 1843 Passed, 127 ok, failures 0
+PHP 8.5: 50 files, 318 methods, 1843 Passed, 127 ok, failures 0
+PHPStan 2.2.9: GREEN
+7 changed paths x 3 PHP versions lint: GREEN
+10 targeted mutations: expected RED, then restored GREEN
+```
+
+Повторный официальный `php:8.1-fpm` подтвердил `variables_order=EGPCS` и
+наличие пустого `RU_PROFILE_MASK` в `$_ENV`: base падает на string/int operation,
+candidate преобразует значение в integer `0777` и обслуживает запрос. Direct
+probes также подтвердили FIFO mode `0600`, запись в regular mode `0222` и отказ
+создавать relative log path.
+
+Независимый whole-candidate review: **APPROVED**, Critical/Important/Minor — 0.
+Remote branch на момент подготовки отсутствует; push не выполнялся.

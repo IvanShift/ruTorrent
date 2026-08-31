@@ -23,6 +23,9 @@ Tests:
 
 # Handoff
 
+- upstream PR: `Novik/ruTorrent#3230`;
+- published remote: `origin/up/rtorrent-0-16-21-f19` @ `cbacef8e`;
+- GitHub checks: 8/8 GREEN on 2026-08-31;
 - upstream base: `f19c9d86`;
 - local branch: `up/rtorrent-0-16-21-f19`;
 - commit: `cbacef8e6e7bae1eec7daf1fcbe1f1644c334273`;

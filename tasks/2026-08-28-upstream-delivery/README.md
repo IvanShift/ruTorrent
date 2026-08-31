@@ -154,6 +154,8 @@ key по обеим формам. **#3226** — отдельная upstream File
 | **#3198** | `up/kinozal-session` (local `de98a49a`, remote `4cf74c52`) | Открыт. Локальный один commit перебазирован на `755404f3`, 5 файлов, +636/−28; focused 35/35, обе полные PHP-матрицы и PHPStan зелёные. Remote намеренно не менялся и требует owner-only force-with-lease. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
 | **#3227** | `up/setsettings-socket-alloc` (`a8b60bea`) | Открыт владельцем. GitHub выявил один package-owned ESLint `no-redeclare` в `js/rtorrent.js`; one-file follow-up `a8b60bea` исправляет только индекс fault-loop. Владелец опубликовал fix, remote/local совпадают; все восемь GitHub checks и local focused Jest 66/66 зелёные. Тот же patch интегрирован и опубликован в fork `master` как `fe5313fa`. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
 | **#3228** | `up/httprpc-refusals` (`c7a431aa`) | Открыт владельцем. Exact 5 paths `+437/-14` на `f19c9d86`; candidate и fork integration independently APPROVED. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
+| **#3229** | `up/php74-binary-metainfo` (`a1e60e69`) | Открыт владельцем; все восемь GitHub checks зелёные. Узкая PHP 7.4 защита не передаёт binary metainfo bytes в filesystem path probes. |
+| **#3230** | `up/rtorrent-0-16-21-f19` (`cbacef8e`) | Открыт владельцем; все восемь GitHub checks зелёные. Runtime не меняется, добавлена явная compatibility coverage rTorrent 0.16.21. Handoff: `PR-rtorrent-0-16-21.md`. |
 
 ---
 
@@ -161,7 +163,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 
 | ветка | коммит | объём | что мешает |
 |---|---|---|---|
-| `up/fileutil-defects` | `79190927` | +514/−10, 7 файлов | **ГОТОВА.** Один commit прямо на `755404f3`, patch после rebase идентичен; PHP 8.5/8.1 — 48 файлов, 303 теста, 1815 assertions; PHPStan и direct probes зелёные. PHP 7.4 qualification: `../2026-08-28-fileutil-defects/VERIFICATION.md` |
+| `up/fileutil-defects-f19` | `76485317` | +514/−10, 7 файлов | **ГОТОВА К ПУБЛИКАЦИИ.** Один non-merge commit прямо на `f19c9d86` после #3226; braces сохранены, `MakeDirectoryTest.php` и `makeDirectory()` не входят в diff. Full PHP 7.4/8.1/8.5: 50 files, 318 methods, 1843 assertions, 127 TAP; PHPStan, 10 mutations, FPM/FIFO/write-only probes GREEN; independent review без findings. Текст/команда: `../2026-08-28-fileutil-defects/PR_BODY.md`. |
 | `up/history-service-labels` | `4cf3bd69` | +37/−5, 3 файла | **НЕ ОТПРАВЛЯТЬ.** Достижимая потеря истории/Pushbullet для пользовательских `.private`-меток; producer отсутствует в upstream; тест не держит production-gate. Разбор: `REVIEW-history-service-labels.md` |
 | `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/rtorrent-0-16-21-f19` | `cbacef8e` | +9/−4, 3 test-файла | **ГОТОВА К ПУБЛИКАЦИИ.** Один non-merge commit прямо на актуальном `upstream/master=f19c9d86`; exact diff идентичен исходному донору `48bc6d4b`. Fresh Jest 20/20 и focused PHP 7.4/8.1/8.5 зелёные; independent review без findings, `Ready to merge: Yes`. Runtime-код не меняется. Текст и команда: `PR-rtorrent-0-16-21.md` |
