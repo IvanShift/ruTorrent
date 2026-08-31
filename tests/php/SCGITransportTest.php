@@ -723,6 +723,47 @@ class SCGITransportTest extends TestCase
 		finally { $peer->close(); }
 	}
 
+	public function testCopiedRpc2KeepsStartupDiagnosticsOutsideRequestWarnings()
+	{
+		if(!$this->transportIsAvailable()) return;
+		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
+		$peer = SCGITransportFixture::startUnix("Content-Length: ".strlen($body)."\r\n\r\n".$body);
+		try
+		{
+			$jitWarning = 'JIT is incompatible with third party extensions that override '
+				.'zend_execute_ex(). JIT disabled. in Unknown on line 0';
+			$result = $this->runCopiedRpc2($peer->host(), '0', $this->allowedXml(), array(
+				'legacy' => true,
+				'startupWarning' => $jitWarning,
+			));
+			$this->assertTrue(isset($result['serverStartupError'])
+				&& strpos($result['serverStartupError'], $jitWarning) !== false,
+				'the harness retains diagnostics emitted before the request boundary');
+			$this->assertTrue(isset($result['serverError'])
+				&& strpos($result['serverError'], $jitWarning) === false,
+				'a server startup warning is not attributed to copied rpc2 code');
+		}
+		finally { $peer->close(); }
+	}
+
+	public function testCopiedRpc2StillCapturesRequestWarningsAfterStartupBoundary()
+	{
+		if(!$this->transportIsAvailable()) return;
+		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
+		$peer = SCGITransportFixture::startUnix("Content-Length: ".strlen($body)."\r\n\r\n".$body);
+		try
+		{
+			$result = $this->runCopiedRpc2($peer->host(), '0', $this->allowedXml(), array(
+				'legacy' => true,
+				'requestWarning' => 'injected copied rpc2 warning',
+			));
+			$this->assertTrue(isset($result['serverError'])
+				&& strpos($result['serverError'], 'injected copied rpc2 warning') !== false,
+				'a warning emitted while copied rpc2 runs remains visible to the test');
+		}
+		finally { $peer->close(); }
+	}
+
 	public function testCopiedRealRpc2ReturnsNeutral502AndOneClassifiedLog()
 	{
 		if(!$this->transportIsAvailable()) return;
@@ -826,11 +867,17 @@ PHP;
 				$config .= "\$rpcMaxResponseBytes = ".var_export(isset($options['max']) ? $options['max'] : 67108864, true).";\n";
 			}
 			file_put_contents($tree.'/conf/config.php', $config);
-			file_put_contents($tree.'/prepend.php', "<?php\n\$_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] = 'on';\n");
+			$prepend = "<?php\n\$_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] = 'on';\n";
+			if(isset($options['requestWarning']))
+				$prepend .= "if (isset(\$_SERVER['REQUEST_URI']) && \$_SERVER['REQUEST_URI'] === '/rpc2.php') "
+					."trigger_error(".var_export((string)$options['requestWarning'], true).", E_USER_WARNING);\n";
+			file_put_contents($tree.'/prepend.php', $prepend);
 			if(file_put_contents($tree.'/__rutorrent_scgi_ready__', 'ready') !== 5)
 				throw new Exception('could not create copied rpc2 readiness file');
 			$rpcLog = $tree.'/rpc2.log';
 			$serverError = $tree.'/server.err';
+			if(isset($options['startupWarning']))
+				file_put_contents($serverError, "PHP Warning: ".(string)$options['startupWarning']."\n");
 			$httpPort = $this->reservePort();
 			$environment = array_merge($_ENV, array(
 				'SCGI_TEST_HOST' => $host,
@@ -839,7 +886,8 @@ PHP;
 			));
 			$command = escapeshellarg(PHP_BINARY)
 				.' -d auto_prepend_file='.escapeshellarg($tree.'/prepend.php')
-				.' -d display_errors=0 -S 127.0.0.1:'.$httpPort.' -t '.escapeshellarg($tree);
+				.' -d display_errors=0 -d log_errors=1 -d error_reporting=-1'
+				.' -S 127.0.0.1:'.$httpPort.' -t '.escapeshellarg($tree);
 			$process = proc_open($command, array(
 				0 => array('pipe', 'r'),
 				1 => array('file', $tree.'/server.out', 'a'),
@@ -849,9 +897,17 @@ PHP;
 				throw new Exception('could not start copied rpc2 server');
 			fclose($pipes[0]);
 			$this->waitForServer($httpPort, $process, $serverError);
+			// php -S can report inherited runtime configuration before it serves
+			// copied code. Keep that transcript, but judge rpc2 from this boundary.
+			clearstatcache(true, $serverError);
+			$requestErrorOffset = is_file($serverError) ? filesize($serverError) : 0;
+			if($requestErrorOffset === false)
+				throw new Exception('could not establish copied rpc2 diagnostic boundary');
 			$result = $this->rawPost($httpPort, '/rpc2.php', $body);
 			$result['rpcLog'] = is_file($rpcLog) ? file_get_contents($rpcLog) : '';
-			$result['serverError'] = is_file($serverError) ? file_get_contents($serverError) : '';
+			$allServerError = is_file($serverError) ? file_get_contents($serverError) : '';
+			$result['serverStartupError'] = substr($allServerError, 0, $requestErrorOffset);
+			$result['serverError'] = substr($allServerError, $requestErrorOffset);
 			return $result;
 		}
 		finally
