@@ -58,6 +58,13 @@ restart — a reply can legitimately take far longer than opening the socket did
 override it without touching `php.ini`. It is independent of `$rpcTimeOut`: the
 two bound different phases, and neither constrains the other.
 
+The same transfer value is one absolute budget for sending the complete SCGI
+request and the idle timeout while reading its reply. rTorrent supplies a
+required `Content-Length`; ruTorrent therefore stops at that exact body instead
+of waiting for the peer to close the socket. `$rpcMaxResponseBytes` defaults to
+64 MiB and may be raised only as far as rTorrent's supported 100 MiB wire
+ceiling.
+
 Note that the browser gives up independently: `webui.reqtimeout` (Settings →
 Interface, default 10 seconds) aborts the request no matter how patient PHP is.
 Raising `$rpcTransferTimeOut` past that only helps the paths the browser is not

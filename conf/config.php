@@ -24,14 +24,17 @@
 
 	// for xmlrpc actions
 	$rpcTimeOut = 5;			// connect timeout, in seconds
-	// How long to wait for rtorrent to ANSWER, once the connection is up.
-	// rtorrent builds a whole multicall before it writes its first byte, so on
-	// a large session -- or one still loading after a restart -- an answer can
-	// legitimately take far longer than it takes to open the socket. Keeping
-	// both on $rpcTimeOut cut every reply off at five seconds.
+	// One absolute budget covers the complete SCGI request write; reply reads
+	// use the same value as their idle timeout. rtorrent builds a whole
+	// multicall before it writes its first byte, so on a large session -- or one
+	// still loading after a restart -- an answer can legitimately take far
+	// longer than it takes to open the socket. Keeping both phases on
+	// $rpcTimeOut cut every reply off at five seconds.
 	// null = PHP's default_socket_timeout (usually 60), which is what ruTorrent
 	// waited before this budget became explicit.
 	$rpcTransferTimeOut = null;
+	// Bound one daemon reply so a broken peer cannot exhaust a PHP worker.
+	$rpcMaxResponseBytes = 67108864;
 	$rpcLogCalls = false;
 	$rpcLogFaults = true;
 

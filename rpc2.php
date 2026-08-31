@@ -42,7 +42,6 @@ if(!isset($_SERVER['RUTORRENT_XMLRPC_ENDPOINT']) ||
 }
 
 require_once(dirname(__FILE__).'/conf/config.php');
-require_once(dirname(__FILE__).'/php/scgitransport.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_path.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_proxy.php');
 
@@ -87,28 +86,23 @@ function rpc2_fault($status, $message)
 }
 
 /**
- * One SCGI request to rtorrent, with the trust the policy decided on. Same
- * wire format ruTorrent's rXMLRPCRequest::send() uses; kept here so the
- * endpoint does not need ruTorrent's settings bootstrap to make a call.
+ * One SCGI request to rtorrent, with the trust the policy decided on. It uses
+ * the shared transport directly so this endpoint does not need ruTorrent's
+ * settings bootstrap to make a call.
  */
 function rpc2_send($payload, $trusted)
 {
-	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut;
-	$err = null;
-	// isset() on the transfer budget only. $rpcTimeOut is assigned
-	// unconditionally by the conf/config.php required above, but a deployment
-	// edits that file in place and carries its own copy across upgrades, so the
-	// newer global may simply not be there; null makes the transport apply its
-	// own default.
-	$res = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted, $rpcTimeOut, $err,
-		isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null);
-	if($res === null)
-	{
-		if($err !== null)
-			rpc2_log($err);
-		return null;
-	}
-	return $res['body'];
+	require_once(dirname(__FILE__).'/php/scgitransport.php');
+	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes;
+	$failure = null;
+	$result = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted,
+		isset($rpcTimeOut) ? $rpcTimeOut : 30, $failure,
+		isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
+		isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
+		rSCGITransport::RESPONSE_BODY);
+	if($result === null)
+		rpc2_log($failure);
+	return $result;
 }
 
 if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST'))
@@ -169,7 +163,7 @@ if($decision['action'] !== 'send')
 
 $result = rpc2_send($decision['payload'], $decision['trusted']);
 if($result === null)
-	rpc2_fault('502 Bad Gateway', 'Could not reach rTorrent over XMLRPC. Is rTorrent running?');
+	rpc2_fault('502 Bad Gateway', 'Could not complete the rTorrent XMLRPC request.');
 
 header('Content-Type: text/xml');
 header('Content-Length: '.strlen($result));

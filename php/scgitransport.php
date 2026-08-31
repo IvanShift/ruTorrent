@@ -1,334 +1,298 @@
 <?php
 
 /**
- * Shared, fail-closed SCGI transport for XML-RPC communication with rTorrent.
+ * One framed SCGI exchange. This layer owns bytes and deadlines only; XML is
+ * deliberately left to its caller, which knows the response it requested.
  */
 class rSCGITransport
 {
+	const RESPONSE_RAW = 'raw';
+	const RESPONSE_BODY = 'body';
 	const MAX_HEADER_BYTES = 65536;
-	const MAX_BODY_BYTES = 67108864;
+	const MAX_WRITE_BYTES = 65536;
+	const DEFAULT_MAX_RESPONSE_BYTES = 67108864;
+	const MAX_WIRE_RESPONSE_BYTES = 104857600;
 
-	/**
-	 * Send one XML-RPC request and return one complete XML-RPC methodResponse.
-	 *
-	 * @param  int|float      $timeout         seconds to wait for the CONNECTION
-	 * @param  int|float|null $transferTimeout seconds to wait on the request and
-	 *                        the reply once connected; null defers to PHP's
-	 *                        default_socket_timeout
-	 * @return array|null array('headers' => string, 'body' => string,
-	 *                    'raw' => string), or null on any transport/framing error
-	 */
-	public static function send($host, $port, $payload, $trusted = true, $timeout = 30, &$errorLog = null,
-		$transferTimeout = null)
+	public static function send($host, $port, $payload, $trusted = true, $connectTimeout = 30,
+		&$failure = null, $transferTimeout = null, $maxResponseBytes = null,
+		$responseMode = self::RESPONSE_RAW)
 	{
-		$errorLog = null;
-		if(!function_exists('simplexml_load_string'))
-		{
-			$errorLog = 'SimpleXML extension is required for SCGI response validation';
-			return null;
-		}
-		$payload = (string) $payload;
-		$contentLength = strlen($payload);
-		if($contentLength === 0)
-		{
-			$errorLog = 'empty payload';
-			return null;
-		}
+		$failure = null;
+		if($payload === '')
+			return self::fail($failure, 'empty-request');
+		if(($responseMode !== self::RESPONSE_RAW) && ($responseMode !== self::RESPONSE_BODY))
+			return self::fail($failure, 'invalid-response-mode');
+		$limit = self::responseLimit($maxResponseBytes);
+		if($limit === null)
+			return self::fail($failure, 'invalid-response-limit');
+		$transferTimeout = self::transferTimeout($transferTimeout);
 
-		// Two budgets, because they answer two different questions.
-		//
-		// The connect budget measures the HOST: rtorrent is listening or it is
-		// not, and a local socket settles that in microseconds, so a tight
-		// value is right and a daemon that is down must fail fast -- during a
-		// container restart the panel should say so at once, not hang.
-		//
-		// The transfer budget measures rtorrent's ANSWER. rtorrent computes a
-		// whole multicall before it writes its first byte, so first-byte
-		// latency IS the computation time; over a large session, or one still
-		// loading from disk after a restart, tens of seconds is ordinary.
-		//
-		// These were one number, and that number was $rpcTimeOut, which
-		// conf/config.php has documented and shipped as a connect timeout since
-		// long before this transport existed. Reusing it for the reply cut
-		// every answer off at five seconds and reported a healthy rtorrent as
-		// 'timed out reading from rtorrent after 5s'. Covered by
-		// testSCGITransportSlowReplySurvivesATightConnectTimeout.
-		$connectTimeout = (float) $timeout;
-		if(!($connectTimeout > 0))
-			$connectTimeout = 30;
-		// null means "whatever PHP would have waited", which is exactly what
-		// this transport inherited before the budget became explicit. Resolving
-		// the ini at runtime rather than freezing a literal leaves an operator
-		// who has already tuned default_socket_timeout in charge of it.
-		if($transferTimeout === null || $transferTimeout === '')
-			$transferTimeout = ini_get('default_socket_timeout');
-		$transferTimeout = (float) $transferTimeout;
-		if(!($transferTimeout > 0))
-			$transferTimeout = 60;
-		// Deliberately NOT clamped to the connect budget. The two are
-		// independent, and raising $rpcTimeOut never raised the reply budget
-		// anyway -- before this transport existed it bounded fsockopen() and
-		// nothing else, so an operator who had set it to 120 still read under
-		// default_socket_timeout. Clamping would hand that install 120s of
-		// per-read idle budget where it always had 60, and since the read
-		// budget is an idle timeout rather than an overall deadline, a wedged
-		// rtorrent would hold a php-fpm worker twice as long while the panel
-		// keeps polling.
-		// Whole seconds plus a remainder: stream_set_timeout() takes the two
-		// separately, and the (int) cast this replaced turned a legitimate
-		// fractional $rpcTimeOut of 0.5 into 0, which the guard above then
-		// promoted to the 30s default -- sixty times what was asked for.
-		$transferSeconds = (int) floor($transferTimeout);
-		$transferMicroseconds = (int) round(($transferTimeout - $transferSeconds) * 1000000);
-
-		$socket = @fsockopen($host, $port, $errno, $errstr, $connectTimeout);
+		$address = (($port === 0) || ($port === '0')) ? $host : 'tcp://'.$host.':'.$port;
+		$socket = static::openSocket($address, $errno, $error, $connectTimeout);
 		if($socket === false)
+			return self::fail($failure, 'connect-failed');
+		try
 		{
-			$errorLog = 'cannot reach rtorrent at ' . $host . ': ' . $errstr;
-			return null;
-		}
+			if(!static::configureBlocking($socket, false))
+				return self::fail($failure, 'socket-config-failed');
 
-		$scgiHeaders = "CONTENT_LENGTH\x00" . $contentLength . "\x00CONTENT_TYPE\x00text/xml\x00"
-			. "SCGI\x001\x00UNTRUSTED_CONNECTION\x00" . ($trusted ? '0' : '1') . "\x00";
-		$request = strlen($scgiHeaders) . ':' . $scgiHeaders . ',' . $payload;
-		$totalLength = strlen($request);
-		$written = 0;
-		$writeDeadline = microtime(true) + $transferTimeout;
-		stream_set_blocking($socket, false);
-		while($written < $totalLength)
+			$header = "CONTENT_LENGTH\x00".strlen($payload)."\x00CONTENT_TYPE\x00text/xml\x00"
+				."SCGI\x001\x00UNTRUSTED_CONNECTION\x00".($trusted ? '0' : '1')."\x00";
+			$prefix = strlen($header).':'.$header.',';
+			$deadline = static::monotonicNow() + $transferTimeout;
+			if(!self::writeAll($socket, $prefix, $deadline, $failure))
+				return null;
+			if(!self::writeAll($socket, $payload, $deadline, $failure))
+				return null;
+
+			if(!static::configureBlocking($socket, true) || !self::setReadTimeout($socket, $transferTimeout))
+				return self::fail($failure, 'socket-config-failed');
+			return self::readResponse($socket, $limit, $responseMode, $failure);
+		}
+		finally
 		{
-			$remainingTime = $writeDeadline - microtime(true);
-			if($remainingTime <= 0)
-			{
-				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
-					. $written . ' of ' . $totalLength . ' bytes written)';
-				fclose($socket);
-				return null;
-			}
-			$seconds = (int) floor($remainingTime);
-			$microseconds = (int) (($remainingTime - $seconds) * 1000000);
-			$read = null;
-			$write = array($socket);
-			$except = null;
-			$ready = @stream_select($read, $write, $except, $seconds, $microseconds);
-			if($ready === false)
-			{
-				$errorLog = 'failed waiting to write to rtorrent socket';
-				fclose($socket);
-				return null;
-			}
-			if($ready === 0)
-			{
-				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
-					. $written . ' of ' . $totalLength . ' bytes written)';
-				fclose($socket);
-				return null;
-			}
-			$count = @fwrite($socket, substr($request, $written));
-			$meta = stream_get_meta_data($socket);
-			if(!empty($meta['timed_out']))
-			{
-				$errorLog = 'timed out writing to rtorrent after ' . $transferTimeout . 's ('
-					. $written . ' of ' . $totalLength . ' bytes written)';
-				fclose($socket);
-				return null;
-			}
-			if($count === false || $count === 0)
-			{
-				$errorLog = 'failed write to rtorrent socket after ' . $written
-					. ' of ' . $totalLength . ' bytes';
-				fclose($socket);
-				return null;
-			}
-			$written += $count;
+			fclose($socket);
 		}
-		stream_set_blocking($socket, true);
-		stream_set_timeout($socket, $transferSeconds, $transferMicroseconds);
-
-		$headerBuffer = '';
-		$responseHeaders = null;
-		$body = '';
-		$expectedLength = null;
-		while(true)
-		{
-			$readLength = 65536;
-			if($responseHeaders === null)
-			{
-				// A complete delimiter may begin immediately after an exact-limit
-				// header. Keep room for those four bytes, but no more.
-				$headerReadCapacity = self::MAX_HEADER_BYTES + 4 - strlen($headerBuffer);
-				if($headerReadCapacity <= 0)
-				{
-					$errorLog = 'response headers exceed ' . self::MAX_HEADER_BYTES . ' bytes';
-					fclose($socket);
-					return null;
-				}
-				$readLength = min($readLength, $headerReadCapacity);
-			}
-			$chunk = @fread($socket, $readLength);
-			// Timeout metadata must win over the ambiguous false/empty fread result.
-			$meta = stream_get_meta_data($socket);
-			if(!empty($meta['timed_out']))
-			{
-				$errorLog = 'timed out reading from rtorrent after ' . $transferTimeout . 's';
-				fclose($socket);
-				return null;
-			}
-			if($chunk === false)
-			{
-				$errorLog = 'read error from rtorrent socket';
-				fclose($socket);
-				return null;
-			}
-			if($chunk === '')
-			{
-				if(feof($socket))
-					break;
-				$errorLog = 'empty read from rtorrent socket before EOF';
-				fclose($socket);
-				return null;
-			}
-
-			if($responseHeaders === null)
-			{
-				$headerBuffer .= $chunk;
-				$delimiter = strpos($headerBuffer, "\r\n\r\n");
-				if($delimiter === false)
-				{
-					// Up to three trailing bytes may still become the delimiter.
-					// They are not provably header bytes until a later byte breaks
-					// that prefix, so do not charge them against the exact limit.
-					$partialDelimiterBytes = 0;
-					$maximumPrefix = min(3, strlen($headerBuffer));
-					for($prefixLength = $maximumPrefix; $prefixLength > 0; $prefixLength--)
-					{
-						if(substr($headerBuffer, -$prefixLength)
-							=== substr("\r\n\r\n", 0, $prefixLength))
-						{
-							$partialDelimiterBytes = $prefixLength;
-							break;
-						}
-					}
-					$provableHeaderBytes = strlen($headerBuffer) - $partialDelimiterBytes;
-					if($provableHeaderBytes > self::MAX_HEADER_BYTES)
-					{
-						$errorLog = 'response headers exceed ' . self::MAX_HEADER_BYTES . ' bytes';
-						fclose($socket);
-						return null;
-					}
-					continue;
-				}
-				if($delimiter > self::MAX_HEADER_BYTES)
-				{
-					$errorLog = 'response headers exceed ' . self::MAX_HEADER_BYTES . ' bytes';
-					fclose($socket);
-					return null;
-				}
-
-				$responseHeaders = substr($headerBuffer, 0, $delimiter);
-				if(!self::parseHeaders($responseHeaders, $expectedLength, $errorLog))
-				{
-					fclose($socket);
-					return null;
-				}
-				$body = substr($headerBuffer, $delimiter + 4);
-				$headerBuffer = '';
-			}
-			else
-				$body .= $chunk;
-
-			if(strlen($body) > self::MAX_BODY_BYTES)
-			{
-				$errorLog = 'response body exceeds ' . self::MAX_BODY_BYTES . ' bytes';
-				fclose($socket);
-				return null;
-			}
-			if($expectedLength !== null && strlen($body) > $expectedLength)
-			{
-				$errorLog = 'overlong response from rtorrent: expected ' . $expectedLength
-					. ' bytes, got at least ' . strlen($body);
-				fclose($socket);
-				return null;
-			}
-		}
-		fclose($socket);
-
-		if($responseHeaders === null)
-		{
-			$errorLog = ($headerBuffer === '') ? 'empty response from rtorrent'
-				: 'malformed response from rtorrent: missing header delimiter';
-			return null;
-		}
-		$actualLength = strlen($body);
-		if($expectedLength !== null && $actualLength < $expectedLength)
-		{
-			$errorLog = 'truncated response from rtorrent: expected ' . $expectedLength
-				. ' bytes, got ' . $actualLength;
-			return null;
-		}
-		if(!self::isMethodResponse($body))
-		{
-			$errorLog = 'invalid XML methodResponse from rtorrent';
-			return null;
-		}
-
-		return array(
-			'headers' => $responseHeaders,
-			'body' => $body,
-			'raw' => $responseHeaders . "\r\n\r\n" . $body,
-		);
 	}
 
-	private static function parseHeaders($headers, &$contentLength, &$errorLog)
+	private static function fail(&$failure, $code)
 	{
-		$contentLength = null;
-		$seenContentLength = false;
-		foreach(explode("\r\n", $headers) as $line)
+		$failure = $code;
+		return null;
+	}
+
+	protected static function openSocket($address, &$errno, &$error, $timeout)
+	{
+		return @stream_socket_client($address, $errno, $error, $timeout, STREAM_CLIENT_CONNECT);
+	}
+
+	protected static function configureBlocking($socket, $blocking)
+	{
+		return @stream_set_blocking($socket, $blocking);
+	}
+
+	protected static function waitWritable($socket, $seconds, $microseconds)
+	{
+		$read = null;
+		$write = array($socket);
+		$except = null;
+		return @stream_select($read, $write, $except, $seconds, $microseconds);
+	}
+
+	protected static function writeBytes($socket, $bytes, $length)
+	{
+		return @fwrite($socket, $bytes, $length);
+	}
+
+	protected static function configureReadTimeout($socket, $seconds, $microseconds)
+	{
+		return @stream_set_timeout($socket, $seconds, $microseconds);
+	}
+
+	protected static function readBytes($socket, $length)
+	{
+		return @fread($socket, $length);
+	}
+
+	protected static function socketMetadata($socket)
+	{
+		return stream_get_meta_data($socket);
+	}
+
+	protected static function monotonicNow()
+	{
+		if(function_exists('hrtime'))
 		{
-			if(!preg_match('/^([A-Za-z0-9!#$%&\x27*+.^_`|~-]+):[ \t]*(.*)$/D', $line, $match))
+			$value = hrtime();
+			return ((float)$value[0]) + (((float)$value[1]) / 1000000000.0);
+		}
+		return microtime(true);
+	}
+
+	private static function responseLimit($value)
+	{
+		if($value === null)
+			return self::DEFAULT_MAX_RESPONSE_BYTES;
+		if(is_int($value))
+			return (($value >= 1) && ($value <= self::MAX_WIRE_RESPONSE_BYTES)) ? $value : null;
+		if(!is_string($value) || !preg_match('/^[0-9]+$/', $value))
+			return null;
+		$normal = ltrim($value, '0');
+		if($normal === '')
+			return null;
+		$maximum = (string)self::MAX_WIRE_RESPONSE_BYTES;
+		if((strlen($normal) > strlen($maximum)) ||
+			((strlen($normal) === strlen($maximum)) && (strcmp($normal, $maximum) > 0)))
+			return null;
+		return (int)$normal;
+	}
+
+	private static function transferTimeout($value)
+	{
+		if($value === null)
+		{
+			$ini = ini_get('default_socket_timeout');
+			$number = (float)$ini;
+			if(is_numeric($ini) && is_finite($number) && ($number > 0))
+				return $number;
+			return 60.0;
+		}
+		if(!(is_int($value) || is_float($value) || is_string($value)) || !is_numeric($value))
+			return 60.0;
+		$number = (float)$value;
+		return (is_finite($number) && ($number > 0)) ? $number : 60.0;
+	}
+
+	private static function writeAll($socket, $bytes, $deadline, &$failure)
+	{
+		$offset = 0;
+		$length = strlen($bytes);
+		while($offset < $length)
+		{
+			$remaining = $deadline - static::monotonicNow();
+			if($remaining <= 0)
+				return self::fail($failure, 'write-timeout') !== null;
+			$seconds = (int)floor($remaining);
+			$microseconds = (int)(($remaining - $seconds) * 1000000);
+			if(($seconds === 0) && ($microseconds === 0))
+				$microseconds = 1;
+			$selected = static::waitWritable($socket, $seconds, $microseconds);
+			if($selected === false)
 			{
-				$errorLog = 'malformed response header from rtorrent';
+				$failure = 'write-wait-failed';
 				return false;
 			}
-			if(strcasecmp($match[1], 'Content-Length') !== 0)
-				continue;
-			if($seenContentLength)
+			if($selected === 0)
 			{
-				$errorLog = 'malformed response: duplicate Content-Length header';
+				$failure = 'write-timeout';
 				return false;
 			}
-			$seenContentLength = true;
-			$value = trim($match[2]);
-			if($value === '' || !ctype_digit($value))
+			$offered = min(self::MAX_WRITE_BYTES, $length - $offset);
+			$slice = substr($bytes, $offset, $offered);
+			$written = static::writeBytes($socket, $slice, $offered);
+			if(($written === false) || ($written <= 0) || ($written > $offered))
 			{
-				$errorLog = 'malformed Content-Length header';
+				$failure = 'write-failed';
 				return false;
 			}
-			$normalized = ltrim($value, '0');
-			if($normalized === '')
-				$normalized = '0';
-			$maximum = (string) self::MAX_BODY_BYTES;
-			if(strlen($normalized) > strlen($maximum) ||
-				(strlen($normalized) === strlen($maximum) && strcmp($normalized, $maximum) > 0))
-			{
-				$errorLog = 'response body exceeds ' . self::MAX_BODY_BYTES . ' bytes';
-				return false;
-			}
-			$contentLength = (int) $normalized;
+			$offset += $written;
 		}
 		return true;
 	}
 
-	private static function isMethodResponse($body)
+	private static function setReadTimeout($socket, $timeout)
 	{
-		if(!function_exists('simplexml_load_string'))
-			return false;
-		$previous = libxml_use_internal_errors(true);
-		libxml_clear_errors();
-		$xml = simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NONET);
-		$valid = ($xml !== false && $xml->getName() === 'methodResponse');
-		libxml_clear_errors();
-		libxml_use_internal_errors($previous);
-		return $valid;
+		$seconds = (int)floor($timeout);
+		$microseconds = (int)(($timeout - $seconds) * 1000000);
+		if(($seconds === 0) && ($microseconds === 0))
+			$microseconds = 1;
+		return static::configureReadTimeout($socket, $seconds, $microseconds);
+	}
+
+	private static function readResponse($socket, $limit, $responseMode, &$failure)
+	{
+		$received = '';
+		while(($delimiter = strpos($received, "\r\n\r\n")) === false)
+		{
+			if(strlen($received) > self::MAX_HEADER_BYTES + 3)
+				return self::fail($failure, 'headers-too-large');
+			$chunk = static::readBytes($socket, min(8192, self::MAX_HEADER_BYTES + 4 - strlen($received)));
+			if(($chunk === false) || ($chunk === ''))
+				return self::readFailure($socket, $received === '', $failure,
+					($received === '') ? 'closed-before-headers' : 'truncated-headers');
+			$received .= $chunk;
+		}
+		$header = substr($received, 0, $delimiter);
+		if(strlen($header) > self::MAX_HEADER_BYTES)
+			return self::fail($failure, 'headers-too-large');
+		$declared = self::contentLength($header, $limit, $failure);
+		if($declared === null)
+			return null;
+		$buffer = @fopen('php://temp/maxmemory:1048576', 'w+b');
+		if($buffer === false)
+			return self::fail($failure, 'read-failed');
+		try
+		{
+			if(($responseMode === self::RESPONSE_RAW) && !self::append($buffer, $header."\r\n\r\n"))
+				return self::fail($failure, 'read-failed');
+			$tail = substr($received, $delimiter + 4);
+			$received = '';
+			$bodyBytes = min(strlen($tail), $declared);
+			if(($bodyBytes > 0) && !self::append($buffer, substr($tail, 0, $bodyBytes)))
+				return self::fail($failure, 'read-failed');
+			while($bodyBytes < $declared)
+			{
+				$chunk = static::readBytes($socket, min(65536, $declared - $bodyBytes));
+				if(($chunk === false) || ($chunk === ''))
+					return self::readFailure($socket, false, $failure, 'truncated-body');
+				if(!self::append($buffer, $chunk))
+					return self::fail($failure, 'read-failed');
+				$bodyBytes += strlen($chunk);
+			}
+			rewind($buffer);
+			$result = stream_get_contents($buffer);
+			return ($result === false) ? self::fail($failure, 'read-failed') : $result;
+		}
+		finally
+		{
+			fclose($buffer);
+		}
+	}
+
+	private static function append($buffer, $bytes)
+	{
+		$offset = 0;
+		$length = strlen($bytes);
+		while($offset < $length)
+		{
+			$written = @fwrite($buffer, substr($bytes, $offset), $length - $offset);
+			if(($written === false) || ($written === 0))
+				return false;
+			$offset += $written;
+		}
+		return true;
+	}
+
+	private static function readFailure($socket, $beforeHeaders, &$failure, $closed = 'closed-before-headers')
+	{
+		$meta = static::socketMetadata($socket);
+		if(isset($meta['timed_out']) && $meta['timed_out'])
+			return self::fail($failure, 'read-timeout');
+		if(isset($meta['eof']) && $meta['eof'])
+			return self::fail($failure, $closed);
+		return self::fail($failure, 'read-failed');
+	}
+
+	private static function contentLength($header, $limit, &$failure)
+	{
+		$count = 0;
+		$value = null;
+		foreach(explode("\r\n", $header) as $line)
+		{
+			$colon = strpos($line, ':');
+			$fieldValue = ($colon === false) ? '' : substr($line, $colon + 1);
+			if(($colon === false) || !preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/', substr($line, 0, $colon)) ||
+				!preg_match('/^[\x09\x20-\x7E\x80-\xFF]*$/D', $fieldValue))
+				return self::fail($failure, 'malformed-header');
+			if(strcasecmp(substr($line, 0, $colon), 'Content-Length') === 0)
+			{
+				$count++;
+				$value = trim($fieldValue, " \t");
+			}
+		}
+		if($count === 0)
+			return self::fail($failure, 'missing-content-length');
+		if($count > 1)
+			return self::fail($failure, 'duplicate-content-length');
+		if(($value === '') || !preg_match('/^[0-9]+$/', $value))
+			return self::fail($failure, 'malformed-content-length');
+		$value = ltrim($value, '0');
+		if($value === '')
+			return self::fail($failure, 'zero-content-length');
+		$limitString = (string)$limit;
+		if((strlen($value) > strlen($limitString)) ||
+			((strlen($value) === strlen($limitString)) && (strcmp($value, $limitString) > 0)))
+			return self::fail($failure, 'response-too-large');
+		return (int)$value;
 	}
 }

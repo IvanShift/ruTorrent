@@ -99,28 +99,21 @@ class rXMLRPCRequest
 		global $rpcLogCalls;
 		if($rpcLogCalls)
 			FileUtil::toLog($data);
-		$result = false;
-		if(strlen((string) $data) > 0)
+		global $rpcTimeOut;
+		global $rpcTransferTimeOut;
+		global $rpcMaxResponseBytes;
+		global $scgi_host;
+		global $scgi_port;
+		$failure = null;
+		$result = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted,
+			isset($rpcTimeOut) ? $rpcTimeOut : 30, $failure,
+			isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
+			isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
+			rSCGITransport::RESPONSE_RAW);
+		if($result === null)
 		{
-			global $rpcTimeOut;
-			global $rpcTransferTimeOut;
-			global $scgi_host;
-			global $scgi_port;
-			$err = null;
-			// isset(), not a bare read: a deployment edits conf/config.php in
-			// place and carries its own copy across upgrades, so one written
-			// before this knob existed must fall back to the transport's own
-			// default rather than warn into the response.
-			$res = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted, $rpcTimeOut, $err,
-				isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null);
-			if($res !== null)
-			{
-				$result = $res['raw'];
-			}
-			elseif($err !== null)
-			{
-				FileUtil::toLog('rXMLRPCRequest: ' . $err);
-			}
+			FileUtil::toLog('rXMLRPCRequest: '.$failure);
+			$result = false;
 		}
 		if($rpcLogCalls)
 			FileUtil::toLog($result);
