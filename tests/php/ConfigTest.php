@@ -31,10 +31,19 @@ class ConfigTest extends TestCase
 		}
 	}
 
-	private function configuredProfileMask($value)
+	private function configuredProfileMask($value, &$diagnostic = null)
 	{
 		$_ENV['RU_PROFILE_MASK'] = $value;
-		include(__DIR__ . '/../../conf/config.php');
+		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
+		$oldErrorLog = ini_get('error_log');
+		ini_set('error_log', $errorLog);
+		try {
+			include(__DIR__ . '/../../conf/config.php');
+		} finally {
+			$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
+			ini_set('error_log', $oldErrorLog);
+			unlink($errorLog);
+		}
 		return $profileMask;
 	}
 
@@ -58,41 +67,54 @@ class ConfigTest extends TestCase
 	{
 		// The fallback is 0777, which is wider than any mask an admin sets one
 		// for. Taking it silently turns a typo into world-writable profiles.
-		$warned = null;
-		set_error_handler(function ($errno, $errstr) use (&$warned) {
-			$warned = $errstr;
-			return true;
-		});
-		$mask = $this->configuredProfileMask('02770');
-		restore_error_handler();
+		$diagnostic = null;
+		$mask = $this->configuredProfileMask('02770', $diagnostic);
 
 		$this->assertEquals(0777, $mask, 'a mask that could not be read falls back to the default');
-		$this->assertTrue($warned !== null, 'and the fallback is reported');
-		$this->assertTrue(strpos($warned, 'RU_PROFILE_MASK') !== false,
-			'and the report names the setting: ' . var_export($warned, true));
+		$this->assertTrue($diagnostic !== '', 'and the fallback is reported');
+		$this->assertTrue(strpos($diagnostic, 'RU_PROFILE_MASK') !== false,
+			'and the report names the setting: ' . var_export($diagnostic, true));
+	}
+
+	public function testInvalidMaskDiagnosticUsesTheServerLogInsteadOfTheResponse()
+	{
+		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
+		$code = '$_ENV["RU_PROFILE_MASK"] = "02770"; require '
+			. var_export(__DIR__ . '/../../conf/config.php', true) . ';';
+		$output = array();
+		$status = 0;
+		exec(
+			escapeshellarg(PHP_BINARY)
+				. ' -d variables_order=GPCS -d error_reporting=-1'
+				. ' -d display_errors=1 -d log_errors=0'
+				. ' -d error_log=' . escapeshellarg($errorLog)
+				. ' -r ' . escapeshellarg($code) . ' 2>&1',
+			$output,
+			$status
+		);
+		$response = implode("\n", $output);
+		$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
+		unlink($errorLog);
+
+		$this->assertEquals(0, $status, 'an invalid mask does not terminate configuration loading');
+		$this->assertEquals('', $response,
+			'the configuration diagnostic cannot corrupt an HTTP response body');
+		$this->assertTrue(strpos($diagnostic, 'RU_PROFILE_MASK') !== false,
+			'the invalid mask remains visible in the server error log: ' . var_export($diagnostic, true));
 	}
 
 	public function testAMaskThatIsSimplyUnsetSaysNothing()
 	{
-		$warned = null;
-		set_error_handler(function ($errno, $errstr) use (&$warned) {
-			$warned = $errstr;
-			return true;
-		});
-		$mask = $this->configuredProfileMask('');
-		restore_error_handler();
+		$diagnostic = null;
+		$mask = $this->configuredProfileMask('', $diagnostic);
 
 		$this->assertEquals(0777, $mask, 'an empty mask uses the documented default');
-		$this->assertTrue($warned === null, 'and says nothing, because nothing was asked for');
+		$this->assertEquals('', $diagnostic, 'and says nothing, because nothing was asked for');
 	}
 
 	public function testInvalidEnvironmentProfileMaskUsesTheDefault()
 	{
-		// The fallback now reports itself; the handler keeps that out of the
-		// suite log without changing what this case asserts.
-		set_error_handler(function () { return true; });
 		$mask = $this->configuredProfileMask('not-a-mask');
-		restore_error_handler();
 
 		$this->assertEquals(
 			0777,
