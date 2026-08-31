@@ -4,8 +4,10 @@ Date: 2026-08-31
 
 ## Verdict
 
-**APPROVED — implemented and locally integrated.** Package #3 is closed as an
-implementation package. Push, PR creation and deployment were not performed.
+**APPROVED — implemented, locally integrated and submitted upstream.** Package
+#3 is closed as an implementation package. The owner later published exact
+branch `c7a431aa` and opened Novik/ruTorrent PR #3228; fork `master` and
+deployment were not published.
 
 The package separates unreadable and empty XMLRPC input, makes refusal and
 transport-failure responses terminal, reuses one named refusal message at both
@@ -158,7 +160,9 @@ base-equal `rRetrackers` failure was established. No new failure was hidden.
 - No live `/RPC2`, SCGI, deployment or Docker image build was required for this
   endpoint-control-flow package; transport runtime belongs to package #4.
 - The unrelated untracked `rutorrent-app-errors.log` remains unstaged.
-- No push was performed.
+- At the implementation-verification checkpoint no push had been performed;
+  the owner subsequently published only `up/httprpc-refusals=c7a431aa` and
+  opened upstream PR #3228.
 - Package #4 `up/scgi-transport` now has `c7a431aa` as its exact immediate
   parent. Packages #6 and #14 are sibling branches from the same final package.
 

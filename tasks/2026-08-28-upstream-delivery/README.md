@@ -65,7 +65,7 @@ Focused endpoint/helper matrix прошла на PHP 7.4/8.1/8.5; PHPStan и Jes
 зелёные. Broad PHP comparison имеет только exact base-equal известные RED
 `rRetrackers` и PHP 7.4 raw-magnet prerequisite; runtime cache пользователя не
 удалялся. Владелец затем опубликовал exact branch как
-`origin/up/httprpc-refusals=c7a431aa` и сообщил о создании upstream PR;
+`origin/up/httprpc-refusals=c7a431aa` и открыл upstream PR #3228;
 `origin/master` и deployment не менялись. Evidence:
 `VERIFICATION-httprpc-refusals-2026-08-31.md`.
 
@@ -79,10 +79,17 @@ test, а `76b0c0f5` защищает три PHP 7.4 path probe от binary metai
 bootstrap не меняет production; поэтому счёт очереди не уменьшается. Evidence:
 `VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
 
-Текущий счёт: **15 implementations / 0 audits / 6 ready or locally integrated
-owner handoffs outside count + 1 accepted upstream closure**. Package 4
-`up/scgi-transport` уже выполняется в отдельном worktree от exact parent
-`c7a431aa`; completion пока не заявлен.
+Package 4 `up/scgi-transport` также закрыт отдельной реализацией. Final
+upstream-clean branch — `4682a761`, один non-merge commit прямо на
+`c7a431aa`, exact 7 paths `+1569/-51`; fork integration — `19086b5f` плюс
+отдельная one-path test-stub adaptation `3ff4860c`. Recorded полные PHP
+7.4/8.1/8.5 матрицы, stable focused suite, PHPStan, mutations и реальные
+UNIX-SCGI probes на rTorrent 0.9.8 и
+0.16.21 зелёные; оба snapshots independently APPROVED. Evidence:
+`VERIFICATION-scgi-transport-2026-08-31.md`.
+
+Текущий счёт: **14 implementations / 0 audits / 7 ready or locally integrated
+owner handoffs outside count + 1 accepted upstream closure**.
 
 ## Цель
 
@@ -125,6 +132,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 | PR | ветка | состояние |
 |---|---|---|
 | **#3198** | `up/kinozal-session` (local `de98a49a`, remote `4cf74c52`) | Открыт. Локальный один commit перебазирован на `755404f3`, 5 файлов, +636/−28; focused 35/35, обе полные PHP-матрицы и PHPStan зелёные. Remote намеренно не менялся и требует owner-only force-with-lease. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
+| **#3228** | `up/httprpc-refusals` (`c7a431aa`) | Открыт владельцем. Exact 5 paths `+437/-14` на `f19c9d86`; candidate и fork integration independently APPROVED. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
 
 ---
 
@@ -138,7 +146,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 | `up/rtorrent-0-16-21` | `48bc6d4b` | +9/−4, 3 test-файла | **ГОТОВА.** Один commit прямо на `755404f3`; обе полные PHP-матрицы 46/285/1790, Jest 20/196, независимые spec/quality reviews зелёные. Тексты: `REVIEW-rtorrent-0-16-21.md`, `PR-rtorrent-0-16-21.md` |
 | `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
 | `up/setsettings-socket-alloc` | `d548016b` | +1229/−19, 4 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на current `f19c9d86`; independent reviews APPROVED, локальная fork integration `f547b2f3`, push не выполнялся. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
-| `up/httprpc-refusals` | `c7a431aa` | +437/−14, 5 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `f19c9d86`; repeat review APPROVED, fork integration `48825583`, push не выполнялся. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
+| `up/scgi-transport` | `4682a761` | +1569/−51, 7 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на final httprpc `c7a431aa`; reviews, PHP 7.4/8.1/8.5 и real 0.9.8/0.16.21 UNIX probes APPROVED. Fork integration `19086b5f` + test adaptation `3ff4860c`; push не выполнялся. Evidence: `VERIFICATION-scgi-transport-2026-08-31.md`, PR text: `PR-scgi-transport.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
 ### Что исправлено в `up/test-harness`
@@ -179,16 +187,17 @@ key по обеим формам. **#3226** — отдельная upstream File
 Полный current crosswalk: `CROSSWALK-remaining-divergence-2026-08-29.md`;
 исполняемый план: `PLAN-remaining-queue-2026-08-29.md`.
 
-Точный текущий счёт после завершения всех пяти disposition-аудитов:
+Точный текущий счёт после завершения всех пяти disposition-аудитов и packages
+1–4:
 
-- **15 незакрытых реализационных пакетов**;
+- **14 незакрытых реализационных пакетов**;
 - **0 неразобранных carve/verdict-аудитов**;
-- шесть готовых или локально интегрированных owner handoff в это число не входят;
+- семь готовых или локально интегрированных owner handoff в это число не входят;
 - package 1 уже принят upstream как #3224 и учитывается отдельно как closure.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
 `13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
-P0: `19 - 1 = 18`. После реализации packages 1–3: `18 - 3 = 15`.
+P0: `19 - 1 = 18`. После реализации packages 1–4: `18 - 4 = 14`.
 Successors: rTorrent alias surface, XMLRPC proxy policy,
 manual rutracker entrypoints и три foreign-handler packages.
 Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
@@ -198,10 +207,9 @@ dispatch-vs-load граница реальна, но unconditional log один�
 Замороженные contract boundaries: httprpc — exact 5 paths; SCGI — exact 7
 paths; retrackers recovery — exact 5 paths; erasedata A — exact 8 production +
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
-estimate остаётся около `+850/-45`; final numstat каждого package измеряется
-только от его exact final predecessor tip после natural RED и реализации.
-Design approvals сами по себе не закрыли packages; отдельные реализации 1–3
-закрыли три строки. Pending carve/verdict audits — 0, шесть ready/integrated
+estimate заменён final exact delta `+1569/-51` от `c7a431aa`.
+Design approvals сами по себе не закрыли packages; отдельные реализации 1–4
+закрыли четыре строки. Pending carve/verdict audits — 0, семь ready/integrated
 owner handoff остаются вне счёта, а PHP74 уже принят upstream.
 Erasedata A/B остаются самостоятельными, а C сложен внутрь P0. B donor
 `+168/-2` подтверждён только как snapshot и опровергнут как final estimate;
@@ -217,7 +225,7 @@ donor tests остаются characterization, не closure. HistoricalBindingSa
 B5+EPOCH production capture остаётся BLOCKED до появления реальных five-path
 producers `rr.receipts.v1`, `pf`/`pv`, extended owner, paired actions и
 canonical four-field marker. Это post-implementation acceptance gate, а не
-prerequisite design approval; текущий общий счёт остаётся 15.
+prerequisite design approval; текущий общий счёт остаётся 14.
 
 Authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, approved contract SHA-256
@@ -268,13 +276,14 @@ silent non-root unlink failure. Это baseline/reachability evidence, не GREE
 должны появиться RED-first. Exact commands/results/limitations:
 `VERIFICATION-erasedata-contracts-2026-08-29.md`.
 
-SCGI transport: DESIGN APPROVED — implementation pending, exact 7 paths from
-final `up/httprpc-refusals`. Approved nine-argument API freezes complete
+SCGI transport **implemented and APPROVED** как clean `4682a761`, exact 7 paths
+`+1569/-51` from final `up/httprpc-refusals`. Nine-argument API implements complete
 segmented writes, exact `Content-Length` framing, raw/body modes, trust bit,
 legacy-safe optional globals, PHP 7.4, TCP/UNIX runtime gates, 64 MiB default
-client cap and 100 MiB operator/wire ceiling. Current donor tests remain
-characterization; final numstat and GREEN belong to the implementation tip.
-Brief: `REVIEW-scgi-transport-2026-08-29.md`.
+client cap and 100 MiB operator/wire ceiling. Fork integration is `19086b5f`
+plus isolated test adaptation `3ff4860c`. Evidence:
+`VERIFICATION-scgi-transport-2026-08-31.md`; design history:
+`REVIEW-scgi-transport-2026-08-29.md`.
 
 Socket package **implemented and APPROVED** как `d548016b` на `f19c9d86`:
 patch-identical predecessor `b3e36835` прошёл независимый review. Save-lock держится
@@ -328,19 +337,19 @@ B и combined C+P0 и container baseline:
 - XMLRPC proxy design на том checkpoint ещё не был закрыт;
 - push не выполнялся.
 
-После checkpoint отдельные SCGI и XMLRPC contracts получили DESIGN APPROVED —
-implementation pending, а retrackers contract после двух CLEAN reviews получил
+После checkpoint отдельные SCGI и XMLRPC contracts получили DESIGN APPROVED,
+а retrackers contract после двух CLEAN reviews получил
 тот же статус на exact five-path scope в approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`. Позднее exact container cleanup
 получил GREEN и был зафиксирован commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`; это runtime cleanup, не
-implementation/capture acceptance. С тех пор packages 1–3 закрыты отдельной
+implementation/capture acceptance. С тех пор packages 1–4 закрыты отдельной
 реализацией; B5 production capture остаётся post-implementation BLOCKED.
 
 Resume point: не считать donor GREEN закрытием packages. A → B и A → combined
 C+P0 сохраняются; SCGI, XMLRPC и A начинаются только от final httprpc;
-retrackers — только от final SCGI. Общая очередь — 15 implementation packages,
-pending carve/verdict audits — 0, ready/integrated handoffs outside count — 6;
+retrackers — только от final SCGI. Общая очередь — 14 implementation packages,
+pending carve/verdict audits — 0, ready/integrated handoffs outside count — 7;
 ещё один закрытый package уже принят upstream.
 
 ---
@@ -370,11 +379,12 @@ pending carve/verdict audits — 0, ready/integrated handoffs outside count — 
    `REVIEW-history-service-labels.md`.
 3. ~~Починить `up/test-harness`.~~ Готова как `8eafb529`; осталось push/PR по
    `PR-test-harness.md`.
-4. Owner-only handoff шести готовых/integrated packages —
-   FileUtil/test-harness/rTorrent/Kinozal/socket/httprpc; PHP74 уже принят
+4. Owner-only handoff семи готовых/integrated packages —
+   FileUtil/test-harness/rTorrent/Kinozal/socket/httprpc/SCGI; PHP74 уже принят
    upstream. Первые пять зафиксированы в
-   `REVIEW-ready-branches-2026-08-29.md`, httprpc — в
-   `VERIFICATION-httprpc-refusals-2026-08-31.md`.
+   `REVIEW-ready-branches-2026-08-29.md`, httprpc и SCGI — в
+   `VERIFICATION-httprpc-refusals-2026-08-31.md` и
+   `VERIFICATION-scgi-transport-2026-08-31.md`.
 5. Design approvals зафиксированы отдельно от implementation authority. После
    нового явного указания реализовывать packages RED->GREEN только от exact
    final predecessors; approval контракта сам по себе не является командой на
@@ -382,5 +392,5 @@ pending carve/verdict audits — 0, ready/integrated handoffs outside count — 
 6. После final httprpc SCGI, XMLRPC policy и erasedata A являются sibling
    branches. Retrackers строится только после final SCGI; consumer — после
    XMLRPC policy + A; B и P0+C — после final A; P3 — после final P1 +
-   retrackers. Продолжить оставшиеся 15 packages по PLAN; pending audits = 0,
-   ready/integrated owner handoffs outside count = 6, accepted closure = 1.
+   retrackers. Продолжить оставшиеся 14 packages по PLAN; pending audits = 0,
+   ready/integrated owner handoffs outside count = 7, accepted closure = 1.

@@ -5,7 +5,7 @@ parent будущей ветки — final `up/httprpc-refusals`. Fork испо�
 donor гипотез. Поведение и protocol limits независимо перепроверены по rTorrent
 0.9.8 и 0.16.21, а PHP-совместимость — в immutable containers.
 
-## Verdict: DESIGN APPROVED — implementation pending
+## Verdict: IMPLEMENTED / APPROVED — locally integrated
 
 Один shared transport владеет SCGI framing, complete writes, response framing,
 connect/write/read budgets и memory bounds. Открытых design-решений больше нет:
@@ -17,8 +17,10 @@ connect/write/read budgets и memory bounds. Открытых design-решен�
 - XML validation остаётся consumer responsibility;
 - transport failures имеют stable classified codes, а endpoints — neutral text.
 
-Код контракта ещё не реализован. Текущие fork tests — characterization, не
-GREEN нового API.
+Final implementation закрыта clean branch `4682a761` от exact parent
+`c7a431aa`; fork integration — `19086b5f` + separate test adaptation
+`3ff4860c`. Полный evidence находится в
+`VERIFICATION-scgi-transport-2026-08-31.md`.
 
 ## Exact seven-path scope
 
@@ -32,9 +34,8 @@ GREEN нового API.
 6. новый `tests/php/SCGITransportTest.php`;
 7. `README.md`.
 
-Raw fork/upstream aggregate равен `+1027/-69`, но это не package delta: final
-numstat считается только от exact final httprpc tip после удаления чужих
-logging/fault/refusal hunks.
+Final package delta от exact final httprpc tip равен `+1569/-51`. Historical
+raw fork/upstream aggregates не используются как package scope.
 
 Не входят: `php/xmlrpc_path.php`, `php/rtorrent.php`, proxy policy, erasedata,
 trackers, `env_check.php`, SimpleXML requirement, Docker/runtime config и task
@@ -311,10 +312,11 @@ baseline, не GREEN перечисленных новых RED/mutation cases.
 
 ## Approval boundary
 
-Design, API, limits, ownership и evidence gate утверждены. Implementation branch
-ещё нет. Package нельзя называть готовым до witnessed natural RED, deterministic
-short-write RED, corrected GREEN, mutations, exact predecessor range и
-independent whole-file review.
+Этот раздел фиксировал pre-implementation boundary: package нельзя было
+называть готовым до witnessed natural RED, deterministic short-write RED,
+corrected GREEN, mutations, exact predecessor range и independent whole-file
+review. Все перечисленные gates выполнены на final implementation tip; closure
+зафиксирован ниже.
 
 ## Post-sync revalidation — 2026-08-30
 
@@ -338,6 +340,26 @@ production limit. Literal PHP 7.4 `128M` accepted-body/bounded-failure оста�
 combined final-parent/retrackers-consumer gate, а не ретроактивно выполненная
 гарантия этого predecessor.
 
-Статус остаётся **DESIGN APPROVED — implementation pending**. API, exact scope,
-dependencies и общий счёт неизменны: все 18 implementation packages общей
-очереди остаются pending, SCGI transport является одним из них.
+На этом историческом 2026-08-30 checkpoint статус оставался **DESIGN APPROVED —
+implementation pending**. Последующая реализация ниже заменяет этот статус.
+
+## Implementation closure — 2026-08-31
+
+Clean branch `up/scgi-transport=4682a761cda6c813e3911ac6229dcf84ea4c7e99`
+содержит один non-merge commit прямо на
+`c7a431aaf5ad470f9fc7487395d38b48d12c722f`, exact seven paths
+`+1569/-51`. Final focused suite — `34 methods / 129 assertions`; recorded
+clean full harness на PHP 7.4, 8.1 и 8.5 — одинаковые `50 files / 344 methods /
+1990 Passed / 127 ok / 0 failures`. Later broad repeat встретил только
+unchanged `_task` process-exit race после всех SCGI tests; focused repeat,
+PHPStan, lint, named mutations, test-name accounting и independent whole-file
+review GREEN.
+
+Real UNIX-SCGI success независимо повторён на rTorrent 0.16.21 через full lab и
+на daemon-only 0.9.8 через direct PHP 7.4 client с string port `"0"`. Fork
+integration `19086b5f` сохраняет richer proxy/path/fault behavior; отдельный
+`3ff4860c` адаптирует только erasedata test stub, не ослабляя production API.
+Push и deployment не выполнялись. Verdict окончательно **IMPLEMENTED /
+APPROVED — locally integrated**; package #4 уменьшает открытую очередь с 15 до
+14. Полная проверка и upstream PR text:
+`VERIFICATION-scgi-transport-2026-08-31.md`, `PR-scgi-transport.md`.
