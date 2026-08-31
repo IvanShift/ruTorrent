@@ -81,9 +81,9 @@ test, а `76b0c0f5` защищает три PHP 7.4 path probe от binary metai
 bootstrap не меняет production; поэтому счёт очереди не уменьшается. Evidence:
 `VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
 
-Package 4 `up/scgi-transport` также закрыт отдельной реализацией. Final
-upstream-clean branch — `4682a761`, один non-merge commit прямо на
-`c7a431aa`, exact 7 paths `+1569/-51`; fork integration — `19086b5f` плюс
+Package 4 `up/scgi-transport` также закрыт отдельной реализацией. Runtime
+implementation — `4682a761` прямо на `c7a431aa`; delivery head `51386542`
+добавляет один test-only CI portability fix. Exact 7 paths `+1578/-51`; fork integration — `19086b5f` плюс
 отдельная one-path test-stub adaptation `3ff4860c`. Recorded полные PHP
 7.4/8.1/8.5 матрицы, stable focused suite, PHPStan, mutations и реальные
 UNIX-SCGI probes на rTorrent 0.9.8 и
@@ -166,9 +166,9 @@ key по обеим формам. **#3226** — отдельная upstream File
 | `up/fileutil-defects-f19` | `76485317` | +514/−10, 7 файлов | **ГОТОВА К ПУБЛИКАЦИИ.** Один non-merge commit прямо на `f19c9d86` после #3226; braces сохранены, `MakeDirectoryTest.php` и `makeDirectory()` не входят в diff. Full PHP 7.4/8.1/8.5: 50 files, 318 methods, 1843 assertions, 127 TAP; PHPStan, 10 mutations, FPM/FIFO/write-only probes GREEN; independent review без findings. Текст/команда: `../2026-08-28-fileutil-defects/PR_BODY.md`. |
 | `up/history-service-labels` | `4cf3bd69` | +37/−5, 3 файла | **НЕ ОТПРАВЛЯТЬ.** Достижимая потеря истории/Pushbullet для пользовательских `.private`-меток; producer отсутствует в upstream; тест не держит production-gate. Разбор: `REVIEW-history-service-labels.md` |
 | `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
-| `up/rtorrent-0-16-21-f19` | `cbacef8e` | +9/−4, 3 test-файла | **ГОТОВА К ПУБЛИКАЦИИ.** Один non-merge commit прямо на актуальном `upstream/master=f19c9d86`; exact diff идентичен исходному донору `48bc6d4b`. Fresh Jest 20/20 и focused PHP 7.4/8.1/8.5 зелёные; independent review без findings, `Ready to merge: Yes`. Runtime-код не меняется. Текст и команда: `PR-rtorrent-0-16-21.md` |
+| `up/rtorrent-0-16-21-f19` | `cbacef8e` | +9/−4, 3 test-файла | **ОПУБЛИКОВАНА КАК #3230.** Один non-merge commit прямо на `upstream/master=f19c9d86`; exact diff идентичен donor `48bc6d4b`. Все восемь GitHub checks и focused PHP 7.4/8.1/8.5 зелёные; independent review без findings. Runtime-код не меняется. Handoff: `PR-rtorrent-0-16-21.md` |
 | `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
-| `up/scgi-transport` | `4682a761` | +1569/−51, 7 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на final httprpc `c7a431aa`; reviews, PHP 7.4/8.1/8.5 и real 0.9.8/0.16.21 UNIX probes APPROVED. Fork integration `19086b5f` + test adaptation `3ff4860c`; push не выполнялся. Evidence: `VERIFICATION-scgi-transport-2026-08-31.md`, PR text: `PR-scgi-transport.md` |
+| `up/scgi-transport` | `51386542` | +1578/−51, 7 paths | **ГОТОВА ЛОКАЛЬНО.** Runtime `4682a761` прямо на final httprpc `c7a431aa` плюс test-only complete-HTTP readiness fix; reviews, PHP 7.4/8.1/8.5 и real 0.9.8/0.16.21 UNIX probes APPROVED. Fork integration `19086b5f` + `3ff4860c`; push не выполнялся. Evidence: `VERIFICATION-scgi-transport-2026-08-31.md`, PR text: `PR-scgi-transport.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
 ### Что исправлено в `up/test-harness`
@@ -229,7 +229,7 @@ dispatch-vs-load граница реальна, но unconditional log один�
 Замороженные contract boundaries: httprpc — exact 5 paths; SCGI — exact 7
 paths; retrackers recovery — exact 6 paths; erasedata A — exact 8 production +
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
-estimate заменён final exact delta `+1569/-51` от `c7a431aa`.
+estimate заменён final exact delta `+1578/-51` от `c7a431aa`.
 Design approvals сами по себе не закрыли packages; отдельные реализации 1–4
 закрыли четыре строки. Pending carve/verdict audits — 0, семь ready/integrated
 owner handoff остаются вне счёта, а PHP74 уже принят upstream.
@@ -307,8 +307,9 @@ silent non-root unlink failure. Это baseline/reachability evidence, не GREE
 должны появиться RED-first. Exact commands/results/limitations:
 `VERIFICATION-erasedata-contracts-2026-08-29.md`.
 
-SCGI transport **implemented and APPROVED** как clean `4682a761`, exact 7 paths
-`+1569/-51` from final `up/httprpc-refusals`. Nine-argument API implements complete
+SCGI transport **implemented and APPROVED**: runtime `4682a761`, delivery head
+`51386542`, exact 7 paths `+1578/-51` from final `up/httprpc-refusals`.
+Nine-argument API implements complete
 segmented writes, exact `Content-Length` framing, raw/body modes, trust bit,
 legacy-safe optional globals, PHP 7.4, TCP/UNIX runtime gates, 64 MiB default
 client cap and 100 MiB operator/wire ceiling. Fork integration is `19086b5f`

@@ -18,9 +18,10 @@ payloads.
 
 - branch: `up/scgi-transport`
 - parent: `c7a431aaf5ad470f9fc7487395d38b48d12c722f`
-- head: `4682a761cda6c813e3911ac6229dcf84ea4c7e99`
-- topology: one non-merge commit
-- scope: exactly seven paths, `+1569/-51`
+- runtime implementation: `4682a761cda6c813e3911ac6229dcf84ea4c7e99`
+- delivery head: `51386542` (`Tests: complete SCGI readiness probe`)
+- topology: two linear non-merge commits; the second is test-only
+- scope: exactly seven paths, `+1578/-51`
 
 ```text
 README.md
@@ -68,7 +69,7 @@ Legacy configurations that do not define `$rpcTransferTimeOut` or
 
 ## Candidate verification
 
-Fresh verification on final head `4682a761`:
+Fresh verification on final head `51386542`:
 
 - focused SCGI suite on host PHP 8.5 and official PHP 7.4, 8.1 and 8.5:
   `34 methods / 129 Passed / 0 failures` on every runtime;
@@ -88,8 +89,17 @@ asynchronous child before it disappeared. Focused final-head SCGI reruns stayed
 
 The final three-assertion follow-up restored predecessor intent for
 `X-Content-Length` and delimiter splits 1/2/3. It was independently reviewed
-and then amended into the unpublished single candidate commit. No test name was
-added, removed or duplicated.
+and remains in the runtime implementation commit. No test name was added,
+removed or duplicated.
+
+GitHub run `33389898091` then exposed a test-harness portability defect: the
+readiness check opened and immediately closed an empty TCP connection. PHP
+7.4's single-threaded development server could wait on that accepted client for
+about 60 seconds; PHP 8.1 could log a malformed-request warning. Test-only
+commit `51386542` sends and drains one complete bounded HTTP/1.0 probe instead.
+The old runtime tip remains its direct parent, so package #5 ancestry is not
+broken. Full PHP 7.4/8.1/8.5 reruns on the delivery head are GREEN:
+`50 files / 1990 Passed / 127 ok / 0 failures` per runtime.
 
 Natural RED and named mutations covered one-write request loss, EOF-driven
 response completion, deadline reset, trust-bit inversion, response-mode
@@ -152,14 +162,16 @@ review were GREEN. No Schedule code or cache was changed.
 ## Residuals and handoff
 
 - The unrelated untracked `rutorrent-app-errors.log` remains unstaged.
-- Local `master` is at `5208727d`, ten commits ahead of
-  `origin/master=d553bd47`; no push was performed.
+- Local `master` contains the same readiness correction in `1ca023ba`; no push
+  was performed by the agent.
 - The clean branch may be published with
   `git push -u origin up/scgi-transport`, but its upstream PR must remain
   stacked behind package #3 or be rebased onto the upstream tip after that PR
   lands.
-- Package #5 `up/retrackers-recovery` now has final SCGI head `4682a761` as its
-  implementation parent.
+- Package #5 `up/retrackers-recovery` retains runtime SCGI implementation
+  `4682a761` as its parent. Delivery-only test commit `51386542` changes no
+  production path and will be carried into its final integration after the
+  active implementation step.
 
 After package #4 the queue is **14 open implementation packages / 0 pending
 audits / 7 ready or locally integrated owner handoffs + 1 accepted upstream
