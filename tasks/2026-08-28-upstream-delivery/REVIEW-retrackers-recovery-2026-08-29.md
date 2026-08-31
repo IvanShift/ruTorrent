@@ -1,20 +1,21 @@
 # `up/retrackers-recovery` — закрытый технический контракт
 
-Дата: 2026-08-29. База исследования: `upstream/master=755404f3`; immediate
-implementation parent — final `up/scgi-transport`. Опубликованный fork baseline
+Дата: 2026-08-29; contract correction: 2026-08-31. База исследования:
+`upstream/master=755404f3`; immediate implementation parent — final
+`up/scgi-transport=4682a761`. Опубликованный fork baseline
 `43484fba`. Fork, включая новый partial implementation
 `Fix retrackers replacement handoff`, и исторический `FINDINGS.md`
 использованы только как donor гипотез; каждый race и daemon primitive
 перепроверен независимо по исходникам и в disposable rTorrent 0.9.8 и 0.16.21
-labs. Current base всё ещё содержит predecessor
-seven-argument/array-returning `rSCGITransport::send()`; frozen implementation
-и runtime interface ниже относятся только к approved final
-nine-argument/string-returning `up/scgi-transport` parent и не считаются
-доказанными current base.
+labs. Historical research base содержала predecessor
+seven-argument/array-returning `rSCGITransport::send()`. Actual implementation
+parent `4682a761` и fork master уже содержат отдельно verified final
+nine-argument/string-returning interface; package 5 строится и проверяется
+только против него.
 
 ## Verdict: DESIGN APPROVED — implementation pending
 
-Пятипутевой recovery package нужен, но current donor переносить нельзя. Его
+Шестипутевой recovery package нужен, но current donor переносить нельзя. Его
 главная ошибка — трактовать return `rTorrent::sendTorrent()` как daemon
 acknowledgement. Return вычисляется локально после XMLRPC dispatch; actual
 `DownloadFactory` load завершается позже и может быть отвергнут.
@@ -38,13 +39,19 @@ surviving receipts, armed scheduler fences, exact candidate acknowledgement,
 owned partial cleanup или multi-profile gate этого контракта. Поэтому package
 ещё не реализован, а current `42 tests / 0 failures` остаётся false-green
 characterization, не closure.
-Design approval не закрывает ни один из frozen **18 implementation packages**,
-не даёт authority на implementation или push; все 18 остаются pending до их
-отдельного RED→GREEN исполнения.
+Design approval сам по себе не закрывает implementation package и не даёт
+authority на push. Из первоначальных 18 packages реализации 1–4 уже закрыты;
+текущий счёт — **14 pending**, и retrackers остаётся одним из них до отдельного
+RED→GREEN исполнения.
 
-## Exact five-path scope
+## Contract correction 2026-08-31: exact six-path scope
 
-Package меняет ровно пять путей:
+Первоначальный exact-five scope был внутренне противоречив: новый
+side-effect-free `update.php` должен импортироваться из sequence-test, но тот
+же контракт одновременно требовал byte-for-byte неизменности всего test file.
+Без отдельного import sentinel test либо запускает production entrypoint, либо
+не проверяет production helpers. Исправленный package меняет ровно шесть
+путей:
 
 1. `plugins/retrackers/init.php` — ledger/profile install protocol, generation
    handoff, loop suppression и background launch only; no stop;
@@ -56,7 +63,10 @@ Package меняет ровно пять путей:
    canonical functional/defer/safety hook builders, CLI worker, immutable
    source, conditional commit, confirmation и rollback;
 5. `tests/plugins/retrackers/UpdateTest.php` — focused worker/hook/shell
-   contract.
+   contract;
+6. `tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` — только
+   import/bootstrap preamble; сама class body и все 12 predecessor methods
+   остаются byte-identical.
 
 Не входят: `plugins/retrackers/guard.php`, новые service-wrapper conditions,
 `.chk-meta`/`chk-meta-old` recovery и их tests. Research prerequisite
@@ -65,17 +75,26 @@ Package меняет ровно пять путей:
 `43484fba` используется только как independently audited donor и не расширяет
 package scope. `init.php` и `done.php` загружают side-effect-free definitions из
 `update.php`; CLI execution находится за явным entrypoint, поэтому include не
-читает argv/config/filesystem/RPC. Service label/marker predicates принадлежат
+читает argv/config/filesystem/RPC. `init.php`, `done.php`, `UpdateTest.php` и
+`RetrackersUpdateSequenceTest.php` определяют `RETRACKERS_IMPORT_ONLY` до
+include. Sequence-test явно загружает `retrackers.php`, затем `update.php`.
+Service label/marker predicates принадлежат
 отдельному P3 package и здесь не создаются, не меняются и не тестируются.
 
-Upstream `tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` остаётся
-byte-for-byte и сохраняет exact 12 methods. Это predecessor gate, а не седьмой
-target path: implementation branch режется от upstream prerequisite tip, где
-файл обязан иметь SHA-256
-`47c0ad870214e5a8056c20c5a008fd35173732bd50ffae5a1b45c9e975a4eb13`.
-На published fork `43484fba` файл отсутствует как старый merge artifact; такой
-tip нельзя использовать predecessor-ом без отдельного restore/rebase до начала
-этого package:
+Upstream `tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` теперь
+является шестым target path. Full-file SHA не является invariant, потому что
+bootstrap preamble обязан измениться. Вместо него заморожены два проверяемых
+инварианта:
+
+- registration-aware sorted 12-name SET SHA-256
+  `0ee7b35f9cda898d00e963b7e23aff02351e3653db21bbf2e99e31a34d5c7044`;
+- bytes от строки `class RetrackersUpdateSequenceTest extends TestCase` до EOF
+  SHA-256
+  `f0dac045fa3b9e98172132977e05fa14b7f091d1b9779a989d8b1d047fecc8f3`.
+
+Все 12 methods обязаны выполниться и пройти. Допустимое изменение preamble:
+`RETRACKERS_IMPORT_ONLY`, explicit `retrackers.php`, затем `update.php`;
+никакого второго helper implementation в test нет:
 
 ```text
 testTheScriptsHelpersAreTheRealOnes
@@ -92,8 +111,8 @@ testClearTrackerDropsAGroupItEmpties
 testDeleteTrackersMatchesOnASubstringCaseInsensitively
 ```
 
-Его удаление в current fork diff — merge artifact. Исторический `+1493/-45`
-не является final numstat; точный delta считается от final predecessor.
+Исторический `+1493/-45` не является final numstat; точный delta считается от
+final predecessor `up/scgi-transport=4682a761`.
 
 ## Перепроверенные verdicts
 
@@ -123,8 +142,8 @@ testDeleteTrackersMatchesOnASubstringCaseInsensitively
 | `d.state=1` означает, что replacement должен снова стартовать torrent | **ОПРОВЕРГНУТО, production-reachable** | На обеих families `d.pause` оставил tuple `(state,is_active,is_open)=(1,0,1)`; `load.start` сделал бы его `(1,1,1)`. Target видимо отказывает paused/unsupported lifecycle до mutation. |
 | explicit `d.close` + inner post-quiesce CAS закрывает paused/closed races | **ПОДТВЕРЖДЕНО** | На обеих daemon families `close` синхронно quiesce-ит object и завершает hooks; повторный internal close в `erase` при `is_open=0` возвращается до closed hook. |
 | `state=0,is_active=0,is_open=0` достаточно для eventless repeated close | **ОПРОВЕРГНУТО** | `pause()` сначала сбрасывает nonzero `d.hashing` и вызывает `event.download.hash_removed`; inner CAS дополнительно требует exact `d.hashing=0`. |
-| worker может увидеть present-target intent в transaction-owned absent gap | **НЕДОСТИЖИМО В ЭТОМ FIVE-PATH SCOPE** | Любой `d.stop`/pause/start/setter/erase по уже absent hash не оставляет intent; нужна сериализация target endpoint либо durable journal, который пишет сам command path. |
-| worker может отличить user `d.stop` после собственного partial stop | **НЕДОСТИЖИМО В ЭТОМ FIVE-PATH SCOPE** | Повторный stop idempotent и не меняет full tuple; контракт fail-closed не restart-ит object. |
+| worker может увидеть present-target intent в transaction-owned absent gap | **НЕДОСТИЖИМО В ЭТОМ SIX-PATH SCOPE** | Любой `d.stop`/pause/start/setter/erase по уже absent hash не оставляет intent; нужна сериализация target endpoint либо durable journal, который пишет сам command path. |
+| worker может отличить user `d.stop` после собственного partial stop | **НЕДОСТИЖИМО В ЭТОМ SIX-PATH SCOPE** | Повторный stop idempotent и не меняет full tuple; контракт fail-closed не restart-ит object. |
 | per-transaction `method.insert` можно убрать через `method.erase` | **ОПРОВЕРГНУТО, blocking** | Обе версии удаляют только command-map slot, но оставляют object-storage value; имя нельзя вставить повторно до daemon restart. |
 | один private `multi` ledger даёт reusable receipts | **ПОДТВЕРЖДЕНО** | На 0.9.8/0.16.21 exact subkey переживает `d.erase`, двухаргументный `method.set_key` удаляет только его, key сразу переиспользуется. |
 | отдельный RPC reply после load является causal fence | **ОПРОВЕРГНУТО, blocking** | SCGI callbacks от independent connections могут обгонять уже принятый request. Нужен receipt от заранее зарегистрированного daemon scheduler item с timestamp строго позже factory tasks. |
@@ -269,7 +288,8 @@ storage; package никогда не erase/recreate-ит его. Если нес
 migration.
 
 После boundary действует visible **exclusive current writer** prerequisite:
-только callbacks этих пяти paths могут менять reserved
+только callbacks/builders, принадлежащие четырём production paths package,
+могут менять reserved
 `tadd_trackers1*|tadd_trackers2*`, `pf:*`, `pv:*`, `ma:1`, `ta:1` и extended
 `to:*`. HTTP XMLRPC не может вызвать private ledger, но trusted SCGI сам по себе
 не защищает от другого local writer. Self-consistent trusted overwrite action +
@@ -569,8 +589,12 @@ double-fork подтверждает первый fork, но не сообщае
 
 ```sh
 cd "$(dirname "$0")" || exit 1
-exec "$1" ./update.php "$2" "$3" "$4" >/dev/null 2>&1
+exec "$1" ./update.php "$2" "$3" "$4"
 ```
+
+Запрещены `php -r`, environment flag вместо sentinel, дополнительный argv и
+скрытое backgrounding/redirection в wrapper: worker получает один прямой POSIX
+`exec`, а logging policy остаётся у PHP entrypoint/runtime.
 
 Hook/rTorrent command builder обязан сохранить PHP/script/hash/user/handoff как
 отдельные arguments с canonical rTorrent escaping. Whitespace, comma, quote и
@@ -579,8 +603,11 @@ backslash в configured PHP path не могут менять argv shape. Shell 
 
 ## Entrypoint and immutable pre-commit gates
 
-`init.php`, `done.php` и tests определяют frozen import-only sentinel до
-`require_once __DIR__.'/update.php'`. Top level `update.php` содержит только
+`init.php`, `done.php`, `UpdateTest.php` и
+`RetrackersUpdateSequenceTest.php` определяют exact
+`RETRACKERS_IMPORT_ONLY` до своего respective `require_once` production-файла
+`plugins/retrackers/update.php`. Production importers используют sibling path,
+tests — plugin-relative path из test tree. Top level `update.php` содержит только
 constants и function/class-independent definitions, которые не требуют loaded
 `Torrent`/XMLRPC classes; raw scanner/rewriter не наследует `Torrent`.
 Внизу exact discriminator имеет форму «если import sentinel отсутствует,
@@ -1786,7 +1813,7 @@ foreign same-hash generation. Любой successful target command, принят
 daemon-ом для присутствующей generation, сохраняется full-CAS/post-event
 authority rules выше. Но stop, pause, start, setter или erase, нацеленный в
 owned absent gap, получает missing-hash и не оставляет intent. Такое intent
-недостижимо в exact five-path scope: соответствующие command endpoints должны
+недостижимо в exact six-path scope: соответствующие command endpoints должны
 писать tombstone/ledger либо сериализоваться с rewrite transaction. Это
 отдельный durable package, не скрытая гарантия этого контракта.
 
@@ -2348,7 +2375,7 @@ Current-base RED/mutation suite обязана доказать:
    Success, null transport, malformed RAW и XMLRPC fault делают exactly one send
    и используют `retrackersDecodeRestrictedRawResponse()` без legacy fallback.
    Large delayed-first-byte multicall не получает hardcoded 0.25-second read
-   budget. Static RED всех пяти paths запрещает `fsockopen`, `stream_socket*`,
+   budget. Static RED всех шести paths запрещает `fsockopen`, `stream_socket*`,
    private SCGI framing и `rXMLRPCRequest::send()`;
 9. failed open, non-regular descriptor, false/empty/positive-short read,
    source CAP+1, scanner/hash и candidate CAP+1/preflight/append failures
@@ -2374,10 +2401,14 @@ Current-base RED/mutation suite обязана доказать:
     list/map key-set equality, string-`1` map values, i8 `has_key=0|1` и full
     consumption; unused direct/member permutations are RED. Separate empty
     captures pin-ят 0.9.8 explicit CRLF containers и 0.16.21 self-closing
-    containers. Source-reachable partial `d.multicall2` row и empty
-    `t.multicall` invalid-wrapper row отвергаются exact width до consumer use;
-    capture остаётся authority accepted shapes. Missing-target fault never
-    becomes zero rows. Named adversarial
+    containers. Measured erase adversary даёт captured two-cell partial
+    `d.multicall2` row на 0.16.21; на 0.9.8 daemon exits 139, OOM=false и
+    возвращает zero bytes, поэтому там transport failure является единственным
+    честным evidence. Empty `t.multicall` invalid-wrapper row source-real, но
+    deterministic public producer не найден: exact synthetic `[[]]` остаётся
+    rejection fixture и не подменяется captured empty outer list. Все эти
+    формы отвергаются до consumer use; capture остаётся authority accepted
+    shapes. Missing-target fault never becomes zero rows. Named adversarial
     RED отвергают missing/extra/reordered row/cell/member, flat-vs-row/struct
     confusion, wrong success/fault wrapper/tag/nesting/count, attributes,
     namespaces, DTD/entity declarations, malformed UTF-8/entities/tags, `<ix>`,
@@ -2447,16 +2478,17 @@ Current-base RED/mutation suite обязана доказать:
     clears lease, genuinely pending work retains it;
 24. successful present-generation stop/start/setter/erase races are preserved,
     while any target intent accepted in the owned absent gap is explicitly
-    outside this five-path guarantee;
+    outside this six-path guarantee;
 25. duplicate same-hash load cannot alter existing marker/local id/state;
     PHP/script paths with whitespace/comma/quote/backslash keep exact argv;
-26. all 12 upstream sequence tests survive byte-for-byte and test-name extractor
-    proves the frozen non-empty set/count.
+26. all 12 upstream sequence test methods and the class-through-EOF bytes
+    survive byte-for-byte; the registration-aware extractor proves the frozen
+    non-empty set/count while the bootstrap preamble adopts the import sentinel.
 
 Mandatory mutations, каждая с named executed RED, no preceding fatal и fresh
 GREEN after restore:
 
-- добавить шестой target path/`guard.php`, top-level include side effect или
+- добавить седьмой target path/`guard.php`, top-level include side effect или
   unloaded `Torrent` parent; вернуть stop в hook либо launch раньше `wh/wp`;
 - split-ить lifecycle acquire и predecessor neutralization, retry-ить unknown
   acquire, ослабить full-service historical-worker drain до rTorrent restart,
@@ -2610,11 +2642,11 @@ GREEN after restore:
 
 Verification на exact implementation tip:
 
-- focused `UpdateTest.php`, unchanged 12-method sequence suite и full test-name
-  set/count guard;
+- focused `UpdateTest.php`, all 12 sequence methods executed, exact
+  class-through-EOF hash и full test-name set/count guard;
 - PHP lint/runtime 7.4/8.1/8.5, full harness 8.1/8.5, PHPStan 2.2.9 level 0,
   `sh -n`;
-- exact five-path diff и whole-file review;
+- exact six-path diff и whole-file review;
 - final-parent static/fake adapter test на PHP 7.4 с warnings-as-exceptions:
   ровно один nine-argument `rSCGITransport::send()` с `trusted=true`, connect
   `0.25s`, by-reference failure, independent transfer/response-cap positions и
@@ -2622,7 +2654,7 @@ Verification на exact implementation tip:
   `null`/configured forwarding без notice; success/null/malformed/fault cases
   дают exactly one send и один restricted-codec path. Delayed-first-byte fixture
   доказывает отсутствие hardcoded 0.25-second transfer budget; static scan всех
-  пяти paths не находит `fsockopen`, `stream_socket*`, private SCGI framing или
+  шести paths не находит `fsockopen`, `stream_socket*`, private SCGI framing или
   `rXMLRPCRequest::send()`;
 - deterministic bounded-reader/candidate tests на PHP 7.4/8.1/8.5: regular
   CAP-1/CAP/CAP+1, required final EOF probe, false/empty/positive-short reads,
@@ -2642,9 +2674,10 @@ Verification на exact implementation tip:
   empty/populated unordered string-`1` struct, scalar i8 slot and member fault.
   Exact count/order/width/key-set/fault-placement checks include 0.9.8 explicit
   CRLF empties, 0.16.21 self-closing empties, captured missing-target faults and
-  private trackerless 0.16.21 zero-row fixture. Source-owned branch fixtures
-  отдельно подтверждают rejection partial-width `d.multicall2` и empty-row
-  `t.multicall` без расширения capture-backed accepted grammar. Adversarial
+  private trackerless 0.16.21 zero-row fixture. Captured 0.16.21 partial-width
+  `d.multicall2`, measured 0.9.8 exit-139 transport failure и source-owned
+  synthetic empty-row `t.multicall` отдельно подтверждают rejection без
+  расширения capture-backed accepted grammar. Adversarial
   suite отвергает
   unused direct/member modes, every frozen wrapper/row/flat-vs-struct/count/cell/
   slot/attribute/namespace/DTD/entity/type/range/duplicate/`<ix>`/extra/prefix/
@@ -2773,7 +2806,8 @@ ack model в proof.
 
 ## Approval boundary
 
-**DESIGN / CONTRACT APPROVAL** основан на reviewed pre-approval commit
+Historical exact-five **DESIGN / CONTRACT APPROVAL** основан на reviewed
+pre-approval commit
 `38dd46e3073c6d102b867169c96f8dd9ed1770cd` и candidate SHA-256
 `5f44b73cd7fd4f1cb33d481165faece3c2f2076b02a06fa2451bf3fc6b3c8014`.
 Round-5 immutable package имеет SHA-256
@@ -2782,21 +2816,25 @@ specification `CLEAN` report —
 `d0256a456b8b0068555d2726e148e53eb80db96c9d5dd479d139ccf18b59441d`,
 adversarial `CLEAN` report —
 `b311a75677c82f2df1379173d8b0c1a867adff616cf2c261f8237b0057d31f19`.
-Этот approval commit меняет только status/evidence и не изменяет и не
-инвалидирует reviewed technical bytes, formulas, state transitions, scope,
-resource limits или acceptance gates.
+Этот historical approval остаётся evidence authority для reviewed technical
+bytes, formulas, state transitions, resource limits и acceptance gates, но не
+для current scope/sequence invariant. Исправление 2026-08-31 явно supersede-ит
+его exact-five scope, immutable full-file sequence SHA и связанные wording;
+остальные technical guarantees не расширены и не ослаблены.
 
-Natural B5 missing-ledger result остаётся честным post-implementation
-`BLOCKED` gate до появления real five-path producers. Он не отменяет design
-approval и не является `GREEN`.
+Natural missing-ledger B5 RAW/BODY boundary уже captured на обеих daemon
+families: это GREEN capture evidence ожидаемого RED behavior. Post-implementation
+`BLOCKED` остаются только production-provenance successful B5 и полный
+two-family/eight-state/two-read manifest после появления package-owned
+ledger/lifecycle producers. Это не отменяет design approval.
 
 **IMPLEMENTATION / CAPTURE ACCEPTANCE** является отдельным более поздним gate.
-До него implementation branch ещё нет, все 18 implementation packages остаются
-pending и package нельзя называть mergeable/ready. Acceptance требует real
+До него implementation branch ещё нет; в общей очереди 14 implementation
+packages, и retrackers нельзя называть mergeable/ready. Acceptance требует real
 producers and callbacks, witnessed natural RED, corrected GREEN, mandatory
 mutations, exact two-family/eight-state/two-read manifest, PHP 7.4 128M bounds,
-both-daemon runtime, byte-for-byte 12-test preservation, exact predecessor range
-и independent whole-file review. Только этот второй gate подтверждает, что
+both-daemon runtime, exact 12-name/class-body preservation, exact predecessor
+range и independent whole-file review. Только этот второй gate подтверждает, что
 реализация соответствует уже approved contract.
 
 ## Post-sync revalidation — 2026-08-30
@@ -2805,12 +2843,13 @@ Final merge `4b3cd79925e7b73ea25feb1658a34e6b698c9855` использует upst
 `529033335e66e1acd4084b73030f5880035ce1c0`; historical
 `755404f3e38af98b6901852b35be10fb9659ffd3` baselines, B5 vectors и approval
 hashes остаются frozen. Exact delta `755404f3..52903333` содержит только
-#3220/#3202 и три package-lock/filedrop path; пересечение с exact five-path
+#3220/#3202 и три package-lock/filedrop path; пересечение с exact six-path
 retrackers scope пусто. Pre-755 #3218 plugin-relative init-path shield сохранён,
 а #3212 predecessor test не был адаптирован под fork.
 
-Current `tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` byte-exact
-upstream: SHA-256
+На 2026-08-30 merge и clean parent `4682a761` input
+`tests/plugins/retrackers/RetrackersUpdateSequenceTest.php` был byte-exact
+upstream, SHA-256
 `47c0ad870214e5a8056c20c5a008fd35173732bd50ffae5a1b45c9e975a4eb13`.
 Registration-aware 12-name SET имеет SHA-256
 `0ee7b35f9cda898d00e963b7e23aff02351e3653db21bbf2e99e31a34d5c7044`:
@@ -2830,15 +2869,17 @@ testDeletingEveryTrackerInAGroupRemovesTheGroup
 testTheScriptsHelpersAreTheRealOnes
 ```
 
-Fresh current-fork run остаётся honest natural RED: raw exit 255, только 2/12
-methods начаты, 2 assertions `Passed`, затем named failure
-`the plugin configuration class is loadable too` и uncaught fatal
-`Class "rRetrackers" not found`. Это implementation gate: test не изменяется,
-RED не называется regression closure или readiness. Literal PHP 7.4
-`memory_limit=128M` combined consumer bounds также остаются будущим acceptance,
-не predecessor GREEN.
+Fork follow-up `c4fef63f` уже восстановил реальный `rRetrackers` bootstrap:
+текущая predecessor class выполняет **12 methods / 40 assertions / 0 failures**
+на PHP 7.4, 8.1 и 8.5. Это baseline, а не implementation closure. Новый
+side-effect-free import всё равно требует разрешённой правки preamble с
+`RETRACKERS_IMPORT_ONLY`; замороженными остаются 12-name SET и class-through-EOF
+hash, а не устаревший full-file SHA. Literal PHP 7.4 `memory_limit=128M`
+combined consumer bounds остаются будущим acceptance.
 
-Статус остаётся **DESIGN APPROVED — implementation pending**. Five-path scope,
-dependencies и общий счёт неизменны: все 18 implementation packages общей
-очереди остаются pending, retrackers recovery является одним из них и не ready/
-mergeable.
+Статус остаётся **DESIGN APPROVED — implementation pending**. Six-path scope и
+dependencies скорректированы без новой package строки: из общей очереди 14
+implementation packages retrackers recovery является одним и пока не ready/
+mergeable. Pre-code RAW fixtures и граница того, что действительно достижимо
+до producers, зафиксированы в
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.

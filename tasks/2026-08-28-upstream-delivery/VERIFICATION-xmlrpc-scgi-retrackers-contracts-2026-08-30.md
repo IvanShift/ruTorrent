@@ -1,5 +1,12 @@
 # XMLRPC / SCGI / retrackers — сводный verification and cleanup archive
 
+> Historical archive only. Its SCGI/queue statuses and retrackers exact-five
+> authority describe the 2026-08-30 checkpoint. Current SCGI closure is in
+> `VERIFICATION-scgi-transport-2026-08-31.md`; the corrected retrackers
+> six-path authority and pre-code capture boundary are in
+> `VERIFICATION-retrackers-recovery-precode-2026-08-31.md`. Do not use the
+> exact-five rows below as the current implementation contract.
+
 Дата архива: 2026-08-30. Frozen repository identity:
 `14683d93bc54dbab89d6abce636d2e749e8492ba` на branch
 `codex/retrackers-contract-finish` с clean tracked/index tree до authoring.

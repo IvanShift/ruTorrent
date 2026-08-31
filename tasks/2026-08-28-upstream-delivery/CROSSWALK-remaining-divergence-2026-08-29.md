@@ -60,6 +60,15 @@ integrated handoffs + 1 accepted closure**. Exact httprpc branch опублик�
 владельцем как `origin/up/httprpc-refusals=c7a431aa`; SCGI branch, fork
 master и deploy не опубликованы.
 
+Package 5 pre-code revalidation исправила contract scope с 5 до exact 6 paths:
+четыре production paths + два tests. Дополнительный path —
+`RetrackersUpdateSequenceTest.php`, где меняется только import/bootstrap
+preamble; 12-name SET и class-through-EOF hash остаются frozen. Это не новая
+package строка и не меняет current count 14. Reachable RAW/BODY matrix и
+natural missing-ledger B5 сняты в isolated 0.9.8/0.16.21 labs; production-success
+B5 и 2×8×2 manifest остаются post-implementation gate. Evidence:
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
+
 Последующие broad-harness blockers закрыты без изменения crosswalk arithmetic:
 `c4fef63f` — test-only retrackers bootstrap, `76b0c0f5` — PHP 7.4 NUL-safe
 Torrent path probes. Для второго готова upstream-clean branch
@@ -86,7 +95,7 @@ carve-аудитам.
 | SCGI/XMLRPC/httprpc/path | 17 | +1,533/-825 | httprpc, SCGI, consumer integration, 7-path proxy-policy package; whole-file copy запрещён |
 | fork task/tooling | 12 | +1,568/-0 | не отправлять |
 | rTorrent compatibility | 5 | +1,364/-8 | готовая 0.16.21 characterization + 3-path alias-surface package |
-| retrackers | 5 | +1,540/-45 | exact five-path recovery design APPROVED and implementation pending; later P3 marker package separate |
+| retrackers | 5 | +1,540/-45 | historical divergence bucket; current recovery contract is exact 6 paths because sequence-test preamble is an explicit target; later P3 marker package separate |
 | Kinozal/loginmgr | 5 | +636/-28 | готовая локальная ветка/open PR |
 | socket/settings | 4 | +450/-22 | historical fork delta; final approved carve `d548016b` is `+1229/-19`, ready and locally integrated |
 | test harness | 3 | +3/-17 | готовая ветка также добавляет новый test-файл |
@@ -115,11 +124,13 @@ SHA, integration merges и последующие remediation.
 Package 4 SCGI is implemented and independently APPROVED from final package 3;
 packages 5 retrackers, 6 erasedata A and 14 XMLRPC proxy policy are
 DESIGN APPROVED — implementation pending.
-Their exact scopes are 7, 5, 8 production + 2 test and 7 paths respectively.
+Their exact scopes are 7, 6, 8 production + 2 test and 7 paths respectively.
 Retrackers uses final SCGI as immediate parent; P3 waits final retrackers +
-final P1. Approved retrackers authority is commit
+final P1. Historical retrackers approval authority is commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba` / contract SHA-256
-`922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`.
+`922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`;
+its exact-five scope is superseded by the six-path correction in
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
 Final verification and cleanup authority is commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0` / archive SHA-256
 `f2a08d8b1f36b43d2490f87da8d859916c804e8396ac09b7c3600f34d64bee16`;
@@ -174,7 +185,8 @@ two-path scope и historical production hunk `+6/-13` в
 - exact P0/P1, erasedata A/C и новые manual/foreign packages нельзя называть
   ready до RED-first carve-а на их final prerequisite tips;
 - approved retrackers design остаётся действующим, но implementation branch
-  нельзя называть ready до RED-first five-path carve от final SCGI, полных B5
-  producer/capture gates и exact predecessor test-set preservation;
+  нельзя называть ready до RED-first six-path carve от final SCGI,
+  production-success B5/2×8×2 producer gates и exact predecessor
+  class/test-set preservation;
 - PHP 7.4 defect #3213 не входит в 139 fork paths, но учитывается отдельным
   обязательным compatibility package.

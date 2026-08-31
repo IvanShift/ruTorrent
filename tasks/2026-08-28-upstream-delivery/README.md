@@ -91,6 +91,18 @@ UNIX-SCGI probes на rTorrent 0.9.8 и
 Текущий счёт: **14 implementations / 0 audits / 7 ready or locally integrated
 owner handoffs outside count + 1 accepted upstream closure**.
 
+Package 5 pre-code gate перепроверен 2026-08-31. Старый exact-five contract
+оказался противоречивым: он требовал import-safe `update.php`, одновременно
+запрещая необходимую правку bootstrap sequence-test. Scope исправлен на exact
+6 paths: четыре production paths плюс `UpdateTest.php` и
+`RetrackersUpdateSequenceTest.php`. В sequence-test меняется только preamble;
+12-name SET и class-through-EOF bytes заморожены отдельными SHA-256.
+Контейнерный RAW audit сохранил 112 RAW/BODY pairs для rTorrent 0.9.8/0.16.21
+и подтвердил natural missing-ledger B5 boundary. Production-success B5 и
+two-family × eight-state × two-read manifest остаются недостижимы до появления
+реальных package producers и обязательны после реализации. Evidence:
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
+
 ## Цель
 
 Отправить в upstream **все** расхождения форка, корректно оформленными PR. Это решение
@@ -205,7 +217,7 @@ dispatch-vs-load граница реальна, но unconditional log один�
 успеха и отказа и потому ничего не диагностирует.
 
 Замороженные contract boundaries: httprpc — exact 5 paths; SCGI — exact 7
-paths; retrackers recovery — exact 5 paths; erasedata A — exact 8 production +
+paths; retrackers recovery — exact 6 paths; erasedata A — exact 8 production +
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
 estimate заменён final exact delta `+1569/-51` от `c7a431aa`.
 Design approvals сами по себе не закрыли packages; отдельные реализации 1–4
@@ -218,18 +230,23 @@ foreign-handler packages. Полный синтез: `REVIEW-disposition-wave-20
 foreign brief: `REVIEW-foreign-tracker-handlers-2026-08-29.md`.
 
 Retrackers recovery: DESIGN APPROVED — implementation pending. Scope — ровно
-`init.php`, `done.php`, `run.sh`, `update.php` и `UpdateTest.php`; `guard.php`
-и P3 service policy исключены. Immediate implementation parent — final
+`init.php`, `done.php`, `run.sh`, `update.php`, `UpdateTest.php` и
+`RetrackersUpdateSequenceTest.php`; `guard.php` и P3 service policy исключены.
+В шестом path разрешён только import/bootstrap preamble; 12 methods и class
+body неизменны. Immediate implementation parent — final
 `up/scgi-transport`; P3 строится только после final P1 и package 5. Published
-donor tests остаются characterization, не closure. HistoricalBindingSampleV2/
-B5+EPOCH production capture остаётся BLOCKED до появления реальных five-path
-producers `rr.receipts.v1`, `pf`/`pv`, extended owner, paired actions и
-canonical four-field marker. Это post-implementation acceptance gate, а не
-prerequisite design approval; текущий общий счёт остаётся 14.
+donor tests остаются characterization, не closure. Natural missing-ledger B5 и
+wire fixtures уже captured; production-success HistoricalBindingSampleV2/
+B5+EPOCH manifest остаётся BLOCKED до появления `rr.receipts.v1`, `pf`/`pv`,
+extended owner, paired actions и canonical four-field marker. Это
+post-implementation acceptance gate, а не prerequisite design approval;
+текущий общий счёт остаётся 14.
 
-Authority: approval commit
-`14683d93bc54dbab89d6abce636d2e749e8492ba`, approved contract SHA-256
+Historical five-path authority: approval commit
+`14683d93bc54dbab89d6abce636d2e749e8492ba`, contract SHA-256
 `922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`.
+Он не является authority исправленного six-path scope; текущий commit/SHA
+фиксируется отдельным control update после independent review этой правки.
 Final verification and cleanup authority: commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`, archive SHA-256
 `f2a08d8b1f36b43d2490f87da8d859916c804e8396ac09b7c3600f34d64bee16`,
@@ -339,12 +356,15 @@ B и combined C+P0 и container baseline:
 
 После checkpoint отдельные SCGI и XMLRPC contracts получили DESIGN APPROVED,
 а retrackers contract после двух CLEAN reviews получил
-тот же статус на exact five-path scope в approval commit
-`14683d93bc54dbab89d6abce636d2e749e8492ba`. Позднее exact container cleanup
+тот же статус на первоначальном exact-five scope в approval commit
+`14683d93bc54dbab89d6abce636d2e749e8492ba`; этот scope позднее исправлен до
+exact six в `VERIFICATION-retrackers-recovery-precode-2026-08-31.md`. Exact
+container cleanup
 получил GREEN и был зафиксирован commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`; это runtime cleanup, не
 implementation/capture acceptance. С тех пор packages 1–4 закрыты отдельной
-реализацией; B5 production capture остаётся post-implementation BLOCKED.
+реализацией; natural missing-ledger B5 уже captured, а production-success B5
+и exact 2×8×2 manifest остаются post-implementation BLOCKED.
 
 Resume point: не считать donor GREEN закрытием packages. A → B и A → combined
 C+P0 сохраняются; SCGI, XMLRPC и A начинаются только от final httprpc;

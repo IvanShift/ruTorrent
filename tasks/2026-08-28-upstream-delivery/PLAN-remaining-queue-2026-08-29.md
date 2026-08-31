@@ -71,6 +71,15 @@ production `76b0c0f5` не передаёт binary bencode с NUL в три file
 1 и test correction, поэтому current queue остаётся **14**. Evidence:
 `VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
 
+Package 5 pre-code contract скорректирован без изменения арифметики очереди:
+exact 6 paths вместо противоречивых 5. Шестой path — только bootstrap preamble
+`RetrackersUpdateSequenceTest.php`; его 12-name SET и class-through-EOF bytes
+остаются immutable. Exact parent — final SCGI `4682a761`. Isolated
+0.9.8/0.16.21 audit уже сохранил reachable RAW/BODY matrix и natural
+missing-ledger B5. Production-success B5 и full 2×8×2 manifest ждут producers
+реализации. Evidence:
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
+
 ## Уже готовые handoff
 
 Семь веток готовы или уже локально интегрированы: FileUtil, test harness,
@@ -90,7 +99,7 @@ Push выполняет только владелец.
 | 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED**: `d548016b`, direct parent `f19c9d86`; integrated `f547b2f3`; no push |
 | 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / APPROVED / PR #3228 OPEN**: `c7a431aa`, direct parent `f19c9d86`; integrated `48825583`; branch published by owner |
 | 4 | `up/scgi-transport` | exact 7 paths, `+1569/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: clean `4682a761`, direct parent `c7a431aa`; fork integration `19086b5f` + separate test adaptation `3ff4860c`; no push |
-| 5 | `up/retrackers-recovery` | exact 5 paths; final numstat after RED/implementation | после final 4; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; B5+EPOCH production capture BLOCKED until real five-path producers, without blocking design approval |
+| 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; reachable RAW and missing-ledger B5 captured; production-success B5+EPOCH 2×8×2 manifest waits real producers |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | exact 2 paths; final numstat после copied-real RED | после final A drain/rearm seam | corrected design independently **APPROVED**; missing-helper no-op/log + Ratio-startup rearm pending A wake; username filter/Ratio force guard исключены |
@@ -186,9 +195,10 @@ Standalone C удалён из счёта, потому что без P0 он pr
    этого exact parent как clean `4682a761` и fork integration `19086b5f`;
    XMLRPC policy и A остаются отдельными sibling branches. Build the consumer
    only after XMLRPC + A; B and P0+C only after A.
-4. Build retrackers only after final SCGI. Alias surface and manual entrypoints
-   remain independent; after final P1 build foreign handlers, then P2/P3 under
-   their exact dual prerequisites.
+4. Next build retrackers from exact final SCGI `4682a761` under the corrected
+   six-path contract. Alias surface and manual entrypoints remain independent;
+   after final P1 build foreign handlers, then P2/P3 under their exact dual
+   prerequisites.
 5. После combined P0+C построить P1; от final P1 параллельно строить три foreign
    handler packages, и только после runtime evidence — P2/P3.
 6. Для каждой ветки: named RED, production mutation, focused/full матрицы,
