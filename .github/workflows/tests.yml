@@ -9,6 +9,9 @@ jobs:
   php:
     runs-on: ubuntu-latest
     strategy:
+      # Complete both supported runtimes after one fails, preserving the
+      # independent result needed to reproduce and diagnose a PHP-only failure.
+      fail-fast: false
       matrix:
         php: ['7.4', '8.1']
     steps:
