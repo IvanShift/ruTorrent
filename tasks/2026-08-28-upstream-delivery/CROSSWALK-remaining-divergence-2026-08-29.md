@@ -52,7 +52,17 @@ Package 3 `up/httprpc-refusals` закрыт на exact current predecessor:
 Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md`. Package 4 SCGI теперь
 строится от exact final parent `c7a431aa`; completion ещё не заявлен. Current
 count: **15 implementations / 0 audits / 6 ready or locally integrated
-handoffs + 1 accepted closure**. Push/deploy не выполнялись.
+handoffs + 1 accepted closure**. Exact httprpc branch опубликована владельцем
+как `origin/up/httprpc-refusals=c7a431aa`; fork master/deploy не опубликованы.
+
+Последующие broad-harness blockers закрыты без изменения crosswalk arithmetic:
+`c4fef63f` — test-only retrackers bootstrap, `76b0c0f5` — PHP 7.4 NUL-safe
+Torrent path probes. Для второго готова upstream-clean branch
+`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`, без
+push. Fork full harness последовательно GREEN на PHP 7.4/8.1/8.5: 65 files,
+4152 success signals, zero failures. Это package-1 follow-up, не новая
+implementation line. Evidence:
+`VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
 
 ## Метод и полный объём
 

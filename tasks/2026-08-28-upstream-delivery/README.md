@@ -64,8 +64,20 @@ Package 3 `up/httprpc-refusals` завершён после отдельной R
 Focused endpoint/helper matrix прошла на PHP 7.4/8.1/8.5; PHPStan и Jest
 зелёные. Broad PHP comparison имеет только exact base-equal известные RED
 `rRetrackers` и PHP 7.4 raw-magnet prerequisite; runtime cache пользователя не
-удалялся. Push/deploy не выполнялись. Evidence:
+удалялся. Владелец затем опубликовал exact branch как
+`origin/up/httprpc-refusals=c7a431aa` и сообщил о создании upstream PR;
+`origin/master` и deployment не менялись. Evidence:
 `VERIFICATION-httprpc-refusals-2026-08-31.md`.
+
+Оба broad-harness follow-up теперь также закрыты отдельными commits:
+`c4fef63f` исправляет только bootstrap реального `rRetrackers` class в sequence
+test, а `76b0c0f5` защищает три PHP 7.4 path probe от binary metainfo с NUL.
+Для второго подготовлена, но не опубликована upstream-clean branch
+`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`.
+Полный fork harness после обеих правок проходит 65 files / 4152 success signals
+на PHP 7.4, 8.1 и 8.5. Raw-metainfo fix является follow-up package 1, а test
+bootstrap не меняет production; поэтому счёт очереди не уменьшается. Evidence:
+`VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
 
 Текущий счёт: **15 implementations / 0 audits / 6 ready or locally integrated
 owner handoffs outside count + 1 accepted upstream closure**. Package 4
