@@ -90,6 +90,12 @@ UNIX-SCGI probes на rTorrent 0.9.8 и
 0.16.21 зелёные; оба snapshots independently APPROVED. Evidence:
 `VERIFICATION-scgi-transport-2026-08-31.md`.
 
+GitHub run `33386106599` не дал публичного failing-test log: PHP 8.1
+завершился с `1`, а PHP 7.4 был отменён fail-fast. Поэтому кодовая
+заглушка не добавлялась; локальный `95f9ab6f` только отключает
+matrix fail-fast, сохраняя красный verdict и оба PHP результата. Evidence:
+`VERIFICATION-ci-php-matrix-observability-2026-08-31.md`.
+
 Текущий счёт: **14 implementations / 0 audits / 7 ready or locally integrated
 owner handoffs outside count + 1 accepted upstream closure**.
 
