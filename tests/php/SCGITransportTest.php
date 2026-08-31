@@ -710,9 +710,12 @@ class SCGITransportTest extends TestCase
 			$this->assertEquals($body, $result['body'], 'rpc2 returns body mode without daemon headers');
 			$this->assertEquals((string)strlen($body), $result['headers']['content-length'],
 				'rpc2 publishes the exact framed body length');
-			$this->assertTrue(strpos($result['serverError'], 'Warning') === false
-				&& strpos($result['serverError'], 'Notice') === false,
-				'legacy config without new globals produces no warning');
+			$serverClean = strpos($result['serverError'], 'Warning') === false
+				&& strpos($result['serverError'], 'Notice') === false;
+			$message = 'legacy config without new globals produces no warning';
+			if(!$serverClean)
+				$message .= ': '.json_encode($result['serverError']);
+			$this->assertTrue($serverClean, $message);
 			$request = $peer->request();
 			$this->assertTrue(strpos($request['header'], "UNTRUSTED_CONNECTION\0"."1\0") !== false,
 				'rpc2 forwards an ordinary admitted request as untrusted');
@@ -824,6 +827,8 @@ PHP;
 			}
 			file_put_contents($tree.'/conf/config.php', $config);
 			file_put_contents($tree.'/prepend.php', "<?php\n\$_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] = 'on';\n");
+			if(file_put_contents($tree.'/__rutorrent_scgi_ready__', 'ready') !== 5)
+				throw new Exception('could not create copied rpc2 readiness file');
 			$rpcLog = $tree.'/rpc2.log';
 			$serverError = $tree.'/server.err';
 			$httpPort = $this->reservePort();
@@ -901,7 +906,8 @@ PHP;
 				$written = fwrite($socket, $request);
 				$response = ($written === strlen($request)) ? stream_get_contents($socket) : false;
 				fclose($socket);
-				if($response !== false && strpos($response, "\r\n\r\n") !== false)
+				if($response !== false && strpos($response, ' 200 OK') !== false
+					&& strpos($response, "\r\n\r\n") !== false)
 					return;
 			}
 			$status = proc_get_status($process);
