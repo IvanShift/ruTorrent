@@ -112,7 +112,7 @@ SHA, integration merges и последующие remediation.
 
 ## Закрыто или готово
 
-- готово или локально интегрировано: FileUtil `76485317`, test harness
+- готово или локально интегрировано: FileUtil `76485317` (#3231), test harness
   `8eafb529`, rTorrent 0.16.21 `cbacef8e` (#3230), Kinozal `de98a49a`, socket
   `d548016b`/`f547b2f3`, httprpc `c7a431aa`/`48825583`, SCGI
   `33934444` (runtime `4682a761`)/`19086b5f` + `3ff4860c`;

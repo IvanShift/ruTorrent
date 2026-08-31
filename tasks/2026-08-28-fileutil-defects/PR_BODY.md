@@ -65,8 +65,10 @@ After:
 - exact diff: seven upstream-owned paths, `+514/-10`;
 - upstream #3226 is the direct parent and is preserved, not duplicated;
 - independent review: `APPROVED`, no findings.
+- published upstream PR: `Novik/ruTorrent#3231`;
+- GitHub checks: 8/8 GREEN.
 
-Publish:
+Published by the owner with:
 
 ```sh
 git push -u origin up/fileutil-defects-f19

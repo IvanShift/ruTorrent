@@ -473,4 +473,5 @@ probes также подтвердили FIFO mode `0600`, запись в regul
 создавать relative log path.
 
 Независимый whole-candidate review: **APPROVED**, Critical/Important/Minor — 0.
-Remote branch на момент подготовки отсутствует; push не выполнялся.
+Владелец опубликовал exact branch как upstream PR #3231. На head `76485317`
+все восемь GitHub checks GREEN; agent push не выполнял.
