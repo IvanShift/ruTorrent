@@ -124,11 +124,11 @@ foreach (array(
 ) as $ext => $why) {
 	check('req', extension_loaded($ext), "PHP extension: $ext", $why);
 }
-check('req', fn_available('simplexml_load_string', $disabled), 'PHP extension: simplexml',
-	'core SCGI XMLRPC response validation');
 check('req', fn_available('fsockopen', $disabled), 'fsockopen() available', 'used to talk to rtorrent over SCGI');
 
 // ---- Recommended extensions ----------------------------------------------
+check('rec', fn_available('simplexml_load_string', $disabled), 'PHP extension: simplexml',
+	'XMLRPC proxy sanitisation (Sonarr/Radarr raw pass-through)');
 foreach (array(
 	'curl'      => 'HTTP fetches used by several plugins',
 	'mbstring'  => 'robust handling of non-UTF8 torrent and file names',

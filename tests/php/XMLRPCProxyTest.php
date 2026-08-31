@@ -922,23 +922,25 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'and untrusted');
 	}
 
-	public function testEnvCheckRequiresTheAvailableSimpleXMLFunction()
+	public function testEnvCheckRecommendsTheAvailableSimpleXMLFunction()
 	{
 		$envCheckPath = realpath(__DIR__ . '/../../env_check.php');
 		$child = SCGITransportFixture::runPhpChild(array('-n', '-d',
 			'disable_functions=simplexml_load_string', $envCheckPath));
 
-		$this->assertEquals(1, $child['exitCode'],
-			'env_check must exit 1 when the required SimpleXML function is disabled');
+		$this->assertEquals(0, $child['exitCode'],
+			'env_check keeps optional proxy sanitisation a recommendation');
 		$this->assertEquals('', $child['stderr'], 'env_check emits no fatal or warning');
-		$this->assertTrue(strpos($child['stdout'], 'Required:') !== false, 'Required section present');
-		$reqSection = '';
-		if(preg_match('/Required:(.*?)(?:Recommended:|Configuration:|$)/s', $child['stdout'], $m)) {
-			$reqSection = $m[1];
+		$this->assertTrue(strpos($child['stdout'], 'Recommended:') !== false,
+			'Recommended section present');
+		$recommendedSection = '';
+		if(preg_match('/Recommended:(.*?)(?:Configuration:|$)/s', $child['stdout'], $m)) {
+			$recommendedSection = $m[1];
 		}
-		$this->assertTrue(preg_match('/^  \[FAIL\] PHP extension: simplexml\s+'
-			. 'core SCGI XMLRPC response validation$/m', $reqSection) === 1,
-			'simplexml must be a required FAIL with the exact core-validation reason');
+		$this->assertTrue(preg_match('/^  \[WARN\] PHP extension: simplexml\s+'
+			. 'XMLRPC proxy sanitisation \(Sonarr\/Radarr raw pass-through\)$/m',
+			$recommendedSection) === 1,
+			'simplexml must be a recommendation with the exact proxy-sanitisation reason');
 	}
 
 	// ---- an escaped comma is part of the value, not a separator ----
