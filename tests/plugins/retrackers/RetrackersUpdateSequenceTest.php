@@ -1,10 +1,11 @@
 <?php
 
 // plugins/retrackers/update.php is a top level script: it reads $argv and,
-// with no torrent hash on the command line, does nothing but declare its two
-// pure helpers and load the plugin's configuration. That makes it includable,
-// so clearTracker() and deleteTrackers() below are the real ones and not a
-// second implementation of them.
+// with no valid handoff on the command line, returns before its production
+// bootstrap. Its pure helpers are still declared, but the configuration class
+// is loaded explicitly so this test does not depend on that unreachable branch.
+// clearTracker() and deleteTrackers() below are therefore the real ones and not
+// a second implementation of them.
 //
 // The profile path is pointed at a directory of our own first -- conf/config.php
 // reads RU_PROFILE_PATH -- so the settings cache it opens on the way in is an
@@ -13,6 +14,7 @@ $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-retrackers-seq-' . g
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/TorrentSequenceFixtures.php');
+require_once(__DIR__ . '/../../../plugins/retrackers/retrackers.php');
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 
 /**
