@@ -7,9 +7,9 @@
 
 ## Dependency
 
-This branch contains one SCGI commit on top of #3228 because both changes touch
-`rpc2.php`. It should be reviewed and merged after #3228. Once that predecessor
-lands, this pull request has an exact seven-file diff.
+This branch is stacked on top of #3228 because both changes touch `rpc2.php`.
+It should be reviewed and merged after #3228. Once that predecessor lands,
+this pull request has an exact seven-file diff.
 
 ## Why this is needed
 
@@ -42,7 +42,8 @@ without warnings.
 - focused transport suite on PHP 7.4, 8.1, and 8.5: 34 methods, 129 assertions;
 - fresh full PHP suite on all three versions: 50 files, 1,990 assertions and
   127 TAP checks, with no failures;
-- GitHub-exposed copied-server readiness regression fixed by a complete HTTP
-  probe; full PHP 7.4/8.1/8.5 reruns remain green;
+- GitHub-exposed copied-server readiness regressions fixed by a complete HTTP
+  probe against a real static resource with an exact `200 OK` gate; full PHP
+  7.4/8.1/8.5 reruns remain green;
 - changed-file lint and PHPStan 2.2.9 level 0: clean;
 - disposable rTorrent 0.9.8 and 0.16.21 UNIX-socket probes: passed.

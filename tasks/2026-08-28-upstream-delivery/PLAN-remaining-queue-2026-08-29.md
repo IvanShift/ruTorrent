@@ -53,8 +53,9 @@ Package 3 closed:
 
 Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md`. Package 4
 `up/scgi-transport` is also closed: runtime `4682a761`, delivery head
-`51386542`, exact 7 paths `+1578/-51` from `c7a431aa`; fork integration `19086b5f` plus isolated
-test-stub adaptation `3ff4860c`. Recorded full and stable focused PHP
+`33934444`, exact 7 paths `+1584/-51` from `c7a431aa`; fork integration
+`19086b5f` plus isolated test-stub adaptation `3ff4860c`. Recorded full and
+stable focused PHP
 7.4/8.1/8.5 matrices, PHPStan, mutations and real
 0.9.8/0.16.21 UNIX-SCGI probes are GREEN; reviews are APPROVED. Evidence:
 `VERIFICATION-scgi-transport-2026-08-31.md`. Current queue: **14 open
@@ -103,7 +104,7 @@ Push выполняет только владелец.
 | 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED #3224**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3225 follow-up included in `7a78c606` |
 | 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED**: `d548016b`, direct parent `f19c9d86`; integrated `f547b2f3`; no push |
 | 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / APPROVED / PR #3228 OPEN**: `c7a431aa`, direct parent `f19c9d86`; integrated `48825583`; branch published by owner |
-| 4 | `up/scgi-transport` | exact 7 paths, `+1578/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: runtime `4682a761`, test-only delivery head `51386542`; direct parent `c7a431aa`; fork integration `19086b5f` + `3ff4860c`; no push |
+| 4 | `up/scgi-transport` | exact 7 paths, `+1584/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: runtime `4682a761`, test-only delivery head `33934444`; direct parent `c7a431aa`; fork integration `19086b5f` + `3ff4860c`; no push |
 | 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; reachable RAW and missing-ledger B5 captured; production-success B5+EPOCH 2×8×2 manifest waits real producers |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
@@ -198,11 +199,12 @@ Standalone C удалён из счёта, потому что без P0 он pr
 3. ~~Реализовать final httprpc predecessor.~~ Завершено: clean `c7a431aa`,
    fork integration `48825583`, upstream PR #3228. SCGI также завершён от
    этого exact parent как runtime `4682a761`, test-only delivery head
-   `51386542` и fork integration `19086b5f`;
+   `33934444` и fork integration `19086b5f`;
    XMLRPC policy и A остаются отдельными sibling branches. Build the consumer
    only after XMLRPC + A; B and P0+C only after A.
 4. Next build retrackers from exact runtime SCGI `4682a761` under the corrected
-   six-path contract, then carry test-only `51386542` into final integration.
+   six-path contract, then carry test-only delivery head `33934444` into final
+   integration.
    Alias surface and manual entrypoints remain independent;
    after final P1 build foreign handlers, then P2/P3 under their exact dual
    prerequisites.

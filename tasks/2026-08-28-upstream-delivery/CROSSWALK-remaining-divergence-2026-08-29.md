@@ -50,9 +50,10 @@ Package 3 `up/httprpc-refusals` закрыт на exact current predecessor:
   base-equal и относится к отдельному `rRetrackers` test bootstrap.
 
 Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md`. Package 4 SCGI также
-закрыт: runtime `4682a761`, test-only delivery head `51386542`, direct parent
-`c7a431aa`, exact 7 paths `+1578/-51`; fork integration `19086b5f` + separate test adaptation
-`3ff4860c`. Reviews, recorded full and stable focused PHP 7.4/8.1/8.5,
+закрыт: runtime `4682a761`, test-only delivery head `33934444`, direct parent
+`c7a431aa`, three linear commits, exact 7 paths `+1584/-51`; fork integration
+`19086b5f` + separate test adaptation `3ff4860c`. Reviews, recorded full and
+stable focused PHP 7.4/8.1/8.5,
 PHPStan and real 0.9.8/0.16.21 UNIX probes are GREEN. Evidence:
 `VERIFICATION-scgi-transport-2026-08-31.md`.
 Current count: **14 implementations / 0 audits / 7 ready or locally
@@ -114,7 +115,7 @@ SHA, integration merges и последующие remediation.
 - готово или локально интегрировано: FileUtil `76485317`, test harness
   `8eafb529`, rTorrent 0.16.21 `cbacef8e` (#3230), Kinozal `de98a49a`, socket
   `d548016b`/`f547b2f3`, httprpc `c7a431aa`/`48825583`, SCGI
-  `51386542` (runtime `4682a761`)/`19086b5f` + `3ff4860c`;
+  `33934444` (runtime `4682a761`)/`19086b5f` + `3ff4860c`;
 - PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-up #3225 также
   принят и включён в fork refresh `7a78c606`;
 - standalone history dot-label branch отвергнута и не отправляется;

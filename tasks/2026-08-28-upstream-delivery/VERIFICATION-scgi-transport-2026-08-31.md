@@ -19,9 +19,9 @@ payloads.
 - branch: `up/scgi-transport`
 - parent: `c7a431aaf5ad470f9fc7487395d38b48d12c722f`
 - runtime implementation: `4682a761cda6c813e3911ac6229dcf84ea4c7e99`
-- delivery head: `51386542` (`Tests: complete SCGI readiness probe`)
-- topology: two linear non-merge commits; the second is test-only
-- scope: exactly seven paths, `+1578/-51`
+- delivery head: `33934444` (`Tests: require real SCGI readiness response`)
+- topology: three linear non-merge commits; the last two are test-only
+- scope: exactly seven paths, `+1584/-51`
 
 ```text
 README.md
@@ -69,7 +69,7 @@ Legacy configurations that do not define `$rpcTransferTimeOut` or
 
 ## Candidate verification
 
-Fresh verification on final head `51386542`:
+Fresh verification on final head `33934444`:
 
 - focused SCGI suite on host PHP 8.5 and official PHP 7.4, 8.1 and 8.5:
   `34 methods / 129 Passed / 0 failures` on every runtime;
@@ -98,7 +98,26 @@ readiness check opened and immediately closed an empty TCP connection. PHP
 about 60 seconds; PHP 8.1 could log a malformed-request warning. Test-only
 commit `51386542` sends and drains one complete bounded HTTP/1.0 probe instead.
 The old runtime tip remains its direct parent, so package #5 ancestry is not
-broken. Full PHP 7.4/8.1/8.5 reruns on the delivery head are GREEN:
+broken.
+
+Run `33394805840` on fork `master@b57cae80` proved that the first correction
+was incomplete on PHP 8.1: the probe still requested an absent resource and
+accepted any complete response, including `404 ... No such file or directory`,
+as readiness. User archive `logs_90485329911.zip` has SHA-256
+`f12b24030b8b4a2c140f8520594d8b60a5214cbbf6c40f2f6e52678a7f9b264c`.
+Its old assertion did not print the captured `server.err`, so the exact warning
+bytes are unavailable; it does prove that only
+`testCopiedRealRpc2UsesBodyModeOverUnixWithLegacyGlobals` failed while the
+surrounding status/body/length/untrusted assertions passed.
+
+Test-only commit `33934444` creates the exact five-byte static readiness
+resource before server startup, accepts readiness only on `200 OK`, and appends
+the server transcript to the assertion only on failure. A mutation keeping the
+200 gate but removing the resource reaches the named copied-rpc2 test and ends
+with `copied rpc2 server did not start`; an injected rpc2 `E_USER_WARNING`
+still fails the assertion and prints the sentinel, so the correction does not
+hide production warnings. Full PHP 7.4/8.1/8.5 reruns on the final delivery
+head are GREEN:
 `50 files / 1990 Passed / 127 ok / 0 failures` per runtime.
 
 Natural RED and named mutations covered one-write request loss, EOF-driven
@@ -162,14 +181,15 @@ review were GREEN. No Schedule code or cache was changed.
 ## Residuals and handoff
 
 - The unrelated untracked `rutorrent-app-errors.log` remains unstaged.
-- Local `master` contains the same readiness correction in `1ca023ba`; no push
-  was performed by the agent.
+- Local `master` contains the complete-HTTP correction in `1ca023ba` and the
+  real-resource/200 correction in `8b22b010`; no push of the latter was
+  performed by the agent.
 - The clean branch may be published with
   `git push -u origin up/scgi-transport`, but its upstream PR must remain
   stacked behind package #3 or be rebased onto the upstream tip after that PR
   lands.
 - Package #5 `up/retrackers-recovery` retains runtime SCGI implementation
-  `4682a761` as its parent. Delivery-only test commit `51386542` changes no
+  `4682a761` as its parent. Delivery-only commits through `33934444` change no
   production path and will be carried into its final integration after the
   active implementation step.
 
