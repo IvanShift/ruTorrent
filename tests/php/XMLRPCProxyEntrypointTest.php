@@ -141,7 +141,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'XMLRPC_ENTRYPOINT_SEND' => $send,
 				'XMLRPC_ENTRYPOINT_UNREADABLE' => ($body === 'unreadable') ? '1' : '0',
 			));
-			$command = escapeshellarg(PHP_BINARY)
+			// Replace the command shell so proc_terminate() always targets the
+			// disposable PHP server instead of leaving it orphaned.
+			$command = 'exec ' . escapeshellarg(PHP_BINARY)
 				. ' -d auto_prepend_file=' . escapeshellarg($tree . '/prepend.php')
 				. ' -d display_errors=0'
 				. ' -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($tree);
