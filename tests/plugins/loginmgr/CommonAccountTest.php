@@ -47,10 +47,11 @@ function caAccountClasses()
 }
 
 /**
- * A Snoopy stand-in. fetch() returns true whatever the status, because the real
- * one does: php/Snoopy.class.inc returns the transport result and answers true
- * for a 500 as readily as for a 200. That is the premise of the whole guard, so
- * a double that returned false for 4xx/5xx would let a reverted fix pass.
+ * A Snoopy stand-in. fetch() returns the scripted transport result whatever the
+ * status, because the real one does: php/Snoopy.class.inc returns the transport
+ * result and answers true for a 500 as readily as for a 200. That is the premise
+ * of the whole guard, so a double that returned false for 4xx/5xx would let a
+ * reverted fix pass.
  */
 class CAClient
 {
@@ -72,7 +73,9 @@ class CAClient
     {
         $this->fetches++;
         if ($this->queue) {
-            $this->apply(array_shift($this->queue));
+            $answer = array_shift($this->queue);
+            $this->apply($answer);
+            return isset($answer[2]) ? $answer[2] : true;
         }
         return true;
     }
@@ -234,6 +237,19 @@ $tests = array(
         caAssertSame(0, $account->logins, 'no credential POST is spent on an outage');
         caAssertSame(0, $account->data->removed, 'cookies never shown to be stale are kept');
         caAssertSame(1, $client->fetches, 'and no second request is made');
+    },
+
+    'a cached request that cannot reach the tracker keeps its session' => function () {
+        // A false Snoopy::fetch() means no response arrived at all. It cannot
+        // establish that the cached cookies are stale, so this attempt must
+        // stop before the Kinozal credential POST and leave that session alone.
+        list($account, $client) = caWarmProbe(array(array(0, '', false)));
+        $client->cookies = array('sid' => 'cached');
+        caAssertSame(false, caFetch($account, $client), 'a transport failure is reported');
+        caAssertSame(0, $account->logins, 'no credential POST is spent without an answer');
+        caAssertSame(0, $account->data->removed, 'the cached session is not deleted');
+        caAssertSame(array('sid' => 'cached'), $client->cookies, 'the cached cookies stay in place');
+        caAssertSame(1, $client->fetches, 'the failed request is not retried through login');
     },
 
     'an unchanged conditional answer is a live session' => function () {

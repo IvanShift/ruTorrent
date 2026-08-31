@@ -218,9 +218,10 @@ abstract class commonAccount
 		$is_result_fetched = false;
 		$data = $this->loadData($client);
 		if($data->loaded &&
-			$this->updateCached($client,$url,$method,$content_type,$body) &&
-			$client->fetch($url,$method,$content_type,$body))
+			$this->updateCached($client,$url,$method,$content_type,$body))
 		{
+			if(!$client->fetch($url,$method,$content_type,$body))
+				return(false);
 			// Taken before isOKPostFetch(), because an override may fetch
 			// further pages onto this client and the question here is about
 			// the answer to the caller's own URL.
