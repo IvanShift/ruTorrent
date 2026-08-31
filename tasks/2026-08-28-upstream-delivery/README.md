@@ -246,7 +246,11 @@ Historical five-path authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, contract SHA-256
 `922a7bad8caed5c6cdd0ce02112ff4729be9fbb6798ba5ee208440fc1edbfc17`.
 Он не является authority исправленного six-path scope; текущий commit/SHA
-фиксируется отдельным control update после independent review этой правки.
+зафиксирован после двух independent APPROVED reviews. Current six-path
+authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
+`6232b0cf6e5d9c36eaed49648cdd372e579c305b58d90cbefe631cf5ad59a535`,
+pre-code verification SHA-256
+`cc7de16b20b1752dd95464a6a98ca034bd22aceaceacf03cdae3bb3d8a21acef`.
 Final verification and cleanup authority: commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`, archive SHA-256
 `f2a08d8b1f36b43d2490f87da8d859916c804e8396ac09b7c3600f34d64bee16`,

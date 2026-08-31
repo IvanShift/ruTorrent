@@ -78,7 +78,9 @@ exact 6 paths вместо противоречивых 5. Шестой path —
 0.9.8/0.16.21 audit уже сохранил reachable RAW/BODY matrix и natural
 missing-ledger B5. Production-success B5 и full 2×8×2 manifest ждут producers
 реализации. Evidence:
-`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`.
+`VERIFICATION-retrackers-recovery-precode-2026-08-31.md`. Current corrected
+authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
+`6232b0cf6e5d9c36eaed49648cdd372e579c305b58d90cbefe631cf5ad59a535`.
 
 ## Уже готовые handoff
 
