@@ -892,8 +892,17 @@ PHP;
 			$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
 			if($socket !== false)
 			{
+				// An empty connect leaves PHP 7.4's single-threaded development
+				// server waiting for a request and makes newer versions log a
+				// malformed-request warning. Complete the probe before returning.
+				$request = "GET /__rutorrent_scgi_ready__ HTTP/1.0\r\n"
+					."Host: 127.0.0.1\r\nConnection: close\r\n\r\n";
+				stream_set_timeout($socket, 1);
+				$written = fwrite($socket, $request);
+				$response = ($written === strlen($request)) ? stream_get_contents($socket) : false;
 				fclose($socket);
-				return;
+				if($response !== false && strpos($response, "\r\n\r\n") !== false)
+					return;
 			}
 			$status = proc_get_status($process);
 			if(!$status['running'])

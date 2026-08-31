@@ -925,7 +925,7 @@ class XMLRPCProxyTest extends TestCase
 	public function testEnvCheckRecommendsTheAvailableSimpleXMLFunction()
 	{
 		$envCheckPath = realpath(__DIR__ . '/../../env_check.php');
-		$child = SCGITransportFixture::runPhpChild(array('-n', '-d',
+		$child = SCGITransportFixture::runPhpChild(array('-d',
 			'disable_functions=simplexml_load_string', $envCheckPath));
 
 		$this->assertEquals(0, $child['exitCode'],
