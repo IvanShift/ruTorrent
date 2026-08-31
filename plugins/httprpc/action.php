@@ -656,15 +656,18 @@ switch($mode)
 			eval(FileUtil::getPluginConf('httprpc'));
 			$proxyMode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
 			$proxyLog = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
+			if($HTTP_RAW_POST_DATA === false)
+			{
+				if($proxyLog)
+					FileUtil::toLog("xmlrpc-proxy: could not read request body");
+				header("HTTP/1.0 400 Bad Request");
+				CachedEcho::send("Could not read XMLRPC request.", "text/html");
+				exit;
+			}
 			if($HTTP_RAW_POST_DATA === '')
 			{
-				// An empty body is what arrives when post_max_size is smaller
-				// than the request, which is easy to hit when a client adds a
-				// torrent by file. rtorrent is never asked, so this must not
-				// fall through to the send() below and be reported as the
-				// outage that answer describes. rpc2.php refuses the same way.
 				if($proxyLog)
-					FileUtil::toLog("xmlrpc-proxy: empty request body (check post_max_size against the largest torrent you add)");
+					FileUtil::toLog("xmlrpc-proxy: empty request body");
 				header("HTTP/1.0 400 Bad Request");
 				CachedEcho::send("Empty XMLRPC request.", "text/html");
 				exit;
@@ -718,10 +721,8 @@ switch($mode)
 			$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted']);
 			if($result === false)
 			{
-				// The call passed the filter but the SCGI connection failed --
-				// this one really is an outage.
 				header("HTTP/1.0 500 Server Error");
-				CachedEcho::send("Could not reach rTorrent over XMLRPC. Is rTorrent running?", "text/html");
+				CachedEcho::send("Could not complete the rTorrent XMLRPC request.", "text/html");
 				exit;
 			}
 			if(!empty($result))
