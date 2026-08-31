@@ -160,6 +160,21 @@ package regression.
 
 ## Residuals and handoff
 
+### Upstream PR CI follow-up — 2026-08-31
+
+The owner subsequently published `d548016b` as upstream PR #3227. GitHub's
+exact ESLint 9 job found one package-owned `no-redeclare`: `getResponse()` had
+an existing function-scoped `var i`, while the new member-fault loop declared
+`var i` again. This was a real PR/master defect, not workflow drift.
+
+Branch follow-up `a8b60beaf67e4a09599461f979463b3e01c1cbac`
+renames only that inner loop index and its lookup to `j`. The owner published
+it; remote/local are equal, and all eight GitHub checks are green. The same
+patch is integrated and published in fork `master` as `fe5313fa`. Fresh exact
+ESLint, `node --check js/rtorrent.js`, focused `rtorrent.spec.js` plus
+`setsettings.spec.js` (66/66), scope and whitespace checks are green. The
+untracked user log remains untouched.
+
 - Same-browser Saves are serialized; another rTorrent client remains outside
   this browser transaction boundary.
 - No live daemon `/RPC2` or deployed enabled-httprpc smoke was run. A disposable

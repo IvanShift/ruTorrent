@@ -144,6 +144,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 | PR | ветка | состояние |
 |---|---|---|
 | **#3198** | `up/kinozal-session` (local `de98a49a`, remote `4cf74c52`) | Открыт. Локальный один commit перебазирован на `755404f3`, 5 файлов, +636/−28; focused 35/35, обе полные PHP-матрицы и PHPStan зелёные. Remote намеренно не менялся и требует owner-only force-with-lease. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
+| **#3227** | `up/setsettings-socket-alloc` (`a8b60bea`) | Открыт владельцем. GitHub выявил один package-owned ESLint `no-redeclare` в `js/rtorrent.js`; one-file follow-up `a8b60bea` исправляет только индекс fault-loop. Владелец опубликовал fix, remote/local совпадают; все восемь GitHub checks и local focused Jest 66/66 зелёные. Тот же patch интегрирован и опубликован в fork `master` как `fe5313fa`. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
 | **#3228** | `up/httprpc-refusals` (`c7a431aa`) | Открыт владельцем. Exact 5 paths `+437/-14` на `f19c9d86`; candidate и fork integration independently APPROVED. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
 
 ---
@@ -157,7 +158,6 @@ key по обеим формам. **#3226** — отдельная upstream File
 | `up/test-harness` | `8eafb529` | +49/−17, 4 файла | **ГОТОВА.** Один commit прямо на `755404f3`; PHP 8.5/8.1 — 47 файлов, 287 тестов, 1781 `Passed:`; семь полных мутаций красные. Тексты: `REVIEW-test-harness.md`, `PR-test-harness.md` |
 | `up/rtorrent-0-16-21` | `48bc6d4b` | +9/−4, 3 test-файла | **ГОТОВА.** Один commit прямо на `755404f3`; обе полные PHP-матрицы 46/285/1790, Jest 20/196, независимые spec/quality reviews зелёные. Тексты: `REVIEW-rtorrent-0-16-21.md`, `PR-rtorrent-0-16-21.md` |
 | `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
-| `up/setsettings-socket-alloc` | `d548016b` | +1229/−19, 4 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на current `f19c9d86`; independent reviews APPROVED, локальная fork integration `f547b2f3`, push не выполнялся. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
 | `up/scgi-transport` | `4682a761` | +1569/−51, 7 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на final httprpc `c7a431aa`; reviews, PHP 7.4/8.1/8.5 и real 0.9.8/0.16.21 UNIX probes APPROVED. Fork integration `19086b5f` + test adaptation `3ff4860c`; push не выполнялся. Evidence: `VERIFICATION-scgi-transport-2026-08-31.md`, PR text: `PR-scgi-transport.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
