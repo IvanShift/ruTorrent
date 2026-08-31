@@ -7,7 +7,7 @@
 - return terminal, correctly classified 400/403/500 responses without sending
   a refused request or falling through after a response helper returns;
 - share the named `-501` refusal message between both XMLRPC doors and use
-  neutral wording for transport failures;
+  neutral wording for `httprpc` transport failures;
 - add copied-entrypoint regression tests that execute the real HTTP control
   flow, status codes, bodies, Content-Types and logging behavior.
 
@@ -29,6 +29,16 @@ Finally, the old transport error asked whether rTorrent was running. A failed
 connection setup can also come from endpoint configuration, socket path or
 listener state, and socket permissions, so daemon availability was not proven
 by that result.
+
+## Before / after
+
+| Scenario | Before | After |
+|---|---|---|
+| `php://input` cannot be read | `httprpc` continued into proxy policy; `/RPC2` treated it as an empty body and logged a speculative `post_max_size` cause | distinct HTTP 400: `Could not read XMLRPC request.` |
+| Request body is empty | no independently classified `httprpc` response; `/RPC2` shared the failed-read branch | distinct HTTP 400: `Empty XMLRPC request.` |
+| Proxy policy rejects a command | `httprpc` relied on `CachedEcho::send()` terminating and could fall through if it returned | terminal HTTP 403 / XML fault `-501`; the rejected command is named and is never forwarded |
+| An admitted `httprpc` call cannot be sent | response text implied that rTorrent was not running and control flow could continue | terminal HTTP 500 with neutral `Could not complete the rTorrent XMLRPC request.` |
+| `/RPC2` rejects a named command | generic refusal text | the same shared refusal sentence names the rejected method |
 
 ## Behavior after this change
 
