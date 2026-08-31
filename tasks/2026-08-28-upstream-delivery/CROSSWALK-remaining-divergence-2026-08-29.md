@@ -37,6 +37,23 @@ refresh integrated as `7a78c606`. Package and integration reviews are APPROVED;
 no push/deploy was performed for socket. Current count: **16 implementations /
 0 audits / 5 ready or locally integrated handoffs + 1 accepted closure**.
 
+## Implementation closure — 2026-08-31
+
+Package 3 `up/httprpc-refusals` закрыт на exact current predecessor:
+
+- clean branch `c7a431aa`, direct parent `f19c9d86`, one commit, exact 5 paths
+  `+437/-14`;
+- fork integration `48825583`, exact 4-path delta поверх `d553bd47`; existing
+  richer `php/xmlrpc_proxy.php` behavior сохранён без redundant net change;
+- candidate и фактическая integration независимо **APPROVED**, PHP
+  7.4/8.1/8.5 focused matrix, PHPStan и full Jest GREEN; broad PHP RED
+  base-equal и относится к отдельному `rRetrackers` test bootstrap.
+
+Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md`. Package 4 SCGI теперь
+строится от exact final parent `c7a431aa`; completion ещё не заявлен. Current
+count: **15 implementations / 0 audits / 6 ready or locally integrated
+handoffs + 1 accepted closure**. Push/deploy не выполнялись.
+
 ## Метод и полный объём
 
 Прямой diff `755404f3..master` непригоден: он показывает 12 ещё не слитых
@@ -70,7 +87,7 @@ SHA, integration merges и последующие remediation.
 
 - готово или локально интегрировано: FileUtil `79190927`, test harness
   `8eafb529`, rTorrent 0.16.21 `48bc6d4b`, Kinozal `de98a49a`, socket
-  `d548016b`/`f547b2f3`;
+  `d548016b`/`f547b2f3`, httprpc `c7a431aa`/`48825583`;
 - PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-up #3225 также
   принят и включён в fork refresh `7a78c606`;
 - standalone history dot-label branch отвергнута и не отправляется;
@@ -79,8 +96,9 @@ SHA, integration merges и последующие remediation.
 
 ## Current approved contract status
 
-Packages 4 SCGI, 5 retrackers and 6 erasedata A are DESIGN APPROVED —
-implementation pending; package 14 XMLRPC proxy policy has the same status.
+Package 4 SCGI is DESIGN APPROVED and implementation is in progress from final
+package 3; packages 5 retrackers, 6 erasedata A and 14 XMLRPC proxy policy are
+DESIGN APPROVED — implementation pending.
 Their exact scopes are 7, 5, 8 production + 2 test and 7 paths respectively.
 Retrackers uses final SCGI as immediate parent; P3 waits final retrackers +
 final P1. Approved retrackers authority is commit
@@ -96,32 +114,32 @@ and does not make retrackers production B5+EPOCH or successor behavior GREEN.
 
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **16 implementation packages** из
+До полного закрытия divergence остаётся **15 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
-Пять ready/integrated handoff в этот счёт не входят; ещё один закрытый package
+Шесть ready/integrated handoff в этот счёт не входят; ещё один закрытый package
 уже принят upstream.
 
 Переход от прежних 18 workstream проверен арифметически:
 `18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
-сложен внутрь P0: `19 - 1 = 18`. Packages 1 и 2 затем реализованы:
-`18 - 2 = 16`. Residual rTorrent, proxy policy и manual
+сложен внутрь P0: `19 - 1 = 18`. Packages 1–3 затем реализованы:
+`18 - 3 = 15`. Residual rTorrent, proxy policy и manual
 entrypoints дали по одному package; foreign bucket — три; generic
 `sendTorrent() +17/-0` закрыт no-send. Evidence:
 `REVIEW-disposition-wave-2026-08-29.md` и
 `REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
 Design approval itself decrements neither implementations nor fork divergence;
-accepted implementation evidence for packages 1 and 2 changed the arithmetic.
-The current count is 16 implementations / 0 audits / 5 ready or locally
+accepted implementation evidence for packages 1–3 changed the arithmetic.
+The current count is 15 implementations / 0 audits / 6 ready or locally
 integrated owner handoffs outside the count + 1 accepted upstream closure.
 
 ## Ownership corrections
 
 Отдельный `php/xmlrpc_path.php` в critical chain не нужен. Endpoint-local
-resolver остаётся в proxy doors; filesystem identity принадлежит A. После
-final httprpc SCGI, XMLRPC proxy policy и A — sibling packages. Retrackers
-имеет immediate parent final SCGI и не является sibling implementation from
-httprpc.
+resolver остаётся в proxy doors; filesystem identity принадлежит A. Final
+httprpc = `c7a431aa`; SCGI, XMLRPC proxy policy и A — sibling packages от него.
+Retrackers имеет immediate parent final SCGI и не является sibling
+implementation from httprpc.
 
 Отдельный `up/httprpc-erasedata-contract` остаётся обязательным, сохраняет exact
 two-path scope и historical production hunk `+6/-13` в

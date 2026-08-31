@@ -53,6 +53,25 @@ push/deploy не выполнялись. Полный evidence:
 Текущий счёт: **16 implementations / 0 audits / 5 ready or locally integrated
 owner handoffs outside count + 1 accepted upstream closure**.
 
+## Implementation checkpoint — 2026-08-31
+
+Package 3 `up/httprpc-refusals` завершён после отдельной RED→GREEN реализации и
+двух independent reviews. Upstream-clean branch — `c7a431aa`, один commit
+прямо на `f19c9d86`, exact 5 paths `+437/-14`. Fork integration —
+`48825583`, exact 4-path delta поверх `d553bd47`: shared refusal helper уже был
+в richer fork parser, поэтому `php/xmlrpc_proxy.php` не получил net change.
+
+Focused endpoint/helper matrix прошла на PHP 7.4/8.1/8.5; PHPStan и Jest
+зелёные. Broad PHP comparison имеет только exact base-equal известные RED
+`rRetrackers` и PHP 7.4 raw-magnet prerequisite; runtime cache пользователя не
+удалялся. Push/deploy не выполнялись. Evidence:
+`VERIFICATION-httprpc-refusals-2026-08-31.md`.
+
+Текущий счёт: **15 implementations / 0 audits / 6 ready or locally integrated
+owner handoffs outside count + 1 accepted upstream closure**. Package 4
+`up/scgi-transport` уже выполняется в отдельном worktree от exact parent
+`c7a431aa`; completion пока не заявлен.
+
 ## Цель
 
 Отправить в upstream **все** расхождения форка, корректно оформленными PR. Это решение
@@ -107,6 +126,7 @@ key по обеим формам. **#3226** — отдельная upstream File
 | `up/rtorrent-0-16-21` | `48bc6d4b` | +9/−4, 3 test-файла | **ГОТОВА.** Один commit прямо на `755404f3`; обе полные PHP-матрицы 46/285/1790, Jest 20/196, независимые spec/quality reviews зелёные. Тексты: `REVIEW-rtorrent-0-16-21.md`, `PR-rtorrent-0-16-21.md` |
 | `up/kinozal-session` | `de98a49a` | +636/−28, 5 файлов | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `755404f3`; remote открыт на старом `4cf74c52` и обновляется только владельцем с exact lease. Handoff: `REVIEW-ready-branches-2026-08-29.md` |
 | `up/setsettings-socket-alloc` | `d548016b` | +1229/−19, 4 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на current `f19c9d86`; independent reviews APPROVED, локальная fork integration `f547b2f3`, push не выполнялся. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
+| `up/httprpc-refusals` | `c7a431aa` | +437/−14, 5 paths | **ГОТОВА ЛОКАЛЬНО.** Один commit прямо на `f19c9d86`; repeat review APPROVED, fork integration `48825583`, push не выполнялся. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
 | `up/loginmgr-account-selection` | `1975ecb4` | — | **Уже влита как #3205.** Ветку можно удалять |
 
 ### Что исправлено в `up/test-harness`
@@ -149,14 +169,14 @@ key по обеим формам. **#3226** — отдельная upstream File
 
 Точный текущий счёт после завершения всех пяти disposition-аудитов:
 
-- **16 незакрытых реализационных пакетов**;
+- **15 незакрытых реализационных пакетов**;
 - **0 неразобранных carve/verdict-аудитов**;
-- пять готовых или локально интегрированных owner handoff в это число не входят;
+- шесть готовых или локально интегрированных owner handoff в это число не входят;
 - package 1 уже принят upstream как #3224 и учитывается отдельно как closure.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
 `13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
-P0: `19 - 1 = 18`. После реализации packages 1 и 2: `18 - 2 = 16`.
+P0: `19 - 1 = 18`. После реализации packages 1–3: `18 - 3 = 15`.
 Successors: rTorrent alias surface, XMLRPC proxy policy,
 manual rutracker entrypoints и три foreign-handler packages.
 Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
@@ -168,8 +188,8 @@ paths; retrackers recovery — exact 5 paths; erasedata A — exact 8 production
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
 estimate остаётся около `+850/-45`; final numstat каждого package измеряется
 только от его exact final predecessor tip после natural RED и реализации.
-Design approvals сами по себе не закрыли packages; отдельные реализации 1 и 2
-закрыли две строки. Pending carve/verdict audits — 0, пять ready/integrated
+Design approvals сами по себе не закрыли packages; отдельные реализации 1–3
+закрыли три строки. Pending carve/verdict audits — 0, шесть ready/integrated
 owner handoff остаются вне счёта, а PHP74 уже принят upstream.
 Erasedata A/B остаются самостоятельными, а C сложен внутрь P0. B donor
 `+168/-2` подтверждён только как snapshot и опровергнут как final estimate;
@@ -185,7 +205,7 @@ donor tests остаются characterization, не closure. HistoricalBindingSa
 B5+EPOCH production capture остаётся BLOCKED до появления реальных five-path
 producers `rr.receipts.v1`, `pf`/`pv`, extended owner, paired actions и
 canonical four-field marker. Это post-implementation acceptance gate, а не
-prerequisite design approval; текущий общий счёт остаётся 16.
+prerequisite design approval; текущий общий счёт остаётся 15.
 
 Authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, approved contract SHA-256
@@ -258,9 +278,12 @@ harness и mutations подтверждены. Fork integration commit — `acbf
 upstream follow-up #3225 также включён в локальный `7a78c606`. Design brief:
 `REVIEW-php74-torrent-properties.md`.
 
-Httprpc corrected 5-path design одобрен после реальных PHP 7.4/8.5 probes:
-read failure и empty body разделены, `post_max_size` explanation удалено,
-transport 500 использует neutral text без ложного log promise. Brief:
+Httprpc package **implemented and APPROVED**: clean branch `c7a431aa`, exact 5
+paths `+437/-14`, direct parent `f19c9d86`; fork integration `48825583`
+сохранила richer fork parser/policy/SCGI surface и добавила exact copied-door
+tests. Read failure и empty body разделены, terminal 403/500 закреплены,
+transport 500 использует neutral text без ложного log promise. Evidence:
+`VERIFICATION-httprpc-refusals-2026-08-31.md`; design history:
 `REVIEW-httprpc-refusals-2026-08-29.md`.
 
 XMLRPC proxy policy: DESIGN APPROVED — implementation pending, exact 7 paths
@@ -299,13 +322,13 @@ implementation pending, а retrackers contract после двух CLEAN reviews
 `14683d93bc54dbab89d6abce636d2e749e8492ba`. Позднее exact container cleanup
 получил GREEN и был зафиксирован commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`; это runtime cleanup, не
-implementation/capture acceptance. С тех пор packages 1 и 2 закрыты отдельной
+implementation/capture acceptance. С тех пор packages 1–3 закрыты отдельной
 реализацией; B5 production capture остаётся post-implementation BLOCKED.
 
 Resume point: не считать donor GREEN закрытием packages. A → B и A → combined
 C+P0 сохраняются; SCGI, XMLRPC и A начинаются только от final httprpc;
-retrackers — только от final SCGI. Общая очередь — 16 implementation packages,
-pending carve/verdict audits — 0, ready/integrated handoffs outside count — 5;
+retrackers — только от final SCGI. Общая очередь — 15 implementation packages,
+pending carve/verdict audits — 0, ready/integrated handoffs outside count — 6;
 ещё один закрытый package уже принят upstream.
 
 ---
@@ -335,10 +358,11 @@ pending carve/verdict audits — 0, ready/integrated handoffs outside count — 
    `REVIEW-history-service-labels.md`.
 3. ~~Починить `up/test-harness`.~~ Готова как `8eafb529`; осталось push/PR по
    `PR-test-harness.md`.
-4. Owner-only handoff пяти готовых/integrated packages —
-   FileUtil/test-harness/rTorrent/Kinozal/socket; PHP74 уже принят upstream;
-   exact состояние в
-   `REVIEW-ready-branches-2026-08-29.md`.
+4. Owner-only handoff шести готовых/integrated packages —
+   FileUtil/test-harness/rTorrent/Kinozal/socket/httprpc; PHP74 уже принят
+   upstream. Первые пять зафиксированы в
+   `REVIEW-ready-branches-2026-08-29.md`, httprpc — в
+   `VERIFICATION-httprpc-refusals-2026-08-31.md`.
 5. Design approvals зафиксированы отдельно от implementation authority. После
    нового явного указания реализовывать packages RED->GREEN только от exact
    final predecessors; approval контракта сам по себе не является командой на
@@ -346,5 +370,5 @@ pending carve/verdict audits — 0, ready/integrated handoffs outside count — 
 6. После final httprpc SCGI, XMLRPC policy и erasedata A являются sibling
    branches. Retrackers строится только после final SCGI; consumer — после
    XMLRPC policy + A; B и P0+C — после final A; P3 — после final P1 +
-   retrackers. Продолжить оставшиеся 16 packages по PLAN; pending audits = 0,
-   ready/integrated owner handoffs outside count = 5, accepted closure = 1.
+   retrackers. Продолжить оставшиеся 15 packages по PLAN; pending audits = 0,
+   ready/integrated owner handoffs outside count = 6, accepted closure = 1.

@@ -40,21 +40,40 @@ ready or locally integrated handoffs + 1 accepted upstream closure**.
 Evidence package 2:
 `VERIFICATION-setsettings-socket-alloc-2026-08-30.md`.
 
+## Implementation progress checkpoint — 2026-08-31
+
+Package 3 closed:
+
+- `up/httprpc-refusals` = `c7a431aa`, direct parent `f19c9d86`, exact 5 paths
+  `+437/-14`, one non-merge commit;
+- fork integration = `48825583`, exact 4-path delta after preserving existing
+  richer fork proxy/parser/SCGI behavior;
+- candidate and integration reviews: **APPROVED**, PHP 7.4/8.1/8.5 focused
+  matrix, PHPStan and 310/310 Jest GREEN; broad PHP failures are base-equal.
+
+Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md`. Package 4
+`up/scgi-transport` is now in RED→GREEN implementation in a separate worktree
+from exact parent `c7a431aa`; it is not yet closed. Current queue: **15 open
+implementations / 0 audits / 6 ready or locally integrated handoffs + 1
+accepted upstream closure**.
+
 ## Уже готовые handoff
 
-Пять веток готовы или уже локально интегрированы: FileUtil, test harness,
-rTorrent 0.16.21, Kinozal и setsettings/socket. PHP74 уже принят upstream. Их
-SHA, scope и проверки зафиксированы в `REVIEW-ready-branches-2026-08-29.md`.
+Шесть веток готовы или уже локально интегрированы: FileUtil, test harness,
+rTorrent 0.16.21, Kinozal, setsettings/socket и httprpc refusals. PHP74 уже
+принят upstream. Первые пять handoff зафиксированы в
+`REVIEW-ready-branches-2026-08-29.md`, httprpc — в
+`VERIFICATION-httprpc-refusals-2026-08-31.md`.
 Push выполняет только владелец.
 
-## Реестр 18 пакетов — 16 ещё открыты
+## Реестр 18 пакетов — 15 ещё открыты
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
 | 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED #3224**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3225 follow-up included in `7a78c606` |
 | 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED**: `d548016b`, direct parent `f19c9d86`; integrated `f547b2f3`; no push |
-| 3 | `up/httprpc-refusals` | exact 5 paths; final numstat после tests | test-harness как evidence gate | corrected design APPROVED; split false/empty 400, terminal 403/500, exact neutral text, copied-entrypoint RED |
-| 4 | `up/scgi-transport` | exact 7 paths; historical donor estimate около `+850/-45`, final numstat only from final httprpc tip | после 3 из-за общего `rpc2.php` | DESIGN APPROVED — implementation pending; nine-arg transport, deterministic short-write/framing, trust, PHP74, TCP/UNIX and 64/100 MiB gates |
+| 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / APPROVED**: `c7a431aa`, direct parent `f19c9d86`; integrated `48825583`; no push |
+| 4 | `up/scgi-transport` | exact 7 paths; historical donor estimate около `+850/-45`, final numstat only from final httprpc tip | после 3 из-за общего `rpc2.php` | **IMPLEMENTATION IN PROGRESS** from exact parent `c7a431aa`; natural/held-open RED witnessed, full short-write/timeout/UNIX/mutation gate pending |
 | 5 | `up/retrackers-recovery` | exact 5 paths; final numstat after RED/implementation | после final 4; P3 после final P1 + 5 | DESIGN APPROVED — implementation pending; guard excluded; B5+EPOCH production capture BLOCKED until real five-path producers, without blocking design approval |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
@@ -114,7 +133,7 @@ Retrackers recovery имеет final SCGI как immediate implementation parent
    поправка включена в те же пять sibling paths.
 
 Историческая арифметика реестра: `18 - 5 audits + 6 successors - 1 standalone
-C fold = 18 packages`. После closure packages 1 и 2: `18 - 2 = 16 open`;
+C fold = 18 packages`. После closure packages 1–3: `18 - 3 = 15 open`;
 pending audits — 0.
 Standalone C удалён из счёта, потому что без P0 он production-unreachable и
 оставляет active inline cleanup; доказательства:
@@ -146,8 +165,10 @@ Standalone C удалён из счёта, потому что без P0 он pr
    fork-owned hunks в `master`.~~ Завершено: final `d548016b` на `f19c9d86`;
    prerequisite sync `ed71bee5`; package integration `f547b2f3`; accepted
    upstream refresh `7a78c606`.
-3. After final httprpc, build SCGI, XMLRPC policy and A as separate sibling
-   branches. Build the consumer only after XMLRPC + A; B and P0+C only after A.
+3. ~~Реализовать final httprpc predecessor.~~ Завершено: clean `c7a431aa`,
+   fork integration `48825583`. SCGI уже строится от этого exact parent;
+   XMLRPC policy и A остаются отдельными sibling branches. Build the consumer
+   only after XMLRPC + A; B and P0+C only after A.
 4. Build retrackers only after final SCGI. Alias surface and manual entrypoints
    remain independent; after final P1 build foreign handlers, then P2/P3 under
    their exact dual prerequisites.
