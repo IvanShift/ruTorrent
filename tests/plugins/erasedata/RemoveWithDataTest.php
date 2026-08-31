@@ -233,9 +233,10 @@ class RemoveWithDataTest extends TestCase
 			.'public function getCommand($command){return $command;} '
 			.'public function maxContentSize(){return 1048576;}}');
 		file_put_contents($fixture.'/scgitransport.php', '<?php '
-			.'class rSCGITransport{public static $raw="";'
-			.'public static function send($host,$port,$data,$trusted,$timeout,&$error)'
-			.'{return array("raw"=>self::$raw);}}');
+			.'class rSCGITransport{const RESPONSE_RAW="raw";public static $raw="";'
+			.'public static function send($host,$port,$data,$trusted,$timeout,&$error,'
+			.'$transferTimeout=null,$maxResponseBytes=null,$responseMode=self::RESPONSE_RAW)'
+			.'{return self::$raw;}}');
 		// The production XMLRPC parser needs its own include tree, so it runs in
 		// a real script that receives one absolute JSON scenario filename.
 		$scenario = $fixture.'/scenario.json';
