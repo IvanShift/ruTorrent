@@ -20,6 +20,7 @@ foreach(get_declared_classes() as $cls) {
 # signals are honoured: a non-zero exit (the self-running TestLib suites end
 # with exit($failures)) and failure output (the TestCase runner only prints).
 status=0
+failed_files=()
 for t in $(find php plugins -type f -name '*Test.php')
 do
 	echo '> php' $t
@@ -31,7 +32,16 @@ do
 	printf '%s\n' "$out"
 	if [ "$code" -ne 0 ] || printf '%s\n' "$out" | grep -qE '^Failed:|^not ok|failed with error|PHP (Fatal|Parse) error|Uncaught'; then
 		status=1
+		failed_files+=("$t")
+		# Public job annotations identify the failing file even when GitHub hides
+		# the full Actions log from unauthenticated readers.
+		printf '::error file=tests/%s::PHP test file failed; inspect the PHP failure-log artifact for its complete output.\n' "$t"
 	fi
 done
+
+if [ "${#failed_files[@]}" -ne 0 ]; then
+	printf 'Failed PHP test files (%d):\n' "${#failed_files[@]}"
+	printf ' - %s\n' "${failed_files[@]}"
+fi
 
 exit $status

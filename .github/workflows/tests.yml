@@ -21,8 +21,19 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: posix, dom, xml, mbstring, iconv, json, curl
       - name: PHP test suite
-        run: bash php-test.sh
+        id: php_tests
+        run: |
+          set -o pipefail
+          bash php-test.sh 2>&1 | tee "php-test-${{ matrix.php }}.log"
         working-directory: tests
+      - name: Upload PHP failure log
+        if: ${{ failure() && steps.php_tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.php }}-failure-log
+          path: tests/php-test-${{ matrix.php }}.log
+          if-no-files-found: error
+          retention-days: 14
 
   jest:
     runs-on: ubuntu-latest
