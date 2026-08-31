@@ -72,8 +72,10 @@ B5 и 2×8×2 manifest остаются post-implementation gate. Evidence:
 Последующие broad-harness blockers закрыты без изменения crosswalk arithmetic:
 `c4fef63f` — test-only retrackers bootstrap, `76b0c0f5` — PHP 7.4 NUL-safe
 Torrent path probes. Для второго готова upstream-clean branch
-`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`, без
-push. Fork full harness последовательно GREEN на PHP 7.4/8.1/8.5: 65 files,
+`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`;
+владелец опубликовал её как upstream PR #3229. На 2026-08-31 PR `OPEN`,
+а `upstream/master=f19c9d86`. Fork full harness последовательно GREEN на PHP
+7.4/8.1/8.5: 65 files,
 4152 success signals, zero failures. Это package-1 follow-up, не новая
 implementation line. Evidence:
 `VERIFICATION-php74-binary-metainfo-2026-08-31.md`.

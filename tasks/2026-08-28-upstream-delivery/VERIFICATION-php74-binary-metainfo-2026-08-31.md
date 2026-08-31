@@ -1,7 +1,8 @@
 # PHP 7.4 binary metainfo path probes — verification
 
 Дата: 2026-08-31. Вердикт: **APPROVED**. Исправление production-reachable
-дефекта зафиксировано отдельно от httprpc/SCGI и не опубликовано.
+дефекта зафиксировано отдельно от httprpc/SCGI. Владелец опубликовал
+exact branch и открыл upstream PR #3229; на 2026-08-31 он остаётся `OPEN`.
 
 ## Причина и достижимость
 

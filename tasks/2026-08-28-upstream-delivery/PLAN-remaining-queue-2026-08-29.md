@@ -65,8 +65,10 @@ Post-package harness follow-ups не создают новых строк рее
 `c4fef63f` загружает реальный `rRetrackers` class до sequence entrypoint, а
 production `76b0c0f5` не передаёт binary bencode с NUL в три filesystem probes
 на PHP 7.4. Clean upstream branch второго fix —
-`up/php74-binary-metainfo=a1e60e69`, exact 2 paths на `f19c9d86`; push не
-выполнялся. Последовательный clean full harness PHP 7.4/8.1/8.5 теперь GREEN
+`up/php74-binary-metainfo=a1e60e69`, exact 2 paths на `f19c9d86`; владелец
+опубликовал её и открыл upstream PR #3229. На 2026-08-31 PR остаётся
+`OPEN`, а `upstream/master=f19c9d86`. Последовательный clean full harness PHP
+7.4/8.1/8.5 теперь GREEN
 `65 files / 4152 success signals / 0 failures` для fork. Это follow-up package
 1 и test correction, поэтому current queue остаётся **14**. Evidence:
 `VERIFICATION-php74-binary-metainfo-2026-08-31.md`.
@@ -87,7 +89,8 @@ authority: commit `d60f479b746e165c51c75d9c5b763435ca273539`, contract SHA-256
 Семь веток готовы или уже локально интегрированы: FileUtil, test harness,
 rTorrent 0.16.21, Kinozal, setsettings/socket, httprpc refusals и SCGI
 transport; httprpc branch уже опубликована владельцем. PHP74 уже принят upstream, а отдельная
-binary-metainfo follow-up branch готова, но остаётся частью той же lane. Первые
+binary-metainfo follow-up branch опубликована как PR #3229 и остаётся частью
+той же lane. Первые
 пять handoff зафиксированы в `REVIEW-ready-branches-2026-08-29.md`, httprpc и
 SCGI — в `VERIFICATION-httprpc-refusals-2026-08-31.md` и
 `VERIFICATION-scgi-transport-2026-08-31.md`.

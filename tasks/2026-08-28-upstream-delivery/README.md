@@ -72,8 +72,10 @@ Focused endpoint/helper matrix прошла на PHP 7.4/8.1/8.5; PHPStan и Jes
 Оба broad-harness follow-up теперь также закрыты отдельными commits:
 `c4fef63f` исправляет только bootstrap реального `rRetrackers` class в sequence
 test, а `76b0c0f5` защищает три PHP 7.4 path probe от binary metainfo с NUL.
-Для второго подготовлена, но не опубликована upstream-clean branch
-`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`.
+Для второго владелец опубликовал upstream-clean branch
+`up/php74-binary-metainfo=a1e60e69`, exact 2 paths `+36/-3` на `f19c9d86`,
+и открыл upstream PR #3229. На 2026-08-31 PR остаётся `OPEN`, а
+`upstream/master` по-прежнему равен `f19c9d86`.
 Полный fork harness после обеих правок проходит 65 files / 4152 success signals
 на PHP 7.4, 8.1 и 8.5. Raw-metainfo fix является follow-up package 1, а test
 bootstrap не меняет production; поэтому счёт очереди не уменьшается. Evidence:
