@@ -1,7 +1,7 @@
 # Crosswalk оставшегося fork divergence — 2026-08-29
 
 Текущие refs, package gates и upstream PR находятся в
-`STATUS-18-PACKAGES-2026-08-31.md`; этот файл сохраняет историческую
+`STATUS-18-PACKAGES-2026-09-01.md`; этот файл сохраняет историческую
 file-level декомпозицию и ownership границы.
 
 Исторический file-level срез: fork behavior snapshot `511ed13f`; текущий
@@ -117,10 +117,10 @@ SHA, integration merges и последующие remediation.
 
 ## Закрыто или готово
 
-- готово или локально интегрировано: FileUtil `76485317` (#3231), test harness
-  `8eafb529`, rTorrent 0.16.21 `cbacef8e` (#3230), Kinozal `c39d499d`, socket
-  `d548016b`/`f547b2f3`, httprpc `c7a431aa`/`48825583`, SCGI
-  `33934444` (runtime `4682a761`)/`19086b5f` + `3ff4860c`;
+- приняты upstream: FileUtil #3231, test harness #3232, rTorrent 0.16.21
+  #3230/#3236, Kinozal #3198, socket #3227 и httprpc #3228;
+- local-only upstream handoff: SCGI `33934444` (runtime `4682a761`), уже
+  интегрированный в fork как `19086b5f` + `3ff4860c`;
 - PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-ups #3225 и
   #3229 также приняты, а #3229 входит в local ancestry sync `d06e0651`;
 - standalone history dot-label branch отвергнута и не отправляется;
@@ -157,8 +157,8 @@ and does not make retrackers production B5+EPOCH or successor behavior GREEN.
 
 До полного закрытия divergence остаётся **14 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
-Семь ready/integrated handoff в этот счёт не входят; ещё один закрытый package
-уже принят upstream.
+Packages 1–3 уже приняты upstream, package 4 реализован и остаётся local-only;
+эти четыре closure уже вычтены из счёта.
 
 Переход от прежних 18 workstream проверен арифметически:
 `18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
@@ -171,8 +171,8 @@ entrypoints дали по одному package; foreign bucket — три; gener
 
 Design approval itself decrements neither implementations nor fork divergence;
 accepted implementation evidence for packages 1–4 changed the arithmetic.
-The current count is 14 implementations / 0 audits / 7 ready or locally
-integrated owner handoffs outside the count + 1 accepted upstream closure.
+The current count is 14 open implementations / 0 audits; packages 1–3 are
+upstream-accepted and package 4 is implemented locally.
 
 ## Ownership corrections
 

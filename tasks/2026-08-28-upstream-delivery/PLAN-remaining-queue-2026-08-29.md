@@ -1,7 +1,7 @@
 # Актуальный план оставшейся upstream-очереди — 2026-08-29
 
 Текущий статус исполнения, refs и PR вынесен в
-`STATUS-18-PACKAGES-2026-08-31.md`. Исторические checkpoint и оценки ниже
+`STATUS-18-PACKAGES-2026-09-01.md`. Исторические checkpoint и оценки ниже
 сохраняются как provenance контракта.
 
 Этот документ заменяет старую очередь 5–11 из
@@ -98,24 +98,22 @@ Tasks 5–8. Следующий шаг — Task 5 init/done hook install protoco
 
 ## Уже готовые handoff
 
-Семь веток готовы или уже локально интегрированы: FileUtil, test harness,
-rTorrent 0.16.21, Kinozal, setsettings/socket, httprpc refusals и SCGI
-transport; FileUtil опубликована как #3231, httprpc — как #3228. PHP74 уже
-принят upstream, а отдельный binary-metainfo follow-up #3229 также merged и
-остаётся частью той же lane. Kinozal опубликован как #3198 на `c39d499d`.
-Первые
-пять handoff зафиксированы в `REVIEW-ready-branches-2026-08-29.md`, httprpc и
-SCGI — в `VERIFICATION-httprpc-refusals-2026-08-31.md` и
-`VERIFICATION-scgi-transport-2026-08-31.md`.
-Push выполняет только владелец.
+Из семи веток этой delivery-волны шесть уже приняты: FileUtil #3231, test
+harness #3232, rTorrent 0.16.21 #3230/#3236, Kinozal #3198,
+setsettings/socket #3227 и httprpc refusals #3228. PHP74 lane также полностью
+принята, включая binary-metainfo follow-up #3229. Local-only остаётся SCGI
+transport `33934444`; перед PR его надо перебазировать на `495e2a54` и заново
+проверить. Детали зафиксированы в `REVIEW-ready-branches-2026-08-29.md`,
+`VERIFICATION-httprpc-refusals-2026-08-31.md` и
+`VERIFICATION-scgi-transport-2026-08-31.md`. Push выполняет только владелец.
 
 ## Реестр 18 пакетов — 14 ещё открыты
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
 | 1 | `up/php74-torrent-properties` | exact 3 files, `+14/-9` | независим | **CLOSED / UPSTREAM ACCEPTED**: historical candidate `286dd24b`, parent `eeae9f3a`; integrated `acbf5691`; #3224/#3225 и binary follow-up #3229 merged |
-| 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / APPROVED / PR #3227 OPEN**: final branch `938ff6ff`; integrated в fork; maintainer fixes опубликованы, ожидается re-review |
-| 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / APPROVED / PR #3228 OPEN**: `c7a431aa`, direct parent `f19c9d86`; integrated `48825583`; branch published by owner |
+| 2 | `up/setsettings-socket-alloc` | exact 4 paths, `+1229/-19` | независим | **CLOSED / UPSTREAM ACCEPTED**: final branch `938ff6ff`; integrated в fork; #3227 merged как `7d2a69db` |
+| 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / UPSTREAM ACCEPTED**: `c7a431aa`, integrated `48825583`; #3228 merged как `7e77ebf0` |
 | 4 | `up/scgi-transport` | exact 7 paths, `+1584/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: runtime `4682a761`, test-only delivery head `33934444`; direct parent `c7a431aa`; fork integration `19086b5f` + `3ff4860c`; no push |
 | 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | **PARTIAL IMPLEMENTATION**: Tasks 1–4 complete, Task 4B APPROVED at `9fef4d66`; Tasks 5–8 pending; не в master/no push |
 | 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |

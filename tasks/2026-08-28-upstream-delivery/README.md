@@ -1,10 +1,10 @@
 # Задача: заливка форка в upstream — что залито, что осталось, где проблемы
 
 > **Текущий авторитетный срез:**
-> [`STATUS-18-PACKAGES-2026-08-31.md`](STATUS-18-PACKAGES-2026-08-31.md).
-> В нём зафиксированы все 18 пакетов, актуальные refs/PR, merge #3229 и
-> resume-order. Числа ниже относятся к историческим checkpoint на момент их
-> создания.
+> [`STATUS-18-PACKAGES-2026-09-01.md`](STATUS-18-PACKAGES-2026-09-01.md).
+> В нём зафиксированы все 18 пакетов, sync с `upstream/master=495e2a54`,
+> принятые #3198/#3227/#3228/#3232 и resume-order. Числа ниже относятся к
+> историческим checkpoint на момент их создания.
 
 Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, опубликованный
 `origin/master` = `24891da9`, 101 commit впереди и 12 позади. Исторические
@@ -164,13 +164,14 @@ metainfo follow-up **#3229** также принят и завершает upstr
 
 ---
 
-## Открыто в upstream
+## Последний upstream delivery checkpoint
 
 | PR | ветка | состояние |
 |---|---|---|
-| **#3198** | `up/kinozal-session` (`c39d499d`) | Открыт. Исправленная commonAccount-реализация опубликована одним commit на `781cee4e`, 5 файлов, +653/−28. Свежий independent review `APPROVED`; полный PHP 7.4/8.1/8.5, focused suites, lint и adversarial mutations зелёные. GitHub: clean merge и 8/8 checks GREEN. Последний отсутствующий fork fragment интегрирован как `377de777`. Ответ xirvik: `../2026-08-28-upstream-rebuild/REPLY-3198.md` |
-| **#3227** | `up/setsettings-socket-alloc` (`938ff6ff`) | Открыт владельцем. Blank socket fields теперь пропускаются, indeterminate-lock имеет постоянное сообщение, локализация восстановлена; maintainer fixes опубликованы. Ожидается повторный review. Evidence: `VERIFICATION-setsettings-socket-alloc-2026-08-30.md` |
-| **#3228** | `up/httprpc-refusals` (`c7a431aa`) | Открыт владельцем. Exact 5 paths `+437/-14` на `f19c9d86`; candidate и fork integration independently APPROVED. Evidence: `VERIFICATION-httprpc-refusals-2026-08-31.md` |
+| **#3198** | `up/kinozal-session` (`c39d499d`) | **Merged** как `495e2a54`; loginmgr handoff закрыт вне счётчика 18 |
+| **#3227** | `up/setsettings-socket-alloc` (`938ff6ff`) | **Merged** как `7d2a69db`; package 2 upstream-closed |
+| **#3228** | `up/httprpc-refusals` (`c7a431aa`) | **Merged** как `7e77ebf0`; package 3 upstream-closed |
+| **#3232** | `up/test-harness` | **Merged** как `2920ad7d`; upstream follow-up #3239 восстановил isolated test ini |
 
 ---
 
@@ -230,8 +231,8 @@ metainfo follow-up **#3229** также принят и завершает upstr
 - **14 незакрытых реализационных пакетов**: package 5 partial, packages 6–18
   ещё не начаты;
 - **0 неразобранных carve/verdict-аудитов**;
-- семь готовых или локально интегрированных owner handoff в это число не входят;
-- package 1 уже принят upstream как #3224 и учитывается отдельно как closure.
+- packages 1–3 уже приняты upstream; package 4 реализован и остаётся local-only;
+- эти четыре closure уже вычтены из счёта 14.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
 `13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
