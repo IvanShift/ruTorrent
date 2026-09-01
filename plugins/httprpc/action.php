@@ -700,6 +700,22 @@ switch($mode)
 			// connection to rtorrent, and process()'s null return cannot tell a
 			// call this filter refused from one rtorrent could not answer. That
 			// is what rpc2.php does with the same policy.
+			if($HTTP_RAW_POST_DATA === false)
+			{
+				if($proxyLog)
+					FileUtil::toLog("xmlrpc-proxy: could not read request body");
+				header("HTTP/1.0 400 Bad Request");
+				CachedEcho::send("Could not read XMLRPC request.", "text/html");
+				exit;
+			}
+			if($HTTP_RAW_POST_DATA === '')
+			{
+				if($proxyLog)
+					FileUtil::toLog("xmlrpc-proxy: empty request body");
+				header("HTTP/1.0 400 Bad Request");
+				CachedEcho::send("Empty XMLRPC request.", "text/html");
+				exit;
+			}
 			$decision = XMLRPCProxy::decide($HTTP_RAW_POST_DATA, $proxyMode, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
 			if($proxyLog)
 				foreach($decision['log'] as $line)
