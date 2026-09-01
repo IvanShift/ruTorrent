@@ -121,6 +121,8 @@ SHA, integration merges и последующие remediation.
   #3230/#3236, Kinozal #3198, socket #3227 и httprpc #3228;
 - local-only upstream handoff: SCGI `33934444` (runtime `4682a761`), уже
   интегрированный в fork как `19086b5f` + `3ff4860c`;
+- local-only alias-surface candidate `3146f741`, интегрированный в fork как
+  `4d779ff9`, APPROVED без push/PR;
 - PHP74 `286dd24b`/`acbf5691` принят upstream как #3224; follow-ups #3225 и
   #3229 также приняты, а #3229 входит в local ancestry sync `d06e0651`;
 - standalone history dot-label branch отвергнута и не отправляется;
@@ -129,7 +131,8 @@ SHA, integration merges и последующие remediation.
 
 ## Current approved contract status
 
-Package 4 SCGI is implemented and independently APPROVED from final package 3.
+Packages 4 SCGI and 13 alias surface are implemented and independently
+APPROVED; package 13 candidate/integration are `3146f741`/`4d779ff9`.
 Package 5 retrackers is partially implemented through Task 4B at `9fef4d66`
 and independently APPROVED at that boundary; Tasks 5–8 remain. Packages 6
 erasedata A and 14 XMLRPC proxy policy are DESIGN APPROVED — implementation
@@ -153,26 +156,32 @@ cleanup report SHA-256 is
 Exact eight-container cleanup is GREEN, but it closes no implementation package
 and does not make retrackers production B5+EPOCH or successor behavior GREEN.
 
+Package 13 `rtorrent-alias-surface` затем закрыт exact four-path candidate
+`3146f741` прямо на `upstream/master=495e2a54` и интегрирован в fork commit
+`4d779ff9`. Production alias tables не менялись; две non-test правки
+comment-only. Full PHP 7.4/8.1/8.5, full Jest 326/326, 14 named mutations и
+stock rTorrent 0.16.21 oracle APPROVED. Ветка не push и PR не создавался.
+
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **14 implementation packages** из
+До полного закрытия divergence остаётся **13 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
-Packages 1–3 уже приняты upstream, package 4 реализован и остаётся local-only;
-эти четыре closure уже вычтены из счёта.
+Packages 1–3 уже приняты upstream, packages 4 и 13 реализованы и остаются
+local-only; эти пять closure уже вычтены из счёта.
 
 Переход от прежних 18 workstream проверен арифметически:
 `18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
-сложен внутрь P0: `19 - 1 = 18`. Packages 1–4 затем реализованы:
-`18 - 4 = 14`. Residual rTorrent, proxy policy и manual
+сложен внутрь P0: `19 - 1 = 18`. Packages 1–4 и 13 затем реализованы:
+`18 - 5 = 13`. Residual rTorrent, proxy policy и manual
 entrypoints дали по одному package; foreign bucket — три; generic
 `sendTorrent() +17/-0` закрыт no-send. Evidence:
 `REVIEW-disposition-wave-2026-08-29.md` и
 `REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
 Design approval itself decrements neither implementations nor fork divergence;
-accepted implementation evidence for packages 1–4 changed the arithmetic.
-The current count is 14 open implementations / 0 audits; packages 1–3 are
-upstream-accepted and package 4 is implemented locally.
+accepted implementation evidence for packages 1–4 and 13 changed the
+arithmetic. The current count is 13 open implementations / 0 audits; packages
+1–3 are upstream-accepted and packages 4/13 are implemented locally.
 
 ## Ownership corrections
 

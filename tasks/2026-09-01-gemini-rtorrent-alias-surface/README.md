@@ -1488,3 +1488,51 @@ following are true:
 `READY_FOR_REVIEW` is not acceptance. After Gemini returns, another model will
 perform a whole-file review, independently rerun load-bearing mutations and
 container/runtime checks, and either amend the candidate or reject it.
+
+## 12. Independent acceptance result — 2026-09-01
+
+Final verdict: **APPROVED / PACKAGE 13 CLOSED**.
+
+Gemini's initial candidate was not accepted unchanged. Independent review found
+two test-quality defects and corrected them before integration:
+
+1. both fixture loaders removed blank rows before checking fixture integrity,
+   so a boundary blank-row corruption could pass;
+2. new comments cited unstable upstream source line numbers.
+
+The corrected candidate is:
+
+```text
+branch:  gemini/rtorrent-alias-surface
+parent:  495e2a54a657efcc132dc1456db8d7e680304a8a
+commit:  3146f74136f1c54f4568d4d8e59b3c3551469ef0
+fork:    4d779ff93cc7c30859cb30de8d6f5148c9b52a36
+```
+
+Acceptance evidence:
+
+- exact final scope: the four paths from section 3;
+- PHP and JavaScript blank-row mutation now gives named RED;
+- all original 13 mutations plus the new boundary mutation give named RED,
+  contain no preceding fatal/bootstrap failure and recover to GREEN;
+- focused PHP alias/socket suites GREEN;
+- full PHP harness GREEN on host PHP 8.5 and network-disabled PHP 7.4/8.1
+  containers from an exact detached integration worktree;
+- full Jest: 23/23 suites, 326/326 tests; focused `rtorrent.spec.js`: 24/24;
+- shipped PHP 8.5 image focused gate GREEN;
+- stock rTorrent 0.16.21: API 26, 1027 unique methods;
+- shared fixture: 982 rows, 982 unique, sorted, no empty rows, zero names absent
+  from the live registry;
+- exact modern missing target set remains
+  `dht.throttle.name`, `dht.throttle.name.set`, `throttle.ip`;
+- both comment-only files have executable-token equality with their base;
+- the four integration files are byte-identical to the approved candidate.
+
+No push or PR was performed. The candidate worktree remains available for a
+later upstream handoff. Four user diagnostic files in the primary checkout were
+not touched.
+
+The primary-checkout pre-commit hook separately exposed an existing isolation
+defect: `ScheduleTest.php` reads `share/settings/rtorrent.dat` and then assumes
+the no-cache parameter layout. It is GREEN 11/11 in the exact clean worktree.
+That follow-up is outside package 13 and outside the 18-package arithmetic.

@@ -9,7 +9,10 @@ checkpoint.
 - product-sync commit: `88995e7c7a8aae7729809aa0c52bfb095e6be62c`;
 - его родители: fork `a4d48853997377eab3a839d4246b687fe79bde60` и
   `upstream/master=495e2a54a657efcc132dc1456db8d7e680304a8a`;
-- опубликованный `origin/master`: `a4d48853997377eab3a839d4246b687fe79bde60`;
+- опубликованный `origin/master`: `774a6bf2d2f83df9e1f2a87788a093de08a73963`;
+- package 13 candidate: `3146f74136f1c54f4568d4d8e59b3c3551469ef0`,
+  direct parent `upstream/master=495e2a54a657efcc132dc1456db8d7e680304a8a`;
+- package 13 fork integration: `4d779ff93cc7c30859cb30de8d6f5148c9b52a36`;
 - push не выполнялся;
 - четыре пользовательских диагностических файла в корне сохранены и в commits
   не включены.
@@ -29,14 +32,15 @@ guards для httprpc, локализации и `php-test.ini`.
 
 ## Сводка
 
-- полностью реализованы: **4 из 18** — packages 1–4;
+- полностью реализованы: **5 из 18** — packages 1–4 и 13;
 - частично реализован: **1** — package 5, Tasks 1–4 из 8 завершены;
-- финальная реализация ещё не начата: **13** — packages 6–18;
-- незакрытых реализационных пакетов: **14** — packages 5–18;
-- финальные реализации в fork `master`: **1–4**;
+- финальная реализация ещё не начата: **12** — packages 6–12 и 14–18;
+- незакрытых реализационных пакетов: **13** — package 5 partial, packages
+  6–12 и 14–18 pending;
+- финальные реализации в fork `master`: **1–4 и 13**;
 - полностью приняты upstream: **packages 1–3**;
 - открытых upstream PR среди 18 packages: **0**;
-- готовый local-only package без PR: **№4**;
+- готовые local-only packages без PR: **№4 и №13**;
 - partial local-only package без PR: **№5**.
 
 Acceptance upstream меняет delivery-state, но не число реализованных packages.
@@ -59,7 +63,7 @@ runtime-проверок и финального review.
 | 10 | P1 `rutracker-post-api` | Scope/ownership утверждены, кода нет | Нет | PR нет | После package 9 |
 | 11 | P2 history marker | Контракт зафиксирован, кода нет | Нет | PR нет | После package 10 и event-order capture |
 | 12 | P3 retrackers marker | Scope/order зафиксированы, кода нет | Нет | PR нет | После packages 5 и 10 |
-| 13 | rTorrent alias surface | Scope утверждён, кода нет | Финальной ветки нет | Prerequisites #3230/#3236 merged | RED-first implementation и mutation gates |
+| 13 | rTorrent alias surface | **Полностью реализован и APPROVED** | Candidate `gemini/rtorrent-alias-surface=3146f741`, one commit прямо на `495e2a54`; fork integration `4d779ff9`; код в `master` | PR нет; push нет | При необходимости переименовать/скопировать candidate в `up/*`, сделать свежий rebase-review и подготовить PR |
 | 14 | XMLRPC proxy policy | Design **APPROVED**, финального package-кода нет | Старые/richer fork hunks не считаются closure | PR нет | RED-first implementation на post-#3228 базе |
 | 15 | manual entrypoints | Six-path scope и 7 production defects классифицированы, кода нет | Нет | PR нет | Независим и разблокирован |
 | 16 | Kinozal checker resilience | Split **APPROVED**, кода нет | Нет; loginmgr #3198 — другая тема | PR нет | После package 10 |
@@ -80,7 +84,14 @@ runtime-проверок и финального review.
 - PHP 8.5 host full harness: 71 files, 3545 `Passed:`, 0 failures;
 - PHP 7.4 container, UID 1000:1000: 71 files, 3545 `Passed:`, 0 failures;
 - PHP 8.1 container, UID 1000:1000: 71 files, 3545 `Passed:`, 0 failures;
-- full Jest: 23 suites / 324 tests GREEN;
+- package 13 exact integration `4d779ff9`: full PHP harness GREEN на host
+  PHP 8.5 и в network-disabled PHP 7.4/8.1 containers; focused alias/socket
+  suites GREEN;
+- full Jest после package 13: 23 suites / 326 tests GREEN; focused
+  `rtorrent.spec.js`: 24/24;
+- package 13: 14 обязательных mutations дали named RED без preceding fatal и
+  GREEN после восстановления; stock rTorrent 0.16.21 lab вернул 1027 unique
+  methods, а 982-row fixture оказался его полным subset;
 - focused socket + localization Jest: 61/61 GREEN;
 - PHP lint, `node --check`, `bash -n` и `git diff --check` GREEN.
 
@@ -88,19 +99,30 @@ runtime-проверок и финального review.
 permission-denial fixtures: root обходит проверяемые запреты записи. Повтор от
 UID 1000:1000 является валидным verdict и полностью зелёный.
 
+Pre-commit в основном checkout отдельно обнаружил test-isolation defect:
+`ScheduleTest.php` читает существующий `share/settings/rtorrent.dat` и сдвигает
+индексы параметров `schedule`. Тот же test даёт 11/11 в чистом worktree, а
+полный exact-SHA harness зелёный. Runtime cache не удалялся. Это test-hygiene
+follow-up вне счётчика 18 и не относится к package 13 diff.
+
 ## Следующий порядок
 
 1. Продолжить package 5 с Task 5: init/done hook install protocol.
-2. Независимо доступны packages 6, 13, 14 и 15.
+2. Независимо доступны packages 6, 14 и 15; для package 14 подготовлен
+   исполнимый Gemini brief `../2026-09-01-gemini-xmlrpc-proxy-policy/README.md`.
 3. После package 6: package 8 и package 9; после package 9 — package 10 и его
    dependants 11, 12, 16, 17, 18.
 4. Package 7 ждёт одновременно packages 14 и 6.
 5. Package 4 можно отдельно подготовить к upstream после чистого rebase на
-   `495e2a54`; это delivery-задача и не меняет счёт 14.
+   `495e2a54`; package 13 также можно отдельно оформить upstream-handoff. Эти
+   delivery-задачи не меняют счёт 13.
 
 ## Точка продолжения
 
 - product sync: `88995e7c`;
+- package 13: candidate `3146f741`, fork integration `4d779ff9`, APPROVED;
+- package 14 delegated implementation brief:
+  `tasks/2026-09-01-gemini-xmlrpc-proxy-policy/README.md`;
 - package 5 branch: `up/retrackers-recovery=9fef4d66`, Task 5 не начинался;
 - package 4 delivery branch: `up/scgi-transport=33934444`, local-only;
 - `origin/master` отстаёт, потому что push не разрешался и не выполнялся;

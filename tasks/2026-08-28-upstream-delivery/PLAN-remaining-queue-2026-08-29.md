@@ -96,18 +96,37 @@ literal rTorrent 0.9.8/0.16.21 capture checks и независимый фина
 `APPROVED`. Ветка не включена в `master`, не push и не готова к handoff до
 Tasks 5–8. Следующий шаг — Task 5 init/done hook install protocol.
 
+## Implementation progress checkpoint — 2026-09-01
+
+Package 13 `rtorrent-alias-surface` закрыт после делегированной реализации и
+независимой повторной проверки:
+
+- clean candidate `3146f741`, one non-merge commit прямо на
+  `upstream/master=495e2a54`, exact four-path scope;
+- fork integration `4d779ff9` в `master`;
+- обе production-правки comment-only; executable alias tables не менялись;
+- full Jest `23 suites / 326 tests`, full PHP host 8.5 и containers 7.4/8.1,
+  14 mutations и stock rTorrent 0.16.21 runtime oracle — GREEN;
+- 982-row captured fixture unique/sorted/non-empty и является subset 1027
+  unique runtime methods; exact modern missing set остаётся тремя `-D`-only
+  aliases, для которых production sender не найден.
+
+Ветка и integration не push. Package 13 теперь **CLOSED / APPROVED**; текущая
+очередь — **13 open implementations / 0 audits**.
+
 ## Уже готовые handoff
 
 Из семи веток этой delivery-волны шесть уже приняты: FileUtil #3231, test
 harness #3232, rTorrent 0.16.21 #3230/#3236, Kinozal #3198,
 setsettings/socket #3227 и httprpc refusals #3228. PHP74 lane также полностью
-принята, включая binary-metainfo follow-up #3229. Local-only остаётся SCGI
-transport `33934444`; перед PR его надо перебазировать на `495e2a54` и заново
-проверить. Детали зафиксированы в `REVIEW-ready-branches-2026-08-29.md`,
+принята, включая binary-metainfo follow-up #3229. Local-only остаются SCGI
+transport `33934444` и alias-surface candidate `3146f741`; перед SCGI PR ветку
+надо перебазировать на `495e2a54` и заново проверить. Детали зафиксированы в
+`REVIEW-ready-branches-2026-08-29.md`,
 `VERIFICATION-httprpc-refusals-2026-08-31.md` и
 `VERIFICATION-scgi-transport-2026-08-31.md`. Push выполняет только владелец.
 
-## Реестр 18 пакетов — 14 ещё открыты
+## Реестр 18 пакетов — 13 ещё открыты
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
@@ -123,7 +142,7 @@ transport `33934444`; перед PR его надо перебазировать
 | 10 | P1 `up/rutracker-post-api` | exact hunk scope после P0+C | после P0+C | одобрение P0->P1 split и live-capture/lab evidence |
 | 11 | P2 `up/rutracker-meta-history-marker` | 3 history paths + entrypoint evidence | после P1 и event-order capture | только producer-owned marker; dot-label запрещён |
 | 12 | P3 `up/rutracker-meta-retrackers-marker` | retrackers marker integration | после final P1 и final package 5 | real-daemon command-shape test; current guard запрещён |
-| 13 | `up/rtorrent-alias-surface` | 3 paths; existing-hunk snapshot `+1351/-4` до wording fix | после готового `up/rtorrent-0-16-21` | characterization, natural RED нет; mutation gates обязательны |
+| 13 | `up/rtorrent-alias-surface` | final exact 4 paths: 2 comment-only production/test comments + PHP/JS characterization | prerequisite #3230/#3236 готов | **CLOSED / APPROVED**: candidate `3146f741` прямо на `495e2a54`, fork integration `4d779ff9`; 14 mutations и full PHP/Jest/runtime matrix GREEN; no push/PR |
 | 14 | `up/xmlrpc-proxy-policy` | exact 7 paths; final numstat only from final httprpc tip | после 3 | DESIGN APPROVED — implementation pending; eight loads, exact evaluator/carrier deny, six direct-multicall all-or-nothing rebuild, system.multicall refusal, preserve #3209/#3211 |
 | 15 | `up/rutracker-manual-entrypoints` | exact 6 focused paths; final numstat после реализации | независим от P0/P1 | collision/short-write/launch/body/worker/UI RED; без crawler/503/raw text |
 | 16 | `up/kinozal-checker-resilience` | 2 paths, current snapshot `+260/-146` | после final P1 | endpoint streaks, exact deletion и parsed-object seam |
@@ -174,7 +193,8 @@ Retrackers recovery имеет final SCGI как immediate implementation parent
    поправка включена в те же пять sibling paths.
 
 Историческая арифметика реестра: `18 - 5 audits + 6 successors - 1 standalone
-C fold = 18 packages`. После closure packages 1–4: `18 - 4 = 14 open`;
+C fold = 18 packages`. После closure packages 1–4 и 13:
+`18 - 5 = 13 open`;
 pending audits — 0.
 Standalone C удалён из счёта, потому что без P0 он production-unreachable и
 оставляет active inline cleanup; доказательства:
@@ -212,14 +232,16 @@ Standalone C удалён из счёта, потому что без P0 он pr
    `33934444` и fork integration `19086b5f`;
    XMLRPC policy и A остаются отдельными sibling branches. Build the consumer
    only after XMLRPC + A; B and P0+C only after A.
-4. Next build retrackers from exact runtime SCGI `4682a761` under the corrected
+4. ~~Build the independent alias-surface package.~~ Завершено: candidate
+   `3146f741`, integration `4d779ff9`, APPROVED; push/PR не выполнялись.
+5. Next build retrackers from exact runtime SCGI `4682a761` under the corrected
    six-path contract, then carry test-only delivery head `33934444` into final
    integration.
-   Alias surface and manual entrypoints remain independent;
+   XMLRPC policy, erasedata A and manual entrypoints remain independent;
    after final P1 build foreign handlers, then P2/P3 under their exact dual
    prerequisites.
-5. После combined P0+C построить P1; от final P1 параллельно строить три foreign
+6. После combined P0+C построить P1; от final P1 параллельно строить три foreign
    handler packages, и только после runtime evidence — P2/P3.
-6. Для каждой ветки: named RED, production mutation, focused/full матрицы,
+7. Для каждой ветки: named RED, production mutation, focused/full матрицы,
    PHPStan/Jest где применимо, exact scope/diff-check, independent whole-file
    review, task text и отдельный commit. Push не выполнять.

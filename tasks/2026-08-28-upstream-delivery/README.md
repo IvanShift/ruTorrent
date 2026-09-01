@@ -127,6 +127,20 @@ PHP 7.4/8.1/8.5 и independent final review `APPROVED`. Ветка не вход
 `master`, не push и остаётся partial до Tasks 5–8. Следующий resume point —
 Task 5 init/done hook install protocol.
 
+## Implementation checkpoint — 2026-09-01
+
+Package 13 `rtorrent-alias-surface` завершён. Делегированный clean candidate
+`3146f741` — один non-merge commit прямо на
+`upstream/master=495e2a54`, final exact 4 paths. После независимой проверки и
+двух исправлений тестовой чувствительности он интегрирован в fork как
+`4d779ff9`.
+
+Production alias tables не менялись; правки `php/settings.php` и
+`SocketAllocLimitsTest.php` comment-only. Full PHP на 7.4/8.1/8.5, full Jest
+`23/23 suites, 326/326 tests`, stock rTorrent 0.16.21 runtime oracle и 14
+named mutations GREEN. Candidate/fork integration **APPROVED**; push/PR не
+выполнялись. Текущий счёт — **13 open implementations / 0 audits**.
+
 ## Цель
 
 Отправить в upstream **все** расхождения форка, корректно оформленными PR. Это решение
@@ -226,17 +240,18 @@ metainfo follow-up **#3229** также принят и завершает upstr
 исполняемый план: `PLAN-remaining-queue-2026-08-29.md`.
 
 Точный текущий счёт после завершения всех пяти disposition-аудитов, packages
-1–4 и partial Tasks 1–4 package 5:
+1–4 и 13, а также partial Tasks 1–4 package 5:
 
-- **14 незакрытых реализационных пакетов**: package 5 partial, packages 6–18
-  ещё не начаты;
+- **13 незакрытых реализационных пакетов**: package 5 partial, packages 6–12 и
+  14–18 ещё не начаты;
 - **0 неразобранных carve/verdict-аудитов**;
-- packages 1–3 уже приняты upstream; package 4 реализован и остаётся local-only;
-- эти четыре closure уже вычтены из счёта 14.
+- packages 1–3 уже приняты upstream; packages 4 и 13 реализованы и остаются
+  local-only;
+- эти пять closure уже вычтены из счёта 13.
 
 Арифметика: прежние `13 implementations + 5 audits = 18` преобразованы в
 `13 + 6 audited successors = 19`, затем standalone erasedata C сложен внутрь
-P0: `19 - 1 = 18`. После реализации packages 1–4: `18 - 4 = 14`.
+P0: `19 - 1 = 18`. После реализации packages 1–4 и 13: `18 - 5 = 13`.
 Successors: rTorrent alias surface, XMLRPC proxy policy,
 manual rutracker entrypoints и три foreign-handler packages.
 Exact generic `sendTorrent() +17/-0` закрыт как no-send: семантическая
@@ -247,9 +262,9 @@ dispatch-vs-load граница реальна, но unconditional log один�
 paths; retrackers recovery — exact 6 paths; erasedata A — exact 8 production +
 2 test paths; XMLRPC proxy policy — exact 7 paths. SCGI historical donor
 estimate заменён final exact delta `+1584/-51` от `c7a431aa`.
-Design approvals сами по себе не закрыли packages; отдельные реализации 1–4
-закрыли четыре строки. Pending carve/verdict audits — 0, семь ready/integrated
-owner handoff остаются вне счёта, а PHP74 уже принят upstream.
+Design approvals сами по себе не закрыли packages; отдельные реализации 1–4 и
+13 закрыли пять строк. Pending carve/verdict audits — 0; package 13 добавил
+готовый local-only handoff, а PHP74 уже принят upstream.
 Erasedata A/B остаются самостоятельными, а C сложен внутрь P0. B donor
 `+168/-2` подтверждён только как snapshot и опровергнут как final estimate;
 70-путевый rutracker snapshot заменён P0/P1/P2/P3, manual entrypoints и тремя
@@ -268,7 +283,7 @@ wire fixtures уже captured; production-success HistoricalBindingSampleV2/
 B5+EPOCH manifest остаётся BLOCKED до появления `rr.receipts.v1`, `pf`/`pv`,
 extended owner, paired actions и canonical four-field marker. Это
 post-implementation acceptance gate, а не prerequisite design approval;
-текущий общий счёт остаётся 14.
+текущий общий счёт остаётся 13.
 
 Historical five-path authority: approval commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba`, contract SHA-256
@@ -395,14 +410,14 @@ exact six в `VERIFICATION-retrackers-recovery-precode-2026-08-31.md`. Exact
 container cleanup
 получил GREEN и был зафиксирован commit
 `f1e6d4ed7ee5c1095b24dab27adde72493f76cc0`; это runtime cleanup, не
-implementation/capture acceptance. С тех пор packages 1–4 закрыты отдельной
+implementation/capture acceptance. С тех пор packages 1–4 и 13 закрыты отдельной
 реализацией; natural missing-ledger B5 уже captured, а production-success B5
 и exact 2×8×2 manifest остаются post-implementation BLOCKED.
 
 Resume point: не считать donor GREEN закрытием packages. A → B и A → combined
 C+P0 сохраняются; SCGI, XMLRPC и A начинаются только от final httprpc;
-retrackers — только от final SCGI. Общая очередь — 14 implementation packages,
-pending carve/verdict audits — 0, ready/integrated handoffs outside count — 7;
+retrackers — только от final SCGI. Общая очередь — 13 implementation packages,
+pending carve/verdict audits — 0; package 13 готов как local-only handoff;
 ещё один закрытый package уже принят upstream.
 
 ---
@@ -442,8 +457,11 @@ pending carve/verdict audits — 0, ready/integrated handoffs outside count — 
    нового явного указания реализовывать packages RED->GREEN только от exact
    final predecessors; approval контракта сам по себе не является командой на
    код, push или upstream sync.
-6. После final httprpc SCGI, XMLRPC policy и erasedata A являются sibling
+6. ~~Реализовать independent package 13 alias surface.~~ Завершено:
+   `3146f741` / integration `4d779ff9`, APPROVED, no push/PR.
+7. После final httprpc SCGI, XMLRPC policy и erasedata A являются sibling
    branches. Retrackers строится только после final SCGI; consumer — после
    XMLRPC policy + A; B и P0+C — после final A; P3 — после final P1 +
-   retrackers. Продолжить оставшиеся 14 packages по PLAN; pending audits = 0,
-   ready/integrated owner handoffs outside count = 7, accepted closure = 1.
+   retrackers. Продолжить оставшиеся 13 packages по PLAN; pending audits = 0.
+   Следующий delegated brief —
+   `../2026-09-01-gemini-xmlrpc-proxy-policy/README.md`.
