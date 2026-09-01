@@ -227,18 +227,25 @@ describe("xmlrpc calls", () => {
   // the tests below walk the whole map instead of sampling it.
   //
   // The registry to hold it against is the 982-name system.listMethods
-  // answer from the live 0.16.20 daemon, which the PHP suite already carries
+  // answer from the 0.16.20 daemon, which the PHP suite already carries
   // as a fixture. Read it out of that file rather than keeping a second
   // copy here, so the two halves of the suite cannot drift apart.
-  function stockDaemonMethods() {
+  function loadDaemonMethodFixture() {
     const suite = readFileSync("php/RtorrentCompatibilityTest.php", {
       encoding: "utf-8",
     });
-    const names = /<<<'LISTMETHODS'\n([\s\S]*?)\nLISTMETHODS/
-      .exec(suite)[1]
-      .split("\n");
-    expect(names).toHaveLength(982);
-    return new Set(names);
+    const match = /<<<'LISTMETHODS'\r?\n([\s\S]*?)\r?\nLISTMETHODS/.exec(suite);
+    if (!match || typeof match[1] !== "string") {
+      throw new Error(
+        "Could not find LISTMETHODS fixture in php/RtorrentCompatibilityTest.php"
+      );
+    }
+    // Keep blank rows visible so the fixture-integrity assertions reject them.
+    return match[1].split(/\r?\n/);
+  }
+
+  function stockDaemonMethods() {
+    return new Set(loadDaemonMethodFixture());
   }
 
   function effectiveTargets(version) {
@@ -250,16 +257,26 @@ describe("xmlrpc calls", () => {
     return { keys: aliases.length, targets };
   }
 
+  it("uses a complete unique sorted shared daemon-method fixture", () => {
+    const list = loadDaemonMethodFixture();
+    expect(list).toHaveLength(982);
+    expect(
+      list.every((name) => typeof name === "string" && name.length > 0)
+    ).toBe(true);
+    expect(new Set(list).size).toBe(982);
+    expect([...list].sort()).toEqual(list);
+  });
+
   it("maps every alias to a name the daemon registers", () => {
     // rtorrent registers dht.throttle.name, its setter and throttle.ip only
-    // inside if(method.use_deprecated == 1) (src/main.cc:388-433), and since
+    // inside the method.use_deprecated gate in src/main.cc main(). Since
     // 0.16.14 that can only be turned on with the -D launch option. A stock
     // daemon answers "Method not defined" to all three. They are dormant
     // rather than broken -- nothing sends get_dht_throttle, set_dht_throttle
     // or throttle_ip -- but the set is pinned exactly, so a fourth one, or a
     // first caller, fails here instead of in a user's settings panel.
     //
-    // The empty entry is content.js's own (:563): an identity mapping that
+    // The empty entry is content.js's own inline-seed identity mapping that
     // keeps an empty command name empty. It is not a daemon method and is
     // listed here for that reason, not as a fault.
     const unregistered = [
@@ -272,12 +289,26 @@ describe("xmlrpc calls", () => {
 
     // Only 0.16.18 and later are held against this registry: 0.16.16 and
     // below map the port commands to network.port_range and friends, which
-    // 0.16.18 removed, so the live daemon's list is the wrong oracle there.
+    // 0.16.18 removed, so the daemon's list is the wrong oracle there.
     for (const version of [0x1012, 0x1015]) {
       const { targets } = effectiveTargets(version);
       expect([...targets].filter((t) => !registry.has(t)).sort()).toEqual(
         unregistered
       );
+    }
+  });
+
+  it("keeps the deprecated-only aliases paired with their exact targets", () => {
+    for (const version of [0x1012, 0x1015]) {
+      withRtorrentVersion(version, () => {
+        expect(theRequestManager.map("get_dht_throttle")).toBe(
+          "dht.throttle.name"
+        );
+        expect(theRequestManager.map("set_dht_throttle")).toBe(
+          "dht.throttle.name.set"
+        );
+        expect(theRequestManager.map("throttle_ip")).toBe("throttle.ip");
+      });
     }
   });
 

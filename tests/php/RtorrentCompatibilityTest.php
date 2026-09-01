@@ -238,22 +238,21 @@ class RtorrentCompatibilityTest extends TestCase
 
 	/**
 	 * Every name a stock rTorrent 0.16.20 registers: the verbatim answer to
-	 * system.listMethods from the live daemon this fork runs against, 982
-	 * names, sorted. It is the oracle for "does this alias target exist" --
-	 * the alias tables are hand-maintained lists of strings, and nothing but
-	 * a real registry can tell a working mapping from a typo or from a name
-	 * that a later rtorrent quietly stopped registering.
+	 * system.listMethods from the daemon, 982 names, sorted. It is the oracle
+	 * for "does this alias target exist" -- the alias tables are hand-maintained
+	 * lists of strings, and nothing but a real registry can tell a working mapping
+	 * from a typo or from a name that a later rtorrent quietly stopped registering.
 	 *
-	 * 0.16.21 adds names, it removes none (see the command diffs in
-	 * tasks/2026-08-26-rtorrent-0.16.21-adoption.md), so a 0.16.20 registry
-	 * is the conservative oracle for the whole 0.16.18+ generation: every
-	 * name it contains is still registered further up.
+	 * 0.16.21 adds names, it removes none, so a 0.16.20 registry is the conservative
+	 * oracle for the whole 0.16.18+ generation: every name it contains is still
+	 * registered further up.
 	 */
-	private function stockDaemonMethods()
+	private function stockDaemonMethodList()
 	{
-		static $methods = null;
-		if ($methods === null) {
-			$methods = array_flip(explode("\n", trim(<<<'LISTMETHODS'
+		static $list = null;
+		if ($list === null) {
+			// Keep boundary blank rows visible to the fixture-integrity test.
+			$list = explode("\n", str_replace("\r\n", "\n", <<<'LISTMETHODS'
 add_peer
 and
 argument.0
@@ -1237,9 +1236,31 @@ view.sort
 view.sort_current
 view.sort_new
 LISTMETHODS
-			)));
+			));
+		}
+		return $list;
+	}
+
+	private function stockDaemonMethods()
+	{
+		static $methods = null;
+		if ($methods === null) {
+			$methods = array_flip($this->stockDaemonMethodList());
 		}
 		return $methods;
+	}
+
+	public function testStockDaemonMethodFixtureIsCompleteUniqueAndSorted()
+	{
+		$methods = $this->stockDaemonMethodList();
+		$this->assertEquals(982, count($methods), 'fixture contains exactly 982 names');
+		$this->assertEquals(982, count(array_unique($methods)), 'fixture contains no duplicate names');
+		$sorted = $methods;
+		sort($sorted, SORT_STRING);
+		$this->assertEquals($sorted, $methods, 'fixture is sorted in LC_ALL=C order');
+		foreach ($methods as $name) {
+			$this->assertTrue(is_string($name) && strlen($name) > 0, 'fixture entries are non-empty strings');
+		}
 	}
 
 	/**
@@ -1250,10 +1271,11 @@ LISTMETHODS
 	{
 		// rtorrent registers these three names only inside
 		// if(rpc::call_command_value("method.use_deprecated") == 1)
-		// (src/main.cc:388-433), and since 0.16.14 that flag can only be
+		// (src/main.cc, main(), method.use_deprecated gate). Since 0.16.14
+		// that flag can only be
 		// turned on with the -D launch option, not from the rc file. A stock
-		// daemon -- the live one included -- answers "Method not defined" to
-		// all three, which faults the whole batch they were sent in.
+		// daemon answers "Method not defined" to all three, which faults
+		// the whole batch they were sent in.
 		//
 		// They are dormant, not broken: the keys below appear nowhere but the
 		// two alias tables, so nothing ever asks for them. The pairing is
@@ -1325,87 +1347,127 @@ LISTMETHODS
 	}
 
 	/**
-	 * The fork's own PHP and JS sources, as git knows them.
-	 *
-	 * A directory walk is the wrong instrument for this question: it reads
-	 * whatever happens to be sitting in the tree -- scratch copies, editor
-	 * backups, an unpacked tarball someone left in place -- and the only
-	 * thing keeping those out is a hand-kept list of directory names to
-	 * skip, which is one `mkdir` away from being wrong in either direction.
-	 * What "the fork" means is exactly what is committed, so ask git.
+	 * Scans owned production PHP and JS sources across root-level PHP entrypoints
+	 * and the php, plugins, js, conf, and lang trees, excluding tests and node_modules.
 	 */
-	private function trackedSources($root)
+	private function ownedProductionSources($root)
 	{
-		// An allow-list of the directories the fork keeps sources in, walked
-		// directly. Deliberately NOT `git ls-files`: the documented 8.1 matrix
-		// step runs this suite in php:8.1-cli, which ships no git, and even
-		// where git exists the bind-mounted checkout trips "detected dubious
-		// ownership" on the uid mismatch. Either way the listing comes back
-		// empty and every scan built on it fails, taking the whole suite with
-		// it. Enumerating the source roots also answers the reason git was
-		// reached for in the first place -- untracked scratch (ROUND6/,
-		// REMEDIATION_*/, stray copies at the repo root) simply is not inside
-		// them, so no skip-list of scratch directory names is needed.
 		$paths = array();
-		foreach (array('php', 'plugins', 'js', 'tests', 'conf') as $dir) {
-			$base = $root.'/'.$dir;
-			if (!is_dir($base))
+
+		foreach (scandir($root) as $item) {
+			if ($item === '.' || $item === '..' || is_dir($root.'/'.$item)) {
 				continue;
+			}
+			if (preg_match('/\.php$/D', $item)) {
+				$paths[] = $item;
+			}
+		}
+
+		foreach (array('php', 'plugins', 'js', 'conf', 'lang') as $dir) {
+			$base = $root.'/'.$dir;
+			if (!is_dir($base)) {
+				continue;
+			}
 			$walk = new RecursiveIteratorIterator(
 				new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS));
 			foreach ($walk as $file) {
 				$path = $file->getPathname();
-				if (strpos($path, '/node_modules/') !== false)
+				if (strpos($path, '/node_modules/') !== false) {
 					continue;
-				if (!preg_match('/\.(php|js)$/D', $path))
+				}
+				if (!preg_match('/\.(php|js)$/D', $path)) {
 					continue;
+				}
 				$paths[] = ltrim(substr($path, strlen($root)), '/');
 			}
 		}
 		sort($paths);
 
-		// A truncated listing would make every scan built on it pass by reading
-		// nothing at all. Fail loudly on the way in instead.
+		$sentinels = array('rpc2.php', 'env_check.php', 'lang/en.js', 'php/settings.php', 'js/content.js');
 		$this->assertTrue(
-			count($paths) > 100 && in_array('php/settings.php', $paths, true) && in_array('js/content.js', $paths, true),
-			'the fork\'s PHP and JS sources are listed for the scans below; got '.count($paths).' paths'
+			count($paths) > 100,
+			'owned production sources scan found more than 100 paths; got '.count($paths)
 		);
+		foreach ($sentinels as $sentinel) {
+			$this->assertTrue(
+				in_array($sentinel, $paths, true),
+				'owned production sources listing includes sentinel '.$sentinel
+			);
+		}
 		return $paths;
 	}
 
-	public function testDeprecatedOnlyAliasKeysAreNotSentByTheFork()
+	public function testDeprecatedOnlyAliasKeysAreNotSentByProductionCode()
 	{
 		// The three targets above are harmless only for as long as nobody
 		// asks for them. Anything that starts sending one of these keys ships
 		// a fault to every stock daemon, so the "nothing calls them" half of
 		// the argument is checked here rather than left as a comment.
 		$root = dirname(dirname(__DIR__));
-
-		// The two alias tables are where these keys are defined, and tests/
-		// is where they are argued about -- neither ships a request. Both
-		// exclusions are paths that must exist, not names that must not.
-		$allowed = array('php/methods-0.9.4.php', 'js/content.js');
+		$paths = $this->ownedProductionSources($root);
+		$deprecatedOnly = $this->deprecatedOnlyAliases();
 
 		$callers = array();
+		$definitions = array();
+		$unreadable = array();
 		$scanned = 0;
-		foreach ($this->trackedSources($root) as $path) {
-			if (in_array($path, $allowed, true) || strncmp($path, 'tests/', 6) === 0) {
-				continue;
-			}
+
+		foreach ($paths as $path) {
 			$contents = @file_get_contents($root.'/'.$path);
 			if ($contents === false) {
+				$unreadable[] = $path;
 				continue;
 			}
 			$scanned++;
-			foreach (array_keys($this->deprecatedOnlyAliases()) as $alias) {
-				if (strpos($contents, $alias) !== false) {
-					$callers[] = $path.' sends '.$alias;
+			$lines = explode("\n", $contents);
+			foreach ($lines as $lineNum => $line) {
+				foreach ($deprecatedOnly as $alias => $target) {
+					if (strpos($line, $alias) === false) {
+						continue;
+					}
+					if ($path === 'php/methods-0.9.4.php') {
+						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*=>\s*array\(\s*"name"\s*=>\s*"'.preg_quote($target, '/').'",\s*"prm"\s*=>\s*[01]\s*\),?(\s*\/\/.*)?$/';
+						if (preg_match($pattern, $line)) {
+							$definitions[$alias]['php/methods-0.9.4.php'] = isset($definitions[$alias]['php/methods-0.9.4.php'])
+								? $definitions[$alias]['php/methods-0.9.4.php'] + 1
+								: 1;
+							if ($definitions[$alias]['php/methods-0.9.4.php'] > 1) {
+								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
+							}
+							continue;
+						}
+					} elseif ($path === 'js/content.js') {
+						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*:\s*\{\s*name:\s*"'.preg_quote($target, '/').'",\s*prm:\s*[01]\s*\},?(\s*\/\/.*)?$/';
+						if (preg_match($pattern, $line)) {
+							$definitions[$alias]['js/content.js'] = isset($definitions[$alias]['js/content.js'])
+								? $definitions[$alias]['js/content.js'] + 1
+								: 1;
+							if ($definitions[$alias]['js/content.js'] > 1) {
+								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
+							}
+							continue;
+						}
+					}
+					$callers[] = $path.':'.($lineNum + 1).' sends '.$alias;
 				}
 			}
 		}
-		sort($callers);
-		$this->assertTrue($scanned > 100, 'the dormancy scan read the fork\'s sources; files scanned: '.$scanned);
-		$this->assertEquals(array(), $callers, 'the deprecated-only aliases stay confined to the alias tables; found: '.implode(', ', $callers));
+
+		$this->assertEquals(array(), $unreadable, 'all owned production sources are readable; unreadable: '.implode(', ', $unreadable));
+		$this->assertTrue($scanned > 100, 'the dormancy scan read production sources; files scanned: '.$scanned);
+
+		foreach ($deprecatedOnly as $alias => $target) {
+			$this->assertTrue(
+				isset($definitions[$alias]['php/methods-0.9.4.php']) && $definitions[$alias]['php/methods-0.9.4.php'] === 1,
+				'exact PHP definition found for '.$alias
+			);
+			$this->assertTrue(
+				isset($definitions[$alias]['js/content.js']) && $definitions[$alias]['js/content.js'] === 1,
+				'exact JS definition found for '.$alias
+			);
+		}
+
+		$this->assertEquals(array(), $callers, 'the deprecated-only aliases stay confined to the exact alias table definitions; found: '.implode(', ', $callers));
 	}
 
 	public function testEveryAliasEntryIsWellFormedAtEveryVersionGate()

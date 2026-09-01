@@ -5,10 +5,10 @@ require_once(__DIR__ . '/../../php/settings.php');
 
 /**
  * The settings page offers the user a maximum for open files and for HTTP
- * connections, and states the budget the two share. rTorrent reports that
- * budget only from 0.16.21 -- system.sockets.available_alloc and the
- * per-category limits do not exist before it -- so the probe is version-gated
- * and the fields stay at zero, which the page reads as "unknown".
+ * connections, and states the budget the two share. The complete six-value
+ * probe is available only from rTorrent 0.16.21. rTorrent 0.16.20 already
+ * exposes available_alloc, but not the per-category limit getters required
+ * by the settings-page validation.
  *
  * Nothing covered the gate: a settings page that offered limits an older
  * daemon will reject, or a six-command multicall sent to a daemon that cannot

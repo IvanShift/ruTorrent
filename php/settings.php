@@ -515,15 +515,13 @@ class rTorrentSettings
 	// min_alloc and max_alloc, followed by a system.sockets.adjust_alloc
 	// recompute -- nothing takes effect until adjust_alloc runs.
 	//
-	// Restricted to 0.16.19+, because earlier versions abort the process on an
-	// over-budget adjust_alloc while 0.16.19 reports a regular XMLRPC fault
-	// instead. On 0.16.19 that fault is the only warning available: the terms
-	// of the budget are not exposed over RPC there, so the request cannot be
-	// weighed before it is sent. 0.16.20 added system.sockets.reserved_alloc
-	// and system.sockets.available_alloc alongside the generic category's own
-	// min_alloc, which between them are enough to pre-flight the request; we
-	// still do not, and keep leaning on the fault, so that one code path serves
-	// both versions.
+	// Before 0.16.19, an over-budget adjust_alloc could terminate the daemon;
+	// from 0.16.19, it returns a normal XMLRPC fault.
+	// 0.16.20 exposes shared allocation totals and the generic minimum, but
+	// not per-category hard-limit getters; 0.16.21 adds the per-category
+	// limit getters used by the UI's complete six-value preflight.
+	// The fault/rollback path remains the final safety boundary because
+	// values can change between pre-read and adjust_alloc.
 	public function getSocketAllocCategory( $name )
 	{
 		if($this->iVersion<0x1013)
