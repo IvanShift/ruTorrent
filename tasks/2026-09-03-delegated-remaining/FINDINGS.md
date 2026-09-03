@@ -186,3 +186,42 @@ Blocks: package 6, and through it packages 7, 8, 9, 10, 11, 12, 16, 17, 18.
 
 This is the single highest-value unblocking decision in the remaining queue:
 one contract ruling reopens nine of the thirteen open packages.
+
+---
+
+## F10 — `OPEN` — the upstream sync is small, and blocked on exactly two contract rulings
+
+Measured, not estimated: a trial `git merge upstream/master` was run in a
+throwaway detached worktree and aborted; `master` was never touched.
+
+```text
+master           ee260ac5   (fork ahead by 164)
+upstream/master  cd814cb5   (upstream ahead by 18)
+merge-base       495e2a54
+conflicts        3
+```
+
+| Conflicting path | What the conflict actually is |
+|---|---|
+| `plugins/rutracker_check/plugin.info` | trivial: `plugin.version` 6.0 vs 5.1, plus upstream's new `php.extensions.warning` line |
+| `plugins/httprpc/conf.php` | the package 14 §13 decision (F1/F2) |
+| `plugins/erasedata/erase.php` | the package 6 design decision (F9) |
+
+Test-file survival was checked explicitly, because a merge that moves tests
+deletes them without a conflict:
+
+```text
+fork-only test files      18
+missing after the merge    0
+new upstream test files    6
+```
+
+So the mechanical risk is low. The blocker is not mechanical: two of the three
+conflicts *are* the two frozen-contract decisions this run stopped on. Resolving
+them inside a merge would settle both contracts by hand, silently, which is
+exactly what the delegation brief forbids.
+
+Recommendation: rule on F9 (whose erasedata drain design wins) and on F1/F2 (how
+package 14 §13 coexists with upstream's `XMLRPCProxyPolicyParityTest`). With
+those two answers the sync becomes mechanical, and packages 6-12 and 16-18
+unblock at the same time.
