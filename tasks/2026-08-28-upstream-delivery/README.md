@@ -1,10 +1,21 @@
 # Задача: заливка форка в upstream — что залито, что осталось, где проблемы
 
 > **Текущий авторитетный срез:**
-> [`STATUS-18-PACKAGES-2026-09-01.md`](STATUS-18-PACKAGES-2026-09-01.md).
-> В нём зафиксированы все 18 пакетов, sync с `upstream/master=495e2a54`,
-> принятые #3198/#3227/#3228/#3232 и resume-order. Числа ниже относятся к
-> историческим checkpoint на момент их создания.
+> [`STATUS-18-PACKAGES-2026-09-03.md`](STATUS-18-PACKAGES-2026-09-03.md).
+> В нём зафиксированы все 18 пакетов, sync с `upstream/master=cd814cb5`,
+> исправленные current-base контракты №6/№14, локально закрытый №15 и точный
+> resume-order. Числа ниже относятся к историческим checkpoint на момент их
+> создания.
+
+## Current checkpoint — 2026-09-03
+
+Upstream синхронизирован локальным merge `4fd60d54`; package №15 после
+независимой проверки интегрирован как `b4d68005`. Полностью реализованы 6 из 18,
+№5 partial, остаётся 12 незакрытых реализационных пакетов. №14 разблокирован
+после принятия #3251 как prerequisite. Контракт №6 исправлен с 8+2 до 10+3:
+upstream queue сохраняется как admission seam, но её hash-only acknowledgement
+и finite give-up заменяются generation-bound durable semantics. Полная запись:
+`VERIFICATION-upstream-sync-packages-2026-09-03.md`. Push не выполнялся.
 
 Срез обновлён **2026-08-29**: `upstream/master` = `755404f3`, опубликованный
 `origin/master` = `24891da9`, 101 commit впереди и 12 позади. Исторические
@@ -302,8 +313,10 @@ cleanup report SHA-256
 Exact eight-container cleanup is GREEN; this runtime cleanup closes no
 implementation package and does not turn B5 or successor behavior GREEN.
 
-Erasedata A: DESIGN APPROVED — implementation pending, exact 8 production + 2
-test paths. Frozen design: pre-erase generation + fixed repeating schedule +
+Erasedata A: CORRECTED DESIGN APPROVED — implementation pending, current-base
+exact 10 production + 3 test paths. The 2026-09-03 amendment composes upstream
+pending admission with exact-generation ownership and rejects finite give-up.
+Frozen durable design remains: pre-erase generation + fixed repeating schedule +
 real PHP child ack, один NB worker owner, blocking drain scheduler/hash locks,
 exact batch set/cardinality, settle-before-remove, prepared/erase-started
 journal и A/B restart rearm. Periodic pass остаётся NB,

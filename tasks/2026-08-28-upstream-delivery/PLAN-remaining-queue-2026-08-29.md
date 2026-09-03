@@ -1,13 +1,32 @@
 # Актуальный план оставшейся upstream-очереди — 2026-08-29
 
 Текущий статус исполнения, refs и PR вынесен в
-`STATUS-18-PACKAGES-2026-09-01.md`. Исторические checkpoint и оценки ниже
+`STATUS-18-PACKAGES-2026-09-03.md`. Исторические checkpoint и оценки ниже
 сохраняются как provenance контракта.
 
 Этот документ заменяет старую очередь 5–11 из
 `../2026-08-28-upstream-rebuild/PLAN.md`. Текущая upstream-база — `f19c9d86`;
 historical estimates ниже сохраняют собственные refs. Whole-file copy из fork
 master запрещён там, где upstream уже менял общий файл.
+
+## Current execution checkpoint — 2026-09-03
+
+Local `master=b4d68005` включает `upstream/master=cd814cb5` через merge
+`4fd60d54` и independently approved package 15. Текущий счёт: **12 open
+implementations / 0 audits**; закрыты №1–4, №13 и №15, №5 остаётся partial.
+
+Upstream #3251 принят как prerequisite package 14: shared safe-parameter list
+имеет одного owner, а plugin conf остаётся override layer с unset-only defaults
+только для независимых mode/log/local-path settings. Package 14 разблокирован.
+
+Upstream #3240/#3248 принят как вход в package 6, но не как готовая реализация.
+Hash-only `<hash>.pending`/`<hash>.list` protocol ломает re-added same-hash
+generation, а default ten-attempt abandonment противоречит durable retention.
+Package 6 scope superseded с 8+2 на **10 production + 3 tests**; pending
+admission становится generation-bound и сохраняет pre-erase repeating arm +
+real-child ack. Downstream №7–12/№16–18 ждут фактический final №6.
+
+Evidence: `VERIFICATION-upstream-sync-packages-2026-09-03.md`.
 
 ## Post-sync execution checkpoint — 2026-08-30
 
@@ -126,7 +145,7 @@ transport `33934444` и alias-surface candidate `3146f741`; перед SCGI PR �
 `VERIFICATION-httprpc-refusals-2026-08-31.md` и
 `VERIFICATION-scgi-transport-2026-08-31.md`. Push выполняет только владелец.
 
-## Реестр 18 пакетов — 13 ещё открыты
+## Реестр 18 пакетов — 12 ещё открыты
 
 | # | Пакет | Замороженный scope/оценка | Зависимость | Текущий gate |
 |---:|---|---|---|---|
@@ -135,7 +154,7 @@ transport `33934444` и alias-surface candidate `3146f741`; перед SCGI PR �
 | 3 | `up/httprpc-refusals` | exact 5 paths, `+437/-14` | test-harness как evidence gate | **CLOSED / UPSTREAM ACCEPTED**: `c7a431aa`, integrated `48825583`; #3228 merged как `7e77ebf0` |
 | 4 | `up/scgi-transport` | exact 7 paths, `+1584/-51` | после 3 из-за общего `rpc2.php` | **CLOSED / APPROVED**: runtime `4682a761`, test-only delivery head `33934444`; direct parent `c7a431aa`; fork integration `19086b5f` + `3ff4860c`; no push |
 | 5 | `up/retrackers-recovery` | exact 6 paths; final numstat after RED/implementation | после final 4 `4682a761`; P3 после final P1 + 5 | **PARTIAL IMPLEMENTATION**: Tasks 1–4 complete, Task 4B APPROVED at `9fef4d66`; Tasks 5–8 pending; не в master/no push |
-| 6 | `up/erasedata-remove-payload` (A) | exact 8 production + 2 test paths | после 3 по delivery order; не зависит от SCGI API | DESIGN APPROVED — implementation pending; durable generation, fixed repeating pre-erase arm, real child ack, exact batch sets, settle-before-remove and restart rearm |
+| 6 | `up/erasedata-remove-payload` (A) | current-base exact 10 production + 3 test paths | после 3 по delivery order; не зависит от SCGI API | CORRECTED DESIGN APPROVED — implementation pending; upstream admission seam становится generation-bound, finite give-up запрещён; durable arm/ack/retry сохранены |
 | 7 | `up/httprpc-erasedata-contract` | 2 пути; production hunk `+6/-13` | после 14 и A | copied real entrypoint; exact force/helper/no-fallback mutations |
 | 8 | `up/ratio-erasedata-contract` (B) | exact 2 paths; final numstat после copied-real RED | после final A drain/rearm seam | corrected design independently **APPROVED**; missing-helper no-op/log + Ratio-startup rearm pending A wake; username filter/Ratio force guard исключены |
 | 9 | P0+C `up/rutracker-check-replacement-transaction` | exact 20 paths: 11 production + 9 tests | после A | design independently **APPROVED**; C folded, OLD/NEW-aware no-bridge ownership, token/false/null claim gate, pre-erase A drain ack, restart rearm |
@@ -143,8 +162,8 @@ transport `33934444` и alias-surface candidate `3146f741`; перед SCGI PR �
 | 11 | P2 `up/rutracker-meta-history-marker` | 3 history paths + entrypoint evidence | после P1 и event-order capture | только producer-owned marker; dot-label запрещён |
 | 12 | P3 `up/rutracker-meta-retrackers-marker` | retrackers marker integration | после final P1 и final package 5 | real-daemon command-shape test; current guard запрещён |
 | 13 | `up/rtorrent-alias-surface` | final exact 4 paths: 2 comment-only production/test comments + PHP/JS characterization | prerequisite #3230/#3236 готов | **CLOSED / APPROVED**: candidate `3146f741` прямо на `495e2a54`, fork integration `4d779ff9`; 14 mutations и full PHP/Jest/runtime matrix GREEN; no push/PR |
-| 14 | `up/xmlrpc-proxy-policy` | exact 7 paths; final numstat only from final httprpc tip | после 3 | DESIGN APPROVED — implementation pending; eight loads, exact evaluator/carrier deny, six direct-multicall all-or-nothing rebuild, system.multicall refusal, preserve #3209/#3211 |
-| 15 | `up/rutracker-manual-entrypoints` | exact 6 focused paths; final numstat после реализации | независим от P0/P1 | collision/short-write/launch/body/worker/UI RED; без crawler/503/raw text |
+| 14 | `up/xmlrpc-proxy-policy` | 7-path ownership boundary; current-base net paths after RED | после 3; #3251 prerequisite уже в base | DESIGN APPROVED / UNBLOCKED; one shared safe list, eight loads, exact evaluator/carrier deny, six direct-multicall all-or-nothing rebuild, system.multicall refusal, preserve parity + #3209/#3211 |
+| 15 | `up/rutracker-manual-entrypoints` | upstream candidate 6 paths; fork integration 7 paths with aggregate test | независим от P0/P1 | **CLOSED / LOCAL APPROVED**: candidate `5a1a0d97`, integration `b4d68005`; forum crawl preserved; PHP 7.4/8.1/8.5 and JS GREEN |
 | 16 | `up/kinozal-checker-resilience` | 2 paths, current snapshot `+260/-146` | после final P1 | endpoint streaks, exact deletion и parsed-object seam |
 | 17 | `up/nnmclub-checker-live-contract` | 2 paths, current snapshot `+1142/-231` | после final P1 | captured 67-byte scrape, current-torrent credential, bounded schema |
 | 18 | `up/sibling-tracker-verdicts` | 5 paths; current snapshot `+606/-32`, final изменится | после final P1 | safe verdicts плюс AniDUB/Tfile canonical HTTPS/session RED |

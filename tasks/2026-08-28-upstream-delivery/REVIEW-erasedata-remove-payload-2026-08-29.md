@@ -3,7 +3,61 @@
 Дата: 2026-08-29. Current base: `upstream/master=755404f3`. Fork и прежние
 findings использованы как гипотезы; review был read-only.
 
-## Verdict: CORRECTED DESIGN APPROVED on the same 8+2 boundary
+## Current-base amendment — 2026-09-03
+
+**Verdict: CORRECTED DESIGN APPROVED — implementation pending, exact 10
+production + 3 test paths.** Immediate implementation base is fork `master`
+after sync commit `4fd60d54` (`upstream/master=cd814cb5`). This amendment
+supersedes only the old 8+2 cardinality and the admission details below; the
+durable generation, pre-erase repeating arm, real-child acknowledgement,
+retention and filesystem-safety requirements remain authoritative.
+
+Upstream #3240/#3248 added an independently useful overload-control seam:
+`plugins/erasedata/pending.php`, `plugins/erasedata/conf.php` and
+`tests/plugins/erasedata/PendingQueueTest.php`. Those paths are now owned by A,
+but the shipped hash-only protocol is not wired unchanged. A trial integration
+made `testLegacyManifestDoesNotBlockAReaddedSameHash` fail: an old
+`<hash>.list` made `erasedataQueueRequest()` return success without recording a
+new request, so a re-added torrent with the same infohash was never erased.
+Restoring the direct generation-aware entrypoint made the case green again.
+
+The composed current-base contract is therefore:
+
+- keep the local-file admission principle and single-drainer exclusion from
+  upstream, but bind every pending request and acknowledgement to the exact
+  drain/manifest generation; a bare `<hash>.pending` is not sufficient;
+- never treat existence of legacy `<hash>.list` as acknowledgement of a new
+  request for the same infohash; only the exact generation may suppress or
+  complete its own request;
+- retain failed obligations and retry them on later passes. The shipped default
+  of ten attempts and deletion of the marker is superseded; `conf.php` must not
+  silently reintroduce abandonment (zero/unbounded is the compatibility value);
+- preserve the already approved fixed repeating `erasedata-drain<User>` arm,
+  real guarded PHP-child acknowledgement before `d.erase`, exact batch
+  partitions, settle-before-remove order and restart rearm;
+- keep current `erase.php` on the direct safe path until all of those properties
+  have named RED→GREEN coverage. Merely having `pending.php` in the tree is not
+  an implementation of A.
+
+Revised exact ownership paths add two production files and one test to the
+historical list:
+
+9. `plugins/erasedata/conf.php` — no finite abandonment default;
+10. `plugins/erasedata/pending.php` — generation-bound admission/drain seam;
+11. `tests/plugins/erasedata/PendingQueueTest.php` — rewritten preservation and
+    generation/retry coverage.
+
+The resulting boundary is **10 production + 3 tests**. Current upstream tests
+for exclusive create and one nonblocking drainer are preservation gates; the
+old “gives up after N” assertion must become RED for the corrected retention
+contract, not be preserved as desired behavior. Packages 7–12 and 16–18 remain
+dependency-blocked until A is implemented, but A itself is no longer blocked on
+an architectural decision.
+
+Full sync and reproduction evidence:
+`VERIFICATION-upstream-sync-packages-2026-09-03.md`.
+
+## Historical verdict: corrected design approved on the original 8+2 boundary
 
 A остаётся одним cohesive package на точной границе **8 production + 2 test
 paths**. Это review scope/дизайна, не ещё не существующего isolated code.

@@ -6,7 +6,50 @@
 rTorrent 0.9.8 (`6154d169`) и 0.16.21 (`109a20c0`), а current behavior — в
 immutable PHP-контейнерах.
 
-## Verdict: DESIGN APPROVED — implementation pending
+## Current-base amendment — 2026-09-03
+
+**Verdict: DESIGN APPROVED — implementation pending and unblocked.** Current
+base is fork `master` after `4fd60d54`, containing
+`upstream/master=cd814cb5`. Upstream #3251 (`62083b85`) is now a prerequisite,
+not a competing implementation: it established one shared safe-parameter list
+and parity between the httprpc and `rpc2.php` doors, but did not implement the
+remaining sanitizer policy in this contract.
+
+This amendment supersedes the old config-layer wording as follows:
+
+```text
+conf/xmlrpc_proxy.php
+  -> plugins/httprpc/conf.php override layer
+  -> plugins/httprpc/conf.local.php
+  -> conf/users/<user>/plugins/httprpc/conf.php
+```
+
+The shipped plugin conf must not assign `$XMLRPCProxySafeParams`; the shared
+file is its single default owner. It may still override the list in a local or
+per-user deployment. Unset-only fallbacks remain valid for the other independent
+settings (`$XMLRPCProxy`, `$XMLRPCProxyLog`,
+`$XMLRPCProxyAllowLocalPaths`) so a tree missing the shared file fails in a
+defined way. Removing every fallback, as the delegated draft proposed, would
+broaden #3251 beyond what it changed and is rejected.
+
+There is no conflict between `d.open`/`d.close`/`d.start`/`d.stop` being safe
+command slots inside a canonical rebuilt load/multicall and direct calls being
+owned by the elevated exact-shape matrix. These are distinct structural
+positions. `d.close` needs no direct elevation merely because it is a safe
+slot.
+
+The seven historical ownership paths remain the maximum package boundary, but
+current-base net changed paths must be remeasured after natural RED tests:
+`plugins/httprpc/action.php`, `plugins/httprpc/conf.php` and part of
+`XMLRPCProxyEntrypointTest.php` now contain prerequisite behavior that should
+survive unchanged. New upstream
+`tests/php/XMLRPCProxyPolicyParityTest.php` is a mandatory preservation gate,
+not an eighth package path; needing to edit it would reopen this contract.
+
+Full sync evidence:
+`VERIFICATION-upstream-sync-packages-2026-09-03.md`.
+
+## Historical verdict: DESIGN APPROVED — implementation pending
 
 Seven-path boundary подтверждена. Открытых policy-решений больше нет. В
 `sanitize` proxy не пытается написать второй parser rTorrent grammar:

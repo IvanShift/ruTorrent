@@ -7,6 +7,10 @@ Each entry says whether it was fixed here, and if not, what it blocks.
 
 Status vocabulary:
 
+- `FIXED AND INTEGRATED` / `FIXED` — independently rechecked and committed to
+  local master;
+- `RESOLVED` / `REFUTED` — a reported contract collision has a measured final
+  disposition;
 - `FIXED IN CANDIDATE` — corrected inside a package candidate on this run;
 - `OPEN` — real, reproduced, nobody owns it yet;
 - `CONTRACT` — a frozen contract document disagrees with the current tree;
@@ -14,7 +18,7 @@ Status vocabulary:
 
 ---
 
-## F1 — `CONTRACT` — upstream #3251 landed part of package 14 and now conflicts with its §13
+## F1 — `RESOLVED` — upstream #3251 is package 14 prerequisite
 
 Upstream `62083b85` ("Read one XMLRPC proxy policy at both entry points") makes
 `plugins/httprpc/action.php` load `conf/xmlrpc_proxy.php` before the plugin conf,
@@ -31,11 +35,13 @@ therefore either byte-identical to the shared list — carrying no policy, makin
 the §13 layer vacuous — or it fails a test package 14's seven-path scope forbids
 editing.
 
-Blocks: package 14. Recorded in full in `PROGRESS.md`.
+Resolution: the shared file is the only shipped safe-list owner. Plugin-local
+unset-only defaults remain only for independent mode/log/local-path settings.
+Package 14 is unblocked; see the 2026-09-03 amendment to its contract.
 
 ---
 
-## F2 — `CONTRACT` — #3251 also crosses package 14's §12 elevated set
+## F2 — `REFUTED` — safe command slots do not conflict with direct elevation
 
 `testTheSharedPolicyCarriesTheViewActions` requires `conf/xmlrpc_proxy.php` to
 list `d.open`, `d.close`, `d.start` and `d.stop` as safe parameters. Package 14
@@ -46,15 +52,19 @@ Upstream's commit message carries live measurement for this — a `d.multicall2`
 carrying `d.stop=` refused to an untrusted caller on 0.16.21 and 0.16.20 — so
 the two mechanisms are competing over commands that demonstrably matter.
 
-Blocks: package 14, together with F1.
+Verdict after re-reading both execution paths: the safe list governs command
+slots inside canonical rebuilt load/multicall calls; the elevated matrix governs
+direct XMLRPC calls. These are distinct positions. `d.close` needs no direct
+elevation merely because it is a safe nested slot.
 
 ---
 
-## F3 — `FIXED IN CANDIDATE` — seven reachable defects in the upstream manual check route
+## F3 — `FIXED AND INTEGRATED` — seven reachable defects in the upstream manual check route
 
 Reproduced against exact upstream `cd814cb5`, each by a named failing test that
 drives the real entrypoint (no reimplementation, no fatal before the failure).
-Fixed by the package 15 candidate.
+Fixed by candidate `5a1a0d97`, independently approved and integrated into local
+master as `b4d68005` with the fork's forum crawl preserved.
 
 | # | Defect in `plugins/rutracker_check/action.php` / `batch_check.php` | Evidence |
 |---|---|---|
@@ -163,7 +173,7 @@ package.
 
 ---
 
-## F9 — `CONTRACT` — upstream shipped an erasedata drain queue that collides with package 6's approved design
+## F9 — `RESOLVED CONTRACT` — upstream queue admitted only with generation correction
 
 `a5509dc5` (#3240) and `dcf3fb96` (#3248) added `plugins/erasedata/pending.php`
 and `tests/plugins/erasedata/PendingQueueTest.php`, and rewrote
@@ -182,14 +192,20 @@ repeating `erasedata-drain` schedule was approved in its place, with the user's
 explicit agreement. Upstream has since shipped a `drain.lock` + attempt-counter
 design closer to the rejected shape, and with no acknowledgement step at all.
 
-Blocks: package 6, and through it packages 7, 8, 9, 10, 11, 12, 16, 17, 18.
+Resolution: package 6 scope is superseded to 10 production + 3 test paths.
+Upstream's local admission and single-drainer concepts stay, but bare
+`<hash>.pending`/`<hash>.list` acknowledgement and finite give-up do not. The
+trial wiring was proven unsafe by
+`testLegacyManifestDoesNotBlockAReaddedSameHash`: an old manifest suppressed a
+new same-infohash generation. Package 6 itself is unblocked; its dependants
+still wait for its implementation.
 
 This is the single highest-value unblocking decision in the remaining queue:
 one contract ruling reopens nine of the thirteen open packages.
 
 ---
 
-## F10 — `OPEN` — the upstream sync is small, and blocked on exactly two contract rulings
+## F10 — `FIXED` — upstream sync completed after the two rulings
 
 Measured, not estimated: a trial `git merge upstream/master` was run in a
 throwaway detached worktree and aborted; `master` was never touched.
@@ -225,3 +241,6 @@ Recommendation: rule on F9 (whose erasedata drain design wins) and on F1/F2 (how
 package 14 §13 coexists with upstream's `XMLRPCProxyPolicyParityTest`). With
 those two answers the sync becomes mechanical, and packages 6-12 and 16-18
 unblock at the same time.
+
+Final disposition: the rulings above were applied, focused/full tests passed,
+and the local merge was committed as `4fd60d54`. No push was performed.

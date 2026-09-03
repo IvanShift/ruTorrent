@@ -1,12 +1,22 @@
 # The two blocking conflicts, and one proposed way out
 
+> **Resolved 2026-09-03.** Independent verification accepted a corrected form
+> of option A for erasedata: keep upstream's local admission seam, but bind it
+> and its acknowledgement to the exact generation, retain obligations without
+> finite abandonment, and preserve the approved repeating wake plus real-child
+> acknowledgement. Package 6 is now 10 production + 3 test paths. For XMLRPC,
+> upstream #3251 is accepted as prerequisite; the shared safe list has one
+> shipped owner while independent mode/log/local-path defaults remain unset-only.
+> Package 15 is integrated as `b4d68005`, and upstream is merged as `4fd60d54`.
+> See `../2026-08-28-upstream-delivery/VERIFICATION-upstream-sync-packages-2026-09-03.md`.
+
 2026-09-03. Written because nine of the thirteen open packages are blocked on
 exactly two rulings, and both rulings belong to the contract owner rather than
 to an implementer.
 
-Nothing here has been applied. `master` carries documentation only; no product
-code was integrated, nothing was pushed, and the trial merge used to measure the
-surface was aborted and its worktree removed.
+The text below is the pre-decision proposal and is retained as provenance. It
+was not applied by the delegated agent; the later Codex disposition above is
+authoritative. Nothing was pushed.
 
 ---
 

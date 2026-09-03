@@ -1,8 +1,28 @@
 # Crosswalk оставшегося fork divergence — 2026-08-29
 
 Текущие refs, package gates и upstream PR находятся в
-`STATUS-18-PACKAGES-2026-09-01.md`; этот файл сохраняет историческую
+`STATUS-18-PACKAGES-2026-09-03.md`; этот файл сохраняет историческую
 file-level декомпозицию и ownership границы.
+
+## Current-base correction — 2026-09-03
+
+`upstream/master=cd814cb5` интегрирован merge-коммитом `4fd60d54`; package 15
+закрыт локальной integration `b4d68005`. Полностью реализованы №1–4, №13 и
+№15; №5 partial; открыто **12 implementations / 0 audits**.
+
+Две прежние contract collisions разрешены по измеренному current tree:
+
+- package 14 сохраняет seven-path ownership boundary, принимает #3251 как
+  prerequisite и не дублирует `$XMLRPCProxySafeParams`; новый upstream parity
+  test — обязательный unchanged gate;
+- package 6 расширяется с 8+2 до 10 production + 3 tests и владеет
+  `conf.php`, `pending.php`, `PendingQueueTest.php`. Upstream local admission
+  сохраняется, но hash-only acknowledgement и finite give-up заменяются exact
+  generation binding, durable repeating wake и real-child ack.
+
+Полный current evidence:
+`VERIFICATION-upstream-sync-packages-2026-09-03.md`. Все старые numstat ниже
+остаются историческими и не должны использоваться как current package diff.
 
 Исторический file-level срез: fork behavior snapshot `511ed13f`; текущий
 upstream `755404f3`; последний уже слитый в snapshot upstream-tip `fde9863b`.
@@ -131,13 +151,17 @@ SHA, integration merges и последующие remediation.
 
 ## Current approved contract status
 
-Packages 4 SCGI and 13 alias surface are implemented and independently
-APPROVED; package 13 candidate/integration are `3146f741`/`4d779ff9`.
+Packages 4 SCGI, 13 alias surface and 15 manual entrypoints are implemented and
+independently APPROVED; package 13 candidate/integration are
+`3146f741`/`4d779ff9`, and package 15 candidate/integration are
+`5a1a0d97`/`b4d68005`.
 Package 5 retrackers is partially implemented through Task 4B at `9fef4d66`
-and independently APPROVED at that boundary; Tasks 5–8 remain. Packages 6
-erasedata A and 14 XMLRPC proxy policy are DESIGN APPROVED — implementation
-pending.
-Their exact scopes are 7, 6, 8 production + 2 test and 7 paths respectively.
+and independently APPROVED at that boundary; its Task 5 builder `0bdac05d` is
+approved but not wired or integrated, so Tasks 5–8 remain. Packages 6 erasedata
+A and 14 XMLRPC proxy policy are DESIGN APPROVED — implementation pending and
+unblocked. Their current boundaries are: SCGI 7 paths, retrackers 6 paths,
+erasedata 10 production + 3 tests, XMLRPC at most the historical 7 ownership
+paths with net paths remeasured after RED.
 Retrackers uses final SCGI as immediate parent; P3 waits final retrackers +
 final P1. Historical retrackers approval authority is commit
 `14683d93bc54dbab89d6abce636d2e749e8492ba` / contract SHA-256
@@ -164,24 +188,24 @@ stock rTorrent 0.16.21 oracle APPROVED. Ветка не push и PR не созд
 
 ## Открытый счёт
 
-До полного закрытия divergence остаётся **13 implementation packages** из
+До полного закрытия divergence остаётся **12 implementation packages** из
 `PLAN-remaining-queue-2026-08-29.md`; неразобранных carve/verdict-аудитов — 0.
-Packages 1–3 уже приняты upstream, packages 4 и 13 реализованы и остаются
-local-only; эти пять closure уже вычтены из счёта.
+Packages 1–3 уже приняты upstream, packages 4, 13 и 15 реализованы и остаются
+local-only; эти шесть closure уже вычтены из счёта.
 
 Переход от прежних 18 workstream проверен арифметически:
 `18 - 5 завершённых audits + 6 successor packages = 19`, затем standalone C
-сложен внутрь P0: `19 - 1 = 18`. Packages 1–4 и 13 затем реализованы:
-`18 - 5 = 13`. Residual rTorrent, proxy policy и manual
+сложен внутрь P0: `19 - 1 = 18`. Packages 1–4, 13 и 15 затем реализованы:
+`18 - 6 = 12`. Residual rTorrent, proxy policy и manual
 entrypoints дали по одному package; foreign bucket — три; generic
 `sendTorrent() +17/-0` закрыт no-send. Evidence:
 `REVIEW-disposition-wave-2026-08-29.md` и
 `REVIEW-erasedata-obsolete-jobs-2026-08-29.md`.
 
 Design approval itself decrements neither implementations nor fork divergence;
-accepted implementation evidence for packages 1–4 and 13 changed the
-arithmetic. The current count is 13 open implementations / 0 audits; packages
-1–3 are upstream-accepted and packages 4/13 are implemented locally.
+accepted implementation evidence for packages 1–4, 13 and 15 changed the
+arithmetic. The current count is 12 open implementations / 0 audits; packages
+1–3 are upstream-accepted and packages 4/13/15 are implemented locally.
 
 ## Ownership corrections
 

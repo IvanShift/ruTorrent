@@ -1,16 +1,44 @@
 # Delegated remaining packages — append-only ledger
 
-Started 2026-09-03. This ledger is **not** the official status document.
-`tasks/2026-08-28-upstream-delivery/STATUS-18-PACKAGES-2026-09-01.md` remains
-authoritative and still records **5 of 18 independently approved**.
+## Codex verification and integration — final disposition
 
-Two counters are tracked separately here:
+The delegated artifacts below were independently remeasured before use.
+
+- Upstream `cd814cb5` was merged locally as `4fd60d54`; no push was performed.
+- Package 15 candidate `5a1a0d97` is **APPROVED**. Its fork-aware integration
+  `b4d68005` preserves the forum crawl and updates the pre-existing aggregate
+  test to the approved handled-2xx/body-status contract. It is now in local
+  `master`.
+- Package 5 Task 5 commit `0bdac05d` is **APPROVED AS AN INCREMENT ONLY**. It
+  remains on `up/retrackers-recovery`; without wiring it does not close Task 5
+  or package 5 and was not integrated into master.
+- Package 14 conflict F1 is resolved by accepting upstream #3251 as a
+  prerequisite. The shared safe-parameter list has one shipped owner; only
+  independent mode/log/local-path values retain unset-only plugin defaults.
+- Package 6 conflict F9 is resolved by composing, with a required correction:
+  upstream's admission seam is retained but made generation-bound. Hash-only
+  acknowledgement and finite abandonment are rejected. Scope is now 10
+  production + 3 test paths.
+- Current authoritative status and evidence are
+  `../2026-08-28-upstream-delivery/STATUS-18-PACKAGES-2026-09-03.md` and
+  `../2026-08-28-upstream-delivery/VERIFICATION-upstream-sync-packages-2026-09-03.md`.
+
+The detailed delegated log below is retained as provenance; its earlier
+`READY_FOR_CODEX_REVIEW` and `BLOCKED_ON_CONTRACT_DECISION` labels describe the
+state before this disposition.
+
+Started 2026-09-03. This ledger is **not** the official status document.
+The current official status is now
+`tasks/2026-08-28-upstream-delivery/STATUS-18-PACKAGES-2026-09-03.md`.
+
+The delegated run originally tracked two counters separately:
 
 - independently approved: **5** (packages 1-4 and 13) — unchanged by this work;
 - candidate ready for Codex review: see the running total at the end.
 
-No verdict in this ledger is `APPROVED` or `CLOSED`. The best outcome an entry
-may carry is `READY_FOR_CODEX_REVIEW`.
+Those are historical counters below. Codex later approved/integrated package 15,
+so the current total is six closed implementations and belongs to the official
+status document, not this delegated ledger.
 
 ## Session starting refs
 
