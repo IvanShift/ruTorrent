@@ -158,6 +158,11 @@ var theUILang =
  Glob_max_memory		: "Μέγιστη χρήση μνήμης",
  Glob_max_files			: "Μέγιστος αριθμός ανοικτών αρχείων",
  Glob_max_http			: "Μέγιστος αριθμός ενεργών συνδέσεων http",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "Ανοιξε",
  Other_sett			: "Άλλες",
  Directory_For_Dl		: "Προεπιλεγμένος φάκελος για λήψεις",
@@ -323,5 +328,5 @@ var theUILang =
  copyToClipboardFailed		: "Η λειτουργία αντιγραφής δεν λειτουργεί στον περιηγητή σας.\nΠαρακαλώ αντιγράψτε αυτό το περιεχόμενο χειροκίνητα:\n\n",
  copyToClipboardSuccess		: "Αντιγράφηκε με επιτυχία στο πρόχειρο!",
  normalizeTorrentName		: "Ταξινόμηση με χρήση κανονικοποιημένου ονόματος torrent και αναγνώριση ετικέτας ονόματος",
- Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
+ Settings_save_indeterminate	: "Το αποτέλεσμα των ρυθμίσεων είναι άγνωστο. Η αποθήκευση παραμένει κλειδωμένη. Επαναφορτώστε χειροκίνητα μόνο αφού αποκριθεί το rTorrent."
 };

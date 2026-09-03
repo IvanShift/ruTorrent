@@ -4,7 +4,7 @@ plugin.version: 6.0
 rtorrent.remote: error
 rtorrent.external.error: php
 php.extensions.error: json
-php.extensions.warning: simplexml,libxml
+php.extensions.warning: ctype,simplexml,libxml
 plugin.dependencies: loginmgr
 rtorrent.version: 0.9.8
 plugin.help: https://github.com/Novik/ruTorrent/wiki/PluginRutracker_check

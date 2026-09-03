@@ -405,12 +405,12 @@ describe("the manual check", () => {
     expect(added[0][1][1]).toBe("theWebUI.perform( 'checktorrent' )");
   });
 
-  it("logs Queued upon receiving queued response and failure on error/malformed response", () => {
+  it("logs Queued upon receiving queued response and the shared Error on refusal", () => {
     const logs = [];
     global.log = (msg) => logs.push(msg);
     global.theUILang.Done = "Done";
     global.theUILang.Queued = "Queued";
-    global.theUILang.cantFetchInfo = "Can't retrieve data";
+    global.theUILang.Error = "Error";
 
     // Queued response logs Queued
     rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "queued", accepted: 1 });
@@ -420,15 +420,15 @@ describe("the manual check", () => {
     // Error response logs failure message
     logs.length = 0;
     rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "error", error: "dispatch_failed" });
-    expect(logs).toEqual([theUILang.checkTorrent + ": Can't retrieve data"]);
+    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
 
     // Legacy "success" or malformed response logs failure message, never Done
     logs.length = 0;
     rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "success" });
-    expect(logs).toEqual([theUILang.checkTorrent + ": Can't retrieve data"]);
+    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
 
     logs.length = 0;
     rTorrentStub.prototype.checktorrentResponse.call(stub, null);
-    expect(logs).toEqual([theUILang.checkTorrent + ": Can't retrieve data"]);
+    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
   });
 });

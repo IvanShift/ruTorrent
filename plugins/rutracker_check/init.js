@@ -33,7 +33,7 @@ if(plugin.canChangeMenu())
 		if( data && data.status === "queued" )
 			log( theUILang.checkTorrent + ": " + theUILang.Queued );
 		else
-			log( theUILang.checkTorrent + ": " + theUILang.cantFetchInfo );
+			log( theUILang.checkTorrent + ": " + theUILang.Error );
 	}
 }
 

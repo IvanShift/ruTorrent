@@ -30,5 +30,7 @@ require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once( dirname(__FILE__)."/removewithdata.php" );
 
 // A pending manifest may belong to an older torrent generation with the same
-// infohash, so it cannot suppress this generation's erase request.
+// infohash, so it cannot suppress this generation's erase request. The upstream
+// queue is retained in pending.php for the durable package to integrate, but is
+// not wired here until it can acknowledge generation-named manifests.
 exit((erasedataRemoveWithData(array($hash), $force) === false) ? 1 : 0);

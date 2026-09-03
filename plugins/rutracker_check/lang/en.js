@@ -7,7 +7,6 @@
  */
 
  theUILang.checkTorrent		= "Check for Update";
- theUILang.cantFetchInfo		= "Failed to queue the update check.";
  theUILang.chkHdr		= "Torrent Update Check";
  theUILang.checkedAt		= "Last Checked";
  theUILang.checkedResult	= "Result";
