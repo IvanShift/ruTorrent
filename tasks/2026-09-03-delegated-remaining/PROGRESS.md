@@ -321,3 +321,89 @@ PR                          no
 master product integration  no
 user diagnostic files       untouched
 ```
+
+---
+
+## Package 6 — `erasedata-remove-payload` (A)
+
+**Verdict: `CONTRACT_CONFLICT`,** triggered by `BASE_DRIFT`. No branch, no
+worktree, no code, no commit.
+
+### Contract files read
+
+```text
+tasks/2026-08-28-upstream-delivery/REVIEW-erasedata-remove-payload-2026-08-29.md
+tasks/2026-08-28-upstream-delivery/VERIFICATION-erasedata-contracts-2026-08-29.md
+```
+
+### Frozen base vs observed base
+
+```text
+contract base   upstream/master = 755404f3   (stated in the review's header)
+observed base   upstream/master = cd814cb5
+```
+
+### The frozen 8+2 boundary can no longer describe the tree
+
+The contract freezes exactly eight production paths and two test paths, and
+states that any new scope may come only from a separate current-base finding.
+Three of its production paths (`collector.php`, `filesystem.php`,
+`manifest.php`) and its `CollectorFixture.php` exist only in the fork, so the
+approved work is a carve of fork hunks onto an upstream base.
+
+Upstream `a5509dc5` (#3240) and `dcf3fb96` (#3248) changed exactly that base:
+
+```text
+M  plugins/erasedata/conf.php     + $erasePendingMaxAttempts
+M  plugins/erasedata/erase.php    rewritten: record-then-drain
+A  plugins/erasedata/pending.php  182 lines, a ninth production file
+A  tests/plugins/erasedata/PendingQueueTest.php   309 lines, a third test file
+```
+
+`erase.php` is contract path 3. At the frozen base it called
+`erasedataRemoveWithData()` directly; it now records a marker and calls
+`erasedataDrainQueue()`. The fork's copy still has the old call, so the carve
+that was reviewed no longer applies to the file it targets.
+
+### The conflict is a design collision, not just a moved line
+
+Upstream's `pending.php` solves an overlapping problem with a **different**
+mechanism from the one package 6 had approved:
+
+| Concern | Package 6 approved design | Upstream `pending.php` |
+|---|---|---|
+| serialising erase work | durable wake generation, one coalesced repeating `erasedata-drain` schedule | `drain.lock` + `flock(LOCK_EX\|LOCK_NB)`, first firing drains |
+| request record | generation-bound v2 staging | `<hash>.pending` marker, exclusive `fopen(..., "x")` |
+| giving up | exact retention/retry, retried every pass | `$erasePendingMaxAttempts`, default 10, then abandoned |
+| acknowledgement | real PHP child acknowledgement | none |
+
+Choosing between them — or reconciling them — changes what package 6 *is*. The
+contract explicitly rejected a targeted one-shot in favour of the durable-wake
+variant, recording that the user approved that choice; upstream has since
+shipped something closer to the rejected shape. That is a contract decision.
+
+Per the delegation brief §7, a later document supersedes a frozen contract only
+with an explicit supersession explanation. Upstream's commits carry none — they
+are not aware of this contract. So the package stops here rather than being
+silently rebased onto a boundary nobody approved.
+
+### Cascade
+
+Package 6 is the prerequisite for 7, 8 and 9; 9 for 10; 10 for 11, 12, 16, 17
+and 18. All of them are therefore `BLOCKED` on this same decision, and none was
+started. Package 12 additionally needs a fully finished package 5.
+
+```text
+6  CONTRACT_CONFLICT
+   ├── 7  BLOCKED (also needs package 14, itself BASE_DRIFT)
+   ├── 8  BLOCKED
+   └── 9  BLOCKED
+        └── 10 BLOCKED
+             ├── 11 BLOCKED (also needs event-order evidence)
+             ├── 12 BLOCKED (also needs package 5 complete)
+             ├── 16 BLOCKED
+             ├── 17 BLOCKED
+             └── 18 BLOCKED
+```
+
+No dependent package was built on an unproven result.

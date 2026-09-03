@@ -160,3 +160,29 @@ The package 15 test hit the same trap and was corrected inside its own file
 Worth fixing in the shipped tests, but it is a test-harness change that belongs
 with `2026-08-28-harness-defects.md` rather than inside an implementation
 package.
+
+---
+
+## F9 — `CONTRACT` — upstream shipped an erasedata drain queue that collides with package 6's approved design
+
+`a5509dc5` (#3240) and `dcf3fb96` (#3248) added `plugins/erasedata/pending.php`
+and `tests/plugins/erasedata/PendingQueueTest.php`, and rewrote
+`plugins/erasedata/erase.php` from a direct `erasedataRemoveWithData()` call to
+record-then-drain.
+
+Package 6's contract freezes eight production and two test paths and forbids
+new scope without a separate current-base finding. `pending.php` would be a
+ninth production path and `PendingQueueTest.php` a third test path, and
+`erase.php` — contract path 3 — no longer resembles the file the approved carve
+targets.
+
+The collision is substantive: the contract records that a targeted one-shot
+drain was **rejected**, and a durable wake generation with one coalesced
+repeating `erasedata-drain` schedule was approved in its place, with the user's
+explicit agreement. Upstream has since shipped a `drain.lock` + attempt-counter
+design closer to the rejected shape, and with no acknowledgement step at all.
+
+Blocks: package 6, and through it packages 7, 8, 9, 10, 11, 12, 16, 17, 18.
+
+This is the single highest-value unblocking decision in the remaining queue:
+one contract ruling reopens nine of the thirteen open packages.
