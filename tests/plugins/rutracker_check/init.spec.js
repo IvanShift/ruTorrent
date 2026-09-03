@@ -354,6 +354,7 @@ describe("the manual check", () => {
       add: (after, entry) => added.push([after, entry]),
     };
     global.theUILang.Force_recheck = "Force re-check";
+    global.iv = (value) => parseInt(value, 10) || 0;
     global.rTorrentStub = function () {};
     global.rTorrentStub.prototype = {};
     menuPlugin = {
@@ -405,30 +406,39 @@ describe("the manual check", () => {
     expect(added[0][1][1]).toBe("theWebUI.perform( 'checktorrent' )");
   });
 
-  it("logs Queued upon receiving queued response and the shared Error on refusal", () => {
+  it("reports an accepted batch as queued with its accepted count", () => {
     const logs = [];
+    const notices = [];
     global.log = (msg) => logs.push(msg);
-    global.theUILang.Done = "Done";
+    global.noty = (msg, status) => notices.push({ msg, status });
     global.theUILang.Queued = "Queued";
     global.theUILang.Error = "Error";
 
-    // Queued response logs Queued
-    rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "queued", accepted: 1 });
-    expect(logs).toEqual([theUILang.checkTorrent + ": Queued"]);
-    expect(logs).not.toContain(theUILang.checkTorrent + ": Done");
+    const data = { status: "queued", accepted: 3 };
+    expect(rTorrentStub.prototype.checktorrentResponse.call(stub, data)).toBe(data);
+    expect(logs).toEqual([theUILang.checkTorrent + ": Queued (3)"]);
+    expect(notices).toHaveLength(0);
+  });
 
-    // Error response logs failure message
-    logs.length = 0;
-    rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "error", error: "dispatch_failed" });
-    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
+  it.each([
+    ["a refused batch", { status: "refused", accepted: 0 }],
+    ["a rejected batch", { status: "rejected", accepted: 0 }],
+    ["a legacy success answer", { status: "success" }],
+    ["a malformed answer", null],
+  ])("surfaces %s as an error notification", (_name, data) => {
+    const logs = [];
+    const notices = [];
+    global.log = (msg) => logs.push(msg);
+    global.noty = (msg, status) => notices.push({ msg, status });
+    global.theUILang.Queued = "Queued";
+    global.theUILang.Error = "Error";
 
-    // Legacy "success" or malformed response logs failure message, never Done
-    logs.length = 0;
-    rTorrentStub.prototype.checktorrentResponse.call(stub, { status: "success" });
-    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
-
-    logs.length = 0;
-    rTorrentStub.prototype.checktorrentResponse.call(stub, null);
-    expect(logs).toEqual([theUILang.checkTorrent + ": Error"]);
+    expect(rTorrentStub.prototype.checktorrentResponse.call(stub, data)).toBe(data);
+    expect(logs).toHaveLength(0);
+    expect(notices).toEqual([{
+      msg: theUILang.checkTorrent + ": Error",
+      status: "error",
+    }]);
+    expect(notices[0].msg).not.toContain("undefined");
   });
 });

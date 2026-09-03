@@ -28,12 +28,22 @@ if(plugin.canChangeMenu())
 		this.dataType = "json";
 	}
 
+	// getResponse() dispatches through processAction("Response", data), so this
+	// is where the answer to a manual check arrives. It has to be read here:
+	// the request carries list=1, so the core follows up with its own list
+	// request and discards this response entirely.
+	//
+	// action.php answers 2xx for every handled outcome -- a failure status would
+	// make the shared getTorrents() error callback report rTorrent as stopped --
+	// so a refusal is only visible if the body is inspected. A refusal the user
+	// cannot see is a check they believe is running.
 	rTorrentStub.prototype.checktorrentResponse = function( data )
 	{
-		if( data && data.status === "queued" )
-			log( theUILang.checkTorrent + ": " + theUILang.Queued );
+		if( data && (data.status === "queued") )
+			log( theUILang.checkTorrent+": "+theUILang.Queued+" ("+iv(data.accepted)+")" );
 		else
-			log( theUILang.checkTorrent + ": " + theUILang.Error );
+			noty( theUILang.checkTorrent+": "+theUILang.Error, "error" );
+		return( data );
 	}
 }
 

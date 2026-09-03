@@ -1,7 +1,16 @@
 <?php
 
-require_once( __DIR__ . '/launcher.php' );
+require_once( dirname(__FILE__).'/launcher.php' );
 
+/**
+ * The detached worker for a manual "check for update".
+ *
+ * It is started by action.php with the path of a handover file holding the
+ * hashes the user selected. Nothing observes this process: its output goes to
+ * /dev/null and its exit status is discarded, so whatever it fails to do it
+ * fails to do silently. That is why each torrent is isolated from the next and
+ * why the handover is removed on every path out.
+ */
 class ruTrackerBatchCheck
 {
 	static private function log($message, $logger = null)
@@ -15,12 +24,19 @@ class ruTrackerBatchCheck
 		}
 		catch(Throwable $e)
 		{
-		}
-		catch(Exception $e)
-		{
+			// The log is a diagnostic, not a step of the batch.
 		}
 	}
 
+	/**
+	 * Check every hash named by the handover, remove it, then start the forum
+	 * crawl that resolves topics queued by the checks.
+	 *
+	 * @param callable|null $checker Injection seam for tests.
+	 * @param callable|null $crawler Injection seam for the fork's forum index.
+	 * @param callable|null $deleter Injection seam for tests.
+	 * @param callable|null $logger  Injection seam for tests.
+	 */
 	static public function runHandover($handoverPath, $checker = null, $crawler = null,
 		$deleter = null, $logger = null)
 	{
@@ -30,6 +46,9 @@ class ruTrackerBatchCheck
 		$hashes = ($raw !== false && $raw !== '')
 			? @unserialize($raw, array('allowed_classes' => false))
 			: null;
+
+		if(!is_array($hashes))
+			self::log('batch_check: the handover file held no usable selection', $logger);
 
 		try
 		{
@@ -48,27 +67,32 @@ class ruTrackerBatchCheck
 					}
 					catch(Throwable $e)
 					{
-						self::log("batch_check: exception checking hash " . $hash . ": " . $e->getMessage(), $logger);
-					}
-					catch(Exception $e)
-					{
-						self::log("batch_check: exception checking hash " . $hash . ": " . $e->getMessage(), $logger);
+						// One unreachable tracker is the ordinary case, not a
+						// reason to abandon the rest of a deliberate selection.
+						// Keep remote exception text out of the routine log.
+						self::log('batch_check: a selected torrent could not be checked', $logger);
 					}
 				}
 			}
 		}
 		finally
 		{
-			if(is_string($handoverPath) && $handoverPath !== '' && file_exists($handoverPath))
+			// The handover is this process's own temporary file. Left behind by a
+			// batch that threw, it accumulates in the temp directory forever.
+			$removed = false;
+			try
+			{
+				$removed = RuTrackerBatchDispatch::removeHandover($handoverPath, $deleter);
+			}
+			catch(Throwable $e)
 			{
 				$removed = false;
-				try { $removed = RuTrackerBatchDispatch::removeHandover($handoverPath, $deleter); }
-				catch(Throwable $e) { $removed = false; }
-				catch(Exception $e) { $removed = false; }
-				if(!$removed)
-					self::log('batch_check: could not remove the handover file', $logger);
 			}
+			if(!$removed)
+				self::log('batch_check: could not remove the handover file', $logger);
 
+			// Manual checks can be the only pass when the scheduler is disabled.
+			// Spawn after all checks so every unresolved topic has been queued.
 			try
 			{
 				if($crawler !== null)
@@ -78,11 +102,7 @@ class ruTrackerBatchCheck
 			}
 			catch(Throwable $e)
 			{
-				self::log("batch_check: exception spawning crawl: " . $e->getMessage(), $logger);
-			}
-			catch(Exception $e)
-			{
-				self::log("batch_check: exception spawning crawl: " . $e->getMessage(), $logger);
+				self::log('batch_check: the forum crawl could not be started', $logger);
 			}
 		}
 	}

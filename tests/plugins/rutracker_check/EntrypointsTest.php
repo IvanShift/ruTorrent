@@ -507,39 +507,42 @@ $suite->test('the manual action delegates handover creation and launch to the te
     epAssertOrder($calls, 'RuTrackerBatchRequest::parseHashes', 'RuTrackerBatchDispatch::dispatch',
         'the tokenized entrypoint proves request validation completes before dispatch');
     strictAssertTrue(epAt($calls, 'Utility::getPHP') >= 0, 'the checker is still spawned');
-    strictAssertTrue(strpos($source, "array('FileUtil', 'toLog')") !== false,
+    strictAssertTrue(strpos($source, "array( 'FileUtil', 'toLog' )") !== false,
         'observable dispatch failures are wired to the production log sink');
 });
 
-$suite->test('the manual action rejects empty or all-invalid body with HTTP 400 and no dispatch artifact', function () {
+$suite->test('the manual action rejects empty or all-invalid body in its 2xx JSON answer', function () {
     epWithActionServer(function ($port, $temp, $log) {
         $emptyResponse = epPostAction($port, 'cmd=check');
-        strictAssertSame(400, $emptyResponse['status'], 'empty body returns HTTP 400');
-        strictAssertSame(array('status' => 'error', 'error' => 'no_valid_hashes', 'accepted' => 0), $emptyResponse['json'],
-            'empty body returns no_valid_hashes with 0 accepted');
+        strictAssertSame(200, $emptyResponse['status'],
+            'empty selection stays 2xx so the shared callback does not report rTorrent stopped');
+        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $emptyResponse['json'],
+            'empty body is rejected with 0 accepted');
 
         $invalidResponse = epPostAction($port, 'cmd=check&hash=short&hash=123');
-        strictAssertSame(400, $invalidResponse['status'], 'all-invalid body returns HTTP 400');
-        strictAssertSame(array('status' => 'error', 'error' => 'no_valid_hashes', 'accepted' => 0), $invalidResponse['json'],
-            'all-invalid body returns no_valid_hashes with 0 accepted');
+        strictAssertSame(200, $invalidResponse['status'],
+            'all-invalid selection also stays 2xx');
+        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $invalidResponse['json'],
+            'all-invalid body is rejected with 0 accepted');
 
         strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'), 'no dispatch artifact created on empty/invalid batch');
         strictAssertTrue(!is_file($log), 'no dispatch logged on empty/invalid batch');
     });
 });
 
-$suite->test('the manual action returns HTTP 503 dispatch_failed when dispatch is refused', function () {
+$suite->test('the manual action reports a refused dispatch without claiming rTorrent is down', function () {
     epWithActionServer(function ($port, $temp, $log) {
         $response = epPostAction($port, 'hash=' . str_repeat('A', 40));
 
-        strictAssertSame(503, $response['status'], 'a launch refusal returns HTTP 503');
-        strictAssertSame(array('status' => 'error', 'error' => 'dispatch_failed', 'accepted' => 0), $response['json'],
-            'the action exposes the failed dispatch with error dispatch_failed');
+        strictAssertSame(200, $response['status'],
+            'a launch refusal stays 2xx so the shared callback does not report rTorrent stopped');
+        strictAssertSame(array('status' => 'refused', 'accepted' => 0), $response['json'],
+            'the action exposes the failed dispatch as refused');
         strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
             'the failed dispatch leaves no child handover behind');
         strictAssertTrue(is_file($log), 'the intentional launch refusal uses the fixture-local log');
         strictAssertTrue(strpos((string) file_get_contents($log),
-            'manual batch command was not accepted by the shell') !== false,
+            'manual batch worker was not accepted by the shell') !== false,
             'the fixture-local log records the intentional launch refusal');
     });
 });
@@ -552,7 +555,7 @@ $suite->test('the manual action returns queued after one exact detached handover
 
         $response = epPostAction($port, $body, 'Endpoint User');
 
-        strictAssertSame(202, $response['status'], 'accepted dispatch returns HTTP 202');
+        strictAssertSame(200, $response['status'], 'accepted dispatch returns a handled 2xx answer');
         strictAssertSame(array('status' => 'queued', 'accepted' => 2), $response['json'],
             'accepted dispatch returns queued with count of unique valid hashes');
 
@@ -577,19 +580,20 @@ $suite->test('the manual action returns queued after one exact detached handover
     }, 'accept');
 });
 
-$suite->test('the manual action rejects MAX_BODY_BYTES plus one with HTTP 413 before launch', function () {
+$suite->test('the manual action rejects MAX_BODY_BYTES plus one in its bounded 2xx answer', function () {
     epWithActionServer(function ($port, $temp, $log) {
         $body = 'hash=' . str_repeat('B', 40) . '&pad=' . str_repeat('x', 262095);
         strictAssertSame(262145, strlen($body), 'the endpoint fixture is exactly 256 KiB plus one byte');
 
         $response = epPostAction($port, $body);
 
-        strictAssertSame(413, $response['status'], 'the endpoint rejects the first over-limit byte');
-        strictAssertSame(array('status' => 'error', 'error' => 'payload_too_large'), $response['json'],
-            'the over-limit response names the bounded-body refusal');
+        strictAssertSame(200, $response['status'],
+            'the over-limit refusal stays 2xx so the shared callback does not report rTorrent stopped');
+        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $response['json'],
+            'the over-limit response rejects the whole selection');
         strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
             'an over-limit body cannot launch or leave a handover');
-        strictAssertTrue(!is_file($log), 'an over-limit body reaches neither dispatch nor its log sink');
+        strictAssertTrue(is_file($log), 'the over-limit request writes a classified refusal log');
     });
 });
 
@@ -777,7 +781,7 @@ $suite->test('manual batch dispatch removes its handover and logs safely when th
         strictAssertSame(array(), glob($tmpDir . '/rutorrent-prm-*'),
             'the rejected child cannot consume the handover, so the parent removes it');
         strictAssertSame(1, count($logs), 'the refusal emits one actionable diagnostic');
-        strictAssertTrue(strpos($logs[0], 'manual batch command was not accepted by the shell') !== false,
+        strictAssertTrue(strpos($logs[0], 'manual batch worker was not accepted by the shell') !== false,
             'the diagnostic names shell acceptance');
         strictAssertTrue(strpos($logs[0], $hash) === false,
             'the diagnostic contains neither selected hashes nor serialized payloads');
@@ -902,7 +906,8 @@ $suite->test('RuTrackerBatchRequest::parseHashes parses, normalizes, deduplicate
     strictAssertSame(262144, strlen($bodyAllowed), 'boundary fixture is exactly 256 KiB');
     strictAssertSame(array($h1), RuTrackerBatchRequest::parseHashes($bodyAllowed), 'body of exactly 256 KiB admitted');
 
-    // Max 4096 unique hashes accepted
+    // The byte bound is the single selection limit. Do not add a second,
+    // arbitrary item-count refusal below it: 4097 valid hashes still fit.
     $hashes4096 = array();
     $bodySegments = array();
     for ($i = 0; $i < 4096; $i++) {
@@ -913,11 +918,15 @@ $suite->test('RuTrackerBatchRequest::parseHashes parses, normalizes, deduplicate
     $body4096 = implode('&', $bodySegments);
     strictAssertSame($hashes4096, RuTrackerBatchRequest::parseHashes($body4096), 'accepts exactly 4096 unique hashes');
 
-    // 4097th unique hash rejects the WHOLE batch
+    // The 4097th unique hash is admitted because the body is still below the
+    // documented 256 KiB boundary.
     $body4097 = $body4096 . '&hash=' . sprintf('%040X', 4096);
     $error4097 = null;
-    strictAssertSame(array(), RuTrackerBatchRequest::parseHashes($body4097, $error4097), '4097th unique hash rejects whole batch');
-    strictAssertTrue($error4097 !== null, 'error reported for batch over unique hash limit');
+    $hashes4097 = $hashes4096;
+    $hashes4097[] = sprintf('%040X', 4096);
+    strictAssertSame($hashes4097, RuTrackerBatchRequest::parseHashes($body4097, $error4097),
+        '4097th unique hash is accepted while the request remains below the byte bound');
+    strictAssertSame(null, $error4097, 'no second item-count limit rejects a bounded body');
 
     // Non-string body
     strictAssertSame(array(), RuTrackerBatchRequest::parseHashes(null), 'null body returns empty');
