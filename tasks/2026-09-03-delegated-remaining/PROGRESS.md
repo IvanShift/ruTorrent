@@ -407,3 +407,168 @@ started. Package 12 additionally needs a fully finished package 5.
 ```
 
 No dependent package was built on an unproven result.
+
+---
+
+## Package 5 — `retrackers-recovery`, Task 5 (partial)
+
+**Verdict: `READY_FOR_CODEX_REVIEW` for the Task 5 increment only.**
+Package 5 as a whole remains **incomplete**: Tasks 6, 7 and 8 are untouched, and
+Task 5's own `init.php` wiring is deliberately not done (reason below).
+
+### Contract files read
+
+```text
+REVIEW-retrackers-recovery-2026-08-29.md            (§ hook and shell contract, § entrypoint gates)
+VERIFICATION-retrackers-recovery-precode-2026-08-31.md
+PLAN-remaining-queue-2026-08-29.md                  (row 5)
+```
+
+### Base and candidate
+
+```text
+PACKAGE_BASE   9fef4d667a722331b3c72e673e3e6a0db0564246   (Task 4B, APPROVED)
+branch         up/retrackers-recovery                     (existing, continued)
+worktree       .worktrees/up-retrackers-recovery
+candidate      0bdac05d  parent 9fef4d66, non-merge, tree clean
+paths          plugins/retrackers/update.php        +60  -0
+               tests/plugins/retrackers/UpdateTest.php +155 -0
+```
+
+Both are inside the corrected six-path scope. `4682a761` is an ancestor.
+
+### Frozen predecessor invariants — re-verified, not assumed
+
+```text
+sequence class-body-through-EOF sha256
+  f0dac045fa3b9e98172132977e05fa14b7f091d1b9779a989d8b1d047fecc8f3   MATCHES contract
+sequence 12 sorted method names sha256
+  0ee7b35f9cda898d00e963b7e23aff02351e3653db21bbf2e99e31a34d5c7044   MATCHES contract
+  normalization recovered by search: LF-joined WITH a final LF
+sequence run: 12 methods / 40 assertions / 0 failures   MATCHES contract
+```
+
+The existing `retrackersBuildSafetyOnlyInsertAction()` hash reproduced as
+`c1ec79a6767399434309847606d9dda5f5d5eaf5d3d849e42c72b32a9dae83bb`, identical to
+the value already frozen in the suite — which is what shows the probe harness
+reproduces the established quoting layer exactly, rather than a lookalike.
+
+### What was built
+
+`retrackersBuildInsertAction($script, $php, $user)` in the side-effect-free
+importable part of `update.php`, composed **exactly** from the contract's frozen
+expression list, completing the trio of canonical hook shapes.
+
+```text
+action bytes   2386
+sha256         ed597fcf31a63256e78346d442c4ca28bbd854a5ab34a00f69beb3131a8db706
+shares a 456-byte marker/ack head with both existing variants
+contains no d.stop, d.close or d.erase in any branch
+```
+
+### Natural RED
+
+Production held at exact `9fef4d66` (`git status` reported 0 modified production
+files; the builder is absent there):
+
+```text
+5 named RED, 0 fatal/parse errors
+  update.php declares the canonical functional insert action builder
+  the functional insert action builder exists   (x4, one per dependent case)
+```
+
+### Tests
+
+```text
+UpdateTest   base 75 methods / 402 assertions / 0 failures
+             candidate 80 methods / 424 assertions / 0 failures
+             +5 methods, 0 lost
+```
+
+| Runtime | Result |
+|---|---|
+| host PHP 8.5.4 `bash php-test.sh` | 51 files, 2416 `Passed:` + 127 `ok -`, 0 failures |
+| `php:7.4-cli` `7bbbb12d1498` non-root, no network | identical: 51 / 2416 / 127 / 0 |
+| `php:8.1-cli` `7699e39d88f6` non-root, no network | identical: 51 / 2416 / 127 / 0 |
+| `php -l`, `git diff --check` | clean |
+
+### Mutations — 7 of 7 sensitive
+
+```text
+sensitive 7/7   fatal before named RED 0   restore byte diffs 0   RED after restore 0
+```
+
+| # | Mutation | Named RED |
+|---|---|---|
+| P01 | receipt cleared before the launch instead of after | `the hook-active receipt is cleared only after the launch returns` |
+| P02 | ack and marker written in the wrong order | `the pending lease, the ack and the marker are all written before the launch` |
+| P03 | a stop reintroduced into the owner branch | `the functional insert action carries no d.stop in any branch` |
+| P04 | canonical user interpolated into the launch unquoted | `the canonical user is not one layer short` |
+| P05 | script path interpolated into the launch unquoted | `the script path is not one layer short...` |
+| P06 | handoff stops binding to the canonical user | `the handoff carries the exact SHA-256 of the canonical user` |
+| P07 | hook-active key stops being per-download | `the hook-active receipt is written once and cleared once` |
+
+The first campaign found **P04, P05 and P06 caught only by the frozen-bytes
+pin**, not by the behavioural cases. That was a real weakness in the tests, not
+in the code: the launch sits five nesting layers deep, so the outer layers escape
+a value even when its own quote is dropped, and "the raw value is absent" is
+true either way. The cases were rewritten to measure escaping **depth** — a
+value quoted properly appears at depth 6 and must not appear at depth 5 — and
+re-run; all seven are sensitive now.
+
+### Runtime evidence, and its exact limit
+
+Disposable lab, `ivanshift/rutorrent:latest` `7cea0d172586`, rTorrent
+**0.16.21**, torn down afterwards with no container left.
+
+The fork's own XMLRPC proxy refuses `method.*` through httprpc with HTTP 403 —
+correct behaviour from package 3 — so the probe went to the daemon's SCGI socket
+directly.
+
+```text
+system.client_version                                  0.16.21
+method.insert  "", rr.receipts.v1, multi|private       0  (and "Invalid key." when repeated,
+                                                          exactly as the contract records)
+method.set_key "", event.download.inserted_new, ...    0        the 2386 bytes were accepted
+method.has_key installed key                           1
+method.has_key never-installed key                     0
+```
+
+**This does not prove the grammar parses.** A deliberately broken variant
+(`branch=` → `branch`) was **also accepted** with result 0, so `method.set_key`
+stores the string without parsing it. The check therefore proves installation
+and retrieval, and nothing about validity. Real grammar validation needs the
+event to fire against an inserted download, which is Task 8's runtime acceptance
+and needs the worker protocol Tasks 6-7 build. rTorrent 0.9.8 was not exercised
+at all: no such image is present and building one is a from-source compile.
+
+### Why `init.php` was not wired
+
+The contract gives `init.php` the *ledger and profile install protocol* — an
+idempotent `method.insert = "", rr.receipts.v1, multi|private`, coherent ordered
+`system.multicall(list_keys, get, required has_key)` validation, lifecycle
+acquire, generation handoff and loop suppression — not merely two `set_key`
+calls. Installing the functional hook without that protocol arms worker launches
+against a transaction protocol Tasks 6 and 7 have not built, and the profile
+classifier would read the resulting pair as `invalid` because no `pf:` claim
+exists. Building half of it would be inventing the missing half.
+
+So the builder ships with no production caller yet. That is visible and
+intentional rather than dead code: the contract assigns all three canonical
+builders to `update.php`, the other two already sit there consumed only by the
+profile classifier, and the `init.php` protocol is the named next step.
+
+### Unresolved risks
+
+1. Task 5 is not finished — only its `update.php` half is.
+2. The action's grammar is unvalidated against a firing event on either daemon.
+3. rTorrent 0.9.8 has no runtime evidence in this run.
+4. The frozen action bytes were derived from the contract's own expression list;
+   the daemon confirmed storage, not meaning.
+
+### State
+
+```text
+push  no        PR  no        master product integration  no
+user diagnostic files  untouched
+```
