@@ -1,5 +1,33 @@
 <?php
 
+// The settings singleton normally restores share/settings/rtorrent.dat. A
+// developer checkout can legitimately contain that ignored runtime cache, but
+// this test exercises schedule construction in isolation and must not inherit
+// its daemon version or alias table.
+$scheduleProfilePath = sys_get_temp_dir() . '/rutorrent-schedule-test-' . getmypid();
+$_ENV['RU_PROFILE_PATH'] = $scheduleProfilePath;
+
+function scheduleRemoveProfile($path)
+{
+    if (!is_dir($path)) {
+        return;
+    }
+    foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
+        $child = $path . '/' . $entry;
+        if (is_dir($child) && !is_link($child)) {
+            scheduleRemoveProfile($child);
+        } else {
+            unlink($child);
+        }
+    }
+    rmdir($path);
+}
+
+scheduleRemoveProfile($scheduleProfilePath);
+register_shutdown_function(function () use ($scheduleProfilePath) {
+    scheduleRemoveProfile($scheduleProfilePath);
+});
+
 // A minimal local runner, for the same reason as tests/php/SnoopyTest.php:
 // settings.php drags in the real rXMLRPC* classes, which collide with the
 // doubles in tests/plugins/rutracker_check/TestLib.php.
