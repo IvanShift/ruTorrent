@@ -1,6 +1,72 @@
-# Статус 18 реализационных пакетов — 2026-09-03
+# Статус 18 реализационных пакетов — обновлено 2026-09-05
 
-Это текущий авторитетный срез после независимой проверки делегированной работы,
+## Текущий срез: upstream-ветки подготовлены, реализационный счёт не меняется
+
+**Закрыто 8/18; остаётся 10 незакрытых реализационных пакетов.**
+
+Принятый product tree — `92d7111f`; после локального squash тот же код
+закреплён ref `codex/upstream-handoff-squash-20260905` и master. Первый parent
+aggregate — пользовательский `ebb60a7e`, второй — upstream `b4e84b64`.
+Повторный fetch подтвердил origin/master `72d1885c`; push, PR и deployment
+не выполнялись. Четыре диагностических log-файла сохранены. Точный handoff:
+[UPSTREAM-HANDOFF-2026-09-05.md](../2026-09-03-delegated-remaining/UPSTREAM-HANDOFF-2026-09-05.md).
+
+| № | Пакет | Текущий итог | Где находится / что дальше |
+|---:|---|---|---|
+| 1 | PHP 7.4 Torrent | CLOSED / UPSTREAM | В master; #3224/#3229 приняты по ранее подтверждённой истории |
+| 2 | setsettings/socket | CLOSED / UPSTREAM | В master; #3227 принят |
+| 3 | httprpc-refusals | CLOSED / UPSTREAM | В master; #3228 принят |
+| 4 | scgi-transport | CLOSED / PR BRANCH READY | `up/scgi-transport-v2` — `de781784`, независимо от upstream b4e84b64 |
+| 5 | retrackers-recovery | **CLOSED / STACKED BRANCH READY** | `up/retrackers-recovery-v2` — `26991e79`; отправлять после №4 и refresh |
+| 6 | erasedata A remove-payload | **EXTERNAL CANDIDATE / REVIEW PENDING** | Внешние rebuild-ветки не проверялись и не вливались в этой сессии; следующий кандидат на приёмку |
+| 7 | httprpc → erasedata | PENDING | Теперь ждёт только №6: №14 закрыт |
+| 8 | Ratio → erasedata B | PENDING | После №6 |
+| 9 | P0+C replacement transaction | PENDING | После №6 |
+| 10 | P1 rutracker-post-api | PENDING | После №9 |
+| 11 | P2 history marker | PENDING | После №10 и event-order capture |
+| 12 | P3 retrackers marker | PENDING | Теперь ждёт №10: №5 закрыт |
+| 13 | rTorrent alias surface | CLOSED / PR BRANCH READY | `up/rtorrent-alias-surface` — `a7bf4986`, независимо |
+| 14 | XMLRPC proxy policy | **CLOSED / STACKED BRANCH READY** | `up/xmlrpc-proxy-policy` — `132efb1f`; отправлять после №4 и refresh |
+| 15 | manual entrypoints | CLOSED / PR BRANCH READY | `up/rutracker-manual-entrypoints` — `b64afb30`; только ручной маршрут, не весь плагин |
+| 16 | Kinozal checker resilience | PENDING | После №10 |
+| 17 | NNMClub live contract | PENDING | После №10; capture сохранён |
+| 18 | sibling tracker verdicts | PENDING | После №10 |
+
+Остались №6–12 и №16–18. Это не «10 ещё не созданных контрактов»:
+архитектурная работа зафиксирована, очередь относится к implementation/review.
+Наличие внешней реализации №6 не означает её независимую приёмку.
+Пакеты №6–12/№16–18 в текущей сессии не начинались.
+
+Публикация и upstream acceptance — отдельные статусы. №5/№14 сейчас только
+локальные, не отправлены upstream. Ранее принятые PR №1–3 здесь не проверялись
+заново через GitHub API; запись сохраняет уже установленный merged status.
+Подготовлены пять локальных веток: три независимые и две stacked. English
+PR bodies, команды, точные scopes и связь со всеми 18 пакетами — в handoff.
+Весь `rutracker_check` пользователь намерен отправлять после полной готовности;
+самостоятельные части разрешены сейчас. №15 выделен без fork-only forum crawl.
+
+Проверки итогового объединённого кода:
+
+- PHP 7.4/8.1: №5 — 221/1097, sequence — 12/40;
+  №14 — 192 methods / 2542 assertions на каждой версии.
+- Полный host PHP 8.5 harness — exit 0; полный Jest — 23 suites / 336 tests.
+- Полный PHPStan CI — 0 errors.
+- Реальные rTorrent 0.9.8/0.16.21: partial cleanup/rollback, шесть потерянных
+  mutation replies, 12 delayed reads и 11 безопасных late callbacks на каждом.
+- Frozen sequence class сохранён побайтно; все 42 старых worker-сценария
+  имеют проверенную semantic crosswalk.
+
+Полный протокол, refs, ограничения доказательств и точка остановки:
+[PACKAGE-5-14-INTEGRATION-2026-09-05.md](../2026-09-03-delegated-remaining/PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+
+Работа остановлена после upstream handoff и локального squash. №6 не ждали:
+его проверенная база `72d1885c` остаётся в ancestry; готовность внешнего агента
+не заменяет review. По следующему поручению — fresh inventory и review №6
+либо публикация/feedback подготовленных веток. Старые числа ниже исторические.
+
+## Исторический срез 2026-09-03
+
+Далее сохранён предыдущий срез после независимой проверки делегированной работы,
 синхронизации с `upstream/master=cd814cb5`, корректировки контрактов №6/№14 и
 локальной интеграции пакета №15.
 

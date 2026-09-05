@@ -1,19 +1,12 @@
 <?php
 
-// plugins/retrackers/update.php is a top level script: it reads $argv and,
-// with no valid handoff on the command line, returns before its production
-// bootstrap. Its pure helpers are still declared, but the configuration class
-// is loaded explicitly so this test does not depend on that unreachable branch.
-// clearTracker() and deleteTrackers() below are therefore the real ones and not
-// a second implementation of them.
-//
-// The profile path is pointed at a directory of our own first -- conf/config.php
-// reads RU_PROFILE_PATH -- so the settings cache it opens on the way in is an
-// empty one, and not whatever this checkout happens to have written there.
+// update.php imports declarations only. Load the configuration class explicitly
+// so the sequence remains bound to the production helper implementation.
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-retrackers-seq-' . getmypid();
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/TorrentSequenceFixtures.php');
+define('RETRACKERS_IMPORT_ONLY', true);
 require_once(__DIR__ . '/../../../plugins/retrackers/retrackers.php');
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 

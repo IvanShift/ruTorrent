@@ -25,26 +25,28 @@ class XMLRPCProxy
 	// Methods that need trusted connections but can carry command
 	// parameters. We rebuild these from scratch, keeping only safe params.
 	//
-	// A command that is not kept costs a label or a directory and the torrent
-	// is still added, so an unknown one is dropped rather than made to fail
-	// the whole call.
+	// Any unclassifiable, denied, or boundary-refused expression makes the
+	// outer request locally terminal with no transport call.
 	private static $sanitizeMethods = array(
-		'load.start', 'load.raw_start', 'load.raw', 'load.normal',
-		'load_start', 'load_raw_start', 'load_raw',
+		'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
+		'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
 	);
 
-	// Of those, the ones whose parameter 1 is a URI rather than the torrent
-	// itself. rtorrent treats anything that is not a network or magnet URI as a
-	// path on its own filesystem, opens it, and ties the download to it — see
-	// $networkUri.
-	//
-	// The 0.9.x spellings are deliberately absent. They exist on no rtorrent
-	// this supports (0.9.8 and 0.16.x both answer "not defined"), and they put
-	// the URI one parameter earlier, so testing parameter 1 would read a
-	// command string as the URI and refuse a valid call. A load that does not
-	// happen ties nothing, so there is nothing to protect there.
 	private static $uriLoadMethods = array(
-		'load.start', 'load.normal',
+		'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
+	);
+
+	private static $rawLoadMethods = array(
+		'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
+	);
+
+	private static $evaluatorDenies = array(
+		'catch', 'branch', 'try', 'and', 'or', 'less', 'greater', 'equal', 'match',
+	);
+
+	private static $viewCarrierDenies = array(
+		'view.filter', 'view.filter.temp', 'view.sort_new',
+		'view.sort_current', 'view.event_added', 'view.event_removed',
 	);
 
 	// Exactly the URIs rtorrent does not treat as a local path:
@@ -54,12 +56,11 @@ class XMLRPCProxy
 	// would be the hole this closes.
 	private static $networkUri = '#^(?:http://|https://|ftp://|magnet:\?)#';
 
-	// Multicalls carry commands in the same trailing position, and the same
-	// rebuilding applies — but for these the commands ARE the request, and
-	// most of them are read commands (d.name=, t.url=) that no allowlist
-	// should have to enumerate. Dropping one would answer with a short row and
-	// no fault, so a command this side does not rebuild sends the request on
-	// untouched instead, for rtorrent's own gate to judge.
+	// Multicalls carry commands in trailing positions, and the same rebuilding
+	// applies. For multicalls all command slots, including filtered filters,
+	// must be parsed and rebuilt; any unknown, denied, or unrebuildable command
+	// causes terminal rejection of the entire outer call.
+	//
 	// Refused outright in sanitize mode, whatever rtorrent would have made of
 	// them. Matched as name prefixes, because these are families that differ
 	// between versions — 0.9.8 has execute2 and schedule_remove2, 0.16.x has
@@ -79,9 +80,6 @@ class XMLRPCProxy
 		'network.scgi',           // re-open the listener somewhere else
 		'session.path.set',
 		'directory.default.set',
-		'catch',                  // evaluates its argument
-		'branch',                 // evaluates its arguments
-		'if',                     // evaluates its arguments
 		'system.env',
 		'system.shutdown',        // and .normal / .quick -- answered by the xmlrpc-c
 		                          // registry, not rtorrent's command map, so rtorrent's
@@ -149,16 +147,548 @@ class XMLRPCProxy
 			FileUtil::toLog("xmlrpc-proxy: ".$msg);
 	}
 
-	/**
-	 * Make a client-supplied value safe to put in a log line: one line, and
-	 * short enough that it cannot push the rest of the entry out of view.
-	 */
-	private static function logValue($value)
+	private static $validTypes = array(
+		'string', 'int', 'i4', 'i8', 'boolean', 'double',
+		'dateTime.iso8601', 'base64', 'array', 'struct'
+	);
+
+	public static function normalizeMethodName($name)
 	{
-		$value = str_replace(array("\r", "\n", "\t"), ' ', (string)$value);
-		if(strlen($value) > 120)
-			$value = substr($value, 0, 120).'...';
-		return $value;
+		if($name === null || $name === '')
+			return null;
+		$name = (string)$name;
+		$clean = preg_replace('/[^A-Za-z0-9_.:-]/', '?', $name);
+		if(strlen($clean) > 96)
+			$clean = substr($clean, 0, 96);
+		return $clean;
+	}
+
+	public static function formatLogMessage($msg)
+	{
+		$clean = preg_replace('/[\x00-\x1f\x7f]/', ' ', (string)$msg);
+		if(strlen($clean) > 512)
+			$clean = substr($clean, 0, 512);
+		return $clean;
+	}
+
+	private static function isDeniedCommand($name, $deny)
+	{
+		if(in_array($name, self::$evaluatorDenies, true))
+			return true;
+		if($name === 'p.call_target')
+			return true;
+		if(in_array($name, self::$viewCarrierDenies, true))
+			return true;
+		if(strncmp($name, 'directory.watch.', 16) === 0)
+			return true;
+		foreach($deny as $prefix)
+		{
+			if(strncmp($name, $prefix, strlen($prefix)) === 0)
+				return true;
+		}
+		return false;
+	}
+
+	private static function isDirectDenied($name, $deny)
+	{
+		if(in_array($name, self::$directoryCommands, true))
+			return true;
+		return self::isDeniedCommand($name, $deny);
+	}
+
+	private static function isValidXmlUtf8String($str)
+	{
+		if(!is_string($str))
+			return false;
+		if(@preg_match('//u', $str) !== 1)
+			return false;
+		// Base64 URI text bypasses the input XML parser's character checks.
+		// Valid UTF-8 alone does not exclude XML 1.0's U+FFFE and U+FFFF.
+		if(preg_match('/[\x00-\x08\x0b\x0c\x0e-\x1f\x{fffe}\x{ffff}]/u', $str))
+			return false;
+		$escaped = htmlspecialchars($str, ENT_NOQUOTES, 'UTF-8');
+		if($escaped === '' && $str !== '')
+			return false;
+		if(htmlspecialchars_decode($escaped, ENT_NOQUOTES) !== $str)
+			return false;
+		return true;
+	}
+
+	private static function hasNsOrAttrs($node, $xpath = null)
+	{
+		if($node->hasAttributes())
+			return true;
+		if($node->namespaceURI !== null && $node->namespaceURI !== '')
+			return true;
+		if($node->prefix !== null && $node->prefix !== '')
+			return true;
+		if($xpath !== null)
+		{
+			$nsList = $xpath->query('namespace::*[local-name() != "xml"]', $node);
+			if($nsList->length > 0)
+				return true;
+		}
+		return false;
+	}
+
+	private static function decodeCall($rawData)
+	{
+		if(!is_string($rawData) || $rawData === '')
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		$prev = null;
+		if(PHP_VERSION_ID < 80000 && function_exists('libxml_disable_entity_loader'))
+			$prev = libxml_disable_entity_loader(true);
+		$doc = new DOMDocument();
+		$ok = @$doc->loadXML($rawData, LIBXML_NONET);
+		if($prev !== null)
+			libxml_disable_entity_loader($prev);
+
+		if(!$ok)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		if($doc->doctype !== null)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		foreach($doc->childNodes as $docChild)
+		{
+			if($docChild->nodeType !== XML_ELEMENT_NODE)
+				return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+		}
+
+		$xpath = new DOMXPath($doc);
+		$root = $doc->documentElement;
+		if(!$root || $root->nodeName !== 'methodCall')
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		if(self::hasNsOrAttrs($root, $xpath))
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		$methodNode = null;
+		$paramsNode = null;
+		$elementCount = 0;
+
+		foreach($root->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath))
+					return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+				$elementCount++;
+				if($elementCount === 1)
+				{
+					if($child->nodeName !== 'methodName')
+						return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+					$methodNode = $child;
+				}
+				elseif($elementCount === 2)
+				{
+					if($child->nodeName !== 'params')
+						return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+					$paramsNode = $child;
+				}
+				else
+				{
+					return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+				}
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+			}
+		}
+
+		if($methodNode === null)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		if($methodNode->childNodes->length !== 1)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+		$mnChild = $methodNode->childNodes->item(0);
+		if($mnChild->nodeType !== XML_TEXT_NODE)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+		$methodName = $mnChild->nodeValue;
+		if($methodName === '' || trim($methodName, " \t\r\n") !== $methodName)
+			return array('ok' => false, 'error' => 'rejected (invalid XML)', 'method' => null);
+
+		$decodedParams = array();
+		if($paramsNode !== null)
+		{
+			foreach($paramsNode->childNodes as $pChild)
+			{
+				if($pChild->nodeType === XML_TEXT_NODE || $pChild->nodeType === XML_CDATA_SECTION_NODE)
+				{
+					if(trim($pChild->nodeValue, " \t\r\n") !== '')
+						return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+				}
+				elseif($pChild->nodeType === XML_ELEMENT_NODE)
+				{
+					if(self::hasNsOrAttrs($pChild, $xpath) || $pChild->nodeName !== 'param')
+						return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+					$paramRes = self::decodeParam($pChild, $methodName, $xpath);
+					if(!$paramRes['ok'])
+						return $paramRes;
+
+					$decodedParams[] = $paramRes['param'];
+				}
+				else
+				{
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+				}
+			}
+		}
+
+		return array(
+			'ok' => true,
+			'method' => $methodName,
+			'params' => $decodedParams,
+		);
+	}
+
+	private static function decodeParam($paramNode, $methodName, $xpath)
+	{
+		$valueNode = null;
+		$valueCount = 0;
+		foreach($paramNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath) || $child->nodeName !== 'value')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$valueCount++;
+				if($valueCount > 1)
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$valueNode = $child;
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		if($valueCount !== 1 || $valueNode === null)
+			return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+		return self::decodeValue($valueNode, $methodName, $xpath);
+	}
+
+	private static function decodeValue($valueNode, $methodName, $xpath)
+	{
+		if(self::hasNsOrAttrs($valueNode, $xpath))
+			return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+		$elementChildren = array();
+		$hasNonWhitespaceText = false;
+		$rawText = '';
+
+		foreach($valueNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				$rawText .= $child->nodeValue;
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					$hasNonWhitespaceText = true;
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				$elementChildren[] = $child;
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		if(count($elementChildren) > 1)
+			return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+		if(count($elementChildren) === 1)
+		{
+			if($hasNonWhitespaceText)
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+			$typeNode = $elementChildren[0];
+			if(self::hasNsOrAttrs($typeNode, $xpath))
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+			$tag = $typeNode->nodeName;
+			if(in_array($tag, self::$validTypes, true))
+			{
+				if($tag === 'array')
+				{
+					$res = self::decodeArray($typeNode, $methodName, $xpath);
+					if(!$res['ok'])
+						return $res;
+					return array('ok' => true, 'param' => array(
+						'type' => 'array',
+						'typeTag' => 'array',
+						'value' => $res['data'],
+					));
+				}
+				elseif($tag === 'struct')
+				{
+					$res = self::decodeStruct($typeNode, $methodName, $xpath);
+					if(!$res['ok'])
+						return $res;
+					return array('ok' => true, 'param' => array(
+						'type' => 'struct',
+						'typeTag' => 'struct',
+						'value' => $res['data'],
+					));
+				}
+				else
+				{
+					$val = '';
+					foreach($typeNode->childNodes as $scChild)
+					{
+						if($scChild->nodeType === XML_TEXT_NODE || $scChild->nodeType === XML_CDATA_SECTION_NODE)
+						{
+							$val .= $scChild->nodeValue;
+						}
+						else
+						{
+							return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+						}
+					}
+
+					$type = ($tag === 'i4' || $tag === 'i8') ? 'int' : $tag;
+					return array('ok' => true, 'param' => array(
+						'type' => $type,
+						'typeTag' => $tag,
+						'value' => $val,
+					));
+				}
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		return array('ok' => true, 'param' => array(
+			'type' => 'string',
+			'typeTag' => 'string',
+			'value' => $rawText,
+		));
+	}
+
+	private static function decodeArray($arrayNode, $methodName, $xpath)
+	{
+		$dataNode = null;
+		$dataCount = 0;
+		foreach($arrayNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath) || $child->nodeName !== 'data')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$dataCount++;
+				if($dataCount > 1)
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$dataNode = $child;
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		if($dataCount !== 1 || $dataNode === null)
+			return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+		$items = array();
+		foreach($dataNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath) || $child->nodeName !== 'value')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$valRes = self::decodeValue($child, $methodName, $xpath);
+				if(!$valRes['ok'])
+					return $valRes;
+
+				$items[] = $valRes['param'];
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		return array('ok' => true, 'data' => $items);
+	}
+
+	private static function decodeStruct($structNode, $methodName, $xpath)
+	{
+		$members = array();
+		foreach($structNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath) || $child->nodeName !== 'member')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$memRes = self::decodeMember($child, $methodName, $xpath);
+				if(!$memRes['ok'])
+					return $memRes;
+
+				$members[] = $memRes['data'];
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		return array('ok' => true, 'data' => $members);
+	}
+
+	private static function decodeMember($memberNode, $methodName, $xpath)
+	{
+		$nameNode = null;
+		$valNode = null;
+		$elementCount = 0;
+
+		foreach($memberNode->childNodes as $child)
+		{
+			if($child->nodeType === XML_TEXT_NODE)
+			{
+				if(trim($child->nodeValue, " \t\r\n") !== '')
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+			elseif($child->nodeType === XML_ELEMENT_NODE)
+			{
+				if(self::hasNsOrAttrs($child, $xpath))
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+				$elementCount++;
+				if($elementCount === 1)
+				{
+					if($child->nodeName !== 'name')
+						return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+					$nameNode = $child;
+				}
+				elseif($elementCount === 2)
+				{
+					if($child->nodeName !== 'value')
+						return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+					$valNode = $child;
+				}
+				else
+				{
+					return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+				}
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		if($nameNode === null || $valNode === null)
+			return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+
+		$nameText = '';
+		foreach($nameNode->childNodes as $nc)
+		{
+			if($nc->nodeType === XML_TEXT_NODE || $nc->nodeType === XML_CDATA_SECTION_NODE)
+			{
+				$nameText .= $nc->nodeValue;
+			}
+			else
+			{
+				return array('ok' => false, 'error' => 'rejected (malformed XML envelope or structure)', 'method' => $methodName);
+			}
+		}
+
+		$valRes = self::decodeValue($valNode, $methodName, $xpath);
+		if(!$valRes['ok'])
+			return $valRes;
+
+		return array('ok' => true, 'data' => array(
+			'name' => $nameText,
+			'value' => $valRes['param'],
+		));
+	}
+
+	private static function emitArgumentFromDecoded($shape, $param, $sizeLimitMax)
+	{
+		if($param['type'] === 'array' || $param['type'] === 'struct')
+			return null;
+
+		$val = $param['value'];
+
+		switch($shape)
+		{
+			case 'hash':
+				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}$/', $val))
+					return null;
+				return '<param><value><string>' . strtoupper($val) . '</string></value></param>';
+
+			case 'empty':
+				if($param['type'] !== 'string' || $val !== '')
+					return null;
+				return '<param><value><string></string></value></param>';
+
+			case 'int':
+				if($param['type'] !== 'int' && $param['type'] !== 'string')
+					return null;
+				if(!preg_match('/^(?:0|-?[1-9][0-9]{0,17})$/', $val))
+					return null;
+				return '<param><value><i8>' . $val . '</i8></value></param>';
+
+			case 'size':
+				if($param['type'] !== 'int' && $param['type'] !== 'string')
+					return null;
+				if(!preg_match('/^[1-9][0-9]{0,17}$/', $val))
+					return null;
+				if(strlen($val) > 8 || (int)$val > $sizeLimitMax)
+					$size = $sizeLimitMax;
+				else
+					$size = (int)$val;
+				return '<param><value><i8>' . $size . '</i8></value></param>';
+
+			case 'text':
+				if($param['type'] !== 'string')
+					return null;
+				return '<param><value><string>'
+					. htmlspecialchars($val, ENT_NOQUOTES, 'UTF-8')
+					. '</string></value></param>';
+
+			default:
+				return null;
+		}
 	}
 
 	/**
@@ -234,279 +764,238 @@ class XMLRPCProxy
 		$deny = isset($options['deny']) ? $options['deny'] : self::$denyPrefixes;
 		$elevate = isset($options['elevate']) ? $options['elevate'] : self::$elevate;
 		$sizeLimitMax = isset($options['sizeLimitMax']) ? $options['sizeLimitMax'] : self::$sizeLimitMax;
+		$directory = isset($options['directory']) ? $options['directory'] : null;
 
-		if($mode === 'off')
+		if($mode === 'off' || ($mode !== 'passthrough_unsafe' && $mode !== 'sanitize'))
 			return self::reject("rejected (proxy disabled)");
 
 		if($mode === 'passthrough_unsafe')
 			return self::forward($rawData, true, "passthrough (UNSAFE mode)");
 
-		// sanitize mode
-		$xml = self::parseXml($rawData);
-		if($xml === false || !isset($xml->methodName))
-			return self::forward($rawData, false, "untrusted (invalid XML)");
+		$decoded = self::decodeCall($rawData);
+		if(!$decoded['ok'])
+		{
+			$method = isset($decoded['method']) ? $decoded['method'] : null;
+			$logMsg = $decoded['error'];
+			if($method !== null)
+				$logMsg .= ': ' . self::normalizeMethodName($method);
+			return self::reject($logMsg, $method, $decoded['error']);
+		}
 
-		$methodName = (string)$xml->methodName;
+		$methodName = $decoded['method'];
+		$params = $decoded['params'];
 
-		if(self::isDenied($methodName, $deny))
+		if(self::isDirectDenied($methodName, $deny))
 			return self::reject("rejected (not allowed on this connection): ".
-				self::logValue($methodName), $methodName);
+				self::normalizeMethodName($methodName), $methodName);
 
-		$directory = isset($options['directory']) ? $options['directory'] : null;
+		if($methodName === 'system.multicall')
+			return self::reject("rejected (not allowed on this connection): ".
+				self::normalizeMethodName($methodName), $methodName);
 
 		if(in_array($methodName, self::$sanitizeMethods, true))
 		{
+			if(count($params) < 2)
+				return self::reject("rejected (malformed load call): ".
+					self::normalizeMethodName($methodName), $methodName);
+
+			if($params[0]['type'] !== 'string')
+				return self::reject("rejected (malformed load call): ".
+					self::normalizeMethodName($methodName), $methodName);
+
+			$targetVal = $params[0]['value'];
+			$isRaw = in_array($methodName, self::$rawLoadMethods, true);
+			$dataParam = $params[1];
 			$localPath = null;
-			if(in_array($methodName, self::$uriLoadMethods, true))
+
+			if($isRaw)
 			{
-				$uri = self::loadUri($xml);
-				if(($uri !== null) && !preg_match(self::$networkUri, $uri))
+				if($dataParam['typeTag'] !== 'base64')
+					return self::reject("rejected (malformed load call): ".
+						self::normalizeMethodName($methodName), $methodName);
+
+				$rawBytes = base64_decode($dataParam['value'], true);
+				if($rawBytes === false)
+					return self::reject("rejected (malformed load call): ".
+						self::normalizeMethodName($methodName), $methodName);
+
+				$canonicalDataXml = '<param><value><base64>'.base64_encode($rawBytes).'</base64></value></param>';
+			}
+			else
+			{
+				if($dataParam['type'] !== 'string' && $dataParam['typeTag'] !== 'base64')
+					return self::reject("rejected (malformed load call): ".
+						self::normalizeMethodName($methodName), $methodName);
+
+				$uri = $dataParam['value'];
+				if($dataParam['typeTag'] === 'base64')
+				{
+					$decodedUri = base64_decode($uri, true);
+					if($decodedUri === false)
+						return self::reject("rejected (malformed load call): ".
+							self::normalizeMethodName($methodName), $methodName);
+					$uri = $decodedUri;
+				}
+
+				if(!self::isValidXmlUtf8String($uri))
+					return self::reject("rejected (malformed load call): ".
+						self::normalizeMethodName($methodName), $methodName);
+
+				if(!preg_match(self::$networkUri, $uri))
 				{
 					if(!$allowLocalPaths)
 						return self::reject("rejected (load from a local path): ".
-							$methodName." ".self::logValue($uri), $methodName);
+							self::normalizeMethodName($methodName), $methodName);
 					$localPath = $uri;
 				}
+
+				$canonicalDataXml = '<param><value><string>'.htmlspecialchars($uri, ENT_NOQUOTES, 'UTF-8').'</string></value></param>';
 			}
 
-			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams, $directory);
+			$rebuiltCommands = array();
 
-			// Trusted only when every parameter was rebuilt from parts this
-			// side parsed. Anything carried over verbatim goes untrusted, so
-			// rtorrent still applies its own command restrictions to it.
-			$trusted = $rebuilt['rebuiltAll'];
-
-			$state = $trusted ? "trusted" : "untrusted (a parameter could not be rebuilt)";
-			if(count($rebuilt['stripped']) > 0)
+			for($i = 2; $i < count($params); $i++)
 			{
-				$stripped = array();
-				foreach($rebuilt['stripped'] as $value)
-					$stripped[] = self::logValue($value);
-				$line = $state.": ".$methodName." (kept ".$rebuilt['kept']." params, stripped: ".implode(', ', $stripped).")";
+				$cmdParam = $params[$i];
+				if($cmdParam['type'] !== 'string')
+					return self::reject("rejected (malformed load call): ".
+						self::normalizeMethodName($methodName), $methodName);
+
+				$cmdVal = $cmdParam['value'];
+				$rebuilt = self::rebuildSafeLoadParam($cmdVal, $safeParams, $directory, $deny);
+				if($rebuilt === null || $rebuilt === false)
+				{
+					return self::reject("rejected (not allowed on this connection): ".
+						self::normalizeMethodName($methodName), $methodName);
+				}
+
+				$rebuiltCommands[] = $rebuilt;
 			}
-			else
-				$line = $state.": ".$methodName." (".$rebuilt['kept']." params)";
+
+			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>'."\n"
+				. '<methodCall><methodName>'.htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8').'</methodName><params>'
+				. '<param><value><string>'.htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8').'</string></value></param>'
+				. $canonicalDataXml;
+			foreach($rebuiltCommands as $rc)
+			{
+				$canonicalXml .= '<param><value><string>'.htmlspecialchars($rc, ENT_NOQUOTES, 'UTF-8').'</string></value></param>';
+			}
+			$canonicalXml .= '</params></methodCall>';
+
+			$totalKept = 2 + count($rebuiltCommands);
+			$normMethod = self::normalizeMethodName($methodName);
+			$paramDesc = "kept ".$totalKept." params";
 
 			if($localPath !== null)
-				$line = "WARNING: operator-enabled local path forwarded: ".
-					$methodName." ".self::logValue($localPath).
-					"; rtorrent resolves it after proxy checks; ".$line;
-			return self::forward($rebuilt['xml'], $trusted, $line);
+			{
+				$logMsg = "WARNING: operator-enabled local path forwarded: ".$normMethod.
+					"; trusted: ".$normMethod." (".$paramDesc.")";
+			}
+			else
+			{
+				$logMsg = "trusted: ".$normMethod." (".$paramDesc.")";
+			}
+			return self::forward($canonicalXml, true, $logMsg);
 		}
 
 		if(in_array($methodName, self::$multicallMethods, true))
 		{
-			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams, $directory);
-
-			if(count($rebuilt['stripped']) > 0)
+			$isFiltered = ($methodName === 'd.multicall.filtered');
+			$minParams = $isFiltered ? 4 : 3;
+			if(count($params) < $minParams)
 			{
-				// About to forward the caller's own bytes. Anything in them
-				// that rtorrent would run as a command has to be refused here,
-				// because untrusted is not a refusal on every version.
-				foreach($rebuilt['stripped'] as $value)
-				{
-					$command = self::commandName($value);
-					if(($command !== null) && self::isDenied($command, $deny))
-						return self::reject("rejected (not allowed on this connection): ".
-							$methodName." carrying ".self::logValue($command), $command);
-				}
-
-				// Name the members, not just how many there are. rTorrent
-				// refuses a multicall WHOLE if any member is outside its own
-				// rpc.mark_safe list, so the outcome here is all-or-nothing:
-				// the allowed setters in the same batch do not run either.
-				// "N command parameters this side does not rebuild" reads like
-				// a partial degradation and sent more than one diagnosis of an
-				// external client (Prowlarr, Sonarr, Radarr, Transdroid) down
-				// the wrong path.
-				$names = array();
-				foreach($rebuilt['stripped'] as $value)
-				{
-					$command = self::commandName($value);
-					$names[] = ($command !== null) ? $command : '?';
-				}
-				return self::forward($rawData, false, "untrusted: ".$methodName." carrying ".
-					implode(', ', $names)." (forwarded as the caller's own bytes; rtorrent ".
-					"refuses the whole multicall if any of them is not safe there)");
+				return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
 			}
 
-			$trusted = $rebuilt['rebuiltAll'];
-			$state = $trusted ? "trusted" : "untrusted (a parameter could not be rebuilt)";
+			if($params[0]['type'] !== 'string' || $params[1]['type'] !== 'string')
+				return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
 
-			return self::forward($rebuilt['xml'], $trusted,
-				$state.": ".$methodName." (".$rebuilt['kept']." params)");
+			$targetVal = $params[0]['value'];
+			$viewVal = $params[1]['value'];
+
+			$filterVal = null;
+			$resultStartIndex = 2;
+			if($isFiltered)
+			{
+				if($params[2]['type'] !== 'string')
+					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+				$rawFilter = $params[2]['value'];
+				$rebuiltFilter = self::rebuildSafeLoadParam($rawFilter, $safeParams, $directory, $deny);
+				if($rebuiltFilter === null || $rebuiltFilter === false)
+				{
+					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+				}
+				$filterVal = $rebuiltFilter;
+				$resultStartIndex = 3;
+			}
+
+			$rebuiltResults = array();
+			for($i = $resultStartIndex; $i < count($params); $i++)
+			{
+				if($params[$i]['type'] !== 'string')
+					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+
+				$cmd = $params[$i]['value'];
+				$separator = strpos($cmd, '=');
+				$cmdName = ($separator !== false) ? trim(substr($cmd, 0, $separator)) : trim($cmd);
+				if($cmdName !== '' && self::isDirectDenied($cmdName, $deny))
+					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+
+				$rebuilt = self::rebuildSafeLoadParam($cmd, $safeParams, $directory, $deny);
+				if($rebuilt === null || $rebuilt === false)
+				{
+					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+				}
+				$rebuiltResults[] = $rebuilt;
+			}
+
+			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+				. '<methodCall><methodName>' . htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8') . '</methodName><params>'
+				. '<param><value><string>' . htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>'
+				. '<param><value><string>' . htmlspecialchars($viewVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
+			if($isFiltered)
+			{
+				$canonicalXml .= '<param><value><string>' . htmlspecialchars($filterVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
+			}
+			foreach($rebuiltResults as $rr)
+			{
+				$canonicalXml .= '<param><value><string>' . htmlspecialchars($rr, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
+			}
+			$canonicalXml .= '</params></methodCall>';
+
+			$totalParams = count($params);
+			return self::forward($canonicalXml, true, "trusted: " . self::normalizeMethodName($methodName) . " (" . $totalParams . " params)");
 		}
 
 		if(isset($elevate[$methodName]))
 		{
-			$built = self::rebuildElevated($xml, $methodName, $elevate[$methodName], $sizeLimitMax);
-			if($built !== null)
-				return self::forward($built, true, "trusted: ".$methodName." (elevated)");
-			return self::forward($rawData, false, "untrusted: ".self::logValue($methodName).
-				" (arguments did not match the allowed shape)");
-		}
+			$shapes = $elevate[$methodName];
+			if(count($params) !== count($shapes))
+				return self::reject("rejected (arguments did not match allowed shape): ".
+					self::normalizeMethodName($methodName), $methodName);
 
-		// system.multicall is about to be forwarded verbatim, and its members
-		// are calls rather than command strings, so the check above did not see
-		// them. rtorrent refuses them at inner dispatch from 0.16.10 — naming
-		// the inner method, which is how we know it does — but not before.
-		if($methodName === 'system.multicall')
-		{
-			foreach(self::multicallMemberNames($xml) as $member)
-				if(self::isDenied($member, $deny))
-					return self::reject("rejected (not allowed on this connection): ".
-						"system.multicall carrying ".self::logValue($member), $member);
+			$canonicalParams = array();
+			for($i = 0; $i < count($shapes); $i++)
+			{
+				$shape = $shapes[$i];
+				$param = $params[$i];
+				$emitted = self::emitArgumentFromDecoded($shape, $param, $sizeLimitMax);
+				if($emitted === null)
+					return self::reject("rejected (arguments did not match allowed shape): ".
+						self::normalizeMethodName($methodName), $methodName);
+				$canonicalParams[] = $emitted;
+			}
+
+			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+				. '<methodCall><methodName>' . htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8') . '</methodName><params>'
+				. implode('', $canonicalParams)
+				. '</params></methodCall>';
+
+			return self::forward($canonicalXml, true, "trusted: " . self::normalizeMethodName($methodName) . " (elevated)");
 		}
 
 		// Unknown method — pass through as untrusted.
-		// rtorrent's own whitelist will allow/reject.
-		return self::forward($rawData, false, "untrusted: ".self::logValue($methodName));
-	}
-
-	/**
-	 * The URI a load.* call is being asked to fetch, or null when the call does
-	 * not carry one. Read from parameter 1, which is where every version puts
-	 * it — parameter 0 is the target.
-	 */
-	private static function loadUri($xml)
-	{
-		if(!isset($xml->params->param))
-			return null;
-		$index = 0;
-		foreach($xml->params->param as $param)
-		{
-			if($index === 1)
-			{
-				// A base64 parameter is still a URI as far as rtorrent is
-				// concerned: it decodes to the string it opens. Read it the
-				// same way, so encoding it is not a way past this.
-				if(isset($param->value->base64))
-				{
-					$decoded = base64_decode((string)$param->value->base64, true);
-					return ($decoded === false) ? '' : $decoded;
-				}
-				return self::extractParamValue($param->value);
-			}
-			$index++;
-		}
-		return null;
-	}
-
-	/**
-	 * Is this command name in a refused family? Prefix match, so a version that
-	 * spells it execute2 or schedule.remove is covered by the same entry.
-	 */
-	private static function isDenied($name, $deny)
-	{
-		foreach($deny as $prefix)
-			if(strncmp($name, $prefix, strlen($prefix)) === 0)
-				return true;
-		return false;
-	}
-
-	/**
-	 * The command a parameter would run, or null if it does not look like one.
-	 * Only the name is wanted here; whether its arguments are acceptable is
-	 * rebuildSafeLoadParam's question.
-	 */
-	private static function commandName($paramValue)
-	{
-		$separator = strpos($paramValue, '=');
-		if($separator === false)
-			return null;
-		return trim(substr($paramValue, 0, $separator));
-	}
-
-	/**
-	 * The methodName of every member of a system.multicall, so they can be
-	 * judged like any other method rather than smuggled past inside a struct.
-	 */
-	private static function multicallMemberNames($xml)
-	{
-		$names = array();
-		if(!isset($xml->params->param->value->array->data->value))
-			return $names;
-		foreach($xml->params->param->value->array->data->value as $member)
-		{
-			if(!isset($member->struct->member))
-				continue;
-			foreach($member->struct->member as $field)
-				if(isset($field->name) && ((string)$field->name === 'methodName'))
-					$names[] = isset($field->value->string)
-						? (string)$field->value->string
-						: trim((string)$field->value);
-		}
-		return $names;
-	}
-
-	/**
-	 * Re-emit a call whose arguments all match the shapes declared for it, or
-	 * null if any of them does not. Nothing is copied from the client: every
-	 * argument is emitted from the value this side validated.
-	 */
-	private static function rebuildElevated($xml, $methodName, $shapes, $sizeLimitMax)
-	{
-		$values = array();
-		if(isset($xml->params->param))
-			foreach($xml->params->param as $param)
-				$values[] = self::extractParamValue($param->value);
-
-		if(count($values) !== count($shapes))
-			return null;
-
-		$out = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-			. '<methodCall><methodName>' . htmlspecialchars($methodName)
-			. '</methodName><params>';
-
-		foreach($shapes as $index => $shape)
-		{
-			$emitted = self::emitArgument($shape, $values[$index], $sizeLimitMax);
-			if($emitted === null)
-				return null;
-			$out .= $emitted;
-		}
-
-		return $out . '</params></methodCall>';
-	}
-
-	private static function emitArgument($shape, $value, $sizeLimitMax)
-	{
-		switch($shape)
-		{
-			case 'hash':
-				if(!preg_match('/^[0-9A-Fa-f]{40}$/', $value))
-					return null;
-				return '<param><value><string>'.strtoupper($value).'</string></value></param>';
-
-			case 'empty':
-				if($value !== '')
-					return null;
-				return '<param><value><string></string></value></param>';
-
-			case 'int':
-				if(!preg_match('/^-?[0-9]{1,18}$/', $value))
-					return null;
-				return '<param><value><i8>'.$value.'</i8></value></param>';
-
-			case 'size':
-				if(!preg_match('/^[0-9]{1,18}$/', $value))
-					return null;
-				$size = (int)$value;
-				if($size < 1)
-					return null;
-				if($size > $sizeLimitMax)
-					$size = $sizeLimitMax;
-				return '<param><value><i8>'.$size.'</i8></value></param>';
-
-			case 'text':
-				// rtorrent stores an XMLRPC string argument, it does not parse
-				// it as a command, so nothing in it needs rejecting — only the
-				// XML carrying it has to stay well formed.
-				return '<param><value><string>'
-					. htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8')
-					. '</string></value></param>';
-		}
-		return null;
+		return self::forward($rawData, false, "untrusted: " . self::normalizeMethodName($methodName));
 	}
 
 	/**
@@ -592,7 +1081,7 @@ class XMLRPCProxy
 	private static function forward($payload, $trusted, $line)
 	{
 		return array('action' => 'send', 'payload' => $payload,
-			'trusted' => $trusted, 'method' => null, 'log' => array($line));
+			'trusted' => $trusted, 'method' => null, 'log' => array(self::formatLogMessage($line)));
 	}
 
 	/**
@@ -600,10 +1089,16 @@ class XMLRPCProxy
 	 * has one to name — a door renders it back to the caller so the client is
 	 * told what it may not do, instead of being left to guess.
 	 */
-	private static function reject($line, $method = null)
+	private static function reject($line, $method = null, $error = null)
 	{
-		return array('action' => 'reject', 'payload' => '',
-			'trusted' => false, 'method' => $method, 'log' => array($line));
+		return array(
+			'action' => 'reject',
+			'payload' => '',
+			'trusted' => false,
+			'method' => self::normalizeMethodName($method),
+			'log' => array(self::formatLogMessage($line)),
+			'error' => ($error !== null) ? $error : $line,
+		);
 	}
 
 	/**
@@ -614,8 +1109,9 @@ class XMLRPCProxy
 	 */
 	public static function rejectionMessage($method)
 	{
-		return (($method !== null) && ($method !== ''))
-			? "The command '".$method."' was rejected by this server."
+		$cleanMethod = self::normalizeMethodName($method);
+		return (($cleanMethod !== null) && ($cleanMethod !== ''))
+			? "The command '".$cleanMethod."' was rejected by this server."
 			: "This XMLRPC call was rejected by this server.";
 	}
 
@@ -642,7 +1138,8 @@ class XMLRPCProxy
 	 * double-quoted string is one argument even when it contains commas.
 	 * Unquoted arguments are trimmed; quoted ones are not. An unclosed quote,
 	 * or text after a quoted argument that is not a comma, is malformed and
-	 * returns null so the whole parameter is dropped.
+	 * returns null. The production policy treats that result as a terminal
+	 * rejection of the complete outer request without a transport call.
 	 *
 	 * Clients such as cross-seed quote every value (d.custom1.set="cross-seed").
 	 * Splitting on ',' first would cut inside those quotes; dropping them left
@@ -744,7 +1241,8 @@ class XMLRPCProxy
 	}
 
 	/**
-	 * Rebuild one command parameter, or return null to drop it.
+	 * Rebuild one command parameter. A null or false result makes the production
+	 * policy reject the complete outer request without a transport call.
 	 *
 	 * A parameter is not a single command: rtorrent ends a command at ';' or a
 	 * newline and calls a parenthesised (command,args) found in a value, so a
@@ -759,13 +1257,15 @@ class XMLRPCProxy
 	 * re-quoted, rather than dropped: cross-seed and others send
 	 * d.custom1.set="label".
 	 */
-	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null)
+	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null, $deny = null)
 	{
 		$separator = strpos($paramValue, '=');
 		if($separator === false)
 			return null;
 
 		$command = trim(substr($paramValue, 0, $separator));
+		if(self::isDeniedCommand($command, $deny !== null ? $deny : self::$denyPrefixes))
+			return null;
 		if(!in_array($command, $safeParams, true))
 			return null;
 
@@ -775,14 +1275,14 @@ class XMLRPCProxy
 		if($parts === null)
 			return null;
 
-		// Both shipped endpoints provide boundary options. rpc2.php refuses to
-		// serve without a usable boundary (or the explicit root opt-in); httprpc
-		// keeps serving with an empty boundary but strips directory setters.
+		// Both shipped endpoints provide boundary options. Any directory setter
+		// outside the configured boundary returns false here and makes the
+		// outer request locally terminal with no transport call.
 		if(($directory !== null) && in_array($command, self::$directoryCommands, true))
 		{
 			$path = isset($parts[0]) ? $parts[0] : '';
 			if(!self::directoryIsAllowed($path, $directory))
-				return null;
+				return false;
 		}
 
 		$arguments = array();
@@ -856,6 +1356,12 @@ class XMLRPCProxy
 			{
 				if($index < 2)
 				{
+					if(!isset($param->value))
+					{
+						$rebuiltAll = false;
+						$index++;
+						continue;
+					}
 					// Target and URL/data are values, never commands, but they
 					// are re-emitted rather than copied so that what was read
 					// and what is sent are the same bytes.
@@ -870,6 +1376,11 @@ class XMLRPCProxy
 				}
 				else
 				{
+					if(!isset($param->value))
+					{
+						$index++;
+						continue;
+					}
 					$value = self::extractParamValue($param->value);
 					$rebuiltParam = self::rebuildSafeLoadParam($value, $safeParams, $directory);
 					if($rebuiltParam !== null)
@@ -901,6 +1412,9 @@ class XMLRPCProxy
 	 */
 	private static function rebuildDataParam($paramElement)
 	{
+		if($paramElement === null)
+			return null;
+
 		if(isset($paramElement->base64))
 		{
 			$decoded = base64_decode((string)$paramElement->base64, true);

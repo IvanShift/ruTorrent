@@ -263,7 +263,7 @@ class XMLRPCProxyContractTest extends TestCase
 		$this->assertTrue($status === 0,
 			'decide() runs with neither FileUtil nor rXMLRPCRequest defined: '
 			. implode(' / ', $output));
-		$this->assertTrue(implode("\n", $output) === 'send|untrusted|not xml at all',
+		$this->assertTrue(implode("\n", $output) === 'reject|untrusted|',
 			'and reaches the same decision there');
 	}
 }

@@ -11,6 +11,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 {
 	private $sourceRoot;
 
+	const ORDINARY_PAYLOAD = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
+	const ORDINARY_LENGTH = 109;
+	const ORDINARY_SHA256 = 'da404e3c00f2949eaae852190dce9909c81734f86e0f1c833c99f59003d9cdf3';
+
+	const CANONICAL_MULTICALL_PAYLOAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.stop=\"\"</string></value></param></params></methodCall>";
+	const CANONICAL_MULTICALL_LENGTH = 275;
+	const CANONICAL_MULTICALL_SHA256 = 'd92ec179c05929f0f8eebd4c6325a27a5fba884907c8cbb2e7c37c3b0f636908';
+
 	public function setUp()
 	{
 		$this->sourceRoot = realpath(__DIR__ . '/../..');
@@ -23,16 +31,20 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$result = $this->runEntrypoint('action', 'unreadable', true);
 		$this->assertHttp($result, '400 Bad Request', 'text/html; charset=UTF-8',
 			'Could not read XMLRPC request.');
-		$this->assertState($result['state'], 0, 1,
-			array('xmlrpc-proxy: could not read request body'));
+		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+		$this->assertEquals(array('xmlrpc-proxy: could not read request body'), $result['state']['logs']);
 	}
 
 	public function testHttprpcEmptyInputReturnsClassified400()
 	{
 		$result = $this->runEntrypoint('action', '', true);
 		$this->assertHttp($result, '400 Bad Request', 'text/html; charset=UTF-8', 'Empty XMLRPC request.');
-		$this->assertState($result['state'], 0, 1,
-			array('xmlrpc-proxy: empty request body'));
+		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+		$this->assertEquals(array('xmlrpc-proxy: empty request body'), $result['state']['logs']);
 	}
 
 	public function testHttprpcInputFailuresDoNotLogWhenDisabled()
@@ -40,11 +52,17 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$unreadable = $this->runEntrypoint('action', 'unreadable', false);
 		$this->assertHttp($unreadable, '400 Bad Request', 'text/html; charset=UTF-8',
 			'Could not read XMLRPC request.');
-		$this->assertState($unreadable['state'], 0, 1, array());
+		$this->assertFullTranscript('httprpc unreadable', $unreadable['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+		$this->assertEquals(array(), $unreadable['state']['logs']);
 
 		$empty = $this->runEntrypoint('action', '', false);
 		$this->assertHttp($empty, '400 Bad Request', 'text/html; charset=UTF-8', 'Empty XMLRPC request.');
-		$this->assertState($empty['state'], 0, 1, array());
+		$this->assertFullTranscript('httprpc empty', $empty['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+		$this->assertEquals(array(), $empty['state']['logs']);
 	}
 
 	public function testHttprpcRefusalReturnsNamed403AndStops()
@@ -56,7 +74,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertTrue(strpos($result['body'],
 			"The command 'execute.capture' was rejected by this server.") !== false,
 			'httprpc refusal names the refused command');
-		$this->assertCounts($result['state'], 0, 1);
+		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
 	}
 
 	public function testHttprpcTransportFailureReturnsNeutral500AndStops()
@@ -64,11 +84,12 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$result = $this->runEntrypoint('action', $this->allowedXml(), true, 'false');
 		$this->assertHttp($result, '500 Server Error', 'text/html; charset=UTF-8',
 			'Could not complete the rTorrent XMLRPC request.');
-		$this->assertCounts($result['state'], 1, 1);
-		$this->assertEquals($this->allowedXml(), $result['state']['payload'],
-			'httprpc sends the admitted XML payload');
-		$this->assertTrue($result['state']['trusted'] === false,
-			'httprpc sends an ordinary admitted method as untrusted');
+		$this->assertFullTranscript('httprpc', $result['state'], 1, self::ORDINARY_PAYLOAD,
+			self::ORDINARY_LENGTH, self::ORDINARY_SHA256, null, null, false, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
 	}
 
 	public function testRpc2UnreadableInputReturnsClassified400()
@@ -81,6 +102,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'rpc2 unreadable input returns the XMLRPC -501 envelope');
 		$this->assertRpc2Log($result, 'could not read request body',
 			'rpc2 logs the classified unreadable-input reason');
+		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
+			null, null, null, null, null, array());
 	}
 
 	public function testRpc2EmptyInputReturnsClassified400()
@@ -93,6 +116,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'rpc2 does not speculate about post_max_size in the client fault');
 		$this->assertRpc2Log($result, 'empty request body',
 			'rpc2 logs the classified empty-input reason');
+		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
+			null, null, null, null, null, array());
 	}
 
 	public function testRpc2RefusalRendersTheSharedNamedMessage()
@@ -104,6 +129,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'rpc2 refusal names the refused command');
 		$this->assertTrue(strpos($result['body'], '<i4>-501</i4>') !== false,
 			'rpc2 refusal returns the XMLRPC -501 envelope');
+		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
+			null, null, null, null, null, array());
 	}
 
 	public function testBothDoorsDecideTheSameTrustForTheSameRequest()
@@ -125,13 +152,349 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	public function testHttprpcNamesAMissingPolicyRatherThanStrippingInSilence()
 	{
 		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
+		$this->assertHttp($result, '403 Forbidden', 'text/xml; charset=UTF-8');
 		$this->assertTrue(in_array('xmlrpc-proxy: no $XMLRPCProxySafeParams is defined in '
 			. 'conf/xmlrpc_proxy.php or plugins/httprpc/conf.php',
 			$result['state']['logs'], true),
 			'a tree with no policy says so rather than letting it read as a client fault');
-		$this->assertEquals(false, $result['state']['trusted'],
-			'with no policy every command parameter is stripped and the call goes untrusted');
+		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
 	}
+
+	public function testBothDoorsRejectMalformedOwnedCallWith403And501()
+	{
+		$malformedXml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>';
+		$httprpc = $this->runEntrypoint('action', $malformedXml, true);
+		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false,
+			'httprpc malformed load refusal returns the XMLRPC -501 envelope');
+		$this->assertTrue(strpos($httprpc['body'],
+			"The command 'load.start' was rejected by this server.") !== false,
+			'httprpc malformed load refusal names load.start');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $malformedXml, true);
+		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($rpc2['body'],
+			"The command 'load.start' was rejected by this server.") !== false,
+			'rpc2 malformed load refusal names load.start');
+		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false,
+			'rpc2 malformed load refusal returns the XMLRPC -501 envelope');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
+			null, null, null, null, null, array());
+	}
+
+	public function testBothDoorsRejectNestedMulticallDenialNamingOuterMethod()
+	{
+		$nestedDeniedXml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			. '<params><param><value><string></string></value></param>'
+			. '<param><value><string>main</string></value></param>'
+			. '<param><value><string>execute.capture=/bin/id</string></value></param>'
+			. '</params></methodCall>';
+		$httprpc = $this->runEntrypoint('action', $nestedDeniedXml, true);
+		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false,
+			'httprpc nested denial returns XMLRPC -501 envelope');
+		$this->assertTrue(strpos($httprpc['body'],
+			"The command 'd.multicall2' was rejected by this server.") !== false,
+			'httprpc nested denial names outer method d.multicall2');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $nestedDeniedXml, true);
+		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($rpc2['body'],
+			"The command 'd.multicall2' was rejected by this server.") !== false,
+			'rpc2 nested denial names outer method d.multicall2');
+		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false,
+			'rpc2 nested denial returns the XMLRPC -501 envelope');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
+			null, null, null, null, null, array());
+	}
+
+	public function testBothDoorsPreserveOuterIdentityAfterLaterParameterFailure()
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			. '<params><param><value><string></string></value></param>'
+			. '<param></param></params></methodCall>';
+
+		$httprpc = $this->runEntrypoint('action', $xml, true);
+		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false,
+			'httprpc returns XMLRPC -501 fault');
+		$this->assertTrue(strpos($httprpc['body'],
+			"The command 'd.multicall2' was rejected by this server.") !== false,
+			'httprpc fault names normalized outer method d.multicall2');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
+		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false,
+			'rpc2 returns XMLRPC -501 fault');
+		$this->assertTrue(strpos($rpc2['body'],
+			"The command 'd.multicall2' was rejected by this server.") !== false,
+			'rpc2 fault names normalized outer method d.multicall2');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
+			null, null, null, null, null, array());
+	}
+
+	public function testBothDoorsSendOrdinaryPayloadOnceUntrusted()
+	{
+		$xml = $this->allowedXml();
+
+		$httprpc = $this->runEntrypoint('action', $xml, true);
+		$this->assertHttp($httprpc, '200 OK', 'text/xml; charset=UTF-8');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
+			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
+			null, null, false, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
+		$this->assertHttp($rpc2, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
+			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
+			'127.0.0.1', 1, false,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array(
+				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
+			));
+	}
+
+	public function testBothDoorsSendCanonicalOwnedPayloadOnceTrusted()
+	{
+		$xml = $this->viewActionXml();
+
+		$httprpc = $this->runEntrypoint('action', $xml, true);
+		$this->assertHttp($httprpc, '200 OK', 'text/xml; charset=UTF-8');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
+			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
+			null, null, true, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
+		$this->assertHttp($rpc2, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
+			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
+			'127.0.0.1', 1, true,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array(
+				array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
+			));
+	}
+
+	public function testBothDoorsRejectMalformedOwnedWithoutTransport()
+	{
+		$malformedXml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>';
+
+		$httprpc = $this->runEntrypoint('action', $malformedXml, true);
+		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false, 'httprpc -501 fault');
+		$this->assertTrue(strpos($httprpc['body'], "The command 'load.start' was rejected by this server.") !== false,
+			'httprpc names load.start');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $malformedXml, true);
+		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false, 'rpc2 -501 fault');
+		$this->assertTrue(strpos($rpc2['body'], "The command 'load.start' was rejected by this server.") !== false,
+			'rpc2 names load.start');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
+			null, null, null, null, null, array());
+	}
+
+	public function testBothDoorsRejectNestedMulticallWithoutTransport()
+	{
+		$nestedXml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			. '<params><param><value><string></string></value></param>'
+			. '<param><value><string>main</string></value></param>'
+			. '<param><value><string>execute.capture=/bin/id</string></value></param></params></methodCall>';
+
+		$httprpc = $this->runEntrypoint('action', $nestedXml, true);
+		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false, 'httprpc -501 fault');
+		$this->assertTrue(strpos($httprpc['body'], "The command 'd.multicall2' was rejected by this server.") !== false,
+			'httprpc names d.multicall2');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
+			null, null, null, null, null,
+			array(array('event' => 'response', 'door' => 'httprpc')));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $nestedXml, true);
+		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false, 'rpc2 -501 fault');
+		$this->assertTrue(strpos($rpc2['body'], "The command 'd.multicall2' was rejected by this server.") !== false,
+			'rpc2 names d.multicall2');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
+			null, null, null, null, null, array());
+	}
+
+	public function testBothDoorsReturnNeutralStatusAfterOneTransportFailure()
+	{
+		$xml = $this->allowedXml();
+
+		$httprpc = $this->runEntrypoint('action', $xml, true, 'false');
+		$this->assertHttp($httprpc, '500 Server Error', 'text/html; charset=UTF-8',
+			'Could not complete the rTorrent XMLRPC request.');
+		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
+			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
+			null, null, false, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
+
+		$rpc2 = $this->runEntrypoint('rpc2', $xml, true, 'false');
+		$this->assertHttp($rpc2, '502 Bad Gateway', 'text/xml;charset=UTF-8');
+		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
+			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
+			'127.0.0.1', 1, false,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array(
+				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
+			));
+	}
+
+	public function testBothDoorsLoggingDoesNotChangeTransport()
+	{
+		$dispositions = array(
+			'zero_call' => array(
+				'xml' => $this->deniedXml(),
+				'send' => 'success',
+				'sends' => 0,
+				'payload' => null,
+				'length' => null,
+				'sha' => null,
+				'trusted' => null,
+				'httprpc_events' => array(array('event' => 'response', 'door' => 'httprpc')),
+				'rpc2_events' => array(),
+				'httprpc_status' => '403 Forbidden',
+				'httprpc_type' => 'text/xml; charset=UTF-8',
+				'rpc2_status' => '403 Forbidden',
+				'rpc2_type' => 'text/xml;charset=UTF-8',
+			),
+			'ordinary_pass' => array(
+				'xml' => $this->allowedXml(),
+				'send' => 'success',
+				'sends' => 1,
+				'payload' => self::ORDINARY_PAYLOAD,
+				'length' => self::ORDINARY_LENGTH,
+				'sha' => self::ORDINARY_SHA256,
+				'trusted' => false,
+				'httprpc_events' => array(
+					array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+					array('event' => 'response', 'door' => 'httprpc'),
+				),
+				'rpc2_events' => array(
+					array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
+				),
+				'httprpc_status' => '200 OK',
+				'httprpc_type' => 'text/xml; charset=UTF-8',
+				'rpc2_status' => '200 OK',
+				'rpc2_type' => 'text/xml;charset=UTF-8',
+			),
+			'canonical_owned' => array(
+				'xml' => $this->viewActionXml(),
+				'send' => 'success',
+				'sends' => 1,
+				'payload' => self::CANONICAL_MULTICALL_PAYLOAD,
+				'length' => self::CANONICAL_MULTICALL_LENGTH,
+				'sha' => self::CANONICAL_MULTICALL_SHA256,
+				'trusted' => true,
+				'httprpc_events' => array(
+					array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
+					array('event' => 'response', 'door' => 'httprpc'),
+				),
+				'rpc2_events' => array(
+					array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
+				),
+				'httprpc_status' => '200 OK',
+				'httprpc_type' => 'text/xml; charset=UTF-8',
+				'rpc2_status' => '200 OK',
+				'rpc2_type' => 'text/xml;charset=UTF-8',
+			),
+			'transport_failure' => array(
+				'xml' => $this->allowedXml(),
+				'send' => 'false',
+				'sends' => 1,
+				'payload' => self::ORDINARY_PAYLOAD,
+				'length' => self::ORDINARY_LENGTH,
+				'sha' => self::ORDINARY_SHA256,
+				'trusted' => false,
+				'httprpc_events' => array(
+					array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+					array('event' => 'response', 'door' => 'httprpc'),
+				),
+				'rpc2_events' => array(
+					array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
+				),
+				'httprpc_status' => '500 Server Error',
+				'httprpc_type' => 'text/html; charset=UTF-8',
+				'rpc2_status' => '502 Bad Gateway',
+				'rpc2_type' => 'text/xml;charset=UTF-8',
+			),
+		);
+
+		foreach($dispositions as $name => $disp)
+		{
+			// httprpc: logged vs quiet
+			$httprpcLogged = $this->runEntrypoint('action', $disp['xml'], true, $disp['send']);
+			$httprpcQuiet = $this->runEntrypoint('action', $disp['xml'], false, $disp['send']);
+			$this->assertHttp($httprpcLogged, $disp['httprpc_status'], $disp['httprpc_type']);
+			$this->assertHttp($httprpcQuiet, $disp['httprpc_status'], $disp['httprpc_type']);
+			$this->assertFullTranscript('httprpc logged (' . $name . ')', $httprpcLogged['state'],
+				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
+				null, null, $disp['trusted'], null, null, $disp['httprpc_events']);
+			$this->assertFullTranscript('httprpc quiet (' . $name . ')', $httprpcQuiet['state'],
+				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
+				null, null, $disp['trusted'], null, null, $disp['httprpc_events']);
+			$this->assertTranscriptsStrictlyIdentical('httprpc (' . $name . ')', $httprpcLogged['state'], $httprpcQuiet['state']);
+			$this->assertTrue(count($httprpcLogged['state']['logs']) >= count($httprpcQuiet['state']['logs']),
+				'httprpc (' . $name . ') logged has at least as many log entries');
+			if($disp['sends'] > 0 && $disp['trusted'])
+			{
+				$this->assertTrue(in_array('xmlrpc-proxy: trusted: d.multicall2 (3 params)', $httprpcLogged['state']['logs'], true),
+					'httprpc (' . $name . ') logged has proxy log');
+				$this->assertTrue(!in_array('xmlrpc-proxy: trusted: d.multicall2 (3 params)', $httprpcQuiet['state']['logs'], true),
+					'httprpc (' . $name . ') quiet has no proxy log');
+			}
+
+			// rpc2: logged vs quiet
+			$rpc2Logged = $this->runEntrypoint('rpc2', $disp['xml'], true, $disp['send']);
+			$rpc2Quiet = $this->runEntrypoint('rpc2', $disp['xml'], false, $disp['send']);
+			$this->assertHttp($rpc2Logged, $disp['rpc2_status'], $disp['rpc2_type']);
+			$this->assertHttp($rpc2Quiet, $disp['rpc2_status'], $disp['rpc2_type']);
+			$rpc2Host = ($disp['sends'] > 0) ? '127.0.0.1' : null;
+			$rpc2Port = ($disp['sends'] > 0) ? 1 : null;
+			$rpc2Timeouts = ($disp['sends'] > 0) ? array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null) : null;
+			$rpc2ResponseMode = ($disp['sends'] > 0) ? 1 : null;
+			$this->assertFullTranscript('rpc2 logged (' . $name . ')', $rpc2Logged['state'],
+				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
+				$rpc2Host, $rpc2Port, $disp['trusted'], $rpc2Timeouts, $rpc2ResponseMode, $disp['rpc2_events']);
+			$this->assertFullTranscript('rpc2 quiet (' . $name . ')', $rpc2Quiet['state'],
+				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
+				$rpc2Host, $rpc2Port, $disp['trusted'], $rpc2Timeouts, $rpc2ResponseMode, $disp['rpc2_events']);
+			$this->assertTranscriptsStrictlyIdentical('rpc2 (' . $name . ')', $rpc2Logged['state'], $rpc2Quiet['state']);
+			if($disp['sends'] > 0 && $disp['trusted'])
+			{
+				$this->assertTrue(strpos($rpc2Logged['rpc2logs'], 'trusted: d.multicall2 (3 params)') !== false,
+					'rpc2 (' . $name . ') logged records diagnostic');
+			}
+		}
+	}
+
 
 	/**
 	 * "Stop all": what a client sends to act on a whole view. rtorrent refuses
@@ -172,6 +535,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			file_put_contents($state, json_encode(array(
 				'sends' => 0, 'responses' => 0, 'logs' => array(),
 				'payload' => null, 'trusted' => null,
+				'host' => null, 'port' => null,
+				'payload_base64' => null, 'payload_sha256' => null, 'payload_length' => null,
+				'timeouts' => null, 'response_mode' => null, 'events' => array(),
 			)));
 			$this->writeStubs($tree);
 
@@ -222,7 +588,6 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$files = array(
 			'plugins/httprpc/action.php',
-			'php/scgitransport.php',
 			'php/xmlrpc_path.php',
 			'php/xmlrpc_proxy.php',
 			'rpc2.php',
@@ -250,25 +615,81 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		if(!is_dir($tree . '/conf'))
 			mkdir($tree . '/conf', 0700, true);
+		file_put_contents($tree . '/php/scgitransport.php', <<<'PHP'
+<?php
+class rSCGITransport
+{
+	const RESPONSE_BODY = 1;
+
+	public static function send($host, $port, $payload, $trusted = false, $timeout = 0, &$failure = null, $transferTimeout = null, $maxResponseBytes = null, $responseMode = self::RESPONSE_BODY)
+	{
+		$path = getenv('XMLRPC_ENTRYPOINT_STATE');
+		$state = json_decode(@file_get_contents($path), true);
+		if(!is_array($state))
+			$state = array('sends' => 0, 'responses' => 0, 'logs' => array(),
+				'payload' => null, 'trusted' => null, 'host' => null, 'port' => null,
+				'payload_base64' => null, 'payload_sha256' => null, 'payload_length' => null,
+				'timeouts' => null, 'response_mode' => null, 'events' => array());
+
+		$state['sends']++;
+		$state['host'] = $host;
+		$state['port'] = $port;
+		$state['payload'] = $payload;
+		$state['payload_base64'] = base64_encode($payload);
+		$state['payload_sha256'] = hash('sha256', $payload);
+		$state['payload_length'] = strlen($payload);
+		$state['trusted'] = (bool)$trusted;
+		$state['timeouts'] = array('timeout' => $timeout, 'transferTimeout' => $transferTimeout, 'maxResponseBytes' => $maxResponseBytes);
+		$state['response_mode'] = $responseMode;
+		$state['events'][] = array('event' => 'send', 'door' => 'rpc2', 'trusted' => (bool)$trusted, 'sends' => $state['sends']);
+
+		file_put_contents($path, json_encode($state));
+
+		if(getenv('XMLRPC_ENTRYPOINT_SEND') === 'false')
+		{
+			$failure = 'transport connection failed';
+			return null;
+		}
+
+		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
+	}
+}
+PHP
+);
 		file_put_contents($tree . '/php/xmlrpc.php', <<<'PHP'
 <?php
 function entrypoint_state($key, $value = null)
 {
 	$path = getenv('XMLRPC_ENTRYPOINT_STATE');
-	$state = json_decode(file_get_contents($path), true);
+	$state = json_decode(@file_get_contents($path), true);
 	if(!is_array($state))
 		$state = array('sends' => 0, 'responses' => 0, 'logs' => array(),
-			'payload' => null, 'trusted' => null);
+			'payload' => null, 'trusted' => null, 'host' => null, 'port' => null,
+			'payload_base64' => null, 'payload_sha256' => null, 'payload_length' => null,
+			'timeouts' => null, 'response_mode' => null, 'events' => array());
 	if($key === 'log')
+	{
 		$state['logs'][] = $value;
+	}
 	elseif($key === 'send')
 	{
 		$state['sends']++;
+		$state['host'] = null;
+		$state['port'] = null;
 		$state['payload'] = $value[0];
-		$state['trusted'] = $value[1];
+		$state['payload_base64'] = base64_encode($value[0]);
+		$state['payload_sha256'] = hash('sha256', $value[0]);
+		$state['payload_length'] = strlen($value[0]);
+		$state['trusted'] = (bool)$value[1];
+		$state['timeouts'] = null;
+		$state['response_mode'] = null;
+		$state['events'][] = array('event' => 'send', 'door' => 'httprpc', 'trusted' => (bool)$value[1], 'sends' => $state['sends']);
 	}
 	elseif($key === 'response')
+	{
 		$state['responses']++;
+		$state['events'][] = array('event' => 'response', 'door' => 'httprpc');
+	}
 	file_put_contents($path, json_encode($state));
 }
 class FileUtil
@@ -290,17 +711,19 @@ class rXMLRPCRequest
 	public static function send($payload, $trusted)
 	{
 		entrypoint_state('send', array($payload, $trusted));
-		return (getenv('XMLRPC_ENTRYPOINT_SEND') === 'false') ? false : '';
+		if(getenv('XMLRPC_ENTRYPOINT_SEND') === 'false')
+			return false;
+		return "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}
 }
 class CachedEcho
 {
 	public static function send($body, $type)
 	{
-		header('Content-Type: ' . $type . '; charset=UTF-8');
+		header('Content-Type: ' . $type . '; charset=UTF-8', true);
 		entrypoint_state('response');
 		echo $body;
-		return;
+		exit;
 	}
 }
 class JSON { public static function safeEncode($value) { return json_encode($value); } }
@@ -401,16 +824,37 @@ PHP
 			$this->assertEquals($body, $result['body'], 'HTTP body is exact');
 	}
 
-	private function assertState($state, $sends, $responses, $logs)
+	private function assertFullTranscript($door, array $state, $expectedSends, $expectedPayload, $expectedLength, $expectedSha, $expectedHost, $expectedPort, $expectedTrusted, $expectedTimeouts, $expectedResponseMode, array $expectedEvents)
 	{
-		$this->assertCounts($state, $sends, $responses);
-		$this->assertEquals($logs, $state['logs'], 'recorded log lines are exact');
+		$this->assertSameStrict($expectedSends, $state['sends'], $door . ' call count');
+		$this->assertSameStrict($expectedPayload, $state['payload'], $door . ' request bytes');
+		$this->assertSameStrict($expectedLength, $state['payload_length'], $door . ' byte length');
+		$this->assertSameStrict($expectedSha, $state['payload_sha256'], $door . ' SHA-256');
+		$this->assertSameStrict($expectedHost, $state['host'], $door . ' host');
+		$this->assertSameStrict($expectedPort, $state['port'], $door . ' port');
+		$this->assertSameStrict($expectedTrusted, $state['trusted'], $door . ' trusted mode');
+		$this->assertSameStrict($expectedTimeouts, $state['timeouts'], $door . ' timeouts');
+		$this->assertSameStrict($expectedResponseMode, $state['response_mode'], $door . ' response mode');
+		$this->assertSameStrict($expectedEvents, $state['events'], $door . ' event array');
 	}
 
-	private function assertCounts($state, $sends, $responses)
+	private function assertSameStrict($expected, $actual, $message)
 	{
-		$this->assertEquals($sends, $state['sends'], 'transport send count is exact');
-		$this->assertEquals($responses, $state['responses'], 'CachedEcho response count is exact');
+		$this->assertTrue($expected === $actual, $message . ' (expected ' . json_encode($expected) . ', got ' . json_encode($actual) . ')');
+	}
+
+	private function assertTranscriptsStrictlyIdentical($prefix, array $a, array $b)
+	{
+		$this->assertSameStrict($a['sends'], $b['sends'], $prefix . ' identical sends');
+		$this->assertSameStrict($a['payload'], $b['payload'], $prefix . ' identical payload');
+		$this->assertSameStrict($a['payload_length'], $b['payload_length'], $prefix . ' identical payload_length');
+		$this->assertSameStrict($a['payload_sha256'], $b['payload_sha256'], $prefix . ' identical payload_sha256');
+		$this->assertSameStrict($a['host'], $b['host'], $prefix . ' identical host');
+		$this->assertSameStrict($a['port'], $b['port'], $prefix . ' identical port');
+		$this->assertSameStrict($a['trusted'], $b['trusted'], $prefix . ' identical trusted');
+		$this->assertSameStrict($a['timeouts'], $b['timeouts'], $prefix . ' identical timeouts');
+		$this->assertSameStrict($a['response_mode'], $b['response_mode'], $prefix . ' identical response_mode');
+		$this->assertSameStrict($a['events'], $b['events'], $prefix . ' identical events');
 	}
 
 	private function assertRpc2Log($result, $needle, $message)

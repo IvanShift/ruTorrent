@@ -1,16 +1,16 @@
 <?php
 
-if(!defined('RETRACKERS_TEST_MODE'))
-	require_once( dirname(__FILE__).'/retrackers.php');
-if(!class_exists('rTorrent', false))
-	require_once( dirname(__FILE__).'/../../php/rtorrent.php');
-require_once( dirname(__FILE__).'/guard.php');
+define('RETRACKERS_IMPORT_ONLY', true);
+require_once( dirname(__FILE__)."/update.php");
+require_once( dirname(__FILE__)."/retrackers.php");
 
-$insertAction = retrackersBuildInsertAction($rootPath, Utility::getPHP(), User::getUser());
+$script = $rootPath.'/plugins/retrackers/run.sh';
+$php = Utility::getPHP();
+$user = User::getUser();
 
-$req = $insertAction === false ? null : new rXMLRPCRequest(
-	$theSettings->getOnInsertCommand(array('tadd_trackers1'.User::getUser(), $insertAction)));
-if($req !== null && $req->run() && !$req->fault)
+$failure = null;
+$ok = retrackersRunLifecycleInit($user, $script, $php, $jResult, $failure);
+if($ok)
 {
 	$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	$trks = rRetrackers::load();

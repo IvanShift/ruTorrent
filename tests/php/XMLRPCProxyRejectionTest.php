@@ -60,13 +60,11 @@ class XMLRPCProxyRejectionTest extends TestCase
 
 	public function testAMulticallCarryingADeniedCommandNamesThatCommand()
 	{
-		// The command the multicall smuggles is what the caller must be told
-		// about, not the multicall wrapper.
 		$d = $this->call('d.multicall2', array('', 'main', 'execute.capture=/bin/id'));
 		$this->assertTrue($d['action'] === 'reject',
 			'a multicall carrying execute.capture is refused');
-		$this->assertTrue(isset($d['method']) && $d['method'] === 'execute.capture',
-			'the refusal names the carried command, execute.capture');
+		$this->assertTrue(isset($d['method']) && $d['method'] === 'd.multicall2',
+			'the refusal names the outer method, d.multicall2');
 	}
 
 	public function testSystemMulticallCarryingADeniedMemberNamesIt()
@@ -79,8 +77,8 @@ class XMLRPCProxyRejectionTest extends TestCase
 		$d = XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $this->opts);
 		$this->assertTrue($d['action'] === 'reject',
 			'a system.multicall carrying system.shutdown is refused');
-		$this->assertTrue(isset($d['method']) && $d['method'] === 'system.shutdown',
-			'the refusal names the carried member, system.shutdown');
+		$this->assertTrue(isset($d['method']) && $d['method'] === 'system.multicall',
+			'the refusal names the outer method, system.multicall');
 	}
 
 	// --- the split the door relies on: a forwardable call is sent, so a real

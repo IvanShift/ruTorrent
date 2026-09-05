@@ -44,6 +44,10 @@ $str = function($value) {
 	return("<param><value><string>".$value."</string></value></param>");
 };
 
+// Top-level case keys in this fixture are stable historical identifiers.
+// Legacy case keys whose prose says "forwarded" are retained as fixed identifier
+// strings; the expected tuple (returned, sends, trusted, payload, log) is normative
+// and defines the required behavior. Do not rename fixture keys.
 $cases = array(
 	"off mode rejects and sends nothing" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent")),
@@ -80,22 +84,22 @@ $cases = array(
 	),
 	"a body that is not XML is forwarded untrusted" => array(
 		"request" => "not xml at all",
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "not xml at all",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted (invalid XML)",
+			"xmlrpc-proxy: rejected (invalid XML)",
 		),
 	),
 	"a methodCall with no methodName is forwarded untrusted" => array(
 		"request" => "<?xml version=\"1.0\"?><methodCall><params></params></methodCall>",
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><params></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted (invalid XML)",
+			"xmlrpc-proxy: rejected (invalid XML)",
 		),
 	),
 	"an unknown method is forwarded untrusted" => array(
@@ -115,7 +119,7 @@ $cases = array(
 		"trusted" => false,
 		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>system.foo\nxmlrpc-proxy: trusted: forged</methodName><params></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: untrusted: system.foo xmlrpc-proxy: trusted: forged",
+			"xmlrpc-proxy: untrusted: system.foo?xmlrpc-proxy:?trusted:?forged",
 		),
 	),
 	"load.start with an allowed command param is rebuilt and trusted" => array(
@@ -125,37 +129,37 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (3 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
 	"load.start strips a command param that is not allowed" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: execute=evil)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"every stripped param is named in one log line" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil").$str("d.peers_max.set=1")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: execute=evil, d.peers_max.set=1)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"a param this side cannot rebuild forces the call untrusted" => array(
 		"request" => $call("load.raw_start", "<param><value><int>1</int></value></param>".$str("http://example.test/x.torrent")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.raw_start</methodName><params><param><value><int>1</int></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted (a parameter could not be rebuilt): load.raw_start (2 params)",
+			"xmlrpc-proxy: rejected (malformed load call): load.raw_start",
 		),
 	),
 	"a base64 data param is re-emitted without its line wrapping" => array(
@@ -165,7 +169,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.raw_start</methodName><params><param><value><string></string></value></param><param><value><base64>Ynl0ZXMAyGJ5dGVzAMhieXRlcwDIYnl0ZXMAyGJ5dGVzAMhieXRlcwDIYnl0ZXMAyGJ5dGVzAMg=</base64></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.raw_start (3 params)",
+			"xmlrpc-proxy: trusted: load.raw_start (kept 3 params)",
 		),
 	),
 	"a value with no explicit string element is read the same way" => array(
@@ -175,17 +179,17 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (3 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
 	"the 0.9.x method names take the same parameter positions" => array(
 		"request" => $call("load_start", $str("http://example.test/x.torrent").$str("d.custom1.set=label")),
 		"returned" => "SCGI-REPLY",
 		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load_start</methodName><params><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=label</string></value></param></params></methodCall>",
+		"trusted" => false,
+		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>load_start</methodName><params><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=label</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load_start (2 params)",
+			"xmlrpc-proxy: untrusted: load_start",
 		),
 	),
 	"a command taking two arguments keeps both, each trimmed" => array(
@@ -195,7 +199,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom.set=\"chk-state\",\"7\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (3 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
 	"quotes and backslashes in a value are escaped, not dropped" => array(
@@ -205,17 +209,17 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=\"say \\\"hi\\\" \\\\ bye\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (3 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
 	"an argument starting with \$ is dropped rather than quoted" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("d.custom1.set=\$execute.capture=/bin/hostname")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: d.custom1.set=\$execute.capture=/bin/hostname)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"a value the client quoted itself is kept as one argument" => array(
@@ -225,57 +229,57 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=\"Movies, Inc\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (3 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
 	"a long stripped value is truncated in the log" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: execute=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"a newline in a stripped value cannot forge a log line" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil\nxmlrpc-proxy: trusted: forged")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: execute=evil xmlrpc-proxy: trusted: forged)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"an empty allowlist strips every command param" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("d.custom1.set=label")),
 		"safeParams" => array(),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (kept 2 params, stripped: d.custom1.set=label)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
 		),
 	),
 	"a load call with no params at all is still rebuilt" => array(
 		"request" => $call("load.start"),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (0 params)",
+			"xmlrpc-proxy: rejected (malformed load call): load.start",
 		),
 	),
 	"logging off changes what is logged and nothing else" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil")),
 		"enableLog" => false,
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(),
 	),
 	"logging off on the unknown-method path too" => array(
@@ -289,12 +293,12 @@ $cases = array(
 	),
 	"a multicall of read commands is forwarded untouched and untrusted" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.name=")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.name=</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.multicall2 carrying d.name (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"a multicall whose commands are all allowed is rebuilt and trusted" => array(
@@ -309,12 +313,12 @@ $cases = array(
 	),
 	"one unrebuildable command sends the whole multicall untouched" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom1.set=label").$str("d.name=")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=label</string></value></param><param><value><string>d.name=</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.multicall2 carrying d.name (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"a multicall carrying execute.capture is forwarded untouched and untrusted" => array(
@@ -324,17 +328,17 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 carrying execute.capture",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"an allowed command with a \$ argument makes the multicall untrusted" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom1.set=\$execute.capture=/bin/hostname")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\$execute.capture=/bin/hostname</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.multicall2 carrying d.custom1.set (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"a chained command stays inside the argument it was quoted into" => array(
@@ -359,12 +363,12 @@ $cases = array(
 	),
 	"a data param that cannot be rebuilt makes the multicall untrusted" => array(
 		"request" => $call("d.multicall2", "<param><value><int>1</int></value></param>".$str("main").$str("d.custom1.set=label")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><int>1</int></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted (a parameter could not be rebuilt): d.multicall2 (3 params)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"d.multicall takes commands in the same position" => array(
@@ -378,53 +382,53 @@ $cases = array(
 		),
 	),
 	"d.multicall.filtered takes commands in the same position" => array(
-		"request" => $call("d.multicall.filtered", $str("").$str("main").$str("d.custom1.set=label")),
+		"request" => $call("d.multicall.filtered", $str("").$str("main").$str("d.custom1.set=filter value").$str("d.custom1.set=label")),
 		"returned" => "SCGI-REPLY",
 		"sends" => 1,
 		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall.filtered</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall.filtered</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\"filter value\"</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: d.multicall.filtered (3 params)",
+			"xmlrpc-proxy: trusted: d.multicall.filtered (4 params)",
 		),
 	),
 	"t.multicall is command-carrying too" => array(
 		"request" => $call("t.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("t.url=")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>t.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>t.url=</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: t.multicall carrying t.url (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): t.multicall",
 		),
 	),
 	"f.multicall is command-carrying too" => array(
 		"request" => $call("f.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("f.path=")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>f.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>f.path=</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: f.multicall carrying f.path (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): f.multicall",
 		),
 	),
 	"p.multicall is command-carrying too" => array(
 		"request" => $call("p.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("p.address=")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>p.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>p.address=</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: p.multicall carrying p.address (forwarded as the caller's own bytes; rtorrent refuses the whole multicall if any of them is not safe there)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): p.multicall",
 		),
 	),
 	"system.multicall is not one of them" => array(
 		"request" => $call("system.multicall", $str("x")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>system.multicall</methodName><params><param><value><string>x</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: system.multicall",
+			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall",
 		),
 	),
 	"load.start from a local path is rejected" => array(
@@ -434,7 +438,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start /srv/watch/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"load.normal from a local path is rejected" => array(
@@ -444,17 +448,17 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.normal /srv/watch/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.normal",
 		),
 	),
 	"the 0.9.x name is forwarded trusted as an ordinary command" => array(
 		"request" => $call("load_start", $str("").$str("/srv/watch/x.torrent")),
 		"returned" => "SCGI-REPLY",
 		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load_start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
+		"trusted" => false,
+		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>load_start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load_start (2 params)",
+			"xmlrpc-proxy: untrusted: load_start",
 		),
 	),
 	"a relative path is a local path too" => array(
@@ -464,7 +468,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start watch/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"a tilde path is a local path too" => array(
@@ -474,7 +478,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start ~/watch/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"an uppercase scheme is a local path to rtorrent, so it is rejected" => array(
@@ -484,7 +488,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start HTTP://example.test/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"magnet without the ? is a local path to rtorrent, so it is rejected" => array(
@@ -494,7 +498,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start magnet:xt=urn:btih:abc",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"a base64 parameter is read as the URI it decodes to" => array(
@@ -504,7 +508,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (load from a local path): load.start /srv/watch/x.torrent",
+			"xmlrpc-proxy: rejected (load from a local path): load.start",
 		),
 	),
 	"an ftp url is accepted, as rtorrent accepts it" => array(
@@ -514,7 +518,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>ftp://example.test/x.torrent</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (2 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 2 params)",
 		),
 	),
 	"a magnet is accepted" => array(
@@ -524,7 +528,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>magnet:?xt=urn:btih:abc</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.start (2 params)",
+			"xmlrpc-proxy: trusted: load.start (kept 2 params)",
 		),
 	),
 	"load.raw_start is unaffected \xE2\x80\x94 its parameter is the torrent, not a URI" => array(
@@ -534,7 +538,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.raw_start</methodName><params><param><value><string></string></value></param><param><value><base64>Ynl0ZXMAyGJ5dGVzAMhieXRlcwDIYnl0ZXMAyGJ5dGVzAMhieXRlcwDIYnl0ZXMAyGJ5dGVzAMg=</base64></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: trusted: load.raw_start (2 params)",
+			"xmlrpc-proxy: trusted: load.raw_start (kept 2 params)",
 		),
 	),
 	"a local path is allowed when the operator turns it on" => array(
@@ -545,7 +549,7 @@ $cases = array(
 		"trusted" => true,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: WARNING: operator-enabled local path forwarded: load.start /srv/watch/x.torrent; rtorrent resolves it after proxy checks; trusted: load.start (2 params)",
+			"xmlrpc-proxy: WARNING: operator-enabled local path forwarded: load.start; trusted: load.start (kept 2 params)",
 		),
 	),
 	"execute.capture is refused" => array(
@@ -605,7 +609,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 carrying execute.capture",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
 		),
 	),
 	"system.multicall carrying a refused member is refused" => array(
@@ -615,17 +619,17 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall carrying execute.capture",
+			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall",
 		),
 	),
 	"system.multicall of harmless members is still forwarded untrusted" => array(
 		"request" => $call("system.multicall", "<param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param>"),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>system.multicall</methodName><params><param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: system.multicall",
+			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall",
 		),
 	),
 	"passthrough_unsafe is not subject to the refusal list" => array(
@@ -711,22 +715,22 @@ $cases = array(
 	),
 	"a hash-shaped argument is required" => array(
 		"request" => $call("d.start", $str("not-a-hash")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.start</methodName><params><param><value><string>not-a-hash</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.start (arguments did not match the allowed shape)",
+			"xmlrpc-proxy: rejected (arguments did not match allowed shape): d.start",
 		),
 	),
 	"an elevated method with the wrong argument count is not elevated" => array(
 		"request" => $call("d.start", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("extra")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.start</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string>extra</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.start (arguments did not match the allowed shape)",
+			"xmlrpc-proxy: rejected (arguments did not match allowed shape): d.start",
 		),
 	),
 	"the xmlrpc size limit is elevated but clamped" => array(

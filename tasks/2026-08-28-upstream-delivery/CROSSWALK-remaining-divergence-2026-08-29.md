@@ -4,7 +4,30 @@
 `STATUS-18-PACKAGES-2026-09-03.md`; этот файл сохраняет историческую
 file-level декомпозицию и ownership границы.
 
-## Current-base correction — 2026-09-03
+## Current delivery crosswalk — 2026-09-05
+
+Чистые ветки №4/№13/№15 — самостоятельные; №5/№14 — stacked на №4.
+№5 закрывает prerequisite №12, но №12 всё ещё ждёт №10; №14 закрывает
+policy prerequisite №7, но №7 всё ещё ждёт №6 и consumer integration.
+№15 не заменяет P1/№10 и не включает весь fork-плагин. №6–12/№16–18
+в этой работе не реализовывались. Product tree master при squash сохранён.
+Точные file sets, baseline adaptations и таблица всех 18 пакетов:
+[UPSTREAM-HANDOFF-2026-09-05.md](../2026-09-03-delegated-remaining/UPSTREAM-HANDOFF-2026-09-05.md).
+
+## Earlier current-base correction — 2026-09-05
+
+Master code SHA `ee96fab1` включает upstream `b4e84b64` и проверенные №5/№14.
+№5 перенесён только по шести owned paths (пять реально изменились); его старые
+XMLRPC/SCGI prerequisites не копировались. №14 сохранил семь owned paths.
+Семантика всех 42 старых worker scenarios явно сопоставлена с новой suite;
+12 sequence methods и class-through-EOF побайтно сохранены. `run.sh` и
+неиспользуемый `guard.php` master не удалялись/не заменялись.
+В upstream delta 11 путей без прямого пересечения package scopes; settings
+limit/read-index изменения сохранены и проверены. Ownership контрактов не
+расширен. Закрыто 8/18, осталось 10. Артефакты и точные refs:
+[PACKAGE-5-14-INTEGRATION-2026-09-05.md](../2026-09-03-delegated-remaining/PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+
+## Historical current-base correction — 2026-09-03
 
 `upstream/master=cd814cb5` интегрирован merge-коммитом `4fd60d54`; package 15
 закрыт локальной integration `b4d68005`. Полностью реализованы №1–4, №13 и

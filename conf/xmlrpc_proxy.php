@@ -20,9 +20,8 @@
 
 	// Command names allowed as a command parameter of load.* and of the
 	// multicalls. Full names, matched exactly: 'd.custom' does NOT cover
-	// 'd.custom1.set'. A parameter naming anything else is dropped from a
-	// load.* (the torrent is still added) and makes a multicall go to rtorrent
-	// untouched and untrusted.
+	// 'd.custom1.set'. Any denied or unrecognised command in a load.* or in
+	// a multicall causes the entire call to be rejected.
 	$XMLRPCProxySafeParams = array(
 		'd.custom1.set',            // label
 		'd.custom2.set',            // custom field

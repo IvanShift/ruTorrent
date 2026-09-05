@@ -88,7 +88,9 @@ git fetch upstream master
 git switch -c upstream-<short-fix-name> upstream/master
 ```
 
-Before pushing or opening the PR, inspect `git diff --stat upstream/master..HEAD` and `git diff --name-status upstream/master..HEAD`. The PR diff should contain only upstream-owned ruTorrent files and focused tests; exclude this fork's `AGENTS.md`, `.codex/`, `plugins/rutracker_check`, Docker-specific notes, and merge commits unless upstream explicitly asked for them.
+Before pushing or opening the PR, inspect `git diff --stat upstream/master..HEAD` and `git diff --name-status upstream/master..HEAD`. The PR diff should contain only upstream-owned ruTorrent files and focused tests; exclude this fork's `AGENTS.md`, `.codex/`, Docker-specific notes, unrelated fork changes, and merge commits unless upstream explicitly asked for them.
+
+`plugins/rutracker_check` also exists upstream. Self-contained fixes to it may be proposed separately when they are verified against the upstream base and do not depend on unfinished fork work. The full fork plugin is reserved for a separate handoff after it is complete; do not import it wholesale while preparing smaller PRs.
 
 Push the clean branch to `IvanShift/ruTorrent` and open the compare against `Novik/ruTorrent:<base>`. Keep the fork's `master` push/merge workflow separate from upstream PR preparation.
 

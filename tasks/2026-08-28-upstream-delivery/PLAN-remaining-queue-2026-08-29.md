@@ -9,7 +9,27 @@
 historical estimates ниже сохраняют собственные refs. Whole-file copy из fork
 master запрещён там, где upstream уже менял общий файл.
 
-## Current execution checkpoint — 2026-09-03
+## Current delivery checkpoint — 2026-09-05
+
+Подготовлены локальные upstream-ветки №4/№5/№13/№14/№15, без публикации.
+Сначала можно предложить №4/№13/№15; №5/№14 требуют принятия №4 и refresh.
+№15 — самостоятельный manual route; весь `rutracker_check` ждёт полной
+готовности. Счёт реализации остаётся 8 closed / 10 open. Принятая серия
+master схлопнута с сохранением upstream и базы внешнего №6; код №6 не включён.
+Следующая реализационная работа только по новому поручению. Полный handoff:
+[UPSTREAM-HANDOFF-2026-09-05.md](../2026-09-03-delegated-remaining/UPSTREAM-HANDOFF-2026-09-05.md).
+
+## Earlier execution checkpoint — 2026-09-05
+
+№5 и №14 закрыты после review/remediation и внесены в локальный master.
+Code SHA `ee96fab1` включает upstream `b4e84b64`. Остаётся **10** пакетов:
+№6–12, №16–18. №7 теперь ждёт №6; №12 — №10. Никакие новые пакеты
+не начаты. Следующий допустимый шаг по новому поручению — review внешнего
+№6 на обновлённой базе; upstream handoff закрытых пакетов остаётся отдельным
+delivery workflow. Push не выполнялся. Полный протокол:
+[PACKAGE-5-14-INTEGRATION-2026-09-05.md](../2026-09-03-delegated-remaining/PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+
+## Historical execution checkpoint — 2026-09-03
 
 Local `master=b4d68005` включает `upstream/master=cd814cb5` через merge
 `4fd60d54` и independently approved package 15. Текущий счёт: **12 open

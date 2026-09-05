@@ -1,5 +1,10 @@
 # Delegated remaining packages — append-only ledger
 
+Latest disposition (2026-09-05): packages 5 and 14 are closed locally and
+integrated into master; upstream b4e84b64 is included. Eight closed, ten open.
+The chronological entries below are retained, including superseded counts.
+See [final integration and stop point](PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+
 ## Codex verification and integration — final disposition
 
 The delegated artifacts below were independently remeasured before use.
@@ -600,3 +605,55 @@ profile classifier, and the `init.php` protocol is the named next step.
 push  no        PR  no        master product integration  no
 user diagnostic files  untouched
 ```
+
+## Package 5 — Codex completion checkpoint, 2026-09-05
+
+Implementation completed in `153f8e459e834925a6824acff346439e96c93ef9`
+on `up/retrackers-recovery`; clean worktree, ordinary pre-commit passed.
+PHP 7.4/8.1/8.5: 217 methods / 1044 assertions each; frozen sequence 12/40.
+Real 0.9.8/0.16.21 lifecycle, replacement, partial cleanup/rollback, accepted
+response-loss and late-callback verification completed in disposable containers.
+All known implementation blockers are addressed. A new independent final review
+is still pending, not waived: no new agents were permitted. No merge/push/deploy.
+
+Canonical evidence and resume point:
+[PACKAGE-5-FINAL-VERIFICATION-2026-09-05.md](PACKAGE-5-FINAL-VERIFICATION-2026-09-05.md).
+This supersedes the historical partial Package 5 entries, not their provenance.
+Other packages were not started or changed. Stop here until the user's next request.
+
+## Packages 5/14 — pre-integration review, 2026-09-05
+
+User authorized integration and conditional upstream sync. Fresh upstream ref:
+`b4e84b64` (fetch only; no merge/push). Package 5 final independent review is
+still pending under the no-new-agents constraint. Package 14 donor `671e00f0`
+passes its existing focused/version and host full suites, but an independent
+URI probe confirms eight malformed trusted outputs for U+FFFE/U+FFFF. Verdict:
+**FIX REQUIRED**, not APPROVED. Neither package is integrated yet.
+
+Current findings, exact refs, fresh evidence and continuation gates:
+[PACKAGE-5-14-INTEGRATION-2026-09-05.md](PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+
+## Packages 5/14 — final integration and stop, 2026-09-05
+
+Package 5 donor 1c810568 includes independently reviewed fixes fde65fe5 and a
+test-only shell-fixture portability correction. The reviewer finished APPROVED.
+All original 42 worker scenarios have a durable semantic crosswalk; the frozen
+12-method sequence class is unchanged. Package 14 donor 626c522a fixes the
+independently reproduced XML-forbidden Unicode URI case with natural and
+mutation REDs. Both candidates were verified, not accepted on implementer claims.
+
+Local master now contains package 14 via 7af7ee38, the scoped package 5 transfer
+via 66571370, and upstream b4e84b64 via ee96fab1. User commit ebb60a7e is retained.
+Final combined tree: PHP 7.4/8.1 focused GREEN, full host PHP 8.5 GREEN, all
+23 Jest suites / 336 tests GREEN, full PHPStan CI zero diagnostics. Disposable
+0.9.8/0.16.21 daemons each passed real partial cleanup/rollback, six accepted
+response losses, 12 delayed read replies and 11 late callback no-ops.
+
+Closed locally: 1-5, 13-15 (8). Still open: 6-12, 16-18 (10).
+No push, PR, deploy or production mutation. No package 6 review or new package
+implementation was started. Four user logs and all external worktrees preserved.
+Stop here. Resume only on a new request; start by inventorying refs and the
+external package 6 candidate against this new integration base.
+
+Canonical evidence: [PACKAGE-5-14-INTEGRATION-2026-09-05.md](PACKAGE-5-14-INTEGRATION-2026-09-05.md).
+Independent report: [PACKAGE-5-FINAL-REVIEW-2026-09-05.md](PACKAGE-5-FINAL-REVIEW-2026-09-05.md).
