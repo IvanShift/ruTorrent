@@ -74,3 +74,9 @@ docs/
 .superpowers/
 tasks/
 backup/
+
+# Operator captures kept in the checkout: CI log bundles downloaded for triage and
+# the running instance's error log. They are evidence, not sources, and a plain
+# `git add -A` would otherwise stage them into a fork commit.
+/logs_*.zip
+/rutorrent-app-errors.log

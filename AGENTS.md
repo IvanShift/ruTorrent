@@ -125,7 +125,7 @@ Rules that follow:
   tests so the provenance is obvious, e.g. `the live NNMClub scrape answer is accepted verbatim`.
 - **Relax which fields are mandatory; never relax the checks on the fields that are present.**
   Type, canonicality, sign and duplicate checks still apply to every counter that appears.
-  `RuTrackerAnnounceProbe::hasValidSuccessSchema()` is the reference shape: require only what the
+  `RuTrackerAnnounce::hasValidSuccessSchema()` (`plugins/rutracker_check/announce.php:434`) is the reference shape: require only what the
   protocol guarantees, and validate each optional field only when it is there.
 - **Keep sibling validators consistent.** The announce layer and the scrape layer of the same
   plugin must not disagree about how strict to be.
