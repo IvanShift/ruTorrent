@@ -1,6 +1,11 @@
 <?php
 
 require_once(dirname(__FILE__) . '/runstate.php');
+// RuTrackerForumIndex::cachedDump(), read by registrationTime() below.
+// Every production loader happens to have it already -- check.php requires
+// trackers/rutracker.php, which requires this, before it requires metafetch --
+// so this states a dependency that is used rather than one that is missing.
+require_once(dirname(__FILE__) . '/forumindex.php');
 
 // Layer 4 of the post-API design: BEP-9 metadata fetch via a one-off service
 // download. All markers ride inside the load command itself -- rTorrent
@@ -595,6 +600,15 @@ class RuTrackerMetaFetch
                 'session-hash-timeout: the owned service item still had a stale session hash after the deadline', 0);
         }
 
+        // Read BEFORE the setters below, because each of them calls
+        // Torrent::touch() and touch() overwrites both keys. announce() with
+        // no argument is the getter and does not touch, so this is the last
+        // point at which the harvested bytes still say what they said.
+        $authored = array(
+            'created by' => $torrent->meta('created by'),
+            'creation date' => $torrent->meta('creation date'),
+        );
+
         if ((string) $torrent->announce() === '') {
             $old = rTorrent::getSource($oldHash);
             if (!is_object($old) || $old->errors()) {
@@ -610,6 +624,15 @@ class RuTrackerMetaFetch
             if (is_array($tiers) && count($tiers)) $torrent->announce_list($tiers);
         }
         $torrent->comment('https://rutracker.org/forum/viewtopic.php?t=' . (int) $stubTuple['topic']);
+        // Every setter above calls Torrent::touch(), which overwrites 'creation
+        // date' with time() and 'created by' with the PHP class's own name.
+        // Neither is ours to write. Left alone, touch() publishes the moment
+        // the CYCLE happened to run as the moment the release was created --
+        // measured live, 8 to 15 hours late and always landing on the top of
+        // an hour -- and claims ruTorrent authored someone else's torrent.
+        // Both then travel out to the "Created On" column and to the history
+        // plugin as fact.
+        self::datePublishedTorrent($torrent, $oldHash, $newHash, $stubTuple, $authored);
         // Only for the size in the diagnostic below: the replacement itself
         // travels as the object, already decoded and already patched.
         $bytes = (string) $torrent;
@@ -632,6 +655,108 @@ class RuTrackerMetaFetch
             . ' returned ' . self::describeResult($result));
         if ($result === null) self::restoreReplacement($oldHash, $newHash);
         return $result;
+    }
+
+    /**
+     * Put back what Torrent::touch() overwrote on a harvested replacement.
+     *
+     * $authored holds both keys as the harvested bytes spelled them, read
+     * before the first setter ran. The rule is: RESTORE what the torrent
+     * actually said, and only decide the value when the torrent said nothing.
+     * Clearing unconditionally would make this the mirror image of touch() --
+     * a caller that destroys a real author's field because it assumed one
+     * could not be there. Today a BEP 9 stub carries neither key (the metadata
+     * exchange transfers the info dictionary alone), so the restore is
+     * usually a no-op; it stops being one the moment harvest() is ever fed
+     * from a source with top-level keys, and that is exactly the change that
+     * would otherwise silently start deleting real data.
+     *
+     * With nothing authored, 'created by' stays absent: nothing here knows who
+     * made the release, and a guess signed with ruTorrent's name is worse than
+     * absence. 'creation date' is filled from the forum dump's reg_time when
+     * the cache can answer for this topic -- the tracker's own record of when
+     * the release was registered. Not byte-identical to what an author would
+     * have written, but the same event to within the upload, and a fact the
+     * tracker published rather than a clock reading from this host. Layer 3
+     * has already fetched and parsed that dump, so it costs no request.
+     *
+     * Failing that -- no forum resolved, a topic the dump does not list, a
+     * document cached before parseDump() kept the column -- the key is left
+     * absent. An empty "Created On" says "not known", which is true; a
+     * fabricated one says something false and is indistinguishable from a
+     * real date.
+     */
+    static private function datePublishedTorrent($torrent, $oldHash, $newHash, $stubTuple, $authored)
+    {
+        self::restoreMeta($torrent, 'created by', $authored['created by']);
+
+        if ($authored['creation date'] !== null) {
+            self::restoreMeta($torrent, 'creation date', $authored['creation date']);
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
+                . ' kept the creation date the harvested metainfo carried');
+            return;
+        }
+
+        $topicId = (int) $stubTuple['topic'];
+        $regTime = self::registrationTime($oldHash, $stubTuple);
+        if ($regTime === null) {
+            $torrent->clearMeta('creation date');
+            ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
+                . ' creation date left unset: no reg_time in the dump cache for topic ' . $topicId);
+            return;
+        }
+        $torrent->setMeta('creation date', $regTime);
+        ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
+            . ' creation date=' . $regTime . ' from the dump reg_time for topic ' . $topicId);
+    }
+
+    /** Put one top-level key back as it was, where absent is also a value. */
+    static private function restoreMeta($torrent, $key, $original)
+    {
+        if ($original === null) $torrent->clearMeta($key);
+        else $torrent->setMeta($key, $original);
+    }
+
+    /**
+     * reg_time as a timestamp, or null.
+     *
+     * canonicalNonnegativeInteger() rather than canonicalPositiveInt32(): this
+     * is a Unix epoch, and the int32 ceiling belongs to topic ids and counters,
+     * not to dates. Held to that ceiling, every registration from 2038-01-19
+     * onwards would silently read as "unknown". Zero is still not a date.
+     */
+    static private function canonicalRegistrationTime($value)
+    {
+        $parsed = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
+        return ($parsed === null || $parsed <= 0) ? null : $parsed;
+    }
+
+    /** reg_time for this stub's topic, or null when nothing can answer for it. */
+    static private function registrationTime($oldHash, $stubTuple)
+    {
+        $topicId = RuTrackerRpcValue::canonicalPositiveInt32($stubTuple['topic'] ?? null);
+        if ($topicId === null) return null;
+
+        // chk-forum on the PREDECESSOR: the replacement is not in rTorrent's
+        // list yet under its own hash, so only the old row can name the forum.
+        // Not important: a creation date nobody can read is a creation date
+        // left unset, never a reason to fail the replacement around it.
+        $req = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd("d.get_custom"), array($oldHash, "chk-forum")));
+        $req->important = false;
+        if (!$req->success() || !isset($req->val[0])) return null;
+        // trim() to match RuTrackerCheckImpl::resolveForum(), the other reader
+        // of this same custom. Without it the two disagree about one stored
+        // value: layer 3 resolves the forum, fetches the dump and finds the
+        // topic, while this one answers "no forum" and logs that the cache had
+        // no reg_time -- a false diagnosis of a cache that had the answer.
+        $forumId = RuTrackerRpcValue::canonicalPositiveInt32(trim((string) $req->val[0]));
+        if ($forumId === null) return null;
+
+        $rows = RuTrackerForumIndex::cachedDump($forumId);
+        if (!is_array($rows) || !isset($rows[$topicId]) || !is_array($rows[$topicId])) return null;
+        // ?? null covers a document cached before parseDump() kept the column.
+        return self::canonicalRegistrationTime($rows[$topicId]['reg_time'] ?? null);
     }
 
     static private function activationState($oldHash, $newHash)

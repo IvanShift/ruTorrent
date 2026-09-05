@@ -849,4 +849,33 @@ $suite->test('a canonically spelled persisted budget still allows, caps, cools d
     });
 });
 
+$suite->test('the probe agent is never anything a browser would send', function () {
+    // Measured live 2026-09-05 on bt4.t-ru.org/ann: a browser agent and no
+    // agent at all both draw 403 from the Cloudflare in front of the announce
+    // hosts, while rtorrent/0.16.21/0.16.21, qBittorrent/4.6.4, a bare
+    // "rtorrent" and even "rutorrent-rutracker_check" all draw 200 and a real
+    // bencoded answer. ruTrackerChecker::makeClient()'s shared default IS a
+    // browser agent, which silently disabled layer 2 -- and with it every
+    // route to STE_DELETED, since only an 'unregistered' probe sets
+    // $trackerConfirmed.
+    //
+    // The last two measurements are why this is a constant and not a version
+    // read from the daemon: there is no client whitelist to satisfy, so the
+    // only property that has to hold is "not a browser".
+    $agent = RuTrackerAnnounce::PROBE_USER_AGENT;
+
+    strictAssertTrue(is_string($agent) && $agent !== '', 'the probe has an agent at all');
+    strictAssertSame(false, (bool) preg_match('/Mozilla|AppleWebKit|Chrome|Safari|Gecko|Edge/i', $agent),
+        'and it is nothing a browser would send');
+    // Built into a request header by concatenation, so it must not be able to
+    // end the line or start another one.
+    strictAssertSame(false, (bool) preg_match('/[\r\n\0]/', $agent),
+        'and it cannot break or extend the request header');
+    strictAssertSame($agent, trim($agent), 'and carries no leading or trailing space');
+    // The whole point of the constant: it must differ from the browser default
+    // that broke this layer. If a merge ever collapses the two, this fails.
+    strictAssertTrue($agent !== ruTrackerChecker::USER_AGENT,
+        'and is not the shared browser default that answered 403 for six days');
+});
+
 exit($suite->run());

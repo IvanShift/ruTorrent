@@ -312,17 +312,23 @@ class Snoopy
 {
 	public static $nextStatus = 200;
 	public static $nextResults = '';
+	public static $nextError = '';
 
 	public $status = 0;
 	public $results = '';
 	public $read_timeout = 0;
 	public $_fp_timeout = 0;
 	public $agent = '';
+	// Mirrors the real Snoopy (php/Snoopy.class.inc declares var $error): it
+	// is the only field that separates the several conditions which all
+	// arrive as status 0, and makeClient() now logs it.
+	public $error = '';
 
 	public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
 	{
 		$this->status = self::$nextStatus;
 		$this->results = self::$nextResults;
+		$this->error = self::$nextError;
 		return true;
 	}
 }
@@ -1900,6 +1906,30 @@ class CheckerTest
 		$this->assertNoRequestKeyContains('d.open', 'nothing may be reopened while both fates are unknown');
 	}
 
+	// The production makeClient(), not the suite double. A mutation check
+	// proved this was needed: reverting the body to an unconditional
+	// `$client->agent = self::USER_AGENT;` left the ENTIRE php suite green,
+	// because every existing agent assertion runs against TestLib's own copy
+	// of makeClient and this is the only suite that loads the real one. That
+	// one line is what revived layer 2 -- Cloudflare answers 403 to browser
+	// agents on the announce hosts, which is how the layer stayed silently
+	// dead for at least six days of log -- so it must not be revertible in
+	// silence.
+	public function testMakeClientSendsTheAgentItWasGivenAndOtherwiseTheBrowser()
+	{
+		$this->resetFakes();
+
+		$client = ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann', 'GET', '', '', 'probe-agent-token');
+		strictAssertSame('probe-agent-token', $client->agent,
+			'an explicit agent reaches the client that fetches');
+
+		$client = ruTrackerChecker::makeClient('https://rutracker.org/forum/viewtopic.php?t=1');
+		strictAssertSame(ruTrackerChecker::USER_AGENT, $client->agent,
+			'and every caller that asks for nothing still gets the browser default');
+		strictAssertTrue(strpos($client->agent, 'Mozilla') === 0,
+			'which is still a browser agent, as the forum and the API need');
+	}
+
 	public function testCurlExitCodeStatusIsLoggedAsTransportFailure()
 	{
 		$this->resetFakes();
@@ -1915,6 +1945,59 @@ class CheckerTest
 					'the transport-failure log line must carry the host and safe cURL category'
 				);
 
+				// Status 0 is NOT a curl exit code -- zero is curl's code for
+				// success -- and it is not one condition either: Snoopy leaves
+				// it for a response with no parseable status line, for a socket
+				// failure whose errno is 0 (what PHP reports for a DNS
+				// failure), and for a refusal to send at all. Sixteen lines of
+				// a live log said "curl-exit code=0 reason=curl" and diagnosed
+				// none of them. The line now states only what is certain and
+				// carries Snoopy's own sentence, which is what tells them apart.
+				FileUtil::$log = array();
+				Snoopy::$nextStatus = 0;
+				Snoopy::$nextError = 'connection failed (0)';
+				ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
+				strictAssertSame(1, count(FileUtil::$log), 'an absent status must still be logged as a failed fetch');
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'transport=no-status reason=unset') !== false,
+					'an absent status must not be reported as a curl exit code: ' . FileUtil::$log[0]
+				);
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'error="connection failed (0)"') !== false,
+					'and must carry the one sentence that says which condition it was: ' . FileUtil::$log[0]
+				);
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'curl-exit') === false,
+					'the misleading curl wording is gone: ' . FileUtil::$log[0]
+				);
+
+				// A passkey can never ride out in the error text. No Snoopy
+				// string quotes the URL today; this holds the line for the one
+				// that does, because the probe URL spells the user's passkey
+				// and buildUrl() strips it for exactly this reason.
+				FileUtil::$log = array();
+				Snoopy::$nextError = 'Error fetching http://bt.t-ru.org/ann?pk=deadbeefcafe: refused';
+				ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'deadbeefcafe') === false,
+					'no passkey survives into the log: ' . FileUtil::$log[0]
+				);
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'pk=<redacted>') !== false,
+					'and the redaction is visible rather than silent: ' . FileUtil::$log[0]
+				);
+
+				// A transport that failed without a message logs the status
+				// alone rather than an empty error="".
+				FileUtil::$log = array();
+				Snoopy::$nextError = '';
+				ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
+				strictAssertSame(1, count(FileUtil::$log), 'still logged');
+				strictAssertTrue(
+					strpos(FileUtil::$log[0], 'error=') === false,
+					'no empty error fragment is appended: ' . FileUtil::$log[0]
+				);
+
 				FileUtil::$log = array();
 				Snoopy::$nextStatus = 200;
 				ruTrackerChecker::makeClient('https://tracker.test/scrape');
@@ -1923,6 +2006,7 @@ class CheckerTest
 			finally
 			{
 				Snoopy::$nextStatus = 200;
+				Snoopy::$nextError = '';
 			}
 		});
 	}

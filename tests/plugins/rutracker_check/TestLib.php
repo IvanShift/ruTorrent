@@ -252,10 +252,20 @@ function strictSetPrivateStatic($className, $property, $value)
 // change had to be made in both copies or they would silently disagree.
 function fiDump($topicId, $status, $hash, $seeders = 7)
 {
+    return fiDumpAt($topicId, $status, $hash, $seeders, 1);
+}
+
+/** fiDump() with the reg_time column spelled by the caller.
+ *
+ * Split out so a test can put a value there that does not parse. fiDump()'s
+ * own placeholder 1 is a valid one, which is exactly why it cannot exercise
+ * the unreadable-column path. */
+function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
+{
     return json_encode(array(
         'format' => array('topic_id' => array('tor_status', 'seeders', 'reg_time', 'tor_size_bytes',
             'keeping_priority', 'keepers', 'seeder_last_seen', 'info_hash', 'topic_poster', 'leechers')),
-        'result' => array((string) $topicId => array($status, $seeders, 1, 2, 0, array(), 3, $hash, 4, 0)),
+        'result' => array((string) $topicId => array($status, $seeders, $regTime, 2, 0, array(), 3, $hash, 4, 0)),
     ));
 }
 
@@ -593,6 +603,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $any = array();
         public static $requests = array();
         public static $rawheadersLog = array();
+        public static $agentsLog = array();
 
         public $status = -1;
         public $results = '';
@@ -608,6 +619,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$any = array();
             self::$requests = array();
             self::$rawheadersLog = array();
+            self::$agentsLog = array();
         }
 
         // $headers models the response headers real Snoopy collects into
@@ -632,6 +644,12 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         {
             self::$requests[] = array($method, $url);
             self::$rawheadersLog[] = $this->rawheaders;
+            // The agent the client actually held when it fetched. Recorded
+            // beside the URL because for an announce probe the User-Agent
+            // decides whether the request is answered at all: Cloudflare
+            // refuses browser agents on the announce hosts, so a probe sent
+            // with the wrong one is not a weaker probe, it is a 403.
+            self::$agentsLog[] = (string) $this->agent;
             if (isset(self::$responses[$url]) && count(self::$responses[$url])) {
                 list($this->status, $this->results, $this->headers) = array_shift(self::$responses[$url]);
                 return true;
@@ -736,6 +754,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$messages = array();
             self::$calls = array();
             self::$results = array();
+            self::$agents = array();
             Snoopy::reset();
             rXMLRPCRequest::reset();
         }
@@ -765,13 +784,28 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return false;
         }
 
-        public static function makeClient($url, $method = 'GET', $contentType = '', $body = '')
+        // Every User-Agent this double was asked to send, in order. Without
+        // it the double silently swallowed the production signature's fifth
+        // argument and never set Snoopy::$agent, so the whole point of the
+        // layer 2 fix -- that the probe does NOT go out as a browser -- had
+        // no assertion anywhere: a refactor dropping the argument, or one
+        // restoring the old unconditional browser agent, would have left every
+        // suite green while layer 2 went back to answering 403 for ever.
+        public static $agents = array();
+
+        public static function makeClient($url, $method = 'GET', $contentType = '', $body = '',
+            $agent = self::USER_AGENT)
         {
+            self::$agents[] = (string) $agent;
             $client = new Snoopy();
+            $client->agent = (string) $agent;
             $client->fetchComplex($url, $method, $contentType, $body);
             return $client;
         }
 
+        // Kept byte-identical to the production text in check.php. A double
+        // that formats a log line differently from the class it stands in for
+        // lets an assertion pass here and fail there.
         public static function transportFailureDetail($status)
         {
             $status = (int) $status;
@@ -780,6 +814,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                 $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
                 return 'transport=socket status=' . $status . ' reason=' . $reason;
             }
+            if ($status === 0) return 'transport=no-status reason=unset';
             $reasons = array(
                 5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
                 35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',

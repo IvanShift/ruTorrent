@@ -332,6 +332,10 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
         true, false, array($oldHash, '', '', '42', '87400', 0)
     );
+    // The harvest reads the predecessor's chk-forum to date the replacement
+    // from the dump's reg_time. Unresolved here, which is the path that leaves
+    // 'creation date' unset rather than inventing one.
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
 
     rXMLRPCRequest::queue('d.hash', true, true, array());
@@ -373,6 +377,18 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'the staged Torrent is the harvested successor');
     strictAssertTrue(preg_match('/^[0-9a-f]{32}$/', rTorrent::$replacementMarker) === 1,
         'the real transaction generated and sent one ownership nonce');
+
+    // The replacement is patched through Torrent's setters, and every one of
+    // them calls Torrent::touch(). Left alone that stamps 'creation date' with
+    // the moment this cycle ran and signs 'created by' with the PHP class's
+    // own name -- both then read out as fact in the "Created On" column and in
+    // the history plugin. Neither value is knowable from BEP 9 metadata, and
+    // no forum was resolved above, so the staged bytes must carry neither.
+    $staged = rTorrent::$sends[0]['torrent'];
+    strictAssertSame(null, $staged->meta('creation date'),
+        'the harvest stamps no invented creation date');
+    strictAssertSame(null, $staged->meta('created by'),
+        'the harvest claims no authorship of someone else\'s torrent');
     strictAssertSame(array(
         'erasedataPrepareObsoleteCleanup',
         'erasedataPublishObsoleteCleanup',
@@ -418,6 +434,9 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'd.set_custom|d.set_custom',
         'd.is_meta',
         'd.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.is_meta',
+        // The predecessor's chk-forum, read to date the replacement from the
+        // dump's reg_time instead of from this host's clock.
+        'd.get_custom',
         'branch',
         'd.hash',
         'd.views',

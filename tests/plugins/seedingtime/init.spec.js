@@ -94,6 +94,45 @@ describe("seedingtime custom-field requests", () => {
     expect(torrent.addtime).toBe(-1);
   });
 
+  // "Created On" is d.creation_date: the date the torrent's AUTHOR built the
+  // file. A torrent added from a magnet link has none and never will -- BEP 9
+  // transfers the info dictionary alone, and 'creation date' is a top level
+  // key that never travels with it -- so the cell stays blank for the rest of
+  // that torrent's life. The add time is the honest stand-in, and this is the
+  // only place in the page that fetches it.
+  describe("the Created On fallback", () => {
+    it("fills a missing creation date with the add time", () => {
+      const torrent = { created: "0" };
+      addtimeCallback("HASH", torrent, String(EPOCH));
+      expect(torrent.created).toBe(String(EPOCH));
+    });
+
+    it("never overwrites a creation date the torrent really carries", () => {
+      const authored = "1300000000";
+      const torrent = { created: authored };
+      addtimeCallback("HASH", torrent, String(EPOCH));
+      expect(torrent.created).toBe(authored);
+    });
+
+    it("leaves the cell empty when neither date is known", () => {
+      // No addtime either (rTorrent writes it on event.download.inserted_new,
+      // so torrents predating that hook have none). Inventing a value here
+      // would be indistinguishable from a real one.
+      const torrent = { created: "0" };
+      addtimeCallback("HASH", torrent, "");
+      expect(torrent.created).toBe("0");
+    });
+
+    it("keeps the field a string, so the column sorts like with like", () => {
+      // rTorrentStub assigns torrent.created straight from the XML-RPC value,
+      // i.e. a string. A number here would compare differently.
+      const torrent = { created: "0" };
+      addtimeCallback("HASH", torrent, String(EPOCH));
+      expect(typeof torrent.created).toBe("string");
+      expect(iv(torrent.created)).toBe(EPOCH);
+    });
+  });
+
   it("renders the columns as a duration and a calendar date", () => {
     const table = { getIdByCol: (i) => ["seedingtime", "addtime"][i] };
     const rendered = theWebUI.tables.trt.format(table, [3 * 86400, EPOCH]);

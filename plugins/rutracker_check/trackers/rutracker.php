@@ -549,7 +549,8 @@ class RuTrackerCheckImpl
                 ruTrackerChecker::logDebug('download_torrent: ' . $hash
                     . ' layer2 skipped: the announce URL cannot be turned into a probe URL');
             } else {
-                $client = ruTrackerChecker::makeClient($probeUrl);
+                $client = ruTrackerChecker::makeClient($probeUrl, "GET", "", "",
+                    RuTrackerAnnounce::PROBE_USER_AGENT);
                 RuTrackerAnnounce::recordOutcome($host, time(), $client->status);
                 $answer = RuTrackerAnnounce::classify($client->status, $client->results);
                 // The probe URL itself is never logged: buildUrl() strips the

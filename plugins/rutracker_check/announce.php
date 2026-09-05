@@ -17,6 +17,49 @@ class RuTrackerAnnounce
 {
     const PEER_PREFIX = '-RC0001-';
 
+    // The User-Agent the probe announces with. NOT the browser agent
+    // ruTrackerChecker::makeClient() otherwise sends.
+    //
+    // Measured live 2026-09-05 against bt4.t-ru.org/ann, one variable at a
+    // time, same URL and the same passkey-less identity throughout:
+    //
+    //   Mozilla/5.0 ... Chrome/120   -> 403  (Cloudflare, server: cloudflare)
+    //   no User-Agent at all         -> 403  (same)
+    //   rtorrent/0.16.21/0.16.21     -> 200  d8:intervali3600e...5:peers6:...e
+    //   qBittorrent/4.6.4            -> 200  (same)
+    //   rtorrent                     -> 200  (same)
+    //   rutorrent-rutracker_check    -> 200  (same)
+    //
+    // Cloudflare in front of the announce hosts refuses BROWSER agents --
+    // reasonably, a browser has no business announcing -- and the shared
+    // browser agent silently disabled this entire layer. Every probe in a
+    // six-day log came back 403 on all four t-ru.org mirrors, ten out of ten,
+    // while rTorrent's own announces to those same hosts succeeded (its
+    // tracker rows showed success counters in the teens). With layer 2 always
+    // inconclusive, $trackerConfirmed never became true and a removed topic
+    // could never reach STE_DELETED at all.
+    //
+    // The last two rows are why this is a plain constant and not a version
+    // derived from the daemon. There is no client whitelist to satisfy: a
+    // token that names no known client at all is accepted, so the version
+    // buys nothing. It would also have to come from rTorrentSettings, which
+    // answers from the cached rtorrent.dat that only a browser-driven
+    // get(true) refreshes -- see ruTrackerChecker::liveVersionLabel(), which
+    // documents that it "can report the old version for days". Claiming a
+    // release this daemon may not be running, from a source known to be
+    // stale, in order to satisfy a check that does not look, is three costs
+    // for no benefit.
+    //
+    // Self-identifying rather than impersonating a client, for the same
+    // reason PEER_PREFIX above spells '-RC0001-' instead of copying a real
+    // client's prefix: the probe is already fingerprintable by that peer id,
+    // so a truthful agent gives away nothing further and lets the tracker's
+    // operators see who is actually calling.
+    //
+    // The browser agent stays correct for the forum and the API, which is why
+    // this is a per-call override and not a change to the shared default.
+    const PROBE_USER_AGENT = 'rutorrent-rutracker_check';
+
     // Measured live 2026-08-07: eight probes to bt4.t-ru.org/ann, this exact
     // probe identity (no passkey, event=stopped, numwant=0, left=0). Three
     // hashes rTorrent was announcing successfully came back with no failure

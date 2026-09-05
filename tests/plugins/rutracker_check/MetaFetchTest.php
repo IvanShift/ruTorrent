@@ -1832,4 +1832,183 @@ $suite->test('no command in begin, adopt or harvest reads or writes chk-meta-run
     }
 });
 
+// A replacement is assembled by calling Torrent's setters, and every setter
+// calls Torrent::touch(). Left alone that writes 'creation date' = time() and
+// 'created by' = the PHP class's own name into a torrent whose real author is
+// someone else -- and both then read out as fact in the "Created On" column
+// and in the history plugin. Measured on a live fleet: eleven torrents dated
+// 8 to 15 hours after the tracker actually registered them, every one landing
+// on the top of an hour because that is when the cycle runs.
+$suite->test('a harvested replacement is dated from the dump, never from this host\'s clock',
+    function () use ($oldHash) {
+    strictWithStateDir('rut-metafetch-regtime', function () use ($oldHash) {
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', null);
+        rTorrent::$sourcesByHash = array();
+        $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+
+        // Publish forum 1106's dump through the ordinary fetch path, so the
+        // reg_time read below comes out of the same cache layer 3 fills.
+        // The forum index memoizes fetched rows in a static that outlives a
+        // test. Without this reset the second publication of the same forum
+        // short-circuits and never writes into THIS test's state directory,
+        // so cachedDump() reads an empty one and answers null.
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106',
+            200, fiDumpAt(6879823, 2, str_repeat('A', 40), 7, 1788342804));
+        strictAssertTrue(RuTrackerForumIndex::fetchDump(1106) !== null, 'the dump is published');
+
+        mfQueueArrived($newHash);
+        // The predecessor's chk-forum: the successor is not in the daemon's
+        // list under its own hash yet, so only the old row can name the forum.
+        rXMLRPCRequest::queue('d.get_custom', true, false, array('1106'));
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the harvest commits');
+        $payload = mfHandedOverTorrent(mfCreates()[0]);
+        strictAssertSame(1788342804, $payload->meta('creation date'),
+            'the date is the tracker\'s own reg_time for the topic');
+        strictAssertSame(null, $payload->meta('created by'),
+            'and no authorship is claimed over it');
+    });
+});
+
+$suite->test('an undatable replacement carries no date at all rather than an invented one',
+    function () use ($oldHash) {
+    strictWithStateDir('rut-metafetch-noregtime', function () use ($oldHash) {
+        // No dump published and no forum resolved: nothing here knows when the
+        // release was made. An empty "Created On" says exactly that. A clock
+        // reading would say something false and would be indistinguishable
+        // from a real date -- which is the whole defect being fixed.
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', null);
+        rTorrent::$sourcesByHash = array();
+        $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+
+        mfQueueArrived($newHash);
+        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the harvest still commits');
+        $payload = mfHandedOverTorrent(mfCreates()[0]);
+        strictAssertSame(null, $payload->meta('creation date'),
+            'an unknown creation date is left unset');
+        strictAssertSame(null, $payload->meta('created by'),
+            'and still no invented authorship');
+        // The replacement itself must not depend on any of this.
+        strictAssertSame('https://rutracker.org/forum/viewtopic.php?t=6879823', $payload->comment(),
+            'the comment patch is unaffected');
+        strictAssertSame($newHash, strtoupper($payload->hash_info()),
+            'and none of it can move the info hash');
+    });
+});
+
+// Mutation checks proved each of the three behaviours below could be deleted
+// outright with the whole suite still green.
+
+$suite->test('a replacement keeps the creation date and creator its own bytes carried',
+    function () use ($oldHash) {
+    strictWithStateDir('rut-metafetch-authored', function () use ($oldHash) {
+        // The restore path. touch() fires inside announce()/announce_list()/
+        // comment() and overwrites BOTH keys, so a harvest that only ever
+        // cleared them would be the mirror image of the bug being fixed: a
+        // caller destroying a real author's fields because it assumed none
+        // could be there. A BEP 9 stub carries neither key today, which is why
+        // this needs a fixture that does -- and why the branch survived a
+        // mutation that discarded the captured values entirely.
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', null);
+        rTorrent::$sourcesByHash = array();
+        $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t',
+            '', null, array('created by' => 'mktorrent 1.1', 'creation date' => 1300000000)));
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+
+        // A dump IS published and DOES list the topic, so reg_time is
+        // available -- and must still lose to what the torrent itself said.
+        // The forum index memoizes fetched rows in a static that outlives a
+        // test. Without this reset the second publication of the same forum
+        // short-circuits and never writes into THIS test's state directory,
+        // so cachedDump() reads an empty one and answers null.
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106',
+            200, fiDumpAt(6879823, 2, str_repeat('A', 40), 7, 1788342804));
+        strictAssertTrue(RuTrackerForumIndex::fetchDump(1106) !== null, 'the dump is published');
+
+        mfQueueArrived($newHash);
+        rXMLRPCRequest::queue('d.get_custom', true, false, array('1106'));
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the harvest commits');
+        $payload = mfHandedOverTorrent(mfCreates()[0]);
+        // A float, because Torrent::decode_integer() runs every bencoded
+        // integer through floatval() -- so this is byte-for-byte what the
+        // fixture carried, not a value this code chose.
+        strictAssertSame(1300000000.0, $payload->meta('creation date'),
+            "the author's own date is restored, not replaced by the tracker's reg_time");
+        strictAssertTrue(strpos((string) $payload, '13:creation datei1300000000e') !== false,
+            'and it re-encodes as the same bencoded integer the author wrote');
+        strictAssertSame('mktorrent 1.1', $payload->meta('created by'),
+            "and the author's own name survives the patch");
+    });
+});
+
+$suite->test('a chk-forum stored with transport whitespace still dates the replacement',
+    function () use ($oldHash) {
+    strictWithStateDir('rut-metafetch-trim', function () use ($oldHash) {
+        // resolveForum() trims the same custom, so without trim() here the two
+        // readers of one stored value disagree: layer 3 resolves the forum and
+        // caches the dump, while the harvest reports that the cache had no
+        // reg_time for the topic -- a false diagnosis of a cache that had it.
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', null);
+        rTorrent::$sourcesByHash = array();
+        $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+
+        // The forum index memoizes fetched rows in a static that outlives a
+        // test. Without this reset the second publication of the same forum
+        // short-circuits and never writes into THIS test's state directory,
+        // so cachedDump() reads an empty one and answers null.
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106',
+            200, fiDumpAt(6879823, 2, str_repeat('A', 40), 7, 1788342804));
+        strictAssertTrue(RuTrackerForumIndex::fetchDump(1106) !== null, 'the dump is published');
+
+        mfQueueArrived($newHash);
+        rXMLRPCRequest::queue('d.get_custom', true, false, array("  1106\n"));
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the harvest commits');
+        strictAssertSame(1788342804, mfHandedOverTorrent(mfCreates()[0])->meta('creation date'),
+            'the padded forum id resolved and the dump answered');
+    });
+});
+
+$suite->test('only a positive integer is accepted as a registration time', function () {
+    // Guards the cache boundary rather than the parser: parseDump() sanitises
+    // what it writes, but a hand-edited or legacy state file is still read
+    // through here. The int32 ceiling is deliberately NOT applied -- a Unix
+    // epoch is not an int32-domain value, and under that ceiling every
+    // registration from 2038-01-19 on would silently read as unknown.
+    foreach (array(
+        'an epoch' => array(1788342804, 1788342804),
+        'a canonical decimal string' => array('1788342804', 1788342804),
+        'past the int32 ceiling' => array(2147483648, 2147483648),
+        'zero is not a date' => array(0, null),
+        'negative' => array(-1, null),
+        'a float' => array(1788342804.5, null),
+        'a padded string' => array(' 1788342804', null),
+        'a leading zero' => array('01788342804', null),
+        'not a number' => array('yesterday', null),
+        'absent' => array(null, null),
+        'an array' => array(array(1788342804), null),
+    ) as $label => $case) {
+        list($value, $expected) = $case;
+        strictAssertSame($expected,
+            strictInvoke('RuTrackerMetaFetch', 'canonicalRegistrationTime', array($value)), $label);
+    }
+});
+
 exit($suite->run());

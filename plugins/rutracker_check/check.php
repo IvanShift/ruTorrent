@@ -1768,6 +1768,39 @@ class ruTrackerChecker
 			$reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
 			return('transport=socket status=' . $status . ' reason=' . $reason);
 		}
+		// Zero is NOT a curl exit code here, and the old text said so twice
+		// over -- zero is curl's code for SUCCESS -- which made sixteen lines
+		// of a live log diagnose nothing at all.
+		//
+		// It is also not one single condition. Snoopy seeds $status with 0 and
+		// overwrites it with curl's exit code, with the code parsed out of an
+		// "HTTP/..." header line, or with fsockopen's $errno, so a surviving 0
+		// is any of four things:
+		//   (a) connected, but no parseable status line came back -- the header
+		//       loops set $status only on a line matching |^HTTP/|;
+		//   (b) the socket path failed with errno 0, which is what PHP reports
+		//       for a getaddrinfo/DNS failure (verified: fsockopen on an
+		//       unresolvable host gives errno 0);
+		//   (c) Snoopy refused before sending -- an invalid protocol, an
+		//       unresolvable host, or one resolving to a non-public address
+		//       (Snoopy.class.inc checkTarget());
+		//   (d) fetch() bailed on a URI parse_url() could not read, before
+		//       touching either field.
+		// Naming any one of them would misdiagnose the rest: an earlier draft
+		// called a DNS outage "the server sent no status line" and would have
+		// sent an operator to look at Cloudflare. So this says only what is
+		// certainly true, and makeClient() logs $client->error beside it.
+		//
+		// That error is NOT always there, and the difference matters more than
+		// it looks: Snoopy writes it on (b) and (c) but on neither (a) nor (d),
+		// because the header loops and the early bail touch only $status. (a)
+		// is exactly what produced the sixteen log lines cited above -- they
+		// are all curl-path fetches that exited 0 with no status line parsed --
+		// so for the motivating case the new field is absent and this text is
+		// the whole diagnosis. An absent error= is therefore evidence in its
+		// own right: it narrows a status 0 to (a) or (d).
+		if($status === 0)
+			return('transport=no-status reason=unset');
 		$reasons = array(
 			5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
 			35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
@@ -1784,14 +1817,19 @@ class ruTrackerChecker
 		return($status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status);
 	}
 
-	static public function makeClient( $url, $method="GET", $content_type="", $body="" )
+	// $agent defaults to the browser agent, which reduces 403/anti-bot errors
+	// on the forum and the API. It is WRONG for an announce endpoint, where
+	// Cloudflare refuses browser agents outright -- see
+	// RuTrackerAnnounce::PROBE_USER_AGENT for the measurements and for what
+	// that silently cost. One default cannot be right for all three callers,
+	// so the one that differs says so at the call site.
+	static public function makeClient( $url, $method="GET", $content_type="", $body="", $agent=self::USER_AGENT )
 	{
 		$client = new Snoopy();
 		$client->read_timeout = 5;
 		$client->_fp_timeout  = 5;
 
-		// Pretend to be a modern browser to reduce 403/anti-bot errors
-		$client->agent = self::USER_AGENT;
+		$client->agent = (string) $agent;
 
 		@$client->fetchComplex($url, $method, $content_type, $body);
 
@@ -1800,8 +1838,33 @@ class ruTrackerChecker
 		if($client->status < 100)
 		{
 			$host = @parse_url($url, PHP_URL_HOST);
+			// Snoopy's own message, not just the numeric map. The number alone
+			// cannot separate the several conditions that all arrive as
+			// status 0 (see transportFailureDetail()), and Snoopy has already
+			// written the one sentence that distinguishes them -- "connection
+			// failed (0)" for an unresolvable host, "Refusing to fetch: ..."
+			// when it declined to send at all. Until now nothing in this
+			// plugin read $client->error, so that sentence was thrown away
+			// exactly when it was the only thing worth having.
+			// Audited 2026-09-05: not one of Snoopy's eight error strings
+			// carries the URL -- they carry a scheme, a host, an IP or an
+			// errno. The redaction is for the ninth. This plugin's hardest
+			// log rule is that a probe URL, which spells the user's passkey
+			// in its query string, must never reach the log
+			// (RuTrackerAnnounce::buildUrl strips it for the same reason), and
+			// Snoopy is a vendored file that some later merge may well teach
+			// to quote the URL it failed on.
+			$error = trim(preg_replace('/\s+/', ' ', (string) $client->error));
+			$error = preg_replace('/\b(pk|passkey|uk)=[^\s&"\']*/i', '$1=<redacted>', $error);
+			// Snoopy quotes the scheme or the host inside three of its eight
+			// messages, so an unescaped value ends the field early and the
+			// tail reads as separate log fragments. Single-quoted instead of
+			// backslash-escaped: this is a log line a person greps, not a
+			// format anything parses back.
+			$error = str_replace('"', "'", $error);
 			self::logDebug("Snoopy fetch failed: host=".(is_string($host) ? $host : 'unknown')." "
-				. self::transportFailureDetail($client->status));
+				. self::transportFailureDetail($client->status)
+				. ($error === '' ? '' : ' error="' . $error . '"'));
 		}
 
 		return $client;

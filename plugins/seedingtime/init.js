@@ -31,6 +31,24 @@ if(plugin.canChangeColumns())
 		{
 			const epochSeconds = iv(value);
 			torrent.addtime = (epochSeconds > 3600*24*365) ? epochSeconds : -1;
+			// "Created On" is d.creation_date -- the date the torrent's AUTHOR
+			// built the file. A torrent added from a magnet link has none and
+			// never will: BEP 9 transfers the info dictionary alone, and
+			// 'creation date' is a top level key that never travels with it.
+			// The column then stays blank for the rest of that torrent's life.
+			//
+			// Fall back to the add time so the cell is not empty. This lives
+			// here rather than in js/rtorrent.js because addtime is fetched
+			// here and nowhere else -- without this plugin the value the
+			// fallback needs does not exist in the page at all.
+			//
+			// Only ever fills a MISSING date: a torrent that carries a real
+			// creation date keeps it untouched.
+			// Assigned as a string: rTorrentStub sets torrent.created from the
+			// raw XML-RPC value, so keeping the type uniform across torrents
+			// keeps the column's sort comparing like with like.
+			if(iv(torrent.created) <= 0 && torrent.addtime > 0)
+				torrent.created = String(torrent.addtime);
 		});
 		plugin.trtRenameColumn();
 	}

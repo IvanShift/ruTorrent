@@ -137,10 +137,33 @@ class RuTrackerForumIndex
                 }
                 $seeders = $parsedSeeders;
             }
+            // reg_time: when the tracker registered this release. Read only
+            // for the replacement's 'creation date' (see
+            // RuTrackerMetaFetch::datePublishedTorrent()).
+            //
+            // Deliberately NOT held to the rule the fields above follow. A bad
+            // tor_status, info_hash or seeders count rejects the whole
+            // document, because those decide verdicts and STE_DELETED, and a
+            // row that lies about one of them is not evidence about the rest.
+            // reg_time decides nothing: no verdict, no counter, no deletion
+            // consults it. Rejecting a forum's dump over a cosmetic column
+            // would trade a wrong date for a forum whose topics can no longer
+            // be classified at all -- so an absent or unparseable value is
+            // simply unknown for that row, and the date is left unset.
+            //
+            // canonicalNonnegativeInteger(), not canonicalPositiveInt32(): a
+            // Unix epoch is not an int32-domain value. Under that ceiling every
+            // registration from 2038-01-19 on would read as unknown. Zero is
+            // still not a date, so it is filtered out below.
+            $regTime = isset($columns['reg_time'])
+                ? RuTrackerRpcValue::canonicalNonnegativeInteger($row[$columns['reg_time']] ?? null)
+                : null;
+            if ($regTime !== null && $regTime <= 0) $regTime = null;
             $rows[$parsedTopic] = array(
                 'tor_status' => $parsedStatus,
                 'info_hash' => strtoupper($rawHash),
                 'seeders' => $seeders,
+                'reg_time' => $regTime,
             );
         }
         $malformed = false;

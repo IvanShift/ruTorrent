@@ -178,8 +178,8 @@ $suite->test('parseDump rejects non-canonical required types and rows shorter th
 
 $suite->test('parseDump follows the declared column format', function () {
     $rows = RuTrackerForumIndex::parseDump(fiDump(6868321, 0, str_repeat('F', 40), 45));
-    strictAssertSame(array('tor_status' => 0, 'info_hash' => str_repeat('F', 40), 'seeders' => 45),
-        $rows[6868321], 'row');
+    strictAssertSame(array('tor_status' => 0, 'info_hash' => str_repeat('F', 40), 'seeders' => 45,
+        'reg_time' => 1), $rows[6868321], 'row');
     strictAssertSame(array(), RuTrackerForumIndex::parseDump('{"error":1}'), 'no result key');
     strictAssertSame(array(), RuTrackerForumIndex::parseDump('not json'), 'garbage');
 
@@ -191,7 +191,8 @@ $suite->test('parseDump follows the declared column format', function () {
         'format' => array('topic_id' => array('info_hash', 'leechers', 'seeders', 'tor_status')),
         'result' => array('6868321' => array(str_repeat('F', 40), 9, 45, 2)),
     ));
-    strictAssertSame(array('tor_status' => 2, 'info_hash' => str_repeat('F', 40), 'seeders' => 45),
+    strictAssertSame(array('tor_status' => 2, 'info_hash' => str_repeat('F', 40), 'seeders' => 45,
+        'reg_time' => null),
         RuTrackerForumIndex::parseDump($permuted)[6868321],
         'a permuted format still yields the same logical row');
 
@@ -201,6 +202,62 @@ $suite->test('parseDump follows the declared column format', function () {
     strictAssertSame(str_repeat('F', 40),
         RuTrackerForumIndex::parseDump(fiDump(6868321, 0, str_repeat('f', 40)))[6868321]['info_hash'],
         'a lowercase dump hash is normalised to uppercase');
+});
+
+$suite->test('parseDump reads reg_time without letting it reject a forum', function () {
+    // The column carries the tracker's registration time, and it is the ONLY
+    // source RuTrackerMetaFetch has for a replacement's 'creation date' -- the
+    // BEP 9 metadata a replacement is built from carries no such key.
+    strictAssertSame(1788342804,
+        RuTrackerForumIndex::parseDump(fiDumpAt(6868321, 2, str_repeat('A', 40), 7, 1788342804))
+            [6868321]['reg_time'],
+        'a declared reg_time is published as a canonical int');
+
+    // A Unix epoch is not an int32-domain value. Held to the ceiling the topic
+    // ids and counters use, every registration from 2038-01-19 on would read
+    // as unknown and every replacement dated from it would silently lose its
+    // creation date.
+    strictAssertSame(2147483648,
+        RuTrackerForumIndex::parseDump(fiDumpAt(6868321, 2, str_repeat('A', 40), 7, 2147483648))
+            [6868321]['reg_time'],
+        'a post-2038 registration time survives the int32 ceiling');
+
+    // Deliberately unlike tor_status, info_hash and seeders: those decide
+    // verdicts and STE_DELETED, so a bad one rejects the document. reg_time
+    // decides nothing, and rejecting a forum's dump over it would trade a
+    // wrong date for topics that can no longer be classified at all. So a
+    // value that will not parse is unknown for that row -- and the rest of
+    // the document is still a fully read forum.
+    foreach (array(
+        'zero' => 0,
+        'negative' => -1,
+        'scientific' => '1e9',
+        'not a number' => 'yesterday',
+        'null' => null,
+        'array' => array(1788342804),
+        // A genuine JSON float. 1788342804.0 is NOT one: json_encode() writes
+        // it back as an integer literal and json_decode() hands back an int,
+        // so a fixture spelled that way silently tests the accepted path.
+        'a float' => 1788342804.5,
+        'a padded string' => ' 1788342804',
+        'a string with a leading zero' => '01788342804',
+    ) as $label => $value) {
+        $malformed = true;
+        $rows = RuTrackerForumIndex::parseDump(
+            fiDumpAt(6868321, 2, str_repeat('A', 40), 7, $value), $malformed);
+        strictAssertSame(false, $malformed, $label . ': the forum is still fully read');
+        strictAssertSame(null, $rows[6868321]['reg_time'], $label . ': reg_time is unknown');
+        strictAssertSame(2, $rows[6868321]['tor_status'], $label . ': the verdict field survives');
+    }
+
+    // A row shorter than its declared format is still rejected outright: that
+    // is the row being malformed, not this one column being unreadable.
+    $malformed = false;
+    strictAssertSame(array(), RuTrackerForumIndex::parseDump(json_encode(array(
+        'format' => array('topic_id' => array('tor_status', 'info_hash', 'reg_time')),
+        'result' => array('6868321' => array(2, str_repeat('A', 40))),
+    )), $malformed), 'a row short of its declared reg_time column publishes nothing');
+    strictAssertSame(true, $malformed, 'and reports the document malformed');
 });
 
 $suite->test('parseDump validates canonical int32 integer domains for topic, status, and seeders', function () {

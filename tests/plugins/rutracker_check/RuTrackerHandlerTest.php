@@ -637,6 +637,26 @@ $suite->test('2: layer1 candidate + layer2 registered -> up to date via exactly 
     strictAssertTrue(strpos(Snoopy::$requests[0][1], 'pk=') === false, 'passkey stripped from the probe URL');
     strictAssertTrue(strpos(Snoopy::$requests[0][1], 'event=stopped') !== false, 'probe carries event=stopped');
 
+    // The User-Agent is part of the probe identity, and getting it wrong is
+    // not a degraded probe but a dead layer: Cloudflare fronts the announce
+    // hosts and answers 403 to browser agents, which is what the shared
+    // default sent for six days of log while every probe came back
+    // inconclusive and STE_DELETED stayed unreachable.
+    //
+    // What THIS covers is the handler end of the wiring: that download_torrent
+    // asks for the announce agent rather than letting the default stand. It
+    // runs against TestLib's own makeClient, so it cannot see the production
+    // body -- reverting that to an unconditional browser agent leaves this
+    // test green. The other half is
+    // CheckerTest::testMakeClientSendsTheAgentItWasGivenAndOtherwiseTheBrowser,
+    // which loads the real class; both mutations are covered only by the pair.
+    strictAssertSame(array(RuTrackerAnnounce::PROBE_USER_AGENT), ruTrackerChecker::$agents,
+        'the probe was asked for with the announce agent, not the browser default');
+    strictAssertSame(array(RuTrackerAnnounce::PROBE_USER_AGENT), Snoopy::$agentsLog,
+        'and the client that fetched actually carried it');
+    strictAssertSame(false, (bool) preg_match('/Mozilla|Chrome/i', Snoopy::$agentsLog[0]),
+        'nothing a browser would send reaches an announce host');
+
     // The operator's only window into an unattended hourly job, asserted on
     // the scenario that produced it rather than on a second run of the same
     // setup: the log is a contract too, and a replay of an identical fixture
