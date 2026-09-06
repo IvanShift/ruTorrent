@@ -21,7 +21,11 @@ $user = isset($argv[3]) ? $argv[3] : "";
 if(!preg_match('/^[0-9A-Fa-f]{40}$/', $hash))
 	exit(1);
 require_once( dirname(__FILE__)."/manifest.php" );
-if(is_null(ErasedataManifestCodec::normalizeForce($force)))
+// The wire boundary: an argv word is a string and can be nothing else, so this
+// is where the decimal spelling becomes the integer force the plugin speaks
+// everywhere below. An unreadable force refuses the run; it is never coerced.
+$normalizedForce = ErasedataManifestCodec::normalizeForce($force);
+if(is_null($normalizedForce))
 	exit(1);
 if($user !== "")
 	$_SERVER['REMOTE_USER'] = $user;
@@ -29,8 +33,11 @@ if($user !== "")
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once( dirname(__FILE__)."/removewithdata.php" );
 
-// A pending manifest may belong to an older torrent generation with the same
-// infohash, so it cannot suppress this generation's erase request. The upstream
-// queue is retained in pending.php for the durable package to integrate, but is
-// not wired here until it can acknowledge generation-named manifests.
-exit((erasedataRemoveWithData(array($hash), $force) === false) ? 1 : 0);
+// One generation-bound admission transaction, shared with the web door in
+// action.php: the obligation is recorded under a generation of its own, the
+// per-user drain schedule is armed, and only a really started guarded child's
+// acknowledgement lets anything be erased. A pending manifest of an older
+// torrent that happens to share this infohash carries a different generation
+// and so cannot suppress this request, which is exactly why the queue can now
+// be wired here at all.
+exit((erasedataAdmitRemoval(array($hash), $normalizedForce) === false) ? 1 : 0);

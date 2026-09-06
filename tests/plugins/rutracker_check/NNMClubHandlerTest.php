@@ -3,6 +3,7 @@
 define('TESTLIB_HANDLER_STUBS', 1);
 require_once(__DIR__ . '/TestLib.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+require_once(testFindRepoRoot() . '/tests/php/UpstreamStampingTorrentFixture.php');
 
 function nnmReset()
 {
@@ -55,9 +56,38 @@ function nnmDownloadUrl($downloadId)
 // Torrent over the very bytes the download serves, which is what the owner
 // would have returned; the handler then patches THAT object and hands it
 // across the replacement boundary, as it does in production.
-function nnmQueueGuestParse($raw)
+// $class lets a case hand the handler a Torrent whose setters stamp, which is
+// upstream Novik/ruTorrent's shape and the only one where the snapshot around
+// patchAuthInTorrent()'s setters does any work. See the last case in this file.
+function nnmQueueGuestParse($raw, $class = 'Torrent')
 {
-    ruTrackerChecker::queueResult('parseMetainfo', @new Torrent($raw));
+    ruTrackerChecker::queueResult('parseMetainfo', @new $class($raw));
+}
+
+/**
+ * The smallest stand-in for a Snoopy that has already failed.
+ *
+ * TestLib's Snoopy double models a queued response and carries no error field,
+ * and the error field is exactly what the guest diagnostics test is about, so
+ * the two pieces of state guestFetch reads -- the status and Snoopy's own
+ * message -- are spelled out here instead of injected into the shared double.
+ */
+class NNMGuestFetchDouble
+{
+    public $status;
+    public $error;
+    public $results = '';
+
+    public function __construct($status, $error)
+    {
+        $this->status = $status;
+        $this->error = $error;
+    }
+
+    public function fetch($url)
+    {
+        return false;
+    }
 }
 
 $suite = new StrictTestSuite();
@@ -1268,13 +1298,19 @@ $suite->test('all scrape transport failures stay retryable and never expose the 
     $hash = $torrent->hash_info();
     Snoopy::queue(nnmDynamicScrapeUrl('bt02.nnm-club.cc:2710', $realPasskey, $hash), 6, '');
     Snoopy::queue(nnmDynamicScrapeUrl('bt.searchtor.to', $realPasskey, $hash), 28, '');
+    // The forum is unreachable as well, which is what makes the verdict below
+    // the retryable one: a silent scrape no longer ends the check on its own,
+    // it hands over to the guest download, and that is what fails here.
+    Snoopy::queue(nnmTopicUrl(42), 0, '');
 
     $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $hash, $torrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'transport-only scrape failure remains retryable');
-    strictAssertSame(2, count(Snoopy::$requests),
-        'only the two scrape hosts are tried; guest replacement never starts');
+    strictAssertSame(3, count(Snoopy::$requests),
+        'the two scrape hosts, then the topic page that also failed');
+    strictAssertSame(nnmTopicUrl(42), Snoopy::$requests[2][1],
+        'the third request is the topic page and nothing else');
     $diagnostics = implode("\n", ruTrackerChecker::$logs);
     strictAssertTrue(strpos($diagnostics, 'Scrape failed on bt02.nnm-club.cc') !== false
         && strpos($diagnostics, 'reason=dns') !== false,
@@ -1421,5 +1457,333 @@ $suite->test('a malformed answer from every scrape host falls through to guest d
     strictAssertSame(0, count(nnmCreates()), 'the control makes no replacement');
     strictAssertSame(1, count(Snoopy::$requests), 'the control issues the scrape and nothing else');
 });
+
+// M05. The fallback scrape host is a DIFFERENT host carrying the SAME account
+// passkey, so the scheme it is reached over decides whether that passkey
+// crosses the network in the clear. The primary preserves the credential URL's
+// own scheme; the fallback used to hard-code http://, so an https credential
+// was downgraded on every check whose primary host did not answer up to date.
+$suite->test('the searchtor fallback keeps the credential URL https scheme', function () use ($realPasskey) {
+    nnmReset();
+    $oldRaw = strictTorrentRaw(
+        'https-credential.bin',
+        'https://bt02.nnm-club.cc/' . $realPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
+    $oldHash = $oldTorrent->hash_info();
+    $infoHash = '/scrape?info_hash=' . rawurlencode(hex2bin($oldHash));
+
+    // Both hosts answer 503, and so does the forum the check then falls back
+    // on, so the recorded requests are the two scrape URLs and the topic page.
+    Snoopy::queue('https://bt02.nnm-club.cc/' . $realPasskey . $infoHash, 503, 'busy');
+    Snoopy::queue('https://bt.searchtor.to/' . $realPasskey . $infoHash, 503, 'busy');
+    // Two catch-alls, so that a downgraded fallback fails the scheme assertion
+    // below instead of throwing "unexpected request", which would say less
+    // about what actually went out. One is spent on the topic page, which is
+    // where an unanswered scrape hands over and which is not queued by URL;
+    // the second is the spare a downgraded fallback scrape eats before the
+    // topic page is ever reached. Measured: with only one queued, forcing
+    // $scheme = 'http' in nnmclub.php fails this test with "Unexpected fetch
+    // request: <topic url>" instead of naming the cleartext scrape.
+    Snoopy::queueAny(503, 'busy');
+    Snoopy::queueAny(503, 'busy');
+
+    strictAssertSame(
+        ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent),
+        'nothing answering anywhere leaves the tracker unreachable'
+    );
+
+    strictAssertSame(3, count(Snoopy::$requests),
+        'the primary and the fallback scrape, then the forum');
+    // The credential rides on the two scrape requests only. The third request
+    // is the guest topic page, which carries no credential at all.
+    foreach (array(Snoopy::$requests[0], Snoopy::$requests[1]) as $request) {
+        strictAssertTrue(strpos($request[1], 'https://') === 0,
+            'the account passkey never leaves over cleartext http: ' . $request[1]);
+    }
+    strictAssertTrue(strpos(Snoopy::$requests[1][1], 'https://bt.searchtor.to/') === 0,
+        'the fallback host is still consulted, over the scheme the credential itself uses');
+    strictAssertSame(nnmTopicUrl(42), Snoopy::$requests[2][1],
+        'and a scrape that reached nobody hands over to the guest download');
+    strictAssertLogsClean(ruTrackerChecker::$logs, $realPasskey, 'scrape');
+});
+
+// M09 (fallback form). The guest .torrent is a real file somebody made, and
+// writing the account passkey into an announce URL is not an act of
+// authorship. patchAuthInTorrent() therefore snapshots 'created by' and
+// 'creation date' around its setters: on this fork Torrent::touch() already
+// leaves a decoded torrent alone, but the plugin ships to upstream separately
+// from php/Torrent.php, where every setter still stamps both keys.
+// M05 (consequence). The searchtor fallback exists for the case where the
+// credential's OWN announce host is the one that is unreachable -- a retired
+// endpoint such as bt02.nnm-club.cc, or an outage. Carrying the credential's
+// https scheme across to that fallback is right, but it also means the
+// fallback can now fail where a hard-coded http:// would have answered.
+// A scrape that reached nobody is an absence of evidence about the release,
+// not evidence that the release is unchanged, and the forum -- a different
+// host, and the authority this handler falls back on for every other
+// unusable scrape answer -- is still there to ask.
+$suite->test('a scrape no host answered still asks the forum, which is the authority',
+        function () use ($realPasskey, $dummyPasskey) {
+    nnmReset();
+    $oldRaw = strictTorrentRaw(
+        'https-credential-dead-primary.bin',
+        'https://bt02.nnm-club.cc/' . $realPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
+    $oldHash = $oldTorrent->hash_info();
+    $infoHash = '/scrape?info_hash=' . rawurlencode(hex2bin($oldHash));
+
+    $guestRaw = strictTorrentRaw(
+        'guest-dead-primary.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(42)
+    );
+
+    // Neither scrape host answers at all: a DNS failure on the credential's
+    // own host and a timeout on the fallback.
+    Snoopy::queue('https://bt02.nnm-club.cc/' . $realPasskey . $infoHash, 6, '');
+    Snoopy::queue('https://bt.searchtor.to/' . $realPasskey . $infoHash, 28, '');
+    Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
+    Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
+    ruTrackerChecker::queueResult('createTorrent', ruTrackerChecker::STE_UPDATED);
+
+    $result = NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
+
+    strictAssertSame(ruTrackerChecker::STE_UPDATED, $result,
+        'the forum answered, so the check reaches a verdict instead of stalling');
+    strictAssertSame(1, count(nnmCreates()), 'the replacement the forum proved is made');
+    strictAssertSame(4, count(Snoopy::$requests),
+        'both scrape hosts, then the topic page and the download');
+    strictAssertLogsClean(ruTrackerChecker::$logs, $realPasskey, 'scrape');
+
+    // Control: when the forum cannot be reached either, the verdict is the
+    // retryable one it has always been.
+    nnmReset();
+    Snoopy::queue('https://bt02.nnm-club.cc/' . $realPasskey . $infoHash, 6, '');
+    Snoopy::queue('https://bt.searchtor.to/' . $realPasskey . $infoHash, 28, '');
+    Snoopy::queue(nnmTopicUrl(42), 0, '');
+    strictAssertSame(
+        ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent),
+        'nothing reachable anywhere is still a retryable tracker failure'
+    );
+    strictAssertSame(0, count(nnmCreates()), 'and nothing is replaced');
+});
+
+$suite->test('the passkey patch leaves the guest torrent\'s own author and creation date alone',
+        function () use ($realPasskey, $dummyPasskey) {
+    nnmReset();
+    $oldRaw = strictTorrentRaw(
+        'old-authored.bin',
+        'http://bt.searchtor.to/announce?uk=' . $realPasskey,
+        nnmTopicUrl(42)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
+    $oldHash = $oldTorrent->hash_info();
+
+    $guestRaw = strictTorrentRaw(
+        'new-authored.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(42),
+        array(array('http://ipv6.bt.searchtor.to/' . $dummyPasskey . '/announce')),
+        array('created by' => 'uTorrent/3.5.5', 'creation date' => 1234567890)
+    );
+    // What the served bytes say, read off a decode of those very bytes so the
+    // comparison below cannot drift on the type bencode integers decode to.
+    $served = @new Torrent($guestRaw);
+    strictAssertTrue(!$served->errors(), 'Guest torrent fixture must parse');
+    strictAssertTrue($served->hash_info() !== $oldHash, 'Guest fixture must represent an update');
+
+    Snoopy::queue(
+        nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $oldHash),
+        200,
+        strictScrapePayload($oldHash, false)
+    );
+    Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
+    Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw);
+    ruTrackerChecker::queueResult('createTorrent', null);
+
+    NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
+
+    $creates = nnmCreates();
+    strictAssertSame(1, count($creates), 'the changed guest torrent is replaced once');
+    $patched = nnmHandedOverTorrent($creates[0]);
+    // Without this the test could pass on a patch that never ran: a handler
+    // that changed no announce URL would keep both keys for free.
+    strictAssertTrue(strpos((string) $patched->announce(), $realPasskey) !== false,
+        'the passkey patch really did run: the handed-over announce URL carries it');
+    strictAssertSame('uTorrent/3.5.5', $patched->meta('created by'),
+        'the release author survives the passkey patch');
+    strictAssertSame($served->meta('creation date'), $patched->meta('creation date'),
+        'and so does the date the release was created');
+});
+
+// F26. The case above passes whether or not patchAuthInTorrent() restores
+// anything: this fork's Torrent::touch() writes nothing on a torrent decoded
+// from served bytes, so the setters it wraps stamp nothing to begin with.
+// Delete the snapshot and the restore loop from trackers/nnmclub.php and every
+// other case in this file stays green -- which makes that block untested code
+// carrying a comment saying why it must not be removed.
+//
+// plugins/rutracker_check ships to upstream separately from php/Torrent.php
+// (AGENTS.md, "Upstream PR Handoff"), and upstream's touch() still stamps both
+// keys from every setter. Driving the same handler through a Torrent of that
+// shape is what makes the block load-bearing here.
+$suite->test('the passkey patch puts the author and date back over a setter that stamps',
+        function () use ($realPasskey, $dummyPasskey) {
+    nnmReset();
+    $oldRaw = strictTorrentRaw(
+        'old-authored-stamping.bin',
+        'http://bt.searchtor.to/announce?uk=' . $realPasskey,
+        nnmTopicUrl(42)
+    );
+    $oldTorrent = @new Torrent($oldRaw);
+    strictAssertTrue(!$oldTorrent->errors(), 'Old torrent fixture must parse');
+    $oldHash = $oldTorrent->hash_info();
+
+    $guestRaw = strictTorrentRaw(
+        'new-authored-stamping.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce',
+        nnmTopicUrl(42),
+        array(array('http://ipv6.bt.searchtor.to/' . $dummyPasskey . '/announce')),
+        array('created by' => 'uTorrent/3.5.5', 'creation date' => 1234567890)
+    );
+    $served = @new Torrent($guestRaw);
+    strictAssertTrue(!$served->errors(), 'Guest torrent fixture must parse');
+    strictAssertTrue($served->hash_info() !== $oldHash, 'Guest fixture must represent an update');
+
+    // Vacuity guard first. If the stand-in did not really stamp, everything
+    // below would pass with no restore in the handler at all -- which is the
+    // exact hole this case exists to close.
+    $control = new UpstreamStampingTorrent($guestRaw);
+    $control->announce('http://bt.searchtor.to/anything/announce');
+    strictAssertSame('ruTorrent (PHP Class - Adrien Gibrat)', $control->meta('created by'),
+        'the stand-in stamps its own name on a bare setter, as upstream does');
+    strictAssertSame(UpstreamStampingTorrent::STAMP_DATE, $control->meta('creation date'),
+        'and stamps its own date there too');
+
+    Snoopy::queue(
+        nnmStaticScrapeUrl('bt.searchtor.to', $realPasskey, $oldHash),
+        200,
+        strictScrapePayload($oldHash, false)
+    );
+    Snoopy::queue(nnmTopicUrl(42), 200, '<a href="download.php?id=7">download</a>');
+    Snoopy::queue(nnmDownloadUrl(7), 200, $guestRaw);
+    nnmQueueGuestParse($guestRaw, 'UpstreamStampingTorrent');
+    ruTrackerChecker::queueResult('createTorrent', null);
+
+    NNMClubCheckImpl::download_torrent(nnmTopicUrl(42), $oldHash, $oldTorrent);
+
+    $creates = nnmCreates();
+    strictAssertSame(1, count($creates), 'the changed guest torrent is replaced once');
+    $patched = nnmHandedOverTorrent($creates[0]);
+    strictAssertTrue($patched instanceof UpstreamStampingTorrent,
+        'the handler patched the stamping Torrent, not a quietly rebuilt plain one');
+    // The patch has to have run, or the setters never fired and nothing stamped.
+    strictAssertTrue(strpos((string) $patched->announce(), $realPasskey) !== false,
+        'the passkey patch really did run: the handed-over announce URL carries it');
+    strictAssertSame('uTorrent/3.5.5', $patched->meta('created by'),
+        'the release author is put back over the stamp the setters wrote');
+    strictAssertSame($served->meta('creation date'), $patched->meta('creation date'),
+        'and so is the date the release was created');
+});
+
+// I05. The guest path already reports the transport detail, but Snoopy's own
+// sentence -- the only thing that separates the several conditions arriving as
+// status 0 -- was thrown away. It is reported as a CLASSIFICATION and never
+// echoed: a token cannot carry a passkey whatever a later Snoopy merge decides
+// to quote in its message.
+$suite->test('a guest fetch failure reports a classified reason and never the message itself',
+        function () {
+    $cases = array(
+        // Every one of these is a real Snoopy error string (php/Snoopy.class.inc).
+        array('Invalid protocol "gopher"\n', 'invalid-protocol'),
+        array('Refusing to fetch: cannot resolve host "nnmclub.to".', 'refused-unresolvable-host'),
+        array('Refusing to fetch: host "nnmclub.to" resolves to the non-public address 127.0.0.1.',
+            'refused-non-public-address'),
+        array('Error: cURL could not retrieve the document, error 28.', 'curl-transfer'),
+        array('socket creation failed (-3)', 'socket-create'),
+        array('dns lookup failure (-4)', 'dns-lookup'),
+        array('connection refused or timed out (-5)', 'connect-refused'),
+        array('connection failed (0)', 'connect-errno'),
+        // Not one of the eight: classified rather than quoted, which is the
+        // whole point -- the ninth message is the one nobody has audited.
+        array('Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked', 'unclassified'),
+    );
+    foreach ($cases as $case) {
+        list($message, $expected) = $case;
+        nnmReset();
+        $client = new NNMGuestFetchDouble(0, $message);
+        strictInvoke('NNMClubCheckImpl', 'guestFetch',
+            array($client, 'https://nnmclub.to/forum/viewtopic.php?t=42'));
+        $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
+            'the guest failure is reported once for ' . $expected);
+        strictAssertTrue(strpos($line, 'error=' . $expected) !== false,
+            'the classified reason is reported: expected error=' . $expected . ', got ' . $line);
+        strictAssertTrue(strpos($line, 'transport=') !== false,
+            'and the transport detail is still there: ' . $line);
+        strictAssertLogsClean(ruTrackerChecker::$logs, 'AbCdEf0123456789AbCdEf0123456789',
+            'guest fetch');
+        strictAssertTrue(strpos($line, 'Refusing') === false && strpos($line, 'cURL') === false,
+            'the third-party sentence itself is never echoed: ' . $line);
+    }
+
+    // A client that failed without writing a message says so by omission: the
+    // absent field is evidence in its own right, exactly as it is in
+    // ruTrackerChecker::makeClient().
+    nnmReset();
+    strictInvoke('NNMClubCheckImpl', 'guestFetch',
+        array(new NNMGuestFetchDouble(-100, ''), 'https://nnmclub.to/forum/viewtopic.php?t=42'));
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
+        'a timeout with no message is still reported');
+    strictAssertTrue(strpos($line, 'error=') === false,
+        'no error field is invented when Snoopy wrote none: ' . $line);
+
+    // A fetch that worked says nothing at all.
+    nnmReset();
+    strictInvoke('NNMClubCheckImpl', 'guestFetch',
+        array(new NNMGuestFetchDouble(200, ''), 'https://nnmclub.to/forum/viewtopic.php?t=42'));
+    strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'Guest fetch failed')),
+        'a successful guest fetch is not reported as a failure');
+});
+
+// S1. The same Snoopy sentence must mean the same token whichever of this
+// plugin's two logging paths saw it. Both paths used to normalise the message
+// themselves and did it differently -- makeClient() collapsed internal
+// whitespace runs, this handler only trimmed -- so a re-spaced or wrapped
+// sentence was 'connect-errno' in one log line and 'unclassified' in the
+// other, and the token stopped meaning one thing.
+//
+// The corpus is TestLib's, shared with CheckerTest, which drives the same rows
+// through ruTrackerChecker::makeClient(). Both suites asserting the same table
+// is what makes this a parity test rather than two independent lists.
+$suite->test('the guest path classifies every shared Snoopy message exactly as makeClient does',
+        function () {
+    foreach (fetchErrorParityCases() as $case) {
+        list($message, $expected) = $case;
+        nnmReset();
+        strictInvoke('NNMClubCheckImpl', 'guestFetch',
+            array(new NNMGuestFetchDouble(0, $message), 'https://nnmclub.to/forum/viewtopic.php?t=42'));
+        $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
+            'the guest failure is reported once for ' . var_export($message, true));
+        $field = array();
+        strictAssertSame(1, preg_match('/ error=([^\s]*)$/', $line, $field),
+            'the field is one unquoted value at the end of one record: ' . $line);
+        strictAssertSame($expected, $field[1],
+            'shared corpus token for ' . var_export($message, true) . ': ' . $line);
+        strictAssertLogsClean(ruTrackerChecker::$logs, 'AbCdEf0123456789AbCdEf0123456789',
+            'guest fetch');
+    }
+});
+
 
 exit($suite->run());

@@ -95,6 +95,31 @@ if(isset($HTTP_RAW_POST_DATA))
 					$torrent = new Torrent( $fname );
 					if( !$torrent->errors() )
 					{
+						// Read BEFORE the setters below; put back after
+						// them. This is the user's own .torrent, edited in
+						// place: changing a tracker, a comment or the private
+						// flag does not make ruTorrent its author, and a
+						// rewritten creation date travels out to the
+						// "Created On" column and to the history plugin as
+						// fact.
+						//
+						// On this fork the restore is a no-op today.
+						// Torrent::touch() returns without writing anything
+						// unless the class built the info dictionary itself
+						// out of files on disk, which a path ending in
+						// .torrent never triggers. It is kept because this
+						// plugin is proposed to upstream Novik/ruTorrent
+						// separately from php/Torrent.php (AGENTS.md,
+						// "Upstream PR Handoff"), and upstream's touch()
+						// still stamps both keys from is_private(),
+						// announce(), announce_list(), comment() and their
+						// clear_* siblings. Dropping the snapshot would
+						// reinstate the data loss on any install carrying
+						// this plugin without the class fix.
+						$authored = array(
+							'created by' => $torrent->meta('created by'),
+							'creation date' => $torrent->meta('creation date'),
+						);
 						if($setPrivate)
 						{
 							$torrent->is_private($private);
@@ -116,6 +141,17 @@ if(isset($HTTP_RAW_POST_DATA))
 							$comment = trim($comment);
 							if(strlen($comment))
 								$torrent->comment($comment);
+						}
+						// Put back what the file said, where absent is
+						// also a value: clearing unconditionally would be the
+						// mirror image of the bug, destroying a real author's
+						// field because it assumed one could not be there.
+						foreach($authored as $key => $value)
+						{
+							if(is_null($value))
+								$torrent->clearMeta($key);
+							else
+								$torrent->setMeta($key, $value);
 						}
 						if(isset($torrent->{'rtorrent'}))
 							unset($torrent->{'rtorrent'});

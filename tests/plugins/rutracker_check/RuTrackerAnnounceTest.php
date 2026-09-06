@@ -21,6 +21,31 @@ $suite->test('buildUrl rejects a non-hex hash', function () {
     strictAssertSame(null, RuTrackerAnnounce::buildUrl('http://bt.t-ru.org/ann', 'not-a-hash', '-RC0001-x', 63981, 'k'), 'null on bad hash');
 });
 
+// The scheme decides which PROTOCOL the probe would be spoken over, and the
+// only fetcher that carries it is Snoopy, whose scheme switch
+// (php/Snoopy.class.inc:283-318) sends a request for the byte-exact literals
+// 'http' and 'https' and opens no socket for any other. A row like
+// 'udp://bt.t-ru.org:2710/announce' satisfied the presence check for scheme,
+// host and path, so layer 2 spent a budget slot and then read the reply it
+// never got as an inconclusive answer. Refusing to build the URL
+// routes it to the 'unbuildable' branch instead, which hands the slot back
+// and stops the cycle reading as a probe that ran.
+$suite->test('buildUrl builds a probe only for the schemes the fetcher speaks', function () use ($hash) {
+    foreach (array('http://bt.t-ru.org/ann', 'https://bt.t-ru.org/ann') as $url)
+        strictAssertTrue(is_string(RuTrackerAnnounce::buildUrl($url, $hash, '-RC0001-x', 63981, 'k')),
+            $url . ': a scheme the fetcher speaks builds a probe');
+    foreach (array(
+        // The row this finding is about: a path is all the old check wanted.
+        'udp://bt.t-ru.org:2710/announce',
+        'wss://bt.t-ru.org/announce',
+        // Not a spelling Snoopy's switch matches either, so not one this
+        // probe can be sent over.
+        'HTTP://bt.t-ru.org/ann',
+    ) as $url)
+        strictAssertSame(null, RuTrackerAnnounce::buildUrl($url, $hash, '-RC0001-x', 63981, 'k'),
+            $url . ': must not become a probe URL');
+});
+
 $suite->test('makePeerId is 20 bytes with the plugin prefix', function () {
     $id = RuTrackerAnnounce::makePeerId();
     strictAssertSame(20, strlen($id), 'length');
@@ -876,6 +901,69 @@ $suite->test('the probe agent is never anything a browser would send', function 
     // that broke this layer. If a merge ever collapses the two, this fails.
     strictAssertTrue($agent !== ruTrackerChecker::USER_AGENT,
         'and is not the shared browser default that answered 403 for six days');
+});
+
+// The two tests above are about ONE HOST's entry. This is the whole document,
+// and it used to be the worse of the two. reserveProbe() never even reaches its
+// closure for a file that will not decode: update() reads the document under
+// the lock and returns false before the mutator runs, so $decision keeps the
+// 'allow' it was initialised to and the only signal left is "the write did not
+// land". The one log line an operator could get therefore named a failed WRITE
+// and pointed at disk space, while the actual cause was a corrupt file on disk
+// that no cycle will ever rewrite. Layer 2 is off until somebody repairs it,
+// and at the shipped $rutrackerCheckDebug = false the probe produced zero
+// ungated log bytes.
+$suite->test('an announce document nobody can read is visible, and is not reported as a failed write', function () {
+    strictWithStateDir('chk-announce-document-corrupt', function ($tmp) {
+        ruTrackerChecker::reset();
+        file_put_contents($tmp . '/announce.json', 'this is not json');
+
+        $written = testCapturedAppLog(function () {
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                'no slot is granted against a budget document that will not read');
+        });
+
+        strictAssertTrue(strpos($written, 'announce.json') !== false,
+            'the operator is told which document is wedged, at the shipped debug default');
+        strictAssertSame('this is not json', file_get_contents($tmp . '/announce.json'),
+            'and nothing silently discarded it to make the refusal go away');
+        strictAssertSame(0, count(strictLogsMatching(ruTrackerChecker::$logs, 'could not be written')),
+            'the disk is no longer blamed for a document that could not be READ');
+        strictAssertTrue(count(strictLogsMatching(ruTrackerChecker::$logs, 'could not be read')) > 0,
+            'the gated line names the real cause instead');
+    });
+});
+
+// The read-only view of the same document, which used to disagree with
+// reserveProbe() about it. probeDecision() called load() without the $readable
+// flag, so an announce.json that will not decode came back as the empty array
+// every fresh installation has: entryFor() found no key for the host, read its
+// four ABSENT fields as zeros, and judge() answered 'allow' -- a whole corrupt
+// document read as an unused budget, the same fail-open the reservation was
+// just closed against. The two are documented as sharing one rule ("neither
+// carries its own copy"), and this is where they parted.
+$suite->test('the read-only budget view refuses a document nobody can read, exactly as the reservation does', function () {
+    strictWithStateDir('chk-announce-decision-corrupt', function ($tmp) {
+        ruTrackerChecker::reset();
+        file_put_contents($tmp . '/announce.json', 'this is not json');
+
+        $written = testCapturedAppLog(function () {
+            strictAssertSame('unstorable',
+                RuTrackerAnnounce::probeDecision('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+                'an unreadable document is a budget of zero here too, not a fresh allowance');
+        });
+
+        strictAssertSame(
+            RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+            RuTrackerAnnounce::probeDecision('bt.t-ru.org', 1000, 40, RAT_WINDOW),
+            'the reader and the writer answer the same question the same way');
+        strictAssertTrue(strpos($written, 'bt.t-ru.org in announce.json is not readable') !== false
+            && strpos($written, 'no probe is authorised') !== false,
+            'and the refusal is visible at the shipped debug default, naming host and consequence');
+        strictAssertSame('this is not json', file_get_contents($tmp . '/announce.json'),
+            'and reading it did not rewrite it');
+    });
 });
 
 exit($suite->run());

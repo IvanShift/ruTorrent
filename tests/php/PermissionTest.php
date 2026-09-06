@@ -10,7 +10,19 @@ class PermissionTest extends TestCase
 
 	public function setUp()
 	{
-		$this->fixtureDir = __DIR__ . '/fixtures';
+		// Not __DIR__ . '/fixtures': these directories were built inside the
+		// repository, which left an untracked tests/php/fixtures in git status
+		// after every run -- cleanDirs() removes what it made, never the parent
+		// it made them in -- and, worse, gave two suite runs over one checkout
+		// the same path to fight over. A run as root then owned the fixtures,
+		// and the next run as an ordinary user failed on "unlink: Permission
+		// denied" instead of on the posix extension it is actually missing,
+		// which is a wrong answer that reads exactly like a real one.
+		//
+		// The pid and a unique suffix keep concurrent runs apart even inside
+		// one temporary directory.
+		$this->fixtureDir = sys_get_temp_dir() . '/rutorrent-permission-'
+			. getmypid() . '-' . uniqid('', true);
 		$this
 			->addDir('dir1', '/dir1')
 			->addDir('dir2', '/dir2')
@@ -22,6 +34,10 @@ class PermissionTest extends TestCase
 	public function tearDown()
 	{
 		$this->cleanDirs();
+		// The directory this run made is this run's to remove. rmdir() only
+		// succeeds on an empty one, so anything cleanDirs() could not remove is
+		// left in place to be seen rather than silently discarded.
+		if (is_dir($this->fixtureDir)) @rmdir($this->fixtureDir);
 	}
 
 	protected function addDir($name, $dir, $symlink = null)
@@ -38,6 +54,7 @@ class PermissionTest extends TestCase
 
 	protected function createDirs()
 	{
+		if (!is_dir($this->fixtureDir)) mkdir($this->fixtureDir, 0777, true);
 		foreach ($this->dirs as [$dir, $symlink]) {
 			if ($symlink) {
 				if (is_link($dir)) {

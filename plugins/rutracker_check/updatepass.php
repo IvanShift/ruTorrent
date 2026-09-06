@@ -884,7 +884,11 @@ class RuTrackerUpdatePass
         return !$foreign && $token[0] === ruTrackerChecker::CHKMSG_TOPIC_STATUS;
     }
 
-    // Columns of the sweep's own fleet scan: hash, ownership marker, record.
+    // Columns of the sweep's own fleet scan, in the order it asks for them:
+    // hash, the staged copy's ownership marker (chk-replacement), its
+    // inheritance record (chk-replaces), and the PREDECESSOR's own pointer at
+    // a successor (chk-replacing). The fourth is what makes a predecessor
+    // whose transaction died before it staged anything reachable at all.
     const SWEEP_COLUMNS = 4;
 
     /**
@@ -1323,6 +1327,8 @@ class RuTrackerUpdatePass
         // good -- precisely the outcome this sweep exists to prevent -- and
         // the "opened since staged" guard below would swallow it too, since
         // opening a complete download is what puts chunks on its counters.
+        // The $record !== null re-test is defensive: a null record has already
+        // returned above. Keep it -- every branch under it writes.
         $resuming = $live && $record !== null && !$satisfied
             && ($record['run']['started'] || $record['run']['open']);
 
@@ -1525,9 +1531,24 @@ class RuTrackerUpdatePass
             . "; retaining the exact generation for a later atomic retry");
     }
 
-    // Reached only when the marker is set, the record decoded, the transaction
-    // aged past the lock window, the copy stopped AND closed, and the recorded
-    // predecessor provably gone.
+    // Two entries, and they disagree about the staged copy's run state, so the
+    // precondition is stated per entry. Both require the marker set, the record
+    // decoded, the transaction aged past the lock window, and the recorded
+    // predecessor provably gone -- torrentExists() answering exactly false, an
+    // unknown answer having already stopped the row in reconcileObsoleteCleanup().
+    // On top of that:
+    //   $resuming === false: the copy measures stopped AND closed, the crash
+    //     signature this sweep was written for.
+    //   $resuming === true: the copy is already live, its record asked for a
+    //     started or open state, and it does NOT yet match it -- this plugin's
+    //     own half-finished activation. Retiring that would leave the
+    //     replacement paused for good, so it is finished here instead, and the
+    //     "opened since staged" guard below is deliberately skipped for it.
+    //     All three conjuncts are needed to sort a row: a live row whose
+    //     record asked for stopped AND closed is never satisfied either, yet
+    //     it is not resuming -- it takes inspectMarkedRow()'s "is already
+    //     running, retiring its replacement keys" branch and never arrives
+    //     here at all.
     static private function finishStrandedReplacement($hash, $record, $val, $resuming = false)
     {
         $marker = (string) $val[8];

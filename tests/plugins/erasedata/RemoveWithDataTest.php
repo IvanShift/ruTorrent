@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__ . '/../../php/PermissionsBiteFixture.php');
 // One shared collector environment: FileUtil/RPC stubs, the replaceable
 // metainfo source and the scripted ErasedataFilesystemOps subclass.
 require_once(__DIR__ . '/CollectorFixture.php');
@@ -108,6 +109,75 @@ if(!class_exists('ErasedataPartialWriteStream'))
 			return(($flags & STREAM_URL_STAT_LINK) ? @lstat($real) : @stat($real));
 		}
 		public function unlink($path) { return(@unlink(self::real($path))); }
+		// Without this the wrapper refuses every rename, and a durable writer
+		// that ignored its own byte count would still look correct here: the
+		// publication would fail on the missing wrapper method rather than on
+		// the short write. With it, the byte count is the only thing between a
+		// stalled write and a published record.
+		public function rename($from, $to)
+		{
+			return(@rename(self::real($from), self::real($to)));
+		}
+	}
+}
+
+// A queue-directory wrapper whose writes all take but whose flush reports a
+// failure -- the shape a buffered filesystem takes when the bytes are accepted
+// and the device then refuses them. Every byte is counted in, so a writer that
+// trusted its own byte count alone would publish a record the storage never
+// took; only a CHECKED fflush() refuses. Nothing else about it is scripted: it
+// renames, unlinks and stats through the real filesystem.
+if(!class_exists('ErasedataFlushFailureStream'))
+{
+	class ErasedataFlushFailureStream
+	{
+		const SCHEME = 'erasedatanoflush';
+		public $context;
+		private $handle = null;
+
+		public static function register()
+		{
+			if(!in_array(self::SCHEME, stream_get_wrappers(), true))
+				stream_wrapper_register(self::SCHEME, 'ErasedataFlushFailureStream');
+		}
+		public static function real($path)
+		{
+			return(substr($path, strlen(self::SCHEME.'://')));
+		}
+		public function stream_open($path, $mode, $options, &$openedPath)
+		{
+			$this->handle = @fopen(self::real($path), $mode);
+			return($this->handle !== false);
+		}
+		public function stream_write($data)
+		{
+			$written = @fwrite($this->handle, $data);
+			return($written === false ? 0 : $written);
+		}
+		// The whole point: the bytes went in, the flush did not come back.
+		public function stream_flush() { return(false); }
+		public function stream_eof() { return(true); }
+		public function stream_stat() { return(@fstat($this->handle)); }
+		public function stream_close()
+		{
+			if(is_resource($this->handle))
+				@fclose($this->handle);
+		}
+		public function url_stat($path, $flags)
+		{
+			$real = self::real($path);
+			return(($flags & STREAM_URL_STAT_LINK) ? @lstat($real) : @stat($real));
+		}
+		public function unlink($path) { return(@unlink(self::real($path))); }
+		// Present for the same reason as the neighbouring wrapper's: without a
+		// rename method a writer that ignored its failing fflush would still
+		// look correct here, because publication would fail on the missing
+		// wrapper method instead of on the flush. With it, the checked fflush
+		// is the only thing between an unflushed write and a published record.
+		public function rename($from, $to)
+		{
+			return(@rename(self::real($from), self::real($to)));
+		}
 	}
 }
 
@@ -139,6 +209,215 @@ if(!class_exists('ErasedataGreedyRemovalFilesystem'))
 class RemoveWithDataTest extends TestCase
 {
 	private $dir;
+	private $schedulerTicks = 0;
+
+	public function testDrainCollectsPayloadAndRetiresBeforeReleasingPassLocks()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$queue = $this->queuePath();
+		$payload = $this->dir.'/drain-payload.bin';
+		file_put_contents($payload, 'payload waiting for its drain worker');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+		$this->assertTrue(is_array($staged), 'the real durable staging writer succeeds');
+		if(!is_array($staged))
+			return;
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$this->armQueue($queue, $generation, array($hash => $staged['path']));
+		$this->probe(true, true, array(), 'info-hash not found');
+		$heldAtRemoval = array();
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0), 'callback' => function() use ($queue, &$heldAtRemoval) {
+				foreach(array('scheduler.lock', '.drain-worker.lock') as $name)
+				{
+					$handle = fopen($queue.'/'.$name, 'c');
+					$heldAtRemoval[$name] = !flock($handle, LOCK_EX | LOCK_NB);
+					fclose($handle);
+				}
+			});
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(!file_exists($payload), 'drain itself deletes the payload without a periodic pass');
+		$this->assertEquals(array(), glob($queue.'/*.list'), 'drain consumes its final manifest');
+		$this->assertTrue(is_array($tick) && $tick['retired'] === true,
+			'the same completed drain tick retires');
+		$this->assertEquals(array('scheduler.lock' => true, '.drain-worker.lock' => true),
+			$heldAtRemoval, 'retirement keeps both pass locks through schedule removal');
+	}
+
+	public function testUnjournaledDrainStagingKeepsItsMarkerAndCannotBeRebound()
+	{
+		foreach(array('present', 'absent') as $presence)
+		{
+			$this->reset();
+			$hash = $this->hash('A');
+			$generation = '0000000000000001';
+			$queue = $this->queuePath();
+			$payload = $this->dir.'/orphan-payload.bin';
+			file_put_contents($payload, 'payload owned by a crashed producer');
+			$bytes = ErasedataManifestCodec::encode($hash,
+				array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+			$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+			$this->assertTrue(is_array($staged), $presence.': complete pre-journal staging exists');
+			if(!is_array($staged))
+				continue;
+			erasedataQueueRequest($queue, $hash, 1, $generation);
+			$marker = erasedataPendingMarkerPath($queue, $hash, $generation);
+			$markerBytes = file_get_contents($marker);
+			$this->armQueue($queue, $generation, array());
+			$this->probe(true, $presence === 'absent',
+				$presence === 'absent' ? array() : array($hash), 'info-hash not found');
+			$this->frozen(true, array($payload, 0, $payload));
+			$this->eraseOk();
+			$tick = erasedataDrainWorkerRun($this->dependencies());
+			$this->assertEquals($markerBytes, @file_get_contents($marker),
+				$presence.': an existing unjournaled staging keeps its exact pending obligation');
+			$this->assertEquals(array(), rXMLRPCRequest::$erased,
+				$presence.': recovery cannot replace an unbound manifest and erase under it');
+			$this->assertEquals($bytes, file_get_contents($staged['path']),
+				$presence.': original staging remains byte-exact');
+			$this->assertEquals(array($staged['path']), glob($queue.'/*.tmp'),
+				$presence.': recovery creates no second staging identity');
+			$this->assertEquals(array(), glob($queue.'/*.list'),
+				$presence.': unjournaled staging authorizes no publication');
+			$this->assertTrue(is_array($tick) && $tick['retained'] === 1
+				&& $tick['unrecoverable'] === 0 && !$tick['retired'],
+				$presence.': the recoverable physical candidate is retained, never abandoned');
+			$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'staging-unbound') !== false,
+				$presence.': the missing journal identity binding is visible');
+		}
+	}
+
+	// One crashed producer freezes ONE obligation, never the whole generation.
+	//
+	// The unbound-staging refusal is generation-wide the moment it returns out
+	// of the pass: a single physical staging object the journal does not bind
+	// then freezes every sibling of the same admission -- nothing published, no
+	// marker discharged, retirement impossible, and no diagnostic naming the
+	// members that were stranded. The refusal itself is unchanged here: the
+	// unbound candidate keeps its marker and its exact bytes, is never adopted
+	// by filename and authorizes no publication. Only its blast radius is.
+	public function testUnboundStagingFreezesOnlyItsOwnMemberOfTheGeneration()
+	{
+		$this->reset();
+		$generation = '0000000000000001';
+		$queue = $this->queuePath();
+		$orphan = $this->hash('A');
+		$siblings = array($this->hash('B'), $this->hash('C'));
+		$payloads = array();
+		$staged = array();
+		foreach(array_merge(array($orphan), $siblings) as $hash)
+		{
+			$label = substr($hash, 0, 1);
+			$payload = $this->dir.'/member-'.$label.'.bin';
+			file_put_contents($payload, 'payload of batch member '.$label);
+			$payloads[$hash] = $payload;
+			$bytes = ErasedataManifestCodec::encode($hash,
+				array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+			$object = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+			$this->assertTrue(is_array($object),
+				'batch member '.$label.' has a complete staging object');
+			if(!is_array($object))
+				return;
+			$staged[$hash] = $object['path'];
+			erasedataQueueRequest($queue, $hash, 1, $generation);
+		}
+		$orphanBytes = file_get_contents($staged[$orphan]);
+		$orphanMarker = erasedataPendingMarkerPath($queue, $orphan, $generation);
+		$orphanMarkerBytes = file_get_contents($orphanMarker);
+		// The journal binds the two siblings and knows nothing of the third,
+		// which is exactly what a producer that died between its staging write
+		// and its journal write leaves behind.
+		$bound = array();
+		foreach($siblings as $hash)
+			$bound[$hash] = $staged[$hash];
+		$this->armQueue($queue, $generation, $bound);
+		$this->probe(true, true, array(), 'info-hash not found');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		foreach($siblings as $hash)
+		{
+			$label = substr($hash, 0, 1);
+			$this->assertTrue(!file_exists($payloads[$hash]),
+				'sibling '.$label.' is published and collected on the first tick');
+			$this->assertTrue(!file_exists(erasedataPendingMarkerPath($queue, $hash, $generation)),
+				'sibling '.$label.' has its pending marker discharged');
+			$this->assertTrue(!file_exists($staged[$hash]),
+				'sibling '.$label.' leaves no staging object behind');
+		}
+		// The refusal itself, undiminished.
+		$this->assertTrue(is_file($payloads[$orphan]),
+			'the unbound member erases nothing');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'no member is erased under a binding the journal never recorded');
+		$this->assertEquals($orphanBytes, @file_get_contents($staged[$orphan]),
+			'the unbound staging object survives byte-exact');
+		$this->assertEquals($orphanMarkerBytes, @file_get_contents($orphanMarker),
+			'the unbound member keeps its exact pending obligation');
+		$this->assertEquals(array($staged[$orphan]), glob($queue.'/*.tmp'),
+			'the unbound member is never rebound and no second identity appears');
+		$this->assertEquals(array(), glob($queue.'/*.list'),
+			'the pass consumes every manifest it published and invents none');
+		$this->assertTrue(is_array($tick) && $tick['published'] === 2
+			&& $tick['retained'] === 1 && $tick['unrecoverable'] === 0,
+			'two siblings resolve while one unbound member is retained');
+		$this->assertTrue(is_array($tick) && $tick['retired'] === false,
+			'the queue is not retirable while the unbound obligation stands');
+		// A stranded obligation is never invisible: the hash that owns the
+		// refusal is named, and no sibling is left retained without one.
+		$log = implode("\n", FileUtil::$log);
+		$this->assertTrue(strpos($log, 'staging-unbound') !== false
+			&& strpos($log, 'hash='.$orphan) !== false,
+			'the retained obligation is diagnosed by its own hash');
+		foreach($siblings as $hash)
+			$this->assertTrue(strpos($log, 'hash='.$hash) === false,
+				'a sibling that resolved is not reported as a refusal');
+	}
+
+	public function testDrainCollectorWaitsForHashWhilePeriodicCollectorSkipsIt()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$queue = $this->queuePath();
+		$payload = $this->dir.'/locked-final-payload.bin';
+		file_put_contents($payload, 'collector must wait for the hash owner');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$final = $queue.'/'.$hash.'.'.$generation.'.1.list';
+		file_put_contents($final, $bytes);
+		$this->armQueue($queue, $generation, array());
+		$this->probe(true, true, array(), 'info-hash not found');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$holder = ErasedataTestProcess::start(erasedataTestLockHolderCommand($queue.'/'.$hash.'.lock', 2.0));
+		try
+		{
+			for($attempt = 0; $attempt < 100 && strpos($holder->out, 'held') === false; $attempt++)
+			{
+				$holder->pump();
+				usleep(10000);
+			}
+			$this->assertTrue(strpos($holder->out, 'held') !== false,
+				'the independent child actually holds the payload hash lock');
+			$started = microtime(true);
+			erasedataRunCollector($queue);
+			$this->assertTrue(microtime(true) - $started < 1.0 && is_file($payload),
+				'the periodic collector retains its nonblocking hash behavior');
+			$started = microtime(true);
+			$tick = erasedataDrainWorkerRun($this->dependencies());
+			$this->assertTrue(microtime(true) - $started > 0.2,
+				'the drain collector waits for the held hash rather than skipping it');
+			$this->assertTrue(!file_exists($payload) && !file_exists($final),
+				'the same drain invocation collects after the owner unlocks');
+			$this->assertTrue(is_array($tick) && $tick['retired'], 'the completed drain can then retire');
+		}
+		finally
+		{
+			$holder->reap();
+		}
+	}
 
 	public function setUp()
 	{
@@ -165,6 +444,7 @@ class RemoveWithDataTest extends TestCase
 		rXMLRPCRequest::$requested = array();
 		rXMLRPCRequest::$erased = array();
 		rXMLRPCRequest::$commandCalls = array();
+		rXMLRPCRequest::$scheduledCommands = array();
 	}
 
 	public function tearDown()
@@ -198,7 +478,51 @@ class RemoveWithDataTest extends TestCase
 		);
 	}
 	private function hash($character = 'A') { return(str_repeat($character, 40)); }
-	private function modeOf($path) { clearstatcache(true, $path); return(fileperms($path) & 0777); }
+	// A queue really ARMED at $generation, whose journal really binds the
+	// staging files named, in the phase given.
+	//
+	// A worker case that queues generation 0000000000000001 against the default
+	// state -- which carries 0000000000000000 -- returns at the
+	// `generation-unarmed` guard before it probes, stages, erases or publishes
+	// anything, so every assertion after the tick is satisfied by that one
+	// refusal and would hold for any implementation whatsoever of the thing the
+	// case is named for. This is what such a case needs written first.
+	private function armQueue($queue, $generation, array $staging,
+		$phase = 'erase-started', $force = 1, $user = 'rutorrent')
+	{
+		$hashes = array_keys($staging);
+		sort($hashes, SORT_STRING);
+		$journal = array();
+		if(count($hashes))
+		{
+			$bound = array();
+			foreach($hashes as $hash)
+			{
+				$stat = @stat($staging[$hash]);
+				$bound[$hash] = array(
+					'path' => $staging[$hash],
+					'dev' => is_array($stat) ? (string)$stat['dev'] : '0',
+					'ino' => is_array($stat) ? (string)$stat['ino'] : '0');
+			}
+			$journal[$generation] = array('phase' => $phase, 'force' => $force,
+				'hashes' => $hashes, 'staging' => $bound);
+		}
+		$state = array(
+			'version' => 1, 'user' => $user,
+			'generation' => $generation, 'acknowledged' => $generation,
+			'phase' => 'armed', 'journal' => $journal, 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the durable state really arms '.$generation.' with a '.$phase
+				.' journal record binding '.count($hashes).' staging object(s)');
+		return($state);
+	}
+	private function modeOf($path)
+	{
+		if(!is_string($path) || $path === '' || !file_exists($path))
+			return(false);
+		clearstatcache(true, $path);
+		return(fileperms($path) & 0777);
+	}
 	private function cleanupIdentity($path)
 	{
 		$canonical = realpath($path);
@@ -385,7 +709,13 @@ class RemoveWithDataTest extends TestCase
 			copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $erasedataDir.'/manifest.php');
 			file_put_contents($erasedataDir.'/removewithdata.php', '<?php require_once(dirname(__FILE__)."/manifest.php"); '
 				.'function erasedataRemoveWithData($hashes,$force) { rXMLRPCRequest::$commands[]="helper:".'
-				.'(is_string($force)?$force:gettype($force)); return array(); }');
+				.'(is_string($force)?$force:gettype($force)); return array(); }'
+				// The shared admission door both public doors now enter. It
+				// records the exact PHP type it was handed, so a door that
+				// forwarded the wire spelling instead of the integer force is
+				// visible here rather than deep inside the producer.
+				.'function erasedataAdmitRemoval($hashes,$force) { rXMLRPCRequest::$commands[]="admit:".'
+				.'(is_int($force)?$force:gettype($force)); return array(); }');
 		}
 		// The copied production action needs its own include tree, so it runs in
 		// a real script that receives one absolute JSON scenario filename.
@@ -757,7 +1087,7 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin", "/d/name/sub/b.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name/sub/b.bin", "/d/name", "1", "1"), $this->listFor($hash), 'multi-file list from frozen paths');
 		$this->assertEquals(array("d.get_base_path", "d.set_custom5"), rXMLRPCRequest::$requested, 'no fallback request when frozen paths exist');
 	}
@@ -770,7 +1100,7 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/a.bin", 0, "/d/a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/a.bin", "/d/a.bin", "0", "1"), $this->listFor($hash), 'single-file list from frozen paths');
 	}
 
@@ -781,7 +1111,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, "", ""));
 		$this->stored(true, array("/d/name", 1, "a.bin", "sub/b.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name/sub/b.bin", "/d/name", "1", "1"), $this->listFor($hash), 'multi-file list rebuilt from d.directory + f.path');
 		$this->assertEquals(array("d.get_base_path", "d.get_directory", "d.set_custom5"), rXMLRPCRequest::$requested, 'fallback request issued');
 	}
@@ -793,7 +1123,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 0, ""));
 		$this->stored(true, array("/d", 0, "movie.mkv"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/movie.mkv", "/d/movie.mkv", "0", "1"), $this->listFor($hash), 'single-file base path is the file, not its directory');
 	}
 
@@ -804,7 +1134,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, ""));
 		$this->stored(true, array("/d/name/", 1, "a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name", "1", "1"), $this->listFor($hash), 'no doubled separator from a trailing slash');
 	}
 
@@ -815,7 +1145,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(false, array());
 		$this->stored(true, array("/d/name", 1, "a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name", "1", "1"), $this->listFor($hash), 'a failed frozen request also falls back');
 	}
 
@@ -827,9 +1157,12 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "2");
+		$result = erasedataRemoveWithData(array($hash), 2);
 		$lines = $this->listFor($hash);
-		$this->assertEquals("2", end($lines), 'delete-path mode recorded as the last line');
+		$this->assertTrue(is_array($lines) && count($lines) > 0,
+			'integer force 2 is admitted and publishes a manifest');
+		$this->assertEquals("2", is_array($lines) && count($lines) ? end($lines) : null,
+			'delete-path mode recorded as the last line');
 	}
 
 	// -- unresolvable download ----------------------------------------------
@@ -841,7 +1174,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, "", ""));
 		$this->stored(true, array("", 1, "", ""));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'no list written when no path resolves');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'torrent must not be erased when its files are unknown');
 		$this->assertTrue($result === false, 'caller is told the removal did not happen');
@@ -858,19 +1191,22 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, ""));
 		$this->stored(true, array("/d/name", 1, "a.bin"));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hashA, $hashB), "1");
+		erasedataRemoveWithData(array($hashA, $hashB), 1);
 		$this->assertEquals(array($hashA, $hashB), rXMLRPCRequest::$erased, 'every resolvable hash is erased');
 	}
 
 	public function testTorrentNotErasedWhenManifestWriteFails()
 	{
+		if(testSkipUnlessPermissionsBite('that a manifest which cannot be written'
+			.' stops the erase instead of letting it proceed unrecorded'))
+			return;
 		$this->reset();
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
 		@chmod($this->dir.'/erasedata', 0555);
 		try {
-			$result = erasedataRemoveWithData(array($hash), "1");
+			$result = erasedataRemoveWithData(array($hash), 1);
 			$this->assertTrue($result === false, 'removal must return false when manifest cannot be written');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased, 'torrent must not be erased when manifest write fails');
 			$this->assertTrue(count(FileUtil::$log) > 0, 'the manifest write failure is logged');
@@ -886,7 +1222,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		rXMLRPCRequest::$responses["d.hash"] = array("ok"=>true, "val"=>array($hash));
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($result === false, 'removal must return false when RPC erase fails');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'list manifest must not exist when torrent still exists in rTorrent');
 		$tmpFiles = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
@@ -902,7 +1238,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($result === false, 'removal returns false on RPC failure');
 		$this->assertEquals(1, count($this->manifestFiles($hash)),
 			'one list manifest must be published after exact missing-hash confirmation');
@@ -917,7 +1253,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(true, false, array(""));
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($result === false, 'removal returns false on RPC failure');
 		$this->assertEquals(0, count($this->manifestFiles($hash)),
 			'clean empty uncertainty must not publish a deletion manifest');
@@ -933,7 +1269,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, false, array());
-		erasedataRemoveWithData(array($hash), "1");
+		erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'transport failure must not be treated as confirmed absence');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'unknown result retains staging for recovery');
 	}
@@ -945,7 +1281,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, true, array());
-		erasedataRemoveWithData(array($hash), "1");
+		erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'daemon fault must not be treated as confirmed absence');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'faulted probe retains staging for recovery');
 	}
@@ -973,7 +1309,7 @@ class RemoveWithDataTest extends TestCase
 				@mkdir(substr($tmp[0], 0, -4).'.list');
 			@mkdir($this->dir.'/erasedata/'.$hash.'.list');
 		});
-		$result = erasedataRemoveWithData(array($hash), "1");
+		$result = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($result === false, 'publication failure is reported to the caller');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'failed rename does not publish a partial list file');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'failed rename retains complete staging for recovery');
@@ -983,7 +1319,7 @@ class RemoveWithDataTest extends TestCase
 	{
 		$this->reset();
 		@rmdir($this->dir.'/erasedata');
-		$result = erasedataRemoveWithData(array($this->hash(), '../outside'), "1");
+		$result = erasedataRemoveWithData(array($this->hash(), '../outside'), 1);
 		$this->assertTrue($result === false, 'the shared producer rejects a non-SHA-1 hash');
 		$this->assertTrue(!file_exists($this->dir.'/erasedata'), 'invalid input cannot create the manifest directory');
 		$this->assertTrue(!file_exists($this->dir.'/OUTSIDE.lock'), 'path traversal cannot create an artifact outside the manifest directory');
@@ -998,7 +1334,7 @@ class RemoveWithDataTest extends TestCase
 		$upper = strtoupper($lower);
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($lower), "1");
+		erasedataRemoveWithData(array($lower), 1);
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$upper.'.lock'), 'the lock uses the canonical uppercase hash');
 		$this->assertEquals(1, count($this->manifestFiles($upper)), 'the live manifest uses the canonical uppercase hash');
 		$this->assertEquals(array($upper), rXMLRPCRequest::$erased, 'RPC commands receive the canonical uppercase hash');
@@ -1015,7 +1351,7 @@ class RemoveWithDataTest extends TestCase
 		chmod($lock, 0600);
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), "1");
+		erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(0660, $this->modeOf($lock), 'an existing persistent hash lock is repaired to the shared profile mode');
 		$this->assertEquals(0660, $this->modeOf($this->onlyManifest($hash)), 'the published manifest has the shared profile mode');
 	}
@@ -1029,11 +1365,11 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, false, array());
-		erasedataRemoveWithData(array($hash), "1");
+		erasedataRemoveWithData(array($hash), 1);
 		$tmp = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
 		$this->assertEquals(1, count($tmp), 'the unknown erase result retains one complete staging manifest');
-		$this->assertEquals(0660, $this->modeOf($tmp[0]), 'completed staging has the shared profile mode');
-		$reader = @fopen($tmp[0], 'r');
+		$this->assertEquals(0660, count($tmp) ? $this->modeOf($tmp[0]) : null, 'completed staging has the shared profile mode');
+		$reader = count($tmp) ? @fopen($tmp[0], 'r') : false;
 		$this->assertTrue($reader !== false, 'the retained manifest can be opened for a later reader');
 		if($reader !== false)
 			fclose($reader);
@@ -1048,7 +1384,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
 		try {
-			erasedataRemoveWithData(array($hash), "1");
+			erasedataRemoveWithData(array($hash), 1);
 			$this->assertEquals(0666, $this->modeOf($this->dir.'/erasedata/'.$hash.'.lock'), 'the lock fallback also strips execute bits');
 			$this->assertEquals(0666, $this->modeOf($this->onlyManifest($hash)), 'focused harnesses without profileMask retain the historical permissive fallback');
 		} finally {
@@ -1476,6 +1812,65 @@ class RemoveWithDataTest extends TestCase
 			&& strpos($named[0], 'no manifest was collected for any torrent') !== false,
 			'and says the whole run was refused, not merely that one path was skipped: '
 			.json_encode($named));
+	}
+
+	// Invariant 12 on the PAYLOAD side of the collector.
+	//
+	// Retention there used to go out through eLog(), which the shipped
+	// $erasedebug_enabled = false silences, so a queue that retained every job
+	// for ever produced not one line an operator could ever see -- the only way
+	// to find out was to switch a debug flag on and wait for it to happen
+	// again. The cleanup side of the same collector already reports its
+	// retentions through the channel debug cannot silence; this pins that the
+	// payload side does too, that it is bounded and classified per physical job
+	// and generation, and that it leaks neither a raw path nor a payload byte.
+	public function testTheOrdinaryCollectorRetainsTheJobAndLeaksNothingSayingSo()
+	{
+		$this->reset();
+		$hash = $this->hash('9');
+		$generation = '000000000000001a';
+		$base = $this->dir.'/unconditional-retention-base';
+		$payload = $base.'/payload.bin';
+		$name = $hash.'.'.$generation.'.7.list';
+		mkdir($base);
+		file_put_contents($payload, 'payload-bytes-nobody-may-log');
+		$this->writeManifestLines($name, array($payload), $base, 1, 1);
+		// rTorrent answers nothing this collector can read, so the whole job is
+		// retained -- unknown is not absence -- and debug stays off throughout.
+		list($status, $output) = $this->runCollector(array('ok' => false,
+			'captureLogs' => true));
+		$this->assertEquals(0, $status,
+			'an unreadable probe must not crash the collector: '.$output);
+		$this->assertTrue(is_file($payload), 'the payload really is retained');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$name),
+			'and so is the manifest that describes it');
+		$logs = $this->collectorLogs($output);
+		$named = array();
+		foreach($logs as $line)
+			if(strpos($line, $hash) !== false && strpos($line, $generation) !== false)
+				$named[] = $line;
+		// This case USED to require the line here, and that was the defect: the
+		// ordinary schedule is registered unconditionally and fires every
+		// $garbageCheckInterval in a fresh process, so a condition that lasts was
+		// reported for the life of the installation -- measured at three of three
+		// alternating cycles, roughly 5760 lines a day for one retained job.
+		//
+		// The report moved to the schedule that exists BECAUSE of the condition.
+		// A published manifest classifies as 'final', keeps the retirement scan
+		// non-empty and therefore keeps the drain armed for exactly as long as
+		// there is something to say, so nothing is lost by this pass staying
+		// quiet: testTheOrdinaryCollectorLeavesPayloadRetentionToTheDrain pins
+		// both halves together, and this case keeps proving that the silence is
+		// real silence and leaks nothing.
+		$this->assertEquals(0, count($named),
+			'the ordinary pass reports no payload retention: '.json_encode($logs));
+		foreach($logs as $line)
+		{
+			$this->assertTrue(strpos($line, $this->dir) === false,
+				'no collector diagnostic leaks the settings root or a raw path: '.$line);
+			$this->assertTrue(strpos($line, 'payload-bytes-nobody-may-log') === false,
+				'no collector diagnostic leaks payload bytes: '.$line);
+		}
 	}
 
 	public function testCollectorRetriesAfterTransientReservationContainerFailure()
@@ -1909,7 +2304,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->frozen(true, array($oldBase, 1, $oldFile));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 		$first = $this->onlyManifest($hash);
 		$this->assertTrue(is_string($first) && basename($first) !== $hash.'.list',
 			'a produced obligation has staging-derived generation identity');
@@ -1923,7 +2318,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->frozen(true, array($newBase, 1, $newFile));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(1, count($this->manifestFiles($hash)), 'the second erase publishes its own generation');
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-second-erase collection exits normally: '.$output);
@@ -1946,10 +2341,10 @@ class RemoveWithDataTest extends TestCase
 
 		$this->frozen(true, array($oldBase, 1, $oldFile));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 		$this->frozen(true, array($newBase, 1, $newFile));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 
 		$this->assertEquals(2, count($this->manifestFiles($hash)), 'a second erase never overwrites an older pending generation');
 		list($status, $output) = $this->runCollector(array());
@@ -1970,7 +2365,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->frozen(true, array($base, 1, $file));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 		$first = $this->onlyManifest($hash);
 		$exact = is_file($first) ? file_get_contents($first) : null;
 
@@ -1984,7 +2379,7 @@ class RemoveWithDataTest extends TestCase
 
 		$this->frozen(true, array($base, 1, $file));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), '1');
+		erasedataRemoveWithData(array($hash), 1);
 		$this->assertEquals(2, count($this->manifestFiles($hash)), 'the overlapping second erase has a distinct generation');
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'overlapping generations collect after absence: '.$output);
@@ -2272,16 +2667,172 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		$invalidForces = array(null, false, true, 0, 1, 2, "", "0", "01", "02", " 1", "1 ", "2\n1\n2", array(1), (object)array('force' => 1));
+		// Invariant 13: an INVALID force is REFUSED, never coerced to "delete
+		// the download's own files".
+		//
+		// What counts as invalid is the point. The exact integers 1 and 2 and
+		// the exact decimal spellings "1" and "2" are the whole accepted
+		// domain -- the spellings because an HTTP parameter and an argv word
+		// are strings and cannot be anything else -- so they belong in the
+		// case below this one, not in this list. Everything here is somebody's
+		// mistake or somebody's injection, and guessing at one of them means
+		// guessing at a deletion.
+		$invalidForces = array(null, false, true, 0, 3, 9, -1, 1.0, 2.0,
+			"", "0", "3", "9", "x", "one", "01", "02", "+1", " 1", "1 ", "1\n",
+			"2\n1\n2", array(), array(1), (object)array('force' => 1));
 		foreach($invalidForces as $inv)
 		{
 			rXMLRPCRequest::$erased = array();
+			foreach(array_merge($this->manifestFiles($hash, 'tmp'),
+				$this->manifestFiles($hash, 'list')) as $residue)
+				@unlink($residue);
 			$res = erasedataRemoveWithData(array($hash), $inv);
 			$this->assertTrue($res === false, 'invalid force parameter must be rejected before staging/erase');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased, 'd.erase must not be called for invalid force');
 			$this->assertEquals(array(), $this->manifestFiles($hash, 'tmp'), 'staging must not be published for invalid force');
 			$this->assertEquals(array(), $this->manifestFiles($hash, 'list'), 'manifest must not be published for invalid force');
+			// And nothing durable at all: no obligation marker, no journal.
+			$this->assertEquals(array(), glob($this->queuePath().'/*.pending'),
+				'no pending marker is written for invalid force');
+			$this->assertTrue(!file_exists($this->queuePath().'/.drain-state'),
+				'no drain journal is written for invalid force');
 		}
+		$this->assertEquals(array(), rXMLRPCRequest::$requested,
+			'a refused force reaches no RPC at all');
+	}
+
+	// The regression this case exists for: the wire spelling reaching the
+	// PUBLIC doors from plugins/httprpc/action.php.
+	//
+	// plugins/erasedata/init.js routes "Remove and delete data" through the
+	// httprpc plugin whenever it is loaded, which on a stock install it always
+	// is, and plugins/httprpc/action.php hands the producer the RAW POST
+	// STRING after validating it with normalizeForce(). A producer or door
+	// that demanded the integer refused that call and the feature failed
+	// closed on every default install, while every in-repo test that passed an
+	// integer stayed green. So the acceptance is pinned here, at both public
+	// doors, together with what invariant 13 actually requires: what arrives
+	// in the marker, the journal and the staging record is the INTEGER.
+	public function testWireForceSpellingsAreAcceptedAtThePublicDoorsAsIntegers()
+	{
+		$invariant = 'the exact wire spellings "1" and "2" are accepted at the'
+			.' public doors and normalized once into the integer force';
+		// A pair list, never an array key: PHP casts a decimal-string key to
+		// an integer, so array("1" => 1) would hand this loop the very
+		// integer the case exists to stop testing.
+		foreach(array(array("1", 1), array("2", 2)) as $pair)
+		{
+			list($wire, $expected) = $pair;
+			$this->assertTrue($wire === (string)$expected,
+				'the case really hands the doors the STRING "'.$expected.'"');
+			// (a) The destructive producer, called exactly as
+			// plugins/httprpc/action.php calls it.
+			$this->reset();
+			$hash = $this->hash();
+			$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
+			$this->eraseOk();
+			$result = erasedataRemoveWithData(array($hash), $wire);
+			$this->assertTrue($result !== false,
+				'the producer accepts the wire force "'.$wire.'" rather than failing closed');
+			$this->assertEquals(array($hash), rXMLRPCRequest::$erased,
+				'and really erases the requested download for wire force "'.$wire.'"');
+			$record = $this->manifestRecordFor($hash);
+			$this->assertTrue(is_array($record) && array_key_exists('force', $record)
+				&& $record['force'] === $expected,
+				'the published manifest carries the integer force '.$expected
+					.' for wire force "'.$wire.'"');
+		}
+		if(!$this->requireApi(array('erasedataAdmitRemoval()',
+			'erasedataReadDrainState()', 'erasedataDecodePendingMarker()'), $invariant))
+			return;
+		foreach(array(array("1", 1), array("2", 2)) as $pair)
+		{
+			list($wire, $expected) = $pair;
+			$this->assertTrue($wire === (string)$expected,
+				'the case really hands the doors the STRING "'.$expected.'"');
+			// (b) The shared admission door, whose internal runner below it
+			// takes the integer and nothing else.
+			$this->reset();
+			$hash = $this->hash();
+			$queue = $this->queuePath();
+			// A force-2 admission proves a real directory capability before it
+			// stages anything (erasedataAcquireRemovalCapability, added by the
+			// producer repair), so this door needs a base that really is a
+			// directory on disk; a synthetic "/d/name" is refused with
+			// descriptor-unavailable before the generation is armed. The
+			// subject of the case is untouched: what is handed to the door is
+			// still the raw wire STRING "$wire". reset() wipes everything under
+			// $this->dir at the top of each iteration, so this needs no
+			// teardown, and the per-wire name keeps the two iterations
+			// independent.
+			$base = $this->dir.'/wire-force-'.$wire;
+			mkdir($base);
+			file_put_contents($base.'/a.bin', 'payload');
+			$this->frozen(true, array($base, 1, $base.'/a.bin'));
+			// The marker is removed as part of discharging the obligation, so
+			// it is captured at the instant of the erase RPC, which is after
+			// it is durable and before it is discharged.
+			$markers = array();
+			$this->eraseOk(function($commands) use ($queue, &$markers)
+			{
+				foreach(glob($queue.'/*.pending') as $marker)
+					$markers[basename($marker)] = @file_get_contents($marker);
+			});
+			$this->acknowledgeOnRegistration($queue);
+			$outcome = erasedataAdmitRemoval(array($hash), $wire);
+			$this->assertTrue(is_array($outcome) && isset($outcome['force'])
+				&& $outcome['force'] === $expected,
+				'the public admission door accepts wire force "'.$wire
+					.'" and reports the integer '.$expected);
+			$generation = is_array($outcome) && isset($outcome['generation'])
+				? $outcome['generation'] : null;
+			$state = erasedataReadDrainState($queue);
+			$entry = is_array($state) && is_string($generation)
+				&& isset($state['journal'][$generation])
+				? $state['journal'][$generation] : array();
+			$this->assertTrue(isset($entry['force']) && $entry['force'] === $expected,
+				'the journal record binds the integer force '.$expected
+					.' for wire force "'.$wire.'"');
+			$this->assertTrue(isset($entry['staging'][$hash]['path'])
+				&& is_string($generation)
+				&& strpos((string)$entry['staging'][$hash]['path'], $generation) !== false,
+				'the staging record of this generation exists for wire force "'.$wire.'"');
+			$this->assertEquals(1, count($markers),
+				'exactly one obligation marker was durable for wire force "'.$wire.'"');
+			$marker = count($markers) ? erasedataDecodePendingMarker(
+				current($markers)) : false;
+			$this->assertTrue(is_array($marker) && array_key_exists('force', $marker)
+				&& $marker['force'] === $expected,
+				'the marker parses back to the integer '.$expected
+					.' for wire force "'.$wire.'"');
+			$this->assertTrue(is_array($marker) && isset($marker['generation'])
+				&& $marker['generation'] === $generation,
+				'and carries the generation the admission bound for wire force "'.$wire.'"');
+			$staged = $this->manifestRecordFor($hash);
+			$this->assertTrue(is_array($staged) && array_key_exists('force', $staged)
+				&& $staged['force'] === $expected,
+				'the manifest the admission published carries the integer force '
+					.$expected.' for wire force "'.$wire.'"');
+		}
+		// Both public doors are reachable with the wire spelling because they
+		// normalize it themselves, not because some caller happened to.
+		$producer = $this->productionFunctionBody('removewithdata.php',
+			'function erasedataRemoveWithData($hashes, $forceDelete)');
+		$this->assertTrue(is_string($producer)
+			&& strpos($producer, 'ErasedataManifestCodec::normalizeForce($forceDelete)') !== false,
+			'the producer normalizes its own force argument');
+		$this->assertTrue(is_string($producer)
+			&& strpos($producer, '$forceDelete !== 1 && $forceDelete !== 2') === false,
+			'and carries no integer-only type guard in front of that normalization');
+		// The door is not the last function in the file, and every function in
+		// it is nested inside an if(!function_exists()) guard, so a body scan
+		// would run to the end of the file. These two exact lines are read off
+		// the whole source instead, which is precise either way.
+		$this->sourceHas('removewithdata.php',
+			"\t\t\$normalizedForce = ErasedataManifestCodec::normalizeForce(\$force);\n",
+			'the shared admission door normalizes its own force argument');
+		$this->sourceHas('removewithdata.php', '), $hashes, $normalizedForce));',
+			'and hands the internal runner the normalized integer, not the raw value');
 	}
 
 	public function testHttprpcRemovalFailsClosedWithoutErasedataHelper()
@@ -2316,16 +2867,17 @@ class RemoveWithDataTest extends TestCase
 		$base = "/d/name";
 		$this->frozen(true, array($base, 1, $specialFile));
 		$this->eraseOk();
-		$res = erasedataRemoveWithData(array($hash), "1");
+		$res = erasedataRemoveWithData(array($hash), 1);
 		$this->assertTrue($res !== false, 'valid request with byte-opaque path must succeed');
 		$record = $this->manifestRecordFor($hash);
 		$this->assertTrue(is_array($record), 'v2 manifest record must decode properly');
-		$this->assertEquals(2, $record['version'], 'version must be 2');
-		$this->assertEquals($hash, $record['hash'], 'hash must match');
-		$this->assertEquals(array($specialFile), $record['files'], 'path bytes with newline, CR, and non-UTF8 must be strictly preserved');
-		$this->assertEquals($base, $record['base'], 'base path must be strictly preserved');
-		$this->assertTrue($record['multi'], 'multi flag must be boolean true');
-		$this->assertEquals(1, $record['force'], 'force must be normalized int 1');
+		$record = is_array($record) ? $record : array();
+		$this->assertEquals(2, isset($record['version']) ? $record['version'] : null, 'version must be 2');
+		$this->assertEquals($hash, isset($record['hash']) ? $record['hash'] : null, 'hash must match');
+		$this->assertEquals(array($specialFile), isset($record['files']) ? $record['files'] : null, 'path bytes with newline, CR, and non-UTF8 must be strictly preserved');
+		$this->assertEquals($base, isset($record['base']) ? $record['base'] : null, 'base path must be strictly preserved');
+		$this->assertTrue(isset($record['multi']) && $record['multi'], 'multi flag must be boolean true');
+		$this->assertEquals(1, isset($record['force']) ? $record['force'] : null, 'force must be normalized int 1');
 	}
 
 	public function testEncoderRejectsFileCountBeforeEncodingPaths()
@@ -4786,6 +5338,10 @@ class RemoveWithDataTest extends TestCase
 			return;
 		// A read-only queue directory refuses the staged write while the
 		// pre-created persistent hash lock still opens.
+		if(testSkipUnlessPermissionsBite('that a cleanup preparation which cannot'
+			.' stage its file fails, leaves no partial artifact and still releases'
+			.' the old-hash lock'))
+			return;
 		file_put_contents($this->dir.'/erasedata/'.$oldHash.'.lock', '');
 		@chmod($this->dir.'/erasedata', 0555);
 		try {
@@ -6101,17 +6657,20 @@ class RemoveWithDataTest extends TestCase
 		@unlink($list);
 		@unlink($tmp);
 
-		$tmp = $this->stagedManifest($hash, '4.dddd.tmp', 'staged-bytes');
-		@chmod($queue, 0500);
-		$published = $this->publishStagingUnderTest($tmp, $hash);
-		@chmod($queue, 0777);
-		$this->assertTrue($published === false,
-			'rename failure: an unpublishable staging file reports failure');
-		$this->assertEquals('staged-bytes', is_file($tmp) ? file_get_contents($tmp) : null,
-			'rename failure: the staged bytes are retained for retry');
-		$this->assertTrue(!file_exists($queue.'/'.$hash.'.4.dddd.list'),
-			'rename failure: no list name is created');
-		@unlink($tmp);
+		if(!testSkipUnlessPermissionsBite('that a staging file which cannot be'
+			.' renamed reports failure and keeps its bytes for a retry')) {
+			$tmp = $this->stagedManifest($hash, '4.dddd.tmp', 'staged-bytes');
+			@chmod($queue, 0500);
+			$published = $this->publishStagingUnderTest($tmp, $hash);
+			@chmod($queue, 0777);
+			$this->assertTrue($published === false,
+				'rename failure: an unpublishable staging file reports failure');
+			$this->assertEquals('staged-bytes', is_file($tmp) ? file_get_contents($tmp) : null,
+				'rename failure: the staged bytes are retained for retry');
+			$this->assertTrue(!file_exists($queue.'/'.$hash.'.4.dddd.list'),
+				'rename failure: no list name is created');
+			@unlink($tmp);
+		}
 
 		$first = $this->stagedManifest($hash, '5.eeee.tmp', 'first-generation');
 		$second = $this->stagedManifest($hash, '6.ffff.tmp', 'second-generation');
@@ -6139,5 +6698,7500 @@ class RemoveWithDataTest extends TestCase
 			'absent staging file: publication reports failure');
 		$this->assertTrue(!file_exists($queue.'/'.$hash.'.8.hhhh.list'),
 			'absent staging file: no list name is created');
+	}
+
+	// =======================================================================
+	// Package 6: "remove with data" as a generation-bound admission
+	// transaction, a durable per-user rTorrent schedule that starts a real
+	// guarded CLI worker, staged manifests, exact per-hash erase outcomes,
+	// recovery and retirement.
+	//
+	// Everything below is RED-first: it is written against the exact base,
+	// where none of the production symbols it names exist yet. Each case
+	// PROBES for the symbols it needs and then asserts its invariant, so a
+	// missing implementation reads as one "Failed: <invariant>" line rather
+	// than a fatal that would hide every later case in this file.
+	//
+	// The contract the later slices must satisfy, by name:
+	//
+	//   filesystem.php
+	//     ErasedataFilesystemOps::canonicalMissingPath($path)
+	//     ErasedataFilesystemOps::acquireDirectoryCapability($path, $identity)
+	//     ErasedataFilesystemOps::releaseDirectoryCapability($capability)
+	//     erasedataDescriptorCandidates()
+	//     erasedataWriteDurableFile($path, $bytes, $mode = null)
+	//     erasedataGenerationIsValid($value)
+	//     erasedataGenerationIncrement($generation)
+	//     erasedataGenerationCompare($left, $right)
+	//   pending.php
+	//     erasedataEncodePendingMarker(array $record)
+	//     erasedataDecodePendingMarker($bytes)
+	//     erasedataQueueRequest($listPath, $hash, $force, $generation)
+	//     erasedataPendingObligations($listPath)
+	//     erasedataLockObligations($listPath, $hashes)
+	//     erasedataUnlockObligations($locks)
+	//   removewithdata.php
+	//     erasedataDrainScheduleKey($user)
+	//     erasedataReadDrainState($listPath)
+	//     erasedataWriteDrainState($listPath, array $state)
+	//     erasedataAdmissionPartition($hashes, $force)
+	//     erasedataAdmitRemoval($hashes, $force)             [public door]
+	//     erasedataRemovalAdmissionRun(array $dependencies, $hashes, $force)
+	//     erasedataRemoveWithData($hashes, $force)              [public, 2 args]
+	//     erasedataDrainWorkerRun(array $dependencies)
+	//     erasedataDrainWorkerMain($user)                       [public]
+	//     erasedataClassifyEraseOutcomes(array $hashes, $request)
+	//     erasedataRetirementScan(array $dependencies)
+	//     erasedataRetirementRun(array $dependencies, array &$notes)
+	//     erasedataRearmDrainScheduleRun(array $dependencies)
+	//     erasedataRearmDrainSchedule()                         [public, 0 args]
+	//
+	// The dependency array the internal runners take is exactly:
+	//   listPath, user, filesystem, log, ackTimeout, ackPoll.
+	// `forceEnabled` was in that list and was read by nobody. It is gone from
+	// erasedataAdmitRemoval() rather than wired up, because the value cannot be
+	// built truthfully at either public door: neither erase.php nor action.php
+	// evaluates the plugin configuration, so $enableForceDeletion is unset in
+	// every process that reaches the door and an admission-time refusal built
+	// on it would refuse every force-2 removal, including the ones an operator
+	// switched the setting on for. Coercing force 2 down to force 1 is
+	// forbidden outright, so the policy stays where the exact base enforces it:
+	// collector.php at deletion time, which runs under update.php and does have
+	// the setting. The helpers below still pass the key; nothing reads it.
+	// Test injection lives here, in test-owned adapters around those runners;
+	// the public wrappers always build the real dependencies themselves.
+	//
+	// erasedataLockObligations()/erasedataUnlockObligations() were added to the
+	// contract by the task 1 fix round: PendingQueueTest's paired-subprocess
+	// case needs a real production entry point that decides the hash lock order
+	// for a batch, and invariant 7 makes that order canonical, deduplicated and
+	// sorted before the first lock is taken.
+	// =======================================================================
+
+	// -- package 6 harness --------------------------------------------------
+
+	// The repository root, anchored at __DIR__. The focused runner executes
+	// this file through process substitution, so __FILE__ and dirname(__FILE__)
+	// point at /proc/<pid>/fd/N and __DIR__ is the only correct anchor.
+	private function repositoryRoot()
+	{
+		return(__DIR__.'/../../..');
+	}
+
+	private function productionPath($relative)
+	{
+		return($this->repositoryRoot().'/plugins/erasedata/'.$relative);
+	}
+
+	// Production source bytes, or null. An unreadable source is an explicit
+	// failure: a "does not contain" assertion must never be satisfied by a
+	// read that returned false.
+	private function productionSource($relative)
+	{
+		$bytes = @file_get_contents($this->productionPath($relative));
+		$this->assertTrue(is_string($bytes) && $bytes !== '',
+			'production source plugins/erasedata/'.$relative.' is readable');
+		return(is_string($bytes) && $bytes !== '' ? $bytes : null);
+	}
+
+	private function sourceHas($relative, $needle, $message)
+	{
+		$bytes = $this->productionSource($relative);
+		$this->assertTrue(is_string($bytes) && strpos($bytes, $needle) !== false, $message);
+	}
+
+	private function sourceLacks($relative, $needle, $message)
+	{
+		$bytes = $this->productionSource($relative);
+		$this->assertTrue(is_string($bytes) && strpos($bytes, $needle) === false, $message);
+	}
+
+	// The body of one top-level production function, or null.
+	//
+	// A structural assertion has to be scoped to the function that owns the
+	// property or it is worthless: "filesystem.php mentions fclose" is satisfied
+	// by four unrelated call sites. The body runs from the signature to the next
+	// top-level "function " in the file, and an empty or unfindable body is an
+	// explicit failure so no assertion can pass on a read that found nothing.
+	// Delimit on WHICHEVER boundary comes first: a column-zero "function " (which
+	// is how filesystem.php separates its free functions) or the
+	// if(!function_exists( guard that owns every function in removewithdata.php.
+	// Using only the column-zero form silently ran a "body" to end-of-file in
+	// removewithdata.php -- 0 lines there match it -- so a positive assertion
+	// passed on a match anywhere later in the file and a negative one held only
+	// by accident of function ordering. Three call sites were correct by luck.
+	private function productionFunctionBody($relative, $signature)
+	{
+		$bytes = $this->productionSource($relative);
+		$start = is_string($bytes) ? strpos($bytes, $signature) : false;
+		if($start === false)
+		{
+			$this->assertTrue(false, 'plugins/erasedata/'.$relative.' declares '.$signature);
+			return(null);
+		}
+		$rest = substr($bytes, $start + strlen($signature));
+		$end = false;
+		foreach(array("\nfunction ", "\nif(!function_exists(") as $delimiter)
+		{
+			$at = strpos($rest, $delimiter);
+			if($at !== false && ($end === false || $at < $end))
+				$end = $at;
+		}
+		$body = ($end === false) ? $rest : substr($rest, 0, $end);
+		$this->assertTrue(is_string($body) && $body !== '',
+			'the body of '.$signature.' is readable for inspection');
+		return(is_string($body) && $body !== '' ? $body : null);
+	}
+
+	// One function's body, delimited by the if(!function_exists(...)) guard that
+	// owns it rather than by the next column-zero "function ": every function in
+	// removewithdata.php is indented inside such a guard, so the column-zero
+	// delimiter never fires there and a "body" runs to the end of the file.
+	private function guardedFunctionBody($relative, $signature)
+	{
+		$bytes = $this->productionSource($relative);
+		$start = is_string($bytes) ? strpos($bytes, $signature) : false;
+		if($start === false)
+		{
+			$this->assertTrue(false,
+				'plugins/erasedata/'.$relative.' declares '.$signature);
+			return(null);
+		}
+		$rest = substr($bytes, $start + strlen($signature));
+		$end = strpos($rest, "\nif(!function_exists(");
+		$body = ($end === false) ? $rest : substr($rest, 0, $end);
+		$this->assertTrue(is_string($body) && $body !== '',
+			'the body of '.$signature.' is readable for inspection');
+		return(is_string($body) && $body !== '' ? $body : null);
+	}
+
+	// Probe first, assert second. "erasedataX()" is a function, "Class::method"
+	// a method, a bare name a class.
+	private function requireApi(array $symbols, $invariant)
+	{
+		$missing = array();
+		foreach($symbols as $symbol)
+		{
+			if(strpos($symbol, '::') !== false)
+			{
+				$parts = explode('::', $symbol, 2);
+				if(!class_exists($parts[0]) || !method_exists($parts[0], $parts[1]))
+					$missing[] = $symbol;
+			}
+			else if(substr($symbol, -2) === '()')
+			{
+				if(!function_exists(substr($symbol, 0, -2)))
+					$missing[] = $symbol;
+			}
+			else if(!class_exists($symbol))
+				$missing[] = $symbol;
+		}
+		if(count($missing))
+		{
+			$this->assertTrue(false, $invariant
+				.' [not implemented yet: '.implode(', ', $missing).']');
+			return(false);
+		}
+		return(true);
+	}
+
+	private function queuePath()
+	{
+		return($this->dir.'/erasedata');
+	}
+
+	// The explicit dependencies the internal runners take. Test-owned: no
+	// production code reads any of it.
+	private function dependencies(array $overrides = array())
+	{
+		$defaults = array(
+			'listPath' => $this->queuePath(),
+			'user' => User::getUser(),
+			'filesystem' => new ErasedataFilesystemOps(),
+			'log' => array('FileUtil', 'toLog'),
+			'forceEnabled' => true,
+			'ackTimeout' => 0.30,
+			'ackPoll' => 0.02,
+		);
+		foreach($overrides as $key => $value)
+			$defaults[$key] = $value;
+		return($defaults);
+	}
+
+	// A byte-verified mirror of the shipped plugin, with test-owned adapters
+	// for everything below the plugin boundary.
+	private function mirror($name = 'mirror', $user = 'rutorrent')
+	{
+		$mirror = ErasedataProductionMirror::build($this->dir.'/'.$name,
+			$this->repositoryRoot(), $user);
+		$this->assertTrue($mirror->isExact(),
+			'the child runs the shipped production bytes ('.$mirror->describe().')');
+		return($mirror);
+	}
+
+	// Every entry the queue directory holds, names only.
+	private function queueEntries($queue = null)
+	{
+		$queue = is_null($queue) ? $this->queuePath() : $queue;
+		$entries = @scandir($queue);
+		if(!is_array($entries))
+			return(array());
+		$entries = array_values(array_diff($entries, array('.', '..')));
+		sort($entries, SORT_STRING);
+		return($entries);
+	}
+
+	private function scheduleRecords($family = null)
+	{
+		$ret = array();
+		foreach(rXMLRPCRequest::$scheduledCommands as $record)
+			if($family === null || $record['family'] === $family)
+				$ret[] = $record;
+		return($ret);
+	}
+
+	// Retirement, the way the one production caller reaches it.
+	//
+	// erasedataRetirementRun() takes its notes list by reference and reports
+	// nothing itself: erasedataDrainWorkerRun() folds the notes into the tick's
+	// own report memory. There is deliberately no self-reporting one-argument
+	// wrapper any more -- production never called one, so it was a branch only
+	// this file could reach.
+	private function retire($dependencies = null)
+	{
+		$notes = array();
+		return(erasedataRetirementRun(is_array($dependencies)
+			? $dependencies : $this->dependencies(), $notes));
+	}
+
+	// Which shipped plugin files carry $needle. Used to pin that an internal
+	// runner really has a PRODUCTION caller: a helper only the tests call is
+	// not reachable code, however carefully it is written.
+	private function productionCallers($needle)
+	{
+		$callers = array();
+		$unreadable = array();
+		foreach(ErasedataProductionMirror::pluginFiles() as $file)
+		{
+			$bytes = @file_get_contents($this->repositoryRoot().'/plugins/erasedata/'.$file);
+			if(!is_string($bytes) || $bytes === '')
+			{
+				$unreadable[] = $file;
+				continue;
+			}
+			if(strpos($bytes, $needle) !== false)
+				$callers[] = $file;
+		}
+		$this->assertTrue(count($unreadable) === 0,
+			'every shipped plugin source is readable for inspection ('
+				.implode(', ', $unreadable).')');
+		return($callers);
+	}
+
+	// The test playing the scheduler, synchronously.
+	//
+	// rTorrent answers a schedule registration and, some ticks later, starts
+	// the child. The recording-only stub never does either, so a case that has
+	// to reach a POST-acknowledgement branch in process installs this callback
+	// and raises `acknowledged` itself, at the moment the registration is
+	// observed. It is legitimate here for the same reason the fixture's
+	// register is recording-only everywhere else: it is the test, not the RPC
+	// layer, that decides a child ran, and the acknowledgement invariant itself
+	// (invariant 5: only a really started guarded child raises it) is carried
+	// by testTheProducerNeverWritesTheAcknowledgement and by the real
+	// update.php children of the paired-subprocess cases, none of which use
+	// this helper.
+	private function acknowledgeOnRegistration($queue, $extra = null)
+	{
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		rXMLRPCRequest::$responses['schedule']['callback'] =
+			function($commands) use ($queue, $extra)
+			{
+				if(is_callable($extra))
+					call_user_func($extra, $commands);
+				$state = erasedataReadDrainState($queue);
+				if(!is_array($state) || !isset($state['generation']))
+					return;
+				$state['acknowledged'] = $state['generation'];
+				erasedataWriteDrainState($queue, $state);
+			};
+	}
+
+	// -- durable primitives (task 2) ----------------------------------------
+
+	public function testExactForceDomainIsRefusedBeforeStagingRpcAndMarkers()
+	{
+		$this->reset();
+		$invariant = 'admission refuses every force outside the exact 1|2 domain'
+			.' before any marker, staging or RPC, and never coerces it';
+		if(!$this->requireApi(array('erasedataAdmissionPartition()'), $invariant))
+			return;
+		$hash = $this->hash('A');
+		$rejected = array('0', 3, '1 ', ' 2', true, false, 1.0, '01', '', null,
+			array(1), '2.0', '+1', "1\n", 'one');
+		foreach($rejected as $force)
+		{
+			$outcome = erasedataAdmissionPartition(array($hash), $force);
+			$this->assertTrue($outcome === false,
+				'force '.json_encode($force).' is refused outright');
+		}
+		$this->assertEquals(array(), $this->queueEntries(),
+			'a refused force leaves the queue directory empty');
+		$this->assertEquals(0, count(rXMLRPCRequest::$requested),
+			'a refused force reaches no RPC at all');
+		foreach(array(1, 2) as $force)
+		{
+			$outcome = erasedataAdmissionPartition(array($hash), $force);
+			$this->assertTrue(is_array($outcome) && isset($outcome['force'])
+				&& $outcome['force'] === $force,
+				'integer force '.$force.' is admitted and keeps its integer type');
+		}
+	}
+
+	public function testForceTwoKeepsItsIntegerTypeThroughEveryDurableRecord()
+	{
+		$this->reset();
+		$invariant = 'force is integer 1|2 in every PHP value and one decimal'
+			.' character in every durable record, parsed back strictly';
+		if(!$this->requireApi(array('erasedataEncodePendingMarker()',
+			'erasedataDecodePendingMarker()'), $invariant))
+			return;
+		$hash = $this->hash('B');
+		$generation = '000000000000000f';
+		$bytes = erasedataEncodePendingMarker(array(
+			'version' => 1, 'generation' => $generation, 'hash' => $hash, 'force' => 2));
+		$this->assertTrue(is_string($bytes), 'a complete marker record encodes');
+		$this->assertTrue(is_string($bytes)
+			&& preg_match('/(^|\n)force=2(\n|$)/D', $bytes) === 1,
+			'force serializes as the single decimal character 2');
+		$decoded = is_string($bytes) ? erasedataDecodePendingMarker($bytes) : false;
+		$this->assertTrue(is_array($decoded) && array_key_exists('force', $decoded)
+			&& $decoded['force'] === 2,
+			'the marker parses back to integer 2, not "2"');
+		$this->assertTrue(is_array($decoded) && isset($decoded['generation'])
+			&& $decoded['generation'] === $generation,
+			'the marker carries the exact generation it was written with');
+		$this->assertTrue(is_string($bytes)
+			&& erasedataEncodePendingMarker($decoded) === $bytes,
+			'encoding is byte deterministic, so a rewrite cannot drift');
+		foreach(array('force=12', 'force=1 ', 'force=+1', 'force=01', 'force=',
+			'force=3', 'force=x') as $broken)
+		{
+			$this->assertTrue(erasedataDecodePendingMarker(
+				"version=1\ngeneration=".$generation."\nhash=".$hash."\n".$broken."\n") === false,
+				'a marker carrying '.trim($broken).' is refused, never coerced to 1');
+		}
+		$this->assertEquals(2, ErasedataManifestCodec::normalizeForce(2),
+			'the manifest codec already agrees that force 2 is the integer 2');
+	}
+
+	public function testGenerationArithmeticIsStringOnlyAndFailsClosedOnOverflow()
+	{
+		$this->reset();
+		$invariant = 'a generation is 16 lowercase hex digits, incremented and'
+			.' compared as strings, failing closed at ffffffffffffffff';
+		if(!$this->requireApi(array('erasedataGenerationIsValid()',
+			'erasedataGenerationIncrement()', 'erasedataGenerationCompare()'), $invariant))
+			return;
+		$this->assertTrue(erasedataGenerationIsValid('0000000000000000'),
+			'the zero generation is valid');
+		foreach(array('FFFFFFFFFFFFFFFF', '1', '00000000000000000', '000000000000000g',
+			'0x00000000000000', 0, null, true, ' 0000000000000001') as $bad)
+			$this->assertTrue(!erasedataGenerationIsValid($bad),
+				json_encode($bad).' is not a generation');
+		$this->assertEquals('0000000000000001', erasedataGenerationIncrement('0000000000000000'),
+			'increment carries from zero');
+		$this->assertEquals('0000000000000010', erasedataGenerationIncrement('000000000000000f'),
+			'increment carries out of a nibble');
+		$this->assertEquals('0000000100000000', erasedataGenerationIncrement('00000000ffffffff'),
+			'increment carries across the 32-bit boundary');
+		$this->assertEquals('ffffffffffffffff', erasedataGenerationIncrement('fffffffffffffffe'),
+			'increment reaches the maximum exactly');
+		$this->assertTrue(erasedataGenerationIncrement('ffffffffffffffff') === false,
+			'overflow at the maximum fails closed rather than wrapping');
+		$this->assertTrue(erasedataGenerationIncrement('FFFFFFFFFFFFFFFE') === false,
+			'an uppercase generation is refused, not lowercased');
+		$this->assertEquals(-1, erasedataGenerationCompare('0000000000000009', '0000000000000010'),
+			'compare orders across a carry');
+		$this->assertEquals(0, erasedataGenerationCompare('20000000000000ff', '20000000000000ff'),
+			'compare recognises equality');
+		$this->assertEquals(1, erasedataGenerationCompare('0000000100000000', '00000000ffffffff'),
+			'compare orders across the 32-bit boundary');
+		// Both operands are beyond double precision: a float or native-width
+		// collapse makes these equal.
+		$this->assertEquals(-1, erasedataGenerationCompare('ffffffffffffff00', 'ffffffffffffff01'),
+			'values beyond float precision still compare exactly');
+		$this->assertTrue(erasedataGenerationCompare('zzzzzzzzzzzzzzzz', '0000000000000001') === false,
+			'a malformed operand fails closed instead of comparing');
+		$this->sourceLacks('removewithdata.php', 'hexdec(',
+			'no hexdec() anywhere in the generation path');
+		$this->sourceLacks('filesystem.php', 'hexdec(',
+			'no hexdec() in the filesystem primitives either');
+	}
+
+	public function testDurableWriterRequiresCompleteBytesFlushCloseAndAtomicRename()
+	{
+		$this->reset();
+		$invariant = 'the durable writer publishes only after a complete byte'
+			.' count, fflush, a checked fclose and an atomic rename';
+		if(!$this->requireApi(array('erasedataWriteDurableFile()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$target = $queue.'/durable.state';
+		$payload = str_repeat("abcdefghij\n", 512);
+		$this->assertTrue(erasedataWriteDurableFile($target, $payload) === true,
+			'a complete write publishes the file');
+		$this->assertEquals($payload, @file_get_contents($target),
+			'the published bytes are exactly what was handed in');
+		$this->assertEquals(array('durable.state'), $this->queueEntries(),
+			'publication leaves no staging residue beside the final name');
+		// A stream that writes half of the first chunk and then stalls: the
+		// writer must refuse and publish nothing.
+		ErasedataPartialWriteStream::register();
+		$partial = ErasedataPartialWriteStream::SCHEME.'://'.$queue.'/partial.state';
+		$this->assertTrue(erasedataWriteDurableFile($partial, $payload) === false,
+			'a short write is reported as failure, not as success');
+		$this->assertTrue(!file_exists($queue.'/partial.state'),
+			'a short write publishes nothing under the final name');
+		// A stream that takes every byte and then fails its flush. The byte
+		// count is satisfied, so this is reached only by CHECKING fflush().
+		ErasedataFlushFailureStream::register();
+		$unflushed = ErasedataFlushFailureStream::SCHEME.'://'.$queue.'/unflushed.state';
+		$this->assertTrue(erasedataWriteDurableFile($unflushed, $payload) === false,
+			'a complete write whose flush fails is reported as failure, not as success');
+		$this->assertTrue(!file_exists($queue.'/unflushed.state'),
+			'a failed flush publishes nothing under the final name');
+		$residue = array();
+		foreach($this->queueEntries() as $entry)
+			if(substr($entry, -4) === '.tmp')
+				$residue[] = $entry;
+		$this->assertEquals(array(), $residue,
+			'and a failed flush leaves no staging object behind either');
+		// The close is CHECKED. PHP's fclose() returns true for every stream a
+		// writer could legitimately have opened -- a userland wrapper's
+		// stream_close() return value is discarded, and the NO_FCLOSE streams
+		// that answer false are unreachable from a staging name -- so no
+		// behavioural case can drive a failing close. The property is therefore
+		// pinned structurally, scoped to the writer's own body so that an
+		// unrelated fclose elsewhere in the file cannot satisfy it.
+		$writer = $this->productionFunctionBody('filesystem.php',
+			'function erasedataWriteDurableFile(');
+		$this->assertTrue(is_string($writer) && preg_match(
+			'/if\s*\(\s*@?\s*fclose\s*\(\s*\$handle\s*\)\s*(!==\s*true|===\s*false)\s*\)/', $writer) === 1,
+			'the durable writer tests the return of its own fclose rather than firing and forgetting');
+		$this->assertTrue(is_string($writer) && preg_match(
+			'/@?\s*fflush\s*\(\s*\$handle\s*\)\s*===\s*false/', $writer) === 1,
+			'and tests the return of its own fflush');
+		$this->assertTrue(is_string($writer) && strpos($writer, 'rename(') !== false,
+			'and publishes with a rename rather than by writing the final name');
+		// The staging name's leading dot is the same kind of property: no
+		// behavioural case can observe it, because the writer removes its own
+		// staging on every failure it survives, and the fixtures never record
+		// the path they were opened with. Without the dot the name would fall
+		// inside the <hash>.<generation>.<...>.tmp grammar the drain worker's
+		// unbound-staging scan matches, which strands the hash.
+		$this->assertTrue(is_string($writer) && preg_match(
+			'/\$staging\s*=\s*dirname\(\$path\)\s*\.\s*\'\/\.\'/', $writer) === 1,
+			'and stages under a dot-prefixed name, outside the <hash>.<generation>.<...>.tmp grammar');
+		$this->sourceHas('filesystem.php', 'erasedataWriteDurableFile',
+			'the durable writer lives in the filesystem primitives');
+	}
+
+	public function testDurableWriteFailureIsTerminalForTheAttempt()
+	{
+		$this->reset();
+		$invariant = 'an unwritable or colliding durable target fails the whole'
+			.' attempt instead of leaving a partial or half-published record';
+		if(!$this->requireApi(array('erasedataWriteDurableFile()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		// The parent of the target is a regular file, so no uid can create it.
+		@file_put_contents($queue.'/blocker', 'x');
+		$this->assertTrue(erasedataWriteDurableFile($queue.'/blocker/state', 'x') === false,
+			'a target whose parent is not a directory fails');
+		// The final name is a directory, so the atomic rename cannot land.
+		@mkdir($queue.'/collision', 0777, true);
+		$this->assertTrue(erasedataWriteDurableFile($queue.'/collision', 'x') === false,
+			'a final name already taken by a directory fails');
+		$this->assertTrue(is_dir($queue.'/collision'),
+			'and the colliding object is left exactly as it was');
+		$residue = array();
+		foreach($this->queueEntries() as $entry)
+			if(substr($entry, -4) === '.tmp' || strpos($entry, 'state') === 0)
+				$residue[] = $entry;
+		$this->assertEquals(array(), $residue,
+			'a failed durable write leaves no staging residue behind');
+	}
+
+	public function testMissingTailNormalizationRefusesDotComponents()
+	{
+		$this->reset();
+		$invariant = 'an unresolved path tail is component-normalized and any'
+			.' . or .. component is refused, so no name can climb out of its'
+			.' canonical ancestor';
+		if(!$this->requireApi(array('ErasedataFilesystemOps::canonicalMissingPath'), $invariant))
+			return;
+		$filesystem = new ErasedataFilesystemOps();
+		$base = $this->dir.'/tails';
+		@mkdir($base.'/existing', 0777, true);
+		$real = realpath($base);
+		$this->assertEquals($real.'/existing/leaf',
+			$filesystem->canonicalMissingPath($base.'/existing/leaf'),
+			'a clean missing tail resolves against its deepest existing ancestor');
+		foreach(array('/existing/missing/../escape', '/existing/./leaf',
+			'/existing/../../escape', '/existing/missing//leaf',
+			'/existing/missing/.') as $tail)
+		{
+			$resolved = $filesystem->canonicalMissingPath($base.$tail);
+			$this->assertTrue($resolved === false,
+				'a missing tail containing '.$tail.' is refused, not reconstructed verbatim');
+		}
+		$this->assertTrue($filesystem->canonicalMissingPath('relative/leaf') === false,
+			'a relative path is refused');
+		$this->assertTrue($filesystem->canonicalMissingPath($base."/nul\0byte") === false,
+			'a NUL byte is refused');
+		$this->sourceHas('filesystem.php', 'canonicalMissingPath',
+			'ErasedataFilesystemOps owns missing-tail normalization');
+	}
+
+	// Containment is only real when the tail is proven ABSENT.
+	//
+	// realpath() and lstat() answer "not there" the same way for a name that is
+	// missing, for a dangling symlink and for an ancestor this uid may not
+	// search, and the last two reconstruct a tail whose components are symlinks.
+	// That divergence is ordinary here: the producer runs as the web user and
+	// the eraser as whatever uid rTorrent uses, which is why
+	// erasedataSharedFileMode() exists at all. A "canonical" name that satisfies
+	// any lexical containment check against the intended root and then resolves
+	// somewhere else entirely is the whole hazard, so absence is proven or the
+	// answer is refused.
+	public function testAnUnresolvableAncestorYieldsNoCanonicalNameAtAll()
+	{
+		$this->reset();
+		$invariant = 'only a tail proven absent is reconstructed: a dangling'
+			.' symlink and an ancestor this process cannot search both fail'
+			.' closed instead of producing a lexically contained name';
+		if(!$this->requireApi(array('ErasedataFilesystemOps::canonicalMissingPath'), $invariant))
+			return;
+		$filesystem = new ErasedataFilesystemOps();
+		$lab = $this->dir.'/containment';
+		$escape = $this->dir.'/containment-escape';
+		@mkdir($lab.'/existing', 0777, true);
+		$dangling = $lab.'/existing/dangling';
+		$this->assertTrue(@symlink($escape, $dangling) === true,
+			'a symlink whose target does not exist yet can be planted');
+		$this->assertTrue(@lstat($dangling) !== false && @realpath($dangling) === false,
+			'and it really is a dangling symlink: present as a name, unresolvable as a path');
+		$this->assertTrue($filesystem->canonicalMissingPath($dangling.'/leaf') === false,
+			'a tail below a dangling symlink is refused, not reconstructed verbatim');
+		$this->assertTrue($filesystem->canonicalMissingPath($dangling) === false,
+			'and so is the dangling name itself');
+		// The delayed trigger: the link becomes live. The answer must be the
+		// RESOLVED name, never the name that merely looks contained.
+		@mkdir($escape, 0777, true);
+		$resolved = $filesystem->canonicalMissingPath($dangling.'/leaf');
+		$this->assertEquals(realpath($escape).'/leaf', $resolved,
+			'once the link resolves, the name it yields is the resolved one');
+		$this->assertTrue(is_string($resolved) && strpos($resolved, realpath($lab).'/') !== 0,
+			'and it never claims to live under the ancestor it was handed');
+		// An ancestor this process cannot search. No race at all: the name is
+		// lexically inside $private, and 'link' points straight out of it.
+		$private = $lab.'/private';
+		@mkdir($private, 0777, true);
+		$this->assertTrue(@symlink($escape, $private.'/link') === true,
+			'a symlink out of the unsearchable directory can be planted');
+		@chmod($private, 0000);
+		clearstatcache(true, $private.'/link');
+		$searchable = @lstat($private.'/link') !== false;
+		if(!$searchable)
+			$this->assertTrue($filesystem->canonicalMissingPath($private.'/link/payload') === false,
+				'an ancestor this process cannot search yields no canonical name at all');
+		else
+			$this->assertEquals(realpath($escape).'/payload',
+				$filesystem->canonicalMissingPath($private.'/link/payload'),
+				'a process that CAN search it resolves the link rather than reconstructing it');
+		@chmod($private, 0777);
+		// A regular file is not an ancestor: nothing can ever be created below it.
+		@file_put_contents($lab.'/plainfile', 'x');
+		$this->assertTrue($filesystem->canonicalMissingPath($lab.'/plainfile/leaf') === false,
+			'a tail below a regular file is refused rather than reconstructed');
+		// The clean case still answers, so none of the above is a blanket refusal.
+		$this->assertEquals(realpath($lab).'/existing/absent/leaf',
+			$filesystem->canonicalMissingPath($lab.'/existing/absent/leaf'),
+			'a genuinely absent tail below a searchable ancestor still resolves');
+	}
+
+	public function testForceTwoDescriptorCapabilityStaysOpenThroughTheEraseDecision()
+	{
+		$this->reset();
+		$invariant = 'a force-2 traversal holds one open directory descriptor'
+			.' whose identity is proven, with /proc/self/fd then /dev/fd as the'
+			.' only candidates, and a preflight that closes is not a capability';
+		if(!$this->requireApi(array('erasedataDescriptorCandidates()',
+			'ErasedataFilesystemOps::acquireDirectoryCapability',
+			'ErasedataFilesystemOps::releaseDirectoryCapability'), $invariant))
+			return;
+		$this->assertEquals(array('/proc/self/fd', '/dev/fd'), erasedataDescriptorCandidates(),
+			'the descriptor candidates are a fixed list, /proc first and /dev/fd as fallback');
+		$filesystem = new ErasedataFilesystemOps();
+		$root = $this->dir.'/capability';
+		@mkdir($root.'/payload', 0777, true);
+		$identity = $filesystem->targetIdentity($root);
+		$capability = $filesystem->acquireDirectoryCapability($root, $identity);
+		$this->assertTrue(is_array($capability) && isset($capability['handle'])
+			&& is_resource($capability['handle']),
+			'the capability keeps a real open handle, not a remembered path');
+		$descriptor = is_array($capability) && isset($capability['path'])
+			? $capability['path'] : '';
+		$this->assertTrue(is_string($descriptor)
+			&& (strpos($descriptor, '/proc/self/fd/') === 0
+				|| strpos($descriptor, '/dev/fd/') === 0),
+			'the capability exposes a descriptor path under one of the candidates');
+		$this->assertTrue(is_string($descriptor) && $descriptor !== ''
+			&& erasedataSameEntryIdentity($identity, $filesystem->targetIdentity($descriptor)),
+			'the descriptor really resolves to the captured directory identity');
+		$mismatch = is_array($identity)
+			? array('dev' => $identity['dev'], 'ino' => $identity['ino'] + 1) : false;
+		$this->assertTrue($filesystem->acquireDirectoryCapability($root, $mismatch) === false,
+			'a mismatched expected identity is refused, existence is not acceptance');
+		if(is_array($capability))
+			$filesystem->releaseDirectoryCapability($capability);
+		$this->assertTrue(!is_string($descriptor) || $descriptor === ''
+			|| !is_dir($descriptor),
+			'releasing the capability really closes the descriptor');
+		// The force-2 traversal that needs this capability is parseOneItem()'s
+		// force branch in collector.php, and it reaches
+		// ErasedataFilesystemOps::acquireDirectoryCapability() through the
+		// openDirectoryReference() alias in filesystem.php, which forwards to it.
+		// `removewithdata.php` never names acquireDirectoryCapability at all, and
+		// its one openDirectoryReference() call is the producer's own admission
+		// capability rather than this traversal -- so an assertion pointed at
+		// that file was looking in the wrong place, and adding a call there to
+		// satisfy the string match would be exactly the dead code this rebuild
+		// exists to delete.
+		$this->sourceHas('collector.php', 'openDirectoryReference',
+			'the force-2 traversal opens a directory reference rather than probing once');
+		$this->sourceHas('filesystem.php', 'acquireDirectoryCapability',
+			'and that reference is the one capability implementation, kept open');
+	}
+
+	// The fixed candidate roots, driven one at a time.
+	//
+	// testForceTwoDescriptorCapabilityStaysOpenThroughTheEraseDecision pins the
+	// list and the happy path; this pins what the list is FOR. Production always
+	// gets erasedataDescriptorCandidates(); the injected list exists so the three
+	// answers that are otherwise unreachable on a machine that has /proc -- a
+	// candidate root that exists but names no descriptor of ours, the fall
+	// through to the second root, and no usable root at all -- are decided here
+	// rather than by whatever the host happens to mount.
+	public function testDescriptorCandidateRootsAreDrivenThroughTheInjectedSeam()
+	{
+		$this->reset();
+		$invariant = 'a candidate root is accepted only when a descriptor under'
+			.' it proves the open handle\'s identity; existence of the root is'
+			.' not the capability';
+		if(!$this->requireApi(array('erasedataDescriptorCandidates()',
+			'ErasedataFilesystemOps::acquireDirectoryCapability',
+			'ErasedataFilesystemOps::releaseDirectoryCapability'), $invariant))
+			return;
+		$filesystem = new ErasedataFilesystemOps();
+		$root = $this->dir.'/candidate-target';
+		@mkdir($root, 0777, true);
+		$identity = $filesystem->targetIdentity($root);
+		$this->assertTrue(is_array($identity), 'the target directory has an identity to prove');
+		// A real directory that holds no numeric descriptor at all: the root
+		// exists, so a check that stopped at is_dir() would accept it.
+		$decoy = $this->dir.'/candidate-decoy';
+		@mkdir($decoy, 0777, true);
+		$this->assertTrue(
+			$filesystem->acquireDirectoryCapability($root, $identity, array($decoy)) === false,
+			'a candidate root that exists but proves no identity yields no capability');
+		$this->assertTrue(
+			$filesystem->acquireDirectoryCapability($root, $identity,
+				array($this->dir.'/candidate-absent-a', $this->dir.'/candidate-absent-b')) === false,
+			'no usable candidate root at all yields no capability');
+		$available = array();
+		foreach(erasedataDescriptorCandidates() as $candidate)
+			if(is_dir($candidate))
+				$available[] = $candidate;
+		$this->assertTrue(count($available) > 0,
+			'at least one of the fixed descriptor roots exists on this host');
+		if(!count($available))
+			return;
+		$capability = $filesystem->acquireDirectoryCapability(
+			$root, $identity, array($decoy, $available[0]));
+		$this->assertTrue(is_array($capability) && isset($capability['root'])
+			&& $capability['root'] === $available[0],
+			'an unusable first candidate falls through to the next one in the list');
+		$this->assertTrue(is_array($capability) && isset($capability['handle'])
+			&& is_resource($capability['handle']),
+			'and the capability it hands back still carries an open handle');
+		$this->assertTrue(is_array($capability)
+			&& $filesystem->releaseDirectoryCapability($capability) === true,
+			'releasing it reports the close it really performed');
+		$this->assertTrue(is_array($capability)
+			&& $filesystem->releaseDirectoryCapability($capability) === false,
+			'and releasing an already released capability reports failure rather'
+				.' than pretending to close a handle a second time');
+		// A regular file is not a directory capability, however exactly its
+		// identity matches: a force-2 traversal handed one would walk nothing
+		// and conclude the payload was gone.
+		$file = $this->dir.'/candidate-file';
+		@file_put_contents($file, 'x');
+		$this->assertTrue($filesystem->acquireDirectoryCapability(
+			$file, $filesystem->targetIdentity($file)) === false,
+			'a regular file never yields a directory capability');
+	}
+
+	// Every descriptor under $root that names $identity right now. The test's
+	// own view of the same evidence acquireDirectoryCapability() reasons from.
+	private function descriptorsNaming($root, $identity)
+	{
+		$naming = array();
+		$expected = erasedataIdentityDeviceAndInode($identity);
+		$entries = @scandir($root);
+		if($expected === false || !is_array($entries))
+			return($naming);
+		foreach($entries as $entry)
+		{
+			if(!ctype_digit($entry))
+				continue;
+			clearstatcache(true, $root.'/'.$entry);
+			if(erasedataIdentityDeviceAndInode(@stat($root.'/'.$entry)) === $expected)
+				$naming[] = $entry;
+		}
+		return($naming);
+	}
+
+	// The descriptor a capability hands back must be the one IT opened.
+	//
+	// dev/ino agreement identifies the DIRECTORY, never the descriptor: any
+	// other handle this process holds on the same directory matches exactly as
+	// well. Taking the first match hands out a descriptor the capability does
+	// not own, and when its real owner closes it the number is reused by the
+	// next open(), so the "capability" then names an unrelated object --
+	// through which erasedataDeleteDirectoryReferenceContents() deletes. The
+	// case builds that exact situation: decoy handles that a first-match scan
+	// would return (proven, not assumed: scandir() sorts numerically-named
+	// entries as strings, so the decoys are grown until one really does sort
+	// ahead of the number the capability's own open will get).
+	public function testADirectoryCapabilityNamesTheDescriptorItOpenedItself()
+	{
+		$this->reset();
+		$invariant = 'the descriptor a capability exposes is the one it opened'
+			.' itself, not another handle of this process that happens to name'
+			.' the same directory';
+		if(!$this->requireApi(array('erasedataDescriptorCandidates()',
+			'ErasedataFilesystemOps::acquireDirectoryCapability',
+			'ErasedataFilesystemOps::releaseDirectoryCapability'), $invariant))
+			return;
+		$filesystem = new ErasedataFilesystemOps();
+		$root = false;
+		foreach(erasedataDescriptorCandidates() as $candidate)
+			if(is_dir($candidate))
+			{
+				$root = $candidate;
+				break;
+			}
+		$this->assertTrue(is_string($root),
+			'at least one of the fixed descriptor roots exists on this host');
+		if(!is_string($root))
+			return;
+		$target = $this->dir.'/owned-capability';
+		@mkdir($target.'/payload', 0777, true);
+		$identity = $filesystem->targetIdentity($target);
+		$this->assertTrue(is_array($identity), 'the target directory has an identity to prove');
+		// Decoys, plus the number the capability's own open will land on. A
+		// probe handle takes that number and gives it straight back, so the
+		// acquisition below reuses it.
+		$decoys = array();
+		$mine = false;
+		for($attempt = 0; $attempt < 64; $attempt++)
+		{
+			$mine = false;
+			$handle = @fopen($target, 'r');
+			if($handle === false)
+				break;
+			$decoys[] = $handle;
+			$known = $this->descriptorsNaming($root, $identity);
+			$probe = @fopen($target, 'r');
+			$predicted = array_values(array_diff(
+				$this->descriptorsNaming($root, $identity), $known));
+			if(is_resource($probe))
+				@fclose($probe);
+			if(count($predicted) !== 1)
+				continue;
+			$sorted = $known;
+			$sorted[] = $predicted[0];
+			sort($sorted, SORT_STRING);
+			// A first-match scan would return $sorted[0]. Once that is a decoy,
+			// the mutation this case exists for really is reachable.
+			if($sorted[0] !== $predicted[0])
+			{
+				$mine = $predicted[0];
+				break;
+			}
+		}
+		$decoyNumbers = $this->descriptorsNaming($root, $identity);
+		$this->assertTrue(is_string($mine) && count($decoyNumbers) > 0,
+			'the decoy descriptors really sort ahead of the one the capability will open'
+				.' (decoys='.count($decoyNumbers).')');
+		$capability = $filesystem->acquireDirectoryCapability($target, $identity);
+		$this->assertTrue(is_array($capability) && isset($capability['path'])
+			&& is_string($capability['path']),
+			'the capability is still granted with other handles open on the same directory');
+		$descriptor = (is_array($capability) && isset($capability['path']))
+			? basename($capability['path']) : '';
+		$this->assertTrue($descriptor !== ''
+			&& !in_array($descriptor, $decoyNumbers, true),
+			'and the descriptor it exposes is none of the handles that were already open');
+		// The proof that it matters: close every decoy and let regular files
+		// take their numbers. A borrowed descriptor now names a file.
+		foreach($decoys as $handle)
+			if(is_resource($handle))
+				@fclose($handle);
+		$decoys = array();
+		$filler = array();
+		for($i = 0; $i < count($decoyNumbers) + 4; $i++)
+		{
+			$path = $this->dir.'/filler-'.$i;
+			@file_put_contents($path, 'x');
+			$handle = @fopen($path, 'r');
+			if($handle !== false)
+				$filler[] = $handle;
+		}
+		$this->assertTrue(is_array($capability) && isset($capability['path'])
+			&& erasedataSameEntryIdentity($identity,
+				$filesystem->targetIdentity($capability['path'])),
+			'the capability still names the proven directory after every other'
+				.' handle on it is closed and its number reused');
+		$this->assertTrue(is_array($capability) && isset($capability['path'])
+			&& is_dir($capability['path']),
+			'and it is still a directory rather than whatever took the number');
+		foreach($filler as $handle)
+			if(is_resource($handle))
+				@fclose($handle);
+		if(is_array($capability))
+			$filesystem->releaseDirectoryCapability($capability);
+	}
+
+	public function testDrainStateSchemaIsStrictBoundedAndFailsClosed()
+	{
+		$this->reset();
+		$invariant = 'drain state has an exact bounded schema: unknown keys,'
+			.' wrong types, bad generations and unknown phases all fail closed';
+		if(!$this->requireApi(array('erasedataReadDrainState()',
+			'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$initial = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($initial) && isset($initial['phase'])
+			&& $initial['phase'] === 'disarmed',
+			'an empty queue reads as a valid disarmed state');
+		$this->assertTrue(is_array($initial) && isset($initial['generation'])
+			&& $initial['generation'] === '0000000000000000',
+			'and starts at the zero generation');
+		$state = array(
+			'version' => 1,
+			'user' => 'rutorrent',
+			'generation' => '0000000000000001',
+			'acknowledged' => '0000000000000000',
+			'phase' => 'armed',
+			'journal' => array(),
+			'diagnostics' => array(),
+		);
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'a complete valid state is written durably');
+		$readBack = erasedataReadDrainState($queue);
+		$this->assertEquals($state, $readBack,
+			'the state reads back exactly, field for field');
+		// The EMPTY user is a legitimate owner, not a broken state: every
+		// install without HTTP authentication and every install with
+		// $forbidUserSettings = true has User::getUser() === ''. A schema that
+		// refused it refused the whole protocol on a single-user install.
+		$single = $state;
+		$single['user'] = '';
+		$this->assertTrue(erasedataWriteDrainState($queue, $single) === true,
+			'a state owned by the single-user install\'s empty user is written durably');
+		$this->assertEquals($single, erasedataReadDrainState($queue),
+			'and reads back exactly, field for field');
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the named-user state is restored');
+		$broken = array(
+			'unknown key' => array('surprise' => 1),
+			'wrong version' => array('version' => 2),
+			'a user carrying a NUL byte' => array('user' => "ruto\0rrent"),
+			'an oversized user' => array('user' => str_repeat('u', 256)),
+			'a user of the wrong type' => array('user' => array('rutorrent')),
+			'non-hex generation' => array('generation' => 'not-a-generation!'),
+			'oversized generation' => array('generation' => '10000000000000000'),
+			'uppercase generation' => array('generation' => '000000000000000A'),
+			'unknown phase' => array('phase' => 'running'),
+			'phase of the wrong type' => array('phase' => 1),
+			'journal of the wrong type' => array('journal' => 'none'),
+			'ack ahead of generation' => array('acknowledged' => '0000000000000002'),
+		);
+		foreach($broken as $label => $overrides)
+		{
+			$candidate = $state;
+			foreach($overrides as $key => $value)
+				$candidate[$key] = $value;
+			$this->assertTrue(erasedataWriteDrainState($queue, $candidate) === false,
+				'a state with '.$label.' is refused by the writer');
+			@file_put_contents($queue.'/.drain-state', json_encode($candidate));
+			$this->assertTrue(erasedataReadDrainState($queue) === false,
+				'a state with '.$label.' is refused by the reader');
+		}
+		@file_put_contents($queue.'/.drain-state', '{"version":1,');
+		$this->assertTrue(erasedataReadDrainState($queue) === false,
+			'a truncated state file fails closed rather than reading as empty');
+	}
+
+	// -- one generation-bound public admission transaction (task 3) ---------
+
+	public function testAdmissionComputesTheExactDisjointPartitionBeforeSideEffects()
+	{
+		$this->reset();
+		$invariant = 'admission partitions the canonical unique request set R'
+			.' into A and F before any side effect, with |R| = |A| + |F|';
+		if(!$this->requireApi(array('erasedataAdmissionPartition()'), $invariant))
+			return;
+		$good = array($this->hash('C'), strtolower($this->hash('A')), $this->hash('B'));
+		$bad = array('', '../../etc/passwd', str_repeat('Z', 40), str_repeat('A', 39),
+			str_repeat('A', 41), null, 12345, array($this->hash('D')));
+		$request = array_merge($good, $bad, array($this->hash('C')));
+		$outcome = erasedataAdmissionPartition($request, 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['accepted'], $outcome['refused']),
+			'the partition names both halves');
+		$accepted = is_array($outcome) && isset($outcome['accepted'])
+			? $outcome['accepted'] : array();
+		$refused = is_array($outcome) && isset($outcome['refused'])
+			? $outcome['refused'] : array();
+		$this->assertEquals(array($this->hash('A'), $this->hash('B'), $this->hash('C')),
+			array_values($accepted),
+			'A is the canonical uppercase set, deduplicated and sorted');
+		$this->assertEquals(count($bad), count($refused),
+			'F holds every inadmissible member and nothing else');
+		$this->assertEquals(0, count(array_intersect($accepted, $refused)),
+			'A and F are disjoint');
+		$this->assertEquals(3 + count($bad), count($accepted) + count($refused),
+			'|R| = |A| + |F| over the canonical unique request set');
+		$this->assertEquals(array(), $this->queueEntries(),
+			'computing the partition mutates no filesystem state');
+		$this->assertEquals(0, count(rXMLRPCRequest::$requested),
+			'computing the partition performs no RPC');
+	}
+
+	public function testRefusedMembersGetNoMarkerJournalStagingRpcOrMutation()
+	{
+		$this->reset();
+		$invariant = 'every member of F gets no marker, no journal entry, no'
+			.' staging, no RPC and no filesystem mutation of any kind';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$accepted = $this->hash('A');
+		$refused = str_repeat('Z', 40);
+		erasedataRemovalAdmissionRun($this->dependencies(),
+			array($accepted, $refused, 'not-a-hash'), 1);
+		foreach($this->queueEntries() as $entry)
+		{
+			$this->assertTrue(strpos($entry, $refused) !== 0,
+				'no queue entry names the refused hash: '.$entry);
+			$this->assertTrue(strpos($entry, 'not-a-hash') === false,
+				'no queue entry names the malformed request: '.$entry);
+		}
+		$mentioned = false;
+		foreach(rXMLRPCRequest::$commandCalls as $commands)
+			foreach($commands as $command)
+				if(json_encode($command->params) !== false
+					&& strpos((string)json_encode($command->params), $refused) !== false)
+					$mentioned = true;
+		$this->assertTrue(!$mentioned, 'no RPC ever mentions a refused hash');
+	}
+
+	public function testAdmissionBindsOneExactGenerationToEveryAcceptedMember()
+	{
+		$this->reset();
+		$invariant = 'pending request, journal record, staging identity, final'
+			.' manifest and acknowledgement all carry one exact 16-hex generation';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataGenerationIsValid()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// The registration and the acknowledgement rTorrent's scheduler would
+		// produce. Without them the arm answers false, the run stops before it
+		// stages anything, and there is no generation-bound journal record for
+		// any of the assertions below to be about -- the case as first written
+		// could not pass whatever the producer did.
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$hashes = array($this->hash('A'), $this->hash('B'));
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(), $hashes, 1);
+		$generation = is_array($outcome) && isset($outcome['generation'])
+			? $outcome['generation'] : null;
+		$this->assertTrue(erasedataGenerationIsValid($generation),
+			'admission reports the exact generation it bound');
+		$state = erasedataReadDrainState($this->queuePath());
+		$this->assertTrue(is_array($state) && isset($state['journal'][$generation]),
+			'the journal is keyed by that same generation');
+		$entry = is_array($state) && isset($state['journal'][$generation])
+			? $state['journal'][$generation] : array();
+		$this->assertEquals($hashes, isset($entry['hashes']) ? $entry['hashes'] : array(),
+			'the journal record binds the exact sorted canonical hash set');
+		$this->assertTrue(isset($entry['force']) && $entry['force'] === 1,
+			'and the exact integer force');
+		foreach($hashes as $hash)
+		{
+			$staging = isset($entry['staging'][$hash]) ? $entry['staging'][$hash] : null;
+			$this->assertTrue(is_array($staging) && isset($staging['path'],
+				$staging['dev'], $staging['ino']),
+				'the journal binds a staging path and its captured dev/ino for '.$hash);
+			$this->assertTrue(is_array($staging) && isset($staging['path'])
+				&& strpos((string)$staging['path'], $generation) !== false,
+				'the staging name carries the same generation for '.$hash);
+		}
+	}
+
+	public function testABareHashListNeverAcknowledgesANewGenerationOfTheSameHash()
+	{
+		$this->reset();
+		$invariant = 'a bare <hash>.list never acknowledges a new generation of'
+			.' the same hash';
+		if(!$this->requireApi(array('erasedataQueueRequest()',
+			'erasedataPendingObligations()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000007';
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation) === true,
+			'a generation-bound request is queued');
+		@file_put_contents($queue.'/'.$hash.'.list', 'legacy manifest of an older torrent');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation]),
+			'the obligation survives an unrelated bare list of the same hash');
+		@file_put_contents($queue.'/'.$hash.'.0000000000000006.99.list', 'older generation');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation]),
+			'and survives a published manifest of a different generation');
+	}
+
+	public function testArmPrecedesStagingAndTheFirstErase()
+	{
+		$this->reset();
+		$invariant = 'the durable arm and its successful repeating schedule RPC'
+			.' always precede staging and the first d.erase';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$order = array();
+		$queue = $this->queuePath();
+		// The acknowledgement is played by the test, so the run really reaches
+		// the erase: a producer that arms and then stops can no longer satisfy
+		// this case by never erasing at all.
+		$this->acknowledgeOnRegistration($queue, function($commands) use (&$order, $queue)
+		{
+			$order[] = 'schedule:'.count(glob($queue.'/*.tmp'));
+		});
+		erasedataRemovalAdmissionRun($this->dependencies(), array($this->hash('A')), 1);
+		$scheduleIndex = false;
+		$eraseIndex = false;
+		foreach(rXMLRPCRequest::$commandCalls as $index => $commands)
+			foreach($commands as $command)
+			{
+				if(rXMLRPCRequest::scheduleFamily($command->command) === 'schedule'
+					&& $scheduleIndex === false)
+					$scheduleIndex = $index;
+				if($command->command === 'd.erase' && $eraseIndex === false)
+					$eraseIndex = $index;
+			}
+		$this->assertTrue($scheduleIndex !== false,
+			'the producer registers the repeating drain schedule');
+		$this->assertTrue($eraseIndex !== false,
+			'and an acknowledged generation really reaches d.erase');
+		$this->assertTrue($scheduleIndex !== false && $eraseIndex !== false
+			&& $scheduleIndex < $eraseIndex,
+			'the schedule registration precedes every d.erase');
+		$this->assertEquals(array('schedule:0'), $order,
+			'nothing is staged before the arm returns successfully');
+	}
+
+	public function testScheduleFamiliesUseMappedLogicalNamesOnly()
+	{
+		$this->reset();
+		$invariant = 'both scheduling families go through the mapped logical'
+			.' names schedule and schedule_remove, never schedule2 or'
+			.' schedule_remove2, which stock rTorrent 0.16 does not define';
+		// The LOGICAL key has to reach the COMMAND CONSTRUCTOR, not merely
+		// appear somewhere in the file. rXMLRPCCommand::__construct() calls
+		// rTorrentSettings::patchDeprecatedCommand($this, $cmd) before it
+		// appends a single argument, and that helper looks the alias up by the
+		// name it was HANDED. Given the already-resolved name that
+		// getCmd('schedule') returns, it finds no alias on rTorrent 0.9.x,
+		// never adds the mandatory leading empty target, and the daemon answers
+		// "Unsupported target type found." -- measured on a real 0.9.8 daemon,
+		// alongside 0.16.21's "invalid parameters: invalid target" for the same
+		// omission. So the constructor argument is what these pin, which is
+		// strictly stronger than pinning that getCmd('schedule') occurs at all.
+		$this->sourceHas('removewithdata.php', "new rXMLRPCCommand('schedule',",
+			'the drain arm hands the mapped logical schedule name to the constructor');
+		$this->sourceHas('removewithdata.php', "new rXMLRPCCommand('schedule_remove'",
+			'retirement hands the mapped logical schedule_remove name to the constructor');
+		$this->sourceLacks('removewithdata.php', "rXMLRPCCommand(getCmd('schedule')",
+			'and never the resolved spelling, which loses the empty target on 0.9.x');
+		$this->sourceLacks('removewithdata.php', "rXMLRPCCommand(getCmd('schedule_remove')",
+			'nor the resolved removal spelling, for exactly the same reason');
+		foreach(array('removewithdata.php', 'update.php', 'init.php', 'pending.php') as $file)
+		{
+			$this->sourceLacks($file, 'schedule2',
+				'no deprecated schedule2 alias in '.$file);
+			$this->sourceLacks($file, 'schedule_remove2',
+				'no deprecated schedule_remove2 alias in '.$file);
+		}
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataRetirementRun()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		erasedataRemovalAdmissionRun($this->dependencies(), array($this->hash('A')), 1);
+		$this->retire();
+		$commands = array();
+		foreach(rXMLRPCRequest::$scheduledCommands as $record)
+			$commands[$record['command']] = true;
+		$this->assertTrue(isset($commands['schedule']),
+			'the observed registration command is exactly "schedule"');
+		$this->assertTrue(!isset($commands['schedule2']) && !isset($commands['schedule_remove2']),
+			'no deprecated alias is ever emitted');
+	}
+
+	public function testTheDrainScheduleKeyIsPerUserAndNeverCollidesWithTheCollector()
+	{
+		$this->reset();
+		$invariant = 'the schedule key is exactly erasedata-drain<User> with the'
+			.' same user handed to the child, and never collides with the'
+			.' ordinary erasedata<User> key that done.php removes';
+		if(!$this->requireApi(array('erasedataDrainScheduleKey()'), $invariant))
+			return;
+		$this->assertEquals('erasedata-drainrutorrent', erasedataDrainScheduleKey('rutorrent'),
+			'the key is the literal prefix followed by the user');
+		// The single-user install. User::getUser() is '' there, so '' is a real
+		// user with a real key of its own, and it is still not the collector's.
+		$this->assertEquals('erasedata-drain', erasedataDrainScheduleKey(''),
+			'the empty user of a single-user install has the bare prefix as its key');
+		$this->assertTrue(erasedataDrainScheduleKey('') !== 'erasedata'.'',
+			'which is still not the periodic collector key done.php removes');
+		$this->assertTrue(erasedataDrainScheduleKey(null) === false,
+			'a missing user has no drain schedule key');
+		$this->assertTrue(erasedataDrainScheduleKey(array('rutorrent')) === false,
+			'a non-string user has no drain schedule key');
+		$this->assertTrue(erasedataDrainScheduleKey("ruto\0rrent") === false,
+			'a user carrying a NUL byte has no drain schedule key');
+		$this->assertTrue(erasedataDrainScheduleKey(str_repeat('u', 256)) === false,
+			'an oversized user has no drain schedule key');
+		$this->assertTrue(erasedataDrainScheduleKey('rutorrent') !== 'erasedata'.'rutorrent',
+			'the drain key is not the periodic collector key');
+		$doneSource = @file_get_contents($this->repositoryRoot().'/plugins/erasedata/done.php');
+		$this->assertTrue(is_string($doneSource) && $doneSource !== '',
+			'done.php is readable for inspection');
+		$this->assertTrue(is_string($doneSource)
+			&& strpos($doneSource, 'getRemoveScheduleCommand("erasedata")') !== false,
+			'done.php still removes only the periodic collector key');
+		$this->assertTrue(is_string($doneSource)
+			&& strpos($doneSource, 'erasedata-drain') === false,
+			'done.php never removes the drain key');
+	}
+
+	public function testScheduleRegistrationFaultOrFalseNeverStagesOrErases()
+	{
+		$this->reset();
+		$invariant = 'a schedule RPC that faults or returns false leaves the'
+			.' state unarmed and stages and erases nothing';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$cases = array(
+			'a fault' => array('ok' => true, 'fault' => true, 'faultString' => 'refused'),
+			'a false return' => array('ok' => false, 'val' => array()),
+		);
+		foreach($cases as $label => $response)
+		{
+			$this->reset();
+			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+			$this->eraseOk();
+			rXMLRPCRequest::$responses['schedule'] = $response;
+			$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+				array($this->hash('A')), 1);
+			$this->assertTrue($outcome === false,
+				'the producer fails closed when the arm answers with '.$label);
+			$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+				'nothing is erased when the arm answers with '.$label);
+			$state = erasedataReadDrainState($this->queuePath());
+			$this->assertTrue($state === false
+				|| (isset($state['phase']) && $state['phase'] !== 'armed'),
+				'the durable phase never reaches armed on '.$label);
+			$this->assertEquals(array(), glob($this->queuePath().'/*.tmp'),
+				'no staging survives '.$label);
+		}
+	}
+
+	public function testTheProducerNeverWritesTheAcknowledgement()
+	{
+		$this->reset();
+		$invariant = 'only a really started guarded child raises acknowledged;'
+			.' registration acceptance is not acknowledgement and the producer'
+			.' never writes it itself';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataGenerationIsValid()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		erasedataRemovalAdmissionRun(
+			$this->dependencies(array('ackTimeout' => 0.15)), array($this->hash('A')), 1);
+		// A do-nothing producer must not satisfy this case: the arm has to have
+		// really happened and the durable state has to really name a generation
+		// before "acknowledged is still behind it" means anything at all.
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the producer really registered the repeating drain schedule');
+		$state = erasedataReadDrainState($this->queuePath());
+		$this->assertTrue(is_array($state) && isset($state['generation'])
+			&& erasedataGenerationIsValid($state['generation']),
+			'and durably bound a real generation to it');
+		$this->assertTrue(is_array($state) && array_key_exists('acknowledged', $state)
+			&& erasedataGenerationIsValid($state['acknowledged']),
+			'the durable state carries a readable acknowledged generation of its own');
+		$this->assertTrue(is_array($state) && isset($state['generation'])
+			&& array_key_exists('acknowledged', $state)
+			&& $state['acknowledged'] !== $state['generation'],
+			'an accepted registration with no child leaves acknowledged behind the generation');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and nothing is erased on the strength of the registration alone');
+	}
+
+	public function testAcceptedScheduleWithNoChildRetainsTheTorrentAndRollsBackOnlyItsOwn()
+	{
+		$this->reset();
+		$invariant = 'an accepted schedule that never produces a child times out'
+			.' bounded, retains the torrent, rolls back only its own prepared'
+			.' staging identity, leaves a later generation untouched and writes'
+			.' exactly one unconditional drain-no-ack diagnostic';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$foreign = $queue.'/'.$this->hash('Z').'.ffffffffffffffff.42.tmp';
+		@file_put_contents($foreign, "a later generation's staging\n");
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$began = microtime(true);
+		$outcome = erasedataRemovalAdmissionRun(
+			$this->dependencies(array('ackTimeout' => 0.25)), array($this->hash('A')), 1);
+		$took = microtime(true) - $began;
+		$this->assertTrue($took < 5.0,
+			'the wait for an acknowledgement is bounded: took '.round($took, 2).'s');
+		$this->assertTrue($outcome === false, 'the producer reports failure');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'the torrent is retained');
+		$this->assertTrue(is_file($foreign),
+			'a later generation staging file is never rolled back by this producer');
+		$own = array();
+		foreach(glob($queue.'/*.tmp') as $file)
+			if($file !== $foreign)
+				$own[] = basename($file);
+		$this->assertEquals(array(), $own,
+			'only this generation\'s own prepared staging is rolled back');
+		$diagnostics = 0;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'drain-no-ack') !== false)
+				$diagnostics++;
+		$this->assertEquals(1, $diagnostics,
+			'exactly one unconditional drain-no-ack diagnostic is written');
+	}
+
+	public function testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding()
+	{
+		$this->reset();
+		$invariant = 'after the acknowledgement the producer re-takes hash then'
+			.' state locks and revalidates generation, phase, sorted hashes,'
+			.' force, cardinality and every staging path and dev/ino before'
+			.' writing erase-started; any mismatch is a hard no-erase';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// The acknowledgement is played at the registration, as everywhere else
+		// in this file. The SWAP cannot be played there too: invariant 4 puts
+		// the arm before the first staging file exists, so a swap driven from
+		// the registration callback would find an empty queue and prove
+		// nothing -- which is exactly what this case used to do.
+		//
+		// The path collection of the SECOND hash is the one moment that is
+		// after a staging file has been published and before the binding is
+		// revalidated, so the swap is driven from there.
+		$this->acknowledgeOnRegistration($queue);
+		$hashes = array($this->hash('A'), $this->hash('B'));
+		$swapped = false;
+		$collected = 0;
+		rXMLRPCRequest::$responses['d.get_base_path'] = array(
+			'ok' => true, 'val' => array('/d/name', 1, '/d/name/a.bin'),
+			'callback' => function($commands) use ($queue, &$swapped, &$collected)
+			{
+				if(++$collected < 2)
+					return;
+				foreach(glob($queue.'/*.tmp') as $file)
+				{
+					@unlink($file);
+					@file_put_contents($file, "a different object at the same name\n");
+					$swapped = true;
+				}
+			});
+		$outcome = erasedataRemovalAdmissionRun(
+			$this->dependencies(array('ackTimeout' => 1.0)), $hashes, 1);
+		$this->assertTrue($swapped, 'the acknowledgement really landed and the staging was swapped');
+		$this->assertTrue($outcome === false,
+			'a staging identity that no longer matches the journal is a hard no-erase');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and no d.erase is sent');
+		$state = erasedataReadDrainState($queue);
+		$stillPrepared = false;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $entry)
+				if(isset($entry['phase']) && $entry['phase'] === 'erase-started')
+					$stillPrepared = true;
+		$this->assertTrue(!$stillPrepared,
+			'erase-started is never written for a binding that failed revalidation');
+	}
+
+	public function testStateWriteFailureRefusesBeforeArmAndRetainsAfterArm()
+	{
+		$this->reset();
+		$invariant = 'an I/O failure on a durable state write is terminal for'
+			.' the attempt: it refuses the obligation when admission was not yet'
+			.' durable and retains it once it was';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// The state name is a directory, so no durable state write can land.
+		@mkdir($queue.'/.drain-state', 0777, true);
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($this->hash('A')), 1);
+		$this->assertTrue($outcome === false,
+			'admission refuses when it cannot write its own durable state');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'nothing is erased when the state write failed before the arm');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and no schedule is registered on the strength of an unwritten state');
+		$diagnosed = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'state-write') !== false)
+				$diagnosed = true;
+		$this->assertTrue($diagnosed,
+			'the failed durable state write is classified and reported');
+	}
+
+	public function testJournalCapacityExhaustionRefusesBeforeEraseAndNeverEvicts()
+	{
+		$this->reset();
+		$invariant = 'journal capacity exhaustion refuses the new request before'
+			.' any erase; it never evicts an active entry';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()',
+			'erasedataGenerationIncrement()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$state = erasedataReadDrainState($queue);
+		if(!is_array($state))
+		{
+			$this->assertTrue(false, $invariant.' [drain state unreadable]');
+			return;
+		}
+		$generation = '0000000000000000';
+		$journal = array();
+		for($index = 0; $index < 4096; $index++)
+		{
+			$generation = erasedataGenerationIncrement($generation);
+			if($generation === false)
+				break;
+			$journal[$generation] = array(
+				'phase' => 'prepared',
+				'force' => 1,
+				'hashes' => array($this->hash('A')),
+				'staging' => array($this->hash('A') => array(
+					'path' => $queue.'/'.$this->hash('A').'.'.$generation.'.1.tmp',
+					'dev' => 1, 'ino' => 1)),
+			);
+		}
+		$state['journal'] = $journal;
+		$state['generation'] = $generation;
+		$state['phase'] = 'armed';
+		$written = erasedataWriteDrainState($queue, $state);
+		$this->assertTrue($written === false,
+			'a journal beyond its capacity cap cannot be written at all');
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($this->hash('B')), 1);
+		$after = erasedataReadDrainState($queue);
+		$survived = is_array($after) && isset($after['journal'])
+			? count($after['journal']) : 0;
+		$this->assertTrue($outcome === false || $survived > 0,
+			'a refusal on capacity never silently discards the existing journal');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'capacity exhaustion refuses before erase');
+	}
+
+	public function testAContinuousProducerStreamDoesNotReRegisterALiveSchedule()
+	{
+		$this->reset();
+		$invariant = 'a continuous producer stream does not postpone the first'
+			.' tick: an already-armed correct schedule is never re-registered';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()'), $invariant))
+			return;
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$dependencies = $this->dependencies(array('ackTimeout' => 0.05));
+		foreach(array('A', 'B', 'C', 'D', 'E') as $character)
+			erasedataRemovalAdmissionRun($dependencies, array($this->hash($character)), 1);
+		$registrations = 0;
+		foreach($this->scheduleRecords('schedule') as $record)
+			if(strpos((string)$record['key'], 'erasedata-drain') === 0)
+				$registrations++;
+		$this->assertEquals(1, $registrations,
+			'five producers arm the drain schedule exactly once, not five times');
+	}
+
+	public function testPublicDoorsShareOneAdmissionApiAndExposeNoTestSeams()
+	{
+		$this->reset();
+		$invariant = 'both public doors go through the same admission API, and'
+			.' the public production wrapper takes no injection parameters';
+		$this->sourceHas('action.php', 'erasedataAdmitRemoval',
+			'action.php calls the shared admission API');
+		$this->sourceHas('erase.php', 'erasedataAdmitRemoval',
+			'erase.php calls the shared admission API');
+		$this->sourceLacks('action.php', 'erasedataRemoveWithData(',
+			'action.php never calls the destructive producer directly');
+		$this->sourceLacks('erase.php', 'erasedataRemoveWithData(',
+			'erase.php never calls the destructive producer directly');
+		foreach(array('action.php', 'erase.php', 'update.php', 'removewithdata.php',
+			'pending.php', 'filesystem.php', 'manifest.php', 'collector.php',
+			'init.php', 'conf.php') as $file)
+		{
+			$this->sourceLacks($file, 'getenv(',
+				'no environment path override in '.$file);
+			$this->sourceLacks($file, 'putenv(',
+				'no environment path override written by '.$file);
+		}
+		foreach(array('erasedataSimulateNoDescriptorCapability', 'erasedataInjectedEraseCut',
+			'erasedataAckTimeout', 'erasedataLastBatchOutcome', 'autoAcknowledgeDrain',
+			'ERASEDATA_SETTINGS_PATH') as $seam)
+			$this->sourceLacks('removewithdata.php', $seam,
+				'no production test switch named '.$seam);
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataAdmitRemoval()'), $invariant))
+			return;
+		$public = new ReflectionFunction('erasedataRemoveWithData');
+		$this->assertEquals(2, $public->getNumberOfParameters(),
+			'erasedataRemoveWithData keeps exactly its two production parameters');
+		$door = new ReflectionFunction('erasedataAdmitRemoval');
+		$this->assertEquals(2, $door->getNumberOfParameters(),
+			'the shared public door takes hashes and force and nothing else');
+		$runner = new ReflectionFunction('erasedataRemovalAdmissionRun');
+		$parameters = $runner->getParameters();
+		$this->assertTrue(count($parameters) === 3
+			&& $parameters[0]->getName() === 'dependencies',
+			'the internal runner takes its dependencies explicitly, as its first argument');
+	}
+
+	// Invariant 4's durable `arming` phase, pinned where it can be observed.
+	//
+	// Nothing else in this file fails when a producer skips `arming` and jumps
+	// straight to `armed`, or writes no state at all before the registration:
+	// every other case reads the state through the production reader, which
+	// answers with the disarmed default for a queue that has no state yet, so a
+	// skipped arming write looks exactly like a queue nobody has armed. This
+	// case reads the state FILE, with no production code between it and the
+	// bytes, at the instant the registration RPC is made. Either the durable
+	// arming write happened before it or this fails.
+	public function testTheDurableArmingPhasePrecedesTheScheduleRegistration()
+	{
+		$this->reset();
+		$invariant = 'a durable arming state carrying the new generation is'
+			.' published before the repeating schedule is ever registered';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataGenerationIsValid()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$observed = false;
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0),
+			'callback' => function($commands) use ($queue, &$observed)
+			{
+				$raw = @file_get_contents($queue.'/.drain-state');
+				$observed = is_string($raw) ? json_decode($raw, true) : false;
+			});
+		erasedataRemovalAdmissionRun($this->dependencies(array('ackTimeout' => 0.05)),
+			array($this->hash('A')), 1);
+		$this->assertTrue(is_array($observed),
+			'a durable drain state file already exists when the registration is made');
+		$this->assertTrue(is_array($observed) && isset($observed['phase'])
+			&& $observed['phase'] === 'arming',
+			'and it carries the arming phase, neither armed nor disarmed');
+		$this->assertTrue(is_array($observed) && isset($observed['generation'])
+			&& erasedataGenerationIsValid($observed['generation'])
+			&& $observed['generation'] !== '0000000000000000',
+			'and the new generation the arm is binding, not the zero generation');
+		$this->assertTrue(is_array($observed) && isset($observed['user'])
+			&& $observed['user'] === User::getUser(),
+			'and the nonempty user the schedule key is built from');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['phase'])
+			&& $after['phase'] === 'armed',
+			'and the arm is swapped to armed once the registration returns');
+		$this->assertTrue(is_array($after) && is_array($observed)
+			&& isset($after['generation'], $observed['generation'])
+			&& $after['generation'] === $observed['generation'],
+			'the compare-and-swap keeps the exact generation it armed under');
+	}
+
+	// The web door's own parsing, at the boundary where a browser body arrives.
+	//
+	// The upstream loop read $parts[1] after an unconstrained explode, so a body
+	// carrying a bare "hash" raised an undefined-index notice before anything
+	// could refuse it. error_reporting is -1 and display_errors is on in
+	// php-test.ini, so the child's output is where such a notice would show.
+	public function testMalformedFormEntriesAreRefusedWithoutNoticesOrSideEffects()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$door = __DIR__.'/../../../plugins/erasedata/action.php';
+		$bodies = array(
+			'a key with no value at all' => 'mode=removewithdata&hash&v=1',
+			'an empty key' => 'mode=removewithdata&=orphan&hash='.$hash.'&v=1',
+			'an empty entry' => 'mode=removewithdata&&hash='.$hash.'&v=1',
+			'nothing but separators' => '&&&',
+			'a body that is one bare key' => 'mode',
+			'a trailing separator' => 'mode=removewithdata&hash='.$hash.'&v=1&',
+		);
+		foreach($bodies as $label => $body)
+		{
+			list($status, $output, $commands) = $this->runCopiedAction($door, $body, true);
+			$this->assertEquals(0, $status,
+				'the door exits normally on '.$label.': '.$output);
+			$this->assertEquals(array(), $commands,
+				'a malformed body is refused before any admission on '.$label);
+			// The message deliberately never spells the signal out when the
+			// case passes: tests/php-test.sh greps the WHOLE output of a file
+			// for "Uncaught" and the PHP error words, so a passing assertion
+			// that quoted one would mark this file failed for ever.
+			$offending = '';
+			foreach(array('Notice', 'Warning', 'Deprecated', 'Fatal error',
+				'Parse error', 'Uncaught') as $signal)
+				if(strpos($output, $signal) !== false)
+					$offending = $signal.': '.trim(substr($output, 0, 200));
+			$this->assertTrue($offending === '',
+				'and refuses without emitting a PHP diagnostic of its own on '
+					.$label.($offending === '' ? '' : ' -- '.$offending));
+		}
+		// Without this the assertions above are all satisfied by a door that
+		// refuses everything it is ever handed.
+		list($status, $output, $commands) = $this->runCopiedAction($door,
+			'mode=removewithdata&hash='.$hash.'&v=1', true);
+		$this->assertEquals(0, $status,
+			'the door exits normally on a well-formed body: '.$output);
+		$this->assertEquals(array('admit:1'), $commands,
+			'a well-formed body enters the shared admission API with the integer force');
+		// A multi-valued entry keeps everything after the first "=", rather
+		// than silently losing it the way an unlimited explode did.
+		list($status, $output, $commands) = $this->runCopiedAction($door,
+			'mode=removewithdata&hash='.$hash.'&v=1=2', true);
+		$this->assertEquals(array(), $commands,
+			'a force carrying a second "=" is refused rather than truncated to a valid one');
+	}
+
+	// Dead code is not an implementation.
+	//
+	// Every primitive below has exactly one owner and, before this slice, no
+	// production caller anywhere: the admission transaction is the caller they
+	// were written for. A helper only the tests reach is unreachable code
+	// however carefully it is written, so each is pinned to a shipped file
+	// other than the one that declares it.
+	public function testTheAdmissionTransactionHasProductionCallersForItsPrimitives()
+	{
+		$this->reset();
+		$wired = array(
+			'erasedataQueueRequest($' => 'removewithdata.php',
+			'erasedataLockObligations($' => 'removewithdata.php',
+			'erasedataUnlockObligations($' => 'removewithdata.php',
+			'erasedataPendingMarkerPath($' => 'removewithdata.php',
+			'erasedataWriteDurableFile($' => 'removewithdata.php',
+			'erasedataGenerationIncrement($' => 'removewithdata.php',
+			'erasedataGenerationCompare($' => 'removewithdata.php',
+			'erasedataGenerationIsValid($' => 'removewithdata.php',
+			'erasedataRemovalAdmissionRun(' => 'removewithdata.php',
+			'erasedataPublishedGenerations($' => 'removewithdata.php',
+			// The filesystem slice. Its primitives were the one part of this
+			// package the gate above never covered, and canonicalMissingPath()
+			// shipped with zero production callers and a header comment
+			// claiming "every erasedata decision reads it" because of exactly
+			// that gap. The needles are CALL spellings ('->name(' /
+			// 'name($'), never the declaration, so a symbol whose only reader
+			// is a test still fails here even when it is pinned to the file
+			// that declares it: canonicalMissingPath() is read by
+			// pathIdentity() and acquireDirectoryCapability() by
+			// openDirectoryReference(), both in filesystem.php, and both of
+			// those are in turn pinned to callers outside it.
+			'->canonicalMissingPath(' => 'filesystem.php',
+			'->pathIdentity(' => 'collector.php',
+			'erasedataPathIdentity(' => 'removewithdata.php',
+			'erasedataPathTouchesOwnedPaths(' => 'collector.php',
+			'->entryIdentity(' => 'collector.php',
+			'->targetIdentity(' => 'collector.php',
+			'->acquireDirectoryCapability(' => 'filesystem.php',
+			'erasedataWriteDurableFile($' => 'pending.php',
+		);
+		foreach($wired as $needle => $file)
+		{
+			$callers = $this->productionCallers($needle);
+			$this->assertTrue(in_array($file, $callers, true),
+				'a production caller of '.$needle.' exists in '.$file
+					.' (found in: '.implode(', ', $callers).')');
+		}
+		$doors = $this->productionCallers('erasedataAdmitRemoval(');
+		foreach(array('action.php', 'erase.php') as $door)
+			$this->assertTrue(in_array($door, $doors, true),
+				$door.' enters the shared admission API (found in: '
+					.implode(', ', $doors).')');
+		// The marker codec is reachable only because the store that writes
+		// through it is: a codec nothing records or reads with is dead however
+		// many tests exercise it.
+		$this->assertTrue(in_array('pending.php',
+			$this->productionCallers('erasedataEncodePendingMarker(array('), true),
+			'the marker encoder is reached by the store the admission records through');
+	}
+
+	// I6: this plugin owns the identity that authorises its own deletions.
+	//
+	// erasedataPathsOverlap() is the predicate behind every "may I delete this
+	// payload?" decision the collector makes, and FALSE is the answer that
+	// authorises the deletion. It used to ask XMLRPCPathResolver, a core class
+	// shared with the standalone and session XMLRPC endpoints, which answers a
+	// MISSING name by reconstructing its unresolved tail VERBATIM: realpath()
+	// fails on every prefix that contains a missing component, so a '..' in the
+	// tail survives into the "canonical" name. Two names that really are the
+	// same object then compare as disjoint, and the collector deletes a file a
+	// live download still owns.
+	//
+	// The whole hazard is reproduced below on real files, and the fix is
+	// ownership: erasedataPathIdentity() -> ErasedataFilesystemOps::pathIdentity()
+	// -> canonicalMissingPath(), which proves a missing name's location
+	// component by component or refuses, and a refusal is read as overlap.
+	public function testTheFilesystemSliceOwnsEveryIdentityDecision()
+	{
+		$this->reset();
+		$invariant = 'the owned-path predicate that authorises a deletion reads'
+			.' this plugin\'s own identity owner, and a missing name it cannot'
+			.' canonicalise is overlap rather than permission to delete';
+		if(!$this->requireApi(array('erasedataPathIdentity()',
+			'erasedataPathsOverlap()', 'erasedataPathTouchesOwnedPaths()',
+			'ErasedataFilesystemOps::pathIdentity',
+			'ErasedataFilesystemOps::canonicalMissingPath'), $invariant))
+			return;
+
+		// The loop below quantifies over a hand-maintained list, so a plugin
+		// file left off it would be silently exempt from the two assertions
+		// inside. The non-empty check matters as much as the equality: glob()
+		// answers array() for a mistyped root, and two empty sets compare equal.
+		$shipped = array_map('basename',
+			(array)glob($this->repositoryRoot().'/plugins/erasedata/*.php'));
+		$listed = ErasedataProductionMirror::pluginFiles();
+		sort($shipped, SORT_STRING);
+		sort($listed, SORT_STRING);
+		$this->assertTrue(count($shipped) > 0,
+			'the shipped plugin directory really lists .php files');
+		$this->assertEquals(json_encode($shipped), json_encode($listed),
+			'the mirror enumerates every shipped plugin file, so a new one'
+				.' cannot be exempt from the guard below');
+
+		// (a) No erasedata production file depends on the excluded core owner
+		// any more -- not by call, not by require.
+		foreach(ErasedataProductionMirror::pluginFiles() as $file)
+		{
+			$bytes = $this->productionSource($file);
+			$this->assertTrue(is_string($bytes) && $bytes !== '',
+				'the shipped '.$file.' is readable for inspection');
+			$this->assertTrue(is_string($bytes)
+				&& strpos($bytes, 'XMLRPCPathResolver::') === false,
+				$file.' calls no XMLRPCPathResolver method');
+			$this->assertTrue(is_string($bytes)
+				&& strpos($bytes, 'xmlrpc_path.php') === false,
+				$file.' does not require the core resolver');
+		}
+
+		// (b) The hazard itself, on real files. The live download owns a name
+		// carrying a '..' component; the obsolete manifest names the very same
+		// object by its plain spelling. Lexical containment sees nothing, and
+		// the missing name has no dev/ino to compare, so the ONLY thing between
+		// this and deleting the live download's file is what identity answers
+		// for the missing name.
+		$lab = $this->dir.'/identity-owner';
+		$this->assertTrue(@mkdir($lab.'/live', 0777, true), 'the lab needs a live directory');
+		$secret = $lab.'/live/secret.bin';
+		$this->assertTrue(file_put_contents($secret, 'payload the live download still owns') > 0,
+			'and a file the live download still owns');
+		$ownedSpelling = $lab.'/live/notyet/../secret.bin';
+		$this->assertTrue(!file_exists($ownedSpelling),
+			'the owned spelling does not resolve as a name: its parent is absent');
+		$this->assertTrue(erasedataPathContains($ownedSpelling, $secret) === false
+			&& erasedataPathContains($secret, $ownedSpelling) === false,
+			'and lexical containment sees no relation between the two spellings');
+		$this->assertTrue(erasedataPathIdentity($ownedSpelling) === false,
+			'a missing name whose canonical location cannot be proven has no identity');
+		$this->assertTrue(erasedataPathsOverlap($secret, $ownedSpelling) === true,
+			'so the owned-path predicate answers OVERLAP and the payload is retained');
+		// The base is deliberately elsewhere, so retention rests ENTIRELY on the
+		// one owned file spelling and nothing lexical can satisfy it by accident.
+		$this->assertTrue(erasedataPathTouchesOwnedPaths($secret,
+			array('base' => $lab.'/unrelated', 'files' => array($ownedSpelling))) === true,
+			'and the collector predicate built on it retains it too');
+		$this->assertTrue(is_file($secret),
+			'nothing in this case may have deleted the live download\'s file');
+
+		// (c) It is not a blanket refusal: a clean missing name still gets a
+		// canonical answer, and it is the RESOLVED one.
+		$this->assertTrue(@mkdir($lab.'/real', 0777, true), 'a real directory');
+		$this->assertTrue(@symlink($lab.'/real', $lab.'/alias') === true,
+			'reachable through a directory symlink');
+		$clean = erasedataPathIdentity($lab.'/alias/notyet.bin');
+		$this->assertTrue(is_array($clean) && isset($clean['exists'], $clean['path'])
+			&& $clean['exists'] === false,
+			'a clean missing name is answered, not refused');
+		$this->assertEquals(realpath($lab.'/real').'/notyet.bin',
+			is_array($clean) && isset($clean['path']) ? $clean['path'] : null,
+			'and the answer resolves the alias rather than repeating the spelling');
+		$this->assertTrue(erasedataPathsOverlap($lab.'/real/notyet.bin',
+			$lab.'/alias/notyet.bin') === true,
+			'so two spellings of one missing name still overlap');
+		$this->assertTrue(erasedataPathsOverlap($lab.'/real/notyet.bin',
+			$lab.'/real/other.bin') === false,
+			'while two genuinely different missing names do not, and stay deletable');
+
+		// (d) An existing name is answered exactly as before: canonical path
+		// plus both dev/ino pairs, so nothing that used to compare equal stops
+		// comparing equal.
+		$existing = erasedataPathIdentity($secret);
+		$this->assertTrue(is_array($existing) && !empty($existing['exists'])
+			&& isset($existing['path'], $existing['lstat']['dev'], $existing['lstat']['ino'],
+				$existing['stat']['dev'], $existing['stat']['ino']),
+			'an existing name carries its canonical path and both identity pairs');
+		$this->assertEquals(realpath($secret),
+			is_array($existing) && isset($existing['path']) ? $existing['path'] : null,
+			'with the realpath spelling');
+		$this->assertTrue(erasedataPathsOverlap($secret, $lab.'/alias/../real') === false,
+			'and an unrelated existing name is still no overlap');
+		$this->assertTrue(erasedataPathIdentity('relative/name') === false
+			&& erasedataPathIdentity('') === false
+			&& erasedataPathIdentity($secret."\0x") === false,
+			'a relative, empty or NUL-carrying name has no identity at all');
+	}
+
+	// The journal cap is a refusal, and it sits at or below the queue's own
+	// generation cap so the queue refuses first.
+	//
+	// testJournalCapacityExhaustionRefusesBeforeEraseAndNeverEvicts proves that
+	// a journal beyond the cap cannot be written and that the refusal erases
+	// nothing. It cannot show where the cap IS, because it never writes a state
+	// that succeeds: an implementation whose cap was one record would satisfy
+	// it just as well while refusing every real batch.
+	public function testTheJournalCapIsARefusalAtTheQueueGenerationCap()
+	{
+		$this->reset();
+		$invariant = 'the journal holds up to the queue generation cap and'
+			.' refuses the record beyond it without evicting anything';
+		if(!$this->requireApi(array('erasedataWriteDrainState()',
+			'erasedataReadDrainState()', 'erasedataGenerationIncrement()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000000';
+		$journal = array();
+		for($index = 0; $index < ERASEDATA_PENDING_MAX_GENERATIONS; $index++)
+		{
+			$generation = erasedataGenerationIncrement($generation);
+			if($generation === false)
+				break;
+			$journal[$generation] = array(
+				'phase' => 'prepared', 'force' => 1, 'hashes' => array($hash),
+				'staging' => array($hash => array(
+					'path' => $queue.'/'.$hash.'.'.$generation.'.1.tmp',
+					'dev' => 1, 'ino' => 1)));
+		}
+		$this->assertEquals(ERASEDATA_PENDING_MAX_GENERATIONS, count($journal),
+			'the fixture really builds one record per queue generation');
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => $generation, 'acknowledged' => '0000000000000000',
+			'phase' => 'armed', 'journal' => $journal, 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'a journal exactly at the cap is a state the producer can still write');
+		$readBack = erasedataReadDrainState($queue);
+		$this->assertEquals(count($journal),
+			is_array($readBack) && isset($readBack['journal'])
+				? count($readBack['journal']) : 0,
+			'and reads back whole rather than truncated to fit');
+		$beyond = erasedataGenerationIncrement($generation);
+		$state['journal'][$beyond] = array(
+			'phase' => 'prepared', 'force' => 1, 'hashes' => array($hash),
+			'staging' => array($hash => array(
+				'path' => $queue.'/'.$hash.'.'.$beyond.'.1.tmp',
+				'dev' => 1, 'ino' => 1)));
+		$state['generation'] = $beyond;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === false,
+			'one record beyond the cap is refused rather than written after an eviction');
+		$survivor = erasedataReadDrainState($queue);
+		$this->assertEquals(count($journal),
+			is_array($survivor) && isset($survivor['journal'])
+				? count($survivor['journal']) : 0,
+			'and the durable journal on disk is exactly what it was before the refusal');
+	}
+
+	// A member of F must not even reach the same schedule the accepted members
+	// arm, and a batch that is nothing but F must make no durable mark at all.
+	public function testAMixedBatchAdmitsOnlyTheExactSortedAcceptedSet()
+	{
+		$this->reset();
+		$invariant = 'a mixed batch admits exactly A, sorted and generation'
+			.' bound, and leaves every member of F entirely untouched';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->acknowledgeOnRegistration($queue);
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($this->hash('C'), 'not-a-hash', strtolower($this->hash('A')),
+				str_repeat('Z', 40), $this->hash('C')), 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['accepted']),
+			'the mixed batch is admitted rather than refused whole');
+		$this->assertEquals(array($this->hash('A'), $this->hash('C')),
+			is_array($outcome) && isset($outcome['accepted'])
+				? array_values($outcome['accepted']) : array(),
+			'A is the canonical sorted deduplicated set');
+		$state = erasedataReadDrainState($queue);
+		$generation = is_array($outcome) && isset($outcome['generation'])
+			? $outcome['generation'] : null;
+		$this->assertTrue(is_array($state) && isset($state['journal'][$generation]['hashes'])
+			&& $state['journal'][$generation]['hashes']
+				=== array($this->hash('A'), $this->hash('C')),
+			'and the journal record binds exactly that set, in that order');
+		foreach($this->queueEntries() as $entry)
+			$this->assertTrue(strpos($entry, str_repeat('Z', 40)) !== 0
+				&& strpos($entry, 'not-a-hash') === false,
+				'no queue entry belongs to a refused member: '.$entry);
+		// A batch of nothing but F: no state, no marker, no staging, no RPC.
+		$this->reset();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->assertTrue(erasedataRemovalAdmissionRun($this->dependencies(),
+			array('not-a-hash', 42, null), 1) === false,
+			'a batch with no admissible member is refused');
+		$this->assertEquals(array(), $this->queueEntries(),
+			'and leaves the queue directory exactly as empty as it found it');
+		$this->assertEquals(0, count(rXMLRPCRequest::$requested),
+			'and performs no RPC of any kind, not even the arm');
+	}
+
+	// Invariant 6: `erase-started` is DURABLE before the first destructive call.
+	//
+	// testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding proves
+	// the record is never written when revalidation fails. Nothing proved the
+	// other direction, so a producer that set the phase in memory and erased
+	// without ever publishing it passed the whole suite -- and a crash between
+	// the erase and the next state write would then leave a torrent erased with
+	// a journal record still claiming nothing destructive had begun. The state
+	// FILE is read here at the instant of the first destructive command, with
+	// no production code between the assertion and the bytes.
+	public function testTheFirstDestructiveCallFindsADurableEraseStartedRecord()
+	{
+		$this->reset();
+		$invariant = 'the erase-started journal record is durable before the'
+			.' first destructive command is sent';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->acknowledgeOnRegistration($queue);
+		$observed = false;
+		$this->eraseOk(function($commands) use ($queue, &$observed)
+		{
+			$raw = @file_get_contents($queue.'/.drain-state');
+			$observed = is_string($raw) ? json_decode($raw, true) : false;
+		});
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($this->hash('A')), 1);
+		$generation = is_array($outcome) && isset($outcome['generation'])
+			? $outcome['generation'] : null;
+		$this->assertTrue(erasedataGenerationIsValid($generation),
+			'the admission really completed and reported its generation');
+		$this->assertEquals(1, count(rXMLRPCRequest::$erased),
+			'and really reached the destructive request');
+		$this->assertTrue(is_array($observed),
+			'a durable drain state exists when the first destructive command is sent');
+		$this->assertTrue(is_array($observed)
+			&& isset($observed['journal'][$generation]['phase'])
+			&& $observed['journal'][$generation]['phase'] === 'erase-started',
+			'and its record for this exact generation already says erase-started');
+	}
+
+	// A refused arm never erases, even when an acknowledgement is sitting there.
+	//
+	// testScheduleRegistrationFaultOrFalseNeverStagesOrErases drives the same
+	// two refusals, but with no acknowledgement at all: a producer that ignored
+	// the registration result would still stop at the bounded ack wait, so its
+	// "nothing is erased" assertion is satisfied by the wrong mechanism. Here a
+	// previous generation's child is still running and raises the
+	// acknowledgement while the registration is being refused, which is exactly
+	// the state a restarted daemon leaves behind. Only the registration result
+	// itself can stop the erase now.
+	public function testARefusedArmErasesNothingEvenWhenAnAcknowledgementArrives()
+	{
+		$this->reset();
+		$invariant = 'a registration that faults or returns false stages and'
+			.' erases nothing even when the acknowledgement is already there';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$cases = array(
+			'a fault' => array('ok' => true, 'fault' => true, 'faultString' => 'refused'),
+			'a false return' => array('ok' => false, 'val' => array()),
+		);
+		foreach($cases as $label => $response)
+		{
+			$this->reset();
+			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+			$this->eraseOk();
+			$acknowledged = false;
+			$response['callback'] = function($commands) use ($queue, &$acknowledged)
+			{
+				$state = erasedataReadDrainState($queue);
+				if(!is_array($state) || !isset($state['generation']))
+					return;
+				$state['acknowledged'] = $state['generation'];
+				$acknowledged = erasedataWriteDrainState($queue, $state);
+			};
+			rXMLRPCRequest::$responses['schedule'] = $response;
+			$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+				array($this->hash('A')), 1);
+			$this->assertTrue($acknowledged,
+				'the acknowledgement really landed while the arm answered with '.$label);
+			$this->assertTrue($outcome === false,
+				'the producer still fails closed on '.$label);
+			$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+				'and erases nothing on '.$label.', acknowledgement or not');
+			$this->assertEquals(array(), glob($queue.'/*.tmp'),
+				'and stages nothing on '.$label);
+			$this->assertEquals(array(), glob($queue.'/*.pending'),
+				'and records no obligation on '.$label.': the admission never became durable');
+		}
+	}
+
+	// Identity is not enough on its own, and this is why.
+	//
+	// testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding swaps the
+	// staging by unlinking and recreating it. Whether that changes the inode is
+	// a property of the filesystem, not of the plugin: measured, it does on the
+	// host and does NOT inside php:7.4-cli or php:8.1-cli, where the inode is
+	// reused immediately and a dev/ino comparison sees no change at all. Here
+	// the file is rewritten IN PLACE, so dev and ino are provably identical and
+	// the only thing that can still refuse the erase is what the file now says.
+	public function testAStagingRewrittenInPlaceIsRefusedThoughItsIdentityIsUnchanged()
+	{
+		$this->reset();
+		$invariant = 'a staging object rewritten in place -- same dev, same ino,'
+			.' different contents -- is a hard no-erase';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->acknowledgeOnRegistration($queue);
+		$hashes = array($this->hash('A'), $this->hash('B'));
+		$identical = false;
+		$rewritten = false;
+		$collected = 0;
+		rXMLRPCRequest::$responses['d.get_base_path'] = array(
+			'ok' => true, 'val' => array('/d/name', 1, '/d/name/a.bin'),
+			'callback' => function($commands) use ($queue, &$identical, &$rewritten, &$collected)
+			{
+				if(++$collected < 2)
+					return;
+				foreach(glob($queue.'/*.tmp') as $file)
+				{
+					$before = @stat($file);
+					// No unlink: the inode has to survive, or this case is
+					// proving the same thing the swap case already proves.
+					@file_put_contents($file, "not a manifest at all\n");
+					clearstatcache(true, $file);
+					$after = @stat($file);
+					$rewritten = true;
+					$identical = is_array($before) && is_array($after)
+						&& $before['dev'] === $after['dev']
+						&& $before['ino'] === $after['ino'];
+				}
+			});
+		$outcome = erasedataRemovalAdmissionRun(
+			$this->dependencies(array('ackTimeout' => 1.0)), $hashes, 1);
+		$this->assertTrue($rewritten,
+			'the staging really was rewritten while the batch was still preparing');
+		$this->assertTrue($identical,
+			'and its dev/ino really are unchanged, so identity alone cannot refuse it');
+		$this->assertTrue($outcome === false,
+			'a staging that no longer holds this generation\'s manifest is a hard no-erase');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and no d.erase is sent');
+		$state = erasedataReadDrainState($queue);
+		$started = false;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $entry)
+				if(isset($entry['phase']) && $entry['phase'] === 'erase-started')
+					$started = true;
+		$this->assertTrue(!$started,
+			'erase-started is never written for a binding that failed revalidation');
+	}
+
+	// Publication is not the whole discharge: the marker has to go too.
+	//
+	// Invariant 10 retires a schedule only on a scan that proves there is no
+	// *.pending left, so a marker the producer could not remove -- or anything
+	// else that ends up sitting at that name -- is an obligation it still owes,
+	// however completely the manifest was published. A producer that reported
+	// success anyway would leave that queue unable to retire for ever, and
+	// nothing would say why.
+	public function testAMarkerThatSurvivesPublicationKeepsTheObligationOutstanding()
+	{
+		$this->reset();
+		$invariant = 'a generation whose marker is still there after publication'
+			.' is reported as unresolved rather than as a clean success';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataPendingMarkerPath()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// Three commands per hash, every one individually answered. Without
+		// this the two-hash batch below is a TRUNCATED reply list -- the shared
+		// eraseOk() default answers one hash -- so the second member would be
+		// UNKNOWN and retained, and this case would be measuring a partial
+		// execution instead of what happens to a marker after a publication
+		// that really succeeded. testPartialRpcExecutionYieldsExactPerHashOutcomeSets
+		// owns the truncated case.
+		rXMLRPCRequest::$responses['d.set_custom5']['val'] = array_fill(0, 6, '');
+		$this->acknowledgeOnRegistration($queue);
+		$blocked = $this->hash('A');
+		$clean = $this->hash('B');
+		$replaced = false;
+		$collected = 0;
+		rXMLRPCRequest::$responses['d.get_base_path'] = array(
+			'ok' => true, 'val' => array('/d/name', 1, '/d/name/a.bin'),
+			'callback' => function($commands) use ($queue, $blocked, &$replaced, &$collected)
+			{
+				// Both markers are already recorded by now; the staging of the
+				// first hash is done and the second is being collected.
+				if(++$collected < 2)
+					return;
+				foreach(glob($queue.'/'.$blocked.'.*.pending') as $marker)
+				{
+					@unlink($marker);
+					$replaced = @mkdir($marker, 0777, true);
+				}
+			});
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($blocked, $clean), 1);
+		$this->assertTrue($replaced,
+			'something really took the marker name of the first hash');
+		$this->assertTrue($outcome === false,
+			'the admission reports failure rather than a clean success');
+		$state = erasedataReadDrainState($queue);
+		$retained = false;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $entry)
+				if(isset($entry['phase']) && $entry['phase'] === 'retained')
+					$retained = true;
+		$this->assertTrue($retained,
+			'and the journal record stays retained, so a later tick retries it');
+		$this->assertEquals(1, count(glob($queue.'/'.$clean.'.*.list')),
+			'the hash whose marker really went is still published exactly once');
+		$this->assertEquals(0, count(glob($queue.'/'.$clean.'.*.pending')),
+			'and its marker is gone');
+		$this->assertEquals(1, count(glob($queue.'/'.$blocked.'.*.pending')),
+			'while the blocked name is left exactly as it was found');
+	}
+
+	// -- one real production worker and exact outcomes (task 4) -------------
+
+	public function testTheWorkerIsReachableOnlyThroughTheRealGuardedUpdateChild()
+	{
+		$this->reset();
+		$invariant = 'update.php <nonempty-user> drain is the only scheduled'
+			.' production entry point into the worker, it is really reachable,'
+			.' and its includes are unconditional';
+		$update = $this->productionSource('update.php');
+		$this->assertTrue(is_string($update) && strpos($update, "'drain'") !== false,
+			'update.php recognises the drain mode argument');
+		$this->assertTrue(is_string($update) && strpos($update, 'erasedataDrainWorkerMain') !== false,
+			'update.php really calls the worker entry point');
+		$this->assertTrue(is_string($update)
+			&& preg_match('/^require_once\(.*pending\.php.*\);/m', $update) === 1,
+			'update.php loads the queue implementation unconditionally, at file scope');
+		$callers = array();
+		foreach(ErasedataProductionMirror::pluginFiles() as $file)
+		{
+			$bytes = @file_get_contents($this->repositoryRoot().'/plugins/erasedata/'.$file);
+			if(is_string($bytes) && strpos($bytes, 'erasedataDrainWorkerMain(') !== false)
+				$callers[] = $file;
+		}
+		$this->assertTrue(in_array('update.php', $callers, true),
+			'a production caller of the worker exists in update.php, not only in tests');
+		$mirror = $this->mirror('worker-reach');
+		$mirror->scriptRpc(array());
+		$child = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->assertTrue($child->started(), 'the guarded drain child really starts');
+		$finished = $child->wait(20);
+		$code = $child->reap();
+		$this->assertTrue($finished, 'the guarded drain child finishes inside its budget');
+		$this->assertEquals(0, $code, 'the guarded drain child exits cleanly');
+		$state = @file_get_contents($mirror->listPath.'/.drain-state');
+		$this->assertTrue(is_string($state) && $state !== '',
+			'the real child wrote durable drain state of its own');
+		// The queue above is now claimed by 'rutorrent'. A child started for a
+		// DIFFERENT user must refuse it, and the empty user is a different user
+		// here rather than a wildcard -- on a single-user install '' owns its
+		// own queue and drains it, which
+		// testTheEmptyUserOfASingleUserInstallIsAdmittedAndDrainedEndToEnd pins.
+		$empty = ErasedataTestProcess::start($mirror->php($mirror->pluginDir.'/update.php',
+			array('', 'drain')));
+		$empty->wait(20);
+		$emptyCode = $empty->reap();
+		$emptyOutput = $empty->out.$empty->err;
+		// A refusal, not a crash: an uncaught fatal also exits nonzero and
+		// would otherwise read as "the guard worked".
+		$this->assertTrue($emptyCode !== 0 && $emptyCode < 128,
+			'a child started for a user this queue does not belong to refuses (exit '
+				.$emptyCode.') instead of admitting worker work');
+		$this->assertTrue(strpos($emptyOutput, 'Fatal error') === false
+			&& strpos($emptyOutput, 'Uncaught') === false
+			&& strpos($emptyOutput, 'Parse error') === false,
+			'and refuses deliberately rather than dying: '.trim(substr($emptyOutput, 0, 200)));
+	}
+
+	public function testPartialRpcExecutionYieldsExactPerHashOutcomeSets()
+	{
+		$this->reset();
+		$invariant = 'per-hash outcomes are derived from individual known replies:'
+			.' E accepted, P published, T1 = E \ P, T0 = A \ E, P + T1 + T0 = A';
+		if(!$this->requireApi(array('erasedataClassifyEraseOutcomes()'), $invariant))
+			return;
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$request = new rXMLRPCRequest();
+		// Three commands per hash; a truncated reply list means the tail never ran.
+		$request->val = array('', '', '', '', '', '');
+		$request->fault = false;
+		$outcome = erasedataClassifyEraseOutcomes($hashes, $request);
+		$this->assertTrue(is_array($outcome), 'the classifier returns a per-hash map');
+		$outcome = is_array($outcome) ? $outcome : array();
+		$this->assertEquals('accepted', isset($outcome[$hashes[0]]) ? $outcome[$hashes[0]] : null,
+			'the first hash has an individual known reply');
+		$this->assertEquals('accepted', isset($outcome[$hashes[1]]) ? $outcome[$hashes[1]] : null,
+			'so does the second');
+		$this->assertEquals('unknown', isset($outcome[$hashes[2]]) ? $outcome[$hashes[2]] : null,
+			'the dropped last hash is UNKNOWN, never absent and never accepted');
+		$dropped = new rXMLRPCRequest();
+		$dropped->val = array('', '', '');
+		$outcome = erasedataClassifyEraseOutcomes($hashes, $dropped);
+		$outcome = is_array($outcome) ? $outcome : array();
+		$this->assertEquals(array('accepted', 'unknown', 'unknown'),
+			array(isset($outcome[$hashes[0]]) ? $outcome[$hashes[0]] : null,
+				isset($outcome[$hashes[1]]) ? $outcome[$hashes[1]] : null,
+				isset($outcome[$hashes[2]]) ? $outcome[$hashes[2]] : null),
+			'a dropped middle hash cannot be reported as accepted');
+		$aggregate = new rXMLRPCRequest();
+		$aggregate->val = array();
+		$outcome = erasedataClassifyEraseOutcomes($hashes, $aggregate);
+		$outcome = is_array($outcome) ? $outcome : array();
+		$unknown = 0;
+		foreach($hashes as $hash)
+			if(isset($outcome[$hash]) && $outcome[$hash] === 'unknown')
+				$unknown++;
+		$this->assertEquals(3, $unknown,
+			'an aggregate request that returned nothing accepts nothing');
+		$faulted = new rXMLRPCRequest();
+		$faulted->val = array('', '', '', '', '', '', '', '', '');
+		$faulted->fault = true;
+		$outcome = erasedataClassifyEraseOutcomes($hashes, $faulted);
+		$outcome = is_array($outcome) ? $outcome : array();
+		$known = 0;
+		foreach($hashes as $hash)
+			if(isset($outcome[$hash]) && $outcome[$hash] !== 'unknown')
+				$known++;
+		$this->assertEquals(0, $known,
+			'a faulted aggregate reply leaves every hash UNKNOWN, not successful');
+		$duplicate = new rXMLRPCRequest();
+		$duplicate->val = array('', '', '', '', '', '', '', '', '');
+		$outcome = erasedataClassifyEraseOutcomes(
+			array($hashes[0], $hashes[0], $hashes[1]), $duplicate);
+		$this->assertTrue(is_array($outcome) && count($outcome) === 2,
+			'a duplicated request hash yields one outcome, not two');
+	}
+
+	// The exact per-hash outcome sets of one admission run, as they are
+	// observable after it. E is derived the way invariant 2 requires -- through
+	// the classifier, from the number of individual replies the batch really
+	// got, never assigned before the aggregate returned -- and P from the
+	// durable manifests the run published for that exact generation.
+	private function outcomeSets(array $accepted, $generation, $replies)
+	{
+		$request = new rXMLRPCRequest();
+		$request->val = $replies > 0 ? array_fill(0, $replies, '') : array();
+		$request->fault = false;
+		$classified = erasedataClassifyEraseOutcomes($accepted, $request);
+		$erased = array();
+		foreach(is_array($classified) ? $classified : array() as $hash => $class)
+			if($class === 'accepted')
+				$erased[] = $hash;
+		sort($erased, SORT_STRING);
+		$published = array();
+		foreach($accepted as $hash)
+			if(is_string($generation) && count(glob($this->queuePath().'/'.$hash
+				.'.'.$generation.'.*.list')))
+				$published[] = $hash;
+		sort($published, SORT_STRING);
+		$set = $accepted;
+		sort($set, SORT_STRING);
+		return(array(
+			'A' => $set,
+			'E' => $erased,
+			'P' => $published,
+			'T1' => array_values(array_diff($erased, $published)),
+			'T0' => array_values(array_diff($set, $erased)),
+		));
+	}
+
+	// Every algebraic identity invariant 2 states, over one run's sets.
+	private function assertOutcomeAlgebra(array $sets, $label)
+	{
+		$this->assertEquals(0, count(array_diff($sets['E'], $sets['A'])),
+			$label.': E is a subset of A');
+		$this->assertEquals(0, count(array_diff($sets['P'], $sets['E'])),
+			$label.': P is a subset of E -- nothing is published that was not'
+				.' individually known-accepted');
+		$this->assertEquals($sets['T1'], array_values(array_diff($sets['E'], $sets['P'])),
+			$label.': T1 = E \\ P');
+		$this->assertEquals($sets['T0'], array_values(array_diff($sets['A'], $sets['E'])),
+			$label.': T0 = A \\ E');
+		$this->assertEquals(0, count(array_intersect($sets['P'], $sets['T1'])),
+			$label.': P and T1 are disjoint');
+		$this->assertEquals(0, count(array_intersect($sets['P'], $sets['T0'])),
+			$label.': P and T0 are disjoint');
+		$this->assertEquals(0, count(array_intersect($sets['T1'], $sets['T0'])),
+			$label.': T1 and T0 are disjoint');
+		$union = array_merge($sets['P'], $sets['T1'], $sets['T0']);
+		sort($union, SORT_STRING);
+		$this->assertEquals($sets['A'], $union, $label.': P + T1 + T0 = A');
+		$this->assertEquals(count($sets['A']),
+			count($sets['P']) + count($sets['T1']) + count($sets['T0']),
+			$label.': |P| + |T1| + |T0| = |A| = '.count($sets['A']));
+	}
+
+	public function testTheAcceptedSetPartitionsExactlyIntoPublishedRetainedAndUnattempted()
+	{
+		$this->reset();
+		$invariant = 'the accepted set partitions exactly: E subset of A, P'
+			.' subset of E, T1 = E \\ P, T0 = A \\ E and P + T1 + T0 = A, with'
+			.' exact membership and cardinality, on all success and under an'
+			.' injected cut';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()',
+			'erasedataClassifyEraseOutcomes()', 'erasedataPendingObligations()'), $invariant))
+			return;
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		// -- all success: E = P = A, T1 = T0 = empty ------------------------
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// Three commands per hash, every one individually answered.
+		rXMLRPCRequest::$responses['d.set_custom5']['val'] = array_fill(0, 9, '');
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(), $hashes, 1);
+		$generation = is_array($outcome) && isset($outcome['generation'])
+			? $outcome['generation'] : null;
+		$this->assertTrue(is_string($generation),
+			'the all-success run reports the generation it bound');
+		$sets = $this->outcomeSets($hashes, $generation, 9);
+		$this->assertOutcomeAlgebra($sets, 'all success');
+		$this->assertEquals($hashes, $sets['E'],
+			'all success: every accepted member is individually known-accepted');
+		$this->assertEquals($hashes, $sets['P'],
+			'all success: E = P = A, so every member is durably published');
+		$this->assertEquals(array(), $sets['T1'], 'all success: T1 is empty');
+		$this->assertEquals(array(), $sets['T0'], 'all success: T0 is empty');
+		$this->assertEquals(array(), glob($this->queuePath().'/*.tmp'),
+			'all success: no staging survives');
+		$this->assertEquals(array(), glob($this->queuePath().'/*.pending'),
+			'all success: no obligation survives');
+		// -- injected cut: the reply list stops after the second hash --------
+		$this->reset();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['d.set_custom5']['val'] = array_fill(0, 6, '');
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(), $hashes, 1);
+		$generation = is_array($outcome) && isset($outcome['generation'])
+			? $outcome['generation'] : null;
+		$this->assertTrue(is_string($generation),
+			'the cut run reports the generation it bound');
+		$sets = $this->outcomeSets($hashes, $generation, 6);
+		$this->assertOutcomeAlgebra($sets, 'injected cut');
+		$this->assertEquals(array($hashes[0], $hashes[1]), $sets['E'],
+			'injected cut: only the two individually answered hashes are in E');
+		$this->assertEquals(array($hashes[2]), $sets['T0'],
+			'injected cut: the dropped tail is exactly T0 = A \\ E');
+		$this->assertEquals(0, count(array_intersect(array($hashes[2]), $sets['P'])),
+			'injected cut: the hash whose reply never came is never published');
+		$retained = array_merge(
+			glob($this->queuePath().'/'.$hashes[2].'.'.$generation.'.*.tmp'),
+			glob($this->queuePath().'/'.$hashes[2].'.'.$generation.'.pending'));
+		$this->assertTrue(count($retained) > 0,
+			'injected cut: every T0 member keeps a self-describing retryable obligation');
+		$obligations = erasedataPendingObligations($this->queuePath());
+		$this->assertTrue(is_array($obligations) && count($obligations) > 0,
+			'injected cut: the run leaves the unresolved remainder queued');
+	}
+
+	public function testTransportOrParseUncertaintyIsUnknownNeverAbsenceOrSuccess()
+	{
+		$this->reset();
+		$invariant = 'a failed or unknown live-hash probe retains the affected'
+			.' obligations and can trigger neither publish nor unlink';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataPendingObligations()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$staging = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+		@file_put_contents($staging, "staged manifest\n");
+		// ARMED, and the staging really bound by an erase-started record. Without
+		// this the pass stops at `generation-unarmed` before the probe result can
+		// reach a publish or an unlink at all, and every assertion below would
+		// hold for any handling of UNKNOWN whatsoever.
+		$this->armQueue($queue, $generation, array($hash => $staging));
+		$staged = @file_get_contents($staging);
+		$this->probe(false, false, array());
+		rXMLRPCRequest::$requested = array();
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		// A worker that does nothing at all retains everything trivially, so
+		// the run has to be shown to have really happened first.
+		$this->assertTrue(count(rXMLRPCRequest::$requested) > 0,
+			'the worker really asked rTorrent about the obligation it holds');
+		$this->assertTrue(is_string($staged) && $staged === @file_get_contents($staging),
+			'a transport failure retains the staged manifest, byte for byte');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and erases nothing');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation]),
+			'and the obligation is retained rather than resolved on a failed probe');
+		$this->probe(true, true, array(), 'Method not defined');
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(is_string($staged) && $staged === @file_get_contents($staging),
+			'an unrelated fault is UNKNOWN and still retains the staged manifest');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'unknown') !== false && strpos($line, $hash) !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'the uncertainty is classified as unknown against its canonical hash'
+				.' rather than silently dropped');
+	}
+
+	public function testPublishFailureKeepsTheJournalActiveAndRetainsExactBytes()
+	{
+		$this->reset();
+		$invariant = 'a mixed batch with a publish failure keeps the successful'
+			.' final manifests self-describing and keeps the retained staging'
+			.' bound to an active erase-started journal entry';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$generation = '0000000000000003';
+		$first = $this->hash('A');
+		$second = $this->hash('B');
+		$paths = array();
+		foreach(array($first, $second) as $hash)
+		{
+			$paths[$hash] = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+			@file_put_contents($paths[$hash], "manifest of ".$hash."\n");
+		}
+		// The second final name is already a directory, so its publish cannot land.
+		@mkdir($queue.'/'.$second.'.'.$generation.'.1.list', 0777, true);
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => $generation, 'acknowledged' => $generation,
+			'phase' => 'armed', 'diagnostics' => array(),
+			'journal' => array($generation => array(
+				'phase' => 'erase-started', 'force' => 1,
+				'hashes' => array($first, $second),
+				'staging' => array(),
+			)),
+		);
+		foreach(array($first, $second) as $hash)
+		{
+			$stat = @stat($paths[$hash]);
+			$state['journal'][$generation]['staging'][$hash] = array(
+				'path' => $paths[$hash],
+				'dev' => is_array($stat) ? $stat['dev'] : 0,
+				'ino' => is_array($stat) ? $stat['ino'] : 0);
+		}
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the erase-started journal is durable before the worker runs');
+		$before = @file_get_contents($paths[$second]);
+		$this->assertTrue(is_string($before) && $before !== '',
+			'the staging whose publication will fail is readable before the run');
+		$this->eraseOk();
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals($before, @file_get_contents($paths[$second]),
+			'the staging that could not be published retains its exact bytes');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['journal'][$generation]),
+			'the journal entry stays active while a bound staging survives');
+		$this->assertTrue(is_array($after) && isset($after['journal'][$generation]['phase'])
+			&& $after['journal'][$generation]['phase'] !== 'completed',
+			'a premature completion is never written while a bound staging survives');
+	}
+
+	// "Publish only a staging file whose exact recorded identity still matches",
+	// pinned where nothing else pins it.
+	//
+	// testPublishFailureKeepsTheJournalActiveAndRetainsExactBytes runs with an
+	// identity that DOES match, so a worker that published on the name alone
+	// passed it. A name is not an identity: an unlink immediately followed by a
+	// create at the same name is routine, and promoting whatever holds the name
+	// would publish a manifest this generation never staged -- and the
+	// collector deletes what a published manifest describes.
+	public function testTheWorkerPublishesOnlyStagingWhoseRecordedIdentityStillMatches()
+	{
+		$this->reset();
+		$invariant = 'a staging object whose exact recorded physical identity no'
+			.' longer matches is never published and never unlinked';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$generation = '0000000000000009';
+		$hash = $this->hash('A');
+		$path = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+		@file_put_contents($path, "the bytes of some other object\n");
+		$stat = @stat($path);
+		$this->assertTrue(is_array($stat), 'the object at the staging name exists');
+		// The journal captured a DIFFERENT inode at this exact name, which is
+		// what an unlink-and-recreate leaves behind. Recording the mismatch
+		// rather than racing for one keeps the case deterministic on a
+		// filesystem that reuses inodes and on one that does not.
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => $generation, 'acknowledged' => $generation,
+			'phase' => 'armed', 'diagnostics' => array(),
+			'journal' => array($generation => array(
+				'phase' => 'erase-started', 'force' => 1,
+				'hashes' => array($hash),
+				'staging' => array($hash => array(
+					'path' => $path,
+					'dev' => is_array($stat) ? (string)$stat['dev'] : '0',
+					'ino' => is_array($stat) ? (string)($stat['ino'] + 1) : '0')))));
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the erase-started journal is durable before the worker runs');
+		$before = @file_get_contents($path);
+		$this->eraseOk();
+		// rTorrent is certain the download is gone, so the recorded identity is
+		// the only thing between this tick and a publication.
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(array(), glob($queue.'/'.$hash.'.'.$generation.'.*.list'),
+			'nothing is published from an object the journal never captured');
+		$this->assertEquals($before, @file_get_contents($path),
+			'and the object at that name keeps its exact bytes');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['journal'][$generation]),
+			'the journal record stays active for a later tick');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, $hash) !== false && strpos($line, $generation) !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'and the refusal is classified against its hash and its generation');
+	}
+
+	public function testEveryUnresolvedOutcomeIsRetriedWithNoTerminalCap()
+	{
+		$this->reset();
+		$invariant = 'every T0, T1, partial publish, RPC unknown or lock'
+			.' uncertainty leaves a retryable obligation; there is no terminal'
+			.' retry cap and no unreadable ad-hoc pending staging';
+		$this->sourceLacks('pending.php', 'giving up on',
+			'the queue no longer abandons an unresolved obligation');
+		$this->sourceLacks('pending.php', '-pending-staging',
+			'no unreadable ad-hoc *-pending-staging name survives');
+		$conf = $this->productionSource('conf.php');
+		$this->assertTrue(is_string($conf) && strpos($conf, 'erasePendingMaxAttempts') === false,
+			'the finite attempt cap is gone from the shipped configuration');
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataPendingObligations()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$staging = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+		@file_put_contents($staging, "staged manifest\n");
+		$bytes = @file_get_contents($staging);
+		// The retry has to be evidenced over a really ARMED generation with a
+		// really bound staging object. Twenty-five ticks that all stop at the
+		// `generation-unarmed` refusal evidence the refusal, not the absence of a
+		// cap on the T0 path this case is named for.
+		$this->armQueue($queue, $generation, array($hash => $staging));
+		$this->probe(false, false, array());
+		for($tick = 0; $tick < 25; $tick++)
+			erasedataDrainWorkerRun($this->dependencies());
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && count($obligations) === 1,
+			'twenty-five failed ticks still leave the obligation queued');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and no torrent was erased to make the obligation go away');
+		$this->assertEquals($bytes, @file_get_contents($staging),
+			'the bound staging object survives every one of them, byte for byte');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after)
+			&& isset($after['journal'][$generation]['staging'][$hash]),
+			'and its journal record still binds that object, tick after tick');
+	}
+
+	/**
+	 * A PUBLISHED manifest the collector really walks, over repeated ticks.
+	 *
+	 * The sibling case above repeats the worker, but its job is a generation-bound
+	 * `.tmp` staging, which the collector deliberately ignores -- so it exercises
+	 * the worker's own diagnostic memory and never reaches the collector's. This
+	 * one publishes the manifest first, which is what puts the job in front of the
+	 * collector on every tick.
+	 *
+	 * Why it matters: retention is a CONDITION, not an event. A presence probe
+	 * that cannot answer keeps the job retained for as long as it stays
+	 * unreadable, the drain rebuilds a collector every ERASEDATA_DRAIN_INTERVAL
+	 * seconds, and the retries have no terminal limit by design. Reported per tick
+	 * that is roughly 17k identical lines a day per retained job -- measured on
+	 * this code before the fix: ticks 1, 2 and 3 each logged the same line.
+	 */
+	public function testAnUnchangedRetentionOfAPublishedManifestIsReportedOncePerCondition()
+	{
+		$this->reset();
+		$invariant = 'a published manifest retained for an unchanged reason is'
+			.' reported once, not once per tick, and a CHANGED reason is reported'
+			.' at once rather than inheriting the silence';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$payload = $this->dir.'/retained-payload.bin';
+		file_put_contents($payload, 'payload-bytes-nobody-may-log');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('files' => array($payload), 'base' => $payload, 'multi' => false), 1);
+		$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+		$this->assertTrue(is_array($staged), 'the manifest stages');
+		$this->armQueue($queue, $generation, array($hash => $staged['path']),
+			'published');
+		$this->assertTrue(
+			ErasedataManifestCodec::publishStaging($staged['path'], $hash),
+			'and publishes, so the collector walks it on every tick');
+
+		// (1) Nothing readable comes back, so the whole job is retained.
+		$this->probe(true, false, array());
+		FileUtil::$log = array();
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(is_array($tick) && $tick['admitted'] === true,
+			'the first tick really ran: '.json_encode($tick));
+		$named = array();
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, $hash) !== false && strpos($line, 'rpc-unknown') !== false)
+				$named[] = $line;
+		$this->assertEquals(1, count($named),
+			'the first tick classifies the retention: '.json_encode(FileUtil::$log));
+		$this->assertTrue(is_file($payload), 'and the payload is retained, not collected');
+		foreach(FileUtil::$log as $line)
+		{
+			$this->assertTrue(strpos($line, $queue) === false,
+				'no diagnostic leaks the settings root or a raw path');
+			$this->assertTrue(strpos($line, 'payload-bytes-nobody-may-log') === false,
+				'no diagnostic leaks payload bytes');
+		}
+
+		// (2) The same condition, twice more. This is the whole point: the
+		// schedule fires for ever and the condition has not changed.
+		foreach(array('second', 'third') as $which)
+		{
+			FileUtil::$log = array();
+			$tick = erasedataDrainWorkerRun($this->dependencies());
+			// Without this the silence below could be the silence of a tick that
+			// was refused admission and never reached the collector at all.
+			$this->assertTrue(is_array($tick) && $tick['admitted'] === true,
+				'the '.$which.' tick really ran: '.json_encode($tick));
+			$repeated = array();
+			foreach(FileUtil::$log as $line)
+				if(strpos($line, 'rpc-unknown') !== false)
+					$repeated[] = $line;
+			$this->assertEquals(0, count($repeated),
+				'the '.$which.' tick repeats nothing about an unchanged retention: '
+					.json_encode(FileUtil::$log));
+			$this->assertTrue(is_file($payload),
+				'and the '.$which.' tick still retains the payload');
+		}
+
+		// (3) A DIFFERENT reason is a different state and must be heard at once.
+		// The torrent is now present, but its owned paths cannot be read, which
+		// is 'owned-paths-unknown' rather than 'rpc-unknown'.
+		$this->probe(true, false, array($hash));
+		rXMLRPCRequest::$responses['f.multicall'] = array('runResult' => false,
+			'fault' => false, 'val' => array());
+		FileUtil::$log = array();
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(is_array($tick) && $tick['admitted'] === true,
+			'the reason-change tick really ran: '.json_encode($tick));
+		$changed = array();
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, $hash) !== false
+				&& strpos($line, 'owned-paths-unknown') !== false)
+				$changed[] = $line;
+		$this->assertEquals(1, count($changed),
+			'a changed reason is reported immediately rather than inheriting the'
+				.' silence of the one before it: '.json_encode(FileUtil::$log));
+		$this->assertTrue(is_file($payload),
+			'and the payload is still retained under the new reason');
+	}
+
+	/**
+	 * The cleanup half of the same rule, over repeated ticks.
+	 *
+	 * manifestLog()'s own comment calls the payload and cleanup retentions one
+	 * rule; the case above covers the payload half. This covers the other, and it
+	 * is the worse of the two to leave repeating: 'unreadable-manifest' is healed
+	 * by no retry and pruned by nothing, so the line stood for the life of the
+	 * daemon, and before this it was not even classified.
+	 */
+	public function testAnUnchangedCleanupRetentionIsAlsoReportedOncePerCondition()
+	{
+		$this->reset();
+		$invariant = 'a cleanup job retained for an unchanged reason is reported'
+			.' once, not once per tick, and is classified when it is';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('B');
+		// A cleanup artifact nothing can read. The name is the one
+		// erasedataParseCollectorCandidate() accepts: <hash>.cleanup.<digits>.<token>.
+		file_put_contents($queue.'/'.$hash.'.cleanup.1.abcdef.list', "garbage\n");
+
+		$seen = array();
+		foreach(array('first', 'second', 'third') as $which)
+		{
+			FileUtil::$log = array();
+			$tick = erasedataDrainWorkerRun($this->dependencies());
+			$this->assertTrue(is_array($tick),
+				'the '.$which.' tick really ran: '.json_encode($tick));
+			$lines = array();
+			foreach(FileUtil::$log as $line)
+				if(strpos($line, 'cleanup-retained') !== false)
+					$lines[] = $line;
+			$seen[$which] = $lines;
+		}
+		$this->assertEquals(1, count($seen['first']),
+			'the first tick classifies the cleanup retention exactly once: '
+				.json_encode($seen['first']));
+		$this->assertTrue(count($seen['first']) === 1
+			&& strpos($seen['first'][0], $hash) !== false
+			&& strpos($seen['first'][0], 'consequence=') !== false,
+			'and names its hash and its consequence rather than merely happening: '
+				.json_encode($seen['first']));
+		$this->assertEquals(0, count($seen['second']),
+			'the second tick repeats nothing: '.json_encode($seen['second']));
+		$this->assertEquals(0, count($seen['third']),
+			'nor does the third: '.json_encode($seen['third']));
+		foreach($seen['first'] as $line)
+			$this->assertTrue(strpos($line, $queue) === false,
+				'and no cleanup diagnostic leaks the settings root');
+	}
+
+	/**
+	 * The ordinary schedule does not report payload retention -- the drain does.
+	 *
+	 * Two schedules run the same collector with opposite lifetimes. The ordinary
+	 * one is registered unconditionally at plugin init and fires every
+	 * $garbageCheckInterval for ever, in a fresh process each time; the drain is
+	 * armed only while an obligation exists and retired when it does not. A
+	 * retained published manifest classifies as 'final' and keeps the retirement
+	 * scan non-empty, so it keeps the drain alive exactly as long as there is
+	 * something to say. Reporting from the ordinary pass therefore cannot be
+	 * bounded by anything -- measured before this: the same line on every one of
+	 * three alternating cycles -- while reporting from the drain is bounded by
+	 * the condition itself.
+	 */
+	public function testTheOrdinaryCollectorLeavesPayloadRetentionToTheDrain()
+	{
+		$this->reset();
+		$invariant = 'the always-on collector schedule reports no payload'
+			.' retention; the drain, which exists because the obligation does,'
+			.' reports it once per condition';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$payload = $this->dir.'/ordinary-retained.bin';
+		file_put_contents($payload, 'payload-bytes-nobody-may-log');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('files' => array($payload), 'base' => $payload, 'multi' => false), 1);
+		$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+		$this->assertTrue(is_array($staged), 'the manifest stages');
+		$this->armQueue($queue, $generation, array($hash => $staged['path']),
+			'published');
+		$this->assertTrue(
+			ErasedataManifestCodec::publishStaging($staged['path'], $hash),
+			'and publishes, so both schedules walk it');
+		$this->probe(true, false, array());
+
+		// Three cycles, each running the ordinary collector and then the drain,
+		// exactly as the two schedules do beside each other.
+		$ordinary = array();
+		$drain = array();
+		foreach(array(1, 2, 3) as $cycle)
+		{
+			FileUtil::$log = array();
+			// The production wiring of the ordinary schedule, from
+			// plugins/erasedata/update.php: no sink, no drain state, the live
+			// seam. Anything it says, it says on every one of these cycles.
+			$service = erasedataCollectorService(new ErasedataFilesystemOps());
+			$service->run($queue);
+			$ordinary[$cycle] = FileUtil::$log;
+			FileUtil::$log = array();
+			erasedataDrainWorkerRun($this->dependencies());
+			$lines = array();
+			foreach(FileUtil::$log as $line)
+				if(strpos($line, 'rpc-unknown') !== false)
+					$lines[] = $line;
+			$drain[$cycle] = $lines;
+		}
+		foreach(array(1, 2, 3) as $cycle)
+			$this->assertEquals(0, count($ordinary[$cycle]),
+				'the ordinary pass says nothing about retention on cycle '.$cycle
+					.': '.json_encode($ordinary[$cycle]));
+		$this->assertEquals(1, count($drain[1]),
+			'the drain classifies it once: '.json_encode($drain[1]));
+		$this->assertEquals(0, count($drain[2]),
+			'and not again on cycle 2: '.json_encode($drain[2]));
+		$this->assertEquals(0, count($drain[3]),
+			'nor on cycle 3: '.json_encode($drain[3]));
+		$this->assertTrue(is_file($payload),
+			'and the payload is retained throughout, which is why it kept saying so');
+	}
+
+	/**
+	 * The diagnostic memory covers the whole queue the journal admits.
+	 *
+	 * The memory is what keeps an unchanged condition from being reported again
+	 * on the next tick, and the drain fires every ERASEDATA_DRAIN_INTERVAL for as
+	 * long as an obligation is outstanding. A generation whose digest does not
+	 * fit is therefore a generation reported for ever. The cap used to be 32
+	 * against a journal of ERASEDATA_DRAIN_MAX_JOURNAL, so the bound held for the
+	 * first 32 generations and silently stopped holding for the rest -- measured
+	 * at 33 admitted generations, the 33rd repeated verbatim on every tick.
+	 *
+	 * This pins the relationship, not the number: whatever the journal admits,
+	 * the memory must be able to describe, and the named groups must survive a
+	 * truncation because a generation key sorts before every letter.
+	 */
+	public function testTheDiagnosticMemoryCoversEveryGenerationTheJournalAdmits()
+	{
+		$this->reset();
+		// The UNION, not either set. A tick's tasks come from the pending
+		// projection and from the carried journal, and the two are capped
+		// separately: a published final manifest leaves the pending projection
+		// while its unfinished journal record still yields a task, so the two
+		// sets are disjoint in the worst case and the bound is their sum.
+		// Measured before this: 10 journal generations and 4095 marker-only ones
+		// gave 4105 tasks against a cap of 4103, and the four that did not fit
+		// repeated verbatim on every tick.
+		$union = ERASEDATA_PENDING_MAX_GENERATIONS + ERASEDATA_DRAIN_MAX_JOURNAL;
+		$this->assertTrue(ERASEDATA_DRAIN_MAX_DIAGNOSTICS > $union,
+			'the memory describes the whole union of admissible tasks: '
+				.ERASEDATA_DRAIN_MAX_DIAGNOSTICS.' vs '.$union);
+
+		// One digest per task the union can hold, plus the named groups, against
+		// the state ceiling. 57 bytes is a 16-hex key, a space and a sha1.
+		$worst = ($union + 8) * 57;
+		$this->assertTrue($worst < ERASEDATA_DRAIN_STATE_MAX_BYTES,
+			'and a full memory still fits the state: '.$worst.' vs '
+				.ERASEDATA_DRAIN_STATE_MAX_BYTES);
+
+		// A memory deeper than the old cap survives whole, and the named groups
+		// survive with it. A generation key is 16 lowercase hex and sorts before
+		// every letter, so a plain sort put the named groups last and truncation
+		// took exactly the ones that describe the tick as a whole.
+		$memory = array();
+		for($index = 1; $index <= 64; $index++)
+			$memory[sprintf('%016x', $index)] = sha1('generation-'.$index);
+		foreach(array('tick', 'retire', 'manifest', 'cleanup') as $named)
+			$memory[$named] = sha1('group-'.$named);
+		$lines = erasedataDrainReportLines($memory);
+		$this->assertEquals(68, count($lines),
+			'every entry is kept, not the first 32: '.count($lines));
+		$kept = array();
+		foreach($lines as $line)
+			$kept[substr($line, 0, strpos($line, ' '))] = true;
+		foreach(array('tick', 'retire', 'manifest', 'cleanup') as $named)
+			$this->assertTrue(isset($kept[$named]),
+				'the named group '.$named.' survives: '.json_encode(array_keys($kept)));
+
+		// And when a truncation does happen, it takes generations rather than the
+		// groups that describe the tick.
+		$overflow = array();
+		for($index = 1; $index <= ERASEDATA_DRAIN_MAX_DIAGNOSTICS + 16; $index++)
+			$overflow[sprintf('%016x', $index)] = sha1('overflow-'.$index);
+		$overflow['tick'] = sha1('group-tick');
+		$overflow['retire'] = sha1('group-retire');
+		$truncated = erasedataDrainReportLines($overflow);
+		$this->assertEquals(ERASEDATA_DRAIN_MAX_DIAGNOSTICS, count($truncated),
+			'the cap is still a cap: '.count($truncated));
+		$keptNames = array();
+		foreach($truncated as $line)
+			$keptNames[substr($line, 0, strpos($line, ' '))] = true;
+		$this->assertTrue(isset($keptNames['tick']) && isset($keptNames['retire']),
+			'and the named groups are what it keeps, not what it drops');
+	}
+
+	/**
+	 * A publication refusal is reported by whoever classifies it, once.
+	 *
+	 * ErasedataManifestCodec::publishStaging() writes its own unclassified line
+	 * on failure and has no memory of any kind, while the drain retries a
+	 * retained staging on every tick -- so that line stood on every one of them,
+	 * about 17k a day for a single obstacle, beside the classified note that was
+	 * already deduplicated. The codec now stays quiet for callers that classify
+	 * the refusal themselves, and says it for callers that would otherwise say
+	 * nothing.
+	 */
+	public function testAPublicationRefusalIsReportedByOneVoiceNotTwo()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$queue = $this->queuePath();
+		$staging = $queue.'/'.$hash.'.0000000000000001.7.tmp';
+		file_put_contents($staging, 'staged-bytes');
+		// A directory standing on the final name refuses the rename for every
+		// user, root included, so this case does not depend on permissions.
+		@mkdir($queue.'/'.$hash.'.0000000000000001.7.list');
+
+		FileUtil::$log = array();
+		$this->assertEquals(false,
+			ErasedataManifestCodec::publishStaging($staging, $hash, null, false),
+			'the publication really is refused');
+		$this->assertEquals(0, count(FileUtil::$log),
+			'and a caller that classifies it hears nothing from the codec: '
+				.json_encode(FileUtil::$log));
+
+		FileUtil::$log = array();
+		$this->assertEquals(false,
+			ErasedataManifestCodec::publishStaging($staging, $hash),
+			'the same refusal, for a caller that says nothing of its own');
+		$this->assertEquals(1, count(FileUtil::$log),
+			'is still reported, because silence there would lose it entirely: '
+				.json_encode(FileUtil::$log));
+		$this->assertTrue(strpos(FileUtil::$log[0], $hash) !== false,
+			'and the line names the hash it is about: '.FileUtil::$log[0]);
+		$this->assertTrue(is_file($staging),
+			'the staged bytes are retained either way');
+	}
+
+	public function testDiagnosticsAreUnconditionalBoundedClassifiedAndLeakNothing()
+	{
+		$this->reset();
+		$invariant = 'diagnostics are unconditional, bounded and classified per'
+			.' physical job and generation: canonical hash plus reason plus'
+			.' consequence, and never a raw path, settings root, manifest byte,'
+			.' hash list or remote text';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$staging = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+		@file_put_contents($staging,
+			"secret-manifest-bytes-should-never-be-logged\n");
+		// Armed and bound, so the lines below are the ones the pass really
+		// produces rather than the two a `generation-unarmed` refusal produces.
+		$this->armQueue($queue, $generation, array($hash => $staging));
+		$this->probe(true, true, array(), 'rTorrent said something private');
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(count(FileUtil::$log) > 0,
+			'the worker reports its outcome without needing debug to be on');
+		$this->assertTrue(count(FileUtil::$log) < 64,
+			'diagnostics stay bounded: '.count(FileUtil::$log).' lines');
+		foreach(FileUtil::$log as $line)
+		{
+			$this->assertTrue(strpos($line, $queue) === false,
+				'no diagnostic leaks the settings root or a raw path');
+			$this->assertTrue(strpos($line, 'secret-manifest-bytes') === false,
+				'no diagnostic leaks manifest bytes');
+			$this->assertTrue(strpos($line, 'rTorrent said something private') === false,
+				'no diagnostic leaks remote text');
+		}
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, $hash) !== false && strpos($line, '0000000000000001') !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'each diagnostic names its canonical hash and its generation');
+		// Bounded over TIME, not only per tick. The drain schedule fires every
+		// ERASEDATA_DRAIN_INTERVAL seconds and by design never gives up, so one
+		// obligation nothing can discharge would otherwise write these same lines
+		// into the ruTorrent log for the life of the installation.
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(0, count(FileUtil::$log),
+			'a repeat of the same unchanged unresolvable job is not reported again');
+		// And nothing is ever suppressed that is not identical: the moment the
+		// classification changes it is reported at once, on the same tick.
+		FileUtil::$log = array();
+		$this->probe(true, false, array($hash));
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(count(FileUtil::$log) > 0,
+			'while a CHANGED classification is reported at once, never suppressed');
+		$changed = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, $hash) !== false && strpos($line, $generation) !== false)
+				$changed = true;
+		$this->assertTrue($changed,
+			'and the changed report still names its hash and its generation');
+	}
+
+	// The producer/worker split, which nothing else in this file pinned.
+	//
+	// A `prepared` journal record is the PRODUCER's own transaction: after its
+	// acknowledgement it re-takes the locks, revalidates the complete binding
+	// and only then writes `erase-started` and erases. The guarded worker can
+	// only reach a `prepared` record with that generation's hash locks taken,
+	// and a producer that can still reach its own erase holds those from
+	// admission to the end -- so reaching one proves the producer is gone. The
+	// worker then CANCELS it, exactly and identity bound, and erases nothing:
+	// completing somebody else's prepared obligation into a deletion is a
+	// deletion the producer's own revalidation never approved.
+	public function testTheWorkerCancelsAnOrphanedPreparedGenerationAndNeverErasesIt()
+	{
+		$this->reset();
+		$invariant = 'the worker never completes a prepared obligation into an'
+			.' erase: an orphaned prepared generation is cancelled exactly,'
+			.' identity bound, and a later generation is never touched';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataWriteDrainState()',
+			'erasedataReadDrainState()', 'erasedataPendingObligations()',
+			'erasedataCollectPaths()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		// The orphan holds the real manifest its producer staged, so a worker
+		// that treated `prepared` as its own would pass every gate below the
+		// phase -- identity, decoded hash and decoded force -- and really erase.
+		$paths = erasedataCollectPaths($hash);
+		$content = ErasedataManifestCodec::encode($hash, $paths, 1);
+		$this->assertTrue(is_string($content) && $content !== '',
+			'the orphan really holds the manifest its producer staged');
+		$staging = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+		@file_put_contents($staging, is_string($content) ? $content : '');
+		// Residue this cancellation does not own, under the same hash.
+		$foreign = $queue.'/'.$hash.'.ffffffffffffffff.42.tmp';
+		@file_put_contents($foreign, "a later generation's staging\n");
+		$unrelated = $queue.'/not-a-candidate-at-all';
+		@file_put_contents($unrelated, "a file nobody parses\n");
+		$this->armQueue($queue, $generation, array($hash => $staging), 'prepared');
+		$this->eraseOk();
+		// rTorrent still holds it and answers every command, so the PHASE is
+		// the only thing between this tick and a destructive call.
+		$this->probe(true, false, array($hash));
+		FileUtil::$log = array();
+		$outcome = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'a prepared obligation is never completed into an erase by the worker');
+		$this->assertEquals(array(), glob($queue.'/'.$hash.'.'.$generation.'.*.list'),
+			'and nothing is published under it');
+		$this->assertTrue(!file_exists($staging),
+			'the orphaned prepared staging is cancelled, not left to rot');
+		$this->assertEquals(array(), glob($queue.'/'.$hash.'.'.$generation.'.pending'),
+			'and so is the marker that recorded the obligation');
+		$this->assertTrue(is_file($foreign) && is_file($unrelated),
+			'while a later generation and an unrelated file are untouched');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && !isset($after['journal'][$generation]),
+			'the cancelled generation leaves no journal record behind');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && count($obligations) === 0,
+			'and the queue really is drained rather than left carrying it');
+		$this->assertTrue(is_array($outcome) && isset($outcome['cancelled'])
+			&& $outcome['cancelled'] === 1,
+			'the tick reports exactly the one cancellation it made');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'prepared-cancelled') !== false
+				&& strpos($line, $hash) !== false
+				&& strpos($line, $generation) !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'and says so against its canonical hash and its exact generation');
+	}
+
+	// A published manifest is a licence to delete a payload, so it must never
+	// become final for a download that was not erased.
+	//
+	// The drain protocol stages as <hash>.<generation>.<token>.tmp, and the
+	// generation-aware candidate alternative made exactly that name an ordinary
+	// legacy remove-payload candidate. An ordinary periodic collector pass
+	// therefore renamed a LIVE retained T0 staging object to a final
+	// <hash>.<generation>.<token>.list -- while rTorrent still held the
+	// download. From that moment erasedataPublishedGenerations() reported the
+	// generation as published, which hid the hash from BOTH obligation readers:
+	// the download was never erased, its marker was orphaned for ever, and a
+	// payload manifest stood for something still live.
+	public function testThePeriodicCollectorNeverPromotesABoundDrainStaging()
+	{
+		$this->reset();
+		$invariant = 'a retained staging object is never promoted to a final'
+			.' manifest by the periodic collector, and its hash stays visible to'
+			.' both obligation readers until it is genuinely discharged';
+		if(!$this->requireApi(array('erasedataParseCollectorCandidate()',
+			'erasedataBuildCollectorIndex()', 'erasedataDrainWorkerJobs()',
+			'erasedataPendingObligations()', 'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$staging = $queue.'/'.$hash.'.'.$generation.'.4242.abc123.tmp';
+		@file_put_contents($staging, "a retained T0 staging object\n");
+		$this->assertEquals(false,
+			erasedataParseCollectorCandidate($queue, basename($staging)),
+			'a generation-bound staging object is not a collector candidate at all');
+		// The shape the legacy alternative exists for is untouched: an
+		// ungenerationed staging object still IS the collector's to promote.
+		$legacy = $queue.'/'.$hash.'.4242.abc123.tmp';
+		@file_put_contents($legacy, "a legacy staging object\n");
+		$candidate = erasedataParseCollectorCandidate($queue, basename($legacy));
+		$this->assertTrue(is_array($candidate) && isset($candidate['operation'])
+			&& $candidate['operation'] === ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD,
+			'while an ungenerationed legacy staging object still is one');
+		// And the PUBLISHED form of a generation-bound job stays a candidate:
+		// deleting the payload of something really erased is the collector's
+		// own work, and refusing that would strand every drained manifest.
+		$other = $this->hash('B');
+		$final = $queue.'/'.$other.'.'.$generation.'.4242.abc123.list';
+		@file_put_contents($final, "a published manifest\n");
+		$published = erasedataParseCollectorCandidate($queue, basename($final));
+		$this->assertTrue(is_array($published) && isset($published['operation'])
+			&& $published['operation'] === ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD,
+			'and the final manifest of a real erase still is a candidate');
+		// The index the periodic pass actually walks is what promotes, so the
+		// exclusion has to hold there and not only in the parser.
+		$index = erasedataBuildCollectorIndex($queue, $hash);
+		$names = array();
+		if(is_array($index) && isset($index[$hash]['legacy'])
+			&& is_array($index[$hash]['legacy']))
+			foreach($index[$hash]['legacy'] as $item)
+				$names[] = basename($item['path']);
+		$this->assertTrue(!in_array(basename($staging), $names, true),
+			'the collector index never offers a bound staging object for promotion');
+		$this->assertTrue(in_array(basename($legacy), $names, true),
+			'while the legacy object the alternative exists for is still indexed');
+		// Both obligation readers still see the hash, which is the half of this
+		// the promotion used to destroy.
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation])
+			&& in_array($hash, $obligations[$generation]['hashes'], true),
+			'the marker half of the obligation is still visible');
+		$state = $this->armQueue($queue, $generation, array($hash => $staging));
+		$jobs = erasedataDrainWorkerJobs($queue, $state,
+			is_array($obligations) ? $obligations : array());
+		$this->assertTrue(isset($jobs[$generation]['hashes'])
+			&& in_array($hash, $jobs[$generation]['hashes'], true),
+			'and so is the journal half');
+		// Even with a final manifest of that exact generation standing beside a
+		// record that is not `published`, the journal half stays visible: the
+		// record's PHASE decides whether it is finished, never a `.list`.
+		@file_put_contents($queue.'/'.$hash.'.'.$generation.'.4242.abc123.list',
+			"a manifest somebody else published\n");
+		$jobs = erasedataDrainWorkerJobs($queue, $state, array());
+		$this->assertTrue(isset($jobs[$generation]['hashes'])
+			&& in_array($hash, $jobs[$generation]['hashes'], true),
+			'a final manifest never hides an unfinished record from the worker');
+	}
+
+	// Invariant 13 at the worker's door: markers that disagree among themselves
+	// are corruption, and a journal record may never resolve the disagreement.
+	//
+	// erasedataPendingObligations() signals exactly this by setting the group
+	// force to `false`, and the guard used to skip its own refusal in that one
+	// case, so a force-1 request was erased and published carrying `"force":2`.
+	// Force 2 is whole-base-path deletion: the $force_delete branch of
+	// parseOneItem() in collector.php removes the base directory through
+	// erasedataCompleteForcedDirectory(). So a member whose marker asked only
+	// for its own files could have its base directory deleted. A disagreement
+	// must never resolve, least of all upward.
+	public function testDisagreeingMarkerForcesAreRefusedEvenWithAJournalRecord()
+	{
+		$this->reset();
+		$invariant = 'a generation whose markers disagree on force is refused'
+			.' whether or not a journal record exists: nothing is erased,'
+			.' nothing is published and no force is resolved upward';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataWriteDrainState()',
+			'erasedataPendingObligations()', 'erasedataCollectPaths()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$first = $this->hash('A');
+		$second = $this->hash('B');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $first, 1, $generation);
+		erasedataQueueRequest($queue, $second, 2, $generation);
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation])
+			&& $obligations[$generation]['force'] === false,
+			'the queue really reports the disagreement as a false group force');
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$staging = array();
+		foreach(array($first, $second) as $hash)
+		{
+			// Staged as the JOURNAL claims -- force 2 -- so every gate below
+			// the force guard passes and only the guard itself can refuse.
+			$content = ErasedataManifestCodec::encode($hash,
+				erasedataCollectPaths($hash), 2);
+			$staging[$hash] = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+			@file_put_contents($staging[$hash], is_string($content) ? $content : '');
+		}
+		$markers = array();
+		foreach(array($first, $second) as $hash)
+			$markers[$hash] = @file_get_contents(
+				$queue.'/'.$hash.'.'.$generation.'.pending');
+		$this->armQueue($queue, $generation, $staging, 'erase-started', 2);
+		$this->eraseOk();
+		// rTorrent still holds the force-1 member and answers for it, so the
+		// disagreement is the only thing between this tick and deleting a whole
+		// base path under a force nobody asked for.
+		$this->probe(true, false, array($first));
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'a force nobody agreed on erases nothing');
+		$this->assertEquals(array(), glob($queue.'/*.list'),
+			'and publishes nothing under it');
+		foreach(array($first, $second) as $hash)
+			$this->assertEquals($markers[$hash],
+				@file_get_contents($queue.'/'.$hash.'.'.$generation.'.pending'),
+				'every marker is retained byte for byte, including the force-1 one');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'force-disagreement') !== false
+				&& strpos($line, $generation) !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'and the refusal is classified against the generation it refused');
+	}
+
+	public function testAStaleWorkerOwnerIsClassifiedWithoutBreakingItsLock()
+	{
+		$this->reset();
+		$invariant = 'a hung worker owner yields a bounded classified stale-worker'
+			.' consequence; it never force-breaks the flock and never consumes'
+			.' the jobs the owner holds';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		erasedataQueueRequest($queue, $hash, 1, '0000000000000001');
+		$staging = $queue.'/'.$hash.'.0000000000000001.1.tmp';
+		@file_put_contents($staging, "staged\n");
+		$holder = ErasedataTestProcess::start(
+			erasedataTestLockHolderCommand($queue.'/.drain-worker.lock', 4.0));
+		$this->assertTrue($holder->started(), 'the hung owner really starts');
+		$acquired = '';
+		for($wait = 0; $wait < 200 && $acquired === ''; $wait++)
+		{
+			$holder->pump();
+			if(strpos($holder->out, 'held') !== false)
+				$acquired = 'held';
+			else
+				usleep(20000);
+		}
+		$this->assertEquals('held', $acquired, 'and really holds the worker lock');
+		FileUtil::$log = array();
+		$began = microtime(true);
+		erasedataDrainWorkerRun($this->dependencies());
+		$took = microtime(true) - $began;
+		$holder->reap();
+		$this->assertTrue($took < 3.0,
+			'worker admission is nonblocking: took '.round($took, 2).'s');
+		$this->assertTrue(is_file($staging),
+			'the hung owner\'s job is not consumed by the competitor');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and nothing is erased behind the owner\'s back');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'worker-busy') !== false || strpos($line, 'stale-worker') !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'the refusal is a bounded classified consequence rather than silence');
+	}
+
+	// Invariant 5 at the child's own door, and invariant 3's exactness with it.
+	//
+	// Nothing else in this file fails when a child acknowledges a generation it
+	// was not started for, or acknowledges on another user's queue: every other
+	// worker case runs on a queue this user owns, so a child that ignored the
+	// user binding altogether passed all of them.
+	public function testTheDrainChildRefusesAWrongUserAndAcknowledgesItsExactGeneration()
+	{
+		$this->reset();
+		$invariant = 'a drain child refuses a queue armed for another user --'
+			.' including when its own user is the empty one -- and otherwise'
+			.' acknowledges the EXACT generation the durable state carries,'
+			.' never a computed or remembered one';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '000000000000002a';
+		$state = array(
+			'version' => 1, 'user' => 'somebody-else',
+			'generation' => $generation, 'acknowledged' => '0000000000000000',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the queue really is armed for another user');
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// rTorrent still holds it, so nothing but the user binding stands
+		// between these ticks and a destructive call.
+		$this->probe(true, false, array($hash));
+		FileUtil::$log = array();
+		// (a) The empty user is a real user with a real key, and this queue is
+		// not its queue. It refuses for the mismatch, not for emptiness.
+		$this->assertTrue(erasedataDrainWorkerRun(
+			$this->dependencies(array('user' => ''))) === false,
+			'the empty user refuses a whole tick over somebody else\'s queue');
+		$observed = erasedataReadDrainState($queue);
+		$this->assertEquals('0000000000000000',
+			is_array($observed) && isset($observed['acknowledged'])
+				? $observed['acknowledged'] : null,
+			'and acknowledges nothing');
+		// (b) The wrong user: this queue belongs to somebody else.
+		$this->assertTrue(erasedataDrainWorkerRun($this->dependencies()) === false,
+			'a queue armed for another user refuses the tick');
+		$observed = erasedataReadDrainState($queue);
+		$this->assertEquals('somebody-else',
+			is_array($observed) && isset($observed['user']) ? $observed['user'] : null,
+			'and the other user keeps their queue');
+		$this->assertEquals('0000000000000000',
+			is_array($observed) && isset($observed['acknowledged'])
+				? $observed['acknowledged'] : null,
+			'with no acknowledgement written on their behalf');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'neither refusal admits a single destructive call');
+		$this->assertEquals(1, count(glob($queue.'/'.$hash.'.*.pending')),
+			'and the obligation is retained exactly as it was found');
+		// (c) The right user: the acknowledgement is the exact durable
+		// generation, not the zero it started from and not the next one.
+		$state['user'] = 'rutorrent';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the queue is re-armed for this child\'s own user');
+		erasedataDrainWorkerRun($this->dependencies());
+		$observed = erasedataReadDrainState($queue);
+		$this->assertEquals($generation,
+			is_array($observed) && isset($observed['acknowledged'])
+				? $observed['acknowledged'] : null,
+			'the child acknowledged exactly the generation the state carried');
+	}
+
+	// Invariant 15 at the acknowledgement: an I/O failure there is terminal for
+	// the tick. The acknowledgement is what a blocked producer is waiting for
+	// and it is written BEFORE worker admission, so a child that went on
+	// without it would take the worker lock, walk the queue and erase on a
+	// binding no producer had been released for.
+	public function testAnUnreadableOrUnwritableAcknowledgementAdmitsNoWorkerWork()
+	{
+		$this->reset();
+		$invariant = 'a drain child whose acknowledgement cannot be read back or'
+			.' made durable refuses before worker admission: nothing is erased,'
+			.' nothing is published and every obligation is retained';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataPendingObligations()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		// (a) Present but unreadable is NOT the "never armed" default: a child
+		// that took it for one would arm a second schedule over an obligation
+		// it could not see.
+		@mkdir($queue.'/'.ERASEDATA_DRAIN_STATE_NAME, 0777, true);
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataDrainWorkerRun($this->dependencies()) === false,
+			'an unreadable durable state refuses the tick');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'and erases nothing');
+		$this->assertEquals(array(), glob($queue.'/'.$hash.'.*.list'),
+			'and publishes nothing');
+		$this->assertTrue(count(FileUtil::$log) > 0,
+			'and says so rather than failing silently');
+		@rmdir($queue.'/'.ERASEDATA_DRAIN_STATE_NAME);
+		// (b) A readable state that cannot be republished. The first tick
+		// creates the state and both pass locks, so what the read-only queue
+		// directory takes away below is exactly the ability to WRITE the
+		// acknowledgement, not the ability to open anything.
+		erasedataDrainWorkerRun($this->dependencies());
+		$before = @file_get_contents($queue.'/'.ERASEDATA_DRAIN_STATE_NAME);
+		$this->assertTrue(is_string($before) && $before !== '',
+			'the first tick left a readable durable state to fail on');
+		if(testSkipUnlessPermissionsBite('that an acknowledgement which cannot be'
+			.' made durable refuses the tick, admitting no destructive call and'
+			.' retaining the obligation'))
+			return;
+		@chmod($queue, 0555);
+		FileUtil::$log = array();
+		$refused = erasedataDrainWorkerRun($this->dependencies());
+		@chmod($queue, 0777);
+		$this->assertTrue($refused === false,
+			'an acknowledgement that cannot be made durable refuses the tick');
+		$this->assertEquals($before,
+			@file_get_contents($queue.'/'.ERASEDATA_DRAIN_STATE_NAME),
+			'and leaves the durable state exactly as it found it');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'no destructive call is admitted on a failed acknowledgement');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$generation]),
+			'and the obligation is retained for a later tick');
+	}
+
+	// Invariant 3 from the worker's side: the generation is the binding, and a
+	// marker naming one this queue never armed binds nothing at all. A worker
+	// that trusted the marker's own generation would erase on a schedule that
+	// belongs to a state file somebody lost or replaced.
+	public function testAStaleScheduleGenerationNeverAdmitsDestructiveWorkerWork()
+	{
+		$this->reset();
+		$invariant = 'a marker naming a generation the durable state never armed'
+			.' is retained and classified: nothing is staged, nothing is erased'
+			.' and nothing is deleted on its behalf';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataWriteDrainState()',
+			'erasedataPendingObligations()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$stale = '00000000000000ff';
+		$this->assertTrue(erasedataWriteDrainState($queue, array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000004', 'acknowledged' => '0000000000000004',
+			'phase' => 'armed', 'journal' => array(),
+			'diagnostics' => array())) === true,
+			'the queue carries a durable generation of its own');
+		erasedataQueueRequest($queue, $hash, 1, $stale);
+		$marker = @file_get_contents($queue.'/'.$hash.'.'.$stale.'.pending');
+		$this->assertTrue(is_string($marker) && $marker !== '',
+			'the stale obligation is really recorded');
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		// rTorrent still holds it, so the generation is the only thing between
+		// this tick and a destructive call.
+		$this->probe(true, false, array($hash));
+		FileUtil::$log = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'a generation the state never armed erases nothing');
+		$this->assertEquals(array(), glob($queue.'/'.$hash.'.'.$stale.'.*.tmp'),
+			'and stages nothing under it');
+		$this->assertEquals($marker,
+			@file_get_contents($queue.'/'.$hash.'.'.$stale.'.pending'),
+			'the marker is left byte for byte where it was found');
+		$obligations = erasedataPendingObligations($queue);
+		$this->assertTrue(is_array($obligations) && isset($obligations[$stale]),
+			'the obligation is retained rather than resolved');
+		$classified = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'generation-unarmed') !== false
+				&& strpos($line, $stale) !== false)
+				$classified = true;
+		$this->assertTrue($classified,
+			'and the refusal names the generation it could not account for');
+	}
+
+	// Invariant 7's second half, which nothing else in this file could catch.
+	//
+	// Every other case has exactly one actor that wants the state lock, so an
+	// implementation that took the state lock FIRST and then blocked on a hash
+	// lock while still holding it passed all of them: the deadlock it creates
+	// needs a second actor to become visible. Here a real competitor owns the
+	// hash lock for four seconds, the real guarded child blocks on it, and a
+	// third real process then asks for the state lock. If the worker were
+	// holding it, that process would wait out the whole hash-lock hold -- and
+	// in production the process waiting would be the producer, which takes the
+	// hash locks first, so the two would deadlock outright rather than merely
+	// stall.
+	public function testTheDrainWorkerNeverHoldsTheStateLockWhileWaitingForAHashLock()
+	{
+		$this->reset();
+		$invariant = 'while the drain worker blocks on a hash lock it holds no'
+			.' state lock, so another actor takes the state lock at once';
+		$mirror = $this->mirror('state-lock-order');
+		$mirror->scriptRpc($this->drainScript());
+		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$producer->wait(30);
+		$producer->reap();
+		$queued = glob($mirror->listPath.'/*.pending');
+		$this->assertTrue(count($queued) > 0,
+			'the producer left an obligation for the worker to block on');
+		$hold = 4.0;
+		$hashHolder = ErasedataTestProcess::start(erasedataTestLockHolderCommand(
+			$mirror->listPath.'/'.$this->hash('A').'.lock', $hold));
+		$this->assertTrue($hashHolder->started(), 'the hash-lock competitor starts');
+		$this->waitForLock($hashHolder, 'held hash lock');
+		$heldAt = microtime(true);
+		$worker = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		// Long enough for the child to acknowledge and reach the hash lock, and
+		// far short of the hold, so the observation below really lands inside
+		// the window where the worker is waiting.
+		usleep(800000);
+		$began = microtime(true);
+		$stateHolder = ErasedataTestProcess::start(erasedataTestLockHolderCommand(
+			$mirror->listPath.'/'.ERASEDATA_DRAIN_STATE_LOCK_NAME, 0.2));
+		$took = null;
+		for($wait = 0; $wait < 200 && $took === null; $wait++)
+		{
+			$stateHolder->pump();
+			if(strpos($stateHolder->out, 'held') !== false)
+				$took = microtime(true) - $began;
+			else
+				usleep(20000);
+		}
+		$stillWaiting = (microtime(true) - $heldAt) < $hold;
+		$this->runChildren(array('hash' => $hashHolder, 'worker' => $worker,
+			'state' => $stateHolder), 40, $invariant);
+		$this->assertTrue($stillWaiting,
+			'the observation really happened while the hash lock was still held');
+		$this->assertTrue($took !== null && $took < 1.5,
+			'the state lock was free while the worker waited for the hash lock ('
+				.($took === null ? 'never taken' : round($took, 2).'s').')');
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+			'and the blocked worker had already acknowledged before it waited');
+	}
+
+	// -- conservative restart, rearm and retirement (task 5) ----------------
+
+	public function testRetirementRequiresAStableGenerationAndAProvenEmptyScan()
+	{
+		$this->reset();
+		$invariant = 'retirement requires a stable generation plus a fresh'
+			.' proven-empty scan of pending, staging, final, journal, malformed,'
+			.' residue and unknown candidates';
+		// Reachability, the same pin the worker carries: an internal runner
+		// nothing in the shipped plugin calls is dead code, however completely
+		// it is implemented and however thoroughly the tests call it directly.
+		$callers = $this->productionCallers('erasedataRetirementScan($');
+		$this->assertTrue(count($callers) > 0,
+			'a production caller of erasedataRetirementScan() exists in the'
+				.' shipped plugin, not only in the tests');
+		if(!$this->requireApi(array('erasedataRetirementScan()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue(is_array($scan) && isset($scan['empty']) && $scan['empty'] === true,
+			'an empty queue scans as proven empty');
+		$candidates = array(
+			'pending' => $this->hash('A').'.0000000000000001.pending',
+			'staging' => $this->hash('B').'.0000000000000001.1.tmp',
+			'final' => $this->hash('C').'.0000000000000001.1.list',
+			'malformed' => $this->hash('D').'.not-a-generation.list',
+			'unknown' => 'something-nobody-parses',
+			// Staging of an interrupted durable write: erasedataWriteDurableFile()
+			// names it .<final name>.<token>.tmp, so it is dot-prefixed and
+			// outside the manifest grammar entirely.
+			'residue' => '.'.$this->hash('E').'.0000000000000001.1.list.abc123.tmp',
+		);
+		foreach($candidates as $class => $name)
+		{
+			// scandir, not glob: glob() does not match a dot-prefixed name, so
+			// a glob cleanup would leave the residue entry standing for every
+			// case after it and this loop would stop resetting its own fixture.
+			foreach($this->queueEntries() as $stale)
+				@unlink($queue.'/'.$stale);
+			@file_put_contents($queue.'/'.$name, "x\n");
+			$scan = erasedataRetirementScan($this->dependencies());
+			$this->assertTrue(is_array($scan) && isset($scan['empty'])
+				&& $scan['empty'] === false,
+				'a surviving '.$class.' candidate refuses to scan as empty');
+			$this->assertTrue(is_array($scan) && isset($scan['classes'][$class])
+				&& $scan['classes'][$class] >= 1,
+				'and is recognised as the '.$class.' class');
+		}
+		foreach($this->queueEntries() as $stale)
+			@unlink($queue.'/'.$stale);
+		@mkdir($queue.'/unreadable', 0700, true);
+		@file_put_contents($queue.'/unreadable/'.$this->hash('E').'.0000000000000001.pending', 'x');
+		@chmod($queue.'/unreadable', 0500);
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue(is_array($scan) && isset($scan['empty']) && $scan['empty'] === false,
+			'read or parse uncertainty means retain and diagnose, not declare empty');
+		@chmod($queue.'/unreadable', 0700);
+	}
+
+	// The other two halves of invariant 10, which the scan-only case above
+	// leaves to an implementation's discretion.
+	//
+	// "Provably empty" and "stable generation" are INDEPENDENT licences and
+	// each one alone makes a retirement wrong. A queue whose newest admission
+	// no started child has picked up yet holds no file and is about to; a queue
+	// nobody could read is not empty, it is unknown. Nothing else in this file
+	// fails when either guard is deleted: every other retirement case is
+	// already stable, readable and non-empty.
+	public function testRetirementRefusesEveryUncertaintyAndEveryUnacknowledgedGeneration()
+	{
+		$this->reset();
+		$invariant = 'retirement refuses a generation no started child has'
+			.' acknowledged, a registration still in flight, a queue directory'
+			.' it could not read and a durable state it could not parse, and'
+			.' sends no schedule_remove for any of them';
+		if(!$this->requireApi(array('erasedataRetirementRun()',
+			'erasedataRetirementScan()', 'erasedataWriteDrainState()',
+			'erasedataReadDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		// (a) A queue nobody ever armed. It is empty, its default state is
+		// stable and disarmed, and every other guard in this function is
+		// satisfied by it -- so without the one that asks whether a generation
+		// was ever admitted, a tick that starts a hair before a producer would
+		// take away the schedule that producer is about to make. The paired
+		// subprocess race cannot evidence this: the drain child never wins the
+		// start by enough for it to show, which is exactly why it is pinned
+		// here in process instead.
+		$this->assertEquals(array(), $this->queueEntries(),
+			'the queue was never armed and holds nothing at all');
+		$this->assertTrue($this->retire() === false,
+			'a queue no generation was ever admitted on retires nothing');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and sends no schedule_remove for a schedule nobody ever registered');
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000005', 'acknowledged' => '0000000000000004',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		// (b) The queue holds no candidate at all, so the acknowledgement is
+		// the ONLY thing between this call and a removal.
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the queue carries an admission no child has acknowledged yet');
+		$this->assertTrue($this->retire() === false,
+			'a generation no started guarded child has acknowledged never retires');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and no schedule_remove is sent for it');
+		$after = erasedataReadDrainState($queue);
+		$this->assertEquals('armed',
+			is_array($after) && isset($after['phase']) ? $after['phase'] : null,
+			'and the durable arm is left exactly as it was found');
+		// (c) A registration still in flight is the same admission one step
+		// earlier: the producer has not even been told whether it has a
+		// schedule yet.
+		$state['acknowledged'] = '0000000000000005';
+		$state['phase'] = 'arming';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the queue carries a registration still in flight');
+		$this->assertTrue($this->retire() === false,
+			'an arm still in flight never retires');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and sends no schedule_remove either');
+		// (d) A durable state nobody can parse. The markers are not the state,
+		// and an unreadable state is not an empty one.
+		$state['phase'] = 'armed';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the queue is stable and drained again');
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue(is_array($scan) && isset($scan['empty'])
+			&& $scan['empty'] === true,
+			'the control files of a drained queue are not candidates');
+		@file_put_contents($queue.'/'.ERASEDATA_DRAIN_STATE_NAME, '{"version":1,"phase":');
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue(is_array($scan) && isset($scan['empty'], $scan['unreadable'])
+			&& $scan['empty'] === false && $scan['unreadable'] === true,
+			'a durable state nobody can parse scans as unknown, never as empty');
+		$this->assertTrue($this->retire() === false,
+			'and retirement refuses on it');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'with no schedule_remove sent on a state it could not read');
+		// (e) A queue directory this process is not allowed to read at all.
+		if(testSkipUnlessPermissionsBite('that a queue directory which cannot be'
+			.' read scans as unknown rather than empty, and that retirement'
+			.' refuses on it instead of sending schedule_remove'))
+			return;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the durable state is restored');
+		@chmod($queue, 0000);
+		$scan = erasedataRetirementScan($this->dependencies());
+		$refused = $this->retire();
+		@chmod($queue, 0777);
+		$this->assertTrue(is_array($scan) && isset($scan['empty'], $scan['unreadable'])
+			&& $scan['empty'] === false && $scan['unreadable'] === true,
+			'a queue directory that cannot be read scans as unknown, never as empty');
+		$this->assertTrue($refused === false,
+			'and retirement refuses on a permission failure rather than declaring it empty');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'with no schedule_remove sent on a queue nothing could read');
+	}
+
+	public function testRetirementWritesSettledThenDisarmedBeforeMappedScheduleRemove()
+	{
+		$this->reset();
+		$invariant = 'durable settled then disarmed are written FIRST; only'
+			.' after both writes succeed is mapped schedule_remove called';
+		$callers = $this->productionCallers('erasedataRetirementRun($');
+		$this->assertTrue(count($callers) > 0,
+			'a production caller of erasedataRetirementRun() exists in the'
+				.' shipped plugin, not only in the tests');
+		if(!$this->requireApi(array('erasedataRetirementRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000004', 'acknowledged' => '0000000000000004',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		erasedataWriteDrainState($queue, $state);
+		$phaseAtRemoval = null;
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0),
+			'callback' => function($commands) use ($queue, &$phaseAtRemoval)
+			{
+				$observed = erasedataReadDrainState($queue);
+				$phaseAtRemoval = is_array($observed) && isset($observed['phase'])
+					? $observed['phase'] : null;
+			});
+		$this->assertTrue($this->retire() === true,
+			'a stable empty generation retires');
+		$this->assertEquals('disarmed', $phaseAtRemoval,
+			'the durable disarmed write happened before schedule_remove was sent');
+		$removals = $this->scheduleRecords('schedule_remove');
+		$this->assertEquals(1, count($removals),
+			'exactly one mapped schedule_remove is sent');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($removals) ? $removals[0]['key'] : null,
+			'and it names the exact drain key, never the periodic collector key');
+	}
+
+	public function testRetirementRefusalIsVisibleRetryableAndSelfHealing()
+	{
+		$this->reset();
+		$invariant = 'a retained, changed or unknown candidate refuses'
+			.' retirement visibly and retryably, and a schedule_remove fault'
+			.' leaves a state every restart converges from';
+		if(!$this->requireApi(array('erasedataRetirementRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$state = array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000004', 'acknowledged' => '0000000000000004',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		erasedataWriteDrainState($queue, $state);
+		erasedataQueueRequest($queue, $this->hash('A'), 1, '0000000000000005');
+		FileUtil::$log = array();
+		$this->assertTrue($this->retire() === false,
+			'a pending obligation refuses retirement');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and no schedule_remove is sent');
+		// Visibility is asserted on the route production really takes.
+		// erasedataRetirementRun() reports nothing itself, by design: the one
+		// production caller, erasedataDrainWorkerRun(), hands its notes to
+		// erasedataDrainReportGroup() under the 'retire' group so a refusal
+		// that has not changed since the last tick stays silent. Reading the
+		// log after calling retirement alone would pin a self-reporting wrapper
+		// that no production path ever took.
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataDrainWorkerRun($this->dependencies()) !== false,
+			'a production tick over the same refusing queue runs to a decision');
+		$visible = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'retire-refused') !== false)
+				$visible = true;
+		$this->assertTrue($visible, 'the refusal is visible rather than silent');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and the tick still sends no schedule_remove');
+		foreach(glob($queue.'/*.pending') as $stale)
+			@unlink($stale);
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'fault' => true,
+			'faultString' => 'refused');
+		$this->assertTrue($this->retire() === false,
+			'a schedule_remove fault is reported as failure');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['phase'])
+			&& $after['phase'] === 'disarmed',
+			'the durable settled/disarmed writes stand, so a later tick can retry the removal');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$this->assertTrue($this->retire() === true,
+			'and the next attempt self-heals');
+	}
+
+	public function testStartupRecoveryRearmsFromDurableStateNotFromMarkersAlone()
+	{
+		$this->reset();
+		$invariant = 'startup recovery inspects the same durable state and all'
+			.' candidate classes as the worker; it never infers safety from'
+			.' *.pending alone, and corrupt state fails closed';
+		$this->sourceHas('init.php', 'erasedataRearmDrainSchedule',
+			'init.php re-arms the drain schedule at startup');
+		if(!$this->requireApi(array('erasedataRearmDrainScheduleRun()',
+			'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		erasedataWriteDrainState($queue, array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000004', 'acknowledged' => '0000000000000003',
+			'phase' => 'armed', 'diagnostics' => array(),
+			'journal' => array('0000000000000004' => array(
+				'phase' => 'prepared', 'force' => 1,
+				'hashes' => array($this->hash('A')),
+				'staging' => array($this->hash('A') => array(
+					'path' => $queue.'/'.$this->hash('A').'.0000000000000004.1.tmp',
+					'dev' => 1, 'ino' => 1))))));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'an unfinished durable obligation re-arms the exact per-user schedule');
+		$registrations = $this->scheduleRecords('schedule');
+		$this->assertEquals(1, count($registrations), 'exactly one registration');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($registrations) ? $registrations[0]['key'] : null,
+			'with the exact per-user drain key');
+		rXMLRPCRequest::$scheduledCommands = array();
+		@file_put_contents($queue.'/.drain-state', '{"version":1,"phase":');
+		@file_put_contents($queue.'/'.$this->hash('B').'.0000000000000009.pending', "x\n");
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === false,
+			'a corrupt or partial state fails closed rather than trusting a marker');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and re-arms nothing on the strength of a *.pending file alone');
+	}
+
+	// The one schedule guard the real-daemon evidence names outright.
+	//
+	// Re-registering an existing key succeeds SILENTLY on rTorrent 0.16.21 and
+	// restarts its countdown (CommandScheduler replaces the entry), and no
+	// return value anywhere reveals that it did. The aligned start resolves most
+	// re-registrations of one key to the same absolute instant, but one made
+	// during the fire second itself resolves a whole slot later, so a producer
+	// stream that re-registered on every request could keep pushing the tick
+	// past the acknowledgement a public door is blocked on, with every call
+	// reporting success.
+	public function testALiveDrainScheduleIsNeverReRegisteredOrPostponed()
+	{
+		$this->reset();
+		$invariant = 'an already armed drain schedule is left exactly as it is:'
+			.' neither a second producer nor startup recovery re-registers it,'
+			.' because a re-registration restarts rTorrent\'s countdown and'
+			.' reports success either way';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataRearmDrainScheduleRun()', 'erasedataWriteDrainState()'),
+			$invariant))
+			return;
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($this->hash('A')));
+		$this->acknowledgeOnRegistration($queue);
+		// (a) The first admission really arms, so what follows is measured
+		// against a schedule that exists rather than against one nobody made.
+		erasedataRemovalAdmissionRun($this->dependencies(), array($this->hash('A')), 1);
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the first admission arms the drain schedule exactly once');
+		// (b) A second producer over the same live schedule.
+		rXMLRPCRequest::$scheduledCommands = array();
+		erasedataRemovalAdmissionRun($this->dependencies(), array($this->hash('B')), 1);
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'a second admission on a live schedule re-registers nothing');
+		// (c) Startup recovery over a queue that owes nothing at all. There is
+		// no schedule to lose, so arming one would only restart a countdown.
+		foreach(glob($queue.'/*') as $entry)
+			if(is_file($entry))
+				@unlink($entry);
+		$this->assertTrue(erasedataWriteDrainState($queue, array(
+			'version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000004', 'acknowledged' => '0000000000000004',
+			'phase' => 'armed', 'journal' => array(),
+			'diagnostics' => array())) === true,
+			'the queue carries a stable armed generation with nothing owed');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery over a queue that owes nothing succeeds');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and arms nothing, so no live countdown anywhere is restarted');
+	}
+
+	public function testDoneRemovesThePeriodicKeyAndLeavesTheDrainKeyAlone()
+	{
+		$this->reset();
+		$invariant = 'done.php removes only the periodic erasedata<User> key and'
+			.' never the erasedata-drain<User> key';
+		$mirror = $this->mirror('done-key');
+		$mirror->scriptRpc(array(
+			'schedule' => array('ok' => true, 'val' => array(0)),
+			'schedule_remove' => array('ok' => true, 'val' => array(0)),
+			'd.get_base_path' => array('val' => array('/d/name', 1, '/d/name/a.bin')),
+			'd.set_custom5' => array('val' => array('', '', '')),
+		));
+		$producer = ErasedataTestProcess::start($mirror->eraseCommand($this->hash('A'), '1'));
+		$producer->wait(20);
+		$producer->reap();
+		$armed = array();
+		foreach($mirror->scheduleLog() as $record)
+			if($record['family'] === 'schedule')
+				$armed[] = $record['key'];
+		$this->assertTrue(in_array('erasedata-drainrutorrent', $armed, true),
+			'the public door armed the drain key before done.php runs');
+		$runner = $mirror->writeRunner('done-runner',
+			"require(".var_export($mirror->pluginDir.'/done.php', true).");\n");
+		$child = ErasedataTestProcess::start($mirror->php($runner));
+		$this->assertTrue($child->wait(20), 'the real done.php runs to completion');
+		$child->reap();
+		$removals = $mirror->scheduleLog();
+		$keys = array();
+		foreach($removals as $record)
+			if($record['family'] === 'schedule_remove')
+				$keys[] = $record['key'];
+		$this->assertEquals(array('erasedatarutorrent'), $keys,
+			'done.php removes exactly the periodic collector key');
+		$this->assertTrue(!in_array('erasedata-drainrutorrent', $keys, true),
+			'and never the drain key');
+	}
+
+	// -- real paired subprocess cases ---------------------------------------
+	//
+	// Each case below starts REAL child processes with a bounded budget, keeps
+	// a direct handle on every one of them and reaps every one of them however
+	// the case ends. No child is ever launched from inside a registration RPC:
+	// the schedule fake records, and the test plays the scheduler itself.
+
+	private function actionDoor($mirror, array $hashes, $force, $name = 'action-door')
+	{
+		return(ErasedataTestProcess::start(
+			$mirror->actionCommand($hashes, $force, $name), $mirror->pluginDir));
+	}
+
+	// -- the test playing rTorrent's scheduler ------------------------------
+	//
+	// The mirror's RPC adapter RECORDS a schedule registration and does nothing
+	// else, deliberately: a fake that started a child from inside the
+	// registration RPC would be the RPC layer standing in for the scheduler,
+	// and invariant 5 -- only a really started guarded child raises the
+	// acknowledgement -- would then be carried by the fixture instead of by the
+	// product. So the test reads the registration back out of the mirror's own
+	// log and starts the REAL `update.php <user> drain` child itself, here, in
+	// processes of its own that it holds a handle on and reaps.
+	//
+	// Nothing under test is shortened to make this work.
+	// ERASEDATA_DRAIN_ACK_TIMEOUT is still 11.0s and the producer still waits
+	// the whole of it if nobody answers; what a scheduler changes is that
+	// something answers inside it, which is the entire point of having one.
+
+	// Is the per-user drain key registered right now? The LAST scheduling
+	// record for the key decides, exactly as rTorrent's own table would: a
+	// schedule_remove takes it away and a later registration brings it back.
+	private function scheduleIsLive($mirror)
+	{
+		$live = false;
+		foreach($mirror->scheduleLog() as $record)
+		{
+			if((string)$record['key'] !== 'erasedata-drain'.$mirror->user)
+				continue;
+			if($record['family'] === 'schedule_remove')
+			{
+				$live = false;
+				continue;
+			}
+			// The registration has to carry a runnable update.php command, or
+			// "the schedule fired" would be the test's own invention rather
+			// than something the product asked rTorrent for.
+			$live = ErasedataProductionMirror::scheduledChildCommand($record) !== false;
+		}
+		return($live);
+	}
+
+	// One scheduler tick: reap whatever finished, and start one real guarded
+	// child when the drain key is live and fewer than $parallel are running.
+	private function schedulerTick($mirror, array &$children, &$startedAt,
+		$interval = 0.25, $parallel = 2)
+	{
+		foreach($children as $key => $child)
+		{
+			$child->pump();
+			if(!$child->running())
+			{
+				$child->reap();
+				unset($children[$key]);
+			}
+		}
+		$now = microtime(true);
+		if(count($children) >= $parallel
+			|| ($startedAt !== null && ($now - $startedAt) < $interval)
+			|| !$this->scheduleIsLive($mirror))
+			return;
+		$startedAt = $now;
+		$children['tick-'.$this->schedulerTicks++] =
+			ErasedataTestProcess::start($mirror->drainCommand('drain'));
+	}
+
+	// Run $processes to completion inside ONE budget while the test plays the
+	// scheduler for the whole of it, and reap every child of either kind.
+	private function runChildrenScheduled($mirror, array $processes, $budget, $label)
+	{
+		$ticks = array();
+		$startedAt = null;
+		$deadline = microtime(true) + $budget;
+		$pending = $processes;
+		while(count($pending) && microtime(true) < $deadline)
+		{
+			foreach($pending as $key => $process)
+			{
+				$process->pump();
+				if(!$process->running())
+					unset($pending[$key]);
+			}
+			if(!count($pending))
+				break;
+			$this->schedulerTick($mirror, $ticks, $startedAt);
+			usleep(20000);
+		}
+		$finished = !count($pending);
+		ErasedataTestProcess::reapAll($ticks);
+		$codes = ErasedataTestProcess::reapAll($processes);
+		$this->assertTrue($finished,
+			$label.': every child finished inside the '.$budget.'s budget');
+		return($codes);
+	}
+
+	// The scheduler, but only until the producer's generation really has been
+	// acknowledged.
+	//
+	// A guarded child writes the acknowledgement BEFORE it tries the worker
+	// lock, and then blocks on the per-hash lock the producer holds unbroken
+	// from admission to the end. So every tick still alive at that instant is
+	// parked behind a lock a LIVE producer owns and has changed nothing at all,
+	// and reaping them there is what keeps the producer's own crash the subject
+	// of the case rather than handing its generation to a recovery that would
+	// legitimately cancel it.
+	//
+	// The acknowledgement it accepts is the EXACT generation the producer armed
+	// -- read out of the same durable state -- rather than merely "not the zero
+	// generation". Both are correct at the one call site, which carries a
+	// single generation, but only the exact one stays correct if the helper is
+	// ever reused for a case with two: a stale acknowledgement of an earlier
+	// admission would otherwise read as this producer's.
+	private function acknowledgeOnce($mirror, $producer, $budget)
+	{
+		$ticks = array();
+		$startedAt = null;
+		$deadline = microtime(true) + $budget;
+		$acknowledged = false;
+		$running = true;
+		while(microtime(true) < $deadline)
+		{
+			$producer->pump();
+			$running = $producer->running();
+			// The acknowledgement is DURABLE and it is written by the child,
+			// not by the producer, so it outlives the producer. Read the state
+			// on this pass even when the producer has just exited: breaking
+			// first would report "never acknowledged" for an ack that is
+			// sitting on disk, whenever the write and the exit fall between
+			// two iterations. That window is not load-dependent -- load only
+			// makes landing in it likely.
+			$state = $this->mirrorState($mirror);
+			if(is_array($state) && isset($state['acknowledged'], $state['generation'])
+				&& $state['generation'] !== '0000000000000000'
+				&& $state['acknowledged'] === $state['generation'])
+			{
+				$acknowledged = true;
+				break;
+			}
+			if(!$running)
+				break;
+			$this->schedulerTick($mirror, $ticks, $startedAt);
+			usleep(20000);
+		}
+		ErasedataTestProcess::reapAll($ticks);
+		return($acknowledged);
+	}
+
+	private function runChildren(array $processes, $budget, $label)
+	{
+		$finished = ErasedataTestProcess::waitAll($processes, $budget);
+		$codes = ErasedataTestProcess::reapAll($processes);
+		$this->assertTrue($finished,
+			$label.': every child finished inside the '.$budget.'s budget');
+		return($codes);
+	}
+
+	private function waitForLock($holder, $label)
+	{
+		for($wait = 0; $wait < 250; $wait++)
+		{
+			$holder->pump();
+			if(strpos($holder->out, 'held') !== false)
+				return(true);
+			usleep(20000);
+		}
+		$this->assertTrue(false, $label.': the competitor never took the lock');
+		return(false);
+	}
+
+	private function mirrorState($mirror)
+	{
+		$raw = @file_get_contents($mirror->listPath.'/.drain-state');
+		if(!is_string($raw) || $raw === '')
+			return(null);
+		$decoded = json_decode($raw, true);
+		return(is_array($decoded) ? $decoded : null);
+	}
+
+	private function mirrorErased($mirror)
+	{
+		$erased = array();
+		foreach($mirror->rpcLog() as $request)
+			foreach($request as $command)
+				if(isset($command['command']) && $command['command'] === 'd.erase')
+					$erased[] = is_array($command['params'])
+						? implode(',', $command['params']) : (string)$command['params'];
+		return($erased);
+	}
+
+	private function drainScript()
+	{
+		return(array(
+			'schedule' => array('ok' => true, 'val' => array(0)),
+			'schedule_remove' => array('ok' => true, 'val' => array(0)),
+			'd.get_base_path' => array('val' => array('/d/name', 1, '/d/name/a.bin')),
+			'd.set_custom5' => array('val' => array('', '', '')),
+			'd.multicall' => array('val' => array()),
+			'd.hash' => array('ok' => true, 'fault' => true,
+				'faultString' => 'invalid parameters: info-hash not found'),
+		));
+	}
+
+	public function testInverseHashBatchOrderNeverDeadlocksAndKeepsExactOutcomes()
+	{
+		$this->reset();
+		$invariant = 'two public-door batches over the same hashes in inverse'
+			.' order both complete: hash locks are taken blocking in canonical'
+			.' sorted order, and the exact canonical set is admitted once';
+		$mirror = $this->mirror('inverse-batch');
+		$mirror->scriptRpc($this->drainScript());
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$children = array(
+			'forward' => $this->actionDoor($mirror, $hashes, 1, 'door-forward'),
+			'inverse' => $this->actionDoor($mirror, array_reverse($hashes), 1, 'door-inverse'),
+		);
+		$this->runChildren($children, 30, $invariant);
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['journal'])
+			&& is_array($state['journal']) && count($state['journal']) > 0,
+			'the inverse batches leave a durable generation-bound journal');
+		$sorted = true;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $entry)
+			{
+				$recorded = isset($entry['hashes']) && is_array($entry['hashes'])
+					? $entry['hashes'] : array();
+				$expected = $recorded;
+				sort($expected, SORT_STRING);
+				if($recorded !== $expected || count($recorded) !== count(array_unique($recorded)))
+					$sorted = false;
+			}
+		$this->assertTrue($sorted,
+			'every journal record holds the canonical sorted unique hash set');
+		$erased = $this->mirrorErased($mirror);
+		$this->assertEquals(count($erased), count(array_unique($erased)),
+			'no hash is erased twice by the two racing batches');
+	}
+
+	public function testProducerAndWorkerRaceKeepOneScheduleAndOneWorker()
+	{
+		$this->reset();
+		$invariant = 'a producer and the guarded worker running at the same time'
+			.' keep one fixed schedule key and one active worker: there is no'
+			.' per-hash or per-invocation schedule fan-out';
+		$mirror = $this->mirror('producer-worker');
+		$mirror->scriptRpc($this->drainScript());
+		$children = array(
+			'producer' => $this->actionDoor($mirror,
+				array($this->hash('A'), $this->hash('B')), 1),
+			'worker' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+		);
+		$this->runChildren($children, 30, $invariant);
+		$keys = array();
+		foreach($mirror->scheduleLog() as $record)
+			if($record['family'] === 'schedule')
+				$keys[] = $record['key'];
+		$drain = array();
+		foreach($keys as $key)
+			if(strpos((string)$key, 'erasedata-drain') === 0)
+				$drain[] = $key;
+		$this->assertTrue(count($drain) > 0,
+			'the producer really armed the drain schedule');
+		$this->assertEquals(array('erasedata-drainrutorrent'), array_values(array_unique($drain)),
+			'and only ever the one fixed per-user key');
+		$this->assertTrue(count($drain) <= 2,
+			'two hashes in one batch do not fan out into a schedule per hash: '
+				.count($drain).' registrations');
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+			'the real guarded child wrote a durable acknowledgement');
+	}
+
+	public function testWorkerAndRetirementRaceNeverRetireAJustAdmittedGeneration()
+	{
+		$this->reset();
+		$invariant = 'retirement and a live producer in either order never'
+			.' retire a generation whose obligation is still admitted';
+		$mirror = $this->mirror('worker-retire');
+		$mirror->scriptRpc($this->drainScript());
+		$children = array(
+			'retirement' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+			'producer' => $this->actionDoor($mirror, array($this->hash('A')), 1),
+		);
+		$this->runChildren($children, 30, $invariant);
+		$removed = false;
+		foreach($mirror->scheduleLog() as $record)
+			if($record['family'] === 'schedule_remove'
+				&& strpos((string)$record['key'], 'erasedata-drain') === 0)
+				$removed = true;
+		$state = $this->mirrorState($mirror);
+		$outstanding = 0;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			$outstanding = count($state['journal']);
+		$pending = glob($mirror->listPath.'/*.pending');
+		$published = glob($mirror->listPath.'/*.list');
+		$this->assertTrue(is_array($state),
+			'the race leaves readable durable state behind');
+		// Without this the two guards below are satisfied by an implementation
+		// that admits nothing and retires nothing.
+		$this->assertTrue($outstanding > 0 || count($pending) > 0
+			|| count($published) > 0 || count($this->mirrorErased($mirror)) > 0,
+			'the producer really admitted its generation during the race');
+		$this->assertTrue(!$removed || $outstanding === 0,
+			'the drain schedule is only removed once no obligation is outstanding');
+		$this->assertTrue(!$removed || count($pending) === 0,
+			'and never while a pending marker survives');
+		// The other half: once the queue really is empty and the generation
+		// really is stable, a REAL guarded child must retire the schedule. An
+		// implementation that defines retirement and never wires it into the
+		// production tick fails here rather than passing every guard above by
+		// never removing anything.
+		foreach(glob($mirror->listPath.'/*') as $entry)
+			if(basename($entry) !== '.drain-state' && is_file($entry))
+				@unlink($entry);
+		// A drained queue carrying a stable armed generation is the state
+		// retirement exists for. The test authors it here for the same reason
+		// testRetirementWritesSettledThenDisarmedBeforeMappedScheduleRemove
+		// authors it in process: what is under test is what the child does
+		// NEXT, not how the queue became empty.
+		$settled = $this->mirrorState($mirror);
+		if(is_array($settled) && isset($settled['generation']))
+		{
+			$settled['journal'] = array();
+			$settled['diagnostics'] = array();
+			$settled['acknowledged'] = $settled['generation'];
+			$settled['phase'] = 'armed';
+			@file_put_contents($mirror->listPath.'/.drain-state', json_encode($settled));
+		}
+		$retired = false;
+		for($tick = 0; $tick < 3 && !$retired; $tick++)
+		{
+			$child = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+			$this->runChildren(array('retire-tick-'.$tick => $child), 30, $invariant);
+			foreach($mirror->scheduleLog() as $record)
+				if($record['family'] === 'schedule_remove'
+					&& $record['key'] === 'erasedata-drain'.$mirror->user)
+					$retired = true;
+		}
+		$this->assertTrue($retired,
+			'a proven-empty queue with a stable generation really produces a'
+				.' mapped schedule_remove on the exact drain key, from a real child');
+	}
+
+	public function testHeldSchedulerLockStillLetsTheChildAcknowledgeFirst()
+	{
+		$this->reset();
+		$invariant = 'the drain tick acknowledges under the state lock before it'
+			.' tries worker admission, so a held scheduler lock delays the work'
+			.' but never the acknowledgement';
+		$mirror = $this->mirror('held-scheduler');
+		$mirror->scriptRpc($this->drainScript());
+		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$producer->wait(20);
+		$producer->reap();
+		$hold = 2.0;
+		$holder = ErasedataTestProcess::start(
+			erasedataTestLockHolderCommand($mirror->listPath.'/scheduler.lock', $hold));
+		$this->waitForLock($holder, 'held scheduler lock');
+		// The competitor releases at $heldAt + $hold. An acknowledgement seen
+		// after that proves nothing, so the observation is timestamped and
+		// compared with the release rather than with a poll budget that happens
+		// to be the same length as the hold.
+		$heldAt = microtime(true);
+		$worker = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$acknowledgedAt = null;
+		while($acknowledgedAt === null && microtime(true) < $heldAt + $hold)
+		{
+			$state = $this->mirrorState($mirror);
+			if(is_array($state) && isset($state['acknowledged'])
+				&& $state['acknowledged'] !== '0000000000000000')
+				$acknowledgedAt = microtime(true);
+			else
+				usleep(20000);
+		}
+		$this->runChildren(array('holder' => $holder, 'worker' => $worker), 30,
+			$invariant);
+		$this->assertTrue($acknowledgedAt !== null
+			&& ($acknowledgedAt - $heldAt) < $hold,
+			'the child acknowledged its generation while the scheduler lock was'
+				.' still held, '.($acknowledgedAt === null ? 'never'
+					: round($acknowledgedAt - $heldAt, 2).'s')
+				.' into a '.$hold.'s hold');
+	}
+
+	public function testHeldHashLockBlocksTheDrainAndTheBroadPassExitsImmediately()
+	{
+		$this->reset();
+		$invariant = 'a held hash lock makes the drain worker wait blocking and'
+			.' consume after the unlock, while the periodic broad pass keeps its'
+			.' locks nonblocking and exits at once';
+		$mirror = $this->mirror('held-hash');
+		$mirror->scriptRpc($this->drainScript());
+		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$producer->wait(20);
+		$producer->reap();
+		// A broad pass that exits at once because it has nothing to skip is not
+		// evidence of anything, so the obligation it must skip is pinned first.
+		$queued = array_merge(glob($mirror->listPath.'/*.pending'),
+			glob($mirror->listPath.'/*.tmp'));
+		sort($queued, SORT_STRING);
+		$this->assertTrue(count($queued) > 0,
+			'the producer left an obligation for the broad pass to walk past');
+		$holder = ErasedataTestProcess::start(
+			erasedataTestLockHolderCommand(
+				$mirror->listPath.'/'.$this->hash('A').'.lock', 2.0));
+		$this->waitForLock($holder, 'held hash lock');
+		$began = microtime(true);
+		$broad = ErasedataTestProcess::start($mirror->drainCommand(''));
+		$broadFinished = $broad->wait(20);
+		$broadTook = microtime(true) - $began;
+		$broad->reap();
+		$after = array_merge(glob($mirror->listPath.'/*.pending'),
+			glob($mirror->listPath.'/*.tmp'));
+		sort($after, SORT_STRING);
+		$this->assertTrue($broadFinished, 'the periodic broad pass finishes');
+		$this->assertEquals($queued, $after,
+			'the periodic broad pass consumed nothing behind the held hash lock');
+		$began = microtime(true);
+		$drain = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$drainFinished = $drain->wait(30);
+		$drainTook = microtime(true) - $began;
+		$this->runChildren(array('holder' => $holder, 'drain' => $drain), 30,
+			$invariant);
+		$this->assertTrue($drainFinished, 'the drain worker finishes');
+		// One assertion, so neither half can be satisfied on its own by an
+		// implementation where both passes simply do nothing.
+		$this->assertTrue($broadTook < 1.5 && $drainTook >= 0.5,
+			'the periodic broad pass keeps LOCK_NB and exits at once ('
+				.round($broadTook, 2).'s) while the drain worker waits blocking'
+				.' for the same lock ('.round($drainTook, 2).'s)');
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+			'and it consumed its work after the unlock rather than giving up');
+	}
+
+	public function testAContinuousProducerDuringRetirementRetainsTheSchedule()
+	{
+		$this->reset();
+		$invariant = 'a producer admitted during retirement is either included'
+			.' durably or forces retirement to retain the schedule';
+		$mirror = $this->mirror('continuous-producer');
+		$mirror->scriptRpc($this->drainScript());
+		$hashes = array();
+		foreach(array('A', 'B', 'C', 'D', 'E', 'F') as $character)
+			$hashes[] = $this->hash($character);
+		$loop = $mirror->writeRunner('producer-loop',
+			'$hashes = '.var_export($hashes, true).";\n"
+			.'foreach($hashes as $hash)'."\n"
+			.'{'."\n"
+			."\t".'$output = array(); $code = 0;'."\n"
+			."\t".'exec('.var_export(escapeshellarg(PHP_BINARY).' -d display_errors=0 -f '
+				.escapeshellarg($mirror->pluginDir.'/erase.php').' -- ', true)
+				.'.escapeshellarg($hash).\' 1 \'.escapeshellarg('
+				.var_export($mirror->user, true).').\' 2>/dev/null\', $output, $code);'."\n"
+			."\t".'usleep(120000);'."\n"
+			.'}'."\n");
+		$children = array(
+			'producers' => ErasedataTestProcess::start($mirror->php($loop)),
+			'retirement' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+		);
+		// The mirror has no scheduler of its own, and six serial erase.php
+		// calls with nothing to acknowledge them wait out
+		// ERASEDATA_DRAIN_ACK_TIMEOUT five times over -- 55s of honest waiting
+		// against a 60s budget, before anything else in this case happens. The
+		// answer is a scheduler, not a shorter timeout: the waiting is what is
+		// under test.
+		$this->runChildrenScheduled($mirror, $children, 60, $invariant);
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state),
+			'the continuous stream leaves readable durable state');
+		$outstanding = is_array($state) && isset($state['journal'])
+			&& is_array($state['journal']) ? count($state['journal']) : 0;
+		$outstanding += count(glob($mirror->listPath.'/*.pending'));
+		$removed = 0;
+		$rearmed = 0;
+		foreach($mirror->scheduleLog() as $record)
+		{
+			if(strpos((string)$record['key'], 'erasedata-drain') !== 0)
+				continue;
+			if($record['family'] === 'schedule_remove')
+				$removed++;
+			else
+				$rearmed++;
+		}
+		$this->assertTrue($rearmed > 0,
+			'the producers armed the drain schedule at least once');
+		$this->assertTrue($outstanding === 0 || $removed === 0
+			|| $rearmed > $removed,
+			'an obligation admitted during retirement keeps or regains the schedule');
+	}
+
+	public function testCrashAfterArmLeavesADurableWakeAndARecoverableJob()
+	{
+		$this->reset();
+		$invariant = 'a producer that dies after the arm and before staging'
+			.' leaves a durable wake and a recoverable exact job, and erases'
+			.' nothing';
+		$mirror = $this->mirror('crash-after-arm');
+		$script = $this->drainScript();
+		$script['d.get_base_path'] = array('exit' => 9);
+		$mirror->scriptRpc($script);
+		$crashing = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$crashing->wait(20);
+		$crashCode = $crashing->reap();
+		$this->assertTrue($crashCode !== 0,
+			'the producer really died at the staging boundary (exit '.$crashCode.')');
+		$this->assertEquals(array(), $this->mirrorErased($mirror),
+			'a crash before staging erases nothing');
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['phase'])
+			&& in_array($state['phase'], array('arming', 'armed'), true),
+			'the durable wake survives the crash');
+		$mirror->scriptRpc($this->drainScript());
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 30, $invariant);
+		$after = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($after),
+			'a real recovery child converges from the crashed state');
+		$this->assertEquals(array(), $this->mirrorErased($mirror),
+			'and still erases nothing it cannot account for');
+	}
+
+	public function testCrashAfterStagingLeavesExactRecoverableStagingAndNoErase()
+	{
+		$this->reset();
+		$invariant = 'a producer that dies after staging and before the first'
+			.' erase leaves its exact staging recoverable and no torrent erased';
+		$mirror = $this->mirror('crash-after-staging');
+		$script = $this->drainScript();
+		// The death is OBSERVED, not merely scheduled. The producer announces
+		// that it has reached the cut and waits there; the case reaps every
+		// scheduler child it started for the acknowledgement first, and only
+		// then lets the process die. Without that gate the producer dies at an
+		// unknown moment just after the acknowledgement, the hash lock it held
+		// is released, and a tick that was blocked on it runs a complete lawful
+		// recovery -- clearing the very journal record this case then asks
+		// about. That is what this case really failed on, 5 runs in 8 on a
+		// loaded host, on the base commit as well as here.
+		$script['d.set_custom5'] = array('exit' => 9, 'await' => 'crash-gate');
+		$mirror->scriptRpc($script);
+		// Residue and blockers this job does not own: neither the crash nor the
+		// recovery that follows it may touch them (matrix row 8).
+		$unrelated = array(
+			$mirror->listPath.'/'.$this->hash('Z').'.ffffffffffffffff.42.tmp'
+				=> "a later generation's staging\n",
+			$mirror->listPath.'/'.$this->hash('Y').'.list'
+				=> "a legacy manifest awaiting the collector\n",
+			$mirror->listPath.'/not-a-candidate-at-all'
+				=> "a file nobody parses\n",
+		);
+		foreach($unrelated as $path => $bytes)
+			@file_put_contents($path, $bytes);
+		$crashing = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		// The crash cut sits on d.set_custom5, which the producer only reaches
+		// after a really started guarded child has acknowledged its generation.
+		// With nothing playing the scheduler the producer waits out the ack
+		// timeout and exits cleanly, and the case can never reach the boundary
+		// it is named for.
+		$this->assertTrue($this->acknowledgeOnce($mirror, $crashing, 20),
+			'a real guarded child acknowledged the generation the producer armed');
+		// acknowledgeOnce() has reaped every scheduler child by now, and the
+		// producer is still alive and still holding its hash lock, so nothing
+		// can consume the generation between its death and the reading below.
+		$this->assertTrue($mirror->crashGateReached('crash-gate', 25),
+			'the producer reached the erase boundary and is waiting there');
+		$mirror->releaseCrashGate('crash-gate');
+		$crashing->wait(20);
+		$crashCode = $crashing->reap();
+		$this->assertTrue(!$mirror->crashGateExpired('crash-gate'),
+			'and it died because it was released, not because a wait ran out');
+		$this->assertTrue($crashCode !== 0,
+			'the producer really died at the erase boundary (exit '.$crashCode.')');
+		$this->assertEquals(array(), $this->mirrorErased($mirror),
+			'a crash before the first erase erases nothing');
+		$state = $this->mirrorState($mirror);
+		$bound = false;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $entry)
+				if(isset($entry['staging']) && is_array($entry['staging'])
+					&& count($entry['staging']))
+					$bound = true;
+		$this->assertTrue($bound,
+			'the journal binds the staging the crashed producer had already written');
+		$mirror->scriptRpc($this->drainScript());
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 30, $invariant);
+		$survivors = array_merge(glob($mirror->listPath.'/*.tmp'),
+			glob($mirror->listPath.'/*.pending'), glob($mirror->listPath.'/*.list'));
+		$this->assertTrue(count($survivors) > 0,
+			'the obligation is still there for a later tick, not quietly dropped');
+		foreach($unrelated as $path => $bytes)
+			$this->assertTrue(@file_get_contents($path) === $bytes,
+				'neither the crash nor the recovery touched the unrelated '
+					.basename($path));
+	}
+
+	// RENAMED, from testCrashAfterPartialEraseKeepsEveryRemainingObligation.
+	//
+	// The old name claimed a producer that died during a partly executed
+	// aggregate erase, and this case never drove one: nothing plays the
+	// scheduler for its producer, so the producer waits out
+	// ERASEDATA_DRAIN_ACK_TIMEOUT, takes the no-ack rollback
+	// (`drain-no-ack ... consequence=torrents-retained-own-staging-rolled-back`)
+	// and reaches no erase at all. What it really pins -- and pins well, which
+	// is why it is kept rather than deleted -- is the disposition of every
+	// member of a batch its producer left wholly owed, and a recovery that has
+	// to honour each of them against its own payload.
+	//
+	// The boundary the old name promised is driven, with a real daemon on the
+	// other side of the wire, by
+	// testProducerDeathAfterFirstAggregateEraseKeepsEveryObligation() and
+	// testDaemonDeathAfterFirstAggregateEraseRecoversRemainingMembers() below.
+	public function testNoAckRollbackKeepsEveryRemainingObligationOfTheBatch()
+	{
+		$this->reset();
+		$invariant = 'every hash of a batch its producer left owed ends in'
+			.' exactly one lawful disposition after the recovery -- still owed'
+			.' under a generation-bound record, or demonstrably carried out'
+			.' against its OWN payload -- and nothing at all is erased, because'
+			.' the daemon already answers that every member is gone';
+		$mirror = $this->mirror('crash-partial-erase');
+		// A REAL payload PER MEMBER, so that "this obligation was carried out"
+		// is provable for one hash without any other hash's work licensing it.
+		//
+		// One SHARED payload directory is what this fixture used to build, and
+		// it defeated the whole case: any single member's collection deleted the
+		// one directory, so `discharged` degenerated to "this hash has no
+		// .pending marker left" for the other two. A silent drop of one member
+		// -- its marker discharged, nothing staged, published, journaled or
+		// erased for it -- was then INVISIBLE: the method stayed 6 Passed / 0
+		// Failed and the end state was byte-identical to a clean run, because
+		// its siblings had removed the directory that was supposed to convict
+		// it. The mirror's 'byParam' entry answers d.get_base_path per hash, so
+		// each member now owns a directory only its own manifest can name.
+		//
+		// The default answer names a decoy nothing may ever collect: a manifest
+		// built for a hash outside this batch would delete it, and the assertion
+		// below says so.
+		$payload = $this->dir.'/crash-payload';
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$mine = array();
+		$byHash = array();
+		foreach($hashes as $hash)
+		{
+			$mine[$hash] = $payload.'/'.$hash.'/name';
+			mkdir($mine[$hash], 0777, true);
+			file_put_contents($mine[$hash].'/a.bin', 'payload of '.$hash);
+			$byHash[$hash] = array('val' => array($mine[$hash], 1,
+				$mine[$hash].'/a.bin'));
+		}
+		$decoy = $payload.'/unclaimed/name';
+		mkdir($decoy, 0777, true);
+		file_put_contents($decoy.'/a.bin', 'no member of this batch owns this');
+		$base = array('val' => array($decoy, 1, $decoy.'/a.bin'),
+			'byParam' => $byHash);
+		$script = $this->drainScript();
+		$script['d.get_base_path'] = $base;
+		// The `cut` directive that used to sit here is GONE, with the "known
+		// fixture gap" note that admitted it never fired. It could not: a cut
+		// counts REQUESTS and fires before the request is written, while
+		// erasedataEraseRequest() sends the whole batch as ONE aggregate, so a
+		// cut of 2 needed a second erase request this flow never makes. Leaving
+		// an inert directive in a case reads as coverage of a boundary nothing
+		// reaches. The boundary itself is now driven where it belongs, by the
+		// aggregate cases further down.
+		$mirror->scriptRpc($script);
+		$crashing = $this->actionDoor($mirror, $hashes, 1);
+		$crashing->wait(20);
+		$crashing->reap();
+		$recoveryScript = $this->drainScript();
+		$recoveryScript['d.get_base_path'] = $base;
+		$mirror->scriptRpc($recoveryScript);
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 30, $invariant);
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state),
+			'the batch its producer left owed leaves readable durable state');
+		// SUPERSEDED SHAPE. This used to demand that EVERY hash still be
+		// OUTSTANDING after the recovery -- a <hash>.<16hex>.* artefact or a
+		// journal entry naming it. That held only because the pre-repair drain
+		// never collected: the manifests it published stayed on disk for the
+		// ordinary periodic collector, retirement was refused with
+		// `obligations-outstanding`, and the assertion was reading that stall.
+		// The worker repair (P02, step (5) of erasedataDrainWorkerRun) completes
+		// the lifecycle inside one tick -- publish, collect, discharge the
+		// marker, retire -- so a fulfilled obligation legitimately leaves
+		// nothing outstanding behind, and the journal record for it is pruned.
+		//
+		// What must remain true is the disposition, per hash: still owed under a
+		// generation-bound record, or demonstrably carried out. The third state
+		// -- marker, manifest, journal entry AND payload all gone -- is the real
+		// defect this case exists to catch, and only a real payload can tell it
+		// apart from a completed discharge.
+		//
+		// "Bound" still has to mean a GENERATION-BOUND record. Any leftover file
+		// whose name happens to start with the hash -- a bare <hash>.list from an
+		// older torrent, say -- accounts for nothing.
+		$accounted = array();
+		$carriedOut = array();
+		foreach($hashes as $hash)
+		{
+			$bound = false;
+			foreach(glob($mirror->listPath.'/'.$hash.'.*') as $candidate)
+				if(preg_match('/^'.$hash.'\.[0-9a-f]{16}\./D', basename($candidate)) === 1)
+					$bound = true;
+			if(!$bound && is_array($state) && isset($state['journal'])
+				&& is_array($state['journal']))
+				foreach($state['journal'] as $generation => $entry)
+					if(preg_match('/^[0-9a-f]{16}$/D', (string)$generation) === 1
+						&& isset($entry['hashes']) && is_array($entry['hashes'])
+						&& in_array($hash, $entry['hashes'], true))
+						$bound = true;
+			// Carried out: this hash owes no marker any more AND the payload
+			// ITS OWN manifest named is really gone, file and base directory
+			// both. Reading a shared directory here was what let one member's
+			// collection discharge every member on paper.
+			$discharged = !count(glob($mirror->listPath.'/'.$hash.'.*.pending'))
+				&& !file_exists($mine[$hash].'/a.bin') && !is_dir($mine[$hash]);
+			$this->assertTrue(($bound && !$discharged) || (!$bound && $discharged),
+				'after the producer went away and the recovery ran, '.$hash.' is'
+					.' in exactly one of the two lawful states -- still owed under a'
+					.' generation-bound record, or demonstrably carried out with'
+					.' its marker discharged and its payload deleted (bound='
+					.($bound ? 'yes' : 'no').' discharged='
+					.($discharged ? 'yes' : 'no').')');
+			if($bound || $discharged)
+				$accounted[] = $hash;
+			if($discharged)
+				$carriedOut[] = $hash;
+		}
+		$this->assertEquals($hashes, $accounted,
+			'every hash of the batch is accounted for after the recovery, none of'
+				.' them silently dropped');
+		// The disposition above is satisfied by a recovery that did NOTHING --
+		// three members still owed under the record their producer left is a
+		// lawful end state, just not the one this fixture drives. So say what
+		// this fixture really produces: every member's obligation is carried
+		// out, its own payload deleted under its own manifest.
+		$this->assertEquals($hashes, $carriedOut,
+			'the recovery really carried out every obligation the producer left'
+				.' owed, one payload per member, rather than satisfying the'
+				.' disposition by leaving the whole batch retained');
+		$this->assertTrue(file_get_contents($decoy.'/a.bin')
+				=== 'no member of this batch owns this',
+			'and it collected nothing outside the batch: the decoy payload the'
+				.' unkeyed script answer names is untouched');
+		// NOT a per-hash guard on the erase transcript. This fixture never
+		// reaches a destructive call at all -- the recovery finds every member
+		// ABSENT, so d.erase is never sent -- and a foreach over an empty erase
+		// list is a test-shaped no-op that reads as coverage while it can never
+		// fail. The observable fact is therefore asserted directly, and it is
+		// the stronger one here: a d.erase in this transcript would be a
+		// destructive call under a download rTorrent had already said was gone.
+		// "Nothing is erased before its durable erase-started record" is pinned
+		// where it can actually be observed, by
+		// testTheFirstDestructiveCallFindsADurableEraseStartedRecord().
+		$this->assertEquals(array(), $this->mirrorErased($mirror),
+			'the recovery erased nothing: every member was already gone, so the'
+				.' destructive call was never sent');
+	}
+
+	// -- observable death INSIDE one aggregate erase -------------------------
+	//
+	// erasedataEraseRequest() sends a whole batch as ONE aggregate request:
+	// d.set_custom5 + d.delete_tied + d.erase per member, nine commands for
+	// three hashes. Every boundary this harness could express before was a
+	// boundary between REQUESTS, and the mirror's `cut` fires before the
+	// request is even written, so neither "the producer died between two
+	// executed erases" nor "the daemon stopped between two executed erases"
+	// could be reached at all -- the case named for the first of them in fact
+	// drove a no-ack rollback, and says so above.
+	//
+	// The three cases below drive those boundaries with a REAL second process
+	// on the daemon side (AggregateEraseFixture.php) that applies the commands
+	// of one request one at a time against a presence table of its own. Two
+	// things they are careful to keep apart, because a review found the harness
+	// conflating them:
+	//
+	//   * a dead CLIENT is not a stopped daemon. A batch rTorrent has accepted
+	//     goes on executing with nobody left to read the answer, so the first
+	//     case kills the producer at the barrier and then lets the daemon
+	//     finish;
+	//   * a lost TRANSPORT is not a partial success. When the daemon stops
+	//     mid-batch the producer gets no answer at all -- production's own
+	//     stack refuses a truncated body (rSCGITransport::readResponse()
+	//     'truncated-body' -> null -> rXMLRPCRequest::send() false), so there
+	//     is no prefix of successful replies anywhere on that path -- and every
+	//     member is UNKNOWN, including the one that really was erased.
+	//
+	// Each member owns a payload only its own manifest can name, and a fourth
+	// download the daemon holds belongs to no manifest and no obligation at
+	// all: one shared payload made a lost obligation invisible here once
+	// already.
+
+	// One payload directory per hash: base/<hash>/name/a.bin.
+	private function aggregatePayloads(array $hashes)
+	{
+		$root = $this->dir.'/aggregate-payload';
+		$payloads = array();
+		foreach($hashes as $hash)
+		{
+			$base = $root.'/'.$hash.'/name';
+			@mkdir($base, 0777, true);
+			@file_put_contents($base.'/a.bin', 'payload of '.$hash);
+			$payloads[$hash] = $base;
+		}
+		return($payloads);
+	}
+
+	// The daemon's starting presence table: every one of these downloads exists
+	// and owns exactly the files its own manifest will name.
+	private function aggregateHashTable(array $payloads)
+	{
+		$table = array();
+		foreach($payloads as $hash => $base)
+			$table[$hash] = array('present' => true, 'base' => $base,
+				'multi' => 1, 'files' => array($base.'/a.bin'));
+		return($table);
+	}
+
+	// The state of one member as independent facts rather than one summary:
+	// what the daemon says about the download, whether its own payload is still
+	// there, whether it still owes a marker, whether a manifest of its own
+	// stands, and whether anything generation-bound still names it.
+	private function memberState($mirror, array $payloads, $hash)
+	{
+		$state = $this->mirrorState($mirror);
+		$bound = false;
+		foreach(glob($mirror->listPath.'/'.$hash.'.*') as $candidate)
+			if(preg_match('/^'.$hash.'\.[0-9a-f]{16}\./D', basename($candidate)) === 1)
+				$bound = true;
+		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
+			foreach($state['journal'] as $generation => $entry)
+				if(preg_match('/^[0-9a-f]{16}$/D', (string)$generation) === 1
+					&& isset($entry['hashes']) && is_array($entry['hashes'])
+					&& in_array($hash, $entry['hashes'], true))
+					$bound = true;
+		clearstatcache();
+		return(array(
+			'daemon' => $mirror->daemonHolds($hash) ? 'present' : 'absent',
+			'payload' => file_exists($payloads[$hash].'/a.bin') ? 'kept' : 'deleted',
+			'base' => is_dir($payloads[$hash]) ? 'kept' : 'deleted',
+			'marker' => count(glob($mirror->listPath.'/'.$hash.'.*.pending')) > 0
+				? 'owed' : 'discharged',
+			'manifest' => count(glob($mirror->listPath.'/'.$hash.'.*.list')) > 0
+				? 'published' : 'none',
+			'bound' => $bound ? 'bound' : 'unbound',
+		));
+	}
+
+	// Every request a client really SENT that carried a d.erase, as
+	// commands/erases pairs. What the daemon EXECUTED is a different count and
+	// comes from the daemon's own transcript.
+	private function aggregateSends($mirror)
+	{
+		$ret = array();
+		foreach($mirror->rpcLog() as $request)
+		{
+			$erases = 0;
+			foreach($request as $command)
+				if(isset($command['command']) && $command['command'] === 'd.erase')
+					$erases++;
+			if($erases)
+				$ret[] = count($request).'/'.$erases;
+		}
+		return($ret);
+	}
+
+	// Every destructive batch as the DAEMON saw it: how many of its commands
+	// were really applied, how many d.erase commands really ran, and whether
+	// the daemon ever answered it at all. This is the other half of
+	// aggregateSends(): what was sent and what was executed are two counts, and
+	// the whole point of these cases is that they can differ.
+	private function aggregateExecutions($mirror)
+	{
+		$batches = array();
+		$order = array();
+		foreach($mirror->daemonEvents() as $record)
+		{
+			if(!isset($record['event'], $record['request']))
+				continue;
+			$request = $record['request'];
+			if($record['event'] === 'command-applied')
+			{
+				if(!isset($batches[$request]))
+				{
+					$batches[$request] = array('applied' => 0, 'erased' => 0,
+						'answered' => false, 'destructive' => false);
+					$order[] = $request;
+				}
+				$batches[$request]['applied']++;
+				if($record['command'] === 'd.erase' && $record['fault'] === null)
+				{
+					$batches[$request]['erased']++;
+					$batches[$request]['destructive'] = true;
+				}
+			}
+			else if($record['event'] === 'reply-delivered' && isset($batches[$request]))
+				$batches[$request]['answered'] = true;
+		}
+		$ret = array();
+		foreach($order as $request)
+			if($batches[$request]['destructive'])
+				$ret[] = $batches[$request]['applied'].'/'.$batches[$request]['erased']
+					.'/'.($batches[$request]['answered'] ? 'answered' : 'unanswered');
+		return($ret);
+	}
+
+	// A REAL second process against one real lock. Returns 'busy', 'free' or
+	// 'unopenable'.
+	private function lockProbe($path, $label)
+	{
+		$probe = ErasedataTestProcess::start(erasedataTestLockProbeCommand($path));
+		$finished = $probe->wait(15);
+		$probe->reap();
+		$this->assertTrue($finished, $label.': the real lock probe finished');
+		return(trim($probe->out));
+	}
+
+	// The commands the daemon applied for one request, in order.
+	private function appliedFor($mirror, $request)
+	{
+		$ret = array();
+		foreach($mirror->daemonEventsOf('command-applied') as $record)
+			if(isset($record['request']) && $record['request'] === $request)
+				$ret[] = $record;
+		return($ret);
+	}
+
+	// The request the daemon raised its barrier inside.
+	private function barrierRecord($mirror)
+	{
+		$events = $mirror->daemonEventsOf('barrier-reached');
+		return(count($events) ? $events[count($events) - 1] : null);
+	}
+
+	private function startAggregateDaemon($mirror, $label)
+	{
+		$mirror->daemonClearControls();
+		$daemon = ErasedataTestProcess::start($mirror->daemonCommand());
+		$this->assertTrue($daemon->started() && $mirror->daemonWaitFile('alive', 20),
+			$label.': the separate daemon fixture is up and holding the transport');
+		return($daemon);
+	}
+
+	private function stopAggregateDaemon($mirror, $daemon, $label)
+	{
+		$mirror->daemonAskStop();
+		$finished = $daemon->wait(20);
+		$code = $daemon->reap();
+		$this->assertTrue($finished && $code === 0,
+			$label.': the daemon fixture exited on its own (exit '
+				.var_export($code, true).')');
+		$this->assertTrue(!$mirror->daemonAlive(),
+			$label.': and left no fixture process holding the transport');
+	}
+
+	public function testProducerDeathAfterFirstAggregateEraseKeepsEveryObligation()
+	{
+		$this->reset();
+		$invariant = 'a producer killed between the first and second executed'
+			.' d.erase of ONE aggregate batch discharges nothing: the daemon it'
+			.' had already reached finishes the batch with no live client, and'
+			.' the recovery carries out every obligation exactly once against'
+			.' each member\'s own payload';
+		if(!$this->requireApi(array('ErasedataProductionMirror::scriptAggregate',
+			'ErasedataProductionMirror::daemonCommand', 'ErasedataTestProcess::kill',
+			'erasedataTestLockProbeCommand()'), $invariant))
+			return;
+		$mirror = $this->mirror('aggregate-producer-death');
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$decoy = $this->hash('D');
+		$payloads = $this->aggregatePayloads(array_merge($hashes, array($decoy)));
+		$decoyBytes = file_get_contents($payloads[$decoy].'/a.bin');
+		$mirror->scriptRpc($this->drainScript());
+		$this->assertTrue($mirror->scriptAggregate(array(
+			// The barrier is a number of EXECUTED d.erase commands inside one
+			// batch, not a number of requests: the whole gap this case closes
+			// is that a request-level cut can never land between two of them.
+			'aggregate' => array('after_erase' => 1, 'mode' => 'pause-after-erase',
+				'barrier' => 'first-erase-applied'),
+			'hashes' => $this->aggregateHashTable($payloads),
+		)), 'the daemon fixture is configured to stop at the first executed erase');
+		$daemon = $this->startAggregateDaemon($mirror, 'producer-death');
+		$producer = $this->actionDoor($mirror, $hashes, 1);
+		// The generation-bound acknowledgement of a REAL guarded child, first:
+		// without one the producer waits out ERASEDATA_DRAIN_ACK_TIMEOUT and
+		// takes the no-ack rollback, and no erase is ever built at all. The
+		// helper reaps its scheduler children the moment the ack is durable, so
+		// nothing but this producer is alive at the barrier below.
+		$this->assertTrue($this->acknowledgeOnce($mirror, $producer, 25),
+			'a real guarded child acknowledged the exact generation the producer armed');
+		$this->assertTrue($mirror->daemonWaitFile('barrier', 25),
+			'the daemon really reached the first executed d.erase INSIDE the batch');
+		$barrier = $this->barrierRecord($mirror);
+		$this->assertTrue(is_array($barrier) && $barrier['ordinal'] === 3
+			&& $barrier['erased'] === 1 && $barrier['hash'] === $hashes[0],
+			'the barrier is three commands into the aggregate, on the first'
+				.' member\'s own d.erase ('.json_encode($barrier).')');
+		$request = is_array($barrier) ? $barrier['request'] : '';
+		$this->assertEquals(array($hashes[0]), $mirror->daemonExecutedErases(),
+			'exactly one d.erase has been EXECUTED, and it is the first member\'s');
+		$this->assertEquals(3, count($this->appliedFor($mirror, $request)),
+			'three of the nine commands of the aggregate have been applied');
+		$this->assertEquals(array('absent', 'present', 'present', 'present'),
+			array($mirror->daemonHolds($hashes[0]) ? 'present' : 'absent',
+				$mirror->daemonHolds($hashes[1]) ? 'present' : 'absent',
+				$mirror->daemonHolds($hashes[2]) ? 'present' : 'absent',
+				$mirror->daemonHolds($decoy) ? 'present' : 'absent'),
+			'the daemon holds B, C and the decoy and no longer holds A');
+		// Contention, proved by real second processes rather than asserted from
+		// inside the holder: the producer is stopped inside its erase, and it
+		// holds every hash lock of the batch and the drain state lock while it
+		// is there. A hash nobody admitted is the control that shows the probe
+		// can also say 'free'.
+		foreach($hashes as $hash)
+			$this->assertEquals('busy',
+				$this->lockProbe($mirror->listPath.'/'.$hash.'.lock', 'producer-death'),
+				'a real second process finds '.$hash.'\'s lock held by the'
+					.' producer stopped inside the aggregate erase');
+		$this->assertEquals('busy',
+			$this->lockProbe($mirror->listPath.'/.drain-state.lock', 'producer-death'),
+			'and finds the drain state lock held there too');
+		$this->assertEquals('free',
+			$this->lockProbe($mirror->listPath.'/'.$decoy.'.lock', 'producer-death'),
+			'while a hash this batch never admitted is not locked at all');
+		$state = $this->mirrorState($mirror);
+		$generation = is_array($state) && isset($state['generation'])
+			? $state['generation'] : null;
+		$this->assertTrue(is_string($generation) && isset($state['journal'][$generation])
+			&& $state['journal'][$generation]['phase'] === 'erase-started',
+			'the durable record says erase-started before anything destructive ran');
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => $hash === $hashes[0] ? 'absent' : 'present',
+				'payload' => 'kept', 'base' => 'kept', 'marker' => 'owed',
+				'manifest' => 'none', 'bound' => 'bound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'at the barrier '.$hash.' still owes its marker, has published no'
+					.' manifest and has lost no payload');
+		// The producer dies WHERE IT STANDS: inside the aggregate erase, with
+		// the batch half applied and no reply written for it.
+		$producerPid = $producer->pid();
+		$this->assertTrue(is_int($producerPid) && $producerPid > 0,
+			'the producer child has a pid of its own to kill');
+		$this->assertTrue($producer->kill(9),
+			'the producer is signalled inside the half-applied aggregate erase');
+		$this->assertTrue($producer->wait(20), 'and really died there');
+		$producerCode = $producer->reap();
+		$this->assertTrue($producerCode !== 0,
+			'the producer left no orderly exit behind (exit '
+				.var_export($producerCode, true).')');
+		// Now let the daemon finish the batch it had already accepted. A client
+		// that is gone does not cancel work rTorrent took on.
+		$mirror->daemonRelease();
+		$this->assertTrue(
+			$mirror->daemonWaitRequestEvent('reply-delivered', $request, 25),
+			'the daemon finished the aggregate it had accepted');
+		$applied = $this->appliedFor($mirror, $request);
+		$this->assertEquals(9, count($applied),
+			'all nine commands of the one aggregate were executed');
+		$this->assertEquals($hashes, $mirror->daemonExecutedErases(),
+			'and all three members were erased, in the order the batch carried them');
+		$this->assertEquals(array('9/3'), $this->aggregateSends($mirror),
+			'the producer had SENT exactly one destructive request, of nine'
+				.' commands carrying three erases');
+		$this->assertEquals(array('9/3/answered'), $this->aggregateExecutions($mirror),
+			'and the daemon EXECUTED all nine of them and answered the batch,'
+				.' after its client was already gone');
+		$afterBarrier = array();
+		foreach($applied as $record)
+			if($record['ordinal'] > 3)
+				$afterBarrier[] = $record['client_alive'];
+		$this->assertEquals(array(false, false, false, false, false, false),
+			$afterBarrier,
+			'every command after the barrier was executed with the client'
+				.' already dead: a disconnect stops nothing rTorrent accepted');
+		$answered = null;
+		foreach($mirror->daemonEventsOf('reply-delivered') as $record)
+			if($record['request'] === $request)
+				$answered = $record;
+		$this->assertTrue(is_array($answered) && $answered['client_alive'] === false
+			&& in_array($request, $mirror->daemonReplies(), true),
+			'and its reply was written for a client that was no longer there to'
+				.' read it ('.json_encode($answered).')');
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'kept',
+				'base' => 'kept', 'marker' => 'owed', 'manifest' => 'none',
+				'bound' => 'bound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'the dead producer published nothing and discharged nothing for '
+					.$hash.', so every obligation survives it');
+		// Recovery: the real guarded worker, restarted exactly as the scheduler
+		// starts it.
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'deleted',
+				'base' => 'deleted', 'marker' => 'discharged', 'manifest' => 'none',
+				'bound' => 'unbound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'the recovery carried '.$hash.'\'s obligation out against its OWN'
+					.' payload and retired the record that held it');
+		$this->assertEquals($hashes, $mirror->daemonExecutedErases(),
+			'the recovery erased nothing twice: the daemon still records exactly'
+				.' the three erases its own batch executed');
+		$this->assertEquals('present', $mirror->daemonHolds($decoy) ? 'present' : 'absent',
+			'the download no manifest of this batch names was never touched');
+		$this->assertTrue(file_get_contents($payloads[$decoy].'/a.bin') === $decoyBytes,
+			'and its payload is byte-for-byte what it was');
+		$this->assertEquals(1, count($mirror->daemonEventsOf('barrier-reached')),
+			'the barrier fired exactly once, inside the producer\'s own batch');
+		$this->assertEquals(array(), $mirror->daemonEventsOf('barrier-timeout'),
+			'and no barrier was reached by waiting one out');
+		$this->stopAggregateDaemon($mirror, $daemon, 'producer-death');
+	}
+
+	public function testDaemonDeathAfterFirstAggregateEraseRecoversRemainingMembers()
+	{
+		$this->reset();
+		$invariant = 'a daemon that stops between the first and second executed'
+			.' d.erase of ONE aggregate batch leaves the producer with no answer'
+			.' at all: nothing is published for the member that really was'
+			.' erased either, every obligation is retained, and a later worker'
+			.' reconciles each member against the daemon\'s own presence';
+		if(!$this->requireApi(array('ErasedataProductionMirror::scriptAggregate',
+			'ErasedataProductionMirror::daemonCommand',
+			'erasedataTestDescriptorsNaming()'), $invariant))
+			return;
+		$mirror = $this->mirror('aggregate-daemon-death');
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$decoy = $this->hash('D');
+		$payloads = $this->aggregatePayloads(array_merge($hashes, array($decoy)));
+		$decoyBytes = file_get_contents($payloads[$decoy].'/a.bin');
+		$table = $this->aggregateHashTable($payloads);
+		$mirror->scriptRpc($this->drainScript());
+		$this->assertTrue($mirror->scriptAggregate(array(
+			'aggregate' => array('after_erase' => 1, 'mode' => 'pause-after-erase',
+				'barrier' => 'first-erase-applied'),
+			'hashes' => $table,
+		)), 'the daemon fixture is configured to stop at the first executed erase');
+		$daemon = $this->startAggregateDaemon($mirror, 'daemon-death');
+		// force=2, so the admission really has to take a directory capability
+		// per member and hold it through the erase.
+		$producer = $this->actionDoor($mirror, $hashes, 2);
+		$this->assertTrue($this->acknowledgeOnce($mirror, $producer, 25),
+			'a real guarded child acknowledged the exact generation the producer armed');
+		$this->assertTrue($mirror->daemonWaitFile('barrier', 25),
+			'the daemon really reached the first executed d.erase INSIDE the batch');
+		$barrier = $this->barrierRecord($mirror);
+		$request = is_array($barrier) ? $barrier['request'] : '';
+		$this->assertTrue(is_array($barrier) && $barrier['ordinal'] === 3
+			&& $barrier['erased'] === 1 && $barrier['hash'] === $hashes[0],
+			'the barrier is three commands into the aggregate, on the first'
+				.' member\'s own d.erase ('.json_encode($barrier).')');
+		// The force-2 capability, observed rather than assumed: the stopped
+		// producer really holds an open descriptor naming each member's base
+		// directory. Reading it by dev/ino through /proc is exactly how
+		// ErasedataFilesystemOps::descriptorsNamingIdentity() recognises its
+		// own, and /proc is the same runtime the capability itself needs
+		// (erasedataDescriptorCandidates()).
+		$producerPid = $producer->pid();
+		foreach($hashes as $hash)
+		{
+			$naming = erasedataTestDescriptorsNaming($producerPid, $payloads[$hash]);
+			$this->assertTrue(is_array($naming) && count($naming) >= 1,
+				'the force-2 producer stopped inside the erase still holds an open'
+					.' descriptor on '.$hash.'\'s base directory ('
+					.json_encode($naming).')');
+		}
+		$this->assertEquals(array(),
+			erasedataTestDescriptorsNaming($producerPid, $payloads[$decoy]),
+			'and holds no descriptor at all on the base of a download it never admitted');
+		foreach($hashes as $hash)
+			$this->assertEquals('busy',
+				$this->lockProbe($mirror->listPath.'/'.$hash.'.lock', 'daemon-death'),
+				'a real second process finds '.$hash.'\'s lock held by the'
+					.' producer stopped inside the aggregate erase');
+		// Now the DAEMON dies, not the client. The transport closes with no
+		// reply of any kind, which is what production would see: rTorrent that
+		// stops mid-multicall sends nothing that the SCGI reader will hand on.
+		$mirror->daemonAskStop();
+		$this->assertTrue($daemon->wait(25), 'the daemon fixture really stopped');
+		$daemonCode = $daemon->reap();
+		$this->assertTrue($daemonCode === 0,
+			'it closed its transport and exited on its own (exit '
+				.var_export($daemonCode, true).')');
+		$stopped = $mirror->daemonEventsOf('daemon-stopped');
+		$this->assertTrue(count($stopped) === 1
+			&& $stopped[0]['reason'] === 'stopped-at-barrier',
+			'and it recorded that it stopped at the barrier, mid-batch');
+		$this->assertTrue(!in_array($request, $mirror->daemonReplies(), true),
+			'no reply of any kind was written for the half-executed batch: a lost'
+				.' transport is never a successful array of the first replies');
+		// The PRODUCER survives its daemon and finishes on its own terms.
+		$this->assertTrue($producer->wait(30),
+			'the producer, which was never killed, finished by itself');
+		$producerCode = $producer->reap();
+		$this->assertTrue($producerCode === 0,
+			'the surviving producer exited normally (exit '
+				.var_export($producerCode, true).')');
+		$this->assertEquals(array($hashes[0]), $mirror->daemonExecutedErases(),
+			'exactly one member was really erased, and the other two never were');
+		$this->assertEquals(3, count($this->appliedFor($mirror, $request)),
+			'three of the nine commands the producer sent were executed');
+		$this->assertEquals(array('9/3'), $this->aggregateSends($mirror),
+			'while the producer had SENT all nine of them in one request');
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => $hash === $hashes[0] ? 'absent' : 'present',
+				'payload' => 'kept', 'base' => 'kept', 'marker' => 'owed',
+				'manifest' => 'none', 'bound' => 'bound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'with its answer lost the producer published nothing for '.$hash
+					.', not even for the member that really was erased');
+		$unresolved = 0;
+		foreach($mirror->log() as $line)
+			if(strpos($line, 'erasedata: erase-unresolved ') === 0)
+				$unresolved++;
+		$this->assertTrue($unresolved >= 1,
+			'and it said so: the members it could not account for are reported'
+				.' as unresolved, not as erased');
+		// The daemon comes back with exactly what it had executed. A restart
+		// resumes no lost batch: B and C are still there because nothing ever
+		// ran their commands.
+		$this->assertTrue($mirror->scriptAggregate(array(
+			'aggregate' => array('after_erase' => 0, 'mode' => 'none',
+				'barrier' => 'none'),
+			'hashes' => $table,
+		)), 'the daemon is reconfigured with no barrier for the recovery phase');
+		$daemon = $this->startAggregateDaemon($mirror, 'daemon-death-restart');
+		$this->assertEquals(array($hashes[0]), $mirror->daemonExecutedErases(),
+			'the restarted daemon kept exactly the one erase it had executed');
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'deleted',
+				'base' => 'deleted', 'marker' => 'discharged', 'manifest' => 'none',
+				'bound' => 'unbound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'the recovery reconciled '.$hash.' against the daemon\'s own'
+					.' presence and carried its obligation out against its own payload');
+		$this->assertEquals($hashes, $mirror->daemonExecutedErases(),
+			'B and C were erased once each by the recovery, and A was not erased twice');
+		// The recovery's own aggregate is the happy path: one unbroken request
+		// for the two members that were still there, answered in full.
+		$this->assertEquals(array('9/3', '6/2'), $this->aggregateSends($mirror),
+			'the recovery sent one aggregate of six commands carrying two erases');
+		$this->assertEquals(array('3/1/unanswered', '6/2/answered'),
+			$this->aggregateExecutions($mirror),
+			'the producer\'s nine commands were executed three deep and never'
+				.' answered, and the recovery\'s six ran whole and were answered'
+				.' in full: the happy path, with no break');
+		$this->assertEquals('present', $mirror->daemonHolds($decoy) ? 'present' : 'absent',
+			'the download no manifest of this batch names was never touched');
+		$this->assertTrue(file_get_contents($payloads[$decoy].'/a.bin') === $decoyBytes,
+			'and its payload is byte-for-byte what it was');
+		$this->stopAggregateDaemon($mirror, $daemon, 'daemon-death-restart');
+	}
+
+	public function testDaemonDeathAfterSecondAggregateEraseRetainsOnlyTheLastMember()
+	{
+		$this->reset();
+		$invariant = 'the same boundary one command further in: with two of the'
+			.' three erases of a batch executed and the transport then lost, the'
+			.' third member is still held by the daemon, every obligation is'
+			.' retained, and the recovery erases exactly the one member that'
+			.' remains';
+		if(!$this->requireApi(array('ErasedataProductionMirror::scriptAggregate',
+			'ErasedataProductionMirror::daemonCommand'), $invariant))
+			return;
+		$mirror = $this->mirror('aggregate-second-erase');
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$decoy = $this->hash('D');
+		$payloads = $this->aggregatePayloads(array_merge($hashes, array($decoy)));
+		$decoyBytes = file_get_contents($payloads[$decoy].'/a.bin');
+		$table = $this->aggregateHashTable($payloads);
+		$mirror->scriptRpc($this->drainScript());
+		$this->assertTrue($mirror->scriptAggregate(array(
+			'aggregate' => array('after_erase' => 2, 'mode' => 'stop-after-erase',
+				'barrier' => 'second-erase-applied'),
+			'hashes' => $table,
+		)), 'the daemon fixture is configured to stop at the SECOND executed erase');
+		$daemon = $this->startAggregateDaemon($mirror, 'second-erase');
+		$producer = $this->actionDoor($mirror, $hashes, 1);
+		$this->assertTrue($this->acknowledgeOnce($mirror, $producer, 25),
+			'a real guarded child acknowledged the exact generation the producer armed');
+		$this->assertTrue($daemon->wait(30),
+			'the daemon stopped itself at the second executed erase');
+		$daemon->reap();
+		$barrier = $this->barrierRecord($mirror);
+		$this->assertTrue(is_array($barrier) && $barrier['ordinal'] === 6
+			&& $barrier['erased'] === 2 && $barrier['hash'] === $hashes[1],
+			'the barrier is six commands into the aggregate, on the second'
+				.' member\'s own d.erase ('.json_encode($barrier).')');
+		$this->assertEquals(array($hashes[0], $hashes[1]),
+			$mirror->daemonExecutedErases(),
+			'A and B were executed and C was not');
+		$request = is_array($barrier) ? $barrier['request'] : '';
+		$this->assertTrue(!in_array($request, $mirror->daemonReplies(), true),
+			'and the half-executed batch was answered with nothing at all');
+		$this->assertTrue($producer->wait(30),
+			'the producer, which was never killed, finished by itself');
+		$producer->reap();
+		foreach($hashes as $hash)
+			$this->assertEquals(array(
+				'daemon' => $hash === $hashes[2] ? 'present' : 'absent',
+				'payload' => 'kept', 'base' => 'kept', 'marker' => 'owed',
+				'manifest' => 'none', 'bound' => 'bound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'nothing was published or discharged for '.$hash.' on an answer'
+					.' that never arrived');
+		$this->assertTrue($mirror->scriptAggregate(array(
+			'aggregate' => array('after_erase' => 0, 'mode' => 'none',
+				'barrier' => 'none'),
+			'hashes' => $table,
+		)), 'the daemon is reconfigured with no barrier for the recovery phase');
+		$daemon = $this->startAggregateDaemon($mirror, 'second-erase-restart');
+		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		$this->assertEquals($hashes, $mirror->daemonExecutedErases(),
+			'the recovery erased exactly the one member that was still there,'
+				.' and neither of the two that had already gone');
+		$this->assertEquals(array('9/3', '3/1'), $this->aggregateSends($mirror),
+			'and it sent one aggregate of three commands carrying one erase');
+		$this->assertEquals(array('6/2/unanswered', '3/1/answered'),
+			$this->aggregateExecutions($mirror),
+			'the producer\'s nine commands were executed six deep and never'
+				.' answered, and the recovery\'s three ran whole and were'
+				.' answered in full');
+		foreach($hashes as $hash)
+			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'deleted',
+				'base' => 'deleted', 'marker' => 'discharged', 'manifest' => 'none',
+				'bound' => 'unbound'),
+				$this->memberState($mirror, $payloads, $hash),
+				'and every member ends with its own payload deleted and its'
+					.' obligation discharged, including '.$hash);
+		$this->assertEquals('present', $mirror->daemonHolds($decoy) ? 'present' : 'absent',
+			'the download no manifest of this batch names was never touched');
+		$this->assertTrue(file_get_contents($payloads[$decoy].'/a.bin') === $decoyBytes,
+			'and its payload is byte-for-byte what it was');
+		$this->stopAggregateDaemon($mirror, $daemon, 'second-erase-restart');
+	}
+
+	public function testRestartAfterVolatileScheduleLossRearmsTheExactGeneration()
+	{
+		$this->reset();
+		$invariant = 'a daemon restart that loses the volatile schedule re-arms'
+			.' the exact per-user drain key from durable state alone';
+		$mirror = $this->mirror('restart-rearm');
+		$mirror->scriptRpc($this->drainScript());
+		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$producer->wait(20);
+		$producer->reap();
+		$before = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($before) && isset($before['generation']),
+			'the producer left a durable generation to recover');
+		// The restart: rTorrent forgot every schedule, and the plugin loader
+		// runs the real init.php again with its own globals.
+		@unlink($mirror->settings.'/rpc.log');
+		$startup = $mirror->writeRunner('startup',
+			'$theSettings = rTorrentSettings::get();'."\n"
+			.'$plugin = array("name" => "erasedata");'."\n"
+			.'$pInfo = array("perms" => 0);'."\n"
+			.'$jResult = "";'."\n"
+			.'require('.var_export($mirror->pluginDir.'/init.php', true).");\n");
+		$children = array(
+			'startup' => ErasedataTestProcess::start($mirror->php($startup)),
+			'worker' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+		);
+		$this->runChildren($children, 30, $invariant);
+		$drain = array();
+		$periodic = 0;
+		foreach($mirror->scheduleLog() as $record)
+		{
+			if($record['family'] !== 'schedule')
+				continue;
+			if(strpos((string)$record['key'], 'erasedata-drain') === 0)
+				$drain[] = $record['key'];
+			else if(strpos((string)$record['key'], 'erasedata') === 0)
+				$periodic++;
+		}
+		$this->assertTrue($periodic >= 1,
+			'startup still arms the ordinary periodic collector schedule');
+		$this->assertEquals(array('erasedata-drainrutorrent'),
+			array_values(array_unique($drain)),
+			'and re-arms the exact per-user drain key after the restart');
+		$after = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($after) && isset($after['generation'])
+			&& isset($before['generation'])
+			&& $after['generation'] === $before['generation'],
+			'the recovered generation is the one that was durable before the restart');
+	}
+
+	public function testGlobalLockBypassWouldShowOverlapInSharedRecovery()
+	{
+		$this->reset();
+		$invariant = 'two guarded workers started at the same time overlap in no'
+			.' shared recovery work: exactly one consumes each obligation';
+		$mirror = $this->mirror('global-lock');
+		$mirror->scriptRpc($this->drainScript());
+		$hashes = array($this->hash('A'), $this->hash('B'));
+		$producer = $this->actionDoor($mirror, $hashes, 1);
+		$producer->wait(20);
+		$producer->reap();
+		// The producer stages its own manifests, so it issues its own
+		// d.get_base_path calls; it is fully reaped before either worker starts,
+		// so this index cuts the transcript into a producer-only half and a
+		// worker-only half.
+		$beforeWorkers = count($mirror->rpcLog());
+		// This case is named for a lock and used to be decided by nothing but
+		// the END STATE, which is the same whether a lock did the separating or
+		// luck did: it passed unchanged with EVERY flock acquisition refusal
+		// deleted from removewithdata.php -- the two children then ran complete
+		// ticks side by side, collided in their collectors, and still left one
+		// staging per hash and an empty queue behind. (The weakness is older
+		// than the package 6 repairs: the pre-rewrite shape passes the same
+		// mutation against pre-repair production, so it was inherited rather
+		// than introduced. It is fixed here rather than recorded as debt.)
+		//
+		// What actually separates them is asserted below instead. Two things are
+		// needed for that to mean anything: the children must really be inside
+		// the same window, and the loser must be the LOCK's doing.
+		//
+		// The window is widened deliberately, and only for the workers, so the
+		// producer above still runs at full speed: each d.get_base_path of a
+		// recovery holds its caller for 0.6s. The winner therefore stays inside
+		// its pass, holding the nonblocking worker admission, for well over a
+		// second -- three orders of magnitude longer than the skew between two
+		// proc_open() starts. Without it the two children still overlap on this
+		// machine, measured, but only by the ~20ms a whole tick takes, and a
+		// case whose premise depends on a 20ms window on a shared box is one
+		// scheduling hiccup away from passing vacuously.
+		$slow = $this->drainScript();
+		$slow['d.get_base_path']['delay'] = 600000;
+		$mirror->scriptRpc($slow);
+		$children = array(
+			'first' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+			'second' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
+		);
+		$this->runChildren($children, 30, $invariant);
+		// The overlap itself, stated rather than assumed, and the one assertion
+		// here that the locks carry: exactly one of the two children got worker
+		// admission, and the other said so by its own classified reason. Delete
+		// the flock refusals and this line is what goes missing -- both children
+		// are admitted, both run a whole tick, and every count below still
+		// reads exactly as it does on a healthy queue. Either child may be the
+		// loser: whichever reaches the nonblocking admission second reports.
+		$busy = 0;
+		foreach($mirror->log() as $line)
+			if(strpos($line, 'erasedata: worker-busy ') === 0)
+				$busy++;
+		$this->assertEquals(1, $busy,
+			'the two workers really were inside the same window, and exactly one'
+				.' of them was refused worker admission and consumed nothing');
+		$erased = $this->mirrorErased($mirror);
+		$this->assertEquals(count($erased), count(array_unique($erased)),
+			'no hash is erased twice by two overlapping workers');
+		// SUPERSEDED SHAPE. This used to tally the <HASH>.<gen>.*.list files left
+		// in the queue after both workers exited. The worker repair (P02, step
+		// (5) of erasedataDrainWorkerRun) makes a complete tick collect what it
+		// published and retire under the same pass locks, so a final manifest is
+		// consumed inside the tick that wrote it and the queue is legitimately
+		// empty by the time the children are reaped -- the old tally measured a
+		// transient the repair deliberately removed, and its vacuity guard then
+		// fired on a queue that had in fact been fully drained.
+		//
+		// The witness that survives collection is the RPC transcript. A drain
+		// worker can only publish a hash by first rebuilding its manifest through
+		// erasedataCollectPaths(), whose first call is d.get_base_path <hash>, so
+		// one entry per hash means exactly one worker did that work and two
+		// entries for one hash means the two workers overlapped on it. Zero
+		// entries means no recovery happened at all, which is what keeps the
+		// per-hash equality below non-vacuous.
+		// (testDrainCollectsPayloadAndRetiresBeforeReleasingPassLocks is the case
+		// that pins the collect-and-retire behaviour itself.)
+		$staged = array();
+		foreach(array_slice($mirror->rpcLog(), $beforeWorkers) as $request)
+			foreach($request as $command)
+			{
+				if(!isset($command['command'])
+					|| $command['command'] !== 'd.get_base_path')
+					continue;
+				$argv = isset($command['params']) && is_array($command['params'])
+					? $command['params']
+					: array(isset($command['params']) ? $command['params'] : null);
+				$hash = array_key_exists(0, $argv) ? (string)$argv[0] : '';
+				$staged[$hash] = isset($staged[$hash]) ? $staged[$hash] + 1 : 1;
+			}
+		ksort($staged, SORT_STRING);
+		$this->assertEquals($hashes, array_keys($staged),
+			'the shared recovery really rebuilt and published every member of the batch');
+		foreach($staged as $hash => $count)
+			$this->assertEquals(1, $count,
+				'exactly one worker staged and published '.$hash);
+		$this->assertEquals(array(), glob($mirror->listPath.'/*.pending'),
+			'every obligation of the batch is discharged');
+		$this->assertEquals(array(), glob($mirror->listPath.'/*.tmp'),
+			'and no staging object of the batch is left behind');
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+			'a real guarded child acknowledged, so the shared recovery really ran');
+	}
+
+	// -- the seven defects the real-daemon lab and the slice review found ----
+
+	// D1. The empty user is a REAL user, not an absent one.
+	//
+	// User::getUser() answers '' on every install without HTTP authentication
+	// and on every install with $forbidUserSettings = true -- which is the
+	// shipped image's own generated config -- and erase.php has documented that
+	// since the exact base. A protocol that refused '' refused every removal on
+	// a single-user install: measured against a real rTorrent 0.16.21, the HTTP
+	// door answered false, wrote nothing, sent no RPC and left the payload on
+	// disk, where the exact base erased the download and deleted the data.
+	//
+	// What must still be refused is a MISMATCH between the user a producer
+	// admitted under and the user a child, a retirement or a re-arm carries.
+	// Emptiness itself is not a mismatch, and '' is not a wildcard either.
+	public function testTheEmptyUserOfASingleUserInstallIsAdmittedAndDrainedEndToEnd()
+	{
+		$this->reset();
+		$invariant = 'the empty User::getUser() of a single-user install is a'
+			.' real user: admitted, armed, acknowledged, drained and retired end'
+			.' to end on its own erasedata-drain key, while a user mismatch in'
+			.' either direction is still refused';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataDrainWorkerRun()', 'erasedataRetirementRun()',
+			'erasedataDrainWorkerCommand()', 'erasedataDrainScheduleKey()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$single = $this->dependencies(array('user' => ''));
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		$this->acknowledgeOnRegistration($queue);
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$outcome = erasedataRemovalAdmissionRun($single, array($hash), 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['published'])
+			&& $outcome['published'] === array($hash),
+			'the single-user install admits the removal and publishes its manifest');
+		$this->assertEquals(array($hash), rXMLRPCRequest::$erased,
+			'and really erases the download it was asked to');
+		$this->assertEquals(1, count($this->manifestFiles($hash)),
+			'exactly one final manifest stands for the collector');
+		$this->assertEquals(array(), glob($queue.'/*.pending'),
+			'and the obligation marker is discharged');
+		$registrations = $this->scheduleRecords('schedule');
+		$this->assertEquals(1, count($registrations),
+			'the drain schedule is armed exactly once');
+		$this->assertEquals('erasedata-drain',
+			count($registrations) ? $registrations[0]['key'] : null,
+			'on the bare per-user key the empty user owns');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('', is_array($state) && isset($state['user'])
+			? $state['user'] : null,
+			'and the durable state records the empty user as the owner');
+		$generation = is_array($state) && isset($state['generation'])
+			? $state['generation'] : null;
+		$this->assertTrue($generation !== null
+			&& $generation !== '0000000000000000',
+			'on a real generation, not the zero one');
+		// The child the scheduler would start carries the SAME empty user.
+		$command = erasedataDrainWorkerCommand('');
+		$this->assertTrue(is_string($command)
+			&& strpos($command, ' '.escapeshellarg('').' '.escapeshellarg('drain')) !== false,
+			'the scheduled child receives the same empty user as its own argv word');
+		// A real internal tick for the empty user acknowledges its generation.
+		$state['acknowledged'] = '0000000000000000';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'the acknowledgement is wound back so the tick has something to do');
+		$this->assertTrue(erasedataDrainWorkerRun($single) !== false,
+			'a drain tick started for the empty user runs to a decision');
+		$after = erasedataReadDrainState($queue);
+		$this->assertEquals($generation, is_array($after) && isset($after['acknowledged'])
+			? $after['acknowledged'] : null,
+			'and the empty user acknowledges exactly its own durable generation');
+		// And what it armed, it can retire.
+		foreach($this->manifestFiles($hash) as $collected)
+			@unlink($collected);
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue($this->retire($single) === true,
+			'a drained single-user queue really retires its own schedule');
+		$removals = $this->scheduleRecords('schedule_remove');
+		$this->assertEquals(1, count($removals),
+			'with exactly one mapped schedule_remove');
+		$this->assertEquals('erasedata-drain',
+			count($removals) ? $removals[0]['key'] : null,
+			'on the exact bare drain key, never the collector key');
+
+		// The other half: '' binds exactly, it does not match anything.
+		$this->reset();
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$owned = array('version' => 1, 'user' => 'somebody-else',
+			'generation' => '0000000000000003', 'acknowledged' => '0000000000000003',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $owned) === true,
+			'the queue is armed for a named user');
+		$this->assertTrue($this->retire(
+			$this->dependencies(array('user' => ''))) === false,
+			'the empty user never retires a schedule another user armed');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and sends no schedule_remove on their behalf');
+		$this->assertTrue(erasedataDrainWorkerRun(
+			$this->dependencies(array('user' => ''))) === false,
+			'nor acknowledges on their queue');
+		$observed = erasedataReadDrainState($queue);
+		$this->assertEquals('somebody-else', is_array($observed) && isset($observed['user'])
+			? $observed['user'] : null,
+			'which keeps its owner exactly as it was found');
+		$owned['user'] = '';
+		$this->assertTrue(erasedataWriteDrainState($queue, $owned) === true,
+			'and now the queue belongs to the empty user instead');
+		$this->assertTrue(erasedataDrainWorkerRun(
+			$this->dependencies(array('user' => 'rutorrent'))) === false,
+			'a named user never acknowledges on the empty user\'s queue either');
+		$observed = erasedataReadDrainState($queue);
+		$this->assertEquals('0000000000000003',
+			is_array($observed) && isset($observed['acknowledged'])
+				? $observed['acknowledged'] : null,
+			'and writes nothing into it');
+
+		// The lab reproduction itself: the REAL shipped HTTP door, in a real
+		// child process, on a mirror whose User::getUser() is the empty string.
+		$this->reset();
+		$mirror = $this->mirror('single-user', '');
+		$payload = $mirror->root.'/single-user-payload.bin';
+		file_put_contents($payload, 'the real child must collect this payload');
+		$script = $this->drainScript();
+		$script['d.get_base_path']['val'] = array($payload, 0, $payload);
+		$mirror->scriptRpc($script);
+		$door = $this->actionDoor($mirror, array($this->hash('C')), 1, 'single-user-door');
+		$this->runChildrenScheduled($mirror, array('door' => $door), 40, $invariant);
+		// The producer can finish before its acknowledging child collects, so
+		// allow a successor tick to finish any interrupted collection.
+		$drain = ErasedataTestProcess::start($mirror->drainCommand());
+		$this->assertTrue($drain->wait(5.0), 'the real successor drain finishes');
+		$this->assertEquals(0, $drain->reap(), 'the real successor drain exits successfully');
+		clearstatcache();
+		$this->assertTrue(!file_exists($payload), 'the real single-user drain deletes the payload');
+		$this->assertEquals(0, count(glob($mirror->listPath.'/'.$this->hash('C').'.*.list')),
+			'the real single-user drain consumes the published final manifest');
+		$this->assertTrue(strpos($door->out, 'false') === false,
+			'and answers the user with an outcome rather than false: '
+				.trim(substr($door->out, 0, 200)));
+		$mirrorState = $this->mirrorState($mirror);
+		$this->assertEquals('', is_array($mirrorState) && isset($mirrorState['user'])
+			? $mirrorState['user'] : null,
+			'the real child and the real door agree the empty user owns this queue');
+		$armed = array();
+		foreach($mirror->scheduleLog() as $record)
+			if($record['family'] === 'schedule'
+				&& strpos((string)$record['key'], 'erasedata-drain') === 0)
+				$armed[(string)$record['key']] = true;
+		$this->assertEquals(array('erasedata-drain'), array_keys($armed),
+			'on the exact bare drain key');
+	}
+
+	// D2, first half. A finished generation must stop blocking its own
+	// retirement.
+	//
+	// The journal is half of invariant 10's scan, and before this the only
+	// pruner in the plugin ran on the ADMISSION path. So after the LAST removal
+	// on a queue at least one record always stood, the scan was never empty,
+	// and the durable settled/disarmed writes and the mapped schedule_remove
+	// were unreachable for ever -- measured on a real 0.16.21 against a queue
+	// holding nothing but control files: a forced tick exited 0 and left
+	// phase:armed, while the five-second child kept re-probing erased hashes at
+	// about 1.6 kB/s of faulting-RPC error log.
+	public function testAJournalRecordThatBindsNothingNeverBlocksRetirementForEver()
+	{
+		$this->reset();
+		$invariant = 'a journal record that binds no staging, no marker and no'
+			.' uncollected manifest is pruned durably and stops blocking'
+			.' retirement, in every phase -- while one that still binds'
+			.' something is kept and still refuses';
+		if(!$this->requireApi(array('erasedataRetirementRun()',
+			'erasedataPruneResolvedJournalRecords()', 'erasedataReadDrainState()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$hash = $this->hash('A');
+		$generation = '0000000000000004';
+		foreach(array('published', 'retained', 'erase-started') as $phase)
+		{
+			$this->reset();
+			$queue = $this->queuePath();
+			rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+			$this->armQueue($queue, $generation,
+				array($hash => $queue.'/'.$hash.'.'.$generation.'.1.tmp'), $phase);
+			$this->assertEquals(array(), glob($queue.'/*.tmp'),
+				'the '.$phase.' record binds a staging object that is not there');
+			$this->assertEquals(array(), glob($queue.'/*.pending'),
+				'and no marker of its own');
+			$this->assertEquals(array(), $this->manifestFiles($hash),
+				'and no manifest the collector still owes anything for');
+			$this->assertTrue($this->retire() === true,
+				'a '.$phase.' record that binds nothing no longer blocks retirement');
+			$after = erasedataReadDrainState($queue);
+			$this->assertEquals(0, is_array($after) && isset($after['journal'])
+				? count($after['journal']) : -1,
+				'the '.$phase.' record is pruned durably rather than merely ignored');
+			$this->assertEquals('disarmed', is_array($after) && isset($after['phase'])
+				? $after['phase'] : null,
+				'the durable disarm stands after the '.$phase.' record went');
+			$removals = $this->scheduleRecords('schedule_remove');
+			$this->assertEquals(1, count($removals),
+				'exactly one mapped schedule_remove follows a '.$phase.' record');
+			$this->assertEquals('erasedata-drainrutorrent',
+				count($removals) ? $removals[0]['key'] : null,
+				'on the exact drain key');
+		}
+		// The conservative half, unweakened: a record that still binds ANY of
+		// its three halves is kept and refuses.
+		$bindings = array(
+			'a surviving marker' => 'marker',
+			'a surviving staging object' => 'staging',
+			'an uncollected manifest of its own generation' => 'manifest',
+		);
+		foreach($bindings as $label => $kind)
+		{
+			$this->reset();
+			$queue = $this->queuePath();
+			rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+			$staging = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
+			if($kind === 'staging')
+				@file_put_contents($staging, "x\n");
+			$this->armQueue($queue, $generation, array($hash => $staging), 'retained');
+			if($kind === 'marker')
+				erasedataQueueRequest($queue, $hash, 1, $generation);
+			if($kind === 'manifest')
+				@file_put_contents($queue.'/'.$hash.'.'.$generation.'.1.abc.list', "x\n");
+			$this->assertTrue($this->retire() === false,
+				'a record still bound by '.$label.' refuses retirement');
+			$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+				'and sends no schedule_remove for it');
+			$after = erasedataReadDrainState($queue);
+			$this->assertTrue(is_array($after) && isset($after['journal'][$generation]),
+				'and the record itself is kept, not pruned, on '.$label);
+		}
+	}
+
+	// D2, second half. An orphan marker a refused admission left behind must
+	// not wedge the scan for ever.
+	//
+	// The losing batch of the lab's inverse-concurrency probe was refused AFTER
+	// its markers were written, and the winning batch had already erased both
+	// downloads and deleted their payloads. Those markers survived a container
+	// restart and were still being retried: rTorrent answers "info-hash not
+	// found" for the download, so no file list can ever be read off it and no
+	// manifest can ever be staged -- yet they are `pending`-class candidates, so
+	// they pinned retirement open for ever while every tick paid a faulting RPC.
+	public function testAnOrphanMarkerNothingCanDischargeIsSettledOnceAndReported()
+	{
+		$this->reset();
+		$invariant = 'a marker whose download rTorrent individually says is gone,'
+			.' with no manifest of its generation and no staging object left, is'
+			.' discharged ONCE with a classified line instead of being retried'
+			.' for ever, and the queue can then retire';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataQueueRequest()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000005';
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => $generation,
+			'acknowledged' => $generation, 'phase' => 'armed',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the queue is armed and stable, with no journal record for the marker');
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation) === true,
+			'and carries the marker a refused admission left behind');
+		// Exactly what a real daemon answers for an erased download.
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+		$this->frozen(false, array());
+		$this->stored(false, array());
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		FileUtil::$log = array();
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(is_array($tick), 'the guarded tick runs to a decision');
+		$this->assertEquals(array(), glob($queue.'/*.pending'),
+			'and discharges a marker nothing can ever turn into a manifest');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'without erasing anything to do it');
+		$this->assertEquals(array(), $this->manifestFiles($hash),
+			'and without inventing a manifest for a payload it cannot describe');
+		$reported = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'obligation-unrecoverable') !== false
+				&& strpos($line, $hash) !== false)
+				$reported = true;
+		$this->assertTrue($reported,
+			'the loss is stated, with its canonical hash, rather than swallowed');
+		$this->assertTrue(is_array($tick) && isset($tick['retired'])
+			&& $tick['retired'] === true,
+			'and the same tick can finally retire the schedule it unwedged');
+		$removals = $this->scheduleRecords('schedule_remove');
+		$this->assertEquals(1, count($removals),
+			'with one mapped schedule_remove');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($removals) ? $removals[0]['key'] : null,
+			'on the exact drain key');
+		// Uncertainty is still uncertainty: a probe that answers nothing
+		// definite retains the marker exactly as it found it.
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => $generation,
+			'acknowledged' => $generation, 'phase' => 'armed',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the same queue, armed again');
+		erasedataQueueRequest($queue, $hash, 1, $generation);
+		$this->probe(false, false, array());
+		$this->frozen(false, array());
+		$this->stored(false, array());
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals(1, count(glob($queue.'/*.pending')),
+			'an unknown probe retains the obligation rather than discharging it');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'and retires nothing on the strength of an answer nobody got');
+	}
+
+	// D3. One acknowledgement releases every producer it is at or ahead of.
+	//
+	// A tick raises `acknowledged` to whatever generation the durable state
+	// carries when it runs, and two producers over DISJOINT hash sets are
+	// serialised by no hash lock at all -- one "Remove and delete data" click is
+	// one request, so two tabs are enough. With an exact-equality wait the
+	// earlier producer's generation became permanently unreachable: measured
+	// twice out of two against a real 0.16.21, one door answered false after
+	// exactly ERASEDATA_DRAIN_ACK_TIMEOUT while the other published.
+	public function testAnAcknowledgementReleasesEveryProducerItIsAtOrAheadOf()
+	{
+		$this->reset();
+		$invariant = 'a child\'s acknowledgement satisfies every producer whose'
+			.' generation is at or below the acknowledged one, so two concurrent'
+			.' admissions over disjoint hashes never starve each other';
+		if(!$this->requireApi(array('erasedataWaitForDrainAcknowledgement()',
+			'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$state = array('version' => 1, 'user' => 'rutorrent',
+			'generation' => '000000000000000e', 'acknowledged' => '000000000000000e',
+			'phase' => 'armed', 'journal' => array(), 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'a later producer has already pushed the state past an earlier one');
+		$started = microtime(true);
+		$this->assertTrue(erasedataWaitForDrainAcknowledgement($queue,
+			'000000000000000d', 2.0, 0.02) === true,
+			'the overtaken producer is released by the acknowledgement that passed it');
+		$this->assertTrue((microtime(true) - $started) < 1.0,
+			'at once, rather than after the whole timeout');
+		$this->assertTrue(erasedataWaitForDrainAcknowledgement($queue,
+			'000000000000000e', 2.0, 0.02) === true,
+			'and so is the producer whose generation matches exactly');
+		// The guard is still a guard.
+		$state['acknowledged'] = '0000000000000001';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'an acknowledgement that is BEHIND the waited-for generation');
+		$started = microtime(true);
+		$this->assertTrue(erasedataWaitForDrainAcknowledgement($queue,
+			'000000000000000e', 0.30, 0.02) === false,
+			'releases nobody');
+		$this->assertTrue((microtime(true) - $started) >= 0.25,
+			'and the wait really is bounded by its own timeout');
+		$this->assertTrue(erasedataWaitForDrainAcknowledgement($this->dir.'/no-such-queue',
+			'0000000000000001', 0.10, 0.02) === false,
+			'a state nobody can read releases nobody either');
+
+		// The lab reproduction, with two REAL doors over disjoint real hashes.
+		//
+		// Two things are sequenced deliberately, and neither shortens what is
+		// under test. The second door starts only once the first is past its arm
+		// and into its acknowledgement wait, because starting both in the same
+		// instant sometimes produces the unrelated arm compare-and-swap
+		// collision instead of the acknowledgement race this case is about. And
+		// the scheduler is held back until BOTH producers have staged, which is
+		// what makes the overtake certain rather than lucky: the first tick then
+		// acknowledges the SECOND generation while the first producer is still
+		// waiting for its own. Everything else is the shipped product --
+		// ERASEDATA_DRAIN_ACK_TIMEOUT is still 11.0s and the first door still
+		// waits the whole of it if nothing releases it.
+		$this->reset();
+		$mirror = $this->mirror('disjoint-producers');
+		$mirror->scriptRpc($this->drainScript());
+		$first = $this->actionDoor($mirror, array($this->hash('A')), 1, 'door-a');
+		$armed = false;
+		$armedBy = microtime(true) + 20;
+		while(microtime(true) < $armedBy)
+		{
+			$first->pump();
+			$observed = $this->mirrorState($mirror);
+			if(is_array($observed) && isset($observed['phase'], $observed['journal'])
+				&& $observed['phase'] === 'armed' && is_array($observed['journal'])
+				&& count($observed['journal']) === 1)
+			{
+				$armed = true;
+				break;
+			}
+			if(!$first->running())
+				break;
+			usleep(10000);
+		}
+		$this->assertTrue($armed,
+			'the first producer armed and staged its own generation, and is now'
+				.' waiting for an acknowledgement of it');
+		$doors = array(
+			'first' => $first,
+			'second' => $this->actionDoor($mirror, array($this->hash('B')), 1, 'door-b'),
+		);
+		$ticks = array();
+		$startedAt = null;
+		$both = false;
+		$pending = $doors;
+		$deadline = microtime(true) + 60;
+		while(count($pending) && microtime(true) < $deadline)
+		{
+			foreach($pending as $key => $process)
+			{
+				$process->pump();
+				if(!$process->running())
+					unset($pending[$key]);
+			}
+			if(!count($pending))
+				break;
+			if(!$both)
+			{
+				$observed = $this->mirrorState($mirror);
+				$both = is_array($observed) && isset($observed['journal'])
+					&& is_array($observed['journal']) && count($observed['journal']) >= 2;
+			}
+			if($both)
+				$this->schedulerTick($mirror, $ticks, $startedAt);
+			usleep(20000);
+		}
+		ErasedataTestProcess::reapAll($ticks);
+		ErasedataTestProcess::reapAll($doors);
+		$this->assertTrue(!count($pending),
+			$invariant.': both doors finished inside the budget');
+		$this->assertTrue($both,
+			'both producers really armed disjoint generations at the same time');
+		// SUPERSEDED SHAPE. This used to count one <HASH>.*.list per producer in
+		// the queue after both doors exited. The worker repair (P02, step (5) of
+		// erasedataDrainWorkerRun) makes every drain tick run the real collector
+		// over the whole queue directory, so a manifest published by a producer
+		// is legitimately consumed by the next tick this loop plays -- and this
+		// loop keeps playing the scheduler until BOTH doors have exited, so the
+		// residue is gone before the assertion looks. That is the same contract
+		// 'drain consumes its final manifest' pins above; the two expectations
+		// are contradictory in shape and this is the one that was written
+		// against a worker that collected nothing.
+		//
+		// The stronger replacement is the producer's OWN answer, which is also
+		// better attributed: a hash reaches `published` only after THAT producer
+		// renamed its own staging into the final manifest and discharged its own
+		// pending marker, whereas a .list on disk would equally have been
+		// satisfied by a drain-side recovery publishing on the producer's behalf.
+		$answers = array();
+		foreach($doors as $name => $door)
+		{
+			$answer = json_decode(trim($door->out), true);
+			$this->assertTrue(is_array($answer),
+				'the '.$name.' door answered a decodable outcome');
+			$answers[$name] = is_array($answer) ? $answer : array();
+		}
+		foreach(array('A' => 'first', 'B' => 'second') as $character => $door)
+		{
+			$hash = $this->hash($character);
+			$this->assertEquals(array($hash),
+				isset($answers[$door]['published']) ? $answers[$door]['published'] : null,
+				'the '.$door.' disjoint producer published its own manifest');
+			$this->assertEquals(array(),
+				isset($answers[$door]['retained']) ? $answers[$door]['retained'] : null,
+				'and retained nothing of its own obligation');
+			$this->assertEquals(array(),
+				isset($answers[$door]['refused']) ? $answers[$door]['refused'] : null,
+				'and had nothing of it refused');
+			$this->assertEquals(0,
+				count(glob($mirror->listPath.'/'.$hash.'.*.pending'))
+					+ count(glob($mirror->listPath.'/'.$hash.'.*.tmp')),
+				'and left neither an obligation marker nor staging behind');
+		}
+		$this->assertTrue(isset($answers['first']['generation'],
+				$answers['second']['generation'])
+			&& $answers['first']['generation'] !== $answers['second']['generation'],
+			'each producer completed on its own distinct generation');
+		$erased = $this->mirrorErased($mirror);
+		sort($erased, SORT_STRING);
+		$this->assertEquals(array($this->hash('A'), $this->hash('B')), $erased,
+			'and each disjoint hash was erased exactly once');
+		foreach($doors as $name => $door)
+			$this->assertTrue(strpos($door->out, 'false') === false,
+				'and the '.$name.' door answered its user an outcome, not false: '
+					.trim(substr($door->out, 0, 160)));
+	}
+
+	// F1. Startup recovery must never arm a schedule retirement could not take
+	// away.
+	//
+	// The conservative scan is written for RETIREMENT, which must refuse on
+	// anything it cannot account for, so it also counts `final`, `malformed`,
+	// `residue` and `unknown` entries. Arming on those made the arm predicate
+	// and the retire predicate disagree, and the disagreement is reachable on a
+	// stock install: plugins/httprpc/action.php still runs the legacy producer,
+	// whose <HASH>.<pid>.<uniqid>.list lives about a collector interval,
+	// classifies as `malformed` and never touches the drain state. One full UI
+	// load in that window armed erasedata-drain<User> on the ZERO generation --
+	// which retirement refuses for ever, silently, for the life of the daemon.
+	public function testStartupRecoveryNeverArmsAScheduleRetirementCouldNotTakeAway()
+	{
+		$this->reset();
+		$invariant = 'startup recovery arms only what the drain protocol itself'
+			.' owes, and only on a generation retirement could later retire: a'
+			.' legacy manifest never arms it, a zero generation never arms it,'
+			.' and whatever it does arm can be retired again';
+		if(!$this->requireApi(array('erasedataRearmDrainScheduleRun()',
+			'erasedataRetirementRun()', 'erasedataRetirementScan()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()',
+			'erasedataQueueRequest()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		// (a) The stock install: the legacy httprpc producer has published its
+		// manifest and the collector has not taken it yet.
+		$legacy = $queue.'/'.$this->hash('A').'.31337.65f0a1b2c3d4e5.12345678.list';
+		@file_put_contents($legacy, "x\n");
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue(is_array($scan) && $scan['empty'] === false
+			&& $scan['classes']['malformed'] >= 1,
+			'the legacy manifest really is a candidate the retirement scan refuses on');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery over a queue holding only a legacy manifest succeeds');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and arms no drain schedule at all, because the drain protocol owes nothing');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('0000000000000000', is_array($state)
+			&& isset($state['generation']) ? $state['generation'] : null,
+			'leaving the zero generation exactly as it found it');
+		// (b) A marker whose generation the durable state no longer knows.
+		// Arming here would make a schedule retirement refuses for ever, and a
+		// worker that refused every job it found with generation-unarmed.
+		@unlink($legacy);
+		erasedataQueueRequest($queue, $this->hash('B'), 1, '0000000000000009');
+		rXMLRPCRequest::$scheduledCommands = array();
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === false,
+			'an obligation with no admitted generation behind it fails closed');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and arms nothing on the zero generation');
+		$visible = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'rearm-unarmed') !== false)
+				$visible = true;
+		$this->assertTrue($visible,
+			'and says why, rather than refusing in silence');
+		// (c) The property the two above exist for: whatever startup recovery
+		// DOES arm, retirement can take away again.
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => '0000000000000009',
+			'acknowledged' => '0000000000000009', 'phase' => 'disarmed',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the queue carries the generation that obligation was admitted on');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'a real outstanding obligation on an admitted generation re-arms');
+		$registrations = $this->scheduleRecords('schedule');
+		$this->assertEquals(1, count($registrations), 'exactly once');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($registrations) ? $registrations[0]['key'] : null,
+			'on the exact per-user drain key');
+		foreach(glob($queue.'/*.pending') as $marker)
+			@unlink($marker);
+		$this->assertTrue($this->retire() === true,
+			'and the schedule that arm created really can be retired again');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule_remove')),
+			'with one mapped schedule_remove');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($this->scheduleRecords('schedule_remove'))
+				? $this->scheduleRecords('schedule_remove')[0]['key'] : null,
+			'on the same key it armed');
+	}
+
+	// F2. Re-registering the drain key must not postpone its own countdown.
+	//
+	// php/getplugins.php re-runs every enabled plugin's init.php on EVERY full
+	// load of the web interface, and rTorrent replaces the entry for a reused
+	// key and restarts its countdown at now+start. With start == interval, two
+	// page reloads inside the 11 s acknowledgement window pushed the first tick
+	// past a blocked producer's timeout -- and reloading is exactly what a user
+	// does when a deletion looks stuck. php/settings.php:450-484 documents
+	// getAlignedStart() as the fix for this exact bug and the sibling periodic
+	// collector schedule already uses it.
+	public function testEveryDrainRegistrationResolvesToTheSameAlignedFireInstant()
+	{
+		$this->reset();
+		$invariant = 'the drain registration takes its start from'
+			.' rTorrentSettings::getAlignedStart, so every re-registration of the'
+			.' key resolves to the same absolute fire instant and no number of'
+			.' page loads can postpone a live countdown';
+		$body = $this->productionFunctionBody('removewithdata.php',
+			'function erasedataDrainScheduleCommand($user, $interval)');
+		$this->assertTrue(is_string($body)
+			&& strpos($body, 'rTorrentSettings::getAlignedStart(') !== false,
+			'erasedataDrainScheduleCommand() builds its start with the aligned helper');
+		if(!$this->requireApi(array('erasedataDrainScheduleCommand()',
+			'erasedataRearmDrainScheduleRun()', 'erasedataWriteDrainState()',
+			'erasedataQueueRequest()', 'rTorrentSettings::getAlignedStart'), $invariant))
+			return;
+		$key = 'erasedata-drainrutorrent';
+		$interval = ERASEDATA_DRAIN_INTERVAL;
+		// The property itself, over a whole span of registration instants: one
+		// key, one absolute fire slot, and never an immediate firing.
+		$slots = array();
+		for($now = 1700000000; $now < 1700000000 + 4 * $interval; $now++)
+		{
+			$start = rTorrentSettings::getAlignedStart($key, $interval, $now);
+			$this->assertTrue(is_int($start) && $start >= 1 && $start <= $interval,
+				'an aligned start stays inside the interval at '.$now.': '.$start);
+			$slots[($now + $start) % $interval] = true;
+		}
+		$this->assertEquals(1, count($slots),
+			'every registration instant resolves to the one absolute fire slot');
+		// And the shipped command really carries that start, not now+interval.
+		$expected = null;
+		$argv = array();
+		for($attempt = 0; $attempt < 5; $attempt++)
+		{
+			$at = time();
+			$command = erasedataDrainScheduleCommand('rutorrent', $interval);
+			$expected = rTorrentSettings::getAlignedStart($key, $interval, $at);
+			$argv = ($command instanceof rXMLRPCCommand) && is_array($command->params)
+				? $command->params : array();
+			if($at === time())
+				break;
+		}
+		$this->assertEquals($key, isset($argv[0]) ? $argv[0] : null,
+			'the registration names the exact per-user drain key');
+		$this->assertEquals((string)$expected, isset($argv[1]) ? $argv[1] : null,
+			'and starts at the aligned instant rather than a fresh countdown');
+		$this->assertEquals((string)$interval, isset($argv[2]) ? $argv[2] : null,
+			'while the repeat interval is unchanged');
+		// Behaviourally: three plugin inits over one owed obligation really do
+		// re-register three times -- getplugins.php gives no choice about that
+		// -- and every one of them names the aligned start for the moment it
+		// was made, so none of them moves the fire instant.
+		$queue = $this->queuePath();
+		$stamps = array();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0),
+			'callback' => function($commands) use (&$stamps) { $stamps[] = time(); });
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => '0000000000000007',
+			'acknowledged' => '0000000000000007', 'phase' => 'disarmed',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the queue carries an admitted generation');
+		erasedataQueueRequest($queue, $this->hash('A'), 1, '0000000000000007');
+		for($init = 0; $init < 3; $init++)
+			erasedataRearmDrainScheduleRun($this->dependencies());
+		$registrations = $this->scheduleRecords('schedule');
+		$this->assertEquals(3, count($registrations),
+			'three plugin inits really do re-register the key three times');
+		foreach($registrations as $index => $record)
+		{
+			$start = isset($record['argv'][1]) ? (string)$record['argv'][1] : 'none';
+			$stamp = isset($stamps[$index]) ? $stamps[$index] : null;
+			$aligned = $stamp === null ? array() : array(
+				(string)rTorrentSettings::getAlignedStart($key, $interval, $stamp),
+				(string)rTorrentSettings::getAlignedStart($key, $interval, $stamp - 1));
+			$this->assertTrue(in_array($start, $aligned, true),
+				'registration '.$index.' carries the aligned start for the moment it'
+					.' was made, not a fresh interval: '.$start);
+		}
+	}
+
+	// F3. An empty scan must not leave a stale `armed` claim standing.
+	//
+	// rTorrent's schedule table is volatile and plugin init is the one moment
+	// the loss is plausible. Writing nothing there left the durable phase saying
+	// `armed` over a table the restart had just emptied; the producer's own
+	// live-schedule guard then trusted that claim, registered NO schedule,
+	// waited the whole acknowledgement timeout and refused -- leaving a marker
+	// with nothing scheduled to drain it.
+	public function testStartupRecoveryClearsAStaleArmedClaimWhenNothingIsOwed()
+	{
+		$this->reset();
+		$invariant = 'a plugin init over a queue that owes nothing writes'
+			.' disarmed, so a daemon restart cannot leave an armed claim that'
+			.' makes the next producer register nothing and time out';
+		if(!$this->requireApi(array('erasedataRearmDrainScheduleRun()',
+			'erasedataRemovalAdmissionRun()', 'erasedataReadDrainState()',
+			'erasedataWriteDrainState()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => '0000000000000004',
+			'acknowledged' => '0000000000000004', 'phase' => 'armed',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the queue carries the armed claim a completed admission left behind');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery over a queue that owes nothing succeeds');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and arms nothing, so no live countdown anywhere is restarted');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('disarmed', is_array($state) && isset($state['phase'])
+			? $state['phase'] : null,
+			'but it does correct the claim the restart invalidated');
+		$this->assertEquals('0000000000000004', is_array($state)
+			&& isset($state['generation']) ? $state['generation'] : null,
+			'without inventing or losing a generation to do it');
+		// The consequence, measured: the first removal after the restart really
+		// registers again, and really completes.
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($this->hash('A')));
+		$this->acknowledgeOnRegistration($queue);
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($this->hash('A')), 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['published'])
+			&& $outcome['published'] === array($this->hash('A')),
+			'the first removal after the restart is admitted and published');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'because it registered the drain schedule the restart had lost');
+		// The other side of the same correction: a registration still IN FLIGHT
+		// is left exactly as it is. The producer releases this very lock across
+		// its schedule RPC, so a page load that rewrote the phase on nothing but
+		// the phase itself would break a perfectly good admission -- it keeps
+		// its HASH locks across that RPC, and a held one is the proof somebody
+		// is still inside the window.
+		// testAnAbandonedArmingIsCorrectedOnlyWhenNoProducerHoldsTheQueue owns
+		// both directions of that decision; this is the half that belongs to the
+		// startup-recovery guard itself.
+		$this->reset();
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$this->assertTrue(erasedataWriteDrainState($queue, array('version' => 1,
+			'user' => 'rutorrent', 'generation' => '0000000000000005',
+			'acknowledged' => '0000000000000004', 'phase' => 'arming',
+			'journal' => array(), 'diagnostics' => array())) === true,
+			'the queue carries a registration a producer has in flight right now');
+		$inFlight = erasedataAcquireHashLock($queue, $this->hash('A'), true);
+		$this->assertTrue(is_resource($inFlight),
+			'and the producer really holds the hash lock it took before it armed');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery over it still succeeds');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('arming', is_array($state) && isset($state['phase'])
+			? $state['phase'] : null,
+			'and leaves the arm in flight exactly as it found it');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'without registering a second schedule over it');
+		erasedataReleaseHashLock($inFlight);
+	}
+
+	// A comment that contradicts the code is worse than no comment, and a
+	// dependency key nothing reads is worse than no key.
+	//
+	// Every statement pinned here was TRUE once and was reversed by a later
+	// fix without the sentence being reversed with it. Each of them cost a
+	// reviewer real time: the empty user "has no schedule key" after the fix
+	// that made '' a real user; a duplicate erasedataSharedFileMode() in
+	// removewithdata.php that does not exist; a 'forceEnabled' dependency the
+	// same file explicitly says it does not have; a 'filesystem' key built on
+	// every full web-interface load and thrown away unread; and a self-reporting
+	// retirement wrapper only the tests could ever reach.
+	public function testTheShippedSourceCarriesNoStatementItHasSinceReversed()
+	{
+		$this->reset();
+		// m3: the empty user IS a real user, in the comment as well as the code.
+		$this->sourceLacks('removewithdata.php',
+			'An empty or oversized user has no schedule key',
+			'the worker guard no longer claims the empty user has no schedule key');
+		$this->sourceLacks('removewithdata.php',
+			'with the nonempty user the schedule key was built from',
+			'and neither does the command the scheduler runs');
+		// A2: one owner for the shared file mode, stated once.
+		$this->sourceLacks('filesystem.php',
+			'the same guarded definition for the load orders',
+			'filesystem.php no longer claims a duplicate erasedataSharedFileMode()');
+		$this->assertEquals(1, substr_count((string)$this->productionSource('filesystem.php')
+			.(string)$this->productionSource('removewithdata.php')
+			.(string)$this->productionSource('pending.php'),
+			'function erasedataSharedFileMode('),
+			'because there really is exactly one definition of it');
+		// A2: the admission dependency list, as the runner really reads it.
+		$this->sourceLacks('removewithdata.php',
+			'filesystem, log, forceEnabled',
+			'the admission runner no longer lists a forceEnabled dependency');
+		$this->sourceLacks('removewithdata.php', "'forceEnabled' =>",
+			'and nothing in the shipped plugin passes one');
+		// A1: the re-arm builds exactly what its runner reads.
+		// Delimited by the guard, and scoped by hand to these two: each is the
+		// only function inside its own if(!function_exists(...)) guard. Nothing
+		// in that file is declared at column zero, so a body taken to the next
+		// column-zero "function " would run to the end of it and be satisfied by
+		// any other function's keys. A few guards there do hold more than one
+		// function, so this extractor is only ever pointed at one that does not.
+		$body = $this->guardedFunctionBody('removewithdata.php',
+			'function erasedataRearmDrainSchedule()');
+		$this->assertTrue(is_string($body) && strpos($body, "'listPath' =>") !== false
+			&& strpos($body, "'user' =>") !== false
+			&& strpos($body, "'log' =>") !== false,
+			'the re-arm wrapper builds listPath, user and log');
+		$this->assertTrue(is_string($body) && strpos($body, "'filesystem' =>") === false,
+			'and no filesystem key, which erasedataRearmDrainScheduleRun() never reads');
+		$run = $this->guardedFunctionBody('removewithdata.php',
+			'function erasedataRearmDrainScheduleRun(array $dependencies)');
+		$this->assertTrue(is_string($run) && strpos($run, "['filesystem']") === false,
+			'and the runner really does not read one');
+		// B1: retirement has no self-reporting wrapper for callers production
+		// never had. Its notes are required, and the tick owns the reporting.
+		$this->sourceLacks('removewithdata.php', 'erasedataRetireDrainSchedule',
+			'the reporting wrapper only the tests could reach is gone');
+		$this->sourceHas('removewithdata.php',
+			'function erasedataRetirementRun(array $dependencies, array &$notes)',
+			'and retirement requires the notes list its one production caller reports');
+		$callers = $this->productionCallers('erasedataRetirementRun($');
+		$this->assertTrue(in_array('removewithdata.php', $callers, true),
+			'which really is called in production (found in: '.implode(', ', $callers).')');
+	}
+
+	// N2. A member that FINISHED must not be reported as a loss.
+	//
+	// The settle step's last resort discharges a member rTorrent says is gone
+	// when no manifest of its generation survives and no staging object does
+	// either. Entirely different members satisfy that. One completed perfectly
+	// -- its manifest was published, the collector consumed it and deleted the
+	// payload, and its marker was discharged by whoever finished it, so its
+	// manifest is absent BECAUSE collection worked. Another is a real loss: a
+	// marker still standing for a download that no longer exists, which no
+	// later tick can ever construct a file list for.
+	//
+	// Reported as one reason, the log tells an operator that removals which in
+	// fact completed had lost their payload. Invariant 12 asks for the
+	// consequence to be TRUE, not merely present, so the completed member is
+	// separated out by the marker -- the obligation record itself. This case
+	// pins that separation only; a member served under ANOTHER generation is
+	// indistinguishable here once the winning manifest has been collected, and
+	// is still reported as unrecoverable (see the settle step's comment).
+	public function testACompletedMemberIsNotReportedAsAnUnrecoverableLoss()
+	{
+		$this->reset();
+		$invariant = 'a member whose obligation is already discharged is'
+			.' classified as complete, and only a marker nothing can ever'
+			.' discharge is classified as an unrecoverable loss';
+		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
+			'erasedataPendingMarkerStands()', 'erasedataQueueRequest()',
+			'erasedataPendingMarkerPath()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$generation = '0000000000000005';
+		$finished = $this->hash('A');
+		$lost = $this->hash('B');
+		// Both members were staged under this generation and neither staging
+		// object survives: one was renamed into its final manifest and then
+		// collected, the other never got that far.
+		$this->armQueue($queue, $generation, array(
+			$finished => $queue.'/'.$finished.'.'.$generation.'.1.tmp',
+			$lost => $queue.'/'.$lost.'.'.$generation.'.1.tmp',
+		), 'erase-started');
+		// The obligation record is what separates them. The finished member's
+		// marker was discharged the instant its producer completed; the lost
+		// member's is still standing.
+		$this->assertTrue(erasedataQueueRequest($queue, $lost, 1, $generation) === true,
+			'the member nothing can recover still carries its obligation marker');
+		$this->assertTrue(!file_exists(erasedataPendingMarkerPath($queue, $finished, $generation)),
+			'while the member that completed carries none');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $lost, $generation) === true
+			&& erasedataPendingMarkerStands($queue, $finished, $generation) === false,
+			'and the marker probe tells the two apart');
+		// rTorrent answers individually that both downloads are gone.
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
+		FileUtil::$log = array();
+		$tick = erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(is_array($tick), 'the production tick runs to a decision');
+
+		$unrecoverable = array();
+		$complete = array();
+		foreach(FileUtil::$log as $line)
+		{
+			if(strpos($line, 'obligation-unrecoverable') !== false)
+				$unrecoverable[] = $line;
+			if(strpos($line, 'obligation-complete') !== false)
+				$complete[] = $line;
+		}
+		$this->assertEquals(1, count($unrecoverable),
+			'exactly one member is reported as unrecoverable');
+		$this->assertTrue(count($unrecoverable) === 1
+			&& strpos($unrecoverable[0], 'hash='.$lost) !== false,
+			'and it is the one whose marker nothing could ever discharge');
+		$this->assertTrue(count($unrecoverable) === 1
+			&& strpos($unrecoverable[0], 'download-gone-no-manifest-marker-discharged') !== false,
+			'stated with the consequence that really happened to it');
+		$this->assertEquals(1, count($complete),
+			'and exactly one is reported as already complete');
+		$this->assertTrue(count($complete) === 1
+			&& strpos($complete[0], 'hash='.$finished) !== false,
+			'which is the member that had nothing left to owe');
+		$this->assertTrue(count($complete) === 1
+			&& strpos($complete[0], 'download-gone-obligation-already-discharged') !== false,
+			'and says so rather than claiming a loss that did not happen');
+		foreach($unrecoverable as $line)
+			$this->assertTrue(strpos($line, 'hash='.$finished) === false,
+				'no unrecoverable line names the member that completed');
+
+		// The action taken is the same one that was always taken, and it is
+		// still right: the standing marker is discharged, the tick counts one
+		// loss and one completion, and nothing is left owed.
+		$this->assertTrue(!file_exists(erasedataPendingMarkerPath($queue, $lost, $generation)),
+			'the marker nothing could recover is discharged');
+		$this->assertEquals(1, is_array($tick) && isset($tick['unrecoverable'])
+			? $tick['unrecoverable'] : null,
+			'the tick counts exactly one unrecoverable obligation');
+		$this->assertEquals(0, is_array($tick) && isset($tick['cancelled'])
+			? $tick['cancelled'] : null,
+			'and none of it is counted as a cancellation: they are not the same outcome');
+		$this->assertEquals(1, is_array($tick) && isset($tick['published'])
+			? $tick['published'] : null,
+			'the completed member is counted as discharged, not as a loss');
+		$this->assertEquals(0, is_array($tick) && isset($tick['retained'])
+			? $tick['retained'] : null,
+			'and nothing is left owed by either of them');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals(array(), is_array($state) && isset($state['journal'])
+			? $state['journal'] : null,
+			'and the record that bound them both is closed');
+	}
+
+	// Invariant 2's arithmetic has ONE builder.
+	//
+	// erasedataClassifyEraseOutcomes() partitions the reply list by
+	// ERASEDATA_ERASE_COMMANDS_PER_HASH: member i is individually accepted only
+	// when the list is long enough to hold that member's own third reply. The
+	// file used to build that request in three separate places -- the producer,
+	// the drain pass and the legacy httprpc producer -- while the constant's
+	// own comment demanded they stay in step. A builder that ever gained or
+	// lost a command would mis-partition `E` SILENTLY and publish a final
+	// manifest, a licence to delete a payload, for a download rTorrent still
+	// holds.
+	public function testTheEraseRequestHasOneBuilderThatCannotDriftFromItsConstant()
+	{
+		$this->reset();
+		$invariant = 'every destructive erase request is built by one function'
+			.' whose length per member is exactly the constant'
+			.' erasedataClassifyEraseOutcomes() partitions by';
+		if(!$this->requireApi(array('erasedataEraseRequest()',
+			'erasedataEraseCommandsForHash()',
+			'erasedataClassifyEraseOutcomes()'), $invariant))
+			return;
+		// The builder and the constant agree, measured on the commands a real
+		// request really carried rather than read off the source.
+		$this->eraseOk();
+		foreach(array(array($this->hash('A')),
+			array($this->hash('A'), $this->hash('B')),
+			array($this->hash('A'), $this->hash('B'), $this->hash('C'))) as $batch)
+		{
+			$request = erasedataEraseRequest($batch);
+			$this->assertTrue($request instanceof rXMLRPCRequest,
+				'a batch of '.count($batch).' builds a request');
+			rXMLRPCRequest::$commandCalls = array();
+			if($request instanceof rXMLRPCRequest)
+				$request->run();
+			$sent = count(rXMLRPCRequest::$commandCalls)
+				? rXMLRPCRequest::$commandCalls[0] : array();
+			$this->assertEquals(count($batch) * ERASEDATA_ERASE_COMMANDS_PER_HASH,
+				count($sent),
+				'carrying exactly ERASEDATA_ERASE_COMMANDS_PER_HASH commands per member');
+		}
+		$this->assertEquals(ERASEDATA_ERASE_COMMANDS_PER_HASH,
+			count(erasedataEraseCommandsForHash($this->hash('A'))),
+			'and the per-member builder itself is exactly that long');
+		// The order is part of the contract: the classifier counts positions.
+		$names = array();
+		foreach(erasedataEraseCommandsForHash($this->hash('A')) as $command)
+			$names[] = $command->command;
+		$this->assertEquals(array('d.set_custom5', 'd.delete_tied', 'd.erase'),
+			$names, 'in the exact order the classifier partitions by');
+
+		// The drift guard. Every destructive call site in the shipped plugin
+		// goes through the one builder, so no two of them can disagree: the
+		// erase commands are written down in exactly one place.
+		$callers = $this->productionCallers('erasedataEraseRequest(');
+		$this->assertTrue(in_array('removewithdata.php', $callers, true),
+			'the builder has a production caller (found in: '.implode(', ', $callers).')');
+		$bytes = $this->productionSource('removewithdata.php');
+		$this->assertTrue(is_string($bytes) && $bytes !== '',
+			'the shipped producer is readable for inspection');
+		foreach(array('d.erase', 'd.delete_tied', 'd.set_custom5') as $command)
+		{
+			$written = 0;
+			foreach(array("getCmd('".$command."')", 'getCmd("'.$command.'")') as $spelling)
+			{
+				$offset = 0;
+				while(is_string($bytes)
+					&& ($at = strpos($bytes, $spelling, $offset)) !== false)
+				{
+					$written++;
+					$offset = $at + 1;
+				}
+			}
+			$this->assertEquals(1, $written,
+				$command.' is written in exactly one place in the shipped plugin,'
+					.' so no second builder can drift from the constant');
+		}
+		// And the classifier really does read the constant rather than a
+		// hardcoded three of its own.
+		$this->sourceHas('removewithdata.php',
+			'* ERASEDATA_ERASE_COMMANDS_PER_HASH',
+			'the classifier derives its per-member stride from the constant');
+	}
+
+	// N1. Two removals started together must both happen.
+	//
+	// The arm is a compare-and-swap over the durable state, and the state lock
+	// is released across the registration RPC, so two producers that start from
+	// a queue AT REST both write their own `arming` and the one that wrote
+	// first no longer finds it when it comes back. Before retirement worked,
+	// `armed` was the resting state and a second producer never entered the
+	// window at all; now `disarmed` is the resting state and the collision is
+	// the COMMON case -- 6 of 6 on a real daemon, where "select two torrents,
+	// remove and delete data" left one of them silently untouched.
+	//
+	// The loser has staged nothing, written no marker and erased nothing, so it
+	// re-enters the arm instead of refusing the user's removal.
+	public function testTheArmCompareAndSwapLoserRetriesInsteadOfRefusing()
+	{
+		$this->reset();
+		$invariant = 'a producer that loses the arm compare-and-swap re-enters'
+			.' the arm with a new generation and completes the removal, rather'
+			.' than refusing an admission that had staged nothing';
+		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
+			'erasedataReadDrainState()', 'erasedataWriteDrainState()'), $invariant))
+			return;
+		if(!defined('ERASEDATA_ADMISSION_ARM_ATTEMPTS'))
+		{
+			$this->assertTrue(false, $invariant
+				.' [not implemented yet: ERASEDATA_ADMISSION_ARM_ATTEMPTS]');
+			return;
+		}
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		// Another producer wins the swap: at the instant this one registers, the
+		// durable state carries somebody else's completed arm. That is exactly
+		// what the loser observes on a real daemon.
+		$stolen = '00000000000000aa';
+		$registrations = 0;
+		// The winner is itself still `arming` when this producer comes back --
+		// the exact shape of the collision, since both producers wrote `arming`
+		// from the same resting state.
+		$this->acknowledgeOnRegistration($queue,
+			function($commands) use ($queue, $stolen, &$registrations)
+			{
+				$registrations++;
+				if($registrations > 1)
+					return;
+				erasedataWriteDrainState($queue, array('version' => 1,
+					'user' => 'rutorrent', 'generation' => $stolen,
+					'acknowledged' => '0000000000000000', 'phase' => 'arming',
+					'journal' => array(), 'diagnostics' => array()));
+			});
+		FileUtil::$log = array();
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($hash), 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['published'])
+			&& $outcome['published'] === array($hash),
+			'the removal the loser was asked for really is published');
+		$this->assertEquals(2, $registrations,
+			'because the loser re-entered the arm exactly once');
+		$lost = 0;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'arm-lost') !== false)
+				$lost++;
+		$this->assertEquals(0, $lost,
+			'so nothing is reported as a lost arm at all');
+		$state = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($state) && isset($state['phase'])
+			&& $state['phase'] === 'armed',
+			'and the queue is left armed on the generation the removal used');
+		$this->assertTrue(is_array($state) && isset($state['generation'])
+			&& erasedataGenerationCompare($state['generation'], $stolen) === 1,
+			'which is strictly past the generation the winner had claimed');
+
+		// The other shape: the winner's arm has already LANDED. The retry does
+		// not take it on trust -- it re-reads the durable phase under the state
+		// lock, exactly as any second removal onto a live queue does -- and then
+		// stages under its own new generation instead of refusing. Nothing
+		// acknowledges it in this process, so the admission still ends at the
+		// acknowledgement wait; what matters is that it got there at all.
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		$registrations = 0;
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0),
+			'callback' => function($commands) use ($queue, $stolen, &$registrations)
+			{
+				$registrations++;
+				erasedataWriteDrainState($queue, array('version' => 1,
+					'user' => 'rutorrent', 'generation' => $stolen,
+					'acknowledged' => $stolen, 'phase' => 'armed',
+					'journal' => array(), 'diagnostics' => array()));
+			});
+		FileUtil::$log = array();
+		$onLiveArm = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($hash), 1);
+		$this->assertTrue($onLiveArm === false,
+			'with nothing to acknowledge it, the admission still ends in a refusal');
+		$this->assertEquals(1, $registrations,
+			'but the retry rode the arm the winner had already landed');
+		$reasons = array();
+		foreach(FileUtil::$log as $line)
+		{
+			if(strpos($line, 'arm-lost') !== false)
+				$reasons[] = 'arm-lost';
+			if(strpos($line, 'drain-no-ack') !== false)
+				$reasons[] = 'drain-no-ack';
+		}
+		$this->assertEquals(array('drain-no-ack'), $reasons,
+			'and it failed at the acknowledgement, never at the arm it had verified itself');
+
+		// The bound. A queue where every registration loses the swap refuses
+		// after ERASEDATA_ADMISSION_ARM_ATTEMPTS passes, and refuses the way it
+		// always did: nothing staged, no marker, no erase.
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		$registrations = 0;
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0),
+			'callback' => function($commands) use ($queue, $stolen, &$registrations)
+			{
+				$registrations++;
+				erasedataWriteDrainState($queue, array('version' => 1,
+					'user' => 'rutorrent', 'generation' => $stolen,
+					'acknowledged' => '0000000000000000', 'phase' => 'arming',
+					'journal' => array(), 'diagnostics' => array()));
+			});
+		FileUtil::$log = array();
+		$refused = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($hash), 1);
+		$this->assertTrue($refused === false,
+			'an arm that never lands refuses the admission');
+		$this->assertEquals(ERASEDATA_ADMISSION_ARM_ATTEMPTS, $registrations,
+			'after exactly the bounded number of passes, never more');
+		$lost = 0;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'arm-lost') !== false)
+				$lost++;
+		$this->assertEquals(1, $lost,
+			'and says so once, classified, when it finally gives up');
+		$this->assertEquals(array(), $this->queueEntries($queue) === array()
+			? array() : array_values(array_filter($this->queueEntries($queue),
+				function($e) { return(substr($e, 0, 1) !== '.'
+					&& substr($e, -5) !== '.lock'); })),
+			'with no marker, staging or manifest left behind by any of them');
+	}
+
+	// N1/F1's other door: an `arming` phase nothing will ever correct.
+	//
+	// A producer that dies -- or simply fails -- between its successful
+	// registration and its compare-and-swap leaves the durable phase `arming`
+	// over a schedule rTorrent really is running. Retirement refuses on
+	// `arming` for ever (`retire-unstable`), so `update.php <User> drain` is
+	// then spawned every ERASEDATA_DRAIN_INTERVAL seconds for the life of the
+	// daemon and nothing in the plugin can take it away.
+	//
+	// The correction has to be a PROOF, not a guess: the producer releases the
+	// state lock across its registration, so rewriting the phase on nothing but
+	// the phase itself would break a healthy admission. It keeps its HASH locks
+	// across that RPC, and that is the evidence -- a queue whose every hash lock
+	// is free holds no producer at all.
+	public function testAnAbandonedArmingIsCorrectedOnlyWhenNoProducerHoldsTheQueue()
+	{
+		$this->reset();
+		$invariant = 'a durable arming phase no producer holds is corrected to'
+			.' disarmed so retirement can converge, while one a producer really'
+			.' is inside is left exactly as it was found';
+		if(!$this->requireApi(array('erasedataRearmDrainScheduleRun()',
+			'erasedataNoAdmissionHoldsThisQueue()', 'erasedataRetirementRun()',
+			'erasedataAcquireHashLock()', 'erasedataReleaseHashLock()'), $invariant))
+			return;
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$wedged = array('version' => 1, 'user' => 'rutorrent',
+			'generation' => '0000000000000005', 'acknowledged' => '0000000000000005',
+			'phase' => 'arming', 'journal' => array(), 'diagnostics' => array());
+
+		// (a) A producer really is inside the arm window: it holds the hash lock
+		// it took before it wrote `arming`. Nothing may touch the phase.
+		$this->assertTrue(erasedataWriteDrainState($queue, $wedged) === true,
+			'the queue carries a registration a producer has in flight right now');
+		$held = erasedataAcquireHashLock($queue, $hash, true);
+		$this->assertTrue(is_resource($held),
+			'and that producer really holds the hash lock it took before it armed');
+		$this->assertTrue(erasedataNoAdmissionHoldsThisQueue($queue) === false,
+			'so the queue is not provably free of admissions');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery over it still succeeds');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('arming', is_array($state) && isset($state['phase'])
+			? $state['phase'] : null,
+			'and leaves the arm in flight exactly as it found it');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'without registering a second schedule over it');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+		$this->assertTrue($this->retire() === false,
+			'and retirement keeps refusing it, as it must');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
+			'with no schedule_remove sent on an admission in flight');
+
+		// (b) The producer is gone. Its lock is free, nothing is owed, and the
+		// phase it left is corrected once and reported.
+		erasedataReleaseHashLock($held);
+		$this->assertTrue(erasedataNoAdmissionHoldsThisQueue($queue) === true,
+			'a queue whose every hash lock is free holds no admission');
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()) === true,
+			'startup recovery succeeds over the queue the producer abandoned');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('disarmed', is_array($state) && isset($state['phase'])
+			? $state['phase'] : null,
+			'and corrects the arming phase nothing else would ever have corrected');
+		$this->assertEquals('0000000000000005', is_array($state)
+			&& isset($state['generation']) ? $state['generation'] : null,
+			'without inventing or losing a generation to do it');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'and without registering anything: the queue owes nothing');
+		$visible = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'rearm-arming-abandoned') !== false)
+				$visible = true;
+		$this->assertTrue($visible,
+			'the correction is classified and said, not made in silence');
+		// The consequence, and the whole reason the correction exists: the
+		// schedule that fired every interval for ever can finally be retired.
+		$this->assertTrue($this->retire() === true,
+			'retirement now converges on the queue that was wedged');
+		$removals = $this->scheduleRecords('schedule_remove');
+		$this->assertEquals(1, count($removals),
+			'with exactly one mapped schedule_remove');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($removals) ? $removals[0]['key'] : null,
+			'on the exact per-user drain key');
+
+		// (c) The evidence itself. The proof above is only worth anything
+		// because a producer really does hold its hash locks THROUGH the
+		// registration RPC -- that release was the one moment in a whole
+		// admission when it held none.
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->probe(true, false, array($hash));
+		$freeAtRegistration = null;
+		$this->acknowledgeOnRegistration($queue,
+			function($commands) use ($queue, $hash, &$freeAtRegistration)
+			{
+				$probe = erasedataAcquireHashLock($queue, $hash, true);
+				$freeAtRegistration = is_resource($probe);
+				erasedataReleaseHashLock($probe);
+			});
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),
+			array($hash), 1);
+		$this->assertTrue(is_array($outcome) && isset($outcome['published'])
+			&& $outcome['published'] === array($hash),
+			'a healthy admission still completes end to end');
+		$this->assertTrue($freeAtRegistration === false,
+			'and its hash lock is held THROUGH the registration RPC, never released across it');
+	}
+
+	// F4. The plugin-init re-arm must not put a page load behind the state lock.
+	//
+	// erasedataRearmDrainScheduleRun() runs on php/getplugins.php. A producer
+	// holds the same lock across one d.get_base_path per accepted hash plus
+	// every marker and staging write, and retirement holds it across the removal
+	// RPC, so a BLOCKING acquisition here stalls a full UI load for as long as
+	// either of those takes. A re-arm that cannot get the lock has learned
+	// something real -- another actor is already managing this state -- and the
+	// next page load retries at no cost.
+	//
+	// Pinned on the function body rather than behaviourally on purpose: a
+	// behavioural case would have to hold the lock and then call the re-arm, and
+	// under a regression that call blocks for ever, which hangs the whole suite
+	// instead of failing one assertion.
+	public function testForceTwoAdmissionRefusesBeforeStagingWhenDescriptorsAreUnavailable()
+	{
+		$this->reset();
+		$base = $this->dir.'/no-descriptor-base';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->eraseOk();
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$filesystem = new ErasedataCollectorFixture(array(
+			'openDirectoryReference:*' => array('result' => false),
+		));
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(array(
+			'filesystem' => $filesystem,
+		)), array($hash), 2);
+		$this->assertTrue($outcome === false || (is_array($outcome)
+			&& isset($outcome['accepted']) && $outcome['accepted'] === array()),
+			'an unavailable force-2 directory capability refuses admission');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'capability refusal happens before the destructive download RPC');
+		$obligations = array_filter($this->queueEntries(), function($name) use ($hash) {
+			return strpos($name, $hash.'.') === 0 && substr($name, -5) !== '.lock';
+		});
+		$this->assertEquals(array(), array_values($obligations),
+			'a refused member has no pending marker, staging or published manifest');
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'),
+			'the refused payload is untouched');
+	}
+
+	public function testForceTwoRecoveryAlsoRefusesAnUnavailableDirectoryCapability()
+	{
+		$this->reset();
+		$base = $this->dir.'/recovery-no-descriptor';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$state = erasedataDefaultDrainState();
+		$state['user'] = User::getUser();
+		$state['generation'] = $generation;
+		$state['acknowledged'] = $generation;
+		$state['phase'] = 'armed';
+		$this->assertTrue(erasedataWriteDrainState($this->queuePath(), $state),
+			'the recovery fixture has an acknowledged durable arm');
+		$this->assertTrue(erasedataQueueRequest($this->queuePath(), $hash, 2, $generation),
+			'the recovery fixture has a real retained marker');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->probe(true, false, array($hash));
+		$this->eraseOk();
+		$notes = array();
+		$filesystem = new ErasedataCollectorFixture(array(
+			'openDirectoryReference:*' => array('result' => false),
+		));
+		$outcome = erasedataDrainGenerationPass($this->queuePath(), User::getUser(),
+			$generation, array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'recovery cannot bypass the descriptor preflight before d.erase');
+		$this->assertTrue($outcome['retained'] === 1 && $outcome['published'] === 0,
+			'an unavailable capability keeps the pending obligation retryable');
+		$this->assertTrue(erasedataPendingMarkerStands($this->queuePath(), $hash, $generation),
+			'no failed preflight discharges the marker');
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'),
+			'recovery left the refused payload untouched');
+		// "It stages NOTHING" is a deviation this pass makes deliberately, and
+		// the four assertions above cannot see it. With the preflight deleted,
+		// the prepare step writes a real .tmp staging object for the refused
+		// member and the LATER re-check still stops the erase, so all four stay
+		// green over a queue that has grown an object no proven capability
+		// admitted. The exact surviving entry set is what pins it: the marker of
+		// this generation, and nothing else of this hash.
+		$entries = array();
+		foreach($this->queueEntries() as $name)
+			if(strpos($name, $hash.'.') === 0 && substr($name, -5) !== '.lock')
+				$entries[] = $name;
+		$this->assertEquals(array($hash.'.'.$generation.'.pending'), $entries,
+			'a refused force-2 recovery member stages nothing: no .tmp beside its'
+				.' marker, and no published manifest either ('
+				.implode(',', $this->queueEntries()).')');
+	}
+
+	// A queue directory at mode 0400 is READABLE but not SEARCHABLE. scandir()
+	// lists it while every child stat(), is_file() and file_get_contents()
+	// fails with EACCES, and PHP reports each of those failures as plain false
+	// -- byte for byte the answer a genuinely missing file gives. Concluding
+	// absence from that is fail-OPEN: an armed queue holding a live obligation
+	// reads back as pristine and never armed, its staging object reads as gone
+	// and its journal record reads as resolved.
+	//
+	// Durable loss through this was NOT demonstrated -- under the same mode a
+	// write usually fails too, and the transient-permission race was never
+	// reproduced. What was measured, and what this pins, is that the three
+	// readers answer confidently and wrongly. Absence may only be concluded
+	// when the lookup itself demonstrably succeeded.
+	public function testAnUnsearchableQueueDirectoryIsUncertaintyAndNeverAbsence()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$payload = $this->dir.'/unsearchable-payload.bin';
+		file_put_contents($payload, 'payload of a live obligation');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+		$this->assertTrue(is_array($staged), 'the fixture has a real staging object on disk');
+		if(!is_array($staged))
+			return;
+		$state = $this->armQueue($queue, $generation, array($hash => $staged['path']));
+		$staging = $state['journal'][$generation]['staging'];
+		$this->assertTrue(chmod($queue, 0400), 'the fixture can restrict the queue directory');
+		try
+		{
+			clearstatcache();
+			// chmod cannot restrict root, so under root this scenario cannot be
+			// staged at all: the premise is checked rather than assumed, and the
+			// case is skipped when it does not hold. Root is not a runner this
+			// project supports -- CI and the documented image invocation both
+			// run the suite as a non-root user.
+			if(is_readable($staged['path']))
+			{
+				$this->assertTrue(true, 'skipped: this process still searches a 0400 directory (running as root)');
+				return;
+			}
+			$this->assertTrue(erasedataReadDrainState($queue) === false,
+				'a state file this process may not look at is uncertainty, never a never-armed queue');
+			$this->assertTrue(erasedataStagingObjectIsGone($queue, $staging, $hash) === false,
+				'a staging object this process may not look at is not a staging object that is gone');
+			$abandoned = null;
+			$kept = erasedataPruneResolvedJournalRecords($queue, $state, $abandoned);
+			$this->assertTrue(is_array($kept) && isset($kept['journal'][$generation]),
+				'a journal record whose staging cannot be looked at is not a resolved record');
+			$this->assertEquals(array(), $abandoned,
+				'and a lookup that never answered abandons nothing');
+		}
+		finally
+		{
+			chmod($queue, 0755);
+			clearstatcache();
+		}
+		$restored = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($restored) && $restored['generation'] === $generation
+			&& count($restored['journal']) === 1,
+			'the queue held an armed generation and one journal record the whole time');
+	}
+
+	public function testForceTwoKeepsTheOwnedDescriptorAliveUntilTheEraseReply()
+	{
+		$this->reset();
+		$base = $this->dir.'/held-admission-descriptor';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$filesystem = new class extends ErasedataFilesystemOps {
+			public $references = array();
+			public function openDirectoryReference($path, $identity)
+			{
+				$result = parent::openDirectoryReference($path, $identity);
+				if(is_array($result)) $this->references[] = $result;
+				return($result);
+			}
+		};
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$heldAtErase = false;
+		$this->eraseOk(function() use ($filesystem, &$heldAtErase) {
+			$heldAtErase = count($filesystem->references) === 1
+				&& is_resource($filesystem->references[0]['handle'])
+				&& is_dir($filesystem->references[0]['path']);
+		});
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(array(
+			'filesystem' => $filesystem,
+		)), array($hash), 2);
+		$this->assertTrue(is_array($outcome) && $outcome['published'] === array($hash),
+			'a usable force-2 capability admits and publishes the removal');
+		$this->assertTrue($heldAtErase,
+			'the admission descriptor stays owned and open through the erase RPC');
+		$this->assertTrue(count($filesystem->references) === 1
+			&& !is_resource($filesystem->references[0]['handle']),
+			'the producer releases its descriptor when the attempt finishes');
+	}
+
+	public function testForceTwoPreflightPartitionsAMixedBatchWithoutQueuingTheRefusal()
+	{
+		$this->reset();
+		$allowed = $this->hash('A');
+		$refused = $this->hash('B');
+		$bases = array($allowed => $this->dir.'/allowed', $refused => $this->dir.'/refused');
+		$responses = array();
+		foreach($bases as $hash => $base)
+		{
+			mkdir($base);
+			file_put_contents($base.'/payload', $hash);
+			$responses[$hash] = array('ok' => true, 'val' => array($base, 1, $base.'/payload'));
+		}
+		rXMLRPCRequest::$responses['d.get_base_path'] = array('byHash' => $responses);
+		$this->eraseOk();
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$filesystem = new ErasedataCollectorFixture(array(
+			'openDirectoryReference:*' => array('path' => $bases[$refused], 'result' => false),
+		));
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(array('filesystem' => $filesystem)),
+			array($refused, $allowed), 2);
+		$this->assertTrue(is_array($outcome) && $outcome['accepted'] === array($allowed)
+			&& $outcome['refused'] === array($refused) && $outcome['published'] === array($allowed),
+			'the physical preflight keeps the exact accepted/refused partition');
+		$this->assertEquals(array($allowed), rXMLRPCRequest::$erased,
+			'only the descriptor-capable member reaches the destructive RPC');
+		$refusedEntries = array_filter($this->queueEntries(), function($name) use ($refused) {
+			return strpos($name, $refused.'.') === 0 && substr($name, -5) !== '.lock';
+		});
+		$this->assertEquals(array(), array_values($refusedEntries),
+			'the refused member acquires no obligation or manifest');
+	}
+
+	public function testForceTwoLosingItsDescriptorBeforeStagingErasesNothing()
+	{
+		$this->reset();
+		$base = $this->dir.'/lost-admission-descriptor';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$filesystem = new class extends ErasedataFilesystemOps {
+			public $reference = null;
+			public function openDirectoryReference($path, $identity)
+			{
+				$this->reference = parent::openDirectoryReference($path, $identity);
+				return($this->reference);
+			}
+		};
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->eraseOk();
+		$hadCapability = false;
+		$this->acknowledgeOnRegistration($this->queuePath(),
+			function() use ($filesystem, &$hadCapability) {
+				$hadCapability = is_array($filesystem->reference)
+					&& is_resource($filesystem->reference['handle']);
+				if($hadCapability) fclose($filesystem->reference['handle']);
+			});
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(array('filesystem' => $filesystem)),
+			array($this->hash('A')), 2);
+		$this->assertTrue($hadCapability, 'the scenario invalidates a real previously acquired descriptor');
+		$this->assertTrue($outcome === false, 'loss of the held descriptor refuses the attempt');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'capability loss never falls through to d.erase');
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'), 'the payload survives capability loss');
+	}
+
+	public function testThePluginInitRearmTakesTheStateLockNonBlocking()
+	{
+		$this->reset();
+		$body = $this->productionFunctionBody('removewithdata.php',
+			'function erasedataRearmDrainScheduleRun(array $dependencies)');
+		$this->assertTrue(is_string($body)
+			&& strpos($body, 'erasedataAcquireDrainStateLock($listPath, true)') !== false,
+			'the plugin-init re-arm takes the drain state lock NONBLOCKING');
+		$this->assertTrue(is_string($body)
+			&& strpos($body, 'erasedataAcquireDrainStateLock($listPath)') === false,
+			'and never blocks a web page load on it');
+		$this->sourceHas('init.php', 'erasedataRearmDrainSchedule',
+			'and that is the function php/getplugins.php reaches through init.php');
+	}
+
+	// One classified note out of a pass, by reason and by hash.
+	//
+	// The drain pass reports through $notes and its caller folds them into the
+	// tick's bounded report memory, so a refusal that emits nothing is
+	// indistinguishable from one that emits a line nobody can read. These
+	// helpers make the line itself an assertable object.
+	// A note is (reason, generation, members, consequence, hash), with one
+	// optional sixth element: the name of the staging object a `staging-unbound`
+	// refusal strands. The arity is still asserted, so a malformed note is not
+	// silently matched.
+	private function noteFor(array $notes, $reason, $hash = null)
+	{
+		foreach($notes as $note)
+			if(is_array($note) && (count($note) === 5 || count($note) === 6)
+				&& $note[0] === $reason
+				&& ($hash === null || $note[4] === $hash))
+				return($note);
+		return(false);
+	}
+
+	private function assertNote(array $notes, $reason, $generation, $hash,
+		$consequence, $message)
+	{
+		$note = $this->noteFor($notes, $reason, $hash);
+		$this->assertTrue(is_array($note) && $note[1] === $generation
+			&& $note[3] === $consequence, $message
+				.' ('.$reason.' '.json_encode($note).')');
+	}
+
+	// The force-2 capability the RECOVERY path re-proves immediately before
+	// d.erase, and the classified line it writes when that proof fails.
+	//
+	// The producer opens a descriptor on the base path, holds it across its own
+	// erase and re-checks it right before the destructive call; recovery owes
+	// the identical re-check because a descriptor that no longer names the base
+	// path it was opened on proves nothing any more. The preflight succeeding
+	// is not the same event: this case lets the preflight succeed, stages a real
+	// manifest under it, and only then invalidates the base-path lookup the
+	// re-check makes, so the refusal can only have come from the second proof.
+	public function testForceTwoRecoveryReProvesItsCapabilityImmediatelyBeforeErase()
+	{
+		$this->reset();
+		$base = $this->dir.'/recovery-recheck-base';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = User::getUser();
+		$state['generation'] = $generation;
+		$state['acknowledged'] = $generation;
+		$state['phase'] = 'armed';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'the recovery fixture has an acknowledged durable arm');
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 2, $generation),
+			'the recovery fixture has a real retained marker');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->probe(true, false, array($hash));
+		$this->eraseOk();
+		// Three base-path identity lookups reach the seam in this scenario: two
+		// while the capability is acquired, and the last one inside the re-check
+		// the erase decision is gated on. Refusing exactly the third leaves the
+		// preflight intact and fails only the second proof. The count is
+		// asserted below, so a change in the sequence cannot make this pass
+		// vacuously by refusing the preflight instead.
+		$calls = $this->dir.'/recheck-base-lookups';
+		$filesystem = new ErasedataCollectorFixture(array(
+			'targetIdentity:3' => array('path' => $base, 'result' => false),
+			'targetIdentity:*' => array('path' => $base, 'count_file' => $calls),
+		));
+		$notes = array();
+		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
+			array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
+		$this->assertEquals(3, substr_count(@file_get_contents($calls), "\n"),
+			'the refusal really is the pre-erase re-check, not the preflight');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'a capability that no longer names its base path never reaches d.erase');
+		$this->assertEquals('preserve', @file_get_contents($base.'/payload'),
+			'and the payload it would have deleted is untouched');
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1
+			&& $outcome['published'] === 0,
+			'the obligation is retained for the next tick, never resolved');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $hash, $generation),
+			'and its pending marker still stands');
+		// The preflight demonstrably ran and bound a real staging object, which
+		// is what separates this refusal from the preflight refusal above.
+		$this->assertEquals(1, count(glob($queue.'/'.$hash.'.'.$generation.'.*.tmp')),
+			'the pass had already staged a manifest under the proven capability');
+		$this->assertEquals(array(), glob($queue.'/*.list'),
+			'and published none of it');
+		$this->assertNote($notes, 'descriptor-unavailable', $generation, $hash,
+			'obligation-retained-nothing-erased',
+			'the pre-erase capability refusal is classified against its own hash');
+	}
+
+	// The force-2 preflight refusals are visible, not a silent stall.
+	//
+	// A refused member keeps its marker and is retained indefinitely, so the
+	// classified line naming it is the whole difference between a conservative
+	// retention and a queue that never finishes and never says why. Both
+	// refusals the preflight can reach are pinned here, kept apart: the daemon
+	// could not say what the download owns, or it could and the base path would
+	// not yield a descriptor.
+	public function testForceTwoRecoveryRefusalsAreClassifiedAgainstTheirOwnHash()
+	{
+		foreach(array('descriptor-unavailable', 'paths-unknown') as $reason)
+		{
+			$this->reset();
+			$base = $this->dir.'/recovery-refusal-base';
+			mkdir($base);
+			file_put_contents($base.'/payload', 'preserve');
+			$hash = $this->hash('A');
+			$generation = '0000000000000001';
+			$queue = $this->queuePath();
+			$state = erasedataDefaultDrainState();
+			$state['user'] = User::getUser();
+			$state['generation'] = $generation;
+			$state['acknowledged'] = $generation;
+			$state['phase'] = 'armed';
+			$this->assertTrue(erasedataWriteDrainState($queue, $state),
+				$reason.': the recovery fixture has an acknowledged durable arm');
+			$this->assertTrue(erasedataQueueRequest($queue, $hash, 2, $generation),
+				$reason.': the recovery fixture has a real retained marker');
+			// paths-unknown is the daemon refusing to say what the download
+			// owns; descriptor-unavailable is a complete answer whose base path
+			// yields no descriptor.
+			if($reason === 'paths-unknown')
+				$this->frozen(false, array());
+			else
+				$this->frozen(true, array($base, 1, $base.'/payload'));
+			$this->probe(true, false, array($hash));
+			$this->eraseOk();
+			$filesystem = new ErasedataCollectorFixture(array(
+				'openDirectoryReference:*' => array('result' => false),
+			));
+			$notes = array();
+			$outcome = erasedataDrainGenerationPass($queue, User::getUser(),
+				$generation, array('hashes' => array($hash), 'force' => 2),
+				$filesystem, $notes);
+			$this->assertEquals(array(), rXMLRPCRequest::$erased,
+				$reason.': an unproven capability never reaches d.erase');
+			$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1,
+				$reason.': the obligation is retained');
+			$this->assertNote($notes, $reason, $generation, $hash,
+				'obligation-retained-nothing-erased',
+				$reason.': the refusal names its hash, its generation and its'
+					.' consequence');
+			$this->assertTrue($this->noteFor($notes, $reason === 'paths-unknown'
+				? 'descriptor-unavailable' : 'paths-unknown') === false,
+				$reason.': and the two refusals are not reported as each other');
+		}
+	}
+
+	// A queue directory that cannot be LISTED is uncertainty about what is
+	// already final, never an empty set of published manifests.
+	//
+	// The pass reads scandir() once, under the state lock, for two things it
+	// then makes destructive decisions with: which members already have a final
+	// manifest of this generation, and which physical staging objects the
+	// journal does not bind. Treating a failed scan as "nothing is final and
+	// nothing is unbound" is fail-OPEN in both directions at once, so the scan
+	// failing has to retain the whole generation and say so.
+	//
+	// A directory at mode 0300 is writable and searchable but not listable:
+	// every known path inside it still opens, so the pass gets as far as the
+	// scan and no further, which is exactly the state this pins.
+	public function testAnUnlistableQueueRetainsRatherThanInventingAnEmptyFinalSet()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000001';
+		$payload = $this->dir.'/unlistable-payload.bin';
+		file_put_contents($payload, 'payload of an obligation nobody could scan for');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+		$this->assertTrue(is_array($staged), 'the fixture has a real staging object on disk');
+		if(!is_array($staged))
+			return;
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
+			'and a real pending marker over it');
+		$marker = erasedataPendingMarkerPath($queue, $hash, $generation);
+		$markerBytes = file_get_contents($marker);
+		$this->armQueue($queue, $generation, array($hash => $staged['path']));
+		// Absent, with a bound and identity-matching staging object: without the
+		// refusal this is the pass that publishes the manifest and discharges
+		// the marker on a scan that never answered.
+		$this->probe(true, true, array(), 'info-hash not found');
+		$this->eraseOk();
+		$notes = array();
+		$outcome = null;
+		$this->assertTrue(chmod($queue, 0300),
+			'the fixture can make the queue directory unlistable');
+		try
+		{
+			clearstatcache();
+			// chmod cannot restrict root, so under root the scenario cannot be
+			// staged at all: the premise is checked rather than assumed, and the
+			// case is skipped when it does not hold. Root is not a runner this
+			// project supports -- CI and the documented image invocation both
+			// run the suite as a non-root user.
+			if(is_array(@scandir($queue)))
+			{
+				$this->assertTrue(true,
+					'skipped: this process still lists a 0300 directory (running as root)');
+				return;
+			}
+			$outcome = erasedataDrainGenerationPass($queue, User::getUser(),
+				$generation, array('hashes' => array($hash), 'force' => 1),
+				new ErasedataFilesystemOps(), $notes);
+		}
+		finally
+		{
+			chmod($queue, 0755);
+			clearstatcache();
+		}
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1
+			&& $outcome['published'] === 0 && $outcome['unrecoverable'] === 0
+			&& $outcome['cancelled'] === 0,
+			'a scan that never answered retains the whole generation');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'and erases nothing under it');
+		$this->assertEquals(array(), glob($queue.'/*.list'),
+			'a manifest is never published on an invented empty final set');
+		$this->assertEquals($bytes, @file_get_contents($staged['path']),
+			'the staging object survives byte-exact');
+		$this->assertEquals($markerBytes, @file_get_contents($marker),
+			'and the pending obligation is kept exactly as it was found');
+		$this->assertNote($notes, 'queue-unreadable', $generation, null,
+			'obligations-retained-nothing-erased',
+			'the queue nobody could list is reported, not silently treated as empty');
+	}
+
+	// Step (5) owes step (3)'s staging rollback.
+	//
+	// Step (3) releases the staging it wrote when its own journal write fails,
+	// because staging bound by a record that never became durable is bound by
+	// nothing. The last journal write of the pass had no such rollback, so a
+	// failure there left behind exactly the physical object the pass refuses to
+	// resolve: an unjournaled staging candidate, which is retained
+	// conservatively and for ever until a human recovers its binding. No such
+	// failure has been observed in production; the gap is closed by
+	// construction, and this reaches it deterministically through the one bound
+	// the durable state really enforces -- a journal already holding
+	// ERASEDATA_DRAIN_MAX_JOURNAL records cannot accept one more.
+	public function testAFailedFinalJournalWriteReleasesTheStagingItWouldOrphan()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$base = $this->dir.'/orphan-rollback-base';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$generation = '0000000000001000';
+		$filler = $this->hash('B');
+		$journal = array();
+		for($index = 1; $index < ERASEDATA_DRAIN_MAX_JOURNAL + 1; $index++)
+		{
+			$key = sprintf('%016x', $index);
+			$journal[$key] = array('phase' => 'published', 'force' => 1,
+				'hashes' => array($filler),
+				'staging' => array($filler => array(
+					'path' => $queue.'/'.$filler.'.'.$key.'.1.tmp',
+					'dev' => '1', 'ino' => (string)$index)));
+		}
+		$this->assertEquals(ERASEDATA_DRAIN_MAX_JOURNAL, count($journal),
+			'the fixture builds a journal exactly at its bound');
+		$state = array('version' => 1, 'user' => User::getUser(),
+			'generation' => $generation, 'acknowledged' => $generation,
+			'phase' => 'armed', 'journal' => $journal, 'diagnostics' => array());
+		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
+			'a journal at its bound is still a durable state that writes');
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 2, $generation),
+			'the member has a real pending obligation of its own');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->probe(true, false, array($hash));
+		$this->eraseOk();
+		// The capability is proven, a manifest really is staged under it, and
+		// the pre-erase re-check then refuses -- so nothing is erasable, no
+		// `erase-started` record is written, and the ONLY journal write of the
+		// pass is the last one. That write cannot succeed: this generation has
+		// no record yet, so completing it would be record 4096.
+		$filesystem = new ErasedataCollectorFixture(array(
+			'targetIdentity:3' => array('path' => $base, 'result' => false),
+		));
+		$notes = array();
+		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
+			array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
+		$this->assertTrue(is_array($this->noteFor($notes, 'journal-write')),
+			'the fixture really reaches a failing final journal write');
+		$this->assertEquals(array(), glob($queue.'/*.tmp'),
+			'staging no durable record binds is released, never left unjournaled');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $hash, $generation),
+			'the obligation itself survives and is re-admittable on the next tick');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'nothing was erased under the staging that was released');
+		$this->assertEquals('preserve', @file_get_contents($base.'/payload'),
+			'and the payload is untouched');
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1
+			&& $outcome['published'] === 0,
+			'the member is retained, not resolved');
+		$restored = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($restored)
+			&& count($restored['journal']) === ERASEDATA_DRAIN_MAX_JOURNAL
+			&& !isset($restored['journal'][$generation]),
+			'the durable journal is exactly what it was before the failed write');
+	}
+
+	// A `prepared` record whose producer is gone cancels its own bindings and
+	// nothing else.
+	//
+	// Cancelling a member releases its staging and DISCHARGES its marker, which
+	// is the whole obligation. A member the record does not bind, but which has
+	// a physical staging object of this generation on disk, satisfies "no
+	// binding to release" trivially -- so it would be cancelled on the strength
+	// of having nothing the record knows about, its marker discharged and its
+	// real staging candidate left in the queue under no identity at all. The
+	// unbound member is retained instead, and its innocent siblings are still
+	// cancelled on the same pass.
+	public function testAPreparedRecordNeverCancelsAMemberItDoesNotBind()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$generation = '0000000000000001';
+		$orphan = $this->hash('A');
+		$member = $this->hash('B');
+		$staged = array();
+		foreach(array($orphan, $member) as $hash)
+		{
+			$payload = $this->dir.'/prepared-'.substr($hash, 0, 1).'.bin';
+			file_put_contents($payload, 'payload of prepared member '.substr($hash, 0, 1));
+			$bytes = ErasedataManifestCodec::encode($hash,
+				array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+			$object = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+			$this->assertTrue(is_array($object),
+				'prepared member '.substr($hash, 0, 1).' has a staging object');
+			if(!is_array($object))
+				return;
+			$staged[$hash] = $object['path'];
+			$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
+				'prepared member '.substr($hash, 0, 1).' has a pending marker');
+		}
+		$orphanBytes = file_get_contents($staged[$orphan]);
+		$orphanMarker = erasedataPendingMarkerPath($queue, $orphan, $generation);
+		$orphanMarkerBytes = file_get_contents($orphanMarker);
+		// The record is `prepared` and binds the second member only, which is
+		// what a producer that died between two staging writes leaves behind.
+		$this->armQueue($queue, $generation, array($member => $staged[$member]),
+			'prepared');
+		$this->probe(true, false, array($orphan, $member));
+		$this->eraseOk();
+		$notes = array();
+		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
+			array('hashes' => array($orphan, $member), 'force' => 1),
+			new ErasedataFilesystemOps(), $notes);
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'a prepared record erases nothing at all');
+		$this->assertTrue(is_array($outcome) && $outcome['cancelled'] === 1
+			&& $outcome['retained'] === 1 && $outcome['unrecoverable'] === 0,
+			'the bound member is cancelled and the unbound one is retained');
+		$this->assertTrue(!file_exists($staged[$member]),
+			'the cancelled member releases the staging the record bound');
+		$this->assertTrue(!erasedataPendingMarkerStands($queue, $member, $generation),
+			'and its obligation is cancelled, ready to be admitted again');
+		$this->assertEquals($orphanMarkerBytes, @file_get_contents($orphanMarker),
+			'the unbound member keeps its exact pending obligation');
+		$this->assertEquals($orphanBytes, @file_get_contents($staged[$orphan]),
+			'and its staging candidate survives byte-exact');
+		$this->assertNote($notes, 'staging-unbound', $generation, $orphan,
+			'physical-staging-retained-journal-binding-recovery-required',
+			'the retained member is named, so the stranded obligation is visible');
+		$this->assertNote($notes, 'prepared-cancelled', $generation, $member,
+			'nothing-erased-obligation-cancelled',
+			'and the sibling it would once have frozen is reported as cancelled');
+		$state = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($state) && isset($state['journal'][$generation]),
+			'a partial cancellation keeps its record for the next tick');
+	}
+
+	// P6-1: the line only a human can act on must name the file they have to
+	// remove.
+	//
+	// `staging-unbound` is repairable by hand and by nothing else: adopting a
+	// staging object by filename is forbidden, so the object and the obligation
+	// it strands survive every tick until a person deletes that object. Reason,
+	// generation, members, hash and consequence do not tell that person WHICH
+	// file -- the name carries a pid and a uniqid that cannot be derived from
+	// any of them -- so the note carries the name the queue scan matched and the
+	// rendered line prints it. The queue directory itself stays out of the line,
+	// which is why the name is asserted verbatim against an object that really
+	// is on disk: a name nobody can find is no better than no name.
+	public function testTheUnboundStagingDiagnosticNamesTheRetainedObject()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$generation = '0000000000000001';
+		$orphan = $this->hash('A');
+		$payload = $this->dir.'/unbound-named.bin';
+		file_put_contents($payload, 'payload of the unbound member');
+		$bytes = ErasedataManifestCodec::encode($orphan,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$object = erasedataStageAdmittedManifest($queue, $orphan, $generation, $bytes);
+		$this->assertTrue(is_array($object),
+			'the crashed producer left a complete staging object behind');
+		if(!is_array($object))
+			return;
+		$name = basename($object['path']);
+		$this->assertTrue(erasedataQueueRequest($queue, $orphan, 1, $generation),
+			'and the pending marker it wrote before it died');
+		// Armed, with a journal that binds nothing: the producer died between
+		// its staging write and the record that would have bound it.
+		$this->armQueue($queue, $generation, array());
+		$this->probe(true, false, array($orphan));
+		$notes = array();
+		erasedataDrainGenerationPass($queue, User::getUser(), $generation,
+			array('hashes' => array($orphan), 'force' => 1),
+			new ErasedataFilesystemOps(), $notes);
+		$note = $this->noteFor($notes, 'staging-unbound', $orphan);
+		$this->assertTrue(is_array($note) && isset($note[5]) && $note[5] === $name,
+			'the note carries the name the queue scan matched: '.json_encode($note));
+		// The rendered line is the only thing an operator ever sees.
+		FileUtil::$log = array();
+		$fresh = array();
+		erasedataDrainReportGroup(null, $generation, $notes, array(), $fresh);
+		$named = array();
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'staging-unbound') !== false)
+				$named[] = $line;
+		$this->assertEquals(1, count($named),
+			'the stranded obligation is reported exactly once: '
+				.json_encode(FileUtil::$log));
+		$line = count($named) ? $named[0] : '';
+		$this->assertTrue(strpos($line, ' file='.$name.' ') !== false,
+			'and the line names the file a human has to remove: '.$line);
+		$this->assertTrue(is_file($queue.'/'.$name),
+			'a file that really is in the queue, not a reconstruction of one');
+		$this->assertTrue(strpos($line, $queue) === false,
+			'without leaking the queue directory or the settings root: '.$line);
+	}
+
+	// P6-2: what the accepted conservative retention actually costs, measured.
+	//
+	// A queue holding one unbound staging object never retires, so the drain
+	// child runs again every ERASEDATA_DRAIN_INTERVAL seconds for the life of
+	// the daemon and re-probes that hash on every tick until a human deletes
+	// the file. Nothing here changes that policy -- adopting the object by
+	// filename stays forbidden and the retention is the accepted repair. This
+	// pins the cost, which nobody had measured: the classification is identical
+	// from tick to tick, so the report memory writes it on the first tick and on
+	// no later one, while the RPC probe is paid on every tick. A silent log
+	// after tick one is therefore NOT a resolved queue, and the last assertions
+	// say so: the object, its marker and its obligation are all still there.
+	public function testTheUnboundStagingRetentionCostsOneReportAndOneProbePerTick()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$generation = '0000000000000001';
+		$orphan = $this->hash('A');
+		$payload = $this->dir.'/unbound-cost.bin';
+		file_put_contents($payload, 'payload of the stranded member');
+		$bytes = ErasedataManifestCodec::encode($orphan,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$object = erasedataStageAdmittedManifest($queue, $orphan, $generation, $bytes);
+		$this->assertTrue(is_array($object),
+			'the crashed producer left a complete staging object behind');
+		if(!is_array($object))
+			return;
+		$staged = file_get_contents($object['path']);
+		$this->assertTrue(erasedataQueueRequest($queue, $orphan, 1, $generation),
+			'and the pending marker it wrote before it died');
+		$this->armQueue($queue, $generation, array());
+		$this->probe(true, false, array($orphan));
+		$lines = array();
+		$named = array();
+		$probes = array();
+		$captured = array();
+		for($tick = 0; $tick < 10; $tick++)
+		{
+			FileUtil::$log = array();
+			rXMLRPCRequest::$requested = array();
+			erasedataDrainWorkerRun($this->dependencies());
+			$captured[$tick] = FileUtil::$log;
+			$lines[] = count(FileUtil::$log);
+			$hit = 0;
+			foreach(FileUtil::$log as $line)
+				if(strpos($line, 'staging-unbound') !== false
+					&& strpos($line, basename($object['path'])) !== false)
+					$hit++;
+			$named[] = $hit;
+			$probes[] = count(rXMLRPCRequest::$requested);
+		}
+		$this->assertEquals(1, $named[0],
+			'the first tick names the stranded file exactly once: '
+				.json_encode($named));
+		$this->assertEquals(array_fill(0, 9, 0), array_slice($named, 1),
+			'and no later tick repeats it: '.json_encode($named));
+		$this->assertEquals(array_fill(0, 9, 0), array_slice($lines, 1),
+			'the report converges to complete silence after tick one: '
+				.json_encode($lines));
+		// The part that does NOT converge, which is the cost worth knowing.
+		$this->assertTrue(count(array_unique($probes)) === 1 && $probes[0] > 0,
+			'while every tick still pays the same RPC probe: '.json_encode($probes));
+		// And why it is paid for ever: the schedule cannot retire while the
+		// obligation stands, which the first tick says in its own line.
+		$this->assertTrue(strpos(implode("\n", $captured[0]),
+			'retire-refused') !== false,
+			'the queue refuses to retire while the obligation stands: '
+				.json_encode($captured[0]));
+		// Silence is not resolution.
+		$this->assertEquals($staged, @file_get_contents($object['path']),
+			'the stranded object is still there, byte for byte, after ten ticks');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $orphan, $generation),
+			'and so is the obligation it strands');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'nothing was erased across any of those ticks');
 	}
 }

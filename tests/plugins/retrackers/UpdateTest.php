@@ -5174,12 +5174,18 @@ PHP;
 	{
 		$this->installRtorrentQuoteDouble();
 		$classifier = new RetrackersHistoricalBindingClassifier();
-		$cleanRow = array(str_repeat('A', 40), str_repeat('B', 40), '', '');
+		// A row carrying a marker. The ledger lives in the daemon's memory and
+		// the marker lives in the session file, so a marker with no receipt
+		// behind it is a recovery that outlived the ledger that authorised it --
+		// which IS structural corruption.
+		$localId = str_repeat('B', 40);
+		$markedRow = array(str_repeat('A', 40), $localId,
+			'v1:original:1:' . $localId . ':' . str_repeat('c', 64), '');
 		$withoutEpoch = $this->historicalProjectionFixture(array(), array(),
-			$this->packedRecoveryRows4(array($cleanRow)));
+			$this->packedRecoveryRows4(array($markedRow)));
 		$this->assertTrue($classifier->classify($withoutEpoch, 'alice', null)['status'] ===
 			'ledger-corrupt',
-			'an empty ledger is structural corruption when a valid recovery row makes the sample non-BOOTSTRAP');
+			'an empty ledger is structural corruption when an outstanding MARKER survived it');
 		$adapter = $this->historicalQueueAdapter(array($withoutEpoch, $withoutEpoch));
 		$authority = new RetrackersStableHistoricalBinding($adapter);
 		$this->assertTrue($authority->consume('alice', null,
@@ -5198,6 +5204,70 @@ PHP;
 		$bootstrap = $classifier->classify($foreignHookBootstrap, 'alice', null);
 		$this->assertTrue($bootstrap['status'] === 'valid' && $bootstrap['phase'] === 'BOOTSTRAP',
 			'unrelated event actions remain valid in an otherwise empty BOOTSTRAP sample');
+	}
+
+	/**
+	 * An ordinary download is not an outstanding recovery.
+	 *
+	 * The rows this classifier reads come from an unfiltered d.multicall2 over
+	 * the whole 'main' view (retrackersBuildHistoricalBindingRequestV2), so
+	 * their COUNT is the number of downloads on the installation. Reading that
+	 * count as "a recovery is in flight" made a first init answer
+	 * 'receipt-ledger-corrupt' on any daemon holding a single torrent, and kept
+	 * answering it: the ledger lives in the daemon's memory and comes back empty
+	 * after every restart, while the torrents come back with the session.
+	 * Measured on a live container -- zero torrents initialised, one torrent
+	 * carrying no marker at all did not.
+	 *
+	 * The rule this pins: an empty ledger plus rows that carry NO marker is
+	 * BOOTSTRAP, whatever the row count; the guard belongs to markers, which
+	 * outlive the ledger, and the case above holds it there.
+	 */
+	public function testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre()
+	{
+		$this->installRtorrentQuoteDouble();
+		$classifier = new RetrackersHistoricalBindingClassifier();
+
+		foreach (array(1, 2, 400) as $downloads) {
+			$sample = $this->historicalProjectionFixture(array(), array(),
+				$this->packedRecoveryRows4Range($downloads));
+			$verdict = $classifier->classify($sample, 'alice', null);
+			$this->assertTrue($verdict['status'] === 'valid' && $verdict['phase'] === 'BOOTSTRAP',
+				$downloads . ' marker-free downloads and an empty ledger are still BOOTSTRAP');
+		}
+
+		// The mirror image, so this case cannot pass by disabling the guard: one
+		// marker among the same clean rows and the sample is corrupt again.
+		$rows = array();
+		for ($index = 1; $index <= 3; $index++) {
+			$hash = str_pad(strtoupper(dechex($index)), 40, '0', STR_PAD_LEFT);
+			$localId = 'F' . str_pad(strtoupper(dechex($index)), 39, '0', STR_PAD_LEFT);
+			$rows[] = $index === 2
+				? array($hash, $localId,
+					'v1:original:0:' . $localId . ':' . str_repeat('d', 64), '')
+				: array($hash, $localId, '', '');
+		}
+		$withMarker = $this->historicalProjectionFixture(array(), array(),
+			$this->packedRecoveryRows4($rows));
+		$this->assertTrue($classifier->classify($withMarker, 'alice', null)['status'] ===
+			'ledger-corrupt',
+			'one marker among clean rows still makes an empty ledger corruption');
+
+		// And a marker this code cannot parse counts too. Absence is a known
+		// state; present-but-unreadable is not, and must not read as absent.
+		$unreadable = array();
+		for ($index = 1; $index <= 3; $index++) {
+			$hash = str_pad(strtoupper(dechex($index)), 40, '0', STR_PAD_LEFT);
+			$localId = 'F' . str_pad(strtoupper(dechex($index)), 39, '0', STR_PAD_LEFT);
+			$unreadable[] = $index === 2
+				? array($hash, $localId, 'v1:original:0:' . $localId, '')
+				: array($hash, $localId, '', '');
+		}
+		$withUnreadable = $this->historicalProjectionFixture(array(), array(),
+			$this->packedRecoveryRows4($unreadable));
+		$this->assertTrue($classifier->classify($withUnreadable, 'alice', null)['status'] ===
+			'ledger-corrupt',
+			'a marker in a shape this code cannot read is not the same as no marker');
 	}
 
 	public function testStableHistoricalBindingReadsExactlyTwiceAndExposesOnlySampleTwoDecision()
@@ -11218,7 +11288,12 @@ PHP;
 
 	public function testTask5All165PreTaskPublicMethodsRemainOnePassRunnerReachable()
 	{
+		// Everything declared after the 165 were frozen, whatever added it -- the
+		// name says Task5 but the list already carries the review-era cases too.
+		// What the guard protects is the 165 and their fingerprint below; a new
+		// case belongs here so that it cannot be mistaken for one of them.
 		$added = array(
+			'testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre',
 			'testReviewPostEventRuntimeTrackersRemainAuthoritative',
 			'testReviewProductionRoutePollsAndRealShellPreservesEveryArgument',
 			'testReviewSourceAndResumeTopologyRefuseLossBeforeMutation',
@@ -11287,7 +11362,7 @@ PHP;
 		$preTask = array_values(array_diff($runtime, $added));
 		sort($preTask, SORT_STRING);
 		$fingerprint = hash('sha256', implode("\n", $preTask) . "\n");
-		$this->assertTrue(count($runtime) === 221 && count(array_unique($runtime)) === 221 &&
+		$this->assertTrue(count($runtime) === 222 && count(array_unique($runtime)) === 222 &&
 			count($preTask) === 165 &&
 			$fingerprint === 'c98eea96cfddf100e2dc2ee726750efe678100db6d02e70f8d44334b83052278',
 			'the one-pass generated runner retains every frozen pre-task public method exactly once');

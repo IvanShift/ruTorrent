@@ -884,7 +884,13 @@ PHP;
 				'SCGI_TEST_PORT' => (string)$port,
 				'SCGI_TEST_RPC_LOG' => $rpcLog,
 			));
-			$command = escapeshellarg(PHP_BINARY)
+			// 'exec ' so the pid proc_open() hands back IS the server. proc_open() runs a
+			// string command through /bin/sh, and this shell forks rather than execs it
+			// (measured here: 6 of 6 trials, php runs as the shell's child), so the
+			// proc_terminate() in the finally below signals the shell and leaves the
+			// server holding its port. exec makes the shell replace itself, so the
+			// signal reaches the process that has to die.
+			$command = 'exec '.escapeshellarg(PHP_BINARY)
 				.' -d auto_prepend_file='.escapeshellarg($tree.'/prepend.php')
 				.' -d display_errors=0 -d log_errors=1 -d error_reporting=-1'
 				.' -S 127.0.0.1:'.$httpPort.' -t '.escapeshellarg($tree);

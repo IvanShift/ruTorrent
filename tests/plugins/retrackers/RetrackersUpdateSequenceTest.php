@@ -11,18 +11,29 @@ require_once(__DIR__ . '/../../../plugins/retrackers/retrackers.php');
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 
 /**
- * What plugins/retrackers/update.php does to a torrent.
+ * What plugins/retrackers/update.php's tracker edit does to a Torrent.
  *
- * The script itself cannot be called from a test -- it takes a hash on the
- * command line, asks rtorrent for the session path, and hands the result to
- * rTorrent::sendTorrent() over SCGI. What it does in between is a fixed
- * sequence of calls on a Torrent, and that sequence is replayed here against
- * the class, with the script's own clearTracker() and deleteTrackers() driving
- * it.
+ * The script cannot be called from a test -- it takes a hash on the command
+ * line, asks rtorrent for the session path, and hands the result back over
+ * SCGI. The edit itself is a fixed sequence of calls on a Torrent, driven by
+ * the script's own clearTracker() and deleteTrackers() (update.php lines 3-39,
+ * the real ones, included above), and that sequence is replayed here.
  *
- * The limitation that carries: this pins the transcription, not the script. An
- * edit to update.php will not fail these tests. They are here for Torrent --
- * the bencoded bytes it hands back are what a regression in the class would
+ * Two limitations carry, and both are deliberate.
+ *
+ * This pins the transcription, not the script: an edit to update.php will not
+ * fail these tests.
+ *
+ * And the script no longer writes a Torrent's bytes at all.
+ * RetrackersTorrentProjector::project() (update.php lines 5502-5575) still
+ * makes this edit on a Torrent, but only to read 'announce' and
+ * 'announce-list' back out of it; the object is then discarded, and
+ * RetrackersCandidateBuilder rewrites the source bytes instead, re-emitting
+ * every other top-level key raw and dropping 'rtorrent' (update.php lines
+ * 5630-5637). That is why 'created by' and 'creation date' survive the live
+ * path whatever Torrent does with them -- and why the whole-dictionary
+ * assertions below are about Torrent, which is what they were always for: the
+ * bencoded bytes it hands back are what a regression in the class would
  * corrupt, and they are asserted whole.
  */
 class RetrackersUpdateSequenceTest extends TestCase
@@ -51,9 +62,17 @@ class RetrackersUpdateSequenceTest extends TestCase
 	}
 
 	/**
-	 * plugins/retrackers/update.php lines 80-127, verbatim but for the RPC
-	 * either side of it. Returns the two flags the script decides whether to
-	 * rewrite the torrent at all by.
+	 * The tracker edit: the same sequence of Torrent calls
+	 * RetrackersTorrentProjector::project() makes (update.php lines
+	 * 5526-5562), with two known differences. The projector re-indexes the
+	 * group arrays through its own normalizeTrackerList() at lines 5549 and
+	 * 5561, because clearTracker() and deleteTrackers() unset keys in place;
+	 * and it does not drop the 'rtorrent' key, which the live path drops in
+	 * RetrackersCandidateBuilder instead. What is transcribed below is the
+	 * sequence update.php carried inline before the projector replaced it,
+	 * which normalized nothing and dropped 'rtorrent' itself; it is kept that
+	 * way so that what is replayed is one whole edit. Returns the two flags
+	 * that decide whether the torrent is rewritten at all.
 	 */
 	private function replay($torrent, $trks)
 	{
@@ -119,7 +138,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	 */
 	public function testAnnounceOnlyTorrentGainsAnAnnounceListEndingWithTheAddition()
 	{
-		$before = time();
 		$torrent = new Torrent($this->announceOnlyTorrent());
 		$this->assertTrue($torrent->errors() === false, 'the fixture parses');
 
@@ -136,8 +154,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 				array('http://one.test/announce'),
 				array('http://added.test/announce'),
 			)),
-			'created by'    => $this->bstr($this->ourCreator()),
-			'creation date' => $this->bint($this->stampedDate($written, $before)),
+			'created by'    => $this->bstr($this->sourceCreator()),
+			'creation date' => $this->bint($this->preservedDate($written)),
 			'info'          => $this->singleFileInfo(),
 		));
 		$this->assertTrue($written === $expected,
@@ -155,7 +173,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	/** addToBegin puts the configured groups in front of the torrent's own. */
 	public function testAddToBeginPutsTheAdditionFirst()
 	{
-		$before = time();
 		$torrent = new Torrent($this->announceOnlyTorrent());
 		list($wasAddition, $wasDeletion) = $this->replay($torrent,
 			$this->retrackers(array(array('http://added.test/announce')), array(), 1));
@@ -169,8 +186,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 				array('http://added.test/announce'),
 				array('http://one.test/announce'),
 			)),
-			'created by'    => $this->bstr($this->ourCreator()),
-			'creation date' => $this->bint($this->stampedDate($written, $before)),
+			'created by'    => $this->bstr($this->sourceCreator()),
+			'creation date' => $this->bint($this->preservedDate($written)),
 			'info'          => $this->singleFileInfo(),
 		));
 		$this->assertTrue($written === $expected, 'the addition is written in front');
@@ -182,7 +199,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	 */
 	public function testATrackerlessTorrentGetsAnnounceAndAnnounceList()
 	{
-		$before = time();
 		$torrent = new Torrent($this->trackerlessTorrent());
 		$this->assertTrue($torrent->announce() === null, 'the fixture has no announce');
 
@@ -199,8 +215,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 				array('http://added.test/announce', 'http://added.test/announce2'),
 				array('udp://added.test/announce'),
 			)),
-			'created by'    => $this->bstr($this->ourCreator()),
-			'creation date' => $this->bint($this->stampedDate($written, $before)),
+			'created by'    => $this->bstr($this->sourceCreator()),
+			'creation date' => $this->bint($this->preservedDate($written)),
 			'info'          => $this->singleFileInfo(),
 		));
 		$this->assertTrue($written === $expected,
@@ -212,7 +228,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	/** Groups the torrent already carries are dropped from the addition. */
 	public function testATrackerAlreadyPresentIsNotAddedTwice()
 	{
-		$before = time();
 		$torrent = new Torrent($this->announceListTorrent());
 		list($wasAddition,) = $this->replay($torrent, $this->retrackers(array(
 			array('http://one.test/announce'),
@@ -228,8 +243,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 				array('udp://two.test/announce', 'udp://two.test/announce2'),
 				array('http://added.test/announce'),
 			)),
-			'created by'    => $this->bstr($this->ourCreator()),
-			'creation date' => $this->bint($this->stampedDate($written, $before)),
+			'created by'    => $this->bstr($this->sourceCreator()),
+			'creation date' => $this->bint($this->preservedDate($written)),
 			'info'          => $this->singleFileInfo(),
 		));
 		$this->assertTrue($written === $expected,
@@ -237,9 +252,11 @@ class RetrackersUpdateSequenceTest extends TestCase
 	}
 
 	/**
-	 * Nothing to add and nothing to delete: the script never reaches
-	 * sendTorrent(), and the torrent must come back byte for byte as it was --
-	 * no setter ran, so not even the creation date moved.
+	 * Nothing to add and nothing to delete: the torrent is never rewritten,
+	 * and must come back byte for byte as it was. This is the stronger
+	 * statement of the two -- the tests above show the setters leave the
+	 * file's own stamp alone, and this one shows a no-op sequence leaves every
+	 * byte alone, including the key order.
 	 */
 	public function testATorrentThatNeedsNothingIsNotRewritten()
 	{
@@ -270,7 +287,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	/** A todelete entry that matches every tracker in a group removes the group. */
 	public function testDeletingEveryTrackerInAGroupRemovesTheGroup()
 	{
-		$before = time();
 		$torrent = new Torrent($this->announceListTorrent());
 		list($wasAddition, $wasDeletion) = $this->replay($torrent,
 			$this->retrackers(array(), array('two.test')));
@@ -282,8 +298,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 		$expected = $this->bdict(array(
 			'announce'      => $this->bstr('http://one.test/announce'),
 			'announce-list' => $this->bannounceList(array(array('http://one.test/announce'))),
-			'created by'    => $this->bstr($this->ourCreator()),
-			'creation date' => $this->bint($this->stampedDate($written, $before)),
+			'created by'    => $this->bstr($this->sourceCreator()),
+			'creation date' => $this->bint($this->preservedDate($written)),
 			'info'          => $this->singleFileInfo(),
 		));
 		$this->assertTrue($written === $expected, 'the emptied group is gone from the written torrent');
@@ -296,7 +312,6 @@ class RetrackersUpdateSequenceTest extends TestCase
 	/** Adding and deleting in the same run, on the torrent rtorrent saved. */
 	public function testAdditionAndDeletionTogetherOnASessionTorrent()
 	{
-		$before = time();
 		$torrent = new Torrent($this->sessionTorrent());
 		list($wasAddition, $wasDeletion) = $this->replay($torrent,
 			$this->retrackers(array(array('http://added.test/announce')), array('two.test')));
@@ -310,8 +325,8 @@ class RetrackersUpdateSequenceTest extends TestCase
 				array('http://one.test/announce'),
 				array('http://added.test/announce'),
 			)),
-			'created by'        => $this->bstr($this->ourCreator()),
-			'creation date'     => $this->bint($this->stampedDate($written, $before)),
+			'created by'        => $this->bstr($this->sourceCreator()),
+			'creation date'     => $this->bint($this->preservedDate($written)),
 			'info'              => $this->singleFileInfo(),
 			'libtorrent_resume' => $this->resumeDictionary(),
 		));

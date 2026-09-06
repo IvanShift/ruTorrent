@@ -12,15 +12,23 @@ final class ErasedataManifestCodec
 	const READ_CHUNK_BYTES = 65536;
 	const MAX_CAPTURED_NAME_BYTES = 4096;
 
+	// The one canonical force type: the INTEGER 1 or 2, never the string.
+	//
+	// Invariant 13. The wire still speaks strings -- an HTTP parameter and an
+	// argv word are strings and cannot be anything else -- so the two exact
+	// decimal spellings are accepted here, at the boundary, and converted once.
+	// Everything past this point is an integer, and anything that is neither an
+	// exact spelling nor the exact integer is refused rather than coerced: true,
+	// 1.0, "01", " 1" and "1\n" are each somebody's mistake, and guessing at one
+	// of them means guessing at a deletion.
 	public static function normalizeForce($value)
 	{
-		if(is_string($value))
-		{
-			if($value === "1")
-				return(1);
-			if($value === "2")
-				return(2);
-		}
+		if($value === 1 || $value === 2)
+			return($value);
+		if($value === "1")
+			return(1);
+		if($value === "2")
+			return(2);
 		return(null);
 	}
 
@@ -726,8 +734,17 @@ final class ErasedataManifestCodec
 	// therefore borrows two symbols from files it cannot name. Every caller
 	// loads them; a future one that does not gets a refusal it can read instead
 	// of a fatal on an undefined symbol.
+	// $reportRefusal: whether a failed publication writes its own line here.
+	//
+	// It is a CONDITION, not an event -- the drain retries a retained staging on
+	// every tick, five seconds apart, for as long as the obstacle stands -- and
+	// this class has no memory across ticks, so the line below repeated about
+	// 17k times a day. Callers that classify the refusal themselves and pass it
+	// through the drain's durable report memory pass false; the note they write
+	// says the same thing once. Callers that say nothing of their own leave it
+	// true, because a refusal nobody reports is worse than one reported often.
 	public static function publishStaging($tmpPath, $hash,
-		?ErasedataFilesystemOps $filesystem = null)
+		?ErasedataFilesystemOps $filesystem = null, $reportRefusal = true)
 	{
 		if(!class_exists('ErasedataFilesystemOps', false)
 			|| !function_exists('erasedataRepairFileMode'))
@@ -743,7 +760,9 @@ final class ErasedataManifestCodec
 		if($listFile === '' || file_exists($listFile) || is_link($listFile)
 			|| !is_file($tmpPath) || !$filesystem->rename($tmpPath, $listFile))
 		{
-			FileUtil::toLog("erasedata: failed to publish manifest for ".$hash.", staging retained");
+			if($reportRefusal)
+				FileUtil::toLog("erasedata: failed to publish manifest for ".$hash
+					.", staging retained");
 			return(false);
 		}
 		erasedataRepairFileMode($listFile);

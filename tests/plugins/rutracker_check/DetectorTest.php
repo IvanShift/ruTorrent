@@ -264,4 +264,71 @@ $suite->test('a transport excuse must cover the whole of d.message, not just its
     strictAssertSame(false, RuTrackerDetector::isTransportFailure(null), 'and neither is a non-string');
 });
 
+// Jurisdiction and attribution are two different questions about the same
+// row, and the two callers of messageSpeaksForTracker() used to answer the
+// second one differently: classify() counted a row foreign by the loose
+// substring test, the metadata fetch by the anchored host test. A lookalike
+// host satisfies the loose test, so classify() read it as RuTracker's own,
+// left $foreign at 0, and handed that row's "Could not connect" to RuTracker
+// as an excuse -- 'transport' instead of 'candidate', and layers 2 and 3 never
+// ran. Anyone who can put an announce URL into a torrent picks that host.
+$suite->test('a look-alike row cannot write the message RuTracker is excused by', function () {
+    $tru = array('url' => 'http://bt.t-ru.org/ann?pk=x', 'enabled' => 1, 'failed' => 6, 'success' => 0);
+    $lookalike = array('url' => 'http://rutracker.evil.example/ann', 'enabled' => 1, 'failed' => 4, 'success' => 0);
+    $timeout = 'Tracker: [Could not connect to server]';
+
+    // The one canonical predicate both callers now ask.
+    strictAssertSame(true, RuTrackerDetector::isForeignRow($lookalike), 'a look-alike host is somebody else');
+    strictAssertSame(false, RuTrackerDetector::isForeignRow($tru), 'RuTracker\'s own row is not foreign');
+    strictAssertSame(false, RuTrackerDetector::isForeignRow(
+        array('url' => 'http://rutracker.evil.example/ann', 'enabled' => 0, 'failed' => 4, 'success' => 0)),
+        'a disabled row writes no events at all');
+    strictAssertSame(true, RuTrackerDetector::isForeignRow(
+        array('url' => 'dht://', 'enabled' => 1, 'failed' => 0, 'success' => 0)),
+        'the dht:// row is foreign here too');
+
+    strictAssertSame('candidate', RuTrackerDetector::classify(array($tru, $lookalike), $timeout),
+        'a look-alike row may have written the message, so it excuses nothing');
+    strictAssertSame('transport', RuTrackerDetector::classify(array($tru), $timeout),
+        'and with only RuTracker rows the same message still excuses them');
+
+    // Row SELECTION stays the loose test: a torrent whose announce was
+    // tampered with is still a RuTracker topic layers 2 and 3 must look at, so
+    // it keeps getting a verdict rather than dropping to 'none'.
+    strictAssertSame('candidate', RuTrackerDetector::classify(array($lookalike), $timeout),
+        'a tampered announce is still within jurisdiction');
+    strictAssertSame('none', RuTrackerDetector::classify(
+        array(array('url' => 'http://tracker.kinozal.tv/ann', 'enabled' => 1, 'failed' => 6, 'success' => 0)), $timeout),
+        'and another tracker\'s torrent is still not my jurisdiction');
+});
+
+// isForeignRow() is a TRUST predicate, so it has to degrade the way the two
+// host predicates do: isTrackerRow() and isTrackerHost() both answer false
+// for anything they cannot parse into one of RuTracker's own domains, i.e.
+// toward "this is not RuTracker's". An argument that is not a row array
+// is not a row this helper can vouch for, so the answer is "somebody else
+// could have written the message", which silences d.message for BOTH callers.
+// The shape that makes this matter is the signature pair: isTrackerRow() takes
+// a URL string and isForeignRow() takes a row array, so the natural slip at a
+// call site is isForeignRow($row['url']). Answering false there would put
+// $foreign back at 0 and hand a look-alike row's "Could not connect" to
+// RuTracker as an excuse again -- the exact defect the test above pins --
+// with no test failing, because every existing caller passes an array.
+$suite->test('isForeignRow cannot vouch for an argument that is not a row', function () {
+    strictAssertSame(true, RuTrackerDetector::isForeignRow('http://bt.t-ru.org/ann?pk=x'),
+        'a bare URL string is the sibling predicate\'s argument, not a row');
+    strictAssertSame(true, RuTrackerDetector::isForeignRow(null), 'null is not a row');
+    strictAssertSame(true, RuTrackerDetector::isForeignRow(42), 'an integer is not a row');
+
+    // The disabled-row half of the guard is the documented one and keeps its
+    // direction: a disabled row announces nothing, so it writes no event and
+    // cannot be the author of d.message.
+    strictAssertSame(false, RuTrackerDetector::isForeignRow(
+        array('url' => 'http://rutracker.evil.example/ann', 'enabled' => 0, 'failed' => 1, 'success' => 0)),
+        'a disabled look-alike row is still nobody');
+    strictAssertSame(false, RuTrackerDetector::isForeignRow(
+        array('url' => 'http://bt.t-ru.org/ann?pk=x', 'enabled' => '0', 'failed' => 0, 'success' => 0)),
+        'and so is a disabled RuTracker row');
+});
+
 exit($suite->run());

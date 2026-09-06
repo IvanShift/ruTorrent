@@ -23,4 +23,32 @@ $rutrackerLayer2Enabled	??= true;	// announce confirmation layer; disabling it a
 					// corroborate a deletion, never conclude one
 $rutrackerAnnouncePause	??= 5;	// 0-60 seconds between probe announces
 $rutrackerAnnounceCap	??= 10;	// 0-40 probe announces per persisted window per announce host; 0 disables the probe
-$rutrackerSweepCooldown	??= 86400;	// >= 0 seconds between automatic full forum sweeps
+// Seconds between automatic full forum sweeps.
+//
+// Domain: a nonnegative PHP integer, or its canonical decimal spelling as a
+// string. Unset or null means this default. Anything else -- an empty string,
+// a boolean, a negative number, a float, '1e3', ' 24', '024', '+24', an array,
+// an object, a decimal past PHP_INT_MAX -- is not read as a number at all:
+// forumindex.php falls back to this same 86400 and says so once per process in
+// ruTorrent's application log ("config: invalid rutrackerSweepCooldown").
+// Noncanonical spellings that used to be coerced (notably '' and other text,
+// which reached (int) as 0) therefore change meaning: they now get the
+// default rather than "no cooldown at all".
+//
+// 0 keeps its literal meaning -- no cooldown, so every cycle and every manual
+// check may start a full walk -- and a small value such as 24 is a valid 24
+// seconds, not a mis-typed hour. There is no floor and no auto-disable.
+//
+// Cost: a sweep issues one dump request per forum in the tracker's CURRENT
+// tree, so the price follows that tree's size rather than any fixed number,
+// and 304s, early exits and refusals all lower it. For scale only, the design
+// sample of 2026-08-06 fetched 140 forums in 70 s over 6 parallel connections
+// for 50.4 MB DECOMPRESSED, and extrapolated the then-listed 1261 forums to
+// roughly 10-11 minutes parallel or about an hour sequentially. That is a
+// historical sample and an extrapolation, not today's capture, not network
+// volume, and not the guaranteed cost of any given run.
+//
+// The cooldown does not promise that sweeps never overlap: forumcrawl.php
+// takes no whole-crawl lock, and a crawl may itself run longer than the
+// configured interval.
+$rutrackerSweepCooldown	??= 86400;	// >= 0 seconds between automatic full forum sweeps; see the note above

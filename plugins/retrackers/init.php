@@ -1,5 +1,14 @@
 <?php
 
+// update.php reaches rTorrent::quoteCommandArg() while it builds the insert
+// grammar, i.e. at plugin-init time, and nothing on the getplugins.php path has
+// loaded that class by then. ruTorrent's autoloader (php/util.php) looks for a
+// class under php/utility/<lowercase>.php, and rTorrent lives in php/rtorrent.php,
+// so it can never resolve this one: the include fails and the whole page 500s.
+// getplugins.php is the only thing that re-creates plugin schedules, so that
+// turns one plugin's init into a silent, fleet-wide stop.
+require_once( dirname(__FILE__)."/../../php/rtorrent.php");
+
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once( dirname(__FILE__)."/update.php");
 require_once( dirname(__FILE__)."/retrackers.php");

@@ -95,7 +95,7 @@ class EraseWithDataCommandTest extends TestCase
 		copy(__DIR__.'/../../../plugins/erasedata/erase.php', $entrypoint);
 		copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $fixture.'/plugins/erasedata/manifest.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', "<?php\n");
-		file_put_contents($fixture.'/plugins/erasedata/removewithdata.php', '<?php function erasedataRemoveWithData($hashes,$force){'
+		file_put_contents($fixture.'/plugins/erasedata/removewithdata.php', '<?php function erasedataAdmitRemoval($hashes,$force){'
 			.'file_put_contents(getenv("ERASEDATA_ENTRY_LOG"),json_encode(array($hashes,$force)));return array();}');
 		putenv('ERASEDATA_ENTRY_LOG='.$callLog);
 		try {
@@ -174,7 +174,7 @@ class EraseWithDataCommandTest extends TestCase
 		copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $fixture.'/plugins/erasedata/manifest.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', '<?php class FileUtil {'
 			.'public static function getSettingsPath(){return getenv("ERASEDATA_ENTRY_SETTINGS");}}');
-		file_put_contents($fixture.'/plugins/erasedata/removewithdata.php', '<?php function erasedataRemoveWithData($hashes,$force){'
+		file_put_contents($fixture.'/plugins/erasedata/removewithdata.php', '<?php function erasedataAdmitRemoval($hashes,$force){'
 			.'file_put_contents(getenv("ERASEDATA_ENTRY_LOG"),json_encode(array($hashes,$force)));return array();}');
 		file_put_contents($settings.'/erasedata/'.$hash.'.list', "legacy\nlegacy\n0\n1\n");
 		putenv('ERASEDATA_ENTRY_SETTINGS='.$settings);
@@ -184,8 +184,8 @@ class EraseWithDataCommandTest extends TestCase
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($entrypoint).' '.escapeshellarg($hash).' 1 2>&1', $output, $status);
 			$this->assertEquals(0, $status, 'the copied production entrypoint exits successfully: '.implode("\n", $output));
-			$this->assertEquals(array(array($hash), '1'),
-				is_file($callLog) ? json_decode(file_get_contents($callLog), true) : null,
+			$this->assertTrue(is_file($callLog)
+				&& json_decode(file_get_contents($callLog), true) === array(array($hash), 1),
 				'a legacy pending generation cannot suppress erase of a re-added torrent with the same hash');
 		} finally {
 			putenv('ERASEDATA_ENTRY_SETTINGS');

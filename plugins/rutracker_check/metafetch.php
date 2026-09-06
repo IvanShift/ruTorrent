@@ -314,7 +314,18 @@ class RuTrackerMetaFetch
     }
 
     // Picks up a stub begin() loaded on an earlier cycle but never got to
-    // mark: start it, claim it on the old torrent, and let pump() take over.
+    // mark: refresh its deadline -- and start it, when it is still waiting for
+    // metadata -- claim it on the old torrent, and report it as pending. It
+    // never harvests, not even on the branch where the metadata has already
+    // arrived: adoption only re-establishes the handles pump() is addressed
+    // by, and the harvest is left to the next cycle's pump(). That normally
+    // costs the replacement one cycle, which is the price of finding the stub
+    // unmarked -- but it is a HANDOFF, not a promise, and neither this
+    // comment nor the log line below may state it as one. The next pump reads
+    // the same state afresh and can decide otherwise: if the item at $newHash
+    // is gone by then it clears the fetch instead (pinned by 'pump clears
+    // state when the stub vanished'), and if the item is no longer this
+    // transaction's it retires the fetch as superseded or foreign.
     static private function adoptStub($oldHash, $newHash, $deadline)
     {
         $meta = new rXMLRPCRequest(array(
@@ -383,7 +394,8 @@ class RuTrackerMetaFetch
 
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' adopted its own stub at '
             . $newHash . ' left by an earlier cycle, '
-            . ($arrived ? 'with its metadata already in: harvesting from the session copy'
+            . ($arrived ? 'with its metadata already in; adoption does not harvest,'
+                            . ' so the harvest is left to the next pump'
                         : 'waiting until ' . $deadline));
         return ruTrackerChecker::STE_META_PENDING;
     }
@@ -520,7 +532,10 @@ class RuTrackerMetaFetch
             $foreign = 0;
             foreach ($projection['rows'] as $row) {
                 if (empty($row['enabled'])) continue;   // a disabled row says nothing
-                if (!RuTrackerDetector::isTrackerRow($row['url'])) {
+                // The same canonical predicate classify() counts foreign rows
+                // with; messageSpeaksForTracker() reads both counts, so the two
+                // callers may not define this differently.
+                if (RuTrackerDetector::isForeignRow($row)) {
                     $foreign++;   // the dht:// row, or a tr= the tracker's own list added
                     continue;
                 }
@@ -600,10 +615,20 @@ class RuTrackerMetaFetch
                 'session-hash-timeout: the owned service item still had a stale session hash after the deadline', 0);
         }
 
-        // Read BEFORE the setters below, because each of them calls
-        // Torrent::touch() and touch() overwrites both keys. announce() with
-        // no argument is the getter and does not touch, so this is the last
-        // point at which the harvested bytes still say what they said.
+        // Read BEFORE the setters below. announce() with no argument is the
+        // getter and writes nothing, so this is the last point at which the
+        // harvested bytes still say what they said.
+        //
+        // On this fork the setters below leave both keys alone anyway:
+        // Torrent::touch() returns without writing anything unless the class
+        // built the info dictionary itself out of files on disk, and a
+        // session .torrent read back through rTorrent::getSource() is decoded.
+        // The snapshot is kept because plugins/rutracker_check is proposed to
+        // upstream Novik/ruTorrent separately from php/Torrent.php (AGENTS.md,
+        // "Upstream PR Handoff"), and upstream's touch() still stamps both
+        // keys from every setter -- so on an install with the plugin and not
+        // the class fix, this read is the only surviving copy of what the
+        // harvested bytes carried.
         $authored = array(
             'created by' => $torrent->meta('created by'),
             'creation date' => $torrent->meta('creation date'),
@@ -624,14 +649,15 @@ class RuTrackerMetaFetch
             if (is_array($tiers) && count($tiers)) $torrent->announce_list($tiers);
         }
         $torrent->comment('https://rutracker.org/forum/viewtopic.php?t=' . (int) $stubTuple['topic']);
-        // Every setter above calls Torrent::touch(), which overwrites 'creation
-        // date' with time() and 'created by' with the PHP class's own name.
-        // Neither is ours to write. Left alone, touch() publishes the moment
-        // the CYCLE happened to run as the moment the release was created --
-        // measured live, 8 to 15 hours late and always landing on the top of
-        // an hour -- and claims ruTorrent authored someone else's torrent.
-        // Both then travel out to the "Created On" column and to the history
-        // plugin as fact.
+        // Neither key is ours to write. Where touch() stamps a decoded torrent
+        // -- as this class did before its own fix, and as upstream's Torrent
+        // still does -- the stamp publishes the moment the CYCLE happened to
+        // run as the moment the release was created (measured on the live
+        // fleet before the fix: 8 to 15 hours late, always on the top of an
+        // hour) and claims ruTorrent authored someone else's torrent. Both
+        // then travel out to the "Created On" column and to the history
+        // plugin as fact. The call below restores the snapshot either way,
+        // and only chooses a date where the harvested bytes carried none.
         self::datePublishedTorrent($torrent, $oldHash, $newHash, $stubTuple, $authored);
         // Only for the size in the diagnostic below: the replacement itself
         // travels as the object, already decoded and already patched.
@@ -658,16 +684,16 @@ class RuTrackerMetaFetch
     }
 
     /**
-     * Put back what Torrent::touch() overwrote on a harvested replacement.
+     * Write the harvested replacement's 'created by' and 'creation date'.
      *
      * $authored holds both keys as the harvested bytes spelled them, read
      * before the first setter ran. The rule is: RESTORE what the torrent
      * actually said, and only decide the value when the torrent said nothing.
-     * Clearing unconditionally would make this the mirror image of touch() --
+     * Clearing unconditionally would make this the mirror image of the bug --
      * a caller that destroys a real author's field because it assumed one
      * could not be there. Today a BEP 9 stub carries neither key (the metadata
-     * exchange transfers the info dictionary alone), so the restore is
-     * usually a no-op; it stops being one the moment harvest() is ever fed
+     * exchange transfers the info dictionary alone), so the restore usually
+     * puts nothing back; it stops being empty the moment harvest() is ever fed
      * from a source with top-level keys, and that is exactly the change that
      * would otherwise silently start deleting real data.
      *
@@ -745,12 +771,10 @@ class RuTrackerMetaFetch
             getCmd("d.get_custom"), array($oldHash, "chk-forum")));
         $req->important = false;
         if (!$req->success() || !isset($req->val[0])) return null;
-        // trim() to match RuTrackerCheckImpl::resolveForum(), the other reader
-        // of this same custom. Without it the two disagree about one stored
-        // value: layer 3 resolves the forum, fetches the dump and finds the
-        // topic, while this one answers "no forum" and logs that the cache had
-        // no reg_time -- a false diagnosis of a cache that had the answer.
-        $forumId = RuTrackerRpcValue::canonicalPositiveInt32(trim((string) $req->val[0]));
+        // The same predicate RuTrackerCheckImpl::resolveForum() reads this
+        // custom with. They once disagreed over one stored value, and
+        // RuTrackerRpcValue::canonicalForumId() records what that cost.
+        $forumId = RuTrackerRpcValue::canonicalForumId((string) $req->val[0]);
         if ($forumId === null) return null;
 
         $rows = RuTrackerForumIndex::cachedDump($forumId);

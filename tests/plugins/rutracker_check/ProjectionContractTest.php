@@ -327,4 +327,166 @@ $suite->test('the projection state/is_open cast is a canonical 0/1 read, not a c
     }
 });
 
+// ---------------------------------------------------------------------------
+// chk-forum has one canonicalisation, and every file that reads it as a forum
+// id calls it.
+//
+// The rule lived twice: RuTrackerCheckImpl::resolveForum() and
+// RuTrackerMetaFetch::registrationTime(). It had already drifted once -- one
+// copy omitted the trim(), so for a single stored value layer 3 resolved the
+// forum, fetched the dump and found the topic while the other answered "no
+// forum" and logged that the cache carried no reg_time. Pinning the predicate
+// is only half the guard; the other half is that no reader re-spells it.
+// ---------------------------------------------------------------------------
+
+$suite->test('canonicalForumId is canonicalPositiveInt32 over a trimmed value, and nothing else', function () {
+    foreach (rpcMatrixRows() as $row) {
+        $label = $row[0];
+        $value = $row[1];
+        if (is_string($value)) {
+            $expected = RuTrackerRpcValue::canonicalPositiveInt32(trim($value));
+        } elseif (is_int($value)) {
+            $expected = RuTrackerRpcValue::canonicalPositiveInt32($value);
+        } else {
+            $expected = null;
+        }
+        strictAssertSame($expected, RuTrackerRpcValue::canonicalForumId($value),
+            'canonicalForumId on ' . $label);
+    }
+});
+
+$suite->test('canonicalForumId accepts transport whitespace and still refuses a non-canonical id', function () {
+    // Whitespace is the one thing it forgives, because that is transport and
+    // not the spelling of the id.
+    foreach (array(' 22', '22 ', "\n22", "22\n", "\t22\t", "  22  ") as $padded) {
+        strictAssertSame(22, RuTrackerRpcValue::canonicalForumId($padded),
+            'a forum id padded by transport still reads as 22: ' . var_export($padded, true));
+    }
+    // And everything canonicalPositiveInt32 refuses stays refused once trimmed,
+    // which is the half that keeps '007' from being fetched as forum 7.
+    foreach (array(' 007 ', ' 0 ', ' -1 ', ' 1.0 ', '  ', ' 2147483648 ') as $bad) {
+        strictAssertSame(null, RuTrackerRpcValue::canonicalForumId($bad),
+            'trimming does not rescue a non-canonical id: ' . var_export($bad, true));
+    }
+});
+
+// Removes PHP comments and leaves string literals alone, so that prose naming
+// a function does not count as a call to it. The previous spelling of the
+// guard below was a whole-file strpos() and was satisfied by the comment
+// sitting above the call it meant to find; a reader could stop calling the
+// shared predicate with this suite green.
+//
+// Hand-rolled rather than token_get_all(): the shipped Alpine image loads no
+// tokenizer extension, several static-structure suites already fail there for
+// that reason, and this one runs clean everywhere today.
+function pcCodeWithoutComments($source)
+{
+    $out = '';
+    $length = strlen($source);
+    for ($i = 0; $i < $length; $i++) {
+        $c = $source[$i];
+        $next = $i + 1 < $length ? $source[$i + 1] : '';
+        if (($c === '/' && $next === '/') || $c === '#') {
+            while ($i < $length && $source[$i] !== "\n") $i++;
+            $out .= "\n";
+            continue;
+        }
+        if ($c === '/' && $next === '*') {
+            $end = strpos($source, '*/', $i + 2);
+            $comment = $end === false ? substr($source, $i) : substr($source, $i, $end + 2 - $i);
+            // Keep the newlines the comment held, so a reported line number
+            // still points at the line the source has it on.
+            $out .= str_repeat("\n", substr_count($comment, "\n"));
+            $i = $end === false ? $length : $end + 1;
+            continue;
+        }
+        if ($c === '"' || $c === "'") {
+            $out .= $c;
+            for ($i++; $i < $length; $i++) {
+                $out .= $source[$i];
+                if ($source[$i] === '\\') {
+                    $i++;
+                    if ($i < $length) $out .= $source[$i];
+                    continue;
+                }
+                if ($source[$i] === $c) break;
+            }
+            continue;
+        }
+        $out .= $c;
+    }
+    return $out;
+}
+
+$suite->test('every reader of chk-forum canonicalises it through the shared predicate', function () {
+    // A drift guard, not a style check: two readers disagreeing over one
+    // stored value is a defect this plugin has actually shipped.
+    //
+    // The reader set is DISCOVERED rather than listed, because a listed one is
+    // what a third reader walks past: createTorrent() spelled the rule out by
+    // hand in the same commit that added the shared predicate, and the
+    // two-file version of this test stayed green. A file counts as a reader
+    // when its CODE names the custom as a whole quoted token.
+    $root = dirname(dirname(dirname(__DIR__))) . '/plugins/rutracker_check';
+    // The one file that names chk-forum in code without reading it as a forum
+    // id, for the reason RuTrackerRpcValue::canonicalForumId()'s docblock
+    // states: forumindex.php compares the stored BYTES verbatim under its lock,
+    // where canonicalising would let " 22" match "22" and lose the swap.
+    //
+    // runstate.php, the predicate's own home, needs no exclusion: it names
+    // chk-forum only in prose, and pcCodeWithoutComments() has already removed
+    // the prose by the time the discovery below runs. Listing it would be a
+    // dead entry that reads as load-bearing. If it ever does name the custom in
+    // code, the reader list below fails and a human decides which it is.
+    $notForumIdReaders = array('forumindex.php');
+    $sources = array();
+    foreach (array('/*.php', '/trackers/*.php') as $pattern) {
+        foreach (glob($root . $pattern) as $path) {
+            $sources[substr($path, strlen($root) + 1)] = pcCodeWithoutComments(file_get_contents($path));
+        }
+    }
+    strictAssertSame(true, count($sources) > 20,
+        'the plugin source must be listable for this guard to mean anything');
+    $readers = array();
+    foreach ($sources as $relative => $code) {
+        if (preg_match('/([\'"])chk-forum\\1/', $code) !== 1) continue;
+        if (in_array($relative, $notForumIdReaders, true)) continue;
+        $readers[] = $relative;
+    }
+    sort($readers);
+    // Names the file, which is what makes a new reader visible here rather
+    // than in production.
+    strictAssertSame(array('check.php', 'metafetch.php', 'trackers/rutracker.php'), $readers,
+        'these are the files that read chk-forum as a forum id; a new one must be held to the same rule');
+    foreach ($readers as $relative) {
+        $code = $sources[$relative];
+        strictAssertSame(true, strpos($code, 'RuTrackerRpcValue::canonicalForumId(') !== false,
+            $relative . ' must call the shared predicate in code, not name it in a comment');
+        // The negative half, per line rather than per file: check.php reads
+        // chk-topic with canonicalPositiveInt32(trim(...)) on the line directly
+        // above its forum read, so a file-wide ban on the substring cannot be
+        // used here. Every hand-spelling this plugin has actually drifted into
+        // named the forum on its own line.
+        //
+        // There is deliberately no canonicalTopicId(), and the reason is not
+        // that nobody got round to it. chk-topic is read under TWO rules on
+        // purpose. check.php trims first because it FORWARDS the id onto a
+        // successor row, and transport whitespace is not the question there --
+        // measured, that rule is byte-for-byte canonicalForumId(), so a
+        // canonicalTopicId() would be a second name for one body and the next
+        // change to the forum rule would silently leave the topic one behind.
+        // forumindex.php does not trim, twice, because it PROVES that a row
+        // carries the topic it is about before writing to it; " 22" must name
+        // no topic there. One predicate cannot hold both, and the difference is
+        // the point rather than an oversight.
+        foreach (explode("\n", $code) as $index => $line) {
+            if (stripos($line, 'forum') === false) continue;
+            strictAssertSame(false, strpos($line, 'RuTrackerRpcValue::canonicalPositiveInt32(') !== false,
+                $relative . ':' . ($index + 1)
+                    . ' names a forum and spells the chk-forum rule by hand beside the shared one');
+        }
+    }
+});
+
+
 exit($suite->run());

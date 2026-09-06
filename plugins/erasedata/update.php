@@ -12,6 +12,13 @@ if(!class_exists('rXMLRPCRequest'))
 	require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once( dirname(__FILE__)."/filesystem.php" );
 require_once( dirname(__FILE__)."/manifest.php" );
+// The obligation store the drain worker below reads and discharges. It is
+// loaded here, unconditionally and at file scope, and never behind the
+// condition that decides which mode this invocation runs in: a conditional
+// include is how a worker ends up present in the source, reachable from the
+// tests and dead in production, with the guard that was supposed to reach it
+// silently false on every real tick.
+require_once( dirname(__FILE__)."/pending.php" );
 require_once( dirname(__FILE__)."/removewithdata.php" );
 require_once( dirname(__FILE__)."/collector.php" );
 eval(FileUtil::getPluginConf('erasedata'));
@@ -82,8 +89,33 @@ function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 // forged from a request.
 $erasedataScript = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : null;
 $erasedataIsEntryPoint = is_string($erasedataScript) && realpath($erasedataScript) === __FILE__;
+// The mode word the per-user drain schedule passes as the third argument.
+// `update.php <user> drain` is the ONE scheduled production entry point into
+// the guarded drain worker, and this is the only place in the shipped plugin
+// that calls erasedataDrainWorkerMain(). Anything else -- no third argument, or
+// a hash -- is the ordinary periodic collector pass, which is why the mode is
+// tested before erasedataCollectorMain() reads $argv[2] as a targeted hash.
+//
+// The user comes from $argv[1], not from User::getUser(): a CLI child's
+// User::getUser() answers whatever REMOTE_USER the $argv[1] assignment at the
+// top of this file already set, while the argument the scheduler passed is the
+// one the producer really armed under. That argument may be the EMPTY STRING
+// and still name a real user -- every install without HTTP authentication, and
+// every install with $forbidUserSettings = true, has User::getUser() === '', so
+// the empty user owns its queue, its `erasedata-drain` schedule key and the
+// child started for it, exactly as any other user does. Only a MISMATCH between
+// the queue's recorded owner and this argument is refused. The exit code
+// carries the tick's own decision without dying, so a refusal can never be
+// mistaken for a crash.
+$erasedataDrainTick = isset($argv) && is_array($argv) && count($argv) > 2
+	&& $argv[2] === 'drain';
 if(erasedataMayStartCollector(PHP_SAPI, $erasedataScript, __FILE__))
+{
+	if($erasedataDrainTick)
+		exit(erasedataDrainWorkerMain(
+			isset($argv[1]) && is_string($argv[1]) ? $argv[1] : '') ? 0 : 1);
 	erasedataCollectorMain(new ErasedataFilesystemOps());
+}
 // Only when this file IS the entry point: being required by another plugin for
 // erasedataRunCollector() is ordinary and says nothing. Reaching here otherwise
 // is either the HTTP request this guard exists for, or the likelier and

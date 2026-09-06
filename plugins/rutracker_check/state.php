@@ -51,13 +51,22 @@ class RuTrackerState
     // A whole-cycle mutex, and a different thing from the per-document locks
     // below: those keep one JSON file internally consistent, this keeps two
     // cycles from doing the same outward-facing work twice. Overlapping passes
-    // are not merely wasteful. Every safeguard that bounds outbound traffic --
-    // the announce cap, the forum-dump memo, the Kinozal session latch -- is a
-    // per-process static and cannot see its twin, so two cycles silently double
-    // each limit. They also share one loginmgr cookie jar: a failed request in
-    // one erases the stored session for both, the other logs in again, and a
-    // tracker that allows a single live session per account keeps knocking the
-    // pair out in turn.
+    // are not merely wasteful. Two of the safeguards that bound outbound
+    // traffic cannot see their twin at all, because they are per-process
+    // statics: forumindex.php's dump memo ($memo, "at most one dump fetch per
+    // forum per cycle") and trackers/kinozal.php's session latch
+    // ($sessionDead, which stops a run asking again once a locked-out loginmgr
+    // account has been proven dead -- documented there as a per-process latch
+    // that saved 130 requests a cycle on the live fleet). Two cycles silently
+    // double each of those. The announce cap is NOT one of them -- announce.php
+    // documents it as the durable per-host budget in announce.json, counted
+    // across every process by design -- but a second cycle still spends that
+    // one shared allowance on probes the first is already making, so a
+    // window's confirmations are bought twice and half of them wasted. They
+    // also share one loginmgr cookie jar: a failed request in one erases the
+    // stored session for both, the other logs in again, and a tracker that
+    // allows a single live session per account keeps knocking the pair out in
+    // turn.
     //
     // Non-blocking on purpose: a cycle that cannot get in has nothing useful to
     // wait for, since the running one is already doing exactly its work. The
@@ -69,15 +78,17 @@ class RuTrackerState
     // holds it, and true when no lock file could be created at all -- a guard
     // that cannot be built must not stop the cycle, since losing the guard is
     // better than losing every cycle.
-    // Deliberately NOT dir(): that path sits inside one ruTorrent user's
-    // profile, and the live system had two of them -- an anonymous one and
-    // "torrent" -- driving the very same rTorrent. Each got its own lock, so
-    // neither could see the other and both cycles ran, which is the whole
-    // reason the guard did nothing. What needs protecting is the daemon and
-    // the trackers behind it, not a profile, so the lock lives outside every
-    // user's profile and is keyed by how this ruTorrent reaches its rTorrent:
-    // a genuine multiuser install with a daemon per user keeps a lock per
-    // daemon and never serialises unrelated cycles.
+    // Deliberately NOT inside the calling profile's own settings path. The
+    // live system had two ruTorrent users -- an anonymous one and "torrent" --
+    // driving the very same rTorrent. A lock under each one's profile gave
+    // each cycle its own file, so neither could see the other and both cycles
+    // ran, which is the whole reason the guard did nothing. What needs
+    // protecting is the daemon and the trackers behind it, not a profile, so
+    // the lock lives in dir() -- the SHARED location documented above, outside
+    // every user's profile, and shared for exactly the same reason -- and is
+    // keyed by how this ruTorrent reaches its rTorrent: a genuine multiuser
+    // install with a daemon per user keeps a lock per daemon and never
+    // serialises unrelated cycles.
     static private function cycleLockPath()
     {
         global $scgi_host, $scgi_port, $XMLRPCMountPoint;
@@ -239,21 +250,6 @@ class RuTrackerState
         return true;
     }
 
-    // Atomic read-modify-write: opens <name>.json (creating it if missing),
-    // takes an exclusive lock, reads whatever is CURRENTLY on disk, applies
-    // $mutator to it (a callable taking the current state array and
-    // returning the new one), writes the result back, and releases the
-    // lock. Because the read happens under the lock and after it is
-    // acquired, $mutator's input is always the latest write from any other
-    // caller of update(), never a snapshot obtained earlier -- unlike
-    // load()+save(), no caller can persist something older than what is on
-    // disk at write time.
-    //
-    // $mutator must stay quick: the lock is held for its entire duration,
-    // and every other update()/save() call for the same $name blocks on it.
-    // In particular it must never wrap a slow operation like an HTTP fetch
-    // -- callers with one (forumindex.php's fetchDump()) do the fetch
-    // outside update() entirely and only reach for it to apply the result.
     // Removes a document (and its lock) outright -- for per-forum dumps
     // whose retention has lapsed, where an empty-but-present file would just
     // accumulate. Safe against a concurrent update(): its rename would
@@ -281,12 +277,69 @@ class RuTrackerState
         return $renamed;
     }
 
+    // Which documents this process has already reported as unreadable, keyed
+    // by full path. A single cycle reaches the same refusal once per host or
+    // once per forum, and a wedged file is one fact, not dozens; production
+    // runs one PHP process per cycle, so this is one line per wedged document
+    // per cycle -- enough to be noticed, not enough to drown the shared log.
+    private static $reported = array();
+
+    // The one refusal in this class that CANNOT heal. Nothing here ever
+    // rewrites a document it could not read -- that is the whole point of
+    // update()'s fail-closed guard below, since rebuilding the document from
+    // an empty array would erase every key the file held, and save(), the one
+    // writer that does not read first, has a single production caller, which
+    // gives it a freshly staged name (forumindex.php's dump staging) -- so
+    // whatever reads that document stays frozen until somebody repairs or
+    // removes the file.
+    // That makes it the case AGENTS.md names: a refusal that is neither
+    // self-healing nor visible is a silent permanent stall, so this one takes
+    // the ungated channel and names the document and the consequence.
+    // Deliberately NOT a self-heal: discarding an operator's state document is
+    // how the evidence would disappear along with the fault.
+    static private function reportUnreadable($dir, $name)
+    {
+        if (!class_exists('ruTrackerChecker')) return;
+        $path = $dir . '/' . $name . '.json';
+        if (isset(self::$reported[$path])) return;
+        self::$reported[$path] = true;
+        ruTrackerChecker::logUnrepairable('state: ' . $path . ' is present and does not decode as'
+            . ' JSON, so every update to it is refused and nothing in this plugin will rewrite it;'
+            . ' whatever that document holds -- the announce budget, the crawl queue, the forum'
+            . ' index -- stays frozen until the file is repaired or removed by hand');
+    }
+
+    // Atomic read-modify-write: opens <name>.json (creating it if missing),
+    // takes an exclusive lock, reads whatever is CURRENTLY on disk, applies
+    // $mutator to it (a callable taking the current state array and
+    // returning the new one), writes the result back, and releases the
+    // lock. Because the read happens under the lock and after it is
+    // acquired, $mutator's input is always the latest write from any other
+    // caller of update(), never a snapshot obtained earlier -- unlike
+    // load()+save(), no caller can persist something older than what is on
+    // disk at write time.
+    //
+    // $mutator must stay quick: the lock is held for its entire duration,
+    // and every other update()/save() call for the same $name blocks on it.
+    // In particular it must never wrap a slow operation like an HTTP fetch
+    // -- callers with one (forumindex.php's fetchDump()) do the fetch
+    // outside update() entirely and only reach for it to apply the result.
+    //
     // @return bool -- whether the mutated state reached the disk. A caller
     // whose next step assumes the write landed (the announce budget spends a
     // slot this way) has to fail closed on false rather than carry on.
-    static public function update($name, $mutator)
+    // @param string|null $failure out: why it did not, when it did not --
+    //   'unreadable' (the document is there and does not decode),
+    //   'unwritable' (the mutator ran and the write did not land) or
+    //   'unlockable' (no guard could be established). "It did not happen" is
+    //   three facts, and only the first is permanent; reported as one boolean,
+    //   the announce budget told an operator its slot "could not be written"
+    //   for a document that could not be READ, which points at disk space
+    //   rather than at the file that is actually wedging the layer.
+    static public function update($name, $mutator, &$failure = null)
     {
         global $profileMask;
+        $failure = null;
         $dir = self::dir();
         // The lock lives BESIDE the document, never on it: the write below
         // replaces the document wholesale by rename, and a lock taken on the
@@ -298,13 +351,17 @@ class RuTrackerState
         $lock = $dir . '/' . $name . '.lock';
         $fp = self::openShared($lock);
         if ($fp === false) {
+            $failure = 'unlockable';
             if (class_exists('ruTrackerChecker'))
                 ruTrackerChecker::logDebug('state: cannot open ' . $lock . ', the ' . $name . ' update is lost');
             return false;
         }
 
         try {
-            if (!flock($fp, LOCK_EX)) return false;
+            if (!flock($fp, LOCK_EX)) {
+                $failure = 'unlockable';
+                return false;
+            }
             try {
                 $readable = true;
                 $current = self::load($name, $readable);
@@ -312,13 +369,14 @@ class RuTrackerState
                 // indistinguishable from a legitimate first write, and it
                 // silently discards everything the file held.
                 if (!$readable) {
-                    if (class_exists('ruTrackerChecker'))
-                        ruTrackerChecker::logDebug('state: the ' . $name . ' document is present but could'
-                            . ' not be read; the update is abandoned rather than written over it');
+                    $failure = 'unreadable';
+                    self::reportUnreadable($dir, $name);
                     return false;
                 }
                 $state = call_user_func($mutator, $current);
-                return self::replace($dir, $name, $state);
+                $stored = self::replace($dir, $name, $state);
+                if (!$stored) $failure = 'unwritable';
+                return $stored;
             } finally {
                 flock($fp, LOCK_UN);
             }

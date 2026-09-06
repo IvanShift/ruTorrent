@@ -125,8 +125,10 @@ Rules that follow:
   tests so the provenance is obvious, e.g. `the live NNMClub scrape answer is accepted verbatim`.
 - **Relax which fields are mandatory; never relax the checks on the fields that are present.**
   Type, canonicality, sign and duplicate checks still apply to every counter that appears.
-  `RuTrackerAnnounce::hasValidSuccessSchema()` (`plugins/rutracker_check/announce.php:434`) is the reference shape: require only what the
-  protocol guarantees, and validate each optional field only when it is there.
+  `RuTrackerAnnounce::hasValidSuccessSchema()` (`plugins/rutracker_check/announce.php`) is the
+  reference shape: require only what the protocol guarantees, and validate each optional field
+  only when it is there. One grep finds its single definition; the line number this citation used
+  to carry went stale in the very next commit, so do not add one back.
 - **Keep sibling validators consistent.** The announce layer and the scrape layer of the same
   plugin must not disagree about how strict to be.
 - When a rule comes from a spec, say so in a comment and say whether it was checked against a
@@ -175,9 +177,11 @@ strings out of it, and stops a raw fault message being mistaken for a verdict.
 That is not a loss of diagnostic power. The full request/response transcript is available on
 demand, in core:
 
-- `$rpcLogCalls` — `php/xmlrpc.php:99` logs every request.
-- `$rpcLogFaults` — `php/xmlrpc.php:235` logs the request **and** the raw answer whenever a call
-  faults on an `important` request.
+- `$rpcLogCalls` — `rXMLRPCRequest::send()` in `php/xmlrpc.php` logs every request it sends and
+  the raw answer it came back with. Callers that reach `rSCGITransport::send()` directly, such
+  as `rpc2.php`, do not pass through it.
+- `$rpcLogFaults` — `rXMLRPCRequest::run()` in the same file logs the request **and** the raw
+  answer whenever a call faults on an `important` request.
 
 So when a cause has to be found: turn on `$rpcLogFaults`, reproduce, read the transcript. When
 writing plugin code: log the classification, not the payload.
@@ -186,6 +190,109 @@ Any refusal must be **either self-healing or visible**. A guard that fails close
 and has no path back is not fail-closed, it is a silent permanent stall — and this fork has shipped
 two of those. If a corrupt persisted value can only be repaired by hand, the refusal must name the
 document, the key and the consequence.
+
+## This Machine Will Lie To You About Test Results
+
+Three separate review rounds on 2026-09-05 reported suite exit codes and failure counts that did
+not reproduce. None was a code defect; all four causes are environmental and all four are still
+here unless someone fixed them. **Re-run a number before you quote it.** Verdicts (accept /
+changes-required) have held up well in review; measured numbers have not.
+
+- **The test fixtures leak one server process per call, and it is invisible.** `proc_open()` given a
+  STRING command runs it through `/bin/sh`, and this shell FORKS rather than execs (measured: 6 of 6
+  trials, php as the shell's child), so `proc_terminate()` signals the shell and the real server
+  keeps its port. `tests/php/SCGITransportTest.php` and `tests/php/SCGITransportFixture.php` prefix
+  the command with `exec ` for exactly this reason -- if you write a new long-lived fixture process,
+  do the same. One session accumulated 785 orphaned `php -S` processes this way and then every
+  unrelated shell command started failing with no output.
+  The leaked servers carry rutorrent-scgi-rpc2 in their command line -- spelled plainly here so
+  that grepping this file for the name you just saw in `ps` lands on this paragraph.
+  Check with `pgrep -cf '[r]utorrent-scgi-rpc2'`; a healthy idle machine answers 0, and `pgrep -c`
+  exits 1 when it counts nothing, so do not chain it with `&&`. The brackets are what keep the
+  checking command out of its own match: an agent's Bash tool passes the whole command as a
+  single argv element, so the unbracketed pattern finds that wrapper and answers 1 on an idle
+  machine (measured both ways here). Read a non-zero count with `pgrep -af` before killing
+  anything, and kill by PID.
+  **The fix must reach every branch.** It was made on one line while another had already branched
+  from an older master, and the unfixed line leaked 186 servers over six hours before anyone noticed.
+
+- **`TasksMax` is a percentage of `kernel.threads-max`, and both were low.** The systemd default for
+  a user slice is `TasksMax=33%`. With `kernel.threads-max=12093` that is 3990 tasks -- and VS Code
+  alone holds ~600 threads, Firefox ~350. A full `php-test.sh` run forks a process per test file, so
+  a few concurrent runs hit the ceiling, `fork()` fails, and the shell dies with exit 1 and NO
+  output. That is the signature: a command that returns nothing at all, not an error message.
+  Diagnose with `systemctl show user-$(id -u).slice -p TasksMax -p TasksCurrent`.
+
+- **`/tmp` is a 1.7 GB tmpfs because this VM has Hyper-V Dynamic Memory.** `tmp.mount` ships
+  `size=50%`, and a percentage is evaluated ONCE, at mount time. This VM boots with the balloon
+  holding RAM down to about 3.3 GB, so 50% became 1736012k; the balloon then grows RAM to 38 GB and
+  the tmpfs cap never moves. `hv_balloon` in `lsmod` and `auto_online_blocks=online` are the tell.
+  Two reboots confirmed it on different numbers: a boot that started with ~3.3 GB produced
+  `size=1736012k` (1.7 GiB), and the next one, which started with ~9 GB, produced `size=4701512k`
+  (4.5 GiB) -- same rule, different starting RAM, and in both cases exactly half of it. So the size
+  of `/tmp` varies from boot to boot and cannot be relied on.
+  **On this host a percentage is always wrong -- use an absolute size.** Several suites write 64 MiB
+  fixtures there
+  (`SCGITransportTest`, the retrackers bounded-reader cases), and once it fills, a dozen unrelated
+  suites fail on writes they never expected to fail. `tests/php-test.sh` warns when the temp
+  filesystem has under 512 MiB free; `.git/hooks/pre-commit` points TMPDIR at `~/.cache/rutorrent-tmp`.
+  **Always `export TMPDIR=~/.cache/rutorrent-tmp/<label>` before a suite run**, and never put two
+  full `git archive` exports in `/tmp`.
+
+- **Concurrent agents contaminate each other's runs.** Suites key scratch directories off `/tmp` and
+  the PID, so two campaigns running at once collide. A reviewer measured a "5 failures in 8 runs"
+  race that the next reviewer reproduced as 1 in 12. If a failure matters, reproduce it against a
+  clean `git archive` export of the base commit under the SAME conditions before calling it a
+  regression.
+
+## The Pre-Commit Suite Is 200 Seconds, And Two Files Are 83% Of It
+
+Measured 2026-09-07 on an idle machine, per file, 81 files:
+
+| file | seconds | share |
+|---|---:|---:|
+| `tests/plugins/erasedata/RemoveWithDataTest.php` | 117.6 | 59% |
+| `tests/plugins/retrackers/UpdateTest.php` | 48.7 | 24% |
+| the other 79 files together | ~35 | 17% |
+| **total** | **201** | |
+
+Two things follow, and the first is a correction worth having:
+
+- **The hook is not ten minutes.** `.git/hooks/pre-commit` runs the suite and nothing
+  else. Runs that took ten minutes here were contended -- agents, containers and a second
+  suite over the same tree, all at once. Before optimising it, check what else is running:
+  `uptime` and `pgrep -cf '[b]ash php-test.sh'`.
+- **Parallelising the loop is not the lever.** `tests/php-test.sh` is a sequential `for`
+  over 81 independent PHP processes and this machine has 24 cores, but perfect parallelism
+  is bounded by the slowest single file: about 118 seconds instead of 201, a factor of 1.7.
+  The lever is inside the two suites the 2026-09 campaign grew -- 670 KB and 533 KB of
+  test source, 311 methods in the first. Splitting them is what would let parallelism bite.
+
+If someone does parallelise it, one file has to be handled first: `plugins/_task/TaskTest.php`
+runs `kill -9` over every child of PID 1 (see the entry above). On this host that is harmless
+-- 46 of 47 children answer EPERM -- but inside a container, where every process shares one
+uid, it would kill the sibling test processes. Everything else is already safe for it: all
+six suites that open sockets build unique paths from `uniqid()`/`getmypid()` and none binds a
+fixed port, and `PermissionTest` stopped writing fixtures into the checkout on 2026-09-06.
+
+The cheapest win is not speed at all: **skip the run when nothing it tests has changed.**
+Four commits on 2026-09-06 touched only Markdown under `tasks/` and each paid the full suite.
+A digest over `php/`, `plugins/` and `tests/`, compared against the last green run, would
+have made those four free.
+
+## Match The Review Effort To The Change
+
+Adversarial review found real defects here -- a blocking generation-wide freeze in the erasedata
+drain, `Torrent::touch()` destroying real authorship, the fixture leak above. It is worth its cost
+on behaviour changes. It is not worth its cost on a comment.
+
+- A behaviour change earns the full treatment: RED-first test, independent reviewer, and a mutation
+  proving the new test is load-bearing.
+- A comment or docblock fix does not. Verify the sentence against the code, run the suite, commit.
+  Spawning an implementer plus a reviewer for four words costs about an hour and finds nothing.
+- The recurring defect class in review is **a replacement comment that is itself false** -- three
+  rounds caught one each. So the check that pays is not "did a reviewer look at it" but "did anyone
+  open the line the new sentence cites". Do that, always, and prefer a shorter true sentence.
 
 ## Test Hygiene Traps Found The Hard Way
 
@@ -241,6 +348,25 @@ Know before you interpret the result:
   no tokenizer function anywhere. The base commit fails identically — **always run the same suite
   on the base before calling a failure a regression**. That comparison is the only thing separating
   an image gap from a real one.
+- **`TaskTest` kills the container it runs in, and the symptom looks like an out-of-memory.**
+  `rTask::kill()` reads a pid out of a file and runs ``kill -9 `pgrep -P $pid` ; kill -9 $pid`` --
+  the pid *and every child of it*. `testKillRunsNothingFromANonNumericPidFile` deliberately feeds
+  it a pid file reading `1$(touch ...)`; `intval()` correctly strips the injection the case is
+  about, and leaves the pid **1**. Inside a container that is init, so every process in the
+  container is a direct child of it and all of them are the same uid: they all die. Measured -- an
+  unrelated `sleep` started beside the suite was killed, and a full run inside a live `rt-lab`
+  container ended it (`Exited (0)`, mid-suite). What you see is `Killed` and `EXIT=137` at the line
+  `> php plugins/_task/TaskTest.php`, which reads as an OOM kill and is not one; `free` will show
+  the machine idle. Exclude that one file when running the suite in a container you care about.
+  `php:7.4-cli` and `php:8.1-cli` do not ship `pgrep`, so the path silently does nothing there --
+  which is why a version matrix does not show it. The plugin is untouched by any current work; the
+  underlying defect is written up in `tasks/2026-09-05-consolidated-fixes/SIDE-FINDINGS.md`.
+- **Suites that write fixtures into the checkout make two concurrent runs corrupt each other.**
+  `PermissionTest` built its directories in `tests/php/fixtures` until this was fixed. Six parallel
+  runs then passed 3 or 4 of 5 assertions instead of 5, and a run as root left the fixtures
+  root-owned so the next ordinary-user run failed on `unlink: Permission denied` -- a wrong answer
+  that reads exactly like a real one, and one that hides the `posix` gap above. Give every run its
+  own tree, or its own `TMPDIR`, before comparing results across PHP versions or uids.
 - **The scratchpad is a 1.7 GB tmpfs.** Two `git archive` exports of this repository filled it, and
   a full `/tmp` does not announce itself: `Write` returned `EDQUOT` and then *every* shell command,
   down to `true`, exited 1 with no output. If the shell starts failing universally, check `df`
@@ -284,7 +410,7 @@ artifact instead:
 
 ```sh
 until docker images -q rutorrent-rtXYZ:test | grep -q . \
-   || ! pgrep -f 'docker build.*rutorrent-rtXYZ' >/dev/null; do sleep 10; done
+   || ! pgrep -f '[d]ocker build.*rutorrent-rtXYZ' >/dev/null; do sleep 10; done
 ```
 
 Mutating probes belong here, never on the live instance. The live endpoint is for reads.

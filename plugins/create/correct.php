@@ -50,6 +50,22 @@ if( count( $argv ) > 1 )
 		}
 		if(count($trackers)>0)
 			$announce_list[] = $trackers;
+		// Correcting a torrent is an edit, not a re-creation, so the author's
+		// name and date stay on it. The file opened below is not a stranger's:
+		// each of the six *.sh wrappers that can reach this script runs an
+		// external hasher over the user's own files into temp.torrent and, when
+		// that succeeds, runs correct.php on the result. So what is corrected
+		// here is the output of ruTorrent's own create task, not a .torrent that
+		// arrived from outside. What settles the question is where the hashing
+		// happened, and it did not happen here: this script reads no payload --
+		// 'pieces', 'length' and 'name' all come out of temp.torrent unchanged --
+		// and the setters below make the same kind of edit
+		// plugins/edit/action.php makes on a torrent rtorrent already holds:
+		// trackers, comment, private flag, and here a source tag as well. So
+		// 'created by' and 'creation date' go on naming the hasher that did read
+		// the data, and Torrent::touch() leaves them alone because this object
+		// was decoded rather than built. createtorrent.php is the other case: it
+		// hashes the files itself, so this class signs what it built.
        		$torrent = new Torrent($tname);
        		$torrent->clear_announce();
        		if(count($announce_list)>0)

@@ -19,6 +19,18 @@ function testFindRepoRoot()
     throw new RuntimeException('Unable to locate the ruTorrent repository root');
 }
 
+// The real Snoopy error classifier, not a stand-in.
+//
+// The suites that need it reach ruTrackerChecker through loadClassDefinition()
+// -- they eval the class body out of check.php and never run that file's
+// require_once lines -- so the leaf its classifyFetchError() delegates to has
+// to be loaded here. It is required rather than restated: a stub copy of the
+// eight token/pattern pairs is exactly the drift this extraction removed, and
+// a test suite carrying its own copy could not see the production one change.
+// The file is a leaf with no dependencies of its own, so requiring it costs
+// the suites nothing.
+require_once(testFindRepoRoot() . '/plugins/rutracker_check/fetcherror.php');
+
 // Identity command mapper by default. A focused test may install the real
 // production-shaped alias names in $testCommandAliases to prove that nested
 // rTorrent DSL remains valid after getCmd() rewrites legacy names.
@@ -61,6 +73,164 @@ function loadClassDefinition($filename, $className)
         throw new RuntimeException("Class {$className} was not found in {$filename}");
     // ruTrackerChecker is the final declaration in check.php.
     return substr($source, $offset);
+}
+
+// Where a quoted string that begins at $offset ends -- the offset just past its
+// closing quote. Backticks count as quotes: shell_exec's operand is a string,
+// and a brace inside one is not a brace. Escapes are honoured so that a literal
+// ending in a backslash is not read as running on past its own closing quote.
+//
+// This and its two companions below exist because the shipped Alpine image
+// loads no tokenizer extension, and a reader that only works on the developer's
+// machine is a reader with a hole in it. They are deliberately narrow: each
+// refuses what it cannot read rather than guessing at it.
+function testEndOfStringLiteral($source, $offset, $where)
+{
+    $quote = $source[$offset];
+    if ($quote !== "'" && $quote !== '"' && $quote !== '`')
+        throw new RuntimeException('No string literal begins at offset ' . $offset . ' in ' . $where);
+    $length = strlen($source);
+    for ($i = $offset + 1; $i < $length; $i++) {
+        if ($source[$i] === '\\') {
+            $i++;
+            continue;
+        }
+        if ($source[$i] === $quote) return $i + 1;
+    }
+    throw new RuntimeException('An unterminated string literal begins at offset '
+        . $offset . ' in ' . $where);
+}
+
+// Where the comment that begins at $offset ends, or false when none begins
+// there. An unterminated /* runs to the end of the file, which is what PHP
+// itself does with one.
+function testEndOfComment($source, $offset, $where)
+{
+    $two = substr($source, $offset, 2);
+    if ($two === '/*') {
+        $end = strpos($source, '*/', $offset + 2);
+        return $end === false ? strlen($source) : $end + 2;
+    }
+    // "#[" opens a PHP 8 attribute, not a comment to the end of the line. This
+    // project targets 7.4 and carries none; refuse rather than swallow a line.
+    if ($two === '#[')
+        throw new RuntimeException('An attribute at offset ' . $offset . ' in ' . $where
+            . '; this reader knows comments, not attributes');
+    if ($two === '//' || $source[$offset] === '#') {
+        $end = strpos($source, "\n", $offset);
+        return $end === false ? strlen($source) : $end + 1;
+    }
+    return false;
+}
+
+// Where the heredoc or nowdoc that begins at $offset ends, or false when none
+// begins there. The body ends at the first line whose leading whitespace is
+// followed by the label and then anything that cannot continue an identifier.
+function testEndOfHeredoc($source, $offset, $where)
+{
+    if (substr($source, $offset, 3) !== '<<<') return false;
+    $length = strlen($source);
+    $i = $offset + 3;
+    while ($i < $length && ($source[$i] === ' ' || $source[$i] === "\t")) $i++;
+    $quote = ($i < $length && ($source[$i] === "'" || $source[$i] === '"')) ? $source[$i] : '';
+    if ($quote !== '') $i++;
+    $label = '';
+    while ($i < $length && preg_match('/[A-Za-z0-9_]/', $source[$i])) {
+        $label .= $source[$i];
+        $i++;
+    }
+    if ($label === '' || ($quote !== '' && (!isset($source[$i]) || $source[$i] !== $quote)))
+        throw new RuntimeException('A heredoc at offset ' . $offset . ' in ' . $where
+            . ' has no label this reader can make out');
+    if ($quote !== '') $i++;
+    $newline = strpos($source, "\n", $i);
+    if ($newline === false)
+        throw new RuntimeException('A heredoc at offset ' . $offset . ' in ' . $where
+            . ' never opens its body');
+    $i = $newline + 1;
+    while ($i <= $length) {
+        $lineEnd = strpos($source, "\n", $i);
+        $line = $lineEnd === false ? substr($source, $i) : substr($source, $i, $lineEnd - $i);
+        $trimmed = ltrim($line, " \t");
+        if (strpos($trimmed, $label) === 0) {
+            $after = substr($trimmed, strlen($label), 1);
+            if ($after === '' || !preg_match('/[A-Za-z0-9_]/', $after))
+                return $i + (strlen($line) - strlen($trimmed)) + strlen($label);
+        }
+        if ($lineEnd === false) break;
+        $i = $lineEnd + 1;
+    }
+    throw new RuntimeException('A heredoc opened at offset ' . $offset . ' in ' . $where
+        . ' is never closed by its own label');
+}
+
+// The source of one function -- top-level or method -- out of a file the test
+// must not require whole: the function-level companion to loadClassDefinition().
+// A test that binds a double to the function it doubles needs the real
+// declaration.
+//
+// The braces are matched over the code only. A brace inside a string, a
+// comment or a heredoc is not a brace, and counting them over the raw text is
+// exactly what this function exists not to do; the three readers above are how
+// it tells the difference without the tokenizer extension, which the shipped
+// Alpine image does not load. Checked against a token_get_all() implementation
+// over every function in every PHP file of this repository: 4126 comparisons,
+// byte-identical but for two methods named with reserved words (echo, match),
+// which the tokenizer version could not find at all -- there this reader is the
+// more capable of the two, never the less.
+function loadFunctionDefinition($filename, $functionName)
+{
+    $source = file_get_contents($filename);
+    $length = strlen($source);
+    $start = null;
+    $depth = 0;
+    $i = 0;
+    while ($i < $length) {
+        $character = $source[$i];
+        if ($character === "'" || $character === '"' || $character === '`') {
+            $i = testEndOfStringLiteral($source, $i, $filename);
+            continue;
+        }
+        $skip = testEndOfComment($source, $i, $filename);
+        if ($skip === false) $skip = testEndOfHeredoc($source, $i, $filename);
+        if ($skip !== false) {
+            $i = $skip;
+            continue;
+        }
+        if ($start === null) {
+            // "function", as a whole word, then the wanted name as a whole word.
+            if ($character === 'f' && substr($source, $i, 8) === 'function'
+                && ($i === 0 || !preg_match('/[A-Za-z0-9_$\\\\]/', $source[$i - 1]))) {
+                $after = $i + 8;
+                while ($after < $length && strpos(" \t\r\n&", $source[$after]) !== false) $after++;
+                if (substr($source, $after, strlen($functionName)) === $functionName) {
+                    $tail = $after + strlen($functionName);
+                    if ($tail >= $length || !preg_match('/[A-Za-z0-9_]/', $source[$tail])) {
+                        $start = $i;
+                        $i = $tail;
+                        continue;
+                    }
+                }
+            }
+            $i++;
+            continue;
+        }
+        if ($character === '{') {
+            $depth++;
+            $i++;
+            continue;
+        }
+        if ($character === '}') {
+            $depth--;
+            if ($depth === 0) return substr($source, $start, $i + 1 - $start);
+            $i++;
+            continue;
+        }
+        $i++;
+    }
+    if ($start === null)
+        throw new RuntimeException("Function {$functionName} was not found in {$filename}");
+    throw new RuntimeException("Function {$functionName} in {$filename} has an unbalanced body");
 }
 
 class StrictTestSuite
@@ -269,6 +439,61 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
     ));
 }
 
+// The Snoopy failure sentences this plugin classifies, each paired with the
+// token it must become.
+//
+// One table, read by three suites: the classifier's own FetchErrorTest and the
+// two production callers that log the field -- ruTrackerChecker::makeClient()
+// (CheckerTest) and NNMClubCheckImpl::guestFetch() (NNMClubHandlerTest). It
+// lives here because "the same message means the same token whichever path
+// logged it" is a property of the plugin, and a property no per-suite list can
+// state: two lists agreeing is a coincidence that has to be maintained.
+//
+// The whitespace rows carry the weight. The two callers each normalised the
+// message themselves and did it differently -- one collapsed internal runs,
+// the other only trimmed -- so a re-spaced or wrapped sentence landed on its
+// token down one path and on 'unclassified' down the other.
+//
+// The first eight rows are php/Snoopy.class.inc's eight strings, in the order
+// that file writes them.
+function fetchErrorParityCases()
+{
+    return array(
+        array('Invalid protocol "gopher"\n', 'invalid-protocol'),
+        array('Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'),
+        array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
+            'refused-non-public-address'),
+        array('Error: cURL could not retrieve the document, error 6.', 'curl-transfer'),
+        array('socket creation failed (-3)', 'socket-create'),
+        array('dns lookup failure (-4)', 'dns-lookup'),
+        array('connection refused or timed out (-5)', 'connect-refused'),
+        array('connection failed (111)', 'connect-errno'),
+        // Repeated spaces, a tab and a newline in one message. Under a
+        // trim-only normalisation this is 'unclassified'.
+        array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
+        array("dns   lookup\tfailure (-4)", 'dns-lookup'),
+        array("\n socket\r\ncreation  failed (-3) \t", 'socket-create'),
+        array("Refusing to fetch:  cannot  resolve\thost \"nx.invalid\".", 'refused-unresolvable-host'),
+        // Not one of the eight. The canary is shaped like an NNMClub passkey:
+        // an unrecognised sentence is classified, never quoted, so no merge
+        // that teaches the vendored Snoopy to name the URL it failed on can
+        // put a credential in this plugin's log.
+        array('Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked', 'unclassified'),
+        array('something php/Snoopy.class.inc does not say today', 'unclassified'),
+    );
+}
+
+// The complete set of answers the classifier is allowed to give: the eight
+// tokens, the catch-all, and '' for "Snoopy wrote no message". A test that
+// only checks known messages cannot see a raw-text fallback; one that checks
+// membership can.
+function fetchErrorTokenVocabulary()
+{
+    return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
+        'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
+        'unclassified');
+}
+
 function strictInvoke($className, $method, $arguments = array())
 {
     $reflection = new ReflectionMethod($className, $method);
@@ -357,6 +582,10 @@ class rXMLRPCRequest
     public $important = true;
     public $fault = false;
     public $faultString = '';
+    // php/xmlrpc.php declares this next to faultString and leaves it null on a
+    // clean answer. Consumers that need exact fault boundaries prefer it, so a
+    // double that omits it silently reroutes them to the trimmed copy.
+    public $rawFaultString = null;
     public $val = array();
 
     public function __construct($commands = null)
@@ -420,11 +649,32 @@ class rXMLRPCRequest
     {
         $key = implode('|', array_map(function ($command) { return $command->command; }, $this->commands));
         self::$requests[] = array('key' => $key, 'important' => $this->important, 'commands' => $this->commands);
+        // Nothing queued stands for a transport that answered nothing: run()
+        // false, no fault. php/xmlrpc.php cannot report a fault on a request
+        // that did not run (see the fault rules below), so the fallback must
+        // not either.
         $response = (isset(self::$responses[$key]) && count(self::$responses[$key]))
             ? array_shift(self::$responses[$key])
-            : array(false, true, array(), '');
-        $this->fault = $response[1];
-        $this->faultString = isset($response[3]) ? (string) $response[3] : '';
+            : array(false, false, array(), '');
+        // php/xmlrpc.php declares fault false, faultString '' and
+        // rawFaultString null (:79-81) and assigns all three together, only
+        // inside the branch that saw a faultCode (:223-227). Two consequences
+        // this double reproduces. First, makeNextCall() puts fault back to
+        // false before every batch (:135) while nothing ever clears the two
+        // strings, so a later clean run still carries the previous fault's
+        // text. Second, that faultCode branch sits inside if($ret) (:221) and
+        // $ret is what run() returns (:241), so a request that did not run
+        // never reports a fault. Both are pinned against the real transport by
+        // UpdatePassTest's 'the XMLRPC double models php/xmlrpc.php fault
+        // fields across a sequence of answers'. The queued string is the raw
+        // text, so a fixture can describe a fault whose boundaries matter.
+        $queuedFault = isset($response[3]) ? (string) $response[3] : '';
+        $this->fault = false;
+        if ($response[0] && $response[1]) {
+            $this->fault = true;
+            $this->rawFaultString = $queuedFault;
+            $this->faultString = trim($queuedFault);
+        }
         // A lazily-computed value is queued as a Closure (see CheckerTest's
         // queueLoadConfirmed()); every other value is a plain literal, most
         // often a two-element array of strings. is_callable() would treat
@@ -465,17 +715,39 @@ class rXMLRPCRequest
 }
 
 if (!function_exists('erasedataTorrentPresence')) {
+    // Behaviourally identical to plugins/erasedata/removewithdata.php's
+    // function of the same name -- reformatted to this file's style, not copied
+    // line for line -- and it must stay identical: ruTrackerChecker::
+    // torrentExists() reads it, and that is the gate in front of every
+    // irreversible step of the replacement transaction. A double that answers
+    // ABSENT where production answers UNKNOWN (or the reverse) lets this suite
+    // prove a step production would never take. Change it only together with
+    // the real function: UpdatePassTest's 'the erasedata presence double is
+    // bound to removewithdata.php' reads that file, compares the whitelists and
+    // runs both functions over the same probes, so a one-sided change fails
+    // there rather than passing quietly.
     function erasedataTorrentPresence($hash)
     {
         $probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.hash'), $hash));
         $probe->important = false;
         if (!$probe->run()) return ERASEDATA_TORRENT_UNKNOWN;
-        if ($probe->fault)
-            return preg_match('/(?:info-hash\s+not\s+found|could\s+not\s+find\s+info-hash)/i',
-                $probe->faultString) === 1 ? ERASEDATA_TORRENT_ABSENT : ERASEDATA_TORRENT_UNKNOWN;
-        if (!is_array($probe->val) || count($probe->val) !== 1 || !is_string($probe->val[0]))
+        if ($probe->fault) {
+            $msg = isset($probe->rawFaultString) && is_string($probe->rawFaultString)
+                ? $probe->rawFaultString
+                : (isset($probe->faultString) && is_string($probe->faultString) ? $probe->faultString : '');
+            $missingFaults = array(
+                'info-hash not found',
+                'info-hash not found.',
+                'could not find info-hash',
+                'could not find info-hash.',
+                'invalid parameters: info-hash not found',
+            );
+            if (in_array(strtolower($msg), $missingFaults, true))
+                return ERASEDATA_TORRENT_ABSENT;
             return ERASEDATA_TORRENT_UNKNOWN;
-        if ($probe->val[0] === '') return ERASEDATA_TORRENT_ABSENT;
+        }
+        if (count($probe->val) !== 1 || !is_string($probe->val[0]))
+            return ERASEDATA_TORRENT_UNKNOWN;
         return strcasecmp($probe->val[0], $hash) === 0
             ? ERASEDATA_TORRENT_PRESENT : ERASEDATA_TORRENT_UNKNOWN;
     }

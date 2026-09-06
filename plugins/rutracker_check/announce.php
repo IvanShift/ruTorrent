@@ -150,12 +150,18 @@ class RuTrackerAnnounce
     // settings directory or a full disk, nothing corrupt on disk, and the
     // very next cycle succeeds the moment the machine is fixed. That one
     // stays on the debug channel; this one cannot heal, so it has to be
-    // visible. See ruTrackerChecker::logUnrepairable().
+    // visible. See ruTrackerChecker::logUnrepairable(). It names the document,
+    // the key and the consequence because that is what AGENTS.md requires of a
+    // refusal that can only be repaired by hand -- probeDecision() reaches this
+    // for a whole unreadable announce.json and never calls update(), so
+    // RuTrackerState::reportUnreadable()'s line naming the path is not
+    // guaranteed to be there beside it.
     static private function logCorruptBudget($host, $what)
     {
         if (class_exists('ruTrackerChecker'))
             ruTrackerChecker::logUnrepairable('announce: the stored budget for ' . $host
-                . ' is not readable, so ' . $what . ', and nothing will rewrite it');
+                . ' in announce.json is not readable, so ' . $what
+                . ', and nothing will rewrite it');
     }
 
     // THE budget rule, in one place. It takes an entry that has already been
@@ -220,11 +226,26 @@ class RuTrackerAnnounce
     // below does, because deciding and taking must be one locked write -- so
     // it exists for diagnostics and for the tests that have to ask the same
     // question repeatedly without spending the budget they are measuring.
+    //
+    // The $readable flag, not a bare load(). load() answers array() for two
+    // different documents -- the one that is not there yet, and the one that
+    // is there and will not decode -- and reading the second as the first
+    // turned a whole corrupt announce.json into an unused allowance here:
+    // entryFor() found no key for the host, read four ABSENT fields as zeros,
+    // and judge() said 'allow'. reserveProbe() answers 'unstorable' for that
+    // same document, so the two views of ONE rule disagreed exactly where the
+    // rule matters. An unreadable document is a budget of zero, and it is the
+    // permanent kind: nothing in this class rewrites a document it could not
+    // read, so the refusal takes logCorruptBudget()'s ungated channel rather
+    // than becoming a silent stall (AGENTS.md, "either self-healing or
+    // visible").
     static public function probeDecision($host, $now, $cap, $window)
     {
         $host = self::hostKey($host);
         $window = max((int) $window, self::MIN_WINDOW);
-        $judged = self::judge(self::entryFor(RuTrackerState::load('announce'), $host), $now, $cap, $window);
+        $readable = true;
+        $state = RuTrackerState::load('announce', $readable);
+        $judged = self::judge($readable ? self::entryFor($state, $host) : null, $now, $cap, $window);
         if ($judged[0] === 'unstorable') self::logCorruptBudget($host, 'no probe is authorised');
         return $judged[0];
     }
@@ -243,6 +264,7 @@ class RuTrackerAnnounce
         $host = self::hostKey($host);
         $window = max((int) $window, self::MIN_WINDOW);
         $decision = 'allow';
+        $failure = null;
         $stored = RuTrackerState::update('announce', function ($state) use ($host, $now, $cap, $window, &$decision) {
             $entry = self::entryFor($state, $host);
             list($decision, $windowStart, $count) = self::judge($entry, $now, $cap, $window);
@@ -252,19 +274,40 @@ class RuTrackerAnnounce
             $entry['window_count'] = $count + 1;
             $state[$host] = $entry;
             return $state;
-        });
+        }, $failure);
 
-        // A budget that cannot be written is a budget of zero. The slot is
+        // A budget that cannot be stored is a budget of zero. The slot is
         // only spent once it is on disk; if the store refused -- an
         // unwritable settings directory, a full disk, a lock that could not
         // be opened -- then nothing is holding it, the next process reads the
         // same untouched allowance, and the cap stops capping exactly when
         // the machine is least healthy. So the refusal is the answer, not a
         // detail to be logged under an 'allow'.
+        //
+        // WHICH refusal it was is not a detail either. An announce.json that
+        // will not decode never reaches the closure at all: update() takes the
+        // lock, reads the document, sees it is unreadable and returns false
+        // BEFORE calling the mutator (state.php), so judge() is never asked,
+        // $decision is still the 'allow' it was initialised to above, and
+        // $stored is the only thing that says anything went wrong. Read as a
+        // failed write -- all a bare bool could ever say -- this line blamed
+        // the disk for a file that could not be READ, which is the one cause a
+        // disk fix cannot repair and the one that never heals on its own.
+        // $failure names which it was. The ungated line naming the DOCUMENT
+        // comes from update() itself (RuTrackerState::reportUnreadable()), so
+        // this one stays on the debug channel and merely stops naming the
+        // wrong thing.
+        //
+        // 'unlockable' shares the 'written' wording on purpose: like an
+        // unwritable store it is a permissions or disk fault in the same
+        // directory, it leaves nothing corrupt behind, and the next cycle
+        // succeeds the moment the machine is fixed. Only 'unreadable' is the
+        // permanent one, so only it gets its own word.
         if ($decision === 'allow' && !$stored) {
             if (class_exists('ruTrackerChecker'))
-                ruTrackerChecker::logDebug('announce: the budget for ' . $host
-                    . ' could not be written, so the slot is refused rather than spent unrecorded');
+                ruTrackerChecker::logDebug('announce: the budget for ' . $host . ' could not be '
+                    . ($failure === 'unreadable' ? 'read' : 'written')
+                    . ', so the slot is refused rather than spent unrecorded');
             return 'unstorable';
         }
         // judge() refused an unreadable entry and the closure returned $state
@@ -357,6 +400,16 @@ class RuTrackerAnnounce
         if (!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) return null;
         $parts = @parse_url((string) $announceUrl);
         if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) return null;
+        // Having a scheme is not the same as having one this probe can be
+        // spoken over. Snoopy's scheme switch (php/Snoopy.class.inc:283-318)
+        // sends a request for the byte-exact literals 'http' and 'https' and
+        // opens no socket for any other, so a hand-edited or magnet-sourced
+        // row like 'udp://bt.t-ru.org:2710/announce' -- scheme, host and path
+        // all present -- built a probe URL no request was ever made from,
+        // while its caller spent a budget slot and then read the reply it
+        // never got as an inconclusive answer about the topic. Answering null
+        // puts such a row on the same never-ran path as a pathless one.
+        if ($parts['scheme'] !== 'http' && $parts['scheme'] !== 'https') return null;
 
         // Rebuild scheme+host+path only: an existing query string (RuTracker
         // announce URLs carry ?pk=<passkey>) must never reach the probe.

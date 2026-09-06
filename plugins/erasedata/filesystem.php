@@ -95,44 +95,305 @@ class ErasedataFilesystemOps
 		return(@scandir($path));
 	}
 
-	public function openDirectoryReference($path, $expectedIdentity)
+	// The canonical name a path that does not exist yet WOULD have.
+	//
+	// The core XMLRPCPathResolver answers the same question for the core
+	// endpoints with its own deepestExistingAncestor(), but that one
+	// reconstructs the missing tail verbatim, so
+	// "<existing>/missing/../escape" comes back as a name that resolves outside
+	// the ancestor it was canonicalised against. That resolver is shared with
+	// paths this plugin does not own and is out of this package's scope, so the
+	// stricter rule lives here. pathIdentity() below is its one caller, and
+	// pathIdentity() is what every erasedata decision reads:
+	//
+	//   - the path must be absolute, NUL-free and within the path ceiling;
+	//   - every component is normalised BEFORE anything is resolved, and '.',
+	//     '..' and an empty component are refused outright rather than
+	//     collapsed -- a caller that means "the parent" must say so itself;
+	//   - the ancestor is walked DOWN from the root one plain component at a
+	//     time, and every component that EXISTS is resolved as it is met: a
+	//     symlink becomes its realpath(), so the ancestor carries no symlink,
+	//     no '.' and no '..' of its own;
+	//   - the tail is only reconstructed once it is proven ABSENT, never merely
+	//     unresolvable. realpath() and lstat() fail identically on a name that
+	//     is not there, on an ancestor this uid may not search, on a dangling
+	//     symlink and on a symlink loop, and the last three all reconstruct a
+	//     tail whose components may be symlinks pointing anywhere. That is not
+	//     hypothetical here: the producer runs as the web user and the eraser
+	//     runs as whatever uid rTorrent uses, so a directory the producer cannot
+	//     search is an ordinary state, and the child that CAN search it would
+	//     resolve the "canonical" name straight through the link. Absence is
+	//     therefore proven positively -- the deepest ancestor must be a
+	//     directory this process can really search, and every remaining prefix
+	//     must really lstat() as absent -- and everything else fails closed.
+	//
+	// A name built from a canonical ancestor plus components that are all plain
+	// names AND all proven absent cannot climb out of the ancestor.
+	public function canonicalMissingPath($path)
 	{
-		if(!is_dir('/proc/self/fd'))
+		if(!is_string($path) || $path === '' || $path[0] !== '/'
+			|| strpos($path, "\0") !== false
+			|| strlen($path) > ErasedataManifestCodec::MAX_PATH_BYTES)
 			return(false);
+		$parts = explode('/', $path);
+		$components = array();
+		for($i = 1; $i < count($parts); $i++)
+		{
+			// A trailing slash lands here as an empty component as well, so
+			// "<dir>/" and "<dir>//leaf" are both refused rather than silently
+			// meaning "<dir>".
+			if($parts[$i] === '' || $parts[$i] === '.' || $parts[$i] === '..')
+				return(false);
+			$components[] = $parts[$i];
+		}
+		$count = count($components);
+		if(!$count)
+			return(false);
+		$ancestor = '/';
+		$depth = 0;
+		for(; $depth < $count; $depth++)
+		{
+			$candidate = ($ancestor === '/' ? '' : $ancestor).'/'.$components[$depth];
+			clearstatcache(true, $candidate);
+			$link = @lstat($candidate);
+			if(!is_array($link) || !isset($link['mode']))
+				break;
+			// The name is there. A symlink is resolved HERE or the whole answer
+			// fails: a link that cannot be resolved -- dangling today and live
+			// tomorrow, or a loop -- is not an ancestor anything may be built on.
+			if(($link['mode'] & 0170000) === 0120000)
+			{
+				$real = @realpath($candidate);
+				if(!is_string($real) || $real === '' || $real[0] !== '/')
+					return(false);
+				$ancestor = ($real === '/') ? '/' : rtrim($real, '/');
+			}
+			else
+				$ancestor = $candidate;
+		}
+		if($depth < $count)
+		{
+			// Prove the tail is ABSENT rather than merely unreadable. A
+			// directory this process may not search fails lstat() on its
+			// children exactly like a directory that does not hold them, so the
+			// deepest ancestor is required to answer a search of its own '.'
+			// entry -- which needs the very execute bit the walk above needed
+			// and could not otherwise have been shown to hold.
+			$search = ($ancestor === '/' ? '' : $ancestor).'/.';
+			clearstatcache(true, $search);
+			$searchStat = @stat($search);
+			if(!is_array($searchStat) || !isset($searchStat['mode'])
+				|| ($searchStat['mode'] & 0170000) !== 0040000)
+				return(false);
+			$probe = $ancestor;
+			for($i = $depth; $i < $count; $i++)
+			{
+				$probe = ($probe === '/' ? '' : $probe).'/'.$components[$i];
+				clearstatcache(true, $probe);
+				if(@lstat($probe) !== false)
+					return(false);
+			}
+		}
+		$base = ($ancestor === '/') ? '' : $ancestor;
+		$name = $base;
+		for($i = $depth; $i < $count; $i++)
+			$name .= '/'.$components[$i];
+		if($name === '')
+			$name = '/';
+		// Belt and braces: the components above cannot climb, and this proves it
+		// of the name that is actually returned rather than of the argument.
+		if($base !== '' && $name !== $base && strpos($name, $base.'/') !== 0)
+			return(false);
+		return($name);
+	}
+
+	// The physical identity of ONE name, owned by this plugin.
+	//
+	// Every erasedata decision that compares two names, verifies a captured
+	// object or authorises a deletion reads this. The answer shape is the one
+	// its callers already read -- 'exists', a canonical 'path', and 'lstat' /
+	// 'stat' dev+ino pairs -- and for a name that EXISTS the answer is the same
+	// realpath()/lstat()/stat() reading the core resolver gives.
+	//
+	// The missing name is where this owner exists. The core XMLRPCPathResolver,
+	// shared with core endpoints this plugin does not own, reconstructs an
+	// unresolved tail VERBATIM through deepestExistingAncestor(): '.', '..' and
+	// any symlink component survive into the "canonical" name, so a name that
+	// satisfies a lexical containment check against its intended root can
+	// resolve somewhere else entirely. erasedataPathsOverlap() turns exactly
+	// that comparison into a deletion authorisation -- false means DELETE -- so
+	// a missed overlap deletes a path a live download still owns. The plugin
+	// answers with canonicalMissingPath() instead, and answers FALSE for every
+	// missing name whose canonical location it cannot PROVE.
+	//
+	// false is never "no overlap": every caller in this plugin treats a
+	// non-array identity as uncertainty and retains. Fail closed is the whole
+	// contract of this method.
+	public function pathIdentity($path)
+	{
+		if(!is_string($path) || $path === '' || $path[0] !== '/'
+			|| strpos($path, "\0") !== false)
+			return(false);
+		clearstatcache(true, $path);
+		if(!file_exists($path) && !is_link($path))
+		{
+			// Absent -- so the canonical name is the one it WOULD have, proven
+			// component by component, or there is no answer at all.
+			$canonical = $this->canonicalMissingPath($path);
+			if(!is_string($canonical) || $canonical === '')
+				return(false);
+			return(array(
+				'exists' => false,
+				'path' => $canonical,
+				'lstat' => null,
+				'stat' => null,
+			));
+		}
+		$lstat = @lstat($path);
+		$stat = @stat($path);
+		$resolved = @realpath($path);
+		if(!is_array($lstat) || !is_array($stat)
+			|| !is_string($resolved) || $resolved === '')
+			return(false);
+		return(array(
+			'exists' => true,
+			'path' => ($resolved === '/') ? '/' : rtrim($resolved, '/'),
+			'lstat' => array('dev'=>$lstat['dev'], 'ino'=>$lstat['ino']),
+			'stat' => array('dev'=>$stat['dev'], 'ino'=>$stat['ino']),
+		));
+	}
+
+	// The numeric entries of $root that name the identity $identity right now,
+	// or false when the root cannot be listed at all.
+	//
+	// Nothing in a /proc/self/fd entry says who opened it, so a matching dev/ino
+	// alone identifies the DIRECTORY, never the descriptor. This is the half of
+	// acquireDirectoryCapability() that lets it tell its own descriptor from a
+	// stranger's: the snapshot is taken before the handle exists and again while
+	// it is held, and scandir() is used rather than a bare numeric probe so the
+	// answer is whatever the process really holds.
+	//
+	// The transient descriptor scandir() itself consumes is never a false
+	// positive: it names $root, and it is closed before the stat() loop below
+	// runs, so it neither matches the target identity nor survives to be stat'd.
+	private function descriptorsNamingIdentity($root, array $identity)
+	{
+		if(!is_string($root) || $root === '' || !is_dir($root))
+			return(false);
+		$entries = @scandir($root);
+		if(!is_array($entries))
+			return(false);
+		$naming = array();
+		foreach($entries as $entry)
+		{
+			if(!ctype_digit($entry))
+				continue;
+			$reference = $root.'/'.$entry;
+			clearstatcache(true, $reference);
+			if(erasedataIdentityDeviceAndInode(@stat($reference)) === $identity)
+				$naming[] = $entry;
+		}
+		return($naming);
+	}
+
+	// One open directory handle whose physical identity is proven, plus a
+	// descriptor path that names THIS handle.
+	//
+	// Existence of /proc/self/fd is NOT the capability: the capability is the
+	// open handle, and the descriptor path is only accepted once fstat() on the
+	// handle and stat() on <root>/<fd> agree on dev and ino. The handle stays
+	// open in the returned array, so the traversal and the erase decision that
+	// follow keep operating on the directory that was proven, not on a name
+	// that may since have been replaced.
+	//
+	// Agreement on dev/ino is necessary but NOT sufficient. Any other descriptor
+	// this process holds on the same directory matches it exactly, and taking
+	// the first match hands back a descriptor the capability does not own: when
+	// its real owner closes it, the number is reused by the next open() and the
+	// "capability" then names an unrelated object, which
+	// erasedataDeleteDirectoryReferenceContents() deletes through. So ownership
+	// is proven positively. The descriptors that already name this identity are
+	// snapshotted BEFORE the handle is opened and again while it is held; in a
+	// single-threaded PHP process nothing else can run between the two, so
+	// exactly one descriptor can have appeared and it is the one fopen() just
+	// returned. Anything else -- none new, or more than one -- is unprovable and
+	// fails closed: a capability that cannot be proven is not a capability.
+	//
+	// $candidates exists so the fixed roots can be driven in a test: production
+	// always gets erasedataDescriptorCandidates(), which is hardcoded.
+	public function acquireDirectoryCapability($path, $expectedIdentity, $candidates = null)
+	{
+		$expected = erasedataIdentityDeviceAndInode($expectedIdentity);
+		if($expected === false)
+			return(false);
+		if(!is_array($candidates))
+			$candidates = erasedataDescriptorCandidates();
+		// Before the handle exists: every descriptor that already names it.
+		$before = array();
+		foreach($candidates as $index => $root)
+			$before[$index] = $this->descriptorsNamingIdentity($root, $expected);
 		$handle = @fopen($path, 'r');
 		if($handle === false)
 			return(false);
 		$stat = @fstat($handle);
-		$expDev = isset($expectedIdentity['stat']['dev']) ? $expectedIdentity['stat']['dev'] : (isset($expectedIdentity['dev']) ? $expectedIdentity['dev'] : null);
-		$expIno = isset($expectedIdentity['stat']['ino']) ? $expectedIdentity['stat']['ino'] : (isset($expectedIdentity['ino']) ? $expectedIdentity['ino'] : null);
-		if(!is_array($stat) || is_null($expDev) || is_null($expIno)
-			|| $stat['dev'] !== $expDev || $stat['ino'] !== $expIno)
+		$open = erasedataIdentityDeviceAndInode($stat);
+		// The handle must be a DIRECTORY of the proven identity. Existence of a
+		// candidate root proves nothing, and neither does a name that happened
+		// to open: only the two together, on the same dev and ino.
+		if($open === false || $open !== $expected || !is_array($stat)
+			|| !isset($stat['mode']) || ($stat['mode'] & 0170000) !== 0040000)
 		{
 			@fclose($handle);
 			return(false);
 		}
-		$entries = @scandir('/proc/self/fd');
-		if($entries !== false)
+		foreach($candidates as $index => $root)
 		{
-			foreach($entries as $entry)
-			{
-				if(!ctype_digit($entry))
-					continue;
-				$reference = '/proc/self/fd/'.$entry;
-				$referenceStat = @stat($reference);
-				if(is_array($referenceStat) && $referenceStat['dev'] === $stat['dev']
-					&& $referenceStat['ino'] === $stat['ino'])
-					return(array('handle'=>$handle, 'path'=>$reference));
-			}
+			if(!isset($before[$index]) || !is_array($before[$index]))
+				continue;
+			$after = $this->descriptorsNamingIdentity($root, $open);
+			if(!is_array($after))
+				continue;
+			$opened = array_values(array_diff($after, $before[$index]));
+			if(count($opened) !== 1)
+				continue;
+			return(array(
+				'handle' => $handle,
+				'path' => $root.'/'.$opened[0],
+				'root' => $root,
+				'dev' => $open['dev'],
+				'ino' => $open['ino'],
+			));
 		}
 		@fclose($handle);
 		return(false);
 	}
 
+	public function releaseDirectoryCapability($capability)
+	{
+		if(!is_array($capability) || !isset($capability['handle'])
+			|| !is_resource($capability['handle']))
+			return(false);
+		$closed = @fclose($capability['handle']) === true;
+		// The descriptor name disappears with the handle, but a stat of it taken
+		// while the capability was held is still cached, and a cached stat is
+		// how a released capability goes on looking like a live directory. The
+		// cache is dropped here so nothing downstream can act on that answer.
+		if(isset($capability['path']) && is_string($capability['path']))
+			clearstatcache(true, $capability['path']);
+		return($closed);
+	}
+
+	// The names the captured-entry protocol has always used. They are the
+	// scripted seam the destructive-race tests override, so they stay, but the
+	// capability itself has exactly one owner above.
+	public function openDirectoryReference($path, $expectedIdentity)
+	{
+		return($this->acquireDirectoryCapability($path, $expectedIdentity));
+	}
+
 	public function closeDirectoryReference($reference)
 	{
-		if(is_array($reference) && isset($reference['handle']) && is_resource($reference['handle']))
-			@fclose($reference['handle']);
+		$this->releaseDirectoryCapability($reference);
 	}
 
 	// Identity-bound deletion of one visible entry. Every mutation of the
@@ -167,6 +428,174 @@ function erasedataPathExists($path)
 	return(file_exists($path) || is_link($path));
 }
 
+// The only roots a directory capability may be taken through, in the order they
+// are tried. Hardcoded: a capability that could be pointed at an attacker-chosen
+// root would not be a capability at all. /proc/self/fd is the normal answer and
+// /dev/fd the fallback for systems that do not mount procfs.
+function erasedataDescriptorCandidates()
+{
+	return(array('/proc/self/fd', '/dev/fd'));
+}
+
+// dev/ino of one identity array, as strings, or false.
+//
+// Strings because the other operand often already is one. dev/ino are spelled
+// into captured-entry directory names and parsed back out of them as strings by
+// erasedataCapturedEntryRootInfo(), and acquireDirectoryCapability() stores this
+// function's own stringified answer, which erasedataRemovalCapabilityStillMatches()
+// then compares against a fresh @fstat(). One spelling for both shapes is what
+// lets === decide, and (string) of an int is exact.
+//
+// It is NOT a float-precision safeguard, and must not be read as one: (string)
+// of a float renders through precision=14, so it merges values that a float ===
+// keeps apart, not the reverse. Widths are not a concern here either --
+// ErasedataManifestCodec::normalizeIdentity() rejects a dev/ino that is not a
+// nonnegative int at the only boundary where a decoded one could arrive.
+function erasedataIdentityDeviceAndInode($identity)
+{
+	if(!is_array($identity))
+		return(false);
+	$source = $identity;
+	if(isset($identity['stat']) && is_array($identity['stat']))
+		$source = $identity['stat'];
+	else if(isset($identity['lstat']) && is_array($identity['lstat']))
+		$source = $identity['lstat'];
+	if(!isset($source['dev']) || !isset($source['ino'])
+		|| !(is_int($source['dev']) || is_float($source['dev']) || is_string($source['dev']))
+		|| !(is_int($source['ino']) || is_float($source['ino']) || is_string($source['ino'])))
+		return(false);
+	return(array('dev' => (string)$source['dev'], 'ino' => (string)$source['ino']));
+}
+
+if(!function_exists('erasedataSharedFileMode'))
+{
+	// The mode every file this plugin shares between the web user and the user
+	// rTorrent runs the scheduled child as must carry. This is its ONE
+	// definition -- removewithdata.php:27-30 records the same single-owner rule
+	// from the other side -- and it lives here so the durable writer below and
+	// the obligation store in pending.php do not have to depend on the RPC layer
+	// to get at it.
+	function erasedataSharedFileMode()
+	{
+		global $profileMask;
+		return((isset($profileMask) ? $profileMask : 0777) & 0666);
+	}
+}
+
+// Publish $bytes at $path, or publish nothing.
+//
+// Invariant 15, in one place: the whole payload is written and the count is
+// checked against what was handed in, the stream is flushed, the close is
+// CHECKED -- a buffered filesystem reports a full disk there and nowhere else --
+// and only then is the staging name moved onto the final one with rename(),
+// which is atomic. A reader therefore never observes a half-written record, and
+// a caller that does not check the return value cannot proceed on one either,
+// because there is nothing under the final name to proceed on.
+//
+// Returns true only when the bytes are published. Every failure leaves the final
+// name exactly as it was and removes the staging object.
+function erasedataWriteDurableFile($path, $bytes, $mode = null)
+{
+	if(!is_string($path) || $path === '' || strpos($path, "\0") !== false
+		|| !is_string($bytes))
+		return(false);
+	if(is_null($mode))
+		$mode = erasedataSharedFileMode();
+	if(!is_int($mode))
+		return(false);
+	$token = erasedataPrivateToken();
+	if($token === false)
+		return(false);
+	// Beside the final name, so the rename below is within one directory and
+	// therefore atomic, and unique, so two writers never share a staging object.
+	// The leading dot keeps it out of the <hash>.<generation>.<...>.tmp grammar
+	// the drain worker's unbound-staging scan matches on: residue from an
+	// interrupted write is this file's to clean up, and a scan that matched it
+	// would strand that hash as `staging-unbound` until a human cleared it. The
+	// collector is not the consumer this protects against -- it refuses every
+	// generation-bearing .tmp candidate outright, dot or no dot.
+	$staging = dirname($path).'/.'.basename($path).'.'.$token.'.tmp';
+	$handle = @fopen($staging, 'xb');
+	if($handle === false)
+		return(false);
+	$total = strlen($bytes);
+	$written = 0;
+	$complete = true;
+	while($written < $total)
+	{
+		$chunk = @fwrite($handle, substr($bytes, $written));
+		if(!is_int($chunk) || $chunk <= 0)
+		{
+			$complete = false;
+			break;
+		}
+		$written += $chunk;
+	}
+	if($written !== $total)
+		$complete = false;
+	if($complete && @fflush($handle) === false)
+		$complete = false;
+	if(@fclose($handle) !== true)
+		$complete = false;
+	if($complete)
+	{
+		@chmod($staging, $mode);
+		if(@rename($staging, $path) === true)
+			return(true);
+	}
+	@unlink($staging);
+	return(false);
+}
+
+// -- generations (invariant 14) ---------------------------------------------
+//
+// A generation is exactly 16 lowercase hex digits and is handled as a STRING
+// from end to end. Hex-to-integer conversion and native-width arithmetic both
+// collapse the top of that range on a 32-bit build, and the conversion silently
+// yields a float even on 64-bit, so two distinct generations would compare equal
+// and an increment would wrap. Nothing below turns a generation into a number.
+
+function erasedataGenerationIsValid($value)
+{
+	return(is_string($value) && preg_match('/^[0-9a-f]{16}$/D', $value) === 1);
+}
+
+// The next generation, or false at ffffffffffffffff.
+//
+// Overflow fails closed rather than wrapping to zero: a wrapped generation would
+// re-use a name an older obligation still owns, and invariant 3 rests on a
+// generation naming exactly one physical job.
+function erasedataGenerationIncrement($generation)
+{
+	if(!erasedataGenerationIsValid($generation))
+		return(false);
+	$digits = '0123456789abcdef';
+	$next = $generation;
+	for($position = 15; $position >= 0; $position--)
+	{
+		$value = strpos($digits, $next[$position]);
+		if(!is_int($value))
+			return(false);
+		if($value < 15)
+		{
+			$next[$position] = $digits[$value + 1];
+			return($next);
+		}
+		$next[$position] = '0';
+	}
+	return(false);
+}
+
+// -1, 0 or 1, or false when either operand is not a generation. Fixed width and
+// one case means the lexical order IS the numeric order.
+function erasedataGenerationCompare($left, $right)
+{
+	if(!erasedataGenerationIsValid($left) || !erasedataGenerationIsValid($right))
+		return(false);
+	$order = strcmp($left, $right);
+	return($order < 0 ? -1 : ($order > 0 ? 1 : 0));
+}
+
 // Who is allowed to start the collector. A predicate rather than an inline
 // condition at the entry point, because the SAPI half of it cannot be reached
 // by any test the suite can run -- there is no non-CLI SAPI available to it,
@@ -185,6 +614,28 @@ function erasedataMayStartCollector($sapi, $scriptFilename, $entryPoint)
 	if(!is_string($scriptFilename) || $scriptFilename === '')
 		return(false);
 	return(realpath($scriptFilename) === $entryPoint);
+}
+
+// The identity read every erasedata decision goes through, as a free function.
+//
+// ErasedataFilesystemOps::pathIdentity() is the owner; this is the seamless
+// spelling for the three callers that have no injected filesystem in scope --
+// erasedataPathsOverlap() and erasedataCleanupCurrentIdentity(), which are pure
+// predicates, and erasedataReservationHasEncodedIdentity(), which validates a
+// name it was handed. The instance is stateless and is built once so the
+// collector's per-file loops do not construct one per name.
+//
+// This function, and the method behind it, replace the core
+// XMLRPCPathResolver's filesystemIdentity() everywhere in this plugin:
+// identity is what authorises a payload deletion here, so its owner is this
+// plugin and not a core file shared with endpoints answering a different
+// question.
+function erasedataPathIdentity($path)
+{
+	static $ops = null;
+	if($ops === null)
+		$ops = new ErasedataFilesystemOps();
+	return($ops->pathIdentity($path));
 }
 
 // The single owned-path predicate of this plugin. Every collector decision that
@@ -618,3 +1069,9 @@ function erasedataDeleteDirectoryReferenceContents($reference, $reservationKey,
 	}
 	return(true);
 }
+
+// The obligation store the durable primitives above exist for. It is required
+// here, at the end, rather than at the top of pending.php alone, so that every
+// entry point that already loads the filesystem seam also has the queue: the
+// two files are one layer and require_once resolves the pair from either side.
+require_once(dirname(__FILE__)."/pending.php");

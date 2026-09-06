@@ -11,6 +11,7 @@
 
 define('TESTLIB_HANDLER_STUBS', 1);
 require_once(__DIR__ . '/TestLib.php');
+require_once(testFindRepoRoot() . '/tests/php/UpstreamStampingTorrentFixture.php');
 
 class rTorrent
 {
@@ -898,6 +899,47 @@ $suite->test('begin adopts its own stub left by an earlier cycle', function () u
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'adopted its own stub',
         'the adoption is logged');
     strictAssertEnglish($line, 'the adoption line');
+});
+
+// The sibling branch: the stub adopted here is no longer a stub, its metadata
+// landed while nobody was watching. Adoption still only RECORDS that -- it
+// refreshes the deadline, claims the stub on the old torrent and returns
+// STE_META_PENDING, and the harvest happens a cycle later at the next pump.
+// The line used to announce a harvest from the session copy that this branch
+// does not perform, which is a diagnostic pointing at the wrong function.
+// Its replacement then promised one instead ('it is harvested at the next
+// pump'), which adoption cannot guarantee either: the next pump re-reads the
+// state and may clear the fetch because the stub vanished, or retire it
+// because the item at that hash is no longer this transaction's. So the line
+// has to name where the harvest is ATTEMPTED, as a handoff, and that is what
+// the third assertion pins.
+$suite->test('an adopted stub whose metadata already arrived says only that, and harvests at the next pump',
+    function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    ruTrackerChecker::queueResult('torrentExists', true);
+    mfQueueCollisionOwner($oldHash); // carries OUR stub marker
+    rXMLRPCRequest::queue(
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        true,
+        false,
+        array($oldHash, '6879823', '900', 0)   // is_meta=0: the metadata is already in
+    );
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // setCustoms
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // markOldTorrent
+
+    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+    strictAssertSame(ruTrackerChecker::STE_META_PENDING, $state, 'adoption defers to the next pump');
+    strictAssertSame(0, count(mfCreates()), 'and hands nothing to createTorrent in this cycle');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'adopted its own stub',
+        'the adoption is logged');
+    strictAssertTrue(strpos($line, 'harvesting') === false,
+        'the line may not say it is harvesting now; this branch does not: ' . $line);
+    strictAssertTrue(strpos($line, 'next pump') !== false,
+        'it names where the harvest is attempted: ' . $line);
+    strictAssertTrue(strpos($line, 'left to the next pump') !== false,
+        'and hands the harvest over rather than promising it will happen: ' . $line);
+    strictAssertEnglish($line, 'the arrived-adoption line');
 });
 
 $suite->test('pump leaves a foreign item at the successor hash alone and retires the fetch', function () use ($oldHash, $newHash) {
@@ -1832,13 +1874,16 @@ $suite->test('no command in begin, adopt or harvest reads or writes chk-meta-run
     }
 });
 
-// A replacement is assembled by calling Torrent's setters, and every setter
-// calls Torrent::touch(). Left alone that writes 'creation date' = time() and
+// A replacement is assembled by calling Torrent's setters. Where touch()
+// stamps a decoded torrent -- as this class did before its own fix, and as
+// upstream's Torrent still does -- that writes 'creation date' = time() and
 // 'created by' = the PHP class's own name into a torrent whose real author is
-// someone else -- and both then read out as fact in the "Created On" column
-// and in the history plugin. Measured on a live fleet: eleven torrents dated
-// 8 to 15 hours after the tracker actually registered them, every one landing
-// on the top of an hour because that is when the cycle runs.
+// someone else, and both then read out as fact in the "Created On" column and
+// in the history plugin. Measured on the live fleet before the fix: eleven
+// torrents dated 8 to 15 hours after the tracker actually registered them,
+// every one landing on the top of an hour because that is when the cycle runs.
+// What this test pins is the replacement rule: the date comes from the
+// tracker's own dump, never from this host's clock.
 $suite->test('a harvested replacement is dated from the dump, never from this host\'s clock',
     function () use ($oldHash) {
     strictWithStateDir('rut-metafetch-regtime', function () use ($oldHash) {
@@ -1911,13 +1956,12 @@ $suite->test('an undatable replacement carries no date at all rather than an inv
 $suite->test('a replacement keeps the creation date and creator its own bytes carried',
     function () use ($oldHash) {
     strictWithStateDir('rut-metafetch-authored', function () use ($oldHash) {
-        // The restore path. touch() fires inside announce()/announce_list()/
-        // comment() and overwrites BOTH keys, so a harvest that only ever
-        // cleared them would be the mirror image of the bug being fixed: a
-        // caller destroying a real author's fields because it assumed none
-        // could be there. A BEP 9 stub carries neither key today, which is why
-        // this needs a fixture that does -- and why the branch survived a
-        // mutation that discarded the captured values entirely.
+        // The restore path. A harvest that only ever cleared the two keys
+        // would be the mirror image of the bug being fixed: a caller
+        // destroying a real author's fields because it assumed none could be
+        // there. A BEP 9 stub carries neither key today, which is why this
+        // needs a fixture that does -- and why the branch survived a mutation
+        // that discarded the captured values entirely.
         ruTrackerChecker::reset();
         ruTrackerChecker::queueResult('createTorrent', null);
         rTorrent::$sourcesByHash = array();
@@ -1954,6 +1998,59 @@ $suite->test('a replacement keeps the creation date and creator its own bytes ca
     });
 });
 
+// The same restore, held against a setter that stamps.
+//
+// The case above passes with metafetch's 'created by' restore deleted: this
+// fork's Torrent::touch() writes nothing on a decoded torrent, so nothing ever
+// overwrites the harvested name and putting it back is a no-op. Only the DATE
+// half is pinned there, and only indirectly -- discard the snapshot and the
+// date falls through to the tracker's reg_time, which differs.
+//
+// plugins/rutracker_check ships to upstream Novik/ruTorrent separately from
+// php/Torrent.php (AGENTS.md, "Upstream PR Handoff"), where every setter still
+// stamps both keys. Driving the same harvest through a Torrent of that shape
+// is what makes the whole snapshot load-bearing: delete either half and this
+// case fails while the rest of the file stays green.
+$suite->test('the replacement keeps its own creator and date over a setter that stamps',
+    function () use ($oldHash) {
+    strictWithStateDir('rut-metafetch-authored-stamping', function () use ($oldHash) {
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', null);
+        rTorrent::$sourcesByHash = array();
+        $raw = strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t',
+            '', null, array('created by' => 'mktorrent 1.1', 'creation date' => 1300000000));
+        $fixture = @new UpstreamStampingTorrent($raw);
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+
+        // Vacuity guard: without a stand-in that really stamps, every
+        // assertion below would hold with no restore in metafetch.php at all.
+        $control = @new UpstreamStampingTorrent($raw);
+        $control->comment('anything');
+        strictAssertSame('ruTorrent (PHP Class - Adrien Gibrat)', $control->meta('created by'),
+            'the stand-in stamps its own name on a bare setter, as upstream does');
+        strictAssertSame(UpstreamStampingTorrent::STAMP_DATE, $control->meta('creation date'),
+            'and stamps its own date there too');
+
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106',
+            200, fiDumpAt(6879823, 2, str_repeat('A', 40), 7, 1788342804));
+        strictAssertTrue(RuTrackerForumIndex::fetchDump(1106) !== null, 'the dump is published');
+
+        mfQueueArrived($newHash);
+        rXMLRPCRequest::queue('d.get_custom', true, false, array('1106'));
+
+        strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000), 'the harvest commits');
+        $payload = mfHandedOverTorrent(mfCreates()[0]);
+        strictAssertTrue($payload instanceof UpstreamStampingTorrent,
+            'the harvest patched the stamping Torrent, not a quietly rebuilt plain one');
+        strictAssertSame('mktorrent 1.1', $payload->meta('created by'),
+            "the author's own name is put back over the stamp the setters wrote");
+        strictAssertSame(1300000000.0, $payload->meta('creation date'),
+            "and the author's own date is put back over it too");
+    });
+});
+
 $suite->test('a chk-forum stored with transport whitespace still dates the replacement',
     function () use ($oldHash) {
     strictWithStateDir('rut-metafetch-trim', function () use ($oldHash) {
@@ -1984,6 +2081,47 @@ $suite->test('a chk-forum stored with transport whitespace still dates the repla
         strictAssertSame(1788342804, mfHandedOverTorrent(mfCreates()[0])->meta('creation date'),
             'the padded forum id resolved and the dump answered');
     });
+});
+
+$suite->test('a non-canonical chk-forum names no forum, and the dump its digits would name is never read',
+    function () use ($oldHash) {
+    // The other half of the shared predicate, and the reason it is shared:
+    // "007" must not be read as forum 7. Each value below is one intval()
+    // would answer 7 for, the dump for forum 7 IS published, and it carries
+    // this very topic's reg_time -- so a reader that stopped calling
+    // RuTrackerRpcValue::canonicalForumId() has an answer waiting and stamps a
+    // date from a forum the stored value never named. Refusing the id is what
+    // leaves the creation date unset.
+    foreach (array('007', '+7', '7abc') as $index => $stored) {
+        strictWithStateDir('rut-metafetch-noncanonical-' . $index,
+            function () use ($oldHash, $stored) {
+            ruTrackerChecker::reset();
+            ruTrackerChecker::queueResult('createTorrent', null);
+            rTorrent::$sourcesByHash = array();
+            $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II',
+                'http://bt.t-ru.org/ann?pk=s3cr3t'));
+            $newHash = strtoupper($fixture->hash_info());
+            rTorrent::$source = $fixture;
+
+            // The forum index memoizes fetched rows in a static that outlives
+            // a test; without this reset the publication short-circuits and
+            // never reaches THIS test's state directory.
+            strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+            Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '7',
+                200, fiDumpAt(6879823, 2, str_repeat('A', 40), 7, 1788342804));
+            strictAssertTrue(RuTrackerForumIndex::fetchDump(7) !== null,
+                'the forum 7 dump is published for ' . var_export($stored, true));
+
+            mfQueueArrived($newHash);
+            rXMLRPCRequest::queue('d.get_custom', true, false, array($stored));
+
+            strictAssertSame(null, RuTrackerMetaFetch::pump($oldHash, 1000),
+                'the harvest still commits for ' . var_export($stored, true));
+            strictAssertSame(null, mfHandedOverTorrent(mfCreates()[0])->meta('creation date'),
+                'a chk-forum of ' . var_export($stored, true)
+                    . ' resolves no forum, so nothing dates the replacement');
+        });
+    }
 });
 
 $suite->test('only a positive integer is accepted as a registration time', function () {

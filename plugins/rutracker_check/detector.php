@@ -14,13 +14,39 @@ class RuTrackerDetector
     // both satisfy it. Anywhere the answer decides whether to SEND something
     // to a host, use this one.
     //
-    // The TLDs are enumerated rather than left as [a-z]{2,} for the same
-    // reason the rest of the plugin enumerates them (trackers/rutracker.php
-    // :33, :90, :173): anyone who can put an announce URL into a torrent picks
-    // the host, so a wildcard TLD hands 'rutracker.xyz' -- or, on a machine
-    // with a search domain, plain 'rutracker.local' -- an outgoing request and
-    // a say in the verdict. '.cc' is the API/dump host; the other four are the
-    // site's own mirrors.
+    // The TLDs are enumerated rather than left as [a-z]{2,} because anyone who
+    // can put an announce URL into a torrent picks the host, so a wildcard TLD
+    // hands 'rutracker.xyz' -- or, on a machine with a search domain, plain
+    // 'rutracker.local' -- an outgoing request and a say in the verdict.
+    // '.cc' is the API/dump host; the other four are the site's own mirrors.
+    //
+    // This constant is the ONLY enumeration of them inside this plugin. It
+    // once had hand-written copies in trackers/rutracker.php, and they
+    // drifted: the topic-URL copy was anchored at the START of the host and
+    // had never heard of rutracker.cc, so the site's own
+    // 'https://www.rutracker.org/...' links stopped being recognised.
+    // No copy of the list is left: every decision that has to know WHICH
+    // domains now asks isTrackerHost(), isTrackerRow() or isForeignRow().
+    // Other host tests do remain -- TRACKER_PATTERN's substring jurisdiction
+    // test at three production sites, and the two literal regexes
+    // registerTracker() is handed at the bottom of trackers/rutracker.php --
+    // but none of them enumerates the TLDs, so none of them has to change when
+    // a domain is added. Those three names are the grep to run before adding a
+    // sixth domain; as of this comment it answers in six functions --
+    // RuTrackerCheckImpl::extractTopicId(),
+    // ruTrackerRowUrl() (which picks WHICH announce row the two below then
+    // use, as $trackerUrl -> $announceUrl), the layer-2 announce gate in
+    // download_torrent(), RuTrackerMetaFetch::begin() before it builds the
+    // magnet's tr=, RuTrackerMetaFetch::pump()'s stub projection, and
+    // classify() below, which asks twice: attribution and the 'alive' gate.
+    //
+    // That grep stops at this plugin's border, and so does this constant:
+    // detector.php is required only from inside plugins/rutracker_check (and
+    // from the tests), so anything elsewhere in the tree that recognises
+    // RuTracker by name necessarily carries its own list and cannot be reached
+    // from here. A sixth domain is therefore a whole-tree search, not a
+    // directory one, and sharing a list across plugins is a real change rather
+    // than something a grep can finish.
     const TRACKER_HOST_PATTERN = '/(^|\.)(t-ru\.org|rutracker\.(?:org|cr|net|nl|cc))$/i';
 
     // Anchored at the start of the message rTorrent itself composes
@@ -34,20 +60,20 @@ class RuTrackerDetector
     /**
      * Is this announce URL one of RuTracker's own?
      *
-     * The one predicate that answers it AS A TRUST QUESTION. Other sites ask
-     * a different question with TRACKER_PATTERN -- hostOf(), the counter log,
-     * metadata harvest, and the row selection in classify() below -- and they
-     * keep the loose substring test on
-     * purpose, because they decide JURISDICTION: a torrent whose announce was
-     * tampered with is still a RuTracker topic that layers 2 and 3 must look
-     * at. Trust is the other question, and a substring test over a whole URL
-     * answers YES for rutracker.evil.example
-     * and bt.t-ru.org.evil.example. That is harmless when the answer only
-     * selects which row to LOG, and not harmless at all when it decides a
-     * verdict: a lookalike row announcing successfully made classify() answer
-     * 'alive', the scheduler wrote UPTODATE from it, and the real RuTracker
-     * topic was never checked again. Anyone who can put an announce URL into a
-     * torrent picks that host.
+     * The one predicate that answers it AS A TRUST QUESTION. Exactly three
+     * other sites ask a different question with TRACKER_PATTERN -- hostOf()
+     * (updatepass.php), describeCounters()'s counter log (trackers/
+     * rutracker.php) and the row selection in classify() below -- and they
+     * keep the loose substring test on purpose, because they decide
+     * JURISDICTION: a torrent whose announce was tampered with is still a
+     * RuTracker topic that layers 2 and 3 must look at. Trust is the other
+     * question, and a substring test over a whole URL answers YES for
+     * rutracker.evil.example and bt.t-ru.org.evil.example. That is harmless
+     * when the answer only selects which row to LOG, and not harmless at all
+     * when it decides a verdict: a lookalike row announcing successfully made
+     * classify() answer 'alive', the scheduler wrote UPTODATE from it, and the
+     * real RuTracker topic was never checked again. Anyone who can put an
+     * announce URL into a torrent picks that host.
      *
      * So the host is extracted and matched whole, against RuTracker's own
      * domains -- the same anchored rule the outgoing paths already use.
@@ -127,16 +153,35 @@ class RuTrackerDetector
         // announces successfully proves the topic is alive, and 'alive' is
         // also the safe direction -- 'candidate' is what spends requests and
         // ultimately replaces the user's torrent.
+        // $enabled counts JURISDICTION, not trust, and the two counters below
+        // are not exclusive: a look-alike row increments $foreign AND
+        // $enabled. So "$enabled > 0" means "some row puts this torrent in
+        // RuTracker's jurisdiction", never "some row is provably RuTracker's".
+        // Narrowing it would drop a torrent whose announce was tampered with
+        // to 'none' and stop checking it for good, which is why it stays loose
+        // -- and why the one verdict that must be sure, the 'alive' gate
+        // below, re-asks isTrackerRow() instead of reading this counter.
+        // Anyone reusing $enabled as a count of RuTracker's own rows is wrong.
         $enabled = 0;
         $foreign = 0;
         $alive = false;
         $counted = false;
         foreach ((array) $rows as $row) {
             if (!is_array($row) || empty($row['enabled'])) continue;
-            if (!preg_match(self::TRACKER_PATTERN, (string) ($row['url'] ?? ''))) {
-                $foreign++;   // some other tracker, and it can write $dMessage too
-                continue;
-            }
+            // Two different questions about the same row, asked in this order.
+            //
+            // Attribution: could this row have written $dMessage on its own?
+            // isForeignRow() is the canonical answer, shared with the metadata
+            // fetch, and it is the anchored host test -- a look-alike is not
+            // RuTracker and must not lend RuTracker its excuses.
+            if (self::isForeignRow($row)) $foreign++;
+            // Jurisdiction: is this a RuTracker topic at all? Deliberately the
+            // loose substring test, and the same row selection updatepass.php's
+            // hostOf() makes, because a torrent whose announce was tampered
+            // with is still a RuTracker topic layers 2 and 3 have to look at.
+            // A look-alike row is therefore counted BOTH ways: judged here,
+            // trusted nowhere.
+            if (!preg_match(self::TRACKER_PATTERN, (string) ($row['url'] ?? ''))) continue;
             $enabled++;
 
             $failed = (int) ($row['failed'] ?? 0);
@@ -211,7 +256,9 @@ class RuTrackerDetector
      * that cannot be attributed must silence BOTH, and an empty one is not a
      * rejection any more than it is an excuse.
      *
-     * $foreignEnabled counts the enabled rows belonging to somebody else. A
+     * $foreignEnabled counts the enabled rows belonging to somebody else, and
+     * both callers count them with isForeignRow() -- one definition, or this
+     * helper answers two different questions depending on who asked. A
      * magnet's own dht:// row is one of them, which is why the fetch's stub --
      * "exactly one HTTP row, so nobody else could have written the message" --
      * was not the closed world it took itself for.
@@ -219,6 +266,48 @@ class RuTrackerDetector
     static public function messageSpeaksForTracker($foreignEnabled, $dMessage)
     {
         return (int) $foreignEnabled === 0 && is_string($dMessage) && $dMessage !== '';
+    }
+
+    /**
+     * Could this row have written d.message without RuTracker's involvement?
+     *
+     * The canonical counterpart to messageSpeaksForTracker(): whatever that
+     * helper's $foreignEnabled is counted from must ask exactly this, and both
+     * of its callers -- classify() above and RuTrackerMetaFetch::pump()'s stub
+     * projection -- now do. They used to disagree. classify() counted a row
+     * foreign by TRACKER_PATTERN, a substring test over the whole URL, which
+     * 'rutracker.evil.example' and 'bt.t-ru.org.evil.example' both satisfy, so
+     * a look-alike row was not counted foreign at all and its own "Could not
+     * connect" was handed to RuTracker as an excuse: layer 1 answered
+     * 'transport' -- do nothing this cycle -- and layers 2 and 3 never ran.
+     *
+     * Attribution is a trust question, so it takes the anchored host test.
+     * Row SELECTION is a separate, deliberately loose question about
+     * jurisdiction, and stays where it is: a torrent whose announce was
+     * tampered with is still a RuTracker topic the later layers must look at.
+     *
+     * Two guards, and they answer in OPPOSITE directions, so they are not one
+     * condition. A disabled row is nobody: it announces nothing, so it writes
+     * no event, and false is right. Anything that is not a row array is not a
+     * row this helper can read at all, and an unreadable row's author is
+     * unknown -- which is "somebody else could have written it", the answer
+     * that silences d.message for both callers. Failing the other way here
+     * would say "this is RuTracker's own" about garbage, which is the
+     * opposite of what the two host predicates do: isTrackerRow() and
+     * isTrackerHost() both answer false for an argument they cannot parse
+     * into one of RuTracker's domains, null and '' included.
+     * No caller can reach it today -- classify() drops non-arrays first and
+     * parseTrackerProjection() emits only well-formed rows -- but the
+     * signature pair invites the slip: isTrackerRow() takes a URL string and
+     * this one takes a row array, so isForeignRow($row['url']) at a future
+     * call site would otherwise put $foreign back at 0 and restore the exact
+     * defect above, silently.
+     */
+    static public function isForeignRow($row)
+    {
+        if (!is_array($row)) return true;
+        if (empty($row['enabled'])) return false;
+        return !self::isTrackerRow($row['url'] ?? '');
     }
 
     // Fleet-level circuit breaker: an announce host trips when its share of

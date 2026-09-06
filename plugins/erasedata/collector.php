@@ -84,7 +84,7 @@ function erasedataReservationHasEncodedIdentity($reserved, $path, $reservationKe
 	if($encoded === false || !erasedataPrivateMarkerIsValid($reserved))
 		return(false);
 	$data = erasedataReservationDataPath($reserved);
-	$identity = XMLRPCPathResolver::filesystemIdentity($data);
+	$identity = erasedataPathIdentity($data);
 	return(is_array($identity) && !empty($identity['exists']) && !is_link($data)
 		&& is_dir($data)
 		&& (string)$identity['lstat']['dev'] === $encoded['device']
@@ -293,7 +293,7 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 	else if($captureExists)
 		return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
 
-	$identity = XMLRPCPathResolver::filesystemIdentity($candidate);
+	$identity = $filesystem->pathIdentity($candidate);
 	if(!is_array($identity) || empty($identity['exists']) || is_link($candidate)
 		|| !is_dir($candidate)
 		|| (string)$identity['lstat']['dev'] !== $linkLayout['dev']
@@ -400,7 +400,7 @@ function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $fi
 		return(false);
 	// The rename captures one directory name atomically; only the inode that was
 	// validated through the recovery link may cross into recursive deletion.
-	$current = XMLRPCPathResolver::filesystemIdentity($capture);
+	$current = $filesystem->pathIdentity($capture);
 	if(!erasedataSameFilesystemEntry($recovery['identity'], $current))
 	{
 		if(!erasedataPathExists($target))
@@ -478,7 +478,7 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 	$deleted = erasedataDeleteDirectoryReferenceContents(
 		$reference, $reservationKey, $filesystem);
 	erasedataCloseDirectoryReference($reference, $filesystem);
-	$current = XMLRPCPathResolver::filesystemIdentity($capture);
+	$current = $filesystem->pathIdentity($capture);
 	if(!$deleted || !erasedataSameFilesystemEntry($captured['identity'], $current)
 		|| !$filesystem->removeDirectory($capture) || erasedataPathExists($capture))
 		return(false);
@@ -576,7 +576,7 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	// Listed children are handled separately; leave the symlink itself alone.
 	if(is_link($path))
 		return(true);
-	$expected = XMLRPCPathResolver::filesystemIdentity($path);
+	$expected = $filesystem->pathIdentity($path);
 	if($expected === false || empty($expected['exists']) || !is_dir($path))
 		return(false);
 	$entries = $filesystem->scanDirectory($path);
@@ -585,7 +585,7 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	if(count(array_diff($entries, array('.', '..'))) > 0)
 		return(true);
 
-	$current = XMLRPCPathResolver::filesystemIdentity($path);
+	$current = $filesystem->pathIdentity($path);
 	if(!erasedataSamePathIdentity($expected, $current))
 		return(false);
 
@@ -606,7 +606,7 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 		$filesystem->removeDirectory($reservation);
 		return(false);
 	}
-	$reservedIdentity = XMLRPCPathResolver::filesystemIdentity($reserved);
+	$reservedIdentity = $filesystem->pathIdentity($reserved);
 	if(!erasedataSameFilesystemEntry($expected, $reservedIdentity))
 	{
 		// Publish only through the no-replace link helper. If another directory
@@ -679,7 +679,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		return($filesystem->unlinkCapturedEntry(
 			$path, $expected, $reservationKey));
 	}
-	$expected = XMLRPCPathResolver::filesystemIdentity($path);
+	$expected = $filesystem->pathIdentity($path);
 	if($expected === false || empty($expected['exists']) || !is_dir($path))
 		return(false);
 
@@ -703,7 +703,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		$filesystem->removeDirectory($reservation);
 		return(false);
 	}
-	$reservedIdentity = XMLRPCPathResolver::filesystemIdentity($reserved);
+	$reservedIdentity = $filesystem->pathIdentity($reserved);
 	if(!erasedataSameFilesystemEntry($expected, $reservedIdentity))
 	{
 		erasedataPublishReservationLink($reserved, $path, $filesystem);
@@ -736,10 +736,44 @@ function erasedataReadCleanupManifest($path, $expectedStat, $hash, &$artifact = 
 	return($read['manifest']);
 }
 
+// The identity of one cleanup artifact, plus the size and mtime the exact
+// cleanup protocol compares on top of it.
+//
+// A name that is ABSENT is an ordinary answer here, not an uncertainty: the
+// exact protocol's whole job is to record "this name was absent, twice, with
+// nothing changing in between", and rTorrent names files that do not exist yet
+// all the time. erasedataPathIdentity() answers false for a missing name whose
+// canonical location it cannot PROVE -- one below a regular file, a dangling
+// link or a directory this uid cannot search -- so this falls back, for a name
+// it has itself just proven absent, to an observation carrying the name AS
+// GIVEN.
+//
+// That fallback is sound HERE and nowhere else, and the reason is what the
+// value is used for. This 'path' is only ever compared for EQUALITY against
+// another observation of the SAME input name
+// (erasedataCleanupSuccessorObservationMatches, erasedataCleanupIdentityMatches
+// against a manifest's recorded canonical name, which is only reached when the
+// name exists). It is never compared for CONTAINMENT. Containment is
+// erasedataPathsOverlap()'s question -- the one that authorises a deletion --
+// and that reads erasedataPathIdentity() directly and stays fail closed on
+// exactly the names this falls back for.
 function erasedataCleanupCurrentIdentity($path)
 {
-	$identity = XMLRPCPathResolver::filesystemIdentity($path);
-	if($identity === false || empty($identity['exists']))
+	$identity = erasedataPathIdentity($path);
+	if($identity === false)
+	{
+		if(!is_string($path) || $path === '' || $path[0] !== '/'
+			|| strpos($path, "\0") !== false)
+			return(false);
+		clearstatcache(true, $path);
+		// Only a name proven absent. Anything that is THERE and could not be
+		// identified stays an uncertainty and fails closed.
+		if(file_exists($path) || is_link($path))
+			return(false);
+		return(array('exists' => false, 'path' => $path,
+			'lstat' => null, 'stat' => null));
+	}
+	if(empty($identity['exists']))
 		return($identity);
 	$lstat = @lstat($path);
 	$stat = @stat($path);
@@ -1006,22 +1040,120 @@ final class ErasedataCollector
 	private $pathCollector;
 	private $logger;
 	private $enableForceDeletion;
+	private $blockingHashLocks;
 	private $cleanupLogState = array('completed' => array(), 'retained' => array());
+	private $manifestLogState = array();
+	// Set by reportRetentionsTo(); null means log directly, as the ordinary
+	// schedule does.
+	private $retentionSink = null;
 
 	public function __construct(ErasedataFilesystemOps $filesystem, $presenceProbe,
-		$pathCollector, $logger, $enableForceDeletion)
+		$pathCollector, $logger, $enableForceDeletion, $blockingHashLocks = false)
 	{
 		$this->filesystem = $filesystem;
 		$this->presenceProbe = $presenceProbe;
 		$this->pathCollector = $pathCollector;
 		$this->logger = $logger;
 		$this->enableForceDeletion = $enableForceDeletion;
+		$this->blockingHashLocks = $blockingHashLocks;
+	}
+
+	// Hand the retentions to the caller instead of logging them.
+	//
+	// Called as $sink($kind, $hash, $generation, $reason) with $kind 'manifest'
+	// or 'cleanup' -- the two halves of the one rule this class states in
+	// manifestLog() below. The sink belongs to the caller for the life of this
+	// object; run() does not clear it, and the drain builds a fresh collector per
+	// tick, so the buffer behind it is per-tick by construction.
+	//
+	// This object's own deduplication is per-run and both memories are cleared at
+	// the top of every run(), so one pass says one line per condition. That is
+	// enough only if the passes are far apart. The drain is the other shape: it
+	// builds a collector on EVERY tick, ERASEDATA_DRAIN_INTERVAL apart, for as
+	// long as the condition lasts, and an unchanged retention was reported again
+	// on each -- about 17k identical lines a day per retained job.
+	//
+	// The drain already owns the answer -- erasedataDrainReportGroup() over a
+	// digest it persists across ticks -- and already gives it to retirement for
+	// exactly this reason. A sink lets it give the same treatment to retention
+	// without this class learning anything about drain state.
+	//
+	// NOT a claim about the ordinary schedule. That one also fires repeatedly
+	// -- $garbageCheckInterval in conf.php, 15 seconds by default -- with no sink
+	// and no durable memory, so it still repeats an unchanged retention. It is a
+	// separate condition with a separate home for its memory, and nothing here
+	// fixes it.
+	public function reportRetentionsTo($sink)
+	{
+		$this->retentionSink = is_callable($sink) ? $sink : null;
 	}
 
 	private function log($str)
 	{
 		if(is_callable($this->logger))
 			call_user_func($this->logger, $str);
+	}
+
+	// One unconditional, bounded, classified line per physical job that ends
+	// RETAINED: the canonical hash, the generation its manifest is bound under
+	// and the reason. Never a raw path, never a settings root, never a manifest
+	// byte and never anything rTorrent sent.
+	//
+	// Retention on the payload side used to go out through $this->log(), which
+	// is eLog(), which the shipped $erasedebug_enabled = false silences: a
+	// queue that retained every job for ever said nothing at any level an
+	// operator ever looks at, and the only way to find out was to turn a debug
+	// flag on and wait for it to happen again. The cleanup side of this same
+	// collector already reports its retentions through the channel debug cannot
+	// silence (cleanupLog() above); this is the payload side of that one rule.
+	//
+	// Bounded by construction: one line per hash, generation and reason, so a
+	// queue holding many items of one job cannot turn one refusal into many
+	// lines.
+	private function manifestLog($hash, $path, $reason)
+	{
+		if(!is_array($this->manifestLogState))
+			$this->manifestLogState = array();
+		// The generation comes out of the NAME, which carries the hash and the
+		// generation and nothing else; a legacy name that carries neither
+		// reports 'none' rather than leaking what it does carry.
+		$parts = explode('.', basename(is_string($path) ? $path : ''));
+		$generation = isset($parts[1]) && erasedataGenerationIsValid($parts[1])
+			? $parts[1] : 'none';
+		$key = $hash.'|'.$generation.'|'.$reason;
+		if(isset($this->manifestLogState[$key]))
+			return;
+		$this->manifestLogState[$key] = true;
+		// The report belongs to whoever was scheduled BECAUSE of the condition.
+		//
+		// Two schedules run this collector and they have opposite lifetimes. The
+		// ordinary one (erasedata, $garbageCheckInterval) is registered at plugin
+		// init unconditionally and fires for ever, in a fresh process each time,
+		// whether or not anything is retained -- so no memory this object could
+		// keep would bound anything, and an un-silenceable line here is one line
+		// every 15 seconds for the life of the installation. The drain
+		// (erasedata-drain<User>) is armed only while an obligation exists and is
+		// retired when it does not: a retained published manifest classifies as
+		// 'final', keeps the retirement scan non-empty, and therefore keeps that
+		// schedule alive exactly as long as there is something to say.
+		//
+		// So the drain reports retention and the ordinary pass says nothing --
+		// which is also what this plugin did before the sink existed: there was
+		// no payload retention line at all on the ordinary path.
+		//
+		// 'publish-refused' used to be excluded here, because publishStaging()
+		// wrote its own unclassified line for the same failure and silencing the
+		// classified half alone would have left the operator with the worse of
+		// the two. That is no longer true: the call below asks the codec to stay
+		// quiet, so this one classified note is the whole report and belongs in
+		// the memory with the rest.
+		if($this->retentionSink !== null)
+		{
+			// The per-run key above still runs, so one tick offers one note per
+			// condition; the caller decides whether the tick says anything at all.
+			call_user_func($this->retentionSink, 'manifest', $hash, $generation,
+				$reason);
+		}
 	}
 
 	private function probePresence($hash)
@@ -1102,7 +1234,7 @@ final class ErasedataCollector
 				}
 				else
 				{
-					$identity = XMLRPCPathResolver::filesystemIdentity($file);
+					$identity = $this->filesystem->pathIdentity($file);
 					if($identity === false)
 					{
 						$this->log('Retain unresolved file '.$file);
@@ -1290,6 +1422,20 @@ final class ErasedataCollector
 		}
 		if(isset($this->cleanupLogState['retained'][$key])) return;
 		$this->cleanupLogState['retained'][$key] = true;
+		// The cleanup half of the one rule manifestLog() names. 'unreadable-manifest'
+		// and 'generation-mismatch' are healed by no retry and pruned by nothing, so
+		// on the drain's schedule this line repeated for the life of the daemon.
+		if($this->retentionSink !== null)
+		{
+			// 'none', and not a parse that happens to fail: a cleanup job is named
+			// <hash>.cleanup.<digits>.<token>, and that number is not a manifest
+			// generation -- erasedataParseCollectorCandidate() matches it as
+			// [0-9]+ where a generation is 16 lowercase hex. There is no
+			// generation to report here, so the note says so.
+			call_user_func($this->retentionSink, 'cleanup', $hash, 'none',
+				$reason === null ? 'unspecified' : $reason);
+			return;
+		}
 		FileUtil::toLog('erasedata: cleanup retained '.$hash.' '.$reason);
 	}
 
@@ -1487,7 +1633,7 @@ final class ErasedataCollector
 
 	private function collectHashIndexed($listPath, $hash, $hashIndex, $index)
 	{
-		$lock = erasedataAcquireHashLock($listPath, $hash, true);
+		$lock = erasedataAcquireHashLock($listPath, $hash, !$this->blockingHashLocks);
 		if($lock === false)
 			return;
 		if($index === null)
@@ -1507,7 +1653,16 @@ final class ErasedataCollector
 			$ownedPaths = null;
 			if($presence === ERASEDATA_TORRENT_PRESENT)
 				$ownedPaths = $this->collectPaths($hash);
-			if($presence !== ERASEDATA_TORRENT_UNKNOWN && !($presence === ERASEDATA_TORRENT_PRESENT && $ownedPaths === false))
+			if($presence === ERASEDATA_TORRENT_UNKNOWN
+				|| ($presence === ERASEDATA_TORRENT_PRESENT && $ownedPaths === false))
+				// The whole job is retained on an answer nobody could read.
+				// Unknown is not absence: it says so, once per job, at a level
+				// the shipped configuration cannot silence.
+				foreach($legacyItems as $item)
+					$this->manifestLog($hash, $item['path'],
+						$presence === ERASEDATA_TORRENT_UNKNOWN
+							? 'rpc-unknown' : 'owned-paths-unknown');
+			else
 				foreach($legacyItems as $item)
 				{
 					$path = $item['path'];
@@ -1525,11 +1680,15 @@ final class ErasedataCollector
 							&& erasedataSameStatIdentity($item['stat'], $current))
 							continue;
 						if(!ErasedataManifestCodec::publishStaging(
-							$path, $hash, $this->filesystem))
+							$path, $hash, $this->filesystem, false))
+						{
+							$this->manifestLog($hash, $path, 'publish-refused');
 							continue;
+						}
 						$path = substr($path, 0, -4).'.list';
 					}
-					$this->consumeManifest($path, $item['stat'], $ownedPaths);
+					if(!$this->consumeManifest($path, $item['stat'], $ownedPaths))
+						$this->manifestLog($hash, $path, 'incomplete');
 				}
 		}
 		$cleanupItems = isset($hashIndex['cleanup']) && is_array($hashIndex['cleanup']) ? $hashIndex['cleanup'] : array();
@@ -1639,6 +1798,7 @@ final class ErasedataCollector
 	public function run($listPath, $onlyHash = null)
 	{
 		$this->cleanupLogState = array('completed' => array(), 'retained' => array());
+		$this->manifestLogState = array();
 		// Seeded so the report below always names something real even if a
 		// future refusal in there forgets to.
 		$blocker = $listPath;

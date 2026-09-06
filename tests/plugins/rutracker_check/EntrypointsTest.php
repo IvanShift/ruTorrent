@@ -486,19 +486,46 @@ $suite->test('the configured announce budget reaches the budget through its clam
     // handed reserveProbe() and sleep() the raw globals. A helper's unit test
     // cannot see that; the call site is what has to be pinned.
     //
-    // The cap has a behavioural test as well (RuTrackerHandlerTest). The pause
-    // cannot have one -- asserting it would mean sleeping for the bound -- so
-    // this is the only thing standing between it and the same fate.
+    // The cap has a behavioural test as well (RuTrackerHandlerTest), and so
+    // now does the pause, but only at one end of it: 'a configured pause of 0
+    // costs the probe path no wall-clock time' drives five real flows and
+    // asserts the wall time, which is affordable exactly because 0 is the
+    // documented off setting. Every configured value ABOVE it is still out
+    // of a behavioural test's reach -- asserting one would mean sleeping for
+    // it.
+    //
+    // What that 0-second test does and does not reach was measured, in a
+    // scratch copy, by mutating the sleep() call site:
+    //   sleep(probePause($cfg) + random_int(0, 3)) -- the shape round 1
+    //     shipped, jitter escaping the clamp -- reds it.
+    //   sleep($rutrackerAnnouncePause) -- no clamp at all -- does not: it
+    //     also sleeps 0 for a configured 0, so before the shape check below
+    //     existed, that mutation left both suites green.
+    // A dropped clamp is therefore this check's job alone, and the check has
+    // to be about the SHAPE of the call site rather than about one wrong
+    // spelling of it. Forbidding '(int) $rutrackerAnnouncePause', which is
+    // what stood here, is exactly the check that mutation walked past.
     $calls = epCalls('trackers/rutracker.php');
     strictAssertTrue(epAt($calls, 'RuTrackerAnnounce::probeCap') >= 0,
         'the configured cap goes through probeCap() before it reaches the budget');
     strictAssertTrue(epAt($calls, 'RuTrackerAnnounce::probePause') >= 0,
         'and the configured pause through probePause() before it reaches sleep()');
+    // Every READ of either global must be the immediate argument of a clamp.
+    // The 'global' statement that declares them is not a read, so it is cut
+    // out first; anything left over is a use that reached past the clamp.
     $source = file_get_contents(EP_DIR . '/trackers/rutracker.php');
-    strictAssertTrue(strpos($source, '(int) $rutrackerAnnounceCap') === false,
-        'the raw configured cap never reaches the budget again');
-    strictAssertTrue(strpos($source, '(int) $rutrackerAnnouncePause') === false,
-        'nor the raw configured pause');
+    $body = preg_replace('/\bglobal\s+[^;]*;/', '', $source);
+    foreach (array(
+        '$rutrackerAnnounceCap' => '/probeCap\(\s*\$rutrackerAnnounceCap\b/',
+        '$rutrackerAnnouncePause' => '/(?:probeSleepSeconds|probePause)\(\s*\$rutrackerAnnouncePause\b/',
+    ) as $global => $clamped) {
+        $reads = preg_match_all('/' . preg_quote($global, '/') . '\b/', $body);
+        $guarded = preg_match_all($clamped, $body);
+        strictAssertTrue($reads > 0, $global . ' is still read by the layer it configures');
+        strictAssertSame($reads, $guarded,
+            'every read of ' . $global . ' is handed straight to its clamp: '
+                . $guarded . ' of ' . $reads . ' are');
+    }
 });
 
 $suite->test('the manual action delegates handover creation and launch to the tested dispatcher', function () {

@@ -415,4 +415,53 @@ $suite->test('load() says whether it could read, so callers can tell absent from
     });
 });
 
+// "It did not happen" is three different facts, and the callers act on them
+// differently. A corrupt document is permanent -- nothing in this plugin
+// rewrites one it could not read -- while an unwritable store or a lock that
+// could not be opened heals the moment the machine does. Reported as one
+// boolean, the announce budget told an operator its slot "could not be
+// written" for a file that could not be READ, which points at disk space
+// instead of at the corrupt file that is actually wedging the layer.
+$suite->test('update() says WHY it did not happen, so a caller cannot name the wrong cause', function () {
+    strictWithStateDir('chk-state-failure-reason', function ($tmp) {
+        $failure = 'unset';
+        strictAssertSame(true, RuTrackerState::update('doc', function ($state) {
+            $state['a'] = 1;
+            return $state;
+        }, $failure), 'a mutation that landed');
+        strictAssertSame(null, $failure, 'reports no failure at all');
+
+        file_put_contents($tmp . '/broken.json', '{"half":');
+        strictAssertSame(false, RuTrackerState::update('broken', function ($state) {
+            return array('rebuilt' => 1);
+        }, $failure), 'a document that will not decode is refused');
+        strictAssertSame('unreadable', $failure,
+            'and says the file is corrupt, not that the write failed');
+        strictAssertSame('{"half":', file_get_contents($tmp . '/broken.json'),
+            'and is left exactly as it was found');
+
+        // A state json_encode() cannot represent: the mutator runs and the
+        // write is skipped, which is a different fact from a document nobody
+        // could read.
+        strictAssertSame(false, RuTrackerState::update('doc', function ($state) {
+            $state['c'] = NAN;
+            return $state;
+        }, $failure), 'a mutation that cannot be encoded is refused too');
+        strictAssertSame('unwritable', $failure, 'and is reported as the write it was');
+
+        // A store with nowhere to put its lock: even root gets ENOTDIR under a
+        // regular file.
+        $blocked = $tmp . '/not-a-directory';
+        file_put_contents($blocked, 'x');
+        strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/store');
+        try {
+            $refused = RuTrackerState::update('doc', function ($state) { return $state; }, $failure);
+        } finally {
+            strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+        }
+        strictAssertSame(false, $refused, 'a mutation with nowhere to go is refused');
+        strictAssertSame('unlockable', $failure, 'and names the guard it could not establish');
+    });
+});
+
 exit($suite->run());

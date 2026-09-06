@@ -170,10 +170,6 @@ class RuTrackerForumIndex
         return $rows;
     }
 
-    // A bare Snoopy client sized for a dump fetch: ruTrackerChecker::makeClient()'s
-    // 5s timeout is too short for a multi-megabyte dump, so both fetchDump()
-    // and sweep()'s default fetcher build their own client instead, sharing
-    // this constructor so the two stay consistent.
     // A persisted counter as this state file stores it, or null when the
     // stored bytes cannot be believed. An ABSENT key is the fresh zero --
     // there was nothing to read -- while a key that IS there and does not
@@ -278,6 +274,10 @@ class RuTrackerForumIndex
         return RuTrackerRpcValue::canonicalNonnegativeInteger(substr($document, strlen($prefix)));
     }
 
+    // A bare Snoopy client sized for a dump fetch: ruTrackerChecker::makeClient()'s
+    // 5s timeout is too short for a multi-megabyte dump, so both fetchDump()
+    // and sweep()'s default fetcher build their own client instead, sharing
+    // this constructor so the two stay consistent.
     static private function makeDumpClient()
     {
         $client = new Snoopy();
@@ -305,15 +305,48 @@ class RuTrackerForumIndex
     // answer, never a failure. $client lets a caller
     // supply an already-configured Snoopy instead of the default one built
     // here.
-    static public function fetchDump($forumId, $client = null)
+    //
+    // @param string|null $failureReason out: WHICH failure it was. Set on
+    //   every answer that is not this request's own freshly fetched body
+    //   arriving intact -- so always when the answer is null, and also when a
+    //   non-null answer is the DURABLE winner some other request published
+    //   (document-unsaved, publish-*, reservation-superseded,
+    //   document-unpromoted), because "there is a dump and it is not the one
+    //   this request fetched" is a different fact from "there is no dump".
+    //   NOT set by a 304 confirmation: those cached rows are exactly what this
+    //   request asked for, so the 'fresh' => false it answers with is a
+    //   success and not a reason. (cache-lost is the one thing that can go
+    //   wrong on that path, and it does set one.)
+    //
+    //   Only three of the reasons carry an HTTP detail, because only three of
+    //   them have a status to carry: dump-refused, dump-empty and
+    //   dump-malformed go through crawlFailureReason(), i.e. through
+    //   ruTrackerChecker::fetchStatusDetail(), which is the formatter sweep()
+    //   already threads its own failures out with -- one vocabulary, not two,
+    //   and 429 is the refusal this endpoint is documented to answer (see
+    //   sweep()'s comment on dumpRefused()). The rest -- the reservation and
+    //   publication faults -- are bare classification literals, because either
+    //   no HTTP request was made or its status is not what went wrong.
+    //
+    //   Before this, all of them reached the caller as the single word
+    //   'unavailable'. The one that already said more was reservation-retired,
+    //   which writes its own logDebug line naming the forum and the unreadable
+    //   book on the way past.
+    static public function fetchDump($forumId, $client = null, &$failureReason = null)
     {
         $forumId = (int) $forumId;
+        $failureReason = null;
         $memoize = ($client === null);
         // array_key_exists, not isset(): a remembered null (fetch failed
         // this cycle) must still short-circuit the next candidate in the
-        // same forum rather than be mistaken for "never tried".
-        if ($memoize && array_key_exists($forumId, self::$memo))
-            return self::$memo[$forumId];
+        // same forum rather than be mistaken for "never tried". The reason
+        // travels with it, or the second and later candidates in the same
+        // forum would be told nothing while the first was told exactly what
+        // happened.
+        if ($memoize && array_key_exists($forumId, self::$memo)) {
+            $failureReason = self::$memo[$forumId]['reason'];
+            return self::$memo[$forumId]['value'];
+        }
 
         // Reserve before I/O. The reservation is the request's authority to
         // publish: a later request advances it before either response can
@@ -327,12 +360,15 @@ class RuTrackerForumIndex
         $token = null;
         $cachedEtag = '';
         $retired = null;
+        $refusal = null;
+        $stateFailure = null;
         $reserved = RuTrackerState::update('forumindex', function ($state) use (
             $forumId,
             &$reservation,
             &$token,
             &$cachedEtag,
-            &$retired
+            &$retired,
+            &$refusal
         ) {
             // dump_gen is the migration path from the first incomplete
             // generation attempt. A counter that will not READ cannot be
@@ -371,6 +407,7 @@ class RuTrackerForumIndex
                     . ' this cycle; its cached body and counters are retired so the next one can,'
                     . ' and the counter is reseeded above every generation still readable on disk');
                 $retired = $current;
+                $refusal = 'reservation-retired';
                 // Seated, not SKIPPED. The old guard passed over exactly the
                 // books that most needed clearing: one that is not an array
                 // cannot be unset at all (an Error on both target runtimes),
@@ -438,6 +475,7 @@ class RuTrackerForumIndex
                     . ' on disk still proves was issued, so clear forum ' . $forumId . ' out of'
                     . ' dump_reservations, dump_generations and dump_gen and drop its forumdump-'
                     . $forumId . '-* documents to start it again');
+                $refusal = 'generation-exhausted';
                 return $state;
             }
             $reservation = $floor + 1;
@@ -460,12 +498,29 @@ class RuTrackerForumIndex
             $cachedEtag = is_string($state['etags'][$forumId] ?? null)
                 ? (string) $state['etags'][$forumId] : '';
             return $state;
-        });
+        }, $stateFailure);
         // The retired body goes only once its bookkeeping is provably gone
         // from disk; a failed update leaves both exactly as they were.
         if ($reserved && $retired !== null) self::dropDocuments(array($retired));
-        if (!$reserved || $reservation === null)
-            return self::remember($memoize, $forumId, null);
+        if (!$reserved || $reservation === null) {
+            // A reservation nobody could write down and a reservation this
+            // forum is not allowed to be issued are different faults, and the
+            // first is itself three (see RuTrackerState::update()): the
+            // document is corrupt, the store is unwritable, or no lock could
+            // be taken. Only the first is permanent, and it is the one that
+            // used to leave layer 3 off with nothing above debug said at all.
+            // The two defaults are totality, not faults anything emits: the
+            // closure above sets $refusal before each of its two returns that
+            // leave $reservation null, and RuTrackerState::update() assigns
+            // $failure before every false return of its own. They are what
+            // keeps this docblock's "always set when the answer is null"
+            // guarantee whole across that boundary; dropping them would let a
+            // null answer carry no reason, or the truncated 'reservation-'.
+            $failureReason = $reserved
+                ? ($refusal !== null ? $refusal : 'reservation-refused')
+                : 'reservation-' . ($stateFailure !== null ? $stateFailure : 'unstored');
+            return self::remember($memoize, $forumId, null, $failureReason);
+        }
 
         if ($client === null) {
             $client = self::makeDumpClient();
@@ -522,7 +577,8 @@ class RuTrackerForumIndex
                         unset($state['etags'][$forumId]);
                     return $state;
                 });
-                return self::remember($memoize, $forumId, null);
+                $failureReason = 'cache-lost';
+                return self::remember($memoize, $forumId, null, $failureReason);
             }
             $dropDocuments = array();
             $touched = RuTrackerState::update('forumindex', function ($state) use (
@@ -539,10 +595,25 @@ class RuTrackerForumIndex
                 return self::touchDump($state, $forumId, $dropDocuments);
             });
             if ($touched) self::dropDocuments($dropDocuments);
-            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+            $confirmed = self::durableDumpAnswer($forumId);
+            // The confirmation stands even when the retention touch above did
+            // not land; only the body going missing between the read and here
+            // makes this a non-answer.
+            if ($confirmed === null) $failureReason = 'cache-lost';
+            return self::remember($memoize, $forumId, $confirmed, $failureReason);
         }
-        if ((int) $client->status !== 200 || !is_string($client->results) || $client->results === '')
-            return self::remember($memoize, $forumId, null);
+        $status = (int) $client->status;
+        if ($status !== 200 || !is_string($client->results) || $client->results === '') {
+            // An answered 200 carrying nothing is not the same failure as a
+            // refusal, and dumpAnswer() already treats the two apart for the
+            // sweep. Both statuses go through the shared formatter, which
+            // spells a transport failure (< 100) as its own reason and
+            // anything else as http-status=N -- the 429 this endpoint is
+            // documented to answer included.
+            $failureReason = self::crawlFailureReason(
+                $status === 200 ? 'dump-empty' : 'dump-refused', array($client->status));
+            return self::remember($memoize, $forumId, null, $failureReason);
+        }
 
         // An EMPTY dump is an answer, not a failure: a forum that lists nothing
         // is a fact about that forum, and folding it into "unavailable" meant
@@ -551,7 +622,10 @@ class RuTrackerForumIndex
         // be understood is a non-answer, and parseDump says which is which.
         $malformed = false;
         $rows = self::parseDump($client->results, $malformed);
-        if ($malformed) return self::remember($memoize, $forumId, null);
+        if ($malformed) {
+            $failureReason = self::crawlFailureReason('dump-malformed', array($client->status));
+            return self::remember($memoize, $forumId, null, $failureReason);
+        }
 
         $etag = isset($client->headers) ? self::headerEtag($client->headers) : '';
         // The rows live in their own per-forum document: a forum dump is the
@@ -571,13 +645,17 @@ class RuTrackerForumIndex
             'etag' => $etag,
             'rows' => $rows,
         ));
-        if (!$saved)
-            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+        if (!$saved) {
+            $failureReason = 'document-unsaved';
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId), $failureReason);
+        }
 
         $promoted = false;
         $published = false;
         $oldDocument = null;
         $dropDocuments = array();
+        $publishRefusal = null;
+        $publishFailure = null;
         $stored = RuTrackerState::update('forumindex', function ($state) use (
             $forumId,
             $reservation,
@@ -588,10 +666,13 @@ class RuTrackerForumIndex
             &$promoted,
             &$published,
             &$oldDocument,
-            &$dropDocuments
+            &$dropDocuments,
+            &$publishRefusal
         ) {
-            if (!self::holdsReservation($state, $forumId, $reservation, $token))
+            if (!self::holdsReservation($state, $forumId, $reservation, $token)) {
+                $publishRefusal = 'reservation-superseded';
                 return $state;
+            }
 
             // Ahead of the read below as well as the three writes: one byte of
             // a string dump_documents book reads back as a perfectly good
@@ -600,7 +681,10 @@ class RuTrackerForumIndex
             foreach (array('dump_documents', 'dump_generations', 'etags') as $book)
                 self::seatBook($state, $book, 'forum ' . $forumId);
             $oldDocument = self::stateDumpDocument($state, $forumId);
-            if (!RuTrackerState::promote($stagedKey, $document)) return $state;
+            if (!RuTrackerState::promote($stagedKey, $document)) {
+                $publishRefusal = 'document-unpromoted';
+                return $state;
+            }
             $promoted = true;
             $state['dump_documents'][$forumId] = $document;
             $state['dump_generations'][$forumId] = $reservation;
@@ -609,15 +693,26 @@ class RuTrackerForumIndex
             $state = self::touchDump($state, $forumId, $dropDocuments);
             $published = true;
             return $state;
-        });
+        }, $publishFailure);
         RuTrackerState::drop($stagedKey);
 
+        // Both of these answer with the DURABLE winner, which may well be a
+        // perfectly good cached dump -- so the reason describes what became of
+        // THIS request, not the answer that came back.
         if (!$stored) {
             if ($promoted) RuTrackerState::drop($document);
-            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+            // 'unstored' is the same totality default as on the reservation
+            // side above: update() names every false return of its own.
+            $failureReason = 'publish-' . ($publishFailure !== null ? $publishFailure : 'unstored');
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId), $failureReason);
         }
-        if (!$published)
-            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId));
+        if (!$published) {
+            // Likewise 'publish-refused': the publish closure sets
+            // $publishRefusal before each of the two returns that leave
+            // $published false, and sets it true on the only other path.
+            $failureReason = $publishRefusal !== null ? $publishRefusal : 'publish-refused';
+            return self::remember($memoize, $forumId, self::durableDumpAnswer($forumId), $failureReason);
+        }
 
         if ($oldDocument !== null && $oldDocument !== $document)
             RuTrackerState::drop($oldDocument);
@@ -625,9 +720,30 @@ class RuTrackerForumIndex
         return self::remember($memoize, $forumId, array('rows' => $rows, 'fresh' => true));
     }
 
-    static private function remember($memoize, $forumId, $value)
+    // The exit for every answer fetchDump() COMPUTES, so the answer and the
+    // reason for it can never be memoised apart. It is not fetchDump()'s only
+    // exit: the memo short-circuit at the top of it returns without coming
+    // through here, and that short-circuit is exactly what gives the line
+    // below its once-per-forum-per-cycle property -- the second and later
+    // candidates sharing a forum never reach this function at all.
+    //
+    // The line is written HERE as well as at the caller because it says a
+    // different thing: this one names the FORUM once per cycle, while layer 3
+    // takes the same reason by reference and, on the answers it reports as
+    // 'unavailable' (i.e. the null ones), prints it against the torrent hash
+    // that asked (trackers/rutracker.php). Both print the classification and
+    // never the tracker's own text (see AGENTS.md, "Diagnostics: Classified
+    // Reason, Raw Transcript On Demand").
+    //
+    // $memoize is false when the caller supplied its own $client -- tests
+    // only, today -- and with no memo the line fires once per call instead.
+    // The once-per-cycle guarantee is the memo's, not this function's.
+    static private function remember($memoize, $forumId, $value, $reason = null)
     {
-        if ($memoize) self::$memo[$forumId] = $value;
+        if ($memoize) self::$memo[$forumId] = array('value' => $value, 'reason' => $reason);
+        if ($reason !== null)
+            ruTrackerChecker::logDebug('forumindex: forum ' . (int) $forumId
+                . ' produced no fresh dump this cycle; reason=' . $reason);
         return $value;
     }
 
@@ -951,16 +1067,67 @@ class RuTrackerForumIndex
         });
     }
 
+    // One warning per PHP process for a configuration that cannot be read.
+    // The FLAG is cached, never the value: an administrator's setting is read
+    // fresh on every call, so nothing here can pin a stale cooldown for the
+    // life of the process. Tests reset it through the existing reflection
+    // helper rather than through a production API added for their benefit.
+    static private $invalidSweepCooldownReported = false;
+
     // Seconds between automatic full sweeps; doubles as the window that
     // suppresses a topic a completed sweep already failed to find.
+    //
+    // The accepted domain is a PHP integer >= 0 or its canonical decimal
+    // string, judged by the same parser this plugin applies to the integers
+    // it reads from RPC and from its own state -- there is no second grammar
+    // here. (The other admin-config knobs still take a bare cast; this one no
+    // longer does.)
+    // Unset or null is the shipped 86400 and is not a misconfiguration.
+    // Anything else -- '', booleans, negatives, floats, '1e3', ' 24', '024',
+    // '+24', arrays, objects, a decimal string past PHP_INT_MAX -- falls back
+    // to the shipped 86400 with one classified warning.
+    //
+    // Validating the RAW value is the whole point, and it is why the old
+    // max(0, (int) $configured) could not be repaired by clamping. A negative
+    // value does break the arithmetic rather than merely widening it
+    // ("$now - $last > $cooldown" passes even for a stamp in the future, and
+    // missWindow() multiplies this same number, so it would go negative and
+    // prune every miss record in the same write that created it) -- but after
+    // the cast there is no longer any way to tell 'abc' from a deliberate 0.
+    // '', false and 'abc' all reached (int) as 0, and 0 here makes both this
+    // cooldown and the miss window built on it zero-length. Zero-length is not
+    // "no limit": sweepAllowed() asks "$now - $last > $cooldown", so a second
+    // claim in the SAME second is still refused, and missSuppresses() asks
+    // "<= $window", so a miss stamped that same second is still suppressed --
+    // the tests below pin both. What it does mean is that one second of
+    // distance is enough, so a permanently unresolvable topic re-triggers a
+    // full walk on every hourly cycle and every manual check click, and
+    // forumcrawl.php takes no cycle lock, so those walks can overlap. A typo
+    // therefore landed on the most aggressive setting the knob has.
+    //
+    // A canonical 0 still means exactly that, and so does a small valid value
+    // such as 24: neither is treated as a typo here. conf.php's ">= 0" is a
+    // compatibility fact about the shipped behaviour, not evidence about what
+    // the original author intended. Introducing a floor, an auto-disable or a
+    // whole-crawl lock are separate decisions for the owner; this function
+    // only stops unreadable configuration from silently meaning "no limit".
     static private function sweepCooldown()
     {
         global $rutrackerSweepCooldown;
-        // >= 0: a negative cooldown lets every caller through, so each
-        // manual click would launch its own tracker-wide crawl -- the one
-        // thing this value exists to prevent. It is also the base of the
-        // miss window, which would then prune records instantly.
-        return max(0, isset($rutrackerSweepCooldown) ? (int) $rutrackerSweepCooldown : 86400);
+        $raw = isset($rutrackerSweepCooldown) ? $rutrackerSweepCooldown : 86400;
+        $value = RuTrackerRpcValue::canonicalNonnegativeInteger($raw);
+        if ($value !== null) return $value;
+        if (!self::$invalidSweepCooldownReported) {
+            self::$invalidSweepCooldownReported = true;
+            // Ungated, because the effective value is safe but the
+            // configuration is still wrong and only a person can repair it.
+            // Fixed text: the setting's name, the default that replaced it and
+            // the unit. The raw value is never printed -- it is whatever an
+            // administrator typed, and a type dump would say no more.
+            ruTrackerChecker::logUnrepairable(
+                'config: invalid rutrackerSweepCooldown; using-default=86400 unit=seconds');
+        }
+        return 86400;
     }
 
     static public function sweepAllowed($now)
@@ -1003,11 +1170,22 @@ class RuTrackerForumIndex
     // announce budget reserves a slot rather than reading and then spending.
     //
     // @return bool -- true when this caller took the window and should crawl
-    static public function markSweep($now)
+    // @param string|null $refusal out: why not, when not -- 'claimed' (the
+    //   stamp on disk says another crawl holds the window) or 'unwritten' (the
+    //   claim this caller made never reached disk, or the document could not
+    //   be read or locked to make one at all). Two unrelated facts, and
+    //   reporting the second as the first sends an operator looking for a
+    //   concurrent crawler that does not exist on an installation whose
+    //   settings directory is simply unwritable. The classifier below says
+    //   which of the two a given failure is; it is not "any failure means
+    //   unwritten".
+    static public function markSweep($now, &$refusal = null)
     {
         $now = (int) $now;
+        $refusal = null;
         $cooldown = self::sweepCooldown();
         $claimed = false;
+        $failure = null;
         $stored = RuTrackerState::update('forumindex', function ($state) use ($now, $cooldown, &$claimed) {
             // Same predicate as sweepAllowed(), including its explicit
             // first-run case: an absent last_sweep is not a zero. And one
@@ -1026,10 +1204,27 @@ class RuTrackerForumIndex
             $claimed = true;
             $state['last_sweep'] = $now;
             return $state;
-        });
+        }, $failure);
         // A claim nobody could write down is not a claim: the next process
         // would read the same free window and crawl too.
-        return $claimed && $stored;
+        if ($claimed && $stored) return true;
+        // Whose answer to believe depends on whether the mutator ran at all,
+        // and update()'s three failures split on exactly that (state.php):
+        // 'unreadable' and 'unlockable' are decided BEFORE the mutator, so
+        // $claimed is still its initial false and means nothing. 'unwritable'
+        // is decided AFTER it -- load() succeeded, the mutator read the real
+        // last_sweep and answered -- so $claimed is a true verdict about the
+        // window even though the write then failed.
+        //
+        // Which is why $claimed is consulted first on that path. A readable
+        // forumindex.json whose stamp says another crawl holds the window, on
+        // a store that also cannot be written, is a held window; calling it a
+        // failed write sends an operator to check disk space for a concurrent
+        // crawl that really is there. Only when the mutator DID claim the
+        // window and the write lost it is 'unwritten' the honest answer.
+        $reached = $failure !== 'unreadable' && $failure !== 'unlockable';
+        $refusal = ($reached && !$claimed) ? 'claimed' : 'unwritten';
+        return false;
     }
 
     // Records that a completed sweep looked at every forum and did not find
@@ -1259,15 +1454,90 @@ class RuTrackerForumIndex
         }
     }
 
+    // THE wanted set, in one place: what a crawl would look for, given the
+    // topics already queued. The explicit queue is taken as-is -- whatever is
+    // in it passed the miss backoff on the way in -- and the fleet half, every
+    // torrent whose chk-topic is known but chk-forum is not, goes through that
+    // same backoff here. Without it a topic no completed crawl can ever find
+    // (a deleted one, the very case the backoff exists for) is re-added from
+    // the fleet every time and makes each sweep a full crawl of the tracker.
+    //
+    // It is shared with crawlWanted() below because the two definitions drifted
+    // and cost a process per cycle: the launcher counted the fleet half
+    // unfiltered, so a suppressed topic still answered "there is work", while
+    // runCrawl() -- which does the filtering -- then found none and returned
+    // before markSweep(), leaving last_sweep unstamped so the same answer came
+    // back on the next cycle. One detached PHP process, one bootstrap, one
+    // check.php require and one fleet RPC, for ever, resolving nothing.
+    //
+    // @return array|null -- null when the fleet scan itself failed, which is
+    //   "could not tell" and not "nothing to do"; both callers must stand down.
+    // @param array|null $awaiting out: topicsAwaitingForum()'s map, so the
+    //   crawler does not pay for a second fleet read.
+    static private function collectWanted($queued, $now, &$awaiting = null, &$currentForum = null)
+    {
+        $currentForum = array();
+        $awaiting = self::topicsAwaitingForum(array_flip($queued), $currentForum);
+        if ($awaiting === null) return null;
+
+        $state = RuTrackerState::load('forumindex');
+        // Read through the same is_array() every other reader of this book
+        // uses, rather than seated: this snapshot is never written back, and a
+        // repair nothing persists is not a repair worth announcing. A book
+        // that is not an array holds no record anyone can see, and indexing a
+        // string one reads a character and calls it an undatable miss.
+        $misses = isset($state['misses']) && is_array($state['misses']) ? $state['misses'] : array();
+        $now = (int) $now;
+        $wanted = array();
+        foreach ($queued as $topic) $wanted[(int) $topic] = true;
+        $missRepairs = array();
+        foreach (array_keys($awaiting) as $topic) {
+            $repair = null;
+            if (self::missSuppresses($misses[(int) $topic] ?? null, $topic, $now, $repair)) {
+                if ($repair !== null) $missRepairs[(int) $topic] = $repair;
+                continue;
+            }
+            $wanted[(int) $topic] = true;
+        }
+        // Same repair storeQueuedTopic() applies, in the one place this half
+        // of the wanted set reads the record: a topic whose miss cannot be
+        // dated is otherwise never crawled for again by anything. It is
+        // PERSISTED here rather than at the crawler's own bail-out, because the
+        // launcher asks this question too and a repair discarded because the
+        // asker turned out to have no work is a repair that never happens.
+        //
+        // The seat inside the callback is NOT the same guard as the is_array()
+        // above, and removing it because "the snapshot was already checked" is
+        // the mistake to avoid. update() takes the lock and then re-reads the
+        // document, so the $state handed to this callback is a fresh read, not
+        // the snapshot taken a few lines up. Between those two reads another
+        // PROCESS -- another cycle, another crawl, the update pass -- can have
+        // replaced the book with anything, which is the whole reason update()
+        // locks and re-reads at all. No single-process test can reach it, so it
+        // is deliberately left unpinned; the is_array() above is pinned, and
+        // guards a different read at a different time.
+        if (count($missRepairs))
+            RuTrackerState::update('forumindex', function ($state) use ($missRepairs) {
+                self::seatBook($state, 'misses', 'the topics this crawl repaired');
+                foreach ($missRepairs as $topic => $repair)
+                    if (self::missedAt($state['misses'][$topic] ?? null) === null)
+                        $state['misses'][$topic] = $repair;
+                return $state;
+            });
+        return array_keys($wanted);
+    }
+
     // Whether a crawl has anything to do -- the trigger its callers use.
     // The persistent queue is the durable trigger for explicit work such as
-    // correcting a moved topic. The fleet scan adds torrents whose forum is
-    // still unknown, including legacy work that predates the queue.
+    // correcting a moved topic, and it short-circuits: a queued topic is
+    // wanted by definition, so noticing it costs no fleet scan. Everything
+    // else is the fleet half of collectWanted() above, filtered exactly as the
+    // crawl it starts would filter it.
     static public function crawlWanted()
     {
         if (count(self::takeQueuePeek())) return true;
-        $awaiting = self::topicsAwaitingForum();
-        return is_array($awaiting) && count($awaiting) > 0;
+        $wanted = self::collectWanted(array(), time());
+        return is_array($wanted) && count($wanted) > 0;
     }
 
     // Starts the background crawl when there is work and the cooldown allows.
@@ -1311,62 +1581,11 @@ class RuTrackerForumIndex
         // Every resolved topic is written back to chk-forum through the scan --
         // without it there is nothing useful sweep() could produce, so bail out
         // before crawling. The queue remains untouched on this failure path.
-        $currentForum = array();
-        $awaiting = self::topicsAwaitingForum(array_flip($queued), $currentForum);
-        if ($awaiting === null) return null;
-
-        // Wanted set: the explicit queue (topics an update pass couldn't
-        // resolve from cache or feed) plus every torrent whose chk-topic is
-        // known but chk-forum isn't -- catches anything a caller queued and
-        // lost track of.
-        // The fleet half of the wanted set goes through the same miss backoff
-        // queueTopic() applies: without it a topic no completed crawl can
-        // ever find -- a deleted one, the very case the backoff exists for --
-        // is re-added from the fleet every time and makes each sweep a full
-        // crawl of the tracker, for ever. The explicit queue is taken as-is:
-        // whatever is in it already passed the backoff on the way in.
-        $state = RuTrackerState::load('forumindex');
-        // Read through the same is_array() every other reader of this book
-        // uses, rather than seated: this snapshot is never written back, and a
-        // repair nothing persists is not a repair worth announcing. A book
-        // that is not an array holds no record anyone can see, and indexing a
-        // string one reads a character and calls it an undatable miss.
-        $misses = isset($state['misses']) && is_array($state['misses']) ? $state['misses'] : array();
         $now = (int) $now;
-        $wanted = array();
-        foreach ($queued as $topic) $wanted[$topic] = true;
-        $missRepairs = array();
-        foreach (array_keys($awaiting) as $topic) {
-            $repair = null;
-            if (self::missSuppresses($misses[(int) $topic] ?? null, $topic, $now, $repair)) {
-                if ($repair !== null) $missRepairs[(int) $topic] = $repair;
-                continue;
-            }
-            $wanted[(int) $topic] = true;
-        }
-        // Same repair storeQueuedTopic() applies, in the one place this half
-        // of the wanted set reads the record: a topic whose miss cannot be
-        // dated is otherwise never crawled for again by anything.
-        //
-        // The seat inside the callback is NOT the same guard as the is_array()
-        // above, and removing it because "the snapshot was already checked" is
-        // the mistake to avoid. update() takes the lock and then re-reads the
-        // document, so the $state handed to this callback is a fresh read, not
-        // the snapshot taken at the top of this function. Between those two
-        // reads another PROCESS -- another cycle, another crawl, the update
-        // pass -- can have replaced the book with anything, which is the whole
-        // reason update() locks and re-reads at all. No single-process test can
-        // reach it, so it is deliberately left unpinned; the is_array() above
-        // is pinned, and guards a different read at a different time.
-        if (count($missRepairs))
-            RuTrackerState::update('forumindex', function ($state) use ($missRepairs) {
-                self::seatBook($state, 'misses', 'the topics this crawl repaired');
-                foreach ($missRepairs as $topic => $repair)
-                    if (self::missedAt($state['misses'][$topic] ?? null) === null)
-                        $state['misses'][$topic] = $repair;
-                return $state;
-            });
-        $wanted = array_keys($wanted);
+        $currentForum = array();
+        $awaiting = null;
+        $wanted = self::collectWanted($queued, $now, $awaiting, $currentForum);
+        if ($wanted === null) return null;
         if (!count($wanted)) return null;
 
         // Mark the cooldown before crawling, not after: a crawl that fails
@@ -1377,9 +1596,12 @@ class RuTrackerForumIndex
         // this one was starting up, that crawl is already doing exactly this
         // work, so stand down and give the wanted set back rather than
         // sweeping the tracker a second time.
-        if (!self::markSweep($now)) {
+        $claimRefusal = null;
+        if (!self::markSweep($now, $claimRefusal)) {
             foreach ($wanted as $topic) self::ensureQueued($topic);
-            return 'wanted ' . count($wanted) . ', another crawl already holds this window';
+            return 'wanted ' . count($wanted) . ($claimRefusal === 'unwritten'
+                ? ', the crawl window could not be recorded'
+                : ', another crawl already holds this window');
         }
 
         // sweep() returns null when the crawl couldn't even start (the tree
@@ -1399,9 +1621,32 @@ class RuTrackerForumIndex
                 ? call_user_func($sweeper, $wanted)
                 : self::sweep($wanted, null, $failureReason);
         } catch (Throwable $failure) {
-            // Exception messages may contain an HTTP target or response
-            // fragment. The stable class is enough for an operator and safe
-            // to place in the shared application log.
+            // Neither the message NOR the class reaches the log. An exception
+            // message can carry an HTTP target or a response fragment, and a
+            // class name is third-party text too once a library is on the
+            // stack. What the line below reports is a fixed classification --
+            // whatever reason sweep() had already threaded out through
+            // $failureReason before it threw, and 'crawl-exception' when it
+            // had not got that far -- which is the rule the rest of this
+            // plugin follows (AGENTS.md, "Diagnostics: Classified Reason, Raw
+            // Transcript On Demand").
+            //
+            // And here that classification is ALL there is: $failure is
+            // discarded outright, with no switch anywhere that would print it.
+            // The transcript half of that AGENTS.md heading is core XMLRPC
+            // only -- $rpcLogCalls and $rpcLogFaults are read in php/xmlrpc.php
+            // and print a request and its raw answer, and $rpcLogFaults only
+            // for a reply carrying faultCode on an `important` request. Nothing
+            // inside this try makes an XMLRPC call at all: sweep() fetches
+            // forum dumps over HTTP through Snoopy, and an injected $sweeper is
+            // a test double. Every XMLRPC call this file makes is outside it --
+            // topicsAwaitingForum()'s fleet read above, writeForumMapping()'s
+            // read and write below -- and each of the three sets
+            // important = false, so $rpcLogFaults would pass over them even
+            // there. So do not send an operator to turn $rpcLogFaults on for
+            // this line; what a cause has to be found from is
+            // 'crawl-exception' plus whatever classified reason sweep() itself
+            // threaded out before it threw.
             $threw = true;
         }
 
@@ -1476,27 +1721,6 @@ class RuTrackerForumIndex
             . ($failureReason !== null ? ' reason=' . $failureReason : '');
     }
 
-    // The full-forum crawl, layer 3's last resort: walk every
-    // forum in cat_forum_tree, in the order the tree lists them, and collect
-    // topic_id -> forum_id for whichever of $wantedTopics turns up, stopping
-    // as soon as every one of them is found. A pure function deliberately:
-    // no RuTrackerState read or write here, so it stays trivially testable
-    // and callers decide what to persist. $fetcher(url) returns a response
-    // body or null on any failure; production defaults to a one-off Snoopy
-    // per request via makeDumpClient() (same timeout/User-Agent as
-    // fetchDump()) but, unlike fetchDump(), never touches the ETag/dump
-    // cache -- caching a sweep's worth of forums would blow that cache far
-    // past the "forums actually in play" it's sized for.
-    //
-    // Return value: null means the crawl could not even start (the forum
-    // tree itself couldn't be fetched or parsed) -- the caller learns
-    // nothing about any of $wantedTopics and should treat this as
-    // transient. Any other return is array('resolved' => topic => forum,
-    // 'complete' => bool): 'resolved' is what turned up, and 'complete'
-    // says whether EVERY forum's dump was actually read. Only a complete
-    // crawl is the final word on the topics it didn't resolve -- a skipped
-    // dump (429, timeout) is indistinguishable from "topic not in that
-    // forum", so an incomplete crawl proves no absence at all.
     /**
      * Whether an HTTP answer to a dump request means "the tracker turned us
      * away" rather than "this forum carries no dump".
@@ -1566,6 +1790,40 @@ class RuTrackerForumIndex
         return $code . (count($details) ? ' statuses=' . implode('|', array_keys($details)) : '');
     }
 
+    // The full-forum crawl, layer 3's last resort: walk every
+    // forum in cat_forum_tree, in the order the tree lists them, and collect
+    // topic_id -> forum_id for whichever of $wantedTopics turns up, stopping
+    // as soon as every one of them is found. A pure function deliberately:
+    // no RuTrackerState read or write here, so it stays trivially testable
+    // and callers decide what to persist. $fetcher($url, &$refused, &$status)
+    // returns a response body or null on any failure, and answers the two
+    // questions the walk below needs about a non-body: whether the tracker
+    // REFUSED (dumpRefused(), which is what leaves territory unread) and what
+    // status it gave, so the reason threaded out of here can name it.
+    // Production defaults to a one-off Snoopy per request via makeDumpClient()
+    // (same timeout/User-Agent as fetchDump()) but, unlike fetchDump(), never
+    // touches the ETag/dump cache -- caching a sweep's worth of forums would
+    // blow that cache far past the "forums actually in play" it's sized for.
+    //
+    // Return value: null means the crawl could not even start (the forum
+    // tree itself couldn't be fetched or parsed) -- the caller learns
+    // nothing about any of $wantedTopics and should treat this as
+    // transient. Any other return is array('resolved' => topic => forum,
+    // 'complete' => bool): 'resolved' is what turned up, and 'complete' says
+    // that nothing this crawl asked about was left UNREAD.
+    //
+    // Which is not the same as "every forum's dump was read", and the
+    // difference is deliberate on both sides. A forum answering that it
+    // carries no dump at all (404/410) IS read -- most of RuTracker's tree is
+    // categories and archives with none, so counting those as unread made
+    // every crawl incomplete and markMiss() dead code for the case it exists
+    // for. And the walk stops the moment the last wanted topic is resolved, so
+    // the forums after that are never requested at all; nothing is being
+    // concluded about a topic that has already been found. Only a refusal or a
+    // body that is not a dump leaves territory unknown, and only those raise
+    // the counter behind this flag. Which is exactly the inference it exists
+    // for: a skipped dump (429, timeout) is indistinguishable from "topic not
+    // in that forum", so an incomplete crawl proves no absence at all.
     static public function sweep($wantedTopics, $fetcher = null, &$failureReason = null)
     {
         $failureReason = null;
@@ -1638,7 +1896,10 @@ class RuTrackerForumIndex
                 // and markMiss() could never run. That made the whole miss
                 // backoff dead code for the case it was written for: a deleted
                 // topic no crawl can ever resolve kept re-triggering a
-                // ~1500-forum walk every cooldown, for ever.
+                // full-tree walk every cooldown, for ever. That walk is 1261
+                // forums -- the only measured figure, from the design's own
+                // survey; the "~1500" this comment used to give was nobody's
+                // measurement.
                 //
                 // A REFUSAL is the opposite -- unknown territory, the dump may
                 // exist and may hold a wanted topic -- so it does count, and a

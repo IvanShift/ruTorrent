@@ -11,6 +11,7 @@ require_once( "trackers/nnmclub.php" );
 require_once( "trackers/tapocheknet.php" );
 require_once( "trackers/tfile.php" );
 require_once( "trackers/toloka.php" );
+require_once( dirname(__FILE__) . "/fetcherror.php" );
 require_once( dirname(__FILE__) . "/runstate.php" );
 require_once( dirname(__FILE__) . "/../erasedata/removewithdata.php" );
 require_once( "metafetch.php" );
@@ -861,9 +862,15 @@ class ruTrackerChecker
 			: RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues);
 		if($status === RuTrackerAtomicOwnership::ACTED)
 			return(true);
-		if($status === RuTrackerAtomicOwnership::SKIPPED)
-			self::logDebug("activateReplacement: Skipped activation of " . $hash . " due to ownership or state change");
-		self::logDebug("activateReplacement: Could not confirm activation of " . $hash);
+		// One line per outcome. A SKIPPED used to log both "Skipped" and
+		// "Could not confirm" for the same status, which reads as a
+		// contradiction and names two different things to go and look at: a
+		// SKIPPED is the guard refusing on purpose because the row no longer
+		// matches, anything else is an attempt whose result was not readable.
+		self::logDebug("activateReplacement: activation of " . $hash
+			. ($status === RuTrackerAtomicOwnership::SKIPPED
+				? " was skipped: the row no longer carries the expected ownership or run state"
+				: " could not be confirmed"));
 		return(false);
 	}
 
@@ -993,6 +1000,19 @@ class ruTrackerChecker
 		return(RuTrackerReplacementRecord::decode($value, $shaped));
 	}
 
+	// The resolved, bounded wait: the caller's override when given, otherwise
+	// $rutrackerMetaWait, otherwise the default -- clamped at both ends.
+	// Separate from awaitMetadata() so the bound can be asserted without
+	// spending the wait it describes.
+	static public function metadataWaitSeconds( $override = null )
+	{
+		global $rutrackerMetaWait;
+		$seconds = $override;
+		if(is_null($seconds))
+			$seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
+		return(min(self::METADATA_WAIT_MAX, max(0, (int) $seconds)));
+	}
+
 	/**
 	 * Wait for a magnet download to acquire its metainfo.
 	 *
@@ -1019,19 +1039,6 @@ class ruTrackerChecker
 	 * testable through metadataWaitSeconds(), which is where it belongs -- a
 	 * wait is not something a test should have to sit through to assert.
 	 */
-	// The resolved, bounded wait: the caller's override when given, otherwise
-	// $rutrackerMetaWait, otherwise the default -- clamped at both ends.
-	// Separate from awaitMetadata() so the bound can be asserted without
-	// spending the wait it describes.
-	static public function metadataWaitSeconds( $override = null )
-	{
-		global $rutrackerMetaWait;
-		$seconds = $override;
-		if(is_null($seconds))
-			$seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
-		return(min(self::METADATA_WAIT_MAX, max(0, (int) $seconds)));
-	}
-
 	static public function awaitMetadata( $hash )
 	{
 		$seconds = self::metadataWaitSeconds();
@@ -1182,19 +1189,6 @@ class ruTrackerChecker
 	}
 
 	/**
-	 * Replace $hash with an already parsed replacement.
-	 *
-	 * $torrent is the Torrent parseMetainfo() returned, or the one a handler
-	 * downloaded and patched itself -- never bytes. Metainfo is decoded at one
-	 * boundary and the object travels from there, so this never decodes again.
-	 *
-	 * Anything else is a caller that could not produce metainfo, and the answer
-	 * is STE_ERROR: an error to retry next cycle, with nothing changed. It is
-	 * not a deletion. A tracker that really has removed a topic says so in its
-	 * own words, and each handler recognises that signal for itself, well
-	 * before it gets here.
-	 */
-	/**
 	 * Hand rTorrent::sendTorrent() a replacement that claims no file on disk.
 	 *
 	 * sendTorrent() reads Torrent::getFileName() as "a file this plugin owns":
@@ -1241,6 +1235,19 @@ class ruTrackerChecker
 		return($torrent);
 	}
 
+	/**
+	 * Replace $hash with an already parsed replacement.
+	 *
+	 * $torrent is the Torrent parseMetainfo() returned, or the one a handler
+	 * downloaded and patched itself -- never bytes. Metainfo is decoded at one
+	 * boundary and the object travels from there, so this never decodes again.
+	 *
+	 * Anything else is a caller that could not produce metainfo, and the answer
+	 * is STE_ERROR: an error to retry next cycle, with nothing changed. It is
+	 * not a deletion. A tracker that really has removed a topic says so in its
+	 * own words, and each handler recognises that signal for itself, well
+	 * before it gets here.
+	 */
 	static public function createTorrent($torrent, $hash, $oldTorrent = null){
 		global $saveUploadedTorrents;
 
@@ -1435,8 +1442,40 @@ class ruTrackerChecker
 		$label = rawurldecode($req->val[1]);
 		$throttle = $req->val[2];
 		$connectionSeed = $req->val[3];
-		$topic = (string) $req->val[4];
-		$forum = (string) $req->val[5];
+		// Canonicalised for the load command list, which is a DSL, not XML.
+		// These two are the only values in that list whose bytes come from a
+		// field a third party writes freely: the marker is hex from
+		// random_bytes, the inheritance record is comma-free by construction
+		// (see encodeInheritance()), the rest are ints or enums, and the label
+		// is rawurlencode'd. d.custom.set splits its own arguments on commas,
+		// so a comma here would make it a three-argument call -- an
+		// input_error which, by the abort semantics documented at
+		// buildReplacementAddition(), would drop the tail of the list. That
+		// truncation is a conclusion from those documented semantics, not an
+		// observed failure. A non-canonical id is wrong even without a comma:
+		// "007" names no topic to topicsAwaitingForum() or resolveForum(), so
+		// forwarding it writes a value the successor's own readers refuse.
+		// trim() only, and only on the COPY: transport whitespace is not the
+		// question, the spelling of the id is. Nothing here writes back to the
+		// predecessor's own customs, and that restraint is load-bearing for
+		// exactly ONE of these two keys. chk-forum is compared as BYTES by its
+		// only other writer: RuTrackerForumIndex::writeForumMapping() holds its
+		// lock and, on a call that is NOT authoritative, tests the stored value
+		// verbatim against $expectedForum -- a crawl's pre-sweep snapshot --
+		// answering FORUM_WRITE_SUPERSEDED on any difference. An authoritative
+		// caller skips that guard, so today only the crawl reaches it. The
+		// second byte test has no such qualifier: every call compares the
+		// stored value verbatim against the id it means to write and answers
+		// FORUM_WRITE_CURRENT on a match. Rewriting those bytes
+		// anywhere else therefore changes what that compare-and-swap sees, which
+		// is why " 22" is left as " 22" on the row it is stored on. chk-topic is
+		// the other shape: its guard canonicalises BOTH sides, so " 22" names no
+		// topic there and answers FORUM_WRITE_OBSOLETE no matter what this
+		// function does. Do not read the byte-comparison hazard onto chk-topic.
+		$topicId = RuTrackerRpcValue::canonicalPositiveInt32(trim((string) $req->val[4]));
+		$forumId = RuTrackerRpcValue::canonicalForumId((string) $req->val[5]);
+		$topic = $topicId === null ? '' : (string) $topicId;
+		$forum = $forumId === null ? '' : (string) $forumId;
 
 		$stagedAt = time();
 		$stoppedFallback = null;
@@ -1675,11 +1714,17 @@ class ruTrackerChecker
 		// a chance to claim the topic URL.
 		foreach (self::$TRACKERS as $commentFilter => $tracker)
 		{
-			// It already answered, from better input: five of the seven
-			// handlers register the same pattern as both filters (anidub,
-			// tapochek, toloka...), so without this the same handler ran twice
-			// for one torrent -- once on the comment it is written to read,
-			// then again on an announce URL it cannot.
+			// It already answered, from better input. Only two of the seven
+			// handlers -- anidub and tapochek -- register one pattern as both
+			// filters, but identity is not what makes this guard necessary: a
+			// torrent from its own tracker normally carries both a comment the
+			// comment filter matched and an announce the announce filter matches.
+			// That is what rutracker (/rutracker\./ against
+			// /rutracker\.|t-ru\.org/) and toloka (/toloka\./ against
+			// /toloka\.to/) look like -- differing patterns that still both hit
+			// the same host. So without this the same handler ran twice for one
+			// torrent -- once on the comment it is written to read, then again on
+			// an announce URL it cannot.
 			if(isset($askedAlready[$commentFilter])) continue;
 			foreach($announces as $announce)
 			{
@@ -1789,16 +1834,17 @@ class ruTrackerChecker
 		// Naming any one of them would misdiagnose the rest: an earlier draft
 		// called a DNS outage "the server sent no status line" and would have
 		// sent an operator to look at Cloudflare. So this says only what is
-		// certainly true, and makeClient() logs $client->error beside it.
+		// certainly true, and makeClient() logs classifyFetchError()'s token
+		// for $client->error beside it.
 		//
-		// That error is NOT always there, and the difference matters more than
-		// it looks: Snoopy writes it on (b) and (c) but on neither (a) nor (d),
-		// because the header loops and the early bail touch only $status. (a)
-		// is exactly what produced the sixteen log lines cited above -- they
-		// are all curl-path fetches that exited 0 with no status line parsed --
-		// so for the motivating case the new field is absent and this text is
-		// the whole diagnosis. An absent error= is therefore evidence in its
-		// own right: it narrows a status 0 to (a) or (d).
+		// That token is NOT always there, and the difference matters more than
+		// it looks: Snoopy writes the message on (b) and (c) but on neither
+		// (a) nor (d), because the header loops and the early bail touch only
+		// $status. (a) is exactly what produced the sixteen log lines cited
+		// above -- they are all curl-path fetches that exited 0 with no status
+		// line parsed -- so for the motivating case the field is absent and
+		// this text is the whole diagnosis. An absent error= is therefore
+		// evidence in its own right: it narrows a status 0 to (a) or (d).
 		if($status === 0)
 			return('transport=no-status reason=unset');
 		$reasons = array(
@@ -1808,6 +1854,27 @@ class ruTrackerChecker
 		);
 		$reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
 		return('transport=curl-exit code=' . $status . ' reason=' . $reason);
+	}
+
+	/**
+	 * Snoopy's failure sentence, reduced to one greppable token.
+	 *
+	 * transportFailureDetail() alone cannot separate the several conditions
+	 * that all arrive as status 0, and Snoopy has already written the one
+	 * sentence that distinguishes them.
+	 *
+	 * The rule itself lives in fetcherror.php, which the NNMClub guest path
+	 * requires too: both used to carry their own copy of the same eight
+	 * token/pattern pairs, and the copies had drifted over how they normalised
+	 * whitespace. The method stays as a delegate so that de-duplicating the
+	 * rule changed no call site's name or shape; makeClient() below is its
+	 * only caller and it may be inlined.
+	 *
+	 * @return string A token, or '' when Snoopy wrote no message
+	 */
+	static public function classifyFetchError( $error )
+	{
+		return(RuTrackerFetchError::classify($error));
 	}
 
 	static public function fetchStatusDetail($status)
@@ -1838,33 +1905,30 @@ class ruTrackerChecker
 		if($client->status < 100)
 		{
 			$host = @parse_url($url, PHP_URL_HOST);
-			// Snoopy's own message, not just the numeric map. The number alone
-			// cannot separate the several conditions that all arrive as
-			// status 0 (see transportFailureDetail()), and Snoopy has already
-			// written the one sentence that distinguishes them -- "connection
-			// failed (0)" for an unresolvable host, "Refusing to fetch: ..."
-			// when it declined to send at all. Until now nothing in this
-			// plugin read $client->error, so that sentence was thrown away
-			// exactly when it was the only thing worth having.
-			// Audited 2026-09-05: not one of Snoopy's eight error strings
-			// carries the URL -- they carry a scheme, a host, an IP or an
-			// errno. The redaction is for the ninth. This plugin's hardest
-			// log rule is that a probe URL, which spells the user's passkey
-			// in its query string, must never reach the log
-			// (RuTrackerAnnounce::buildUrl strips it for the same reason), and
-			// Snoopy is a vendored file that some later merge may well teach
-			// to quote the URL it failed on.
-			$error = trim(preg_replace('/\s+/', ' ', (string) $client->error));
-			$error = preg_replace('/\b(pk|passkey|uk)=[^\s&"\']*/i', '$1=<redacted>', $error);
-			// Snoopy quotes the scheme or the host inside three of its eight
-			// messages, so an unescaped value ends the field early and the
-			// tail reads as separate log fragments. Single-quoted instead of
-			// backslash-escaped: this is a log line a person greps, not a
-			// format anything parses back.
-			$error = str_replace('"', "'", $error);
+			// Snoopy's own message, classified, not just the numeric map. The
+			// number alone cannot separate the several conditions that all
+			// arrive as status 0 (see transportFailureDetail()), and Snoopy has
+			// already written the one sentence that distinguishes them --
+			// "connection failed (0)" for an unresolvable host, "Refusing to
+			// fetch: ..." when it declined to send at all. This plugin used to
+			// read $client->error nowhere at all, so that sentence was thrown
+			// away exactly when it was the only thing worth having.
+			//
+			// A token rather than the sentence, for two reasons. It is the
+			// spelling this plugin's other reader of the same Snoopy field
+			// uses (NNMClubCheckImpl::guestFetch()), so one grep now reads the
+			// field wherever the plugin writes it; two shapes needed two.
+			// And it needs no redaction audit: this plugin's hardest log rule
+			// is that a probe URL, which spells the user's passkey in its query
+			// string, must never reach the log (RuTrackerAnnounce::buildUrl
+			// strips it for the same reason), and Snoopy is a vendored file
+			// that some later merge may well teach to quote the URL it failed
+			// on. classifyFetchError() answers 'unclassified' to anything it
+			// does not recognise, so that merge cannot leak through here.
+			$error = self::classifyFetchError($client->error);
 			self::logDebug("Snoopy fetch failed: host=".(is_string($host) ? $host : 'unknown')." "
 				. self::transportFailureDetail($client->status)
-				. ($error === '' ? '' : ' error="' . $error . '"'));
+				. ($error === '' ? '' : ' error=' . $error));
 		}
 
 		return $client;

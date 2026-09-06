@@ -262,7 +262,11 @@ fclose($server);
 PHP;
 		$scriptFile = $this->dir.'/peer.php';
 		file_put_contents($scriptFile, $script);
-		$command = escapeshellarg(PHP_BINARY).' '.escapeshellarg($scriptFile).' '
+		// 'exec ' so proc_terminate() in close() reaches the peer itself: proc_open()
+		// runs a string command through /bin/sh, this shell forks rather than execs it,
+		// and the signal would otherwise stop at the shell while the peer keeps its
+		// socket open. Same reason as the copied-rpc2 server in SCGITransportTest.
+		$command = 'exec '.escapeshellarg(PHP_BINARY).' '.escapeshellarg($scriptFile).' '
 			.escapeshellarg($configFile).' '.escapeshellarg($endpointFile).' '
 			.escapeshellarg($this->accepted).' '.escapeshellarg($this->capture).' '
 			.escapeshellarg($this->release);

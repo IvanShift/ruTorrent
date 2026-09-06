@@ -3788,6 +3788,7 @@ class RetrackersRecoveryRows4Decisions
 		$previousHash = null;
 		$previousLocalId = null;
 		$quarantineCount = 0;
+		$markedCount = 0;
 		for ($row = 0; $row < $count; $row++) {
 			$cells = array();
 			for ($cell = 0; $cell < 4; $cell++) {
@@ -3820,6 +3821,16 @@ class RetrackersRecoveryRows4Decisions
 			if ($decision[0] === 'Q') {
 				$quarantineCount++;
 			}
+			// How many rows carry a marker at all. 'C' is the class of a row with
+			// NEITHER custom set -- an ordinary download this plugin has never
+			// touched -- and the request these rows come from is an unfiltered
+			// d.multicall2 over the whole main view, so 'count' above is the
+			// number of DOWNLOADS, not the number of recoveries in flight.
+			// Anything that means to ask "is a recovery outstanding" has to ask
+			// this counter; asking 'count' asks "does this install have torrents".
+			if ($decision[0] !== 'C') {
+				$markedCount++;
+			}
 			$decisions .= $cells[0] . $cells[1] . $decision[0] . $decision[1] .
 				pack('N', strlen($decision[2])) . $decision[2] .
 				pack('N', strlen($cells[2])) . hash('sha256', $cells[2], true) .
@@ -3829,7 +3840,7 @@ class RetrackersRecoveryRows4Decisions
 			return(false);
 		}
 		return(array('ok' => true, 'count' => $count, 'quarantine_count' => $quarantineCount,
-			'packed' => $decisions));
+			'marked_count' => $markedCount, 'packed' => $decisions));
 	}
 }
 
@@ -4103,8 +4114,20 @@ class RetrackersHistoricalBindingClassifier
 			return($this->ledgerCorrupt());
 		}
 		$profiles = $this->profiles($value['actions'], $ledger['claims']);
+		// An empty ledger is not by itself corruption: it is what a daemon that
+		// has just started looks like, because these keys live only in its
+		// memory. It becomes corruption when something SURVIVED the ledger --
+		// a hook this code cannot account for, one of our own pairs with no
+		// receipt behind it, or a recovery marker on a torrent, since markers
+		// live in the session files and outlive the daemon.
+		//
+		// The last of those asks marked_count and not count. count is the row
+		// count of an unfiltered d.multicall2 over the whole main view, so
+		// asking it made every install that holds a single torrent answer
+		// 'receipt-ledger-corrupt' for ever -- measured on a live container,
+		// zero torrents initialised and one marker-free torrent did not.
 		if (count($value['ledger_keys']) === 0 && (!$profiles['valid'] ||
-			count($profiles['profiles']) !== 0 || $recovery['count'] !== 0)) {
+			count($profiles['profiles']) !== 0 || $recovery['marked_count'] !== 0)) {
 			return($this->ledgerCorrupt());
 		}
 		$semanticValid = $profiles['valid'] && !$ledger['claim_duplicate'];
@@ -4119,8 +4142,10 @@ class RetrackersHistoricalBindingClassifier
 		$observation = null;
 		$epoch = count($ledger['pv']) === 1 ? $ledger['pv'][0] : null;
 		if ($epoch === null) {
+			// marked_count for the same reason as the gate above: BOOTSTRAP is
+			// "nothing of ours exists yet", not "this daemon holds no torrents".
 			if (count($value['ledger_keys']) === 0 && $profileCount === 0 && $claimCount === 0 &&
-				$recovery['count'] === 0) {
+				$recovery['marked_count'] === 0) {
 				$phase = 'BOOTSTRAP';
 				$observation = 'BOOTSTRAP';
 			} else {

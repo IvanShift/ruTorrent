@@ -104,6 +104,41 @@ class RuTrackerRpcValue
         return ($parsed > 0 && $parsed <= 2147483647 && (string) $parsed === $value) ? $parsed : null;
     }
 
+    /**
+     * A stored chk-forum, read as a forum id, or null.
+     *
+     * The rule is canonicalPositiveInt32() over a trimmed value, and it is
+     * here because it had been written out twice --
+     * RuTrackerCheckImpl::resolveForum() and
+     * RuTrackerMetaFetch::registrationTime() -- and the two spellings had
+     * drifted. One of them omitted the trim(), so for a single stored
+     * value layer 3 resolved the forum, fetched the dump and found the topic
+     * while the other answered "no forum" and logged that the cache carried no
+     * reg_time: a false diagnosis of a cache that had the answer.
+     *
+     * Canonical or nothing. ctype_digit() plus a bare (int) would read "007"
+     * as forum 7 and "0" as forum 0, and layer 3 would then fetch a dump from
+     * a forum the stored value never named -- whose rows go on to decide
+     * whether the torrent is deleted. The trim() stays because transport
+     * whitespace is not the question; the spelling of the id is.
+     *
+     * PURE, and deliberately so: it takes the value, never the hash. The RPC
+     * read and the "was the field readable at all" answer belong to the
+     * callers, which need them to mean different things.
+     *
+     * NOT for the stored bytes themselves. RuTrackerForumIndex compares
+     * chk-forum as raw bytes under a lock (a compare-and-swap); canonicalising
+     * there would make " 22" compare equal to "22" and let the swap accept a
+     * store that moved under it.
+     */
+    static public function canonicalForumId($value)
+    {
+        if ($value === null) return null;
+        if (is_int($value)) return self::canonicalPositiveInt32($value);
+        if (!is_string($value)) return null;
+        return self::canonicalPositiveInt32(trim($value));
+    }
+
     /** Canonical int32 counter domain, 0..2147483647; else null. */
     static public function canonicalNonnegativeInt32($value)
     {

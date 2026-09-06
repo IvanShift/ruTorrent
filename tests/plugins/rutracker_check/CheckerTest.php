@@ -1147,6 +1147,41 @@ class CheckerTest
 		finally { strictRemoveTree($base); }
 	}
 
+	// A refused activation used to emit two lines for one status: "Skipped
+	// activation ... due to ownership or state change" and, immediately after
+	// it, "Could not confirm activation ...". That reads in the log as a
+	// contradiction while adding no fact -- SKIPPED is a guard that refused on
+	// purpose, UNCONFIRMED is an attempt whose result was not readable, and
+	// they are different things to go and look at.
+	public function testARefusedActivationIsReportedOnceAndSaysWhichOutcomeItWas()
+	{
+		foreach(array(
+			array('label' => 'skipped', 'sentinel' => RuTrackerAtomicOwnership::SENTINEL_SKIPPED,
+				'says' => 'was skipped', 'not' => 'could not be confirmed'),
+			array('label' => 'unconfirmed', 'sentinel' => RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED,
+				'says' => 'could not be confirmed', 'not' => 'was skipped'),
+		) as $case)
+		{
+			$this->resetFakes();
+			$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1);
+			$this->queueAtomic($case['sentinel']);
+			$this->withDebugLog(function() use ($case) {
+				strictAssertSame(null,
+					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+					$case['label'] . ': a refused activation is still a committed replacement');
+			});
+			$lines = array_values(array_filter(FileUtil::$log, function($line) {
+				return strpos($line, 'rutracker_check: activateReplacement: ') === 0;
+			}));
+			strictAssertSame(1, count($lines),
+				$case['label'] . ': one activation outcome is one line: ' . implode(' // ', $lines));
+			strictAssertTrue(strpos($lines[0], $case['says']) !== false,
+				$case['label'] . ': the line must say what happened: ' . $lines[0]);
+			strictAssertTrue(strpos($lines[0], $case['not']) === false,
+				$case['label'] . ': and must not also claim the other outcome: ' . $lines[0]);
+		}
+	}
+
 	public function testPublishedCleanupSurvivesActivationFailure()
 	{
 		$this->resetFakes();
@@ -1952,7 +1987,8 @@ class CheckerTest
 				// failure), and for a refusal to send at all. Sixteen lines of
 				// a live log said "curl-exit code=0 reason=curl" and diagnosed
 				// none of them. The line now states only what is certain and
-				// carries Snoopy's own sentence, which is what tells them apart.
+				// carries a classified token for Snoopy's own sentence, which
+				// is what tells them apart.
 				FileUtil::$log = array();
 				Snoopy::$nextStatus = 0;
 				Snoopy::$nextError = 'connection failed (0)';
@@ -1963,18 +1999,21 @@ class CheckerTest
 					'an absent status must not be reported as a curl exit code: ' . FileUtil::$log[0]
 				);
 				strictAssertTrue(
-					strpos(FileUtil::$log[0], 'error="connection failed (0)"') !== false,
-					'and must carry the one sentence that says which condition it was: ' . FileUtil::$log[0]
+					strpos(FileUtil::$log[0], ' error=connect-errno') !== false,
+					'and must carry the classified token for the condition it was: ' . FileUtil::$log[0]
 				);
 				strictAssertTrue(
 					strpos(FileUtil::$log[0], 'curl-exit') === false,
 					'the misleading curl wording is gone: ' . FileUtil::$log[0]
 				);
 
-				// A passkey can never ride out in the error text. No Snoopy
-				// string quotes the URL today; this holds the line for the one
-				// that does, because the probe URL spells the user's passkey
-				// and buildUrl() strips it for exactly this reason.
+				// A passkey can never ride out in the error text, because no
+				// remote text does: the field is one token from this plugin's
+				// own vocabulary. Snoopy is a vendored file, so the sentence a
+				// later merge teaches it to write cannot be known here --
+				// whatever it says, an unrecognised message classifies rather
+				// than prints. The probe URL spells the user's passkey, which
+				// is why buildUrl() strips it for the same reason.
 				FileUtil::$log = array();
 				Snoopy::$nextError = 'Error fetching http://bt.t-ru.org/ann?pk=deadbeefcafe: refused';
 				ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
@@ -1983,8 +2022,9 @@ class CheckerTest
 					'no passkey survives into the log: ' . FileUtil::$log[0]
 				);
 				strictAssertTrue(
-					strpos(FileUtil::$log[0], 'pk=<redacted>') !== false,
-					'and the redaction is visible rather than silent: ' . FileUtil::$log[0]
+					strpos(FileUtil::$log[0], ' error=unclassified') !== false,
+					'and an unrecognised message is reported as unclassified, not quoted: '
+						. FileUtil::$log[0]
 				);
 
 				// A transport that failed without a message logs the status
@@ -2002,6 +2042,108 @@ class CheckerTest
 				Snoopy::$nextStatus = 200;
 				ruTrackerChecker::makeClient('https://tracker.test/scrape');
 				strictAssertSame(0, count(FileUtil::$log), 'a successful fetch must not be logged as a failure');
+			}
+			finally
+			{
+				Snoopy::$nextStatus = 200;
+				Snoopy::$nextError = '';
+			}
+		});
+	}
+
+	// AGENTS.md's diagnostics rule: a routine plugin log carries a classified
+	// reason, never third-party text. Snoopy's message was quoted verbatim
+	// here, which cost two things at once. It was not greppable -- the same
+	// Snoopy field is rendered as `error=<token>` by the NNMClub guest path,
+	// so no single grep found every transport failure -- and quoting a
+	// vendored file's string put the burden on a redaction that has to be
+	// re-audited every time that file is merged.
+	//
+	// The rows are spelled out here rather than read out of
+	// fetchErrorParityCases() because of the third column: each carries a
+	// fragment of the remote message -- a scheme, a host, an IP, an errno, a
+	// word of a sentence Snoopy does not write today -- that must NOT appear
+	// in the line. That column is the only assertion in the suite for "no
+	// fragment of the remote message reaches the log", as distinct from "the
+	// error field holds the right token": strictAssertLogsClean(), the leak
+	// guard the parity test below uses, checks plain ASCII plus one fixed
+	// passkey literal and lets a leaked host or errno straight through.
+	//
+	// So the corpus rows with nothing to leak are not repeated here.
+	// testSharedSnoopyCorpusClassifiesTheSameWayThroughMakeClient() below
+	// drives the whole shared table through this same makeClient() -- the
+	// whitespace shapes included -- and pins each token with the same regex.
+	public function testSnoopyFetchErrorIsLoggedAsOneClassifiedToken()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			try
+			{
+				Snoopy::$nextStatus = 0;
+				foreach(array(
+					array('Invalid protocol "gopher"\n', 'invalid-protocol', 'gopher'),
+					array('Refusing to fetch: cannot resolve host "nx.invalid".',
+						'refused-unresolvable-host', 'nx.invalid'),
+					array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
+						'refused-non-public-address', '127.0.0.1'),
+					array('connection failed (111)', 'connect-errno', '111'),
+					array('something php/Snoopy.class.inc does not say today', 'unclassified', 'something'),
+				) as $case)
+				{
+					list($raw, $token, $absent) = $case;
+					FileUtil::$log = array();
+					Snoopy::$nextError = $raw;
+					ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
+					strictAssertSame(1, count(FileUtil::$log), $token . ': the failed fetch is logged');
+					$line = FileUtil::$log[0];
+					$field = array();
+					strictAssertSame(1, preg_match('/ error=([^\s]*)$/', $line, $field),
+						$token . ': the field is one unquoted value at the end of one record: ' . $line);
+					strictAssertSame($token, $field[1],
+						$token . ': the message is classified, not echoed: ' . $line);
+					strictAssertTrue(strpos($line, $absent) === false,
+						$token . ': no fragment of the remote message reaches the log: ' . $line);
+				}
+			}
+			finally
+			{
+				Snoopy::$nextStatus = 200;
+				Snoopy::$nextError = '';
+			}
+		});
+	}
+
+	// S1. The other half of the parity gate. The same corpus of Snoopy
+	// sentences is driven through NNMClubCheckImpl::guestFetch() by
+	// NNMClubHandlerTest; here it goes through makeClient(). The two callers
+	// each used to normalise the message themselves, and differently, so a
+	// re-spaced or wrapped sentence meant two different tokens depending on
+	// which path happened to log it. One table asserted from both sides is
+	// what makes that a test rather than a convention.
+	public function testSharedSnoopyCorpusClassifiesTheSameWayThroughMakeClient()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			try
+			{
+				Snoopy::$nextStatus = 0;
+				foreach(fetchErrorParityCases() as $case)
+				{
+					list($message, $expected) = $case;
+					FileUtil::$log = array();
+					Snoopy::$nextError = $message;
+					ruTrackerChecker::makeClient('http://bt4.t-ru.org/ann');
+					strictAssertSame(1, count(FileUtil::$log),
+						'the failed fetch is logged once for ' . var_export($message, true));
+					$line = FileUtil::$log[0];
+					$field = array();
+					strictAssertSame(1, preg_match('/ error=([^\s]*)$/', $line, $field),
+						'the field is one unquoted value at the end of one record: ' . $line);
+					strictAssertSame($expected, $field[1],
+						'shared corpus token for ' . var_export($message, true) . ': ' . $line);
+					strictAssertLogsClean(FileUtil::$log, 'AbCdEf0123456789AbCdEf0123456789',
+						'makeClient');
+				}
 			}
 			finally
 			{
@@ -3395,6 +3537,51 @@ class CheckerTest
 		strictAssertTrue(strpos($addition, 'chk-topic') === false,
 			'nothing is invented for a predecessor that had no topic recorded');
 		strictAssertTrue(strpos($addition, 'chk-forum') === false, 'nor a forum');
+	}
+
+	// Those two customs are the only values in the load command list whose
+	// bytes come from a field a third party writes freely: the marker is hex
+	// from random_bytes, the inheritance record is documented comma-free, the
+	// rest are ints or enums, and the label is rawurlencode'd. d.custom.set
+	// splits its own arguments on commas, so a comma in either makes it a
+	// three-argument call -- torrent::input_error -- which by the semantics
+	// documented at buildReplacementAddition() aborts the tail of the list.
+	// "007" needs no comma to be wrong: no reader accepts that spelling.
+	public function testAnUncanonicalTopicOrForumIsNotCopiedIntoTheLoadCommandList()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1, array(), array(), '123,456', '007');
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			'the replacement commits');
+		$addition = rTorrent::$lastSend['addition'];
+		$joined = implode("\n", $addition);
+		strictAssertTrue(strpos($joined, 'chk-topic') === false,
+			'a comma-carrying topic never reaches the load command list: ' . $joined);
+		strictAssertTrue(strpos($joined, 'chk-forum') === false,
+			'nor a forum id in a spelling no reader accepts: ' . $joined);
+		foreach($addition as $command)
+			strictAssertTrue(substr_count($command, ',') <= 1,
+				'no load command may carry a third comma-separated argument: ' . $command);
+	}
+
+	// Canonicalising the copy is not the same as rejecting it: transport
+	// whitespace is not the question, the spelling of the id is, which is how
+	// resolveForum() already reads chk-forum back.
+	public function testAWhitespacePaddedTopicAndForumAreForwardedInTheirCanonicalSpelling()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir(), 1, 1, array(), array(), " 6879823\n", ' 1106 ');
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			'the replacement commits');
+		$addition = rTorrent::$lastSend['addition'];
+		strictAssertTrue(in_array('d.set_custom=chk-topic,6879823', $addition, true),
+			'the successor is told its topic in the one spelling that names it: ' . implode("\n", $addition));
+		strictAssertTrue(in_array('d.set_custom=chk-forum,1106', $addition, true),
+			'and its forum likewise: ' . implode("\n", $addition));
 	}
 
 	public function testTheReplacementIsLoadedCarryingItsOwnVerdictAndTimestamps()

@@ -1,6 +1,7 @@
 <?php
 
 require_once( __DIR__ . '/../bencode.php' );
+require_once( __DIR__ . '/../fetcherror.php' );
 
 /**
  * NNMClub handler, resilient to the Cloudflare Turnstile that now blocks
@@ -170,8 +171,22 @@ class NNMClubCheckImpl
         // which is below any real HTTP status.
         if ($client->status < 100) {
             $host = @parse_url($url, PHP_URL_HOST);
+            // Snoopy's own sentence, classified rather than echoed: the transport
+            // detail alone cannot separate the several conditions that all arrive
+            // as status 0 (see ruTrackerChecker::transportFailureDetail()), and a
+            // token cannot carry a passkey whatever a later merge teaches the
+            // vendored Snoopy to write. The rule is shared with
+            // ruTrackerChecker::makeClient() through fetcherror.php, so one grep
+            // for `error=` reads the field wherever this plugin writes it and the
+            // same message cannot mean two tokens. An absent field means Snoopy
+            // wrote no message, which is evidence in its own right: the header
+            // loops set $status without writing one. The early URI bail is not
+            // such a case -- it writes 'Invalid protocol' (php/Snoopy.class.inc)
+            // and so arrives here classified.
+            $reason = RuTrackerFetchError::classify(isset($client->error) ? $client->error : null);
             self::log('Guest fetch failed: host=' . (is_string($host) ? $host : 'unknown')
-                . ' ' . ruTrackerChecker::transportFailureDetail($client->status));
+                . ' ' . ruTrackerChecker::transportFailureDetail($client->status)
+                . ($reason === '' ? '' : ' error=' . $reason));
         }
     }
 
@@ -347,6 +362,27 @@ class NNMClubCheckImpl
         $token = (string) $auth['token'];
         $found = false;
 
+        // Read BEFORE the setters below; put back after them. This is a real
+        // .torrent NNMClub served, so 'created by' and 'creation date' belong
+        // to whoever made the release: writing the account passkey into an
+        // announce URL is not an act of authorship, and a rewritten date
+        // travels out to the "Created On" column and to the history plugin as
+        // fact.
+        //
+        // On this fork the restore is a no-op today: Torrent::touch() returns
+        // without writing anything unless the class built the torrent itself,
+        // and this one was decoded from the bytes NNMClub served. It is kept
+        // because plugins/rutracker_check is proposed to upstream
+        // Novik/ruTorrent separately from php/Torrent.php (AGENTS.md,
+        // "Upstream PR Handoff"), and upstream's touch() still stamps both
+        // keys from every setter. Without the snapshot this handler would
+        // reinstate the data loss on any install carrying the plugin without
+        // the class fix. Same reason metafetch.php keeps its own.
+        $authored = array(
+            'created by' => $torrent->meta('created by'),
+            'creation date' => $torrent->meta('creation date'),
+        );
+
         $announce = $torrent->announce();
         if (is_string($announce) && $announce !== '') {
             $patched = self::injectAuthIntoUrl($announce, $token);
@@ -383,6 +419,15 @@ class NNMClubCheckImpl
             if ($listChanged) {
                 $torrent->announce_list($newList);
             }
+        }
+
+        // Restore what the served bytes said, where absent is also a value.
+        // Clearing unconditionally would be the mirror image of the bug: a
+        // caller destroying a real author's field because it assumed one could
+        // not be there.
+        foreach ($authored as $key => $value) {
+            if ($value === null) $torrent->clearMeta($key);
+            else $torrent->setMeta($key, $value);
         }
 
         return $found;
@@ -506,7 +551,7 @@ class NNMClubCheckImpl
      * demanding all three was not.
      *
      * This is the same shape the announce layer has always had:
-     * RuTrackerAnnounceProbe::hasValidSuccessSchema() in announce.php requires
+     * RuTrackerAnnounce::hasValidSuccessSchema() in announce.php requires
      * only what the protocol guarantees and validates each optional counter
      * that IS present. Keep the two in step.
      *
@@ -532,6 +577,21 @@ class NNMClubCheckImpl
             $seen++;
         }
         return $seen > 0;
+    }
+
+    /**
+     * The scheme the credential's own announce URL uses, lowercased.
+     *
+     * Only https is ever carried across; anything else -- including an
+     * announceUrl that cannot be parsed -- answers http. parseAuthUrl() has
+     * already limited the scheme to http or https, so this is a downgrade
+     * guard and not a parser.
+     */
+    private static function credentialScheme($auth)
+    {
+        $parts = isset($auth['announceUrl']) ? @parse_url((string) $auth['announceUrl']) : null;
+        $scheme = is_array($parts) && isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
+        return $scheme === 'https' ? 'https' : 'http';
     }
 
     /** Derive a scrape URL without changing the credential's meaning or case. */
@@ -584,12 +644,27 @@ class NNMClubCheckImpl
         if ($primary !== null) $urls[] = $primary;
         $mode = isset($auth['mode']) ? $auth['mode'] : null;
         if (isset($auth['token']) && ($mode === 'query' || $mode === 'path')) {
+            // The fallback is a DIFFERENT host carrying the SAME account
+            // passkey, so it inherits the credential URL's own scheme rather
+            // than a hard-coded one. Hard-coding http:// downgraded an https
+            // credential to cleartext on every check whose primary host did
+            // not answer up to date -- exactly the cycles when something is
+            // already wrong. Whether bt.searchtor.to serves https has NOT been
+            // verified: if it does not, an https credential has no working
+            // fallback left, and when its own host is silent too this whole
+            // scrape ends as SCRAPE_RESULT_FAILED. download_torrent() answers
+            // that by going on to the ordinary guest download, which carries
+            // no credential at all -- see the SCRAPE_RESULT_FAILED branch
+            // there for what that does and does not still guarantee. The
+            // deliberate trade: a lost fast path costs forum requests, a
+            // leaked passkey is not recoverable.
+            $scheme = self::credentialScheme($auth);
             $fallback = self::buildScrapeUrl(array(
                 'mode' => $mode,
                 'token' => $auth['token'],
                 'announceUrl' => $mode === 'query'
-                    ? 'http://bt.searchtor.to/announce?uk=' . rawurlencode($auth['token'])
-                    : 'http://bt.searchtor.to/' . rawurlencode($auth['token']) . '/announce',
+                    ? $scheme . '://bt.searchtor.to/announce?uk=' . rawurlencode($auth['token'])
+                    : $scheme . '://bt.searchtor.to/' . rawurlencode($auth['token']) . '/announce',
             ), $binary);
             if ($fallback !== null && !in_array($fallback, $urls, true)) $urls[] = $fallback;
         }
@@ -683,10 +758,26 @@ class NNMClubCheckImpl
             }
             if ($scrapeResult === self::SCRAPE_RESULT_FAILED) {
                 // Nothing answered at all -- DNS, connect, timeout, a 5xx.
-                // The tracker really is out of reach, so conclude nothing and
-                // come back next cycle rather than asking the forum instead.
-                self::log("All scrape hosts failed for {$hash}");
-                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+                // This used to end the check as STE_CANT_REACH_TRACKER, on the
+                // reasoning that the tracker is out of reach. But the hosts
+                // that went silent are announce hosts; the topic page below is
+                // fetched from the forum host in $topicRef, which is the
+                // authority this handler already falls back on for a scrape
+                // that is unreadable or does not know the hash, and which is
+                // reachable or not on its own. Ending here cost the check
+                // entirely whenever the credential's own announce host was the
+                // dead one -- a retired endpoint, which is the case the
+                // searchtor fallback exists for -- and an https credential
+                // whose fallback cannot be reached over https has no other way
+                // back at all.
+                //
+                // What this does NOT promise: a torrent whose topic cannot be
+                // identified still leaves as STE_CANT_REACH_TRACKER just below
+                // this, because there is nothing left to ask. And when the
+                // forum cannot be reached either, the guest fetch answers with
+                // that same STE_CANT_REACH_TRACKER, so a real outage ends
+                // where it always did, one topic request later.
+                self::log("All scrape hosts failed for {$hash}, falling back to guest download");
             }
             if ($scrapeResult === self::SCRAPE_RESULT_UNREADABLE) {
                 // A host is up and we cannot read what it said. Waiting will
