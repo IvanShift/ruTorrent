@@ -1141,12 +1141,9 @@ final class ErasedataCollector
 		// which is also what this plugin did before the sink existed: there was
 		// no payload retention line at all on the ordinary path.
 		//
-		// 'publish-refused' used to be excluded here, because publishStaging()
-		// wrote its own unclassified line for the same failure and silencing the
-		// classified half alone would have left the operator with the worse of
-		// the two. That is no longer true: the call below asks the codec to stay
-		// quiet, so this one classified note is the whole report and belongs in
-		// the memory with the rest.
+		// Publication failures retain the codec's direct report on the ordinary
+		// path: legacy staging may have no drain to report for it. With a sink,
+		// the codec stays quiet and this classified note goes through its memory.
 		if($this->retentionSink !== null)
 		{
 			// The per-run key above still runs, so one tick offers one note per
@@ -1680,7 +1677,7 @@ final class ErasedataCollector
 							&& erasedataSameStatIdentity($item['stat'], $current))
 							continue;
 						if(!ErasedataManifestCodec::publishStaging(
-							$path, $hash, $this->filesystem, false))
+							$path, $hash, $this->filesystem, $this->retentionSink === null))
 						{
 							$this->manifestLog($hash, $path, 'publish-refused');
 							continue;

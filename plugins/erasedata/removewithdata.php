@@ -4967,10 +4967,8 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			// alone, because a cleanup job's name carries no generation to
 			// distinguish two of them by.
 			//
-			// The memory is capped, and these two keys sort after every numeric
-			// generation key, so under a queue deep enough to fill the cap they
-			// are the first evicted -- the dedup is best-effort there, and the
-			// worst case is the behaviour this code had before.
+			// The memory covers the pending/journal union, and serialization keeps
+			// named groups before generation keys if truncation is ever needed.
 			$retainNotes = array('manifest' => array(), 'cleanup' => array());
 			$collector->reportRetentionsTo(
 				function($kind, $hash, $generation, $reason) use (&$retainNotes) {

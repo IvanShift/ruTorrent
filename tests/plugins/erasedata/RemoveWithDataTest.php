@@ -9186,6 +9186,23 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_array($after) && isset($after['journal'][$generation]['phase'])
 			&& $after['journal'][$generation]['phase'] !== 'completed',
 			'a premature completion is never written while a bound staging survives');
+		$refusals = array_filter(FileUtil::$log, function($line) use ($second) {
+			return(strpos($line, 'erasedata: publish-refused ') === 0
+				&& strpos($line, $second) !== false);
+		});
+		$this->assertEquals(1, count($refusals),
+			'the generation pass reports the first publication refusal');
+		for($tick = 2; $tick <= 4; $tick++)
+		{
+			FileUtil::$log = array();
+			$result = erasedataDrainWorkerRun($this->dependencies());
+			$this->assertTrue($result['admitted'] && !$result['retired'],
+				'the bound staging remains retryable on tick '.$tick);
+			$this->assertEquals(array(), FileUtil::$log,
+				'the generation pass does not repeat an unchanged publication refusal');
+			$this->assertEquals($before, file_get_contents($paths[$second]),
+				'repeated publication refusals preserve the bound staging bytes');
+		}
 	}
 
 	// "Publish only a staging file whose exact recorded identity still matches",
@@ -9596,6 +9613,128 @@ class RemoveWithDataTest extends TestCase
 			$keptNames[substr($line, 0, strpos($line, ' '))] = true;
 		$this->assertTrue(isset($keptNames['tick']) && isset($keptNames['retire']),
 			'and the named groups are what it keeps, not what it drops');
+	}
+
+	// Keep named-runner arguments out of the scheduled collector CLI boundary.
+	private function runOrdinaryCollector()
+	{
+		global $argv;
+		$saved = $argv;
+		$argv = array('update.php', 'rutorrent');
+		try
+		{
+			erasedataCollectorMain(new ErasedataFilesystemOps());
+		}
+		finally
+		{
+			$argv = $saved;
+		}
+	}
+
+	public function testOrdinaryCollectorReportsLegacyPublicationFailureWithoutDrain()
+	{
+		foreach(array('occupied-final', 'readonly-queue') as $obstacle)
+		{
+			$this->reset();
+			if($obstacle === 'readonly-queue' && testSkipUnlessPermissionsBite(
+				'ordinary collector reports a publication refused by queue permissions'))
+				continue;
+			$hash = $this->hash('B');
+			$queue = $this->queuePath();
+			$payload = $this->dir.'/legacy-payload.bin';
+			file_put_contents($payload, 'retained legacy payload');
+			$bytes = ErasedataManifestCodec::encode($hash,
+				array('base' => $payload, 'multi' => false, 'files' => array($payload)), 1);
+			$staged = erasedataWriteStagedManifest($queue, $hash, $bytes);
+			$this->assertTrue(is_array($staged), 'the legacy producer staging really exists');
+			if(!is_array($staged))
+				return;
+			$final = substr($staged['path'], 0, -4).'.list';
+			if($obstacle === 'occupied-final')
+				mkdir($final);
+			else
+			{
+				// Existing lock files remain openable when directory writes fail.
+				file_put_contents($queue.'/scheduler.lock', '');
+				file_put_contents($queue.'/'.$hash.'.lock', '');
+				chmod($queue, 0500);
+			}
+			try
+			{
+				$this->probe(true, true, array(), 'Could not find info-hash.', -501);
+				for($tick = 1; $tick <= 3; $tick++)
+				{
+					FileUtil::$log = array();
+					$this->runOrdinaryCollector();
+					$this->assertEquals(1, count(FileUtil::$log),
+						$obstacle.': the ordinary collector reports its refusal on tick '.$tick);
+					$this->assertTrue(count(FileUtil::$log) === 1
+						&& strpos(FileUtil::$log[0], 'failed to publish manifest for '.$hash) !== false,
+						'the report identifies the failed publication and its hash');
+					$this->assertEquals($bytes, file_get_contents($staged['path']),
+						'the refused publication retains the exact staging bytes');
+					$this->assertEquals('retained legacy payload', file_get_contents($payload),
+						'the refusal leaves the payload untouched');
+				}
+				$this->assertTrue(!file_exists($queue.'/.drain-state'),
+					'no drain exists to report this ordinary collector refusal');
+			}
+			finally
+			{
+				if($obstacle === 'readonly-queue')
+					chmod($queue, 0700);
+				else
+					rmdir($final);
+			}
+			FileUtil::$log = array();
+			$this->runOrdinaryCollector();
+			$this->assertTrue(!file_exists($staged['path']) && !file_exists($final)
+				&& !file_exists($payload), 'a later ordinary tick finishes after the obstacle is removed');
+			$this->assertEquals(array(), FileUtil::$log, 'successful recovery emits no stale refusal');
+		}
+	}
+
+	public function testDrainCollectorDeduplicatesLegacyPublicationFailure()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$queue = $this->queuePath();
+		$payload = $this->dir.'/drain-legacy-payload.bin';
+		file_put_contents($payload, 'retained legacy payload');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => false, 'files' => array($payload)), 1);
+		$staged = erasedataWriteStagedManifest($queue, $hash, $bytes);
+		$this->assertTrue(is_array($staged), 'the collector receives real legacy staging');
+		if(!is_array($staged))
+			return;
+		$final = substr($staged['path'], 0, -4).'.list';
+		mkdir($final);
+		// An already armed drain also walks legacy staging through its collector.
+		$this->armQueue($queue, '0000000000000001', array());
+		$this->probe(true, true, array(), 'Could not find info-hash.', -501);
+		for($tick = 1; $tick <= 3; $tick++)
+		{
+			FileUtil::$log = array();
+			$result = erasedataDrainWorkerRun($this->dependencies());
+			$this->assertTrue($result['admitted'] && !$result['retired'],
+				'the actual drain runs its collector and retains the blocked job');
+			$refusals = array();
+			foreach(FileUtil::$log as $line)
+			{
+				$this->assertTrue(strpos($line, 'failed to publish manifest for') === false,
+					'the codec does not bypass the drain diagnostic memory');
+				if(strpos($line, 'publish-refused') !== false && strpos($line, $hash) !== false)
+					$refusals[] = $line;
+			}
+			$this->assertEquals($tick === 1 ? 1 : 0, count($refusals),
+				'the drain classifies the collector publication refusal only on its first tick');
+			if($tick > 1)
+				$this->assertEquals(array(), FileUtil::$log, 'an unchanged drain tick is quiet');
+			$this->assertEquals($bytes, file_get_contents($staged['path']),
+				'the drain retains the exact staging bytes');
+			$this->assertEquals('retained legacy payload', file_get_contents($payload),
+				'the drain retains the payload while publication is refused');
+		}
 	}
 
 	/**
@@ -11582,6 +11721,30 @@ class RemoveWithDataTest extends TestCase
 			$label.': and left no fixture process holding the transport');
 	}
 
+	private function assertAggregateScheduleState($mirror, $retired)
+	{
+		$state = $this->mirrorState($mirror);
+		$this->assertEquals($retired ? 'disarmed' : 'armed',
+			is_array($state) && isset($state['phase']) ? $state['phase'] : null,
+			$retired ? 'aggregate recovery durably disarms the drained queue'
+				: 'the crashed aggregate keeps its drain armed while obligations remain');
+		$this->assertEquals('0000000000000001',
+			is_array($state) && isset($state['generation']) ? $state['generation'] : null,
+			'recovery preserves the exact generation admitted by this batch');
+		$removedKeys = array();
+		foreach($mirror->scheduleLog() as $record)
+			if($record['family'] === 'schedule_remove')
+				$removedKeys[] = $record['key'];
+		$this->assertEquals($retired ? array('erasedata-drainrutorrent') : array(),
+			$removedKeys, $retired
+				? 'the recovery child removes exactly its own drain schedule once'
+				: 'no schedule removal is sent before aggregate obligations are discharged');
+		if($retired)
+			$this->assertEquals(array(),
+				is_array($state) && isset($state['journal']) ? $state['journal'] : null,
+				'no aggregate journal record survives retirement');
+	}
+
 	public function testProducerDeathAfterFirstAggregateEraseKeepsEveryObligation()
 	{
 		$this->reset();
@@ -11718,8 +11881,10 @@ class RemoveWithDataTest extends TestCase
 					.$hash.', so every obligation survives it');
 		// Recovery: the real guarded worker, restarted exactly as the scheduler
 		// starts it.
+		$this->assertAggregateScheduleState($mirror, false);
 		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
 		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		$this->assertAggregateScheduleState($mirror, true);
 		foreach($hashes as $hash)
 			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'deleted',
 				'base' => 'deleted', 'marker' => 'discharged', 'manifest' => 'none',
@@ -11856,8 +12021,10 @@ class RemoveWithDataTest extends TestCase
 		$daemon = $this->startAggregateDaemon($mirror, 'daemon-death-restart');
 		$this->assertEquals(array($hashes[0]), $mirror->daemonExecutedErases(),
 			'the restarted daemon kept exactly the one erase it had executed');
+		$this->assertAggregateScheduleState($mirror, false);
 		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
 		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		$this->assertAggregateScheduleState($mirror, true);
 		foreach($hashes as $hash)
 			$this->assertEquals(array('daemon' => 'absent', 'payload' => 'deleted',
 				'base' => 'deleted', 'marker' => 'discharged', 'manifest' => 'none',
@@ -11941,8 +12108,10 @@ class RemoveWithDataTest extends TestCase
 			'hashes' => $table,
 		)), 'the daemon is reconfigured with no barrier for the recovery phase');
 		$daemon = $this->startAggregateDaemon($mirror, 'second-erase-restart');
+		$this->assertAggregateScheduleState($mirror, false);
 		$recovery = ErasedataTestProcess::start($mirror->drainCommand('drain'));
 		$this->runChildren(array('recovery' => $recovery), 40, $invariant);
+		$this->assertAggregateScheduleState($mirror, true);
 		$this->assertEquals($hashes, $mirror->daemonExecutedErases(),
 			'the recovery erased exactly the one member that was still there,'
 				.' and neither of the two that had already gone');
@@ -11989,9 +12158,11 @@ class RemoveWithDataTest extends TestCase
 			.'$pInfo = array("perms" => 0);'."\n"
 			.'$jResult = "";'."\n"
 			.'require('.var_export($mirror->pluginDir.'/init.php', true).");\n");
+		// After volatile schedule loss, startup must rearm before a scheduler
+		// can start its worker. A concurrent worker could drain the queue first,
+		// correctly leaving startup with nothing to rearm.
 		$children = array(
 			'startup' => ErasedataTestProcess::start($mirror->php($startup)),
-			'worker' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
 		);
 		$this->runChildren($children, 30, $invariant);
 		$drain = array();
@@ -12010,6 +12181,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(array('erasedata-drainrutorrent'),
 			array_values(array_unique($drain)),
 			'and re-arms the exact per-user drain key after the restart');
+		$worker = ErasedataTestProcess::start($mirror->drainCommand('drain'));
+		$this->runChildren(array('worker' => $worker), 30, $invariant);
 		$after = $this->mirrorState($mirror);
 		$this->assertTrue(is_array($after) && isset($after['generation'])
 			&& isset($before['generation'])
