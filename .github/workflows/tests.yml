@@ -19,6 +19,8 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
+          # Keep timing gates independent of runner-installed coverage drivers.
+          coverage: none
           extensions: posix, dom, xml, mbstring, iconv, json, curl
       - name: PHP test suite
         id: php_tests
