@@ -659,8 +659,8 @@ fiStateTest($suite, 'sweep queue and cooldown', function () {
 //
 // $rutrackerSweepCooldown used to reach max(0, (int) $configured), and after
 // that cast '' , false and 'abc' were indistinguishable from a deliberate 0 --
-// which is this plugin's most aggressive setting, not its safest. The raw
-// value is now judged by the shared canonical parser first.
+// formerly a zero-length window. The raw value is judged by the shared
+// canonical parser first, then accepted values below an hour are clamped.
 //
 // The warning flag and the setting are both process-global, so every case owns
 // and restores both: a leak would decide the next case's result rather than
@@ -722,16 +722,16 @@ fiStateTest($suite, 'invalid sweep cooldown uses the shipped default', function 
     }
 });
 
-// The accepted domain, value for value. A deliberate 0 and a small valid 24
-// are both kept: neither is a typo this function is entitled to correct.
-fiStateTest($suite, 'a valid sweep cooldown keeps its exact value and warns about nothing', function () {
+// Accepted raw values below an hour are safe but use the minimum effective
+// interval, while valid values at or above the floor keep their exact value.
+fiStateTest($suite, 'valid sweep cooldowns use the one-hour floor without a warning', function () {
     foreach (array(
-        'a canonical zero' => array(0, 0),
-        'a canonical zero written as a string' => array('0', 0),
-        'one second' => array(1, 1),
-        'one second as a string' => array('1', 1),
-        'a small valid value' => array(24, 24),
-        'a small valid value as a string' => array('24', 24),
+        'a canonical zero' => array(0, 3600),
+        'a canonical zero written as a string' => array('0', 3600),
+        'one second' => array(1, 3600),
+        'one second as a string' => array('1', 3600),
+        'a small valid value' => array(24, 3600),
+        'a small valid value as a string' => array('24', 3600),
         'an hour' => array(3600, 3600),
         'an hour as a string' => array('3600', 3600),
         'the shipped default' => array(86400, 86400),
@@ -742,7 +742,7 @@ fiStateTest($suite, 'a valid sweep cooldown keeps its exact value and warns abou
         'that same integer as a string' => array((string) PHP_INT_MAX, PHP_INT_MAX),
     ) as $label => $case) {
         $run = fiSweepCooldownRun($case[0]);
-        strictAssertSame($case[1], $run['value'], $label . ': the configured value stands as written');
+        strictAssertSame($case[1], $run['value'], $label . ': the effective value follows the configured floor');
         strictAssertSame('', $run['log'], $label . ': a valid setting warns about nothing');
     }
 });
@@ -807,7 +807,7 @@ fiStateTest($suite, 'the sweep-cooldown warning is written once per process, and
             // The FLAG is what is remembered, never the value: a setting
             // repaired inside the same process must take effect at once.
             $GLOBALS['rutrackerSweepCooldown'] = 24;
-            strictAssertSame(24, strictInvoke('RuTrackerForumIndex', 'sweepCooldown'),
+            strictAssertSame(3600, strictInvoke('RuTrackerForumIndex', 'sweepCooldown'),
                 'a repaired setting is read fresh, not served from a cache');
         });
     });
@@ -831,12 +831,12 @@ fiStateTest($suite, 'sweep claims follow the validated cooldown at its boundary'
 
     strictAssertSame(array(true, false, true), $case(null, 86400, false),
         'the shipped default: claimed, refused at exactly 86400 s, free at 86401 s');
-    strictAssertSame(array(true, false, true), $case(0, 0),
-        'a deliberate 0: a second claim in the same second is still refused, the next second is free');
-    strictAssertSame(array(true, false, true), $case('0', 0),
-        'and its canonical string spelling means the same thing');
-    strictAssertSame(array(true, false, true), $case(24, 24),
-        'a small valid 24 stays 24 seconds -- it is not raised to an hour');
+    strictAssertSame(array(true, false, true), $case(0, 3600),
+        'zero still holds the one-hour floor');
+    strictAssertSame(array(true, false, true), $case('0', 3600),
+        'the canonical string zero has the same floor');
+    strictAssertSame(array(true, false, true), $case(24, 3600),
+        '24 seconds cannot grant a second crawl inside an hour');
     strictAssertSame(array(true, false, true), $case('abc', 86400),
         'and an unreadable setting behaves exactly like the shipped default');
 
@@ -850,6 +850,28 @@ fiStateTest($suite, 'sweep claims follow the validated cooldown at its boundary'
     });
     strictAssertSame(false, $future,
         'a stamp in the future grants nothing through a negative cooldown');
+});
+
+fiStateTest($suite, 'zero and 24 cannot admit a second crawl inside one hour', function () {
+    foreach (array(0, 24) as $configured) {
+        fiWithSweepCooldown($configured, function () use ($configured) {
+            strictWithStateDir('chk-forumindex-floor', function () use ($configured) {
+                $first = 1000000;
+                strictAssertSame(true, RuTrackerForumIndex::markSweep($first),
+                    $configured . ': first crawl claims the window');
+                foreach (array(24, 3599, 3600) as $offset) {
+                    strictAssertSame(false, RuTrackerForumIndex::sweepAllowed($first + $offset),
+                        $configured . ': launcher refuses a second crawl inside the floor');
+                    strictAssertSame(false, RuTrackerForumIndex::markSweep($first + $offset),
+                        $configured . ': detached crawler cannot claim the same window');
+                }
+                strictAssertSame(true, RuTrackerForumIndex::sweepAllowed($first + 3601),
+                    $configured . ': a new crawl is allowed after the floor');
+                strictAssertSame(true, RuTrackerForumIndex::markSweep($first + 3601),
+                    $configured . ': the next window can be recorded');
+            });
+        });
+    }
 });
 
 // The other consumer of the same number. missWindow() multiplies it, so an
@@ -866,8 +888,8 @@ fiStateTest($suite, 'the shared miss window follows the same validated cooldown'
     strictAssertSame(86400, $window(null, $first, false), 'the default: one cooldown after a first miss');
     strictAssertSame(86400 * 4, $window(null, $third, false), 'and four after a third');
     strictAssertSame(86400, $window('abc', $first), 'an invalid setting behaves as the default here too');
-    strictAssertSame(0, $window(0, $first), 'a deliberate 0 keeps its old meaning: no suppression at all');
-    strictAssertSame(24, $window(24, $first), 'and a small valid value is used as written');
+    strictAssertSame(3600, $window(0, $first), 'zero uses the same floor for missed topics');
+    strictAssertSame(3600, $window(24, $first), '24 seconds cannot bypass the miss floor');
 });
 
 // Suppression seen from the outside, through the queue it actually gates.
@@ -879,15 +901,12 @@ fiStateTest($suite, 'an invalid sweep cooldown suppresses a missed topic exactly
         strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
             'a fresh miss is suppressed for the default window, not let straight through');
 
-        // The discriminating probe. A same-second miss is suppressed under a
-        // zero window too, and an 86401 s one is released under both, so
-        // neither of those can tell an invalid value from a deliberate 0.
-        // Only the gap between them can: at 100 s a zero window would have
-        // released this topic, and the shipped default holds it.
-        RuTrackerForumIndex::markMiss(333, $now - 100);
+        // At 4000 seconds the one-hour floor has expired, but the invalid
+        // setting's shipped one-day default still suppresses this topic.
+        RuTrackerForumIndex::markMiss(333, $now - 4000);
         RuTrackerForumIndex::queueTopic(333);
         strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
-            'a miss 100 s old is still suppressed, which a zero window would not do');
+            'the invalid setting retains the one-day default, beyond the floor');
 
         RuTrackerForumIndex::markMiss(222, $now - 86401);
         RuTrackerForumIndex::queueTopic(222);
@@ -896,36 +915,26 @@ fiStateTest($suite, 'an invalid sweep cooldown suppresses a missed topic exactly
     });
 });
 
-// A zero window is not "no record": missSuppresses() asks
-// "$now - $missedAt <= $window", so a miss recorded in the SAME second still
-// suppresses, exactly as a second markSweep() in the same second is still
-// refused. One second later nothing is suppressed at all. That is the
-// semantics an explicit 0 has always had, and validating the raw value leaves
-// it untouched.
-fiStateTest($suite, 'a deliberate zero sweep cooldown suppresses only within the same second', function () {
+// A valid zero is clamped for both crawl claims and miss suppression. A
+// same-second miss still suppresses, and a one-second-old miss now does too.
+fiStateTest($suite, 'zero cooldown keeps missed topics suppressed for the one-hour floor', function () {
     fiWithSweepCooldown(0, function () {
         $now = time();
         RuTrackerForumIndex::markMiss(111, $now);
         RuTrackerForumIndex::queueTopic(111);
         strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
-            'a miss stamped this very second is still inside a zero-length window');
+            'a fresh miss remains suppressed');
 
-        // One second of distance is all a zero cooldown asks for -- where the
-        // shipped default would suppress this for a day.
         RuTrackerForumIndex::markMiss(222, $now - 1);
         RuTrackerForumIndex::queueTopic(222);
-        strictAssertSame(array(222), RuTrackerForumIndex::takeQueuePeek(),
-            'an explicit 0 keeps the semantics it always had: nothing is suppressed past that second');
-    });
+        strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+            'a one-second-old miss cannot trigger another crawl');
 
-    // The control that gives the line above its meaning: the same one-second
-    // gap under the shipped default is suppressed.
-    fiWithSweepCooldown(null, function () {
-        RuTrackerForumIndex::markMiss(333, time() - 1);
+        RuTrackerForumIndex::markMiss(333, $now - 3601);
         RuTrackerForumIndex::queueTopic(333);
-        strictAssertSame(array(222), RuTrackerForumIndex::takeQueuePeek(),
-            'under the default the same one-second-old miss is still suppressed');
-    }, false);
+        strictAssertSame(array(333), RuTrackerForumIndex::takeQueuePeek(),
+            'the clamped window still expires after one hour');
+    });
 });
 
 $suite->test('sweep visits forums until all wanted topics resolve', function () {
@@ -3671,6 +3680,21 @@ fiStateTest($suite, 'a crawl window that could not be recorded is not reported a
 
     strictAssertSame('wanted 1, the crawl window could not be recorded', $line,
         'the two causes of a refused claim are told apart in the line an operator reads');
+});
+
+fiStateTest($suite, 'markSweep refuses an ENOTDIR state store without claiming the window', function ($tmp) {
+    $blocked = $tmp . '/not-a-directory';
+    file_put_contents($blocked, 'x');
+    strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/store');
+    try {
+        $refusal = null;
+        strictAssertSame(false, RuTrackerForumIndex::markSweep(1000000, $refusal),
+            'an unwritable claim cannot authorize a full crawl');
+        strictAssertSame('unwritten', $refusal,
+            'the failure is storage, not a competing crawl');
+    } finally {
+        strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+    }
 });
 
 // The other half of the same distinction, and the one the first version of it

@@ -33,11 +33,10 @@ $rutrackerAnnounceCap	??= 10;	// 0-40 probe announces per persisted window per a
 // ruTorrent's application log ("config: invalid rutrackerSweepCooldown").
 // Noncanonical spellings that used to be coerced (notably '' and other text,
 // which reached (int) as 0) therefore change meaning: they now get the
-// default rather than "no cooldown at all".
+// one-day default rather than the old zero-length window.
 //
-// 0 keeps its literal meaning -- no cooldown, so every cycle and every manual
-// check may start a full walk -- and a small value such as 24 is a valid 24
-// seconds, not a mis-typed hour. There is no floor and no auto-disable.
+// Valid values below 3600, including 0 and 24, use a one-hour floor without
+// a warning. This also lengthens the missed-topic suppression window.
 //
 // Cost: a sweep issues one dump request per forum in the tracker's CURRENT
 // tree, so the price follows that tree's size rather than any fixed number,
@@ -48,7 +47,6 @@ $rutrackerAnnounceCap	??= 10;	// 0-40 probe announces per persisted window per a
 // historical sample and an extrapolation, not today's capture, not network
 // volume, and not the guaranteed cost of any given run.
 //
-// The cooldown does not promise that sweeps never overlap: forumcrawl.php
-// takes no whole-crawl lock, and a crawl may itself run longer than the
-// configured interval.
-$rutrackerSweepCooldown	??= 86400;	// >= 0 seconds between automatic full forum sweeps; see the note above
+// The floor limits launch frequency; forumcrawl.php has no whole-crawl lock,
+// so a crawl lasting longer than its interval may still overlap the next one.
+$rutrackerSweepCooldown	??= 86400;	// >= 0 configured seconds, effective minimum 3600

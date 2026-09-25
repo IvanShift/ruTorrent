@@ -1074,49 +1074,23 @@ class RuTrackerForumIndex
     // helper rather than through a production API added for their benefit.
     static private $invalidSweepCooldownReported = false;
 
-    // Seconds between automatic full sweeps; doubles as the window that
-    // suppresses a topic a completed sweep already failed to find.
+    // Seconds between automatic full sweeps; also the base window for
+    // suppressing a topic that a completed sweep could not find.
     //
-    // The accepted domain is a PHP integer >= 0 or its canonical decimal
-    // string, judged by the same parser this plugin applies to the integers
-    // it reads from RPC and from its own state -- there is no second grammar
-    // here. (The other admin-config knobs still take a bare cast; this one no
-    // longer does.)
-    // Unset or null is the shipped 86400 and is not a misconfiguration.
-    // Anything else -- '', booleans, negatives, floats, '1e3', ' 24', '024',
-    // '+24', arrays, objects, a decimal string past PHP_INT_MAX -- falls back
-    // to the shipped 86400 with one classified warning.
-    //
-    // Validating the RAW value is the whole point, and it is why the old
-    // max(0, (int) $configured) could not be repaired by clamping. A negative
-    // value does break the arithmetic rather than merely widening it
-    // ("$now - $last > $cooldown" passes even for a stamp in the future, and
-    // missWindow() multiplies this same number, so it would go negative and
-    // prune every miss record in the same write that created it) -- but after
-    // the cast there is no longer any way to tell 'abc' from a deliberate 0.
-    // '', false and 'abc' all reached (int) as 0, and 0 here makes both this
-    // cooldown and the miss window built on it zero-length. Zero-length is not
-    // "no limit": sweepAllowed() asks "$now - $last > $cooldown", so a second
-    // claim in the SAME second is still refused, and missSuppresses() asks
-    // "<= $window", so a miss stamped that same second is still suppressed --
-    // the tests below pin both. What it does mean is that one second of
-    // distance is enough, so a permanently unresolvable topic re-triggers a
-    // full walk on every hourly cycle and every manual check click, and
-    // forumcrawl.php takes no cycle lock, so those walks can overlap. A typo
-    // therefore landed on the most aggressive setting the knob has.
-    //
-    // A canonical 0 still means exactly that, and so does a small valid value
-    // such as 24: neither is treated as a typo here. conf.php's ">= 0" is a
-    // compatibility fact about the shipped behaviour, not evidence about what
-    // the original author intended. Introducing a floor, an auto-disable or a
-    // whole-crawl lock are separate decisions for the owner; this function
-    // only stops unreadable configuration from silently meaning "no limit".
+    // Use the same canonical nonnegative integer parser as persisted RPC
+    // values. Unset or null means 86400. Invalid values fall back to that
+    // default with one classified warning; the raw value is never logged.
+    // A valid value below one hour, including 0 or 24, is raised to 3600:
+    // forumcrawl.php has no whole-crawl lock, so those short values could
+    // launch another full tracker walk while the previous one is running.
+    // The floor limits launch frequency; a crawl lasting over an hour can
+    // still overlap the next one.
     static private function sweepCooldown()
     {
         global $rutrackerSweepCooldown;
         $raw = isset($rutrackerSweepCooldown) ? $rutrackerSweepCooldown : 86400;
         $value = RuTrackerRpcValue::canonicalNonnegativeInteger($raw);
-        if ($value !== null) return $value;
+        if ($value !== null) return max(3600, $value);
         if (!self::$invalidSweepCooldownReported) {
             self::$invalidSweepCooldownReported = true;
             // Ungated, because the effective value is safe but the
