@@ -1,37 +1,46 @@
 # Задачи форка ruTorrent
 
-Каталог в `.gitignore` — в upstream не уезжает.
+Каталог `tasks/` в `.gitignore`: в upstream он не уезжает. В git отслеживаются только инструменты ниже и этот файл.
 
-## Активные, 2026-08-28
+## Инструменты (в git)
 
-| задача | что это |
-|---|---|
-| [2026-08-28-upstream-delivery/](2026-08-28-upstream-delivery/) | **Главный статус заливки в upstream.** Реестр 18 packages: 5 реализованы, package 5 partial, 13 ещё открыты; refs, dependencies, upstream/local-only delivery |
-| [2026-09-01-gemini-rtorrent-alias-surface/](2026-09-01-gemini-rtorrent-alias-surface/) | Завершённый delegated brief package 13; candidate `3146f741`, fork integration `4d779ff9`, APPROVED |
-| [2026-09-12-iconv-missing/](2026-09-12-iconv-missing/) | **В контейнере нет `iconv()`.** Историческая диагностика пропуска удаления Tapochek и мёртвой ветки Kinozal; оба дефекта исправлены в `af56990f` и проверены без расширения. Fatal'ов нет — первое впечатление было ошибочным |
-| [2026-09-12-app-log-findings/](2026-09-12-app-log-findings/) | **Разбор rutorrent-app-errors.log 2026-09-12.** [Итог исправлений CHECK-RECHECK2](2026-09-12-app-log-findings/FIX-CHECK-RECHECK2-5eba5135.md): 44/45 закрыты локально; условный consumers9 открыт. |
-| [2026-09-01-gemini-xmlrpc-proxy-policy/](2026-09-01-gemini-xmlrpc-proxy-policy/) | Следующее подробное RED-first ТЗ для Gemini: package 14, exact seven-path XMLRPC proxy policy |
-| [2026-08-28-fileutil-defects/](2026-08-28-fileutil-defects/) | Четыре дефекта `FileUtil` + бриф на **независимую перепроверку другой моделью**. Часть находок измерена, часть нет, одна опровергнута |
-| [2026-08-28-harness-defects.md](2026-08-28-harness-defects.md) | 42 дефекта тест-харнесса (`php-test.sh`, `TestCase.php`), 7 разделов. Пред-существующие, ничьим PR не являются. **Адверсальный проход по `[reported]` не доделан** |
-| [2026-08-28-scgi-oom-and-unpinned-ini.md](2026-08-28-scgi-oom-and-unpinned-ini.md) | SCGI отклоняет 64 МиБ уже после того, как их выделил (измеренный OOM-фатал); харнесс перестал пинить `memory_limit`; документированная команда тестов красная под root |
-| [2026-08-28-round6-open-items.md](2026-08-28-round6-open-items.md) | Раунд 6 `rutracker_check`: 9 незакрытых пунктов, PHP 8.1 не гонялся ни разу |
-| [2026-08-28-plan2-open-items.md](2026-08-28-plan2-open-items.md) | Plan 2: 7 незакрытых пунктов, включая тихий клин `collector.php:1641` |
-| [2026-08-28-upstream-rebuild/](2026-08-28-upstream-rebuild/) | Рабочие материалы дня: план, тексты PR, ответ на ревью #3198, вердикты по снятым веткам |
+| файл | назначение |
+| --- | --- |
+| [matrix.sh](matrix.sh) | Локальная матрица PHP-наборов: local, `php:8.1-cli`, `php:7.4-cli` и образ прода без iconv. Каждая нога идёт на своём экспорте и со своим `TMPDIR`. Подробности в AGENTS.md, раздел «PHP Suite Timing and the Matrix». |
+| [rt-lab.sh](rt-lab.sh) | Лабораторный экземпляр на выбранном образе с наложенным рабочим деревом (`up` / `sync` / `down`). Изменяющие пробы делаются только здесь. |
+| [retrackers-clear-markers.php](retrackers-clear-markers.php) | Инструмент снятия застрявшего маркера восстановления retrackers. На него ссылается `tests/plugins/erasedata/RepairToolRefusalTest.php`. |
 
-## Правила, общие для всего
+## Текущее, 2026-09-25
 
-- Ветки для upstream режутся от `upstream/master`, называются `up/<имя>`.
-- **Никогда `git add -A` на ветке `up/*`** — `.gitignore` upstream не знает про
-  `tasks/`, `docs/`, `.claude/`, `.agents/`, `.codex/`, `.superpowers/`, `backup/`.
-- Никакого PHPUnit и composer.
-- Две матрицы PHP перед отправкой: локальный 8.5 и контейнер 8.1 **по команде из README,
-  без `--user`** — с `--user` результаты расходятся.
-- Мутационная проверка каждой правки.
-- Локальный `grep` — обёртка над ugrep с `-I`, молча пропускает бинарный ввод: `grep -a`.
-- **Мерить посылку до того, как писать аргумент.**
+Всё в [2026-09-12-app-log-findings/](2026-09-12-app-log-findings/):
+
+| файл | что это |
+| --- | --- |
+| [OPEN-ISSUES-2026-09-25.md](2026-09-12-app-log-findings/OPEN-ISSUES-2026-09-25.md) | **Единый реестр всех открытых проблем форка**, включая старый долг и находки параллельного ревью R01–R24. Начинать отсюда. |
+| [BACKLOG-2026-09-25.md](2026-09-12-app-log-findings/BACKLOG-2026-09-25.md) | Процедура шага 0 (выкладка коммита прокси) и план шагов 1–6. |
+| [DECISIONS-2026-09-25.md](2026-09-12-app-log-findings/DECISIONS-2026-09-25.md) | Решения владельца Р1–Р10 и рекомендации, которые ждут утверждения. |
+| [ARCHITECTURE-2026-09-25.md](2026-09-12-app-log-findings/ARCHITECTURE-2026-09-25.md) | Архитектурные решения по прокси, Snoopy/loginmgr, rutracker_check и инструментам: обоснования, критерии остановки. |
+| [REVIEW-25a0e2cb.md](2026-09-12-app-log-findings/REVIEW-25a0e2cb.md) | Подробности 130 пунктов ревью (X, S, C, O и N/VC/VO), на которые реестр ссылается по ID, и их статус после исправлений. |
+| [UPSTREAM-YGG-DISCLOSURE-DRAFT.md](2026-09-12-app-log-findings/UPSTREAM-YGG-DISCLOSURE-DRAFT.md) | Черновик закрытого сообщения в upstream о LG16/LG17 (Р5). Перед отправкой пересверить с текущим `upstream/master`. |
+
+Задача для соседнего репозитория: `../docker-rutorrent/tasks/2026-09-25-open-issues-from-rutorrent.md` (7 пунктов реестра из раздела docker-rutorrent).
 
 ## Архив
 
-`backup/2026-08-28/` (вне git) — материалы прежних раундов: `ROUND6/`,
-`REMEDIATION_4B4938CC/` (в нём `PROGRESS.md`, 270 КБ), старые отчёты код-ревью, логи,
-скриншоты. Ничего не удалено, только перенесено.
+Всё прежнее перенесено в `backup/` (вне git), структура каталогов сохранена:
+
+- `backup/2026-09-25/tasks/` — отчёты кампаний с августа по 2026-09-25: раунды ревью и проверок app-log, VERIFY-*, FIX-*, CHECK-*, папки `2026-08-*` и `2026-09-*`, планы и тексты PR. Отсюда же статус доставки в upstream: `backup/2026-09-25/tasks/2026-08-28-upstream-delivery/`, 13 пакетов не отправлены. Лог переноса и список ссылок, которые были битыми ещё до переноса, лежат в `backup/2026-09-25/ARCHIVE-LOG.json`.
+- `backup/2026-09-25-tasks-full.tar.gz` — полная копия `tasks/` до переноса.
+- `backup/2026-08-28/` — материалы более ранних раундов.
+
+Открытые пункты из архивных отчётов перенесены в реестр после проверки по коду. Архивные файлы нужны только для истории.
+
+## Правила, общие для всего
+
+- Ветки для upstream режутся от `upstream/master` и называются `up/<имя>`.
+- **Никогда `git add -A` на ветке `up/*`.** `.gitignore` upstream не знает про `tasks/`, `docs/`, `.claude/`, `.agents/`, `.codex/`, `.superpowers/`, `backup/`.
+- Никакого PHPUnit и composer.
+- Работу вести параллельно, где нет настоящей зависимости: AGENTS.md, «Run Independent Work In Parallel».
+- Выкладывать малыми шагами. Блокирует только воспроизведённый P1 или P2: AGENTS.md, «Ship In Small Steps».
+- Локальный `grep` — обёртка над ugrep с `-I`, двоичный ввод он молча пропускает, поэтому нужен `grep -a`.
+- **Мерить посылку до того, как писать аргумент.**
