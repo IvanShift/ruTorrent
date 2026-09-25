@@ -140,6 +140,30 @@ $tests = array(
         testAssertSame(3, count($client->requests), 'all three replies are consumed');
         testAssertSame(array('destination' => 'own'), $client->requests[2][3], 'CDN can retain its own cookie');
     },
+    'an anonymous account-scoped refusal logs the blocked target without claiming a session' => function () {
+        global $log_file;
+        $previous = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'anonymous-redirect-log-');
+        try {
+            $client = new BoundaryTransport();
+            $client->redirectTrust = function ($url) {
+                return UrlHost::urlIsOneOf($url, array('scoped-log.test'), 'https');
+            };
+            $client->redirect = 'https://foreign-scoped-log.test/file?secret=private';
+            testAssertSame(true, $client->fetch('https://scoped-log.test/start'),
+                'original anonymous response remains available');
+            testAssertSame(1, count($client->requests), 'foreign redirect target is not requested');
+            testAssertSame(array(), $client->cookies, 'the refusal carried no session cookies');
+            testAssertSame('credential-redirect-refused', $client->error, 'caller sees the refusal reason');
+            $log = file_get_contents($log_file);
+            testAssertSame(true, strpos($log, 'redirect target not requested') !== false,
+                'operator log describes the blocked request');
+            testAssertSame(false, strpos($log, 'session not sent') !== false,
+                'operator log does not invent a session');
+            testAssertSame(false, strpos($log, 'private') !== false,
+                'operator log omits the remote query');
+        } finally { unlink($log_file); $log_file = $previous; }
+    },
     'a refused redirect leaves response cookies explicit and never imports them on reuse' => function () {
         global $log_file;
         $previous = $log_file; $log_file = tempnam(sys_get_temp_dir(), 'redirect-log-');

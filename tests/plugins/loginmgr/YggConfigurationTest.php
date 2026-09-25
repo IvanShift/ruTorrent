@@ -334,25 +334,80 @@ CHILD;
             testAssertSame(1, substr_count($diagnostic, "\n"), 'refresh emits one application diagnostic');
         } finally { unlink($log); }
     },
-    'invalid origins stay disabled before any credential request' => function () {
-        global $yggTorrentOrigin;
-        foreach (array('', 'http://ygg.example', 'https://ygg example', "https://ygg.example\n", "https://ygg.ex\tample",
-                       'https://ygg_example', 'https://-ygg.example', 'https://ygg..example', 'https://ygg.example..',
-                       'https://ygg.example:0', 'https://ygg.example:65536', 'https://ygg.example:443x', 'https://ygg.example?', 'https://ygg.example#',
-                       'https://user:pass@ygg.example', 'https://ygg.example/path', 'https://ygg.example\\bad', 'https://[broken]') as $origin) {
-            $yggTorrentOrigin = $origin;
-            $account = new YggConfigLogin();
-            testAssertSame('', $account->url, 'invalid origin is disabled: ' . var_export($origin, true));
-            if ($origin === 'https://ygg.example:0') {
-                testAssertSame('bad-port', $account->configurationError(), 'zero port has a precise reason');
+    'invalid origins report precise reasons without credential requests' => function () {
+        global $yggTorrentOrigin, $log_file;
+        $cases = array(
+            array('', 'missing-origin'),
+            array('http://ygg.example', 'bad-scheme'),
+            array('https://ygg example', 'invalid-characters'),
+            array("https://ygg.example\n", 'invalid-characters'),
+            array("https://ygg.ex\tample", 'invalid-characters'),
+            array('https://ygg_example', 'bad-host'),
+            array('https://-ygg.example', 'bad-host'),
+            array('https://ygg..example', 'bad-host'),
+            array('https://ygg.example..', 'bad-host'),
+            array('https://ygg.example:0', 'bad-port'),
+            array('https://ygg.example:65536', 'invalid-url'),
+            array('https://ygg.example:443x', 'invalid-url'),
+            array('https://ygg.example:abc', 'invalid-url'),
+            array('https://ygg.example?', 'invalid-characters'),
+            array('https://ygg.example#', 'invalid-characters'),
+            array('https://user:pass@ygg.example', 'has-credentials'),
+            array('https://ygg.example/path', 'has-path'),
+            array('https://ygg.example\\bad', 'invalid-characters'),
+            array('https://[broken]', 'bad-host'),
+        );
+        $previousLogFile = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'ygg-reasons-');
+        $warningFlag = new ReflectionProperty(YggTorrentAccount::class, 'configurationWarningShown');
+        if (PHP_VERSION_ID < 80100) { $warningFlag->setAccessible(true); }
+        $previousWarning = $warningFlag->getValue();
+        try {
+            foreach ($cases as $case) {
+                list($origin, $reason) = $case;
+                $yggTorrentOrigin = $origin;
+                $warningFlag->setValue(null, false);
+                file_put_contents($log_file, '');
+                $account = new YggConfigLogin();
+                testAssertSame('', $account->url, 'invalid origin is disabled: ' . var_export($origin, true));
+                testAssertSame($reason, $account->configurationError(), 'origin refusal reason: ' . var_export($origin, true));
+                $client = new YggConfigTransport();
+                testAssertSame(false, $account->directLogin($client, 'https://ygg.example'),
+                    'invalid origin refuses login: ' . var_export($origin, true));
+                testAssertSame(array(), $client->requests, 'no credential request: ' . var_export($origin, true));
+                $diagnostic = file_get_contents($log_file);
+                testAssertSame(true, strpos($diagnostic, '(' . $reason . ')') !== false,
+                    'application log names the refusal reason: ' . var_export($origin, true));
+                testAssertSame(1, substr_count($diagnostic, "\n"), 'one diagnostic for: ' . var_export($origin, true));
             }
-            if ($origin === 'https://ygg.example:65536' || $origin === 'https://ygg.example:443x') {
-                testAssertSame('invalid-url', $account->configurationError(), 'malformed port is rejected before trust');
-            }
-            $client = new YggConfigTransport();
-            testAssertSame(false, $account->directLogin($client, 'https://ygg.example'), 'invalid origin refuses login');
-            testAssertSame(array(), $client->requests, 'no credential request');
+        } finally {
+            $warningFlag->setValue(null, $previousWarning);
+            unlink($log_file);
+            $log_file = $previousLogFile;
         }
+    },
+    'Ygg download selection rejects a configured host used as a leading label' => function () {
+        global $yggTorrentOrigin;
+        $yggTorrentOrigin = 'https://ygg.example';
+        $account = new YggTorrentAccount();
+        $foreign = 'https://ygg.example.evil.test/engine/download_torrent?id=7';
+        testAssertSame(false, $account->test($foreign), 'foreign leading-label host cannot select the account');
+        testAssertSame(false, yggManager()->getAccount($foreign), 'account manager does not select the foreign host');
+        testAssertSame(true, $account->test('https://YGG.EXAMPLE./engine/download_torrent?id=7'),
+            'the configured host still selects the account after normalization');
+    },
+    'settings use account configuration capability rather than its registry name' => function () {
+        global $yggTorrentOrigin;
+        $yggTorrentOrigin = '';
+        $manager = yggManager();
+        $record = $manager->accounts['YggTorrent'];
+        $manager->accounts = array('RenamedYgg' => $record);
+        testAssertSame(true, strpos($manager->get(), "'RenamedYgg':") !== false,
+            'settings include the renamed account');
+        testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false,
+            'settings still explain the missing origin');
+        testAssertSame(true, $manager->getInfo()[0]['configurationRequired'],
+            'settings API exposes the same configuration requirement');
     },
     'valid normalized origins retain explicit ports in credential POSTs' => function () {
         global $yggTorrentOrigin;

@@ -28,7 +28,8 @@ origin before these plugin files are loaded. The account settings page shows
 when an enabled Ygg account needs configuration. Unrelated URL selection stays quiet.
 Existing enabled accounts need this configuration before they can use their
 stored session again. The YggTorrent extsearch engine uses this same origin for
-search and download links; it stays disabled until the setting is valid.
+search and download links; without a valid setting it makes no tracker request
+and shows a configuration hint.
 
 Snoopy keeps credentials on same-origin redirects and on a default-port HTTP
 (80) to HTTPS (443) upgrade to the same host. During loginmgr fetch/refresh,

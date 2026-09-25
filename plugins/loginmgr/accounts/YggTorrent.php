@@ -122,6 +122,8 @@ class YggTorrentAccount extends commonAccount
         if (!$this->trusts($url)) {
             return false;
         }
+        // A configurable origin can be stale. Require a successful landing
+        // response before posting credentials to its configured host.
         if ($client->fetch($url) && $client->status >= 200 && $client->status < 300) {
             $client->setcookies();
             $client->referer = $url;

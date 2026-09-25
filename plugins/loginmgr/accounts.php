@@ -356,16 +356,16 @@ class accountManager
 		$this->setHandlers();
 	}
 
-	private function configurationRequired($name, $nfo, $account = null)
+	private function configurationRequired($nfo, $account = null)
 	{
-		if($name !== 'YggTorrent')
-			return(false);
 		if($account === null)
 		{
 			require_once($nfo["path"]);
+			if(!method_exists($nfo["object"], 'configurationError'))
+				return(false);
 			$account = new $nfo["object"]();
 		}
-		return($account->configurationError() !== '');
+		return(is_callable(array($account, 'configurationError')) && $account->configurationError() !== '');
 	}
 
 	public function get()
@@ -373,7 +373,7 @@ class accountManager
                 $ret = "theWebUI.theAccounts = {";
 		foreach( $this->accounts as $name=>$nfo )
 		{
-			$configurationRequired = $this->configurationRequired($name, $nfo);
+			$configurationRequired = $this->configurationRequired($nfo);
 			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem($nfo["password"]).", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"].", configurationRequired: ".($configurationRequired ? 'true' : 'false')." },";
 		}
 		$len = strlen($ret);
@@ -461,7 +461,7 @@ class accountManager
 			$nfo["name"] = $name;
 			$object = new $nfo["object"]();
 			$nfo["url"] = $object->url;
-			$nfo["configurationRequired"] = $this->configurationRequired($name, $nfo, $object);
+			$nfo["configurationRequired"] = $this->configurationRequired($nfo, $object);
 			unset($nfo["object"]);
 			unset($nfo["path"]);
 			$ret[] = $nfo;

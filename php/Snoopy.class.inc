@@ -539,7 +539,7 @@ class Snoopy
 		if(isset($logged[$key]))
 			return;
 		$logged[$key] = true;
-		FileUtil::toLog('Snoopy: ' . self::CREDENTIAL_REDIRECT_REFUSED . ': ' . $key . '; session not sent, original response retained');
+		FileUtil::toLog('Snoopy: ' . self::CREDENTIAL_REDIRECT_REFUSED . ': ' . $key . '; redirect target not requested, original response retained');
 	}
 
 	protected function trustsRedirect($source, $target)
