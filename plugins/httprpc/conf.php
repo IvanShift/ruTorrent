@@ -7,9 +7,10 @@
 // conf/users/<user>/plugins/httprpc/conf.php.
 
 // $XMLRPCProxySafeParams in conf/xmlrpc_proxy.php lists writable commands
-// allowed in load.* tails, multicall result slots, and the filter slot of
-// d.multicall.filtered. Read-only result commands come from $safeGetters in
-// php/xmlrpc_proxy.php and cannot be removed by changing this list. Set
+// allowed in load.* tails and multicall command slots. Directory setters
+// remain forbidden in multicall slots even if named here. Read-only result
+// commands come from $safeGetters in php/xmlrpc_proxy.php and cannot be
+// removed by changing this list. Set
 // $XMLRPCProxy = "off" to disable raw pass-through entirely. action.php loads
 // the shared policy before this file.
 //

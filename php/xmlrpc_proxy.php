@@ -1130,7 +1130,7 @@ class XMLRPCProxy
 			&& !in_array('d.directory.base.set', $safeParams, true))
 		{
 			$note .= ' [policy lists d.directory_base.set but not d.directory.base.set;'
-				.' add it to conf/xmlrpc_proxy.php]';
+				.' add it to conf/xmlrpc_proxy.php or the httprpc policy override]';
 		}
 		if(($name === 'f.set_create_queued' || $name === 'f.set_resize_queued')
 			&& is_array($safeParams) && !in_array($name, $safeParams, true))

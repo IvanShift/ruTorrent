@@ -37,8 +37,9 @@
 	// empty here has said to forbid every command parameter that WRITES, and
 	// is obeyed -- a multicall of read commands still goes through, because
 	// the read list is the proxy's own and not this file's to withdraw.
-	// The filter slot of d.multicall.filtered uses this list alone, not the
-	// built-in readers. With this shipped list only a setter can be a filter;
+	// The filter slot of d.multicall.filtered runs its command on every
+	// matching download and uses this list alone, not the built-in readers.
+	// With this shipped list only a setter can be a filter;
 	// a read filter such as d.is_active= is refused unless explicitly added.
 	// An empty list refuses every filtered multicall. To refuse raw
 	// pass-through altogether, set $XMLRPCProxy to "off".

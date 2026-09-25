@@ -807,7 +807,7 @@ class XMLRPCProxyTest extends TestCase
 				$this->assertTrue($d['method'] === 'load.start',
 					'the client fault still names the outer load call');
 				$this->assertTrue(strpos($d['log'][0],
-					'policy lists d.directory_base.set but not d.directory.base.set; add it to conf/xmlrpc_proxy.php') !== false,
+					'policy lists d.directory_base.set but not d.directory.base.set; add it to conf/xmlrpc_proxy.php or the httprpc policy override]') !== false,
 					'the deployed policy mismatch has a precise actionable log message');
 			}
 		}
@@ -1018,7 +1018,7 @@ class XMLRPCProxyTest extends TestCase
 	{
 		$sent = $this->sanitizeParam('d.custom.set=key,$execute.capture=/bin/hostname');
 		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'every argument is checked, not only the first');
+			'a denied second argument rejects the whole load');
 	}
 
 	public function testDollarInsideAValueIsKept()
@@ -1053,14 +1053,14 @@ class XMLRPCProxyTest extends TestCase
 		$this->resetMocks();
 		$this->sanitizeParamLogged("execute=evil\nxmlrpc-proxy: trusted: load.raw_start (2 params)");
 		$this->assertTrue(strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
-			'a newline in a stripped value cannot start a new log entry');
+			'a rejected command cannot inject a second log entry');
 	}
 
 	public function testLoggedValueIsLengthCapped()
 	{
 		$this->resetMocks();
 		$this->sanitizeParamLogged('execute=' . str_repeat('A', 500));
-		$this->assertTrue(strlen($this->logText()) < 400, 'a long stripped value is truncated');
+		$this->assertTrue(strlen($this->logText()) < 400, 'a long rejected command is bounded in the log');
 	}
 
 	private function sanitizeParamLogged($param)
@@ -1157,7 +1157,7 @@ class XMLRPCProxyTest extends TestCase
 	{
 		$sent = $this->sanitizeParam('d.custom1.set="$execute.capture=/bin/hostname"');
 		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'quoting does not hide a leading $; the argument is still dropped');
+			'quoting does not hide a leading $; the load is rejected');
 	}
 
 	public function testUnclosedQuoteIsDropped()
@@ -1165,9 +1165,9 @@ class XMLRPCProxyTest extends TestCase
 		$this->resetMocks();
 		$this->sanitizeParamLogged('d.custom1.set="Movies, Inc');
 		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom1.set') === false,
-			'an unclosed quote is malformed and dropped, not split inside it');
-		$this->assertTrue(strpos($this->logText(), 'rejected') !== false || strpos($this->logText(), 'stripped') !== false,
-			'and the drop is visible in the log');
+			'an unclosed quote rejects the whole load without forwarding it');
+		$this->assertTrue(strpos($this->logText(), 'rejected') !== false,
+			'and the rejection is visible in the log');
 	}
 
 	public function testUnknownMethodNameCannotForgeALogLine()

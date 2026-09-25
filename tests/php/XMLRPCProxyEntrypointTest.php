@@ -1308,9 +1308,11 @@ PHP
 		$this->assertSameStrict($a['events'], $b['events'], $prefix . ' identical events');
 	}
 
-	private function assertRpc2Log($result, $needle, $message)
+	private function assertRpc2Log($result, $expected, $message)
 	{
-		$this->assertTrue(strpos($result['rpc2logs'], $needle) !== false, $message);
+		preg_match_all('/^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2} rpc2: (.*)$/m',
+			$result['rpc2logs'], $lines);
+		$this->assertTrue(in_array($expected, $lines[1], true), $message);
 	}
 
 	private function deleteTree($path)
