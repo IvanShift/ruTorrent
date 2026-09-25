@@ -297,6 +297,39 @@ $suite->test('begin loads a stopped magnet with inline markers and starts the st
     strictAssertLogsClean(ruTrackerChecker::$logs, 's3cr3t', 'begin');
 });
 
+$suite->test('begin floors a negative metadata deadline at the current time', function () use ($oldHash, $newHash) {
+    $hadDeadline = array_key_exists('rutrackerMetaDeadline', $GLOBALS);
+    $originalDeadline = $hadDeadline ? $GLOBALS['rutrackerMetaDeadline'] : null;
+    try {
+        foreach (array(0, -5) as $configuredDeadline) {
+            ruTrackerChecker::reset();
+            $GLOBALS['rutrackerMetaDeadline'] = $configuredDeadline;
+            rTorrent::$magnets = array();
+            rTorrent::$sendResult = $newHash;
+            ruTrackerChecker::queueResult('awaitMetadata', false);
+            ruTrackerChecker::queueResult('torrentExists', false);
+            rXMLRPCRequest::queue(
+                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+                true, false, array($oldHash, '6879823', '1000', 1)
+            );
+            rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+            rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+            strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+                RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                    'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+                'a nonpositive setting remains a valid pending fetch');
+            strictAssertSame(1, count(rTorrent::$magnets), 'one service magnet is loaded');
+            $additions = implode(' ', rTorrent::$magnets[0]['addition']);
+            strictAssertTrue(strpos($additions, 'chk-meta-until,1000') !== false,
+                'a nonpositive setting cannot make the service deadline precede the load');
+        }
+    } finally {
+        if ($hadDeadline) $GLOBALS['rutrackerMetaDeadline'] = $originalDeadline;
+        else unset($GLOBALS['rutrackerMetaDeadline']);
+    }
+});
+
 $suite->test('begin fails closed when the load never materialises', function () use ($oldHash, $newHash) {
     ruTrackerChecker::reset();
     rTorrent::$magnets = array();
@@ -680,6 +713,9 @@ $suite->test('pump enforces the deadline', function () use ($oldHash, $newHash) 
     $state = RuTrackerMetaFetch::pump($oldHash, 1000);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'expired fetch returns to the queue');
     strictAssertSame(1, count(mfRequestsForErase($newHash)), 'the expired stub is erased');
+    strictAssertSame(1, count(mfMessages()), 'the expired stub clears the message once');
+    strictAssertSame(array($oldHash, ''), mfMessages()[0]['arguments'],
+        'dropping the expired stub clears its predecessor message');
 });
 
 $suite->test('pump keeps waiting while the stub is healthy', function () use ($oldHash, $newHash) {

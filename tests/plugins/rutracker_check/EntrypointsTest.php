@@ -367,6 +367,39 @@ function epWithActionServer($callback, $dispatchMode = 'refuse')
     }
 }
 
+$suite->test('loading check.php registers the seven expected tracker handlers', function () {
+    // Test the real loader in a child: TestLib has already installed the
+    // checker doubles in this process, so an in-process include would lie.
+    $code = 'require "check.php"; '
+        . '$registry = (new ReflectionClass("ruTrackerChecker"))->getStaticProperties()["TRACKERS"]; '
+        . 'echo json_encode(array_column($registry, "handler"));';
+    $process = proc_open(
+        array(PHP_BINARY, '-c', testFindRepoRoot() . '/tests/php-test.ini', '-r', $code),
+        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        $pipes, EP_DIR
+    );
+    strictAssertTrue(is_resource($process), 'the checker loader child starts');
+    fclose($pipes[0]);
+    $output = stream_get_contents($pipes[1]);
+    $errors = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exit = proc_close($process);
+    strictAssertSame(0, $exit, 'the checker loader exits cleanly: ' . $errors);
+    strictAssertSame('', $errors, 'the checker loader emits no diagnostics');
+    $trackers = json_decode($output, true);
+    strictAssertTrue(is_array($trackers), 'the real checker reports its registered handlers');
+    strictAssertSame(array(
+        'RuTrackerCheckImpl::download_torrent',
+        'AniDUBCheckImpl::download_torrent',
+        'KinozalCheckImpl::download_torrent',
+        'NNMClubCheckImpl::download_torrent',
+        'TapochekNetCheckImpl::download_torrent',
+        'TfileCheckImpl::download_torrent',
+        'tolokaCheckImpl::download_torrent',
+    ), $trackers, 'the loader registers each expected handler once in dispatch order');
+});
+
 $suite->test('erasedata and rutracker_check register one identical collector schedule', function () {
     $erasedataInit = dirname(EP_DIR) . '/erasedata/init.php';
     $rutrackerInit = EP_DIR . '/init.php';

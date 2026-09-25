@@ -589,6 +589,37 @@ $suite->test('confirmDeletion floors a zero interval so the per-cycle cap surviv
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'three clicks in a row must not touch chk-del');
 });
 
+$suite->test('nonpositive deletion cycles settle exactly one recorded confirmation', function () use ($hash) {
+    $now = 1000000;
+    try {
+        foreach (array(0, -5) as $configuredCycles) {
+            hReset();
+            $GLOBALS['rutrackerDeleteCycles'] = $configuredCycles;
+            rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+            rXMLRPCRequest::queue('d.set_custom', true, false, array());
+            strictAssertSame(ruTrackerChecker::STE_DELETED,
+                strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+                'one observed missing row completes the floored one-cycle run');
+            strictAssertSame(array($hash, 'chk-del', '1:' . $now),
+                rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+                'the settled verdict records one actual confirmation');
+            strictAssertSame(array($hash, ruTrackerChecker::CHKMSG_DELETING . '|1/1'),
+                ruTrackerChecker::callsFor('setMessage')[0]['arguments'],
+                'the UI shows one of one, never zero or negative cycles');
+
+            hReset();
+            $GLOBALS['rutrackerDeleteCycles'] = $configuredCycles;
+            rXMLRPCRequest::queue('d.get_custom', true, false, array('0:1000'));
+            rXMLRPCRequest::queue('d.get_custom', true, false, array('999'));
+            strictAssertSame(false,
+                strictInvoke('RuTrackerCheckImpl', 'deletionConfirmedOnce', array($hash)),
+                'a zero-count record cannot reaffirm a settled deletion');
+        }
+    } finally {
+        hReset();
+    }
+});
+
 $suite->test('classifyDump follows the design table order for a found row, and null means the row is missing', function () use ($topicId) {
     $localHash = str_repeat('A', 40);
     $newHash = str_repeat('B', 40);

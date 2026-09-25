@@ -96,3 +96,21 @@ function testRunCases(array $tests, $beforeEach = null)
 	echo count($tests) . ' tests, ' . $failures . " failures\n";
 	return $failures === 0 ? 0 : 1;
 }
+
+// PHP skips auto_append_file when a test calls exit(). At shutdown, flag any
+// declared TestCase that never reached the shared runner's final marker.
+if (getenv('RUTORRENT_PHP_TEST_RUNNER') === '1'
+	&& basename((string) ini_get('auto_append_file')) === 'TestCaseRunner.php') {
+	register_shutdown_function(function () {
+		if (defined('RUTORRENT_TESTCASE_RUNNER_FINISHED')) return;
+		foreach (get_declared_classes() as $cls) {
+			if (is_subclass_of($cls, 'TestCase') && (new ReflectionClass($cls))->isInstantiable()) {
+				echo "\nFailed: TestCase runner did not finish before shutdown\n";
+				// Let later shutdown cleanups run before forcing a failing exit code.
+				// An output buffer may discard the diagnostic itself.
+				register_shutdown_function(function () { exit(1); });
+				return;
+			}
+		}
+	});
+}

@@ -197,7 +197,7 @@ expect_rejected_test() {
         printf '%s\n' "$false_green" >&2
         exit 1
     fi
-    if ! grep -Fq "$expected" "$log"; then
+    if [[ -n "$expected" ]] && ! grep -Fq "$expected" "$log"; then
         cat "$log" >&2
         printf '%s: expected rejection was not reported\n' "$name" >&2
         exit 1
@@ -246,6 +246,52 @@ class ChildSummaryExitCase extends TestCase {
 }
 PHP
 expect_rejected_test ChildSummaryExitTest 'TestCase runner did not finish' 'an incomplete TestCase used a child summary to pass'
+
+# A top-level exit can happen after declaring a TestCase but before the
+# appended runner starts, leaving only a counterfeit standalone summary.
+cat > "$scratch/tests/plugins/a b/TopLevelExitTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class TopLevelExitCase extends TestCase {
+    public function testNeverReached() { $this->assertTrue(false, 'this method must run'); }
+}
+echo "ok - child\n1 tests, 0 failures\n";
+echo 'partial';
+exit(0);
+PHP
+expect_rejected_test TopLevelExitTest 'TestCase runner did not finish' 'a top-level exit bypassed the declared TestCase'
+
+# A test may discard shutdown output. Its exit status must still be red.
+cat > "$scratch/tests/plugins/a b/BufferedExitTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class BufferedExitCase extends TestCase {
+    public function testNeverReached() { $this->assertTrue(false, 'this method must run'); }
+}
+echo "ok - child\n1 tests, 0 failures\n";
+ob_start(function ($bytes) { return ''; });
+exit(0);
+PHP
+expect_rejected_test BufferedExitTest '' 'an output buffer hid the unfinished TestCase'
+
+# Failing an incomplete runner must still allow later cleanup callbacks.
+cat > "$scratch/tests/plugins/a b/CleanupExitTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class CleanupExitCase extends TestCase {
+    public function testNeverReached() { $this->assertTrue(false, 'this method must run'); }
+}
+register_shutdown_function(function () { file_put_contents(__DIR__.'/cleanup-witness', 'done'); });
+echo "ok - child\n1 tests, 0 failures\n";
+ob_start(function ($bytes) { return ''; });
+exit(0);
+PHP
+expect_rejected_test CleanupExitTest '' 'a cleanup fixture hid the unfinished TestCase'
+if [[ ! -f "$scratch/tests/plugins/a b/cleanup-witness" ]]; then
+    echo 'an unfinished TestCase skipped a later cleanup callback' >&2
+    exit 1
+fi
+rm "$scratch/tests/plugins/a b/cleanup-witness"
 
 # A custom run() that skips a declared method must not be treated as a
 # complete TestCase merely because it reports one passing method.
