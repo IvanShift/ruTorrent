@@ -13,9 +13,35 @@ git -C "$repo" config user.name 'rt-lab fixture'
 git -C "$repo" config user.email 'fixture@example.invalid'
 printf 'old\n' > "$repo/old.php"
 printf 'keep\n' > "$repo/keep.php"
-git -C "$repo" add old.php keep.php
+printf 'committed obsolete\n' > "$repo/committed-obsolete.php"
+printf 'renamed\n' > "$repo/rename-old.php"
+printf 'committed rename\n' > "$repo/committed-rename-old.php"
+printf 'revived in image\n' > "$repo/revived.php"
+printf 'old file shape\n' > "$repo/dir-shape"
+mkdir -p "$repo/conf/users" "$app/conf/users" "$app/dir-shape"
+printf 'image child\n' > "$app/dir-shape/image-extra.txt"
+printf 'runtime config\n' > "$repo/conf/config.php"
+printf 'runtime user\n' > "$repo/conf/users/user.php"
+git -C "$repo" add old.php keep.php committed-obsolete.php rename-old.php committed-rename-old.php revived.php dir-shape conf
 git -C "$repo" commit -qm baseline
 cp "$repo/old.php" "$app/old.php"
+cp "$repo/committed-obsolete.php" "$app/committed-obsolete.php"
+cp "$repo/rename-old.php" "$app/rename-old.php"
+cp "$repo/committed-rename-old.php" "$app/committed-rename-old.php"
+cp "$repo/revived.php" "$app/revived.php"
+cp "$repo/conf/config.php" "$app/conf/config.php"
+cp "$repo/conf/users/user.php" "$app/conf/users/user.php"
+git -C "$repo" rm -q committed-obsolete.php revived.php dir-shape conf/config.php conf/users/user.php
+git -C "$repo" mv committed-rename-old.php committed-rename-new.php
+git -C "$repo" commit -qm 'remove obsolete files after image baseline'
+git -c diff.renames=true -C "$repo" show --format= --name-status HEAD | grep -q $'R100\tcommitted-rename-old.php\tcommitted-rename-new.php' || {
+    echo 'committed rename fixture was not detected as a rename' >&2; exit 1
+}
+printf 'revived in checkout\n' > "$repo/revived.php"
+mkdir "$repo/dir-shape"
+printf 'new tracked child\n' > "$repo/dir-shape/new.php"
+git -C "$repo" add revived.php dir-shape/new.php
+git -C "$repo" mv rename-old.php rename-new.php
 printf 'image extra\n' > "$app/image-extra.php"
 printf 'updated\n' > "$repo/keep.php"
 printf 'untracked\n' > "$repo/secret.php"
@@ -61,12 +87,23 @@ esac
 MOCK_DOCKER
 chmod +x "$scratch/bin/docker"
 lab_name="lab-$(basename "$scratch")"
-run_lab() {
-    REPO="$repo" RT_LAB_TEST_APP="$app" RT_LAB_TEST_CONTAINER_TMP="$scratch/container-tmp" \
+run_lab_at() {
+    REPO="$1" RT_LAB_TEST_APP="$app" RT_LAB_TEST_CONTAINER_TMP="$scratch/container-tmp" \
         TMPDIR="$scratch/tmp" PATH="$scratch/bin:$PATH" "$runner" sync "$lab_name"
 }
+run_lab() { run_lab_at "$repo"; }
 run_lab > "$scratch/first.log"
 [ ! -e "$app/old.php" ] || { echo 'staged deletion survived first overlay' >&2; exit 1; }
+[ ! -e "$app/rename-old.php" ] || { echo 'staged rename left the old path in the overlay' >&2; exit 1; }
+[ ! -e "$app/committed-obsolete.php" ] || { echo 'committed deletion survived first overlay' >&2; exit 1; }
+[ ! -e "$app/committed-rename-old.php" ] || { echo 'committed rename left the old path in the overlay' >&2; exit 1; }
+[ "$(cat "$app/committed-rename-new.php")" = 'committed rename' ] || { echo 'committed rename did not overlay the new path' >&2; exit 1; }
+[ -e "$app/rename-new.php" ] || { echo 'staged rename did not overlay the new path' >&2; exit 1; }
+[ "$(cat "$app/revived.php")" = 'revived in checkout' ] || { echo 'reintroduced tracked path was removed' >&2; exit 1; }
+[ "$(cat "$app/dir-shape/image-extra.txt")" = 'image child' ] || { echo 'historical deletion removed an image-only directory child' >&2; exit 1; }
+[ "$(cat "$app/dir-shape/new.php")" = 'new tracked child' ] || { echo 'file-to-directory replacement failed' >&2; exit 1; }
+[ "$(cat "$app/conf/config.php")" = 'runtime config' ] || { echo 'runtime config was removed' >&2; exit 1; }
+[ "$(cat "$app/conf/users/user.php")" = 'runtime user' ] || { echo 'runtime user was removed' >&2; exit 1; }
 [ "$(cat "$app/keep.php")" = updated ]
 [ -e "$app/image-extra.php" ]
 [ ! -e "$app/secret.php" ]
@@ -113,4 +150,63 @@ git -C "$repo" rm -fq new3.php
 run_lab > "$scratch/recovery.log"
 [ ! -e "$app/new3.php" ] || { echo 'pending inventory failed to remove an orphan overlay' >&2; exit 1; }
 [ -e "$app/image-extra.php" ]
-echo 'rt-lab-test.sh: staged and prior-overlay deletions, failed manifest publish, partial extraction recovery, file-to-directory type change, and image extras passed'
+# A failed rm in an xargs batch must not be hidden by a later successful rm.
+printf 'first delete\n' > "$repo/a-denied.php"
+printf 'later delete\n' > "$repo/z-removed.php"
+git -C "$repo" add a-denied.php z-removed.php
+run_lab > "$scratch/before-delete-error.log"
+git -C "$repo" rm -fq a-denied.php z-removed.php
+cat > "$scratch/bin/rm" <<'MOCK_RM'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    if [ "$arg" = ./a-denied.php ]; then exit 17; fi
+done
+exec "$RT_LAB_TEST_REAL_RM" "$@"
+MOCK_RM
+chmod +x "$scratch/bin/rm"
+if RT_LAB_TEST_REAL_RM="$(command -v rm)" run_lab > "$scratch/delete-error.log" 2>&1; then
+    echo 'first deletion failure was masked by a later successful rm' >&2; exit 1
+fi
+[ -e "$app/a-denied.php" ] && [ -e "$app/z-removed.php" ] || {
+    echo 'failed delete published or continued the overlay' >&2; exit 1
+}
+rm "$scratch/bin/rm"
+run_lab > "$scratch/delete-recovery.log"
+[ ! -e "$app/a-denied.php" ] && [ ! -e "$app/z-removed.php" ] || {
+    echo 'failed deletion did not recover on next sync' >&2; exit 1
+}
+# A shallow checkout cannot establish what an older image still contains.
+git clone -q --depth=1 "file://$repo" "$scratch/shallow"
+[ "$(git -C "$scratch/shallow" rev-parse --is-shallow-repository)" = true ] || {
+    echo 'shallow fixture unexpectedly has full history' >&2; exit 1
+}
+keep_before="$(cat "$app/keep.php")"
+if run_lab_at "$scratch/shallow" > "$scratch/shallow.log" 2>&1; then
+    echo 'shallow history was accepted for a first overlay' >&2; exit 1
+fi
+grep -q 'rt-lab: shallow Git history' "$scratch/shallow.log" || {
+    cat "$scratch/shallow.log" >&2
+    echo 'shallow refusal lacked an actionable reason' >&2; exit 1
+}
+[ "$(cat "$app/keep.php")" = "$keep_before" ] || {
+    echo 'shallow refusal changed the app' >&2; exit 1
+}
+# A failed history lookup must stop before destructive overlay operations.
+cat > "$scratch/bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+if [[ " $* " == *' log '* ]]; then
+    : > "$RT_LAB_TEST_HISTORY_MARKER"
+    exit 17
+fi
+exec "$RT_LAB_TEST_REAL_GIT" "$@"
+MOCK_GIT
+chmod +x "$scratch/bin/git"
+if RT_LAB_TEST_REAL_GIT="$(command -v git)" RT_LAB_TEST_HISTORY_MARKER="$scratch/history-attempted" \
+    run_lab > "$scratch/history-error.log" 2>&1; then
+    echo 'failed Git history lookup was silently accepted' >&2; exit 1
+fi
+[ -e "$scratch/history-attempted" ] || { echo 'history failure fixture did not reach git log' >&2; exit 1; }
+[ -e "$app/image-extra.php" ] && [ -e "$app/keep.php" ] || {
+    echo 'failed history lookup changed the app' >&2; exit 1
+}
+echo 'rt-lab-test.sh: staged and committed deletions, staged and committed renames, prior-overlay deletions, failed manifest publish, partial extraction recovery, file-to-directory type change, and image extras, runtime conf, revived files, and deletion/history failures passed'

@@ -282,9 +282,27 @@ if [ "$export_digest" != "$source_before" ]; then
     fi
     fail_setup "archive export differs from source digest; exported content or mode changed (source: $root; export: $export_dir)"
 fi
-expected_files="$(find "$root/tests/php" "$root/tests/plugins" -type f -name '*Test.php' | wc -l)" \
-    || fail_setup "cannot count source tests"
-[ "$expected_files" -gt 0 ] || fail_setup "source has no PHP test files"
+# Count exactly the regular test files in this verified export. The source
+# tree may also contain ignored *Test.php files that were never archived.
+expected_files="$(python3 - "$run/manifest" "$export_dir" <<'PYCOUNT'
+import os
+import stat
+import sys
+
+manifest, export = sys.argv[1:]
+with open(manifest, 'rb') as stream:
+    paths = stream.read().split(b'\0')
+root = os.fsencode(export)
+count = 0
+for path in paths:
+    if not path.startswith((b'tests/php/', b'tests/plugins/')) or not path.endswith(b'Test.php'):
+        continue
+    if stat.S_ISREG(os.lstat(os.path.join(root, path)).st_mode):
+        count += 1
+print(count)
+PYCOUNT
+)" || fail_setup "cannot count exported tests"
+[ "$expected_files" -gt 0 ] || fail_setup "export has no PHP test files"
 
 . "$root/tests/php-failure-pattern.sh"
 uid="$(id -u)"; gid="$(id -g)"

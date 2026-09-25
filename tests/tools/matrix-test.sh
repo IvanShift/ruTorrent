@@ -53,7 +53,35 @@ chmod 0755 "$scratch/tests/php/aTest.php"
 mode_digest="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
 [ "$mode_digest" != "$docs" ] || { echo 'chmod missed the digest' >&2; exit 1; }
 chmod 0644 "$scratch/tests/php/aTest.php"
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/green.log"
+# Equal-content targets isolate the link target itself in the digest.
+printf 'same\n' > "$scratch/same-a.txt"
+printf 'same\n' > "$scratch/same-b.txt"
+ln -s same-a.txt "$scratch/suite-link"
+git -C "$scratch" add same-a.txt same-b.txt suite-link
+link_before="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+ln -sfn same-b.txt "$scratch/suite-link"
+link_after="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+[ "$link_before" != "$link_after" ] || { echo 'symlink target change missed the digest' >&2; exit 1; }
+# Ignored files are outside the export and must not inflate the file count.
+printf 'tests/php/ignoredTest.php\n' > "$scratch/.gitignore"
+git -C "$scratch" add .gitignore
+printf 'ignored\n' > "$scratch/tests/php/ignoredTest.php"
+HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/green.log" || {
+    cat "$short_home/green.log" >&2
+    echo 'ignored PHP file made the exported suite red' >&2; exit 1
+}
+# A partial harness run must still fail against the exported manifest.
+printf 'second\n' > "$scratch/tests/php/secondTest.php"
+git -C "$scratch" add tests/php/secondTest.php
+if HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/missing-file.log" 2>&1; then
+    echo 'harness skipped a tracked exported PHP file' >&2; exit 1
+fi
+missing_file_log="$(awk '$1 == "local" { print $5 }' "$short_home/missing-file.log")"
+grep -q 'ran 1 of 2 PHP files' "$missing_file_log" || {
+    cat "$short_home/missing-file.log" "$missing_file_log" >&2
+    echo 'missing exported PHP file was not counted' >&2; exit 1
+}
+git -C "$scratch" rm -fq tests/php/secondTest.php
 chmod 0664 "$scratch/tests/php/aTest.php"
 ( umask 022; HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/umask.log" ) || {
     cat "$short_home/umask.log" >&2
@@ -171,6 +199,7 @@ grep -q 'no nonempty passing test result in php/aTest.php' "$empty_php_log"
 
 # Both runner styles must still be accepted after the empty-file guard.
 cp "$root/tests/php/TestCase.php" "$scratch/tests/php/TestCase.php"
+cp "$root/tests/php/TestCaseRunner.php" "$scratch/tests/php/TestCaseRunner.php"
 cat > "$scratch/tests/php/aTest.php" <<'TESTCASE'
 <?php
 require_once __DIR__ . '/TestCase.php';
@@ -326,13 +355,13 @@ PYHUP
 cat > "$scratch/tests/php-test.sh" <<'TEST'
 #!/bin/bash
 echo '> php php/aTest.php'
-if [ -n "${MATRIX_TEST_DELAY:-}" ]; then
+if [ -n "${MATRIX_TEST_RELEASE:-}" ]; then
     touch "$TMPDIR/started"
-    sleep "$MATRIX_TEST_DELAY"
+    while [ ! -e "$MATRIX_TEST_RELEASE" ]; do sleep 0.05; done
 fi
 echo '1 tests, 0 failures'
 TEST
-HOME="$short_home" MATRIX_TEST_DELAY=3 "$scratch/tasks/matrix.sh" local > "$short_home/slow.log" 2>&1 &
+HOME="$short_home" MATRIX_TEST_RELEASE="$short_home/release-slow" "$scratch/tasks/matrix.sh" local > "$short_home/slow.log" 2>&1 &
 matrix_pid=$!
 started_file=''
 for ((i=0; i<100; i++)); do
@@ -342,14 +371,29 @@ for ((i=0; i<100; i++)); do
 done
 [ -n "$started_file" ] || { echo 'retention fixture did not start' >&2; exit 1; }
 active_run="$(dirname "$(dirname "$(dirname "$started_file")")")"
+# Force the active directory past the stale cutoff: quick runs must respect
+# its inherited flock, not just the ordinary one-day grace period.
+touch -d '3 days ago' "$active_run"
 for ((i=0; i<3; i++)); do
     HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/quick-$i.log"
 done
 [ -d "$term_run" ] || { echo 'interrupted logs disappeared before the operator could read them' >&2; exit 1; }
 [ -d "$active_run" ] || { echo 'cleanup deleted an active run' >&2; exit 1; }
+touch "$short_home/release-slow"
 wait "$matrix_pid"
 matrix_pid=''
 [ -d "$active_run" ] || { echo 'a late-finishing run erased its own logs' >&2; exit 1; }
+python3 - "$short_home/.cache/rtm" "$active_run" <<'PYRETENTION'
+from pathlib import Path
+import re
+import sys
+base, active = map(Path, sys.argv[1:])
+finished = [p for p in base.iterdir() if re.fullmatch(r'[0-9]{12}\.[A-Za-z0-9]{6}', p.name) and (p / '.finished').exists()]
+if len(finished) != 3:
+    raise SystemExit('retention kept %d completed runs, expected exactly three' % len(finished))
+if active not in finished:
+    raise SystemExit('late-finishing active run was not retained')
+PYRETENTION
 old_unfinished="$short_home/.cache/rtm/000101000000.stale0"
 mkdir -p "$old_unfinished"
 touch -d '3 days ago' "$old_unfinished"

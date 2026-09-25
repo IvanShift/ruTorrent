@@ -69,6 +69,11 @@ def paths(data):
 def valid(path):
     return not path.startswith(b'/') and all(part not in (b'', b'.', b'..') for part in path.split(b'/'))
 
+history_state = git('rev-parse', '--is-shallow-repository').strip()
+if history_state == b'true':
+    sys.exit('rt-lab: shallow Git history cannot identify stale image files; run git fetch --unshallow before sync')
+if history_state != b'false':
+    sys.exit('rt-lab: cannot verify complete Git history before sync')
 tracked = paths(git('ls-files', '-z', *excluded))
 def exportable(path):
     source = os.path.join(os.fsencode(repo), path)
@@ -79,8 +84,17 @@ def exportable(path):
     return stat.S_ISREG(mode) or stat.S_ISLNK(mode)
 current = {path for path in tracked if exportable(path)}
 previous = paths(open(previous_file, 'rb').read()) if os.path.exists(previous_file) else set()
-removed_from_head = paths(git('diff', '--name-only', '--diff-filter=D', '-z', 'HEAD', '--', *excluded))
-removed = (previous | removed_from_head) - current
+# A fresh container has no previous inventory, and the image does not expose a
+# reliable ruTorrent commit SHA. Historical Git deletions cover older images;
+# image-only paths survive unless they reuse a formerly Git-owned name. The
+# current export wins for reintroduced paths. --no-renames makes the old side
+# of both committed and staged renames a deletion.
+removed_from_history = paths(git('log', '-m', '--format=', '--name-only',
+                                 '--no-renames', '--diff-filter=D', '-z',
+                                 'HEAD', '--', *excluded))
+removed_from_head = paths(git('diff', '--no-renames', '--name-only',
+                              '--diff-filter=D', '-z', 'HEAD', '--', *excluded))
+removed = (previous | removed_from_history | removed_from_head) - current
 if any(not valid(path) for path in current | removed):
     raise ValueError('rt-lab: unsafe tracked path in overlay manifest')
 with open(current_file, 'wb') as stream:
@@ -91,7 +105,11 @@ MANIFEST
     tar -C "$REPO" --null -T "$files" -cf "$archive"
     if [ -s "$deleted" ]; then
         docker cp "$deleted" "$name:$container_deleted"
-        docker exec -u root "$name" sh -c "cd $APP && xargs -0 -r rm -f -- < $container_deleted && rm -f $container_deleted"
+        # A historical file path may be a directory in a newer image. Keep
+        # that directory (and image-only children), while removing old files.
+        docker exec -u root "$name" sh -c "cd $APP && xargs -0 -r -n 100 sh -ec 'for path do
+            if [ -L \"\$path\" ] || [ ! -d \"\$path\" ]; then rm -f -- \"\$path\"; fi
+        done' _ < $container_deleted && rm -f $container_deleted"
     fi
     docker cp "$archive" "$name":"$container_archive"
     # A failed manifest upload cannot leave an unrecorded newly overlaid file.

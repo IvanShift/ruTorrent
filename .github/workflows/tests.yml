@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell fixture tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/rutorrent-tool-tests"
+          export TMPDIR="$RUNNER_TEMP/rutorrent-tool-tests"
+          bash tests/tools/rt-lab-test.sh
+          bash tests/tools/matrix-test.sh
+
   php:
     runs-on: ubuntu-latest
     strategy:
