@@ -6,7 +6,7 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 /**
  * One safe-parameter policy for both HTTP entrypoints.
  *
- * The shipped conf file calls XMLRPCProxy::defaultSafeParams(); the proxy
+ * The shipped conf calls XMLRPCProxy::defaultSafeParams() when available; the proxy
  * also uses that list when an older persisted conf volume lacks the file.
  * Other shipped overrides must agree with this default if they define a list.
  */
@@ -20,6 +20,31 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 	{
 		$this->root = realpath(__DIR__ . '/../..');
 		$this->reference = $this->safeParamsOf($this->root . '/conf/xmlrpc_proxy.php');
+	}
+
+	public function testShippedConfLoadsWithLegacyProxyClass()
+	{
+		// Before defaultSafeParams() existed, persisted conf/ could still be
+		// shared with a rolled-back application tree.
+		$script = 'class XMLRPCProxy {} '
+			. 'require ' . var_export($this->root . '/conf/xmlrpc_proxy.php', true) . '; '
+			. 'echo json_encode(array($XMLRPCProxy, $XMLRPCProxyLog, '
+			. 'isset($XMLRPCProxySafeParams)));';
+		$process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', '-r', $script),
+			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+			$pipes);
+		if(!is_resource($process))
+			throw new RuntimeException('legacy proxy child did not start');
+		fclose($pipes[0]);
+		$output = stream_get_contents($pipes[1]);
+		fclose($pipes[1]);
+		$errors = stream_get_contents($pipes[2]);
+		fclose($pipes[2]);
+		$exit = proc_close($process);
+		$this->assertEquals(0, $exit, 'shipped conf loads with a legacy proxy class: '.$errors);
+		if($exit === 0)
+			$this->assertEquals(array('sanitize', true, false), json_decode($output, true),
+				'legacy proxy keeps the proxy mode and its earlier implicit policy');
 	}
 
 	/**

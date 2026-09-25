@@ -224,18 +224,39 @@ class XMLRPCProxyTest extends TestCase
 			'a system.multicall member uses the same direct size shape and floor');
 	}
 
-	public function testBuiltInPolicyHintAppearsOnceOnMulticallDecision()
+	public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallDenialLine()
 	{
 		$policy = XMLRPCProxy::policySettings(array());
 		$hash = str_repeat('A', 40);
 		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
-			array('d.stop', array($hash)), array('d.start', array($hash)),
+			array('d.stop', array($hash)), array('execute.capture', array('id')),
 		)), 'sanitize', $policy['safeParams']);
 		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
+		$this->assertTrue($decision['action'] === 'reject' && count($lines) >= 2
+			&& strpos($lines[0], 'system.multicall') !== false
+			&& strpos($lines[1], '[slot 2]') !== false,
+			'denied multicall has an outer refusal and a member reason');
 		$this->assertEquals(1, substr_count(implode("\n", $lines), '[built-in policy]'),
-			'the carrier decision names the fallback only once');
+			'denied multicall names the fallback only once');
 		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
-			'the summary line carries the policy source');
+			'the outer refusal carries the policy source');
+	}
+
+	public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallWarningLine()
+	{
+		$policy = XMLRPCProxy::policySettings(array());
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('load.start', array('', '/tmp/sample.torrent')),
+		)), 'sanitize', $policy['safeParams'], true);
+		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
+		$this->assertTrue($decision['action'] === 'send' && count($lines) === 2
+			&& strpos($lines[0], 'system.multicall') !== false
+			&& strpos($lines[1], '[slot 1] WARNING:') !== false,
+			'allowed local-path multicall logs a separate member warning');
+		$this->assertEquals(1, substr_count(implode("\n", $lines), '[built-in policy]'),
+			'multicall warning names the fallback only once');
+		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
+			'the outer summary carries the policy source');
 	}
 
 	public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()

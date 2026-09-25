@@ -201,7 +201,7 @@ class XMLRPCProxy
 		'd.custom.if_z' => 2,
 	);
 
-	// The shipped conf/xmlrpc_proxy.php calls defaultSafeParams() directly.
+	// The shipped conf/xmlrpc_proxy.php calls defaultSafeParams() when available.
 	// Keep the list here so an older persisted conf/ volume without that file
 	// still gets a usable policy. Explicit installed lists remain overrides.
 	//
