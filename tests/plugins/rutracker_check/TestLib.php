@@ -858,6 +858,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $requests = array();
         public static $rawheadersLog = array();
         public static $agentsLog = array();
+        public static $beforeFetchSnapshots = array();
 
         public $lastredirectaddr = '';
         public $status = -1;
@@ -876,6 +877,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$requests = array();
             self::$rawheadersLog = array();
             self::$agentsLog = array();
+            self::$beforeFetchSnapshots = array();
         }
 
         // $headers models the response headers real Snoopy collects into
@@ -883,12 +885,12 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // php/Snoopy.class.inc:596). The request side ($rawheaders) is
         // recorded per request into $rawheadersLog, index-parallel to
         // $requests, for the tests that pin conditional-GET behaviour.
-        public static function queue($url, $status, $results, $headers = array(), $redirect = null)
+        public static function queue($url, $status, $results, $headers = array(), $redirect = null, $error = '')
         {
             if (!isset(self::$responses[$url])) {
                 self::$responses[$url] = array();
             }
-            self::$responses[$url][] = array($status, $results, $headers, $redirect);
+            self::$responses[$url][] = array($status, $results, $headers, $redirect, $error);
         }
 
         // A refusal before Snoopy receives a response leaves status/results
@@ -908,10 +910,10 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         // loginmgr may refuse before it reaches Snoopy::fetch(), preserving
         // metadata from the preceding request on this reused client.
-        public static function queueBeforeFetchFailure($url)
+        public static function queueBeforeFetchFailure($url, $lastStatus = null, $lastBody = '')
         {
             if (!isset(self::$responses[$url])) self::$responses[$url] = array();
-            self::$responses[$url][] = array('beforeFetchFailure' => true);
+            self::$responses[$url][] = array('beforeFetchFailure' => array($lastStatus, $lastBody));
         }
 
         public static function queueAny($status, $results, $headers = array())
@@ -922,7 +924,14 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         private function respond($method, $url)
         {
             if (isset(self::$responses[$url][0]['beforeFetchFailure'])) {
-                array_shift(self::$responses[$url]);
+                self::$beforeFetchSnapshots[] = array($this->status, $this->results,
+                    $this->headers, $this->error, $this->lastredirectaddr);
+                $queued = array_shift(self::$responses[$url]);
+                list($lastStatus, $lastBody) = $queued['beforeFetchFailure'];
+                if ($lastStatus !== null) {
+                    $this->status = $lastStatus;
+                    $this->results = $lastBody;
+                }
                 self::$requests[] = array($method, $url);
                 self::$rawheadersLog[] = $this->rawheaders;
                 self::$agentsLog[] = (string) $this->agent;
@@ -952,10 +961,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                     if ($redirect !== null) $this->lastredirectaddr = $redirect;
                     return false;
                 }
-                list($this->status, $this->results, $this->headers, $redirect) = $response;
-                $this->error = '';
-                // Real Snoopy leaves redirect metadata on a reused client until
-                // its caller clears it; an ordinary response sets no redirect.
+                list($this->status, $this->results, $this->headers, $redirect, $this->error) = $response;
+                // A top-level fetch clears the previous redirect above; only
+                // a new redirect sets this field.
                 if ($redirect !== null) $this->lastredirectaddr = $redirect;
                 return true;
             }

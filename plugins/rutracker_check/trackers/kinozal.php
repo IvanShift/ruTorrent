@@ -48,8 +48,8 @@ class KinozalCheckImpl
     //
     // The captured answer is windows-1251; the UTF-8 spelling is a defensive
     // compatibility case, not an observed answer from download.php. Both are
-    // literal bytes, not converted. get_srv_details.php answers UTF-8, and the
-    // production container's PHP has no iconv() at all, so a needle that
+    // literal bytes, not converted. The production container's PHP has no
+    // iconv() at all, so a needle that
     // relied on conversion would never match. Carrying both spellings costs
     // one comparison and depends on no extension.
     const DOWNLOAD_MISSING_CP1251 = "\xcd\xe5\xf2 \xf0\xe0\xe7\xe4\xe0\xf7\xe8 \xf1 \xf2\xe0\xea\xe8\xec ID.";
@@ -71,12 +71,11 @@ class KinozalCheckImpl
     // pattern, so a change to either has to confront the real answer.
     const DOWNLOAD_MISSING_BLOCK = '~<div\s+class=["\']?pad5x5["\']?\s*>((?:(?!</?div\b).)*)</div>~is';
 
-    // Per-endpoint, per-process latches. Production runs one PHP process per
-    // cycle (update.php, batch_check.php), so process lifetime IS cycle lifetime
-    // and each latch
-    // cannot outlive the run. They are set by the two answers that are a
-    // property of an endpoint rather than of one topic: a session the
-    // tracker has stopped honouring (guestAnswer) and a host that has stopped
+    // Per-process latches. The details latch stops this handler for the cycle;
+    // the download latch stops only that endpoint. Production runs one PHP
+    // process per cycle (update.php, batch_check.php), so neither outlives it.
+    // They are set by answers that concern an endpoint rather than one topic:
+    // a session the tracker has stopped honouring (guestAnswer), or a host that has stopped
     // answering (unreachable). Without it every Kinozal torrent spent a
     // request proving the same thing over again -- 130 of them per cycle on
     // the live fleet -- and buried the log under 130 identical lines. The
@@ -259,7 +258,9 @@ class KinozalCheckImpl
                 self::$downloadTransportFailures = 0;
                 return self::guestAnswer("download.php redirected to login.php: id=".$id, 'download');
             }
-            return self::unreachable("download.php failed: status=".$client->status." id=".$id,
+            // A false fetch may leave the status of a loginmgr request here.
+            // Name it as the client's last status, not the download response.
+            return self::unreachable("download attempt failed: last-status=".$client->status." id=".$id,
                 $client, 'download');
         }
         // An answer arrived, so the host is reachable, whatever the body says

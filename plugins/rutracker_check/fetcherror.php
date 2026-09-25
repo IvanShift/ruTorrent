@@ -27,9 +27,10 @@ class RuTrackerFetchError
 	 * handler that ROUTES on this answer must not read an outage as a wall, or
 	 * a ten-minute origin restart sends a whole cycle through its expensive
 	 * door. NNMClubCheckImpl::looksLikeChallengePage() keeps a broader test
-	 * for HTTP-200 topic pages without a download link: login/challenge/captcha
-	 * pages are retryable; other unreadable pages are errors. Non-200 responses
-	 * are rejected before that predicate runs.
+	 * for HTTP-200 topic pages without a download link: pages carrying
+	 * cf-chl, turnstile, captcha, cloudflare, just a moment, or
+	 * challenge-platform are retryable; other unreadable pages are errors.
+	 * Non-200 responses are rejected before that predicate runs.
 	 */
 	static public function isChallenge( $headers, $body )
 	{

@@ -329,7 +329,7 @@ $suite->test('the download guest streak resets on metainfo and then latches inde
         KinozalCheckImpl::download_torrent($oldE['topic_url'], $oldE['hash'], $oldE['torrent']),
         'a healthy details verdict remains available after download guest failures');
     strictAssertSame(9, count(Snoopy::$requests),
-        'healthy details do not erase the download streak and remain independently queryable');
+        'the scenario made nine fetch requests');
     strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
         'a healthy details answer cannot reset the unrelated download guest streak');
     strictAssertSame(true, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
@@ -1325,6 +1325,30 @@ $suite->test('a loginmgr refusal before fetch cannot reuse a details redirect', 
         'the prior details redirect cannot prove a download login wall');
     strictAssertSame(1, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'),
         'a refusal without fresh download bytes counts as transport');
+});
+
+$suite->test('a prefetch refusal sees cleared details response fields', function () {
+    $case = kinozalCase();
+    Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)),
+        array('x-details: yes'), 'https://kinozal.guru/login.php', 'credential-redirect-refused');
+    Snoopy::queueBeforeFetchFailure($case['download_url']);
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+        'the download refusal remains retryable');
+    strictAssertSame(array(array(-1, '', array(), '', '')), Snoopy::$beforeFetchSnapshots,
+        'no details status, body, headers, error or redirect reaches loginmgr as download metadata');
+});
+
+$suite->test('a loginmgr refusal does not attribute its last status to download.php', function () {
+    $case = kinozalCase();
+    Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)));
+    Snoopy::queueBeforeFetchFailure($case['download_url'], 403, '<html>login refused</html>');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+        'a loginmgr refusal stays retryable');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs,
+        'download attempt failed: last-status=403',
+        'the status is named as the last client status, not a download response');
 });
 
 $suite->test('a catch-all answer clears an earlier Snoopy error', function () {

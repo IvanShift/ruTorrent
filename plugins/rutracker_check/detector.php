@@ -266,19 +266,16 @@ class RuTrackerDetector
     /**
      * Is this d.message a transport failure and NOTHING else?
      *
-     * rTorrent joins the messages of every failing row into one string with
-     * ' /// ' between them. Live sample from the fleet, 2026-08-21:
+     * libtorrent may try both address families for one tracker. If both fail,
+     * it joins their IPv4 and IPv6 reasons with ' /// ' (upstream #3201).
+     * A live fleet sample from 2026-08-21 was:
      * "Tracker: [Could not connect to server /// Could not resolve hostname]"
-     * on a torrent whose two failing rows were a retracker and an IPv6 mirror,
-     * while its two working rows had nothing to say.
+     * The separator does not identify different tracker rows; d.message is
+     * download-global, and messageSpeaksForTracker() handles its attribution.
      *
-     * The anchored pattern alone therefore only ever read the FIRST part, and
-     * answered for the whole: a real "Failure reason" queued behind a timeout
-     * was excused as a pure transport failure, so layer 1 said 'transport' --
-     * do nothing this cycle -- about a topic that had just been deregistered,
-     * and would keep saying it for as long as one row could not be resolved.
-     *
-     * So every part has to be a transport failure for the message to be one.
+     * An anchored match on only the first part could treat a later tracker
+     * "Failure reason" as a pure transport failure. Every nonempty part must
+     * therefore be a transport failure.
      */
     static public function isTransportFailure($message)
     {

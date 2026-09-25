@@ -4212,7 +4212,7 @@ class CheckerTest
 					return $row['failure'];
 				},
 				function() use ($row, $label) {
-					rXMLRPCRequest::queue('d.set_custom', true, false, array()); // idempotent writeability check
+					rXMLRPCRequest::queue('d.set_custom', true, false, array()); // same-value state projection
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // a new verdict
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());

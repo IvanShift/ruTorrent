@@ -48,4 +48,15 @@ class LifecycleInitLogTest extends TestCase
                 'the UI diagnostic retains the same bounded reason');
         }
     }
+
+    public function testInPlaceUpgradeHintIsConditionalAndDoesNotReplaceTheFailureCode()
+    {
+        $legacy = retrackersLifecycleDiagnosticJavascript('init', 'receipt-ledger-corrupt');
+        $this->assertTrue(strpos($legacy, 'receipt-ledger-corrupt') !== false &&
+            strpos($legacy, 'if an in-place upgrade left old hooks, restart rTorrent and recheck') !== false,
+            'init keeps the classified refusal and names the conditional legacy-hook remedy');
+        $other = retrackersLifecycleDiagnosticJavascript('done', 'receipt-ledger-corrupt');
+        $this->assertTrue(strpos($other, 'restart rTorrent') === false,
+            'the upgrade hint is limited to the startup path with the documented old-hook case');
+    }
 }

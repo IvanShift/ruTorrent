@@ -71,8 +71,12 @@ class AniDUBCheckImpl{
                 $url_matches["url"], $m)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
             $client->setcookies();
-            if (!$client->fetchComplex("https://tr.anidub.com/engine/download.php?id=" . $m[1]))
+            if (!$client->fetchComplex("https://tr.anidub.com/engine/download.php?id=" . $m[1])) {
+                $reason = RuTrackerFetchError::classify($client->error);
+                ruTrackerChecker::logDebug('[AniDUB] download fetch returned false: error='
+                    . ($reason === '' ? 'none' : $reason));
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
 
             return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
         }

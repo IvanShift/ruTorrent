@@ -126,6 +126,30 @@ $suite->test('a failed second fetch cannot reuse the previous topic page as a do
     }
 });
 
+$suite->test('a failed second fetch logs a classified reason without remote text', function () {
+    foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
+        ruTrackerChecker::reset();
+        Snoopy::queue($h['page'], 200, $h['body']);
+        Snoopy::queueEarlyFailure($h['down'], 'Refusing to fetch: cannot resolve host secret-token');
+        $old = $h['old'] === null ? null : new $h['old']();
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            call_user_func($h['call'], $h['topic'], SIB_OLD_HASH, $old),
+            $name . ': the false fetch remains retryable');
+        $line = strictAssertOneLogMatching(ruTrackerChecker::$logs,
+            'download fetch returned false: error=refused-unresolvable-host',
+            $name . ': the early refusal has a classified diagnostic');
+        strictAssertSame(false, strpos($line, 'secret-token') !== false,
+            $name . ': remote text does not enter routine logs');
+        ruTrackerChecker::reset();
+        Snoopy::queue($h['page'], 200, $h['body']);
+        Snoopy::queueEarlyFailure($h['down'], '');
+        call_user_func($h['call'], $h['topic'], SIB_OLD_HASH, $old);
+        strictAssertOneLogMatching(ruTrackerChecker::$logs,
+            'download fetch returned false: error=none',
+            $name . ': a false fetch without a Snoopy message remains visible');
+    }
+});
+
 $suite->test('a download link that did not answer 200 is not a deletion', function () {
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
         foreach (sibNotFound() as $why => $status) {

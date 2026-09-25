@@ -57,8 +57,12 @@ class tolokaCheckImpl
             $client->setcookies();
 
 	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
-            if (!$client->fetchComplex("https://toloka.to/download.php?id=" . $dow_id))
+            if (!$client->fetchComplex("https://toloka.to/download.php?id=" . $dow_id)) {
+                $reason = RuTrackerFetchError::classify($client->error);
+                ruTrackerChecker::logDebug('[Toloka] download fetch returned false: error='
+                    . ($reason === '' ? 'none' : $reason));
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
             return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
         }
         return ruTrackerChecker::STE_DECLINED;

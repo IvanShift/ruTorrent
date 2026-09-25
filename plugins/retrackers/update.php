@@ -3850,6 +3850,7 @@ class RetrackersRecoveryRows4Decisions
 		if ($offset !== strlen($packed)) {
 			return(false);
 		}
+		// Quarantine count is report-only; marked_count gates empty-ledger startup.
 		return(array('ok' => true, 'count' => $count, 'quarantine_count' => $quarantineCount,
 			'marked_count' => $markedCount, 'packed' => $decisions));
 	}
@@ -9448,8 +9449,13 @@ function retrackersBoundedFailureReason($failure)
 function retrackersLifecycleDiagnosticJavascript($context, $failure)
 {
 	$reason = retrackersBoundedFailureReason($failure);
-	$message = ($context === 'done' && $reason === 'hook-teardown-pending') ?
-		'hook-teardown-pending; daemon restart required after active recovery finishes' : $reason;
+	$message = $reason;
+	if ($context === 'done' && $reason === 'hook-teardown-pending') {
+		$message .= '; daemon restart required after active recovery finishes';
+	} elseif ($context === 'init' && $reason === 'receipt-ledger-corrupt') {
+		// An old hook and missing claims can look alike; the refusal stays closed.
+		$message .= '; if an in-place upgrade left old hooks, restart rTorrent and recheck';
+	}
 	return('noty(' . json_encode('retrackers: ' . $message) . ",'error');");
 }
 

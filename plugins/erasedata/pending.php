@@ -166,8 +166,6 @@ if(!function_exists('erasedataEncodePendingMarker'))
 			return(false);
 		$canonical = strtoupper($hash);
 		$marker = erasedataPendingMarkerPath($listPath, $canonical, $generation);
-		if(!is_string($marker))
-			return(false);
 		clearstatcache(true, $marker);
 		// Already recorded, and never rewritten: a caller that fires again -- a
 		// ratio group command does so on every check -- must not be able to

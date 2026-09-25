@@ -1,10 +1,12 @@
 <?php
 
+// execute.capture includes date's trailing newline; printf keeps the stored epoch numeric.
+$seedingtimeTimestamp = '"$'.getCmd('execute_capture').'={sh,-c,printf %s $(date +%s)}"';
 $req = new rXMLRPCRequest( array(
 	$theSettings->getOnFinishedCommand(array("seedingtime".User::getUser(),
-		getCmd('d.set_custom').'=seedingtime,"$'.getCmd('execute_capture').'={date,+%s}"')),
+		getCmd('d.set_custom').'=seedingtime,'.$seedingtimeTimestamp)),
 	$theSettings->getOnInsertCommand(array("addtime".User::getUser(),
-		getCmd('d.set_custom').'=addtime,"$'.getCmd('execute_capture').'={date,+%s}"')),
+		getCmd('d.set_custom').'=addtime,'.$seedingtimeTimestamp)),
 
 	$theSettings->getOnHashdoneCommand(array("seedingtimecheck".User::getUser(),
 		getCmd('branch=').'$'.getCmd('not=').'$'.getCmd('d.get_complete=').',,'.

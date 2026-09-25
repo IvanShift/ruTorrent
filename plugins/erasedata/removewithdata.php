@@ -3991,10 +3991,12 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					? $collected[$hash] : erasedataCollectPaths($hash);
 				if($paths === false)
 				{
-					// Erasing now would drop the download and leave its data behind
-					// with nothing left to identify it.
-					$notes[] = array('paths-unknown', $generation, $members,
-						'obligation-retained', $hash);
+					// A present download cannot be erased without a file list.
+					// For a gone one, step (4) decides whether its marker is
+					// discharged; do not pre-report its obligation as retained.
+					if($presence[$hash] === ERASEDATA_TORRENT_PRESENT)
+						$notes[] = array('paths-unknown', $generation, $members,
+							'obligation-retained', $hash);
 					continue;
 				}
 				$content = ErasedataManifestCodec::encode($hash, $paths, $force);

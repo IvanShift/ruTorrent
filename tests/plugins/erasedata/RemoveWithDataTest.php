@@ -12906,6 +12906,14 @@ class RemoveWithDataTest extends TestCase
 				$reported = true;
 		$this->assertTrue($reported,
 			'the loss is stated, with its canonical hash, rather than swallowed');
+		$retainedAfterDischarge = array();
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'erasedata: paths-unknown ') !== false
+				&& strpos($line, 'hash='.$hash) !== false
+				&& strpos($line, 'consequence=obligation-retained') !== false)
+				$retainedAfterDischarge[] = $line;
+		$this->assertEquals(array(), $retainedAfterDischarge,
+			'a discharged marker is not also reported as an obligation retained by an unknown path');
 		$this->assertTrue(is_array($tick) && isset($tick['retired'])
 			&& $tick['retired'] === true,
 			'and the same tick can finally retire the schedule it unwedged');
@@ -12934,6 +12942,32 @@ class RemoveWithDataTest extends TestCase
 			'an unknown probe retains the obligation rather than discharging it');
 		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
 			'and retires nothing on the strength of an answer nobody got');
+	}
+
+	public function testPresentMemberWithUnknownPathsKeepsItsMarkerAndReason()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$hash = $this->hash('A');
+		$generation = '0000000000000005';
+		$this->armQueue($queue, $generation, array());
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
+			'the present member has a durable obligation');
+		$this->probe(true, false, array($hash));
+		$this->frozen(false, array());
+		$this->stored(false, array());
+		$notes = array();
+		$outcome = erasedataDrainGenerationPass($queue, User::getUser(),
+			$generation, array('hashes' => array($hash), 'force' => 1),
+			new ErasedataFilesystemOps(), $notes);
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1,
+			'the present member remains owed when its paths cannot be read');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $hash, $generation),
+			'its pending marker is retained');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'no erase is sent without a file list');
+		$this->assertNote($notes, 'paths-unknown', $generation, $hash,
+			'obligation-retained', 'the surviving obligation keeps its accurate reason');
 	}
 
 	public function testDrainAcknowledgementWaitSurvivesClockStepsInBothDirections()

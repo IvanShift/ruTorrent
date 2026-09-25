@@ -17,8 +17,12 @@ class TfileCheckImpl
                 }
                 if (preg_match('`\"download.php\?id=(?P<id>\d+)`', $client->results, $matches)) {
                     $client->setcookies();
-                    if (!$client->fetchComplex("https://megatfile.cc/forum/download.php?id=".$matches["id"]))
+                    if (!$client->fetchComplex("https://megatfile.cc/forum/download.php?id=".$matches["id"])) {
+                        $reason = RuTrackerFetchError::classify($client->error);
+                        ruTrackerChecker::logDebug('[Tfile] download fetch returned false: error='
+                            . ($reason === '' ? 'none' : $reason));
                         return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+                    }
                     return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
                 }
             }

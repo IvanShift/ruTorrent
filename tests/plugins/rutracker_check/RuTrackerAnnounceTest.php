@@ -259,6 +259,33 @@ function ratProbe($host, $now, $status, $window)
     RuTrackerAnnounce::recordOutcome($host, $now, $status);
 }
 
+// Run the same shipped reservation in a fresh PHP process. Passing a ready
+// file and gate makes several children begin the reservation together.
+function ratWriteReservationChild($dir, $host, $cap)
+{
+    $child = $dir . '/child.php';
+    // util.php's autoloader resolves utility paths from php/ in the child.
+    file_put_contents($child, '<?php
+        chdir(' . var_export(testFindRepoRoot() . '/php/utility', true) . ');
+        require ' . var_export(testFindRepoRoot() . '/php/utility/fileutil.php', true) . ';
+        chdir(' . var_export(testFindRepoRoot() . '/php', true) . ');
+        require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/announce.php', true) . ';
+        $dir = new ReflectionProperty("RuTrackerState", "dir");
+        if (PHP_VERSION_ID < 80100) $dir->setAccessible(true);
+        $dir->setValue(null, ' . var_export($dir, true) . ');
+        if (isset($argv[1], $argv[2])) {
+            if (file_put_contents($argv[1], "ready") === false) exit(2);
+            $deadline = microtime(true) + 20;
+            while (!is_file($argv[2])) {
+                if (microtime(true) >= $deadline) exit(3);
+                usleep(1000);
+            }
+        }
+        echo RuTrackerAnnounce::reserveProbe(' . var_export($host, true) . ', 1000, ' . (int) $cap . ', ' . RAT_WINDOW . ');
+    ');
+    return $child;
+}
+
 $suite->test('announce budget: cap and 403 cooldown doubling', function () {
     strictWithStateDir('chk-announce', function () {
         for ($i = 0; $i < 10; $i++) {
@@ -341,20 +368,7 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
     strictRemoveTree($tmp);
     mkdir($tmp, 0777, true);
 
-    // announce.php requires php/util.php, whose autoloader includes utility/
-    // files through a path relative to the cwd, so the child has to run with
-    // its cwd inside php/ -- the same bootstrap TestLib performs.
-    $child = $tmp . '/child.php';
-    file_put_contents($child, '<?php
-        chdir(' . var_export(testFindRepoRoot() . '/php/utility', true) . ');
-        require ' . var_export(testFindRepoRoot() . '/php/utility/fileutil.php', true) . ';
-        chdir(' . var_export(testFindRepoRoot() . '/php', true) . ');
-        require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/announce.php', true) . ';
-        $dir = new ReflectionProperty("RuTrackerState", "dir");
-        if (PHP_VERSION_ID < 80100) $dir->setAccessible(true);
-        $dir->setValue(null, ' . var_export($tmp, true) . ');
-        echo RuTrackerAnnounce::reserveProbe("bt4.t-ru.org", 1000, 5, ' . RAT_WINDOW . ');
-    ');
+    $child = ratWriteReservationChild($tmp, 'bt4.t-ru.org', 5);
 
     try {
         $answers = array();
@@ -372,6 +386,60 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
         strictAssertSame(array('allow', 'allow', 'allow', 'allow', 'allow', 'cap'), $answers,
             'six separate processes share one window: the sixth click finds the budget spent');
     } finally {
+        strictRemoveTree($tmp);
+    }
+});
+
+// Starting all children behind one gate exercises the locked read-modify-write,
+// not just persistence between processes. With one slot, exactly one child
+// may announce even when the other requests were already waiting to start.
+$suite->test('announce budget: simultaneous processes take one slot only once', function () {
+    $tmp = sys_get_temp_dir() . '/chk-announce-concurrent-' . bin2hex(random_bytes(5));
+    strictAssertTrue(mkdir($tmp, 0777, true), 'isolated state directory created');
+    $child = ratWriteReservationChild($tmp, 'bt-concurrent.t-ru.org', 1);
+    $gate = $tmp . '/go';
+    $processes = array();
+    try {
+        for ($i = 0; $i < 4; $i++) {
+            $ready = $tmp . '/ready-' . $i;
+            $cmd = 'exec ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($child) .
+                ' ' . escapeshellarg($ready) . ' ' . escapeshellarg($gate);
+            $spec = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+            $proc = proc_open($cmd, $spec, $pipes);
+            strictAssertTrue(is_resource($proc), 'reservation child ' . $i . ' launched');
+            $processes[$i] = array($proc, $pipes);
+        }
+        $deadline = microtime(true) + 10;
+        do {
+            $readyCount = count((array) glob($tmp . '/ready-*'));
+            if ($readyCount === 4) break;
+            usleep(1000);
+        } while (microtime(true) < $deadline);
+        strictAssertSame(4, $readyCount, 'all children reached the start gate');
+        strictAssertTrue(file_put_contents($gate, 'go') !== false, 'the start gate opened');
+
+        $answers = array();
+        foreach ($processes as $i => $entry) {
+            list($proc, $pipes) = $entry;
+            $answers[] = trim(stream_get_contents($pipes[1]));
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $code = proc_close($proc);
+            unset($processes[$i]);
+            strictAssertSame(0, $code, 'reservation child ' . $i . ' exited cleanly: ' . $stderr);
+        }
+        sort($answers, SORT_STRING);
+        strictAssertSame(array('allow', 'cap', 'cap', 'cap'), $answers,
+            'one simultaneous reservation spends the only slot');
+    } finally {
+        // Release children even when readiness or an assertion fails.
+        @file_put_contents($gate, 'go');
+        foreach ($processes as $entry) {
+            list($proc, $pipes) = $entry;
+            foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
+            proc_close($proc);
+        }
         strictRemoveTree($tmp);
     }
 });
