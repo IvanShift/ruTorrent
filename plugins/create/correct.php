@@ -105,7 +105,11 @@ if( count( $argv ) > 1 )
 				if($resumed = rTorrent::fastResume($torrent,$path_edit))
 					$torrent = $resumed;
 				$torrent->save($fname);
-				rTorrent::sendTorrent($torrent, true, true, $path_edit, null, true, User::isLocalMode() );
+				$load = rTorrent::sendTorrent($torrent, true, true, $path_edit, null, true, User::isLocalMode() );
+				if($load === null)
+					FileUtil::toLog('correct: seeding load pending confirmation');
+				elseif($load === false)
+					FileUtil::toLog('correct: seeding load dispatch failed');
 				@chmod($fname,$profileMask & 0666);
 			}
 		}

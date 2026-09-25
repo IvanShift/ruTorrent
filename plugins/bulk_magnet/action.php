@@ -45,7 +45,12 @@ function parseValue( $value )
 		$fname = getTorrent( $value );
 		if($fname)
 		{
-			$ret = rTorrent::sendTorrent($fname, true, true, '', '', $saveUploadedTorrents, false, true);
+			$receipt = null;
+			$ret = rTorrent::sendTorrent($fname, true, true, '', '',
+				$saveUploadedTorrents, false, true, null, $receipt);
+			if($ret === false || ($ret === null && !$saveUploadedTorrents
+				&& !empty($receipt['raw'])))
+				@unlink($fname);
 		}
 	}
 	else
@@ -70,6 +75,7 @@ $result = array
 (
 	'error' => 0,
 	'success' => 0,
+	'pending' => 0,
 );
 
 if(!isset($HTTP_RAW_POST_DATA))
@@ -86,14 +92,13 @@ if(isset($HTTP_RAW_POST_DATA))
 			$value = trim(rawurldecode($parts[1]));
 			if(strlen($value))
 			{
-				if( parseValue( $value ) )
-				{
-					$result['success'] = $result['success'] + 1;
-				}
+				$loaded = parseValue($value);
+				if($loaded === null)
+					$result['pending']++;
+				elseif($loaded)
+					$result['success']++;
 				else
-				{
-					$result['error'] = $result['error'] + 1;
-				}
+					$result['error']++;
 			}
 		}
 	}

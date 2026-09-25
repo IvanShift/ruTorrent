@@ -492,4 +492,78 @@ final class RSSTest extends TestCase
 			"hash" => ""
 		), $contents['items'][0]);
 	}
+	public function testPendingLoadHistoryCanConfirmItsExactReceipt(): void
+	{
+		$url = 'https://tracker.example/download?id=12';
+		$receipt = array('hash' => str_repeat('A', 40), 'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$history = new rRSSHistory();
+		$history->add($url, 'Pending', 100, 'item-12', $receipt);
+		$this->assertTrue($history->wasLoaded($url, 'item-12', function ($given) use ($receipt) {
+			$this->assertEquals($receipt, $given, 'the persisted receipt is checked');
+			return 'ours';
+		}), 'a confirmed pending load remains suppressed');
+		$this->assertEquals($receipt['hash'], $history->getHash($url),
+			'only the daemon-confirmed hash is shown as loaded');
+	}
+
+	public function testPendingLoadHistoryRetriesOnlyAfterGrace(): void
+	{
+		$url = 'https://tracker.example/download?id=13';
+		$receipt = array('hash' => str_repeat('B', 40), 'key' => 'ru-load-proof-' . str_repeat('b', 32));
+		$history = new rRSSHistory();
+		$history->add($url, 'Pending', 100, 'item-13', $receipt);
+		$this->assertTrue($history->wasLoaded($url, 'item-13', function () { return 'missing'; }),
+			'a recent pending load cannot overlap with a second dispatch');
+		$history->lst[$url]['submittedAt'] = time() - 301;
+		$this->assertTrue(!$history->wasLoaded($url, 'item-13', function () { return 'missing'; }),
+			'an unconfirmed load becomes retryable even with the same GUID');
+		$this->assertEquals('Failed', $history->getHash($url), 'unconfirmed is not loaded');
+		$this->assertEquals(1, $history->getCounter($url), 'one failure is recorded');
+	}
+
+	public function testChangedGuidDoesNotOverlapPendingLoad(): void
+	{
+		$url = 'https://tracker.example/download?id=15';
+		$history = new rRSSHistory();
+		$history->add($url, 'Pending', 100, 'old-guid',
+			array('hash' => str_repeat('D', 40), 'key' => 'ru-load-proof-' . str_repeat('d', 32)));
+		$history->correct($url, 101, 'new-guid');
+		$this->assertTrue($history->wasLoaded($url, 'new-guid', function () { return 'missing'; }),
+			'a new GUID cannot dispatch over a pending load of the same URL');
+		$this->assertEquals('Pending', $history->getHash($url), 'the original receipt remains checkable');
+		$history->wasLoaded($url, 'new-guid', function () { return 'ours'; });
+		$history->correct($url, 101, 'new-guid');
+		$this->assertTrue(!$history->wasLoaded($url, 'new-guid'),
+			'a new GUID becomes eligible after the prior load is confirmed');
+	}
+
+	public function testNewHashWithoutMarkerStaysPendingDuringShortSettleWindow(): void
+	{
+		$url = 'https://tracker.example/download?id=16';
+		$history = new rRSSHistory();
+		$history->add($url, 'Pending', 100, 'item-16',
+			array('hash' => str_repeat('E', 40), 'key' => 'ru-load-proof-' . str_repeat('e', 32)));
+		$this->assertTrue($history->wasLoaded($url, 'item-16', function () { return 'foreign'; }),
+			'a newly visible hash still waits for its deferred marker command');
+		$this->assertEquals('Pending', $history->getHash($url),
+			'transient marker absence does not become a permanent conflict');
+		$history->lst[$url]['submittedAt'] = time() - 11;
+		$history->wasLoaded($url, 'item-16', function () { return 'foreign'; });
+		$this->assertEquals('Conflict', $history->getHash($url),
+			'a settled hash without our marker is a visible conflict');
+	}
+
+	public function testForeignPendingHashIsVisibleAsConflict(): void
+	{
+		$url = 'https://tracker.example/download?id=14';
+		$history = new rRSSHistory();
+		$history->add($url, 'Pending', 100, 'item-14',
+			array('hash' => str_repeat('C', 40), 'key' => 'ru-load-proof-' . str_repeat('c', 32)));
+		$history->lst[$url]['submittedAt'] = time() - 11;
+		$this->assertTrue($history->wasLoaded($url, 'item-14', function () { return 'foreign'; }),
+			'an existing hash is not repeatedly reloaded');
+		$this->assertEquals('Conflict', $history->getHash($url),
+			'a foreign torrent is never shown as this RSS load success');
+	}
+
 }

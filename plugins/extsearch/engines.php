@@ -443,9 +443,13 @@ class engineManager
 				if($torrent!==false)
 				{
 					global $saveUploadedTorrents;
-					if(($success = rTorrent::sendTorrent($torrent, $isStart, $isAddPath, $directory, $label, $saveUploadedTorrents, $fast))===false)
+					$receipt = null;
+					$success = rTorrent::sendTorrent($torrent, $isStart, $isAddPath,
+						$directory, $label, $saveUploadedTorrents, $fast, true, null, $receipt);
+					if($success===false || ($success===null && !$saveUploadedTorrents
+						&& !empty($receipt['raw'])))
 						@unlink($torrent);
-					else
+					if($success!==false && $success!==null)
 						$history->add($url,$success);
 				}
 			}

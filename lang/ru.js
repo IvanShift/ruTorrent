@@ -197,6 +197,7 @@ var theUILang =
  Total				: "Всего",
  PCRENotFound			: "PHP модуль PCRE не установлен. ruTorrent не будет работать.",
  addTorrentSuccess		: "Закачка успешно передана в rTorrent.",
+ addTorrentPending		: "Передано в rTorrent; подтверждение добавления ожидается.",
  addTorrentFailed		: "Ошибка добавления закачки.",
  pnlViews			: "Views",
  NewView			: "New View",

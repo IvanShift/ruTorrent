@@ -13,9 +13,16 @@ if(isset($_REQUEST['result']))
 	{
 		$js = '';
 		foreach( $_REQUEST['result'] as $ndx=>$result )
+		{
+			$status = in_array($result, array('Success', 'Pending', 'Failed',
+				'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
+			$message = $status === 'Pending'
+				? '(theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.")'
+				: 'theUILang.addTorrent'.$status;
+			$kind = $status === 'Success' ? 'success' : ($status === 'Pending' ? 'warning' : 'error');
 			$js.= ('noty("'.(isset($_REQUEST['name'][$ndx]) ? addslashes(rawurldecode(htmlspecialchars($_REQUEST['name'][$ndx]))).' - ' : '').
-				'"+theUILang.addTorrent'.$_REQUEST['result'][$ndx].
-				',"'.($_REQUEST['result'][$ndx]=='Success' ? 'success' : 'error').'");');
+				'"+'.$message.',"'.$kind.'");');
+		}
 		CachedEcho::send($js,"text/html");
 	}
 }
@@ -134,13 +141,21 @@ else
 			{
 				if(isset($_REQUEST['randomize_hash']))
 					$torrent->info['unique'] = uniqid("rutorrent-",true);
-				if(rTorrent::sendTorrent($torrent,
+				$pendingReceipt = null;
+				$load = rTorrent::sendTorrent($torrent,
 					!isset($_REQUEST['torrents_start_stopped']),
 					!isset($_REQUEST['not_add_path']),
-					$dir_edit,$label,$saveUploadedTorrents,isset($_REQUEST['fast_resume']),true,$addition)===false)
+					$dir_edit,$label,$saveUploadedTorrents,isset($_REQUEST['fast_resume']),true,$addition,$pendingReceipt);
+				if($load===false)
 				{
 					@unlink($file['file']);
 					$file['status'] = "Failed";
+				}
+				elseif($load===null)
+				{
+					$file['status'] = "Pending";
+					if(!$saveUploadedTorrents && !empty($pendingReceipt['raw']))
+						@unlink($file['file']);
 				}
 			}
 		}

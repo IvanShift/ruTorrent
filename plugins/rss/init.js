@@ -1,6 +1,15 @@
 plugin.loadMainCSS();
 plugin.loadLang();
 
+plugin.itemStatus = function(item)
+{
+	if(item.hash === "") return theUILang.rssStatus;
+	if(item.hash === "Failed") return theUILang.rssStatusError + " (" + item.errcount + ")";
+	if(item.hash === "Pending") return theUILang.rssStatusPending || "Confirmation pending";
+	if(item.hash === "Conflict") return theUILang.rssStatusConflict || "Torrent already exists";
+	return theUILang.rssStatusLoaded;
+};
+
 // Dynamically import module for transforming bbcode to html
 var bbcode = null;
 import(`./${plugin.path}bbcode.js`)
@@ -612,7 +621,7 @@ theWebUI.loadTorrents = function(needSort)
 				updated = table.setValuesById(href,
 				{
 				 	name: item.title,
-				 	status: (item.hash=="") ? theUILang.rssStatus : (item.hash=="Failed") ? theUILang.rssStatusError+" ("+item.errcount+")" : theUILang.rssStatusLoaded,
+					status: plugin.itemStatus(item),
 					label: item.label,
 					created: item.time
 				},true) || updated;
@@ -755,11 +764,7 @@ theWebUI.addRSSItems = function(d)
 				table.setRowById(
 					{
 						name: item.title,
-						status: (item.hash=="")
-							? theUILang.rssStatus
-							: (item.hash=="Failed")
-							? theUILang.rssStatusError+" ("+item.errcount+")"
-							: theUILang.rssStatusLoaded,
+						status: plugin.itemStatus(item),
 						label,
 						created: item.time
 					},

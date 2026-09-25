@@ -319,7 +319,11 @@ theWebUI.setTagsHash = function(d)
 		{
 			var item = plugin.tegs[d.teg].data[ d.data[i].ndx ];
 			item.hash = d.data[i].hash;
-			noty( (item.hash ? theUILang.addTorrentSuccess : theUILang.addTorrentFailed) +" ("+item.name+')', (item.hash ? "success" : "error") );
+			const pending = item.hash === null;
+			const message = pending
+				? (theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.")
+				: (item.hash ? theUILang.addTorrentSuccess : theUILang.addTorrentFailed);
+			noty(message + " (" + item.name + ')', pending ? "warning" : (item.hash ? "success" : "error"));
 		}
 		theWebUI.getTorrents("list=1");
 	}

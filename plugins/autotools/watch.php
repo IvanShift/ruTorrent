@@ -78,6 +78,7 @@ if( $is_ok )
 
 		if( $is_ok )
 		{
+			$pendingReceipt = null;
 			$hash = rTorrent::sendTorrent(
 				$torrent_file,			// path to .torrent file
 				$auto_start,			// start it or not
@@ -85,16 +86,22 @@ if( $is_ok )
 				$dest_path,			// directory for torrent's data
 				null,				// label is emply
 				false,				// don't saveUploadedTorrents
-				false				// don't fast_resume
+				false,				// don't fast_resume
+				true, null, $pendingReceipt
 			);
 			if( $hash === false )
 			{
 				Debug( "addition of torrent fail" );
 				$is_ok = false;
 			}
-			else {
-				Debug( "torrent added    : ".$hash );
+			elseif( $hash === null )
+			{
+				Debug( "torrent load pending confirmation" );
+				if( !empty($pendingReceipt['raw']) )
+					@unlink($torrent_file);
 			}
+			else
+				Debug( "torrent added    : ".$hash );
 		}
 
 		if( !$is_ok )

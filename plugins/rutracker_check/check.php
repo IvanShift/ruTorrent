@@ -1679,7 +1679,10 @@ class ruTrackerChecker
 		$loadedHash = rTorrent::sendTorrent($disowned, false, false, $baseDir,
 			$label, $saveUploadedTorrents, false, true, $addition);
 		$owner = self::waitForLoad($newHash, $marker);
-		if(!$loadedHash || strcasecmp((string) $loadedHash, (string) $newHash) !== 0 || $owner !== 'ours')
+		// The checker has its own staged marker. It can confirm a core-pending
+		// load without mistaking an older download with this hash for our load.
+		if($loadedHash === false || (is_string($loadedHash)
+			&& strcasecmp($loadedHash, (string) $newHash) !== 0) || $owner !== 'ours')
 		{
 			// Restore the old torrent even when the staged status is unknown:
 			// d.start on it is safe to repeat and is the only recovery there

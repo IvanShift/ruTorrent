@@ -6,6 +6,7 @@ require_once( '../../php/rtorrent.php' );
 ignore_user_abort(true);
 set_time_limit(0);
 $errors = array();
+$pending = false;
 $hashes = array();
 if(!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
@@ -161,11 +162,14 @@ if(isset($HTTP_RAW_POST_DATA))
 						if($eReq->run() && !$eReq->fault)
 						{
 							$label = rawurldecode($req->val[5]);
-							if(!rTorrent::sendTorrent($torrent, $isStart, false, $req->val[6], $label, false, ($req->val[8]==1), false,
+							$reloaded = rTorrent::sendTorrent($torrent, $isStart, false, $req->val[6], $label, false, ($req->val[8]==1), false,
 							        array(	getCmd("d.set_custom3")."=1",
 									getCmd("d.set_connection_seed=").$req->val[7],
-									$throttle)))
+									$throttle));
+							if($reloaded === false)
 								$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
+							elseif($reloaded === null)
+								$pending = true;
 						}
 						else
 							$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
@@ -182,4 +186,4 @@ if(isset($HTTP_RAW_POST_DATA))
 	}
 }
 
-CachedEcho::send(JSON::safeEncode(array( "errors"=>$errors, "hash"=>$hashes )),"application/json");
+CachedEcho::send(JSON::safeEncode(array( "errors"=>$errors, "hash"=>$hashes, "pending"=>$pending )),"application/json");

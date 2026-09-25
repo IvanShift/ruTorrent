@@ -1454,6 +1454,19 @@ class CheckerTest
 		}
 	}
 
+	public function testCorePendingLoadCanBeConfirmedByCheckersOwnMarker()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		rTorrent::$sendResult = null;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		strictAssertSame(null,
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			'the plugin-owned staged marker confirms a core-pending load');
+		strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')),
+			'the confirmed staged replacement reaches predecessor commit');
+	}
+
 	public function testStartedReplacementSucceeds()
 	{
 		$this->resetFakes();

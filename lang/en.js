@@ -197,6 +197,7 @@ var theUILang =
  Total				: "Total",
  PCRENotFound			: "The PHP PCRE module is not installed. ruTorrent will not work.",
  addTorrentSuccess		: "The torrent was added successfully.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  addTorrentFailed		: "Failed to add torrent.",
  pnlViews			: "Views",
  NewView			: "New View",

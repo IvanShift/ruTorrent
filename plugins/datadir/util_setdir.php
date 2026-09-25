@@ -231,7 +231,7 @@ function rtSetDataDir( $hash, $dest_path, $add_path, $move_files, $fast_resume, 
 						}
 						else
 						{
-							if( !rTorrent::sendTorrent(
+							$loadedHash = rTorrent::sendTorrent(
 								$torrent,	// $fname or $torrent
 								true, 		// $isStart
 								$add_path, 	// $isAddPath
@@ -241,7 +241,14 @@ function rtSetDataDir( $hash, $dest_path, $add_path, $move_files, $fast_resume, 
 								true, 		// $isFast
 								false,		// $isNew
 								$addition	// $addition
-								) )
+								);
+							if( $loadedHash === null )
+							{
+								FileUtil::toLog('datadir: torrent reload pending confirmation: '.$hash);
+								$fast_resume = false;
+								$is_ok = null;
+							}
+							elseif( $loadedHash === false )
 							{
 								if( $dbg ) rtDbg( __FUNCTION__, "fail to add new torrent" );
 								$fast_resume = false;

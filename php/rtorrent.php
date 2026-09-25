@@ -7,9 +7,19 @@ require_once( 'Torrent.php' );
 class rTorrent
 {
 	const RTORRENT_PACKET_LIMIT = 1572864;
+	const LOAD_WAIT_ATTEMPTS = 40;
+	const LOAD_WAIT_DELAY_US = 50000;
+	const LOAD_PROOF_KEY_PREFIX = 'ru-load-proof-';
 
-	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null)
+	/**
+	 * @return string|false|null Confirmed hash, dispatch failure, or pending load.
+	 *                          A pending receipt contains the hash and unique
+	 *                          proof key for a later daemon check; raw records whether
+	 *                          the source file can be discarded after dispatch.
+	 */
+	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null)
 	{
+		$pendingReceipt = null;
 		$hash = false;
 		$mustSave = is_object($fname);
 		$torrent = $mustSave ? $fname : new Torrent($fname);
@@ -36,12 +46,11 @@ class rTorrent
 			}
 			$raw_value = base64_encode($torrent->__toString());
 			$filename = is_object($fname) ? $torrent->getFileName() : $fname;
-			if(strlen($raw_value)<self::RTORRENT_PACKET_LIMIT)
+			$rawLoad = strlen($raw_value)<self::RTORRENT_PACKET_LIMIT;
+			if($rawLoad)
 			{
 				$cmd = new rXMLRPCCommand( $isStart ? 'load_raw_start' : 'load_raw' );
 				$cmd->addParameter($raw_value,"base64");
-				if(!is_null($filename) && !$saveTorrent)
-					@unlink($filename);
 			}
 			else
 			{
@@ -63,6 +72,11 @@ class rTorrent
 				$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
 				$cmd->addParameter($filename);
 			}
+			// A fresh key cannot match an older download with the same infohash
+			// or overwrite a user's custom key. It must be the first deferred
+			// command: later caller additions can abort while the load survives.
+			$proofKey = self::LOAD_PROOF_KEY_PREFIX . bin2hex(random_bytes(16));
+			$cmd->addParameter(getCmd("d.set_custom")."=".$proofKey.",1");
 			if(!is_null($filename) && (rTorrentSettings::get()->iVersion>=0x805))
 				$cmd->addParameter(getCmd("d.set_custom")."=x-filename,".rawurlencode(FileUtil::getFileName($filename)));
 			$req = new rXMLRPCRequest();
@@ -98,25 +112,54 @@ class rTorrent
 			$req->addCommand( $cmd );
 			if($req->run() && !$req->fault)
 			{
-				// DISPATCHED, not loaded. rtorrent answers a load command
-				// before DownloadFactory has parsed the payload, so a torrent
-				// it later refuses -- an empty name, duplicate or nested
-				// paths, a duplicate infohash -- can never come back as a
-				// fault. The hash below is computed locally from the metainfo
-				// this process already holds; nothing here has asked the
-				// daemon whether the download exists.
-				//
-				// Say so in the log. Without this line a lost load is
-				// indistinguishable from a successful one after the fact:
-				// $rpcLogFaults only fires on a real fault, and there is no
-				// other record of the outcome anywhere. Callers that must
-				// KNOW have to confirm -- see waitForLoad() in
-				// plugins/rutracker_check/check.php for the shape.
 				$hash = $torrent->hash_info();
-				FileUtil::toLog('rtorrent: load dispatched, not confirmed: '.$hash);
+				$status = self::waitForLoad($hash, $proofKey);
+				if($status === 'ours')
+				{
+					if($rawLoad && !is_null($filename) && !$saveTorrent)
+						@unlink($filename);
+					return $hash;
+				}
+				$pendingReceipt = array('hash' => $hash, 'key' => $proofKey, 'raw' => $rawLoad);
+				FileUtil::toLog('rtorrent: load unconfirmed: '.$hash.' status='.$status);
+				return null;
 			}
 		}
-		return($hash);
+		return false;
+	}
+
+	/** Check a receipt from a deferred load without accepting an old hash. */
+	static public function pendingLoadStatus($receipt)
+	{
+		if(!is_array($receipt) || !isset($receipt['hash'], $receipt['key'])
+			|| !is_string($receipt['hash']) || !is_string($receipt['key'])
+			|| !preg_match('/^[A-F0-9]{40}$/D', $receipt['hash'])
+			|| !preg_match('/^ru-load-proof-[a-f0-9]{32}$/D', $receipt['key']))
+			return 'missing';
+		$req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'),
+			array($receipt['hash'], $receipt['key'])));
+		$req->important = false;
+		if(!$req->run() || $req->fault)
+			return 'missing';
+		return isset($req->val[0]) && (string)$req->val[0] === '1' ? 'ours' : 'foreign';
+	}
+
+	static private function waitForLoad($hash, $key)
+	{
+		$receipt = array('hash' => $hash, 'key' => $key);
+		$deadline = microtime(true) + self::LOAD_WAIT_ATTEMPTS
+			* self::LOAD_WAIT_DELAY_US / 1000000;
+		// The download can be visible before its deferred custom command runs.
+		// A foreign value is final only after this bounded settle window.
+		$status = 'missing';
+		for($attempt = 0; $attempt < self::LOAD_WAIT_ATTEMPTS; $attempt++)
+		{
+			if($attempt) usleep(self::LOAD_WAIT_DELAY_US);
+			if(microtime(true) >= $deadline) break;
+			$status = self::pendingLoadStatus($receipt);
+			if($status === 'ours') return $status;
+		}
+		return $status;
 	}
 
 	static public function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)

@@ -313,6 +313,8 @@ class rRSS
 
 class rRSSHistory
 {
+	const PENDING_RETRY_AFTER = 300;
+	const PENDING_FOREIGN_GRACE = 10;
 	public $hash = "history";
 	public $modified = false;
 	public $lst = array();
@@ -325,12 +327,17 @@ class rRSSHistory
 		$this->version = 2;
 	}
 
-	public function add( $url, $hash, $timestamp, $guid )
+	public function add( $url, $hash, $timestamp, $guid, $pendingReceipt = null )
 	{
 		$cnt = 0;
 		if(array_key_exists($url,$this->lst))
 			$cnt = ($this->lst[$url]["time"]==$timestamp) ? $this->lst[$url]["cnt"] : 0;
 		$this->lst[$url] = array( "hash" => $hash, "time" => $timestamp, "cnt" => $cnt,	"guid" => $guid );
+		if($hash === 'Pending')
+		{
+			$this->lst[$url]['receipt'] = $pendingReceipt;
+			$this->lst[$url]['submittedAt'] = time();
+		}
 		if($hash=='Failed')
 			$this->lst[$url]["cnt"] = $cnt+1;
 		$this->changed = true;
@@ -338,6 +345,7 @@ class rRSSHistory
 	public function correct( $url, $timestamp, $guid )
 	{
 		if( array_key_exists($url,$this->lst) &&
+			$this->lst[$url]['hash'] !== 'Pending' &&
 			($guid && !empty($this->lst[$url]["guid"]) && $this->lst[$url]["guid"] !== $guid) )
 		{
 			unset($this->lst[$url]);
@@ -362,21 +370,41 @@ class rRSSHistory
 			return(intval($this->lst[$url]["cnt"]));
 		return(0);
 	}
-	public function wasLoaded( $url, $guid)
+	public function wasLoaded( $url, $guid, $checkPending = null )
 	{
-		$ret = false;
-		if(array_key_exists($url,$this->lst))
+		if(!array_key_exists($url, $this->lst)) return false;
+		$entry = &$this->lst[$url];
+		if($entry['hash'] === 'Pending')
 		{
-			if($guid && !empty($this->lst[$url]["guid"]))
+			$receipt = isset($entry['receipt']) ? $entry['receipt'] : null;
+			$status = $checkPending === null
+				? rTorrent::pendingLoadStatus($receipt) : $checkPending($receipt);
+			$age = time() - (isset($entry['submittedAt']) ? $entry['submittedAt'] : 0);
+			if($status === 'ours')
 			{
-				$ret = ($this->lst[$url]["guid"] === $guid);
+				$entry['hash'] = $receipt['hash'];
+				unset($entry['receipt'], $entry['submittedAt']);
+				$this->changed = true;
 			}
-			if(!$ret)
+			// A newly visible hash can still be waiting for its deferred marker.
+			elseif($status === 'foreign' && $age > self::PENDING_FOREIGN_GRACE)
 			{
-				$ret = ($this->lst[$url]["hash"]!=='Failed') || ($this->getCounter( $url )>HISTORY_MAX_TRY);
+				$entry['hash'] = 'Conflict';
+				unset($entry['receipt'], $entry['submittedAt']);
+				$this->changed = true;
 			}
+			elseif($status !== 'foreign' && $age > self::PENDING_RETRY_AFTER)
+			{
+				$entry['hash'] = 'Failed';
+				$entry['cnt']++;
+				unset($entry['receipt'], $entry['submittedAt']);
+				$this->changed = true;
+			}
+			else return true;
 		}
-		return($ret);
+		if($entry['hash'] === 'Failed')
+			return $this->getCounter($url) > HISTORY_MAX_TRY;
+		return true;
 	}
 	public function getHash( $url )
 	{
@@ -1241,6 +1269,7 @@ class rRSSManager
 		{
 			self::log("Load torrent [$url]");
 			$thash = 'Failed';
+			$pendingReceipt = null;
 			$ret = $rss->getTorrent( $url );
 			if($ret!==false)
 			{
@@ -1252,7 +1281,13 @@ class rRSSManager
 				global $saveUploadedTorrents;
 				$thash = ($ret==='magnet') ?
 					rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label, $addition) :
-					rTorrent::sendTorrent($ret, $isStart, $isAddPath, $directory, $label, $saveUploadedTorrents, false, true, $addition);
+					rTorrent::sendTorrent($ret, $isStart, $isAddPath, $directory, $label, $saveUploadedTorrents, false, true, $addition, $pendingReceipt);
+				if($thash === null)
+				{
+					$thash = 'Pending';
+					// Raw bytes were sent already; a file-backed load still needs its path.
+					if(!$saveUploadedTorrents && !empty($pendingReceipt['raw'])) @unlink($ret);
+				}
 				if($thash===false)
 				{
 					$thash = 'Failed';
@@ -1266,7 +1301,8 @@ class rRSSManager
 					? " + '; " . Snoopy::CREDENTIAL_REDIRECT_REFUSED . "'" : '';
 				$this->rssList->addError( "theUILang.rssCantLoadTorrent" . $reason, $url );
 			}
-			$this->history->add($url, $thash, $rss->getItemTimestamp($url), $rss->items[$url]['guid']);
+			$this->history->add($url, $thash, $rss->getItemTimestamp($url),
+					$rss->items[$url]['guid'], $pendingReceipt);
 			if($needFlush)
 				$this->saveHistory();
 		}

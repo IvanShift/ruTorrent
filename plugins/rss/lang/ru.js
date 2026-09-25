@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Ошибка загрузки торрента.";
  theUILang.rssStatus			= "Рассылка";
  theUILang.rssStatusLoaded		= "Был загружен";
+ theUILang.rssStatusPending		= "Ожидается подтверждение";
+ theUILang.rssStatusConflict	= "Торрент уже существует";
  theUILang.rssMenuLoad			= "Загрузить";
  theUILang.rssMenuOpen			= "Открыть в браузере";
  theUILang.rssMenuClearHistory		= "Очистить историю";

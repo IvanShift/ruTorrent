@@ -58,11 +58,15 @@ if( $is_ok && $hash && strlen( $datadir ) > 0 )
 	{
 		Debug( "can't create ".$datadir );
 	}
-	elseif( !rtSetDataDir( $hash, $datadir,
-		$move_addpath == '1', $move_datafiles == '1', $move_fastresume == '1',
-		$datadir_debug_enabled ) )
+	else
 	{
-		Debug( "rtSetDataDir() fail!" );
+		$result = rtSetDataDir( $hash, $datadir,
+			$move_addpath == '1', $move_datafiles == '1', $move_fastresume == '1',
+			$datadir_debug_enabled );
+		if( $result === null )
+			Debug( "rtSetDataDir() pending confirmation" );
+		elseif( $result === false )
+			Debug( "rtSetDataDir() fail!" );
 	}
 }
 
