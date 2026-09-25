@@ -139,6 +139,29 @@ class TorrentMetaTest extends TestCase
 			'The binary pieces field is preserved byte for byte');
 	}
 
+	public function testRawBytesModeAcceptsOnlyWhitespaceAfterTheRootDictionary()
+	{
+		// Download scripts commonly end the response with a line break after
+		// the metainfo. rTorrent loads such a file (it never reads past the
+		// root dictionary) and production 1fa8defc accepted it, so raw mode
+		// must too. Anything else after the dictionary still refuses the bytes.
+		foreach(array('LF' => "\n", 'CRLF' => "\r\n", 'spaces and tabs' => " \t \r\n\n") as $label => $tail)
+		{
+			$torrent = Torrent::fromRawBytes($this->fixture() . $tail);
+			$this->assertTrue($torrent->errors() === false,
+				'raw metainfo followed by ' . $label . ' parses without errors');
+		}
+		foreach(array('HTML' => "<html>", 'text after a line break' => "\n<html>", 'NUL' => "\0") as $label => $tail)
+		{
+			$torrent = Torrent::fromRawBytes($this->fixture() . $tail);
+			$messages = array();
+			foreach(($torrent->errors() ?: array()) as $error)
+				$messages[] = $error->getMessage();
+			$this->assertTrue(in_array('Trailing torrent data', $messages, true),
+				'raw metainfo followed by ' . $label . ' is refused as trailing data');
+		}
+	}
+
 	public function testRawBytesModeIgnoresAConflictingLocalFile()
 	{
 		$raw = 'd4:infod4:name1:xee'; // valid dictionary, with no NUL byte

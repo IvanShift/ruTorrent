@@ -162,6 +162,14 @@ $tests = array(
         $client->results = $rawBody . '<html>unexpected extra response</html>';
         snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
             'a bencoded prefix followed by HTML is not a complete torrent');
+        // RSS, addtorrent, bulk_magnet and extsearch all ask this guard; a
+        // tracker that ends the file with a line break must stay downloadable.
+        $client->results = $rawBody . "\r\n";
+        snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+            'metainfo followed by a line break remains downloadable');
+        $client->results = $rawBody . "\n<html>unexpected extra response</html>";
+        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            'a line break does not excuse HTML after the metainfo');
         $client->results = 'd4:infodee';
         snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
             'an empty info dictionary is not metainfo');

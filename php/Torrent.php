@@ -320,7 +320,11 @@ class Torrent
 			$this->data = $string;
 		$this->pointer = 0;
 		$decoded = $this->decode_data();
-		if($this->rawBytes && $this->pointer !== strlen($this->data))
+		// Download scripts often end the metainfo with a line break. rTorrent
+		// never reads past the root dictionary and production 1fa8defc loaded
+		// such files, so ASCII whitespace after it is accepted. Anything else
+		// there (an appended HTML page, NUL) still refuses the bytes.
+		if($this->rawBytes && strspn($this->data, " \t\r\n", $this->pointer) !== strlen($this->data) - $this->pointer)
 			$this->notify_err('Trailing torrent data');
 		return($decoded);
 	}
