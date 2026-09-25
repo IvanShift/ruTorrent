@@ -282,10 +282,10 @@ class ruTrackerChecker
 	/**
 	 * The comment of a torrent's session copy, or '' when it cannot be read.
 	 *
-	 * The scheduler's cycle multicall carries tracker rows and no comment, and
-	 * the comment is what names a torrent's owner -- see run(). It is a file
-	 * read, so the scheduler asks once per row per cycle and hands the answer
-	 * to both the ownership test and the announce gate.
+	 * The scheduler's cycle multicall carries tracker rows and no comment.
+	 * This file read gives the conservative dispatch gate and the announce
+	 * authority gate the same comment once per row per cycle; handlers in
+	 * run() make the final ownership decision.
 	 */
 	static public function sessionComment($hash)
 	{

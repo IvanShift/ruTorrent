@@ -4216,6 +4216,31 @@ class CheckerTest
 		}
 	}
 
+	public function testUnreadableSettledMessageDefersWithoutDispatchOrWrites()
+	{
+		$calls = 0;
+		$this->withVerdictSession('unreadable-message', ruTrackerChecker::STE_NOT_NEED,
+			time() - 700000, function() use (&$calls) {
+				$calls++;
+				return ruTrackerChecker::STE_UPTODATE;
+			}, function() use (&$calls) {
+				rXMLRPCRequest::queue('d.get_custom', false, false, array());
+				$performed = null;
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_NOT_NEED, time(), '', $performed),
+					'an unreadable settled message leaves the check retryable');
+				strictAssertSame(false, $performed, 'the failed read consumed no scheduler work');
+				strictAssertSame(0, $calls, 'no tracker handler ran without the settled token');
+				strictAssertSame(0, rTorrent::$sourceReads, 'the session torrent was not opened');
+				strictAssertSame(array(), $this->customWritesFor('chk-state'),
+					'no lock or verdict was written after the failed message read');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the unreadable token was not overwritten');
+				strictAssertSame(2, count(rXMLRPCRequest::$requests),
+					'only the live state and settled message were read');
+			});
+	}
+
 	public function testSettledVerdictDefersMessageClearOnRetryableFailure()
 	{
 		foreach (array(

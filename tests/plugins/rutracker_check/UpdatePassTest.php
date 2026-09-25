@@ -1583,6 +1583,48 @@ upTest($suite, 'missing comment with foreign and live RuTracker rows cannot take
     });
 });
 
+upTest($suite, 'an empty comment with a disabled foreign row can use its live RuTracker announce', function () {
+    upLoadKinozalRegistration();
+    $hash = str_repeat('X', 40);
+    $row = upParsedRow($hash,
+        'http://bt.t-ru.org/ann?pk=x|1|0|5#'
+        . 'http://tr2.torrent4me.com/ann?uk=x|0|0|5#', '');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array(), $checked, 'the disabled cross-seed row cannot claim the torrent');
+    strictAssertSame(1, $result['uptodate'], 'the live RuTracker row is enough for a free verdict');
+});
+
+upTest($suite, 'an empty comment with an enabled foreign row cannot use RuTracker fast path', function () {
+    upLoadKinozalRegistration();
+    $hash = str_repeat('Y', 40);
+    $row = upParsedRow($hash,
+        'http://bt.t-ru.org/ann?pk=x|1|0|5#'
+        . 'http://tr2.torrent4me.com/ann?uk=x|1|0|5#', '');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($hash), $checked,
+        'the unknown owner is dispatched despite the live RuTracker row');
+    strictAssertSame(0, $result['uptodate'], 'a cross-seed announce cannot certify the owner');
+    upAssertNoCustomWrites('the ambiguous row receives no free verdict');
+});
+
+upTest($suite, 'a RuTracker comment keeps its own live pass despite an enabled foreign cross-seed', function () {
+    upLoadKinozalRegistration();
+    $hash = str_repeat('Z', 40);
+    $row = upParsedRow($hash,
+        'http://bt.t-ru.org/ann?pk=x|1|0|5#'
+        . 'http://tr2.torrent4me.com/ann?uk=x|1|0|5#',
+        'http://rutracker.org/forum/viewtopic.php?t=12345');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array(), $checked, 'a foreign cross-seed does not override the RuTracker comment');
+    strictAssertSame(1, $result['uptodate'], 'its own live announce writes the free verdict');
+});
+
 upTest($suite, 'a row whose session copy cannot be read gets no free pass', function () {
     upLoadKinozalRegistration();
     strictWithStateDir('chk-updatepass-gate-nosession', function ($tmp) {

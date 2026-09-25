@@ -55,19 +55,20 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'new direct Snoopy error assignments require classification');
     strictAssertSame(7, substr_count($source, 'refuseResponseBody('),
         'new body refusals require an explicit classified case');
-    // Count alone misses a reworded assignment. Match each token's stable
-    // phrase inside an actual assignment, so a changed vendored sentence
-    // requires a conscious update to the classifier and this corpus.
+    // Count alone misses a reworded assignment. For direct assignments,
+    // include the opening quote and literal prefix: a changed first word
+    // otherwise still matches a needle taken from the middle of the message.
+    // Body refusal tokens are exact helper arguments.
     $sourceNeedles = array(
-        'invalid-protocol' => 'Invalid protocol',
-        'refused-unresolvable-host' => 'Refusing to fetch: cannot resolve host',
-        'refused-non-public-address' => 'resolves to the non-public address',
+        'invalid-protocol' => '\'Invalid protocol "',
+        'refused-unresolvable-host' => '\'Refusing to fetch: cannot resolve host "',
+        'refused-non-public-address' => '\'Refusing to fetch: host "',
         'redirect-refused' => 'self::CREDENTIAL_REDIRECT_REFUSED',
-        'curl-transfer' => 'cURL could not retrieve the document',
-        'socket-create' => 'socket creation failed',
-        'dns-lookup' => 'dns lookup failure',
-        'connect-refused' => 'connection refused or timed out',
-        'connect-errno' => 'connection failed',
+        'curl-transfer' => '"Error: cURL could not retrieve the document, error ',
+        'socket-create' => '"socket creation failed (-3)"',
+        'dns-lookup' => '"dns lookup failure (-4)"',
+        'connect-refused' => '"connection refused or timed out (-5)"',
+        'connect-errno' => '"connection failed ("',
         'unsupported-transfer-encoding' => 'unsupported-transfer-encoding',
         'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
         'oversized-response' => 'oversized-response',

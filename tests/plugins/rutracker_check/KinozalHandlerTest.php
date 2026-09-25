@@ -648,6 +648,42 @@ $suite->test('an answer that did arrive clears the transport streak', function (
     );
 });
 
+$suite->test('an independent download answer clears a prior details refusal streak', function () {
+    list($a, $b, $fallback, $d, $e, $last) = kinozalTopics(6);
+    Snoopy::queue($a['details_url'], 503, kinozalServerErrorBody());
+    Snoopy::queue($b['details_url'], 503, kinozalServerErrorBody());
+    Snoopy::queue($fallback['details_url'], 403, '<html>Forbidden</html>');
+    Snoopy::queue($fallback['download_url'], 200, $fallback['raw']);
+    ruTrackerChecker::queueResult('parseMetainfo', $fallback['torrent']);
+    ruTrackerChecker::queueResult('createTorrent', ruTrackerChecker::STE_UPTODATE);
+    Snoopy::queue($d['details_url'], 503, kinozalServerErrorBody());
+    Snoopy::queue($e['details_url'], 503, kinozalServerErrorBody());
+    Snoopy::queue($last['details_url'], 200, kinozalDetailsBody($last['hash']));
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($a['topic_url'], $a['hash'], $a['torrent']),
+        'the first details refusal remains retryable');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($b['topic_url'], $b['hash'], $b['torrent']),
+        'the second details refusal remains retryable');
+    strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures'),
+        'two refusals built the details streak');
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent($fallback['topic_url'], $fallback['hash'], $fallback['torrent']),
+        'the unclassified 403 has an independent successful download answer');
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures'),
+        'that independent answer clears the old details streak');
+    foreach (array($d, $e) as $case)
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+            'a later refusal starts a new streak');
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        KinozalCheckImpl::download_torrent($last['topic_url'], $last['hash'], $last['torrent']),
+        'two later refusals cannot hide the next healthy details answer');
+    strictAssertSame(7, count(Snoopy::$requests),
+        'all six topics reached details and the fallback reached download once');
+});
+
 $suite->test('the challenge is recognised by its header when the body says nothing', function () {
     $case = kinozalCase();
     Snoopy::queue($case['details_url'], 403, '<html><body>Forbidden</body></html>',

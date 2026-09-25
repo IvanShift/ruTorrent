@@ -25,11 +25,10 @@ class RuTrackerUpdatePass
     // "use the production default".
     private static $checker = null;
 
-    // The comment that names a row's owner: the row's own when the caller
-    // supplied one, else the session copy's. The cycle multicall carries no
-    // comment and the session copy is a file read, so run() asks once per
-    // row and hands the answer to both readers -- the conservative dispatch
-    // gate here and the announce authority gate in pass 2.
+    // Use the supplied comment, or read the session copy when the row has
+    // none. The cycle multicall carries no comment, so run() reads it once
+    // per row for the conservative dispatch and announce authority gates.
+    // The handlers decide exact topic ownership later.
     static private function commentOf($row)
     {
         if (isset($row['comment']) && is_string($row['comment']) && $row['comment'] !== '')
@@ -39,10 +38,11 @@ class RuTrackerUpdatePass
         return '';
     }
 
-    // This is a conservative scheduler gate, not exact topic ownership. The
-    // loose comment filter or an unknown comment with a foreign announce row
-    // sends the torrent to run(), whose handlers decide ownership by URL.
-    static public function isForeignAuthoritative($row, $comment)
+    // Dispatch when the loose comment filter names a foreign handler, or when
+    // an unreadable comment leaves an enabled foreign announce row ambiguous.
+    // A nonempty comment without that match remains eligible for RuTracker's
+    // own announce verdict; exact topic ownership belongs to the handlers.
+    static private function requiresForeignDispatch($row, $comment)
     {
         if (ruTrackerChecker::isForeignComment($comment)) return true;
         if ((string) $comment !== '') return false;
@@ -353,7 +353,7 @@ class RuTrackerUpdatePass
         $hostStats = array();
         foreach ($rows as $index => $row) {
             $comments[$index] = self::commentOf($row);
-            if (self::isForeignAuthoritative($row, $comments[$index])) {
+            if (self::requiresForeignDispatch($row, $comments[$index])) {
                 $verdicts[$index] = 'none';
                 $hosts[$index] = '';
                 continue;
