@@ -78,6 +78,24 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue(strpos($decision['payload'], 'sonarr_imported') !== false
 			&& strpos($decision['payload'], 'radarr_imported') !== false,
 			'both member values survive canonical rebuilding');
+		$this->assertTrue(strpos($decision['log'][0], 'd.views.push_back_unique') !== false
+			&& strpos($decision['log'][0], 'sonarr_imported') === false,
+			'the untrusted carrier names its command without logging argument values');
+	}
+
+	public function testUntrustedMulticallLogNamesBoundedDistinctCommands()
+	{
+		$hash = str_repeat('A', 40);
+		$members = array();
+		foreach(array('d.name', 'd.hash', 'd.size_bytes', 'd.is_active') as $method)
+			$members[] = array($method, array($hash));
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml($members),
+			'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
+			'the read-only batch remains untrusted');
+		$this->assertEquals(array('untrusted: system.multicall (4 members) '
+			.'[methods: d.name, d.hash, d.size_bytes, ...]'), $decision['log'],
+			'the one summary bounds method names without logging their arguments');
 	}
 
 	public function testSuccessfulSystemMulticallLogsOnlySummaryAndNonroutineWarnings()
@@ -183,11 +201,19 @@ class XMLRPCProxyTest extends TestCase
 			'size-limit setter keeps its checked elevation');
 		$this->assertTrue(strpos($decision['payload'], '<i8>1024</i8>') !== false,
 			'the proxy retains enough XMLRPC budget for a follow-up recovery request');
+		$this->assertTrue(in_array('WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024',
+			$decision['log'], true), 'a silently raised size limit is named in the decision log');
 		$recovery = XMLRPCProxy::decide($this->methodCallXml('network.xmlrpc.size_limit.set',
 			array('', '16777216')), 'sanitize', XMLRPCProxy::defaultSafeParams());
 		$this->assertTrue($recovery['action'] === 'send' && $recovery['trusted']
 			&& strlen($recovery['payload']) < 1024,
 			'the actual emitted recovery setter fits below the enforced floor');
+		$this->assertEquals(1, count($recovery['log']),
+			'an unchanged size limit does not produce a clamp warning');
+		$ceiling = XMLRPCProxy::decide($this->methodCallXml('network.xmlrpc.size_limit.set',
+			array('', '999999999')), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue(in_array('WARNING: network.xmlrpc.size_limit.set requested 999999999, sent 16777216',
+			$ceiling['log'], true), 'the upper clamp is visible too');
 	}
 
 	public function testExplicitPolicyCannotSetXmlrpcLimitThroughNestedCommands()
@@ -222,6 +248,9 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue($member['action'] === 'send' && $member['trusted']
 			&& strpos($member['payload'], '<i8>1024</i8>') !== false,
 			'a system.multicall member uses the same direct size shape and floor');
+		$this->assertTrue(strpos(implode("\n", $member['log']),
+			'[slot 1] WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024') !== false,
+			'a batch member reports the same clamp without repeating a routine decision');
 	}
 
 	public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallDenialLine()

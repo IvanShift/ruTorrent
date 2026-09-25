@@ -687,7 +687,7 @@ switch($mode)
 			{
 				FileUtil::toLog('xmlrpc-proxy: conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
 				header('HTTP/1.0 503 Service Unavailable');
-				CachedEcho::send('XMLRPC proxy policy is not readable.', 'text/html');
+				CachedEcho::send(XMLRPCProxy::faultXml('XMLRPC proxy policy is not readable.'), 'text/xml');
 				exit;
 			}
 			eval(FileUtil::getPluginConf('httprpc'));
@@ -698,7 +698,7 @@ switch($mode)
 			{
 				FileUtil::toLog('xmlrpc-proxy: '.$policy['policyError']);
 				header('HTTP/1.0 503 Service Unavailable');
-				CachedEcho::send($policy['policyError'], 'text/html');
+				CachedEcho::send(XMLRPCProxy::faultXml($policy['policyError']), 'text/xml');
 				exit;
 			}
 			if($HTTP_RAW_POST_DATA === false)
@@ -717,8 +717,8 @@ switch($mode)
 				CachedEcho::send("Empty XMLRPC request.", "text/html");
 				exit;
 			}
-			// An explicit empty or invalid list remains an override, not a
-			// request to use the built-in fallback.
+			// An explicit empty list remains an override, not a request to
+			// use the built-in fallback. Invalid lists were refused above.
 			$proxySafeParams = $policy['safeParams'];
 			$proxyLocalPaths = $policy['allowLocalPaths'];
 			$allowRootDirectory = $policy['allowRootDirectory'];

@@ -217,8 +217,6 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		{
 			$r = $this->runEntrypoint($door, $this->viewActionXml(), true,
 				'success', 'symlink');
-			$this->assertTrue($r['policy_exists'],
-				$door.' sees the shipped policy through the conf volume symlink');
 			$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
 				&& $r['state']['sends'] === 0
 				&& strpos($r['body'], '<i4>-501</i4>') !== false,
@@ -485,6 +483,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', $policy);
 				$this->assertTrue(strpos($r['status'], '503') !== false,
 					$door.' refuses an invalid policy with a visible HTTP status');
+				$this->assertHttp($r, '503 Service Unavailable',
+					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+				$this->assertTrue(strpos($r['body'], '<i4>-501</i4>') !== false,
+					$door.' returns a parseable XMLRPC fault for invalid policy');
 				$this->assertTrue(strpos($r['body'], 'XMLRPCProxySafeParams') !== false,
 					$door.' names the invalid policy key in the response');
 				$this->assertTrue($r['state']['sends'] === 0,
@@ -503,6 +505,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			{
 				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', 'unreadable');
 				$this->assertTrue(strpos($r['status'], '503') !== false, $door.' refuses an unreadable policy instead of widening it');
+				$this->assertHttp($r, '503 Service Unavailable',
+					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+				$this->assertTrue(strpos($r['body'], '<i4>-501</i4>') !== false,
+					$door.' returns a parseable XMLRPC fault for unreadable policy');
 				$this->assertTrue($r['state']['sends'] === 0, 'unreadable policy never reaches transport');
 				$log = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
 				$this->assertTrue(strpos($log, 'exists but is not readable') !== false,

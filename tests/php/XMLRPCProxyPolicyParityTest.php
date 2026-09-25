@@ -30,21 +30,38 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			. 'require ' . var_export($this->root . '/conf/xmlrpc_proxy.php', true) . '; '
 			. 'echo json_encode(array($XMLRPCProxy, $XMLRPCProxyLog, '
 			. 'isset($XMLRPCProxySafeParams)));';
+		list($exit, $output, $errors) = $this->runPhpChild($script);
+		$this->assertEquals(0, $exit, 'shipped conf loads with a legacy proxy class: '.$errors);
+		if($exit === 0)
+			$this->assertEquals(array('sanitize', true, false), json_decode($output, true),
+				'legacy proxy keeps the proxy mode and its earlier implicit policy');
+	}
+
+	public function testSharedPolicyLoaderAlsoLoadsTheProxyClass()
+	{
+		$script = 'require ' . var_export($this->root . '/php/xmlrpc_proxy_policy.php', true)
+			. '; echo json_encode(array(class_exists("XMLRPCProxy"), '
+			. 'isset($XMLRPCProxySafeParams), count($XMLRPCProxySafeParams ?? array())));';
+		list($exit, $output, $errors) = $this->runPhpChild($script);
+		$this->assertEquals(0, $exit, 'shared policy loader works without a preloaded class: '.$errors);
+		if($exit === 0)
+			$this->assertEquals(array(true, true, count(XMLRPCProxy::defaultSafeParams())),
+				json_decode($output, true), 'the loader supplies the class and shipped policy');
+	}
+
+	private function runPhpChild($script)
+	{
 		$process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', '-r', $script),
 			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
 			$pipes);
 		if(!is_resource($process))
-			throw new RuntimeException('legacy proxy child did not start');
+			throw new RuntimeException('policy child did not start');
 		fclose($pipes[0]);
 		$output = stream_get_contents($pipes[1]);
 		fclose($pipes[1]);
 		$errors = stream_get_contents($pipes[2]);
 		fclose($pipes[2]);
-		$exit = proc_close($process);
-		$this->assertEquals(0, $exit, 'shipped conf loads with a legacy proxy class: '.$errors);
-		if($exit === 0)
-			$this->assertEquals(array('sanitize', true, false), json_decode($output, true),
-				'legacy proxy keeps the proxy mode and its earlier implicit policy');
+		return array(proc_close($process), $output, $errors);
 	}
 
 	/**

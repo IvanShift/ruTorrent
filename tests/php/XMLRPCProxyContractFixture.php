@@ -657,7 +657,7 @@ $cases = array(
 		"trusted" => false,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>system.multicall</methodName><params><param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: untrusted: system.multicall (1 members)"
+			"xmlrpc-proxy: untrusted: system.multicall (1 members) [methods: d.name]"
 		),
 	),
 	"passthrough_unsafe is not subject to the refusal list" => array(
@@ -769,6 +769,7 @@ $cases = array(
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>network.xmlrpc.size_limit.set</methodName><params><param><value><string></string></value></param><param><value><i8>16777216</i8></value></param></params></methodCall>",
 		"log" => array(
 			"xmlrpc-proxy: trusted: network.xmlrpc.size_limit.set (elevated)",
+			"xmlrpc-proxy: WARNING: network.xmlrpc.size_limit.set requested 999999999, sent 16777216",
 		),
 	),
 	"a size under the ceiling is passed through" => array(

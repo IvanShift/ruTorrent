@@ -1149,7 +1149,7 @@ class XMLRPCProxy
 			self::normalizeMethodName($methodName), $methodName);
 	}
 
-	private static function emitArgumentFromDecoded($shape, $param)
+	private static function emitArgumentFromDecoded($shape, $param, &$adjustedSize = null)
 	{
 		if($param['type'] === 'array' || $param['type'] === 'struct')
 			return null;
@@ -1210,7 +1210,10 @@ class XMLRPCProxy
 					$size = self::$sizeLimitMax;
 				else
 					$size = (int)$val;
-				return '<param><value><i8>' . max(self::$sizeLimitMin, $size) . '</i8></value></param>';
+				$size = max(self::$sizeLimitMin, $size);
+				if((int)$val !== $size)
+					$adjustedSize = array('requested' => $val, 'sent' => $size);
+				return '<param><value><i8>' . $size . '</i8></value></param>';
 
 			case 'text':
 				if($param['type'] !== 'string')
@@ -1314,6 +1317,8 @@ class XMLRPCProxy
 				return self::reject("rejected (not allowed on this connection): system.multicall", $methodName);
 			$membersXml = '';
 			$memberLogs = array();
+			$untrustedMethods = array();
+			$untrustedMethodsTruncated = false;
 			$batchTrusted = null;
 			foreach($params[0]['value'] as $index => $rawMember)
 			{
@@ -1333,6 +1338,17 @@ class XMLRPCProxy
 					|| ($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted))
 					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log']);
 				$batchTrusted = $innerDecision['trusted'];
+				if(!$batchTrusted)
+				{
+					$name = self::normalizeMethodName($innerMethod);
+					if(!in_array($name, $untrustedMethods, true))
+					{
+						if(count($untrustedMethods) < 3)
+							$untrustedMethods[] = $name;
+						else
+							$untrustedMethodsTruncated = true;
+					}
+				}
 				// Routine per-member decisions can turn one WebUI action into
 				// thousands of lines. Keep only exceptional member warnings.
 				foreach($innerDecision['log'] as $line)
@@ -1355,9 +1371,11 @@ class XMLRPCProxy
 			}
 			$canonicalXml = self::emitMethodCall('system.multicall',
 				'<param><value><array><data>'.$membersXml.'</data></array></value></param>');
+			$methods = $batchTrusted ? '' : ' [methods: '.implode(', ', $untrustedMethods)
+				.($untrustedMethodsTruncated ? ', ...' : '').']';
 			$decision = self::forward($canonicalXml, $batchTrusted,
 				($batchTrusted ? 'trusted: ' : 'untrusted: ').'system.multicall ('
-				.count($params[0]['value']).' members)');
+				.count($params[0]['value']).' members)'.$methods);
 			$decision['log'] = array_merge($decision['log'], $memberLogs);
 			return $decision;
 		}
@@ -1554,11 +1572,12 @@ class XMLRPCProxy
 				return self::unmatchedElevation($methodName, $rawData);
 
 			$canonicalParams = array();
+			$adjustedSize = null;
 			for($i = 0; $i < count($shapes); $i++)
 			{
 				$shape = $shapes[$i];
 				$param = $params[$i];
-				$emitted = self::emitArgumentFromDecoded($shape, $param);
+				$emitted = self::emitArgumentFromDecoded($shape, $param, $adjustedSize);
 				if($emitted === null)
 					return self::unmatchedElevation($methodName, $rawData);
 				$canonicalParams[] = $emitted;
@@ -1566,7 +1585,12 @@ class XMLRPCProxy
 
 			$canonicalXml = self::emitMethodCall($methodName, implode('', $canonicalParams));
 
-			return self::forward($canonicalXml, true, "trusted: " . self::normalizeMethodName($methodName) . " (elevated)");
+			$decision = self::forward($canonicalXml, true,
+				"trusted: " . self::normalizeMethodName($methodName) . " (elevated)");
+			if($adjustedSize !== null)
+				$decision['log'][] = 'WARNING: network.xmlrpc.size_limit.set requested '
+					.$adjustedSize['requested'].', sent '.$adjustedSize['sent'];
+			return $decision;
 		}
 
 		// Unknown method — pass through as untrusted.

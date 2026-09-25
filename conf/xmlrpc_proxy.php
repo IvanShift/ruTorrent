@@ -44,11 +44,12 @@
 	// pass-through altogether, set $XMLRPCProxy to "off".
 	// An explicit list is a complete override, including after an upgrade;
 	// review it when adopting new defaults instead of silently widening it.
-	// Upgrade: persisted conf/ volumes keep their existing file. To accept the
-	// canonical base-directory spelling and Recreate files, explicitly add
-	// d.directory.base.set, f.set_create_queued and f.set_resize_queued to the
-	// installed list (and any httprpc override). An upgrade does not add them
-	// to an explicit policy automatically.
+	// Upgrade: persisted conf/ volumes keep their existing file. This shipped
+	// file inherits d.directory.base.set, f.set_create_queued and
+	// f.set_resize_queued from the built-in default below. In a persisted file
+	// with an explicit $XMLRPCProxySafeParams = array(...), append those three
+	// quoted names inside that array (and any httprpc override). An upgrade
+	// does not widen an explicit custom list automatically.
 	// The shared policy loader provides XMLRPCProxy before this file is included.
 	// A persisted conf/ volume may be read by an older proxy after rollback.
 	// Leave its earlier implicit policy in place when this method is absent.

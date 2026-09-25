@@ -314,10 +314,10 @@ try {
         sourceSame(false, strpos($log, $secret) !== false,
             'refusal and account diagnostics never log cookie values');
 
-    echo "ok - fetchComplex keeps the HTTPS loginmgr session off HTTP\n";
+    echo "ok - fetchComplex keeps loginmgr credentials off HTTP and parses URL cookies\n";
 } catch (Throwable $error) {
     $failed = 1;
-    echo "not ok - fetchComplex keeps the HTTPS loginmgr session off HTTP\n  "
+    echo "not ok - fetchComplex keeps loginmgr credentials off HTTP and parses URL cookies\n  "
         . $error->getMessage() . "\n";
 } finally {
     sourceRemoveTree($sourceTestRoot);
