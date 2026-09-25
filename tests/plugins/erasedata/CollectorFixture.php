@@ -1426,11 +1426,11 @@ class ErasedataProductionMirror
 			// death lands at an unknown moment after the acknowledgement, and a
 			// tick that was blocked on a hash lock the producer held is freed
 			// the instant it dies and can complete a whole lawful recovery
-			// before the case gets to look. Measured: 5 failures in 8 runs of
-			// testCrashAfterStagingLeavesExactRecoverableStagingAndNoErase on a
-			// loaded host, all of them a journal an unreaped tick had already
-			// cleared. The wait is bounded and its expiry is recorded, so a
-			// release nobody sends is visible rather than silent.
+			// before the case gets to look. On one loaded host this test
+			// failed in 5 of 8 runs; another run reproduced it in 1 of 12.
+			// In each failure an unreaped tick had already cleared the journal.
+			// The wait is bounded and its expiry is recorded, so a release
+			// nobody sends is visible rather than silent.
 			."\t\tif(isset(\$reply['exit']) && isset(\$reply['await'])\n"
 			."\t\t\t&& is_string(\$reply['await']) && \$reply['await'] !== '')\n"
 			."\t\t{\n"

@@ -100,7 +100,7 @@ docker run --rm --entrypoint php85 \
   -l plugins/rutracker_check/check.php
 ```
 
-The full Jest suite currently has unrelated existing failures in some legacy specs. Prefer focused tests plus syntax checks unless the task is specifically to repair the test suite.
+The full Jest suite passed 25/25 suites and 340/340 tests on 2026-09-25. Use focused tests and syntax checks while iterating, then run the full gate for a deployment candidate.
 
 ## Upstream Sync
 
@@ -280,9 +280,9 @@ changes-required) have held up well in review; measured numbers have not.
 
 ## PHP Suite Timing and the Matrix
 
-On an idle host after the wait reductions (2026-09-15), the sequential PHP leg has
-85 files and takes about 90 seconds. These are approximate timings; measure
-again after changing a slow suite:
+On an idle host after the wait reductions (2026-09-15), the sequential PHP leg
+had 85 files and took about 90 seconds. This table is historical; the file
+count has grown, so measure the current gate before quoting its duration:
 
 | file | seconds |
 |---|---:|
@@ -302,11 +302,11 @@ Current guidance:
   suite over the same tree, all at once. Before optimising it, check what else is running:
   `uptime` and `pgrep -cf '[b]ash php-test.sh'`.
 - **Parallelising files has a different ceiling now.** `tests/php-test.sh`
-  runs 85 independent PHP files sequentially. With a ~90-second leg and a
+  runs independent PHP files sequentially. With the historical ~90-second leg and a
   slowest file around 36 seconds, perfect file-level parallelism would be
   bounded by that file, before process startup and contention. The matrix
-  below parallelises PHP versions, not files within a leg. `TaskTest.php`
-  needs isolation before parallel file execution inside a container.
+  below parallelises PHP versions, not files within a leg. Every parallel
+  leg needs its own tree and `TMPDIR`.
 - **The lever inside the first file was one constant.** Per-method timing (2026-09-14) put
   110 of its 117 s in ten real producer children, each waiting the whole 11 s
   `ERASEDATA_DRAIN_ACK_TIMEOUT` for a scheduler the mirror never plays, as SETUP for a case
@@ -340,24 +340,24 @@ Current guidance:
   case observes something inside of may not. `ManualEntrypointsTest` keeps its 1 s windows
   for that reason -- they are how it proves that no child was launched.
 
-If someone does parallelise it, one file has to be handled first: `plugins/_task/TaskTest.php`
-runs `kill -9` over every child of PID 1 (see the entry above). On this host that is harmless
--- 46 of 47 children answer EPERM -- but inside a container, where every process shares one
-uid, it would kill the sibling test processes. Everything else is already safe for it: all
-six suites that open sockets build unique paths from `uniqid()`/`getmypid()` and none binds a
-fixed port, and `PermissionTest` stopped writing fixtures into the checkout on 2026-09-06.
+The old `TaskTest.php` fixture killed children of PID 1 inside a container.
+Since `63ac1e33`, it uses an isolated profile, rejects PID <= 1, and checks
+process identity before signalling the task and its children. The numeric PID
+reuse window remains open; see `rtask-kill-pid` in the issue registry. Socket
+fixtures use unique paths, and `PermissionTest` no longer writes into the checkout.
 
 The cheapest win is not speed at all: **skip the run when nothing it tests has changed.**
 Four commits on 2026-09-06 touched only Markdown under `tasks/` and each paid the full suite.
 An input digest compared against the last green run makes such Markdown-only
 changes free.
 
-Both of those exist now (2026-09-14), local to this checkout like the hook itself:
+The matrix script is tracked in this repository; its green marker and the
+pre-commit hook are local to this checkout:
 
 - **`tasks/matrix.sh`** runs four legs in parallel: local PHP, `php:8.1-cli`,
   `php:7.4-cli` (the CI version floor, with a different extension/configuration
   environment), and the shipped-image Kinozal suite without `iconv`. Each leg
-  uses its own `git ls-files` export and `TMPDIR` under `~/.cache/rtm/<stamp>/`;
+  uses its own `git ls-files` export and `TMPDIR` under `~/.cache/rtm/<stamp>.XXXXXX/`;
   containers run as this user. The full run is bounded by the slowest leg.
   `tasks/matrix.sh local 7.4` selects legs. Its digest hashes exported
   non-Markdown working-tree files, tracked or new, plus the PHP and Docker
@@ -515,19 +515,9 @@ Know before you interpret the result:
   no tokenizer function anywhere. The base commit fails identically — **always run the same suite
   on the base before calling a failure a regression**. That comparison is the only thing separating
   an image gap from a real one.
-- **`TaskTest` kills the container it runs in, and the symptom looks like an out-of-memory.**
-  `rTask::kill()` reads a pid out of a file and runs ``kill -9 `pgrep -P $pid` ; kill -9 $pid`` --
-  the pid *and every child of it*. `testKillRunsNothingFromANonNumericPidFile` deliberately feeds
-  it a pid file reading `1$(touch ...)`; `intval()` correctly strips the injection the case is
-  about, and leaves the pid **1**. Inside a container that is init, so every process in the
-  container is a direct child of it and all of them are the same uid: they all die. Measured -- an
-  unrelated `sleep` started beside the suite was killed, and a full run inside a live `rt-lab`
-  container ended it (`Exited (0)`, mid-suite). What you see is `Killed` and `EXIT=137` at the line
-  `> php plugins/_task/TaskTest.php`, which reads as an OOM kill and is not one; `free` will show
-  the machine idle. Exclude that one file when running the suite in a container you care about.
-  `php:7.4-cli` and `php:8.1-cli` do not ship `pgrep`, so the path silently does nothing there --
-  which is why a version matrix does not show it. The plugin is untouched by any current work; the
-  underlying defect is written up in `backup/2026-09-25/tasks/2026-09-05-consolidated-fixes/SIDE-FINDINGS.md`.
+- **The old `TaskTest` fixture killed its container.** This was fixed in
+  `63ac1e33`; see the PHP suite timing section above. Recheck a base commit
+  before attributing its historical exit 137 to the current code.
 - **Suites that write fixtures into the checkout make two concurrent runs corrupt each other.**
   `PermissionTest` built its directories in `tests/php/fixtures` until this was fixed. Six parallel
   runs then passed 3 or 4 of 5 assertions instead of 5, and a run as root left the fixtures
@@ -592,6 +582,9 @@ overlays the local working tree onto it, `sync <name>` re-overlays after an edit
 removes it. It copies only what `git ls-files` reports, so uncommitted work reaches the container
 and untracked scratch does not, and it waits for `/run/rtorrent/rtorrent.sock` before calling
 `/php/getplugins.php` -- a container is "healthy" long before rtorrent is listening.
+After changing `conf/` in a running lab, reload PHP-FPM before probing: the
+shipped image has `opcache.revalidate_freq=60`, and `sync` only copies files.
+The 2026-09-25 V4 probe was initially stale until PHP-FPM received `USR2`.
 
 To build an image with a different rTorrent, nothing in `docker-rutorrent/Dockerfile` needs
 editing; it is already parameterised:
