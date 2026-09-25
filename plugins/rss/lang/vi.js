@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Lỗi tải torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Đã tải";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Tải";
  theUILang.rssMenuOpen			= "Mở trong trình duyệt";
  theUILang.rssMenuClearHistory		= "Xóa lịch sử";

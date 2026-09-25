@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "载入 Torrent 时错误.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "已载入";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "载入";
  theUILang.rssMenuOpen			= "在浏览器中打开";
  theUILang.rssMenuClearHistory		= "清除历史";

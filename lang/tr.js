@@ -206,6 +206,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE modülü yüklü değil. ruTorrent çalışmayacaktır.",
  addTorrentSuccess		: "Torrent başarıyla eklendi.",
  addTorrentFailed		: "Torrent eklenemedi.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlState			: "Durum",
  newLabel			: "Yeni etiket",
  enterLabel			: "Etiket Girin",

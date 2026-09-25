@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Σφάλμα φόρτωσης torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Έχει ήδη φορτωθεί";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Φόρτωση";
  theUILang.rssMenuOpen			= "Άνοιγμα στο πρόγραμμα περιήγησης";
  theUILang.rssMenuClearHistory		= "Εκκαθάριση Ιστορικού";

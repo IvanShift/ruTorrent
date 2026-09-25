@@ -134,7 +134,7 @@ plugin.wasAdded = function(data)
 		noty( theUILang.addTorrentFailed + " ("+data['error']+')', "error" );
 	}
 	if(data['pending'])
-		noty((theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.")
+		noty(theUILang.addTorrentPending
 			+ " (" + data['pending'] + ')', "warning");
 	if(data['success'])
 	{

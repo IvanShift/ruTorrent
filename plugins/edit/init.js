@@ -149,7 +149,7 @@ theWebUI.receiveEdit = function(d)
 		theDialogManager.hide("tedit");
 	}
 	if(d.pending)
-		noty(theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.", "warning");
+		noty(theUILang.addTorrentPending, "warning");
 	if(d.errors.length)
 	{
 		for( var i=0; i<d.errors.length; i++)

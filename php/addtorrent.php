@@ -17,7 +17,7 @@ if(isset($_REQUEST['result']))
 			$status = in_array($result, array('Success', 'Pending', 'Failed',
 				'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
 			$message = $status === 'Pending'
-				? '(theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.")'
+				? 'theUILang.addTorrentPending'
 				: 'theUILang.addTorrent'.$status;
 			$kind = $status === 'Success' ? 'success' : ($status === 'Pending' ? 'warning' : 'error');
 			$js.= ('noty("'.(isset($_REQUEST['name'][$ndx]) ? addslashes(rawurldecode(htmlspecialchars($_REQUEST['name'][$ndx]))).' - ' : '').

@@ -198,6 +198,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE মডিউল ইনস্টল করা নেই। ruTorrent কাজ করবে না।",
  addTorrentSuccess		: "টরেন্ট সফলভাবে যুক্ত করা হয়েছে।",
  addTorrentFailed		: "টরেন্ট যুক্ত করতে ব্যর্থ হয়েছে।",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

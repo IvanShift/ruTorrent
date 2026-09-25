@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Błąd pobierania torrenta.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Pobrany";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Pobierz";
  theUILang.rssMenuOpen			= "Otwórz w przeglądarce";
  theUILang.rssMenuClearHistory		= "Wyczyść historię";

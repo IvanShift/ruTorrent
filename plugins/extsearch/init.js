@@ -321,7 +321,7 @@ theWebUI.setTagsHash = function(d)
 			item.hash = d.data[i].hash;
 			const pending = item.hash === null;
 			const message = pending
-				? (theUILang.addTorrentPending || "Sent to rTorrent; confirmation pending.")
+				? theUILang.addTorrentPending
 				: (item.hash ? theUILang.addTorrentSuccess : theUILang.addTorrentFailed);
 			noty(message + " (" + item.name + ')', pending ? "warning" : (item.hash ? "success" : "error"));
 		}

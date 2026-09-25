@@ -198,6 +198,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE modul nincs telepítve, a rutorrent nem fog működni.",
  addTorrentSuccess		: "Torrent sikeresen hozzáadva.",
  addTorrentFailed		: "Sikertelen torrent hozzáadás.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

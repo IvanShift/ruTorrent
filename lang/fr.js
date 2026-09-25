@@ -198,6 +198,7 @@ var theUILang =
  PCRENotFound			: "Le module PCRE de PHP n’est pas installé. ruTorrent ne fonctionnera pas.",
  addTorrentSuccess		: "Torrent ajouté à rTorrent avec succès.",
  addTorrentFailed		: "Erreur: le torrent n’a pas pu être ajouté à rTorrent.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Vues",
  NewView			: "Nouvelle vue",
  MoveView			: {base: "Déplacer la vue", top: "Vers le haut", up: "En haut", down: "En bas", bottom: "Vers le bas"},

@@ -5,8 +5,8 @@ plugin.itemStatus = function(item)
 {
 	if(item.hash === "") return theUILang.rssStatus;
 	if(item.hash === "Failed") return theUILang.rssStatusError + " (" + item.errcount + ")";
-	if(item.hash === "Pending") return theUILang.rssStatusPending || "Confirmation pending";
-	if(item.hash === "Conflict") return theUILang.rssStatusConflict || "Torrent already exists";
+	if(item.hash === "Pending") return theUILang.rssStatusPending;
+	if(item.hash === "Conflict") return theUILang.rssStatusConflict;
 	return theUILang.rssStatusLoaded;
 };
 

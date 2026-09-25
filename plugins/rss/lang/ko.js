@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "토렌트를 불러오지 못했습니다.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "이미 불러옮";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "불러오기";
  theUILang.rssMenuOpen			= "브라우저에서 열기";
  theUILang.rssMenuClearHistory		= "기록 지우기";

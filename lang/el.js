@@ -196,6 +196,7 @@ var theUILang =
  PCRENotFound			: "Το πρόσθετο PCRE της PHP δεν είναι εγκατεστημένο. Το ruTorrent δεν θα λειτουργήσει.",
  addTorrentSuccess		: "Το αρχείο torrent προστέθηκε με επιτυχία.",
  addTorrentFailed		: "Αποτυχία προσθήκης του αρχείου torrent.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Προβολές",
  NewView			: "Νέα Προβολή",
  MoveView			: {base: "Μετακίνηση προβολής", top: "Στην κορυφή", up: "Πάνω", down: "Κάτω", bottom: "Στο κάτω μέρος"},

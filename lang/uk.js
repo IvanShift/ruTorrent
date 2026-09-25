@@ -198,6 +198,7 @@ var theUILang =
  PCRENotFound			: "Модуль PHP PCRE не інстальовано. ruTorrent не працюватиме.",
  addTorrentSuccess		: "Завантаження успішно передано в rTorrent.",
  addTorrentFailed		: "Сталася помилка додавання завантаження.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

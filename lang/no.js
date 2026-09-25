@@ -197,6 +197,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE-modul er ikke installert. ruTorrent vil ikke fungere.",
  addTorrentSuccess		: "Torrent ble lagt til.",
  addTorrentFailed		: "En feil skjedde, torrent ble ikke lagt til.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

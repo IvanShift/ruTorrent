@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Errore caricamento torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Già caricato";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Carica";
  theUILang.rssMenuOpen			= "Apri nel Browser";
  theUILang.rssMenuClearHistory		= "Cancella cronologia";

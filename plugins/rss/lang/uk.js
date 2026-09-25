@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Не вдалося завантажити торент.";
  theUILang.rssStatus			= "Розсилка";
  theUILang.rssStatusLoaded		= "Завантажено";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Завантажити";
  theUILang.rssMenuOpen			= "Відкрити у браузері";
  theUILang.rssMenuClearHistory		= "Очистити історію";

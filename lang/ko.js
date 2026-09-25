@@ -196,6 +196,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE 모듈이 설치되지 않았습니다. ruTorrent가 동작할 수 없습니다.",
  addTorrentSuccess		: "토렌트를 성공적으로 추가했습니다.",
  addTorrentFailed		: "토렌트를 추가하지 못했습니다.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

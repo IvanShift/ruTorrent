@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Feil ved innlasting av torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Allerede lastet inn";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Last inn";
  theUILang.rssMenuOpen			= "Åpne i nettleser";
  theUILang.rssMenuClearHistory		= "Slett logg";

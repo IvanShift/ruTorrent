@@ -196,6 +196,7 @@ var theUILang =
  PCRENotFound			: "PHP 中未安裝 PCRE 模組，ruTorrent 無法正常運>作",
  addTorrentSuccess		: "torrent 檔案上傳完成",
  addTorrentFailed		: "錯誤: torrent 檔案無法傳送到 rTorrent",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},

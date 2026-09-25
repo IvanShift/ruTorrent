@@ -18,6 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Hiba a torrent betöltése közben.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Már betöltött";
+ theUILang.rssStatusPending		= "Confirmation pending";
+ theUILang.rssStatusConflict	= "Torrent already exists";
  theUILang.rssMenuLoad			= "Betölt";
  theUILang.rssMenuOpen			= "Megnyitás a böngészőben";
  theUILang.rssMenuClearHistory		= "Előzmények törlése";

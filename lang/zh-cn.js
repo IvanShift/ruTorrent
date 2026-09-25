@@ -198,6 +198,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE 模块未安装. ruTorrent 将不会工作.",
  addTorrentSuccess		: "添加 torrent 成功.",
  addTorrentFailed		: "添加 torrent 失败.",
+ addTorrentPending		: "Sent to rTorrent; confirmation pending.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},
