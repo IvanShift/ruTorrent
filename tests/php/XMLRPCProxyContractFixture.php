@@ -3,10 +3,9 @@
 // Representative observable outcomes of XMLRPCProxy::process(): what it
 // returned, what it sent, on what trust, and what it logged.
 //
-// Generated from the implementation, then frozen. It is not a description of
-// what the proxy should do — the suite next to it covers that — it is a record
-// of what it does, so that a change to how the decision is reached shows up
-// here if it changes the decision.
+// The literal outcome tuple is the assertion oracle for the current policy.
+// A behavior change updates both the descriptive case name and its tuple;
+// the focused proxy tests separately explain why that behavior is required.
 
 // The four structural inputs below are what almost every case passes, so they
 // are stated once here instead of on every row. They are inputs only: what a
@@ -44,10 +43,9 @@ $str = function($value) {
 	return("<param><value><string>".$value."</string></value></param>");
 };
 
-// Top-level case keys in this fixture are stable historical identifiers.
-// Legacy case keys whose prose says "forwarded" are retained as fixed identifier
-// strings; the expected tuple (returned, sends, trusted, payload, log) is normative
-// and defines the required behavior. Do not rename fixture keys.
+// Case names describe the expected behavior. The literal outcome tuple
+// (returned, sends, trusted, payload, log) is the assertion oracle.
+// Changes to behavior must update both the name and the tuple explicitly.
 $cases = array(
 	"off mode rejects and sends nothing" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent")),
@@ -82,7 +80,7 @@ $cases = array(
 			"xmlrpc-proxy: passthrough (UNSAFE mode)",
 		),
 	),
-	"a body that is not XML is forwarded untrusted" => array(
+	"a body that is not XML is rejected" => array(
 		"request" => "not xml at all",
 		"returned" => null,
 		"sends" => 0,
@@ -92,7 +90,7 @@ $cases = array(
 			"xmlrpc-proxy: rejected (invalid XML)",
 		),
 	),
-	"a methodCall with no methodName is forwarded untrusted" => array(
+	"a methodCall with no methodName is rejected" => array(
 		"request" => "<?xml version=\"1.0\"?><methodCall><params></params></methodCall>",
 		"returned" => null,
 		"sends" => 0,
@@ -132,27 +130,27 @@ $cases = array(
 			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
-	"load.start strips a command param that is not allowed" => array(
+	"load.start rejects a command param that is not allowed" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: execute]",
 		),
 	),
-	"every stripped param is named in one log line" => array(
+	"a load with multiple refused params logs one outer refusal" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil").$str("d.peers_max.set=1")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: execute]",
 		),
 	),
-	"a param this side cannot rebuild forces the call untrusted" => array(
+	"a param this side cannot rebuild rejects the call" => array(
 		"request" => $call("load.raw_start", "<param><value><int>1</int></value></param>".$str("http://example.test/x.torrent")),
 		"returned" => null,
 		"sends" => 0,
@@ -182,14 +180,14 @@ $cases = array(
 			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
-	"the 0.9.x method names take the same parameter positions" => array(
+	"a legacy load alias is locally denied" => array(
 		"request" => $call("load_start", $str("http://example.test/x.torrent").$str("d.custom1.set=label")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>load_start</methodName><params><param><value><string>http://example.test/x.torrent</string></value></param><param><value><string>d.custom1.set=label</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: load_start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load_start",
 		),
 	),
 	"a command taking two arguments keeps both, each trimmed" => array(
@@ -212,14 +210,14 @@ $cases = array(
 			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
-	"an argument starting with \$ is dropped rather than quoted" => array(
+	"an argument starting with \$ rejects its load rather than being quoted" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("d.custom1.set=\$execute.capture=/bin/hostname")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: d.custom1.set]",
 		),
 	),
 	"a value the client quoted itself is kept as one argument" => array(
@@ -232,27 +230,27 @@ $cases = array(
 			"xmlrpc-proxy: trusted: load.start (kept 3 params)",
 		),
 	),
-	"a long stripped value is truncated in the log" => array(
+	"a long refused value is absent from the classified log" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: execute]",
 		),
 	),
-	"a newline in a stripped value cannot forge a log line" => array(
+	"a newline in a refused value cannot forge a log line" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("execute=evil\nxmlrpc-proxy: trusted: forged")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: execute]",
 		),
 	),
-	"an empty allowlist strips every command param" => array(
+	"an empty allowlist rejects a load carrying command params" => array(
 		"request" => $call("load.start", $str("").$str("http://example.test/x.torrent").$str("d.custom1.set=label")),
 		"safeParams" => array(),
 		"returned" => null,
@@ -260,10 +258,10 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): load.start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load.start [slot 3: d.custom1.set]",
 		),
 	),
-	"a load call with no params at all is still rebuilt" => array(
+	"a load call with no params is rejected as malformed" => array(
 		"request" => $call("load.start"),
 		"returned" => null,
 		"sends" => 0,
@@ -291,14 +289,54 @@ $cases = array(
 		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>",
 		"log" => array(),
 	),
-	"a multicall of read commands is forwarded untouched and untrusted" => array(
+	"a multicall of read commands is rebuilt and trusted" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.name=")),
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.name=\"\"</string></value></param></params></methodCall>",
+		"log" => array(
+			"xmlrpc-proxy: trusted: d.multicall2 (3 params)",
+		),
+	),
+	"a read command that carries an argument is rebuilt with it quoted" => array(
+		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom=chk-state")),
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom=\"chk-state\"</string></value></param></params></methodCall>",
+		"log" => array(
+			"xmlrpc-proxy: trusted: d.multicall2 (3 params)",
+		),
+	),
+	"a read command whose argument is an evaluator is rejected" => array(
+		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom=\$execute.capture=/bin/hostname")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 3: d.custom]",
+		),
+	),
+	"a multicall naming a command on neither list is rejected" => array(
+		"request" => $call("d.multicall2", $str("").$str("main").$str("d.wibble=")),
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
+		"log" => array(
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 3: d.wibble]",
+		),
+	),
+	"a setter beside a command on neither list rejects the whole multicall" => array(
+		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom1.set=label").$str("d.wibble=")),
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
+		"log" => array(
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 4: d.wibble]",
 		),
 	),
 	"a multicall whose commands are all allowed is rebuilt and trusted" => array(
@@ -311,34 +349,25 @@ $cases = array(
 			"xmlrpc-proxy: trusted: d.multicall2 (3 params)",
 		),
 	),
-	"one unrebuildable command sends the whole multicall untouched" => array(
+	"a setter and a read command in one multicall are both rebuilt" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom1.set=label").$str("d.name=")),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param><param><value><string>d.name=\"\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
+			"xmlrpc-proxy: trusted: d.multicall2 (4 params)",
 		),
 	),
-	"a multicall carrying execute.capture is forwarded untouched and untrusted" => array(
-		"request" => $call("d.multicall2", $str("").$str("main").$str("execute.capture=/bin/sh")),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
-		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
-		),
-	),
-	"an allowed command with a \$ argument makes the multicall untrusted" => array(
+
+	"an allowed command with a \$ argument rejects the multicall" => array(
 		"request" => $call("d.multicall2", $str("").$str("main").$str("d.custom1.set=\$execute.capture=/bin/hostname")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 3: d.custom1.set]",
 		),
 	),
 	"a chained command stays inside the argument it was quoted into" => array(
@@ -351,24 +380,22 @@ $cases = array(
 			"xmlrpc-proxy: trusted: d.multicall2 (3 params)",
 		),
 	),
-	"a multicall view name is data, never a command" => array(
+	"a d.multicall2 view containing equals is rejected as ambiguous" => array(
 		"request" => $call("d.multicall2", $str("").$str("d.custom1.set=notacommand").$str("d.custom1.set=label")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => true,
-		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>d.custom1.set=notacommand</string></value></param><param><value><string>d.custom1.set=\"label\"</string></value></param></params></methodCall>",
-		"log" => array(
-			"xmlrpc-proxy: trusted: d.multicall2 (3 params)",
-		),
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
+		"log" => array("xmlrpc-proxy: rejected (ambiguous multicall view): d.multicall2 [slot 2: d.custom1.set]"),
 	),
-	"a data param that cannot be rebuilt makes the multicall untrusted" => array(
+	"a data param that cannot be rebuilt rejects the multicall" => array(
 		"request" => $call("d.multicall2", "<param><value><int>1</int></value></param>".$str("main").$str("d.custom1.set=label")),
 		"returned" => null,
 		"sends" => 0,
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 1]",
 		),
 	),
 	"d.multicall takes commands in the same position" => array(
@@ -381,7 +408,7 @@ $cases = array(
 			"xmlrpc-proxy: trusted: d.multicall (3 params)",
 		),
 	),
-	"d.multicall.filtered takes commands in the same position" => array(
+	"a filtered multicall with a setter filter and result is rebuilt and trusted" => array(
 		"request" => $call("d.multicall.filtered", $str("").$str("main").$str("d.custom1.set=filter value").$str("d.custom1.set=label")),
 		"returned" => "SCGI-REPLY",
 		"sends" => 1,
@@ -391,37 +418,37 @@ $cases = array(
 			"xmlrpc-proxy: trusted: d.multicall.filtered (4 params)",
 		),
 	),
-	"t.multicall is command-carrying too" => array(
+	"t.multicall of a read command is rebuilt and trusted" => array(
 		"request" => $call("t.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("t.url=")),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>t.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>t.url=\"\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): t.multicall",
+			"xmlrpc-proxy: trusted: t.multicall (3 params)",
 		),
 	),
-	"f.multicall is command-carrying too" => array(
+	"f.multicall of a read command is rebuilt and trusted" => array(
 		"request" => $call("f.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("f.path=")),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>f.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>f.path=\"\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): f.multicall",
+			"xmlrpc-proxy: trusted: f.multicall (3 params)",
 		),
 	),
-	"p.multicall is command-carrying too" => array(
+	"p.multicall of a read command is rebuilt and trusted" => array(
 		"request" => $call("p.multicall", $str("0123456789ABCDEF0123456789ABCDEF01234567").$str("").$str("p.address=")),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => true,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>p.multicall</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string></string></value></param><param><value><string>p.address=\"\"</string></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): p.multicall",
+			"xmlrpc-proxy: trusted: p.multicall (3 params)",
 		),
 	),
-	"system.multicall is not one of them" => array(
+	"system.multicall is rejected before carrier rebuilding" => array(
 		"request" => $call("system.multicall", $str("x")),
 		"returned" => null,
 		"sends" => 0,
@@ -451,14 +478,14 @@ $cases = array(
 			"xmlrpc-proxy: rejected (load from a local path): load.normal",
 		),
 	),
-	"the 0.9.x name is forwarded trusted as an ordinary command" => array(
+	"a legacy load alias with a local path is locally denied" => array(
 		"request" => $call("load_start", $str("").$str("/srv/watch/x.torrent")),
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>load_start</methodName><params><param><value><string></string></value></param><param><value><string>/srv/watch/x.torrent</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: load_start",
+			"xmlrpc-proxy: rejected (not allowed on this connection): load_start",
 		),
 	),
 	"a relative path is a local path too" => array(
@@ -609,7 +636,7 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 [slot 3: execute.capture]",
 		),
 	),
 	"system.multicall carrying a refused member is refused" => array(
@@ -619,17 +646,19 @@ $cases = array(
 		"trusted" => null,
 		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall",
+			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall [slot 1: execute.capture]",
+			"xmlrpc-proxy: [slot 1] rejected (not allowed on this connection): execute.capture"
 		),
 	),
-	"system.multicall of harmless members is still forwarded untrusted" => array(
+	"system.multicall of harmless members is forwarded untrusted" => array(
 		"request" => $call("system.multicall", "<param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param>"),
-		"returned" => null,
-		"sends" => 0,
-		"trusted" => null,
-		"payload" => null,
+		"returned" => "SCGI-REPLY",
+		"sends" => 1,
+		"trusted" => false,
+		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>system.multicall</methodName><params><param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: rejected (not allowed on this connection): system.multicall",
+			"xmlrpc-proxy: untrusted: system.multicall (1 members)",
+			"xmlrpc-proxy: [slot 1] untrusted: d.name"
 		),
 	),
 	"passthrough_unsafe is not subject to the refusal list" => array(

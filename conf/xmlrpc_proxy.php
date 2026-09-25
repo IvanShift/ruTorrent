@@ -21,7 +21,34 @@
 	// Command names allowed as a command parameter of load.* and of the
 	// multicalls. Full names, matched exactly: 'd.custom' does NOT cover
 	// 'd.custom1.set'. Any denied or unrecognised command in a load.* or in
-	// a multicall causes the entire call to be rejected.
+	// a multicall causes the entire call to be rejected. Directory setters
+	// are accepted only in load tails, never in multicall filters or results.
+	//
+	// This list is about WRITING. Commands that only read -- d.name, d.hash,
+	// t.url and the rest of what a client asks for when it wants a listing --
+	// are allowed in a multicall's result slots by $safeGetters in
+	// php/xmlrpc_proxy.php, which is not configurable for the same reason
+	// $denyPrefixes and $elevate are not: it states what the proxy is, not
+	// how this installation is set up. Nothing here needs to repeat them.
+	//
+	// Leaving this file out entirely is not the same as setting the list
+	// empty. The proxy carries this exact list as its built-in default, so an
+	// install without this file still works; an install that sets the list
+	// empty here has said to forbid every command parameter that WRITES, and
+	// is obeyed -- a multicall of read commands still goes through, because
+	// the read list is the proxy's own and not this file's to withdraw.
+	// The filter slot of d.multicall.filtered uses this list alone, not the
+	// built-in readers. With this shipped list only a setter can be a filter;
+	// a read filter such as d.is_active= is refused unless explicitly added.
+	// An empty list refuses every filtered multicall. To refuse raw
+	// pass-through altogether, set $XMLRPCProxy to "off".
+	// An explicit list is a complete override, including after an upgrade;
+	// review it when adopting new defaults instead of silently widening it.
+	// Upgrade: persisted conf/ volumes keep their existing file. To accept the
+	// canonical base-directory spelling and Recreate files, explicitly add
+	// d.directory.base.set, f.set_create_queued and f.set_resize_queued to the
+	// installed list (and any httprpc override). An upgrade does not add them
+	// to an explicit policy automatically.
 	$XMLRPCProxySafeParams = array(
 		'd.custom1.set',            // label
 		'd.custom2.set',            // custom field
@@ -30,7 +57,8 @@
 		'd.custom5.set',            // used by erasedata
 		'd.custom.set',             // generic custom field
 		'd.directory.set',          // download directory
-		'd.directory_base.set',     // base directory
+		'd.directory_base.set',     // legacy base-directory alias
+		'd.directory.base.set',     // canonical base-directory setter
 		'd.priority.set',           // priority
 		'd.throttle_name.set',      // throttle group
 		'd.views.push_back_unique', // view membership
@@ -38,6 +66,7 @@
 
 		// Actions a client applies across a view: "pause all", "resume all".
 		'd.open', 'd.close', 'd.start', 'd.stop',
+		'f.set_create_queued', 'f.set_resize_queued',
 	);
 
 	// Let a caller name a path on rtorrent's own filesystem in load.start or

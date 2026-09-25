@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/PermissionsBiteFixture.php');
 
 /**
  * These tests exercise the two HTTP doors, not a reimplementation of them.
@@ -18,6 +19,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	const CANONICAL_MULTICALL_PAYLOAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.stop=\"\"</string></value></param></params></methodCall>";
 	const CANONICAL_MULTICALL_LENGTH = 275;
 	const CANONICAL_MULTICALL_SHA256 = 'd92ec179c05929f0f8eebd4c6325a27a5fba884907c8cbb2e7c37c3b0f636908';
+	const CANONICAL_SYSTEM_BATCH_SHA256 = '640d88150e348f7cfc7a070a4c0d78d41fceab4b7a99517c6ff29de9bb7abadc';
 
 	public function setUp()
 	{
@@ -149,17 +151,179 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'and neither door falls back to forwarding it untrusted');
 	}
 
-	public function testHttprpcNamesAMissingPolicyRatherThanStrippingInSilence()
+	public function testBothDoorsForwardSonarrImportedViewWithoutTrust()
+	{
+		$hash = str_repeat('a', 40);
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.views.push_back_unique</methodName><params>'
+			.'<param><value><string>'.$hash.'</string></value></param>'
+			.'<param><value><string>sonarr_imported</string></value></param>'
+			.'</params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$r = $this->runEntrypoint($door, $xml, true);
+			$this->assertTrue(strpos($r['status'], '200 OK') !== false
+				&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false,
+				$door.' forwards the Sonarr view call without trust');
+			$this->assertTrue($r['state']['payload_sha256'] === hash('sha256', $xml),
+				$door.' keeps the exact direct-call bytes');
+		}
+	}
+
+	public function testBothDoorsDenyOldLoadAndSizeLimitAliases()
+	{
+		foreach(array('load_start', 'set_xmlrpc_size_limit') as $method)
+			foreach(array('action', 'rpc2') as $door)
+			{
+				$xml = '<?xml version="1.0"?><methodCall><methodName>'.$method
+					.'</methodName><params></params></methodCall>';
+				$r = $this->runEntrypoint($door, $xml, true);
+				$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
+					&& $r['state']['sends'] === 0,
+					$door.' denies the '.$method.' legacy bypass before transport');
+			}
+	}
+
+	public function testBothDoorsSendAllUntrustedReadBatchesWithoutTrust()
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName><params>'
+			.'<param><value><array><data><value><struct>'
+			.'<member><name>methodName</name><value><string>system.client_version</string></value></member>'
+			.'<member><name>params</name><value><array><data></data></array></value></member>'
+			.'</struct></value></data></array></value></param></params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$r = $this->runEntrypoint($door, $xml, true);
+			$this->assertTrue(strpos($r['status'], '200 OK') !== false
+				&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false,
+				$door.' sends an all-untrusted read batch without a trusted connection');
+		}
+	}
+
+	public function testBothDoorsAcceptExactShowPeersReadExpressions()
+	{
+		$expression = 'cat="$t.multicall=d.hash=,t.scrape_complete=,cat={#}"';
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+			.'<param><value><string></string></value></param>'
+			.'<param><value><string>main</string></value></param>'
+			.'<param><value><string>d.hash=</string></value></param>'
+			.'<param><value><string>'.$expression.'</string></value></param>'
+			.'</params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$r = $this->runEntrypoint($door, $xml, true);
+			$this->assertTrue(strpos($r['status'], '200 OK') !== false
+				&& $r['state']['sends'] === 1 && $r['state']['trusted'] === true,
+				$door.' accepts the exact read-only tracker expression');
+			$this->assertTrue(strpos($r['state']['payload'], $expression) !== false,
+				$door.' retains the captured tracker expression');
+		}
+	}
+
+	public function testBothDoorsSendOnlyFullyCheckedSystemMulticalls()
+	{
+		$hash = str_repeat('A', 40);
+		$member = function($method) use ($hash) {
+			return '<value><struct><member><name>methodName</name><value><string>'
+				.$method.'</string></value></member><member><name>params</name>'
+				.'<value><array><data><value><string>'.$hash.'</string></value></data></array>'
+				.'</value></member></struct></value>';
+		};
+		$wrap = function($members) {
+			return '<methodCall><methodName>system.multicall</methodName><params>'
+				.'<param><value><array><data>'.$members.'</data></array></value></param>'
+				.'</params></methodCall>';
+		};
+		$allowed = $wrap($member('d.stop').$member('d.start'));
+		$denied = $wrap($member('d.stop').$member('system.client_version'));
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$ok = $this->runEntrypoint($door, $allowed, true);
+			$this->assertTrue(strpos($ok['status'], '200 OK') !== false
+				&& $ok['state']['sends'] === 1 && $ok['state']['trusted'] === true,
+				$door.' sends a fully checked WebUI batch exactly once as trusted');
+			$this->assertTrue($ok['state']['payload_length'] === 703
+				&& $ok['state']['payload_sha256'] === self::CANONICAL_SYSTEM_BATCH_SHA256,
+				$door.' sends the canonical checked batch bytes');
+			$no = $this->runEntrypoint($door, $denied, true);
+			$this->assertTrue(strpos($no['status'], '403 Forbidden') !== false && $no['state']['sends'] === 0,
+				$door.' refuses a batch whose second member was not trusted');
+			$this->assertTrue(strpos($no['body'],
+				"The command 'system.multicall' was rejected by this server.") !== false,
+				$door.' retains the outer client-visible fault');
+		}
+	}
+
+	/**
+	 * An install without conf/xmlrpc_proxy.php is not an install that meant to
+	 * forbid every command parameter, and treating it as one is how a client
+	 * loses its labels and its directories for a reason nothing on its side can
+	 * see. Measured on the live instance 2026-09-12: the container replaces
+	 * conf/ with a volume seeded once, long before that file existed, so the
+	 * policy reached the door only while a second copy of the list lived in
+	 * plugins/httprpc/conf.php -- and upstream #3251 removed that copy.
+	 *
+	 * The decision names the built-in policy without a separate warning per poll.
+	 */
+	public function testHttprpcNamesTheBuiltInPolicyInOneDecisionLine()
 	{
 		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
-		$this->assertHttp($result, '403 Forbidden', 'text/xml; charset=UTF-8');
-		$this->assertTrue(in_array('xmlrpc-proxy: no $XMLRPCProxySafeParams is defined in '
-			. 'conf/xmlrpc_proxy.php or plugins/httprpc/conf.php',
-			$result['state']['logs'], true),
-			'a tree with no policy says so rather than letting it read as a client fault');
-		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
-			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
+		$this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8');
+		$this->assertTrue($result['policy_exists'] === false, 'the policy file is absent');
+		$this->assertEquals(array('xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]'),
+			$result['state']['logs'], 'one decision line identifies the fallback without a repeated warning');
+		$this->assertFullTranscript('httprpc', $result['state'], 1,
+			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
+			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
+	}
+
+	public function testRpc2FallsBackToTheBuiltInPolicyToo()
+	{
+		$result = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none');
+		$this->assertHttp($result, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertTrue($result['policy_exists'] === false, 'the shared policy file is absent');
+		$this->assertRpc2Log($result, 'trusted: d.multicall2 (3 params) [built-in policy]', 'the decision names its fallback policy');
+		$this->assertTrue(count(explode("\n", trim($result['rpc2logs']))) === 1, 'no separate fallback warning is emitted');
+		$this->assertFullTranscript('rpc2', $result['state'], 1,
+			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
+			self::CANONICAL_MULTICALL_SHA256, '127.0.0.1', 1, true,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array(array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1)));
+	}
+
+	public function testExplicitRestrictedAndEmptyPoliciesOverrideDefaultsAtBothDoors()
+	{
+		foreach(array('restricted', 'empty') as $policy)
+			foreach(array('action', 'rpc2') as $door)
+			{
+				$r = $this->runEntrypoint($door, $this->viewActionXml(), true, 'success', $policy);
+				$this->assertTrue(strpos($r['status'], '403') !== false, $door.' honors the '.$policy.' override');
+				$this->assertTrue($r['state']['sends'] === 0, 'an override refusal never reaches transport');
+				$logs = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
+				$this->assertTrue(strpos($logs, '[built-in policy]') === false,
+					$door.' labels the '.$policy.' override as explicit policy');
+				$xml = str_replace('d.stop=', 'd.name=', $this->viewActionXml());
+				$r = $this->runEntrypoint($door, $xml, true, 'success', $policy);
+				$this->assertTrue($r['state']['sends'] === 1 && $r['state']['trusted'] === true, 'read-only listing remains available under a restricted setter policy');
+			}
+	}
+
+	public function testUnreadablePolicyFailsClosedAtBothDoors()
+	{
+		if(testSkipUnlessPermissionsBite('an unreadable conf/xmlrpc_proxy.php fails closed at both doors')) return;
+		foreach(array(true, false) as $logging)
+			foreach(array('action', 'rpc2') as $door)
+			{
+				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', 'unreadable');
+				$this->assertTrue(strpos($r['status'], '503') !== false, $door.' refuses an unreadable policy instead of widening it');
+				$this->assertTrue($r['state']['sends'] === 0, 'unreadable policy never reaches transport');
+				$log = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
+				$this->assertTrue(strpos($log, 'exists but is not readable') !== false,
+					$door.' reports the configuration failure with routine logging '.($logging ? 'on' : 'off'));
+			}
 	}
 
 	public function testBothDoorsRejectMalformedOwnedCallWith403And501()
@@ -487,6 +651,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
 				$rpc2Host, $rpc2Port, $disp['trusted'], $rpc2Timeouts, $rpc2ResponseMode, $disp['rpc2_events']);
 			$this->assertTranscriptsStrictlyIdentical('rpc2 (' . $name . ')', $rpc2Logged['state'], $rpc2Quiet['state']);
+			$this->assertTrue($rpc2Quiet['rpc2logs'] === '', 'quiet rpc2 writes no diagnostic log');
 			if($disp['sends'] > 0 && $disp['trusted'])
 			{
 				$this->assertTrue(strpos($rpc2Logged['rpc2logs'], 'trusted: d.multicall2 (3 params)') !== false,
@@ -569,6 +734,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			if(!is_array($decoded))
 				throw new Exception('copied entrypoint did not write readable state');
 			$response['state'] = $decoded;
+			$response['policy_exists'] = is_file($tree . '/conf/xmlrpc_proxy.php');
 			$response['rpc2logs'] = is_file($tree . '/rpc2.log')
 				? file_get_contents($tree . '/rpc2.log') : '';
 			return $response;
@@ -590,12 +756,13 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'plugins/httprpc/action.php',
 			'php/xmlrpc_path.php',
 			'php/xmlrpc_proxy.php',
+			'php/xmlrpc_proxy_policy.php',
 			'rpc2.php',
 		);
-		// The shipped policy files, so that what a door decides here is what it
-		// decides on an install rather than what this fixture invented. "none"
-		// copies neither, which is a tree missing its configuration.
-		if($policy === 'shipped')
+		// Copy and byte-verify the shipped policy files before applying the
+		// fixture's logging switch and restricted/empty lists below. The
+		// unreadable variant chmods its copy to 0000; "none" omits both files.
+		if($policy !== 'none')
 		{
 			$files[] = 'conf/xmlrpc_proxy.php';
 			$files[] = 'plugins/httprpc/conf.php';
@@ -609,6 +776,17 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
 				throw new Exception('could not byte-copy production source ' . $relative);
 		}
+		if($policy !== 'none')
+		{
+			$file = $tree . '/conf/xmlrpc_proxy.php';
+			// Explicit deployment overrides follow the byte-verified shipped policy.
+			file_put_contents($file, "\n\$XMLRPCProxyLog = (getenv('XMLRPC_ENTRYPOINT_LOGGING') === '1');\n", FILE_APPEND);
+			if($policy === 'restricted' || $policy === 'empty')
+				file_put_contents($file, "\$XMLRPCProxySafeParams = ".($policy === 'empty' ? 'array()' : "array('d.custom1.set')").";\n", FILE_APPEND);
+			if($policy === 'unreadable' && !chmod($file, 0000))
+				throw new Exception('could not make policy unreadable');
+		}
+
 	}
 
 	private function writeStubs($tree)
@@ -658,6 +836,8 @@ PHP
 );
 		file_put_contents($tree . '/php/xmlrpc.php', <<<'PHP'
 <?php
+// The real xmlrpc.php loads util.php, which bootstraps conf/config.php.
+require_once(dirname(__FILE__).'/../conf/config.php');
 function entrypoint_state($key, $value = null)
 {
 	$path = getenv('XMLRPC_ENTRYPOINT_STATE');
@@ -735,6 +915,7 @@ PHP
 // A real directory rather than "/": the shipped policy leaves
 // $XMLRPCProxyAllowRootDirectory false, and rpc2.php refuses to serve at all
 // while the boundary is one that confines nothing.
+$XMLRPCProxyLog = (getenv('XMLRPC_ENTRYPOINT_LOGGING') === '1');
 $topDirectory = realpath(dirname(__FILE__) . '/..');
 $log_file = dirname(__FILE__) . '/../rpc2.log';
 $scgi_host = '127.0.0.1';

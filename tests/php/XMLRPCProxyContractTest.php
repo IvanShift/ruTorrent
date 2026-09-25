@@ -33,11 +33,10 @@ if(!class_exists('rXMLRPCRequest'))
 require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 
 /**
- * process() is decide() plus a send. These tests exist to keep that a refactor:
- * the fixture records what process() did before decide() was split out of it,
- * and nothing here describes what the proxy ought to do — XMLRPCProxyTest
- * covers that. If a change alters a decision, it shows up as a diff to the
- * fixture, which is the point.
+ * process() is decide() plus a send. The fixture's literal outcome tuples
+ * are the oracle for its current observable behavior. Change a tuple and its
+ * descriptive name together when policy changes; XMLRPCProxyTest states the
+ * behavior that justifies those changes.
  *
  * Comparisons are identity, not equality: '' == null and 0 == false, and this
  * suite is about bytes.
@@ -215,11 +214,11 @@ class XMLRPCProxyContractTest extends TestCase
 			$decision = XMLRPCProxy::decide($case['request'], $case['mode'],
 				$case['safeParams'], $case['allowLocalPaths']);
 
-			// One line per decision, whether or not the caller wants it logged.
-			// The switch belongs to the caller, which is why the fixture has
-			// cases with logging off that still send identical bytes.
-			$this->assertTrue(count($decision['log']) === 1,
-				$name.' — reports exactly one line');
+			// A decision always reports its outer reason; a system.multicall
+			// can also report classified decisions of its members. The caller
+			// chooses whether to write those lines.
+			$this->assertTrue(count($decision['log']) >= 1,
+				$name.' — reports at least its outer reason');
 
 			if($case['enableLog'])
 			{

@@ -12,12 +12,11 @@
  * process() applies the policy and sends the result; decide() applies it and
  * returns the result, for a caller that owns its own connection to rtorrent.
  *
- * Dependencies of process() (loaded by the production caller before non-"off"
- * modes):
+ * Dependencies of the process() convenience adapter:
  *   php/util.php    — FileUtil::toLog
  *   php/xmlrpc.php  — rXMLRPCRequest::send
- * (Both are required by plugins/httprpc/action.php, the production caller.)
- * decide() has none.
+ * Both shipped endpoints call decide() and own their transport/logging.
+ * decide() has no external dependencies.
  */
 
 class XMLRPCProxy
@@ -32,10 +31,7 @@ class XMLRPCProxy
 		'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
 	);
 
-	private static $uriLoadMethods = array(
-		'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
-	);
-
+	// Other sanitizeMethods are URI loads, checked against networkUri.
 	private static $rawLoadMethods = array(
 		'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
 	);
@@ -59,7 +55,11 @@ class XMLRPCProxy
 	// Multicalls carry commands in trailing positions, and the same rebuilding
 	// applies. For multicalls all command slots, including filtered filters,
 	// must be parsed and rebuilt; any unknown, denied, or unrebuildable command
-	// causes terminal rejection of the entire outer call.
+	// causes terminal rejection of the entire outer call. A result slot is
+	// matched against $safeParams and $safeGetters together, so a listing
+	// request is rebuilt rather than refused; the filter slot is matched
+	// against $safeParams alone. A small set of exact, read-only cat
+	// expressions from bundled plugins is allowed in result slots verbatim.
 	//
 	// Refused outright in sanitize mode, whatever rtorrent would have made of
 	// them. Matched as name prefixes, because these are families that differ
@@ -68,12 +68,12 @@ class XMLRPCProxy
 	// silently, which for a refusal list is the wrong way to fail.
 	//
 	// This does not exist because rtorrent would allow them. It exists because
-	// rtorrent only refuses them from 0.16.10, where UNTRUSTED_CONNECTION is
+	// rtorrent only refuses them from 0.16.9, where UNTRUSTED_CONNECTION is
 	// honoured; below that the header is read and ignored, so "forward it
 	// untrusted" is a plain forward and this list is the only refusal there is.
 	private static $denyPrefixes = array(
 		'execute',                // and execute2, execute.capture, execute.raw.bg, ...
-		'method.',                // insert / set / set_key / erase / redirect
+		'method.', 'system.method.', // current and pre-0.9.4 command mutation names
 		'import', 'try_import',   // read a file of commands
 		'schedule',               // and schedule2, schedule.remove, scheduler.*
 		'log.',                   // log.execute, log.open_file, log.xmlrpc
@@ -86,10 +86,10 @@ class XMLRPCProxy
 		                          // own untrusted gate never sees it
 	);
 
-	// Methods rtorrent refuses to an untrusted caller that a remote client
-	// still needs, with the shape each argument has to have. A call that
-	// matches is re-emitted from the parsed parts and sent trusted; anything
-	// else is left untrusted, where rtorrent refuses it.
+	// Direct calls that match a listed shape are rebuilt and sent trusted.
+	// An unmatched original elevation is refused locally. For names added to
+	// serve checked WebUI batches, an unmatched direct call retains the older
+	// untrusted route; the batch carrier still refuses any untrusted member.
 	//
 	// The claim being made is per call, not per command: not "d.custom1.set is
 	// safe" but "this call, naming one download by hash, with a value rtorrent
@@ -109,6 +109,41 @@ class XMLRPCProxy
 		'd.priority.set'                => array('hash', 'int'),
 		'd.delete_tied'                 => array('hash'),
 		'network.xmlrpc.size_limit.set' => array('empty', 'size'),
+		// Some are WebUI batch members; socket setters are reachable to direct
+		// RPC clients even though the current WebUI route does not call them.
+		// Only matching shapes are elevated; other direct calls use rTorrent's gate.
+		'f.prioritize_first.enable'     => array('file_target'),
+		'f.prioritize_first.disable'    => array('file_target'),
+		'f.prioritize_last.enable'      => array('file_target'),
+		'f.prioritize_last.disable'     => array('file_target'),
+		'd.update_priorities'           => array('hash'),
+		'd.set_throttle_name'           => array('hash', 'scheduler_throttle'),
+		'd.throttle_name.set'           => array('hash', 'scheduler_throttle'),
+		'd.set_custom'                  => array('hash', 'scheduler_key', 'scheduler_state'),
+		'view.set_visible'              => array('hash', 'ratio_view'),
+		'view.set_not_visible'          => array('hash', 'ratio_view'),
+		'd.views.push_back_unique'      => array('hash', 'ratio_view'),
+		'd.views.remove'                => array('hash', 'ratio_view'),
+		'system.sockets.files.min_alloc.set' => array('empty', 'socket_alloc'),
+		'system.sockets.files.max_alloc.set' => array('empty', 'socket_alloc'),
+		'system.sockets.http.min_alloc.set'  => array('empty', 'socket_alloc'),
+		'system.sockets.http.max_alloc.set'  => array('empty', 'socket_alloc'),
+		'system.sockets.adjust_alloc'   => array(),
+	);
+
+	// These names were added for checked WebUI batches. An unmatched direct
+	// call must retain its pre-batch untrusted route (for example Sonarr's
+	// d.views.push_back_unique(hash, sonarr_imported)). The carrier accepts
+	// only trusted members, so this fallback cannot borrow batch trust.
+	private static $batchElevations = array(
+		'f.prioritize_first.enable', 'f.prioritize_first.disable',
+		'f.prioritize_last.enable', 'f.prioritize_last.disable',
+		'd.update_priorities', 'd.set_throttle_name', 'd.throttle_name.set',
+		'd.set_custom', 'view.set_visible', 'view.set_not_visible',
+		'd.views.push_back_unique', 'd.views.remove',
+		'system.sockets.files.min_alloc.set', 'system.sockets.files.max_alloc.set',
+		'system.sockets.http.min_alloc.set', 'system.sockets.http.max_alloc.set',
+		'system.sockets.adjust_alloc',
 	);
 
 	// Ceiling for network.xmlrpc.size_limit.set. A client raises it to add a
@@ -116,8 +151,29 @@ class XMLRPCProxy
 	// rtorrent buffer as much as it likes.
 	private static $sizeLimitMax = 16777216;
 
+	// These filesystem mutators have no confined argument contract here.
+	// Refuse them locally even when an old daemon ignores the untrusted flag.
+	private static $filesystemDenies = array(
+		'd.create_link', 'd.delete_link', 'd.tied_to_file.set',
+		'd.set_directory', 'd.set_directory_base',
+		'create_link', 'delete_link', 'd.set_tied_to_file',
+	);
+
+	// rTorrent v0.9.8 redirects directory/session/scgi_* to denied commands.
+	// Older daemons also register load_* and XMLRPC size-limit spellings; those
+	// bypass the canonical load sanitizer and size ceiling if forwarded raw.
+	// Old daemons ignore UNTRUSTED_CONNECTION, so refuse these names locally.
+	private static $legacyDenies = array(
+		'directory', 'session', 'scgi_port', 'scgi_local',
+		'set_directory', 'set_session', 'get_scgi_dont_route', 'set_scgi_dont_route',
+		'load', 'load_verbose', 'load_start', 'load_start_verbose',
+		'load_raw', 'load_raw_start', 'load_raw_verbose',
+		'set_xmlrpc_size_limit', 'xmlrpc_size_limit',
+		'view_filter', 'view_sort_new', 'view_sort_current',
+	);
+
 	// Commands whose argument is a path rtorrent will write a download into.
-	// apply_d_directory() (command_download.cc:146) makes it the download's root
+	// Download::set_directory() / set_base_directory() select the download's root
 	// directory: for a single-file torrent the data lands at <dir>/<info.name>,
 	// and the caller wrote the torrent, so it names the file too. Unconfined,
 	// that is an arbitrary file write as the user rtorrent runs as — which lands
@@ -126,12 +182,249 @@ class XMLRPCProxy
 	// ruTorrent already confines these everywhere else: correctDirectory() holds
 	// a directory inside $topDirectory for the panel, for addtorrent.php and for
 	// httprpc's own settings branch. This path skipped it.
+	//
+	// Both spellings of the base-directory setter: rtorrent 0.16.22 registers
+	// d.directory.base.set as the command and keeps d.directory_base.set as a
+	// CMD_REDIRECT to it (src/main.cc, "widely used"), so a client may send
+	// either and the boundary has to hold for either. A boundary that knew one
+	// spelling was one a client could name its way around, once an operator
+	// allowed the other.
+
 	private static $directoryCommands = array(
-		'd.directory.set', 'd.directory_base.set',
+		'd.directory.set', 'd.directory_base.set', 'd.directory.base.set',
 	);
 
+	// Commands whose argument list has more than one member, so a comma in
+	// the text after '=' separates arguments rather than sitting inside one.
+	// d.custom.if_z is the one read that takes two: the key and the value to
+	// answer when the key is unset. Measured 2026-09-14 on 0.16.22:
+	// d.custom.if_z=key,fallback split in two answers the fallback, and the
+	// same text quoted as one argument faults "Missing default argument."
 	private static $multiArgCommands = array(
 		'd.custom.set' => 2,
+		'd.custom.if_z' => 2,
+	);
+
+	// The policy conf/xmlrpc_proxy.php ships, repeated here as what applies
+	// when no policy file defines one.
+	//
+	// An install without that file is not an install that decided to forbid
+	// every command parameter, and treating it as one costs a client its
+	// labels and its directories for a reason nothing on its side can see.
+	// Measured on the live instance 2026-09-12: the container replaces conf/
+	// with a volume seeded once, years before this file existed, so the list
+	// reached the door only while a second copy of it lived in
+	// plugins/httprpc/conf.php -- and #3251 removed that copy as duplication.
+	// The duplication was the only thing holding the policy up.
+	//
+	// Kept in step with the shipped file by XMLRPCProxyPolicyParityTest, which
+	// fails if the two ever disagree. A policy file that does define the list
+	// still wins outright: this is a default, not a floor. A multicall result
+	// applies an allowed setter to every download in the selected view;
+	// d.delete_tied can unlink each download's tied .torrent. Both doors use
+	// this same intentional view-wide write policy.
+	private static $defaultSafeParams = array(
+		'd.custom1.set', 'd.custom2.set', 'd.custom3.set', 'd.custom4.set',
+		'd.custom5.set', 'd.custom.set',
+		'd.directory.set', 'd.directory_base.set', 'd.directory.base.set',
+		'd.priority.set', 'd.throttle_name.set',
+		'd.views.push_back_unique', 'd.delete_tied',
+		'd.open', 'd.close', 'd.start', 'd.stop',
+		'f.set_create_queued', 'f.set_resize_queued',
+	);
+
+	public static function defaultSafeParams()
+	{
+		return self::$defaultSafeParams;
+	}
+
+	/**
+	 * Normalize policy variables after the caller has loaded its own conf.
+	 * No file access happens here; both HTTP doors pass their current scope.
+	 */
+	public static function policySettings($vars)
+	{
+		$mode = isset($vars['XMLRPCProxy']) ? $vars['XMLRPCProxy'] : 'sanitize';
+		$builtIn = !isset($vars['XMLRPCProxySafeParams']);
+		return array(
+			'mode' => $mode,
+			'log' => isset($vars['XMLRPCProxyLog']) ? $vars['XMLRPCProxyLog'] : true,
+			'safeParams' => $builtIn
+				? self::defaultSafeParams() : $vars['XMLRPCProxySafeParams'],
+			'allowLocalPaths' => isset($vars['XMLRPCProxyAllowLocalPaths'])
+				? $vars['XMLRPCProxyAllowLocalPaths'] : false,
+			'allowRootDirectory' => isset($vars['XMLRPCProxyAllowRootDirectory'])
+				? $vars['XMLRPCProxyAllowRootDirectory'] : false,
+			'logSuffix' => ($builtIn && $mode === 'sanitize') ? ' [built-in policy]' : '',
+		);
+	}
+
+	public static function safeGetters()
+	{
+		return self::$safeGetters;
+	}
+
+	// Commands a multicall may carry that only read.
+	//
+	// A multicall's result slots are how a client asks "tell me about every
+	// download in this view", and $safeParams cannot answer for them: it is a
+	// list of setters, so d.name= was never in it and never will be. With any
+	// unrecognised command rejecting the whole outer call, that made every
+	// ordinary listing request a refusal -- seen on the live instance
+	// 2026-09-08, where a client asked for d.multicall2, was refused four
+	// times, and fell back to asking about each download one command at a
+	// time. Each of those single calls was forwarded, so the refusal bought
+	// nothing; it only made the client slower.
+	//
+	// Rebuilt multicalls are sent trusted, so these readers may exceed the
+	// daemon's single-call mark_safe surface. This is an intentional read-only
+	// capability: httprpc mode=list already requests them over trusted RPC.
+	//
+	// Not configurable, and deliberately so. This file already keeps
+	// $denyPrefixes, $elevate, $directoryCommands and $multiArgCommands in
+	// code: what a caller may READ is a property of the proxy, the way those
+	// are, and not the same decision as what it may WRITE. Putting it in
+	// conf/ would also put it exactly where a container that replaces conf/
+	// with a volume cannot see it -- which is the failure this fork has just
+	// spent a release recovering from.
+	//
+	// Derived, not typed: every command rtorrent 0.16.22 registers under d.,
+	// t., f. and p. that does not change state -- read off the daemon's own
+	// registry as frozen in tests/php/RtorrentCompatibilityTest.php, minus the
+	// names whose path says they write (set, erase, start, try_...), minus the
+	// dispatchers and the call carrier (d.multicall2, f./p./t.multicall,
+	// p.call_target -- they run commands rather than read anything, and a
+	// nested d.multicall2 in a result slot walks the whole view once per row),
+	// minus the two announce triggers, minus the two a multicall cannot carry
+	// at all (d.custom.keys and d.custom.items take no argument, and nothing
+	// after the '=' still hands the command one empty argument, so they fault
+	// the whole listing however they are spelled; measured 2026-09-14 on
+	// 0.16.22 over SCGI), plus the pre-0.9 spelling of each from the panel's
+	// alias table (php/methods-0.9.4.php), because this list is matched
+	// literally and a client may send either. Held to exactly that by
+	// RtorrentCompatibilityTest::testXmlrpcProxyReadListIsTheDaemonsReadSurfaceInBothSpellings,
+	// so a getter the list lacks is a failing test here rather than a refused
+	// client -- for the daemon that snapshot was taken from; a name a later
+	// release adds is not on the list until the snapshot is refreshed.
+	//
+	// Why the whole surface and not a hand-picked subset: a list built from
+	// what the panel and one logged client happened to ask for refused
+	// t.failed_counter, t.success_counter and d.load_date -- measured
+	// 2026-09-14 against a live rtorrent 0.16.22 through this proxy -- and
+	// each refusal takes a whole listing down, which is the failure this list
+	// exists to end. Measured there too: the rebuilt shape, d.name="" and
+	// d.custom="chk-state", is answered by the daemon exactly as d.name= is,
+	// and a pre-0.9 spelling is forwarded and faults as unknown, which is the
+	// daemon's answer to give.
+	//
+	// Read commands are rebuilt exactly as setters are, through
+	// rebuildSafeLoadParam(), so an argument -- d.custom=chk-state names a
+	// key -- is quoted, and a $-prefixed one, which rtorrent would call
+	// rather than store, is refused.
+	private static $safeGetters = array(
+		// downloads
+		'd.accepting_seeders', 'd.base_filename', 'd.base_filename.as_binary',
+		'd.base_filename.base64', 'd.base_filename.base64_as_binary',
+		'd.base_filename.hex', 'd.base_filename.or_as_binary',
+		'd.base_filename.or_base64', 'd.base_path', 'd.base_path.as_binary',
+		'd.base_path.base64', 'd.base_path.base64_as_binary', 'd.base_path.hex',
+		'd.base_path.or_as_binary', 'd.base_path.or_base64',
+		'd.base_path.realpath.or_empty', 'd.base_path.realpath.or_throw',
+		'd.bitfield', 'd.bytes_done', 'd.chunk_size', 'd.chunks_hashed',
+		'd.chunks_seen', 'd.complete', 'd.completed_bytes', 'd.completed_chunks',
+		'd.connection_current', 'd.connection_leech', 'd.connection_seed',
+		'd.creation_date', 'd.custom', 'd.custom.if_z', 'd.custom1', 'd.custom2',
+		'd.custom3', 'd.custom4', 'd.custom5', 'd.custom_throw', 'd.directory',
+		'd.directory.realpath.or_empty', 'd.directory.realpath.or_throw',
+		'd.directory_base', 'd.down.choke_heuristics',
+		'd.down.choke_heuristics.leech', 'd.down.choke_heuristics.seed',
+		'd.down.rate', 'd.down.total', 'd.downloads_max', 'd.downloads_min',
+		'd.free_diskspace', 'd.get_base_filename', 'd.get_base_path',
+		'd.get_bitfield', 'd.get_bytes_done', 'd.get_chunk_size',
+		'd.get_chunks_hashed', 'd.get_complete', 'd.get_completed_bytes',
+		'd.get_completed_chunks', 'd.get_connection_current',
+		'd.get_connection_leech', 'd.get_connection_seed', 'd.get_creation_date',
+		'd.get_custom', 'd.get_custom1', 'd.get_custom2', 'd.get_custom3',
+		'd.get_custom4', 'd.get_custom5', 'd.get_custom_throw', 'd.get_directory',
+		'd.get_directory_base', 'd.get_down_rate', 'd.get_down_total',
+		'd.get_free_diskspace', 'd.get_hash', 'd.get_hashing',
+		'd.get_hashing_failed', 'd.get_ignore_commands', 'd.get_left_bytes',
+		'd.get_loaded_file', 'd.get_local_id', 'd.get_local_id_html',
+		'd.get_max_file_size', 'd.get_max_size_pex', 'd.get_message', 'd.get_mode',
+		'd.get_name', 'd.get_peer_exchange', 'd.get_peers_accounted',
+		'd.get_peers_complete', 'd.get_peers_connected', 'd.get_peers_max',
+		'd.get_peers_min', 'd.get_peers_not_connected', 'd.get_priority',
+		'd.get_priority_str', 'd.get_ratio', 'd.get_size_bytes',
+		'd.get_size_chunks', 'd.get_size_files', 'd.get_size_pex',
+		'd.get_skip_rate', 'd.get_skip_total', 'd.get_state',
+		'd.get_state_changed', 'd.get_state_counter', 'd.get_throttle_name',
+		'd.get_tied_to_file', 'd.get_timestamp_finished',
+		'd.get_timestamp_started', 'd.get_tracker_focus', 'd.get_tracker_numwant',
+		'd.get_tracker_size', 'd.get_up_rate', 'd.get_up_total',
+		'd.get_uploads_max', 'd.group', 'd.group.name', 'd.hash', 'd.hashing',
+		'd.hashing_failed', 'd.ignore_commands', 'd.incomplete', 'd.is_active',
+		'd.is_hash_checked', 'd.is_hash_checking', 'd.is_meta', 'd.is_multi_file',
+		'd.is_not_partially_done', 'd.is_open', 'd.is_partially_done',
+		'd.is_pex_active', 'd.is_private', 'd.left_bytes', 'd.load_date',
+		'd.loaded_file', 'd.loaded_file.realpath.or_empty',
+		'd.loaded_file.realpath.or_throw', 'd.local_id', 'd.local_id_html',
+		'd.max_file_size', 'd.max_size_pex', 'd.message', 'd.mode', 'd.name',
+		'd.name.as_binary', 'd.name.base64', 'd.name.base64_as_binary',
+		'd.name.hex', 'd.name.or_as_binary', 'd.name.or_base64', 'd.peer_exchange',
+		'd.peers_accounted', 'd.peers_complete', 'd.peers_connected',
+		'd.peers_max', 'd.peers_min', 'd.peers_not_connected', 'd.priority',
+		'd.priority_str', 'd.ratio', 'd.size_bytes', 'd.size_chunks',
+		'd.size_files', 'd.size_pex', 'd.skip.rate', 'd.skip.total', 'd.state',
+		'd.state_changed', 'd.state_counter', 'd.throttle_name', 'd.tied_to_file',
+		'd.tied_to_file.realpath.or_empty', 'd.tied_to_file.realpath.or_throw',
+		'd.timestamp.finished', 'd.timestamp.finished.elapsed',
+		'd.timestamp.finished.or_zero', 'd.timestamp.started',
+		'd.timestamp.started.elapsed', 'd.timestamp.started.or_zero',
+		'd.tracker.has_active', 'd.tracker.has_active_not_scrape',
+		'd.tracker.has_usable', 'd.tracker_focus', 'd.tracker_numwant',
+		'd.tracker_size', 'd.up.choke_heuristics', 'd.up.choke_heuristics.leech',
+		'd.up.choke_heuristics.seed', 'd.up.rate', 'd.up.total', 'd.uploads_max',
+		'd.uploads_min', 'd.views', 'd.views.has', 'd.wanted_chunks',
+		// trackers
+		't.activity_time_last', 't.activity_time_next', 't.can_scrape',
+		't.failed_counter', 't.failed_time_last', 't.failed_time_next',
+		't.get_group', 't.get_id', 't.get_min_interval', 't.get_normal_interval',
+		't.get_scrape_complete', 't.get_scrape_downloaded',
+		't.get_scrape_incomplete', 't.get_scrape_time_last', 't.get_type',
+		't.get_url', 't.group', 't.id', 't.is_busy', 't.is_enabled',
+		't.is_extra_tracker', 't.is_open', 't.is_scrapable', 't.is_usable',
+		't.latest_event', 't.latest_new_peers', 't.latest_sum_peers',
+		't.min_interval', 't.normal_interval', 't.scrape_complete',
+		't.scrape_counter', 't.scrape_downloaded', 't.scrape_incomplete',
+		't.scrape_time_last', 't.success_counter', 't.success_time_last',
+		't.success_time_next', 't.type', 't.url',
+		// files
+		'f.completed_chunks', 'f.frozen_path', 'f.frozen_path.as_binary',
+		'f.frozen_path.base64', 'f.frozen_path.hex', 'f.frozen_path.or_as_binary',
+		'f.frozen_path.or_base64', 'f.frozen_path.realpath.or_empty',
+		'f.frozen_path.realpath.or_throw', 'f.get_completed_chunks',
+		'f.get_frozen_path', 'f.get_last_touched', 'f.get_match_depth_next',
+		'f.get_match_depth_prev', 'f.get_offset', 'f.get_path',
+		'f.get_path_components', 'f.get_path_depth', 'f.get_priority',
+		'f.get_range_first', 'f.get_range_second', 'f.get_size_bytes',
+		'f.get_size_chunks', 'f.is_create_queued', 'f.is_created', 'f.is_open',
+		'f.is_resize_queued', 'f.last_touched', 'f.match_depth_next',
+		'f.match_depth_prev', 'f.offset', 'f.path', 'f.path_components',
+		'f.path_components.as_binary', 'f.path_components.base64',
+		'f.path_components.base64_as_binary', 'f.path_components.hex',
+		'f.path_components.or_as_binary', 'f.path_components.or_base64',
+		'f.path_depth', 'f.prioritize_first', 'f.prioritize_last', 'f.priority',
+		'f.range_first', 'f.range_second', 'f.size_bytes', 'f.size_chunks',
+		// peers
+		'p.address', 'p.banned', 'p.client_version', 'p.completed_percent',
+		'p.down_rate', 'p.down_total', 'p.get_address', 'p.get_client_version',
+		'p.get_completed_percent', 'p.get_down_rate', 'p.get_down_total',
+		'p.get_id', 'p.get_id_html', 'p.get_options_str', 'p.get_peer_rate',
+		'p.get_peer_total', 'p.get_port', 'p.get_up_rate', 'p.get_up_total',
+		'p.id', 'p.id_html', 'p.is_encrypted', 'p.is_incoming', 'p.is_obfuscated',
+		'p.is_preferred', 'p.is_snubbed', 'p.is_unwanted', 'p.options_str',
+		'p.peer_rate', 'p.peer_total', 'p.port', 'p.snubbed', 'p.up_rate',
+		'p.up_total',
 	);
 
 	private static $multicallMethods = array(
@@ -171,8 +464,10 @@ class XMLRPCProxy
 		return $clean;
 	}
 
-	private static function isDeniedCommand($name, $deny)
+	private static function isDeniedCommand($name)
 	{
+		if(in_array($name, self::$filesystemDenies, true) || in_array($name, self::$legacyDenies, true))
+			return true;
 		if(in_array($name, self::$evaluatorDenies, true))
 			return true;
 		if($name === 'p.call_target')
@@ -181,7 +476,7 @@ class XMLRPCProxy
 			return true;
 		if(strncmp($name, 'directory.watch.', 16) === 0)
 			return true;
-		foreach($deny as $prefix)
+		foreach(self::$denyPrefixes as $prefix)
 		{
 			if(strncmp($name, $prefix, strlen($prefix)) === 0)
 				return true;
@@ -189,11 +484,11 @@ class XMLRPCProxy
 		return false;
 	}
 
-	private static function isDirectDenied($name, $deny)
+	private static function isDirectDenied($name)
 	{
 		if(in_array($name, self::$directoryCommands, true))
 			return true;
-		return self::isDeniedCommand($name, $deny);
+		return self::isDeniedCommand($name);
 	}
 
 	private static function isValidXmlUtf8String($str)
@@ -642,7 +937,133 @@ class XMLRPCProxy
 		));
 	}
 
-	private static function emitArgumentFromDecoded($shape, $param, $sizeLimitMax)
+	private static function emitScalarValue($param)
+	{
+		if($param['type'] === 'array' || $param['type'] === 'struct'
+			|| !in_array($param['typeTag'], self::$validTypes, true))
+			return null;
+		$tag = $param['typeTag'];
+		return '<value><'.$tag.'>'.htmlspecialchars($param['value'], ENT_NOQUOTES, 'UTF-8')
+			.'</'.$tag.'></value>';
+	}
+
+	private static function emitMethodCall($method, $paramsXml)
+	{
+		return '<?xml version="1.0" encoding="UTF-8"?>'."\n"
+			.'<methodCall><methodName>'.htmlspecialchars($method, ENT_NOQUOTES, 'UTF-8')
+			.'</methodName><params>'.$paramsXml.'</params></methodCall>';
+	}
+
+	private static function emitScalarValues($params, $wrapAsParams)
+	{
+		$xml = '';
+		foreach($params as $param)
+		{
+			$value = self::emitScalarValue($param);
+			if($value === null)
+				return null;
+			$xml .= $wrapAsParams ? '<param>'.$value.'</param>' : $value;
+		}
+		return $xml;
+	}
+
+	private static function emitCallFromScalars($method, $params)
+	{
+		$paramsXml = self::emitScalarValues($params, true);
+		return $paramsXml === null ? null : self::emitMethodCall($method, $paramsXml);
+	}
+
+	private static function systemMulticallMember($member)
+	{
+		if($member['type'] !== 'struct')
+			return null;
+		$fields = array();
+		foreach($member['value'] as $field)
+		{
+			$name = $field['name'];
+			if(($name !== 'methodName' && $name !== 'params') || isset($fields[$name]))
+				return null;
+			$fields[$name] = $field['value'];
+		}
+		if(count($fields) !== 2 || $fields['methodName']['type'] !== 'string'
+			|| $fields['params']['type'] !== 'array')
+			return null;
+		return array('method' => $fields['methodName']['value'],
+			'params' => $fields['params']['value']);
+	}
+
+	private static function memberDecisionLogs($index, $logs)
+	{
+		$prefixed = array();
+		foreach($logs as $line)
+			$prefixed[] = self::formatLogMessage('[slot '.($index + 1).'] '.$line);
+		return $prefixed;
+	}
+
+	private static function rejectWithSlot($reason, $method, $index, $name, $note = '')
+	{
+		$detail = ' [slot '.($index + 1);
+		if($name !== null)
+			$detail .= ': '.$name;
+		$outer = 'rejected ('.$reason.'): '.self::normalizeMethodName($method);
+		return self::reject($outer.$detail.']'.$note, $method, $outer);
+	}
+
+	private static function rejectSystemMember($index, $method = null, $memberLogs = array())
+	{
+		// A member has a literal method name; a command slot instead carries
+		// "name=value" and must have its name extracted before formatting.
+		$decision = self::rejectWithSlot('not allowed on this connection',
+			'system.multicall', $index, self::normalizeMethodName($method));
+		$decision['log'] = array_merge($decision['log'],
+			self::memberDecisionLogs($index, $memberLogs));
+		return $decision;
+	}
+
+	private static function rawCommandName($value)
+	{
+		if(!is_string($value))
+			return null;
+		$separator = strpos($value, '=');
+		return trim(($separator === false) ? $value : substr($value, 0, $separator));
+	}
+
+	private static function commandName($value)
+	{
+		return self::normalizeMethodName(self::rawCommandName($value));
+	}
+
+	private static function rejectCommandSlot($reason, $method, $index, $value = null, $safeParams = null)
+	{
+		$name = self::commandName($value);
+		$note = '';
+		if($name === 'd.directory.base.set' && is_array($safeParams)
+			&& in_array('d.directory_base.set', $safeParams, true)
+			&& !in_array('d.directory.base.set', $safeParams, true))
+		{
+			$note .= ' [policy lists d.directory_base.set but not d.directory.base.set;'
+				.' add it to conf/xmlrpc_proxy.php]';
+		}
+		if(($name === 'f.set_create_queued' || $name === 'f.set_resize_queued')
+			&& is_array($safeParams) && !in_array($name, $safeParams, true))
+		{
+			$missing = array_diff(array('f.set_create_queued', 'f.set_resize_queued'), $safeParams);
+			$note .= ' [add '.implode(' and ', $missing)
+				.' to conf/xmlrpc_proxy.php or the httprpc policy override]';
+		}
+		return self::rejectWithSlot($reason, $method, $index, $name, $note);
+	}
+
+	private static function unmatchedElevation($methodName, $rawData)
+	{
+		if(in_array($methodName, self::$batchElevations, true))
+			return self::forward($rawData, false,
+				'untrusted: '.self::normalizeMethodName($methodName).' (shape not elevated)');
+		return self::reject('rejected (arguments did not match allowed shape): '.
+			self::normalizeMethodName($methodName), $methodName);
+	}
+
+	private static function emitArgumentFromDecoded($shape, $param)
 	{
 		if($param['type'] === 'array' || $param['type'] === 'struct')
 			return null;
@@ -655,6 +1076,39 @@ class XMLRPCProxy
 				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}$/', $val))
 					return null;
 				return '<param><value><string>' . strtoupper($val) . '</string></value></param>';
+
+			case 'file_target':
+				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}:f(?:0|[1-9][0-9]*)$/', $val))
+					return null;
+				return '<param><value><string>' . strtoupper(substr($val, 0, 40))
+					. substr($val, 40) . '</string></value></param>';
+
+			case 'ratio_view':
+				if($param['type'] !== 'string' || !preg_match('/^rat_(?:0|[1-9][0-9]{0,5})$/', $val))
+					return null;
+				return '<param><value><string>' . $val . '</string></value></param>';
+
+			case 'scheduler_throttle':
+				if($param['type'] !== 'string' || ($val !== '' && $val !== 'NULL'))
+					return null;
+				return '<param><value><string>' . $val . '</string></value></param>';
+
+			case 'scheduler_key':
+				if($param['type'] !== 'string' || $val !== 'sch_ignore')
+					return null;
+				return '<param><value><string>sch_ignore</string></value></param>';
+
+			case 'scheduler_state':
+				if($param['type'] !== 'string' || ($val !== '' && $val !== '1'))
+					return null;
+				return '<param><value><string>' . $val . '</string></value></param>';
+
+			case 'socket_alloc':
+				if(($param['type'] !== 'int' && $param['type'] !== 'string')
+					|| !preg_match('/^(?:0|[1-9][0-9]{0,6})$/', $val)
+					|| (int)$val > 1048576)
+					return null;
+				return '<param><value><i8>' . $val . '</i8></value></param>';
 
 			case 'empty':
 				if($param['type'] !== 'string' || $val !== '')
@@ -673,8 +1127,8 @@ class XMLRPCProxy
 					return null;
 				if(!preg_match('/^[1-9][0-9]{0,17}$/', $val))
 					return null;
-				if(strlen($val) > 8 || (int)$val > $sizeLimitMax)
-					$size = $sizeLimitMax;
+				if(strlen($val) > 8 || (int)$val > self::$sizeLimitMax)
+					$size = self::$sizeLimitMax;
 				else
 					$size = (int)$val;
 				return '<param><value><i8>' . $size . '</i8></value></param>';
@@ -692,32 +1146,17 @@ class XMLRPCProxy
 	}
 
 	/**
-	 * Parse untrusted XMLRPC XML with entity loading disabled.
-	 *
-	 * PHP 8+ libxml2 defaults external-entity loading off; PHP 7.x does
-	 * not, and ruTorrent still supports PHP 7. We disable it explicitly to
-	 * prevent XXE on client-supplied XML.
-	 */
-	private static function parseXml($rawData)
-	{
-		$prev = null;
-		if(PHP_VERSION_ID < 80000 && function_exists('libxml_disable_entity_loader'))
-			$prev = libxml_disable_entity_loader(true);
-		$xml = @simplexml_load_string($rawData, 'SimpleXMLElement', LIBXML_NONET);
-		if($prev !== null)
-			libxml_disable_entity_loader($prev);
-		return $xml;
-	}
-
-	/**
 	 * Process a raw XMLRPC payload according to the configured mode.
 	 *
 	 * @param string $rawData     Raw XMLRPC XML from the client
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
 	 * @param bool   $enableLog   Enable/disable logging
-	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
+	 * @param array  $safeParams  Exact command names for load tails and multicall slots; results also allow safeGetters
+	 *                            The empty API default rejects setter expressions and filtered multicalls.
+	 *                            Endpoints without an explicit list pass defaultSafeParams(); this API does not.
 	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
 	 *                                 filesystem in load.start / load.normal
+	 * @param array  $options     'directory' => array('root' => absolute path, optional 'resolve' => callable)
 	 * @return string|null        SCGI response, or null on rejection
 	 */
 	public static function process($rawData, $mode = 'sanitize', $enableLog = true, $safeParams = array(), $allowLocalPaths = false, $options = array())
@@ -745,13 +1184,16 @@ class XMLRPCProxy
 	 *
 	 * @param string $rawData     Raw XMLRPC XML from the client
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
-	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
+	 * @param array  $safeParams  Exact command names for load tails and multicall slots; results also allow safeGetters
+	 *                            The empty API default rejects setter expressions and filtered multicalls.
+	 *                            Endpoints without an explicit list pass defaultSafeParams(); this API does not.
 	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
 	 *                                 filesystem in load.start / load.normal.
 	 *                                 Off by default: a remote client has no way
 	 *                                 to know what is on that filesystem, and the
 	 *                                 path it names becomes the download's tied
 	 *                                 file, which d.delete_tied then unlinks.
+	 * @param array  $options     'directory' => array('root' => absolute path, optional 'resolve' => callable)
 	 * @return array  'action'  => "send" or "reject"
 	 *                'payload' => the bytes to send, empty when rejecting
 	 *                'trusted' => whether the connection carrying them may be trusted
@@ -761,9 +1203,6 @@ class XMLRPCProxy
 	 */
 	public static function decide($rawData, $mode = 'sanitize', $safeParams = array(), $allowLocalPaths = false, $options = array())
 	{
-		$deny = isset($options['deny']) ? $options['deny'] : self::$denyPrefixes;
-		$elevate = isset($options['elevate']) ? $options['elevate'] : self::$elevate;
-		$sizeLimitMax = isset($options['sizeLimitMax']) ? $options['sizeLimitMax'] : self::$sizeLimitMax;
 		$directory = isset($options['directory']) ? $options['directory'] : null;
 
 		if($mode === 'off' || ($mode !== 'passthrough_unsafe' && $mode !== 'sanitize'))
@@ -785,13 +1224,61 @@ class XMLRPCProxy
 		$methodName = $decoded['method'];
 		$params = $decoded['params'];
 
-		if(self::isDirectDenied($methodName, $deny))
+		if(self::isDirectDenied($methodName))
 			return self::reject("rejected (not allowed on this connection): ".
 				self::normalizeMethodName($methodName), $methodName);
 
 		if($methodName === 'system.multicall')
-			return self::reject("rejected (not allowed on this connection): ".
-				self::normalizeMethodName($methodName), $methodName);
+		{
+			if(count($params) !== 1 || $params[0]['type'] !== 'array'
+				|| count($params[0]['value']) === 0)
+				return self::reject("rejected (not allowed on this connection): system.multicall", $methodName);
+			$membersXml = '';
+			$memberLogs = array();
+			$batchTrusted = null;
+			foreach($params[0]['value'] as $index => $rawMember)
+			{
+				$member = self::systemMulticallMember($rawMember);
+				if($member === null)
+					return self::rejectSystemMember($index);
+				$innerMethod = $member['method'];
+				// Defensive even though today's scalar-only members and the inner
+				// decide() would also reject a nested carrier.
+				if($innerMethod === 'system.multicall')
+					return self::rejectSystemMember($index, $innerMethod);
+				$innerXml = self::emitCallFromScalars($innerMethod, $member['params']);
+				if($innerXml === null)
+					return self::rejectSystemMember($index, $innerMethod);
+				$innerDecision = self::decide($innerXml, $mode, $safeParams, $allowLocalPaths, $options);
+				if($innerDecision['action'] !== 'send'
+					|| (!$innerDecision['trusted'] && in_array($innerMethod, self::$batchElevations, true))
+					|| ($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted))
+					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log']);
+				$batchTrusted = $innerDecision['trusted'];
+				$memberLogs = array_merge($memberLogs,
+					self::memberDecisionLogs($index, $innerDecision['log']));
+				// Fail closed if a future decision path changes the method or emits
+				// a member value that this scalar-only carrier cannot encode.
+				$checked = self::decodeCall($innerDecision['payload']);
+				if(!$checked['ok'] || $checked['method'] !== $innerMethod)
+					return self::rejectSystemMember($index, $innerMethod);
+				$membersXml .= '<value><struct><member><name>methodName</name><value><string>'
+					.htmlspecialchars($innerMethod, ENT_NOQUOTES, 'UTF-8')
+					.'</string></value></member><member><name>params</name><value><array><data>';
+				$valuesXml = self::emitScalarValues($checked['params'], false);
+				if($valuesXml === null)
+					return self::rejectSystemMember($index, $innerMethod);
+				$membersXml .= $valuesXml;
+				$membersXml .= '</data></array></value></member></struct></value>';
+			}
+			$canonicalXml = self::emitMethodCall('system.multicall',
+				'<param><value><array><data>'.$membersXml.'</data></array></value></param>');
+			$decision = self::forward($canonicalXml, $batchTrusted,
+				($batchTrusted ? 'trusted: ' : 'untrusted: ').'system.multicall ('
+				.count($params[0]['value']).' members)');
+			$decision['log'] = array_merge($decision['log'], $memberLogs);
+			return $decision;
+		}
 
 		if(in_array($methodName, self::$sanitizeMethods, true))
 		{
@@ -858,29 +1345,29 @@ class XMLRPCProxy
 			{
 				$cmdParam = $params[$i];
 				if($cmdParam['type'] !== 'string')
-					return self::reject("rejected (malformed load call): ".
-						self::normalizeMethodName($methodName), $methodName);
+					return self::rejectCommandSlot('malformed load call', $methodName, $i);
 
 				$cmdVal = $cmdParam['value'];
-				$rebuilt = self::rebuildSafeLoadParam($cmdVal, $safeParams, $directory, $deny);
-				if($rebuilt === null || $rebuilt === false)
+				$rebuilt = self::rebuildSafeLoadParam($cmdVal, $safeParams, $directory);
+				if($rebuilt === false)
 				{
-					return self::reject("rejected (not allowed on this connection): ".
-						self::normalizeMethodName($methodName), $methodName);
+					$reason = 'directory outside boundary';
+					if(is_array($directory) && (!isset($directory['root']) || $directory['root'] === ''))
+						$reason .= '; configure $topDirectory or $XMLRPCProxyAllowRootDirectory';
+					return self::rejectCommandSlot($reason, $methodName, $i, $cmdVal, $safeParams);
 				}
+				if($rebuilt === null)
+					return self::rejectCommandSlot('not allowed on this connection',
+						$methodName, $i, $cmdVal, $safeParams);
 
 				$rebuiltCommands[] = $rebuilt;
 			}
 
-			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>'."\n"
-				. '<methodCall><methodName>'.htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8').'</methodName><params>'
-				. '<param><value><string>'.htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8').'</string></value></param>'
+			$paramsXml = '<param><value><string>'.htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8').'</string></value></param>'
 				. $canonicalDataXml;
 			foreach($rebuiltCommands as $rc)
-			{
-				$canonicalXml .= '<param><value><string>'.htmlspecialchars($rc, ENT_NOQUOTES, 'UTF-8').'</string></value></param>';
-			}
-			$canonicalXml .= '</params></methodCall>';
+				$paramsXml .= '<param><value><string>'.htmlspecialchars($rc, ENT_NOQUOTES, 'UTF-8').'</string></value></param>';
+			$canonicalXml = self::emitMethodCall($methodName, $paramsXml);
 
 			$totalKept = 2 + count($rebuiltCommands);
 			$normMethod = self::normalizeMethodName($methodName);
@@ -901,95 +1388,101 @@ class XMLRPCProxy
 		if(in_array($methodName, self::$multicallMethods, true))
 		{
 			$isFiltered = ($methodName === 'd.multicall.filtered');
-			$minParams = $isFiltered ? 4 : 3;
+			$isViewFirst = $methodName === 'd.multicall' && isset($params[1])
+				&& $params[1]['type'] === 'string' && strpos($params[1]['value'], '=') !== false;
+			$minParams = $isFiltered ? 4 : ($isViewFirst ? 2 : 3);
 			if(count($params) < $minParams)
 			{
 				return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
 			}
 
-			if($params[0]['type'] !== 'string' || $params[1]['type'] !== 'string')
-				return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+			if($params[0]['type'] !== 'string')
+				return self::rejectCommandSlot('not allowed on this connection', $methodName, 0);
+			if($params[1]['type'] !== 'string')
+				return self::rejectCommandSlot('not allowed on this connection', $methodName, 1);
 
 			$targetVal = $params[0]['value'];
 			$viewVal = $params[1]['value'];
+			$resultCommands = array_merge($safeParams, self::$safeGetters);
+			// Before 0.9.4 d.multicall is view-first: parameter 1 is already a
+			// result command. Rebuild it too, so old UI listings work without an
+			// executable escape. f./t./p.multicall use this slot only as data.
+			if($isViewFirst)
+			{
+				$viewVal = self::rebuildMulticallParam($viewVal, $resultCommands, true);
+				if($viewVal === null || $viewVal === false)
+					return self::rejectCommandSlot('not allowed on this connection', $methodName, 1, $params[1]['value']);
+			}
+			else if(strncmp($methodName, 'd.', 2) === 0 && strpos($viewVal, '=') !== false)
+				return self::rejectCommandSlot('ambiguous multicall view', $methodName, 1, $viewVal);
 
 			$filterVal = null;
 			$resultStartIndex = 2;
 			if($isFiltered)
 			{
 				if($params[2]['type'] !== 'string')
-					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+					return self::rejectCommandSlot('not allowed on this connection', $methodName, 2);
 				$rawFilter = $params[2]['value'];
-				$rebuiltFilter = self::rebuildSafeLoadParam($rawFilter, $safeParams, $directory, $deny);
+				$rebuiltFilter = self::rebuildMulticallParam($rawFilter, $safeParams);
 				if($rebuiltFilter === null || $rebuiltFilter === false)
 				{
-					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+					return self::rejectCommandSlot('not allowed on this connection', $methodName, 2, $rawFilter);
 				}
 				$filterVal = $rebuiltFilter;
 				$resultStartIndex = 3;
 			}
 
+			// Result slots may name a reader as well as a setter. The filter
+			// slot of d.multicall.filtered above keeps the setter-only rule it
+			// had before the read list existed: widening it is a separate
+			// decision that nobody has asked for, not a property of filters --
+			// rtorrent evaluates a filter command per download exactly as it
+			// evaluates a result command.
 			$rebuiltResults = array();
 			for($i = $resultStartIndex; $i < count($params); $i++)
 			{
 				if($params[$i]['type'] !== 'string')
-					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+					return self::rejectCommandSlot('not allowed on this connection', $methodName, $i);
 
 				$cmd = $params[$i]['value'];
-				$separator = strpos($cmd, '=');
-				$cmdName = ($separator !== false) ? trim(substr($cmd, 0, $separator)) : trim($cmd);
-				if($cmdName !== '' && self::isDirectDenied($cmdName, $deny))
-					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
-
-				$rebuilt = self::rebuildSafeLoadParam($cmd, $safeParams, $directory, $deny);
+				$rebuilt = self::rebuildMulticallParam($cmd, $resultCommands, true);
 				if($rebuilt === null || $rebuilt === false)
 				{
-					return self::reject("rejected (not allowed on this connection): " . self::normalizeMethodName($methodName), $methodName);
+					return self::rejectCommandSlot('not allowed on this connection', $methodName, $i, $cmd, $safeParams);
 				}
 				$rebuiltResults[] = $rebuilt;
 			}
 
-			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-				. '<methodCall><methodName>' . htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8') . '</methodName><params>'
-				. '<param><value><string>' . htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>'
+			$paramsXml = '<param><value><string>' . htmlspecialchars($targetVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>'
 				. '<param><value><string>' . htmlspecialchars($viewVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
 			if($isFiltered)
-			{
-				$canonicalXml .= '<param><value><string>' . htmlspecialchars($filterVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
-			}
+				$paramsXml .= '<param><value><string>' . htmlspecialchars($filterVal, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
 			foreach($rebuiltResults as $rr)
-			{
-				$canonicalXml .= '<param><value><string>' . htmlspecialchars($rr, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
-			}
-			$canonicalXml .= '</params></methodCall>';
+				$paramsXml .= '<param><value><string>' . htmlspecialchars($rr, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
+			$canonicalXml = self::emitMethodCall($methodName, $paramsXml);
 
 			$totalParams = count($params);
 			return self::forward($canonicalXml, true, "trusted: " . self::normalizeMethodName($methodName) . " (" . $totalParams . " params)");
 		}
 
-		if(isset($elevate[$methodName]))
+		if(isset(self::$elevate[$methodName]))
 		{
-			$shapes = $elevate[$methodName];
+			$shapes = self::$elevate[$methodName];
 			if(count($params) !== count($shapes))
-				return self::reject("rejected (arguments did not match allowed shape): ".
-					self::normalizeMethodName($methodName), $methodName);
+				return self::unmatchedElevation($methodName, $rawData);
 
 			$canonicalParams = array();
 			for($i = 0; $i < count($shapes); $i++)
 			{
 				$shape = $shapes[$i];
 				$param = $params[$i];
-				$emitted = self::emitArgumentFromDecoded($shape, $param, $sizeLimitMax);
+				$emitted = self::emitArgumentFromDecoded($shape, $param);
 				if($emitted === null)
-					return self::reject("rejected (arguments did not match allowed shape): ".
-						self::normalizeMethodName($methodName), $methodName);
+					return self::unmatchedElevation($methodName, $rawData);
 				$canonicalParams[] = $emitted;
 			}
 
-			$canonicalXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-				. '<methodCall><methodName>' . htmlspecialchars($methodName, ENT_NOQUOTES, 'UTF-8') . '</methodName><params>'
-				. implode('', $canonicalParams)
-				. '</params></methodCall>';
+			$canonicalXml = self::emitMethodCall($methodName, implode('', $canonicalParams));
 
 			return self::forward($canonicalXml, true, "trusted: " . self::normalizeMethodName($methodName) . " (elevated)");
 		}
@@ -1121,7 +1614,12 @@ class XMLRPCProxy
 	 */
 	public static function rejectionFault($method)
 	{
-		$faultString = self::rejectionMessage($method);
+		return self::faultXml(self::rejectionMessage($method));
+	}
+
+	/** XMLRPC -501 fault body shared with rpc2.php's other HTTP refusals. */
+	public static function faultXml($faultString)
+	{
 		return '<?xml version="1.0" encoding="UTF-8"?>'."\n"
 			.'<methodResponse><fault><value><struct>'
 			.'<member><name>faultCode</name><value><i4>-501</i4></value></member>'
@@ -1240,6 +1738,24 @@ class XMLRPCProxy
 		return $arguments;
 	}
 
+	// Both filter and result slots execute per download and refuse directory
+	// setters outright. The directory boundary is checked only for load.* tails.
+	private static function rebuildMulticallParam($value, $allowed, $resultSlot = false)
+	{
+		// These exact read expressions are shipped by ratio and
+		// show_peers_like_wtorrent. The two tracker forms returned 0#0# in a
+		// local rTorrent 0.16.22 lab with an actual test download. Do not allow
+		// a general cat evaluator or client-selected nested commands.
+		if($resultSlot && ($value === 'cat=$d.views='
+			|| $value === 'cat="$t.multicall=d.hash=,t.scrape_complete=,cat={#}"'
+			|| $value === 'cat="$t.multicall=d.hash=,t.scrape_incomplete=,cat={#}"'))
+			return $value;
+		$name = self::rawCommandName($value);
+		if($name === null || self::isDirectDenied($name))
+			return null;
+		return self::rebuildSafeLoadParam($value, $allowed);
+	}
+
 	/**
 	 * Rebuild one command parameter. A null or false result makes the production
 	 * policy reject the complete outer request without a transport call.
@@ -1257,14 +1773,14 @@ class XMLRPCProxy
 	 * re-quoted, rather than dropped: cross-seed and others send
 	 * d.custom1.set="label".
 	 */
-	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null, $deny = null)
+	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null)
 	{
 		$separator = strpos($paramValue, '=');
 		if($separator === false)
 			return null;
 
-		$command = trim(substr($paramValue, 0, $separator));
-		if(self::isDeniedCommand($command, $deny !== null ? $deny : self::$denyPrefixes))
+		$command = self::rawCommandName($paramValue);
+		if(self::isDeniedCommand($command))
 			return null;
 		if(!in_array($command, $safeParams, true))
 			return null;
@@ -1281,7 +1797,12 @@ class XMLRPCProxy
 		if(($directory !== null) && in_array($command, self::$directoryCommands, true))
 		{
 			$path = isset($parts[0]) ? $parts[0] : '';
-			if(!self::directoryIsAllowed($path, $directory))
+			// Quoted whitespace is path data. Do not validate trimmed bytes
+			// and forward a different, possibly relative path to the daemon.
+			// Dot segments are also unsafe: the kernel resolves them after a
+			// symlink, while lexical normalization would collapse them first.
+			if($path !== trim($path) || in_array('.', explode('/', $path), true)
+				|| in_array('..', explode('/', $path), true) || !self::directoryIsAllowed($path, $directory))
 				return false;
 		}
 
@@ -1301,136 +1822,4 @@ class XMLRPCProxy
 		return $command.'='.implode(',', $arguments);
 	}
 
-	/**
-	 * Extract a command-param value from its <value> element.
-	 *
-	 * Handles both the typed form <value><string>foo</string></value> and
-	 * the implicit-string form <value>foo</value>. For non-string types
-	 * (<int>, <base64>) the raw text is returned; it simply won't match
-	 * any allowed command name and will be stripped — safe default.
-	 */
-	private static function extractParamValue($paramElement)
-	{
-		if(isset($paramElement->string))
-			return (string)$paramElement->string;
-		return trim((string)$paramElement);
-	}
-
-	/**
-	 * Rebuild a command-carrying call keeping only safe parameters.
-	 *
-	 *   Param 0: target                    (always kept)
-	 *   Param 1: URL, raw data, or view    (always kept)
-	 *   Param 2+: command strings (kept iff the command name is in the
-	 *                              whitelist, otherwise stripped)
-	 *
-	 * Both families put their commands at param 2: load.start, load.normal,
-	 * load.raw, load.raw_start, d.multicall, d.multicall2,
-	 * d.multicall.filtered and t/f/p.multicall all do, on 0.9.8 and on 0.16.x
-	 * alike. Measured by side effect against both, rather than read off a
-	 * signature — the caller acts on the answer by deciding what is data.
-	 *
-	 * Public for unit testing — production callers should go through
-	 * process().
-	 *
-	 * @return array ['xml' => string, 'kept' => int, 'stripped' => array,
-	 *                'rebuiltAll' => bool] — rebuiltAll is false when any
-	 *               parameter had to be carried over verbatim, which means
-	 *               the call must not be sent as trusted.
-	 */
-	public static function rebuildLoadParams($xml, $methodName, $safeParams = array(), $directory = null)
-	{
-		$cleanXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
-		$cleanXml .= '<methodCall><methodName>' . htmlspecialchars($methodName) . '</methodName>';
-		$cleanXml .= '<params>';
-
-		$kept = 0;
-		$stripped = array();
-
-		$rebuiltAll = true;
-
-		if(isset($xml->params->param))
-		{
-			$index = 0;
-			foreach($xml->params->param as $param)
-			{
-				if($index < 2)
-				{
-					if(!isset($param->value))
-					{
-						$rebuiltAll = false;
-						$index++;
-						continue;
-					}
-					// Target and URL/data are values, never commands, but they
-					// are re-emitted rather than copied so that what was read
-					// and what is sent are the same bytes.
-					$payload = self::rebuildDataParam($param->value);
-					if($payload === null)
-					{
-						$payload = '<param>' . $param->value->asXML() . '</param>';
-						$rebuiltAll = false;
-					}
-					$cleanXml .= $payload;
-					$kept++;
-				}
-				else
-				{
-					if(!isset($param->value))
-					{
-						$index++;
-						continue;
-					}
-					$value = self::extractParamValue($param->value);
-					$rebuiltParam = self::rebuildSafeLoadParam($value, $safeParams, $directory);
-					if($rebuiltParam !== null)
-					{
-						$cleanXml .= '<param><value><string>'
-							. htmlspecialchars($rebuiltParam, ENT_NOQUOTES, 'UTF-8')
-							. '</string></value></param>';
-						$kept++;
-					}
-					else
-					{
-						$stripped[] = $value;
-					}
-				}
-				$index++;
-			}
-		}
-
-		$cleanXml .= '</params></methodCall>';
-
-		return array('xml' => $cleanXml, 'kept' => $kept, 'stripped' => $stripped,
-			'rebuiltAll' => $rebuiltAll);
-	}
-
-	/**
-	 * Re-emit a target or URL/data parameter from its own content, keeping the
-	 * type the client used. Returns null for a type this side cannot rebuild,
-	 * which makes the whole request go untrusted.
-	 */
-	private static function rebuildDataParam($paramElement)
-	{
-		if($paramElement === null)
-			return null;
-
-		if(isset($paramElement->base64))
-		{
-			$decoded = base64_decode((string)$paramElement->base64, true);
-			if($decoded === false)
-				return null;
-			return '<param><value><base64>'.base64_encode($decoded).'</base64></value></param>';
-		}
-
-		if(isset($paramElement->string) || count($paramElement->children()) === 0)
-		{
-			$text = isset($paramElement->string) ? (string)$paramElement->string : (string)$paramElement;
-			return '<param><value><string>'
-				. htmlspecialchars($text, ENT_NOQUOTES, 'UTF-8')
-				. '</string></value></param>';
-		}
-
-		return null;
-	}
 }

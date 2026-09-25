@@ -101,6 +101,101 @@ class RtorrentCompatibilityTest extends TestCase
 		$property->setValue(null, $settings);
 	}
 
+	/**
+	 * What rtorrent 0.16 registers under d., t., f. and p. that does not
+	 * change state -- the commands a listing client may put in a multicall's
+	 * result slots. Derived from the registry, not typed: the read list is
+	 * whatever this leaves, so a getter the list lacks is a failing test here
+	 * rather than a refused client. Measured 2026-09-14 against a live 0.16.22:
+	 * a list built from the panel's alias table alone refused t.failed_counter
+	 * and d.load_date, neither of which has a pre-0.9 spelling.
+	 *
+	 * "Changes state" is read off the command's path segments: a segment that
+	 * IS a verb (set, erase, start, ...) or starts with one (set_, try_, ...),
+	 * and the two spellings of the dispatchers -- multicall and multicall2 --
+	 * which run other commands rather than read anything, and p.call_target,
+	 * which calls one. Four names are listed by hand: two carry a side effect
+	 * under a noun (the announce triggers), and two cannot be carried by a
+	 * multicall at all -- measured 2026-09-14 on 0.16.22 over SCGI: nothing
+	 * after the '=' still hands the command one empty argument, and a bare
+	 * name without '=' is refused, so d.custom.keys and d.custom.items, which
+	 * take none, fault the whole listing whichever way they are spelled.
+	 */
+	private function stockDaemonReadCommands()
+	{
+		$mutating = '/^(set|erase|disconnect|enable|disable|start|stop|open|close|pause|resume|'
+			. 'check_hash|delete|push_back|insert|remove|unset|update|create|save|try|initialize|'
+			. 'add|send|call|multicall2?|import|execute|clear|reset|toggle)(_|$)|^load$/';
+		$byHand = array(
+			'd.tracker_announce' => true, 'd.tracker_announce.force' => true,
+			'd.custom.keys' => true, 'd.custom.items' => true,
+		);
+		$reads = array();
+		foreach ($this->stockDaemonMethodList() as $name) {
+			if (!preg_match('/^[dtfp]\./', $name) || isset($byHand[$name])) continue;
+			$changes = false;
+			foreach (array_slice(explode('.', $name), 1) as $segment) {
+				if (preg_match($mutating, $segment)) $changes = true;
+			}
+			if (!$changes) $reads[] = $name;
+		}
+		return $reads;
+	}
+
+	/**
+	 * The proxy's read list (XMLRPCProxy::$safeGetters) against the two
+	 * oracles this suite already holds: the daemon's own registry, and the
+	 * legacy alias table the panel ships. The list is matched literally and a
+	 * client may send either spelling, so it has to hold by construction
+	 * rather than by inspection: every read command the daemon registers is
+	 * on it (a getter it lacks refuses a whole listing, measured live), every
+	 * canonical name that has a pre-0.9 alias carries that alias too, every
+	 * pre-0.9 name maps to a canonical name that is on it, and nothing on it
+	 * writes -- neither a shipped setter nor a command the registry says
+	 * changes state.
+	 */
+	public function testXmlrpcProxyReadListIsTheDaemonsReadSurfaceInBothSpellings()
+	{
+		require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
+		$getters = XMLRPCProxy::safeGetters();
+		$this->assertTrue(is_array($getters) && count($getters) > 0, 'the proxy carries a read list');
+		$this->assertEquals(count($getters), count(array_unique($getters)), 'the read list has no duplicates');
+
+		$registered = $this->stockDaemonMethods();
+		$reads = array_flip($this->stockDaemonReadCommands());
+		$aliases = $this->makeSettings(0x1014)->aliases;
+		$legacyOf = array();
+		foreach ($aliases as $old => $entry) {
+			if (preg_match('/^[dtfp]\.get_/', $old)) $legacyOf[$entry['name']][] = $old;
+		}
+
+		$present = array_flip($getters);
+		foreach ($reads as $name => $unused) {
+			$this->assertTrue(isset($present[$name]),
+				$name . ' is a read command rtorrent 0.16 registers, so a listing may ask for it');
+		}
+		$setters = array_flip(XMLRPCProxy::defaultSafeParams());
+		foreach ($getters as $name) {
+			$this->assertTrue(!isset($setters[$name]), $name . ' is not a shipped setter');
+			if (isset($registered[$name])) {
+				$this->assertTrue(isset($reads[$name]),
+					$name . ' is a registered read command, not a state change');
+				$twins = isset($legacyOf[$name]) ? $legacyOf[$name] : array();
+				foreach ($twins as $old) {
+					$this->assertTrue(isset($present[$old]),
+						$name . ' is on the list, so its pre-0.9 spelling ' . $old . ' must be too');
+				}
+				continue;
+			}
+			$this->assertTrue(isset($aliases[$name]) && preg_match('/^[dtfp]\.get_/', $name) === 1,
+				$name . ' is neither a name rtorrent 0.16 registers nor a pre-0.9 spelling the alias table maps');
+			if (isset($aliases[$name])) {
+				$this->assertTrue(isset($present[$aliases[$name]['name']]),
+					$name . ' is the pre-0.9 spelling of ' . $aliases[$name]['name'] . ', which must be on the list too');
+			}
+		}
+	}
+
 	public function testRtorrent0102MethodAliasGateUsesBytewiseVersion()
 	{
 		// iVersion packs one version component per byte, so 0.10.2 is 0x0a02
@@ -237,15 +332,32 @@ class RtorrentCompatibilityTest extends TestCase
 	}
 
 	/**
-	 * Every name a stock rTorrent 0.16.20 registers: the verbatim answer to
-	 * system.listMethods from the daemon, 982 names, sorted. It is the oracle
-	 * for "does this alias target exist" -- the alias tables are hand-maintained
-	 * lists of strings, and nothing but a real registry can tell a working mapping
-	 * from a typo or from a name that a later rtorrent quietly stopped registering.
+	 * Every name a stock rTorrent 0.16.22 registers: the verbatim answer to
+	 * system.listMethods from the daemon, 946 names, sorted in LC_ALL=C order.
+	 * It is the oracle for "does this alias target exist" -- the alias tables are
+	 * hand-maintained lists of strings, and nothing but a real registry can tell a
+	 * working mapping from a typo or from a name that a later rtorrent quietly
+	 * stopped registering -- and for the proxy's read list, which is derived from
+	 * it (stockDaemonReadCommands).
 	 *
-	 * 0.16.21 adds names, it removes none, so a 0.16.20 registry is the conservative
-	 * oracle for the whole 0.16.18+ generation: every name it contains is still
-	 * registered further up.
+	 * Taken 2026-09-14 from the shipped image (ivanshift/rutorrent, rtorrent
+	 * 0.16.22) with `rtorrent -n`: no rc file, no ruTorrent, nothing loaded.
+	 * That matters, because the same daemon under ruTorrent answers 89 names
+	 * more, and none of them is the daemon's: 88 `group.rat_N.*` that the ratio
+	 * plugin creates and `rr.receipts.v1` that plugins/retrackers inserts.
+	 * Capturing without application bootstrap keeps application-added commands
+	 * from concealing an alias whose target the daemon lacks. (`d.directory_base.set` is the
+	 * daemon's own: 0.16.22 keeps it as a CMD_REDIRECT to d.directory.base.set,
+	 * src/main.cc, and the bare daemon lists it.)
+	 *
+	 * What this proves and what it does not: a name on the list is registered
+	 * on the deployed daemon, and the read list derived from it is complete for
+	 * that daemon. For 0.16.18 through 0.16.21 the alias walk below can only show
+	 * that a target is not refuted by 0.16.22 -- releases add names and, as
+	 * 0.16.18 shows, remove them too, so a target present here may still be
+	 * absent further down, and one absent here may have existed.
+	 * A name a later release adds is not on the read list until this snapshot is
+	 * refreshed from that daemon.
 	 */
 	private function stockDaemonMethodList()
 	{
@@ -322,6 +434,8 @@ d.base_path.base64_as_binary
 d.base_path.hex
 d.base_path.or_as_binary
 d.base_path.or_base64
+d.base_path.realpath.or_empty
+d.base_path.realpath.or_throw
 d.bitfield
 d.bytes_done
 d.check_hash
@@ -361,6 +475,9 @@ d.custom_throw
 d.delete_link
 d.delete_tied
 d.directory
+d.directory.base.set
+d.directory.realpath.or_empty
+d.directory.realpath.or_throw
 d.directory.set
 d.directory_base
 d.directory_base.set
@@ -403,6 +520,8 @@ d.is_private
 d.left_bytes
 d.load_date
 d.loaded_file
+d.loaded_file.realpath.or_empty
+d.loaded_file.realpath.or_throw
 d.loaded_file.set
 d.local_id
 d.local_id_html
@@ -459,6 +578,8 @@ d.stop
 d.throttle_name
 d.throttle_name.set
 d.tied_to_file
+d.tied_to_file.realpath.or_empty
+d.tied_to_file.realpath.or_throw
 d.tied_to_file.set
 d.timestamp.finished
 d.timestamp.finished.elapsed
@@ -512,6 +633,8 @@ dht.port.set
 dht.statistics
 directory
 directory.default
+directory.default.realpath.or_empty
+directory.default.realpath.or_throw
 directory.default.set
 directory.watch.added
 directory.watch.ready
@@ -558,6 +681,8 @@ f.frozen_path.base64
 f.frozen_path.hex
 f.frozen_path.or_as_binary
 f.frozen_path.or_base64
+f.frozen_path.realpath.or_empty
+f.frozen_path.realpath.or_throw
 f.is_create_queued
 f.is_created
 f.is_open
@@ -606,94 +731,6 @@ file.prioritize_toc.set
 greater
 group.insert
 group.insert_persistent_view
-group.rat_0.ratio.command
-group.rat_0.ratio.disable
-group.rat_0.ratio.enable
-group.rat_0.ratio.max
-group.rat_0.ratio.max.set
-group.rat_0.ratio.min
-group.rat_0.ratio.min.set
-group.rat_0.ratio.upload
-group.rat_0.ratio.upload.set
-group.rat_0.view
-group.rat_0.view.set
-group.rat_1.ratio.command
-group.rat_1.ratio.disable
-group.rat_1.ratio.enable
-group.rat_1.ratio.max
-group.rat_1.ratio.max.set
-group.rat_1.ratio.min
-group.rat_1.ratio.min.set
-group.rat_1.ratio.upload
-group.rat_1.ratio.upload.set
-group.rat_1.view
-group.rat_1.view.set
-group.rat_2.ratio.command
-group.rat_2.ratio.disable
-group.rat_2.ratio.enable
-group.rat_2.ratio.max
-group.rat_2.ratio.max.set
-group.rat_2.ratio.min
-group.rat_2.ratio.min.set
-group.rat_2.ratio.upload
-group.rat_2.ratio.upload.set
-group.rat_2.view
-group.rat_2.view.set
-group.rat_3.ratio.command
-group.rat_3.ratio.disable
-group.rat_3.ratio.enable
-group.rat_3.ratio.max
-group.rat_3.ratio.max.set
-group.rat_3.ratio.min
-group.rat_3.ratio.min.set
-group.rat_3.ratio.upload
-group.rat_3.ratio.upload.set
-group.rat_3.view
-group.rat_3.view.set
-group.rat_4.ratio.command
-group.rat_4.ratio.disable
-group.rat_4.ratio.enable
-group.rat_4.ratio.max
-group.rat_4.ratio.max.set
-group.rat_4.ratio.min
-group.rat_4.ratio.min.set
-group.rat_4.ratio.upload
-group.rat_4.ratio.upload.set
-group.rat_4.view
-group.rat_4.view.set
-group.rat_5.ratio.command
-group.rat_5.ratio.disable
-group.rat_5.ratio.enable
-group.rat_5.ratio.max
-group.rat_5.ratio.max.set
-group.rat_5.ratio.min
-group.rat_5.ratio.min.set
-group.rat_5.ratio.upload
-group.rat_5.ratio.upload.set
-group.rat_5.view
-group.rat_5.view.set
-group.rat_6.ratio.command
-group.rat_6.ratio.disable
-group.rat_6.ratio.enable
-group.rat_6.ratio.max
-group.rat_6.ratio.max.set
-group.rat_6.ratio.min
-group.rat_6.ratio.min.set
-group.rat_6.ratio.upload
-group.rat_6.ratio.upload.set
-group.rat_6.view
-group.rat_6.view.set
-group.rat_7.ratio.command
-group.rat_7.ratio.disable
-group.rat_7.ratio.enable
-group.rat_7.ratio.max
-group.rat_7.ratio.max.set
-group.rat_7.ratio.min
-group.rat_7.ratio.min.set
-group.rat_7.ratio.upload
-group.rat_7.ratio.upload.set
-group.rat_7.view
-group.rat_7.view.set
 group.seeding.ratio.command
 group.seeding.ratio.disable
 group.seeding.ratio.enable
@@ -837,6 +874,12 @@ network.local_address.ipv4.set
 network.local_address.ipv6
 network.local_address.ipv6.set
 network.local_address.set
+network.local_port
+network.local_port.ipv4
+network.local_port.ipv4.set
+network.local_port.ipv6
+network.local_port.ipv6.set
+network.local_port.set
 network.max_open_files
 network.max_open_files.set
 network.max_open_sockets
@@ -958,6 +1001,7 @@ remove_untied
 scgi_local
 scgi_port
 schedule
+schedule.if_absent
 schedule.remove
 scheduler.max_active
 scheduler.max_active.set
@@ -970,12 +1014,30 @@ session.name.set
 session.on_completion
 session.on_completion.set
 session.path
+session.path.realpath.or_empty
+session.path.realpath.or_throw
 session.path.set
 session.save
 session.use_lock
 session.use_lock.set
 start_tied
 stop_untied
+string.contains
+string.contains_i
+string.ends_with
+string.equals
+string.join
+string.length
+string.lpad
+string.lstrip
+string.map
+string.replace
+string.rpad
+string.rstrip
+string.split
+string.starts_with
+string.strip
+string.substr
 strings.choke_heuristics
 strings.choke_heuristics.download
 strings.choke_heuristics.upload
@@ -1003,12 +1065,16 @@ system.file.split_size
 system.file.split_size.set
 system.file.split_suffix
 system.file.split_suffix.set
+system.file_name.replace_slash
+system.file_name.replace_slash.set
 system.file_status_cache.prune
 system.file_status_cache.size
 system.files.advise_random
 system.files.advise_random.hashing
 system.files.advise_random.hashing.set
 system.files.advise_random.set
+system.files.close_idle
+system.files.close_idle.set
 system.files.closed_counter
 system.files.failed_counter
 system.files.opened_counter
@@ -1025,39 +1091,49 @@ system.shutdown.quick
 system.sockets.adjust_alloc
 system.sockets.available_alloc
 system.sockets.files.max_alloc
+system.sockets.files.max_alloc.limit
 system.sockets.files.max_alloc.set
 system.sockets.files.max_size
 system.sockets.files.min_alloc
+system.sockets.files.min_alloc.limit
 system.sockets.files.min_alloc.set
 system.sockets.files.size
 system.sockets.generic.max_size
 system.sockets.generic.min_alloc
 system.sockets.generic.size
 system.sockets.http.max_alloc
+system.sockets.http.max_alloc.limit
 system.sockets.http.max_alloc.set
 system.sockets.http.max_size
 system.sockets.http.min_alloc
+system.sockets.http.min_alloc.limit
 system.sockets.http.min_alloc.set
 system.sockets.http.size
 system.sockets.internal.max_alloc
+system.sockets.internal.max_alloc.limit
 system.sockets.internal.max_alloc.set
 system.sockets.internal.max_size
 system.sockets.internal.min_alloc
+system.sockets.internal.min_alloc.limit
 system.sockets.internal.min_alloc.set
 system.sockets.internal.size
 system.sockets.max_size
 system.sockets.max_size.set
 system.sockets.reserved_alloc
 system.sockets.rpc.max_alloc
+system.sockets.rpc.max_alloc.limit
 system.sockets.rpc.max_alloc.set
 system.sockets.rpc.max_size
 system.sockets.rpc.min_alloc
+system.sockets.rpc.min_alloc.limit
 system.sockets.rpc.min_alloc.set
 system.sockets.rpc.size
 system.sockets.size
 system.time
 system.time_seconds
 system.time_usec
+system.torrent_name.use_sanitized
+system.torrent_name.use_sanitized.set
 system.umask.set
 t.activity_time_last
 t.activity_time_next
@@ -1253,8 +1329,8 @@ LISTMETHODS
 	public function testStockDaemonMethodFixtureIsCompleteUniqueAndSorted()
 	{
 		$methods = $this->stockDaemonMethodList();
-		$this->assertEquals(982, count($methods), 'fixture contains exactly 982 names');
-		$this->assertEquals(982, count(array_unique($methods)), 'fixture contains no duplicate names');
+		$this->assertEquals(946, count($methods), 'fixture contains exactly 946 names');
+		$this->assertEquals(946, count(array_unique($methods)), 'fixture contains no duplicate names');
 		$sorted = $methods;
 		sort($sorted, SORT_STRING);
 		$this->assertEquals($sorted, $methods, 'fixture is sorted in LC_ALL=C order');
@@ -1299,7 +1375,7 @@ LISTMETHODS
 		//
 		// Only 0.16.18 and later are held against it: 0.16.16 and below map
 		// the port commands to network.port_range and friends, which 0.16.18
-		// removed, so a 0.16.20 registry is the wrong oracle down there. The
+		// removed, so a 0.16.22 registry is the wrong oracle down there. The
 		// shape of those older maps is covered by the walk further below.
 		$deprecatedOnly = array_values($this->deprecatedOnlyAliases());
 		sort($deprecatedOnly);

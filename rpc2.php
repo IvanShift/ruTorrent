@@ -45,15 +45,29 @@ require_once(dirname(__FILE__).'/conf/config.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_path.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_proxy.php');
 
-$policyFile = dirname(__FILE__).'/conf/xmlrpc_proxy.php';
-if(is_file($policyFile) && is_readable($policyFile))
-	require_once($policyFile);
-
-$mode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
-$logging = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
-$safeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
-$allowLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
-$allowRootDirectory = isset($XMLRPCProxyAllowRootDirectory) ? $XMLRPCProxyAllowRootDirectory : false;
+if(!require(dirname(__FILE__).'/php/xmlrpc_proxy_policy.php'))
+{
+	// Configuration failure must remain visible even if logging is off.
+	$logging = true;
+	rpc2_log('conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
+	rpc2_fault('503 Service Unavailable', 'XMLRPC proxy policy is not readable.');
+}
+$policy = XMLRPCProxy::policySettings(get_defined_vars());
+$mode = $policy['mode'];
+$logging = $policy['log'];
+// isset(), not count(): a policy file that sets the list empty on purpose means
+// it. A tree with no policy file at all gets the shipped list, so this door and
+// httprpc still decide the same request the same way.
+//
+// This door reads conf/xmlrpc_proxy.php and nothing else -- not
+// plugins/httprpc/conf.php, where an install older than the shared file may
+// still keep its list. Such an install used to get an empty list here, that
+// is every multicall refused; it now gets the shipped default, which is wider
+// than a list it trimmed on purpose. Move the list into conf/xmlrpc_proxy.php
+// to have the one policy at both doors.
+$safeParams = $policy['safeParams'];
+$allowLocalPaths = $policy['allowLocalPaths'];
+$allowRootDirectory = $policy['allowRootDirectory'];
 
 /**
  * Written here rather than through FileUtil so that this file needs nothing
@@ -75,13 +89,7 @@ function rpc2_fault($status, $message)
 {
 	header('HTTP/1.1 '.$status);
 	header('Content-Type: text/xml');
-	echo '<?xml version="1.0" encoding="UTF-8"?>'."\n"
-		.'<methodResponse><fault><value><struct>'
-		.'<member><name>faultCode</name><value><i4>-501</i4></value></member>'
-		.'<member><name>faultString</name><value><string>'
-		.htmlspecialchars($message, ENT_NOQUOTES, 'UTF-8')
-		.'</string></value></member>'
-		.'</struct></value></fault></methodResponse>';
+	echo XMLRPCProxy::faultXml($message);
 	exit;
 }
 
@@ -147,8 +155,9 @@ $decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, arra
 		'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 	),
 ));
+// Name the fallback in the decision line, without a second warning per poll.
 foreach($decision['log'] as $line)
-	rpc2_log($line);
+	rpc2_log($line . $policy['logSuffix']);
 
 if($decision['action'] !== 'send')
 {

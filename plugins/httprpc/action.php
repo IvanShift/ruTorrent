@@ -657,12 +657,17 @@ switch($mode)
 			// caller may name, for every door that reaches rtorrent through
 			// this filter. The plugin conf is evaluated after it, so a
 			// deployment that means this door to differ still says so there.
-			$policyFile = dirname(__FILE__).'/../../conf/xmlrpc_proxy.php';
-			if(is_file($policyFile) && is_readable($policyFile))
-				require_once($policyFile);
+			if(!require(dirname(__FILE__).'/../../php/xmlrpc_proxy_policy.php'))
+			{
+				FileUtil::toLog('xmlrpc-proxy: conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
+				header('HTTP/1.0 503 Service Unavailable');
+				CachedEcho::send('XMLRPC proxy policy is not readable.', 'text/html');
+				exit;
+			}
 			eval(FileUtil::getPluginConf('httprpc'));
-			$proxyMode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
-			$proxyLog = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
+			$policy = XMLRPCProxy::policySettings(get_defined_vars());
+			$proxyMode = $policy['mode'];
+			$proxyLog = $policy['log'];
 			if($HTTP_RAW_POST_DATA === false)
 			{
 				if($proxyLog)
@@ -679,15 +684,12 @@ switch($mode)
 				CachedEcho::send("Empty XMLRPC request.", "text/html");
 				exit;
 			}
-			$proxySafeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
-			// With no policy at all every command parameter is stripped, which
-			// costs a client its labels and directories and looks to it like a
-			// client problem. Name the cause instead.
-			if($proxyLog && (count($proxySafeParams) == 0))
-				FileUtil::toLog("xmlrpc-proxy: no \$XMLRPCProxySafeParams is defined in "
-					."conf/xmlrpc_proxy.php or plugins/httprpc/conf.php");
-			$proxyLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
-			$allowRootDirectory = isset($XMLRPCProxyAllowRootDirectory) ? $XMLRPCProxyAllowRootDirectory : false;
+			// isset(), not count(): a policy file that sets the list empty on
+			// purpose means it, and is not the same thing as a tree with no
+			// policy file in it at all.
+			$proxySafeParams = $policy['safeParams'];
+			$proxyLocalPaths = $policy['allowLocalPaths'];
+			$allowRootDirectory = $policy['allowRootDirectory'];
 			// d.directory.set names the directory rtorrent writes a download
 			// into, and the caller supplies the torrent, so it names the file
 			// too. Confine it to the same boundary the panel already holds
@@ -698,7 +700,7 @@ switch($mode)
 			// $topDirectory is a global by now -- php/util.php requires
 			// conf/config.php, and php/xmlrpc.php requires util.php. Where it
 			// is "/" it is not a boundary at all, so the empty root is passed
-			// instead and the directory setters are stripped, unless the
+			// instead and loads carrying directory setters are rejected, unless the
 			// operator opted in with $XMLRPCProxyAllowRootDirectory.
 			$topDir = (isset($topDirectory) && ($topDirectory !== '')) ? trim($topDirectory) : '';
 			$rootBoundary = (($topDir === '') || ($topDir === '/'))
@@ -710,29 +712,13 @@ switch($mode)
 				'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 			));
 			// decide() here, not process(): this endpoint owns its own
-			// connection to rtorrent, and process()'s null return cannot tell a
-			// call this filter refused from one rtorrent could not answer. That
-			// is what rpc2.php does with the same policy.
-			if($HTTP_RAW_POST_DATA === false)
-			{
-				if($proxyLog)
-					FileUtil::toLog("xmlrpc-proxy: could not read request body");
-				header("HTTP/1.0 400 Bad Request");
-				CachedEcho::send("Could not read XMLRPC request.", "text/html");
-				exit;
-			}
-			if($HTTP_RAW_POST_DATA === '')
-			{
-				if($proxyLog)
-					FileUtil::toLog("xmlrpc-proxy: empty request body");
-				header("HTTP/1.0 400 Bad Request");
-				CachedEcho::send("Empty XMLRPC request.", "text/html");
-				exit;
-			}
+			// connection to rtorrent and needs the refused method for its
+			// named XMLRPC fault. The process() adapter returns no decision
+			// metadata; rpc2.php uses the same decide() contract.
 			$decision = XMLRPCProxy::decide($HTTP_RAW_POST_DATA, $proxyMode, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
 			if($proxyLog)
 				foreach($decision['log'] as $line)
-					FileUtil::toLog("xmlrpc-proxy: ".$line);
+					FileUtil::toLog("xmlrpc-proxy: ".$line . $policy['logSuffix']);
 			if($decision['action'] !== 'send')
 			{
 				// This filter refused the call; rtorrent never saw it. Name the
