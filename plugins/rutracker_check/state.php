@@ -226,11 +226,22 @@ class RuTrackerState
     {
         global $profileMask;
         $json = json_encode($state);
-        if ($json === false) return false;
+        if ($json === false) {
+            self::reportWriteFailure($dir, $name, 'json-encode-failed');
+            return false;
+        }
         $tmp = @tempnam($dir, $name);
-        if ($tmp === false) return false;
+        // tempnam() may silently fall back to the system temp directory. A
+        // cross-filesystem rename would lose the atomic publication guarantee.
+        // Resolve the parents so a configured symlink to this store still works.
+        if ($tmp === false || realpath(dirname($tmp)) !== realpath($dir)) {
+            if ($tmp !== false) @unlink($tmp);
+            self::reportWriteFailure($dir, $name, 'temp-create-failed');
+            return false;
+        }
         if (@file_put_contents($tmp, $json) === false) {
             @unlink($tmp);
+            self::reportWriteFailure($dir, $name, 'temp-write-failed');
             return false;
         }
         // The mode is set on the TEMP file, before the rename publishes it.
@@ -246,6 +257,7 @@ class RuTrackerState
                 . ' another OS user may not be able to read it');
         if (!@rename($tmp, $dir . '/' . $name . '.json')) {
             @unlink($tmp);
+            self::reportWriteFailure($dir, $name, 'rename-failed');
             return false;
         }
         return true;
@@ -278,12 +290,23 @@ class RuTrackerState
         return $renamed;
     }
 
-    // Which documents this process has already reported as unreadable, keyed
-    // by full path. A single cycle reaches the same refusal once per host or
-    // once per forum, and a wedged file is one fact, not dozens; production
-    // runs one PHP process per cycle, so this is one line per wedged document
-    // per cycle -- enough to be noticed, not enough to drown the shared log.
+    // Per-process refusal dedupe. A cycle can reach the same bad document or
+    // unavailable store once per host or forum; one line per document and
+    // cause in that cycle stays visible without flooding the shared log.
     private static $reported = array();
+
+    // A cycle may hit the same unavailable document for several hosts. Keep
+    // one visible line for each document and closed failure cause per process.
+    static private function reportWriteFailure($dir, $name, $reason)
+    {
+        if (!class_exists('ruTrackerChecker')) return;
+        $path = $dir . '/' . $name . '.json';
+        $key = $path . "\0" . $reason;
+        if (isset(self::$reported[$key])) return;
+        self::$reported[$key] = true;
+        ruTrackerChecker::logUnrepairable('state: ' . $path . ' (' . $reason
+            . '); write was not published');
+    }
 
     // The one refusal in this class that CANNOT heal. Nothing here ever
     // rewrites a document it could not read -- that is the whole point of
@@ -353,14 +376,14 @@ class RuTrackerState
         $fp = self::openShared($lock);
         if ($fp === false) {
             $failure = 'unlockable';
-            if (class_exists('ruTrackerChecker'))
-                ruTrackerChecker::logDebug('state: cannot open ' . $lock . ', the ' . $name . ' update is lost');
+            self::reportWriteFailure($dir, $name, 'lock-open-failed');
             return false;
         }
 
         try {
             if (!flock($fp, LOCK_EX)) {
                 $failure = 'unlockable';
+                self::reportWriteFailure($dir, $name, 'lock-acquire-failed');
                 return false;
             }
             try {

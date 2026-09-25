@@ -9541,6 +9541,9 @@ class RetrackersRecoveryCoordinator
 
 	private static function holdUnknownLease()
 	{
+		if (class_exists('FileUtil') && method_exists('FileUtil', 'toLog')) {
+			FileUtil::toLog('retrackers-recovery: unknown-lease-held; daemon restart required');
+		}
 		while (true) {
 			usleep(250000);
 		}

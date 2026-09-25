@@ -765,8 +765,9 @@ $suite->test('a budget entry nobody can read reaches the application log at the 
     });
 });
 
-// The other half of that rule, pinned: the transient sibling stays quiet.
-$suite->test('a budget that could not be written stays on the gated channel', function () {
+// A transient storage fault still loses this cycle's budget write, so it
+// must leave one visible classified line even with debug disabled.
+$suite->test('a budget that could not be written reaches the application log', function () {
     $tmp = sys_get_temp_dir() . '/chk-announce-unwritable-' . getmypid();
     strictRemoveTree($tmp);
     if (!mkdir($tmp, 0777, true)) throw new RuntimeException('Unable to create ' . $tmp);
@@ -784,10 +785,10 @@ $suite->test('a budget that could not be written stays on the gated channel', fu
                 'an unrecordable slot is still refused rather than spent unrecorded');
         });
 
-        strictAssertSame('', $written,
-            'a refusal that succeeds again the moment the store does writes nothing to the shared log');
+        strictAssertSame(1, substr_count($written, 'announce.json (lock-open-failed)'),
+            'the lost budget write is visible once at the shipped debug default');
         strictAssertTrue(count(strictLogsMatching(ruTrackerChecker::$logs, 'could not be written')) > 0,
-            'it is still said, on the channel a debugging operator turns on');
+            'the existing debug detail remains available when requested');
     } finally {
         strictSetPrivateStatic('RuTrackerState', 'dir', null);
         strictRemoveTree($tmp);
@@ -983,6 +984,23 @@ $suite->test('the read-only budget view refuses a document nobody can read, exac
             'and the refusal is visible at the shipped debug default, naming host and consequence');
         strictAssertSame('this is not json', file_get_contents($tmp . '/announce.json'),
             'and reading it did not rewrite it');
+    });
+});
+
+$suite->test('recordOutcome reports an ignored state write failure on the application log', function () {
+    strictWithStateDir('chk-announce-outcome-write', function ($tmp) {
+        $blocked = $tmp . '/not-a-directory';
+        file_put_contents($blocked, 'x');
+        strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/store');
+        try {
+            $written = testCapturedAppLog(function () {
+                RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 1000, 403);
+            });
+        } finally {
+            strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+        }
+        strictAssertSame(1, substr_count($written, 'announce.json (lock-open-failed)'),
+            'the ignored update return still leaves one visible, classified refusal');
     });
 });
 

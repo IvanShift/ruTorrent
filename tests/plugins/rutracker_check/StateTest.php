@@ -13,6 +13,9 @@
  * writer's work can never be silently erased.
  */
 
+// Include the checker log sink so the write-refusal cases exercise the
+// ungated application log used by production.
+define('TESTLIB_HANDLER_STUBS', 1);
 require_once(__DIR__ . '/TestLib.php');
 // The real FileUtil, not a stub: state.php creates its directory through
 // FileUtil::makeDirectory(), whose umask(0) wrapper is exactly what makes the
@@ -461,6 +464,73 @@ $suite->test('update() says WHY it did not happen, so a caller cannot name the w
         }
         strictAssertSame(false, $refused, 'a mutation with nowhere to go is refused');
         strictAssertSame('unlockable', $failure, 'and names the guard it could not establish');
+    });
+});
+
+
+$suite->test('a symlinked state directory still permits sibling temp publication', function () {
+    strictWithStateDir('chk-state-symlink-dir', function ($tmp) {
+        $alias = $tmp . '/alias';
+        if (!symlink($tmp, $alias)) throw new RuntimeException('Unable to create directory alias');
+        strictSetPrivateStatic('RuTrackerState', 'dir', $alias);
+        try {
+            strictAssertSame(true, RuTrackerState::save('aliased', array('ok' => true)),
+                'tempnam may return the canonical directory behind a safe alias');
+            strictAssertSame(array('ok' => true), RuTrackerState::load('aliased'),
+                'the complete document is available through the configured alias');
+        } finally {
+            strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+        }
+    });
+});
+
+$suite->test('failed state writes and locks leave one visible classified refusal per document and cause', function () {
+    strictWithStateDir('chk-state-visible-refusal', function ($tmp) {
+        $log = testCapturedAppLog(function () use ($tmp) {
+            $failure = null;
+            strictAssertSame(false, RuTrackerState::save('encode', array('bad' => NAN)),
+                'save refuses an unencodable document');
+            strictAssertSame(false, RuTrackerState::save('encode', array('bad' => NAN)),
+                'a repeated refusal is still reported to its caller');
+
+            strictAssertSame(false, RuTrackerState::update('updated', function ($state) {
+                return array('bad' => NAN);
+            }, $failure), 'recordOutcome-style updates refuse an unencodable result');
+            strictAssertSame('unwritable', $failure, 'the caller still gets the existing write classification');
+
+            mkdir($tmp . '/rename.json');
+            strictAssertSame(false, RuTrackerState::save('rename', array('ok' => true)),
+                'a failed final rename leaves the document unpublished');
+
+            $blocked = $tmp . '/not-a-directory';
+            file_put_contents($blocked, 'x');
+            strictSetPrivateStatic('RuTrackerState', 'dir', $blocked . '/store');
+            try {
+                strictAssertSame(false, RuTrackerState::save('temp', array('ok' => true)),
+                    'a temp file cannot be created below a regular file');
+                strictAssertSame(false, RuTrackerState::update('locked', function ($state) {
+                    return $state;
+                }, $failure), 'an update cannot acquire a lock below a regular file');
+                strictAssertSame('unlockable', $failure, 'the lock refusal remains classified');
+            } finally {
+                strictSetPrivateStatic('RuTrackerState', 'dir', $tmp);
+            }
+        });
+
+        foreach (array(
+            'encode.json' => 'json-encode-failed',
+            'updated.json' => 'json-encode-failed',
+            'rename.json' => 'rename-failed',
+            'temp.json' => 'temp-create-failed',
+            'locked.json' => 'lock-open-failed',
+        ) as $document => $cause) {
+            strictAssertSame(1, substr_count($log, $document . ' (' . $cause . ')'),
+                $document . ' has exactly one ungated application-log line for ' . $cause);
+        }
+        strictAssertSame(5, substr_count($log, 'rutracker_check: state:'),
+            'the five independent refusals have five visible lines at the shipped debug default');
+        strictAssertTrue(strpos($log, 'NAN') === false,
+            'the persistent log contains only bounded reasons, not invalid state content');
     });
 });
 
