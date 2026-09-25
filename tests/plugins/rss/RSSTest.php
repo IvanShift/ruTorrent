@@ -63,6 +63,59 @@ final class RSSTest extends TestCase
 		$this->assertEquals('https://tracker.example/feed', $feed->url,
 			'cookie suffix is removed from request URL');
 	}
+	public function testLabelOnlyEditKeepsLegacyCookieHashAndGroup(): void
+	{
+		$source = 'https://tracker.example/feed:COOKIE:uid=1; pass=abc';
+		$legacyHash = md5($source);
+		$normalizedURL = (new rRSS($source))->srcURL;
+		$this->assertTrue($legacyHash !== (new rRSS($source))->hash,
+			'the fixture represents a hash from before cookie normalization');
+		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+		$manager->rssList = new rRSSMetaList();
+		$manager->rssList->lst[$legacyHash] = array(
+			'label' => 'Old', 'auto' => 1, 'enabled' => 0, 'url' => $source,
+		);
+		$manager->groups = new rRSSGroupList();
+		$group = new rRSSGroup('Saved group', 'group-1');
+		$group->lst = array($legacyHash);
+		$manager->groups->add($group);
+		$manager->cache = new class {
+			public $saved = 0;
+			public function set($object, $mergeErrorsOnly = false) { $this->saved++; }
+			public function remove($object) { throw new RuntimeException('feed cache was removed'); }
+		};
+
+		try {
+			$changed = $manager->change($legacyHash, $normalizedURL, 'Renamed', 1);
+		} catch (RuntimeException $error) {
+			$changed = false;
+		}
+		$this->assertEquals(true, $changed,
+			'a label edit succeeds without deleting or fetching the feed');
+		$this->assertEquals(array($legacyHash), array_keys($manager->rssList->lst),
+			'the persisted identity stays stable');
+		if(!array_key_exists($legacyHash, $manager->rssList->lst))
+			return;
+		$this->assertEquals('Renamed', $manager->rssList->lst[$legacyHash]['label'],
+			'the label changes under the old hash');
+		$this->assertEquals(1, $manager->rssList->lst[$legacyHash]['auto'],
+			'a label-only edit keeps the automatic download choice');
+		$this->assertEquals(0, $manager->rssList->lst[$legacyHash]['enabled'],
+			'the enabled state survives the edit');
+		$this->assertEquals(array($legacyHash), $manager->groups->get('group-1')->lst,
+			'group membership continues to point at the feed');
+		$this->assertEquals(1, $manager->cache->saved, 'the updated metadata is persisted once');
+		$this->assertEquals($normalizedURL, $manager->rssList->lst[$legacyHash]['url'],
+			'the stored URL follows the current cookie format');
+		$this->assertEquals(true, $manager->change($legacyHash, $normalizedURL, 'Again', 0),
+			'a second edit from the UI still preserves the old hash');
+		$this->assertEquals(array($legacyHash), array_keys($manager->rssList->lst),
+			'normalizing metadata does not force a later rehash');
+		$this->assertEquals(0, $manager->rssList->lst[$legacyHash]['auto'],
+			'a later automatic-download change stays under the old hash');
+		$this->assertEquals(2, $manager->cache->saved, 'each metadata edit is persisted once');
+	}
+
 	public function testRefusedCredentialRedirectNamesTheReason(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed', function ($url, $cookies, $headers) {

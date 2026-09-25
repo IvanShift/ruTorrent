@@ -1148,8 +1148,13 @@ class rRSSManager
 		else
 		{
 			$rssNew = new rRSS($rssURL);
-			if($rssNew->hash==$hash)
+			$storedURL = $this->rssList->lst[$hash]['url'] ?? null;
+			// Older feeds can keep a pre-normalization hash for the same URL.
+			// Reparse the stored URL with the same cookie rules before replacing it.
+			if($rssNew->hash==$hash || (is_string($storedURL) && $rssNew->srcURL!==null &&
+				(new rRSS($storedURL))->srcURL===$rssNew->srcURL))
 			{
+				$rssNew->hash = $hash;
 				$this->rssList->change($rssNew,$rssLabel,$rssAuto);
 				$this->saveState(false);
 				return(true);
