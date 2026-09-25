@@ -278,6 +278,32 @@ $tests = array(
             $log_file = $previous;
         }
     },
+    'unrelated HTTP URLs do not log a loginmgr migration hint' => function () {
+        global $log_file;
+        $previous = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'http-unrelated-');
+        try {
+            $manager = new accountManager();
+            $manager->accounts = array('RUTracker' => array(
+                'enabled' => 1,
+                'path' => __DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php',
+                'object' => 'ruTrackerAccount',
+            ));
+            foreach (array('http://unrelated.test/forum/dl.php?t=42',
+                'http://rutracker.org/other/?t=42') as $url) {
+                $httpsAccount = 'stale';
+                selAssertSame(false, $manager->getAccount($url, $httpsAccount),
+                    'unrelated HTTP URL has no selected account');
+                selAssertSame(null, $httpsAccount,
+                    'unrelated HTTP URL has no HTTPS candidate');
+            }
+            selAssertSame('', file_get_contents($log_file),
+                'unrelated HTTP URLs do not produce a migration hint');
+        } finally {
+            unlink($log_file);
+            $log_file = $previous;
+        }
+    },
     'an https url still reaches a site whose own scheme is http' => function () {
         // The other direction costs nothing to allow: an https url to a site
         // that really is http-only simply fails to connect.

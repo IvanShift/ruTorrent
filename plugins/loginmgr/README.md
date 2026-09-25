@@ -51,15 +51,17 @@ When an HTTP link has a saved plugin cookie, the application log records
 `cookies: http-refused: source=cookies host=<normalized host>`; it adds
 `account=<name>` only when loginmgr identifies an account for that URL or
 its HTTPS equivalent.
-The log omits cookie values and URL paths, queries and userinfo. An HTTP link
+These logs identify the normalized host and, when an account matches, its name;
+they omit cookie values and URL paths, queries and userinfo. An HTTP link
 that redirects to HTTPS still receives no plugin cookie during that fetch;
 change the original link to HTTPS to use it. Explicit `:COOKIE:` values and
 cookies already set on a Snoopy client are caller supplied and may still be
 sent over HTTP. On redirects, cookies from the plugin and `:COOKIE:` stay on
 the original normalized host; allowed same-host hops keep them. A loginmgr
 session may follow an HTTPS hop to another host accepted by that account.
-A one-time log hint names an HTTP link that would match an enabled account over
-HTTPS.
+For an HTTP link that would match an enabled account over HTTPS, loginmgr logs
+`loginmgr: http-url-not-authenticated` once per account and normalized host in
+that PHP process. Unrelated HTTP links produce no loginmgr hint.
 Update manually entered URLs, RSS sources and `rssurlrewrite` rules to use the
 tracker's HTTPS URL. Without that change, loginmgr authentication is absent;
 requests without other credentials may return a guest page instead of a torrent.

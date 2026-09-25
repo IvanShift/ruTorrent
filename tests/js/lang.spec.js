@@ -129,16 +129,35 @@ describe("localization", () => {
         if (!name.endsWith(".js") || name === "en.js") continue;
         const theirs = keysOf([path.join(dir, name)]);
         for (const key of Object.keys(en)) {
-          // loginmgr-warning.spec.js exercises the full English fallback
-          // when this one untranslated key is absent from a locale.
+          // init.js has a full English fallback for this key; Russian
+          // supplies a translation and must keep it.
           const explicitFallback = path.relative(ROOT, dir) === "plugins/loginmgr/lang"
-            && key === "accOriginRequired";
+            && key === "accOriginRequired" && name !== "ru.js";
           if (!(key in theirs) && !explicitFallback)
             missing.push(`${path.relative(ROOT, dir)}/${name}: ${key}`);
         }
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it("keeps Ygg origin guidance localized where it is supplied", () => {
+    const dir = path.join(ROOT, "plugins", "loginmgr", "lang");
+    const english = keysOf([path.join(dir, "en.js")]).accOriginRequired;
+    const invalid = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".js") || name === "en.js") continue;
+      const locale = keysOf([path.join(dir, name)]);
+      const value = locale.accOriginRequired;
+      if (name === "ru.js" && (typeof value !== "string" || value.trim() === "")) {
+        invalid.push(`${name}: missing Russian guidance`);
+      }
+      if (value !== undefined && (typeof value !== "string" || value.trim() === ""
+          || value === english || value.includes("(or a loginmgr override)"))) {
+        invalid.push(`${name}: stale English guidance`);
+      }
+    }
+    expect(invalid).toEqual([]);
   });
 
   /**
