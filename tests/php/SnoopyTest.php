@@ -990,22 +990,25 @@ $tests = array(
     // answers exactly that to a guest download, and resolving it against the
     // requested host produced https://dl.kinozal.guru:443//kinozal.guru/... --
     // an address that redirects again, until maxredirs runs out.
-    'protocol-relative redirect inherits the scheme and takes the new host' => function () use ($seenPath) {
+    'protocol-relative HTTPS redirect keeps the scheme without a follow-up request' => function () use ($seenPath) {
         @unlink($seenPath);
         putenv('SNOOPY_TEST_REDIRECT=//kinozal.guru/login.php?to=%2Fdownload.php%3Fid%3D1');
         try {
             $client = new Snoopy();
+            $client->maxredirs = 0;
             snoopyAssertTrue(
                 $client->fetch('https://dl.kinozal.guru/download.php?id=1'),
-                'Redirected HTTPS request did not complete'
+                'The source HTTPS response must complete'
             );
-            $args = snoopyCurlArgs();
             snoopyAssertSame(
                 'https://kinozal.guru/login.php?to=%2Fdownload.php%3Fid%3D1',
-                end($args),
-                'The redirect must be followed to the host it names'
+                $client->lastredirectaddr,
+                'The resolved redirect keeps HTTPS and names the destination host'
             );
-            snoopyAssertSame('200', $client->status, 'The redirect target answered');
+            $args = snoopyCurlArgs();
+            snoopyAssertSame('https://dl.kinozal.guru/download.php?id=1', end($args),
+                'The fixture sends only the source HTTPS request');
+            snoopyAssertSame('302', $client->status, 'The source response remains visible');
         } finally {
             putenv('SNOOPY_TEST_REDIRECT');
             @unlink($seenPath);

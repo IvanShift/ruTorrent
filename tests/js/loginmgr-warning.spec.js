@@ -37,7 +37,7 @@ test("Ygg origin warning follows the Enabled checkbox", () => {
   expect(enabledPage.querySelector(".alert-warning").style.display).not.toBe("none");
 });
 
-test("An untranslated locale receives the complete Ygg configuration paths", () => {
+test("An untranslated locale uses the English Ygg origin warning", () => {
   const page = renderAccount(1, null);
   const warning = page.querySelector(".alert-warning").textContent;
   expect(warning).toContain("plugins/loginmgr/conf.local.php");
