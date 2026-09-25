@@ -3,17 +3,29 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 runner="${MATRIX_RUNNER:-$root/tasks/matrix.sh}"
-scratch="$(mktemp -d /tmp/rtmatrix.XXXXXX)"
-short_home="$(mktemp -d /tmp/mx.XXXXXX)"
-long_home="$(mktemp -d /tmp/rtmlonghome.XXXXXX)"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/rtmatrix.XXXXXX")"
+short_home_real=''
+short_home_root=''
+short_home=''
+long_home=''
 matrix_pid=''
 child_pid=''
 cleanup() {
+    local path
     if [ -n "$matrix_pid" ]; then kill -TERM "$matrix_pid" 2>/dev/null || :; fi
     if [ -n "$child_pid" ]; then kill -TERM "$child_pid" 2>/dev/null || :; fi
-    rm -rf -- "$scratch" "$short_home" "$long_home"
+    for path in "$short_home_root" "$scratch" "$short_home_real" "$long_home"; do
+        [ -z "$path" ] || rm -rf -- "$path"
+    done
 }
 trap cleanup EXIT
+short_home_real="$(mktemp -d "${TMPDIR:-/tmp}/mx.XXXXXX")"
+long_home="$(mktemp -d "${TMPDIR:-/tmp}/rtmlonghome.XXXXXX")"
+# The fixture needs a short HOME for the UNIX-socket path budget; only this
+# directory and symlink live in /tmp. Run data stays under TMPDIR.
+short_home_root="$(mktemp -d /tmp/m.XXXXXX)"
+short_home="$short_home_root/h"
+ln -s -- "$short_home_real" "$short_home"
 
 mkdir -p "$scratch/tasks" "$scratch/tests/php" "$scratch/tests/plugins" "$scratch/bin"
 cp "$runner" "$scratch/tasks/matrix.sh"
@@ -69,6 +81,18 @@ cmp -s "$scratch/env_check.php" "$isolation_run/export/env_check.php" || {
 }
 cat > "$scratch/tests/php-test.sh" <<'TEST'
 #!/bin/bash
+printf 'source edit during leg\n' > "$MATRIX_TEST_SOURCE"
+echo '> php php/aTest.php'
+echo '1 tests, 0 failures'
+TEST
+HOME="$short_home" MATRIX_TEST_SOURCE="$scratch/env_check.php" \
+    "$scratch/tasks/matrix.sh" local > "$short_home/source-drift.log"
+grep -q 'source changed while it ran' "$short_home/source-drift.log" || {
+    cat "$short_home/source-drift.log" >&2
+    echo 'source drift was not identified' >&2; exit 1
+}
+cat > "$scratch/tests/php-test.sh" <<'TEST'
+#!/bin/bash
 echo '> php php/aTest.php'
 echo '1 tests, 0 failures'
 TEST
@@ -91,6 +115,25 @@ if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tasks/matrix.sh" local
     echo 'partial archive was accepted' >&2; exit 1
 fi
 grep -q 'archive export failed' "$short_home/export.log"
+rm "$scratch/bin/tar"
+cat > "$scratch/bin/tar" <<'TAR'
+#!/bin/bash
+if [ "$1" = -xpf ]; then
+    /usr/bin/tar "$@" || exit $?
+    dest="${@: -1}"
+    printf 'wrong export\n' > "$dest/tests/php/aTest.php"
+    exit 0
+fi
+exec /usr/bin/tar "$@"
+TAR
+chmod +x "$scratch/bin/tar"
+if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tasks/matrix.sh" local > "$short_home/export-drift.log" 2>&1; then
+    echo 'changed archive was accepted' >&2; exit 1
+fi
+grep -Eq 'archive export.*source digest.*export: ' "$short_home/export-drift.log" || {
+    cat "$short_home/export-drift.log" >&2
+    echo 'archive mismatch did not name its path' >&2; exit 1
+}
 rm "$scratch/bin/tar"
 
 cat > "$scratch/tests/php-test.sh" <<'TEST'
@@ -400,4 +443,27 @@ fi
 if HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_PHP_LOG="$short_home/host-php.log" "$scratch/tasks/matrix.sh" digest > "$short_home/no-host-digest.log" 2>&1; then
     echo 'full digest silently omitted unavailable host PHP' >&2; exit 1
 fi
-echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, Docker-only without host PHP passed'
+cat > "$scratch/bin/docker" <<'DOCKER_DRIFT'
+#!/bin/sh
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+    cat "$MATRIX_TEST_IMAGE_ID"
+    exit 0
+fi
+if [ "$1" = run ]; then
+    printf '%s\n' "$*" > "$MATRIX_TEST_DOCKER_ARGS"
+    printf 'sha256:after\n' > "$MATRIX_TEST_IMAGE_ID"
+    printf '> php php/aTest.php\n1 tests, 0 failures\n'
+    exit 0
+fi
+exit 0
+DOCKER_DRIFT
+chmod +x "$scratch/bin/docker"
+printf 'sha256:before\n' > "$short_home/image-id"
+HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
+    MATRIX_TEST_DOCKER_ARGS="$short_home/docker-args" "$scratch/tasks/matrix.sh" 7.4 > "$short_home/runtime-drift.log" 2>&1
+grep -q -- '--pull=never' "$short_home/docker-args" || { echo 'PHP container can pull an image during the run' >&2; exit 1; }
+grep -q 'runtime changed while it ran' "$short_home/runtime-drift.log" || {
+    cat "$short_home/runtime-drift.log" >&2
+    echo 'runtime drift was reported as source drift' >&2; exit 1
+}
+echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, source/runtime drift, Docker-only without host PHP passed'

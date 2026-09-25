@@ -11,9 +11,9 @@
 #   tasks/matrix.sh digest          print the digest of what the suite tests
 #   tasks/matrix.sh last            show the last green run
 #
-# Why legs run in parallel on separate exports: one leg is ~100 s and most of
-# it is two single-threaded files (AGENTS.md, "PHP Suite Timing and the
-# Matrix"), so three legs side by side cost about one leg -- but two runs
+# Why legs run in parallel on separate exports: the local PHP leg was about
+# 90 s on 2026-09-15, mostly in two files (AGENTS.md, "PHP Suite Timing and the
+# Matrix"). Four legs run side by side, but two runs
 # over ONE tree corrupt each other (AGENTS.md, "This Machine Will Lie To You"),
 # and a default container could write as root. So every leg gets `git ls-files` of the
 # working tree (staged and unstaged edits, untracked new files) exported to a
@@ -265,7 +265,13 @@ grep -zvE '\.md$' "$run/manifest" > "$run/digest-manifest" \
     | tar -xpf - -C "$export_dir" || fail_setup "archive export failed"
 export_digest="$(hash_files "$export_dir" "$run/digest-manifest")" \
     || fail_setup "archive export is incomplete"
-[ "$export_digest" = "$source_before" ] || fail_setup "archive export differs from the source digest"
+if [ "$export_digest" != "$source_before" ]; then
+    source_at_export="$(source_digest)" || fail_setup "archive export differs from source digest; cannot re-read source at $root (export: $export_dir)"
+    if [ "$source_at_export" != "$source_before" ]; then
+        fail_setup "archive export differs from source digest because source changed during export (source: $root; export: $export_dir)"
+    fi
+    fail_setup "archive export differs from source digest; exported content or mode changed (source: $root; export: $export_dir)"
+fi
 expected_files="$(find "$root/tests/php" "$root/tests/plugins" -type f -name '*Test.php' | wc -l)" \
     || fail_setup "cannot count source tests"
 [ "$expected_files" -gt 0 ] || fail_setup "source has no PHP test files"
@@ -304,7 +310,7 @@ for leg in "${legs[@]}"; do
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
                 dir="$1"; leg="$2"; uid="$3"; gid="$4"; name="$5"
-                docker run --rm --name "$name" --user "${uid}:${gid}" \
+                docker run --rm --pull=never --name "$name" --user "${uid}:${gid}" \
                     -e HOME=/mtmp -e TMPDIR=/mtmp \
                     -v "$dir/tree:/w" -v "$dir/tmp:/mtmp" -w /w/tests "php:${leg}-cli" \
                     bash php-test.sh > "$dir/php-test.log" 2>&1
@@ -341,7 +347,9 @@ for leg in "${legs[@]}"; do
     [ "$code" = 0 ] && [ "$fails" = 0 ] || status=1
 done
 elapsed=$(( $(date +%s) - started ))
-after="$(digest "${legs[@]}")" || status=1
+source_after="$(source_digest)" || status=1
+runtime_after="$(runtime_fingerprint "${legs[@]}")" || status=1
+after="$(combine_digest "$source_after" "$runtime_after")" || status=1
 
 if [ "$status" = 0 ] && [ "$before" = "$after" ]; then
     if [ "$record_green" = 1 ]; then
@@ -355,7 +363,14 @@ if [ "$status" = 0 ] && [ "$before" = "$after" ]; then
         echo "green on ${legs[*]} in ${elapsed}s; focused run does not update last-green"
     fi
 elif [ "$status" = 0 ]; then
-    echo "green on ${legs[*]} in ${elapsed}s, but the tree changed while it ran: nothing recorded"
+    if [ "$source_before" != "$source_after" ] && [ "$runtime_before" != "$runtime_after" ]; then
+        change="source and runtime changed"
+    elif [ "$source_before" != "$source_after" ]; then
+        change="source changed"
+    else
+        change="runtime changed"
+    fi
+    echo "green on ${legs[*]} in ${elapsed}s, but $change while it ran: nothing recorded"
 else
     # The export was verified against before; a failed leg invalidates that digest
     # even if the source changed while the leg ran or the final digest failed.
