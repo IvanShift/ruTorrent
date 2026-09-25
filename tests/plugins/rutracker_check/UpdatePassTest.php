@@ -319,12 +319,10 @@ upTest($suite, 'cold torrents are skipped entirely: no checker call, no state wr
     strictAssertSame(array(), rXMLRPCRequest::$requests, 'no state write for a torrent whose counters never moved');
 });
 
-// Every one of these knobs sits in the shared config where a typo is a
-// plausible accident, and each has a value that quietly turns a safeguard off
-// rather than failing loudly. The share is the sharpest: written as 20 instead
-// of 0.2 -- the obvious mistake for "20%" -- the threshold becomes unreachable
-// and the fuse never trips again, with nothing said anywhere.
-upTest($suite, 'a misconfigured fuse clamps into range instead of switching itself off', function () {
+// A share written as 20 instead of 0.2 is the obvious mistake for "20%".
+// Clamping it to 1.0 requires every row on a host to fail, which can leave
+// the fuse nearly inert. The safe default must take effect visibly.
+upTest($suite, 'an out-of-range fuse share uses the safe default and reports the error', function () {
     $saved = array(
         'share' => isset($GLOBALS['rutrackerFuseShare']) ? $GLOBALS['rutrackerFuseShare'] : null,
         'floor' => isset($GLOBALS['rutrackerFuseFloor']) ? $GLOBALS['rutrackerFuseFloor'] : null,
@@ -333,22 +331,27 @@ upTest($suite, 'a misconfigured fuse clamps into range instead of switching itse
         $values = array_merge(
             upRow(str_repeat('C', 40), 6, 'bt2.t-ru.org'),
             upRow(str_repeat('D', 40), 6, 'bt2.t-ru.org'),
-            upRow(str_repeat('E', 40), 6, 'bt2.t-ru.org')
+            upRow(str_repeat('E', 40), 6, 'bt2.t-ru.org'),
+            upRow(str_repeat('F', 40), 0, 'bt2.t-ru.org')
         );
 
-        // "20" meant as 20%. Clamped to 1.0 the fuse still works, just at its
-        // most conservative: every candidate on the host must be failing.
-        // Left at 20 the threshold is ceil(20 * total) -- unreachable -- and
-        // the fuse is silently inert for good.
         $GLOBALS['rutrackerFuseShare'] = 20;
         $GLOBALS['rutrackerFuseFloor'] = 3;
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) {});
         rXMLRPCRequest::reset();
-        for ($i = 0; $i < 3; $i++)
+        for ($i = 0; $i < 4; $i++)
             rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
-        $result = RuTrackerUpdatePass::run(RuTrackerUpdatePass::parseMulticall($values));
+        $rows = RuTrackerUpdatePass::parseMulticall($values);
+        upQueueUnchanged($rows);
+        $result = null;
+        $log = testCapturedAppLog(function () use ($rows, &$result) {
+            $result = RuTrackerUpdatePass::run($rows);
+        });
         strictAssertSame(array('bt2.t-ru.org'), $result['fused'],
-            'a share of 20 clamps to 1.0 -- every candidate failing -- rather than never tripping');
+            'invalid 20 uses the default 0.2, so three of four failed rows trip the fuse');
+        strictAssertSame(array(), $result['checked'], 'the tripped host is not dispatched');
+        strictAssertTrue(strpos($log, 'invalid rutrackerFuseShare > 1; using default 0.2') !== false,
+            'the bad configuration is visible with diagnostics disabled');
 
         // Zero and zero: the floor keeps a host with no candidates at all from
         // fusing, which would otherwise stop the plugin checking anything.

@@ -988,7 +988,7 @@ plugin.fillDetails = function(d) {
   $('#torrentDetails #hash td:last').text(d.hash);
   $('#torrentDetails #comment td:last').text(d.comment);
   $('#torrentDetails #trackerUrl td:last').text((this.detailTrackers && this.detailTrackers.hash == d.hash && this.detailTrackers.list.length) ? (this.detailTrackers.list[0].name + ((this.detailTrackers.list.length > 1) ? (' ' + theUILang.of + ' ' + d.tracker_size) : '')) : d.tracker_size);
-  $('#torrentDetails #trackerStatus td:last').text(d.msg);
+  $('#torrentDetails #trackerStatus td:last').html(getClickableTrackerStatus(d.msg));
 };
 
 plugin.changePriority = function() {

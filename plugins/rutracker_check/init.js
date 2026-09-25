@@ -33,10 +33,9 @@ if(plugin.canChangeMenu())
 	// the request carries list=1, so the core follows up with its own list
 	// request and discards this response entirely.
 	//
-	// action.php answers 2xx for every handled outcome -- a failure status would
-	// make the shared getTorrents() error callback report rTorrent as stopped --
-	// so a refusal is only visible if the body is inspected. A refusal the user
-	// cannot see is a check they believe is running.
+	// action.php answers 2xx for every handled outcome so this response
+	// handler runs before the core follows up with the list request. A refusal
+	// the user cannot see is a check they believe is running.
 	rTorrentStub.prototype.checktorrentResponse = function( data )
 	{
 		if( data && (data.status === "queued") )

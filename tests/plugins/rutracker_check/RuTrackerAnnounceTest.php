@@ -351,7 +351,7 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
         chdir(' . var_export(testFindRepoRoot() . '/php', true) . ');
         require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/announce.php', true) . ';
         $dir = new ReflectionProperty("RuTrackerState", "dir");
-        $dir->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) $dir->setAccessible(true);
         $dir->setValue(null, ' . var_export($tmp, true) . ');
         echo RuTrackerAnnounce::reserveProbe("bt4.t-ru.org", 1000, 5, ' . RAT_WINDOW . ');
     ');

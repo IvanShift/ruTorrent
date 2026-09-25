@@ -555,3 +555,22 @@ describe("visibilitychange handler", () => {
     expect(theWebUI.serverDeltaTime).toBe(3000);
   });
 });
+
+
+describe("empty list HTTP response", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("passes an HTTP 204 with no XML body to the list completion callback", () => {
+    const deferred = $.Deferred();
+    jest.spyOn($, "ajax").mockReturnValue(deferred);
+    const complete = jest.fn();
+
+    Ajax("?list=1", true, complete);
+    deferred.resolve(undefined, "nocontent", {
+      status: 204,
+      getResponseHeader: () => null,
+    });
+
+    expect(complete).toHaveBeenCalledWith("");
+  });
+});

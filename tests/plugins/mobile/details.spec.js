@@ -61,6 +61,7 @@ function detailsMarkup() {
          <tr id="seedtime"><td>Seeding Time</td><td></td></tr>
          <tr id="dateAdded"><td>Added</td><td></td></tr>
          <tr id="created"><td>Created</td><td></td></tr>
+         <tr id="trackerStatus"><td>Tracker status</td><td></td></tr>
        </table>
      </div>`
   );
@@ -75,6 +76,19 @@ describe("mobile details pane", () => {
     document.body.innerHTML = "";
     detailsMarkup();
     plugin.seedingtimeLoaded = true;
+  });
+
+  it("splits joined tracker reasons without rendering remote markup", () => {
+    plugin.fillDetails({
+      seedingtime: -1, addtime: -1, created: 0,
+      msg: "Tracker: [IPv4 failed /// IPv6 failed <script>alert(1)</script>]",
+    });
+
+    const cell = $("#torrentDetails #trackerStatus td:last");
+    expect(cell.html()).toBe(
+      "Tracker: [IPv4 failed<br>IPv6 failed &lt;script&gt;alert(1)&lt;/script&gt;]"
+    );
+    expect(cell.find("script")).toHaveLength(0);
   });
 
   it("renders seeding time as the elapsed duration it already is", () => {

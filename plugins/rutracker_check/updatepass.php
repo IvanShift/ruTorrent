@@ -24,6 +24,7 @@ class RuTrackerUpdatePass
     // capture dispatches without loading a real tracker handler. null means
     // "use the production default".
     private static $checker = null;
+    private static $invalidFuseShareReported = false;
 
     // Use the supplied comment, or read the session copy when the row has
     // none. The cycle multicall carries no comment, so run() reads it once
@@ -329,12 +330,21 @@ class RuTrackerUpdatePass
     static public function run($rows, $forumChanged = array())
     {
         global $rutrackerFuseShare, $rutrackerFuseFloor;
-        // A FRACTION of 1, not a percentage: written as 20 rather than 0.2
-        // the threshold becomes unreachable and the fuse silently inert, so
-        // clamp rather than trust. At 0 with a floor of 0 the opposite
-        // happens -- every host trips and nothing is ever checked again --
-        // which is why the floor is at least one candidate.
-        $share = isset($rutrackerFuseShare) ? min(1.0, max(0.0, (float) $rutrackerFuseShare)) : 0.2;
+        // A FRACTION of 1, not a percentage. An accidental 20 instead of
+        // 0.2 would clamp to 1.0 and make the fuse nearly inert whenever even
+        // one torrent on a host is healthy. Restore the safe default and tell
+        // the operator. The floor remains at least one candidate so a zero
+        // share cannot trip a host with no failing torrents.
+        $share = isset($rutrackerFuseShare) ? (float) $rutrackerFuseShare : 0.2;
+        if ($share > 1.0) {
+            if (!self::$invalidFuseShareReported) {
+                self::$invalidFuseShareReported = true;
+                ruTrackerChecker::logUnrepairable(
+                    'config: invalid rutrackerFuseShare > 1; using default 0.2');
+            }
+            $share = 0.2;
+        }
+        $share = max(0.0, $share);
         $floor = max(1, isset($rutrackerFuseFloor) ? (int) $rutrackerFuseFloor : 3);
         $defaultChecker = self::$checker === null;
         $checker = self::$checker;

@@ -115,7 +115,7 @@ $suite->test('a scoped guard serialises two processes writing the same logical r
             require ' . var_export(testFindRepoRoot() . '/php/utility/fileutil.php', true) . ';
             require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/state.php', true) . ';
             $dir = new ReflectionProperty("RuTrackerState", "dir");
-            $dir->setAccessible(true);
+            if (PHP_VERSION_ID < 80100) $dir->setAccessible(true);
             $dir->setValue(null, ' . var_export($tmp, true) . ');
             $lock = RuTrackerState::acquireScopedLock("forum-map", "HASH");
             file_put_contents(' . var_export($tmp . '/second-entered', true) . ', "1");
@@ -213,7 +213,7 @@ $suite->test('update() really excludes a concurrent writer: two processes never 
         require ' . var_export(testFindRepoRoot() . '/php/utility/fileutil.php', true) . ';
         require ' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/state.php', true) . ';
         $dir = new ReflectionProperty("RuTrackerState", "dir");
-        $dir->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) $dir->setAccessible(true);
         $dir->setValue(null, ' . var_export($tmp, true) . ');
         $barrier = ' . var_export($tmp . '/go', true) . ';
         $deadline = microtime(true) + 10;

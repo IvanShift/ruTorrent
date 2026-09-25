@@ -9048,7 +9048,7 @@ PHP
 require $argv[1];
 $test = new RetrackersUpdateTest();
 $snapshotMethod = new ReflectionMethod('RetrackersUpdateTest', 'task4Snapshot');
-$snapshotMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $snapshotMethod->setAccessible(true);
 $snapshot = $snapshotMethod->invoke($test, '0');
 for ($index = 0; $index < 1024; $index++) {
 	$snapshot['generic_map'][] = array(
@@ -9057,7 +9057,7 @@ for ($index = 0; $index < 1024; $index++) {
 	);
 }
 $fixtureMethod = new ReflectionMethod('RetrackersUpdateTest', 'task5ObligationFixture');
-$fixtureMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $fixtureMethod->setAccessible(true);
 $beforePeak = memory_get_peak_usage(true);
 $fixture = $fixtureMethod->invoke($test, $snapshot, null, 16 * 1024 * 1024);
 $failure = is_array($fixture) && array_key_exists('failure', $fixture) ?
@@ -9065,7 +9065,7 @@ $failure = is_array($fixture) && array_key_exists('failure', $fixture) ?
 $built = is_array($fixture) &&
 	$fixture['obligation'] instanceof RetrackersPostEraseObligation;
 $closeMethod = new ReflectionMethod('RetrackersUpdateTest', 'closeTask5Fixture');
-$closeMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $closeMethod->setAccessible(true);
 $closeMethod->invoke($test, $fixture);
 echo implode('|', array(
 	ini_get('memory_limit'),
@@ -9098,11 +9098,11 @@ PHP;
 require $argv[1];
 $test = new RetrackersUpdateTest();
 $snapshotMethod = new ReflectionMethod('RetrackersUpdateTest', 'task4Snapshot');
-$snapshotMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $snapshotMethod->setAccessible(true);
 $snapshot = $snapshotMethod->invoke($test, '0');
 $snapshot['scalar']['custom1'] = str_repeat('\\', (int)$argv[2]);
 $fixtureMethod = new ReflectionMethod('RetrackersUpdateTest', 'task5ObligationFixture');
-$fixtureMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $fixtureMethod->setAccessible(true);
 $fixture = $fixtureMethod->invoke($test, $snapshot, null, 16 * 1024 * 1024);
 $built = is_array($fixture) &&
 	$fixture['obligation'] instanceof RetrackersPostEraseObligation;
@@ -9132,7 +9132,7 @@ $result = array(
 );
 echo json_encode($result);
 $closeMethod = new ReflectionMethod('RetrackersUpdateTest', 'closeTask5Fixture');
-$closeMethod->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $closeMethod->setAccessible(true);
 $closeMethod->invoke($test, $fixture);
 $test->tearDownClass();
 PHP;
@@ -11370,8 +11370,8 @@ PHP;
 	{
 		// Everything declared after the 165 were frozen, whatever added it -- the
 		// name says Task5 but the list already carries the review-era cases too.
-		// What the guard protects is the 165 and their fingerprint below; a new
-		// case belongs here so that it cannot be mistaken for one of them.
+		// Keep the frozen methods explicit so a new or missing one is named by
+		// the failure instead of hidden behind a fingerprint.
 		$added = array(
 			'testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre',
 			'testReviewPostEventRuntimeTrackersRemainAuthoritative',
@@ -11434,6 +11434,173 @@ PHP;
 			'testTheTeardownDeadlineIsNotNarrowedToAnInt',
 			'testDelayedReceiptsArePolledAtTheDeclaredInterval',
 		);
+		$expectedPreTask = array(
+			'testAllThreeInsertVariantsShareTheMarkerAndAckHead',
+			'testAnAwkwardScriptOrPhpPathCannotChangeTheLaunchArgvShape',
+			'testBencodeScannerAcceptsExactDepthAndComplexityThenRejectsNext',
+			'testBencodeScannerAcceptsUnsortedSourceAndRetainsOffsetDescriptors',
+			'testBencodeScannerRejectsMalformedTrailingNoncanonicalAndDuplicateKeys',
+			'testBencodeScannerRequiresOneRawInfoValueWithTheExpectedSha1',
+			'testBoundedReaderAcceptsEmptyCapMinusOneAndExactCapButRejectsCapPlusOne',
+			'testBoundedReaderOpensOnePlainRegularTargetAndAcceptsItsSymlink',
+			'testBoundedReaderRejectsFalseEmptyAndPositiveShortNonEofReads',
+			'testBoundedReaderRejectsOpenWrapperStatAndNonRegularModesBeforeRead',
+			'testCandidateAppenderBoundsRawAndGeneratedSlicesAndRejectsCrossing',
+			'testCandidateBuilderAcceptsExactCapAndRejectsRawSpanPlusNarrowCapPlusOne',
+			'testCandidateLengthUsesStableSubtractBeforeAddAtExactCap',
+			'testCandidateRewriteChangesOnlyTrackersAndPreservesRawProtectedSpans',
+			'testCanonicalHistoricalSafetyAndDeferActionsShareTheFrozenGrammar',
+			'testCapturedCoherentLedgerReadsBindListsMapsAndOwnKeyOrder',
+			'testCapturedDirectIntegerTagsAndFaultsRemainRequestSpecific',
+			'testCapturedDirectStringResponsesSelectTheirMeasuredSerializerFamily',
+			'testCapturedDownloadRowsEnforceExactWidthAndUppercaseIdentities',
+			'testCapturedFamilyOneMalformedStructLedgerValueStaysMalformed',
+			'testCapturedFamilyOneNestedEventStructRemainsRejected',
+			'testCapturedFamilyOneStructLedgerValueIsReceiptCorruption',
+			'testCapturedGenericMapsDecodeEntitiesOnceAndPreserveEmptyAndLfStrings',
+			'testCapturedMemberFaultDoesNotHideTheAdjacentLaterSuccess',
+			'testCapturedMetainfoBytesCannotBeReinterpretedAsAFilesystemPath',
+			'testCapturedTrackerRowsRequireStringThenFourExplicitI8Cells',
+			'testCliValidationAcceptsOnlyAnAuthenticatedDenseHandoff',
+			'testCliValidationRejectsNonStringsAndTrailingNewlines',
+			'testCommandModelRejectsAnAcquiredBodyMissingItsOwnerWrite',
+			'testCursorCountersAcceptExactValueAndMemberMaximaThenRejectNext',
+			'testDecodedTextAcceptsExactMaxAndRejectsMaxPlusOne',
+			'testDeferredReplayClearsBeforeScanAndLaunchesTheExactFreshLocalId',
+			'testDeferredReplayClearsDqBeforeDirectScanAndPreservesUnknownOrStaleDi',
+			'testDeferredReplayDeletesOnlyAKnownStaleDiAndUnknownScanPreservesIt',
+			'testDeferredReplayLateDqAbaMakesFinalReleaseANoOp',
+			'testDirectAdapterExposesOnlyTheClosedHistoricalRequestBinding',
+			'testDirectAdapterNeverRetriesNullMalformedFaultOrDelayedRawReplies',
+			'testDirectAdapterUsesOneNineArgumentRawCallAcrossOptionalLimits',
+			'testDirectHistoricalClassifierEnforcesExpectedActionByteBoundary',
+			'testDoneAcquireCommandModelReadsBackExactSoleSafetyOwner',
+			'testDoneAcquireRejectsCooperativeValueAndProfileDriftWithoutWrites',
+			'testDonePendingCancellationAndWorkerAdoptionRaceShareOneCasBoundary',
+			'testExistingLedgerPrivacyProbeBindsItsMeasuredSerializerFamily',
+			'testFinalCandidateRescanRejectsInfoTrackerAndProtectedSpanMutations',
+			'testFirstLedgerInsertionBindsItsMeasuredSerializerFamily',
+			'testFrozenLegacyV1BodiesRemainLiteralV2RejectionEvidence',
+			'testHistoricalAuthorityRejectsInvalidCallerInputBeforeAnyRpc',
+			'testHistoricalB5BuilderIsByteIdenticalToTheFrozenRequest',
+			'testHistoricalClassifierMapsEightObservationsToExactlySixPhases',
+			'testHistoricalClassifierRejectsProfileClaimEpochAndOwnerInvalidStates',
+			'testHistoricalClassifierValidatesRecoveryBeforeLedgerAndRequiresPvOutsideBootstrap',
+			'testHistoricalEmptyDigestVectorsAreHardCodedIndependentKnownAnswers',
+			'testHistoricalNaturalB5MemberFaultsRejectTheWholeMeasuredSample',
+			'testHistoricalProfileClaimApplicationBoundaryIsExactAndGeneric',
+			'testHistoricalRecoveryDecisionProjectionAcceptsExactMaxUnderBoundedMemory',
+			'testHistoricalRecoveryRowsRetainOnePackedBoundedBuffer',
+			'testHistoricalRefusalPrecedenceKeepsBusyBehindTrustDriftAndSemantics',
+			'testHistoricalSyntheticLedgerCapturesProjectTypedStreamsButRemainNonProduction',
+			'testHistoricalTypedFailureSeparatesLedgerFaultsFromMalformedRaw',
+			'testImportOnlyDeclaresTheCliBoundaryWithoutRuntimeDependencies',
+			'testInvalidCliArgvExitsBeforeLoadingOrWritingRuntimeDependencies',
+			'testLifecycleAcceptedResponseLossIsOneShotAndKeepsOwnerSticky',
+			'testLifecycleBootstrapAcquireIsOneAtomicTypedCallbackWithTaFirst',
+			'testLifecycleCallbackFaultIsOneRawNineArgumentRequest',
+			'testLifecycleContainmentSetsMaBeforeEveryOverwriteAndKeepsLiveReceipts',
+			'testLifecycleCurrentAcquireKeepsAnUnchangedPreparedClaimSatisfiable',
+			'testLifecycleCurrentAcquireRotatesSampledEpochAndOnlyChangedClaim',
+			'testLifecycleDirectMutationClassifiesATopLevelFault',
+			'testLifecycleDoneAcquireRequiresOwnSoleFunctionalProfile',
+			'testLifecycleDoneCancellationLinearizesPendingVersusAdoptedWorker',
+			'testLifecycleDoneDoesNotBlindlyDeleteAPendingWorkerLease',
+			'testLifecycleDoneKeepsTheSafetyOwnerStickyWhenALedgerReadIsUnknown',
+			'testLifecycleFinalizationDeletesHooksDirectlyAndTaLast',
+			'testLifecycleInitDoesNotActivateFunctionalHooksAfterUnknownDeferredRead',
+			'testLifecycleInitNeverDeletesAnUnresolvedDeferredInsert',
+			'testLifecycleLateDqBlocksReleaseAndAdapterHasNoGenericMutationSurface',
+			'testLifecycleMulticallRejectsACompletedBatchContainingOneFaultSlot',
+			'testLifecycleRejectsSerializerFamilyDriftBeforeAnyMutation',
+			'testLifecycleUsesTheAcceptedHistoricalFamilyBeforeItsFirstMutation',
+			'testMetainfoAuthorityReturnsNoChangeWithoutAllocatingACandidate',
+			'testMetainfoAuthorityUsesOneCapturedBytesTorrentAfterHashGateAndNeverRereadsPath',
+			'testOpaqueDepthAcceptsExactMaxAndRejectsMaxPlusOne',
+			'testPendingCancellationKeepsEveryUnexpectedScalarSticky',
+			'testProjectedOutputAcceptsExactMaxAndRejectsMaxPlusOne',
+			'testPublicHistoricalClassifierRechecksCountsAndStringActionDigest',
+			'testReadyOnlyReceiptsBlockInitDoneAndContainmentRelease',
+			'testRecoveryRowCardinalityAcceptsExactMaxAndRejectsMaxPlusOne',
+			'testRecoveryRows4ProjectsTheFrozenMarkerAckDecisionTableCompactly',
+			'testRecoveryRows4RejectsTruncatedExtraDuplicateAndUnorderedPackedRecords',
+			'testRecoverySchedulerCommandsComeFromTheActiveVersionMap',
+			'testRecoverySchedulerResolverRejectsUnexpectedRuntimeMappings',
+			'testRequestSpecificPlansRejectDirectAndMemberShapeSwaps',
+			'testRestrictedCodecRejectsNamedRawXmlAndSchemaMutations',
+			'testRetainedNamesAcceptExactMaxAndRejectMaxPlusOne',
+			'testSourceAdapterExposesOnlyThreeClosedReadsThroughTheRawBoundary',
+			'testSourceMissingTargetHasADedicatedTerminalClassification',
+			'testSourceScalarBatchUsesTheCapturedTwentyThreeMemberWireContract',
+			'testSourceScalarTopLevelFaultRemainsAnRpcFault',
+			'testSourceSelectionAndInitialOwnershipLifecycleGuardsAreFailClosed',
+			'testSourceSnapshotRetriesOnlyCompleteRoundsWithoutMixingSamples',
+			'testStableHistoricalBindingReadsExactlyTwiceAndExposesOnlySampleTwoDecision',
+			'testStableHistoricalBindingSuppressesConsumerOnFailuresAndRetainedFieldDrift',
+			'testStableSourceSnapshotBracketsCanonicalMapAndTrackerPairs',
+			'testTask3CapabilitiesRemainReadableThroughCandidateAndRollbackFences',
+			'testTask3DaemonPreflightCollapsesEveryUntrustedOutcomeBeforeArm',
+			'testTask3DaemonPreflightSendsExactlyTwoNoShellNonceHashProbes',
+			'testTask3FailuresStayRpcFreeAndCreateNoCandidateArtifacts',
+			'testTask3ImmutableStageCreatesDistinctUnlinkedCapabilitiesWithBoundedShortWrites',
+			'testTask3ImmutableStagePreservesADirectoryWhoseIdentityDrifts',
+			'testTask3ImmutableStageRejectsFalseZeroOvercountAndFlushFailures',
+			'testTask3ImmutableStageRejectsFileIdentityModeOwnerAndLinkDrift',
+			'testTask3ImmutableStageRequiresOneExactProcfdIdentityPerHandle',
+			'testTask3LoadRpcReplyCannotCloseAHandleBeforeTheObservedFence',
+			'testTask3RecoveryPreflightFailureOccursBeforeEraseArmOrOldMutation',
+			'testTask3SourceKeepsOneOpenPreflightAndBoundedRawSpanAllocation',
+			'testTask4AtomicCommitBuilderFreezesEveryOuterAndInnerCasDimension',
+			'testTask4BoundedCommitBuilderOwnsExactEscapedWireAndCap',
+			'testTask4CommitCapRefusesBeforeArmOrCommitTransport',
+			'testTask4CommitDispatchUsesOneShotArmAndOneConditionalCommand',
+			'testTask4CommitSkippedUsesTypedReleaseAndCleanupWithoutSplitWrites',
+			'testTask4CommitUncertaintyNeverEntersReleaseOrCleanup',
+			'testTask4DuplicateEnabledTrackerUrlIsRejected',
+			'testTask4FiveBuilderFailuresAbortThenReleaseThenCleanup',
+			'testTask4FreshObservationIsFullStableAndReadOnly',
+			'testTask4MaximumTrackerDryRefusalIsFastAtLiteral128M',
+			'testTask4NoChangeSucceedsOnlyAfterReleasedAndCleanHandoff',
+			'testTask4OnlyExactUnsupportedFenceMayDisposeBeforeArm',
+			'testTask4OriginalHandoffDisposalDecisionIsBoundedAndOneShot',
+			'testTask4OuterAndInnerCasFreezeAllMutableGenerationDimensions',
+			'testTask4OversizedCommitDryPassIsBoundedAt128MWithoutMaterialisation',
+			'testTask4PendingCleanupDirectHelperStopsBeforeAnyRetry',
+			'testTask4Real1024PairRunClosesCapabilitiesBeforeSafeCleanup',
+			'testTask4ReleaseAndCleanupCallbacksAreExactOrderedSingleCommands',
+			'testTask4ReleaseReconciliationIsOneShotAcrossNineOutcomes',
+			'testTask4ResponseLostReconciliationNeverMutatesOrRedispatches',
+			'testTask4RunCannotReachEraseBeforeTask5DurableFenceExists',
+			'testTask4RunDisposesEveryReachablePreFenceFailure',
+			'testTask4RunRecordsOnlyClosedProducerFailureVocabulary',
+			'testTask4RunReportsUnconfirmedCleanupInsteadOfHandledBuilderFailure',
+			'testTask4SortedTrackerIndexesPreserveRepeatedTupleWire',
+			'testTask4TerminalCleanupFencesWaAndBoundsSuffixRetry',
+			'testTask4TerminalCleanupUnavailableAfterSuffixIsUnconfirmedAndStops',
+			'testTask4TypedReleaseAndCleanupAdaptersEachSendOneStringScalar',
+			'testTask4UnexpectedReleaseScalarAlsoObservesExactlyOnceWithoutReplay',
+			'testTask4WorkerReadsAuthoritativeDaemonContentCap',
+			'testTask5InitAndDoneWiringUsesImportOnlyAndAvoidsLegacyHooks',
+			'testTask5LifecycleCoordinatorBootstrapInstallFlow',
+			'testTask5LifecycleCoordinatorDoneTeardownFlow',
+			'testTask5LifecycleCoordinatorDoneWithActiveWorkersTimesOut',
+			'testTask5LifecycleCoordinatorInitMultiProfileContainment',
+			'testTask6CommitOldGenerationOuterCasMismatchReleasesHandoffAndSkipsCommit',
+			'testTask6CommitOldGenerationSuccessQuiescesAndErasesWithEdExReceipts',
+			'testTask6RecoveryCoordinatorDeclaredAndAdoptsWorker',
+			'testTask6WorkerAdoptionThreeWayLogic',
+			'testTask7CandidateLoadAndConfirmationWithTerminalCleanup',
+			'testTask7CandidatePartialFailureTriggersCleanupAndRollback',
+			'testTheFunctionalInsertActionComposesTheFrozenOrdinaryGrammar',
+			'testTheFunctionalInsertActionNeverStopsClosesOrErasesADownload',
+			'testTheFunctionalInsertActionOrdersItsReceiptsAroundTheLaunch',
+			'testTorrentProjectionMapsDecodeFailureAndRejectsNonStringTrackerShapes',
+			'testTorrentProjectionNormalizesSparseLegacyTrackerMutations',
+			'testTorrentProjectionRejectsAnEmptyDeletionPatternDeterministically',
+			'testTorrentProjectionStopsAfterFirstMatchingDeletionPattern',
+			'testValidCliLoadsRuntimeDependenciesBeforeTheFirstRpc',
+			'testWorkerTransactionCollisionReadNeverTreatsUnknownAsEmpty',
+		);
 		$runtime = array();
 		$reflection = new ReflectionClass('RetrackersUpdateTest');
 		foreach ($reflection->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
@@ -11442,12 +11609,17 @@ PHP;
 				$runtime[] = $method->getName();
 			}
 		}
-		$preTask = array_values(array_diff($runtime, $added));
-		sort($preTask, SORT_STRING);
-		$fingerprint = hash('sha256', implode("\n", $preTask) . "\n");
-		$this->assertTrue(count($runtime) === 225 && count(array_unique($runtime)) === 225 &&
-			count($preTask) === 165 &&
-			$fingerprint === 'c98eea96cfddf100e2dc2ee726750efe678100db6d02e70f8d44334b83052278',
-			'the one-pass generated runner retains every frozen pre-task public method exactly once');
+		$expected = array_merge($expectedPreTask, $added);
+		$unexpected = array_values(array_diff($runtime, $expected));
+		$missing = array_values(array_diff($expected, $runtime));
+		$duplicateExpected = array_values(array_diff_assoc($expected, array_unique($expected)));
+		$duplicateRuntime = array_values(array_diff_assoc($runtime, array_unique($runtime)));
+		$matches = !$unexpected && !$missing && !$duplicateExpected && !$duplicateRuntime;
+		$detail = $matches ? '' : '; unexpected: ' . implode(', ', $unexpected) .
+			'; missing: ' . implode(', ', $missing) .
+			'; duplicate expected: ' . implode(', ', $duplicateExpected) .
+			'; duplicate runtime: ' . implode(', ', $duplicateRuntime);
+		$this->assertTrue($matches,
+			'the one-pass generated runner retains every frozen pre-task public method exactly once' . $detail);
 	}
 }

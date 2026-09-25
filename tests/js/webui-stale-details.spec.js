@@ -207,3 +207,63 @@ describe("webui stale details", () => {
     expect(table.clearRows).not.toHaveBeenCalled();
   });
 });
+
+
+describe("webui list request errors", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    loadWebUI();
+    window.iv = Number;
+    Object.assign(theWebUI, {
+      systemInfo: { rTorrent: { started: true } },
+      settings: { "webui.retry_on_error": 4 },
+      timer: { start: jest.fn() },
+      requestWithTimeout: jest.fn(),
+      error: jest.fn(),
+      setInterval: jest.fn(),
+    });
+  });
+
+  it.each([
+    ["list=1", "403 [error,list]", "Forbidden"],
+    ["checktorrent&hash=" + h("A") + "&list=1", "503 [error,checktorrent]", "Service unavailable"],
+  ])("keeps daemon state after HTTP refusal from %s", (query, status, body) => {
+    theWebUI.getTorrents(query);
+
+    const [url, , , onError] = theWebUI.requestWithTimeout.mock.calls[0];
+    expect(url).toBe("?" + (query === "list=1" ? query : "action=" + query) + "&getmsg=1");
+    onError(status, body);
+
+    expect(theWebUI.systemInfo.rTorrent.started).toBe(true);
+    expect(theWebUI.error).toHaveBeenCalledWith(status, body);
+    expect(theWebUI.setInterval).toHaveBeenCalledWith(4000);
+  });
+
+  it.each(["", {}, { torrents: null }])(
+    "reports a successful list response without a torrent map and retries",
+    (response) => {
+      theWebUI.systemInfo.rTorrent.started = false;
+      const originalTorrents = { [h("A")]: { name: "existing" } };
+      theWebUI.torrents = originalTorrents;
+      const table = { setLazy: jest.fn() };
+      theWebUI.getTable = jest.fn(() => table);
+      theWebUI.categoryList = { statistic: { empty: jest.fn(() => ({})) } };
+      theWebUI.taskAddTorrents = { reset: jest.fn(() => ({ map: jest.fn() })) };
+      window.noty = jest.fn();
+
+      theWebUI.getTorrents("list=1");
+      const [callback, scope] = theWebUI.requestWithTimeout.mock.calls[0][1];
+      expect(() => callback.call(scope, response)).not.toThrow();
+
+      expect(theWebUI.error).toHaveBeenCalledWith(
+        "Invalid torrent list response", "Missing torrents"
+      );
+      expect(theWebUI.setInterval).toHaveBeenCalledWith(4000);
+      expect(theWebUI.systemInfo.rTorrent.started).toBe(false);
+      expect(theWebUI.torrents).toBe(originalTorrents);
+      expect(theWebUI.getTable).not.toHaveBeenCalled();
+      expect(table.setLazy).not.toHaveBeenCalled();
+      expect(window.noty).not.toHaveBeenCalled();
+    }
+  );
+});

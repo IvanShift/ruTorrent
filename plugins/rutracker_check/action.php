@@ -6,13 +6,11 @@ require_once( dirname(__FILE__)."/launcher.php" );
 /**
  * Answer the manual check request and stop.
  *
- * Every handled outcome keeps a 2xx status. The browser reaches this endpoint
- * through theWebUI.getTorrents(), whose shared error callback sets
- * systemInfo.rTorrent.started = false, so answering a refused batch with a
- * failure status reports the daemon as unreachable over a request the daemon
- * never saw -- and skips the plugin's own response handler, which is the only
- * thing that can tell the user what actually happened. The outcome therefore
- * travels in the body, and init.js reads it.
+ * Every handled outcome keeps a 2xx status so the plugin's response handler
+ * can report the accepted or rejected batch before the core follows up with
+ * the torrent list. A failure status bypasses that handler and only reaches
+ * the generic HTTP error callback. The outcome travels in the body, which
+ * init.js reads.
  */
 function ruTrackerManualAnswer( $status, $accepted )
 {

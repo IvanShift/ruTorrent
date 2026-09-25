@@ -10,8 +10,9 @@ $ignoreLabels 	= ['tv-sonarr', 'radarr'];	// list of labels to ignore
 // there. The default applies only when nothing else has set the variable.
 $rutrackerCheckDebug ??= false;	// opt in to diagnostics in ruTorrent's shared application log
 
-// Out-of-range values are clamped where they are read rather than trusted:
-// a fuse share written as 20 instead of 0.2 would make the fuse inert, and
+// The fuse share is a fraction, not a percentage. A value above 1 uses the
+// default 0.2 and writes one operator-visible log line per process; a negative
+// value clamps to 0. Other numeric bounds are clamped where they are read:
 // a delete-cycle count of 0 would settle a deletion on its first sighting.
 $rutrackerFuseShare	??= 0.2;	// 0.0-1.0: candidate SHARE (a fraction, not a percent) per announce host that trips the fuse
 $rutrackerFuseFloor	??= 3;	// >= 1: minimum absolute candidates before the fuse may trip
