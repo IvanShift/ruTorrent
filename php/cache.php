@@ -28,6 +28,114 @@ class rCache
 	{
 		return(get_class($rss).':'.$rss->hash);
 	}
+	// A key names one file inside the cache directory: the shipped ones are a
+	// '<name>.dat', an md5 or a short fixed word. It is concatenated into a
+	// path, and it is not always internal -- plugins/rss/action.php takes one
+	// from a request parameter -- so a key holding a separator would choose
+	// which file is read and unserialized, or which file a store replaces.
+	protected static function isValidKey( $key )
+	{
+		return(is_string($key) && (strlen($key)>0) &&
+			(strpbrk($key,"/\\\0")===false) &&
+			($key!=='.') && ($key!=='..'));
+	}
+	// unserialize() constructs whatever class the stored bytes name, and runs
+	// that class's magic methods while doing it. So the classes a cache file
+	// may name are the ones the caller stores: its own, plus any it declares
+	// through a static cacheClasses(). A file naming another class is not
+	// loaded at all -- see holdsRefusedClass() -- rather than half loaded.
+	protected static function allowedClasses( $target )
+	{
+		if(!is_object($target))
+			return(false);
+		$class = get_class($target);
+		$allowed = array($class);
+		if(is_callable(array($class,'cacheClasses')))
+			$allowed = array_merge($allowed,call_user_func(array($class,'cacheClasses')));
+		return($allowed);
+	}
+	// An allowed nested class is not an allowed root. Check the serialized
+	// header before unserialize(), so a wrong root cannot run __wakeup() on
+	// the way to being refused. Shipped cache roots serialize as O: or a:.
+	protected static function hasExpectedRoot( $bytes, $target )
+	{
+		if(is_array($target))
+			return(strncmp($bytes,'a:',2)===0);
+		if(!is_object($target))
+			return(false);
+		$class = get_class($target);
+		$prefix = 'O:'.strlen($class).':"'.$class.'":';
+		return(strncmp($bytes,$prefix,strlen($prefix))===0);
+	}
+	// What the walk below may spend. Its shape is chosen by whoever wrote the
+	// cache file, so it cannot be allowed to cost whatever that shape asks
+	// for. An object met twice is recognised and not walked again, but an
+	// array is a value and has no identity to recognise: an array containing
+	// itself -- fifteen bytes of "a:1:{i:0;R:1;}" -- is walked until the
+	// process dies, and a file may also nest deeper than the stack goes or
+	// hold one sub-value at so many places through R: back-references that a
+	// few hundred bytes describe more nodes than can ever be visited.
+	//
+	// So the walk is allowed one node per byte of the file the value came
+	// from, and never fewer than WALK_MIN_NODES. A file pays its own length
+	// for what it asks to have walked: the shortest a node can be written is
+	// two bytes, so no honest file ever reaches its own allowance, while a
+	// file that names one sub-value at a million places buys only the nodes
+	// its R: back-references are written in. What a walk costs is therefore
+	// bounded by what the file costs to read, rather than by the graph the
+	// file describes.
+	//
+	// A file that exceeds either budget is refused, which is the same answer
+	// as a refused class: a miss. Note that a miss is not always rebuilt --
+	// rCookies::load() and rRetrackers::load() return their defaults and
+	// leave the file alone -- so a refused file stays on disk and is walked
+	// again on the next read. That is what keeps the allowance small.
+	const WALK_MAX_DEPTH = 64;
+	const WALK_MIN_NODES = 100000;
+
+	// Whether unserialize() met a class it was not allowed to construct, at
+	// any depth. Such a class comes back as __PHP_Incomplete_Class, which
+	// would fail later and further away if it were handed to the caller.
+	// True as well when the value costs more than the budgets above, because
+	// what could not be walked has not been shown to be free of one. $bytes
+	// is the length of the file the value was unserialized from, and $reason
+	// comes back saying which of the three refused it.
+	protected static function holdsRefusedClass( $value, $bytes = 0, &$reason = null )
+	{
+		$budget = max(self::WALK_MIN_NODES,$bytes);
+		$reason = null;
+		return(self::walkForRefusedClass($value,new SplObjectStorage(),0,$budget,$reason));
+	}
+	private static function walkForRefusedClass( $value, $seen, $depth, &$budget, &$reason )
+	{
+		if(--$budget < 0)
+		{
+			$reason = 'describes more than a cache file of its size may describe';
+			return(true);
+		}
+		if($depth > self::WALK_MAX_DEPTH)
+		{
+			$reason = 'nests deeper than a cache file may nest';
+			return(true);
+		}
+		if(is_object($value))
+		{
+			if($value instanceof __PHP_Incomplete_Class)
+			{
+				$reason = 'names a class it may not hold';
+				return(true);
+			}
+			if($seen->offsetExists($value))
+				return(false);
+			$seen->offsetSet($value);
+			$value = (array)$value;
+		}
+		if(is_array($value))
+			foreach($value as $item)
+				if(self::walkForRefusedClass($item,$seen,$depth+1,$budget,$reason))
+					return(true);
+		return(false);
+	}
 	// A cache file's identity, used to tell whether it is still the one this
 	// process loaded. filemtime resolves only to the second, so two writes
 	// inside one second look identical -- and that is the common case here:
@@ -55,6 +163,8 @@ class rCache
 	{
 		global $profileMask;
 		$name = $this->getName($rss);
+		if(is_null($name))
+			return(false);
 		$lockName = $name.'.lock';
 		// One writer per cache key. The changed-since-load check, the merge
 		// and the publishing rename must form a single critical section: two
@@ -121,6 +231,8 @@ class rCache
 	public function get( &$rss )
 	{
 		$fname = $this->getName($rss);
+		if(is_null($fname))
+			return(false);
 		// Stamp before reading. If a concurrent rename lands between the stat
 		// and the read, this process holds new content under an old stamp and
 		// its set() merely performs one redundant merge. Stamping after the
@@ -130,13 +242,29 @@ class rCache
 		$ret = @file_get_contents($fname);
 		if($ret!==false)
 		{
-			// Corrupt or legacy cache files can emit warnings; always restore the
-			// caller's handler, even when the payload throws out of __wakeup().
-			set_error_handler(function () { return true; });
+			if(!self::hasExpectedRoot($ret,$rss))
+			{
+				FileUtil::toLog('rCache: '.basename($fname).' names a different root value; not loaded.');
+				return(false);
+			}
+			// Hide parser diagnostics without swallowing warnings raised by a
+			// permitted class's __wakeup(), and restore the caller's handler on throw.
+			$previousHandler = null;
+			$previousHandler = set_error_handler(function ($severity, $message, $file, $line) use (&$previousHandler) {
+				if($file===__FILE__ && strpos($message, 'unserialize():')===0)
+					return(true);
+				return(is_callable($previousHandler)
+					? call_user_func($previousHandler, $severity, $message, $file, $line) : false);
+			});
 			try {
-				$tmp = unserialize($ret);
+				$tmp = @unserialize($ret,array('allowed_classes'=>self::allowedClasses($rss)));
 			} finally {
 				restore_error_handler();
+			}
+			if(self::holdsRefusedClass($tmp,strlen($ret),$reason))
+			{
+				FileUtil::toLog('rCache: '.basename($fname).' '.$reason.'; not loaded.');
+				return(false);
 			}
 			if(is_array($tmp))
 			{
@@ -165,6 +293,8 @@ class rCache
 	{
 		global $profileMask;
 		$name = $this->getName($rss);
+		if(is_null($name))
+			return(false);
 		$lockName = $name.'.lock';
 		// Delete cache data and its sidecar lock while holding the same key lock used by writers.
 		$lock = fopen( $lockName, "c" );
@@ -183,14 +313,22 @@ class rCache
 		}
 		return(@unlink($name));
 	}
+	// Null when the key names anything other than a file in this directory.
+	// Every caller treats that as a miss rather than reaching for the path.
 	protected function getName($rss)
 	{
-	        return($this->dir."/".(is_object($rss) ? $rss->hash : $rss['__hash__']));
+		$key = is_object($rss) ? $rss->hash : (isset($rss['__hash__']) ? $rss['__hash__'] : null);
+		if(!self::isValidKey($key))
+			return(null);
+		return($this->dir."/".$key);
 	}
 	public function getModified( $obj = null )
 	{
-		return(@filemtime( is_null($obj) ? $this->dir :
-			(is_object($obj) ? $this->getName($obj) : $this->dir."/".$obj) ));
+		if(is_null($obj))
+			return(@filemtime($this->dir));
+		$name = is_object($obj) ? $this->getName($obj) :
+			(self::isValidKey($obj) ? $this->dir."/".$obj : null);
+		return(is_null($name) ? false : @filemtime($name));
 
 	}
 }

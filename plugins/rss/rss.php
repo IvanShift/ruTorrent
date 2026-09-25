@@ -35,6 +35,13 @@ class rRSS
 	public $lastTorrentError = '';
 	private $fetchURL = 'rssFetchURL';
 
+	// A restored feed must use the shipped fetcher; a cache file cannot
+	// choose the function that receives its URL and cookies.
+	public function __wakeup()
+	{
+		$this->fetchURL = 'rssFetchURL';
+	}
+
 	public function __construct( $url = null, $fetchURL = 'rssFetchURL' )
 	{
 		$this->fetchURL = $fetchURL;
@@ -586,6 +593,11 @@ class rRSSFilterList
 	public $modified = false;
         public $lst = array();
 
+	static public function cacheClasses()
+	{
+		return(array('rRSSFilter'));
+	}
+
 	public function add( $filter )
 	{
 		$this->lst[] = $filter;
@@ -646,6 +658,11 @@ class rRSSGroupList
 	public $hash = "groups";
 	public $modified = false;
         public $lst = array();
+
+	static public function cacheClasses()
+	{
+		return(array('rRSSGroup'));
+	}
 
 	public function add( $grp )
 	{

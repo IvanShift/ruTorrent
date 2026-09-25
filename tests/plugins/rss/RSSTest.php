@@ -61,6 +61,19 @@ final class RSSTest extends TestCase
 		$this->assertTrue($feed->fetch(new rRSSHistory()), 'second request accepts 304');
 	}
 
+	public function testRestoredFeedResetsItsSerializedFetcher(): void
+	{
+		$stored = new rRSS(null, 'passthru');
+		$property = new ReflectionProperty(rRSS::class, 'fetchURL');
+		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		$this->assertEquals('passthru', $property->getValue($stored),
+			'the constructor still accepts the caller-provided fetcher');
+
+		$loaded = unserialize(serialize($stored));
+		$this->assertEquals('rssFetchURL', $property->getValue($loaded),
+			'a cache file cannot choose the function that receives feed URLs and cookies');
+	}
+
 	public function testCookieSuffixUsesSharedParserForValuesContainingEquals(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed:COOKIE:token=abc=def;broken;sid=2');

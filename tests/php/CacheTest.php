@@ -26,6 +26,61 @@ class CacheThrowingPayload
 	}
 }
 
+// A harmless stand-in for an arbitrary class named by a cache file.
+class CacheUnexpectedPayload
+{
+    public $hash = 'unexpected-cache-test.dat';
+    public static $wakeups = 0;
+
+    public function __wakeup()
+    {
+        self::$wakeups++;
+    }
+}
+
+class CacheAllowedItem
+{
+    public $hash = 'allowed-list-cache-test.dat';
+    public $name = 'nested';
+    public static $wakeups = 0;
+
+    public function __wakeup()
+    {
+        self::$wakeups++;
+    }
+}
+
+class CacheAllowedList
+{
+    public $hash = 'allowed-list-cache-test.dat';
+    public $items = array();
+
+    public static function cacheClasses()
+    {
+        return array('CacheAllowedItem');
+    }
+}
+
+class CacheWarningPayload
+{
+    public $hash = 'warning-cache-test.dat';
+
+    public function __wakeup()
+    {
+        trigger_error('cache-wakeup-warning', E_USER_WARNING);
+    }
+}
+
+class CacheNestedWarningPayload
+{
+    public $hash = 'nested-warning-cache-test.dat';
+
+    public function __wakeup()
+    {
+        @unserialize('broken');
+    }
+}
+
 class CacheTest extends TestCase
 {
 	private $profilePath;
@@ -249,6 +304,177 @@ class CacheTest extends TestCase
 		$this->assertEquals(false, file_exists($lockFile), 'Cache remove deletes the lock file');
 	}
 
+	public function testGetDoesNotInstantiateAnUnexpectedCacheClass()
+	{
+		$target = new CacheMergePayload();
+		$target->hash = 'unexpected-root-cache-test.dat';
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $target->hash,
+			serialize(new CacheUnexpectedPayload()));
+		CacheUnexpectedPayload::$wakeups = 0;
+
+		$this->assertEquals(false, (new rCache())->get($target),
+			'a cache file naming another class is a miss');
+		$this->assertTrue($target instanceof CacheMergePayload,
+			'the caller keeps its own object');
+		$this->assertEquals(0, CacheUnexpectedPayload::$wakeups,
+			'the unexpected class never runs __wakeup');
+	}
+
+	public function testGetRefusesAnUndeclaredNestedClassButKeepsDeclaredItems()
+	{
+		$cache = new rCache();
+		$stored = new CacheAllowedList();
+		$stored->items = array(new CacheAllowedItem());
+		$this->assertTrue($cache->set($stored), 'a declared nested item is stored');
+		$loaded = new CacheAllowedList();
+		$this->assertTrue($cache->get($loaded), 'a declared nested item loads');
+		$this->assertTrue($loaded->items[0] instanceof CacheAllowedItem,
+			'the declared item keeps its class');
+
+		$stored->items = array(new CacheUnexpectedPayload());
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $stored->hash, serialize($stored));
+		CacheUnexpectedPayload::$wakeups = 0;
+		$loaded = new CacheAllowedList();
+		$this->assertEquals(false, $cache->get($loaded),
+			'an undeclared nested class makes the entire cache load a miss');
+		$this->assertEquals(0, CacheUnexpectedPayload::$wakeups,
+			'the undeclared nested class never runs __wakeup');
+	}
+
+	public function testAllowedNestedClassCannotReplaceTheRootObject()
+	{
+		$root = new CacheAllowedList();
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $root->hash,
+			serialize(new CacheAllowedItem()));
+		CacheAllowedItem::$wakeups = 0;
+		$this->assertEquals(false, (new rCache())->get($root),
+			'a permitted nested type cannot become the cache root');
+		$this->assertTrue($root instanceof CacheAllowedList,
+			'the caller keeps the expected root type');
+		$this->assertEquals(0, CacheAllowedItem::$wakeups,
+			'a wrong root type is refused before constructing it');
+	}
+
+	public function testArrayCacheRefusesObjectsBeforeTheirWakeup()
+	{
+		$key = 'array-object-cache-test.dat';
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $key,
+			serialize(array('__hash__' => $key, 'item' => new CacheUnexpectedPayload())));
+		CacheUnexpectedPayload::$wakeups = 0;
+		$target = array('__hash__' => $key);
+		$this->assertEquals(false, (new rCache())->get($target),
+			'an array cache containing an object is a miss');
+		$this->assertEquals(0, CacheUnexpectedPayload::$wakeups,
+			'an array cache cannot instantiate an object');
+	}
+
+	public function testCacheKeyCannotReadWriteOrRemoveOutsideItsDirectory()
+	{
+		$outside = dirname(rtrim(FileUtil::getSettingsPath(), '/')) . '/outside-cache-test.dat';
+		$stored = new CacheMergePayload();
+		$stored->rows = array('outside' => 'keep');
+		file_put_contents($outside, serialize($stored));
+		$before = file_get_contents($outside);
+		$target = new CacheMergePayload();
+		$target->hash = '../outside-cache-test.dat';
+		$cache = new rCache();
+
+		$this->assertEquals(false, $cache->get($target), 'a traversing key reads nothing');
+		$this->assertEquals(false, $cache->getModified('../outside-cache-test.dat'),
+			'a traversing key cannot query an outside file timestamp');
+		$target = new CacheMergePayload();
+		$target->hash = '../outside-cache-test.dat';
+		$this->assertEquals(false, $cache->set($target), 'a traversing key writes nothing');
+		$this->assertEquals($before, file_get_contents($outside),
+			'a traversing store cannot replace the outside file');
+		$target = new CacheMergePayload();
+		$target->hash = '../outside-cache-test.dat';
+		$this->assertEquals(false, $cache->remove($target), 'a traversing key removes nothing');
+		$this->assertEquals($before, @file_get_contents($outside),
+			'the outside file survives every cache operation');
+	}
+
+	public function testRecursiveArrayCacheIsARefusedMiss()
+	{
+		$key = 'recursive-array-cache-test.dat';
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, 'a:1:{i:0;R:1;}');
+		$target = array('__hash__' => $key);
+		$this->assertEquals(false, (new rCache())->get($target),
+			'a tiny self-referential array is refused instead of being traversed forever');
+	}
+
+	public function testArrayCacheBeyondTheDepthBudgetIsARefusedMiss()
+	{
+		$key = 'deep-array-cache-test.dat';
+		$value = array('leaf');
+		for ($depth = 0; $depth < 66; $depth++) $value = array($value);
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, serialize($value));
+		$target = array('__hash__' => $key);
+		$this->assertEquals(false, (new rCache())->get($target),
+			'a deeply nested cache file is refused within the walk depth budget');
+	}
+
+	public function testSharedArrayGraphBeyondTheNodeBudgetIsARefusedMiss()
+	{
+		$key = 'shared-array-cache-test.dat';
+		$nodes = array(array('leaf'));
+		for ($level = 1; $level <= 17; $level++) {
+			$nodes[$level] = array(&$nodes[$level - 1], &$nodes[$level - 1]);
+		}
+		$bytes = serialize($nodes[17]);
+		$this->assertTrue(strlen($bytes) < 5000, 'the shared graph fits in a small cache file');
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, $bytes);
+		$target = array('__hash__' => $key);
+		$this->assertEquals(false, (new rCache())->get($target),
+			'a small file describing too many nodes is refused within the node budget');
+	}
+
+	public function testGetPassesWakeupWarningsToTheCallerAndRestoresItsHandler()
+	{
+		$target = new CacheWarningPayload();
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $target->hash, serialize($target));
+		$warnings = array();
+		set_error_handler(function ($errno, $message) use (&$warnings) {
+			$warnings[] = $message;
+			return true;
+		});
+		try {
+			$loaded = new CacheWarningPayload();
+			$ok = (new rCache())->get($loaded);
+			trigger_error('post-cache-warning', E_USER_WARNING);
+		} finally {
+			restore_error_handler();
+		}
+		$this->assertTrue($ok, 'the expected cache class still loads');
+		$this->assertEquals(array('cache-wakeup-warning', 'post-cache-warning'), $warnings,
+			'only parse diagnostics are suppressed; caller warnings are delivered: ' . json_encode($warnings));
+	}
+
+	public function testNestedUnserializeWarningReachesTheCaller()
+	{
+		$target = new CacheNestedWarningPayload();
+		file_put_contents(FileUtil::getSettingsPath() . '/' . $target->hash, serialize($target));
+		$warnings = array();
+		set_error_handler(function ($errno, $message) use (&$warnings) {
+			$warnings[] = $message;
+			return true;
+		});
+		try {
+			$loaded = new CacheNestedWarningPayload();
+			$ok = (new rCache())->get($loaded);
+			trigger_error('post-nested-warning', E_USER_WARNING);
+		} finally {
+			restore_error_handler();
+		}
+		$this->assertTrue($ok, 'the expected class still loads');
+		$this->assertEquals(2, count($warnings),
+			'a nested unserialize diagnostic is visible to the caller, along with later warnings');
+		$this->assertTrue(isset($warnings[0]) && strpos($warnings[0], 'unserialize():') === 0,
+			'the caller sees the nested parser diagnostic');
+		$this->assertEquals('post-nested-warning', end($warnings),
+			'the caller handler remains installed after the cache load');
+	}
+
 	// Fork-only, and the reason php/cache.php wraps unserialize(): a cache
 	// file with a readable payload followed by trailing bytes still loads,
 	// and the parse diagnostic never reaches the caller's error handler.
@@ -270,7 +496,7 @@ class CacheTest extends TestCase
 		$loadedResult = (new rCache())->get($loaded);
 		restore_error_handler();
 
-		$this->assertEquals([], $warnings, 'Corrupt cache tail does not emit PHP warnings');
+		$this->assertEquals([], $warnings, 'Corrupt cache tail does not emit PHP warnings: ' . json_encode($warnings));
 		$this->assertTrue($loadedResult, 'Cache with a readable first payload still loads');
 	}
 

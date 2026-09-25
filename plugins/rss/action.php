@@ -334,7 +334,9 @@ switch($cmd)
 					$lbl = rawurldecode($parts[1]);
 				else
 				if($parts[0]=="rss")
-					$curRSS = $parts[1];
+					// A request may only select an existing feed, not an arbitrary cache key.
+					$curRSS = (isset($parts[1]) && $mngr->rssList->isExist($parts[1]))
+						? $parts[1] : null;
 				else
 				if(($parts[0]=="url") && $curRSS)
 				{
