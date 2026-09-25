@@ -55,4 +55,69 @@ class TestCaseTest extends TestCase
 		}
 		echo "Passed: the runner enables strict diagnostics\n";
 	}
+	public function testStandaloneCaseRunnerCountsAssertionAndSetupFailures(): void
+	{
+		$runner = __DIR__ . '/TestCaseRunner.php';
+		$testCase = var_export(__DIR__ . '/TestCase.php', true);
+		$probes = array(
+			array(
+				'<?php require ' . $testCase . '; class AssertionProbe extends TestCase {'
+				. ' public function testRefusal() { $this->assertTrue(false, "deliberate assertion"); }'
+				. ' public function tearDown() { echo "teardown\n"; } }',
+				array('Test: AssertionProbe', '>>testRefusal>>', 'Failed: deliberate assertion',
+					'<<testRefusal<<', 'teardown'),
+			),
+			array(
+				'<?php require ' . $testCase . '; class SetupProbe extends TestCase {'
+				. ' public function setUp() { throw new RuntimeException("setup refused"); }'
+				. ' public function testNever() { echo "should not run\n"; }'
+				. ' public function tearDown() { echo "teardown\n"; } }',
+				array('Test: SetupProbe', 'setup refused', 'teardown'),
+			),
+		);
+		foreach ($probes as $probe) {
+			$script = tempnam(sys_get_temp_dir(), 'rt-case-runner-');
+			if ($script === false) throw new RuntimeException('Unable to create runner probe');
+			try {
+				file_put_contents($script, $probe[0]);
+				$lines = array();
+				$code = 0;
+				exec(escapeshellarg(PHP_BINARY) . ' -d auto_append_file='
+					. escapeshellarg($runner) . ' ' . escapeshellarg($script) . ' 2>&1',
+					$lines, $code);
+				$output = implode("\n", $lines);
+				$this->assertTrue($code === 1, 'the appended runner refuses a failed class');
+				foreach ($probe[1] as $marker) {
+					$this->assertTrue(strpos($output, $marker) !== false,
+						'the appended runner preserves ' . $marker);
+				}
+				$this->assertTrue(strpos($output, 'should not run') === false,
+					'a failed setUp never runs its test body');
+			} finally {
+				@unlink($script);
+			}
+		}
+	}
+
+	public function testStandaloneClosureRunnerCountsFailureAndPrintsNonemptySummary(): void
+	{
+		ob_start();
+		try {
+			$code = testRunCases(array(
+				'first' => function () {},
+				'second' => function () { throw new RuntimeException('deliberate refusal'); },
+			));
+			$output = ob_get_contents();
+		} finally {
+			ob_end_clean();
+		}
+		$this->assertTrue($code === 1, 'a failed closure makes the runner fail');
+		$this->assertTrue(strpos($output, "ok - first\n") !== false,
+			'the passing case keeps its marker');
+		$this->assertTrue(strpos($output, "not ok - second\n") !== false,
+			'the failing case keeps its marker');
+		$this->assertTrue(strpos($output, "2 tests, 1 failures\n") !== false,
+			'the summary counts both cases and the one failure');
+	}
+
 }

@@ -1,21 +1,13 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 // Deliberately not using tests/plugins/rutracker_check/TestLib.php here:
 // history.php transitively loads php/Snoopy.class.inc and php/settings.php,
 // whose real classes collide with TestLib's doubles in either require order.
 // A minimal local runner keeps the real classes intact, the same way
 // tests/php/SnoopyTest.php does.
 require_once(__DIR__ . '/../../../plugins/history/history.php');
-
-function historyAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
-}
 
 // A record shaped like the ones update.php builds, keyed the way add() keys
 // them. Built by hand so a test can place one straight into $data without
@@ -89,8 +81,8 @@ $tests = array(
             'c' => historyRecord('c', 102),
         ));
 
-        historyAssertSame(true, $ours->merge($onDisk, null), 'merge reports success');
-        historyAssertSame(array('c', 'b', 'a'), array_keys($ours->data),
+        testAssertSame(true, $ours->merge($onDisk, null), 'merge reports success');
+        testAssertSame(array('c', 'b', 'a'), array_keys($ours->data),
             'both writers keep their row, newest first');
     },
 
@@ -107,7 +99,7 @@ $tests = array(
         ));
 
         $ours->merge($onDisk, null);
-        historyAssertSame(array('a'), array_keys($ours->data),
+        testAssertSame(array('a'), array_keys($ours->data),
             'the deletion is replayed on top of the fresher copy');
     },
 
@@ -120,7 +112,7 @@ $tests = array(
         historyRecordRemoval($ours, 'k0');
 
         $ours->merge(historyLoaded($records), null);
-        historyAssertSame(599, count($ours->data),
+        testAssertSame(599, count($ours->data),
             'a delete carries no configured limit and must not impose the default one');
     },
 
@@ -133,8 +125,8 @@ $tests = array(
         historyRecordAddition($ours, historyRecord('new', 2000), 4);
 
         $ours->merge(historyLoaded($records), null);
-        historyAssertSame(2, count($ours->data), 'over the cap, half of it is kept');
-        historyAssertSame('new', array_keys($ours->data)[0], 'the newest row is kept');
+        testAssertSame(2, count($ours->data), 'over the cap, half of it is kept');
+        testAssertSame('new', array_keys($ours->data)[0], 'the newest row is kept');
     },
 
     // rTorrent names a magnet that has no metadata yet <INFOHASH>.meta and
@@ -150,7 +142,7 @@ $tests = array(
             'a mixed-case placeholder' => str_repeat('cD', 20) . '.meta',
         );
         foreach ($placeholders as $label => $name)
-            historyAssertSame(true, rHistoryData::isMagnetPlaceholder($name), $label . ' must be recognised');
+            testAssertSame(true, rHistoryData::isMagnetPlaceholder($name), $label . ' must be recognised');
 
         $real = array(
             'a normal download' => 'Some Release 1080p',
@@ -162,7 +154,7 @@ $tests = array(
             'a name with a non-hex character' => str_repeat('A', 39) . 'Z.meta',
         );
         foreach ($real as $label => $name)
-            historyAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
+            testAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
     },
 
     // The metadata fetcher marks its own download with an exact service label;
@@ -176,7 +168,7 @@ $tests = array(
             'a placeholder with no label' => array(str_repeat('A', 40) . '.meta', ''),
         );
         foreach ($service as $label => $row)
-            historyAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be recognised');
+            testAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be recognised');
 
         $real = array(
             'a normal download' => array('Some Release 1080p', 'Video/Movies'),
@@ -186,7 +178,7 @@ $tests = array(
             'a similar prefix' => array('Some Release', '.chk-meta-extra'),
         );
         foreach ($real as $label => $row)
-            historyAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be kept');
+            testAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be kept');
     },
 
     'update.php records a private-label addition and deletion but skips the service stub' => function () {
@@ -222,13 +214,13 @@ $tests = array(
         };
         try {
             $rows = $invoke(1, '.private');
-            historyAssertSame(1, count($rows), 'the user-labelled addition is recorded');
+            testAssertSame(1, count($rows), 'the user-labelled addition is recorded');
             $rows = $invoke(3, '.private');
-            historyAssertSame(2, count($rows), 'the user-labelled deletion is recorded');
-            historyAssertSame(array(1, 3), array_column($rows, 'action'),
+            testAssertSame(2, count($rows), 'the user-labelled deletion is recorded');
+            testAssertSame(array(1, 3), array_column($rows, 'action'),
                 'both user events reach the history cache in event order');
             $rows = $invoke(1, '.chk-meta');
-            historyAssertSame(2, count($rows), 'the metadata stub is not recorded');
+            testAssertSame(2, count($rows), 'the metadata stub is not recorded');
         } finally {
             FileUtil::deleteDirectory($scratch);
         }
@@ -239,25 +231,13 @@ $tests = array(
         historyRecordAddition($ours, historyRecord('b', 101), 500);
 
         $restored = unserialize(serialize($ours));
-        historyAssertSame(array('hash', 'modified', 'data'), $ours->__sleep(),
+        testAssertSame(array('hash', 'modified', 'data'), $ours->__sleep(),
             'only the three long-standing properties are serialised');
-        historyAssertSame(array('a', 'b'), array_keys($restored->data),
+        testAssertSame(array('a', 'b'), array_keys($restored->data),
             'the records survive a round trip');
-        historyAssertSame(array(), historyGetProtected($restored, 'ownAdditions'),
+        testAssertSame(array(), historyGetProtected($restored, 'ownAdditions'),
             'bookkeeping does not outlive the process that did the writing');
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $callback) {
-    try {
-        $callback();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
-exit($failures === 0 ? 0 : 1);
+exit(testRunCases($tests));

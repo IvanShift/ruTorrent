@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/TestCase.php');
+
 // Keep this suite's diagnostics out of the shared application log.
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/snoopy-core-' . getmypid() . '.log';
 
@@ -8,23 +10,6 @@ $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/snoopy-core-' . getmypid() . '.log
 // whose real rXMLRPC* classes collide with TestLib's doubles in either
 // require order. A minimal local runner keeps the real classes intact.
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
-
-function snoopyAssertTrue($condition, $message)
-{
-    if (!$condition) {
-        throw new RuntimeException($message);
-    }
-}
-
-function snoopyAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
-}
 
 function snoopyCurlArgs()
 {
@@ -153,9 +138,9 @@ class SnoopySocketReplies extends Snoopy
             throw new RuntimeException('Unexpected HTTP connection');
         }
         $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
-        snoopyAssertTrue(is_array($pair), 'Unable to create the HTTP socket pair');
+        testAssertTrue(is_array($pair), 'Unable to create the HTTP socket pair');
         $response = array_shift($this->responses);
-        snoopyAssertSame(strlen($response), fwrite($pair[1], $response),
+        testAssertSame(strlen($response), fwrite($pair[1], $response),
             'Complete HTTP fixture response was written');
         stream_socket_shutdown($pair[1], STREAM_SHUT_WR);
         $this->peers[] = $pair[1];
@@ -164,7 +149,7 @@ class SnoopySocketReplies extends Snoopy
 
     public function request($index)
     {
-        snoopyAssertTrue(isset($this->peers[$index]), 'Expected HTTP request was sent');
+        testAssertTrue(isset($this->peers[$index]), 'Expected HTTP request was sent');
         $request = stream_get_contents($this->peers[$index]);
         fclose($this->peers[$index]);
         unset($this->peers[$index]);
@@ -175,7 +160,7 @@ class SnoopySocketReplies extends Snoopy
 function snoopyPlainHttpReply($header, $body, $limit = null, $client = null)
 {
     $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
-    snoopyAssertTrue(is_array($pair), 'Unable to open gzip transport fixture');
+    testAssertTrue(is_array($pair), 'Unable to open gzip transport fixture');
     list($near, $far) = $pair;
     fwrite($far, "HTTP/1.1 200 OK\r\n".$header."\r\n\r\n".$body);
     stream_socket_shutdown($far, STREAM_SHUT_WR);
@@ -196,13 +181,13 @@ $tests = array(
     'plain HTTP preserves unparsed redirect-like headers' => function () {
         $client = new SnoopySocketReplies();
         $client->responses = array("HTTP/1.1 200 OK\r\nLocation:\r\nRefresh: 5\r\n\r\n");
-        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+        testAssertSame(true, $client->fetch('http://tracker.example/start'),
             'plain HTTP reply completes');
-        snoopyAssertSame('', $client->get_header('Location'),
+        testAssertSame('', $client->get_header('Location'),
             'empty Location remains visible to callers');
-        snoopyAssertSame(true, in_array("Refresh: 5\r\n", $client->headers, true),
+        testAssertSame(true, in_array("Refresh: 5\r\n", $client->headers, true),
             'Refresh without a URL remains visible to callers');
-        snoopyAssertSame('', $client->lastredirectaddr,
+        testAssertSame('', $client->lastredirectaddr,
             'neither header starts a redirect');
         $client->request(0);
     },
@@ -212,26 +197,26 @@ $tests = array(
             "HTTP/1.1 302 Found\r\nLocation:http://destination.test/file\r\n\r\n",
             "HTTP/1.1 200 OK\r\n\r\n",
         );
-        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+        testAssertSame(true, $client->fetch('http://tracker.example/start'),
             'plain HTTP redirect chain completes');
-        snoopyAssertSame('http://destination.test/file', $client->lastredirectaddr,
+        testAssertSame('http://destination.test/file', $client->lastredirectaddr,
             'Location without a space names the destination');
         $client->request(0);
-        snoopyAssertTrue(strpos($client->request(1), "Host: destination.test\r\n") !== false,
+        testAssertTrue(strpos($client->request(1), "Host: destination.test\r\n") !== false,
             'socket transport requests the named host');
     },
     'plain HTTP Basic uses decoded URL username and password' => function () {
         $client = new SnoopySocketReplies();
         $client->responses = array("HTTP/1.1 200 OK\r\n\r\n");
-        snoopyAssertSame(true,
+        testAssertSame(true,
             $client->fetch('http://bob%40mail.test:p%40ss@tracker.example/file'),
             'encoded userinfo request completes');
         $request = $client->request(0);
         $expected = "Authorization: Basic " . base64_encode('bob@mail.test:p@ss') . "\r\n";
-        snoopyAssertSame(1, substr_count($request, $expected),
+        testAssertSame(1, substr_count($request, $expected),
             'socket transport sends decoded Basic credentials exactly once');
-        snoopyAssertSame('', $client->user, 'URL username is restored after fetch');
-        snoopyAssertSame('', $client->pass, 'URL password is restored after fetch');
+        testAssertSame('', $client->user, 'URL username is restored after fetch');
+        testAssertSame('', $client->pass, 'URL password is restored after fetch');
     },
     'plain HTTP imports redirect cookies only when passcookies permits it' => function () {
         foreach (array(true, false) as $passcookies) {
@@ -241,11 +226,11 @@ $tests = array(
                 "HTTP/1.1 302 Found\r\nLocation: http://tracker.example/next\r\nSet-Cookie: fresh=secret; Path=/\r\n\r\n",
                 "HTTP/1.1 200 OK\r\n\r\n",
             );
-            snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+            testAssertSame(true, $client->fetch('http://tracker.example/start'),
                 'same-origin HTTP redirect completes');
             $client->request(0);
             $request = $client->request(1);
-            snoopyAssertSame($passcookies, strpos($request, "Cookie: fresh=secret\r\n") !== false,
+            testAssertSame($passcookies, strpos($request, "Cookie: fresh=secret\r\n") !== false,
                 'redirect cookie import follows passcookies');
         }
 
@@ -254,52 +239,52 @@ $tests = array(
             "HTTP/1.1 200 OK\r\nSet-Cookie: fresh=secret; Path=/\r\n\r\n",
             "HTTP/1.1 200 OK\r\n\r\n",
         );
-        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+        testAssertSame(true, $client->fetch('http://tracker.example/start'),
             'non-redirect response completes');
-        snoopyAssertSame(true, $client->fetch('http://tracker.example/independent'),
+        testAssertSame(true, $client->fetch('http://tracker.example/independent'),
             'independent HTTP request completes');
         $client->request(0);
-        snoopyAssertSame(false,
+        testAssertSame(false,
             strpos($client->request(1), "Cookie: fresh=secret\r\n") !== false,
             'non-redirect response cookie is not imported later');
     },
     'gzip content encoding is parsed as an exact header' => function () {
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding:gzip', gzencode('decoded body'));
-        snoopyAssertSame(true, $ok, 'a valid gzip reply completes');
-        snoopyAssertSame('decoded body', $client->results, 'gzip without a space is decoded');
+        testAssertSame(true, $ok, 'a valid gzip reply completes');
+        testAssertSame('decoded body', $client->results, 'gzip without a space is decoded');
         list($ok, $client) = snoopyPlainHttpReply('X-Content-Encoding: gzip', 'ordinary body');
-        snoopyAssertSame(true, $ok, 'unrelated header does not invalidate a plain reply');
-        snoopyAssertSame('ordinary body', $client->results, 'x-gzip is not decoded as gzip');
+        testAssertSame(true, $ok, 'unrelated header does not invalidate a plain reply');
+        testAssertSame('ordinary body', $client->results, 'x-gzip is not decoded as gzip');
     },
     'gzip filename member and expanded body bound are handled' => function () {
         $encoded = gzencode('decoded with filename');
         $withName = substr($encoded, 0, 3).chr(8).substr($encoded, 4, 6)
             .'torrent.name'."\0".substr($encoded, 10);
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip', $withName);
-        snoopyAssertSame(true, $ok, 'gzip member with FNAME completes');
-        snoopyAssertSame('decoded with filename', $client->results, 'FNAME is skipped by the decoder');
+        testAssertSame(true, $ok, 'gzip member with FNAME completes');
+        testAssertSame('decoded with filename', $client->results, 'FNAME is skipped by the decoder');
         $withExtra = substr($encoded, 0, 3).chr(4).substr($encoded, 4, 6)
             .pack('v', 4).'ABCD'.substr($encoded, 10);
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip', $withExtra);
-        snoopyAssertSame(true, $ok, 'gzip member with FEXTRA completes');
-        snoopyAssertSame('decoded with filename', $client->results,
+        testAssertSame(true, $ok, 'gzip member with FEXTRA completes');
+        testAssertSame('decoded with filename', $client->results,
             'FEXTRA is skipped by the decoder');
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
             gzencode(str_repeat('x', 4096)), 128);
-        snoopyAssertSame(false, $ok, 'an expanded body above maxlength is refused');
-        snoopyAssertSame('', $client->results, 'oversized decompression is not exposed to consumers');
+        testAssertSame(false, $ok, 'an expanded body above maxlength is refused');
+        testAssertSame('', $client->results, 'oversized decompression is not exposed to consumers');
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
             gzencode('first').gzencode('second'));
-        snoopyAssertSame(true, $ok, 'multiple gzip members complete');
-        snoopyAssertSame('firstsecond', $client->results,
+        testAssertSame(true, $ok, 'multiple gzip members complete');
+        testAssertSame('firstsecond', $client->results,
             'all gzip members reach the caller');
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
             gzencode('first').'junk');
-        snoopyAssertSame(false, $ok, 'trailing garbage after a valid member is refused');
+        testAssertSame(false, $ok, 'trailing garbage after a valid member is refused');
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
             gzencode('first')."\0\0");
-        snoopyAssertSame(true, $ok, 'gzip zero padding is accepted');
-        snoopyAssertSame('first', $client->results, 'zero padding adds no body data');
+        testAssertSame(true, $ok, 'gzip zero padding is accepted');
+        testAssertSame('first', $client->results, 'zero padding adds no body data');
     },
     'HTTPS curl gzip response is decoded with its own status and body' => function () {
         $bodyFile = tempnam(sys_get_temp_dir(), 'snoopy-gzip-body-');
@@ -308,46 +293,46 @@ $tests = array(
             putenv('SNOOPY_TEST_BODY_FILE=' . $bodyFile);
             snoopyRespondWith("HTTP/1.1 200 OK\r\nContent-Encoding:gzip\r\n");
             $client = new Snoopy();
-            snoopyAssertSame(true, $client->fetch('https://example.test/file'),
+            testAssertSame(true, $client->fetch('https://example.test/file'),
                 'HTTPS gzip fetch completes');
-            snoopyAssertSame('https decoded', $client->results,
+            testAssertSame('https decoded', $client->results,
                 'curl body is decoded without replacing its exit code');
-            snoopyAssertSame('200', $client->status, 'curl HTTP status remains visible');
+            testAssertSame('200', $client->status, 'curl HTTP status remains visible');
             $args = snoopyCurlArgs();
             $maxFlag = array_search('--max-filesize', $args, true);
-            snoopyAssertTrue($maxFlag !== false, 'curl bounds the temporary HTTPS body during transfer');
-            snoopyAssertSame((string)$client->maxlength, $args[$maxFlag + 1] ?? null,
+            testAssertTrue($maxFlag !== false, 'curl bounds the temporary HTTPS body during transfer');
+            testAssertSame((string)$client->maxlength, $args[$maxFlag + 1] ?? null,
                 'curl uses Snoopy maxlength as its transfer limit');
-            snoopyAssertTrue(in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
+            testAssertTrue(in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
                 'HTTPS request advertises gzip when enabled');
             $fallback = new SnoopyWithoutZlib();
-            snoopyAssertSame(true, $fallback->fetch('https://example.test/file'),
+            testAssertSame(true, $fallback->fetch('https://example.test/file'),
                 'HTTPS external gzip fallback completes');
-            snoopyAssertSame('https decoded', $fallback->results,
+            testAssertSame('https decoded', $fallback->results,
                 'HTTPS fallback reads the curl body');
-            snoopyAssertSame('200', $fallback->status,
+            testAssertSame('200', $fallback->status,
                 'gzip child exit does not replace curl HTTP status');
-            snoopyAssertSame(false, in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
+            testAssertSame(false, in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
                 'fallback does not advertise gzip without zlib');
             file_put_contents($bodyFile, 'invalid gzip bytes');
-            snoopyAssertSame(false, $client->fetch('https://example.test/file'),
+            testAssertSame(false, $client->fetch('https://example.test/file'),
                 'invalid gzip body is refused');
-            snoopyAssertSame('', $client->results, 'invalid gzip cannot retain the last body');
-            snoopyAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+            testAssertSame('', $client->results, 'invalid gzip cannot retain the last body');
+            testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
                 'decoder refusal cannot look like a successful HTTP 200');
-            snoopyAssertSame('invalid-or-oversized-gzip', $client->error,
+            testAssertSame('invalid-or-oversized-gzip', $client->error,
                 'invalid gzip has a classified reason');
             file_put_contents($bodyFile, gzencode(str_repeat('x', 4096)));
             $client->maxlength = 128;
-            snoopyAssertSame(false, $client->fetch('https://example.test/file'),
+            testAssertSame(false, $client->fetch('https://example.test/file'),
                 'HTTPS gzip bomb is refused at expanded size');
-            snoopyAssertSame('', $client->results,
+            testAssertSame('', $client->results,
                 'HTTPS gzip bomb does not expose expanded content');
             file_put_contents($bodyFile, str_repeat('x', 4096));
             snoopyRespondWith("HTTP/1.1 200 OK\r\n");
-            snoopyAssertSame(false, $client->fetch('https://example.test/file'),
+            testAssertSame(false, $client->fetch('https://example.test/file'),
                 'HTTPS raw body over maxlength is refused');
-            snoopyAssertSame('unreadable-or-oversized-response', $client->error,
+            testAssertSame('unreadable-or-oversized-response', $client->error,
                 'HTTPS raw size refusal is classified');
         } finally {
             putenv('SNOOPY_TEST_BODY_FILE');
@@ -364,23 +349,23 @@ $tests = array(
         try {
             list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
                 gzencode('external body'), null, new SnoopyWithoutZlib());
-            snoopyAssertSame(true, $ok, 'fallback decoded gzip through argv-safe command');
-            snoopyAssertSame('external body', $client->results, 'fallback keeps its body');
+            testAssertSame(true, $ok, 'fallback decoded gzip through argv-safe command');
+            testAssertSame('external body', $client->results, 'fallback keeps its body');
             list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
                 gzencode(str_repeat('x', 4096)), 128, new SnoopyWithoutZlib());
-            snoopyAssertSame(false, $ok, 'fallback refuses expanded body over maxlength');
-            snoopyAssertSame('', $client->results, 'fallback does not expose oversized body');
+            testAssertSame(false, $ok, 'fallback refuses expanded body over maxlength');
+            testAssertSame('', $client->results, 'fallback does not expose oversized body');
             list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
                 gzencode('first').gzencode('second'), null, new SnoopyWithoutZlib());
-            snoopyAssertSame(true, $ok, 'fallback decodes every gzip member');
-            snoopyAssertSame('firstsecond', $client->results, 'fallback keeps every member body');
+            testAssertSame(true, $ok, 'fallback decodes every gzip member');
+            testAssertSame('firstsecond', $client->results, 'fallback keeps every member body');
             list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
                 gzencode('first').'junk', null, new SnoopyWithoutZlib());
-            snoopyAssertSame(false, $ok, 'fallback refuses trailing garbage');
+            testAssertSame(false, $ok, 'fallback refuses trailing garbage');
             list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
                 gzencode('first')."\0\0", null, new SnoopyWithoutZlib());
-            snoopyAssertSame(true, $ok, 'fallback accepts gzip zero padding');
-            snoopyAssertSame('first', $client->results, 'fallback padding adds no body data');
+            testAssertSame(true, $ok, 'fallback accepts gzip zero padding');
+            testAssertSame('first', $client->results, 'fallback padding adds no body data');
         } finally {
             $pathToExternals['gzip'] = $previous;
             unlink($wrapper);
@@ -389,78 +374,78 @@ $tests = array(
     'plain HTTP chunked bodies are decoded before gzip' => function () {
         list($ok, $client) = snoopyPlainHttpReply('Transfer-Encoding: chunked',
             "5\r\nhello\r\n0\r\nX-Trailer: ignored\r\n\r\n");
-        snoopyAssertSame(true, $ok, 'a valid chunked response completes');
-        snoopyAssertSame('hello', $client->results, 'chunk framing is removed');
+        testAssertSame(true, $ok, 'a valid chunked response completes');
+        testAssertSame('hello', $client->results, 'chunk framing is removed');
         $encoded = gzencode('decoded chunks');
         $chunked = dechex(strlen($encoded))."\r\n".$encoded."\r\n0\r\n\r\n";
         list($ok, $client) = snoopyPlainHttpReply(
             "Transfer-Encoding: chunked\r\nContent-Encoding: gzip", $chunked);
-        snoopyAssertSame(true, $ok, 'chunked gzip response completes');
-        snoopyAssertSame('decoded chunks', $client->results,
+        testAssertSame(true, $ok, 'chunked gzip response completes');
+        testAssertSame('decoded chunks', $client->results,
             'chunk framing is removed before gzip decoding');
         list($ok, $client) = snoopyPlainHttpReply('Transfer-Encoding: chunked',
             "Z\r\ninvalid\r\n0\r\n\r\n");
-        snoopyAssertSame(false, $ok, 'invalid chunk length is refused');
-        snoopyAssertSame('', $client->results, 'invalid chunk data is never returned');
-        snoopyAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+        testAssertSame(false, $ok, 'invalid chunk length is refused');
+        testAssertSame('', $client->results, 'invalid chunk data is never returned');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
             'chunk refusal cannot look like a successful HTTP 200');
         $encoded = gzencode('transfer gzip');
         $chunked = dechex(strlen($encoded))."\r\n".$encoded."\r\n0\r\n\r\n";
         foreach(array("Transfer-Encoding: gzip, chunked",
             "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked") as $headers) {
             list($ok, $client) = snoopyPlainHttpReply($headers, $chunked);
-            snoopyAssertSame(true, $ok, 'gzip transfer coding completes');
-            snoopyAssertSame('transfer gzip', $client->results,
+            testAssertSame(true, $ok, 'gzip transfer coding completes');
+            testAssertSame('transfer gzip', $client->results,
                 'gzip transfer coding is removed after chunk framing');
         }
         list($ok, $client) = snoopyPlainHttpReply('Transfer-Encoding: deflate, chunked',
             "5\r\nhello\r\n0\r\n\r\n");
-        snoopyAssertSame(false, $ok, 'unsupported transfer coding is refused');
-        snoopyAssertSame('unsupported-transfer-encoding', $client->error,
+        testAssertSame(false, $ok, 'unsupported transfer coding is refused');
+        testAssertSame('unsupported-transfer-encoding', $client->error,
             'unsupported transfer coding is classified');
     },
     'URL cookie suffix keeps equals in values and ignores malformed pairs' => function () {
         $url = 'https://tracker.example/file:COOKIE:token=abc=def;broken;sid=2';
-        snoopyAssertSame(array('token' => 'abc=def', 'sid' => '2'), Snoopy::getURLCookies($url),
+        testAssertSame(array('token' => 'abc=def', 'sid' => '2'), Snoopy::getURLCookies($url),
             'cookie parser keeps the full value and skips incomplete pairs');
-        snoopyAssertSame('https://tracker.example/file', $url, 'suffix removed from URL');
+        testAssertSame('https://tracker.example/file', $url, 'suffix removed from URL');
     },
     'a credential redirect refusal is not a successful download' => function () {
         $client = new Snoopy();
         $client->status = 200;
         $client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
-        snoopyAssertSame(false, Snoopy::isSuccessfulResponse($client),
+        testAssertSame(false, Snoopy::isSuccessfulResponse($client),
             '2xx with a refused Location is not a successful response');
         $client->error = 'invalid-or-oversized-gzip';
-        snoopyAssertSame(false, Snoopy::isSuccessfulResponse($client),
+        testAssertSame(false, Snoopy::isSuccessfulResponse($client),
             '2xx with a failed body decoder is not a successful response');
         $client->error = '';
-        snoopyAssertSame(true, Snoopy::isSuccessfulResponse($client),
+        testAssertSame(true, Snoopy::isSuccessfulResponse($client),
             'ordinary 2xx response remains successful');
     },
     'torrent response guard rejects HTML and accepts parsed metainfo' => function () {
         $client = new Snoopy();
         $client->status = 200;
         $client->results = '<html>Login required</html>';
-        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+        testAssertSame(false, Snoopy::isTorrentResponse($client),
             'HTML must not be saved as a torrent');
         $client->results = 'd4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:abcdefghijklmnopqrstee';
-        snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+        testAssertSame(true, Snoopy::isTorrentResponse($client),
             'valid metainfo remains downloadable');
         $rawBody = $client->results;
         $client->results = $rawBody . '<html>unexpected extra response</html>';
-        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+        testAssertSame(false, Snoopy::isTorrentResponse($client),
             'a bencoded prefix followed by HTML is not a complete torrent');
         // RSS, addtorrent, bulk_magnet and extsearch all ask this guard; a
         // tracker that ends the file with a line break must stay downloadable.
         $client->results = $rawBody . "\r\n";
-        snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+        testAssertSame(true, Snoopy::isTorrentResponse($client),
             'metainfo followed by a line break remains downloadable');
         $client->results = $rawBody . "\n<html>unexpected extra response</html>";
-        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+        testAssertSame(false, Snoopy::isTorrentResponse($client),
             'a line break does not excuse HTML after the metainfo');
         $client->results = 'd4:infodee';
-        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+        testAssertSame(false, Snoopy::isTorrentResponse($client),
             'an empty info dictionary is not metainfo');
         $client->results = $rawBody;
         $conflictDir = sys_get_temp_dir() . '/snoopy-raw-' . getmypid();
@@ -469,7 +454,7 @@ $tests = array(
         try {
             chdir($conflictDir);
             file_put_contents($rawBody, 'a conflicting local file');
-            snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+            testAssertSame(true, Snoopy::isTorrentResponse($client),
                 'download validation parses raw bytes even when they name a local file');
         } finally {
             chdir($previousDir);
@@ -480,13 +465,13 @@ $tests = array(
         try {
             file_put_contents($localPath, $client->results);
             $client->results = $localPath;
-            snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            testAssertSame(false, Snoopy::isTorrentResponse($client),
                 'a remote body naming a local file cannot make the downloader read that file');
         } finally {
             @unlink($localPath);
         }
         $client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
-        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+        testAssertSame(false, Snoopy::isTorrentResponse($client),
             'classified refusal wins even over valid source bytes');
     },
     'a failed transport cannot import an earlier response cookie into the next request' => function () {
@@ -495,9 +480,9 @@ $tests = array(
             array(false, 'https://other.test/next', array("Set-Cookie: secret=one; Path=/\r\n"), -100),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(false, $client->fetch('http://tracker.example/first'), 'HTTP transport fails after parsing headers');
-        snoopyAssertSame(true, $client->fetch('https://other.test/second'), 'reused transport works');
-        snoopyAssertSame(array(), $client->requests[1][1], 'failed response cookie stays with its source');
+        testAssertSame(false, $client->fetch('http://tracker.example/first'), 'HTTP transport fails after parsing headers');
+        testAssertSame(true, $client->fetch('https://other.test/second'), 'reused transport works');
+        testAssertSame(array(), $client->requests[1][1], 'failed response cookie stays with its source');
     },
     'a rejected trusted redirect cannot import its response cookie on client reuse' => function () {
         $client = new SnoopyRejectedRedirectProbe();
@@ -507,42 +492,42 @@ $tests = array(
             array(true, 'https://blocked.test/landing', array("Set-Cookie: sid=source; Path=/\r\n"), 302),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(false, $client->fetch('https://tracker.example/start'), 'private target rejects trusted second hop');
-        snoopyAssertSame(false, $client->_redirectaddr, 'failed nested fetch clears pending cookie import');
+        testAssertSame(false, $client->fetch('https://tracker.example/start'), 'private target rejects trusted second hop');
+        testAssertSame(false, $client->_redirectaddr, 'failed nested fetch clears pending cookie import');
         $client->cookies = array();
-        snoopyAssertSame(true, $client->fetch('https://other.test/independent'), 'client can be reused');
-        snoopyAssertSame(array(), $client->requests[1][1], 'source cookie never reaches unrelated host');
+        testAssertSame(true, $client->fetch('https://other.test/independent'), 'client can be reused');
+        testAssertSame(array(), $client->requests[1][1], 'source cookie never reaches unrelated host');
     },
     'URL userinfo is scoped to its fetch chain and does not persist on the client' => function () {
         $client = new SnoopyRedirectProbe();
         $client->replies = array(array(true, false, array(), 200), array(true, false, array(), 200));
-        snoopyAssertSame(true, $client->fetch('https://alice:secret@tracker.example/one'), 'userinfo request');
-        snoopyAssertSame('alice', $client->requests[0][2], 'userinfo credentials used for their own request');
-        snoopyAssertSame('secret', $client->requests[0][3], 'userinfo password used for its own request');
-        snoopyAssertSame('', $client->user, 'userinfo user restored');
-        snoopyAssertSame('', $client->pass, 'userinfo password restored');
-        snoopyAssertSame(true, $client->fetch('https://other.test/two'), 'next request');
-        snoopyAssertSame('', $client->requests[1][2], 'next host receives no prior user');
-        snoopyAssertSame('', $client->requests[1][3], 'next host receives no prior password');
+        testAssertSame(true, $client->fetch('https://alice:secret@tracker.example/one'), 'userinfo request');
+        testAssertSame('alice', $client->requests[0][2], 'userinfo credentials used for their own request');
+        testAssertSame('secret', $client->requests[0][3], 'userinfo password used for its own request');
+        testAssertSame('', $client->user, 'userinfo user restored');
+        testAssertSame('', $client->pass, 'userinfo password restored');
+        testAssertSame(true, $client->fetch('https://other.test/two'), 'next request');
+        testAssertSame('', $client->requests[1][2], 'next host receives no prior user');
+        testAssertSame('', $client->requests[1][3], 'next host receives no prior password');
     },
     'percent-encoded URL userinfo is decoded before Basic authentication' => function () {
         $client = new SnoopyRedirectProbe();
         $client->replies = array(array(true, false, array(), 200), array(true, false, array(), 200));
-        snoopyAssertSame(true, $client->fetch('https://alice:p%40ss@tracker.example/rss'), 'encoded userinfo request');
-        snoopyAssertSame('alice', $client->requests[0][2], 'Basic user is decoded');
-        snoopyAssertSame('p@ss', $client->requests[0][3], 'Basic password is decoded');
+        testAssertSame(true, $client->fetch('https://alice:p%40ss@tracker.example/rss'), 'encoded userinfo request');
+        testAssertSame('alice', $client->requests[0][2], 'Basic user is decoded');
+        testAssertSame('p@ss', $client->requests[0][3], 'Basic password is decoded');
         $url = Snoopy::linkencode('https://alice:p!ss@tracker.example/rss');
-        snoopyAssertSame(true, $client->fetch($url), 'linkencode request');
-        snoopyAssertSame('p!ss', $client->requests[1][3], 'linkencode output is decoded before Basic');
+        testAssertSame(true, $client->fetch($url), 'linkencode request');
+        testAssertSame('p!ss', $client->requests[1][3], 'linkencode output is decoded before Basic');
     },
     'redirect userinfo is refused before same-origin cookies are forwarded' => function () {
         $client = new SnoopyRedirectProbe();
         $client->cookies = array('sid' => 'private');
         $client->replies = array(array(true, 'https://attacker:secret@tracker.example/next', array(), 302));
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/one'), 'origin response remains visible');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'userinfo redirect is refused');
-        snoopyAssertSame(1, count($client->requests), 'no request to userinfo target');
-        snoopyAssertSame('', $client->user, 'redirect userinfo cannot persist');
+        testAssertSame(true, $client->fetch('https://tracker.example/one'), 'origin response remains visible');
+        testAssertSame('credential-redirect-refused', $client->error, 'userinfo redirect is refused');
+        testAssertSame(1, count($client->requests), 'no request to userinfo target');
+        testAssertSame('', $client->user, 'redirect userinfo cannot persist');
     },
     'an anonymous cross-origin redirect does not carry the source Set-Cookie' => function () {
         $client = new SnoopyRedirectProbe();
@@ -551,13 +536,13 @@ $tests = array(
             array(true, false, array(), 200),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous chain reaches destination');
-        snoopyAssertSame(200, $client->status, 'destination response is available');
-        snoopyAssertSame(2, count($client->requests), 'anonymous cross-origin redirect is followed');
-        snoopyAssertSame(array(), $client->requests[1][1], 'source cookie is not sent to destination');
-        snoopyAssertSame(array(), $client->cookies, 'source cookie is not imported into the flat jar');
-        snoopyAssertSame(true, $client->fetch('https://other.test/independent'), 'later independent request works');
-        snoopyAssertSame(array(), $client->requests[2][1], 'new session never imported into flat jar');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous chain reaches destination');
+        testAssertSame(200, $client->status, 'destination response is available');
+        testAssertSame(2, count($client->requests), 'anonymous cross-origin redirect is followed');
+        testAssertSame(array(), $client->requests[1][1], 'source cookie is not sent to destination');
+        testAssertSame(array(), $client->cookies, 'source cookie is not imported into the flat jar');
+        testAssertSame(true, $client->fetch('https://other.test/independent'), 'later independent request works');
+        testAssertSame(array(), $client->requests[2][1], 'new session never imported into flat jar');
     },
     'anonymous redirects may carry conditional validators to the destination' => function () {
         $client = new SnoopyRedirectProbe();
@@ -567,9 +552,9 @@ $tests = array(
             array(true, 'https://cdn.test/feed', array(), 302),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.test/feed'), 'anonymous validator chain follows');
-        snoopyAssertSame(2, count($client->requests), 'destination is requested');
-        snoopyAssertSame($client->requests[0][6], $client->requests[1][6],
+        testAssertSame(true, $client->fetch('https://tracker.test/feed'), 'anonymous validator chain follows');
+        testAssertSame(2, count($client->requests), 'destination is requested');
+        testAssertSame($client->requests[0][6], $client->requests[1][6],
             'conditional validators remain request metadata, not credentials');
     },
     'an anonymous POST redirect is followed as GET without forwarding its body' => function () {
@@ -578,13 +563,13 @@ $tests = array(
             array(true, 'https://other.test/result', array(), 303),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/submit', 'POST',
+        testAssertSame(true, $client->fetch('https://tracker.example/submit', 'POST',
             'application/x-www-form-urlencoded', 'query=public'), 'anonymous POST chain succeeds');
-        snoopyAssertSame(2, count($client->requests), 'anonymous redirect is followed');
-        snoopyAssertSame('https://other.test/result', $client->requests[1][0], 'result URL');
-        snoopyAssertSame('GET', $client->requests[1][4], 'redirect uses GET');
-        snoopyAssertSame('', $client->requests[1][5], 'POST body is not forwarded');
-        snoopyAssertSame('', $client->error, 'body alone does not mean credentials were withheld');
+        testAssertSame(2, count($client->requests), 'anonymous redirect is followed');
+        testAssertSame('https://other.test/result', $client->requests[1][0], 'result URL');
+        testAssertSame('GET', $client->requests[1][4], 'redirect uses GET');
+        testAssertSame('', $client->requests[1][5], 'POST body is not forwarded');
+        testAssertSame('', $client->error, 'body alone does not mean credentials were withheld');
     },
     'account cookie trust does not authorize Basic credentials on a sibling host' => function () {
         $client = new SnoopyRedirectProbe();
@@ -592,10 +577,10 @@ $tests = array(
             return UrlHost::isOneOf(UrlHost::of($url), array('tracker.example'));
         };
         $client->replies = array(array(true, 'https://dl.tracker.example/file', array(), 302));
-        snoopyAssertSame(true, $client->fetch('https://alice:secret@tracker.example/start'), 'origin response');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'Basic credentials stay on their origin');
-        snoopyAssertSame(1, count($client->requests), 'sibling host receives no Basic authorization');
-        snoopyAssertSame('', $client->user, 'URL user restored after refusal');
+        testAssertSame(true, $client->fetch('https://alice:secret@tracker.example/start'), 'origin response');
+        testAssertSame('credential-redirect-refused', $client->error, 'Basic credentials stay on their origin');
+        testAssertSame(1, count($client->requests), 'sibling host receives no Basic authorization');
+        testAssertSame('', $client->user, 'URL user restored after refusal');
     },
     'account cookie trust does not forward a raw Cookie header' => function () {
         $client = new SnoopyRedirectProbe();
@@ -604,9 +589,9 @@ $tests = array(
         };
         $client->rawheaders['Cookie'] = 'sid=private';
         $client->replies = array(array(true, 'https://dl.tracker.example/file', array(), 302));
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin response');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'raw cookie is not account-scoped');
-        snoopyAssertSame(1, count($client->requests), 'sibling host receives no raw cookie');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin response');
+        testAssertSame('credential-redirect-refused', $client->error, 'raw cookie is not account-scoped');
+        testAssertSame(1, count($client->requests), 'sibling host receives no raw cookie');
     },
     'account trust never forwards raw authentication headers to a sibling host' => function () {
         foreach (array('aUtHoRiZaTiOn', 'PrOxY-AuThOrIzAtIoN') as $header) {
@@ -616,9 +601,9 @@ $tests = array(
             };
             $client->rawheaders[$header] = 'secret';
             $client->replies = array(array(true, 'https://dl.tracker.example/file', array(), 302));
-            snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'source responds');
-            snoopyAssertSame(1, count($client->requests), $header . ' stays on source');
-            snoopyAssertSame('credential-redirect-refused', $client->error, 'raw header refusal is classified');
+            testAssertSame(true, $client->fetch('https://tracker.example/start'), 'source responds');
+            testAssertSame(1, count($client->requests), $header . ' stays on source');
+            testAssertSame('credential-redirect-refused', $client->error, 'raw header refusal is classified');
         }
     },
     'account trust cannot authorize an HTTPS downgrade' => function () {
@@ -628,9 +613,9 @@ $tests = array(
         };
         $client->cookies = array('sid' => 'secret');
         $client->replies = array(array(true, 'http://dl.tracker.example/file', array(), 302));
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'source responds');
-        snoopyAssertSame(1, count($client->requests), 'HTTP sibling receives no cookie');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'downgrade refusal is classified');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'source responds');
+        testAssertSame(1, count($client->requests), 'HTTP sibling receives no cookie');
+        testAssertSame('credential-redirect-refused', $client->error, 'downgrade refusal is classified');
     },
     'account trust checks the source URL before forwarding a session' => function () {
         $client = new SnoopyRedirectProbe();
@@ -639,9 +624,9 @@ $tests = array(
         };
         $client->cookies = array('sid' => 'secret');
         $client->replies = array(array(true, 'https://dl.tracker.example/forum/file', array(), 302));
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/login'), 'source responds');
-        snoopyAssertSame(1, count($client->requests), 'out-of-scope source does not authorize destination');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'source-scope refusal is classified');
+        testAssertSame(true, $client->fetch('https://tracker.example/login'), 'source responds');
+        testAssertSame(1, count($client->requests), 'out-of-scope source does not authorize destination');
+        testAssertSame('credential-redirect-refused', $client->error, 'source-scope refusal is classified');
     },
     'account scope refuses an anonymous foreign hop before its cookies can enter the jar' => function () {
         $client = new SnoopyRedirectProbe();
@@ -652,12 +637,12 @@ $tests = array(
             array(true, 'https://evil.test/a', array(), 302),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin response remains readable');
-        snoopyAssertSame(1, count($client->requests), 'foreign host is not requested');
-        snoopyAssertSame('credential-redirect-refused', $client->error, 'untrusted account redirect is visible');
-        snoopyAssertSame(array(), $client->cookies, 'no foreign cookies enter the flat jar');
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/next'), 'later account request succeeds');
-        snoopyAssertSame(array(), $client->requests[1][1], 'later request has no foreign cookie');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin response remains readable');
+        testAssertSame(1, count($client->requests), 'foreign host is not requested');
+        testAssertSame('credential-redirect-refused', $client->error, 'untrusted account redirect is visible');
+        testAssertSame(array(), $client->cookies, 'no foreign cookies enter the flat jar');
+        testAssertSame(true, $client->fetch('https://tracker.example/next'), 'later account request succeeds');
+        testAssertSame(array(), $client->requests[1][1], 'later request has no foreign cookie');
     },
     'own Basic and raw authentication refuse anonymous cross-origin redirects' => function () {
         foreach (array('user', 'pass', 'Cookie', 'Authorization', 'Proxy-Authorization') as $source) {
@@ -666,9 +651,9 @@ $tests = array(
             elseif ($source === 'pass') { $client->pass = 'secret'; }
             else { $client->rawheaders[$source] = 'secret'; }
             $client->replies = array(array(true, 'https://other.test/file', array(), 302));
-            snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin responds');
-            snoopyAssertSame(1, count($client->requests), $source . ' stays on origin');
-            snoopyAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error, 'refusal is classified');
+            testAssertSame(true, $client->fetch('https://tracker.example/start'), 'origin responds');
+            testAssertSame(1, count($client->requests), $source . ' stays on origin');
+            testAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error, 'refusal is classified');
         }
     },
     'redirect depth limit clears pending cookie import before client reuse' => function () {
@@ -678,10 +663,10 @@ $tests = array(
             array(true, 'https://tracker.example/next', array('Set-Cookie: sid=source; Path=/'), 302),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'depth-limited origin responds');
-        snoopyAssertSame(false, $client->_redirectaddr, 'depth limit clears pending import');
-        snoopyAssertSame(true, $client->fetch('https://other.test/independent'), 'later request works');
-        snoopyAssertSame(array(), $client->requests[1][1], 'later host has no source cookie');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'depth-limited origin responds');
+        testAssertSame(false, $client->_redirectaddr, 'depth limit clears pending import');
+        testAssertSame(true, $client->fetch('https://other.test/independent'), 'later request works');
+        testAssertSame(array(), $client->requests[1][1], 'later host has no source cookie');
     },
     'a new explicit request clears the prior refusal error' => function () {
         $client = new SnoopyRedirectProbe();
@@ -691,9 +676,9 @@ $tests = array(
             array(true, false, array(), 200),
         );
         $client->fetch('https://tracker.example/start');
-        snoopyAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error, 'first chain is refused');
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/independent'), 'next request works');
-        snoopyAssertSame('', $client->error, 'old refusal is not retained');
+        testAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error, 'first chain is refused');
+        testAssertSame(true, $client->fetch('https://tracker.example/independent'), 'next request works');
+        testAssertSame('', $client->error, 'old refusal is not retained');
     },
     'redirect refusal log is bounded per source and target origin pair' => function () {
         global $log_file;
@@ -709,9 +694,9 @@ $tests = array(
             $client->fetch('https://core-latch-source.test/start');
             $client->fetch('https://core-latch-source.test/again');
             $log = file_get_contents($log_file);
-            snoopyAssertSame(1, substr_count($log, 'https://core-latch-source.test:443 -> https://core-latch-target.test:443'),
+            testAssertSame(1, substr_count($log, 'https://core-latch-source.test:443 -> https://core-latch-target.test:443'),
                 'one classified line per origin pair');
-            snoopyAssertSame(false, strpos($log, 'secret=') !== false, 'URL query is redacted');
+            testAssertSame(false, strpos($log, 'secret=') !== false, 'URL query is redacted');
         } finally {
             unlink($log_file);
             $log_file = $previous;
@@ -731,14 +716,14 @@ $tests = array(
             $client->fetch('https://core-origin-log.test/start?secret=one');
             $client->fetch('https://core-origin-log.test/again?secret=two');
             $log = file_get_contents($log_file);
-            snoopyAssertSame(1, substr_count($log,
+            testAssertSame(1, substr_count($log,
                 'https://core-origin-log.test:443 -> http://core-origin-log.test:80'),
                 'HTTPS downgrade has its own origin pair');
-            snoopyAssertSame(1, substr_count($log,
+            testAssertSame(1, substr_count($log,
                 'https://core-origin-log.test:443 -> https://core-origin-log.test:8443'),
                 'same host with a different port has its own origin pair');
             foreach (array('user:pass', '/private', 'token=', 'secret=') as $secret)
-                snoopyAssertSame(false, strpos($log, $secret) !== false,
+                testAssertSame(false, strpos($log, $secret) !== false,
                     'log omits ' . $secret);
         } finally {
             unlink($log_file);
@@ -752,22 +737,22 @@ $tests = array(
             array(true, false, array(), 200),
             array(true, false, array(), 200),
         );
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/start'), 'redirect chain');
-        snoopyAssertSame('https://tracker.example/next', $client->lastredirectaddr, 'chain keeps last redirect');
-        snoopyAssertSame(true, $client->fetch('https://tracker.example/independent'), 'explicit next request');
-        snoopyAssertSame('', $client->lastredirectaddr, 'old redirect does not survive');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'redirect chain');
+        testAssertSame('https://tracker.example/next', $client->lastredirectaddr, 'chain keeps last redirect');
+        testAssertSame(true, $client->fetch('https://tracker.example/independent'), 'explicit next request');
+        testAssertSame('', $client->lastredirectaddr, 'old redirect does not survive');
     },
     'a 2xx Location can still produce a classified credential refusal' => function () {
         snoopyRespondWith('HTTP/1.1 200 OK\r\nLocation: http://same-location.test/landing\r\n');
         try {
             $client = new Snoopy();
             $client->cookies = array('sid' => 'private');
-            snoopyAssertSame(true, $client->fetch('https://same-location.test/start'),
+            testAssertSame(true, $client->fetch('https://same-location.test/start'),
                 'the source response arrived');
-            snoopyAssertSame('200', $client->status, 'the source status remains 2xx');
-            snoopyAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error,
+            testAssertSame('200', $client->status, 'the source status remains 2xx');
+            testAssertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $client->error,
                 'the Location refusal is independent of status');
-            snoopyAssertSame('http://same-location.test/landing', $client->lastredirectaddr,
+            testAssertSame('http://same-location.test/landing', $client->lastredirectaddr,
                 'the refused Location remains visible to the caller');
         } finally {
             snoopyRespondWith('');
@@ -776,19 +761,19 @@ $tests = array(
     'a Location header without a space follows the named host' => function () {
         snoopyRespondWith('HTTP/1.1 302 Found\r\nLocation:https://destination.test/file\r\n');
         $client = new Snoopy();
-        snoopyAssertSame(true, $client->fetch('https://tracker.test/start'), 'redirect chain completes');
-        snoopyAssertSame('https://destination.test/file', $client->lastredirectaddr,
+        testAssertSame(true, $client->fetch('https://tracker.test/start'), 'redirect chain completes');
+        testAssertSame('https://destination.test/file', $client->lastredirectaddr,
             'Location without a space keeps its absolute URL');
-        snoopyAssertTrue(in_array('https://destination.test/file', snoopyCurlArgs(), true),
+        testAssertTrue(in_array('https://destination.test/file', snoopyCurlArgs(), true),
             'destination host is requested');
         snoopyRespondWith('');
     },
     'source URL cookie stays on its host in real HTTPS curl headers' => function () {
         $source = new Snoopy();
         $source->maxredirs = 0;
-        snoopyAssertSame(true, $source->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+        testAssertSame(true, $source->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
             'source request completes');
-        snoopyAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+        testAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
             'source host receives its explicit URL cookie');
 
         putenv('SNOOPY_TEST_REDIRECT=https://dl.tracker.test/next');
@@ -798,19 +783,19 @@ $tests = array(
             $sibling->redirectTrust = function ($url) {
                 return UrlHost::urlIsOneOf($url, array('tracker.test'), 'https');
             };
-            snoopyAssertSame(true, $sibling->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+            testAssertSame(true, $sibling->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
                 'account-allowed sibling redirect completes');
-            snoopyAssertTrue(in_array('https://dl.tracker.test/next', snoopyCurlArgs(), true),
+            testAssertTrue(in_array('https://dl.tracker.test/next', snoopyCurlArgs(), true),
                 'fake curl captured the sibling request');
-            snoopyAssertSame(false, in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+            testAssertSame(false, in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
                 'source URL cookie stays off the sibling curl header');
 
             putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
             @unlink(getenv('SNOOPY_TEST_SEEN'));
             $same = new Snoopy();
-            snoopyAssertSame(true, $same->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+            testAssertSame(true, $same->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
                 'same-host redirect completes');
-            snoopyAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+            testAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
                 'same-host curl redirect keeps the URL cookie');
         } finally {
             putenv('SNOOPY_TEST_REDIRECT');
@@ -823,40 +808,40 @@ $tests = array(
         @unlink(getenv('SNOOPY_TEST_SEEN'));
         try {
             $client = new Snoopy();
-            snoopyAssertSame(true, $client->fetch('https://tracker.test/start'), 'anonymous redirect follows');
-            snoopyAssertSame('200', $client->status, 'redirect destination responds');
-            snoopyAssertSame(array(), $client->cookies, 'source cookie stays out of the flat jar');
+            testAssertSame(true, $client->fetch('https://tracker.test/start'), 'anonymous redirect follows');
+            testAssertSame('200', $client->status, 'redirect destination responds');
+            testAssertSame(array(), $client->cookies, 'source cookie stays out of the flat jar');
         } finally {
             putenv('SNOOPY_TEST_REDIRECT');
             putenv('SNOOPY_TEST_REDIRECT_COOKIE');
         }
-        snoopyAssertSame(true, $client->fetch('https://other.test/independent'), 'later request');
+        testAssertSame(true, $client->fetch('https://other.test/independent'), 'later request');
         foreach (snoopyCurlArgs() as $arg) {
-            snoopyAssertSame(false, strpos($arg, 'Cookie:') === 0,
+            testAssertSame(false, strpos($arg, 'Cookie:') === 0,
                 'later host receives no source response cookie');
         }
     },
     'a later real HTTPS request does not carry Basic from earlier URL userinfo' => function () {
         $client = new Snoopy();
-        snoopyAssertSame(true, $client->fetch('https://alice:secret@tracker.example/one'), 'first request');
-        snoopyAssertTrue(in_array('Authorization: Basic ' . base64_encode('alice:secret'), snoopyCurlArgs(), true),
+        testAssertSame(true, $client->fetch('https://alice:secret@tracker.example/one'), 'first request');
+        testAssertTrue(in_array('Authorization: Basic ' . base64_encode('alice:secret'), snoopyCurlArgs(), true),
             'first curl command carries URL Basic authentication');
-        snoopyAssertSame(true, $client->fetch('https://other.test/two'), 'second request');
+        testAssertSame(true, $client->fetch('https://other.test/two'), 'second request');
         foreach (snoopyCurlArgs() as $arg) {
-            snoopyAssertSame(false, strpos($arg, 'Authorization: Basic') !== false,
+            testAssertSame(false, strpos($arg, 'Authorization: Basic') !== false,
                 'second curl command contains no previous Basic header');
         }
     },
     'explicit HTTPS POST forwards -X POST to curl' => function () {
         $client = new Snoopy();
-        snoopyAssertTrue(
+        testAssertTrue(
             $client->fetch('https://example.test/resource', 'POST', 'application/x-www-form-urlencoded', ''),
             'HTTPS request did not complete through the curl test double'
         );
         $args = snoopyCurlArgs();
         $flag = array_search('-X', $args, true);
-        snoopyAssertTrue($flag !== false, 'Explicit HTTPS method was not passed to curl');
-        snoopyAssertSame(
+        testAssertTrue($flag !== false, 'Explicit HTTPS method was not passed to curl');
+        testAssertSame(
             'POST',
             isset($args[$flag + 1]) ? $args[$flag + 1] : null,
             'Empty-body explicit POST request was not preserved'
@@ -864,38 +849,38 @@ $tests = array(
     },
     'legacy positional HTTPS request never adds -X' => function () {
         $client = new Snoopy();
-        snoopyAssertTrue(
+        testAssertTrue(
             $client->_httpsrequest('https://example.test/legacy', 'application/x-www-form-urlencoded', 'payload'),
             'Legacy positional HTTPS request did not complete'
         );
         $args = snoopyCurlArgs();
-        snoopyAssertSame(
+        testAssertSame(
             false,
             array_search('-X', $args, true),
             'Legacy 3-argument call must leave the HTTP method to curl'
         );
-        snoopyAssertTrue(
+        testAssertTrue(
             in_array('Content-type: application/x-www-form-urlencoded', $args, true),
             'Legacy positional content-type argument remains supported'
         );
-        snoopyAssertTrue(in_array('payload', $args, true), 'Legacy positional request body remains supported');
+        testAssertTrue(in_array('payload', $args, true), 'Legacy positional request body remains supported');
     },
     'explicit HTTPS GET with body keeps -X GET' => function () {
         $client = new Snoopy();
-        snoopyAssertTrue(
+        testAssertTrue(
             $client->fetch('https://example.test/get-with-body', 'GET', 'text/plain', 'payload'),
             'Explicit GET-with-body request did not complete'
         );
         $args = snoopyCurlArgs();
         $flag = array_search('-X', $args, true);
-        snoopyAssertTrue(
+        testAssertTrue(
             $flag !== false && isset($args[$flag + 1]) && $args[$flag + 1] === 'GET',
             'Explicit HTTPS GET method must not be changed to POST by curl -d'
         );
     },
     'private targets stay reachable while the guard is off' => function () {
         $client = new Snoopy();
-        snoopyAssertTrue(
+        testAssertTrue(
             $client->fetch('https://127.0.0.1/feed'),
             'Default configuration must not block loopback targets'
         );
@@ -903,8 +888,8 @@ $tests = array(
     'the guard blocks a literal private address' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertSame(false, $client->fetch('https://127.0.0.1/feed'), 'Loopback target was fetched anyway');
-        snoopyAssertTrue(
+        testAssertSame(false, $client->fetch('https://127.0.0.1/feed'), 'Loopback target was fetched anyway');
+        testAssertTrue(
             strpos($client->error, '127.0.0.1') !== false,
             'Blocked fetch must name the offending address, got: ' . $client->error
         );
@@ -912,33 +897,33 @@ $tests = array(
     'the guard blocks the IPv6 loopback literal' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertSame(false, $client->fetch('https://[::1]/feed'), 'IPv6 loopback target was fetched anyway');
+        testAssertSame(false, $client->fetch('https://[::1]/feed'), 'IPv6 loopback target was fetched anyway');
     },
     'the guard leaves public literals alone' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertTrue($client->fetch('https://93.184.216.34/feed'), 'Public literal was blocked: ' . $client->error);
+        testAssertTrue($client->fetch('https://93.184.216.34/feed'), 'Public literal was blocked: ' . $client->error);
     },
     'the allowlist exempts a host from the guard' => function () {
         $client = new Snoopy();
         $client->block_private = true;
         $client->private_allowlist = array('127.0.0.1');
-        snoopyAssertTrue($client->fetch('https://127.0.0.1/feed'), 'Allowlisted host was blocked: ' . $client->error);
+        testAssertTrue($client->fetch('https://127.0.0.1/feed'), 'Allowlisted host was blocked: ' . $client->error);
     },
     'the guard blocks a hostname that resolves to loopback' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertSame(false, $client->fetch('https://localhost/feed'), 'localhost was fetched anyway');
+        testAssertSame(false, $client->fetch('https://localhost/feed'), 'localhost was fetched anyway');
     },
     'a host that cannot be resolved is blocked, and says so' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertSame(
+        testAssertSame(
             false,
             $client->fetch('https://tracker.nonexistent.invalid/feed'),
             'Unresolvable host was fetched anyway'
         );
-        snoopyAssertTrue(
+        testAssertTrue(
             stripos($client->error, 'resolve') !== false,
             'Unresolvable host must be reported as such, got: ' . $client->error
         );
@@ -946,11 +931,11 @@ $tests = array(
     'the validated address is pinned for the HTTPS request' => function () {
         $client = new SnoopyResolvesToPublic();
         $client->block_private = true;
-        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'Public host was blocked: ' . $client->error);
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'Public host was blocked: ' . $client->error);
         $args = snoopyCurlArgs();
         $flag = array_search('--resolve', $args, true);
-        snoopyAssertTrue($flag !== false, 'Validated host must be pinned with --resolve');
-        snoopyAssertSame(
+        testAssertTrue($flag !== false, 'Validated host must be pinned with --resolve');
+        testAssertSame(
             'tracker.test:443:93.184.216.34',
             isset($args[$flag + 1]) ? $args[$flag + 1] : null,
             'Pinned address must be the one the guard validated'
@@ -959,28 +944,28 @@ $tests = array(
     'the guard covers ranges filter_var calls public' => function () {
         $client = new Snoopy();
         $client->block_private = true;
-        snoopyAssertSame(false, $client->fetch('https://100.64.0.1/feed'), 'Carrier-grade NAT target was fetched anyway');
-        snoopyAssertSame(false, $client->fetch('https://192.0.0.1/feed'), 'IETF protocol assignment target was fetched anyway');
+        testAssertSame(false, $client->fetch('https://100.64.0.1/feed'), 'Carrier-grade NAT target was fetched anyway');
+        testAssertSame(false, $client->fetch('https://192.0.0.1/feed'), 'IETF protocol assignment target was fetched anyway');
     },
     'the guard is configured from conf/config.php' => function () {
         $GLOBALS['httpBlockPrivateNetworks'] = true;
         $GLOBALS['httpPrivateNetworkAllowlist'] = array('127.0.0.1');
         $client = new Snoopy();
         unset($GLOBALS['httpBlockPrivateNetworks'], $GLOBALS['httpPrivateNetworkAllowlist']);
-        snoopyAssertTrue($client->block_private, 'Configured guard was not picked up');
-        snoopyAssertSame(false, $client->fetch('https://10.0.0.1/feed'), 'Configured guard did not block a private target');
-        snoopyAssertTrue($client->fetch('https://127.0.0.1/feed'), 'Configured allowlist was not picked up: ' . $client->error);
+        testAssertTrue($client->block_private, 'Configured guard was not picked up');
+        testAssertSame(false, $client->fetch('https://10.0.0.1/feed'), 'Configured guard did not block a private target');
+        testAssertTrue($client->fetch('https://127.0.0.1/feed'), 'Configured allowlist was not picked up: ' . $client->error);
     },
     'a redirect into a private address is blocked too' => function () {
         snoopyRespondWith('HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/secret\r\n');
         $client = new SnoopyResolvesToPublic();
         $client->block_private = true;
-        snoopyAssertSame(
+        testAssertSame(
             false,
             $client->fetch('https://tracker.test/start'),
             'Redirect to a private address was followed'
         );
-        snoopyAssertTrue(
+        testAssertTrue(
             strpos($client->error, '127.0.0.1') !== false,
             'Blocked redirect must name the offending address, got: ' . $client->error
         );
@@ -996,19 +981,19 @@ $tests = array(
         try {
             $client = new Snoopy();
             $client->maxredirs = 0;
-            snoopyAssertTrue(
+            testAssertTrue(
                 $client->fetch('https://dl.kinozal.guru/download.php?id=1'),
                 'The source HTTPS response must complete'
             );
-            snoopyAssertSame(
+            testAssertSame(
                 'https://kinozal.guru/login.php?to=%2Fdownload.php%3Fid%3D1',
                 $client->lastredirectaddr,
                 'The resolved redirect keeps HTTPS and names the destination host'
             );
             $args = snoopyCurlArgs();
-            snoopyAssertSame('https://dl.kinozal.guru/download.php?id=1', end($args),
+            testAssertSame('https://dl.kinozal.guru/download.php?id=1', end($args),
                 'The fixture sends only the source HTTPS request');
-            snoopyAssertSame('302', $client->status, 'The source response remains visible');
+            testAssertSame('302', $client->status, 'The source response remains visible');
         } finally {
             putenv('SNOOPY_TEST_REDIRECT');
             @unlink($seenPath);
@@ -1021,7 +1006,7 @@ $tests = array(
     // somewhere to go.
     'protocol-relative redirect inherits the scheme over plain HTTP' => function () {
         $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
-        snoopyAssertTrue(is_array($pair), 'Unable to create the socket pair standing in for the connection');
+        testAssertTrue(is_array($pair), 'Unable to create the socket pair standing in for the connection');
         list($near, $far) = $pair;
         fwrite($far, "HTTP/1.1 302 Found\r\nLocation: //kinozal.guru/login.php?to=x\r\n\r\n");
         stream_socket_shutdown($far, STREAM_SHUT_WR);
@@ -1030,7 +1015,7 @@ $tests = array(
         $client->host = 'dl.kinozal.guru';
         $client->port = 80;
         try {
-            snoopyAssertTrue(
+            testAssertTrue(
                 $client->_httprequest('/download.php?id=1', $near, 'http://dl.kinozal.guru/download.php?id=1', 'GET'),
                 'Plain HTTP request did not complete'
             );
@@ -1038,7 +1023,7 @@ $tests = array(
             fclose($near);
             fclose($far);
         }
-        snoopyAssertSame(
+        testAssertSame(
             'http://kinozal.guru/login.php?to=x',
             $client->_redirectaddr,
             'The redirect must be followed to the host it names'
@@ -1046,19 +1031,9 @@ $tests = array(
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $callback) {
-    try {
-        snoopyRespondWith('HTTP/1.1 200 OK\r\n');
-        $callback();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
+$status = testRunCases($tests, function () {
+    snoopyRespondWith('HTTP/1.1 200 OK\r\n');
+});
 
 putenv('SNOOPY_TEST_ARGS');
 putenv('SNOOPY_TEST_SEEN');
@@ -1066,4 +1041,4 @@ putenv('SNOOPY_TEST_SEEN');
 @unlink($curlPath);
 @unlink($argsPath);
 @unlink($_ENV['RU_LOG_FILE']);
-exit($failures === 0 ? 0 : 1);
+exit($status);

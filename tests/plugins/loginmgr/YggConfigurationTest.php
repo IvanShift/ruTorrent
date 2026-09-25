@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/ygg-config-' . getmypid() . '.log';
 
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
@@ -8,13 +10,6 @@ require_once(__DIR__ . '/../../../plugins/extsearch/engines.php');
 require_once(__DIR__ . '/../../../plugins/extsearch/engines/YggTorrent.php');
 // These in-process engine tests model an enabled loginmgr plugin.
 rTorrentSettings::get()->registerPlugin('loginmgr');
-
-function yggSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException($message . ': expected ' . var_export($expected, true) . ', got ' . var_export($actual, true));
-    }
-}
 
 // Copy the small runtime boundary so the real config loader runs in a fresh PHP
 // process without editing an operator's conf or reusing require_once state.
@@ -45,8 +40,8 @@ function yggChild($arguments, $cwd = null)
     fclose($pipes[0]);
     $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
     $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
-    yggSame(0, proc_close($process), 'configuration child exit: ' . $stdout . $stderr);
-    yggSame('', $stderr, 'configuration child diagnostics');
+    testAssertSame(0, proc_close($process), 'configuration child exit: ' . $stdout . $stderr);
+    testAssertSame('', $stderr, 'configuration child diagnostics');
     return $stdout;
 }
 function yggEditedPluginTemplate($path, $origin)
@@ -54,7 +49,7 @@ function yggEditedPluginTemplate($path, $origin)
     $template = file_get_contents($path);
     $edited = preg_replace('/^[ \t]*(?:\/\/[ \t]*)?\$yggTorrentOrigin[ \t]*=[ \t]*[^;]+;/m',
         '$yggTorrentOrigin = ' . var_export($origin, true) . ';', $template, 1, $count);
-    yggSame(1, $count, 'template exposes one origin assignment to edit');
+    testAssertSame(1, $count, 'template exposes one origin assignment to edit');
     return $edited;
 }
 function yggConfigProbe($configuration)
@@ -103,7 +98,7 @@ echo json_encode(array($yggTorrentOrigin, $manager->getAccount($argv[1] . '/engi
 CHILD;
         file_put_contents($root . '/probe.php', $script);
         $stdout = yggChild(array($root . '/probe.php', $expected), $root);
-        yggSame($configuration === 'default' ? array(null, false) : array($expected, 'YggTorrent'),
+        testAssertSame($configuration === 'default' ? array(null, false) : array($expected, 'YggTorrent'),
             json_decode($stdout, true), $configuration . ' configuration reaches account selection');
     } finally { yggRemoveTree($root); }
 }
@@ -166,12 +161,12 @@ $tests = array(
         $log_file = '';
         try {
             $manager = yggManager();
-            yggSame(true, strpos($manager->get(), 'configurationRequired: true') !== false,
+            testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false,
                 'settings show disabled account without a log');
             $engine = new YggConfigSearch();
             $results = array();
             $engine->action('query', 'Tout', $results, 10, false);
-            yggSame(true, strpos($results['']['name'], '$yggTorrentOrigin') !== false,
+            testAssertSame(true, strpos($results['']['name'], '$yggTorrentOrigin') !== false,
                 'search shows required setting without a log');
         } finally {
             $log_file = $previousLog;
@@ -181,13 +176,13 @@ $tests = array(
         global $yggTorrentOrigin;
         $yggTorrentOrigin = '';
         $manager = yggManager();
-        yggSame(true, $manager->getInfo()[0]['configurationRequired'], 'settings API identifies disabled origin');
-        yggSame(true, strpos($manager->get(), 'configurationRequired: true') !== false, 'settings bootstrap identifies disabled origin');
+        testAssertSame(true, $manager->getInfo()[0]['configurationRequired'], 'settings API identifies disabled origin');
+        testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false, 'settings bootstrap identifies disabled origin');
         $engine = new YggConfigSearch();
         $results = array();
         $engine->action('query', 'Tout', $results, 10, false);
-        yggSame(array(), $engine->requests, 'unconfigured engine makes no search request');
-        yggSame(true, strpos($results['']['name'], '$yggTorrentOrigin') !== false, 'search reports the required setting');
+        testAssertSame(array(), $engine->requests, 'unconfigured engine makes no search request');
+        testAssertSame(true, strpos($results['']['name'], '$yggTorrentOrigin') !== false, 'search reports the required setting');
     },
     'Ygg extsearch survives a stale request after loginmgr files are removed' => function () {
         $root = sys_get_temp_dir() . '/ygg-missing-loginmgr-' . uniqid();
@@ -213,8 +208,8 @@ echo json_encode(array($engine->getTorrent('https://tracker.example/engine/downl
 CHILD;
             file_put_contents($root . '/probe.php', $script);
             $answer = json_decode(yggChild(array($root . '/probe.php'), $root), true);
-            yggSame(false, $answer[0], 'stale download is refused without loginmgr');
-            yggSame(true, strpos($answer[1], 'loginmgr') !== false,
+            testAssertSame(false, $answer[0], 'stale download is refused without loginmgr');
+            testAssertSame(true, strpos($answer[1], 'loginmgr') !== false,
                 'stale search explains missing loginmgr');
         } finally { yggRemoveTree($root); }
     },
@@ -226,10 +221,10 @@ CHILD;
             $engine = new YggConfigSearch();
             $results = array();
             $engine->action('query', 'Tout', $results, 10, false);
-            yggSame(array(), $engine->requests, 'disabled loginmgr causes no tracker request');
-            yggSame(true, strpos($results['']['name'], 'loginmgr') !== false,
+            testAssertSame(array(), $engine->requests, 'disabled loginmgr causes no tracker request');
+            testAssertSame(true, strpos($results['']['name'], 'loginmgr') !== false,
                 'stale search explains unavailable dependency');
-            yggSame(false, $engine->getTorrent('https://trusted.example/engine/download_torrent?id=1'),
+            testAssertSame(false, $engine->getTorrent('https://trusted.example/engine/download_torrent?id=1'),
                 'stale download is refused');
         } finally {
             rTorrentSettings::get()->registerPlugin('loginmgr');
@@ -239,29 +234,29 @@ CHILD;
         global $yggTorrentOrigin;
         $yggTorrentOrigin = 'https://trusted.example:8443';
         $manager = yggManager();
-        yggSame(false, $manager->getInfo()[0]['configurationRequired'], 'configured account is available');
+        testAssertSame(false, $manager->getInfo()[0]['configurationRequired'], 'configured account is available');
         $engine = new YggConfigSearch();
         $engine->response = '>1 résultats trouvés<td><div class="hidden"><a id="torrent_name" href="https://foreign.test/torrent/film/action/123">Title</td>'
             . '<a target="123" href="#"><div class="hidden">2h</div><td>1GB</td><td>10</td><td>5</td><td>1</td>';
         $results = array();
         $engine->action('query', 'Tout', $results, 10, false);
-        yggSame('https://trusted.example:8443/engine/search/?name=query&do=search&attempt=1',
+        testAssertSame('https://trusted.example:8443/engine/search/?name=query&do=search&attempt=1',
             $engine->requests[0], 'search uses configured origin');
-        yggSame(true, isset($results['https://trusted.example:8443/engine/download_torrent?id=123']),
+        testAssertSame(true, isset($results['https://trusted.example:8443/engine/download_torrent?id=123']),
             'download link uses configured origin, never the HTML href host');
-        yggSame(false, $engine->getTorrent('https://foreign.test/engine/download_torrent?id=123'),
+        testAssertSame(false, $engine->getTorrent('https://foreign.test/engine/download_torrent?id=123'),
             'stale or foreign download link is refused before a request');
-        yggSame(1, count($engine->requests), 'foreign download attempted no fetch');
+        testAssertSame(1, count($engine->requests), 'foreign download attempted no fetch');
     },
     'Ygg download selection uses a parsed nonempty id parameter' => function () {
         global $yggTorrentOrigin;
         $yggTorrentOrigin = 'https://trusted.example';
         $account = new YggTorrentAccount();
         foreach (array('?id=', '?id[]=1', '?id=9&id=', '?ref=1') as $query) {
-            yggSame(false, $account->test('https://trusted.example/engine/download_torrent' . $query),
+            testAssertSame(false, $account->test('https://trusted.example/engine/download_torrent' . $query),
                 'invalid final id must not select account: ' . $query);
         }
-        yggSame(true, $account->test('https://trusted.example/engine/download_torrent?i%64=abc'),
+        testAssertSame(true, $account->test('https://trusted.example/engine/download_torrent?i%64=abc'),
             'encoded parameter name is parsed as id; Ygg id need not be numeric');
     },
     'a later Ygg search page outage keeps earlier results without a PHP warning' => function () {
@@ -278,8 +273,8 @@ CHILD;
         } finally {
             restore_error_handler();
         }
-        yggSame(2, count($engine->requests), 'second page was requested');
-        yggSame(true, isset($results['https://trusted.example/engine/download_torrent?id=123']),
+        testAssertSame(2, count($engine->requests), 'second page was requested');
+        testAssertSame(true, isset($results['https://trusted.example/engine/download_torrent?id=123']),
             'first page remains usable');
     },
     'a plugin local config can override the global origin' => function () { yggConfigProbe('local'); },
@@ -301,23 +296,23 @@ CHILD;
             $manager->accounts = array('YggTorrent' => array('path' => __DIR__ . '/../../../plugins/loginmgr/accounts/YggTorrent.php',
                 'object' => 'YggTorrentAccount', 'enabled' => 0));
             $manager->getInfo();
-            yggSame('', file_get_contents($log_file), 'disabled account listing is quiet');
+            testAssertSame('', file_get_contents($log_file), 'disabled account listing is quiet');
             $manager->accounts['YggTorrent']['enabled'] = 1;
             foreach (array('https://api.rutracker.cc/api', 'https://feed.example/rss', 'https://tracker.example/engine/download_torrent?ref=1') as $url) {
-                yggSame(false, $manager->getAccount($url), 'unrelated URL has no Ygg account');
+                testAssertSame(false, $manager->getAccount($url), 'unrelated URL has no Ygg account');
             }
-            yggSame('', file_get_contents($log_file), 'unrelated requests do not diagnose Ygg');
+            testAssertSame('', file_get_contents($log_file), 'unrelated requests do not diagnose Ygg');
             // The application log must receive the diagnostic even when PHP's error
             // stream is elsewhere (the CLI and web entrypoints share FileUtil).
             ini_set('error_log', sys_get_temp_dir() . '/ygg-unused-error-' . getmypid());
-            yggSame(false, $manager->getAccount('https://tracker.example/engine/download_torrent?id=1'), 'unconfigured download refuses');
+            testAssertSame(false, $manager->getAccount('https://tracker.example/engine/download_torrent?id=1'), 'unconfigured download refuses');
             $diagnostic = file_get_contents($log_file);
             foreach (array('invalid-or-missing-origin', '$yggTorrentOrigin', 'conf/config.php', 'automatic login are disabled') as $part) {
-                yggSame(true, strpos($diagnostic, $part) !== false, 'application diagnostic names ' . $part);
+                testAssertSame(true, strpos($diagnostic, $part) !== false, 'application diagnostic names ' . $part);
             }
-            yggSame(1, substr_count($diagnostic, "\n"), 'one bounded diagnostic');
+            testAssertSame(1, substr_count($diagnostic, "\n"), 'one bounded diagnostic');
             (new YggTorrentAccount())->check(new YggConfigTransport(), 'fake-user', 'fake-pass', 0);
-            yggSame($diagnostic, file_get_contents($log_file), 'refresh does not repeat configuration warning');
+            testAssertSame($diagnostic, file_get_contents($log_file), 'refresh does not repeat configuration warning');
         } finally {
             ini_set('error_log', $previousErrorLog);
             unlink($log_file);
@@ -335,8 +330,8 @@ CHILD;
                 . '(new YggTorrentAccount())->check(null, "fake-user", "fake-pass", 0);';
             yggChild(array('-r', $script));
             $diagnostic = file_get_contents($log);
-            yggSame(true, strpos($diagnostic, 'invalid-or-missing-origin') !== false, 'refresh diagnoses invalid configuration before using the client');
-            yggSame(1, substr_count($diagnostic, "\n"), 'refresh emits one application diagnostic');
+            testAssertSame(true, strpos($diagnostic, 'invalid-or-missing-origin') !== false, 'refresh diagnoses invalid configuration before using the client');
+            testAssertSame(1, substr_count($diagnostic, "\n"), 'refresh emits one application diagnostic');
         } finally { unlink($log); }
     },
     'invalid origins stay disabled before any credential request' => function () {
@@ -347,16 +342,16 @@ CHILD;
                        'https://user:pass@ygg.example', 'https://ygg.example/path', 'https://ygg.example\\bad', 'https://[broken]') as $origin) {
             $yggTorrentOrigin = $origin;
             $account = new YggConfigLogin();
-            yggSame('', $account->url, 'invalid origin is disabled: ' . var_export($origin, true));
+            testAssertSame('', $account->url, 'invalid origin is disabled: ' . var_export($origin, true));
             if ($origin === 'https://ygg.example:0') {
-                yggSame('bad-port', $account->configurationError(), 'zero port has a precise reason');
+                testAssertSame('bad-port', $account->configurationError(), 'zero port has a precise reason');
             }
             if ($origin === 'https://ygg.example:65536' || $origin === 'https://ygg.example:443x') {
-                yggSame('invalid-url', $account->configurationError(), 'malformed port is rejected before trust');
+                testAssertSame('invalid-url', $account->configurationError(), 'malformed port is rejected before trust');
             }
             $client = new YggConfigTransport();
-            yggSame(false, $account->directLogin($client, 'https://ygg.example'), 'invalid origin refuses login');
-            yggSame(array(), $client->requests, 'no credential request');
+            testAssertSame(false, $account->directLogin($client, 'https://ygg.example'), 'invalid origin refuses login');
+            testAssertSame(array(), $client->requests, 'no credential request');
         }
     },
     'valid normalized origins retain explicit ports in credential POSTs' => function () {
@@ -367,8 +362,8 @@ CHILD;
             $yggTorrentOrigin = $origin;
             $account = new YggConfigLogin();
             $client = new YggConfigTransport();
-            yggSame(true, $account->directLogin($client, $normalized), 'valid origin login');
-            yggSame(array($normalized . '/user/login', 'POST', 'application/x-www-form-urlencoded', 'id=fake-user&pass=fake-pass&submit='),
+            testAssertSame(true, $account->directLogin($client, $normalized), 'valid origin login');
+            testAssertSame(array($normalized . '/user/login', 'POST', 'application/x-www-form-urlencoded', 'id=fake-user&pass=fake-pass&submit='),
                 $client->requests[1], 'credential POST retains the configured origin');
         }
     },
@@ -378,16 +373,11 @@ CHILD;
         foreach (array(199 => false, 200 => true, 299 => true, 300 => false, 403 => false, 503 => false) as $status => $expected) {
             $client = new YggConfigTransport();
             $client->status = $status;
-            yggSame($expected, (new YggConfigLogin())->directLogin($client, 'https://ygg.example'), 'landing status ' . $status);
-            yggSame($expected ? 2 : 1, count($client->requests), 'credential request count for status ' . $status);
+            testAssertSame($expected, (new YggConfigLogin())->directLogin($client, 'https://ygg.example'), 'landing status ' . $status);
+            testAssertSame($expected ? 2 : 1, count($client->requests), 'credential request count for status ' . $status);
         }
     },
 );
-$failures = 0;
-foreach ($tests as $name => $test) {
-    try { $test(); echo "ok - $name\n"; }
-    catch (Throwable $error) { $failures++; echo "not ok - $name\n  " . $error->getMessage() . "\n"; }
-}
-echo count($tests) . " tests, $failures failures\n";
+$status = testRunCases($tests);
 @unlink($_ENV['RU_LOG_FILE']);
-exit($failures ? 1 : 0);
+exit($status);

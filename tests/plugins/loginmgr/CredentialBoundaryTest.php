@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 // Keep this suite's diagnostics out of the shared application log.
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/loginmgr-boundary-' . getmypid() . '.log';
 
@@ -7,13 +9,6 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/YggTorrent.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/LostFilm.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/KinozalTV.php');
-
-function boundarySame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException($message . ': expected ' . var_export($expected, true) . ', got ' . var_export($actual, true));
-    }
-}
 
 // The transport double mirrors cookie import using fixture headers.
 // SnoopyTest exercises the real HTTP parser with socket pairs and HTTPS with fake curl.
@@ -109,11 +104,11 @@ $tests = array(
                 if ($source === 'raw-cookie') { $client->rawheaders['cOoKiE'] = 'session=fake-secret'; }
                 if ($source === 'raw-auth') { $client->rawheaders['aUtHoRiZaTiOn'] = 'Bearer fake-secret'; }
                 if ($source === 'raw-proxy-auth') { $client->rawheaders['PrOxY-AuThOrIzAtIoN'] = 'Basic fake-secret'; }
-                boundarySame(true, $client->fetch('https://tracker.example/start'), $source . ' redirect to ' . $target);
-                boundarySame(1, count($client->requests), 'no second request leaves the client');
-                boundarySame(302, $client->status, 'the received HTTP response remains available');
-                boundarySame($target, $client->lastredirectaddr, 'the refused redirect remains observable to tracker classifiers');
-                boundarySame('credential-redirect-refused', $client->error, 'classified refusal');
+                testAssertSame(true, $client->fetch('https://tracker.example/start'), $source . ' redirect to ' . $target);
+                testAssertSame(1, count($client->requests), 'no second request leaves the client');
+                testAssertSame(302, $client->status, 'the received HTTP response remains available');
+                testAssertSame($target, $client->lastredirectaddr, 'the refused redirect remains observable to tracker classifiers');
+                testAssertSame('credential-redirect-refused', $client->error, 'classified refusal');
             }
         }
     },
@@ -122,16 +117,16 @@ $tests = array(
             $client = new BoundaryTransport();
             $client->cookies = array('sid' => 'existing');
             $client->redirect = $target;
-            boundarySame(true, $client->fetch('http://tracker.example:80/start'), 'upgrade response');
-            boundarySame(2, count($client->requests), 'upgrade follows');
-            boundarySame(array('sid' => 'existing'), $client->requests[1][3], 'upgrade retains session');
+            testAssertSame(true, $client->fetch('http://tracker.example:80/start'), 'upgrade response');
+            testAssertSame(2, count($client->requests), 'upgrade follows');
+            testAssertSame(array('sid' => 'existing'), $client->requests[1][3], 'upgrade retains session');
         }
         foreach (array(array('http://tracker.example:8080/start', 'https://tracker.example/next'),
                        array('http://tracker.example/start', 'https://tracker.example:8443/next')) as $pair) {
             $client = new BoundaryTransport(); $client->cookies = array('sid' => 'existing');
             $client->redirect = $pair[1];
             $client->fetch($pair[0]);
-            boundarySame(1, count($client->requests), 'nondefault port is a separate trust decision');
+            testAssertSame(1, count($client->requests), 'nondefault port is a separate trust decision');
         }
     },
     'anonymous redirects without source cookies keep cookies from a later same origin hop' => function () {
@@ -141,9 +136,9 @@ $tests = array(
             array(302, 'https://cdn.example/last', array('Set-Cookie: destination=own; Path=/'), ''),
             array(200, false, array(), 'torrent'),
         );
-        boundarySame(true, $client->fetch('https://tracker.example/start'), 'anonymous chain succeeds');
-        boundarySame(3, count($client->requests), 'all three replies are consumed');
-        boundarySame(array('destination' => 'own'), $client->requests[2][3], 'CDN can retain its own cookie');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous chain succeeds');
+        testAssertSame(3, count($client->requests), 'all three replies are consumed');
+        testAssertSame(array('destination' => 'own'), $client->requests[2][3], 'CDN can retain its own cookie');
     },
     'a refused redirect leaves response cookies explicit and never imports them on reuse' => function () {
         global $log_file;
@@ -156,20 +151,20 @@ $tests = array(
                 array(302, 'https://evil-refusal.test/secret?token=private', array('Set-Cookie: fresh=private; Path=/'), ''),
                 array(200, false, array(), 'next response'),
             );
-            boundarySame(true, $client->fetch('https://tracker.example/login', 'POST', '', 'password=private'), 'POST response survives refusal');
-            boundarySame(302, $client->status, 'login sees the actual response status');
-            boundarySame('fresh=private; Path=/', $client->get_header('Set-Cookie'), 'trusted login response cookies remain readable');
-            boundarySame(false, $client->_redirectaddr, 'no pending cookie import remains');
+            testAssertSame(true, $client->fetch('https://tracker.example/login', 'POST', '', 'password=private'), 'POST response survives refusal');
+            testAssertSame(302, $client->status, 'login sees the actual response status');
+            testAssertSame('fresh=private; Path=/', $client->get_header('Set-Cookie'), 'trusted login response cookies remain readable');
+            testAssertSame(false, $client->_redirectaddr, 'no pending cookie import remains');
             $log = file_get_contents($log_file);
-            boundarySame(true, strpos($log, 'credential-redirect-refused') !== false, 'application log classifies refusal');
-            boundarySame(true, strpos($log, 'https://tracker.example:443 -> https://evil-refusal.test:443') !== false, 'log names source and target origins');
-            boundarySame(false, strpos($log, 'private') !== false, 'application log contains no URL or cookie secrets');
-            boundarySame(true, $client->fetch('https://other.test/next'), 'independent request remains usable');
-            boundarySame(array(), $client->requests[1][3], 'previous response cookie was not imported');
-            boundarySame('', $client->error, 'independent success clears the previous refusal');
+            testAssertSame(true, strpos($log, 'credential-redirect-refused') !== false, 'application log classifies refusal');
+            testAssertSame(true, strpos($log, 'https://tracker.example:443 -> https://evil-refusal.test:443') !== false, 'log names source and target origins');
+            testAssertSame(false, strpos($log, 'private') !== false, 'application log contains no URL or cookie secrets');
+            testAssertSame(true, $client->fetch('https://other.test/next'), 'independent request remains usable');
+            testAssertSame(array(), $client->requests[1][3], 'previous response cookie was not imported');
+            testAssertSame('', $client->error, 'independent success clears the previous refusal');
             $client->queue = array(array(302, 'https://evil-refusal.test/again', array(), ''));
-            boundarySame(true, $client->fetch('https://tracker.example/login', 'POST', '', 'password=private'), 'repeat refusal');
-            boundarySame($log, file_get_contents($log_file), 'same origin pair is logged once per PHP request');
+            testAssertSame(true, $client->fetch('https://tracker.example/login', 'POST', '', 'password=private'), 'repeat refusal');
+            testAssertSame($log, file_get_contents($log_file), 'same origin pair is logged once per PHP request');
         } finally { unlink($log_file); $log_file = $previous; }
     },
     'an expired Kinozal session follows its trusted login redirect and downloads after relogin' => function () {
@@ -183,14 +178,14 @@ $tests = array(
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
             array(200, false, array(), 'd4:infodee'),
         );
-        boundarySame(true, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''), 'cached guest session is repaired');
-        boundarySame(array($url, 'https://kinozal.guru/login.php', 'https://kinozal.guru',
+        testAssertSame(true, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''), 'cached guest session is repaired');
+        testAssertSame(array($url, 'https://kinozal.guru/login.php', 'https://kinozal.guru',
             'https://kinozal.guru/takelogin.php', $url), array_column($client->requests, 0), 'only trusted login and final download are requested');
-        boundarySame('username=user&password=pass', $client->requests[3][2], 'login uses real account body');
-        boundarySame(array('sid' => 'renewed'), $client->requests[4][3], 'POST cookie is kept without following the downgrade');
-        boundarySame(1, $account->data->stored, 'renewed session is stored');
-        boundarySame(0, $account->data->removed, 'renewal does not discard the session');
-        boundarySame(null, $client->redirectTrust, 'account trust is scoped to its own operation');
+        testAssertSame('username=user&password=pass', $client->requests[3][2], 'login uses real account body');
+        testAssertSame(array('sid' => 'renewed'), $client->requests[4][3], 'POST cookie is kept without following the downgrade');
+        testAssertSame(1, $account->data->stored, 'renewed session is stored');
+        testAssertSame(0, $account->data->removed, 'renewal does not discard the session');
+        testAssertSame(null, $client->redirectTrust, 'account trust is scoped to its own operation');
     },
     'automatic account refresh scopes the same trusted redirect policy' => function () {
         $account = new BoundaryKinozal();
@@ -202,10 +197,10 @@ $tests = array(
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
         );
         $account->check($client, 'user', 'pass', 0);
-        boundarySame(array('https://kinozal.guru', 'https://dl.kinozal.guru/welcome',
+        testAssertSame(array('https://kinozal.guru', 'https://dl.kinozal.guru/welcome',
             'https://kinozal.guru/takelogin.php'), array_column($client->requests, 0), 'refresh may follow account-owned HTTPS URLs');
-        boundarySame(1, $account->data->stored, 'refresh stores the received session');
-        boundarySame(null, $client->redirectTrust, 'refresh restores caller policy');
+        testAssertSame(1, $account->data->stored, 'refresh stores the received session');
+        testAssertSame(null, $client->redirectTrust, 'refresh restores caller policy');
     },
     'a depth-limited response never imports its cookies on the next explicit request' => function () {
         $client = new BoundaryTransport();
@@ -214,9 +209,9 @@ $tests = array(
             array(302, 'https://tracker.example/next', array('Set-Cookie: stopped=private; Path=/'), ''),
             array(200, false, array(), 'independent'),
         );
-        boundarySame(true, $client->fetch('https://tracker.example/start'), 'depth limit retains response');
-        boundarySame(true, $client->fetch('https://other.test/independent'), 'later explicit fetch works');
-        boundarySame(array(), $client->requests[1][3], 'depth limit left no automatic cookie import');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'depth limit retains response');
+        testAssertSame(true, $client->fetch('https://other.test/independent'), 'later explicit fetch works');
+        testAssertSame(array(), $client->requests[1][3], 'depth limit left no automatic cookie import');
     },
     'account redirect trust is restored on refusal and never follows a lookalike host' => function () {
         $account = new BoundaryKinozal();
@@ -224,22 +219,22 @@ $tests = array(
         $previous = function ($url) { return true; };
         $client->redirectTrust = $previous;
         $client->redirect = 'https://kinozal.guru.evil.test/login.php';
-        boundarySame(false, $account->fetch($client, 'https://dl.kinozal.guru/download.php?id=7', 'user', 'pass', 'GET', '', ''), 'untrusted redirect is not a guest verdict');
-        boundarySame(1, count($client->requests), 'neither credentials nor automatic login follow the target');
-        boundarySame(0, $account->data->removed, 'ambiguous answer does not delete cached session');
-        boundarySame($previous, $client->redirectTrust, 'caller policy restored');
+        testAssertSame(false, $account->fetch($client, 'https://dl.kinozal.guru/download.php?id=7', 'user', 'pass', 'GET', '', ''), 'untrusted redirect is not a guest verdict');
+        testAssertSame(1, count($client->requests), 'neither credentials nor automatic login follow the target');
+        testAssertSame(0, $account->data->removed, 'ambiguous answer does not delete cached session');
+        testAssertSame($previous, $client->redirectTrust, 'caller policy restored');
     },
     'same origin redirects preserve session and anonymous redirects remain available' => function () {
         $client = new BoundaryTransport();
         $client->cookies = array('session' => 'fake-secret');
         $client->replyCookies = true;
         $client->redirect = 'https://TRACKER.EXAMPLE.:443/next';
-        boundarySame(true, $client->fetch('https://tracker.example/start'), 'normalized same origin');
-        boundarySame(array('session' => 'fake-secret', 'fresh' => 'secret'), $client->requests[1][3], 'cookies remain available');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'normalized same origin');
+        testAssertSame(array('session' => 'fake-secret', 'fresh' => 'secret'), $client->requests[1][3], 'cookies remain available');
         $client = new BoundaryTransport();
         $client->redirect = 'https://cdn.example/file';
-        boundarySame(true, $client->fetch('https://tracker.example/start'), 'anonymous CDN redirect');
-        boundarySame(2, count($client->requests), 'anonymous request follows redirect');
+        testAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous CDN redirect');
+        testAssertSame(2, count($client->requests), 'anonymous request follows redirect');
     },
     'redirect depth belongs to one request chain when a client is reused' => function () {
         $client = new BoundaryTransport();
@@ -248,9 +243,9 @@ $tests = array(
         $client->redirect = 'https://tracker.example/next';
         foreach (array(1, 2) as $attempt) {
             $client->requests = array();
-            boundarySame(true, $client->fetch('https://tracker.example/start'), 'same-origin chain ' . $attempt);
-            boundarySame(2, count($client->requests), 'each explicit fetch can follow one redirect');
-            boundarySame(0, $client->_redirectdepth, 'recursion depth unwinds after the chain');
+            testAssertSame(true, $client->fetch('https://tracker.example/start'), 'same-origin chain ' . $attempt);
+            testAssertSame(2, count($client->requests), 'each explicit fetch can follow one redirect');
+            testAssertSame(0, $client->_redirectdepth, 'recursion depth unwinds after the chain');
         }
     },
     'Ygg trusts only its configured HTTPS origin and never a similarly named domain' => function () {
@@ -264,22 +259,22 @@ $tests = array(
                        'https://user@www.ygg.re/engine/download_torrent?id=1',
                        'https://user:pass@www.ygg.re/engine/download_torrent?id=1',
                        'https://@www.ygg.re/engine/download_torrent?id=1') as $url) {
-            boundarySame(false, $account->test($url), 'selector refuses ' . $url);
+            testAssertSame(false, $account->test($url), 'selector refuses ' . $url);
             foreach (array(false, true) as $cached) {
                 $account->cached = $cached;
                 $client = new BoundaryTransport();
                 $client->guest = true;
-                boundarySame(false, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'direct fetch refuses untrusted origin');
-                boundarySame(array(), $client->requests, 'no session or credential request');
-                boundarySame(false, $account->directLogin($client, $url), 'login independently refuses');
-                boundarySame(array(), $client->requests, 'login makes no request');
+                testAssertSame(false, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'direct fetch refuses untrusted origin');
+                testAssertSame(array(), $client->requests, 'no session or credential request');
+                testAssertSame(false, $account->directLogin($client, $url), 'login independently refuses');
+                testAssertSame(array(), $client->requests, 'login makes no request');
             }
         }
-        boundarySame(true, $account->test('https://WWW.YGG.RE./engine/download_torrent?id=1'), 'normalized configured origin');
+        testAssertSame(true, $account->test('https://WWW.YGG.RE./engine/download_torrent?id=1'), 'normalized configured origin');
         $account->cached = false;
         $client = new BoundaryTransport();
-        boundarySame(true, $account->fetch($client, 'https://www.ygg.re/engine/download_torrent?id=1', 'fake-user', 'fake-pass', 'GET', '', ''), 'configured login succeeds');
-        boundarySame(array('https://www.ygg.re/user/login', 'POST', 'id=fake-user&pass=fake-pass&submit=', array()), $client->requests[1], 'password goes to configured origin');
+        testAssertSame(true, $account->fetch($client, 'https://www.ygg.re/engine/download_torrent?id=1', 'fake-user', 'fake-pass', 'GET', '', ''), 'configured login succeeds');
+        testAssertSame(array('https://www.ygg.re/user/login', 'POST', 'id=fake-user&pass=fake-pass&submit=', array()), $client->requests[1], 'password goes to configured origin');
     },
     'account scoped anonymous redirect never imports a foreign cookie before login' => function () {
         global $yggTorrentOrigin;
@@ -292,12 +287,12 @@ $tests = array(
             array(200, false, array(), 'login accepted'),
         );
         $url = 'https://trusted.example/engine/download_torrent?id=7';
-        boundarySame(false, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''),
+        testAssertSame(false, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''),
             'an account does not authenticate after leaving its trusted origin');
-        boundarySame(array($url), array_column($client->requests, 0),
+        testAssertSame(array($url), array_column($client->requests, 0),
             'the account never fetches the foreign landing or sends a password afterward');
-        boundarySame(array(), $client->cookies, 'the foreign Set-Cookie never enters the flat jar');
-        boundarySame('credential-redirect-refused', $client->error, 'the refusal remains visible');
+        testAssertSame(array(), $client->cookies, 'the foreign Set-Cookie never enters the flat jar');
+        testAssertSame('credential-redirect-refused', $client->error, 'the refusal remains visible');
     },
     'Ygg refresh uses a configured origin and an unconfigured account sends nothing' => function () {
         global $yggTorrentOrigin;
@@ -306,20 +301,20 @@ $tests = array(
             $account = new BoundaryYgg();
             $client = new BoundaryTransport();
             $account->check($client, 'fake-user', 'fake-pass', 0);
-            boundarySame(array(), $client->requests, 'invalid configuration cannot refresh');
+            testAssertSame(array(), $client->requests, 'invalid configuration cannot refresh');
         }
         $yggTorrentOrigin = 'https://www.ygg.re';
         $account = new BoundaryYgg();
         $client = new BoundaryTransport();
         $account->check($client, 'fake-user', 'fake-pass', 0);
-        boundarySame('https://www.ygg.re', $client->requests[0][0], 'refresh landing page');
-        boundarySame('https://www.ygg.re/user/login', $client->requests[1][0], 'refresh credential endpoint');
+        testAssertSame('https://www.ygg.re', $client->requests[0][0], 'refresh landing page');
+        testAssertSame('https://www.ygg.re/user/login', $client->requests[1][0], 'refresh credential endpoint');
     },
     'an account without an origin cannot enter automatic login' => function () {
         $account = new BoundaryUnconfigured();
-        boundarySame('', $account->url, 'the base account has no placeholder website');
+        testAssertSame('', $account->url, 'the base account has no placeholder website');
         $account->check(new BoundaryTransport(), 'fake-user', 'fake-pass', 0);
-        boundarySame(0, $account->logins, 'no credential flow starts without a configured origin');
+        testAssertSame(0, $account->logins, 'no credential flow starts without a configured origin');
     },
     'an automatic refresh without origin writes one classified diagnostic' => function () {
         global $log_file;
@@ -330,9 +325,9 @@ $tests = array(
             $account->check(new BoundaryTransport(), 'fake-user', 'fake-pass', 0);
             $account->check(new BoundaryTransport(), 'fake-user', 'fake-pass', 0);
             $log = file_get_contents($log_file);
-            boundarySame(1, substr_count($log, 'loginmgr: missing-origin: BoundaryUnconfiguredLogged'),
+            testAssertSame(1, substr_count($log, 'loginmgr: missing-origin: BoundaryUnconfiguredLogged'),
                 'unconfigured account explains skipped automatic refresh only once');
-            boundarySame(0, $account->logins, 'diagnostic sends no credentials');
+            testAssertSame(0, $account->logins, 'diagnostic sends no credentials');
         } finally {
             unlink($log_file);
             $log_file = $previous;
@@ -354,15 +349,10 @@ $tests = array(
             $client->results = 'download response';
             $client->lastredirectaddr = 'https://lostfilm.tv/browse.php?cat=1';
             $account->recover($client, $url);
-            boundarySame($id === false ? array() : array('https://lostfilm.tv/details.php?id=' . $id), array_column($client->requests, 0), 'recovery target for ' . $url);
+            testAssertSame($id === false ? array() : array('https://lostfilm.tv/details.php?id=' . $id), array_column($client->requests, 0), 'recovery target for ' . $url);
         }
     },
 );
-$failures = 0;
-foreach ($tests as $name => $test) {
-    try { $test(); echo "ok - $name\n"; }
-    catch (Throwable $error) { $failures++; echo "not ok - $name\n  " . $error->getMessage() . "\n"; }
-}
-echo count($tests) . " tests, $failures failures\n";
+$status = testRunCases($tests);
 @unlink($_ENV['RU_LOG_FILE']);
-exit($failures ? 1 : 0);
+exit($status);

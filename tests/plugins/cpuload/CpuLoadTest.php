@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 /**
  * rCPU::get() reports the one-minute load as a percentage of the box's cores.
  *
@@ -26,34 +28,24 @@ class CpuLoadStub extends rCPU
     }
 }
 
-function cpuAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
-}
-
 $tests = array(
     'the load is reported as a percentage of the cores' => function () {
         $cpu = new CpuLoadStub();
         $cpu->count = 4;
         $cpu->stubLoadavg = array('2.00', '1.00', '0.50');
-        cpuAssertSame(50.0, $cpu->get(), 'two busy cores out of four is 50%');
+        testAssertSame(50.0, $cpu->get(), 'two busy cores out of four is 50%');
         $cpu->stubLoadavg = array('1.234', '1.00', '0.50');
-        cpuAssertSame(31.0, $cpu->get(), 'the percentage is rounded');
+        testAssertSame(31.0, $cpu->get(), 'the percentage is rounded');
         $cpu->count = 1;
         $cpu->stubLoadavg = array('0.00', '0.00', '0.00');
-        cpuAssertSame(0.0, $cpu->get(), 'an idle box reads zero');
+        testAssertSame(0.0, $cpu->get(), 'an idle box reads zero');
     },
 
     'an overloaded box is clamped to 100' => function () {
         $cpu = new CpuLoadStub();
         $cpu->count = 2;
         $cpu->stubLoadavg = array('9.90', '4.00', '2.00');
-        cpuAssertSame(100.0, $cpu->get(), 'the meter never goes past full');
+        testAssertSame(100.0, $cpu->get(), 'the meter never goes past full');
     },
 
     'the load average is read on this platform' => function () {
@@ -78,16 +70,4 @@ $tests = array(
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $test) {
-    try {
-        $test();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
-exit($failures === 0 ? 0 : 1);
+exit(testRunCases($tests));

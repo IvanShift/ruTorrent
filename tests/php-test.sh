@@ -3,30 +3,6 @@
 script_dir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "$script_dir" || exit 1
 
-TEST_RUN='
-$failures = 0;
-foreach(get_declared_classes() as $cls) {
-	if (is_subclass_of($cls, "TestCase") && (new ReflectionClass($cls))->isInstantiable()) {
-		echo "Test: {$cls}\n";
-		$obj = new $cls();
-		try {
-			$obj->setUp();
-			$obj->run();
-		} catch (Throwable $e) {
-			echo "Test {$cls} failed with error: ".$e->getMessage()."\n";
-			$failures++;
-		}
-		try {
-			$obj->tearDown();
-		} catch (Throwable $e) {
-			echo "Test {$cls} tearDown failed with error: ".$e->getMessage()."\n";
-			$failures++;
-		}
-		$failures += $obj->failureCount();
-	}
-}
-if ($failures > 0) exit(1);'
-
 # Exit non-zero if any test file fails, so the suite can gate CI. Counted
 # TestCase and self-running TestLib failures set a non-zero exit; the output
 # matcher still catches diagnostics from other self-running fixtures.
@@ -65,7 +41,8 @@ do
 	# Absolute: this stands in for __DIR__ below, and a relative path makes a
 	# fixture symlink resolve against the wrong directory.
 	DIR=$(CDPATH= cd -- "$(dirname "$t")" && pwd)
-	out=$(php -c php-test.ini -f <(cat <(sed "s@__DIR__@\"$DIR\"@g" "$t") <(echo "$TEST_RUN")) 2>&1)
+	out=$(php -c php-test.ini -d auto_append_file="$script_dir/php/TestCaseRunner.php" \
+		-f <(sed "s@__DIR__@\"$DIR\"@g" "$t") 2>&1)
 	code=$?
 	printf '%s\n' "$out"
 	# A present *Test.php is not proof that its tests ran. TestCase emits a

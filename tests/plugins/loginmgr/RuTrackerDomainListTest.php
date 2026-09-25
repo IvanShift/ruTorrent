@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 /**
  * ruTrackerAccount's domain list -- the hosts this account will send the
  * rutracker.org session to -- and its deliberate difference from the RuTracker
@@ -26,16 +28,6 @@
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php');
 require_once(__DIR__ . '/../../../plugins/rutracker_check/detector.php');
-
-function rtdAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
-}
 
 function rtdForumHosts()
 {
@@ -70,7 +62,7 @@ $tests = array(
         // Written down so that adding a fifth is a decision rather than an
         // edit: whoever adds one has to come here, read why rutracker.cc and
         // t-ru.org are absent, and say the same about the new host.
-        rtdAssertSame(
+        testAssertSame(
             array('rutracker.org', 'rutracker.cr', 'rutracker.net', 'rutracker.nl'),
             rtdForumHosts(),
             'ruTrackerAccount::FORUM_HOSTS changed'
@@ -79,12 +71,12 @@ $tests = array(
 
     'every listed mirror is claimed, and only under /forum/' => function () {
         foreach (rtdForumHosts() as $host) {
-            rtdAssertSame(true, (bool) (new ruTrackerAccount())->test('https://' . $host . '/forum/dl.php?t=1'),
+            testAssertSame(true, (bool) (new ruTrackerAccount())->test('https://' . $host . '/forum/dl.php?t=1'),
                 $host . ' must be claimed');
             // The site's own links carry the www label.
-            rtdAssertSame(true, (bool) (new ruTrackerAccount())->test('https://www.' . $host . '/forum/viewtopic.php?t=1'),
+            testAssertSame(true, (bool) (new ruTrackerAccount())->test('https://www.' . $host . '/forum/viewtopic.php?t=1'),
                 'www.' . $host . ' must be claimed');
-            rtdAssertSame(false, (bool) (new ruTrackerAccount())->test('https://' . $host . '/other/'),
+            testAssertSame(false, (bool) (new ruTrackerAccount())->test('https://' . $host . '/other/'),
                 $host . ' outside /forum/ must not be claimed');
         }
     },
@@ -95,9 +87,9 @@ $tests = array(
         // domains out a second time, so a mirror added to test() alone would
         // have been claimed and then fetched as a plain GET with neither.
         foreach (rtdForumHosts() as $host) {
-            rtdAssertSame('1', rtdDownloadId('https://' . $host . '/forum/dl.php?t=1'),
+            testAssertSame('1', rtdDownloadId('https://' . $host . '/forum/dl.php?t=1'),
                 'dl.php on ' . $host . ' must be recognised');
-            rtdAssertSame('1', rtdDownloadId('https://www.' . $host . '/forum/dl.php?t=1'),
+            testAssertSame('1', rtdDownloadId('https://www.' . $host . '/forum/dl.php?t=1'),
                 'dl.php on www.' . $host . ' must be recognised');
         }
     },
@@ -110,9 +102,9 @@ $tests = array(
         // api.rutracker.cc/v1/static/ and feed.rutracker.cc/atom/
         // (plugins/rutracker_check/forumindex.php), URLs no account claims.
         foreach (array('rutracker.cc', 'api.rutracker.cc', 'bt.t-ru.org') as $host) {
-            rtdAssertSame(true, RuTrackerDetector::isTrackerHost($host),
+            testAssertSame(true, RuTrackerDetector::isTrackerHost($host),
                 $host . ' is one rutracker_check calls RuTracker\'s');
-            rtdAssertSame(false, (bool) (new ruTrackerAccount())->test('https://' . $host . '/forum/dl.php?t=1'),
+            testAssertSame(false, (bool) (new ruTrackerAccount())->test('https://' . $host . '/forum/dl.php?t=1'),
                 $host . ' must not receive this account\'s session');
         }
     },
@@ -122,22 +114,10 @@ $tests = array(
         // and unknown there would be a mirror the checker cannot attribute a
         // torrent to.
         foreach (rtdForumHosts() as $host) {
-            rtdAssertSame(true, RuTrackerDetector::isTrackerHost($host),
+            testAssertSame(true, RuTrackerDetector::isTrackerHost($host),
                 $host . ' must also be RuTracker\'s to rutracker_check');
         }
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $callback) {
-    try {
-        $callback();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
-exit($failures === 0 ? 0 : 1);
+exit(testRunCases($tests));

@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 /**
  * Shared harness for the rutracker_check test suite.
  *
@@ -330,19 +332,12 @@ class StrictTestSuite
 
 function strictAssertTrue($condition, $message)
 {
-    if (!$condition) {
-        throw new RuntimeException($message);
-    }
+    testAssertTrue($condition, $message);
 }
 
 function strictAssertSame($expected, $actual, $message)
 {
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
+    testAssertSame($expected, $actual, $message);
 }
 
 // Every log line this plugin writes must be English. The UI text moved into

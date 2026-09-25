@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 /**
  * accountManager picks an account for a URL by asking each enabled account
  * test($url). Getting that wrong is not a cosmetic bug: the account it picks
@@ -67,39 +69,29 @@ class ProbeRecordingTransport
     }
 }
 
-function selAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
-}
-
 $tests = array(
     'the first download after login is prepared with the complete POST contract' => function () {
         $account = new ProbeRuTrackerDownload();
         $account->cached = false;
         $client = new ProbeRecordingTransport();
         $url = 'https://rutracker.cr/forum/dl.php?t=42';
-        selAssertSame(true, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'login and download');
-        selAssertSame(2, count($client->requests), 'login then download');
-        selAssertSame('https://rutracker.org/forum/login.php', $client->requests[0]['url'], 'password goes to the configured login origin');
-        selAssertSame(array('url' => $url, 'method' => 'POST', 'contentType' => 'application/x-www-form-urlencoded', 'body' => '', 'bb_dl' => '42'), $client->requests[1], 'download after login');
+        testAssertSame(true, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'login and download');
+        testAssertSame(2, count($client->requests), 'login then download');
+        testAssertSame('https://rutracker.org/forum/login.php', $client->requests[0]['url'], 'password goes to the configured login origin');
+        testAssertSame(array('url' => $url, 'method' => 'POST', 'contentType' => 'application/x-www-form-urlencoded', 'body' => '', 'bb_dl' => '42'), $client->requests[1], 'download after login');
     },
     'a rutracker download url in either spelling of the host is prepared as a download' => function () {
         foreach (array('https://rutracker.org/forum/dl.php?t=12345', 'https://rutracker.org./forum/dl.php?t=12345',
                        'https://RUTRACKER.ORG/forum/dl.php?t=12345') as $url) {
             $account = new ProbeRuTrackerDownload();
             $client = new ProbeRecordingTransport();
-            selAssertSame(true, $account->test($url), $url . ' is claimed');
-            selAssertSame(true, $account->fetch($client, $url, '', '', 'GET', '', ''), $url . ' is fetched');
-            selAssertSame(1, count($client->requests), 'one request went out for ' . $url);
-            selAssertSame('POST', $client->requests[0]['method'], $url . ' goes out as the download POST');
-            selAssertSame('application/x-www-form-urlencoded', $client->requests[0]['contentType'], 'download content type');
-            selAssertSame('', $client->requests[0]['body'], 'empty download POST body');
-            selAssertSame('12345', $client->requests[0]['bb_dl'], 'with the bb_dl cookie naming the topic');
+            testAssertSame(true, $account->test($url), $url . ' is claimed');
+            testAssertSame(true, $account->fetch($client, $url, '', '', 'GET', '', ''), $url . ' is fetched');
+            testAssertSame(1, count($client->requests), 'one request went out for ' . $url);
+            testAssertSame('POST', $client->requests[0]['method'], $url . ' goes out as the download POST');
+            testAssertSame('application/x-www-form-urlencoded', $client->requests[0]['contentType'], 'download content type');
+            testAssertSame('', $client->requests[0]['body'], 'empty download POST body');
+            testAssertSame('12345', $client->requests[0]['bb_dl'], 'with the bb_dl cookie naming the topic');
         }
         // What the id is read from, and what it is not.
         $account = new ProbeRuTrackerDownload();
@@ -117,7 +109,7 @@ $tests = array(
         ) as $url => $isDownload) {
             $client = new ProbeRecordingTransport();
             $account->fetch($client, $url, '', '', 'GET', '', '');
-            selAssertSame($isDownload ? 'POST' : 'GET', $client->requests[0]['method'], $url);
+            testAssertSame($isDownload ? 'POST' : 'GET', $client->requests[0]['method'], $url);
         }
     },
     // The query goes out untouched, so the id the cookie names has to be the
@@ -133,9 +125,9 @@ $tests = array(
         ) as $url => $id) {
             $client = new ProbeRecordingTransport();
             $account->fetch($client, $url, '', '', 'GET', '', '');
-            selAssertSame($url, $client->requests[0]['url'], 'the query is sent as given');
-            selAssertSame('POST', $client->requests[0]['method'], $url . ' is a download');
-            selAssertSame($id, $client->requests[0]['bb_dl'], $url . ': bb_dl names the id the forum reads');
+            testAssertSame($url, $client->requests[0]['url'], 'the query is sent as given');
+            testAssertSame('POST', $client->requests[0]['method'], $url . ' is a download');
+            testAssertSame($id, $client->requests[0]['bb_dl'], $url . ': bb_dl names the id the forum reads');
         }
     },
     'an nnmclub url in either spelling of the host reaches the account, and login.php never does' => function () {
@@ -167,7 +159,7 @@ $tests = array(
             'https://nnmclub.to/other/viewtopic.php?t=1'  => false,
             'https://evil.test/nnmclub.to/forum/dl.php'   => false,
         ) as $url => $expected) {
-            selAssertSame($expected, (bool) $account->test($url), $url);
+            testAssertSame($expected, (bool) $account->test($url), $url);
         }
     },
     // Whoever writes the URL picks the spelling of the host. Case is one
@@ -178,9 +170,9 @@ $tests = array(
     // (php/urlhost.php), so the same folding holds here.
     'two spellings of the same host reach the same account' => function () {
         $account = new ABTorrentsAccount();
-        selAssertSame(true, $account->test('https://ABTORRENTS.ME/x'), 'a host has no case');
-        selAssertSame(true, $account->test('https://abtorrents.me./x'), 'the root dot names the same host');
-        selAssertSame(false, $account->test('https://abtorrents.me.evil.test./x'),
+        testAssertSame(true, $account->test('https://ABTORRENTS.ME/x'), 'a host has no case');
+        testAssertSame(true, $account->test('https://abtorrents.me./x'), 'the root dot names the same host');
+        testAssertSame(false, $account->test('https://abtorrents.me.evil.test./x'),
             'and the root dot does not rescue a look-alike');
     },
     'an account is chosen by the url host, not by a substring of the url' => function () {
@@ -211,11 +203,11 @@ $tests = array(
         foreach ($cases as $case) {
             list($class, $url, $expected) = $case;
             $account = new $class();
-            selAssertSame($expected, (bool) $account->test($url), $class . ' vs ' . $url);
+            testAssertSame($expected, (bool) $account->test($url), $class . ' vs ' . $url);
             if ($expected) {
                 $host = parse_url($url, PHP_URL_HOST);
                 foreach (array(strtoupper($host), $host . '.') as $spelling) {
-                    selAssertSame(true, $account->test(str_replace($host, $spelling, $url)), $class . ' normalized host');
+                    testAssertSame(true, $account->test(str_replace($host, $spelling, $url)), $class . ' normalized host');
                 }
             }
         }
@@ -233,7 +225,7 @@ $tests = array(
         ) as $case) {
             list($class, $url) = $case;
             $account = new $class();
-            selAssertSame(false, (bool) $account->test($url),
+            testAssertSame(false, (bool) $account->test($url),
                 $class . ' must not claim the http form of an https site');
         }
     },
@@ -246,10 +238,10 @@ $tests = array(
             'YggTorrentAccount' => '/engine/download_torrent?id=1');
         foreach ($productionAccountClasses as $class) {
             $account = new $class();
-            selAssertSame('https', parse_url($account->url, PHP_URL_SCHEME), $class . ' has an HTTPS origin');
+            testAssertSame('https', parse_url($account->url, PHP_URL_SCHEME), $class . ' has an HTTPS origin');
             $url = rtrim($account->url, '/') . (isset($paths[$class]) ? $paths[$class] : '/x');
-            selAssertSame(true, $account->test($url), $class . ' positive control');
-            selAssertSame(false, $account->test(preg_replace('/^https:/', 'http:', $url)), $class . ' refuses HTTP');
+            testAssertSame(true, $account->test($url), $class . ' positive control');
+            testAssertSame(false, $account->test(preg_replace('/^https:/', 'http:', $url)), $class . ' refuses HTTP');
         }
     },
 
@@ -265,13 +257,13 @@ $tests = array(
                 'object' => 'ruTrackerAccount',
             ));
             $url = 'http://rutracker.org/forum/dl.php?t=42&passkey=private';
-            selAssertSame(false, $manager->getAccount($url), 'HTTP URL receives no loginmgr session');
-            selAssertSame(false, $manager->getAccount($url), 'repeat HTTP URL still receives no session');
+            testAssertSame(false, $manager->getAccount($url), 'HTTP URL receives no loginmgr session');
+            testAssertSame(false, $manager->getAccount($url), 'repeat HTTP URL still receives no session');
             $log = file_get_contents($log_file);
-            selAssertSame(1, substr_count($log, 'loginmgr: http-url-not-authenticated: RUTracker rutracker.org'),
+            testAssertSame(1, substr_count($log, 'loginmgr: http-url-not-authenticated: RUTracker rutracker.org'),
                 'one host-only migration hint is logged');
-            selAssertSame(false, strpos($log, 'passkey') !== false, 'URL query stays out of the log');
-            selAssertSame('RUTracker', $manager->getAccount('https://rutracker.org/forum/dl.php?t=42'),
+            testAssertSame(false, strpos($log, 'passkey') !== false, 'URL query stays out of the log');
+            testAssertSame('RUTracker', $manager->getAccount('https://rutracker.org/forum/dl.php?t=42'),
                 'HTTPS URL still selects its account');
         } finally {
             unlink($log_file);
@@ -292,12 +284,12 @@ $tests = array(
             foreach (array('http://unrelated.test/forum/dl.php?t=42',
                 'http://rutracker.org/other/?t=42') as $url) {
                 $httpsAccount = 'stale';
-                selAssertSame(false, $manager->getAccount($url, $httpsAccount),
+                testAssertSame(false, $manager->getAccount($url, $httpsAccount),
                     'unrelated HTTP URL has no selected account');
-                selAssertSame(null, $httpsAccount,
+                testAssertSame(null, $httpsAccount,
                     'unrelated HTTP URL has no HTTPS candidate');
             }
-            selAssertSame('', file_get_contents($log_file),
+            testAssertSame('', file_get_contents($log_file),
                 'unrelated HTTP URLs do not produce a migration hint');
         } finally {
             unlink($log_file);
@@ -308,8 +300,8 @@ $tests = array(
         // The other direction costs nothing to allow: an https url to a site
         // that really is http-only simply fails to connect.
         $account = new ProbeHttpSiteAccount();
-        selAssertSame(true, (bool) $account->test('https://http-only.example/x'), 'https is accepted');
-        selAssertSame(true, (bool) $account->test('http://http-only.example/x'), 'so is its own scheme');
+        testAssertSame(true, (bool) $account->test('https://http-only.example/x'), 'https is accepted');
+        testAssertSame(true, (bool) $account->test('http://http-only.example/x'), 'so is its own scheme');
     },
 
     'no account claims a url whose host it does not own' => function () {
@@ -336,7 +328,7 @@ $tests = array(
                 'https://' . $host . '.evil.test/forum/dl.php?t=1',
             );
             foreach ($elsewhere as $url) {
-                selAssertSame(false, (bool) $account->test($url),
+                testAssertSame(false, (bool) $account->test($url),
                     $class . ' must not claim ' . var_export($url, true));
             }
         }
@@ -347,23 +339,11 @@ $tests = array(
         foreach ($productionAccountClasses as $class) {
             $account = new $class();
             foreach (array('', 'not a url', '/relative/path', 'javascript:alert(1)') as $url) {
-                selAssertSame(false, (bool) $account->test($url),
+                testAssertSame(false, (bool) $account->test($url),
                     $class . ' must not claim ' . var_export($url, true));
             }
         }
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $callback) {
-    try {
-        $callback();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
-exit($failures === 0 ? 0 : 1);
+exit(testRunCases($tests));

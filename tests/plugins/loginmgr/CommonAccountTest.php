@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../php/TestCase.php');
+
 /**
  * commonAccount -- how loginmgr decides whether a stored session is still good,
  * and what it does when it is not.
@@ -20,16 +22,6 @@
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $accountFile) {
     require_once($accountFile);
-}
-
-function caAssertSame($expected, $actual, $message)
-{
-    if ($expected !== $actual) {
-        throw new RuntimeException(
-            $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
-        );
-    }
 }
 
 // Every concrete account, in a stable order so a failure names the same class
@@ -210,10 +202,10 @@ $tests = array(
 
     'a live page on the cached path is used, and costs no login' => function () {
         list($account, $client) = caWarmProbe(array(array(200, caLivePage())));
-        caAssertSame(true, caFetch($account, $client), 'the cached session serves the page');
-        caAssertSame(0, $account->logins, 'no credential POST is spent on a working session');
-        caAssertSame(0, $account->data->removed, 'the cookies are kept');
-        caAssertSame(1, $client->fetches, 'exactly one request leaves the box');
+        testAssertSame(true, caFetch($account, $client), 'the cached session serves the page');
+        testAssertSame(0, $account->logins, 'no credential POST is spent on a working session');
+        testAssertSame(0, $account->data->removed, 'the cookies are kept');
+        testAssertSame(1, $client->fetches, 'exactly one request leaves the box');
     },
 
     'a guest page is the one answer that re-logs in' => function () {
@@ -221,10 +213,10 @@ $tests = array(
         // answered as a guest.
         list($account, $client) = caWarmProbe(array(array(200, caGuestPage()), array(200, caLivePage())));
         $account->loginAnswer = array(200, caLivePage());
-        caAssertSame(true, caFetch($account, $client), 'the re-login recovers the fetch');
-        caAssertSame(1, $account->logins, 'exactly one login');
-        caAssertSame(1, $account->data->stored, 'the new session is cached');
-        caAssertSame(0, $account->data->removed, 'and not thrown away again');
+        testAssertSame(true, caFetch($account, $client), 'the re-login recovers the fetch');
+        testAssertSame(1, $account->logins, 'exactly one login');
+        testAssertSame(1, $account->data->stored, 'the new session is cached');
+        testAssertSame(0, $account->data->removed, 'and not thrown away again');
     },
 
     'a server error costs no login and keeps the session' => function () {
@@ -233,10 +225,10 @@ $tests = array(
         // that is already failing. Callers that loop over a torrent list would
         // otherwise turn one outage into a login per torrent.
         list($account, $client) = caWarmProbe(array(array(503, '<html>bad gateway</html>')));
-        caAssertSame(false, caFetch($account, $client), 'the failure is reported');
-        caAssertSame(0, $account->logins, 'no credential POST is spent on an outage');
-        caAssertSame(0, $account->data->removed, 'cookies never shown to be stale are kept');
-        caAssertSame(1, $client->fetches, 'and no second request is made');
+        testAssertSame(false, caFetch($account, $client), 'the failure is reported');
+        testAssertSame(0, $account->logins, 'no credential POST is spent on an outage');
+        testAssertSame(0, $account->data->removed, 'cookies never shown to be stale are kept');
+        testAssertSame(1, $client->fetches, 'and no second request is made');
     },
 
     'a cached request that cannot reach the tracker keeps its session' => function () {
@@ -245,11 +237,11 @@ $tests = array(
         // stop before the Kinozal credential POST and leave that session alone.
         list($account, $client) = caWarmProbe(array(array(0, '', false)));
         $client->cookies = array('sid' => 'cached');
-        caAssertSame(false, caFetch($account, $client), 'a transport failure is reported');
-        caAssertSame(0, $account->logins, 'no credential POST is spent without an answer');
-        caAssertSame(0, $account->data->removed, 'the cached session is not deleted');
-        caAssertSame(array('sid' => 'cached'), $client->cookies, 'the cached cookies stay in place');
-        caAssertSame(1, $client->fetches, 'the failed request is not retried through login');
+        testAssertSame(false, caFetch($account, $client), 'a transport failure is reported');
+        testAssertSame(0, $account->logins, 'no credential POST is spent without an answer');
+        testAssertSame(0, $account->data->removed, 'the cached session is not deleted');
+        testAssertSame(array('sid' => 'cached'), $client->cookies, 'the cached cookies stay in place');
+        testAssertSame(1, $client->fetches, 'the failed request is not retried through login');
     },
 
     'an unchanged conditional answer is a live session' => function () {
@@ -257,9 +249,9 @@ $tests = array(
         // 304 is empty on purpose; judging it by its absent body would turn
         // every unchanged poll of an authenticated feed into a fresh login.
         list($account, $client) = caWarmProbe(array(array(304, '')));
-        caAssertSame(true, caFetch($account, $client), '304 is an answer, and an authenticated one');
-        caAssertSame(0, $account->logins, 'an unchanged feed costs no login');
-        caAssertSame(0, $account->data->removed, 'and does not drop the session');
+        testAssertSame(true, caFetch($account, $client), '304 is an answer, and an authenticated one');
+        testAssertSame(0, $account->logins, 'an unchanged feed costs no login');
+        testAssertSame(0, $account->data->removed, 'and does not drop the session');
     },
 
     'a redirect that was not followed is neither live nor dead' => function () {
@@ -268,16 +260,16 @@ $tests = array(
         // one carries no guest marker, so it used to read as a live session.
         foreach (array('', '<html><head><title>302 Found</title></head><body>moved</body></html>') as $stub) {
             list($account, $client) = caWarmProbe(array(array(302, $stub)));
-            caAssertSame(false, caFetch($account, $client), 'a 302 is not a page to hand to the caller');
-            caAssertSame(0, $account->logins, 'and not evidence that the session died');
-            caAssertSame(0, $account->data->removed, 'so the cookies stay');
+            testAssertSame(false, caFetch($account, $client), 'a 302 is not a page to hand to the caller');
+            testAssertSame(0, $account->logins, 'and not evidence that the session died');
+            testAssertSame(0, $account->data->removed, 'so the cookies stay');
         }
     },
 
     'an empty body is not a live session' => function () {
         list($account, $client) = caWarmProbe(array(array(200, '')));
-        caAssertSame(false, caFetch($account, $client), 'nothing arrived, so nothing is served');
-        caAssertSame(0, $account->logins, 'and no login is spent guessing why');
+        testAssertSame(false, caFetch($account, $client), 'nothing arrived, so nothing is served');
+        testAssertSame(0, $account->logins, 'and no login is spent guessing why');
     },
 
     'a body the transport could not decompress is refused, not fatal' => function () {
@@ -286,8 +278,8 @@ $tests = array(
         // ->results, and every marker test under accounts/ is a strpos(),
         // which is fatal on an array in PHP 8.
         list($account, $client) = caWarmProbe(array(array(200, array('gzip: stdin: not in gzip format'))));
-        caAssertSame(false, caFetch($account, $client), 'a non-string body is refused');
-        caAssertSame(0, $account->logins, 'and is not read as a dead session either');
+        testAssertSame(false, caFetch($account, $client), 'a non-string body is refused');
+        testAssertSame(0, $account->logins, 'and is not read as a dead session either');
     },
 
     // ---- what fetch() does on the login path --------------------------------
@@ -300,16 +292,16 @@ $tests = array(
         $account = new ProbeAccount();
         $account->loginAnswer = array(302, '');
         $client = new CAClient(array(array(200, caLivePage())));
-        caAssertSame(true, caFetch($account, $client), 'a bodyless login answer is not a refusal');
-        caAssertSame(1, $account->data->stored, 'the session it produced is cached');
+        testAssertSame(true, caFetch($account, $client), 'a bodyless login answer is not a refusal');
+        testAssertSame(1, $account->data->stored, 'the session it produced is cached');
     },
 
     'a login answered with the guest form is a refusal' => function () {
         $account = new ProbeAccount();
         $account->loginAnswer = array(200, caGuestPage());
         $client = new CAClient();
-        caAssertSame(false, caFetch($account, $client), 'wrong credentials do not authenticate');
-        caAssertSame(1, $account->data->removed, 'and the stale cache is dropped');
+        testAssertSame(false, caFetch($account, $client), 'wrong credentials do not authenticate');
+        testAssertSame(1, $account->data->removed, 'and the stale cache is dropped');
     },
 
     // ---- check(), the auto-relogin cron -------------------------------------
@@ -321,8 +313,8 @@ $tests = array(
         $account = new ProbeAccount();
         $account->loginAnswer = array(200, caLivePage());
         $account->check(new CAClient(), 'user', 'pass', 0);
-        caAssertSame('https://tracker.example', $account->urlSeenByLogin, 'login() is given the account url');
-        caAssertSame(1, $account->data->stored, 'a renewed session is cached');
+        testAssertSame('https://tracker.example', $account->urlSeenByLogin, 'login() is given the account url');
+        testAssertSame(1, $account->data->stored, 'a renewed session is cached');
     },
 
     'check() never deletes a session it merely failed to renew' => function () {
@@ -332,17 +324,17 @@ $tests = array(
         $account = new ProbeAccount();
         $account->loginAnswer = null;
         $account->check(new CAClient(), 'user', 'pass', 0);
-        caAssertSame(0, $account->data->removed, 'the stored session survives a failed renewal');
-        caAssertSame(0, $account->data->stored, 'and nothing bogus is stored either');
+        testAssertSame(0, $account->data->removed, 'the stored session survives a failed renewal');
+        testAssertSame(0, $account->data->stored, 'and nothing bogus is stored either');
     },
 
     // ---- the family, and its one override -----------------------------------
 
     'every account still accepts a page from behind the login wall' => function () {
         $classes = caAccountClasses();
-        caAssertSame(true, count($classes) > 0, 'the account files were found at all');
+        testAssertSame(true, count($classes) > 0, 'the account files were found at all');
         foreach ($classes as $class) {
-            caAssertSame(true, caPostFetch($class, caHolding(200, caLivePage())),
+            testAssertSame(true, caPostFetch($class, caHolding(200, caLivePage())),
                 $class . ' must accept an answer that did arrive');
         }
     },
@@ -351,7 +343,7 @@ $tests = array(
         foreach (caAccountClasses() as $class) {
             foreach (array(array(200, ''), array(503, caLivePage()), array(302, caLivePage()),
                 array(200, array('gzip: not in gzip format'))) as $answer) {
-                caAssertSame(false, caPostFetch($class, caHolding($answer[0], $answer[1])),
+                testAssertSame(false, caPostFetch($class, caHolding($answer[0], $answer[1])),
                     $class . ' on status ' . $answer[0]);
             }
         }
@@ -361,9 +353,9 @@ $tests = array(
         // LostFilm is the only override in accounts/, and its fallthrough used
         // to answer true on its own -- the one way to skip the base verdict,
         // which on the cached path skipped isOK() with it.
-        caAssertSame(false, caPostFetch('LostFilmAccount', caHolding(200, '')),
+        testAssertSame(false, caPostFetch('LostFilmAccount', caHolding(200, '')),
             'LostFilm is not exempt from the guard its siblings get');
-        caAssertSame(false, caPostFetch('LostFilmAccount', caHolding(503, caLivePage())),
+        testAssertSame(false, caPostFetch('LostFilmAccount', caHolding(503, caLivePage())),
             'nor from the status half of it');
     },
 
@@ -376,7 +368,7 @@ $tests = array(
         // pass on its own.
         $client = caHolding(200, caGuestPage(), '/browse.php?cat=1');
         $client->queueAnswers(array(array(200, caLivePage())));
-        caAssertSame(false,
+        testAssertSame(false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
             'the guest answer to the download url decides, not details.php');
     },
@@ -392,7 +384,7 @@ $tests = array(
             // the retried download: a filename header, but an error page
             array(500, '<html>error</html>'),
         ));
-        caAssertSame(false,
+        testAssertSame(false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
             'a 500 carrying a filename header is not a torrent');
     },
@@ -404,21 +396,9 @@ $tests = array(
         // torrent may legitimately carry in its comment field.
         $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment28:see /signup.php to register'
             . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384eee';
-        caAssertSame(true, caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
+        testAssertSame(true, caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
             'a torrent whose comment names /signup.php is still a torrent');
     },
 );
 
-$failures = 0;
-foreach ($tests as $name => $callback) {
-    try {
-        $callback();
-        echo "ok - {$name}\n";
-    } catch (Throwable $error) {
-        $failures++;
-        echo "not ok - {$name}\n";
-        echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
-    }
-}
-echo count($tests) . ' tests, ' . $failures . " failures\n";
-exit($failures === 0 ? 0 : 1);
+exit(testRunCases($tests));

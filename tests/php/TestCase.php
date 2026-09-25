@@ -48,3 +48,38 @@ class TestCase
 		}
 	}
 }
+
+// Throwing assertions for small standalone suites. TestCase's instance
+// assertions keep their own counted/printed contract.
+function testAssertTrue($condition, $message)
+{
+	if (!$condition) throw new RuntimeException($message);
+}
+
+function testAssertSame($expected, $actual, $message)
+{
+	if ($expected !== $actual) {
+		throw new RuntimeException($message . '; expected ' . var_export($expected, true)
+			. ', got ' . var_export($actual, true));
+	}
+}
+
+// Standalone suites own their optional setup/cleanup around this call. Return
+// an exit status so cleanup can still run before the file exits.
+function testRunCases(array $tests, $beforeEach = null)
+{
+	$failures = 0;
+	foreach ($tests as $name => $callback) {
+		try {
+			if ($beforeEach !== null) $beforeEach();
+			$callback();
+			echo "ok - {$name}\n";
+		} catch (Throwable $error) {
+			$failures++;
+			echo "not ok - {$name}\n";
+			echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
+		}
+	}
+	echo count($tests) . ' tests, ' . $failures . " failures\n";
+	return $failures === 0 ? 0 : 1;
+}
