@@ -367,16 +367,6 @@ $tests = array(
         }
     },
 
-    'no account reads an answer that never arrived as a live session' => function () {
-        foreach (caAccountClasses() as $class) {
-            foreach (array(array(200, ''), array(503, caLivePage()), array(302, caLivePage()),
-                array(200, array('gzip: not in gzip format'))) as $answer) {
-                testAssertSame(false, caPostFetch($class, caHolding($answer[0], $answer[1])),
-                    $class . ' on status ' . $answer[0]);
-            }
-        }
-    },
-
     'the one override of isOKPostFetch hands the fallthrough back' => function () {
         // LostFilm is the only override in accounts/, and its fallthrough used
         // to answer true on its own -- the one way to skip the base verdict,

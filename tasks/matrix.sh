@@ -4,9 +4,9 @@
 # pre-commit hook can skip a run it has already seen.
 #
 #   tasks/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
-#                                   plus Kinozal in the shipped no-iconv image
+#                                   plus Kinozal and sibling trackers in the shipped no-iconv image
 #   tasks/matrix.sh local 7.4       only these legs
-#   tasks/matrix.sh prod-kinozal    only the no-iconv Kinozal handler suite
+#   tasks/matrix.sh prod-kinozal    only the no-iconv tracker handler suites
 # Only the default run with no leg arguments records the pre-commit marker.
 #   tasks/matrix.sh digest          print the digest of what the suite tests
 #   tasks/matrix.sh last            show the last green run
@@ -322,16 +322,29 @@ for leg in "${legs[@]}"; do
         prod-kinozal)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
-                dir="$1"; uid="$2"; gid="$3"; name="$4"
-                printf "> php plugins/rutracker_check/KinozalHandlerTest.php\n" > "$dir/php-test.log"
-                docker run --rm --pull=never --network none --name "$name" --user "${uid}:${gid}" \
-                    -e HOME=/mtmp -e TMPDIR=/mtmp --entrypoint php85 \
-                    -v "$dir/tree:/w:ro" -v "$dir/tmp:/mtmp" -w /w \
-                    ivanshift/rutorrent:latest -c tests/php-test.ini \
-                    -d disable_functions=iconv -r \
-                    '"'"'if (function_exists("iconv")) { fwrite(STDERR, "prod-kinozal: iconv available\n"); exit(1); } require "tests/plugins/rutracker_check/KinozalHandlerTest.php";'"'"' \
-                    >> "$dir/php-test.log" 2>&1
-                printf "%s\n" "$?" > "$dir/exit"
+                dir="$1"; uid="$2"; gid="$3"; name="$4"; status=0
+                : > "$dir/php-test.log"
+                for suite in KinozalHandlerTest SiblingTrackersTest; do
+                    test_file="tests/plugins/rutracker_check/${suite}.php"
+                    suite_log="$dir/${suite}.log"
+                    printf "> php %s\n" "$test_file" >> "$dir/php-test.log"
+                    docker run --rm --pull=never --network none --name "$name" --user "${uid}:${gid}" \
+                        -e HOME=/mtmp -e TMPDIR=/mtmp -e RT_SUITE="$test_file" --entrypoint php85 \
+                        -v "$dir/tree:/w:ro" -v "$dir/tmp:/mtmp" -w /w \
+                        ivanshift/rutorrent:latest -c tests/php-test.ini \
+                        -d disable_functions=iconv -r \
+                        '"'"'if (function_exists("iconv")) { fwrite(STDERR, "prod-kinozal: iconv available\n"); exit(1); } require getenv("RT_SUITE");'"'"' \
+                        > "$suite_log" 2>&1
+                    status=$?
+                    cat "$suite_log" >> "$dir/php-test.log"
+                    if [ "$status" -ne 0 ] \
+                        || ! grep -Eq '"'"'^[1-9][0-9]* tests, 0 failures$'"'"' "$suite_log" \
+                        || grep -q '"'"'NOT CHECKED'"'"' "$suite_log"; then
+                        [ "$status" -ne 0 ] || status=1
+                        break
+                    fi
+                done
+                printf "%s\n" "$status" > "$dir/exit"
             ' _ "$dir" "$uid" "$gid" "${container_name[$leg]}" &
             ;;
         *)
@@ -361,10 +374,10 @@ for leg in "${legs[@]}"; do
     fails="${fails:-0}"
     files="${files:-0}"
     if [ "$leg" = prod-kinozal ]; then
-        if [ "$files" -ne 1 ] \
-            || ! grep -Eq '^[1-9][0-9]* tests, 0 failures$' "$dir/php-test.log" \
+        if [ "$files" -ne 2 ] \
+            || [ "$(grep -cE '^[1-9][0-9]* tests, 0 failures$' "$dir/php-test.log")" -ne 2 ] \
             || grep -q 'NOT CHECKED' "$dir/php-test.log"; then
-            echo 'matrix.sh: prod-kinozal did not execute its no-iconv cases' >> "$dir/php-test.log"
+            echo 'matrix.sh: prod-kinozal did not execute both no-iconv suites' >> "$dir/php-test.log"
             fails=$((fails + 1))
         fi
     elif [ "$files" -ne "$expected_files" ]; then

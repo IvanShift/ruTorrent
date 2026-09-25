@@ -402,11 +402,42 @@ HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/stale-cleanup
 
 cat > "$scratch/bin/docker" <<'DOCKER'
 #!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        RT_SUITE=*) printf '%s\n' "${arg#RT_SUITE=}" >> "$MATRIX_TEST_DOCKER_SUITE_LOG" ;;
+    esac
+done
 echo '1 tests, 0 failures'
 DOCKER
 chmod +x "$scratch/bin/docker"
-HOME="$long_home" PATH="$scratch/bin:$PATH" "$scratch/tasks/matrix.sh" prod-kinozal > "$short_home/prod.log"
+HOME="$long_home" PATH="$scratch/bin:$PATH" \
+    MATRIX_TEST_DOCKER_SUITE_LOG="$short_home/prod-suites.log" \
+    "$scratch/tasks/matrix.sh" prod-kinozal > "$short_home/prod.log"
 grep -q 'green on prod-kinozal' "$short_home/prod.log"
+printf '%s\n' tests/plugins/rutracker_check/KinozalHandlerTest.php \
+    tests/plugins/rutracker_check/SiblingTrackersTest.php > "$short_home/expected-prod-suites.log"
+cmp -s "$short_home/expected-prod-suites.log" "$short_home/prod-suites.log" || {
+    echo 'no-iconv leg did not run both tracker suites in order' >&2; exit 1;
+}
+# Two summaries from one suite cannot stand in for an unrun second suite.
+cat > "$scratch/bin/docker" <<'DOCKER'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        RT_SUITE=*KinozalHandlerTest.php)
+            echo '1 tests, 0 failures'
+            echo '1 tests, 0 failures'
+            exit 0 ;;
+        RT_SUITE=*SiblingTrackersTest.php) exit 0 ;;
+    esac
+done
+exit 1
+DOCKER
+chmod +x "$scratch/bin/docker"
+if HOME="$long_home" PATH="$scratch/bin:$PATH" \
+    "$scratch/tasks/matrix.sh" prod-kinozal > "$short_home/prod-false-green.log" 2>&1; then
+    echo 'no-iconv leg accepted summaries from the wrong suite' >&2; exit 1
+fi
 cat > "$scratch/bin/docker" <<'DOCKER'
 #!/bin/bash
 case "$1" in

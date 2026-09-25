@@ -388,6 +388,31 @@ $suite->test('tapochek: the captured live missing-topic page is a deletion', fun
     strictAssertSame(1, count(Snoopy::$requests), 'the removal page needs no download request');
 });
 
+// A phrase on an otherwise live or unreadable topic cannot stand in for
+// the captured Information system message. Each shape reaches a different
+// structural gate in isMissingAnswer(), with no btih to short-circuit it.
+foreach (array(
+    'a phrase in a user post' => '<div class="post_body">' . TAP_GONE_UTF8 . '</div>',
+    'a non-system table' => '<table class="post_body"><tr><th>Информация</th></tr>'
+        . '<tr><td>' . TAP_GONE_UTF8 . '</td></tr></table>',
+    'a marker outside the system table' => '<table class="forumline message">'
+        . '<tr><th>Информация</th></tr><tr><td>Temporary notice</td></tr></table>'
+        . '<div>' . TAP_GONE_UTF8 . '</div>',
+    'a longer message in the system cell' => '<table class="forumline message">'
+        . '<tr><th>Информация</th></tr><tr><td>' . TAP_GONE_UTF8
+        . ' while maintenance is in progress</td></tr></table>',
+) as $description => $body) {
+    $suite->test('tapochek: ' . $description . ' is not a deletion', function () use ($body) {
+        Snoopy::reset();
+        Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $body);
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            TapochekNetCheckImpl::download_torrent(
+                'https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
+            'only the exact system-cell answer can certify deletion');
+        strictAssertSame(1, count(Snoopy::$requests), 'an unreadable topic causes no download');
+    });
+}
+
 $suite->test('tapochek: a commented system table is not a deletion answer', function () {
     Snoopy::reset();
     $body = '<html><!-- <table class="forumline message"><tr><th>Информация</th></tr>'
