@@ -5,14 +5,14 @@ require_once( __DIR__ . '/../../../php/urlhost.php' );
 
 class KinozalCheckImpl
 {
+    const SITE_HOSTS = array('kinozal.tv', 'kinozal.me', 'kinozal.guru');
+
     // The one test this handler applies to a comment before it does anything:
     // a topic URL on one of Kinozal's own hosts, and nothing else. Used both
     // by download_torrent(), which declines whatever fails it, and by the
     // registration at the bottom, which hands it to the scheduler as the
     // declared meaning of "this torrent is Kinozal's" -- one pattern, so the
     // two cannot disagree about what Kinozal owns.
-    const SITE_HOSTS = array('kinozal.tv', 'kinozal.me', 'kinozal.guru');
-
     static public function topicPattern()
     {
         $hosts = array_map(function ($host) { return preg_quote($host, '`'); }, self::SITE_HOSTS);

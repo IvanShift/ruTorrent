@@ -47,7 +47,8 @@ Stale hash races are normal during torrent replacement: the old hash can disappe
   handler's declared `topicPattern` -- the exact test the handler applies before it does
   anything -- and answers null the moment it reaches a handler that declared none. A handler
   opts into the free pass with BOTH its authoritative host list and its topic pattern, and
-  Kinozal keeps that pattern in one constant used by its handler and its registration. Measured
+  Kinozal builds that pattern in `KinozalCheckImpl::topicPattern()` from `SITE_HOSTS` for its
+  handler and registration. Measured
   2026-09-14: the first-match rule handed Kinozal's cross-seed announce the verdict on an NNMClub
   topic (`checked=0 uptodate=1`); the declared rule sends it to the dispatcher. This is the same
   class of defect upstream #3205 fixed in loginmgr -- an identity read off a substring of the URL

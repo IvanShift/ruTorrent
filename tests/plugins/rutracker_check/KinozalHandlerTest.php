@@ -546,7 +546,7 @@ $suite->test('a server error on the details endpoint is a reachability error', f
         'an HTTP error is never a deletion');
 });
 
-$suite->test('every Kinozal mirror in the comment is handled', function () {
+$suite->test('every declared Kinozal mirror is handled', function () {
     foreach (KinozalCheckImpl::SITE_HOSTS as $host) {
         $ownerUrl = 'https://' . $host . '/details.php?id=1';
         strictAssertSame(1, preg_match(KinozalCheckImpl::topicPattern(), $ownerUrl),
@@ -558,6 +558,24 @@ $suite->test('every Kinozal mirror in the comment is handled', function () {
         $result = KinozalCheckImpl::download_torrent($url, $case['hash'], $case['torrent']);
 
         strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, $host . ' must be recognised');
+    }
+});
+
+$suite->test('lookalike Kinozal hosts are declined without a request', function () {
+    foreach (array(
+        'https://kinozal.io/details.php?id=1',
+        'https://kinozalXtv/details.php?id=1',
+        'https://kinozal.tv.evil.test/details.php?id=1',
+        'https://kinozal.tv@evil.test/details.php?id=1',
+    ) as $url) {
+        strictAssertSame(0, preg_match(KinozalCheckImpl::topicPattern(), $url),
+            $url . ' must not match the topic pattern');
+        $case = kinozalCase();
+        $result = KinozalCheckImpl::download_torrent($url, $case['hash'], $case['torrent']);
+        strictAssertSame(ruTrackerChecker::STE_DECLINED, $result,
+            $url . ' must be declined by the handler');
+        strictAssertSame(0, count(Snoopy::$requests),
+            $url . ' must not trigger a request');
     }
 });
 
