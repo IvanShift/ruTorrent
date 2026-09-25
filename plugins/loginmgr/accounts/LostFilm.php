@@ -14,17 +14,13 @@ class LostFilmAccount extends commonAccount
 	}
 	protected function isOKPostFetch($client,$url,$method,$content_type,$body)
 	{
-		// Taken first: the recovery below fetches details.php onto this same
-		// client, and after that $client->results is that page rather than the
-		// answer the caller asked for. Judging the fallthrough on it would be
-		// judging the wrong response.
-		$answered = $this->classifyAnswer($client);
 		$id = $this->getDownloadId($url);
-		if(	$id !== false &&
-			preg_match("`/browse.php\?cat=`si", (string) $client->lastredirectaddr) &&
-			$client->fetch($this->url."/details.php?id=".$id) &&
-			preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^']*)'`si", $client->results, $md5))
+		if($id !== false && preg_match("`/browse.php\?cat=`si", (string) $client->lastredirectaddr))
 		{
+			if(!$client->fetch($this->url."/details.php?id=".$id) ||
+				!$this->hasReadableBody($client) ||
+				!preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^']*)'`si", $client->results, $md5))
+				return(false);
 			$client->cookies["dlt_2"] = $md5[1];
 			// The retry is an answer like any other. get_filename() reads only
 			// the Content-Disposition header -- never the status, never the
@@ -35,12 +31,9 @@ class LostFilmAccount extends commonAccount
 				($this->classifyAnswer($client)===commonAccount::ANSWER_LIVE) &&
 				($client->get_filename()!==false));
 		}
-		// The "nothing special to do here" branch. It has to hand the question
-		// back rather than answer true on its own: this is the only override
-		// of isOKPostFetch() in accounts/, so answering here was the one way
-		// to skip the base class's verdict -- and on the cached path it
-		// skipped isOK() with it, leaving this account checking nothing.
-		return($answered===commonAccount::ANSWER_LIVE);
+		// Only the caller's original answer reaches this branch. A failed
+		// recovery never substitutes the details page for a download.
+		return($this->classifyAnswer($client)===commonAccount::ANSWER_LIVE);
 	}
 	protected function getDownloadId($url)
 	{

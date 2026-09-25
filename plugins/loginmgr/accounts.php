@@ -212,6 +212,14 @@ abstract class commonAccount
 		return($this->classifyAnswer($client)===self::ANSWER_LIVE);
 	}
 
+	private function hasLivePostFetchAnswer($client,$url,$method,$content_type,$body)
+	{
+		// An override may perform recovery, but its return value cannot replace
+		// validation of the answer left on the client for the caller.
+		return($this->isOKPostFetch($client,$url,$method,$content_type,$body) &&
+			$this->classifyAnswer($client)===self::ANSWER_LIVE);
+	}
+
 	protected function withRedirectTrust($client, callable $body)
 	{
 		$scopedTrust = $client instanceof Snoopy;
@@ -244,7 +252,7 @@ abstract class commonAccount
 				// further pages onto this client and the question here is about
 				// the answer to the caller's own URL.
 				$answer = $this->classifyAnswer($client);
-				if($this->isOKPostFetch($client,$url,$method,$content_type,$body))
+				if($this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body))
 					return(true);
 				// Only a guest answer is evidence that the session died. Anything
 				// else leaves that unproven, so report the failure and keep the
@@ -258,7 +266,7 @@ abstract class commonAccount
 			$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
 				$this->loginWasNotRefused($client) &&
 				($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
-				$this->isOKPostFetch($client,$url,$method,$content_type,$body) &&
+				$this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body) &&
 				$data->store($client) );
 			if(!$ret)
 				$data->remove();

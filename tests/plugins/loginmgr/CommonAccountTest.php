@@ -30,7 +30,7 @@ function caAccountClasses()
 {
     $classes = array();
     foreach (get_declared_classes() as $class) {
-        if (is_subclass_of($class, 'commonAccount') && $class !== 'ProbeAccount') {
+        if (is_subclass_of($class, 'commonAccount') && !is_a($class, 'ProbeAccount', true)) {
             $classes[] = $class;
         }
     }
@@ -147,6 +147,15 @@ class ProbeAccount extends commonAccount
         }
         $client->apply($this->loginAnswer);
         $client->setcookies();
+        return true;
+    }
+}
+
+// A future account that forgets to call the base post-fetch validator.
+class CAPermissivePostFetchAccount extends ProbeAccount
+{
+    protected function isOKPostFetch($client, $url, $method, $content_type, $body)
+    {
         return true;
     }
 }
@@ -328,6 +337,25 @@ $tests = array(
         testAssertSame(0, $account->data->stored, 'and nothing bogus is stored either');
     },
 
+    'fetch validates the final answer even if an override always returns true' => function () {
+        $account = new CAPermissivePostFetchAccount();
+        $account->data->loaded = true;
+        $client = new CAClient(array(array(503, caLivePage())));
+        testAssertSame(false, caFetch($account, $client),
+            'a cached 503 cannot become success through a permissive override');
+        testAssertSame(0, $account->logins, 'a server error does not spend credentials');
+        testAssertSame(0, $account->data->removed, 'an unproven dead session keeps its cookies');
+        testAssertSame(0, $account->data->stored, 'the failed fetch stores nothing');
+
+        $account = new CAPermissivePostFetchAccount();
+        $account->loginAnswer = array(200, caLivePage());
+        $client = new CAClient(array(array(503, caLivePage())));
+        testAssertSame(false, caFetch($account, $client),
+            'a fresh login cannot bless a later 503 through the override');
+        testAssertSame(1, $account->logins, 'the new login branch was exercised');
+        testAssertSame(0, $account->data->stored, 'a failed post-login fetch is not cached');
+    },
+
     // ---- the family, and its one override -----------------------------------
 
     'every account still accepts a page from behind the login wall' => function () {
@@ -373,6 +401,15 @@ $tests = array(
             'the guest answer to the download url decides, not details.php');
     },
 
+    'a failed LostFilm recovery cannot return a details page as the download' => function () {
+        $url = 'https://lostfilm.tv/download.php?id=7&x';
+        $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
+        $client->queueAnswers(array(array(200, caLivePage())));
+        testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
+            'a details page without the dlt token is not the requested torrent');
+        testAssertSame(1, $client->fetches, 'the recovery path actually fetched details.php');
+    },
+
     'the override does not accept a download by its headers alone' => function () {
         // get_filename() reads Content-Disposition and never the status or the
         // body, so on its own it accepts a 500 page and a body Snoopy could not
@@ -387,6 +424,41 @@ $tests = array(
         testAssertSame(false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
             'a 500 carrying a filename header is not a torrent');
+    },
+
+    'LostFilm public fetch keeps a cached session when browse recovery fails' => function () {
+        $account = new class extends LostFilmAccount {
+            public $data;
+            public $logins = 0;
+            public function __construct() { $this->data = new CARecordingData('LostFilmProbe'); }
+            protected function loadData($client = null) { return $this->data; }
+            protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
+            {
+                $this->logins++;
+                return false;
+            }
+        };
+        $account->data->loaded = true;
+        $client = new CAClient(array(array(200, caLivePage()), array(200, caLivePage())));
+        $client->lastredirectaddr = '/browse.php?cat=1';
+        $url = 'https://lostfilm.tv/download.php?id=7&x';
+        testAssertSame(false, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''),
+            'a details page without a dlt token cannot become the download');
+        testAssertSame(2, $client->fetches, 'the original URL and details page were fetched');
+        testAssertSame(0, $account->logins, 'the failed recovery did not spend credentials');
+        testAssertSame(0, $account->data->removed, 'an unproven dead session keeps its cookies');
+        testAssertSame(0, $account->data->stored, 'the failed recovery is not cached');
+    },
+
+    'LostFilm recovery refuses unreadable and failed details answers' => function () {
+        $url = 'https://lostfilm.tv/download.php?id=7&x';
+        foreach (array(array(200, array('gzip failed'), true), array(200, caLivePage(), false)) as $detail) {
+            $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
+            $client->queueAnswers(array($detail));
+            testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
+                'unusable details cannot turn the browse redirect into a download');
+            testAssertSame(1, $client->fetches, 'the recovery branch fetched details');
+        }
     },
 
     // ---- one tracker-specific claim worth pinning ---------------------------
