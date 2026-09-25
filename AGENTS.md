@@ -56,9 +56,11 @@ Stale hash races are normal during torrent replacement: the old hash can disappe
   (`kinozal.tv@evil.test`) or as a leading label (`kinozal.tv.evil.test`) does not match.
 - **One host test: `php/urlhost.php`.** "Is this URL's host one of ours?" is answered by
   `UrlHost::of()` / `isOneOf()` / `urlIsOneOf()` and nowhere else: loginmgr's `urlAddresses()`
-  delegates to it, `RuTrackerDetector::isTrackerHost()`/`isTrackerRow()` and
-  `RuTrackerAnnounce::hostKey()` go through it, and a registry authority is a plain host list
-  the helper matches whole. It parses the host out with `parse_url()` and folds case and the
+  delegates to it, as do `RuTrackerDetector::isTrackerHost()` and `isTrackerRow()`.
+  `RuTrackerAnnounce::hostKey()` remains a compatibility alias for
+  `UrlHost::normalize()`; the budget code uses `UrlHost` directly.
+  A registry authority supplies a plain host list that the helper matches whole.
+  It parses the host out with `parse_url()` and folds case and the
   root dot before comparing, so the traps that each of those places had once fallen into --
   the name in the path or query, in the userinfo, as a leading label, or spelled with a
   trailing dot -- are pinned once, in `tests/php/UrlHostTest.php`. Do not write a fourth
@@ -356,11 +358,12 @@ Both of those exist now (2026-09-14), local to this checkout like the hook itsel
   environment), and the shipped-image Kinozal suite without `iconv`. Each leg
   uses its own `git ls-files` export and `TMPDIR` under `~/.cache/rtm/<stamp>/`;
   containers run as this user. The full run is bounded by the slowest leg.
-  `tasks/matrix.sh local 7.4` selects legs. Its digest hashes all exported
-  non-Markdown working-tree files, tracked or new, and `last` shows the last
+  `tasks/matrix.sh local 7.4` selects legs. Its digest hashes exported
+  non-Markdown working-tree files, tracked or new, plus the PHP and Docker
+  runtimes; `last` shows the last
   full green run. A red repeat on the same digest revokes that marker.
-  The local leg's `TMPDIR` must stay under 60 bytes: `SCGITransportFixture`
-  binds a UNIX socket 49 bytes below it and `sun_path` holds 107. PHP
+  The matrix guard caps the local leg's `TMPDIR` at 58 bytes: the socket
+  suffix is 49 bytes and `sun_path` holds 107. PHP
   truncates a longer path with a silenced Notice; bind then lands on the
   directory, and four tests fail with an empty "SCGI fixture peer exited:
   server:". The first trial died that way at a 68-byte `TMPDIR` (2026-09-14).
