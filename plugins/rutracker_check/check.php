@@ -104,6 +104,10 @@ class ruTrackerChecker
 	// One operator-visible line per uninterrupted storage outage. A successful
 	// update resets the latch, so a later independent outage is reported too.
 	private static $claimStoreFailureLogged = false;
+	// Stage the handler's message while a terminal verdict remains visible.
+	// It is published with a definitive new verdict or discarded on retry.
+	private static $terminalMessageHash = null;
+	private static $pendingTerminalMessage = null;
 	private static $obsoleteCleanupSummary = array(
 		'old' => 0,
 		'new' => 0,
@@ -191,18 +195,21 @@ class ruTrackerChecker
 
 	/**
 	 * The jurisdiction filter and authority hosts declared by the handler
-	 * that owns this comment. The caller still passes its tracker rows for
-	 * compatibility; announceVerdict() is the single place that checks for
-	 * enabled rows in that jurisdiction and trusted announce hosts.
+	 * that owns this comment. announceVerdict() is the single place that
+	 * checks enabled rows in that jurisdiction and trusted announce hosts.
 	 *
-	 * @param array  $trackers retained for existing callers; checked downstream
-	 * @param string $comment  the torrent's comment -- see sessionComment()
+	 * The optional second argument retains the former ($trackers, $comment)
+	 * call shape. Tracker rows are ignored because the comment determines
+	 * ownership; the scheduler calls the one-argument form.
+	 *
+	 * @param mixed $commentOrTrackers comment, or legacy tracker rows
+	 * @param string|null $comment legacy comment when supplied
 	 * @return array|null owner's jurisdiction and authority, or null when no
 	 *                    owner can be established or it has not opted in
 	 */
-	static public function announceAuthorityFor($trackers, $comment)
+	static public function announceAuthorityFor($commentOrTrackers, $comment = null)
 	{
-		$owner = self::ownerOf($comment);
+		$owner = self::ownerOf(func_num_args() > 1 ? $comment : $commentOrTrackers);
 		if($owner === null || empty($owner['announceAuthority']))
 			return null;
 		return array(
@@ -578,10 +585,15 @@ class ruTrackerChecker
 		return(self::writeCustomProjection($hash, $commands, "setFastVerdict"));
 	}
 
-	// Writes the chk-msg custom -- a CHKMSG_* token plus its single
-	// parameter, "<token>|<parameter>"; an empty string clears it.
+	// Writes chk-msg outside a retained-terminal dispatch. Inside it, stage
+	// the last token (or empty clear) until the new state and clock are known.
 	static public function setMessage( $hash, $message )
 	{
+		if(self::$terminalMessageHash === $hash)
+		{
+			self::$pendingTerminalMessage = (string) $message;
+			return(true);
+		}
 		$req = new rXMLRPCRequest( new rXMLRPCCommand(
 			getCmd("d.set_custom"), array($hash, "chk-msg", (string) $message) ) );
 		$req->important = false;
@@ -2169,18 +2181,35 @@ class ruTrackerChecker
 					$stateWrite = self::setState( $hash, $state );
 				if($stateWrite === null) return(true);
 				if(!$stateWrite) return(false);
-
 				$handlerPerformed = false;
 				$handlerVerdict = null;
 				$source = rTorrent::getSource($hash);
-				if($source !== false)
+				$pendingMessage = null;
+				if($terminal)
 				{
-					$handlerVerdict = self::run_ex($hash, $source, $handlerPerformed);
-					$state = $handlerVerdict;
+					self::$terminalMessageHash = $hash;
+					self::$pendingTerminalMessage = null;
 				}
-				else self::logDebug("run: " . $hash
-					. " has no readable session copy or tied daemon source;"
-					. " no handler verdict is available");
+				try
+				{
+					if($source !== false)
+					{
+						$handlerVerdict = self::run_ex($hash, $source, $handlerPerformed);
+						$state = $handlerVerdict;
+					}
+					else self::logDebug("run: " . $hash
+						. " has no readable session copy or tied daemon source;"
+						. " no handler verdict is available");
+				}
+				finally
+				{
+					if($terminal)
+					{
+						$pendingMessage = self::$pendingTerminalMessage;
+						self::$terminalMessageHash = null;
+						self::$pendingTerminalMessage = null;
+					}
+				}
 				if($state===self::STE_UNCHANGED) $state = $previous;
 				if($state==self::STE_INPROGRESS) $state=self::STE_ERROR;
 				// A retryable failure cannot refute a terminal topic verdict.
@@ -2190,7 +2219,6 @@ class ruTrackerChecker
 				$retainedTerminal = $terminal
 					&& in_array($state, array(self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true);
 				if($retainedTerminal) $state = $previous;
-
 				$finalWrite = null;
 				if(!is_null($state) && !($terminal
 					&& ($retainedTerminal || $handlerVerdict === self::STE_UNCHANGED)))
@@ -2202,8 +2230,10 @@ class ruTrackerChecker
 							new rXMLRPCCommand(getCmd("d.set_custom"),
 								array($hash, "chk-state", (string) $previous)),
 							new rXMLRPCCommand(getCmd("d.set_custom"),
-								array($hash, "chk-time", (string) $time))), "restoreUnchanged");
-					else $finalWrite = self::setState($hash, $state);
+								array($hash, "chk-time", $time > 0 ? (string) $time : ""))), "restoreUnchanged");
+					else $finalWrite = $terminal && $pendingMessage !== null
+						? self::setFastVerdict($hash, $state, $pendingMessage)
+						: self::setState($hash, $state);
 				}
 				// Handler invocation is not durable consumption. In particular,
 				// STE_UNCHANGED means it learned nothing, and a false/null final

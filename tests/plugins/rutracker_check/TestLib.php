@@ -898,6 +898,21 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$responses[$url][] = array('earlyFailure' => $error);
         }
 
+        // Model a fetchComplex() refusal after fresh HTTP bytes were recorded.
+        public static function queueAnsweredFailure($url, $status, $results, $headers = array(), $redirect = null)
+        {
+            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
+            self::$responses[$url][] = array('answeredFailure' => array($status, $results, $headers, $redirect));
+        }
+
+        // loginmgr may refuse before it reaches Snoopy::fetch(), preserving
+        // metadata from the preceding request on this reused client.
+        public static function queueBeforeFetchFailure($url)
+        {
+            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
+            self::$responses[$url][] = array('beforeFetchFailure' => true);
+        }
+
         public static function queueAny($status, $results, $headers = array())
         {
             self::$any[] = array($status, $results, $headers);
@@ -905,9 +920,17 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         private function respond($method, $url)
         {
-            // A fresh top-level Snoopy fetch clears the previous redirect,
-            // even when it fails before a new HTTP response is received.
+            if (isset(self::$responses[$url][0]['beforeFetchFailure'])) {
+                array_shift(self::$responses[$url]);
+                self::$requests[] = array($method, $url);
+                self::$rawheadersLog[] = $this->rawheaders;
+                self::$agentsLog[] = (string) $this->agent;
+                return false;
+            }
+            // A fresh top-level Snoopy fetch clears the previous redirect and
+            // error, even when it fails before a new HTTP response is received.
             $this->lastredirectaddr = '';
+            $this->error = '';
             self::$requests[] = array($method, $url);
             self::$rawheadersLog[] = $this->rawheaders;
             // The agent the client actually held when it fetched. Recorded
@@ -920,6 +943,12 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                 $response = array_shift(self::$responses[$url]);
                 if (isset($response['earlyFailure'])) {
                     $this->error = $response['earlyFailure'];
+                    return false;
+                }
+                if (isset($response['answeredFailure'])) {
+                    list($this->status, $this->results, $this->headers, $redirect) = $response['answeredFailure'];
+                    $this->error = '';
+                    if ($redirect !== null) $this->lastredirectaddr = $redirect;
                     return false;
                 }
                 list($this->status, $this->results, $this->headers, $redirect) = $response;

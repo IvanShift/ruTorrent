@@ -257,8 +257,16 @@ class RuTrackerUpdatePass
             $state = self::storedCounter($values[$i + 1]);
             $time = self::storedCounter($values[$i + 2]);
             if ($state === null || $time === null) {
-                ruTrackerChecker::logDebug('parseMulticall: a row carries a malformed'
-                    . ' chk-state/chk-time and is dropped rather than read as never checked');
+                // This persisted value is read again each cycle, so a debug-only
+                // refusal would silently exclude the torrent forever.
+                $hash = $values[$i];
+                $hash = is_string($hash) && preg_match('/^[0-9a-f]{40}$/iD', $hash)
+                    ? $hash : 'unknown hash';
+                $keys = array();
+                if ($state === null) $keys[] = 'chk-state';
+                if ($time === null) $keys[] = 'chk-time';
+                ruTrackerChecker::logUnrepairable('parseMulticall: ' . $hash . ' has malformed '
+                    . implode('/', $keys) . '; excluded from tracker checks until the key is repaired');
                 continue;
             }
             $trackersComplete = true;
@@ -451,7 +459,7 @@ class RuTrackerUpdatePass
                     ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED,
                     ruTrackerChecker::STE_INPROGRESS), true);
                 $authority = ($noFreePass || $unresolvedSuccessor) ? null
-                    : ruTrackerChecker::announceAuthorityFor($row['trackers'], $comments[$index]);
+                    : ruTrackerChecker::announceAuthorityFor($comments[$index]);
                 if (($authority !== null)
                     && (RuTrackerDetector::announceVerdict($row['trackers'],
                         $authority['jurisdiction'], $authority['authority']) === 'alive')) {

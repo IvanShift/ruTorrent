@@ -7,6 +7,12 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/announce.php');
 $suite = new StrictTestSuite();
 $hash = 'C6EE8D83000000000000000000000000000000AB';
 
+$suite->test('hostKey remains a compatibility alias for the canonical host key', function () {
+    foreach (array('BT.T-RU.ORG.', 'bt.t-ru.org', '  EXAMPLE.NET.  ') as $host)
+        strictAssertSame(UrlHost::normalize($host), RuTrackerAnnounce::hostKey($host),
+            $host . ' uses the same host normalization as the shared helper');
+});
+
 $suite->test('buildUrl strips passkey and carries the full identity', function () use ($hash) {
     $url = RuTrackerAnnounce::buildUrl('http://bt.t-ru.org/ann?pk=deadbeef', $hash, '-RC0001-abcdef123456', 63981, 'k1');
     strictAssertTrue(strpos($url, 'pk=') === false, 'passkey must be stripped');

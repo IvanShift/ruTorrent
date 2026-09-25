@@ -11,9 +11,13 @@ class KinozalCheckImpl
     // registration at the bottom, which hands it to the scheduler as the
     // declared meaning of "this torrent is Kinozal's" -- one pattern, so the
     // two cannot disagree about what Kinozal owns.
-    // Keep the topic host alternatives aligned with SITE_HOSTS.
     const SITE_HOSTS = array('kinozal.tv', 'kinozal.me', 'kinozal.guru');
-    const TOPIC_PATTERN = '`^https?://kinozal\.(tv|me|guru)/details\.php\?id=(?P<id>\d+)$`';
+
+    static public function topicPattern()
+    {
+        $hosts = array_map(function ($host) { return preg_quote($host, '`'); }, self::SITE_HOSTS);
+        return '`^https?://(?:' . implode('|', $hosts) . ')/details\.php\?id=(?P<id>\d+)$`';
+    }
 
     // Kinozal serves no torrent data to guests: get_srv_details.php answers
     // with a plain "not authorized" line and dl.kinozal.guru redirects to
@@ -302,7 +306,7 @@ class KinozalCheckImpl
 
     static public function download_torrent($url, $hash, $old_torrent)
     {
-        if (!preg_match(self::TOPIC_PATTERN, $url, $matches))
+        if (!preg_match(self::topicPattern(), $url, $matches))
             return ruTrackerChecker::STE_DECLINED;
 
         // Checked after the URL match, so a topic this handler does not own
@@ -393,10 +397,21 @@ class KinozalCheckImpl
 
         if (self::$downloadAbandoned) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         $client->setcookies();
-        if (!$client->fetchComplex(self::DOWNLOAD_URL.$id))
+        // Keep the cookies learned from details while making a failed fetch
+        // unable to expose that earlier response as if it came from download.
+        // loginmgr can refuse before Snoopy itself clears the old redirect.
+        $client->status = -1;
+        $client->results = '';
+        $client->headers = array();
+        $client->error = '';
+        $client->lastredirectaddr = '';
+        if (!$client->fetchComplex(self::DOWNLOAD_URL.$id) && (string) $client->error !== '')
             return self::unreachable("download.php failed before response: "
                 . RuTrackerFetchError::classify($client->error) . " id=" . $id,
                 $client, 'download', false);
+        // Snoopy can return false after recording an HTTP answer. With no
+        // transport error, its fresh status and body still identify a guest
+        // page or challenge and must use the same reader as a true return.
         // The details answer has already said the infohash moved on; the
         // replacement path compares the downloaded hash once more itself.
         return self::decideFromDownload($client, $id, $hash, $old_torrent, false);
@@ -457,4 +472,4 @@ ruTrackerChecker::registerTracker("/kinozal\./",
 	'/' . implode('|', array_map(function ($host) { return preg_quote($host, '/'); }, $kinozalAnnounceHosts)) . '/',
 	"KinozalCheckImpl::download_torrent",
 	$kinozalAnnounceHosts,
-	KinozalCheckImpl::TOPIC_PATTERN);
+	KinozalCheckImpl::topicPattern());

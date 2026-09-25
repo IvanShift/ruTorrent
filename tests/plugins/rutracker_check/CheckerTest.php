@@ -3961,8 +3961,9 @@ class CheckerTest
 			);
 			ruTrackerChecker::registerTracker('/topic\.' . preg_quote($host, '/') . '/',
 				'/tracker\.' . preg_quote($host, '/') . '/', $handler);
+			$initialState = $previous === 0 && $checkedAt === '' ? '' : (string) $previous;
 			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
-				array((string) $previous, (string) $checkedAt, ''));
+				array($initialState, (string) $checkedAt, ''));
 			return $callback();
 		}
 		finally
@@ -3991,17 +3992,19 @@ class CheckerTest
 		$rows = array(
 			'a stored verdict is put back' => array(
 				'previous' => ruTrackerChecker::STE_UPTODATE,
+				'checkedAt' => time() - 3600,
 				'expect'   => (string) ruTrackerChecker::STE_UPTODATE,
 			),
 			'a torrent that was never checked stays unchecked' => array(
 				'previous' => 0,
+				'checkedAt' => '',
 				'expect'   => '0',
 			),
 		);
 
 		foreach($rows as $label => $row)
 		{
-			$priorTime = time() - 3600;
+			$priorTime = $row['checkedAt'];
 			$this->withVerdictSession('cold', $row['previous'], $priorTime,
 				function($url) { return ruTrackerChecker::STE_UNCHANGED; },
 				function() use ($row, $label, $priorTime) {
@@ -4023,7 +4026,7 @@ class CheckerTest
 					);
 					$timeWrites = $this->customWritesFor('chk-time');
 					$successTimeWrites = $this->customWritesFor('chk-stime');
-					strictAssertSame((string) $priorTime, end($timeWrites),
+					strictAssertSame($priorTime > 0 ? (string) $priorTime : '', end($timeWrites),
 						$label . ': no-answer restores the original check clock');
 					strictAssertSame(array(), $successTimeWrites,
 						$label . ': no-answer cannot stamp successful-check time');
@@ -4056,7 +4059,6 @@ class CheckerTest
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // a new verdict
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
-
 					$performed = null;
 					$interrupted = null;
 					try {
@@ -4085,6 +4087,147 @@ class CheckerTest
 		}
 	}
 
+	public function testSettledVerdictDefersMessageClearOnRetryableFailure()
+	{
+		foreach (array(
+			ruTrackerChecker::STE_NOT_NEED => ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4',
+			ruTrackerChecker::STE_ABSORBED => ruTrackerChecker::CHKMSG_ABSORBED . '|42',
+			ruTrackerChecker::STE_DELETED => ruTrackerChecker::CHKMSG_DELETING . '|3/3',
+		) as $previous => $message)
+		{
+			$past = time() - 700000;
+			$this->withVerdictSession('message-retention', $previous, $past,
+				function() {
+					strictAssertSame(true, ruTrackerChecker::setMessage(self::OLD_HASH, ''),
+						'the handler accepted a message clear before returning failure');
+					strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+						'a retained terminal token must not be erased while the handler is still running');
+					return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+				},
+				function() use ($previous, $message) {
+					if($previous === ruTrackerChecker::STE_NOT_NEED)
+						rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+					rXMLRPCRequest::queue('d.set_custom', true, false, array()); // preflight
+					$performed = null;
+					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+						$previous, time(), '', $performed), 'the transport outcome remains retryable');
+					strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+						'a retryable handler never erases the settled token');
+					strictAssertSame(array(), $this->customWritesFor('chk-time'),
+						'the original rest deadline is unchanged');
+					strictAssertSame(true, ruTrackerChecker::isSettledStatus($previous,
+						time(), $message), 'the retained token remains settled on the next cycle');
+				});
+		}
+	}
+
+	public function testTerminalMessageClearShipsWithANewVerdict()
+	{
+		$message = ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4';
+		$this->withVerdictSession('terminal-new', ruTrackerChecker::STE_NOT_NEED, time() - 700000,
+			function() {
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the old terminal token remains during the handler');
+				return ruTrackerChecker::STE_UPTODATE;
+			},
+			function() use ($message) {
+				rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // preflight
+				rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom|d.set_custom',
+					true, false, array()); // state, clock, success clock, message
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_NOT_NEED, time(), '', $performed),
+					'a new authoritative answer is accepted');
+				strictAssertSame(true, $performed, 'the new verdict consumed correction work');
+				strictAssertSame(array(''), $this->customWritesFor('chk-msg'),
+					'the stale token is cleared with the new verdict');
+				$writes = rXMLRPCRequest::requestsFor(
+					'd.set_custom|d.set_custom|d.set_custom|d.set_custom');
+				strictAssertSame(1, count($writes), 'the definitive projection is one daemon request');
+			});
+	}
+
+	public function testTerminalMessageChangeIsDiscardedAfterRetryableFailure()
+	{
+		$message = ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4';
+		$this->withVerdictSession('terminal-changed', ruTrackerChecker::STE_NOT_NEED, time() - 700000,
+			function() {
+				strictAssertSame(true, ruTrackerChecker::setMessage(self::OLD_HASH,
+					ruTrackerChecker::CHKMSG_FUSE . '|tracker.test'),
+					'a nonblank handler message was staged');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the old terminal token remains while the handler is running');
+				return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+			},
+			function() use ($message) {
+				rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // preflight
+				$performed = null;
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_NOT_NEED, time(), '', $performed),
+					'a retryable answer stays retryable');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the earlier settled token was never overwritten');
+			});
+	}
+
+	public function testTerminalNewTokenShipsWithItsVerdict()
+	{
+		$message = ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4';
+		$newMessage = ruTrackerChecker::CHKMSG_ABSORBED . '|42';
+		$this->withVerdictSession('terminal-token', ruTrackerChecker::STE_NOT_NEED, time() - 700000,
+			function() use ($newMessage) {
+				strictAssertSame(true, ruTrackerChecker::setMessage(self::OLD_HASH, $newMessage),
+					'the new token was staged');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the new token is invisible until the verdict is ready');
+				return ruTrackerChecker::STE_ABSORBED;
+			},
+			function() use ($message, $newMessage) {
+				rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // preflight
+				rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom',
+					true, false, array()); // state, clock, message
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_NOT_NEED, time(), '', $performed),
+					'the new verdict is accepted');
+				strictAssertSame(array($newMessage), $this->customWritesFor('chk-msg'),
+					'the new token is written with the definitive verdict');
+				strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
+					'd.set_custom|d.set_custom|d.set_custom')),
+					'the definitive projection uses one daemon request');
+			});
+	}
+
+	public function testTerminalMessageIsDiscardedWhenTheHandlerThrows()
+	{
+		$message = ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4';
+		$this->withVerdictSession('terminal-throw', ruTrackerChecker::STE_NOT_NEED, time() - 700000,
+			function() {
+				ruTrackerChecker::setMessage(self::OLD_HASH, ruTrackerChecker::CHKMSG_FUSE . '|tracker.test');
+				throw new RuntimeException('handler interrupted');
+			},
+			function() use ($message) {
+				rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // preflight
+				$performed = null;
+				try {
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_NOT_NEED,
+						time(), '', $performed);
+					throw new RuntimeException('handler did not throw');
+				} catch (RuntimeException $error) {
+					strictAssertSame('handler interrupted', $error->getMessage(), 'the handler error propagated');
+				}
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'an interrupted handler did not publish a new token');
+				strictAssertSame(null, strictGetPrivateStatic('ruTrackerChecker', 'terminalMessageHash'),
+					'the message guard is cleared after an exception');
+			});
+	}
+
 	public function testSettledNotNeedKeepsItsVerdictAndRestClockOnRetryableFailure()
 	{
 		foreach (array(ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4',
@@ -4108,6 +4251,32 @@ class CheckerTest
 					strictAssertSame(array(), $timeWrites,
 						$message . ': retryable failure preserves the settled rest clock');
 			});
+		}
+	}
+
+	public function testUnsettledNotNeedCanRecordRetryableFailure()
+	{
+		foreach (array('', ruTrackerChecker::CHKMSG_DELETING . '|2/3') as $message)
+		{
+			$past = time() - 700000;
+			$this->withVerdictSession('unsettled', ruTrackerChecker::STE_NOT_NEED, $past,
+				function() { return ruTrackerChecker::STE_CANT_REACH_TRACKER; },
+				function() use ($message, $past) {
+					rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // claim
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // retryable verdict
+					$performed = null;
+					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_NOT_NEED, $past, '', $performed),
+						$message . ': transport remains retryable');
+					strictAssertSame(false, $performed, 'a retryable answer consumed no correction');
+					strictAssertSame(array((string) ruTrackerChecker::STE_INPROGRESS,
+						(string) ruTrackerChecker::STE_CANT_REACH_TRACKER), $this->customWritesFor('chk-state'),
+						$message . ': an unsettled row records the attempted check and its verdict');
+					$times = $this->customWritesFor('chk-time');
+					strictAssertSame(2, count($times), 'both state writes carry a clock');
+					strictAssertSame(true, (int) end($times) > $past, 'the retry clock advances');
+				});
 		}
 	}
 

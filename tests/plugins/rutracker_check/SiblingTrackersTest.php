@@ -399,6 +399,19 @@ $suite->test('tapochek: a commented system table is not a deletion answer', func
         'markup inside an HTML comment cannot certify deletion');
 });
 
+$suite->test('tapochek: an invisible btih cannot hide the captured deletion answer', function () {
+    $body = file_get_contents(__DIR__ . '/fixtures/tapochek-p7-2026-09-25.html');
+    foreach (array('<!-- btih: -->', '<!-- btih:' . SIB_OLD_HASH . '&dn=x -->',
+        '<script>var hint = "btih:";</script>', '<style>/* btih: */</style>') as $invisible) {
+        Snoopy::reset();
+        Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $invisible . $body);
+        strictAssertSame(ruTrackerChecker::STE_DELETED,
+            TapochekNetCheckImpl::download_torrent(
+                'https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
+            'only rendered markup can veto the captured missing-topic answer');
+    }
+});
+
 $suite->test('tapochek: any other unreadable 200 topic page is retryable, not "no jurisdiction"', function () {
     // No btih, no download link, no removal marker: a challenge page, a login
     // wall, a layout change. STE_NOT_NEED would say "this handler has nothing

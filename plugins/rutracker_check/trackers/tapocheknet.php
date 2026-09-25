@@ -21,6 +21,13 @@ class TapochekNetCheckImpl
         return trim(preg_replace('/[ \t\r\n\f\v]+/', ' ', $plain));
     }
 
+    static private function renderedMarkup($body)
+    {
+        // A template comment or script literal cannot prove this topic is live.
+        return preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
+            '', (string) $body);
+    }
+
     static private function hasLivePageSignal($body)
     {
         return preg_match('`btih\s*:`i', (string) $body)
@@ -32,10 +39,6 @@ class TapochekNetCheckImpl
     static private function isMissingAnswer($body)
     {
         if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) return false;
-        // Only rendered markup may speak for the tracker. A table in a
-        // template comment or script literal is not an Information answer.
-        $body = preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
-            '', $body);
         // Find each table's own close tag. A lazy whole-table regex consumes
         // a nested system message as part of its outer layout table.
         if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) return false;
@@ -76,8 +79,9 @@ class TapochekNetCheckImpl
         if (preg_match('`^https?://tapochek\.net/viewtopic\.php\?p=(?P<id>\d+)$`', $url, $matches)) {
             $client = ruTrackerChecker::makeClient("https://tapochek.net/viewtopic.php?p=".$matches["id"]);
             if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            $rendered = self::renderedMarkup($client->results);
 
-            if (preg_match('`btih:(?P<hash>[0-9A-Fa-f]{40})&dn`', $client->results, $matches)) {
+            if (preg_match('`btih:(?P<hash>[0-9A-Fa-f]{40})&dn`', $rendered, $matches)) {
                 // Strict comparison, as the Kinozal handler's hash check documents: a
                 // loose == reads a hex hash shaped like scientific notation
                 // as a number ('1E' + 38 zeros == '00...01'), so two
@@ -85,7 +89,7 @@ class TapochekNetCheckImpl
                 if (strtoupper($matches["hash"])===$hash) {
                     return  ruTrackerChecker::STE_UPTODATE;
                 }
-                if (preg_match('`\"download.php\?id=(?P<id>\d+)\"`', $client->results, $matches)) {
+                if (preg_match('`\"download.php\?id=(?P<id>\d+)\"`', $rendered, $matches)) {
                     $client->setcookies();
                     if (!$client->fetchComplex("https://tapochek.net/download.php?id=".$matches["id"]))
                         return ruTrackerChecker::STE_CANT_REACH_TRACKER;
@@ -94,7 +98,7 @@ class TapochekNetCheckImpl
             }
 
             // Consult the deletion marker only when no valid live evidence (btih) is present
-            if (self::isMissingAnswer($client->results))
+            if (self::isMissingAnswer($rendered))
                 return ruTrackerChecker::STE_DELETED;
 
             // The topic URL is ours and the tracker answered 200, but nothing

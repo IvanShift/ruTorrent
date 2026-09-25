@@ -3935,6 +3935,26 @@ upTest($suite, 'testParseMulticallDropsARowWhoseStoredStateOrTimeIsNotCanonical'
     strictAssertSame(100, $set[0]['time'], 'a canonical chk-time is read as the int it is');
 });
 
+upTest($suite, 'testMalformedStoredStateNamesThePersistentExclusionInTheOperatorLog', function () {
+    $hash = str_repeat('A', 40);
+    $logs = testCapturedAppLog(function () use ($hash) {
+        strictAssertSame(array(), RuTrackerUpdatePass::parseMulticall(
+            upRow($hash, 0, 'bt.t-ru.org', 'bad-state')),
+            'an invalid state must stay out of dispatch');
+        strictAssertSame(array(), RuTrackerUpdatePass::parseMulticall(
+            upRow($hash, 0, 'bt.t-ru.org', '3', '', '', '', '', 'bad-time')),
+            'an invalid time must stay out of dispatch');
+    });
+    strictAssertTrue(strpos($logs, $hash . ' has malformed chk-state') !== false,
+        'the operator can identify the torrent and the damaged state key');
+    strictAssertTrue(strpos($logs, $hash . ' has malformed chk-time') !== false,
+        'the operator can identify the torrent and the damaged time key');
+    strictAssertTrue(strpos($logs, 'excluded from tracker checks until the key is repaired') !== false,
+        'the log names the permanent consequence');
+    strictAssertTrue(strpos($logs, 'bad-state') === false && strpos($logs, 'bad-time') === false,
+        'stored bytes do not enter the log');
+});
+
 upTest($suite, 'testAMalformedSnapshotRowIsNeverDispatchedAndNeverWritten', function () {
     $hash = str_repeat('A', 40);
     // A 6-failure RuTracker row is the ordinary 'candidate' that WOULD be
@@ -4581,12 +4601,26 @@ upTest($suite, 'every Kinozal topic host is accepted by its declared owner', fun
     upLoadKinozalRegistration();
     foreach (KinozalCheckImpl::SITE_HOSTS as $host) {
         $url = 'https://' . $host . '/details.php?id=1';
-        strictAssertSame(1, preg_match(KinozalCheckImpl::TOPIC_PATTERN, $url),
+        strictAssertSame(1, preg_match(KinozalCheckImpl::topicPattern(), $url),
             $host . ' is accepted by the topic pattern');
         $owner = ruTrackerChecker::ownerOf($url);
         strictAssertSame('KinozalCheckImpl::download_torrent', isset($owner['handler']) ? $owner['handler'] : null,
             $host . ' belongs to the Kinozal handler');
     }
+});
+
+upTest($suite, 'legacy two-argument announce authority uses its comment', function () {
+    upLoadKinozalRegistration();
+    $comment = 'https://kinozal.tv/details.php?id=1';
+    $expected = ruTrackerChecker::announceAuthorityFor($comment);
+    strictAssertTrue(is_array($expected) && in_array('kinozal.tv', $expected['authority'], true),
+        'the one-argument form resolves a declared tracker authority');
+    strictAssertSame($expected,
+        ruTrackerChecker::announceAuthorityFor(array('http://unrelated.invalid/announce'), $comment),
+        'the compatibility trackers argument cannot replace the authoritative comment');
+    strictAssertSame(null,
+        ruTrackerChecker::announceAuthorityFor(array('http://kinozal.tv/announce'), ''),
+        'an explicitly empty legacy comment stays empty');
 });
 
 upTest($suite, 'an untimed NOT_NEED successor pointer still reaches its handler', function () {

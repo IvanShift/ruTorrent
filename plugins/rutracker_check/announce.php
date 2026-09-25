@@ -100,10 +100,8 @@ class RuTrackerAnnounce
     // ten manual clicks share one window's budget instead of each buying
     // its own the way an in-memory-only counter used to.
 
-    // Host names are case-insensitive. Normalize every budget key so a second
-    // spelling cannot buy another allowance or bypass a recorded cooldown.
-    // Compatibility alias for callers that used this public method. Budget
-    // methods below use UrlHost directly, sharing the scheduler fuse's rule.
+    // Compatibility alias for callers of the former public helper.
+    // Budget decisions use UrlHost directly.
     static public function hostKey($host)
     {
         return UrlHost::normalize($host);

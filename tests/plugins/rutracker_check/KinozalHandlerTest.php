@@ -549,7 +549,7 @@ $suite->test('a server error on the details endpoint is a reachability error', f
 $suite->test('every Kinozal mirror in the comment is handled', function () {
     foreach (KinozalCheckImpl::SITE_HOSTS as $host) {
         $ownerUrl = 'https://' . $host . '/details.php?id=1';
-        strictAssertSame(1, preg_match(KinozalCheckImpl::TOPIC_PATTERN, $ownerUrl),
+        strictAssertSame(1, preg_match(KinozalCheckImpl::topicPattern(), $ownerUrl),
             $host . ' has an owner topic pattern');
         $case = kinozalCase();
         $url = 'https://' . $host . '/details.php?id=2148020';
@@ -1213,6 +1213,75 @@ $suite->test('a redirect on details does not classify the next failed download a
         KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']), 'download failed');
     strictAssertSame(1, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'), 'download has its own transport failure');
     strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'), 'old redirect cannot prove a new guest answer');
+});
+
+$suite->test('a fresh guest answer is classified after fetchComplex returns false', function () {
+    $cases = kinozalTopics(2);
+    foreach ($cases as $case) {
+        Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)));
+        Snoopy::queueAnsweredFailure($case['download_url'], 200, kinozalUnauthorizedBody());
+        ruTrackerChecker::queueResult('parseMetainfo', null);
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+            'a fresh guest page is retryable');
+    }
+    strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+        'both fresh guest responses must reach the login wall counter');
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'),
+        'the guest responses did not refuse transport');
+    strictAssertSame(true, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
+        'the second consecutive guest response trips the login wall latch');
+});
+
+$suite->test('a fresh challenge answer is classified after fetchComplex returns false', function () {
+    $case = kinozalCase();
+    Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)));
+    Snoopy::queueAnsweredFailure($case['download_url'], 403, kinozalChallengeBody());
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+        'a challenge answer stays retryable');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Cloudflare challenge',
+        'a fresh challenge page is named in diagnostics even after a false return');
+    strictAssertSame(1, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'),
+        'a challenged HTTP response counts as a download refusal');
+});
+
+$suite->test('a false download without a response does not reuse details bytes', function () {
+    $case = kinozalCase();
+    Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)));
+    Snoopy::queueEarlyFailure($case['download_url'], '');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+        'no fresh answer is a retryable transport failure');
+    strictAssertSame(1, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'),
+        'a failed fetch with no new bytes counts as transport failure');
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+        'the previous details response is not read as a download answer');
+});
+
+$suite->test('a loginmgr refusal before fetch cannot reuse a details redirect', function () {
+    $case = kinozalCase();
+    Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('A', 40)), array(),
+        'https://kinozal.guru/login.php');
+    Snoopy::queueBeforeFetchFailure($case['download_url']);
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        KinozalCheckImpl::download_torrent($case['topic_url'], $case['hash'], $case['torrent']),
+        'a prefetch refusal stays retryable');
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+        'the prior details redirect cannot prove a download login wall');
+    strictAssertSame(1, strictGetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures'),
+        'a refusal without fresh download bytes counts as transport');
+});
+
+$suite->test('a catch-all answer clears an earlier Snoopy error', function () {
+    Snoopy::reset();
+    $client = new Snoopy();
+    Snoopy::queueEarlyFailure('https://example.test/first', 'socket failed');
+    strictAssertSame(false, $client->fetch('https://example.test/first'), 'the first request fails early');
+    strictAssertSame('socket failed', $client->error, 'the first error was recorded');
+    Snoopy::queueAny(200, 'fresh response');
+    strictAssertSame(true, $client->fetch('https://example.test/second'), 'the second request succeeds');
+    strictAssertSame('', $client->error, 'a new request starts without the previous error');
 });
 
 exit($suite->run());
