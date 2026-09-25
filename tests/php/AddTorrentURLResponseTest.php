@@ -62,7 +62,8 @@ SH
 			if($exit !== 0) throw new RuntimeException('addtorrent child failed: ' . $errors);
 			$result = json_decode($output, true);
 			if(!is_array($result)) throw new RuntimeException('addtorrent returned: ' . $output . '; ' . $errors);
-			return array($result[0]['status'], glob($root . '/profile/torrents/*'), array_key_exists('file', $result[0]));
+			return array($result[0]['status'], glob($root . '/profile/torrents/*'),
+				array_key_exists('file', $result[0]), @file_get_contents($root . '/errors.log'));
 		}
 		finally
 		{
@@ -87,6 +88,8 @@ SH
 		$this->assertEquals('FailedFile', $result[0], 'HTTP success with HTML is an invalid torrent');
 		$this->assertEquals(array(), $result[1], 'HTML was not saved to the uploads directory');
 		$this->assertEquals(false, $result[2], 'HTML never entered the file upload path');
+		$this->assertTrue(strpos((string)$result[3], 'addtorrent: torrent fetch refused: invalid-torrent-response') !== false,
+			'HTML rejection has a classified log reason');
 	}
 
 	public function testHttpFailureIsAUrlError()
@@ -94,5 +97,7 @@ SH
 		$result = $this->probe(503, '<html>Unavailable</html>');
 		$this->assertEquals('FailedURL', $result[0], 'HTTP failure is a URL error');
 		$this->assertEquals(array(), $result[1], 'failed response was not saved');
+		$this->assertTrue(strpos((string)$result[3], 'addtorrent: torrent fetch refused: http-status-503') !== false,
+			'HTTP rejection has a classified log reason');
 	}
 }

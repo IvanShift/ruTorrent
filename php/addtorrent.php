@@ -2,6 +2,7 @@
 
 require_once( 'Snoopy.class.inc');
 require_once( 'rtorrent.php' );
+require_once( __DIR__ . '/torrentfetch.php' );
 set_time_limit(0);
 
 if(isset($_REQUEST['result']))
@@ -99,8 +100,12 @@ else
 							}
 						}
 						else
+						{
 							$uploaded_url['status'] = ($fetched && Snoopy::isSuccessfulResponse($cli))
 								? "FailedFile" : "FailedURL";
+							FileUtil::toLog("addtorrent: torrent fetch refused: "
+								.TorrentFetch::rejectionReason($cli, $fetched));
+						}
 					}
 					$uploaded_files[] = $uploaded_url;
 				}

@@ -2,12 +2,14 @@
 
 require_once( dirname(__FILE__).'/../../php/Snoopy.class.inc');
 require_once( dirname(__FILE__).'/../../php/rtorrent.php');
+require_once( dirname(__FILE__).'/../../php/torrentfetch.php');
 
 function getTorrent( $url )
 {
 	global $profileMask;
 	$cli = new Snoopy();
-	if($cli->fetchComplex($url) && Snoopy::isTorrentResponse($cli))
+	$fetched = $cli->fetchComplex($url);
+	if($fetched && Snoopy::isTorrentResponse($cli))
 	{
 		$name = $cli->get_filename();
 		if($name===false)
@@ -26,7 +28,11 @@ function getTorrent( $url )
 			@chmod($name,$profileMask & 0666);
 			return($name);
 		}
+		FileUtil::toLog("bulk_magnet: torrent save refused: local-write-failed");
 	}
+	else
+		FileUtil::toLog("bulk_magnet: torrent fetch refused: "
+			.TorrentFetch::rejectionReason($cli, $fetched));
 	return(false);
 }
 
