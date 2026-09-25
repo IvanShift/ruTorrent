@@ -64,7 +64,7 @@ class TorrentAddPathSequenceTest extends TestCase
 		$settings->aliases = array();
 
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		$property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
 		$this->previousSettings = $property->getValue();
 		$property->setValue(null, $settings);
 	}
@@ -72,7 +72,7 @@ class TorrentAddPathSequenceTest extends TestCase
 	public function tearDown()
 	{
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		$property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
 		$property->setValue(null, $this->previousSettings);
 
 		foreach (array_keys($this->mtimes) as $relative) {

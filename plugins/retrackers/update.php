@@ -1,5 +1,16 @@
 <?php
 
+// Lifecycle draining shares this timeout between done() and containment in
+// init(): expiry reports hook-teardown-pending or
+// shared-daemon-owner-ambiguous-uncontained, respectively. Recovery re-reads
+// delayed receipts at the polling interval below. Both waits are
+// declared with if(!defined()) so a caller that loads this file can shorten
+// them first; nothing else reads them, and the defaults are what shipped.
+if (!defined('RETRACKERS_TEARDOWN_TIMEOUT'))
+	define('RETRACKERS_TEARDOWN_TIMEOUT', 5.0);
+if (!defined('RETRACKERS_RECEIPT_POLL'))
+	define('RETRACKERS_RECEIPT_POLL', 0.25);
+
 function clearTracker($addition,$tracker)
 {
 	foreach( $addition as $kg=>$group )
@@ -8956,7 +8967,7 @@ class RetrackersLifecycleCoordinator
 			return(false);
 		}
 		$epoch = $decision['persistent_epoch'];
-		$deadline = hrtime(true) + 5000000000;
+		$deadline = self::teardownDeadline(RETRACKERS_TEARDOWN_TIMEOUT);
 		while (true) {
 			$wh = self::receiptLocalIds($decision, 'wh');
 			if ($wh === false) {
@@ -9069,6 +9080,13 @@ class RetrackersLifecycleCoordinator
 		}
 		$failure = null;
 		return(true);
+	}
+
+	// Keep nanosecond arithmetic in float: five seconds exceeds a 32-bit
+	// integer, so narrowing it to int can expire the shared drain deadline early.
+	private static function teardownDeadline($seconds)
+	{
+		return(hrtime(true) + ((float)$seconds) * 1000000000.0);
 	}
 
 	public static function init($canonicalUser, $script, $php, &$failure = null, $adapter = null)
@@ -9513,7 +9531,7 @@ class RetrackersRecoveryCoordinator
 				$adapter->recordRecoveryFailure($failure);
 				$reported = $failure;
 			}
-			usleep(250000);
+			usleep((int)(RETRACKERS_RECEIPT_POLL * 1000000));
 		}
 	}
 
@@ -9982,7 +10000,7 @@ class RetrackersRecoveryCoordinator
 				// Begin is durable dispatch evidence. The one-shot wrapper must stay
 				// alive and wait only on its scheduled fence, without a timeout or an
 				// unrelated RPC being treated as a load barrier.
-				usleep(250000);
+				usleep((int)(RETRACKERS_RECEIPT_POLL * 1000000));
 				$receiptFailure = null;
 				$next = $adapter->loadPhaseReceipts($plan->phase(), $tx, $receiptFailure);
 				if (!self::validLoadReceipts($next)) {

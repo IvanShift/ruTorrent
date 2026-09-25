@@ -10329,6 +10329,7 @@ class RemoveWithDataTest extends TestCase
 			.' state lock, so another actor takes the state lock at once';
 		$mirror = $this->mirror('state-lock-order');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$producer->wait(30);
 		$producer->reap();
@@ -10359,6 +10360,7 @@ class RemoveWithDataTest extends TestCase
 				usleep(20000);
 		}
 		$stillWaiting = (microtime(true) - $heldAt) < $hold;
+		$state = $this->mirrorState($mirror);
 		$this->runChildren(array('hash' => $hashHolder, 'worker' => $worker,
 			'state' => $stateHolder), 40, $invariant);
 		$this->assertTrue($stillWaiting,
@@ -10366,9 +10368,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue($took !== null && $took < 1.5,
 			'the state lock was free while the worker waited for the hash lock ('
 				.($took === null ? 'never taken' : round($took, 2).'s').')');
-		$state = $this->mirrorState($mirror);
-		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
-			'and the blocked worker had already acknowledged before it waited');
+		$this->assertTrue($this->stateAcknowledgesItsGeneration($state),
+			'the worker acknowledged while the hash lock remained held');
 	}
 
 	// -- conservative restart, rearm and retirement (task 5) ----------------
@@ -10729,6 +10730,7 @@ class RemoveWithDataTest extends TestCase
 			'd.get_base_path' => array('val' => array('/d/name', 1, '/d/name/a.bin')),
 			'd.set_custom5' => array('val' => array('', '', '')),
 		));
+		$mirror->shortenAcknowledgementWait();
 		$producer = ErasedataTestProcess::start($mirror->eraseCommand($this->hash('A'), '1'));
 		$producer->wait(20);
 		$producer->reap();
@@ -10767,6 +10769,71 @@ class RemoveWithDataTest extends TestCase
 			$mirror->actionCommand($hashes, $force, $name), $mirror->pluginDir));
 	}
 
+	// A producer nobody answers waits ERASEDATA_DRAIN_ACK_TIMEOUT, 11 s of
+	// production's choosing, before it gives up and leaves its obligation
+	// queued. Cases whose subject is what happens AFTER that -- a held lock,
+	// a racing worker, a restart -- would otherwise pay those 11 s as setup.
+	// The mirror can hand its children a shorter wait: only its length changes,
+	// never what the producer does at either end of it.
+	public function testAShortenedWaitReachesAChildUnderARootWithIniMetacharacters()
+	{
+		$this->reset();
+		// The prepend option must also survive INI metacharacters in its path.
+		$mirror = $this->mirror('double"quote${HOME}');
+		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait(1.0);
+		// No clock step occurs in this case; measure the real wait duration.
+		$began = microtime(true);
+		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
+		$finished = $producer->wait(20);
+		$took = microtime(true) - $began;
+		$code = $producer->reap();
+		$this->assertTrue($finished, 'the unanswered producer finishes');
+		// The HTTP door answers its caller and exits 0 whether or not anyone
+		// acknowledged; a child that waited, queued and then died would leave
+		// the same files behind, so the exit code is part of the verdict.
+		$this->assertTrue($code === 0,
+			'and finishes the way action.php finishes, exit 0, not by dying (exit '
+				.var_export($code, true).', stderr: '.trim((string)$producer->err).')');
+		// Both bounds in one assertion: the child really waited (it did not
+		// skip the acknowledgement) and really stopped at the shortened wait
+		// rather than at production's 11 s.
+		$this->assertTrue($took >= 1.0 && $took < 4.0,
+			'the producer waited the shortened 1 s and not the 11 s default ('
+				.round($took, 2).'s)');
+		$this->assertTrue(count(glob($mirror->listPath.'/*.pending')) > 0,
+			'and it left its obligation queued exactly as an unanswered producer does');
+		// The protocol state survives the shortened wait exactly as it survives
+		// the full one: a readable document, the armed generation, and the zero
+		// acknowledgement that says nobody answered.
+		$state = $this->mirrorState($mirror);
+		$this->assertTrue(is_array($state) && isset($state['generation'], $state['acknowledged'])
+			&& $state['generation'] !== '0000000000000000'
+			&& $state['acknowledged'] === '0000000000000000',
+			'the generation is armed and nothing acknowledged it: the wait was shortened, not answered');
+	}
+
+	// The helper rejects an apostrophe in the mirror root and reports the
+	// full path; this is the helper's restriction, not an INI limitation.
+	public function testAShortenedWaitRefusesASingleQuoteInTheMirrorRoot()
+	{
+		$this->reset();
+		$mirror = $this->mirror("apos'trophe");
+		$refused = null;
+		try
+		{
+			$mirror->shortenAcknowledgementWait();
+		}
+		catch(RuntimeException $e)
+		{
+			$refused = $e->getMessage();
+		}
+		$this->assertTrue($refused !== null && strpos($refused, $mirror->root) !== false
+			&& strpos($refused, 'INI') !== false,
+			'a mirror root with a single quote is refused, naming the root and the reason: '
+				.var_export($refused, true));
+	}
+
 	// -- the test playing rTorrent's scheduler ------------------------------
 	//
 	// The mirror's RPC adapter RECORDS a schedule registration and does nothing
@@ -10778,10 +10845,12 @@ class RemoveWithDataTest extends TestCase
 	// log and starts the REAL `update.php <user> drain` child itself, here, in
 	// processes of its own that it holds a handle on and reaps.
 	//
-	// Nothing under test is shortened to make this work.
-	// ERASEDATA_DRAIN_ACK_TIMEOUT is still 11.0s and the producer still waits
-	// the whole of it if nobody answers; what a scheduler changes is that
-	// something answers inside it, which is the entire point of having one.
+	// Cases that play the scheduler through runChildrenScheduled() or
+	// acknowledgeOnce() keep the shipped 11 s acknowledgement timeout: their
+	// subject is the real child answering inside that window. Other cases in
+	// this section shorten an unanswered producer's wait as setup for a batch
+	// race, held lock, retirement or rollback observation. The crash-after-arm
+	// case exits before reaching the wait.
 
 	// Is the per-user drain key registered right now? The LAST scheduling
 	// record for the key decides, exactly as rTorrent's own table would: a
@@ -10895,9 +10964,7 @@ class RemoveWithDataTest extends TestCase
 			// two iterations. That window is not load-dependent -- load only
 			// makes landing in it likely.
 			$state = $this->mirrorState($mirror);
-			if(is_array($state) && isset($state['acknowledged'], $state['generation'])
-				&& $state['generation'] !== '0000000000000000'
-				&& $state['acknowledged'] === $state['generation'])
+			if($this->stateAcknowledgesItsGeneration($state))
 			{
 				$acknowledged = true;
 				break;
@@ -10942,6 +11009,13 @@ class RemoveWithDataTest extends TestCase
 		return(is_array($decoded) ? $decoded : null);
 	}
 
+	private function stateAcknowledgesItsGeneration($state)
+	{
+		return(is_array($state) && isset($state['generation'], $state['acknowledged'])
+			&& $state['generation'] !== '0000000000000000'
+			&& $state['acknowledged'] === $state['generation']);
+	}
+
 	private function mirrorErased($mirror)
 	{
 		$erased = array();
@@ -10966,14 +11040,15 @@ class RemoveWithDataTest extends TestCase
 		));
 	}
 
-	public function testInverseHashBatchOrderNeverDeadlocksAndKeepsExactOutcomes()
+	public function testInverseBatchesLeaveCanonicalJournalAndNeverEraseWithoutAck()
 	{
 		$this->reset();
 		$invariant = 'two public-door batches over the same hashes in inverse'
-			.' order both complete: hash locks are taken blocking in canonical'
-			.' sorted order, and the exact canonical set is admitted once';
+			.' order both complete on the no-ack path, leave canonical'
+			.' sorted journal entries, and erase nothing without acknowledgement';
 		$mirror = $this->mirror('inverse-batch');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
 		$children = array(
 			'forward' => $this->actionDoor($mirror, $hashes, 1, 'door-forward'),
@@ -10998,16 +11073,17 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue($sorted,
 			'every journal record holds the canonical sorted unique hash set');
 		$erased = $this->mirrorErased($mirror);
-		$this->assertEquals(count($erased), count(array_unique($erased)),
-			'no hash is erased twice by the two racing batches');
+		$this->assertEquals(array(), $erased,
+			'neither batch erases any hash without an acknowledgement');
 	}
 
-	public function testProducerAndWorkerRaceKeepOneScheduleAndOneWorker()
+	public function testProducerAndWorkerRaceKeepOneFixedScheduleKey()
 	{
 		$this->reset();
 		$invariant = 'a producer and the guarded worker running at the same time'
-			.' keep one fixed schedule key and one active worker: there is no'
-			.' per-hash or per-invocation schedule fan-out';
+			.' keep one fixed schedule key: there is no'
+			.' per-hash or per-invocation schedule fan-out; worker admission is'
+			.' covered by testGlobalLockBypassWouldShowOverlapInSharedRecovery';
 		$mirror = $this->mirror('producer-worker');
 		$mirror->scriptRpc($this->drainScript());
 		$children = array(
@@ -11015,7 +11091,7 @@ class RemoveWithDataTest extends TestCase
 				array($this->hash('A'), $this->hash('B')), 1),
 			'worker' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
 		);
-		$this->runChildren($children, 30, $invariant);
+		$this->runChildrenScheduled($mirror, $children, 30, $invariant);
 		$keys = array();
 		foreach($mirror->scheduleLog() as $record)
 			if($record['family'] === 'schedule')
@@ -11032,7 +11108,7 @@ class RemoveWithDataTest extends TestCase
 			'two hashes in one batch do not fan out into a schedule per hash: '
 				.count($drain).' registrations');
 		$state = $this->mirrorState($mirror);
-		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+		$this->assertTrue($this->stateAcknowledgesItsGeneration($state),
 			'the real guarded child wrote a durable acknowledgement');
 	}
 
@@ -11043,6 +11119,10 @@ class RemoveWithDataTest extends TestCase
 			.' retire a generation whose obligation is still admitted';
 		$mirror = $this->mirror('worker-retire');
 		$mirror->scriptRpc($this->drainScript());
+		// Which of the two reaches the queue first is settled in the first few
+		// milliseconds, long before the producer's wait matters; the wait's
+		// length only decides whether the worker-first order costs 11 s or 1 s.
+		$mirror->shortenAcknowledgementWait();
 		$children = array(
 			'retirement' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
 			'producer' => $this->actionDoor($mirror, array($this->hash('A')), 1),
@@ -11115,6 +11195,7 @@ class RemoveWithDataTest extends TestCase
 			.' but never the acknowledgement';
 		$mirror = $this->mirror('held-scheduler');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$producer->wait(20);
 		$producer->reap();
@@ -11156,6 +11237,7 @@ class RemoveWithDataTest extends TestCase
 			.' locks nonblocking and exits at once';
 		$mirror = $this->mirror('held-hash');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$producer->wait(20);
 		$producer->reap();
@@ -11195,7 +11277,9 @@ class RemoveWithDataTest extends TestCase
 				.round($broadTook, 2).'s) while the drain worker waits blocking'
 				.' for the same lock ('.round($drainTook, 2).'s)');
 		$state = $this->mirrorState($mirror);
-		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
+		$this->assertTrue($this->stateAcknowledgesItsGeneration($state),
+			'the drain worker acknowledged the armed generation');
+		$this->assertEquals(array(), glob($mirror->listPath.'/*.pending'),
 			'and it consumed its work after the unlock rather than giving up');
 	}
 
@@ -11365,7 +11449,8 @@ class RemoveWithDataTest extends TestCase
 	// The old name claimed a producer that died during a partly executed
 	// aggregate erase, and this case never drove one: nothing plays the
 	// scheduler for its producer, so the producer waits out
-	// ERASEDATA_DRAIN_ACK_TIMEOUT, takes the no-ack rollback
+	// ERASEDATA_DRAIN_ACK_TIMEOUT (shortened by the mirror: the rollback is
+	// the same code at any length), takes the no-ack rollback
 	// (`drain-no-ack ... consequence=torrents-retained-own-staging-rolled-back`)
 	// and reaches no erase at all. What it really pins -- and pins well, which
 	// is why it is kept rather than deleted -- is the disposition of every
@@ -11385,6 +11470,7 @@ class RemoveWithDataTest extends TestCase
 			.' against its OWN payload -- and nothing at all is erased, because'
 			.' the daemon already answers that every member is gone';
 		$mirror = $this->mirror('crash-partial-erase');
+		$mirror->shortenAcknowledgementWait();
 		// A REAL payload PER MEMBER, so that "this obligation was carried out"
 		// is provable for one hash without any other hash's work licensing it.
 		//
@@ -12143,6 +12229,7 @@ class RemoveWithDataTest extends TestCase
 			.' the exact per-user drain key from durable state alone';
 		$mirror = $this->mirror('restart-rearm');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$producer->wait(20);
 		$producer->reap();
@@ -12197,6 +12284,7 @@ class RemoveWithDataTest extends TestCase
 			.' shared recovery work: exactly one consumes each obligation';
 		$mirror = $this->mirror('global-lock');
 		$mirror->scriptRpc($this->drainScript());
+		$mirror->shortenAcknowledgementWait();
 		$hashes = array($this->hash('A'), $this->hash('B'));
 		$producer = $this->actionDoor($mirror, $hashes, 1);
 		$producer->wait(20);
@@ -12296,8 +12384,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(array(), glob($mirror->listPath.'/*.tmp'),
 			'and no staging object of the batch is left behind');
 		$state = $this->mirrorState($mirror);
-		$this->assertTrue(is_array($state) && isset($state['acknowledged']),
-			'a real guarded child acknowledged, so the shared recovery really ran');
+		$this->assertTrue($this->stateAcknowledgesItsGeneration($state),
+			'a real guarded child acknowledged the exact generation the producer armed');
 	}
 
 	// -- the seven defects the real-daemon lab and the slice review found ----
@@ -12619,6 +12707,32 @@ class RemoveWithDataTest extends TestCase
 			'an unknown probe retains the obligation rather than discharging it');
 		$this->assertEquals(0, count($this->scheduleRecords('schedule_remove')),
 			'and retires nothing on the strength of an answer nobody got');
+	}
+
+	public function testDrainAcknowledgementWaitSurvivesClockStepsInBothDirections()
+	{
+		$this->reset();
+		$queue = $this->dir.'/no-such-queue';
+		$cases = array(
+			'forward' => array(array(100.0, 100.0), array(200.0, 100.01),
+				array(200.0, 100.06)),
+			'backward' => array(array(100.0, 100.0), array(90.0, 100.06),
+				array(100.06, 100.06)),
+		);
+		foreach($cases as $direction => $times)
+		{
+			$calls = 0;
+			$clock = function() use ($times, &$calls) {
+				if($calls >= count($times))
+					throw new RuntimeException('the wait did not finish on both deadlines');
+				return($times[$calls++]);
+			};
+			$timedOut = erasedataWaitForDrainAcknowledgement($queue,
+				'0000000000000001', 0.05, 0, $clock);
+			$this->assertTrue($timedOut === false && $calls === 3,
+				'a '.$direction.' wall-clock step alone cannot end the wait; both'
+					.' deadlines must expire (clock reads: '.$calls.')');
+		}
 	}
 
 	// D3. One acknowledgement releases every producer it is at or ahead of.

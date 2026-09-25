@@ -56,6 +56,11 @@ if (!function_exists('getCmd')) {
 
 $retrackersUpdateImportsBefore = get_included_files();
 define('RETRACKERS_IMPORT_ONLY', true);
+// Use short waits in this process. The duration cases below verify these
+// overrides with a monotonic timer; a separate child checks
+// the shipped defaults without these declarations.
+define('RETRACKERS_TEARDOWN_TIMEOUT', 0.2);
+define('RETRACKERS_RECEIPT_POLL', 0.01);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 $retrackersUpdateImportsAfter = get_included_files();
 
@@ -6180,6 +6185,76 @@ PHP;
 			'done executes acquire and final deletion as two typed callbacks');
 	}
 
+	public function testTheShippedTeardownIsFiveSecondsAndThePollAQuarterSecond()
+	{
+		// Declared nothing, so the plugin's own defaults, read in a child.
+		$script = 'define("RETRACKERS_IMPORT_ONLY", true); require $argv[1];'
+			. ' echo RETRACKERS_TEARDOWN_TIMEOUT, "|", RETRACKERS_RECEIPT_POLL;';
+		$process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini',
+			'-r', $script, '--', realpath(__DIR__ . '/../../../plugins/retrackers/update.php')),
+			array(1 => array('pipe', 'w'), 2 => array('redirect', 1)), $pipes);
+		$this->assertTrue(is_resource($process), 'a child PHP starts');
+		if (!is_resource($process)) return;
+		// Drain both streams together so diagnostics cannot block a full stderr pipe.
+		$output = stream_get_contents($pipes[1]);
+		fclose($pipes[1]);
+		$status = proc_close($process);
+		$this->assertTrue($status === 0 && $output === '5|0.25',
+			'the child exits successfully with shipped waits of 5 s and 250 ms (exit '
+				. $status . ', output ' . var_export($output, true) . ')');
+	}
+
+	// The deadline is nanoseconds added to hrtime(true). Narrowed to int
+	// first, five seconds is 5e9, past a 32-bit int: PHP 7.4 on such a build
+	// keeps the low bits, about 0.7 s, and done() reports hook-teardown-pending
+	// before a worker had the seconds it was promised. The suite runs on 64-bit
+	// only, so the same narrowing is provoked with a length past PHP_INT_MAX:
+	// the arithmetic that survives it is the arithmetic that survives 32 bits.
+	public function testTheTeardownDeadlineIsNotNarrowedToAnInt()
+	{
+		$deadline = new ReflectionMethod('RetrackersLifecycleCoordinator', 'teardownDeadline');
+		if (PHP_VERSION_ID < 80100) $deadline->setAccessible(true);
+		$seconds = 1e10;
+		$before = hrtime(true);
+		$at = $deadline->invoke(null, $seconds);
+		$this->assertTrue($at - $before >= $seconds * 1e9 * 0.999,
+			'a deadline of ' . $seconds . ' s lies that far ahead, not wrapped or clamped ('
+				. var_export($at, true) . ')');
+	}
+
+	// Both cases measure elapsed time with a monotonic timer. Teardown also
+	// uses a monotonic deadline in production; receipt polling uses usleep.
+	// The upper bounds reject the shipped waits.
+	public function testDelayedReceiptsArePolledAtTheDeclaredInterval()
+	{
+		$fixture = $this->task5ObligationFixture();
+		if ($fixture === false || !($fixture['obligation'] instanceof RetrackersPostEraseObligation)) {
+			$this->assertTrue(false, 'receipt polling requires a complete immutable obligation');
+			$this->closeTask5Fixture($fixture);
+			return;
+		}
+		$tx = str_repeat('2', 32);
+		$adapter = $this->recoveryTestAdapter(array('wa:' . $tx));
+		$adapter->loadCallbackResults = array(false);
+		// Three polls before the fence lands: 750 ms at the default, 30 ms declared.
+		$adapter->loadPhaseReceiptSequence = array(false,
+			array('begin' => '1', 'fence' => '0'),
+			array('begin' => '1', 'fence' => '0'),
+			array('begin' => '1', 'fence' => '1'));
+		$failure = null;
+		$began = hrtime(true);
+		$result = RetrackersRecoveryCoordinator::dispatchLoadObligation(
+			$tx, $fixture['obligation']->candidate(), $adapter, $failure, true);
+		$took = (hrtime(true) - $began) / 1e9;
+		$this->closeTask5Fixture($fixture);
+		$this->assertTrue($result === true && $failure === null &&
+			$adapter->loadPhaseReceiptReads === 4,
+			'the fixture sequence completes successfully on its fourth receipt read');
+		$this->assertTrue($took >= 3 * RETRACKERS_RECEIPT_POLL && $took < 0.2,
+			'and the polls are the declared ' . RETRACKERS_RECEIPT_POLL . ' s, not 250 ms ('
+				. round($took, 3) . 's)');
+	}
+
 	public function testTask5LifecycleCoordinatorDoneWithActiveWorkersTimesOut()
 	{
 		$this->installRtorrentQuoteDouble();
@@ -6187,11 +6262,16 @@ PHP;
 		$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
 		$adapter->ledgerKeys = array('pv:' . str_repeat('1', 32), 'wa:' . str_repeat('a', 32));
 		$failure = null;
+		$began = hrtime(true);
 		$ok = RetrackersLifecycleCoordinator::done('alice', $failure, $adapter);
+		$took = (hrtime(true) - $began) / 1e9;
 		$this->assertTrue($ok === false && $failure === 'hook-teardown-pending',
 			'done times out with active worker keys and returns hook-teardown-pending');
 		$this->assertTrue(count($adapter->callbackHistory) === 1,
 			'done does not perform final hook deletion when worker keys remain active');
+		$this->assertTrue($took >= RETRACKERS_TEARDOWN_TIMEOUT && $took < 1.0,
+			'and the timeout is the declared ' . RETRACKERS_TEARDOWN_TIMEOUT . ' s, not 5 s ('
+				. round($took, 2) . 's)');
 	}
 
 	public function testReadyOnlyReceiptsBlockInitDoneAndContainmentRelease()
@@ -11350,6 +11430,9 @@ PHP;
 			'testTask5UnknownFenceRetainsTheMatchingCapabilityAndNeverSecondLoads',
 			'testTask5WorkerNeverAddsDStartAfterLoadStart',
 			'testWorkerFailureRecorderPersistsOnlyCanonicalHashAndClosedReason',
+			'testTheShippedTeardownIsFiveSecondsAndThePollAQuarterSecond',
+			'testTheTeardownDeadlineIsNotNarrowedToAnInt',
+			'testDelayedReceiptsArePolledAtTheDeclaredInterval',
 		);
 		$runtime = array();
 		$reflection = new ReflectionClass('RetrackersUpdateTest');
@@ -11362,7 +11445,7 @@ PHP;
 		$preTask = array_values(array_diff($runtime, $added));
 		sort($preTask, SORT_STRING);
 		$fingerprint = hash('sha256', implode("\n", $preTask) . "\n");
-		$this->assertTrue(count($runtime) === 222 && count(array_unique($runtime)) === 222 &&
+		$this->assertTrue(count($runtime) === 225 && count(array_unique($runtime)) === 225 &&
 			count($preTask) === 165 &&
 			$fingerprint === 'c98eea96cfddf100e2dc2ee726750efe678100db6d02e70f8d44334b83052278',
 			'the one-pass generated runner retains every frozen pre-task public method exactly once');

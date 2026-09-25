@@ -2210,7 +2210,8 @@ if(!function_exists('erasedataPreparedBindingStillMatches'))
 
 if(!function_exists('erasedataWaitForDrainAcknowledgement'))
 {
-	// Bounded wait for the durable acknowledgement that covers THIS generation.
+	// Wait for the durable acknowledgement that covers THIS generation. A
+	// backward wall-clock step can extend this scheduler-aligned timeout.
 	//
 	// Only a really started guarded update.php child raises it, and it does so
 	// before it tries the worker lock. The registration being accepted proves
@@ -2239,9 +2240,15 @@ if(!function_exists('erasedataWaitForDrainAcknowledgement'))
 	// the acknowledgement licenses is unchanged: the caller still re-takes the
 	// locks and revalidates its own complete `prepared` binding for its own
 	// exact generation before anything destructive happens.
-	function erasedataWaitForDrainAcknowledgement($listPath, $generation, $timeout, $poll)
+	function erasedataWaitForDrainAcknowledgement($listPath, $generation, $timeout, $poll,
+		$clock = null)
 	{
-		$deadline = microtime(true) + ($timeout > 0 ? (float)$timeout : 0.0);
+		if($clock === null)
+			$clock = function() { return(array(microtime(true), hrtime(true) / 1000000000)); };
+		$start = $clock();
+		$duration = $timeout > 0 ? (float)$timeout : 0.0;
+		$wallDeadline = $start[0] + $duration;
+		$monotonicDeadline = $start[1] + $duration;
 		$sleep = (int)($poll * 1000000);
 		if($sleep < 1000)
 			$sleep = 1000;
@@ -2253,7 +2260,11 @@ if(!function_exists('erasedataWaitForDrainAcknowledgement'))
 				: false;
 			if($reached === 0 || $reached === 1)
 				return(true);
-			if(microtime(true) >= $deadline)
+			// rTorrent's scheduler uses wall time: a backward step can delay its
+			// tick. Require that clock AND elapsed monotonic time to expire, so
+			// a forward step cannot shorten the producer's acknowledgement window.
+			$now = $clock();
+			if($now[0] >= $wallDeadline && $now[1] >= $monotonicDeadline)
 				return(false);
 			usleep($sleep);
 		}

@@ -858,6 +858,7 @@ class ErasedataProductionMirror
 	// The transport directory of the separate daemon fixture. It exists for
 	// every mirror and is inert until a case configures the aggregate mode.
 	public $daemonDir;
+	private $prepend = null;
 	public $copyFailures = array();
 	public $unreadable = array();
 
@@ -1218,8 +1219,10 @@ class ErasedataProductionMirror
 		// reason. The prefix belongs here and NOT in ErasedataTestProcess::
 		// start(), because that command already carries its own 'exec ' and
 		// dash refuses 'exec exec <cmd>'.
-		$command = 'exec '.escapeshellarg(PHP_BINARY).' -d display_errors=0 -f '
-			.escapeshellarg($script);
+		$command = 'exec '.escapeshellarg(PHP_BINARY).' -d display_errors=0'
+			.($this->prepend !== null
+				? ' -d '.escapeshellarg("auto_prepend_file='".$this->prepend."'") : '')
+			.' -f '.escapeshellarg($script);
 		if(count($arguments))
 		{
 			$command .= ' --';
@@ -1227,6 +1230,34 @@ class ErasedataProductionMirror
 				$command .= ' '.escapeshellarg($argument);
 		}
 		return($command);
+	}
+
+	// Hand the children this mirror starts through php() -- the producers,
+	// workers and runners a case launches itself -- a shorter
+	// ERASEDATA_DRAIN_ACK_TIMEOUT. The plugin guards its constants with
+	// if(!defined()), and those children are the real entry points, which
+	// define nothing before the plugin loads, so a prepended define is the one
+	// seam that reaches them without a change to production bytes (isExact()
+	// stays true). The command the plugin records for rTorrent's scheduler is
+	// not built here and does not carry it. Only the length of the wait
+	// changes: an unanswered producer still arms, still waits, still leaves
+	// its obligation queued. Use it where the producer is SETUP for what the
+	// case is about. Cases that answer the producer inside its own wait
+	// window keep the shipped 11 s ERASEDATA_DRAIN_ACK_TIMEOUT.
+	public function shortenAcknowledgementWait($seconds = 1.0)
+	{
+		$path = $this->root.'/defines.php';
+		// php() uses an INI single-quoted value inside the shell argument so
+		// double quotes and ${NAME} remain literal. This helper does not support
+		// apostrophes, line breaks or NUL in the mirror root.
+		if(strpbrk($path, "'\r\n\0") !== false)
+			throw new RuntimeException('the mirror root '.$this->root
+				.' is unsupported: a single quote breaks the mirror INI quoting; '
+				.'line breaks and NUL are rejected by this helper');
+		if(@file_put_contents($path, "<?php\n"
+			."define('ERASEDATA_DRAIN_ACK_TIMEOUT', ".var_export((float)$seconds, true).");\n") === false)
+			throw new RuntimeException('could not write '.$path);
+		$this->prepend = $path;
 	}
 
 	// The real guarded worker entry point, exactly as the scheduler starts it.

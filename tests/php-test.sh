@@ -21,8 +21,7 @@ foreach(get_declared_classes() as $cls) {
 # with exit($failures)) and failure output (the TestCase runner only prints).
 # Several suites write large fixtures (SCGITransportTest streams 64 MiB, the
 # retrackers bounded-reader cases write 64 MiB each) into the temporary
-# filesystem. When that filesystem is small -- a 1.7 GB tmpfs /tmp is common on
-# a developer VM, and shared with everything else on the box -- it fills, and
+# filesystem. A small tmpfs shared with other processes can fill. Then
 # the failure surfaces as a dozen unrelated suites failing on writes they never
 # expected to fail. That reads exactly like a code regression and is not one.
 #
@@ -35,6 +34,7 @@ if [ -n "$tmp_free_kb" ] && [ "$tmp_free_kb" -lt 524288 ]; then
 		"$((tmp_free_kb / 1024))" "${TMPDIR:-/tmp}" >&2
 fi
 
+. "$(dirname "$0")/php-failure-pattern.sh"
 status=0
 failed_files=()
 for t in $(find php plugins -type f -name '*Test.php')
@@ -46,7 +46,22 @@ do
 	out=$(php -c php-test.ini -f <(cat <(sed "s@__DIR__@\"$DIR\"@g" "$t") <(echo "$TEST_RUN")) 2>&1)
 	code=$?
 	printf '%s\n' "$out"
-	if [ "$code" -ne 0 ] || printf '%s\n' "$out" | grep -qE '^Failed:|^not ok|failed with error|PHP (Fatal|Parse) error|Uncaught'; then
+	# A present *Test.php is not proof that its tests ran. TestCase emits a
+	# method marker and an assertion; self-running suites emit a case marker
+	# and a positive zero-failure summary. Require one of those observed runs.
+	checked=0
+	if printf '%s\n' "$out" | grep -qE '^>>[^>].*>>$' \
+		&& printf '%s\n' "$out" | grep -q '^Passed: '; then
+		checked=1
+	elif printf '%s\n' "$out" | grep -q '^ok - ' \
+		&& printf '%s\n' "$out" | grep -qE '^[1-9][0-9]* tests?, 0 failures$'; then
+		checked=1
+	fi
+	if [ "$checked" -eq 0 ]; then
+		printf 'php-test.sh: no nonempty passing test result in %s\n' "$t"
+	fi
+	if [ "$code" -ne 0 ] || [ "$checked" -eq 0 ] \
+		|| printf '%s\n' "$out" | grep -qE "$PHP_FAILURE_PATTERN"; then
 		status=1
 		failed_files+=("$t")
 		# Public job annotations identify the failing file even when GitHub hides

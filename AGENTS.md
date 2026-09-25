@@ -38,6 +38,34 @@ Stale hash races are normal during torrent replacement: the old hash can disappe
 
 ### The plugin is multi-tracker despite its name
 
+- **Ownership is declared, never inferred from the loose comment filter.** `run()` asks the
+  handlers whose comment filter matches, in registration order, and moves on when one declines
+  -- so the first filter that matches is who is *asked*, not who *owns*. Kinozal's `/kinozal\./`
+  matches an NNMClub topic URL that carries `source=kinozal.tv`, Kinozal declines it, NNMClub
+  takes it. A scheduler-side shortcut that cannot afford to ask (the announce free pass) must
+  therefore use `ruTrackerChecker::ownerOf()`, which walks the same order but decides by each
+  handler's declared `topicPattern` -- the exact test the handler applies before it does
+  anything -- and answers null the moment it reaches a handler that declared none. A handler
+  opts into the free pass with BOTH its authoritative host list and its topic pattern, and
+  Kinozal keeps that pattern in one constant used by its handler and its registration. Measured
+  2026-09-14: the first-match rule handed Kinozal's cross-seed announce the verdict on an NNMClub
+  topic (`checked=0 uptodate=1`); the declared rule sends it to the dispatcher. This is the same
+  class of defect upstream #3205 fixed in loginmgr -- an identity read off a substring of the URL
+  string instead of its parsed host -- and #3206 is the reminder that a `(\.|\/)` anchor still
+  admits a path segment: a topic pattern anchors at `^https?://<host>/`, so a host in userinfo
+  (`kinozal.tv@evil.test`) or as a leading label (`kinozal.tv.evil.test`) does not match.
+- **One host test: `php/urlhost.php`.** "Is this URL's host one of ours?" is answered by
+  `UrlHost::of()` / `isOneOf()` / `urlIsOneOf()` and nowhere else: loginmgr's `urlAddresses()`
+  delegates to it, `RuTrackerDetector::isTrackerHost()`/`isTrackerRow()` and
+  `RuTrackerAnnounce::hostKey()` go through it, and a registry authority is a plain host list
+  the helper matches whole. It parses the host out with `parse_url()` and folds case and the
+  root dot before comparing, so the traps that each of those places had once fallen into --
+  the name in the path or query, in the userinfo, as a leading label, or spelled with a
+  trailing dot -- are pinned once, in `tests/php/UrlHostTest.php`. Do not write a fourth
+  anchored regex; hand the helper a list. A predicate that needs more than the host (Kinozal's
+  topic pattern wants the path and the id too) keeps its own anchored regex, anchored at
+  `^https?://<host>/`.
+
 `registerTracker()` carries seven handlers (RuTracker, Kinozal, NNMClub, Toloka, tfile, AniDUB, TapochekNet), and `update.php` -> `RuTrackerUpdatePass::run()` is the scheduler's only route into `ruTrackerChecker::run()` for all of them. RuTracker-specific machinery — `RuTrackerDetector::classify()`, the announce fuse, the forum-dump layers — must never decide whether a *foreign*-tracker torrent gets checked.
 
 `classify()` inspects only tracker rows matching `TRACKER_PATTERN`, so it answers `'none'` for a torrent that has no RuTracker row. That verdict means "not my jurisdiction", not "no signal worth a request". Gating dispatch on it once stopped every non-RuTracker handler for a full deploy: 211 of 211 torrents checked in a cycle were RuTracker, and 122 seeding Kinozal/NNMClub torrents were never dispatched, freezing their `chk-state` at whatever the previous release had left. `UpdatePassTest.php` pins this.
@@ -223,7 +251,7 @@ changes-required) have held up well in review; measured numbers have not.
   output. That is the signature: a command that returns nothing at all, not an error message.
   Diagnose with `systemctl show user-$(id -u).slice -p TasksMax -p TasksCurrent`.
 
-- **`/tmp` is a 1.7 GB tmpfs because this VM has Hyper-V Dynamic Memory.** `tmp.mount` ships
+- **`/tmp` is a variable-size tmpfs because this VM has Hyper-V Dynamic Memory.** `tmp.mount` ships
   `size=50%`, and a percentage is evaluated ONCE, at mount time. This VM boots with the balloon
   holding RAM down to about 3.3 GB, so 50% became 1736012k; the balloon then grows RAM to 38 GB and
   the tmpfs cap never moves. `hv_balloon` in `lsmod` and `auto_online_blocks=online` are the tell.
@@ -245,28 +273,67 @@ changes-required) have held up well in review; measured numbers have not.
   clean `git archive` export of the base commit under the SAME conditions before calling it a
   regression.
 
-## The Pre-Commit Suite Is 200 Seconds, And Two Files Are 83% Of It
+## PHP Suite Timing and the Matrix
 
-Measured 2026-09-07 on an idle machine, per file, 81 files:
+On an idle host after the wait reductions (2026-09-15), the sequential PHP leg has
+85 files and takes about 90 seconds. These are approximate timings; measure
+again after changing a slow suite:
 
-| file | seconds | share |
-|---|---:|---:|
-| `tests/plugins/erasedata/RemoveWithDataTest.php` | 117.6 | 59% |
-| `tests/plugins/retrackers/UpdateTest.php` | 48.7 | 24% |
-| the other 79 files together | ~35 | 17% |
-| **total** | **201** | |
+| file | seconds |
+|---|---:|
+| `tests/plugins/erasedata/RemoveWithDataTest.php` | ~29 |
+| `tests/plugins/retrackers/UpdateTest.php` | ~36 |
+| the other 83 files together | ~26 |
+| **total** | **~90** |
 
-Two things follow, and the first is a correction worth having:
+The 2026-09-07 baseline was 201 seconds over 81 files; the erasedata and
+retrackers files then took 117.6 and 48.7 seconds. The wait reductions below
+explain why that historical table no longer describes the current gate.
+
+Current guidance:
 
 - **The hook is not ten minutes.** `.git/hooks/pre-commit` runs the suite and nothing
   else. Runs that took ten minutes here were contended -- agents, containers and a second
   suite over the same tree, all at once. Before optimising it, check what else is running:
   `uptime` and `pgrep -cf '[b]ash php-test.sh'`.
-- **Parallelising the loop is not the lever.** `tests/php-test.sh` is a sequential `for`
-  over 81 independent PHP processes and this machine has 24 cores, but perfect parallelism
-  is bounded by the slowest single file: about 118 seconds instead of 201, a factor of 1.7.
-  The lever is inside the two suites the 2026-09 campaign grew -- 670 KB and 533 KB of
-  test source, 311 methods in the first. Splitting them is what would let parallelism bite.
+- **Parallelising files has a different ceiling now.** `tests/php-test.sh`
+  runs 85 independent PHP files sequentially. With a ~90-second leg and a
+  slowest file around 36 seconds, perfect file-level parallelism would be
+  bounded by that file, before process startup and contention. The matrix
+  below parallelises PHP versions, not files within a leg. `TaskTest.php`
+  needs isolation before parallel file execution inside a container.
+- **The lever inside the first file was one constant.** Per-method timing (2026-09-14) put
+  110 of its 117 s in ten real producer children, each waiting the whole 11 s
+  `ERASEDATA_DRAIN_ACK_TIMEOUT` for a scheduler the mirror never plays, as SETUP for a case
+  about a held lock, a racing worker or a restart. `ErasedataProductionMirror::
+  shortenAcknowledgementWait()` hands the children a shorter wait through `-d
+  auto_prepend_file`: the plugin's constants are `if(!defined())`-guarded and the children
+  are the real entry points, so nothing in production changes and the mirror still verifies
+  it runs the shipped bytes. Nine setup-only cases use it; the file is about 29 s. The
+  scheduler family keeps 11 s because the wait, and what answers inside it, is its subject --
+  do not shorten those, and time the file per method before touching anything else in it (feed the
+  file plus the runner to `php -c php-test.ini` on stdin and clock the `>>method>>` markers).
+- **The second file's were two literals in the plugin.** `RetrackersLifecycleCoordinator::
+  done()` gave active workers a hard-coded 5 s before `hook-teardown-pending`, and the
+  recovery coordinator re-read a delayed receipt every hard-coded 250 ms; five in-process
+  cases paid 26 s for outcomes that do not depend on either length. Both are now
+  `if(!defined())` constants at the top of `plugins/retrackers/update.php`
+  (`RETRACKERS_TEARDOWN_TIMEOUT` 5.0 s, `RETRACKERS_RECEIPT_POLL` 0.25 s, the shipped values),
+  and `UpdateTest.php` declares them short before it loads the plugin. The file is 36 s; what
+  is left is real work (128 MiB fixtures, a child PHP per case that loads the 670 KB test
+  file) rather than waiting. `testTask5All165PreTaskPublicMethodsRemainOnePassRunnerReachable`
+  freezes the public method list of that file: a new case there goes into its `$added` list
+  and its count, or the guard fails with a message that does not name the new method.
+- **Two more courtesies, 9 s.** toloka's handler slept a literal 5 s before each fetch for
+  Cloudflare's sake, and `SiblingTrackersTest` paid it once; it is `TOLOKA_CLOUDFLARE_PAUSE`
+  now, `if(!defined())` with the shipped 5, declared 0 by the suite before the require.
+  `CheckerTest` evals `ruTrackerChecker` out of `check.php` and its two rollback cases exhaust
+  `waitForLoad` on purpose, 40 polls 50 ms apart; the suite now edits that one constant to
+  1 ms in the evaled text and asserts the edit landed, so a renamed constant fails loudly
+  rather than restoring the wait. The rule behind all of these: a wait that is a courtesy to
+  something outside the test (a daemon, a tracker) may be declared short; a wait that the
+  case observes something inside of may not. `ManualEntrypointsTest` keeps its 1 s windows
+  for that reason -- they are how it proves that no child was launched.
 
 If someone does parallelise it, one file has to be handled first: `plugins/_task/TaskTest.php`
 runs `kill -9` over every child of PID 1 (see the entry above). On this host that is harmless
@@ -277,8 +344,28 @@ fixed port, and `PermissionTest` stopped writing fixtures into the checkout on 2
 
 The cheapest win is not speed at all: **skip the run when nothing it tests has changed.**
 Four commits on 2026-09-06 touched only Markdown under `tasks/` and each paid the full suite.
-A digest over `php/`, `plugins/` and `tests/`, compared against the last green run, would
-have made those four free.
+An input digest compared against the last green run makes such Markdown-only
+changes free.
+
+Both of those exist now (2026-09-14), local to this checkout like the hook itself:
+
+- **`tasks/matrix.sh`** runs four legs in parallel: local PHP, `php:8.1-cli`,
+  `php:7.4-cli` (the CI version floor, with a different extension/configuration
+  environment), and the shipped-image Kinozal suite without `iconv`. Each leg
+  uses its own `git ls-files` export and `TMPDIR` under `~/.cache/rtm/<stamp>/`;
+  containers run as this user. The full run is bounded by the slowest leg.
+  `tasks/matrix.sh local 7.4` selects legs. Its digest hashes all exported
+  non-Markdown working-tree files, tracked or new, and `last` shows the last
+  full green run. A red repeat on the same digest revokes that marker.
+  The local leg's `TMPDIR` must stay under 60 bytes: `SCGITransportFixture`
+  binds a UNIX socket 49 bytes below it and `sun_path` holds 107. PHP
+  truncates a longer path with a silenced Notice; bind then lands on the
+  directory, and four tests fail with an empty "SCGI fixture peer exited:
+  server:". The first trial died that way at a 68-byte `TMPDIR` (2026-09-14).
+- **`.git/hooks/pre-commit` skips its run** when that digest equals the last green one
+  recorded by `matrix.sh`: a matrix green on four legs is the stronger check.
+  `PRECOMMIT_FORCE=1` runs it anyway. The hook calls the script's `digest` for the value, so
+  there is one definition of "what the suite sees", not two.
 
 ## Match The Review Effort To The Change
 
@@ -342,9 +429,12 @@ docker run --rm --user 1000:1000 --network none --entrypoint sh \
 Know before you interpret the result:
 
 - The image is Alpine with PHP 8.5 and **does not load `posix`, `pcntl` or `tokenizer`**. So
-  `PermissionTest` and one other test fatal there, and every static-structure test that reads the
-  source through `token_get_all()` fails — 8 of them in `EntrypointsTest`, with
-  `Error: Call to undefined function token_get_all()`. None of it is a code fault: production calls
+  `PermissionTest` and one other test fatal there. Static-structure tests that read source
+  through `token_get_all()` fail: 8 cases in `plugins/rutracker_check/EntrypointsTest`, plus
+  `php/XMLRPCProxyTest`, `php/PluginInitPathsTest`, and
+  `plugins/extsearch/ImmortalSeedCategoriesTest`. The failure may read
+  `Error: Call to undefined function token_get_all()` or an explicit tokenizer guard.
+  None of it is a code fault: production calls
   no tokenizer function anywhere. The base commit fails identically — **always run the same suite
   on the base before calling a failure a regression**. That comparison is the only thing separating
   an image gap from a real one.
@@ -367,7 +457,8 @@ Know before you interpret the result:
   root-owned so the next ordinary-user run failed on `unlink: Permission denied` -- a wrong answer
   that reads exactly like a real one, and one that hides the `posix` gap above. Give every run its
   own tree, or its own `TMPDIR`, before comparing results across PHP versions or uids.
-- **The scratchpad is a 1.7 GB tmpfs.** Two `git archive` exports of this repository filled it, and
+- **The scratchpad is a tmpfs whose size varies between boots.** Two `git archive` exports of
+  this repository filled it, and
   a full `/tmp` does not announce itself: `Write` returned `EDQUOT` and then *every* shell command,
   down to `true`, exited 1 with no output. If the shell starts failing universally, check `df`
   before anything else. Export trees somewhere under `/home`, and delete a finished agent's scratch
@@ -375,6 +466,41 @@ Know before you interpret the result:
 - `/`, `/tmp`, `/config` and `/data` inside a bare container reuse inode numbers after an unlink.
 - The Dockerfile pins `RUTORRENT_REF` to a commit, so the image contains that revision, not the
   working tree. Bind-mounting is what makes it a runtime for local code.
+- **`TESTLIB_HANDLER_STUBS` does not define `iconv()`.** It loads the real
+  Torrent and FileUtil classes for checker fixtures. Kinozal compares literal
+  CP1251 and UTF-8 markers without conversion. The matrix's shipped-image
+  Kinozal leg explicitly disables `iconv` before loading the test library,
+  so this path is exercised on the production-style PHP runtime.
+- **The entrypoint chowns the mounted tree to the image's uid (991).** `startup` runs
+  `find <folder> ! -user $UID -exec chown` over the app directories, so a scratch copy mounted at
+  `/rutorrent/app` stops being writable by the host user after the first start. Push later edits
+  in with `docker cp`, or use `tasks/rt-lab.sh sync`, rather than editing the mounted copy.
+- **Do not pass `-e UID=1000 -e GID=1000` to this image.** `torrent:991` is baked in at build
+  time, and `startup` runs `addgroup -g $GID torrent` whenever no group has that gid -- which
+  collides with the existing name and ends the container at "Create torrent user...". The
+  README's "simple launch" example does exactly this; it is a docker-rutorrent defect, recorded
+  in that repository's AGENTS.md. Leave the identity at the image default.
+- **Public resolvers are only intermittently reachable from this network, and which one answers
+  changes by the hour.** Measured 2026-09-14: from this VM at noon 1.1.1.1 was dead and 8.8.8.8
+  answered; from the production host an hour later 8.8.8.8 was dead and 1.1.1.1 answered. A
+  container that trusts one fixed public resolver -- the README's `--dns 1.1.1.1 --dns 8.8.8.8`,
+  or Docker's own 8.8.8.8/8.8.4.4 default when the host runs a local stub -- loses ALL name
+  resolution when that one is out, and every fetch fails with curl 6, which reads like a dead
+  tracker (the production container lost NNMClub and Kinozal alike that afternoon). The LAN's
+  `172.18.128.1` answered throughout. A local network condition, not something to fix in
+  configuration; when a probe answers `curl: (6)`, check `nslookup <host>` against each resolver
+  before reading anything into the tracker.
+
+Driving a full instance from local code, once it is up (`tasks/rt-lab.sh`, or a scratch
+`git archive` export mounted at `/rutorrent/app` with `-e ENABLE_RPC2=true` and a fresh `/config`
+volume): POST raw XML to `/RPC2` and to `/plugins/httprpc/action.php` to exercise both proxy
+doors against the real daemon, load a torrent through them with `load.raw_start` and a `<base64>`
+param, and read `/tmp/errors.log` inside the container for both doors' decision lines. To run
+`rutracker_check/update.php` against a handler without sending a real announce, give the test
+torrent an announce on a look-alike host such as `tr2.torrent4me.com.invalid`: `update.php`
+admits rows by the registry's ANNOUNCE filter (a substring test, so the look-alike is admitted)
+and never by the comment, while the authority host list rejects it and DNS never resolves
+it. A torrent announcing to `127.0.0.1` is not admitted to the cycle at all.
 
 `tasks/rt-lab.sh` raises a full instance against local code. Two traps it exists to avoid: bind
 mounting the repo over `/rutorrent/app` hides everything the image added at build time, and
@@ -436,6 +562,21 @@ already maps around that.
 
 `rpc.mark_safe()` is the list that decides what an `UNTRUSTED_CONNECTION` may call. A command
 missing from it answers `Fault -507`, which is a policy refusal, not an outage.
+
+**A multicall result slot has no zero-argument form.** `d.multicall` parses each slot with
+`rpc::parse_command` (`src/rpc/parse_commands.cc`), which refuses a name without `=` ("Could not
+find '=' in command") and then runs `parse_whole_list` on whatever follows -- on nothing, that is
+one empty string object; on `key,fallback`, two. So `d.name=` and `d.name=""` are the same call,
+`d.custom.if_z=key,fallback` really passes two arguments, and a command that checks for zero
+arguments (`d.custom.keys`, `d.custom.items`, `src/command_download.cc`) cannot be carried by a
+multicall in any spelling. Measured over SCGI on 0.16.22 (2026-09-14) before it was read in the
+source; the proxy's read list leaves those two out for that reason, and splits `d.custom.if_z`
+like the two-argument setter. `d.multicall2` is a `CMD_REDIRECT` to `d.multicall` on 0.16, and
+`d.get_*` spellings are not registered there at all -- forwarded, they fault as unknown. A bare
+local checkout of the daemon's source lives at `~/xmlrpc-audit.1Efjdk/rtorrent`; its HEAD is
+master a few commits past v0.16.21 (`git describe` says so), not the v0.16.22 tag, so read it
+with `git show HEAD:src/...` for the shape of the code and confirm behaviour against the running
+0.16.22 daemon, as the measurements above were.
 
 ## Merging A Long-Lived Branch That Moved Tests
 

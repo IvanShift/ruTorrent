@@ -16,8 +16,8 @@ require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
  * The script cannot be called from a test -- it takes a hash on the command
  * line, asks rtorrent for the session path, and hands the result back over
  * SCGI. The edit itself is a fixed sequence of calls on a Torrent, driven by
- * the script's own clearTracker() and deleteTrackers() (update.php lines 3-39,
- * the real ones, included above), and that sequence is replayed here.
+ * the script's own clearTracker() and deleteTrackers() from update.php
+ * (the real ones, included above), and that sequence is replayed here.
  *
  * Two limitations carry, and both are deliberate.
  *
@@ -25,13 +25,13 @@ require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
  * fail these tests.
  *
  * And the script no longer writes a Torrent's bytes at all.
- * RetrackersTorrentProjector::project() (update.php lines 5502-5575) still
+ * RetrackersTorrentProjector::project() still
  * makes this edit on a Torrent, but only to read 'announce' and
  * 'announce-list' back out of it; the object is then discarded, and
  * RetrackersCandidateBuilder rewrites the source bytes instead, re-emitting
- * every other top-level key raw and dropping 'rtorrent' (update.php lines
- * 5630-5637). That is why 'created by' and 'creation date' survive the live
- * path whatever Torrent does with them -- and why the whole-dictionary
+ * every other top-level key raw and dropping 'rtorrent'. That is why
+ * 'created by' and 'creation date' survive the live path whatever Torrent
+ * does with them -- and why the whole-dictionary
  * assertions below are about Torrent, which is what they were always for: the
  * bencoded bytes it hands back are what a regression in the class would
  * corrupt, and they are asserted whole.
@@ -63,10 +63,9 @@ class RetrackersUpdateSequenceTest extends TestCase
 
 	/**
 	 * The tracker edit: the same sequence of Torrent calls
-	 * RetrackersTorrentProjector::project() makes (update.php lines
-	 * 5526-5562), with two known differences. The projector re-indexes the
-	 * group arrays through its own normalizeTrackerList() at lines 5549 and
-	 * 5561, because clearTracker() and deleteTrackers() unset keys in place;
+	 * RetrackersTorrentProjector::project() makes, with two known differences.
+	 * The projector re-indexes the group arrays through normalizeTrackerList(),
+	 * because clearTracker() and deleteTrackers() unset keys in place;
 	 * and it does not drop the 'rtorrent' key, which the live path drops in
 	 * RetrackersCandidateBuilder instead. What is transcribed below is the
 	 * sequence update.php carried inline before the projector replaced it,

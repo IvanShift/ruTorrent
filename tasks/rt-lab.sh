@@ -17,8 +17,13 @@ set -eu
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 APP=/rutorrent/app
 
-overlay() {
+overlay() (
     name="$1"
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rt-lab.XXXXXX")
+    trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+    files="$scratch/files.z"
+    archive="$scratch/overlay.tar"
+    container_archive="/tmp/$(basename "$scratch").tar"
     # git-tracked files only, plus anything modified but not yet committed. Untracked
     # scratch (task notes, logs, images) must not reach the container.
     # conf/config.php is TRACKED in the repo but the entrypoint GENERATES its own on
@@ -26,16 +31,16 @@ overlay() {
     # repo copy replaces that with the repo default (TCP 127.0.0.1:5000) and every
     # RPC call then fails with "cannot reach rtorrent ... Connection refused".
     # Same for conf/users/, which holds per-profile state the container owns.
-    ( cd "$REPO" && git ls-files -z ':!conf/config.php' ':!conf/users' ) > /tmp/rt-lab-files.z
-    tar -C "$REPO" --null -T /tmp/rt-lab-files.z -cf /tmp/rt-lab.tar
-    docker cp /tmp/rt-lab.tar "$name":/tmp/rt-lab.tar
-    docker exec -u root "$name" sh -c "tar -C $APP -xf /tmp/rt-lab.tar && rm -f /tmp/rt-lab.tar"
+    ( cd "$REPO" && git ls-files -z ':!conf/config.php' ':!conf/users' ) > "$files"
+    tar -C "$REPO" --null -T "$files" -cf "$archive"
+    docker cp "$archive" "$name":"$container_archive"
+    docker exec -u root "$name" sh -c "tar -C $APP -xf $container_archive && rm -f $container_archive"
     # The entrypoint runs everything as `torrent`; files arrive owned by root.
     docker exec -u root "$name" sh -c "chown -R torrent:torrent $APP" 2>/dev/null || true
-    n=$(tr -cd '\0' < /tmp/rt-lab-files.z | wc -c)
+    n=$(tr -cd '\0' < "$files" | wc -c)
     echo "overlaid $n tracked files from $REPO"
     ( cd "$REPO" && git status --porcelain | grep -v '^??' | sed 's/^/    uncommitted: /' ) || true
-}
+)
 
 case "${1:-}" in
 up)
