@@ -118,8 +118,7 @@ class MakeDirectoryTest extends TestCase
 	/** An empty list asks for nothing and must do nothing. */
 	public function testAnEmptyListCreatesNothing()
 	{
-		// Its own directory: setUp() runs once for the file, not once per
-		// test, so the root carries whatever the tests above it made.
+		// setUp() creates a clean root for this method.
 		$scope = $this->root . '/empty-list';
 		mkdir($scope, 0777, true);
 

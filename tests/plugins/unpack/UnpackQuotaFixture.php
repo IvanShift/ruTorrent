@@ -8,8 +8,8 @@
  * cannot be undeclared once it is there. php-test.sh runs each test file in a
  * PHP of its own, so a file per case is what keeps the two independent.
  *
- * The runner only executes classes whose immediate parent is TestCase, so a
- * shared base class would silently stop both from running. Hence a trait.
+ * A trait shares the probe helpers while each suite keeps its own lifecycle
+ * hooks for its different quotaspace state.
  */
 trait UnpackQuotaProbe
 {

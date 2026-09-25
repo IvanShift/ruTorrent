@@ -7,7 +7,7 @@ require_once(__DIR__.'/../../../plugins/_task/task.php');
 
 class TaskKillIdentityTest extends TestCase
 {
-	public function tearDown()
+	public function tearDownClass()
 	{
 		$profile = $_ENV['RU_PROFILE_PATH'];
 		if (is_dir($profile)) {

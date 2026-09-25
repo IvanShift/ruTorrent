@@ -18,6 +18,9 @@ require_once( "metafetch.php" );
 
 eval(FileUtil::getPluginConf( "rutracker_check" ));
 
+// Tests shorten this courtesy delay without changing the production wait budget.
+if(!defined('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US')) define('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US', 50000);
+
 class ruTrackerChecker
 {
 	const STE_INPROGRESS		= 1;
@@ -74,7 +77,6 @@ class ruTrackerChecker
 	// so waiting for the staged copy to appear is the only wait in the
 	// replacement transaction; every other command is synchronous.
 	const LOAD_WAIT_ATTEMPTS	= 40;
-	const LOAD_WAIT_DELAY_US	= 50000;
 	const REPLACEMENT_MARKER_KEY	= 'chk-replacement';
 
 	// The replacement transaction's second key. The marker answers "is the
@@ -778,7 +780,7 @@ class ruTrackerChecker
 		for($attempt = 0; $attempt < self::LOAD_WAIT_ATTEMPTS; $attempt++)
 		{
 			if($attempt)
-				usleep(self::LOAD_WAIT_DELAY_US);
+				usleep(RUTRACKER_CHECK_LOAD_WAIT_DELAY_US);
 			$req = new rXMLRPCRequest( new rXMLRPCCommand(
 				getCmd("d.get_custom"), array($hash, self::REPLACEMENT_MARKER_KEY) ) );
 			$req->important = false;

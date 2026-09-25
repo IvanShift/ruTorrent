@@ -231,11 +231,9 @@ if(getenv('RUTORRENT_PHP_TEST_RUNNER') !== '1' && isset($_SERVER['SCRIPT_FILENAM
 	&& realpath($_SERVER['SCRIPT_FILENAME']) === __FILE__)
 {
 	$test = new EraseWithDataCommandTest();
-	$test->setUp();
 	ob_start();
 	$test->run();
 	$output = ob_get_clean();
-	$test->tearDown();
 	echo($output);
 	exit(preg_match('/^Failed:|failed with error|PHP (?:Fatal|Parse) error|Uncaught/m', $output) ? 1 : 0);
 }

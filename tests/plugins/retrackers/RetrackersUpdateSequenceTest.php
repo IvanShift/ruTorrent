@@ -40,7 +40,7 @@ class RetrackersUpdateSequenceTest extends TestCase
 {
 	use TorrentSequenceFixtures;
 
-	public function tearDown()
+	public function tearDownClass()
 	{
 		// Loading the plugin's configuration created the settings directory.
 		$profile = $_ENV['RU_PROFILE_PATH'];

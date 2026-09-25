@@ -21,27 +21,40 @@ class UnpackQuotaTest extends TestCase
 
 	private $created = false;
 
-	public function setUp()
+	public function setUpClass()
 	{
-		$this->beginProbe();
-
 		$file = $this->rquotaPath();
 		$dir = dirname($file);
 		if (!file_exists($dir) && !file_exists($file)) {
-			mkdir($dir, 0777, true);
-			file_put_contents($file, $this->pluginSource());
+			if (!mkdir($dir, 0777, true))
+				throw new RuntimeException('Could not create the quotaspace test directory');
 			$this->created = true;
-			// The runner does not reach tearDown() if the process dies outright,
-			// and a plugin directory left behind in the tree would change what
-			// every later run means.
+			// A process exit skips tearDownClass(), so register cleanup before
+			// the stub write can fail or be interrupted.
 			register_shutdown_function(array($this, 'removePlugin'));
+			try {
+				if (file_put_contents($file, $this->pluginSource()) === false)
+					throw new RuntimeException('Could not write the quotaspace test stub');
+			} catch (Throwable $e) {
+				$this->removePlugin();
+				throw $e;
+			}
 		}
+	}
+
+	public function setUp()
+	{
+		$this->beginProbe();
 	}
 
 	public function tearDown()
 	{
 		$this->quotaspaceRegistered(false);
 		$this->endProbe();
+	}
+
+	public function tearDownClass()
+	{
 		$this->removePlugin();
 	}
 

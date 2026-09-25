@@ -24,17 +24,59 @@ class TestCase
 	function run(): int {
 		$executed = 0;
 		foreach ($this->runnableMethods() as $method) {
-			echo ">>{$method}>>\n";
-			try {
-				call_user_func([$this, $method]);
-			} catch (Throwable $e) {
-				$this->failures++;
-				echo "Test {$method} failed with error: {$e->getMessage()}\n";
-			}
-			echo "<<{$method}<<\n\n";
+			$this->runMethod($method);
 			$executed++;
 		}
 		return $executed;
+	}
+
+	// The named-case runner uses this same lifecycle for a selected method.
+	public function runMethod(string $method): void
+	{
+		$matched = null;
+		foreach ($this->runnableMethods() as $candidate) {
+			if (strcasecmp($candidate, $method) === 0) {
+				$matched = $candidate;
+				break;
+			}
+		}
+		if ($matched === null) {
+			throw new InvalidArgumentException("Not a runnable test method: {$method}");
+		}
+		$method = $matched;
+		echo ">>{$method}>>\n";
+		$phase = 'setUp';
+		$ready = false;
+		try {
+			$this->setUp();
+			$ready = true;
+			$phase = 'test';
+			call_user_func([$this, $method]);
+		} catch (Throwable $e) {
+			$this->failures++;
+			$source = $phase === 'setUp' ? get_class($this) : $method;
+			echo "Test {$source} failed with error: {$e->getMessage()}\n";
+		} finally {
+			if ($ready) {
+				try {
+					$this->tearDown();
+				} catch (Throwable $e) {
+					$this->failures++;
+					echo 'Test ' . get_class($this) . ' tearDown failed with error: '
+						. $e->getMessage() . " (after {$method})\n";
+				}
+			}
+			echo "<<{$method}<<\n\n";
+		}
+	}
+
+	// Use these for fixtures intentionally shared by all methods in one class.
+	public function setUpClass()
+	{
+	}
+
+	public function tearDownClass()
+	{
 	}
 
 	public function setUp()

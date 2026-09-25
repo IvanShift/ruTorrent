@@ -8,7 +8,7 @@
  * (evaled out of check.php), a fixture-based Torrent and a recording rTorrent.
  *
  * Two rollback tests deliberately exhaust the waitForLoad poll budget; the
- * class is evaled below with the delay between polls cut from 50 ms to 1 ms,
+ * class uses a declared 1 ms test delay, while production defaults to 50 ms,
  * so they cost milliseconds here where production would spend two seconds.
  */
 
@@ -304,21 +304,16 @@ class RuTrackerMetaFetch
 	}
 }
 
-// The class is evaled from the shipped source with ONE edit: the delay between
-// waitForLoad polls. The two rollback cases exhaust that budget on purpose and
-// prove the poll count, not the courtesy between polls, which at the shipped
-// 50 ms costs two seconds a case. The edit is asserted so that a renamed or
-// retyped constant fails here, loudly, rather than silently restoring the wait.
+// The rollback cases exhaust waitForLoad's poll count, not the courtesy
+// between polls. Declare a short test delay before loading the shipped class.
+if (!defined('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US'))
+	define('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US', 1000);
 $checkerDefinition = loadClassDefinition(
 	__DIR__ . '/../../../plugins/rutracker_check/check.php',
 	'ruTrackerChecker'
 );
-$checkerDefinition = str_replace("const LOAD_WAIT_DELAY_US\t= 50000;",
-	"const LOAD_WAIT_DELAY_US\t= 1000;", $checkerDefinition, $checkerDelayEdits);
-if ($checkerDelayEdits !== 1)
-	throw new RuntimeException('check.php no longer declares LOAD_WAIT_DELAY_US = 50000 the way this suite edits it');
 eval($checkerDefinition);
-unset($checkerDefinition, $checkerDelayEdits);
+unset($checkerDefinition);
 
 class CheckerProbe extends ruTrackerChecker
 {
@@ -1989,8 +1984,8 @@ class CheckerTest
 	// LOAD_WAIT_ATTEMPTS polls, LOAD_WAIT_DELAY_US apart. What they prove is
 	// the count of polls and what happens after the last one; the delay
 	// between polls is production's courtesy to rTorrent, not theirs, so the
-	// class this suite evals declares it short. This case pins that the
-	// declaration reached the class: at the shipped 50 ms the exhaustion
+	// suite declares it short. This case pins that the test declaration
+	// reached the wait: at the shipped 50 ms the exhaustion
 	// alone costs two seconds.
 	public function testAnExhaustedLoadWaitCostsTheDeclaredDelayNotTheShippedOne()
 	{
@@ -3095,6 +3090,15 @@ class CheckerTest
 		strictAssertSame(4, count(rXMLRPCRequest::$requests), 'the raced run must stop right after readback and confirming probe');
 	}
 
+	private function queueExactStateProjectionReadback()
+	{
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+			function($commands) {
+				$writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+				return array($writes[0]['commands'][0]->params[2], $writes[0]['commands'][1]->params[2]);
+			});
+	}
+
 	public function testStateWriteNeedsACompleteReplyOrExactProjectionReadback()
 	{
 		$this->resetFakes();
@@ -3112,15 +3116,37 @@ class CheckerTest
 		// Same truncated reply, but this time both setters really landed and the
 		// response alone was lost. The readback must recognize that success.
 		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0));
-		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
-			function($commands) {
-				$writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
-				return array($writes[0]['commands'][0]->params[2], $writes[0]['commands'][1]->params[2]);
-			});
+		$this->queueExactStateProjectionReadback();
 		strictAssertSame(true, ruTrackerChecker::setState(self::OLD_HASH, ruTrackerChecker::STE_UPDATED),
 			'a short reply is accepted only after the complete desired projection is observed');
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
 			'the lost-response case is still measured rather than trusted');
+	}
+
+	public function testRejectedStateWriteIsDecidedByReadableProjection()
+	{
+		foreach (array(
+			'faulted write' => array(true, true),
+			'no write answer' => array(false, false),
+		) as $reason => $outcome) {
+			$this->resetFakes();
+			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'),
+				$outcome[0], $outcome[1], array());
+			$this->queueExactStateProjectionReadback();
+			strictAssertSame(true, ruTrackerChecker::setState(self::OLD_HASH, ruTrackerChecker::STE_UPDATED),
+				$reason . ': complete readback proves the desired state despite write refusal');
+			strictAssertSame(2, count(rXMLRPCRequest::$requests),
+				$reason . ': one write and one projection read, without an existence probe');
+		}
+
+		$this->resetFakes();
+		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, true, array());
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+			array((string) ruTrackerChecker::STE_UPDATED, '0'));
+		strictAssertSame(false, ruTrackerChecker::setState(self::OLD_HASH, ruTrackerChecker::STE_UPDATED),
+			'a readable but mismatched projection cannot bless a faulted state write');
+		strictAssertSame(2, count(rXMLRPCRequest::$requests),
+			'a readable mismatch needs no existence probe');
 	}
 
 	public function testUpToDateStateWritesTheExactSuccessTimeField()
@@ -4068,8 +4094,10 @@ class CheckerTest
 		$source = file_get_contents(testFindRepoRoot() . '/plugins/rutracker_check/check.php');
 		strictAssertSame(1, preg_match('/const\s+LOAD_WAIT_ATTEMPTS\s*=\s*40\s*;/', $source),
 			'the shipped load wait attempts remain 40, regardless of the short test delay');
-		strictAssertSame(1, preg_match('/const\s+LOAD_WAIT_DELAY_US\s*=\s*50000\s*;/', $source),
-			'the shipped poll delay remains 50 ms before the test-only override');
+		strictAssertSame(1, preg_match('/if\s*\(!defined\(\x27RUTRACKER_CHECK_LOAD_WAIT_DELAY_US\x27\)\)\s*define\(\x27RUTRACKER_CHECK_LOAD_WAIT_DELAY_US\x27,\s*50000\);/', $source),
+			'the shipped poll delay defaults to 50 ms while allowing a test override');
+		strictAssertSame(1, preg_match('/usleep\(RUTRACKER_CHECK_LOAD_WAIT_DELAY_US\)/', $source),
+			'waitForLoad uses the configured interval, not a hard-coded delay');
 	}
 
 	private function withVerdictSession($slug, $previous, $checkedAt, $handler, $callback)

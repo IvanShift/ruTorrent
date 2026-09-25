@@ -25,9 +25,19 @@ class PendingQueueTest extends TestCase
 	private $tree;
 	private $listPath;
 
-	public function setUp()
+	public function setUpClass()
 	{
 		$this->tree = sys_get_temp_dir() . '/rutorrent-pending-' . getmypid();
+		try {
+			$this->buildMirror();
+		} catch (Throwable $e) {
+			$this->wipe();
+			throw $e;
+		}
+	}
+
+	private function buildMirror()
+	{
 		$this->wipe();
 		mkdir($this->tree . '/plugins/erasedata', 0777, true);
 		mkdir($this->tree . '/php', 0777, true);
@@ -62,8 +72,8 @@ class PendingQueueTest extends TestCase
 		foreach ($copies as $relative => $name) {
 			$source = dirname(dirname(dirname(__DIR__))) . '/' . $relative;
 			$target = $this->tree . '/' . $name;
-			copy($source, $target);
-			if (hash_file('sha256', $source) !== hash_file('sha256', $target))
+			if (!copy($source, $target) ||
+				hash_file('sha256', $source) !== hash_file('sha256', $target))
 				throw new Exception('could not copy ' . $relative);
 		}
 
@@ -118,7 +128,7 @@ class PendingQueueTest extends TestCase
 		require_once($this->tree . '/plugins/erasedata/removewithdata.php');
 	}
 
-	public function tearDown()
+	public function tearDownClass()
 	{
 		$this->wipe();
 	}
@@ -135,7 +145,7 @@ class PendingQueueTest extends TestCase
 	}
 
 	/**
-	 * setUp() runs once for the whole file, not once per test, so a case that
+	 * setUpClass() runs once for the whole file, not once per test, so a case that
 	 * counts what is in the queue has to start from an empty one.
 	 */
 	private function fresh()

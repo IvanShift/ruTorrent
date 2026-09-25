@@ -16,8 +16,10 @@ foreach (get_declared_classes() as $cls) {
 			$failures++;
 			continue;
 		}
+		$classReady = false;
 		try {
-			$obj->setUp();
+			$obj->setUpClass();
+			$classReady = true;
 			$executed = $obj->run();
 			$methods += $executed;
 			if ($executed !== $expected) {
@@ -27,11 +29,13 @@ foreach (get_declared_classes() as $cls) {
 			echo 'Test ' . $cls . ' failed with error: ' . $e->getMessage() . "\n";
 			$failures++;
 		}
-		try {
-			$obj->tearDown();
-		} catch (Throwable $e) {
-			echo 'Test ' . $cls . ' tearDown failed with error: ' . $e->getMessage() . "\n";
-			$failures++;
+		if ($classReady) {
+			try {
+				$obj->tearDownClass();
+			} catch (Throwable $e) {
+				echo 'Test ' . $cls . ' tearDownClass failed with error: ' . $e->getMessage() . "\n";
+				$failures++;
+			}
 		}
 		$failures += $obj->failureCount();
 	}

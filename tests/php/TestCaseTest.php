@@ -72,7 +72,14 @@ class TestCaseTest extends TestCase
 				. ' public function setUp() { throw new RuntimeException("setup refused"); }'
 				. ' public function testNever() { echo "should not run\n"; }'
 				. ' public function tearDown() { echo "teardown\n"; } }',
-				array('Test: SetupProbe', 'setup refused', 'teardown'),
+				array('Test: SetupProbe', 'setup refused'),
+			),
+			array(
+				'<?php require ' . $testCase . '; class ClassSetupProbe extends TestCase {'
+				. ' public function setUpClass() { throw new RuntimeException("class setup refused"); }'
+				. ' public function testNever() { echo "should not run\n"; }'
+				. ' public function tearDownClass() { echo "class teardown\n"; } }',
+				array('Test: ClassSetupProbe', 'class setup refused'),
 			),
 		);
 		foreach ($probes as $probe) {
@@ -93,9 +100,155 @@ class TestCaseTest extends TestCase
 				}
 				$this->assertTrue(strpos($output, 'should not run') === false,
 					'a failed setUp never runs its test body');
+				if (strpos($probe[0], 'ClassSetupProbe') !== false) {
+					$this->assertTrue(strpos($output, 'class teardown') === false,
+						'a failed class setup does not tear down a partial fixture');
+				} else if (strpos($probe[0], 'SetupProbe') !== false) {
+					$this->assertTrue(strpos($output, 'teardown') === false,
+						'a failed method setup does not tear down a partial fixture');
+				}
 			} finally {
 				@unlink($script);
 			}
+		}
+	}
+
+	public function testEachMethodGetsSetupAndTeardownEvenAfterErrors(): void
+	{
+		$script = tempnam(sys_get_temp_dir(), 'rt-case-lifecycle-');
+		if ($script === false) throw new RuntimeException('Unable to create lifecycle probe');
+		$source = '<?php require ' . var_export(__DIR__ . '/TestCase.php', true) . '; '
+			. 'class LifecycleProbe extends TestCase {'
+			. ' private $attempt = 0;'
+			. ' public function setUpClass() { echo "event:class-setup\\n"; }'
+			. ' public function tearDownClass() { echo "event:class-teardown\\n"; }'
+			. ' public function setUp() { $this->attempt++; echo "event:setup-{$this->attempt}\\n";'
+			. ' if ($this->attempt === 2) throw new RuntimeException("setup refused"); }'
+			. ' public function tearDown() { echo "event:teardown-{$this->attempt}\\n";'
+			. ' if ($this->attempt === 4) throw new RuntimeException("teardown refused"); }'
+			. ' public function testOne() { echo "event:body-1\\n"; }'
+			. ' public function testTwo() { echo "event:body-2\\n"; }'
+			. ' public function testThree() { echo "event:body-3\\n";'
+			. ' throw new RuntimeException("body refused"); }'
+			. ' public function testFour() { echo "event:body-4\\n"; }'
+			. ' public function testFive() { echo "event:body-5\\n"; }'
+			. ' }';
+		try {
+			file_put_contents($script, $source);
+			$lines = array();
+			$code = 0;
+			exec(escapeshellarg(PHP_BINARY) . ' -d auto_append_file='
+				. escapeshellarg(__DIR__ . '/TestCaseRunner.php') . ' '
+				. escapeshellarg($script) . ' 2>&1', $lines, $code);
+			$output = implode("\n", $lines);
+			preg_match_all('/^event:[^\\r\\n]+$/m', $output, $events);
+			$this->assertEquals(1, $code, 'lifecycle errors make the appended runner fail');
+			$this->assertEquals(array(
+				'event:class-setup',
+				'event:setup-1', 'event:body-1', 'event:teardown-1',
+				'event:setup-2',
+				'event:setup-3', 'event:body-3', 'event:teardown-3',
+				'event:setup-4', 'event:body-4', 'event:teardown-4',
+				'event:setup-5', 'event:body-5', 'event:teardown-5',
+				'event:class-teardown',
+			), $events[0], 'class fixtures run once and completed setup gets method cleanup');
+			$this->assertTrue(strpos($output, 'event:body-2') === false,
+				'a failed method setup skips only its own test body');
+			$this->assertTrue(strpos($output, 'setup refused') !== false
+				&& strpos($output, 'body refused') !== false
+				&& strpos($output, 'teardown refused') !== false,
+				'each lifecycle error is visible');
+			$this->assertEquals(3, substr_count($output, 'failed with error:'),
+				'setup, body, and teardown errors are each counted exactly once');
+			$this->assertTrue(strpos($output, 'TestCase runner finished: 1 classes, 5 methods') !== false,
+				'all five methods are accounted for after lifecycle errors');
+		} finally {
+			@unlink($script);
+		}
+	}
+
+	public function testNamedCaseRunnerUsesTheSameMethodLifecycle(): void
+	{
+		$script = tempnam(sys_get_temp_dir(), 'rt-named-lifecycle-');
+		if ($script === false) throw new RuntimeException('Unable to create named-case probe');
+		$source = '<?php require ' . var_export(__DIR__ . '/TestCase.php', true) . '; '
+			. 'class NamedLifecycleProbe extends TestCase {'
+			. ' private $attempt = 0;'
+			. ' public function setUpClass() { echo "event:class-setup\\n"; }'
+			. ' public function tearDownClass() { echo "event:class-teardown\\n"; }'
+			. ' public function setUp() { $this->attempt++; echo "event:setup-{$this->attempt}\\n";'
+			. ' if ($this->attempt === 2) throw new RuntimeException("setup refused"); }'
+			. ' public function tearDown() { echo "event:teardown-{$this->attempt}\\n"; }'
+			. ' public function testOne() { echo "event:body-1\\n"; $this->assertTrue(true); }'
+			. ' public function testTwo() { echo "event:body-2\\n"; $this->assertTrue(false); }'
+			. ' public function testThree() { echo "event:body-3\\n"; $this->assertTrue(true); }'
+			. ' }';
+		try {
+			file_put_contents($script, $source);
+			$runner = __DIR__ . '/../plugins/erasedata/RunNamedCases.php';
+			$lines = array();
+			$code = 0;
+			exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../php-test.ini')
+				. ' ' . escapeshellarg($runner) . ' ' . escapeshellarg($script)
+				. ' testone testTwo testThree 2>&1', $lines, $code);
+			$output = implode("\n", $lines);
+			preg_match_all('/^event:[^\\r\\n]+$/m', $output, $events);
+			$this->assertEquals(1, $code, 'a failed named case makes the manual runner fail');
+			$this->assertEquals(array(
+				'event:class-setup',
+				'event:setup-1', 'event:body-1', 'event:teardown-1',
+				'event:setup-2',
+				'event:setup-3', 'event:body-3', 'event:teardown-3',
+				'event:class-teardown',
+			), $events[0], 'named methods use class and method lifecycle hooks');
+			$this->assertTrue(strpos($output, 'event:body-2') === false,
+				'a failed named method setup skips its body');
+			$this->assertTrue(strpos($output, 'RunNamedCases: 3/3 cases finished') !== false,
+				'the manual runner completes and accounts for later cases');
+		} finally {
+			@unlink($script);
+		}
+	}
+
+	public function testPartialPendingQueueClassSetupCleansItsMirror(): void
+	{
+		$root = sys_get_temp_dir() . '/rt-pending-setup-' . bin2hex(random_bytes(8));
+		$testDir = $root . '/tests/plugins/erasedata';
+		$phpDir = $root . '/tests/php';
+		mkdir($testDir, 0777, true);
+		mkdir($phpDir, 0777, true);
+		$testFile = $testDir . '/PendingQueueTest.php';
+		$caseFile = $phpDir . '/TestCase.php';
+		$probeFile = $root . '/probe.php';
+		try {
+			if (!copy(__DIR__ . '/TestCase.php', $caseFile)
+				|| !copy(__DIR__ . '/../plugins/erasedata/PendingQueueTest.php', $testFile)) {
+				throw new RuntimeException('Unable to stage the partial setup probe');
+			}
+			$source = '<?php require ' . var_export($testFile, true) . '; '
+				. '$test = new PendingQueueTest(); $refused = false;'
+				. 'try { $test->setUpClass(); } catch (Throwable $e) { $refused = true; }'
+				. '$mirror = sys_get_temp_dir() . "/rutorrent-pending-" . getmypid();'
+				. '$leftBehind = is_dir($mirror); $test->tearDownClass();'
+				. 'echo json_encode(array($refused, $leftBehind));';
+			file_put_contents($probeFile, $source);
+			$lines = array();
+			$code = 0;
+			exec(escapeshellarg(PHP_BINARY) . ' -c '
+				. escapeshellarg(__DIR__ . '/../php-test.ini') . ' '
+				. escapeshellarg($probeFile) . ' 2>&1', $lines, $code);
+			$this->assertEquals(0, $code, 'the incomplete mirror probe exits normally');
+			$this->assertEquals(array(true, false), json_decode((string) end($lines), true),
+				'a failed mirror copy is refused and its partial tree is removed');
+		} finally {
+			@unlink($probeFile);
+			@unlink($testFile);
+			@unlink($caseFile);
+			@rmdir($testDir);
+			@rmdir($root . '/tests/plugins');
+			@rmdir($phpDir);
+			@rmdir($root . '/tests');
+			@rmdir($root);
 		}
 	}
 

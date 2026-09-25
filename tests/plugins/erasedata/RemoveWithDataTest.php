@@ -381,14 +381,14 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
-	public function setUp()
+	public function setUpClass()
 	{
 		$this->dir = sys_get_temp_dir().'/erasedata-test-'.getmypid();
 		@mkdir($this->dir, 0777, true);
 		FileUtil::$settingsPath = $this->dir;
 	}
 
-	// setUp() runs once per class, so each test starts from a clean slate here.
+	// setUpClass() runs once; each method resets its own mutable state here.
 	private function reset()
 	{
 		global $profileMask;
@@ -409,7 +409,7 @@ class RemoveWithDataTest extends TestCase
 		rXMLRPCRequest::$scheduledCommands = array();
 	}
 
-	public function tearDown()
+	public function tearDownClass()
 	{
 		foreach(array_diff(scandir($this->dir), array('.', '..', 'erasedata')) as $entry)
 			$this->removePath($this->dir.'/'.$entry);

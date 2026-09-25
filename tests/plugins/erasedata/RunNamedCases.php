@@ -75,9 +75,11 @@ register_shutdown_function(function() use (&$runnerFinished, $runnerNames) {
 });
 
 $runner = new $runnerClass();
-$runner->setUp();
+$classReady = false;
 try
 {
+	$runner->setUpClass();
+	$classReady = true;
 	foreach($runnerNames as $name)
 	{
 		if(!method_exists($runner, $name))
@@ -90,7 +92,7 @@ try
 		ob_start();
 		try
 		{
-			$runner->$name();
+			$runner->runMethod($name);
 		}
 		catch(Exception $e)
 		{
@@ -119,7 +121,8 @@ try
 }
 finally
 {
-	$runner->tearDown();
+	if($classReady)
+		$runner->tearDownClass();
 }
 
 echo "RunNamedCases: ".count($runnerFinished)."/".count($runnerNames)

@@ -2561,7 +2561,7 @@ PHP
 		return($reader);
 	}
 
-	public function tearDown()
+	public function tearDownClass()
 	{
 		global $retrackersUpdateTestProfile;
 		$this->removeTree($retrackersUpdateTestProfile);
@@ -9134,7 +9134,7 @@ echo json_encode($result);
 $closeMethod = new ReflectionMethod('RetrackersUpdateTest', 'closeTask5Fixture');
 $closeMethod->setAccessible(true);
 $closeMethod->invoke($test, $fixture);
-$test->tearDown();
+$test->tearDownClass();
 PHP;
 		$descriptors = array(
 			0 => array('pipe', 'r'),

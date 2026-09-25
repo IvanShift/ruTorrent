@@ -124,9 +124,8 @@ class ConfigTest extends TestCase
 	}
 
 	/**
-	 * The list config.php builds. setUp() runs once for the file, not once per
-	 * test, so a mask an earlier case left behind would be read here too --
-	 * these cases are about RU_LOCALHOSTS and nothing else.
+	 * These cases inspect RU_LOCALHOSTS only. Ignore a profile mask from the
+	 * caller's environment; tearDown() restores it after each method.
 	 */
 	private function configuredLocalhosts()
 	{
