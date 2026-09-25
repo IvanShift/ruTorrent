@@ -687,6 +687,8 @@ class RemoveWithDataTest extends TestCase
 		@mkdir($actionDir, 0777, true);
 		@mkdir($fixture.'/php', 0777, true);
 		copy($source, $actionDir.'/action.php');
+		if($plugin === 'httprpc')
+			copy(__DIR__.'/../../../plugins/httprpc/settingspolicy.php', $actionDir.'/settingspolicy.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', '<?php '
 			.'class FileUtil { public static function toLog($message) {} public static function getPluginConf($plugin) { return ""; } } '
 			.'class rXMLRPCCommand { public $command; public $params; public function __construct($command,$params=null) {'

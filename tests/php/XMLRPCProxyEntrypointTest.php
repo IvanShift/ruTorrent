@@ -955,6 +955,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$files = array(
 			'plugins/httprpc/action.php',
+			'plugins/httprpc/settingspolicy.php',
 			'php/xmlrpc_path.php',
 			'php/xmlrpc_proxy.php',
 			'php/xmlrpc_proxy_policy.php',
