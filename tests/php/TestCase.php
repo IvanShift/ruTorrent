@@ -45,20 +45,64 @@ class TestCase
 	{
 	}
 
-	public function assertEquals($a, $b, $message = null): void
+	private function assertionMessage($message, string $default): string
 	{
-		$this->assertTrue($a == $b, $message ? $message : 'Expected '.json_encode($a).' == '.json_encode($b));
+		if ($message === null) return $default;
+		if (!is_string($message)) throw new TypeError('Assertion message must be a string or null');
+		return $message;
 	}
 
-	public function assertTrue($bool, $message = null): void
+	private function reportAssertion(bool $passed, string $message): void
 	{
-		$message = $message ? $message : 'Expected value to be ' . ($bool ? 'true' : 'false');
-		if ($bool) {
+		if ($passed) {
 			echo "Passed: {$message}\n";
 		} else {
 			$this->failures++;
 			echo "Failed: {$message}\n";
 		}
+	}
+
+	private function describeAssertionValue($value): string
+	{
+		$warning = false;
+		set_error_handler(function () use (&$warning) {
+			$warning = true;
+			return true;
+		}, E_WARNING);
+		try {
+			$description = var_export($value, true);
+		} finally {
+			restore_error_handler();
+		}
+		return $warning ? gettype($value) . ' (recursive or unsupported)' : $description;
+	}
+
+	private function assertIdentical($expected, $actual, $message): void
+	{
+		$passed = $expected === $actual;
+		if ($message === null) {
+			$message = $passed ? 'Values are identical'
+				: 'Expected ' . $this->describeAssertionValue($expected)
+					. ' === ' . $this->describeAssertionValue($actual);
+		}
+		$this->reportAssertion($passed, $this->assertionMessage($message, 'Values are identical'));
+	}
+
+	public function assertEquals($a, $b, $message = null): void
+	{
+		$this->assertIdentical($a, $b, $message);
+	}
+
+	public function assertSame($expected, $actual, $message = null): void
+	{
+		$this->assertIdentical($expected, $actual, $message);
+	}
+
+	public function assertTrue($bool, $message = null): void
+	{
+		if (!is_bool($bool)) throw new TypeError('assertTrue requires a boolean condition');
+		$this->reportAssertion($bool,
+			$this->assertionMessage($message, 'Expected value to be true'));
 	}
 }
 

@@ -145,8 +145,8 @@ class RtorrentLoadConfirmationTest extends TestCase
 			$this->withPeer('absent', function () use ($source) {
 				$result = rTorrent::sendTorrent($source, true, true,
 					'', null, false, false);
-				$this->assertTrue($result === null,
-					'the daemon did not confirm the raw load');
+				$this->assertSame(null, $result,
+					'the daemon did not confirm the raw load; got ' . var_export($result, true));
 				$this->assertTrue(is_file($source),
 					'the caller retains its input file while the load remains unknown');
 			});

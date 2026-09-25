@@ -26,6 +26,12 @@ class SnoopyMock
 
 final class RSSTest extends TestCase
 {
+	private function assertSameFields(array $expected, array $actual): void
+	{
+		ksort($expected);
+		ksort($actual);
+		$this->assertSame($expected, $actual);
+	}
 	public function testConditionalValidatorsKeepResponseValueCase(): void
 	{
 		$requests = 0;
@@ -267,14 +273,14 @@ final class RSSTest extends TestCase
 
 		// check items
 		$this->assertEquals(2, count($rRSS->items));
-		$this->assertEquals(array(
+		$this->assertSameFields(array(
 			"timestamp" => strtotime('2003-12-13T18:30:02Z'),
 			"title" => 'Title <1>',
 			"link" => 'https://example.org/2003/12/13/atom03',
 			"guid" => 'https://example.org/2003/12/13/atom03',
 			"description" => 'Some text.',
 		), $rRSS->items['https://example.org/2003/12/13/atom03']);
-		$this->assertEquals(array(
+		$this->assertSameFields(array(
 			"timestamp" => strtotime('2003-12-13T19:30:02Z'),
 			"title" => 'Title <2>',
 			"link" => 'https://example.org/2003/12/13/atom04',

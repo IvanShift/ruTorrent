@@ -997,7 +997,9 @@ class PendingQueueTest extends TestCase
 		$this->assertTrue(!in_array(3, $codes, true),
 			$invariant . ' [not implemented yet: erasedataLockObligations(),'
 			. ' erasedataUnlockObligations()]');
-		$this->assertEquals(array('forward' => 0, 'inverse' => 0), $codes,
+		// Completion order is a race; compare the labelled exit codes in key order.
+		ksort($codes);
+		$this->assertSame(array('forward' => 0, 'inverse' => 0), $codes,
 			'both drainers finished on their own rather than deadlocking on inverse orders');
 		foreach ($reports as $label => $file) {
 			$taken = json_decode((string)@file_get_contents($file), true);
