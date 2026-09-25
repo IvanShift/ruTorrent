@@ -1,13 +1,16 @@
 <?php
 
+require_once(__DIR__ . '/../../php/urlhost.php');
+
 // Layer 1 of the post-API design: request-free candidate detection from
 // rTorrent's own per-tracker counters, plus the fleet-level fuse.
 class RuTrackerDetector
 {
     const TRACKER_PATTERN = '/t-ru\.org|rutracker\./i';
 
-    // The host-identity form of the pattern above, anchored to whole domain
-    // labels AND to RuTracker's own top-level domains. TRACKER_PATTERN itself
+    // The host-identity form of the pattern above: RuTracker's own hosts,
+    // matched whole -- a listed host or a subdomain of one, through UrlHost --
+    // and limited to RuTracker's own top-level domains. TRACKER_PATTERN itself
     // is deliberately a substring test -- it is applied to entire announce
     // URLs, where the host sits in the middle -- but that makes it useless as
     // a trust decision: 'rutracker.evil.example' and 'bt.t-ru.org.evil.example'
@@ -31,14 +34,9 @@ class RuTrackerDetector
     // test at three production sites, and the two literal regexes
     // registerTracker() is handed at the bottom of trackers/rutracker.php --
     // but none of them enumerates the TLDs, so none of them has to change when
-    // a domain is added. Those three names are the grep to run before adding a
-    // sixth domain; as of this comment it answers in six functions --
-    // RuTrackerCheckImpl::extractTopicId(),
-    // ruTrackerRowUrl() (which picks WHICH announce row the two below then
-    // use, as $trackerUrl -> $announceUrl), the layer-2 announce gate in
-    // download_torrent(), RuTrackerMetaFetch::begin() before it builds the
-    // magnet's tr=, RuTrackerMetaFetch::pump()'s stub projection, and
-    // classify() below, which asks twice: attribution and the 'alive' gate.
+    // a domain is added. Search those helper names across the plugin before
+    // changing the list. classify() attributes d.message to tracker rows; announceSignal()
+    // selects enabled announce rows and evaluates their live signal for announceVerdict().
     //
     // That grep stops at this plugin's border, and so does this constant:
     // detector.php is required only from inside plugins/rutracker_check (and
@@ -47,7 +45,8 @@ class RuTrackerDetector
     // from here. A sixth domain is therefore a whole-tree search, not a
     // directory one, and sharing a list across plugins is a real change rather
     // than something a grep can finish.
-    const TRACKER_HOST_PATTERN = '/(^|\.)(t-ru\.org|rutracker\.(?:org|cr|net|nl|cc))$/i';
+    const TRACKER_HOSTS = array('t-ru.org', 'rutracker.org', 'rutracker.cr', 'rutracker.net',
+        'rutracker.nl', 'rutracker.cc');
 
     // Anchored at the start of the message rTorrent itself composes
     // ("Tracker: [Could not resolve hostname]"), because the tail of that
@@ -58,13 +57,14 @@ class RuTrackerDetector
     const TRANSPORT_PATTERN = '/^\s*(?:Tracker:\s*)?\[?\s*(?:Could not resolve hostname|Could not connect|Timed? ?out)/i';
 
     /**
-     * Is this announce URL one of RuTracker's own?
+     * Is this announce URL one of RuTracker's own -- or, given another
+     * tracker's host list, one of that tracker's?
      *
      * The one predicate that answers it AS A TRUST QUESTION. Exactly three
      * other sites ask a different question with TRACKER_PATTERN -- hostOf()
      * (updatepass.php), describeCounters()'s counter log (trackers/
-     * rutracker.php) and the row selection in classify() below -- and they
-     * keep the loose substring test on purpose, because they decide
+     * rutracker.php) and the row selection in announceSignal() below -- and
+     * they keep the loose substring test on purpose, because they decide
      * JURISDICTION: a torrent whose announce was tampered with is still a
      * RuTracker topic that layers 2 and 3 must look at. Trust is the other
      * question, and a substring test over a whole URL answers YES for
@@ -78,27 +78,27 @@ class RuTrackerDetector
      * So the host is extracted and matched whole, against RuTracker's own
      * domains -- the same anchored rule the outgoing paths already use.
      */
-    static public function isTrackerRow($url)
+    static public function isTrackerRow($url, $hosts = null)
     {
-        $host = @parse_url((string) $url, PHP_URL_HOST);
-        if (!is_string($host)) return false;
-        return self::isTrackerHost($host);
+        $host = UrlHost::of($url);
+        if ($host === null) return false;
+        return self::isTrackerHost($host, $hosts);
     }
 
-    // The anchored test itself, and the one normalisation it needs. Three
-    // places used to apply TRACKER_HOST_PATTERN by hand and only this one
-    // stripped the trailing dot, so 'bt.t-ru.org.' -- the same host, written
-    // as a fully qualified name -- was RuTracker's here and a stranger to the
-    // outgoing paths, which then skipped layer 2 and refused the metadata
-    // fetch. Normalising can only ever widen the match to the same host under
-    // another spelling: rtrim removes the root dot and nothing else, so
-    // 'rutracker.evil.example.' stays rejected.
-    static public function isTrackerHost($host)
+    // The host test itself is UrlHost::isOneOf() (php/urlhost.php), the one
+    // this tree keeps: three places used to apply an anchored pattern by hand
+    // and only one of them stripped the trailing dot, so 'bt.t-ru.org.' --
+    // the same host, written as a fully qualified name -- was RuTracker's
+    // here and a stranger to the outgoing paths, which then skipped layer 2
+    // and refused the metadata fetch. One implementation, one normalisation.
+    //
+    // $hosts is RuTracker's own list unless a caller supplies another
+    // tracker's: the test is the same whoever the host belongs to, so a
+    // second tracker's authority check goes through this one function
+    // rather than through a copy of it.
+    static public function isTrackerHost($host, $hosts = null)
     {
-        // Same normalisation RuTrackerAnnounce::hostKey() applies before it
-        // keys the announce budget: a trailing dot is the DNS root and names
-        // the same host, and the pattern is anchored at the end.
-        return preg_match(self::TRACKER_HOST_PATTERN, rtrim((string) $host, '.')) === 1;
+        return UrlHost::isOneOf($host, $hosts === null ? self::TRACKER_HOSTS : $hosts);
     }
 
     // Splits the '#'-terminated, '|'-joined tracker blob an embedded
@@ -132,15 +132,90 @@ class RuTrackerDetector
         return $rows;
     }
 
-    // Layer-1 verdict for one torrent, driven only by the
-    // RuTracker tracker row; dht:// and any other row are never consulted.
-    // $dMessage (d.message) is download-global and holds only the most
-    // recent tracker event of ANY row, so it may recognise a transport
-    // failure but never prove a topic is gone.
+    /**
+     * What a set of tracker rows says about a topic, by announce alone.
+     *
+     * The shared core of announceVerdict() and classify(), stated once so a
+     * second tracker cannot grow a second, subtly different copy of it. A
+     * pattern and a list, and they answer different questions:
+     *
+     *   $jurisdiction  is this row about the tracker we are asking about?
+     *                  Deliberately loose, applied to a whole announce URL: a
+     *                  torrent whose announce was tampered with is still that
+     *                  tracker's topic and still has to be looked at.
+     *   $authority     may this row certify the topic ALIVE? A list of hosts
+     *                  matched whole, because 'alive' is the verdict that
+     *                  stops the check, and a host anyone can register must
+     *                  not be able to reach it. Applied through the same
+     *                  isTrackerRow() the outgoing RuTracker paths use.
+     *
+     * @return array enabled: rows in jurisdiction, counted: any of them
+     *               carrying a signal yet, alive: one of them announcing
+     *               successfully on an authoritative host
+     */
+    static private function announceSignal($rows, $jurisdiction, $authority)
+    {
+        $enabled = 0;
+        $alive = false;
+        $counted = false;
+        foreach ((array) $rows as $row) {
+            if (!is_array($row) || empty($row['enabled'])) continue;
+            $url = (string) ($row['url'] ?? '');
+            if (!preg_match($jurisdiction, $url)) continue;
+            $enabled++;
+
+            $failed = (int) ($row['failed'] ?? 0);
+            $success = (int) ($row['success'] ?? 0);
+            if ($failed === 0 && $success === 0) continue;   // no signal from this row yet
+            $counted = true;
+            if ($failed === 0 && self::isTrackerRow($url, $authority)) $alive = true;
+        }
+        return array('enabled' => $enabled, 'alive' => $alive, 'counted' => $counted);
+    }
+
+    /**
+     * The announce verdict for a tracker this class knows nothing else about,
+     * and the first three rungs of classify()'s own ladder.
+     *
+     * No d.message reading, so no 'transport' verdict: d.message is
+     * download-global and says which tracker event happened last, not which
+     * row it happened to -- attributing it needs the look-alike test
+     * isForeignRow() makes, and that test is about RuTracker. classify() adds
+     * that rung for RuTracker; for everyone else the honest answers are the
+     * three below plus 'candidate'.
+     *
+     * The two are NOT interchangeable and the caller must not pass one for
+     * both. A registry announce filter is a substring test over whole URLs --
+     * 'torrent4me\.com' also matches 'evil-torrent4me.com.attacker.test' --
+     * so using it to certify a topic alive would hand that decision to anyone
+     * who can register a domain. The authority is a list of hosts matched
+     * whole, which is why a handler opts into this by SUPPLYING it rather
+     * than by setting a flag.
+     *
+     * @param string $jurisdiction  the handler's announce filter, from the
+     *                              tracker registry
+     * @param array  $authority     the hosts the handler declared authoritative:
+     *                              each of them, or a subdomain of one
+     * @return string 'none' | 'cold' | 'alive' | 'candidate'
+     */
+    static public function announceVerdict($rows, $jurisdiction, $authority)
+    {
+        $signal = self::announceSignal($rows, $jurisdiction, $authority);
+        if ($signal['enabled'] === 0) return 'none';
+        if ($signal['alive']) return 'alive';
+        if (!$signal['counted']) return 'cold';
+        return 'candidate';
+    }
+
+    // Layer-1 verdict for one RuTracker torrent, driven only by its RuTracker
+    // tracker rows; dht:// and any other row are never consulted. $dMessage
+    // (d.message) is download-global and holds only the most recent tracker
+    // event of ANY row, so it may recognise a transport failure but never
+    // prove a topic is gone.
     //
     // 'none' is returned both for a disabled RuTracker row and for a torrent
     // that has no RuTracker row at all -- a Kinozal/NNMClub/Toloka/tfile
-    // torrent, over which this detector simply has no jurisdiction. Callers
+    // torrent, over which this verdict simply has no jurisdiction. Callers
     // that sweep the whole seeding view (RuTrackerUpdatePass::run) carry all
     // of those too and must not read that second 'none' as "nothing to do",
     // or every other tracker's handler silently stops running.
@@ -153,54 +228,26 @@ class RuTrackerDetector
         // announces successfully proves the topic is alive, and 'alive' is
         // also the safe direction -- 'candidate' is what spends requests and
         // ultimately replaces the user's torrent.
-        // $enabled counts JURISDICTION, not trust, and the two counters below
-        // are not exclusive: a look-alike row increments $foreign AND
-        // $enabled. So "$enabled > 0" means "some row puts this torrent in
-        // RuTracker's jurisdiction", never "some row is provably RuTracker's".
-        // Narrowing it would drop a torrent whose announce was tampered with
-        // to 'none' and stop checking it for good, which is why it stays loose
-        // -- and why the one verdict that must be sure, the 'alive' gate
-        // below, re-asks isTrackerRow() instead of reading this counter.
-        // Anyone reusing $enabled as a count of RuTracker's own rows is wrong.
-        $enabled = 0;
-        $foreign = 0;
-        $alive = false;
-        $counted = false;
-        foreach ((array) $rows as $row) {
-            if (!is_array($row) || empty($row['enabled'])) continue;
-            // Two different questions about the same row, asked in this order.
-            //
-            // Attribution: could this row have written $dMessage on its own?
-            // isForeignRow() is the canonical answer, shared with the metadata
-            // fetch, and it is the anchored host test -- a look-alike is not
-            // RuTracker and must not lend RuTracker its excuses.
-            if (self::isForeignRow($row)) $foreign++;
-            // Jurisdiction: is this a RuTracker topic at all? Deliberately the
-            // loose substring test, and the same row selection updatepass.php's
-            // hostOf() makes, because a torrent whose announce was tampered
-            // with is still a RuTracker topic layers 2 and 3 have to look at.
-            // A look-alike row is therefore counted BOTH ways: judged here,
-            // trusted nowhere.
-            if (!preg_match(self::TRACKER_PATTERN, (string) ($row['url'] ?? ''))) continue;
-            $enabled++;
+        //
+        // Jurisdiction is the loose substring test on purpose -- a torrent
+        // whose announce was tampered with is still a RuTracker topic that
+        // layers 2 and 3 must look at -- and the one verdict that must be
+        // sure, 'alive', is gated on the anchored host test instead, inside
+        // announceSignal(). Both outgoing layers already gate on that same
+        // test.
+        $verdict = self::announceVerdict($rows, self::TRACKER_PATTERN, self::TRACKER_HOSTS);
+        if ($verdict !== 'candidate') return $verdict;
 
-            $failed = (int) ($row['failed'] ?? 0);
-            $success = (int) ($row['success'] ?? 0);
-            if ($failed === 0 && $success === 0) continue;   // no signal from this row yet
-            $counted = true;
-            // 'alive' is the only verdict that STOPS the check, so it is the
-            // only one a lookalike may not reach. The row selection above stays
-            // the loose substring test on purpose -- it decides jurisdiction,
-            // and a torrent whose announce was tampered with is still a
-            // RuTracker topic that layers 2 and 3 must look at -- but a host
-            // anyone can register must not be able to certify the topic alive
-            // and have the scheduler write UPTODATE from it. Both outgoing
-            // layers already gate on this same anchored test.
-            if ($failed === 0 && self::isTrackerRow($row['url'] ?? '')) $alive = true;
-        }
-        if ($enabled === 0) return 'none';
-        if ($alive) return 'alive';
-        if (!$counted) return 'cold';
+        // Attribution, asked of every enabled row: could it have written
+        // $dMessage on its own? isForeignRow() is the canonical answer, shared
+        // with the metadata fetch, and it is the anchored host test -- a
+        // look-alike is not RuTracker and must not lend RuTracker its excuses.
+        // A look-alike row is therefore counted BOTH ways: judged by the
+        // signal above, trusted nowhere.
+        $foreign = 0;
+        foreach ((array) $rows as $row)
+            if (is_array($row) && !empty($row['enabled']) && self::isForeignRow($row))
+                $foreign++;
         // d.message is download-global: it holds the most recent tracker event
         // of ANY row. Reading it as the RuTracker row's excuse is only sound
         // when no other enabled tracker could have written it -- otherwise a

@@ -7,8 +7,9 @@
  * this file keeps only the checker-specific fakes: the real ruTrackerChecker
  * (evaled out of check.php), a fixture-based Torrent and a recording rTorrent.
  *
- * Two rollback tests deliberately exhaust the waitForLoad poll budget and each
- * spend about two seconds in usleep; every other test completes immediately.
+ * Two rollback tests deliberately exhaust the waitForLoad poll budget; the
+ * class is evaled below with the delay between polls cut from 50 ms to 1 ms,
+ * so they cost milliseconds here where production would spend two seconds.
  */
 
 require __DIR__ . '/TestLib.php';
@@ -287,10 +288,21 @@ class RuTrackerMetaFetch
 	}
 }
 
-eval(loadClassDefinition(
+// The class is evaled from the shipped source with ONE edit: the delay between
+// waitForLoad polls. The two rollback cases exhaust that budget on purpose and
+// prove the poll count, not the courtesy between polls, which at the shipped
+// 50 ms costs two seconds a case. The edit is asserted so that a renamed or
+// retyped constant fails here, loudly, rather than silently restoring the wait.
+$checkerDefinition = loadClassDefinition(
 	__DIR__ . '/../../../plugins/rutracker_check/check.php',
 	'ruTrackerChecker'
-));
+);
+$checkerDefinition = str_replace("const LOAD_WAIT_DELAY_US\t= 50000;",
+	"const LOAD_WAIT_DELAY_US\t= 1000;", $checkerDefinition, $checkerDelayEdits);
+if ($checkerDelayEdits !== 1)
+	throw new RuntimeException('check.php no longer declares LOAD_WAIT_DELAY_US = 50000 the way this suite edits it');
+eval($checkerDefinition);
+unset($checkerDefinition, $checkerDelayEdits);
 
 class CheckerProbe extends ruTrackerChecker
 {
@@ -386,7 +398,6 @@ class CheckerTest
 		RuTrackerMetaFetch::$result = null;
 		ErasedataFake::reset();
 		strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
-		strictSetPrivateStatic('ruTrackerChecker', 'ANNOUNCES', array());
 		strictSetPrivateStatic('ruTrackerChecker', 'claimStoreFailureLogged', false);
 		// A fresh claim store per test: the meta-pump claim is keyed by hash
 		// and several tests reuse the same one.
@@ -1892,6 +1903,31 @@ class CheckerTest
 		});
 	}
 
+	// The two rollback cases below exhaust waitForLoad's budget on purpose:
+	// LOAD_WAIT_ATTEMPTS polls, LOAD_WAIT_DELAY_US apart. What they prove is
+	// the count of polls and what happens after the last one; the delay
+	// between polls is production's courtesy to rTorrent, not theirs, so the
+	// class this suite evals declares it short. This case pins that the
+	// declaration reached the class: at the shipped 50 ms the exhaustion
+	// alone costs two seconds.
+	public function testAnExhaustedLoadWaitCostsTheDeclaredDelayNotTheShippedOne()
+	{
+		$this->resetFakes();
+		$this->stageTorrents();
+		$this->queueTransactionStart(sys_get_temp_dir(), 1, 1);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$began = hrtime(true);
+		ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
+		$took = (hrtime(true) - $began) / 1e9;
+		strictAssertSame(
+			ruTrackerChecker::LOAD_WAIT_ATTEMPTS,
+			count(rXMLRPCRequest::requestsFor('d.get_custom')),
+			'the budget is still exhausted poll by poll'
+		);
+		strictAssertTrue($took < 0.5,
+			'and the exhaustion costs the declared delay, not 39 pauses of 50 ms (' . round($took, 2) . 's)');
+	}
+
 	public function testRollbackRestoresOldTorrentEvenWhenStagedStatusUnknown()
 	{
 		$this->resetFakes();
@@ -2749,6 +2785,17 @@ class CheckerTest
 			'metainfo without info hash must fail with STE_ERROR'
 		);
 		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'malformed info hash must not touch rTorrent');
+	}
+
+	public function testSameHashReturnsUptodateWithoutDaemonCalls()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['same-hash-torrent'] = array('hash' => self::OLD_HASH,
+			'info' => array('name' => 'same.mkv'));
+		strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+			ruTrackerChecker::createTorrent(checkerParsed('same-hash-torrent'), self::OLD_HASH),
+			'the replacement boundary itself rejects self-replacement');
+		strictAssertSame(0, count(rXMLRPCRequest::$requests), 'equal hashes need no daemon calls');
 	}
 
 	public function testDifferentNumericLookingInfoHashesAreNotTreatedAsEqual()
@@ -3887,6 +3934,53 @@ class CheckerTest
 		}
 	}
 
+	public function testProductionLoadWaitBudgetIsExplicitDespiteTheLocalDelayOverride()
+	{
+		$source = file_get_contents(testFindRepoRoot() . '/plugins/rutracker_check/check.php');
+		strictAssertSame(1, preg_match('/const\s+LOAD_WAIT_ATTEMPTS\s*=\s*40\s*;/', $source),
+			'the shipped load wait attempts remain 40, regardless of the short test delay');
+		strictAssertSame(1, preg_match('/const\s+LOAD_WAIT_DELAY_US\s*=\s*50000\s*;/', $source),
+			'the shipped poll delay remains 50 ms before the test-only override');
+	}
+
+	private function withVerdictSession($slug, $previous, $checkedAt, $handler, $callback)
+	{
+		$this->resetFakes();
+		$dir = sys_get_temp_dir() . '/rut-' . $slug . '-' . bin2hex(random_bytes(5)) . '/';
+		if (!mkdir($dir, 0777, true))
+			throw new RuntimeException('Unable to create checker session directory: ' . $dir);
+		try
+		{
+			$file = $dir . self::OLD_HASH . '.torrent';
+			file_put_contents($file, 'x');
+			rTorrentSettings::get()->session = $dir;
+			$host = $slug . '-test.invalid';
+			Torrent::$fixtures[$file] = array(
+				'comment' => 'http://topic.' . $host . '/1',
+				'announce' => 'http://tracker.' . $host . '/announce',
+			);
+			ruTrackerChecker::registerTracker('/topic\.' . preg_quote($host, '/') . '/',
+				'/tracker\.' . preg_quote($host, '/') . '/', $handler);
+			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+				array((string) $previous, (string) $checkedAt, ''));
+			return $callback();
+		}
+		finally
+		{
+			strictRemoveTree($dir);
+		}
+	}
+
+	private function customWritesFor($field)
+	{
+		$writes = array();
+		foreach (rXMLRPCRequest::$requests as $request)
+			foreach ($request['commands'] as $command)
+				if ($command->command === getCmd('d.set_custom') && $command->params[1] === $field)
+					$writes[] = $command->params[2];
+		return $writes;
+	}
+
 	// A handler that answers STE_UNCHANGED has no data to judge by -- layer 1
 	// calls that 'cold', which is the normal answer for a stopped torrent whose
 	// tracker counters are still at zero. run() must then put back the verdict
@@ -3907,43 +4001,141 @@ class CheckerTest
 
 		foreach($rows as $label => $row)
 		{
-			$this->resetFakes();
-			$dir = sys_get_temp_dir() . '/rut-cold-' . bin2hex(random_bytes(5)) . '/';
-			mkdir($dir, 0777, true);
-			$fname = $dir . self::OLD_HASH . '.torrent';
-			file_put_contents($fname, 'x');
-			rTorrentSettings::get()->session = $dir;
+			$priorTime = time() - 3600;
+			$this->withVerdictSession('cold', $row['previous'], $priorTime,
+				function($url) { return ruTrackerChecker::STE_UNCHANGED; },
+				function() use ($row, $label, $priorTime) {
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the INPROGRESS lock
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the restore
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array()); // if it restores UPTODATE
 
-			Torrent::$fixtures[$fname] = array(
-				'comment' => 'http://topic.cold-test.invalid/1',
-				'announce' => 'http://tracker.cold-test.invalid/announce',
-			);
-			ruTrackerChecker::registerTracker('/topic\.cold-test\.invalid/', '/tracker\.cold-test\.invalid/',
-				function($url) { return ruTrackerChecker::STE_UNCHANGED; });
+					$performed = null;
+					$result = ruTrackerChecker::run(self::OLD_HASH, $row['previous'], time(), '', $performed);
 
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
-				array((string) $row['previous'], (string) time(), ''));
-			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the INPROGRESS lock
-			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the restore
-			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array()); // if it restores UPTODATE
+					strictAssertSame(true, $result, $label . ': an unchanged verdict is not a failed check');
+					strictAssertSame(false, $performed,
+						$label . ': an unchanged handler answer did not durably consume correction work');
+					$writes = $this->customWritesFor('chk-state');
+					strictAssertSame(
+						array((string) ruTrackerChecker::STE_INPROGRESS, $row['expect']),
+						$writes,
+						$label . ': the lock is written, then the previous verdict is put back'
+					);
+					$timeWrites = $this->customWritesFor('chk-time');
+					$successTimeWrites = $this->customWritesFor('chk-stime');
+					strictAssertSame((string) $priorTime, end($timeWrites),
+						$label . ': no-answer restores the original check clock');
+					strictAssertSame(array(), $successTimeWrites,
+						$label . ': no-answer cannot stamp successful-check time');
+			});
+		}
+	}
 
-				$performed = null;
-				$result = ruTrackerChecker::run(self::OLD_HASH, $row['previous'], time(), '', $performed);
+	public function testTransientFailurePreservesTerminalVerdict()
+	{
+		$rows = array();
+		foreach (array(ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED) as $previous)
+			foreach (array(ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::STE_UNCHANGED, ruTrackerChecker::STE_UPTODATE, null) as $failure)
+			{
+				$row = array('previous' => $previous, 'failure' => $failure);
+				if($failure === ruTrackerChecker::STE_UPTODATE)
+					$row['expect'] = (string) $failure;
+				$rows[$previous . '-' . $failure] = $row;
+			}
 
-				strictAssertSame(true, $result, $label . ': an unchanged verdict is not a failed check');
-				strictAssertSame(false, $performed,
-					$label . ': an unchanged handler answer did not durably consume correction work');
-			$writes = array();
-			foreach(rXMLRPCRequest::$requests as $request)
-				foreach($request['commands'] as $command)
-					if(($command->command === getCmd('d.set_custom')) && ($command->params[1] === 'chk-state'))
-						$writes[] = $command->params[2];
-			strictAssertSame(
-				array((string) ruTrackerChecker::STE_INPROGRESS, $row['expect']),
-				$writes,
-				$label . ': the lock is written, then the previous verdict is put back'
-			);
-			strictRemoveTree($dir);
+		foreach($rows as $label => $row)
+		{
+			$this->withVerdictSession('terminal', $row['previous'], time(),
+				function($url) use ($row) {
+					if ($row['failure'] === null) throw new RuntimeException('interrupted handler');
+					return $row['failure'];
+				},
+				function() use ($row, $label) {
+					rXMLRPCRequest::queue('d.set_custom', true, false, array()); // idempotent writeability check
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // a new verdict
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+					rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
+
+					$performed = null;
+					$interrupted = null;
+					try {
+						$result = ruTrackerChecker::run(self::OLD_HASH, $row['previous'], time(), '', $performed);
+					} catch (RuntimeException $error) { $interrupted = $error->getMessage(); }
+					if ($row['failure'] === null) {
+						strictAssertSame('interrupted handler', $interrupted, 'the real handler interruption propagated');
+						strictAssertSame(false, $performed, 'an interrupted handler consumed no work');
+					} else {
+						strictAssertSame(null, $interrupted, 'the handler completed');
+						strictAssertSame($row['failure'] !== ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
+							'the returned transport outcome is independent of the displayed verdict');
+						strictAssertSame($row['failure'] === ruTrackerChecker::STE_UPTODATE, $performed,
+							'only a new authoritative answer durably consumed correction work');
+					}
+
+					$stateWrites = $this->customWritesFor('chk-state');
+					$timeWrites = $this->customWritesFor('chk-time');
+					strictAssertSame($row['failure'] === ruTrackerChecker::STE_UPTODATE
+						? array((string) $row['previous'], $row['expect'])
+						: array((string) $row['previous']), $stateWrites,
+						$label . ': preflight preserves the terminal verdict and only a new verdict replaces it');
+					strictAssertSame($row['failure'] === ruTrackerChecker::STE_UPTODATE ? 1 : 0,
+						count($timeWrites), $label . ': a failed check cannot refresh the settled rest clock');
+			});
+		}
+	}
+
+	public function testSettledNotNeedKeepsItsVerdictAndRestClockOnRetryableFailure()
+	{
+		foreach (array(ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4',
+			ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH) as $message)
+		{
+			$past = time() - 700000;
+			$this->withVerdictSession('settled', ruTrackerChecker::STE_NOT_NEED, $past,
+				function() { return ruTrackerChecker::STE_CANT_REACH_TRACKER; },
+				function() use ($message, $past) {
+					rXMLRPCRequest::queue('d.get_custom', true, false, array($message));
+					rXMLRPCRequest::queue('d.set_custom', true, false, array());
+					$performed = null;
+					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_NOT_NEED, $past, '', $performed),
+						$message . ': transport failure is still reported');
+					strictAssertSame(false, $performed, 'a retryable answer consumes no correction');
+					$stateWrites = $this->customWritesFor('chk-state');
+					$timeWrites = $this->customWritesFor('chk-time');
+					strictAssertSame(array((string) ruTrackerChecker::STE_NOT_NEED), $stateWrites,
+						$message . ': only the same-value preflight write is allowed');
+					strictAssertSame(array(), $timeWrites,
+						$message . ': retryable failure preserves the settled rest clock');
+			});
+		}
+	}
+
+	public function testTerminalPreflightStopsOnMissingHashOrUnprovedWrite()
+	{
+		foreach(array('vanished' => true, 'write unconfirmed' => false) as $label => $missing)
+		{
+			$handlerCalls = 0;
+			$this->withVerdictSession('preflight', ruTrackerChecker::STE_DELETED, time(),
+				function($url) use (&$handlerCalls) {
+					$handlerCalls++;
+					return ruTrackerChecker::STE_UPTODATE;
+				},
+				function() use ($missing, $label, &$handlerCalls) {
+					rXMLRPCRequest::queue('d.set_custom', $missing, $missing, array(),
+						$missing ? 'info-hash not found' : '');
+					rXMLRPCRequest::queue('d.hash', true, $missing,
+						$missing ? array() : array(self::OLD_HASH),
+						$missing ? 'info-hash not found' : '');
+					$performed = null;
+					strictAssertSame($missing, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_DELETED, time(), '', $performed),
+						$label . ': absent is a no-op; unproved write defers');
+					strictAssertSame(0, $handlerCalls, $label . ': no tracker request follows unconfirmed preflight');
+					strictAssertSame(false, $performed, $label . ': no correction was consumed');
+					strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+						$label . ': neither an INPROGRESS lock nor a timestamped verdict is written');
+			});
 		}
 	}
 
@@ -3955,81 +4147,61 @@ class CheckerTest
 			'accepted verdict was durably saved' => array('write' => true, 'fault' => false, 'expect' => true),
 		) as $label => $case)
 		{
-			$this->resetFakes();
-			$dir = sys_get_temp_dir() . '/rut-performed-' . bin2hex(random_bytes(5)) . '/';
-			mkdir($dir, 0777, true);
-			$fname = $dir . self::OLD_HASH . '.torrent';
-			file_put_contents($fname, 'x');
-			rTorrentSettings::get()->session = $dir;
-			Torrent::$fixtures[$fname] = array(
-				'comment' => 'http://topic.performed-test.invalid/1',
-				'announce' => 'http://tracker.performed-test.invalid/announce',
-			);
-			ruTrackerChecker::registerTracker('/topic\.performed-test\.invalid/',
-				'/tracker\.performed-test\.invalid/', function() {
-					return ruTrackerChecker::STE_UPDATED;
-				});
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
-				array((string) ruTrackerChecker::STE_UPTODATE, '100', ''));
-			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
-			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), $case['write'], false, array());
-			if(!$case['write'])
-				rXMLRPCRequest::queue('d.hash', true, $case['fault'],
-					$case['fault'] ? array() : array(self::OLD_HASH));
+			$this->withVerdictSession('performed', ruTrackerChecker::STE_UPTODATE, 100,
+				function() { return ruTrackerChecker::STE_UPDATED; },
+				function() use ($case, $label) {
+					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), $case['write'], false, array());
+					if(!$case['write'])
+						rXMLRPCRequest::queue('d.hash', true, $case['fault'],
+							$case['fault'] ? array() : array(self::OLD_HASH));
 
-			try
-			{
-				$performed = null;
-				strictAssertSame(true,
-					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
-					$label . ': checker invocation itself completed');
-				strictAssertSame($case['expect'], $performed,
-					$label . ': durable correction acknowledgement follows the final write result');
-			}
-			finally
-			{
-				strictRemoveTree($dir);
-			}
+					$performed = null;
+					strictAssertSame(true,
+						ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
+						$label . ': checker invocation itself completed');
+					strictAssertSame($case['expect'], $performed,
+						$label . ': durable correction acknowledgement follows the final write result');
+			});
+		}
+	}
+
+	public function testRetryableHandlerVerdictNeverConsumesForumCorrection()
+	{
+		foreach(array(ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_ERROR) as $verdict)
+		{
+			$this->withVerdictSession('retryable', ruTrackerChecker::STE_UPTODATE, 100,
+				function() use ($verdict) { return $verdict; },
+				function() use ($verdict) {
+					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+					$performed = null;
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed);
+					strictAssertSame(false, $performed, 'retryable verdict ' . $verdict . ' cannot consume correction');
+			});
 		}
 	}
 
 	public function testPerformedDoesNotAcknowledgeATruncatedUnprovedFinalWrite()
 	{
-		$this->resetFakes();
-		$dir = sys_get_temp_dir() . '/rut-performed-short-' . bin2hex(random_bytes(5)) . '/';
-		mkdir($dir, 0777, true);
-		$fname = $dir . self::OLD_HASH . '.torrent';
-		file_put_contents($fname, 'x');
-		rTorrentSettings::get()->session = $dir;
-		Torrent::$fixtures[$fname] = array(
-			'comment' => 'http://topic.performed-short.invalid/1',
-			'announce' => 'http://tracker.performed-short.invalid/announce',
-		);
-		ruTrackerChecker::registerTracker('/topic\.performed-short\.invalid/',
-			'/tracker\.performed-short\.invalid/', function() { return ruTrackerChecker::STE_UPDATED; });
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
-			array((string) ruTrackerChecker::STE_UPTODATE, '100', ''));
-		// The INPROGRESS claim is fully acknowledged.
-		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
-		// The final verdict has a truncated positive reply and a mismatching readback.
-		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0));
-		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('1', '0'));
+		$this->withVerdictSession('performed-short', ruTrackerChecker::STE_UPTODATE, 100,
+			function() { return ruTrackerChecker::STE_UPDATED; },
+			function() {
+				// The INPROGRESS claim is fully acknowledged.
+				rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
+				// The final verdict has a truncated positive reply and a mismatching readback.
+				rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0));
+				rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('1', '0'));
 
-		try
-		{
-			$performed = null;
-			strictAssertSame(true,
-				ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
-				'the checker invocation itself completes');
-			strictAssertSame(false, $performed,
-				'forum correction work is not acknowledged without a measured final verdict');
-			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
-				'the final short reply is verified exactly once');
-		}
-		finally
-		{
-			strictRemoveTree($dir);
-		}
+				$performed = null;
+				strictAssertSame(true,
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
+					'the checker invocation itself completes');
+				strictAssertSame(false, $performed,
+					'forum correction work is not acknowledged without a measured final verdict');
+				strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
+					'the final short reply is verified exactly once');
+		});
 	}
 
 	public function testInheritanceRecordRoundTrips()

@@ -3,7 +3,7 @@
 
 class AniDUBCheckImpl{
     static public function download_torrent($url, $hash, $old_torrent){
-        if( preg_match( '`^http://tr\.anidub\.com/\?newsid=(?P<id>\d+)$`',$url, $matches ) ) {
+        if( preg_match( '`^https?://tr\.anidub\.com/\?newsid=(?P<id>\d+)$`',$url, $matches ) ) {
             $topic_id = $matches["id"];
             $torrent_name = $old_torrent->name();
             $torrent_quality = null;
@@ -51,7 +51,7 @@ class AniDUBCheckImpl{
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
 
-            $client = ruTrackerChecker::makeClient($url);
+            $client = ruTrackerChecker::makeClient("https://tr.anidub.com/?newsid=" . $topic_id);
             if($client->status!=200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
             $resp = preg_replace( "/\r|\n/", "", $client->results);
@@ -63,10 +63,16 @@ class AniDUBCheckImpl{
             // fetch below went out against the bare host.
             if (!preg_match($pattern, $resp, $url_matches)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
-            if (!preg_match('/\/engine\/download\.php\?id=\d{1,10}/i', $url_matches["url"], $m)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            // Accept only the download id, then build the URL under our own host.
+            // A suffix such as .evil.test/engine/download.php?id=1 would
+            // otherwise turn host concatenation into a cookie-bearing request
+            // to tr.anidub.com.evil.test.
+            if (!preg_match('/^\/engine\/download\.php\?id=(\d{1,10})$/i',
+                $url_matches["url"], $m)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
             $client->setcookies();
-            $client->fetchComplex("http://tr.anidub.com" . $url_matches["url"]);
+            if (!$client->fetchComplex("https://tr.anidub.com/engine/download.php?id=" . $m[1]))
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
             return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
         }

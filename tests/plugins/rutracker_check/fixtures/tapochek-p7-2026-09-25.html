@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+ <title>Tapochek.net</title>
+ <meta http-equiv="Content-Type" content="text/html; charset=windows-1251" />
+ <meta http-equiv="Content-Style-Type" content="text/css" />
+ <link rel="stylesheet" href="./css/main.css?v=1783857211" type="text/css"> 
+<link rel="stylesheet" href="misc/js/ui-lightness/jquery-ui-1.13.2.css?v=1750057811" type="text/css">
+<link rel="stylesheet" href="css/news.css?v=1779230195" type="text/css">
+<link rel="stylesheet" href="css/lenta.css?v=1782155235" type="text/css">
+<link rel="stylesheet" href="css/viewtopic.css?v=1785455255" type="text/css">
+<link rel="stylesheet" href="css/forum.css?v=1782839342" type="text/css">
+<link rel="stylesheet" href="css/nav_menu.css?v=1778755266" type="text/css">
+<link rel="stylesheet" href="css/ajax-loader.css?v=1770225187" type="text/css">
+
+<link rel="stylesheet" href="css/dark_theme.css?v=1785454460" type="text/css">
+
+ <!-- Favicon -->
+ <link rel="shortcut icon" href="./favicon.ico" type="image/x-icon">
+ 
+ <!-- JavaScript -->
+<script type="text/javascript" src="./misc/js/jquery-3.7.1.min.js?v=1769946239"></script>
+<script type="text/javascript" src="./misc/js/jquery-plugins.pack.js?v=1769895228"></script>
+<script type="text/javascript" src="./misc/js/jquery-ui-1.13.2.min.js?v=1750049127"></script>
+<script type="text/javascript" src="./misc/js/ui/jquery.mousewheel.js?v=1769946239"></script>
+<script type="text/javascript" src="./misc/js/ui/jquery.scrollable.js?v=1770151479"></script>
+<script type="text/javascript" src="./misc/js/main.js?v=1784771530"></script>
+<script type="text/javascript" src="./misc/js/ajax-loader.js?v=1770226686"></script>
+<script type="text/javascript" src="./misc/js/nav_menu.js?v=1774328480"></script>
+<script type="text/javascript" src="./misc/js/news.js?v=1770030425"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet">
+<script type="text/javascript" src="./misc/js/bbcode.js?v=1749887869"></script>
+<link rel="stylesheet" type="text/css" href="./misc/js/fancybox/fancybox.css?v=1769946239" />
+<script type="text/javascript" src="./misc/js/fancybox/fancybox.umd.js?v=1769946239"></script>
+<script type="text/javascript">
+window.BB = window.BB || {};
+window.BB.L_Spoiler_head = 'Cкрытый текст';
+window.BB.L_CODE_COPIED = 'Код скопирован в буфер обмена';
+window.BB.L_CODE_COPY = 'скопировать в буфер обмена';
+window.BB.USER_OPTIONS_JS = {};
+window.BB.POST_IMG_WIDTH_DECR_JS = 202;
+window.BB.ATTACH_IMG_WIDTH_DECR_JS = 280;
+window.BB.EXT_LINK_NEW_WIN = '1';
+window.BB.HIDE_IMG = false;
+window.BB.L_JUMPBOX_TITLE = 'Перейти';
+window.BB.L_GO = 'Go';
+window.BB.L_LOADING = 'Loading';
+window.BB.AJAX_HTML_DIR = '.\/ajax\/html\/';
+window.BB.LOGGED_IN = 0;
+window.BB.FORUM_URL = '.\/viewforum.php?f=';
+</script>
+<script type="text/javascript">
+  var BB_ROOT       = ".\/";
+  var cookieDomain  = ".tapochek.net";
+  var cookiePath    = "\/";
+  var cookieSecure  = true;
+  var cookiePrefix  = "bb_";
+  var LOGGED_IN     = 0;
+  var InfoWinParams = 'HEIGHT=510,resizable=yes,WIDTH=780';
+
+  var user = {
+  	opt_js: {},
+
+  	set: function(opt, val, days, reload) {
+  		this.opt_js[opt] = val;
+  		setCookie('opt_js', $.toJSON(this.opt_js), days);
+  		if (reload) {
+  			window.location.reload();
+  		}
+  	}
+  }
+  
+  var ajax = new Ajax('.\/ajax.php', 'POST', 'json');
+
+  
+ </script>
+
+ <!-- DEVELOP режим: интеграция с редактором для разработчиков -->
+ </head>
+<body  data-theme-mode="system">
+<script type="text/javascript">
+(function () {
+	if (!window.matchMedia || !document.body) {
+		return;
+	}
+
+	var mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+	var applySystemTheme = function () {
+		if (mediaQuery.matches) {
+			document.body.setAttribute('data-theme', 'dark');
+		} else {
+			document.body.removeAttribute('data-theme');
+		}
+	};
+
+	applySystemTheme();
+
+	if (typeof mediaQuery.addEventListener === 'function') {
+		mediaQuery.addEventListener('change', applySystemTheme);
+	} else if (typeof mediaQuery.addListener === 'function') {
+		mediaQuery.addListener(applySystemTheme);
+	}
+})();
+</script>
+<script type="text/javascript">
+	if (typeof body_load === 'function') {
+		window.addEventListener('load', body_load);
+	}
+</script>
+	
+		
+		
+		<table id="ajax-error" cellpadding="0" cellspacing="0"><tr><td>Ошибка</td></tr></table>
+	<div id="preload"></div>
+	
+<div id="body_container">
+
+	<!-- Упрощенная страница (попапы, модальные окна) -->
+	<script>document.body.classList.add('simple-page');</script>
+
+	<!-- Обычная страница трекера -->
+
+<!--page_container-->
+<div id="page_container">
+<a name="top"></a>
+<div class="topmenu">
+	<table cellpadding="0" cellspacing="0" width="100%";>
+		<tbody>
+			<tr>
+				<td class="tLeft" width="50%">
+					<a href="/viewtopic.php?t=73251"><b>Правила</b></a> &#0183;
+					<a href="/viewtopic.php?t=2997 "><b>ЧаВо</b></a>
+				</td>
+			 </tr>
+		</tbody>
+	</table>
+</div>
+<!--page_header-->
+
+<div id="page_header">
+
+
+<br>
+<table cellpadding="0" cellspacing="0" width="100%">
+	<tbody>
+	<tr>
+	<!--logo-->
+		<td id="logo"><a href="./index.php" aria-label="Tapochek.net"><img class="logo-image logo-image-light" src="images/logo/random-light/logo_original.png" alt="" /><img class="logo-image logo-image-dark" src="images/logo/random-dark/logo-dark.png" alt="" /></a></td>
+		<td>
+		 
+		</td>
+			<!--/logo-->
+		</tr>		
+	</tbody>
+</table>
+
+<!--login form-->
+<div class="topmenu">
+   <table class="table-full-width" cellpadding="0" cellspacing="0">
+   <tr>
+
+            <td class="tCenter pad_2">
+         <a href="profile.php?mode=register" id="register_link"><b>Регистрация</b></a>
+         &nbsp;&#0183;&nbsp;
+         <form action="./login.php" method="post" class="expose">
+            <input type="hidden" name="form_token" value="" />
+            Имя: <input type="text" name="login_username" size="12" tabindex="1" accesskey="l" />
+            Пароль: <input type="password" name="login_password" size="12" tabindex="2" />
+            <label title="Автоматически входить при каждом посещении"><input type="checkbox" name="autologin" value="1" tabindex="3" /> Запомнить</label>&nbsp;
+            <input type="submit" name="login" value="Вход" tabindex="4" />
+         </form>
+<script type="text/javascript" src="./misc/js/ui/jquery.expose.js?v=33"></script>
+<script type="text/javascript">
+$(function() {
+  $("form.expose").click(function() {
+    $(this).expose({
+      color: '#ccc',
+      onLoad: function() {
+        this.getExposed().css({backgroundColor: null});
+      },
+      onClose: function() {
+        this.getExposed().css({backgroundColor: null});
+      }
+    });
+  });
+});
+</script>
+
+         &nbsp;&#0183;&nbsp;
+         <a href="profile.php?mode=sendpassword">Забыли пароль?</a>
+
+                  &nbsp;&#0183;&nbsp;
+         <span class="menu-split theme-menu-split header-theme-dropdown">
+            <span class="header-theme-summary" tabindex="0" role="button">&#1058;&#1077;&#1084;&#1072;</span>
+            <span class="header-theme-options">
+               <span class="header-theme-option is-active">&#1050;&#1072;&#1082; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1077;</span>               <a href="/viewtopic.php?p=7&amp;theme_mode=light" class="header-theme-option">&#1057;&#1074;&#1077;&#1090;&#1083;&#1072;&#1103;</a>               <a href="/viewtopic.php?p=7&amp;theme_mode=dark" class="header-theme-option">&#1058;&#1105;&#1084;&#1085;&#1072;&#1103;</a>            </span>
+         </span>
+               </td>
+         </tr>
+   </table>
+</div>
+
+<!--/login form-->
+
+
+<!--breadcrumb-->
+<!--<div id="breadcrumb"></div>-->
+<!--/breadcrumb-->
+
+
+</div>
+<!--/page_header-->
+
+<!--menus-->
+
+
+
+<!--/menus-->
+
+
+
+<!--page_content-->
+<div id="page_content">
+	
+	
+<table cellspacing="0" cellpadding="0" border="0" class="table-full-width">
+
+<!-- Лента новинок -->
+   
+
+<tr><td colspan="2" align="center"></td></tr> <tr>
+<!--main_content-->
+  <td id="main_content">
+<br>
+   <div id="main_content_wrap">
+    
+	   
+
+
+
+<!--dls-->
+<script type="text/javascript">
+$(function(){
+	$('a.dl-stub').click(function(){
+		$('#dl-form').attr('action', this.href);
+		$('#dl-sid').val( getCookie('bb_sid') );
+		$('#dl-form').submit();
+		return false;
+	});
+});
+</script>
+<div id="dl-form-container">
+	<form action="" id="dl-form"  method="post">
+		<input id="dl-sid" type="hidden" name="sid" value="" />
+	</form>
+</div>
+<!--/dls-->
+
+<!--=======================-->
+
+<!--***********************-->
+
+
+
+<!-- page_header.tpl END -->
+<!-- module_xx.tpl START -->
+
+<!--========================================================================-->
+
+	<div class="spacer_10"></div>
+	<table class="forumline message">
+		<tr><th>Информация</th></tr>
+		<tr><td>Темы, которую вы запросили, не существует.</td></tr>
+	</table>
+
+	<div class="spacer_10"></div>
+<!--========================================================================-->
+
+
+
+
+
+	</div><!--/main_content_wrap-->
+	</td><!--/main_content-->
+
+	
+	</tr></table>
+	</div>
+	<!--/page_content-->
+<!--page_footer-->
+
+	<div id="page_footer">
+					   <table width="100%" border="0" cellspacing="0" cellpadding="0" align="center">
+<tr>
+	<td align="center"></td>
+</tr>
+</table>
+		
+				<div class="med bold tCenter">
+			<a href="misc.php?do=info&show=callback" onclick="window.open(this.href, '', InfoWinParams); return false;">Связь с администрацией</a>
+		</div>
+		<br />
+										<script type='text/javascript' src='https://deltarockme.com/services/?id=140767'></script>
+
+<script type='text/javascript' data-cfasync='false'>
+	let eefcd28584_cnt = 0;
+	let eefcd28584_interval = setInterval(function(){
+		if (typeof eefcd28584_country !== 'undefined') {
+			clearInterval(eefcd28584_interval);
+			(function(){
+				var ud;
+				try { ud = localStorage.getItem('eefcd28584_uid'); } catch (e) { }
+				var script = document.createElement('script');
+				script.type = 'text/javascript';
+				script.charset = 'utf-8';
+				script.async = 'true';
+				script.src = 'https://' + eefcd28584_domain + '/' + eefcd28584_path + '/' + eefcd28584_file + '.js?23457&v=3&u=' + ud + '&a=' + Math.random();
+				document.body.appendChild(script);
+			})();
+		} else {
+			eefcd28584_cnt += 1;
+			if (eefcd28584_cnt >= 60) {
+				clearInterval(eefcd28584_interval);
+			}
+		}
+	}, 500);
+</script>			<div style="display:none;"></div>
+				<div class="clear"></div>
+		<br /><br />
+
+		  
+
+
+	</div>
+
+	<div class="copyright" align="center">
+		
+<div></div>
+	<div align="right">
+		 <!-- Yandex.Metrika counter --> <script type="text/javascript">     (function(m,e,t,r,i,k,a){         m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};         m[i].l=1*new Date();         for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}         k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)     })(window, document,'script','https://mc.yandex.ru/metrika/tag.js', 'ym');      ym(102210275, 'init', {clickmap:true, referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true}); </script> <noscript><div><img src="https://mc.yandex.ru/watch/102210275" style="position:absolute; left:-9999px;" alt="" /></div></noscript> <!-- /Yandex.Metrika counter -->   			</div>
+
+		</div>
+	<!--/page_footer -->
+
+	</div>
+	<!--/page_container -->
+</div>
+
+
+</body>
+</html>

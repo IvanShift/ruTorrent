@@ -25,29 +25,56 @@ $suite->test('every shared Snoopy message classifies to its token', function () 
     }
 });
 
-// The eight sentences php/Snoopy.class.inc actually writes, spelled here with
+// The nine sentences php/Snoopy.class.inc actually writes, spelled here with
 // the values that file interpolates, so a merge that rewords one is caught by
 // the token it stops producing rather than by a live log nobody reads.
-$suite->test('each of Snoopy own eight messages has its own token', function () {
+$suite->test('each of Snoopy own messages has its own token', function () {
     $expected = array(
         'Invalid protocol "gopher"\n' => 'invalid-protocol',
         'Refusing to fetch: cannot resolve host "nx.invalid".' => 'refused-unresolvable-host',
         'Refusing to fetch: host "a.invalid" resolves to the non-public address 10.0.0.1.'
             => 'refused-non-public-address',
+        'credential-redirect-refused' => 'redirect-refused',
         'Error: cURL could not retrieve the document, error 28.' => 'curl-transfer',
         'socket creation failed (-3)' => 'socket-create',
         'dns lookup failure (-4)' => 'dns-lookup',
         'connection refused or timed out (-5)' => 'connect-refused',
         'connection failed (0)' => 'connect-errno',
     );
-    strictAssertSame(8, count($expected), 'php/Snoopy.class.inc writes eight error messages');
+    $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
+    strictAssertTrue(is_string($source), 'Snoopy source is readable');
+    preg_match_all('/\$this->error\s*=/', $source, $assignments);
+    // One assignment initialises the field to empty; all others require a token.
+    strictAssertSame(count($expected) + 1, count($assignments[0]),
+        'every Snoopy error assignment is represented in this table');
+    // Count alone misses a reworded assignment. Match each token's stable
+    // phrase inside an actual assignment, so a changed vendored sentence
+    // requires a conscious update to the classifier and this corpus.
+    $sourceNeedles = array(
+        'invalid-protocol' => 'Invalid protocol',
+        'refused-unresolvable-host' => 'Refusing to fetch: cannot resolve host',
+        'refused-non-public-address' => 'resolves to the non-public address',
+        'redirect-refused' => 'self::CREDENTIAL_REDIRECT_REFUSED',
+        'curl-transfer' => 'cURL could not retrieve the document',
+        'socket-create' => 'socket creation failed',
+        'dns-lookup' => 'dns lookup failure',
+        'connect-refused' => 'connection refused or timed out',
+        'connect-errno' => 'connection failed',
+    );
+    strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
+        'the redirect refusal constant retains the classified token');
+    foreach ($sourceNeedles as $token => $needle) {
+        strictAssertSame(1, preg_match('/\$this->error\s*=\s*[^;]*'
+            . preg_quote($needle, '/') . '[^;]*;/s', $source),
+            $token . ': the vendored error assignment still writes the phrase this token parses');
+    }
     $seen = array();
     foreach ($expected as $message => $token) {
         strictAssertSame($token, RuTrackerFetchError::classify($message),
             'token for ' . var_export($message, true));
         $seen[$token] = true;
     }
-    strictAssertSame(8, count($seen), 'the eight messages map onto eight distinct tokens');
+    strictAssertSame(count($expected), count($seen), 'the messages map onto distinct tokens');
 });
 
 // Whitespace is normalised before matching, not after. Snoopy's strings are
@@ -103,9 +130,9 @@ $suite->test('an unrecognised message classifies rather than echoing', function 
         'something php/Snoopy.class.inc does not say today',
         'Error fetching http://bt.t-ru.org/ann?pk=deadbeefcafe: refused',
         'Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked',
-        // Near-misses. Seven of the eight patterns are anchored at the start
-        // of the message, so a sentence that merely contains one of Snoopy's
-        // openings is not that message; and each ends at a word boundary, so
+        // Near-misses. Most transport patterns are anchored at the start;
+        // curl-transfer is intentionally a substring. The rows here exercise
+        // the anchored patterns and their word boundaries, so
         // a different word is a different message. (A boundary is not a space:
         // 'socket creation failed-ish' would still match, which is why these
         // rows change a word rather than glue a suffix onto one.)
@@ -159,11 +186,30 @@ $suite->test('every token is one plain-ASCII word with no whitespace', function 
             'the token is lower-case ASCII with no separator to break a log record: ' . $token);
     }
     // And the vocabulary is the whole vocabulary: every token the corpus and
-    // the eight messages produce is in it.
+    // the nine messages produce is in it.
     foreach (fetchErrorParityCases() as $case) {
         strictAssertTrue(in_array($case[1], fetchErrorTokenVocabulary(), true),
             'the corpus expects only tokens the vocabulary lists: ' . $case[1]);
     }
+});
+
+
+$suite->test('challenge routing needs interstitial evidence, not prose or JavaScript Detections', function () {
+    foreach (array('Please wait just a moment', '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>',
+        '<p>cf-chl challenge-platform</p>') as $body)
+        strictAssertSame(false, RuTrackerFetchError::isChallenge(array(), $body), 'ordinary body is not a routing signal');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(' CF-Mitigated: challenge '), ''), 'explicit header');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(array('cf-mitigated: challenge'),
+        '<title>Подождите</title><script src="/cdn-cgi/changed.js"></script>'),
+        'the documented header routes a changed or localised body');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), '<title>Just a moment...</title>'), 'interstitial title');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'), 'interstitial script');
+});
+
+$suite->test('a long unrelated script path does not hide a later challenge title', function () {
+    $body = '/cdn-cgi/challenge-platform/' . str_repeat('segment/', 30)
+        . 'not-a-challenge.js<title>Just a moment...</title>';
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), $body), 'later title is still inspected');
 });
 
 exit($suite->run());

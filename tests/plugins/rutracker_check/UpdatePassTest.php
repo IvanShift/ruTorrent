@@ -459,6 +459,26 @@ upTest($suite, 'a disabled tracker row is handed to the generic dispatch, never 
     strictAssertSame(array(str_repeat('A', 40)), $result['checked'], 'and reports it checked');
 });
 
+upTest($suite, 'expired settled verdict survives a transport-only announce failure without writes', function () {
+    $past = (string) (time() - RuTrackerUpdatePass::SETTLED_RECHECK - 1);
+    foreach (array(
+        array(ruTrackerChecker::STE_DELETED, 'deleting|3/3'),
+        array(ruTrackerChecker::STE_ABSORBED, 'absorbed|123'),
+        array(ruTrackerChecker::STE_NOT_NEED, ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4'),
+    ) as $case) {
+        $values = upRow(str_repeat('A', 40), 6, 'bt.t-ru.org', (string) $case[0],
+            'Tracker: [Could not resolve hostname]', '', '', $case[1], $past);
+        $rows = RuTrackerUpdatePass::parseMulticall($values);
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+            throw new RuntimeException('a transport verdict cannot dispatch the checker');
+        });
+        rXMLRPCRequest::reset();
+        upQueueUnchanged($rows);
+        RuTrackerUpdatePass::run($rows);
+        upAssertNoCustomWrites('state ' . $case[0] . ' keeps its state, time and message unchanged');
+    }
+});
+
 upTest($suite, 'a transport-error message marks CANT_REACH_TRACKER without running the checker', function () {
     $values = upRow(str_repeat('A', 40), 6, 'bt.t-ru.org', '3', 'Tracker: [Could not resolve hostname]');
     $rows = RuTrackerUpdatePass::parseMulticall($values);
@@ -474,7 +494,7 @@ upTest($suite, 'a transport-error message marks CANT_REACH_TRACKER without runni
 });
 
 upTest($suite, 'a fast-path verdict is dropped when the row moved since the cycle-start snapshot', function () {
-    // The four fast paths decide from the snapshot update.php took at the top
+    // The fast paths decide from the snapshot update.php took at the top
     // of the cycle and write without asking again. A "check" click runs through
     // batch_check.php, which takes NO cycle lock, reads state live and can leave
     // STE_META_PENDING behind while this pass still holds the old value --
@@ -1281,13 +1301,7 @@ upTest($suite, 'a torrent from another supported tracker still reaches its handl
     );
     $rows = RuTrackerUpdatePass::parseMulticall($values);
 
-    $checked = array();
-    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
-    rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
-
-    upQueueUnchanged($rows);
-    $result = RuTrackerUpdatePass::run($rows);
+    $result = upRunPass($rows, $checked);
 
     strictAssertSame(array($kinozal, $nnmclub), $result['checked'],
         'both foreign-tracker rows are dispatched, in row order');
@@ -1298,62 +1312,367 @@ upTest($suite, 'a torrent from another supported tracker still reaches its handl
         'a dispatched row gets no scheduler-side state write -- its own handler decides');
 });
 
+// A handler whose tracker unregisters an infohash when its topic is re-uploaded
+// can answer "still current" from the announce counters the cycle already
+// holds, for no request at all -- which is what the RuTracker rows above have
+// always done. Kinozal is the first foreign handler to declare it, and the
+// reason is measurable: while Cloudflare walls its details endpoint, the only
+// other way to check a topic is to download the whole .torrent, one per due
+// topic per hour -- 122 of the 147 held, at roughly 200 KB each.
+// The real registration, not a stand-in: what this gate trusts is the anchored
+// pattern the handler itself declares, so a test that invented one would prove
+// nothing about production.
+function upLoadKinozalRegistration()
+{
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/kinozal.php');
+}
+
+function upParsedRow($hash, $trackerBlob, $comment, $extra = array())
+{
+    return array_replace(array(
+        'hash' => $hash, 'state' => 3, 'time' => 100, 'label' => '',
+        'message' => '', 'del' => '', 'msg' => '',
+        'trackers' => RuTrackerDetector::parseTrackerBlob($trackerBlob),
+        'trackers_complete' => true, 'comment' => $comment,
+    ), $extra);
+}
+
+function upKinozalRow($hash, $failed, $success, $host = 'tr2.torrent4me.com')
+{
+    return upParsedRow($hash, "http://{$host}/ann?uk=x|1|{$failed}|{$success}#",
+        'http://kinozal.tv/details.php?id=12345');
+}
+
+// These fixtures answer the three- and four-write UPTODATE paths used below.
+function upRunPass($rows, &$checked, $writeShapes = array(3, 4))
+{
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
+    rXMLRPCRequest::reset();
+    foreach ($writeShapes as $fieldCount)
+        rXMLRPCRequest::queue(array_fill(0, $fieldCount, 'd.set_custom'), true, false, array());
+    upQueueUnchanged($rows);
+    return RuTrackerUpdatePass::run($rows);
+}
+
+function upAssertNoCustomWrites($message)
+{
+    $writes = array();
+    foreach (rXMLRPCRequest::$requests as $request)
+        if (strpos($request['key'], 'd.set_custom') !== false) $writes[] = $request['key'];
+    strictAssertSame(array(), $writes, $message);
+}
+
+// Require production handler registrations before entering this scope: require_once
+// will not recreate a registration removed by restoring a pre-load snapshot.
+function upWithRegistry($callback)
+{
+    $saved = strictGetPrivateStatic('ruTrackerChecker', 'TRACKERS');
+    try { $callback($saved); }
+    finally { strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', $saved); }
+}
+
+upTest($suite, 'a declared-authoritative announce answers for a foreign handler without a request', function () {
+    upLoadKinozalRegistration();
+    $alive   = str_repeat('K', 40);
+    $cold    = str_repeat('L', 40);
+    $failing = str_repeat('N', 40);
+    $rows = array(
+        upKinozalRow($alive, 0, 5),
+        upKinozalRow($cold, 0, 0),
+        upKinozalRow($failing, 6, 0),
+    );
+
+    $result = upRunPass($rows, $checked);
+
+    strictAssertSame(array($cold, $failing), $checked,
+        'only the rows the announce cannot answer for reach the handler');
+    strictAssertSame(array($cold, $failing), $result['checked'],
+        'and only those are reported as checked');
+    strictAssertSame(1, $result['uptodate'],
+        'the live announce wrote UPTODATE on the free path');
+});
+
+upTest($suite, 'a look-alike announce host cannot certify a foreign topic alive', function () {
+    upLoadKinozalRegistration();
+    $lookalike = str_repeat('P', 40);
+    // Substring-matches the registry filter 'torrent4me\.com' and is not it.
+    $rows = array(upKinozalRow($lookalike, 0, 5, 'tr2.torrent4me.com.attacker.test'));
+
+    $result = upRunPass($rows, $checked);
+
+    strictAssertSame(array($lookalike), $checked,
+        'a host anyone can register does not get to stop the check');
+    strictAssertSame(0, $result['uptodate'], 'and writes no free verdict');
+});
+
+// Ownership is decided by the comment everywhere else in this plugin --
+// ruTrackerChecker::run() asks matching comment handlers in order and keeps
+// going when one declines. The free pass must respect the eventual owner. A cross-seeded
+// torrent carries another tracker's announce beside its own, and that
+// tracker's counters say nothing about the topic this torrent was taken from.
+upTest($suite, "a foreign handler's live announce does not answer for a torrent another handler owns", function () {
+    upLoadKinozalRegistration();
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+    $crossSeed = str_repeat('Q', 40);
+    $row = upParsedRow($crossSeed,
+        "http://bt.nnmclub.to/ann?pk=x|1|0|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
+        'http://nnmclub.to/forum/viewtopic.php?t=12345');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($crossSeed), $checked,
+        'the torrent reaches the handler its comment names: a Kinozal announce says nothing about an NNMClub topic');
+    strictAssertSame(0, $result['uptodate'],
+        'and no free verdict is written on the strength of the other tracker');
+});
+
+upTest($suite, 'a RuTracker topic whose own rows are disabled is not answered by a cross-seed announce', function () {
+    upLoadKinozalRegistration();
+    $topic = str_repeat('R', 40);
+    // The RuTracker row is disabled, so hostOf() answers '' and the row takes
+    // the generic path -- the same path a foreign torrent takes.
+    $row = upParsedRow($topic,
+        "http://bt.t-ru.org/ann?pk=x|0|0|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
+        'http://rutracker.org/forum/viewtopic.php?t=12345');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($topic), $checked,
+        'the topic reaches the dispatcher without a free verdict from the Kinozal cross-seed');
+    strictAssertSame(0, $result['uptodate'], 'and gets no free verdict from Kinozal');
+});
+
+upTest($suite, 'a live announce on a kinozal.guru host takes the free pass too', function () {
+    upLoadKinozalRegistration();
+    $alive = str_repeat('S', 40);
+    $rows = array(upKinozalRow($alive, 0, 5, 'tracker.kinozal.guru'));
+
+    $result = upRunPass($rows, $checked);
+
+    strictAssertSame(array(), $checked,
+        'the hosts the authority list certifies are the hosts the registry filter admits: one list, two spellings');
+    strictAssertSame(1, $result['uptodate'], 'and the live announce answered for free');
+});
+
+// This fixture mirrors production order. Both the earlier undeclared owner
+// and Kinozal's own topic pattern independently reject a free pass here;
+// the conservative early-null branch has its own overlapping-owner case.
+upTest($suite, "a RuTracker topic URL that mentions Kinozal is still RuTracker's to check", function () {
+    upLoadKinozalRegistration();
+    upWithRegistry(function ($saved) {
+        strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array('/rutracker\./' => array(
+            'announceFilter' => '/rutracker\.|t-ru\.org/',
+            'handler' => 'RuTrackerCheckImpl::download_torrent',
+            'announceAuthority' => null,
+        )) + $saved);
+
+        $topic = str_repeat('U', 40);
+        $row = upParsedRow($topic,
+            "http://bt.t-ru.org/ann?pk=x|1|6|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
+            'https://rutracker.org/forum/viewtopic.php?t=12345&source=kinozal.tv');
+
+        $result = upRunPass(array($row), $checked);
+
+        strictAssertSame(array($topic), $checked,
+            'an unknown earlier owner and Kinozal topic rejection independently prevent a free pass');
+        strictAssertSame(0, $result['uptodate'], 'and no free verdict is written');
+    });
+});
+
+// The loose comment filter says who is ASKED first, not who owns the torrent:
+// run() moves on when the handler it asked declines, and Kinozal declines any
+// comment that is not its own details.php URL. A handler that opts into the
+// free pass therefore also states the exact test it applies to a comment, and
+// the scheduler grants the pass only when that test accepts -- so a comment
+// that merely mentions Kinozal, whatever else it is, earns Kinozal nothing.
+upTest($suite, "an NNMClub topic URL that mentions Kinozal is NNMClub's to check", function () {
+    upLoadKinozalRegistration();
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+    $order = array_keys(strictGetPrivateStatic('ruTrackerChecker', 'TRACKERS'));
+    $kinozalAt = array_search('/kinozal\\./', $order, true);
+    $nnmAt = array_search('/(nnm-club|nnmclub)\\./', $order, true);
+    strictAssertTrue(($kinozalAt !== false) && ($nnmAt !== false) && ($kinozalAt < $nnmAt),
+        'precondition: both handlers are registered and Kinozal comes first, as check.php registers them');
+    $topic = str_repeat('Y', 40);
+    $row = upParsedRow($topic,
+        "http://bt.nnmclub.to/ann?pk=x|1|6|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
+        'https://nnmclub.to/forum/viewtopic.php?t=12345&source=kinozal.tv');
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($topic), $checked,
+        "Kinozal's filter matches first but Kinozal would decline this URL, so the torrent goes to the dispatcher");
+    strictAssertSame(0, $result['uptodate'], 'and the live Kinozal cross-seed announce buys nothing');
+});
+
+upTest($suite, 'a comment that only mentions Kinozal in passing earns no free pass', function () {
+    upLoadKinozalRegistration();
+    $topic = str_repeat('Z', 40);
+    $row = upKinozalRow($topic, 0, 5);
+    $row['comment'] = 'source: kinozal.tv, see the forum thread';
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($topic), $checked, 'nothing owns this comment, so the handler is asked as before');
+    strictAssertSame(0, $result['uptodate'], 'and nothing is written for free');
+});
+
+// The opt-in is two declarations or none: an authority list alone would put
+// the scheduler back to guessing ownership from the loose filter.
+upTest($suite, 'an announce authority declared without a topic test is not honoured', function () {
+    upWithRegistry(function ($saved) {
+        ruTrackerChecker::registerTracker('/synthetic-tracker\\./', '/synthetic-tracker\\.example/',
+            'SyntheticCheckImpl::download_torrent', array('synthetic-tracker.example'));
+        $topic = str_repeat('S', 40);
+        $row = upParsedRow($topic, 'http://tr.synthetic-tracker.example/ann?uk=x|1|0|5#',
+            'http://synthetic-tracker.example/topic/1');
+
+        $result = upRunPass(array($row), $checked);
+
+        strictAssertSame(array($topic), $checked, 'half an opt-in is no opt-in: the handler is asked');
+        strictAssertSame(0, $result['uptodate'], 'and no free verdict is written');
+    });
+});
+
+// Through the production comment reader, not a synthetic $row['comment']: the
+// cycle multicall carries no comment, so what the gate actually trusts in
+// production is the session copy's comment as sessionComment() reads it.
+upTest($suite, 'the free pass reads the owner from the session copy when the row carries no comment', function () {
+    upLoadKinozalRegistration();
+    // The production Torrent class, the way sessionComment() will read the
+    // copy: it includes a helper by a path relative to php/, so it is loaded
+    // from there, as the F-01 production case below does.
+    $previous = getcwd(); chdir(testFindRepoRoot() . '/php');
+    try { require_once(testFindRepoRoot() . '/php/Torrent.php'); } finally { chdir($previous); }
+    strictWithStateDir('chk-updatepass-gate-session', function ($tmp) {
+        $alive = str_repeat('V', 40);
+        $encode = new ReflectionMethod('Torrent', 'encode');
+        if (PHP_VERSION_ID < 80100) $encode->setAccessible(true);
+        $raw = $encode->invoke(null, array(
+            'announce' => 'http://tr2.torrent4me.com/ann?uk=x',
+            'comment' => 'http://kinozal.tv/details.php?id=12345',
+            'info' => array('length' => 1, 'name' => 'gate.bin', 'piece length' => 16384, 'pieces' => str_repeat("\0", 20)),
+        ));
+        rTorrentSettings::get()->session = $tmp . '/';
+        file_put_contents($tmp . '/' . $alive . '.torrent', $raw);
+        $row = upKinozalRow($alive, 0, 5);
+        unset($row['comment']);
+
+        $result = upRunPass(array($row), $checked);
+
+        strictAssertSame(array(), $checked, 'the session copy names Kinozal as the owner, so the live announce answers');
+        strictAssertSame(1, $result['uptodate'], 'and the free verdict is written');
+    });
+});
+
+upTest($suite, 'missing comment with foreign and live RuTracker rows cannot take RuTracker free pass', function () {
+    upLoadKinozalRegistration();
+    strictWithStateDir('chk-updatepass-mixed-nosession', function ($tmp) {
+        $hash = str_repeat('W', 40);
+        rTorrentSettings::get()->session = $tmp . '/';
+        $row = upParsedRow($hash,
+            'http://tr2.torrent4me.com/ann?pk=x|1|0|0#'
+            . 'http://bt.t-ru.org/ann?pk=x|1|0|5#', '');
+        unset($row['comment']);
+
+        $result = upRunPass(array($row), $checked);
+        strictAssertSame(array($hash), $checked,
+            'unknown ownership with a foreign announce must reach dispatcher');
+        strictAssertSame(0, $result['uptodate'], 'RuTracker announce certifies no unknown owner');
+    });
+});
+
+upTest($suite, 'a row whose session copy cannot be read gets no free pass', function () {
+    upLoadKinozalRegistration();
+    strictWithStateDir('chk-updatepass-gate-nosession', function ($tmp) {
+        $orphan = str_repeat('W', 40);
+        rTorrentSettings::get()->session = $tmp . '/';   // exists, holds no copy of this hash
+        $row = upKinozalRow($orphan, 0, 5);
+        unset($row['comment']);
+
+        $result = upRunPass(array($row), $checked);
+
+        strictAssertSame(array($orphan), $checked, 'no owner can be told, so the handler is asked as before');
+        strictAssertSame(0, $result['uptodate'], 'and nothing is written for free');
+    });
+});
+
+// The RuTracker branch puts its free 'alive' path ABOVE its rest gate, on the
+// grounds that a succeeding announce on RuTracker is proof a settled verdict
+// was wrong. The generic branch does not copy that: its rest gate covers
+// 'superseded', while other terminal verdicts still dispatch. This plugin
+// writes 'superseded' when it finds the successor already in the client and not its own
+// to touch, and whether a foreign tracker stops serving a superseded infohash
+// has not been measured. Flipping the
+// predecessor back to UPTODATE on an announce that may simply still be
+// answered would hand it to the handler again, which would replace it again.
+upTest($suite, 'a superseded foreign row rests even while its announce is alive', function () {
+    upLoadKinozalRegistration();
+    $superseded = str_repeat('T', 40);
+    $row = upKinozalRow($superseded, 0, 5);
+    $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+    $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+    $row['time'] = time();
+
+    // Both free-verdict write shapes are answered so an accidental write is visible.
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array(), $checked, 'a superseded predecessor is not re-checked hourly');
+    strictAssertSame(0, $result['uptodate'],
+        'and its live announce does not flip it back: the rest gate stands ahead of the free pass here');
+    upAssertNoCustomWrites('nothing at all is written to a resting row');
+});
+
+// And once the rest is over the row goes to its HANDLER, not to the free
+// pass: 'superseded' names a successor the plugin FOUND already in the client
+// -- the new hash present with no replacement marker of its own, check.php's
+// createTorrent() -- which is stronger evidence than an announce whose meaning
+// for a superseded infohash was never measured. The base scheduler re-checked
+// such a row after the rest;
+// writing UPTODATE and blanking the successor pointer instead would be a
+// regression, not a saving.
+upTest($suite, 'a superseded foreign row whose rest is over is re-checked by its handler, not answered for free', function () {
+    upLoadKinozalRegistration();
+    $superseded = str_repeat('X', 40);
+    $row = upKinozalRow($superseded, 0, 5);
+    $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+    $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+    $row['time'] = time() - RuTrackerUpdatePass::SETTLED_RECHECK - 1;
+
+    $result = upRunPass(array($row), $checked);
+
+    strictAssertSame(array($superseded), $checked, 'the handler is asked, as it was before the gate existed');
+    strictAssertSame(0, $result['uptodate'], 'no free verdict');
+    upAssertNoCustomWrites('and the successor pointer in chk-msg is left untouched');
+});
+
 upTest($suite, 'F-01: foreign authoritative comment with RuTracker cross-seed announce is dispatched to foreign handler', function () {
     $kinozalMixed = str_repeat('K', 40);
     $nnmclubMixed = str_repeat('M', 40);
     $rutracker = str_repeat('A', 40);
 
-    // Kinozal torrent with a RuTracker announce row that is 'alive' (0 failed)
-    $kinozalTrackers = "http://tr2.torrent4me.com/ann?pk=x|1|0|5#http://bt.t-ru.org/ann?pk=x|1|0|5#";
+    // Kinozal torrent with a RuTracker announce row that is 'alive' (0 failed).
+    // Its OWN row carries no signal yet, deliberately: this case is about
+    // ownership -- the comment decides which handler a mixed-tracker torrent
+    // belongs to -- and a Kinozal row that was also announcing successfully
+    // would be answered by the announce gate instead, which is a different
+    // rule with its own cases above. Loaded explicitly so that stays true
+    // whatever else has registered by the time this runs.
+    upLoadKinozalRegistration();
+    $kinozalTrackers = "http://tr2.torrent4me.com/ann?pk=x|1|0|0#http://bt.t-ru.org/ann?pk=x|1|0|5#";
     // NNMClub torrent with a RuTracker announce row that is in transport error (6 failed)
     $nnmclubTrackers = "http://bt.nnmclub.to/ann?pk=x|1|0|5#http://bt.t-ru.org/ann?pk=x|1|6|0#";
 
     $rows = array(
-        array(
-            'hash' => $kinozalMixed,
-            'state' => 3,
-            'time' => 100,
-            'label' => '',
-            'message' => '',
-            'del' => '',
-            'msg' => '',
-            'trackers' => RuTrackerDetector::parseTrackerBlob($kinozalTrackers),
-            'trackers_complete' => true,
-            'comment' => 'http://kinozal.tv/details.php?id=12345',
-        ),
-        array(
-            'hash' => $nnmclubMixed,
-            'state' => 3,
-            'time' => 100,
-            'label' => '',
-            'message' => 'Tracker: [Could not resolve hostname]',
-            'del' => '',
-            'msg' => '',
-            'trackers' => RuTrackerDetector::parseTrackerBlob($nnmclubTrackers),
-            'trackers_complete' => true,
-            'comment' => 'http://nnmclub.to/forum/viewtopic.php?t=67890',
-        ),
-        array(
-            'hash' => $rutracker,
-            'state' => 3,
-            'time' => 100,
-            'label' => '',
-            'message' => '',
-            'del' => '',
-            'msg' => '',
-            'trackers' => RuTrackerDetector::parseTrackerBlob("http://bt.t-ru.org/ann?pk=x|1|0|5#"),
-            'trackers_complete' => true,
-            'comment' => 'http://rutracker.org/forum/viewtopic.php?t=11111',
-        ),
+        upParsedRow($kinozalMixed, $kinozalTrackers, 'http://kinozal.tv/details.php?id=12345'),
+        upParsedRow($nnmclubMixed, $nnmclubTrackers, 'http://nnmclub.to/forum/viewtopic.php?t=67890',
+            array('message' => 'Tracker: [Could not resolve hostname]')),
+        upParsedRow($rutracker, "http://bt.t-ru.org/ann?pk=x|1|0|5#",
+            'http://rutracker.org/forum/viewtopic.php?t=11111'),
     );
 
-    $checked = array();
-    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
-    rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
-
-    upQueueUnchanged($rows);
-    $result = RuTrackerUpdatePass::run($rows);
+    $result = upRunPass($rows, $checked);
 
     strictAssertSame(array($kinozalMixed, $nnmclubMixed), $result['checked'],
         'both mixed-tracker foreign-comment torrents are dispatched to checker');
@@ -1384,8 +1703,15 @@ upTest($suite, 'F-01: production scheduler rows resolve foreign ownership from t
         . '$torrent=new Torrent($tmp."/".$hash.".torrent");'
         . 'strictAssertSame(false,$torrent->errors(),"the session torrent is readable by production Torrent");'
         . 'strictAssertSame(7,count(ruTrackerChecker::supportedTrackers()),"all production tracker registrations are loaded");'
+        // The Kinozal row carries no announce signal yet (0 failed, 0 success)
+        // on purpose. This case is about OWNERSHIP -- a torrent announcing to
+        // both trackers belongs to the one its comment names -- and a Kinozal
+        // row that was also announcing successfully would be answered by the
+        // announce gate instead, which is a different rule and has its own
+        // cases above. The RuTracker row stays alive: that is the fast path
+        // this torrent must not be allowed to take.
         . '$values=array($hash,"3","100","","","","",'
-        . '$kinozal."|1|0|5#".$rutracker."|1|0|5#");'
+        . '$kinozal."|1|0|0#".$rutracker."|1|0|5#");'
         . '$rows=RuTrackerUpdatePass::parseMulticall($values);'
         . 'strictAssertSame(1,count($rows),"one actual eight-field scheduler row is parsed");'
         . 'strictAssertTrue(!array_key_exists("comment",$rows[0]),"the scheduler row has no synthetic comment field");'
@@ -3565,21 +3891,14 @@ upTest($suite, 'a case may poison scheduler singletons and statics', function ()
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
         throw new RuntimeException('poisoned checker must not survive its case');
     });
-    strictSetPrivateStatic('RuTrackerUpdatePass', 'foreignAuthoritativeResolver', function () {
-        return true;
-    });
 });
 
 upTest($suite, 'the next case receives fresh scheduler singletons and statics', function () {
     strictAssertSame('/nonexistent/', rTorrentSettings::get()->session,
         'rTorrentSettings singleton state is isolated per case');
 
-    foreach (array('checker', 'foreignAuthoritativeResolver') as $property) {
-        $reflection = new ReflectionProperty('RuTrackerUpdatePass', $property);
-        if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
-        strictAssertSame(null, $reflection->getValue(),
-            'RuTrackerUpdatePass::$' . $property . ' is isolated per case');
-    }
+    strictAssertSame(null, strictGetPrivateStatic('RuTrackerUpdatePass', 'checker'),
+        'RuTrackerUpdatePass::$checker is isolated per case');
 });
 
 // --- Persisted chk-state / chk-time are canonical integers or nothing -------
@@ -4223,6 +4542,107 @@ upTest($suite, 'the XMLRPC double models php/xmlrpc.php fault fields across a se
                 'faultString' => $impossible->faultString, 'rawFaultString' => $impossible->rawFaultString),
             'with ' . $what . ', the double must look like the unreachable transport it stands for');
     }
+});
+
+
+upTest($suite, 'foreign terminal and failed superseded verdicts never take an announce free pass', function () {
+    upLoadKinozalRegistration();
+    foreach (array(ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED,
+        ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_ERROR,
+        ruTrackerChecker::STE_INPROGRESS, 0) as $state) {
+        $row = upKinozalRow(str_repeat('A', 40), 0, 5);
+        $row['state'] = $state;
+        $row['time'] = time();
+        if (!in_array($state, array(ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED), true))
+            $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+        $result = upRunPass(array($row), $checked);
+        strictAssertSame(array($row['hash']), $checked, 'state ' . $state . ' still reaches the checker');
+        strictAssertSame(0, $result['uptodate'], 'no scheduler verdict replaces stronger evidence');
+        upAssertNoCustomWrites('no state or successor pointer write');
+    }
+});
+
+upTest($suite, 'foreign INPROGRESS rows never take the announce free pass at either age', function () {
+    upLoadKinozalRegistration();
+    foreach (array('fresh' => time(), 'expired' => time() - ruTrackerChecker::MAX_LOCK_TIME - 1)
+        as $age => $timestamp) {
+        $row = upKinozalRow(str_repeat('A', 40), 0, 5);
+        $row['state'] = ruTrackerChecker::STE_INPROGRESS;
+        $row['time'] = $timestamp;
+        $checked = array();
+        $result = upRunPass(array($row), $checked);
+        strictAssertSame(array($row['hash']), $checked, $age . ' row reaches the checker');
+        strictAssertSame(0, $result['uptodate'], $age . ' row has no free verdict');
+        upAssertNoCustomWrites($age . ' row gets no state write in this pass');
+    }
+});
+
+upTest($suite, 'every Kinozal topic host is accepted by its declared owner', function () {
+    upLoadKinozalRegistration();
+    foreach (KinozalCheckImpl::SITE_HOSTS as $host) {
+        $url = 'https://' . $host . '/details.php?id=1';
+        strictAssertSame(1, preg_match(KinozalCheckImpl::TOPIC_PATTERN, $url),
+            $host . ' is accepted by the topic pattern');
+        $owner = ruTrackerChecker::ownerOf($url);
+        strictAssertSame('KinozalCheckImpl::download_torrent', isset($owner['handler']) ? $owner['handler'] : null,
+            $host . ' belongs to the Kinozal handler');
+    }
+});
+
+upTest($suite, 'an untimed NOT_NEED successor pointer still reaches its handler', function () {
+    upLoadKinozalRegistration();
+    $row = upKinozalRow(str_repeat('A', 40), 0, 5);
+    $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+    $row['time'] = 0;
+    $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+    $result = upRunPass(array($row), $checked, array());
+    strictAssertSame(array($row['hash']), $checked, 'the untimed successor pointer is not retired by an announce');
+    strictAssertSame(0, $result['uptodate'], 'the cached announce does not replace the unresolved verdict');
+    upAssertNoCustomWrites('no state or successor pointer write');
+});
+
+upTest($suite, 'an undeclared earlier owner prevents a later declared owner from claiming the free pass', function () {
+    upLoadKinozalRegistration();
+    upWithRegistry(function ($saved) {
+        strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array('/details\\.php/' => array(
+            'handler' => 'SyntheticCheckImpl::download_torrent', 'announceFilter' => '/torrent4me/',
+            'announceAuthority' => null, 'topicPattern' => null)) + $saved);
+        $row = upKinozalRow(str_repeat('A', 40), 0, 5);
+        strictAssertSame(null, ruTrackerChecker::ownerOf($row['comment']), 'the first possible owner is unknown');
+        $result = upRunPass(array($row), $checked, array());
+        strictAssertSame(array($row['hash']), $checked, 'ownership uncertainty dispatches the checker');
+        strictAssertSame(0, $result['uptodate'], 'no free pass');
+    });
+});
+
+
+upTest($suite, 'supported tracker filters follow first registration order without a second registry', function () {
+    upLoadKinozalRegistration();
+    $priorRegistry = strictGetPrivateStatic('ruTrackerChecker', 'TRACKERS');
+    $priorFilters = ruTrackerChecker::supportedTrackers();
+    upWithRegistry(function ($saved) {
+        $before = ruTrackerChecker::supportedTrackers();
+        ruTrackerChecker::registerTracker('/registry-first/', '/announce-first/', 'first');
+        ruTrackerChecker::registerTracker('/registry-first/', '/ignored/', 'replacement');
+        ruTrackerChecker::registerTracker('/registry-second/', '/announce-second/', 'second');
+        strictAssertSame(array_merge($before, array('/announce-first/', '/announce-second/')),
+            ruTrackerChecker::supportedTrackers(), 'duplicates are ignored and order is stable');
+    });
+    strictAssertSame($priorRegistry, strictGetPrivateStatic('ruTrackerChecker', 'TRACKERS'),
+        'the scope restores the exact previous registry');
+    strictAssertSame($priorFilters, ruTrackerChecker::supportedTrackers(),
+        'the scoped registration cannot leak announce filters');
+});
+
+upTest($suite, 'a true uptodate verdict may clear a stale superseded pointer on the next free pass', function () {
+    upLoadKinozalRegistration();
+    $row = upKinozalRow(str_repeat('A', 40), 0, 5);
+    $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+    $result = upRunPass(array($row), $checked, array(4));
+    strictAssertSame(array(), $checked, 'a real successful verdict retires the failure-only protection');
+    strictAssertSame(1, $result['uptodate'], 'the healthy row is not permanently excluded');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom|d.set_custom')),
+        'the stale successor message is cleared along with the free verdict');
 });
 
 exit($suite->run());

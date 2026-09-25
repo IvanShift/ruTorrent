@@ -18,6 +18,11 @@
  */
 
 define('TESTLIB_HANDLER_STUBS', 1);
+// toloka pauses before every fetch to stay under Cloudflare's radar. The
+// pause is production's courtesy to the tracker, not part of what any case
+// here proves, so it is declared away before the handler loads; the case
+// below pins that the declaration reaches the handler.
+define('TOLOKA_CLOUDFLARE_PAUSE', 0);
 require_once(__DIR__ . '/TestLib.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/tfile.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/tapocheknet.php');
@@ -26,15 +31,20 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/toloka.php'
 
 $suite = new StrictTestSuite();
 
+$suite->test('Toloka production Cloudflare pause remains five seconds', function () {
+    $source = file_get_contents(testFindRepoRoot() . '/plugins/rutracker_check/trackers/toloka.php');
+    strictAssertSame(1, preg_match('/define\(\x27TOLOKA_CLOUDFLARE_PAUSE\x27,\s*5\)/', $source),
+        'the test-only zero pause must not hide a changed shipped default');
+});
+
+
 // The infohash the client holds; the page will advertise a different one, so
 // every handler goes on to fetch the .torrent -- the fetch under test.
 define('SIB_OLD_HASH', str_repeat('A', 40));
 define('SIB_NEW_HASH', str_repeat('B', 40));
-// Measured 2026-08-21 against the live site: the exact sentence tapochek.net
-// serves, with HTTP 200, for a topic it no longer has. The page is
-// windows-1251, so the handler has to find it in both encodings.
+// The UTF-8 spelling also checks the handler's defensive branch; the captured
+// 2026-09-25 response below carries the actual windows-1251 bytes.
 define('TAP_GONE_UTF8', 'Темы, которую вы запросили, не существует');
-define('TAP_GONE_CP1251', iconv('UTF-8', 'CP1251//IGNORE', TAP_GONE_UTF8));
 
 // Every status a live tracker answers a download link with, none of which is
 // evidence the topic is gone.
@@ -51,10 +61,9 @@ function sibNotFound()
     );
 }
 
-// --- the three handlers with no sleep in their path -------------------------
+// --- shared download response checks --------------------------------------
 //
-// One table, three handlers: the seven statuses and the assertion are the same
-// for each because the RULE is the same, and only the pages and URLs differ.
+// Run the same status and payload checks for each handler in the table.
 // anidub picks its download link by the quality tag in the torrent's NAME, so
 // it is the one that needs an $old_torrent.
 class SibAniDubTorrent
@@ -69,8 +78,8 @@ function sibHandlers($hash = SIB_NEW_HASH)
         'tfile' => array(
             'call'  => array('TfileCheckImpl', 'download_torrent'),
             'topic' => 'http://tfile.me/forum/viewtopic.php?p=7',
-            'page'  => 'http://megatfile.cc/forum/viewtopic.php?p=7',
-            'down'  => 'http://megatfile.cc/forum/download.php?id=99',
+            'page'  => 'https://megatfile.cc/forum/viewtopic.php?p=7',
+            'down'  => 'https://megatfile.cc/forum/download.php?id=99',
             'body'  => 'Info hash:</td><td><strong>' . $hash . '</strong></td> <a href="download.php?id=99">get</a>',
             'old'   => null,
         ),
@@ -85,13 +94,37 @@ function sibHandlers($hash = SIB_NEW_HASH)
         'anidub' => array(
             'call'  => array('AniDUBCheckImpl', 'download_torrent'),
             'topic' => 'http://tr.anidub.com/?newsid=7',
-            'page'  => 'http://tr.anidub.com/?newsid=7',
-            'down'  => 'http://tr.anidub.com/engine/download.php?id=99',
+            'page'  => 'https://tr.anidub.com/?newsid=7',
+            'down'  => 'https://tr.anidub.com/engine/download.php?id=99',
             'body'  => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href="/engine/download.php?id=99" ',
             'old'   => 'SibAniDubTorrent',
         ),
+        // toloka joins the table since its Cloudflare pause is declared away
+        // above; before that every case of it cost the suite ten seconds.
+        'toloka' => array(
+            'call'  => array('tolokaCheckImpl', 'download_torrent'),
+            'topic' => 'https://toloka.to/p7',
+            'page'  => 'https://toloka.to/p7',
+            'down'  => 'https://toloka.to/download.php?id=99',
+            'body'  => 'href="magnet:?xt=urn:btih:' . $hash . '" <a href="download.php?id=99">get</a>',
+            'old'   => null,
+        ),
     );
 }
+
+$suite->test('a failed second fetch cannot reuse the previous topic page as a download', function () {
+    foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
+        ruTrackerChecker::reset();
+        Snoopy::queue($h['page'], 200, $h['body']);
+        Snoopy::queueEarlyFailure($h['down'], 'Refusing to fetch: cannot resolve host');
+        $old = $h['old'] === null ? null : new $h['old']();
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            call_user_func($h['call'], $h['topic'], SIB_OLD_HASH, $old),
+            $name . ': an early transfer refusal stays retryable');
+        strictAssertSame(0, count(ruTrackerChecker::callsFor('createTorrentFromDownload')),
+            $name . ': stale topic HTML is never handed to download validation');
+    }
+});
 
 $suite->test('a download link that did not answer 200 is not a deletion', function () {
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
@@ -113,9 +146,10 @@ $suite->test('a download link that did not answer 200 is not a deletion', functi
 
     // The contrast, where the shapes do differ: a page whose hash already
     // matches needs no second fetch at all. anidub has no such short-circuit
-    // (it keys on the quality tag, not the hash), so only two are checked.
+    // (it keys on the quality tag, not the hash), so two are checked here;
+    // Toloka has its own same-hash case below.
     Snoopy::reset();
-    Snoopy::queue('http://megatfile.cc/forum/viewtopic.php?p=7',
+    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7',
         200, 'Info hash:</td><td><strong>' . SIB_OLD_HASH . '</strong></td>');
     strictAssertSame(ruTrackerChecker::STE_UPTODATE,
         TfileCheckImpl::download_torrent('http://tfile.me/forum/viewtopic.php?p=7', SIB_OLD_HASH, null),
@@ -153,10 +187,10 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
             // Only the block matching the parsed quality carries a link, so
             // the URL the handler asks for IS the parse result.
-            Snoopy::queue('http://tr.anidub.com/?newsid=7', 200,
+            Snoopy::queue('https://tr.anidub.com/?newsid=7', 200,
                 '<div id="' . $blockId . '"><div id=\'x1\'> <div class="torrent_h"> '
                 . '<a href="/engine/download.php?id=99" ');
-            Snoopy::queue('http://tr.anidub.com/engine/download.php?id=99', 503, '');
+            Snoopy::queue('https://tr.anidub.com/engine/download.php?id=99', 503, '');
 
             strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
                 AniDUBCheckImpl::download_torrent('http://tr.anidub.com/?newsid=7',
@@ -178,10 +212,10 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
             ruTrackerChecker::reset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
-            Snoopy::queue('http://tr.anidub.com/?newsid=7', 200,
+            Snoopy::queue('https://tr.anidub.com/?newsid=7', 200,
                 '<div id="' . $blockId . '"><div id=\'x1\'> <div class="torrent_h"> '
                 . '<a href="/engine/download.php?id=99" ');
-            Snoopy::queue('http://tr.anidub.com/engine/download.php?id=99', 503, '');
+            Snoopy::queue('https://tr.anidub.com/engine/download.php?id=99', 503, '');
 
             strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
                 AniDUBCheckImpl::download_torrent('http://tr.anidub.com/?newsid=7',
@@ -265,9 +299,10 @@ $suite->test('anidub: a page whose quality block is missing stops instead of fet
     foreach (array(
         'no block for this quality' => '<div id="tv1080"><div id=\'x1\'> <div class="torrent_h"> <a href="/engine/download.php?id=99" ',
         'a block with a foreign link' => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href="/other/path.php?id=99" ',
+        'a host suffix disguised as a download path' => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href=".evil.test/engine/download.php?id=99" ',
     ) as $label => $page) {
         Snoopy::reset();
-        Snoopy::queue('http://tr.anidub.com/?newsid=7', 200, $page);
+        Snoopy::queue('https://tr.anidub.com/?newsid=7', 200, $page);
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
             AniDUBCheckImpl::download_torrent('http://tr.anidub.com/?newsid=7', SIB_OLD_HASH, new SibAniDubTorrent()),
@@ -277,10 +312,26 @@ $suite->test('anidub: a page whose quality block is missing stops instead of fet
     }
 });
 
-// toloka gets ONE case rather than the full matrix above: it sleeps 5 seconds
-// before its first fetch to stay under Cloudflare's radar, so every case costs
-// five seconds of suite time. This is the case worth paying for -- the one
-// where the handler used to invent a deletion out of a missing link.
+// toloka pauses before BOTH of its fetches, the page and the download; the
+// declaration has to reach both, so this case walks the whole path -- a page
+// with a different hash and a download link -- and bounds the pair. A pause
+// left literal at either fetch costs five seconds and fails the bound.
+$suite->test('toloka: the Cloudflare pause honours its declaration at both fetches', function () {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::queueResult('createTorrentFromDownload', ruTrackerChecker::STE_CANT_REACH_TRACKER);
+    Snoopy::reset();
+    $h = sibHandlers(SIB_NEW_HASH)['toloka'];
+    Snoopy::queue($h['page'], 200, $h['body']);
+    Snoopy::queue($h['down'], 200, '');
+    $began = hrtime(true);
+    tolokaCheckImpl::download_torrent('https://toloka.to/p7', SIB_OLD_HASH, null);
+    strictAssertSame(2, count(Snoopy::$requests), 'both fetches went out');
+    strictAssertTrue((hrtime(true) - $began) / 1e9 < 1.0,
+        'a declared pause of 0 means no five-second sleep before either fetch');
+});
+
+// The case toloka used to have alone, when every case of it cost the suite
+// five seconds: the handler used to invent a deletion out of a missing link.
 $suite->test('toloka: a page with no download link is not a deletion', function () {
     // The page proves the topic is alive (it carries a magnet) and offers no
     // .torrent -- a guest view of a login-gated tracker. The old test ANDed
@@ -297,23 +348,55 @@ $suite->test('toloka: a page with no download link is not a deletion', function 
         'and no second request goes out against download.php?id=0');
 });
 
-// Tapochek is the one sibling with a MEASURED, tracker-specific removal marker:
-// a topic it no longer serves comes back as HTTP 200 carrying this exact
-// sentence. Everything else the handler cannot make sense of stays retryable --
-// a login wall, a ratio gate and a protection page are all HTTP 200 too, and
-// none of them proves a topic is gone.
-$suite->test('tapochek: the tracker\'s own missing-topic sentence is a deletion', function () {
-    foreach (array('utf-8' => false, 'windows-1251' => true) as $encoding => $legacy) {
-        Snoopy::reset();
-        $body = '<html><body><table class="forumline message"><tr><th>Информация</th></tr>'
-            . '<tr><td>' . TAP_GONE_UTF8 . '.</td></tr></table></body></html>';
-        Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200,
-            $legacy ? strictCp1251($body) : $body);
+// This UTF-8 case is hypothetical compatibility coverage. The real removal
+// answer is the windows-1251 fixture in the next test. Other unreadable HTTP
+// 200 pages remain retryable because they do not prove deletion.
+$suite->test('tapochek: a UTF-8 Information message is a deletion', function () {
+    Snoopy::reset();
+    $body = '<html><body><table class="forumline message"><tr><th>Информация</th></tr>'
+        . '<tr><td>' . TAP_GONE_UTF8 . '.</td></tr></table></body></html>';
+    Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $body);
+    strictAssertSame(ruTrackerChecker::STE_DELETED,
+        TapochekNetCheckImpl::download_torrent('https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
+        'the defensive UTF-8 spelling remains accepted');
+});
 
-        strictAssertSame(ruTrackerChecker::STE_DELETED,
-            TapochekNetCheckImpl::download_torrent('https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
-            'the measured removal marker is a deletion, served as ' . $encoding);
+$suite->test('tapochek: the captured live missing-topic page is a deletion', function () {
+    $fixture = __DIR__ . '/fixtures/tapochek-p7-2026-09-25.html';
+    $body = file_get_contents($fixture);
+    strictAssertSame(11391, strlen($body), 'the captured response is complete');
+    strictAssertSame('541b85acf6a7aed472a2a7b070f8806bdd4708a6777fd98c3f46cdba426997ba',
+        hash('sha256', $body), 'the anonymous 2026-09-25 response is preserved byte for byte');
+    strictAssertTrue(strpos($body, TapochekNetCheckImpl::MISSING_MARKER_CP1251) !== false,
+        'the CP1251 missing-topic needle occurs in the captured answer');
+    strictAssertTrue(strpos($body, TapochekNetCheckImpl::INFORMATION_CP1251) !== false,
+        'the CP1251 Information needle occurs in the captured answer');
+    strictAssertSame(TAP_GONE_UTF8, TapochekNetCheckImpl::MISSING_MARKER,
+        'the UTF-8 needle is the documented missing-topic phrase');
+    if (function_exists('iconv')) {
+        strictAssertSame(iconv('UTF-8', 'CP1251', TapochekNetCheckImpl::MISSING_MARKER),
+            TapochekNetCheckImpl::MISSING_MARKER_CP1251, 'the literal needle is the CP1251 encoding');
+        strictAssertSame(iconv('UTF-8', 'CP1251', 'Информация'),
+            TapochekNetCheckImpl::INFORMATION_CP1251, 'the literal heading is the CP1251 encoding');
     }
+    Snoopy::reset();
+    Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $body);
+
+    strictAssertSame(ruTrackerChecker::STE_DELETED,
+        TapochekNetCheckImpl::download_torrent('https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
+        'the full nested-table response must carry the deletion verdict');
+    strictAssertSame(1, count(Snoopy::$requests), 'the removal page needs no download request');
+});
+
+$suite->test('tapochek: a commented system table is not a deletion answer', function () {
+    Snoopy::reset();
+    $body = '<html><!-- <table class="forumline message"><tr><th>Информация</th></tr>'
+        . '<tr><td>' . TAP_GONE_UTF8 . '.</td></tr></table> -->'
+        . '<body>Temporary protection page</body></html>';
+    Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $body);
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        TapochekNetCheckImpl::download_torrent('https://tapochek.net/viewtopic.php?p=7', SIB_OLD_HASH, null),
+        'markup inside an HTML comment cannot certify deletion');
 });
 
 $suite->test('tapochek: any other unreadable 200 topic page is retryable, not "no jurisdiction"', function () {
@@ -348,7 +431,7 @@ $suite->test('tfile: a topic page it cannot read is retryable, not "no jurisdict
     // 2026-08-21. Until a working canonical endpoint is known, that has to read
     // as "could not check", or a Tfile torrent silently stops being checked.
     Snoopy::reset();
-    Snoopy::queue('http://megatfile.cc/forum/viewtopic.php?p=7', 200,
+    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7', 200,
         '<html><body>This domain is parked.</body></html>');
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -358,7 +441,7 @@ $suite->test('tfile: a topic page it cannot read is retryable, not "no jurisdict
 
 $suite->test('tfile: a changed hash with no download link is retryable too', function () {
     Snoopy::reset();
-    Snoopy::queue('http://megatfile.cc/forum/viewtopic.php?p=7', 200,
+    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7', 200,
         'Info hash:</td><td><strong>' . SIB_NEW_HASH . '</strong></td>');
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -428,6 +511,32 @@ $suite->test('a tapochek post containing the marker and download evidence is not
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'user content plus live-page signals cannot authorize deletion');
+});
+
+
+$suite->test('toloka same hash needs no download link', function () {
+    ruTrackerChecker::reset();
+    $h = sibHandlers(SIB_OLD_HASH)['toloka'];
+    Snoopy::queue($h['page'], 200, 'href="magnet:?xt=urn:btih:' . SIB_OLD_HASH . '"');
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+        call_user_func($h['call'], $h['topic'], SIB_OLD_HASH, null), 'same hash without download id');
+    strictAssertSame(1, count(Snoopy::$requests), 'only the topic page is fetched');
+});
+
+
+$suite->test('AniDUB accepts old and HTTPS comments but sends both requests over HTTPS', function () {
+    $h = sibHandlers()['anidub'];
+    foreach (array('http', 'https') as $scheme) {
+        ruTrackerChecker::reset();
+        Snoopy::queue($h['page'], 200, $h['body']);
+        Snoopy::queue($h['down'], 200, 'metainfo');
+        ruTrackerChecker::queueResult('createTorrentFromDownload', ruTrackerChecker::STE_UPTODATE);
+        strictAssertSame(ruTrackerChecker::STE_UPTODATE,
+            AniDUBCheckImpl::download_torrent($scheme . '://tr.anidub.com/?newsid=7', SIB_OLD_HASH, new SibAniDubTorrent()),
+            'both stored comment schemes remain accepted');
+        strictAssertSame(array(array('fetchComplex', $h['page']), array('fetchComplex', $h['down'])),
+            Snoopy::$requests, 'the initial page and the download use canonical HTTPS URLs');
+    }
 });
 
 exit($suite->run());

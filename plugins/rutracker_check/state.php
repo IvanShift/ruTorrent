@@ -54,10 +54,11 @@ class RuTrackerState
     // are not merely wasteful. Two of the safeguards that bound outbound
     // traffic cannot see their twin at all, because they are per-process
     // statics: forumindex.php's dump memo ($memo, "at most one dump fetch per
-    // forum per cycle") and trackers/kinozal.php's session latch
-    // ($sessionDead, which stops a run asking again once a locked-out loginmgr
-    // account has been proven dead -- documented there as a per-process latch
-    // that saved 130 requests a cycle on the live fleet). Two cycles silently
+    // forum per cycle") and trackers/kinozal.php's cycle latch
+    // ($cycleAbandoned, which stops a run asking again once a locked-out
+    // loginmgr account or an unreachable host has been proven so -- documented
+    // there as a per-process latch that saved 130 requests a cycle on the
+    // live fleet). Two cycles silently
     // double each of those. The announce cap is NOT one of them -- announce.php
     // documents it as the durable per-host budget in announce.json, counted
     // across every process by design -- but a second cycle still spends that

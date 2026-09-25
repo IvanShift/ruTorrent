@@ -141,9 +141,9 @@ $suite->test('classify weighs every RuTracker row, not just the first', function
 
 // The host form of the tracker pattern decides whether to SEND a request, so
 // a substring match is not good enough.
-$suite->test('TRACKER_HOST_PATTERN matches whole domain labels, never a substring', function () {
+$suite->test('the host test matches whole domain labels, never a substring', function () {
     foreach (array('bt.t-ru.org', 'bt4.t-ru.org', 't-ru.org', 'rutracker.org', 'api.rutracker.cc') as $host)
-        strictAssertSame(1, preg_match(RuTrackerDetector::TRACKER_HOST_PATTERN, $host), $host . ' is RuTracker\'s');
+        strictAssertSame(true, RuTrackerDetector::isTrackerHost($host), $host . ' is RuTracker\'s');
 
     foreach (array('rutracker.evil.example', 'bt.t-ru.org.evil.example', 'evil-rutracker.example',
                    'nott-ru.org.example', 'rutracker.org.attacker.net',
@@ -152,7 +152,7 @@ $suite->test('TRACKER_HOST_PATTERN matches whole domain labels, never a substrin
                    // top-level domain must not buy a request.
                    'rutracker.xyz', 'rutracker.local', 'rutracker.zip',
                    'bt.rutracker.pw', 't-ru.net') as $host)
-        strictAssertSame(0, preg_match(RuTrackerDetector::TRACKER_HOST_PATTERN, $host), $host . ' is not');
+        strictAssertSame(false, RuTrackerDetector::isTrackerHost($host), $host . ' is not');
 
     // The URL-matching form stays a substring test on purpose: it is applied
     // to whole announce URLs, where the host sits in the middle.

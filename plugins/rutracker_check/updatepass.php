@@ -24,20 +24,32 @@ class RuTrackerUpdatePass
     // capture dispatches without loading a real tracker handler. null means
     // "use the production default".
     private static $checker = null;
-    private static $foreignAuthoritativeResolver = null;
 
-    static public function isForeignAuthoritative($row)
+    // The comment that names a row's owner: the row's own when the caller
+    // supplied one, else the session copy's. The cycle multicall carries no
+    // comment and the session copy is a file read, so run() asks once per
+    // row and hands the answer to both readers -- the conservative dispatch
+    // gate here and the announce authority gate in pass 2.
+    static private function commentOf($row)
     {
-        if (self::$foreignAuthoritativeResolver !== null) {
-            return (bool) call_user_func(self::$foreignAuthoritativeResolver, $row);
-        }
-        if (isset($row['comment']) && is_string($row['comment']) && $row['comment'] !== '') {
-            return ruTrackerChecker::isForeignComment($row['comment']);
-        }
-        if (isset($row['hash'])) {
-            return ruTrackerChecker::hasForeignAuthoritativeComment($row['hash']);
-        }
-        return false;
+        if (isset($row['comment']) && is_string($row['comment']) && $row['comment'] !== '')
+            return $row['comment'];
+        if (isset($row['hash']))
+            return ruTrackerChecker::sessionComment($row['hash']);
+        return '';
+    }
+
+    // This is a conservative scheduler gate, not exact topic ownership. The
+    // loose comment filter or an unknown comment with a foreign announce row
+    // sends the torrent to run(), whose handlers decide ownership by URL.
+    static public function isForeignAuthoritative($row, $comment)
+    {
+        if (ruTrackerChecker::isForeignComment($comment)) return true;
+        if ((string) $comment !== '') return false;
+        // An unreadable session comment does not prove RuTracker ownership.
+        // The announce registry includes hosts such as torrent4me.com that
+        // cannot be recognized by searching for the handler's name in a URL.
+        return ruTrackerChecker::hasForeignAnnounceRow($row['trackers']);
     }
 
     static private function forumCorrections()
@@ -282,13 +294,14 @@ class RuTrackerUpdatePass
     }
 
     // The RuTracker row's announce host, or '' when none of the rows
-    // matches. Mirrors RuTrackerDetector::classify()'s own row selection so
+    // matches. Mirrors RuTrackerDetector::announceSignal()'s row selection so
     // the fuse groups candidates by the same host classify() judged them on.
     static private function hostOf($trackers)
     {
         foreach ((array) $trackers as $row) {
             if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) ($row['url'] ?? ''))) continue;
-            // Same row selection as classify(): a disabled row judges nothing
+            // Same selection as announceSignal(), used by classify()/announceVerdict():
+            // a disabled row judges nothing
             // and a later one may, and when every RuTracker row is disabled
             // both answer "nothing here" -- '' and 'none'. Answering with a
             // host while the verdict says 'none' would strand the torrent
@@ -296,11 +309,11 @@ class RuTrackerUpdatePass
             // handed to the generic path either), frozen at whatever
             // chk-state it last carried.
             if (empty($row['enabled'])) continue;
-            // Through the announce budget's normaliser, not raw: parse_url
+            // Through UrlHost's shared normaliser, not raw: parse_url
             // does not case-fold a host, so BT.T-RU.ORG would become a fuse
             // group of its own and neither half would reach the floor. One
             // rule for host names, in one place.
-            return RuTrackerAnnounce::hostKey(@parse_url($row['url'], PHP_URL_HOST));
+            return UrlHost::of($row['url']) ?? '';
         }
         return '';
     }
@@ -328,9 +341,11 @@ class RuTrackerUpdatePass
         // though pass 2 dispatches it unconditionally regardless of verdict.
         $verdicts = array();
         $hosts = array();
+        $comments = array();
         $hostStats = array();
         foreach ($rows as $index => $row) {
-            if (self::isForeignAuthoritative($row)) {
+            $comments[$index] = self::commentOf($row);
+            if (self::isForeignAuthoritative($row, $comments[$index])) {
                 $verdicts[$index] = 'none';
                 $hosts[$index] = '';
                 continue;
@@ -403,12 +418,46 @@ class RuTrackerUpdatePass
             // Kinozal/NNMClub/Toloka/tfile torrent gives classify() nothing to
             // judge and it answers 'none' -- which for those torrents means
             // "not my jurisdiction", NOT "no signal worth a request". They go
-            // straight to their own handler, once per cycle, the way the
-            // pre-layer-1 pass dispatched them; hostOf() answered '' for
+            // to their handler unless resting or certified by its declared
+            // announce authority below; hostOf() answered '' for
             // exactly this case in pass 1.
             if ($hosts[$index] === '') {
-                if (self::isSettled($row, true) && (time() - $row['time']) <= self::SETTLED_RECHECK)
+                // Foreign superseded rows retain their existing rest window.
+                // A terminal verdict, an unfinished check, or an unresolved
+                // successor pointer is stronger than a cached announce.
+                $settled = self::isSettled($row, true);
+                if ($settled && (time() - $row['time']) <= self::SETTLED_RECHECK)
                     continue;
+
+                // The same free pass the RuTracker rows below take, for a
+                // handler that has declared its announce authoritative -- see
+                // ruTrackerChecker::registerTracker() -- and that OWNS this
+                // torrent. The comment names the owner, the way run() picks
+                // the handler, and it is passed along because the rows alone
+                // cannot: a torrent cross-seeded on a second tracker carries
+                // that tracker's row beside its own, and a live announce
+                // there certifies nothing about the topic this torrent came
+                // from. The counters are already in this row; reading them
+                // costs nothing, and a handler that would otherwise have to
+                // fetch the tracker to learn the same thing does not have to.
+                //
+                // Only 'alive' short-circuits. 'cold' means the daemon has not
+                // announced yet, which is the normal state for minutes after a
+                // restart and says nothing, and 'candidate' means the announce
+                // is failing -- which is exactly when the handler must look.
+                $unresolvedSuccessor = $row['state'] !== ruTrackerChecker::STE_UPTODATE
+                    && explode('|', (string) $row['msg'], 2)[0] === ruTrackerChecker::CHKMSG_SUPERSEDED;
+                $noFreePass = in_array($row['state'], array(
+                    ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED,
+                    ruTrackerChecker::STE_INPROGRESS), true);
+                $authority = ($noFreePass || $unresolvedSuccessor) ? null
+                    : ruTrackerChecker::announceAuthorityFor($row['trackers'], $comments[$index]);
+                if (($authority !== null)
+                    && (RuTrackerDetector::announceVerdict($row['trackers'],
+                        $authority['jurisdiction'], $authority['authority']) === 'alive')) {
+                    $deferred[] = self::deferVerdict($row, ruTrackerChecker::STE_UPTODATE, null, true, true);
+                    continue;
+                }
 
                 self::dispatchChecker($checker, $defaultChecker, $row);
                 $checked[] = $row['hash'];
@@ -444,7 +493,7 @@ class RuTrackerUpdatePass
             // Below the generic dispatch on purpose -- this rule is about
             // RuTracker's own verdicts, and a Kinozal/NNMClub/Toloka torrent
             // that happens to carry one of the same state numbers must keep
-            // reaching its own handler every cycle.
+            // reaching its own handler when the foreign rest/authority gates allow it.
             //
             // And below the free 'alive' branch on purpose too: a torrent
             // whose announce is succeeding again is PROOF the verdict was
@@ -455,6 +504,8 @@ class RuTrackerUpdatePass
                 continue;
 
             if ($verdict === 'transport') {
+                // A failed announce supplies no new topic verdict after a settled rest.
+                if (self::isSettled($row)) continue;
                 // The sentence under the state must change with it: a token
                 // an earlier cycle stored ('deleting|2/3', 'fuse|<host>')
                 // describes a different verdict, and init.js appends it to
@@ -513,7 +564,7 @@ class RuTrackerUpdatePass
      * Write the buffered fast-path verdicts, skipping any row that moved since
      * the cycle-start snapshot. Returns how many "counts" verdicts landed.
      *
-     * The four fast paths decide from the snapshot update.php took at the top
+     * The fast paths decide from the snapshot update.php took at the top
      * of the cycle and deliberately ask the daemon nothing per row -- that is
      * the whole point of them, with ~340 rows a cycle. But the snapshot goes
      * stale: a "check" click runs batch_check.php, which takes NO cycle lock
@@ -875,13 +926,7 @@ class RuTrackerUpdatePass
     // also write, keeps being checked.
     static private function isSettled($row, $foreign = false)
     {
-        if ($row['time'] <= 0) return false;
-        if (!$foreign && ($row['state'] === ruTrackerChecker::STE_DELETED
-            || $row['state'] === ruTrackerChecker::STE_ABSORBED)) return true;
-        if ($row['state'] !== ruTrackerChecker::STE_NOT_NEED) return false;
-        $token = explode('|', (string) $row['msg'], 2);
-        if ($token[0] === ruTrackerChecker::CHKMSG_SUPERSEDED) return true;
-        return !$foreign && $token[0] === ruTrackerChecker::CHKMSG_TOPIC_STATUS;
+        return ruTrackerChecker::isSettledStatus($row['state'], $row['time'], $row['msg'], $foreign);
     }
 
     // Columns of the sweep's own fleet scan, in the order it asks for them:

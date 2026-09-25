@@ -1,5 +1,11 @@
 <?php
 
+// Seconds toloka waits before each fetch so that Cloudflare sees a visitor,
+// not a scanner. Declared with if(!defined()) so a caller that loads this file
+// can shorten it first; the shipped value is what the handler always used.
+if (!defined('TOLOKA_CLOUDFLARE_PAUSE'))
+    define('TOLOKA_CLOUDFLARE_PAUSE', 5);
+
 // Toloka.to support by ReMMeR github@r3mm3r.net
 
 class tolokaCheckImpl
@@ -13,7 +19,7 @@ class tolokaCheckImpl
         if (preg_match('`^https?://toloka\.to/p(?P<id>\d+)$`', $url, $matches)) {
             $topic_id = $matches["id"];
 	    $req_url = "https://toloka.to/p".$topic_id;
-	    sleep(5); // Do not want to be banned by cloudflare
+	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
             $client = ruTrackerChecker::makeClient($req_url);
             if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
@@ -27,7 +33,7 @@ class tolokaCheckImpl
 		$dow_id = intval($matches["id"]);
 	    }
 
-            // Strict comparison, as kinozal.php:120-125 documents: a
+            // Strict comparison, as the Kinozal handler's hash check documents: a
             // loose == reads a hex hash shaped like scientific notation
             // as a number ('1E' + 38 zeros == '00...01'), so two
             // different 40-char hashes could pass as equal.
@@ -50,8 +56,9 @@ class tolokaCheckImpl
             if (!$dow_id) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             $client->setcookies();
 
-	    sleep(5); // Do not want to be banned by cloudflare
-            $client->fetchComplex("https://toloka.to/download.php?id=" . $dow_id);
+	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
+            if (!$client->fetchComplex("https://toloka.to/download.php?id=" . $dow_id))
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
         }
         return ruTrackerChecker::STE_DECLINED;

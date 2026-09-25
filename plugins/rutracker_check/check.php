@@ -101,7 +101,6 @@ class ruTrackerChecker
 		. "Chrome/120.0.0.0 Safari/537.36";
 
 	private static $TRACKERS = array();
-	private static $ANNOUNCES = array();
 	// One operator-visible line per uninterrupted storage outage. A successful
 	// update resets the latch, so a later independent outage is reported too.
 	private static $claimStoreFailureLogged = false;
@@ -113,27 +112,147 @@ class ruTrackerChecker
 	);
 
 	/**
-	 * Register a tracker handler.
+	 * Register a tracker handler. The first registration of a comment filter
+	 * wins; later registrations of that same filter are ignored.
 	 *
-	 * @param string   $commentFilter  Regex pattern for torrent comment
-	 * @param string   $announceFilter Regex pattern for announce URL list
-	 * @param callable $handler        Handler function: handler($url, $hash, $torrent)
+	 * Registration order is ownership order: run() asks the handlers whose
+	 * comment filter matches in this order, and the first that does not
+	 * decline owns the torrent. check.php registers RuTracker first.
+	 *
+	 * @param string      $commentFilter     Regex pattern for torrent comment
+	 * @param string      $announceFilter    Regex pattern for announce URL list
+	 * @param callable    $handler           Handler function: handler($url, $hash, $torrent)
+	 * @param array|null  $announceAuthority Optional. Declares that on this
+	 *        tracker a successful announce proves the topic is still current,
+	 *        so the scheduler may answer UPTODATE from the counters it already
+	 *        holds. It is the LIST OF HOSTS on which that holds -- each, or a
+	 *        subdomain of it, matched whole through UrlHost -- rather than a
+	 *        flag: see RuTrackerDetector::announceVerdict() for why the loose
+	 *        $announceFilter must not be the one to certify a topic alive.
+	 * @param string|null $topicPattern      The EXACT test the handler applies
+	 *        to a comment before it does anything -- the pattern it would
+	 *        decline on. ownerOf() reads it whether or not an authority is
+	 *        declared, so a handler may state it alone to make the owner walk
+	 *        exact; an authority, on the other hand, is never reached without
+	 *        it. $commentFilter is a loose substring test that decides who is
+	 *        asked first, not who owns the torrent: run() moves on when the
+	 *        handler it asked declines, and a Kinozal filter matches an NNMClub
+	 *        topic URL that merely mentions kinozal.tv. The scheduler cannot
+	 *        ask a handler without spending a request, so a handler that wants
+	 *        the free pass states its acceptance test here and ownerOf() reads
+	 *        it. An authority declared without this test is never reached:
+	 *        ownerOf() answers null at a handler that declared no test, and
+	 *        the free pass is granted to owners only.
 	 */
-	static public function registerTracker($commentFilter, $announceFilter, $handler)
+	static public function registerTracker($commentFilter, $announceFilter, $handler,
+		$announceAuthority = null, $topicPattern = null)
 	{
 		if(!array_key_exists($commentFilter, self::$TRACKERS))
 		{
 			self::$TRACKERS[$commentFilter] = array(
 				'announceFilter' => $announceFilter,
 				'handler' => $handler,
+				'announceAuthority' => $announceAuthority,
+				'topicPattern' => $topicPattern,
 			);
-			self::$ANNOUNCES[] = $announceFilter;
 		}
+	}
+
+	/**
+	 * The registry record of the handler that owns a torrent, read from its
+	 * comment the way run() reads it -- declared rather than performed.
+	 *
+	 * The walk is run()'s walk made without asking anyone: a handler that
+	 * declared its topic pattern is taken to accept exactly what the pattern
+	 * accepts and to decline the rest; one that declared none cannot be
+	 * second-guessed, so the answer is null rather than a guess. The contract
+	 * -- why the comment filter decides who is asked and not who owns -- is
+	 * stated once, at registerTracker()'s $topicPattern.
+	 *
+	 * @return array|null the owner's registry record, or null when the owner
+	 *                    cannot be told from the comment alone
+	 */
+	static public function ownerOf($comment)
+	{
+		$comment = (string)$comment;
+		if($comment === '')
+			return null;
+		foreach(self::$TRACKERS as $commentFilter => $tracker)
+		{
+			if(!preg_match($commentFilter, $comment))
+				continue;
+			if(empty($tracker['topicPattern']))
+				return null;
+			if(preg_match($tracker['topicPattern'], $comment))
+				return $tracker;
+		}
+		return null;
+	}
+
+	/**
+	 * The jurisdiction filter and authority hosts declared by the handler
+	 * that owns this comment. The caller still passes its tracker rows for
+	 * compatibility; announceVerdict() is the single place that checks for
+	 * enabled rows in that jurisdiction and trusted announce hosts.
+	 *
+	 * @param array  $trackers retained for existing callers; checked downstream
+	 * @param string $comment  the torrent's comment -- see sessionComment()
+	 * @return array|null owner's jurisdiction and authority, or null when no
+	 *                    owner can be established or it has not opted in
+	 */
+	static public function announceAuthorityFor($trackers, $comment)
+	{
+		$owner = self::ownerOf($comment);
+		if($owner === null || empty($owner['announceAuthority']))
+			return null;
+		return array(
+			'jurisdiction' => $owner['announceFilter'],
+			'authority' => $owner['announceAuthority'],
+		);
 	}
 
 	static public function supportedTrackers()
 	{
-		return(self::$ANNOUNCES);
+		return array_values(array_column(self::$TRACKERS, 'announceFilter'));
+	}
+
+	// Shared by the scheduler rest gate and run()'s retryable-verdict guard.
+	// A foreign DELETED/ABSORBED state is not a final RuTracker topic answer;
+	// its only settled state here is a known successor pointer.
+	static public function isSettledStatus($state, $time, $message, $foreign = false)
+	{
+		if($time <= 0) return false;
+		if(!$foreign && ($state === self::STE_DELETED || $state === self::STE_ABSORBED))
+			return true;
+		if($state !== self::STE_NOT_NEED) return false;
+		$token = explode('|', (string)$message, 2)[0];
+		if($token === self::CHKMSG_SUPERSEDED) return true;
+		return !$foreign && $token === self::CHKMSG_TOPIC_STATUS;
+	}
+
+	// Read a settled NOT_NEED token under the per-hash run claim. An unreadable
+	// value is not permission to overwrite a possibly settled verdict.
+	static private function storedMessage($hash)
+	{
+		$req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_custom"),
+			array($hash, "chk-msg")));
+		$req->important = false;
+		return $req->success() && isset($req->val[0]) ? (string)$req->val[0] : null;
+	}
+
+	// A missing comment cannot establish ownership. If any enabled row may
+	// belong to another registered handler, the scheduler must dispatch rather
+	// than certify RuTracker from a successful cross-seed announce.
+	static public function hasForeignAnnounceRow($trackers)
+	{
+		foreach(self::$TRACKERS as $tracker)
+		{
+			if($tracker['handler'] === 'RuTrackerCheckImpl::download_torrent') continue;
+			foreach((array)$trackers as $row)
+				if(!empty($row['enabled']) && isset($row['url'])
+					&& preg_match($tracker['announceFilter'], (string)$row['url'])) return true;
+		}
+		return false;
 	}
 
 	static public function isForeignComment($comment)
@@ -158,20 +277,28 @@ class ruTrackerChecker
 		return false;
 	}
 
-	static public function hasForeignAuthoritativeComment($hash)
+	/**
+	 * The comment of a torrent's session copy, or '' when it cannot be read.
+	 *
+	 * The scheduler's cycle multicall carries tracker rows and no comment, and
+	 * the comment is what names a torrent's owner -- see run(). It is a file
+	 * read, so the scheduler asks once per row per cycle and hands the answer
+	 * to both the ownership test and the announce gate.
+	 */
+	static public function sessionComment($hash)
 	{
 		if(!class_exists('rTorrentSettings') || !method_exists('rTorrentSettings', 'get'))
-			return false;
+			return '';
 		$settings = rTorrentSettings::get();
 		if(!$settings || empty($settings->session))
-			return false;
+			return '';
 		$fname = $settings->session . $hash . ".torrent";
 		if(!is_file($fname))
-			return false;
+			return '';
 		$torrent = @new Torrent($fname);
 		if($torrent->errors())
-			return false;
-		return self::isForeignComment((string) $torrent->comment());
+			return '';
+		return (string) $torrent->comment();
 	}
 
 	/**
@@ -2021,12 +2148,25 @@ class ruTrackerChecker
 			if(($state==self::STE_INPROGRESS) && ((time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
 
 			if($state!==self::STE_INPROGRESS){
-				// Kept across the dispatch so a handler that cannot judge (see
-				// STE_UNCHANGED) can have this verdict put back: by then the
-				// stored value is the STE_INPROGRESS lock written just below.
 				$previous = $state;
+				$terminal = in_array($previous, array(self::STE_DELETED, self::STE_ABSORBED), true);
+				if($previous === self::STE_NOT_NEED && $time > 0)
+				{
+					$message = self::storedMessage($hash);
+					if($message === null) return(false);
+					$terminal = self::isSettledStatus($previous, $time, $message);
+				}
 				$state = self::STE_INPROGRESS;
-				$stateWrite = self::setState( $hash, $state );
+				// claimCheck() serializes workers. Keep a terminal verdict visible
+				// while checking. The same-value preflight leaves chk-time intact
+				// and detects a missing hash. A matching readback of this value
+				// cannot, by itself, prove that the write succeeded.
+				if($terminal)
+					$stateWrite = self::writeCustomProjection($hash, array(
+						new rXMLRPCCommand(getCmd("d.set_custom"),
+							array($hash, "chk-state", (string) $previous))), "confirmTerminalState");
+				else
+					$stateWrite = self::setState( $hash, $state );
 				if($stateWrite === null) return(true);
 				if(!$stateWrite) return(false);
 
@@ -2040,20 +2180,41 @@ class ruTrackerChecker
 				}
 				else self::logDebug("run: " . $hash
 					. " has no readable session copy or tied daemon source;"
-					. " nothing can be checked and the torrent is flagged");
+					. " no handler verdict is available");
 				if($state===self::STE_UNCHANGED) $state = $previous;
 				if($state==self::STE_INPROGRESS) $state=self::STE_ERROR;
+				// A retryable failure cannot refute a terminal topic verdict.
+				// Do not refresh its rest clock without a new answer: the next
+				// scheduled recheck must still arrive at its original deadline.
+				$resultState = $state;
+				$retainedTerminal = $terminal
+					&& in_array($state, array(self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true);
+				if($retainedTerminal) $state = $previous;
 
 				$finalWrite = null;
-				if(!is_null($state)) $finalWrite = self::setState($hash, $state);
+				if(!is_null($state) && !($terminal
+					&& ($retainedTerminal || $handlerVerdict === self::STE_UNCHANGED)))
+				{
+					if($handlerVerdict === self::STE_UNCHANGED)
+						// INPROGRESS briefly stamped the claim clock. An answer that
+						// learned nothing must restore it without touching chk-stime.
+						$finalWrite = self::writeCustomProjection($hash, array(
+							new rXMLRPCCommand(getCmd("d.set_custom"),
+								array($hash, "chk-state", (string) $previous)),
+							new rXMLRPCCommand(getCmd("d.set_custom"),
+								array($hash, "chk-time", (string) $time))), "restoreUnchanged");
+					else $finalWrite = self::setState($hash, $state);
+				}
 				// Handler invocation is not durable consumption. In particular,
 				// STE_UNCHANGED means it learned nothing, and a false/null final
 				// write leaves no verdict for a correction to acknowledge.
 				$performed = $handlerPerformed
-					&& $handlerVerdict !== self::STE_UNCHANGED
+					&& !in_array($handlerVerdict, array(self::STE_UNCHANGED,
+						self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true)
 					&& $finalWrite === true;
+				return($resultState != self::STE_CANT_REACH_TRACKER);
 			}
-			return($state != self::STE_CANT_REACH_TRACKER);
+			return(true); // only a still-held INPROGRESS state reaches here
 		}
 		finally
 		{

@@ -1,24 +1,48 @@
 <?php
 
 /**
- * Snoopy's failure sentence, reduced to one greppable token.
- *
- * A leaf on purpose: it requires nothing and touches no state, so both readers
- * of Snoopy's error field can share it. ruTrackerChecker::makeClient()
- * (check.php) and NNMClubCheckImpl::guestFetch() (trackers/nnmclub.php) each
- * carried their own copy of the same eight token/pattern pairs, and the copies
- * had already drifted: one collapsed internal whitespace before matching, the
- * other only trimmed, so the same re-spaced or wrapped sentence was
- * 'connect-errno' in one log line and 'unclassified' in the other.
- *
- * Neither owner could hold it. Inside ruTrackerChecker it would make the
- * handler load a checker to classify a string, which the handler's own suite
- * does not do -- it stubs that class -- and inside the NNMClub handler it
- * would make the checker's shared diagnostics depend on one tracker's file.
- * A file with no dependencies is what both can require instead.
+ * Stateless HTTP failure diagnostics shared by the checker, NNMClub and Kinozal.
+ * classify() reduces Snoopy's error sentence to a greppable token;
+ * isChallenge() identifies a Cloudflare interstitial for endpoint routing.
+ * Both methods are leaf helpers: no dependencies, state, or third-party text returned.
  */
 class RuTrackerFetchError
 {
+	/**
+	 * Whether an answer is Cloudflare's managed challenge -- the interstitial
+	 * no credential and no retry gets past.
+	 *
+	 * One live Kinozal capture (2026-09-12) carried the header and the
+	 * orchestrate/chl_page script. Cloudflare documents `cf-mitigated: challenge`
+	 * on every challenge response; the body markers have only that one capture
+	 * as provenance. Snoopy keeps raw response header lines in $client->headers.
+	 * The body fallback matches the interstitial's own
+	 * markers alone: the interstitial's orchestrate/chl_page script or its title.
+	 * The generic challenge-platform prefix also serves JavaScript Detections
+	 * on ordinary pages and is not interstitial evidence.
+	 *
+	 * Deliberately NOT the word "cloudflare". Every error page Cloudflare
+	 * serves for an origin that is down -- 52x, "Web server is down" -- names
+	 * Cloudflare in its footer and carries none of the markers above. A
+	 * handler that ROUTES on this answer must not read an outage as a wall, or
+	 * a ten-minute origin restart sends a whole cycle through its expensive
+	 * door. NNMClubCheckImpl::looksLikeChallengePage() keeps a broader test
+	 * for HTTP-200 topic pages without a download link: login/challenge/captcha
+	 * pages are retryable; other unreadable pages are errors. Non-200 responses
+	 * are rejected before that predicate runs.
+	 */
+	static public function isChallenge( $headers, $body )
+	{
+		foreach( (array) $headers as $line )
+		{
+			if( is_string( $line ) && preg_match( '/^cf-mitigated:\s*challenge\b/i', trim( $line ) ) )
+				return true;
+		}
+		if( !is_string( $body ) || $body === '' )
+			return false;
+		return preg_match( '~<title>\s*Just a moment(?:\.\.\.|…)?\s*</title>|/cdn-cgi/challenge-platform/(?:[^/\s\"\'<>]+/)*orchestrate/chl_page/~i', $body ) === 1;
+	}
+
 	/**
 	 * Classify one Snoopy error message.
 	 *
@@ -41,7 +65,7 @@ class RuTrackerFetchError
 	 * without __toString into a fatal.
 	 *
 	 * @param mixed $error Snoopy's $error field, or anything at all
-	 * @return string One of the eight tokens, 'unclassified', or '' when
+	 * @return string One of the nine tokens, 'unclassified', or '' when
 	 *                Snoopy wrote no message
 	 */
 	static public function classify( $error )
@@ -49,12 +73,15 @@ class RuTrackerFetchError
 		if(!is_string($error)) return('');
 		$error = trim(preg_replace('/\s+/', ' ', $error));
 		if($error === '') return('');
-		// php/Snoopy.class.inc's eight strings, in the order that file writes
-		// them.
+		// Classify Snoopy's nine error strings. A refused credential redirect
+		// retains HTTP status 302, so the current plugin consumers that log only
+		// status < 100 do not emit redirect-refused; the class remains available
+		// to callers that inspect the error field directly.
 		$classes = array(
 			'invalid-protocol' => '/^Invalid protocol\b/i',
 			'refused-unresolvable-host' => '/^Refusing to fetch: cannot resolve host\b/i',
 			'refused-non-public-address' => '/^Refusing to fetch: host .* non-public address\b/i',
+			'redirect-refused' => '/^credential-redirect-refused$/i',
 			'curl-transfer' => '/cURL could not retrieve/i',
 			'socket-create' => '/^socket creation failed\b/i',
 			'dns-lookup' => '/^dns lookup failure\b/i',

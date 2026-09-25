@@ -1786,4 +1786,40 @@ $suite->test('the guest path classifies every shared Snoopy message exactly as m
 });
 
 
+
+$suite->test('NNM host allowlists normalize DNS spelling without allowing new subdomains', function () {
+    foreach (array('nnmclub.to', 'NNMCLUB.TO.', 'www.NNMCLUB.TO.') as $host)
+        strictAssertSame(true, strictInvoke('NNMClubCheckImpl', 'isAllowedTopicHost', array($host)), 'official topic spelling');
+    foreach (array('bt.nnmclub.to', 'BT.NNMCLUB.TO.') as $host)
+        strictAssertSame(true, strictInvoke('NNMClubCheckImpl', 'isAllowedTrackerHost', array($host)), 'official tracker spelling');
+    foreach (array('evil.bt.nnmclub.to', 'bt.nnmclub.to.evil.test', 'nnmclub.to@evil.test') as $host)
+        strictAssertSame(false, strictInvoke('NNMClubCheckImpl', 'isAllowedTrackerHost', array($host)), 'passkeys stay on exact hosts');
+});
+
+$suite->test('dotted topic hosts are normalized before the outgoing guest request', function () {
+    foreach (array('NNMCLUB.TO.' => 'nnmclub.to', 'www.NNMCLUB.TO.' => 'www.nnmclub.to') as $input => $host) {
+        nnmReset();
+        $url = 'https://' . $host . '/forum/viewtopic.php?t=42';
+        Snoopy::queue($url, 503, 'Unavailable');
+        $raw = strictTorrentRaw('dotted.bin', 'http://bt.nnmclub.to/announce?uk=abc',
+            'https://' . $input . '/forum/viewtopic.php?t=42');
+        $torrent = new Torrent($raw);
+        NNMClubCheckImpl::download_torrent('https://' . $input . '/forum/viewtopic.php?t=42',
+            $torrent->hash_info(), $torrent);
+        strictAssertSame(array(array('fetch', $url)), Snoopy::$requests, 'guest request uses the canonical host');
+    }
+});
+
+$suite->test('dotted tracker hosts are canonical in scrape and patched announce URLs', function () {
+    $token = 'AbCdEf0123456789AbCdEf0123456789';
+    $announce = 'https://BT.NNMCLUB.TO./announce?uk=' . $token;
+    $auth = array('mode' => 'query', 'token' => $token, 'announceUrl' => $announce);
+    $scrape = strictInvoke('NNMClubCheckImpl', 'buildScrapeUrl', array($auth, str_repeat("\x01", 20)));
+    strictAssertSame('https://bt.nnmclub.to/scrape?uk=' . $token . '&info_hash=' . str_repeat('%01', 20),
+        $scrape, 'the outgoing scrape uses the canonical tracker host');
+    $patched = strictInvoke('NNMClubCheckImpl', 'injectAuthIntoUrl', array($announce, $token));
+    strictAssertSame('https://bt.nnmclub.to/announce?uk=' . $token, $patched,
+        'the replacement announce uses the same canonical host');
+});
+
 exit($suite->run());

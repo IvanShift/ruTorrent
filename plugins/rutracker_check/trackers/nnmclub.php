@@ -2,6 +2,7 @@
 
 require_once( __DIR__ . '/../bencode.php' );
 require_once( __DIR__ . '/../fetcherror.php' );
+require_once( __DIR__ . '/../../../php/urlhost.php' );
 
 /**
  * NNMClub handler, resilient to the Cloudflare Turnstile that now blocks
@@ -190,6 +191,10 @@ class NNMClubCheckImpl
         }
     }
 
+    // Only HTTP-200 topic pages without a download link reach this predicate.
+    // Recognised challenge/captcha pages are retryable (CANT_REACH); other unreadable
+    // pages are ERROR. Non-200 responses are rejected earlier. Endpoint routing
+    // instead uses RuTrackerFetchError::isChallenge()'s narrower evidence.
     private static function looksLikeChallengePage($html)
     {
         return is_string($html)
@@ -213,7 +218,7 @@ class NNMClubCheckImpl
             return null;
         }
 
-        $hostOnly = isset($parts['host']) ? strtolower($parts['host']) : self::SITE_DOMAIN;
+        $hostOnly = isset($parts['host']) ? UrlHost::normalize($parts['host']) : self::SITE_DOMAIN;
         if (!self::isAllowedTopicHost($hostOnly)) {
             return null;
         }
@@ -249,14 +254,14 @@ class NNMClubCheckImpl
 
     private static function isAllowedTopicHost($host)
     {
-        $normalized = preg_replace('/^www\./i', '', (string) $host);
+        $normalized = preg_replace('/^www\./', '', UrlHost::normalize($host));
         return in_array($normalized, self::TOPIC_HOSTS, true);
     }
 
     private static function isAllowedTrackerHost($host)
     {
         return is_string($host)
-            && in_array(strtolower($host), self::TRACKER_HOSTS, true);
+            && in_array(UrlHost::normalize($host), self::TRACKER_HOSTS, true);
     }
 
     /**
@@ -277,7 +282,7 @@ class NNMClubCheckImpl
         if (!is_array($parts)
             || !isset($parts['scheme'], $parts['host'])
             || !preg_match('/^https?$/i', $parts['scheme'])
-            || !self::isAllowedTrackerHost(strtolower($parts['host']))) {
+            || !self::isAllowedTrackerHost($parts['host'])) {
             return null;
         }
         $path = isset($parts['path']) ? $parts['path'] : '';
@@ -336,7 +341,7 @@ class NNMClubCheckImpl
 
     private static function rebuildTrackerUrl($parts, $path, $query)
     {
-        $url = strtolower($parts['scheme']) . '://' . strtolower($parts['host']);
+        $url = strtolower($parts['scheme']) . '://' . UrlHost::normalize($parts['host']);
         if (isset($parts['port'])) $url .= ':' . (int) $parts['port'];
         $url .= $path;
         if (count($query)) {
@@ -451,7 +456,7 @@ class NNMClubCheckImpl
         if (!is_array($parts)
             || !isset($parts['scheme'], $parts['host'], $parts['path'])
             || !preg_match('/^https?$/i', $parts['scheme'])
-            || !self::isAllowedTrackerHost(strtolower($parts['host']))
+            || !self::isAllowedTrackerHost($parts['host'])
             || !preg_match(self::ANNOUNCE_PATH_RE, $parts['path'], $match)) {
             return null;
         }
@@ -603,7 +608,7 @@ class NNMClubCheckImpl
         $parts = @parse_url($auth['announceUrl']);
         if (!is_array($parts)
             || !isset($parts['scheme'], $parts['host'], $parts['path'])
-            || !self::isAllowedTrackerHost(strtolower($parts['host']))) {
+            || !self::isAllowedTrackerHost($parts['host'])) {
             return null;
         }
 

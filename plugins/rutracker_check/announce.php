@@ -6,6 +6,7 @@
 // php/Torrent.php, which requires util.php -- and the decoder is gone, so the
 // dependency is stated instead of inherited.
 require_once( __DIR__ . '/../../php/util.php' );
+require_once( __DIR__ . '/../../php/urlhost.php' );
 require_once( __DIR__ . '/bencode.php' );
 require_once( __DIR__ . '/state.php' );
 require_once( __DIR__ . '/runstate.php' );
@@ -99,22 +100,13 @@ class RuTrackerAnnounce
     // ten manual clicks share one window's budget instead of each buying
     // its own the way an in-memory-only counter used to.
 
-    // Why this host may or may not be probed right now: 'allow', 'cooldown'
-    // (a 403 cooldown is still running) or 'cap' (the window's budget is
-    // spent). A named answer rather than a boolean, because this is what the
-    // debug log prints: a skipped layer 2 says which of the two budgets
-    // stopped it instead of merely that something did.
-    // Host names are case-insensitive, so the budget must be keyed on one
-    // spelling or "BT.T-RU.ORG" quietly buys a second full allowance of
-    // probes -- and a 403 cooldown recorded under one spelling would not
-    // stop the other.
-    // Public because the fuse keys its per-host statistics on the same names
-    // (RuTrackerUpdatePass::hostOf) and must not grow a second copy of this
-    // rule -- BT.T-RU.ORG splitting off as its own fuse group would leave both
-    // halves short of the floor.
+    // Host names are case-insensitive. Normalize every budget key so a second
+    // spelling cannot buy another allowance or bypass a recorded cooldown.
+    // Compatibility alias for callers that used this public method. Budget
+    // methods below use UrlHost directly, sharing the scheduler fuse's rule.
     static public function hostKey($host)
     {
-        return strtolower(rtrim((string) $host, '.'));
+        return UrlHost::normalize($host);
     }
 
     // The host's four budget fields through the one canonical parser, or null
@@ -241,7 +233,7 @@ class RuTrackerAnnounce
     // visible").
     static public function probeDecision($host, $now, $cap, $window)
     {
-        $host = self::hostKey($host);
+        $host = UrlHost::normalize($host);
         $window = max((int) $window, self::MIN_WINDOW);
         $readable = true;
         $state = RuTrackerState::load('announce', $readable);
@@ -261,7 +253,7 @@ class RuTrackerAnnounce
     //         'unstorable' (the slot could not be recorded -- see below)
     static public function reserveProbe($host, $now, $cap, $window)
     {
-        $host = self::hostKey($host);
+        $host = UrlHost::normalize($host);
         $window = max((int) $window, self::MIN_WINDOW);
         $decision = 'allow';
         $failure = null;
@@ -328,7 +320,7 @@ class RuTrackerAnnounce
     // there would give the new window an extra probe out of thin air.
     static public function releaseProbe($host, $reservedAt)
     {
-        $host = self::hostKey($host);
+        $host = UrlHost::normalize($host);
         RuTrackerState::update('announce', function ($state) use ($host, $reservedAt) {
             if (!isset($state[$host]) || !is_array($state[$host])) return $state;
             // Refunding into an entry nobody can read would overwrite the
@@ -353,7 +345,7 @@ class RuTrackerAnnounce
     // the backoff over at one hour instead of continuing to double.
     static public function recordOutcome($host, $now, $status)
     {
-        $host = self::hostKey($host);
+        $host = UrlHost::normalize($host);
         $status = (int) $status;
         // Anything that is neither a refusal nor a served answer leaves the
         // host's record exactly as it was -- including untouched on disk.

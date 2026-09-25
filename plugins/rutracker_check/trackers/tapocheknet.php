@@ -9,18 +9,10 @@ class TapochekNetCheckImpl
     // a protection page all arrive as HTTP 200 too.
     const MISSING_MARKER = 'Темы, которую вы запросили, не существует';
 
-    // Topic pages are windows-1251 in production, while fixtures and future
-    // deployments may already be UTF-8. Structural policy stays in this
-    // handler; this helper only gives it one encoding to inspect.
-    static private function utf8Body($body)
-    {
-        if (!is_string($body) || $body === '') return '';
-        if (strpos($body, self::MISSING_MARKER) !== false
-            || strpos($body, 'Информация') !== false) return $body;
-        if (!function_exists('iconv')) return $body;
-        $converted = @iconv('CP1251', 'UTF-8//IGNORE', $body);
-        return is_string($converted) ? $converted : $body;
-    }
+    // The measured removal page is windows-1251. Literal needles keep this
+    // verdict available in production PHP, which has no iconv extension.
+    const MISSING_MARKER_CP1251 = "\xD2\xE5\xEC\xFB\x2C\x20\xEA\xEE\xF2\xEE\xF0\xF3\xFE\x20\xE2\xFB\x20\xE7\xE0\xEF\xF0\xEE\xF1\xE8\xEB\xE8\x2C\x20\xED\xE5\x20\xF1\xF3\xF9\xE5\xF1\xF2\xE2\xF3\xE5\xF2";
+    const INFORMATION_CP1251 = "\xC8\xED\xF4\xEE\xF0\xEC\xE0\xF6\xE8\xFF";
 
     static private function plainText($html)
     {
@@ -40,11 +32,23 @@ class TapochekNetCheckImpl
     static private function isMissingAnswer($body)
     {
         if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) return false;
-        $body = self::utf8Body($body);
-        if (!preg_match_all('`<table\b(?P<attrs>[^>]*)>(?P<body>.*?)</table>`is',
-            $body, $tables, PREG_SET_ORDER)) return false;
-
-        foreach ($tables as $table) {
+        // Only rendered markup may speak for the tracker. A table in a
+        // template comment or script literal is not an Information answer.
+        $body = preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
+            '', $body);
+        // Find each table's own close tag. A lazy whole-table regex consumes
+        // a nested system message as part of its outer layout table.
+        if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) return false;
+        $stack = array();
+        foreach ($tags[0] as $tag) {
+            if (strpos($tag[0], '</') !== 0) {
+                $stack[] = array('attrs' => substr($tag[0], 6, -1),
+                    'start' => $tag[1] + strlen($tag[0]));
+                continue;
+            }
+            if (!$stack) continue;
+            $table = array_pop($stack);
+            $table['body'] = substr($body, $table['start'], $tag[1] - $table['start']);
             if (!preg_match('`\bclass\s*=\s*(["\'])(?P<class>.*?)\1`is', $table['attrs'], $classMatch))
                 continue;
             $classes = preg_split('/\s+/', strtolower(trim($classMatch['class'])));
@@ -52,7 +56,7 @@ class TapochekNetCheckImpl
             if (!preg_match_all('`<th\b[^>]*>(.*?)</th>`is', $table['body'], $heads)) continue;
             $information = false;
             foreach ($heads[1] as $head) {
-                if (self::plainText($head) === 'Информация') {
+                if (in_array(self::plainText($head), array('Информация', self::INFORMATION_CP1251), true)) {
                     $information = true;
                     break;
                 }
@@ -60,7 +64,8 @@ class TapochekNetCheckImpl
             if (!$information || !preg_match_all('`<td\b[^>]*>(.*?)</td>`is', $table['body'], $cells)) continue;
             foreach ($cells[1] as $cell) {
                 $text = self::plainText($cell);
-                if ($text === self::MISSING_MARKER || $text === self::MISSING_MARKER . '.') return true;
+                if (in_array($text, array(self::MISSING_MARKER, self::MISSING_MARKER . '.',
+                    self::MISSING_MARKER_CP1251, self::MISSING_MARKER_CP1251 . '.'), true)) return true;
             }
         }
         return false;
@@ -73,7 +78,7 @@ class TapochekNetCheckImpl
             if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
 
             if (preg_match('`btih:(?P<hash>[0-9A-Fa-f]{40})&dn`', $client->results, $matches)) {
-                // Strict comparison, as kinozal.php:120-125 documents: a
+                // Strict comparison, as the Kinozal handler's hash check documents: a
                 // loose == reads a hex hash shaped like scientific notation
                 // as a number ('1E' + 38 zeros == '00...01'), so two
                 // different 40-char hashes could pass as equal.
@@ -82,7 +87,8 @@ class TapochekNetCheckImpl
                 }
                 if (preg_match('`\"download.php\?id=(?P<id>\d+)\"`', $client->results, $matches)) {
                     $client->setcookies();
-                    $client->fetchComplex("https://tapochek.net/download.php?id=".$matches["id"]);
+                    if (!$client->fetchComplex("https://tapochek.net/download.php?id=".$matches["id"]))
+                        return ruTrackerChecker::STE_CANT_REACH_TRACKER;
                     return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
                 }
             }

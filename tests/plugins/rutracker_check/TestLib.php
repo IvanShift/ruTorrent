@@ -311,12 +311,9 @@ class StrictTestSuite
                         && property_exists('rTorrentSettings', 'instance')) {
                         strictSetPrivateStatic('rTorrentSettings', 'instance', null);
                     }
-                    if (class_exists('RuTrackerUpdatePass', false)) {
-                        foreach (array('checker', 'foreignAuthoritativeResolver') as $property) {
-                            if (property_exists('RuTrackerUpdatePass', $property)) {
-                                strictSetPrivateStatic('RuTrackerUpdatePass', $property, null);
-                            }
-                        }
+                    if (class_exists('RuTrackerUpdatePass', false)
+                        && property_exists('RuTrackerUpdatePass', 'checker')) {
+                        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
                     }
                 }
             }
@@ -394,7 +391,7 @@ function strictAssertOneLogMatching($logs, $needle, $message)
 
 function strictRemoveTree($path)
 {
-    if (is_link($path) || is_file($path)) {
+    if (is_link($path) || (file_exists($path) && !is_dir($path))) {
         @unlink($path);
         return;
     }
@@ -405,6 +402,13 @@ function strictRemoveTree($path)
         strictRemoveTree($path . '/' . $entry);
     }
     @rmdir($path);
+}
+
+function strictGetPrivateStatic($class, $property)
+{
+    $reflection = new ReflectionProperty($class, $property);
+    if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
+    return $reflection->getValue();
 }
 
 function strictSetPrivateStatic($className, $property, $value)
@@ -454,7 +458,7 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 // the other only trimmed -- so a re-spaced or wrapped sentence landed on its
 // token down one path and on 'unclassified' down the other.
 //
-// The first eight rows are php/Snoopy.class.inc's eight strings, in the order
+// The first nine rows are php/Snoopy.class.inc's nine strings, in the order
 // that file writes them.
 function fetchErrorParityCases()
 {
@@ -463,6 +467,7 @@ function fetchErrorParityCases()
         array('Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'),
         array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
             'refused-non-public-address'),
+        array('credential-redirect-refused', 'redirect-refused'),
         array('Error: cURL could not retrieve the document, error 6.', 'curl-transfer'),
         array('socket creation failed (-3)', 'socket-create'),
         array('dns lookup failure (-4)', 'dns-lookup'),
@@ -483,14 +488,14 @@ function fetchErrorParityCases()
     );
 }
 
-// The complete set of answers the classifier is allowed to give: the eight
+// The complete set of answers the classifier is allowed to give: the nine
 // tokens, the catch-all, and '' for "Snoopy wrote no message". A test that
 // only checks known messages cannot see a raw-text fallback; one that checks
 // membership can.
 function fetchErrorTokenVocabulary()
 {
     return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
-        'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
+        'redirect-refused', 'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
         'unclassified');
 }
 
@@ -791,21 +796,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
     require_once($testLibRepoRoot . '/php/Torrent.php');
     chdir($testLibPrevCwd);
 
-    if (!function_exists('iconv')) {
-        function iconv($from, $to, $content)
-        {
-            $utf8 = 'Поглощено';
-            $cp1251 = "\xCF\xEE\xE3\xEB\xEE\xF9\xE5\xED\xEE";
-            if (stripos($from, 'UTF-8') === 0 && stripos($to, 'CP1251') === 0) {
-                return str_replace($utf8, $cp1251, $content);
-            }
-            if (stripos($from, 'CP1251') === 0 && stripos($to, 'UTF-8') === 0) {
-                return str_replace($cp1251, $utf8, $content);
-            }
-            return false;
-        }
-    }
-
     // FileUtil itself needs no stub here: requiring Torrent.php above already
     // pulls in the real php/util.php, which autoloads the real FileUtil
     // (util.php:59's own FileUtil::getProfilePath() call) before this point.
@@ -855,15 +845,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             . 'e';
     }
 
-    function strictCp1251($html)
-    {
-        $encoded = iconv('UTF-8', 'CP1251//IGNORE', $html);
-        if ($encoded === false) {
-            throw new RuntimeException('Unable to create CP1251 test fixture');
-        }
-        return $encoded;
-    }
-
     class Snoopy
     {
         public static $responses = array();
@@ -877,9 +858,11 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $rawheadersLog = array();
         public static $agentsLog = array();
 
+        public $lastredirectaddr = '';
         public $status = -1;
         public $results = '';
         public $headers = array();
+        public $error = '';
         public $rawheaders = array();
         public $read_timeout = 0;
         public $_fp_timeout = 0;
@@ -899,12 +882,20 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // php/Snoopy.class.inc:596). The request side ($rawheaders) is
         // recorded per request into $rawheadersLog, index-parallel to
         // $requests, for the tests that pin conditional-GET behaviour.
-        public static function queue($url, $status, $results, $headers = array())
+        public static function queue($url, $status, $results, $headers = array(), $redirect = null)
         {
             if (!isset(self::$responses[$url])) {
                 self::$responses[$url] = array();
             }
-            self::$responses[$url][] = array($status, $results, $headers);
+            self::$responses[$url][] = array($status, $results, $headers, $redirect);
+        }
+
+        // A refusal before Snoopy receives a response leaves status/results
+        // from the previous fetch on this same client, but returns false.
+        public static function queueEarlyFailure($url, $error)
+        {
+            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
+            self::$responses[$url][] = array('earlyFailure' => $error);
         }
 
         public static function queueAny($status, $results, $headers = array())
@@ -914,6 +905,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         private function respond($method, $url)
         {
+            // A fresh top-level Snoopy fetch clears the previous redirect,
+            // even when it fails before a new HTTP response is received.
+            $this->lastredirectaddr = '';
             self::$requests[] = array($method, $url);
             self::$rawheadersLog[] = $this->rawheaders;
             // The agent the client actually held when it fetched. Recorded
@@ -923,7 +917,16 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             // with the wrong one is not a weaker probe, it is a 403.
             self::$agentsLog[] = (string) $this->agent;
             if (isset(self::$responses[$url]) && count(self::$responses[$url])) {
-                list($this->status, $this->results, $this->headers) = array_shift(self::$responses[$url]);
+                $response = array_shift(self::$responses[$url]);
+                if (isset($response['earlyFailure'])) {
+                    $this->error = $response['earlyFailure'];
+                    return false;
+                }
+                list($this->status, $this->results, $this->headers, $redirect) = $response;
+                $this->error = '';
+                // Real Snoopy leaves redirect metadata on a reused client until
+                // its caller clears it; an ordinary response sets no redirect.
+                if ($redirect !== null) $this->lastredirectaddr = $redirect;
                 return true;
             }
             if (count(self::$any)) {
@@ -983,7 +986,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             . "Chrome/120.0.0.0 Safari/537.36";
 
         public static $logs = array();
-        public static $registrations = array();
         public static $messages = array();
         public static $calls = array();
         private static $results = array();
@@ -1022,7 +1024,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function reset()
         {
             self::$logs = array();
-            self::$registrations = array();
             self::$messages = array();
             self::$calls = array();
             self::$results = array();
@@ -1033,27 +1034,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         public static function registerTracker($commentFilter, $announceFilter, $handler)
         {
-            self::$registrations[] = array($commentFilter, $announceFilter, $handler);
-        }
-
-        public static function isForeignComment($comment)
-        {
-            if ((string)$comment === '')
-                return false;
-            foreach (self::$registrations as $reg) {
-                if (preg_match($reg[0], (string)$comment)) {
-                    return $reg[2] !== 'RuTrackerCheckImpl::download_torrent';
-                }
-            }
-            if (preg_match('/kinozal\.|nnmclub\.|nnm-club\.|toloka\.|tfile\.|anidub\.|tapochek\./i', (string)$comment)) {
-                return true;
-            }
-            return false;
-        }
-
-        public static function hasForeignAuthoritativeComment($hash)
-        {
-            return false;
         }
 
         // Every User-Agent this double was asked to send, in order. Without

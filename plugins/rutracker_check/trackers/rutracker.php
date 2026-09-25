@@ -336,16 +336,11 @@ class RuTrackerCheckImpl
         return $successStamp > $lastIncrement ? 'interrupted' : 'unbroken';
     }
 
-    // Two-independent-sources deletion confirmation:
-    // chk-del holds "count:timestamp-of-last-increment". The increment is
-    // capped at once per $interval regardless of how many times this runs,
-    // so repeated manual batch_check.php clicks cannot fast-forward the
-    // three required cycles.
     // Whether confirmDeletion() ever reached its threshold for this torrent
     // AND that record still stands: the chk-del counter survives the verdict
     // (only an alive/present row resets it), so it is the durable record that
-    // a full confirmation run happened, readable even after run() has
-    // overwritten chk-state with STE_INPROGRESS for the current dispatch.
+    // a full confirmation run happened. A nonterminal dispatch may replace
+    // chk-state with STE_INPROGRESS; a DELETED/ABSORBED dispatch retains it.
     //
     // The count alone is not that record. A settled topic that comes back is
     // written STE_UPTODATE, which stamps chk-stime but leaves a chk-del whose
@@ -408,6 +403,10 @@ class RuTrackerCheckImpl
         return false;
     }
 
+    // Two-independent-sources deletion confirmation: chk-del stores
+    // "count:timestamp-of-last-increment". The increment is capped at once
+    // per bounded interval, so repeated manual checks cannot fast-forward
+    // the configured number of confirmation cycles.
     static private function confirmDeletion($hash, $now, $interval)
     {
         global $rutrackerDeleteCycles;
@@ -531,11 +530,11 @@ class RuTrackerCheckImpl
     // on a settled case, forever. The chk-msg token metafetch.php wrote IS
     // the record (no new custom field), and one d.hash probe re-verifies it.
     //
-    // check.php's run() writes STE_INPROGRESS immediately before dispatching
-    // to this handler, so that -- not the stored verdict -- is the state a
-    // scheduled or manual check actually sees here; a direct call still sees
-    // STE_NOT_NEED. Any other state means something else has judged this
-    // torrent since the token was written, so the token is stale.
+    // check.php's run() writes STE_INPROGRESS only for nonterminal states;
+    // a direct call may still see STE_NOT_NEED. DELETED/ABSORBED remain
+    // visible during dispatch and deliberately fail this shortcut, sending
+    // the topic through normal revalidation instead. Any other state makes
+    // the successor token insufficient evidence for this shortcut.
     //
     // @return string|null the recorded successor hash, or null when there is
     //         no usable record and the normal flow must run
@@ -647,8 +646,7 @@ class RuTrackerCheckImpl
         // sweepAllowed(), the store by the miss window -- and five other
         // probeDecision values already reached it.
         //
-        // These two DID change the verdict, and to one no stored token
-        // describes.
+        // These paths cannot use the earlier verdict's stored token.
         if ($verdict === 'transport') {
             ruTrackerChecker::setMessage($hash, '');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
@@ -688,7 +686,7 @@ class RuTrackerCheckImpl
         // proves nothing about the RuTracker topic (and the probe itself would
         // land on a tracker that never asked for it), so a foreign host is
         // treated exactly like a missing one: fall through to layer 3.
-        // TRACKER_HOST_PATTERN, not TRACKER_PATTERN: this decides whether to
+        // isTrackerHost(), not TRACKER_PATTERN: this decides whether to
         // SEND a request, so it must match whole domain labels rather than a
         // substring -- 'rutracker.evil.example' satisfies the latter.
         elseif (!RuTrackerDetector::isTrackerHost($host))

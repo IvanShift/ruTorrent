@@ -5,10 +5,10 @@ class TfileCheckImpl
     static public function download_torrent($url, $hash, $old_torrent)
     {
         if (preg_match('`^https?://tfile\.me/forum/viewtopic\.php\?p=(?P<id>\d+)$`', $url, $matches)) {
-            $client = ruTrackerChecker::makeClient("http://megatfile.cc/forum/viewtopic.php?p=".$matches["id"]);
+            $client = ruTrackerChecker::makeClient("https://megatfile.cc/forum/viewtopic.php?p=".$matches["id"]);
             if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             if (preg_match('`Info hash:</td><td><strong>(?P<hash>[0-9A-Fa-f]{40})</strong></td>`', $client->results, $matches)) {
-                // Strict comparison, as kinozal.php:120-125 documents: a
+                // Strict comparison, as the Kinozal handler's hash check documents: a
                 // loose == reads a hex hash shaped like scientific notation
                 // as a number ('1E' + 38 zeros == '00...01'), so two
                 // different 40-char hashes could pass as equal.
@@ -17,7 +17,8 @@ class TfileCheckImpl
                 }
                 if (preg_match('`\"download.php\?id=(?P<id>\d+)`', $client->results, $matches)) {
                     $client->setcookies();
-                    $client->fetchComplex("http://megatfile.cc/forum/download.php?id=".$matches["id"]);
+                    if (!$client->fetchComplex("https://megatfile.cc/forum/download.php?id=".$matches["id"]))
+                        return ruTrackerChecker::STE_CANT_REACH_TRACKER;
                     return ruTrackerChecker::createTorrentFromDownload($client, $hash, $old_torrent);
                 }
             }
