@@ -50,6 +50,14 @@ class SCGITransportFixture
 		return self::startChunks(array(array(0, $response)), $holdOpen, true);
 	}
 
+	/** Reply once, then read and close the next request without headers. */
+	public static function startThenCloseSecond($response)
+	{
+		$fixture = new self();
+		$fixture->boot(array(array(0, $response)), false, false, 0, true);
+		return $fixture;
+	}
+
 	public static function startRepeatedBody($length, $unix = false)
 	{
 		$fixture = new self();
@@ -129,7 +137,7 @@ class SCGITransportFixture
 		}
 	}
 
-	private function boot($chunks, $holdOpen, $unix, $repeatBytes = 0)
+	private function boot($chunks, $holdOpen, $unix, $repeatBytes = 0, $closeSecond = false)
 	{
 		$this->dir = sys_get_temp_dir().'/rutorrent-scgi-'.uniqid('', true);
 		if(!mkdir($this->dir, 0700, true))
@@ -156,6 +164,7 @@ class SCGITransportFixture
 			'hold' => $holdOpen,
 			'chunks' => $configChunks,
 			'repeat' => $repeatBytes,
+			'closeSecond' => $closeSecond,
 		)));
 		$script = <<<'PHP'
 <?php
@@ -258,6 +267,22 @@ if($config['hold'])
 	for($i = 0; $i < 500 && !is_file($argv[5]); $i++)
 		usleep(10000);
 fclose($client);
+if(!empty($config['closeSecond']))
+{
+	$second = @stream_socket_accept($server, 5);
+	if($second === false)
+		exit(15);
+	stream_set_timeout($second, 5);
+	$tail = '';
+	while(strpos($tail, '</methodCall>') === false)
+	{
+		$part = fread($second, 8192);
+		if($part === false || $part === '')
+			exit(16);
+		$tail = substr($tail.$part, -32);
+	}
+	fclose($second);
+}
 fclose($server);
 PHP;
 		$scriptFile = $this->dir.'/peer.php';

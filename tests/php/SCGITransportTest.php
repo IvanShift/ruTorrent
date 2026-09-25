@@ -711,6 +711,67 @@ class SCGITransportTest extends TestCase
 		}
 	}
 
+	public function testLaterChunkHeaderlessEofDoesNotReportPartialSuccess()
+	{
+		if(!$this->transportIsAvailable()) return;
+		$globalsBefore = array();
+		foreach(array('scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcTransferTimeOut',
+			'rpcLogCalls', 'log_file') as $name)
+			$globalsBefore[$name] = array_key_exists($name, $GLOBALS)
+				? array(true, $GLOBALS[$name]) : array(false, null);
+		$settingsClass = new ReflectionClass('rTorrentSettings');
+		$singleton = $settingsClass->getProperty('theSettings');
+		if(PHP_VERSION_ID < 80100)
+			$singleton->setAccessible(true);
+		$previous = $singleton->getValue();
+		$peer = null;
+		$logPath = sys_get_temp_dir().'/rutorrent-scgi-later-chunk-'.uniqid('', true).'.log';
+		try
+		{
+			$settings = $settingsClass->newInstanceWithoutConstructor();
+			$settings->apiVersion = 0;
+			$singleton->setValue(null, $settings);
+			$body = '<?xml version="1.0"?><methodResponse><params><param><value><array><data>'
+				.'<value><string>first</string></value>'
+				.'</data></array></value></param></params></methodResponse>';
+			$peer = SCGITransportFixture::startThenCloseSecond(
+				'Content-Length: '.strlen($body)."\r\n\r\n".$body);
+			$GLOBALS['scgi_host'] = $peer->host();
+			$GLOBALS['scgi_port'] = $peer->port();
+			$GLOBALS['rpcTimeOut'] = 2;
+			$GLOBALS['rpcTransferTimeOut'] = 2;
+			$GLOBALS['rpcLogCalls'] = false;
+			$GLOBALS['log_file'] = $logPath;
+			$req = new rXMLRPCRequest();
+			for($index = 0; $index < 600; $index++)
+				$req->addCommand(new rXMLRPCCommand('d.set_custom1',
+					array(sprintf('%040d', $index), str_repeat('x', 3500))));
+			$result = $req->success();
+			$this->assertTrue(strpos($peer->request()['payload'], sprintf('%040d', 599)) === false,
+				'the bulk request was split before the final command');
+			$this->assertEquals('closed-before-headers', $req->transportFailure,
+				'the second request reached the fake peer and closed before headers');
+			$this->assertEquals(array('first'), $req->val,
+				'the first chunk was parsed before the later failure');
+			$this->assertTrue($result === false,
+				'a later transport failure cannot report partial XMLRPC success');
+		}
+		finally
+		{
+			$singleton->setValue(null, $previous);
+			@unlink($logPath);
+			if($peer !== null)
+				$peer->close();
+			foreach($globalsBefore as $name => $entry)
+			{
+				if($entry[0])
+					$GLOBALS[$name] = $entry[1];
+				else
+					unset($GLOBALS[$name]);
+			}
+		}
+	}
+
 	public function testCoreConsumerForwardsRawModeAndConfiguredLimit()
 	{
 		if(!$this->transportIsAvailable()) return;

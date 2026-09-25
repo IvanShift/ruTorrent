@@ -187,6 +187,8 @@ class rXMLRPCRequest
 		$this->commandOffset = 0;
 		while($this->makeNextCall())
 		{
+			// An earlier chunk cannot make a failed later chunk successful.
+			$ret = false;
 			$answer = self::send($this->content,$trusted,$this->transportFailure);
 			if(!empty($answer))
 			{
