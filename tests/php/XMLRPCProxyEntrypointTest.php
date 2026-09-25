@@ -94,6 +94,27 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			));
 	}
 
+	public function testRpc2OptInCallTranscriptIncludesSentAndReturnedXml()
+	{
+		$xml = $this->allowedXml();
+		$quiet = $this->runEntrypoint('rpc2', $xml, false);
+		$this->assertTrue(strpos($quiet['rpc2logs'], 'rpc-call request base64=') === false,
+			'ordinary rpc2 traffic does not write the raw call transcript');
+		$logged = $this->runEntrypoint('rpc2', $xml, false, 'success', 'shipped', true);
+		$this->assertHttp($logged, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertTrue($logged['state']['sends'] === 1,
+			'opt-in logging does not add an RPC send');
+		$this->assertTrue(strpos($logged['rpc2logs'], 'rpc-call request base64='.base64_encode($xml)) !== false,
+			'opt-in rpc2 logging records the exact sent XML');
+		$this->assertTrue(strpos($logged['rpc2logs'], 'rpc-call response base64='.base64_encode($logged['body'])) !== false,
+			'opt-in rpc2 logging records the returned XML body');
+		$failure = $this->runEntrypoint('rpc2', $xml, false, 'false', 'shipped', true);
+		$this->assertHttp($failure, '502 Bad Gateway', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($failure['rpc2logs'], 'rpc-call request base64='.base64_encode($xml)) !== false
+			&& strpos($failure['rpc2logs'], 'rpc-call response: transport-failed') !== false,
+			'failed transports are diagnosed without pretending to have a reply');
+	}
+
 	public function testRpc2UnreadableInputReturnsClassified400()
 	{
 		$result = $this->runEntrypoint('rpc2', 'unreadable', true);
@@ -908,7 +929,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '<params></params></methodCall>';
 	}
 
-	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped')
+	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false)
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
 		$process = null;
@@ -931,6 +952,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$environment = array_merge($_ENV, array(
 				'XMLRPC_ENTRYPOINT_STATE' => $state,
 				'XMLRPC_ENTRYPOINT_LOGGING' => $logging ? '1' : '0',
+				'XMLRPC_ENTRYPOINT_LOG_CALLS' => $logCalls ? '1' : '0',
 				'XMLRPC_ENTRYPOINT_SEND' => $send,
 				'XMLRPC_ENTRYPOINT_UNREADABLE' => ($body === 'unreadable') ? '1' : '0',
 			));
@@ -1163,6 +1185,7 @@ PHP
 // $XMLRPCProxyAllowRootDirectory false, and rpc2.php refuses to serve at all
 // while the boundary is one that confines nothing.
 $XMLRPCProxyLog = (getenv('XMLRPC_ENTRYPOINT_LOGGING') === '1');
+$rpcLogCalls = (getenv('XMLRPC_ENTRYPOINT_LOG_CALLS') === '1');
 $topDirectory = realpath(dirname(__FILE__) . '/..');
 $log_file = dirname(__FILE__) . '/../rpc2.log';
 $scgi_host = '127.0.0.1';

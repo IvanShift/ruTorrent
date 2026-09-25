@@ -80,10 +80,10 @@ $allowRootDirectory = $policy['allowRootDirectory'];
  * but the proxy and the configuration — the point of the endpoint is that it
  * does one thing.
  */
-function rpc2_log($message)
+function rpc2_log($message, $force = false)
 {
 	global $logging, $log_file;
-	if(!$logging)
+	if(!$logging && !$force)
 		return;
 	$line = date('d.m.Y H:i:s').' rpc2: '.str_replace(array("\r", "\n"), ' ', $message)."\n";
 	if(!empty($log_file) && (@file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX) !== false))
@@ -107,13 +107,20 @@ function rpc2_fault($status, $message)
 function rpc2_send($payload, $trusted)
 {
 	require_once(dirname(__FILE__).'/php/scgitransport.php');
-	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes;
+	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes, $rpcLogCalls;
+	// Explicit call tracing records exact bytes safely on one line, including
+	// failures, even when routine proxy decision logging is disabled.
+	if(!empty($rpcLogCalls))
+		rpc2_log('rpc-call request base64='.base64_encode($payload), true);
 	$failure = null;
 	$result = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted,
 		isset($rpcTimeOut) ? $rpcTimeOut : 30, $failure,
 		isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
 		isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
 		rSCGITransport::RESPONSE_BODY);
+	if(!empty($rpcLogCalls))
+		rpc2_log($result === null ? 'rpc-call response: transport-failed'
+			: 'rpc-call response base64='.base64_encode($result), true);
 	if($result === null)
 		rpc2_log($failure);
 	return $result;

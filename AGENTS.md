@@ -209,8 +209,11 @@ That is not a loss of diagnostic power. The full request/response transcript is 
 demand, in core:
 
 - `$rpcLogCalls` — `rXMLRPCRequest::send()` in `php/xmlrpc.php` logs every request it sends and
-  the raw answer it came back with. Callers that reach `rSCGITransport::send()` directly, such
-  as `rpc2.php`, do not pass through it.
+  the raw answer it came back with. `rpc2.php` reaches `rSCGITransport::send()` directly, so
+  `rpc2_send()` honors the same opt-in flag itself: its log records the exact sent XML and
+  returned SCGI response body as base64 (or `transport-failed`) even when routine proxy
+  decision logging is off. These bytes can contain secrets; if `$log_file` is unavailable,
+  `rpc2_log()` falls back to PHP's error log.
 - `$rpcLogFaults` — `rXMLRPCRequest::run()` in the same file logs the request **and** the raw
   answer whenever a call faults on an `important` request.
 
