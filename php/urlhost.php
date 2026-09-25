@@ -44,7 +44,10 @@ class UrlHost
 	/**
 	 * The host of a URL, normalized, or null when the URL has none that
 	 * parse_url() can find -- which is the answer for a URL that only
-	 * mentions a host somewhere in its path or query.
+	 * mentions a host somewhere in its path or query. A scheme-relative
+	 * reference (//host/path) has a host; callers needing HTTPS must also
+	 * check the scheme. IDN spellings are compared as supplied, without
+	 * Unicode/punycode conversion.
 	 */
 	static public function of($url)
 	{
@@ -106,7 +109,8 @@ class UrlHost
 	/**
 	 * True when $url's host is one of $hosts (or a subdomain of one), its
 	 * scheme is $scheme when one is named, and its path starts with
-	 * $pathPrefix when one is named. Loginmgr account test() methods that
+	 * $pathPrefix when one is named. Port is not part of this host predicate;
+	 * use sameOrigin() when it matters. Loginmgr account test() methods that
 	 * call this select accounts and bound Snoopy's cross-origin session trust.
 	 *
 	 * The scheme may not be weakened: an https site matched over http would

@@ -65,6 +65,43 @@ class UrlHostTest extends TestCase
 		$this->assertTrue(UrlHost::urlIsOneOf('https://tracker.example', $hosts, null, '/'),
 			'a URL with no path is at /');
 	}
+	public function testParsedAuthorityEdgesAreStableAcrossPhpVersions()
+	{
+		// UrlHost compares the parsed host literally; it does not convert IDNs.
+		$this->assertEquals('xn--tst-qla.example', UrlHost::of('https://xn--tst-qla.example/x'),
+			'an IDN A-label remains an A-label');
+		$this->assertEquals('täst.example', UrlHost::of('https://täst.example/x'),
+			'a Unicode host is not silently converted to punycode');
+		$this->assertTrue(!UrlHost::isOneOf('täst.example', array('xn--tst-qla.example')),
+			'different IDN spellings do not gain identity without an explicit converter');
+		$this->assertEquals('[2001:db8::1]', UrlHost::of('https://[2001:db8::1]:8443/x'),
+			'parse_url retains IPv6 brackets in the host');
+		$this->assertTrue(UrlHost::isOneOf('[2001:db8::1]', array('[2001:db8::1]')),
+			'a bracketed IPv6 authority can match a declared host');
+		$this->assertTrue(UrlHost::of('tracker.example/x') === null,
+			'a bare name and path are not a URL authority');
+		$this->assertEquals('tracker.example', UrlHost::of('//tracker.example/x'),
+			'parse_url exposes the host in a scheme-relative reference');
+		$this->assertTrue(!UrlHost::urlIsOneOf('//tracker.example/x', array('tracker.example'), 'https'),
+			'an account requiring HTTPS does not accept a scheme-relative reference');
+		$this->assertEquals('tracker.example', UrlHost::of('https://user@evil@tracker.example:443/x'),
+			'the last at-sign separates userinfo from the actual host');
+		$this->assertTrue(!UrlHost::urlIsOneOf('https://tracker.example@evil.test/x',
+			array('tracker.example'), 'https'), 'a trusted name in userinfo is not a trusted host');
+	}
+
+	public function testHostPredicatesIgnorePortWhileOriginPredicatesCompareIt()
+	{
+		$url = 'https://tracker.example:8443/download';
+		$this->assertEquals('tracker.example', UrlHost::of($url), 'of returns the host without its port');
+		$this->assertTrue(UrlHost::isOneOf(UrlHost::of($url), array('tracker.example')),
+			'isOneOf compares host identity only');
+		$this->assertTrue(UrlHost::urlIsOneOf($url, array('tracker.example'), 'https'),
+			'urlIsOneOf does not impose a port policy');
+		$this->assertTrue(!UrlHost::sameOrigin($url, 'https://tracker.example/download'),
+			'sameOrigin does compare the effective port');
+	}
+
 	public function testSameOriginRequiresTheSameSchemeHostAndEffectivePort()
 	{
 		foreach(array(

@@ -82,13 +82,8 @@ abstract class commonAccount
 	abstract protected function isOK($client);
 	abstract protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched);
 
-	// Prefix-matching the URL string is not the same as matching the site.
-	// "https://tracker.example" is a prefix of "https://tracker.example@evil.test/"
-	// (the tracker name is userinfo, the host is the attacker's) and of
-	// "https://tracker.example.evil.test/" (the tracker name is one label of a
-	// longer domain). Either would have handed this account's cookies to
-	// whoever controls that host, and the URL does not have to come from the
-	// user -- plugins/rss follows links out of a feed.
+	// This decision selects the account whose cookies are sent. UrlHost owns
+	// the host identity rule; a prefix of the raw URL is not an identity.
 	public function test($url)
 	{
 		$site = @parse_url((string) $this->url);
@@ -97,12 +92,8 @@ abstract class commonAccount
 		return(self::urlAddresses($url,array($site["host"]),$site["scheme"]));
 	}
 
-	// True when $url's host is one of $hosts, or a subdomain of one, and its
-	// scheme is $scheme when a scheme is named. Subclasses that accept several
-	// domains, or a whole domain's subdomains, say so here instead of matching
-	// the name anywhere in the URL string. The test itself, and why it is
-	// what it is, live in UrlHost (php/urlhost.php), shared with
-	// plugins/rutracker_check.
+	// Compatibility wrapper for account subclasses. Host, scheme and path
+	// matching live in UrlHost::urlIsOneOf(), shared with rutracker_check.
 	static protected function urlAddresses($url,$hosts,$scheme = null,$pathPrefix = null)
 	{
 		return(UrlHost::urlIsOneOf($url,$hosts,$scheme,$pathPrefix));
