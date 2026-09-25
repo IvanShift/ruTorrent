@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 
 window.$ = require("jquery");
 
-function renderAccount(enabled) {
+function renderAccount(enabled, warningText = "Configure Ygg origin") {
   document.body.innerHTML = "";
   window.theWebUI = {
     theAccounts: {
@@ -12,7 +12,7 @@ function renderAccount(enabled) {
   window.theUILang = {
     Enabled: "Enabled", accAuto: "Auto", accLogin: "Login", accPassword: "Password",
     acAutoNone: "None", acAutoDay: "Day", acAutoWeek: "Week", acAutoMonth: "Month",
-    accOriginRequired: "Configure Ygg origin", accAccounts: "Accounts",
+    accOriginRequired: warningText, accAccounts: "Accounts",
   };
   window.linked = jest.fn();
   const attachPageToOptions = jest.fn();
@@ -35,4 +35,14 @@ test("Ygg origin warning follows the Enabled checkbox", () => {
   const enabledPage = renderAccount(1);
   expect(enabledPage.querySelector(".alert-warning").textContent).toBe("Configure Ygg origin");
   expect(enabledPage.querySelector(".alert-warning").style.display).not.toBe("none");
+});
+
+test("An untranslated locale receives the complete Ygg configuration paths", () => {
+  const page = renderAccount(1, null);
+  const warning = page.querySelector(".alert-warning").textContent;
+  expect(warning).toContain("plugins/loginmgr/conf.local.php");
+  expect(warning).toContain("conf/users/<user>/plugins/loginmgr/conf.php");
+  const english = readFileSync("../plugins/loginmgr/lang/en.js", "utf8")
+    .match(/theUILang\.accOriginRequired = "([^"]+)";/)?.[1];
+  expect(warning).toBe(english);
 });
