@@ -1,5 +1,8 @@
 #!/bin/bash
 
+script_dir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+cd "$script_dir" || exit 1
+
 TEST_RUN='
 foreach(get_declared_classes() as $cls) {
 	if (get_parent_class($cls) == "TestCase") {
@@ -34,15 +37,26 @@ if [ -n "$tmp_free_kb" ] && [ "$tmp_free_kb" -lt 524288 ]; then
 		"$((tmp_free_kb / 1024))" "${TMPDIR:-/tmp}" >&2
 fi
 
-. "$(dirname "$0")/php-failure-pattern.sh"
+. "$script_dir/php-failure-pattern.sh"
 status=0
 failed_files=()
-for t in $(find php plugins -type f -name '*Test.php')
+test_manifest="$(mktemp "${TMPDIR:-/tmp}/rutorrent-php-tests.XXXXXX")" || exit 1
+trap 'rm -f -- "$test_manifest"' EXIT
+if ! find php plugins -type f -name '*Test.php' -print0 > "$test_manifest"; then
+	echo 'php-test.sh: cannot list PHP test files' >&2
+	exit 1
+fi
+mapfile -d '' -t test_files < "$test_manifest"
+if [ "${#test_files[@]}" -eq 0 ]; then
+	echo 'php-test.sh: no PHP test files found' >&2
+	exit 1
+fi
+for t in "${test_files[@]}"
 do
-	echo '> php' $t
+	printf '> php %s\n' "$t"
 	# Absolute: this stands in for __DIR__ below, and a relative path makes a
 	# fixture symlink resolve against the wrong directory.
-	DIR=$(cd "$(dirname "$t")" && pwd)
+	DIR=$(CDPATH= cd -- "$(dirname "$t")" && pwd)
 	out=$(php -c php-test.ini -f <(cat <(sed "s@__DIR__@\"$DIR\"@g" "$t") <(echo "$TEST_RUN")) 2>&1)
 	code=$?
 	printf '%s\n' "$out"
