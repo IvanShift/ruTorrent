@@ -25,6 +25,43 @@ class SnoopyMock
 
 final class RSSTest extends TestCase
 {
+	public function testConditionalValidatorsKeepResponseValueCase(): void
+	{
+		$requests = 0;
+		$feed = new rRSS('https://tracker.example/feed',
+			function ($url, $cookies, $headers) use (&$requests) {
+				$requests++;
+				$client = new SnoopyMock();
+				if($requests === 1)
+				{
+					$client->headers = array('ETag: "AbC"',
+						'Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT');
+					$client->results = file_get_contents(__DIR__ . '/atom-sample.xml');
+				}
+				else
+				{
+					$this->assertEquals(array('If-None-Match' => '"AbC"',
+						'If-Modified-Since' => 'Wed, 21 Oct 2015 07:28:00 GMT'), $headers,
+						'validators sent back with their original value bytes');
+					$client->status = 304;
+				}
+				return $client;
+			});
+		$this->assertTrue($feed->fetch(new rRSSHistory()), 'first response parsed');
+		$this->assertEquals('"AbC"', $feed->etag, 'ETag case retained');
+		$this->assertEquals('Wed, 21 Oct 2015 07:28:00 GMT', $feed->lastModified,
+			'Last-Modified case retained');
+		$this->assertTrue($feed->fetch(new rRSSHistory()), 'second request accepts 304');
+	}
+
+	public function testCookieSuffixUsesSharedParserForValuesContainingEquals(): void
+	{
+		$feed = new rRSS('https://tracker.example/feed:COOKIE:token=abc=def;broken;sid=2');
+		$this->assertEquals(array('token' => 'abc=def', 'sid' => '2'), $feed->cookies,
+			'URL cookie values keep equals and malformed pairs are ignored');
+		$this->assertEquals('https://tracker.example/feed', $feed->url,
+			'cookie suffix is removed from request URL');
+	}
 	public function testRefusedCredentialRedirectNamesTheReason(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed', function ($url, $cookies, $headers) {

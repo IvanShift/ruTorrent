@@ -41,19 +41,8 @@ class rRSS
 		$this->version = 1;
 		if($url)
 		{
-			$pos = strpos($url,':COOKIE:');
-			if($pos!==false)
-			{
-				$this->url = substr($url,0,$pos);
-				$tmp = explode(";",substr($url,$pos+8));
-				foreach($tmp as $item)
-				{
-					list($name,$val) = explode("=",$item);
-					$this->cookies[$name] = $val;
-				}
-			}
-			else
-				$this->url = $url;
+			$this->url = $url;
+			$this->cookies = Snoopy::getURLCookies($this->url);
 			$this->url = Snoopy::linkencode($this->url);
 			$this->srcURL = $this->url;
 			if(count($this->cookies))
@@ -91,7 +80,7 @@ class rRSS
 			// Snoopy can see Location on a 2xx response; its refusal still wins.
 			return(false);
 		}
-		if($cli && $cli->status>=200 && $cli->status<300)
+		if(Snoopy::isTorrentResponse($cli))
 		{
 			$name = $cli->get_filename();
 			if($name===false)
@@ -177,9 +166,12 @@ class rRSS
 		$this->lastModified = null;
 		foreach($cli->headers as $header)
 		{
-			$field = explode(': ', trim(strtolower($header)), 2);
-			$value = count($field) > 1 ? $field[1] : '';
-			switch($field[0]) {
+			$colon = strpos($header, ':');
+			if($colon === false)
+				continue;
+			$name = strtolower(trim(substr($header, 0, $colon)));
+			$value = trim(substr($header, $colon + 1));
+			switch($name) {
 				case 'etag':
 					$this->etag = $value;
 					break;
