@@ -9459,7 +9459,11 @@ function retrackersRunLifecycleInit($canonicalUser, $script, $php, &$jResult,
 	$ok = RetrackersLifecycleCoordinator::init(
 		$canonicalUser, $script, $php, $failure, $adapter);
 	if (!$ok) {
-		$jResult .= retrackersLifecycleDiagnosticJavascript('init', $failure);
+		$reason = retrackersBoundedFailureReason($failure);
+		if (class_exists('FileUtil') && method_exists('FileUtil', 'toLog')) {
+			FileUtil::toLog('retrackers-init: ' . $reason);
+		}
+		$jResult .= retrackersLifecycleDiagnosticJavascript('init', $reason);
 	}
 	return($ok);
 }

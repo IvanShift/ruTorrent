@@ -157,7 +157,10 @@ class rRatio
 		// data could never be collected. A missing helper means a broken
 		// install; fail closed and keep the download so the erase stays possible.
 		if(!is_file($helper))
+		{
+			FileUtil::toLog('ratio: erasedata-helper-unavailable');
 			return(getCmd("cat="));
+		}
 		$user = preg_replace('/[^\w\.\-]/', '', (string)User::getUser());
 		return($prefix.'execute.nothrow.bg={'.Utility::getPHP().','.$helper.
 			',$'.getCmd("d.get_hash").'=,'.$force.','.$user.'}');

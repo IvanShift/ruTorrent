@@ -48,6 +48,37 @@ class EraseWithDataCommandTest extends TestCase
 			'the helper the command points at is part of the tree');
 	}
 
+	public function testMissingErasedataHelperRefusesAndLogsOncePerAction()
+	{
+		$fixture = sys_get_temp_dir().'/ratio-missing-erase-'.bin2hex(random_bytes(4));
+		mkdir($fixture.'/plugins/ratio', 0700, true);
+		mkdir($fixture.'/php', 0700, true);
+		copy(__DIR__.'/../../../plugins/ratio/ratio.php', $fixture.'/plugins/ratio/ratio.php');
+		file_put_contents($fixture.'/php/xmlrpc.php', '<?php class FileUtil {'
+			.'public static $logs = array(); public static function getPluginConf($name) { return ""; } '
+			.'public static function toLog($message) { self::$logs[] = $message; }} '
+			.'function getCmd($command) { return $command; }');
+		file_put_contents($fixture.'/php/cache.php', '<?php');
+		file_put_contents($fixture.'/php/settings.php', '<?php');
+		file_put_contents($fixture.'/probe.php', '<?php require dirname(__FILE__)."/plugins/ratio/ratio.php"; '
+			.'$ratio = new rRatio(); $out = array(); foreach (array("1", "2") as $force) {'
+			.'FileUtil::$logs = array(); $out[$force] = array($ratio->getEraseWithDataCommand($force), FileUtil::$logs); } '
+			.'echo json_encode($out);');
+		try {
+			$output = array();
+			$status = 0;
+			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php').' 2>&1', $output, $status);
+			$decoded = json_decode(implode("\n", $output), true);
+			$this->assertEquals(0, $status, 'copied Ratio command runs without the erasedata helper');
+			$this->assertEquals(array(
+				'1' => array('cat=', array('ratio: erasedata-helper-unavailable')),
+				'2' => array('cat=', array('ratio: erasedata-helper-unavailable')),
+			), $decoded, 'both erase actions refuse with one classified log line each');
+		} finally {
+			$this->removeTree($fixture);
+		}
+	}
+
 	public function testRunsInTheBackground()
 	{
 		$this->assertTrue(strpos($this->command("1"), "execute.nothrow.bg={") !== false,
