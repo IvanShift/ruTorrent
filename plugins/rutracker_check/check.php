@@ -1958,6 +1958,8 @@ class ruTrackerChecker
 	static public function transportFailureDetail($status)
 	{
 		$status = (int) $status;
+		if($status === Snoopy::RESPONSE_BODY_FAILED)
+			return('transport=response-body status=' . $status . ' reason=invalid');
 		if($status < 0)
 		{
 			$reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');

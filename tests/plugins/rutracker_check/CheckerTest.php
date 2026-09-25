@@ -338,6 +338,7 @@ class CheckerProbe extends ruTrackerChecker
 // guard has to classify.
 class Snoopy
 {
+	const RESPONSE_BODY_FAILED = -101;
 	public static $nextStatus = 200;
 	public static $nextResults = '';
 	public static $nextError = '';
@@ -2224,6 +2225,30 @@ class CheckerTest
 	// re-spaced or wrapped sentence meant two different tokens depending on
 	// which path happened to log it. One table asserted from both sides is
 	// what makes that a test rather than a convention.
+	public function testResponseBodyFailureHasAClassifiedReasonDespiteHttp200()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			try
+			{
+				Snoopy::$nextStatus = Snoopy::RESPONSE_BODY_FAILED;
+				Snoopy::$nextError = 'invalid-or-oversized-gzip';
+				$client = ruTrackerChecker::makeClient('https://bt4.t-ru.org/ann');
+				strictAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+					'failed body cannot retain HTTP 200 as its verdict');
+				strictAssertSame(1, count(FileUtil::$log), 'body failure is logged once');
+				strictAssertTrue(strpos(FileUtil::$log[0],
+					'transport=response-body status=-101 reason=invalid error=invalid-or-oversized-gzip') !== false,
+					'the log gives the classified body reason, not remote bytes');
+			}
+			finally
+			{
+				Snoopy::$nextStatus = 200;
+				Snoopy::$nextError = '';
+			}
+		});
+	}
+
 	public function testSharedSnoopyCorpusClassifiesTheSameWayThroughMakeClient()
 	{
 		$this->resetFakes();

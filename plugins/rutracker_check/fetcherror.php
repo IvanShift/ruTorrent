@@ -65,7 +65,7 @@ class RuTrackerFetchError
 	 * without __toString into a fatal.
 	 *
 	 * @param mixed $error Snoopy's $error field, or anything at all
-	 * @return string One of the nine tokens, 'unclassified', or '' when
+	 * @return string One of the fixed tokens, 'unclassified', or '' when
 	 *                Snoopy wrote no message
 	 */
 	static public function classify( $error )
@@ -73,7 +73,7 @@ class RuTrackerFetchError
 		if(!is_string($error)) return('');
 		$error = trim(preg_replace('/\s+/', ' ', $error));
 		if($error === '') return('');
-		// Classify Snoopy's nine error strings. A refused credential redirect
+		// Classify Snoopy's own errors. A refused credential redirect
 		// retains HTTP status 302, so the current plugin consumers that log only
 		// status < 100 do not emit redirect-refused; the class remains available
 		// to callers that inspect the error field directly.
@@ -87,6 +87,11 @@ class RuTrackerFetchError
 			'dns-lookup' => '/^dns lookup failure\b/i',
 			'connect-refused' => '/^connection refused or timed out\b/i',
 			'connect-errno' => '/^connection failed\b/i',
+			'unsupported-transfer-encoding' => '/^unsupported-transfer-encoding$/i',
+			'invalid-or-oversized-chunked' => '/^invalid-or-oversized-chunked$/i',
+			'oversized-response' => '/^oversized-response$/i',
+			'invalid-or-oversized-gzip' => '/^invalid-or-oversized-gzip$/i',
+			'unreadable-or-oversized-response' => '/^unreadable-or-oversized-response$/i',
 		);
 		foreach($classes as $token => $pattern)
 			if(preg_match($pattern, $error)) return($token);

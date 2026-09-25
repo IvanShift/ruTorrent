@@ -41,6 +41,7 @@ require_once( 'urlhost.php' );
 
 class Snoopy
 {
+	const RESPONSE_BODY_FAILED = -101;
 	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
 
 	/**** Public variables ****/
@@ -239,7 +240,7 @@ class Snoopy
 	{
 		return is_object($client) && isset($client->status)
 			&& $client->status >= 200 && $client->status < 300
-			&& (!isset($client->error) || $client->error !== self::CREDENTIAL_REDIRECT_REFUSED);
+			&& (!isset($client->error) || $client->error === '');
 	}
 
 	static public function isTorrentResponse($client)
@@ -258,6 +259,9 @@ class Snoopy
 
 	public function fetchComplex($URI,$method="GET",$content_type="",$body="")
 	{
+		// The cookie suffix is not part of the URL authority. Parse the host
+		// only after removing it, including for pathless source URLs.
+		$urlCookies = self::getURLCookies($URI);
 		$parts = @parse_url($URI);
 		$this->host = is_array($parts) && isset($parts["host"]) ? $parts["host"] : '';
 		$originalCookies = $this->cookies;
@@ -282,7 +286,6 @@ class Snoopy
 				$pluginCookieRefused = $this->requestCookieScheme === 'http'
 					&& !empty($store->getCookiesForHost($this->requestCookieHost));
 			}
-			$urlCookies = self::getURLCookies($URI);
 			$this->requestScopedCookies = array_merge($pluginCookies, $urlCookies);
 			$this->cookies = array_merge($this->cookies, $this->requestScopedCookies);
 			$acc = false;
@@ -686,6 +689,146 @@ class Snoopy
 			. ($target[0] === '/' ? $target : '/' . $target);
 	}
 
+	protected function refuseResponseBody($reason)
+	{
+		$this->status = self::RESPONSE_BODY_FAILED;
+		$this->error = $reason;
+		$this->results = '';
+		return(false);
+	}
+
+	protected static function isGzipContentEncoding($header)
+	{
+		return(preg_match('/^Content-Encoding[ \t]*:[ \t]*gzip[ \t]*$/i',
+			rtrim($header, "\r\n")) === 1);
+	}
+
+	protected static function readFixedBytes($fp, $length)
+	{
+		$body = '';
+		while(strlen($body) < $length)
+		{
+			$part = fread($fp, min(4096, $length - strlen($body)));
+			if($part === false || $part === '')
+				return(false);
+			$body .= $part;
+		}
+		return($body);
+	}
+
+	protected function readChunkedBody($fp)
+	{
+		$body = '';
+		$limit = (int)$this->maxlength;
+		if($limit < 0)
+			return(false);
+		while(true)
+		{
+			$line = fgets($fp, $this->_maxlinelen);
+			if($line === false || !preg_match('/^([0-9a-f]+)(?:;[^\r\n]*)?\r?\n$/i',
+				$line, $match))
+				return(false);
+			$size = hexdec($match[1]);
+			if($size > $limit - strlen($body))
+				return(false);
+			if($size == 0)
+				break;
+			$part = self::readFixedBytes($fp, (int)$size);
+			if($part === false || self::readFixedBytes($fp, 2) !== "\r\n")
+				return(false);
+			$body .= $part;
+		}
+		$trailerBytes = 0;
+		while(($line = fgets($fp, $this->_maxlinelen)) !== false)
+		{
+			$trailerBytes += strlen($line);
+			if($trailerBytes > 8192)
+				return(false);
+			if($line === "\r\n" || $line === "\n")
+				return($body);
+			if(!preg_match('/^[^\r\n]+\r?\n$/', $line))
+				return(false);
+		}
+		return(false);
+	}
+
+	protected function hasZlibGzip()
+	{
+		return(function_exists('inflate_init') && function_exists('inflate_add')
+			&& function_exists('inflate_get_status') && function_exists('inflate_get_read_len'));
+	}
+
+	// Decode bounded chunks so a small compressed answer cannot expand without
+	// limit. The external path exists only for PHP builds without zlib.
+	protected function decodeGzipBody($encoded)
+	{
+		$limit = (int)$this->maxlength;
+		if(!is_string($encoded) || strlen($encoded) < 10 || $limit < 0
+			|| strlen($encoded) > $limit || substr($encoded, 0, 2) !== "\x1f\x8b")
+			return(false);
+		if($this->hasZlibGzip())
+		{
+			$decoded = '';
+			$length = strlen($encoded);
+			$consumed = 0;
+			while($consumed < $length)
+			{
+				// gzip accepts zero padding after the final member.
+				if(strspn($encoded, "\0", $consumed) === $length - $consumed)
+					break;
+				$inflater = @inflate_init(ZLIB_ENCODING_GZIP);
+				if($inflater === false)
+					return(false);
+				for($offset = $consumed; $offset < $length; $offset += 1024)
+				{
+					$chunk = substr($encoded, $offset, 1024);
+					$mode = $offset + strlen($chunk) === $length ? ZLIB_FINISH : ZLIB_SYNC_FLUSH;
+					$part = @inflate_add($inflater, $chunk, $mode);
+					if($part === false || strlen($part) > $limit - strlen($decoded))
+						return(false);
+					$decoded .= $part;
+					if(inflate_get_status($inflater) === ZLIB_STREAM_END)
+						break;
+				}
+				if(inflate_get_status($inflater) !== ZLIB_STREAM_END)
+					return(false);
+				$read = inflate_get_read_len($inflater);
+				if($read <= 0)
+					return(false);
+				$consumed += $read;
+			}
+			return($decoded);
+		}
+		if(!function_exists('proc_open'))
+			return(false);
+		$input = @tmpfile();
+		if(!is_resource($input))
+			return(false);
+		try
+		{
+			$path = stream_get_meta_data($input)['uri'];
+			if(@fwrite($input, $encoded) !== strlen($encoded) || !@fflush($input))
+				return(false);
+			$process = @proc_open(array(Utility::getExternal('gzip'), '-dc', $path),
+				array(0 => array('file', '/dev/null', 'r'),
+					1 => array('pipe', 'w'), 2 => array('file', '/dev/null', 'w')),
+				$pipes);
+			if(!is_resource($process))
+				return(false);
+			$output = stream_get_contents($pipes[1], $limit + 1);
+			if($output === false || strlen($output) > $limit)
+				@proc_terminate($process);
+			fclose($pipes[1]);
+			$status = proc_close($process);
+			return(is_string($output) && strlen($output) <= $limit && $status === 0
+				? $output : false);
+		}
+		finally
+		{
+			fclose($input);
+		}
+	}
+
 	function _httprequest($url,$fp,$URI,$http_method,$content_type="",$body="")
 	{
 		if($this->passcookies && $this->_redirectaddr)
@@ -699,7 +842,7 @@ class Snoopy
 			$headers .= "Host: ".$this->host.($this->port == 80 ? "" : ":".$this->port)."\r\n";
 		if(!empty($this->accept))
 			$headers .= "Accept: ".$this->accept."\r\n";
-		if($this->use_gzip && function_exists("gzinflate"))
+		if($this->use_gzip && $this->hasZlibGzip())
 			$headers .= "Accept-encoding: gzip\r\n";
 		if(!empty($this->referer))
 			$headers .= "Referer: ".$this->referer."\r\n";
@@ -737,6 +880,7 @@ class Snoopy
 		$this->_redirectaddr = false;
 		$this->headers = array();
 		$is_gzipped = false;
+		$transferCodings = array();
 
 		while($currentHeader = fgets($fp,$this->_maxlinelen))
 		{
@@ -765,41 +909,60 @@ class Snoopy
 				$this->response_code = $currentHeader;
 			}
 
-			if (preg_match("/Content-Encoding: gzip/i", $currentHeader) )
+			if (self::isGzipContentEncoding($currentHeader))
 				$is_gzipped = true;
+			if(preg_match('/^Transfer-Encoding[ \t]*:/i', $currentHeader))
+			{
+				if(preg_match('/^Transfer-Encoding[ \t]*:[ \t]*(.*)\r?\n$/i',
+					$currentHeader, $match))
+					foreach(explode(',', $match[1]) as $coding)
+						$transferCodings[] = strtolower(trim($coding));
+				else
+					$transferCodings[] = '';
+			}
 
 			$this->headers[] = $currentHeader;
 		}
 
-		$results = "";
-		while( $data = fread($fp, 4096) )
+		$is_chunked = $transferCodings === array('chunked')
+			|| $transferCodings === array('gzip', 'chunked');
+		$transferGzip = $transferCodings === array('gzip', 'chunked');
+		if($transferCodings && !$is_chunked)
 		{
-			$results .= $data;
-			if( strlen($results) > $this->maxlength )
-			        break;
+			return($this->refuseResponseBody('unsupported-transfer-encoding'));
 		}
-		// gunzip
-		if ( $is_gzipped )
+		$results = $is_chunked ? $this->readChunkedBody($fp) : '';
+		if($is_chunked && $results === false)
 		{
-			if(function_exists("gzinflate"))
+			if($this->_check_timeout($fp))
 			{
-				$results = substr($results, 10);
-				$results = gzinflate($results);
+				$this->status = -100;
+				$this->results = '';
+				return(false);
 			}
-			else
+			return($this->refuseResponseBody('invalid-or-oversized-chunked'));
+		}
+		if(!$is_chunked)
+		{
+			while($data = fread($fp, 4096))
 			{
-				$randName = FileUtil::getTempFilename('answer');
-				file_put_contents($randName.".gz",$results);
-				exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
-				if(is_file($randName))
-				{
-					$results = file_get_contents($randName);
-					unlink($randName);
-				}
-				else
-				{
-					unlink($randName.".gz");
-				}
+				$results .= $data;
+				if(strlen($results) > $this->maxlength)
+					break;
+			}
+			if(strlen($results) > $this->maxlength)
+			{
+				return($this->refuseResponseBody('oversized-response'));
+			}
+		}
+		foreach(array($transferGzip, $is_gzipped) as $encodedGzip)
+		{
+			if(!$encodedGzip)
+				continue;
+			$results = $this->decodeGzipBody($results);
+			if($results === false)
+			{
+				return($this->refuseResponseBody('invalid-or-oversized-gzip'));
 			}
 		}
 
@@ -824,6 +987,8 @@ class Snoopy
 			$headers[] = "Host: ".$this->host.($this->port == 443 ? "" : ":".$this->port);
 		if(!empty($this->accept))
 			$headers[] = "Accept: ".$this->accept;
+		if($this->use_gzip && $this->hasZlibGzip())
+			$headers[] = "Accept-Encoding: gzip";
 		if(!empty($this->referer))
 			$headers[] = "Referer: ".$this->referer;
 		$requestCookies = $this->cookiesForRequest($url);
@@ -883,7 +1048,11 @@ class Snoopy
 
 		# accept self-signed certs
 		$cmdline_params .= " -k -s ";
-		exec(escapeshellarg(Utility::getExternal('curl'))." -g -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($url),$results,$return);
+		// The shipped curl (8.22) stops even an unknown-length response during
+		// transfer, before the temporary body file can grow without bound.
+		$maxDownload = max(1, (int)$this->maxlength);
+		exec(escapeshellarg(Utility::getExternal('curl'))." -g --max-filesize ".$maxDownload
+			." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($url),$results,$return);
 		$this->_redirectaddr = false;
 		$this->headers = array();
 		$this->status = $return;
@@ -892,11 +1061,19 @@ class Snoopy
 		$is_gzipped = false;
 		if($return)
 		{
-			$this->error = "Error: cURL could not retrieve the document, error $return.";
+			$this->error = $return === 63 ? 'oversized-response'
+				: "Error: cURL could not retrieve the document, error $return.";
 		}
 		else
 		{
-			$results = @file_get_contents($contfile);
+			$limit = max(0, (int)$this->maxlength);
+			$results = @file_get_contents($contfile, false, null, 0, $limit + 1);
+			if($results === false || strlen($results) > $limit)
+			{
+				@unlink($headerfile);
+				@unlink($contfile);
+				return($this->refuseResponseBody('unreadable-or-oversized-response'));
+			}
 			$result_headers = file($headerfile);
 			foreach($result_headers as $header)
 			{
@@ -913,32 +1090,18 @@ class Snoopy
 					if(preg_match("|^HTTP/[^\s]*\s(.*?)\s|",$this->response_code, $match))
 						$this->status= $match[1];
 				}
-				if (preg_match("/Content-Encoding: gzip/i", $header) )
+				if (self::isGzipContentEncoding($header))
 					$is_gzipped = true;
 				$this->headers[] = $header;
 			}
-			// gunzip
-			if ( $is_gzipped )
+			if($is_gzipped)
 			{
-				if(function_exists("gzinflate"))
+				$results = $this->decodeGzipBody($results);
+				if($results === false)
 				{
-					$results = substr($results, 10);
-					$results = gzinflate($results);
-				}
-				else
-				{
-					$randName = FileUtil::getTempFilename('answer');
-					file_put_contents($randName.".gz",$results);
-					exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
-					if(is_file($randName))
-					{
-						$results = file_get_contents($randName);
-						unlink($randName);
-					}
-					else
-					{
-						unlink($randName.".gz");
-					}
+					@unlink($headerfile);
+					@unlink($contfile);
+					return($this->refuseResponseBody('invalid-or-oversized-gzip'));
 				}
 			}
 			$this->results = $results;

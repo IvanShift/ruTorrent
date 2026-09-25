@@ -25,7 +25,7 @@ $suite->test('every shared Snoopy message classifies to its token', function () 
     }
 });
 
-// The nine sentences php/Snoopy.class.inc actually writes, spelled here with
+// The sentences php/Snoopy.class.inc actually writes, spelled here with
 // the values that file interpolates, so a merge that rewords one is caught by
 // the token it stops producing rather than by a live log nobody reads.
 $suite->test('each of Snoopy own messages has its own token', function () {
@@ -40,13 +40,21 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'dns lookup failure (-4)' => 'dns-lookup',
         'connection refused or timed out (-5)' => 'connect-refused',
         'connection failed (0)' => 'connect-errno',
+        'unsupported-transfer-encoding' => 'unsupported-transfer-encoding',
+        'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
+        'oversized-response' => 'oversized-response',
+        'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
+        'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
     );
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
-    // One assignment initialises the field to empty; all others require a token.
-    strictAssertSame(count($expected) + 1, count($assignments[0]),
-        'every Snoopy error assignment is represented in this table');
+    // The original nine assignments remain, plus the initializer and the
+    // shared refusal helper; the six helper calls cover five new reasons.
+    strictAssertSame(11, count($assignments[0]),
+        'new direct Snoopy error assignments require classification');
+    strictAssertSame(7, substr_count($source, 'refuseResponseBody('),
+        'new body refusals require an explicit classified case');
     // Count alone misses a reworded assignment. Match each token's stable
     // phrase inside an actual assignment, so a changed vendored sentence
     // requires a conscious update to the classifier and this corpus.
@@ -60,13 +68,24 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'dns-lookup' => 'dns lookup failure',
         'connect-refused' => 'connection refused or timed out',
         'connect-errno' => 'connection failed',
+        'unsupported-transfer-encoding' => 'unsupported-transfer-encoding',
+        'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
+        'oversized-response' => 'oversized-response',
+        'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
+        'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
     );
     strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
         'the redirect refusal constant retains the classified token');
     foreach ($sourceNeedles as $token => $needle) {
-        strictAssertSame(1, preg_match('/\$this->error\s*=\s*[^;]*'
-            . preg_quote($needle, '/') . '[^;]*;/s', $source),
-            $token . ': the vendored error assignment still writes the phrase this token parses');
+        $isBodyRefusal = in_array($token, array(
+            'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
+            'oversized-response', 'invalid-or-oversized-gzip',
+            'unreadable-or-oversized-response'), true);
+        $pattern = $isBodyRefusal
+            ? '/refuseResponseBody\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
+            : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
+        strictAssertSame(1, preg_match($pattern, $source),
+            $token . ': Snoopy still writes the reason this token classifies');
     }
     $seen = array();
     foreach ($expected as $message => $token) {
@@ -186,7 +205,7 @@ $suite->test('every token is one plain-ASCII word with no whitespace', function 
             'the token is lower-case ASCII with no separator to break a log record: ' . $token);
     }
     // And the vocabulary is the whole vocabulary: every token the corpus and
-    // the nine messages produce is in it.
+    // Snoopy messages produce is in it.
     foreach (fetchErrorParityCases() as $case) {
         strictAssertTrue(in_array($case[1], fetchErrorTokenVocabulary(), true),
             'the corpus expects only tokens the vocabulary lists: ' . $case[1]);

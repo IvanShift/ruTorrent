@@ -270,6 +270,35 @@ try {
     $legacy->add('legacy.test', '');
     sourceSame(array(), rCookies::load()->getCookiesForHost('legacy.test.'),
         'deleting a normalized host cannot resurrect its old root-dot key');
+    foreach(array(
+        array('Rutracker.org' => array('sid' => 'folded'),
+            'rutracker.org' => array('sid' => 'exact'),
+            'rutracker.org.' => array('sid' => 'root-dot')),
+        array('rutracker.org' => array('sid' => 'exact'),
+            'Rutracker.org' => array('sid' => 'folded'),
+            'rutracker.org.' => array('sid' => 'root-dot')),
+    ) as $collision)
+    {
+        $legacy = new rCookies();
+        $legacy->list = $collision;
+        sourceSame(true, (new rCache())->set($legacy), 'colliding legacy keys saved verbatim');
+        sourceSame(array('sid' => 'exact'), rCookies::load()->getCookiesForHost('rutracker.org.'),
+            'the exact canonical host wins regardless of legacy insertion order');
+    }
+    $legacy = rCookies::load();
+    $legacy->add('rutracker.org.', 'sid=updated');
+    sourceSame(array('sid' => 'updated'), rCookies::load()->getCookiesForHost('rutracker.org'),
+        'add through a root-dot host replaces the canonical value');
+
+    foreach(array('http', 'https') as $scheme)
+    {
+        $pathless = new SourceRecordingSnoopy();
+        sourceSame(true, $pathless->fetchComplex($scheme.'://cookie.test:COOKIE:sid=explicit'),
+            'pathless URL with explicit cookie completed on '.$scheme);
+        sourceSame('explicit', $pathless->requests[0]['cookies']['sid'] ?? null,
+            'pathless URL cookie reaches only its original host on '.$scheme);
+    }
+
     $equalsCookie = new rCookies();
     $equalsCookie->add('equal.test', 'token=abc==; malformed; other=ok');
     sourceSame(array('token' => 'abc==', 'other' => 'ok'),

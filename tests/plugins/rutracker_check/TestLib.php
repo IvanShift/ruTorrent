@@ -458,8 +458,7 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 // the other only trimmed -- so a re-spaced or wrapped sentence landed on its
 // token down one path and on 'unclassified' down the other.
 //
-// The first nine rows are php/Snoopy.class.inc's nine strings, in the order
-// that file writes them.
+// The first rows are php/Snoopy.class.inc's own error strings.
 function fetchErrorParityCases()
 {
     return array(
@@ -473,13 +472,18 @@ function fetchErrorParityCases()
         array('dns lookup failure (-4)', 'dns-lookup'),
         array('connection refused or timed out (-5)', 'connect-refused'),
         array('connection failed (111)', 'connect-errno'),
+        array('unsupported-transfer-encoding', 'unsupported-transfer-encoding'),
+        array('invalid-or-oversized-chunked', 'invalid-or-oversized-chunked'),
+        array('oversized-response', 'oversized-response'),
+        array('invalid-or-oversized-gzip', 'invalid-or-oversized-gzip'),
+        array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
         array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
         array("dns   lookup\tfailure (-4)", 'dns-lookup'),
         array("\n socket\r\ncreation  failed (-3) \t", 'socket-create'),
         array("Refusing to fetch:  cannot  resolve\thost \"nx.invalid\".", 'refused-unresolvable-host'),
-        // Not one of the eight. The canary is shaped like an NNMClub passkey:
+        // Not one of the known errors. The canary is shaped like an NNMClub passkey:
         // an unrecognised sentence is classified, never quoted, so no merge
         // that teaches the vendored Snoopy to name the URL it failed on can
         // put a credential in this plugin's log.
@@ -488,7 +492,7 @@ function fetchErrorParityCases()
     );
 }
 
-// The complete set of answers the classifier is allowed to give: the nine
+// The complete set of answers the classifier is allowed to give: the fixed
 // tokens, the catch-all, and '' for "Snoopy wrote no message". A test that
 // only checks known messages cannot see a raw-text fallback; one that checks
 // membership can.
@@ -496,7 +500,8 @@ function fetchErrorTokenVocabulary()
 {
     return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
         'redirect-refused', 'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
-        'unclassified');
+        'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
+        'invalid-or-oversized-gzip', 'unreadable-or-oversized-response', 'unclassified');
 }
 
 function strictInvoke($className, $method, $arguments = array())
@@ -847,6 +852,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
     class Snoopy
     {
+        const RESPONSE_BODY_FAILED = -101;
         public static $responses = array();
         // Catch-all queue, consulted only when $url has no exact match.
         // RuTracker's layer-2 probe URL carries a random peer_id tail and a
@@ -1090,6 +1096,8 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function transportFailureDetail($status)
         {
             $status = (int) $status;
+            if ($status === Snoopy::RESPONSE_BODY_FAILED)
+                return 'transport=response-body status=' . $status . ' reason=invalid';
             if ($status < 0) {
                 $reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
                 $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';

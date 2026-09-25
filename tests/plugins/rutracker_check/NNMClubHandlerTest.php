@@ -502,6 +502,29 @@ $suite->test('an unavailable or empty download response is a tracker reachabilit
     }
 });
 
+$suite->test('a failed HTTP 200 body stays retryable and logs its classified reason',
+        function () use ($dummyPasskey) {
+    nnmReset();
+    $topic = nnmTopicUrl(49);
+    $torrent = @new Torrent(strictTorrentRaw('body-failure.bin',
+        'http://bt.searchtor.to/' . $dummyPasskey . '/announce', $topic));
+    strictAssertTrue(!$torrent->errors(), 'body failure fixture must parse');
+    Snoopy::queue($topic, Snoopy::RESPONSE_BODY_FAILED, '');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        NNMClubCheckImpl::download_torrent($topic, $torrent->hash_info(), $torrent),
+        'failed body is a retryable reachability problem, not a topic verdict');
+    strictAssertSame(0, count(nnmCreates()), 'failed body cannot reach replacement');
+    nnmReset();
+    strictInvoke('NNMClubCheckImpl', 'guestFetch',
+        array(new NNMGuestFetchDouble(Snoopy::RESPONSE_BODY_FAILED,
+            'invalid-or-oversized-gzip'), $topic));
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
+        'body failure is logged once');
+    strictAssertTrue(strpos($line,
+        'transport=response-body status=-101 reason=invalid error=invalid-or-oversized-gzip') !== false,
+        'body failure has a classified reason even when HTTP was 200');
+});
+
 $suite->test('array topic parameters are rejected without warnings', function () use ($dummyPasskey) {
     nnmReset();
     $url = 'https://nnmclub.to/forum/viewtopic.php?t[]=42';
