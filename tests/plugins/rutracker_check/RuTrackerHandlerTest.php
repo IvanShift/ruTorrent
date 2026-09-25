@@ -682,6 +682,14 @@ $suite->test('2: layer1 candidate + layer2 registered -> up to date via exactly 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'registered -> up to date');
+    $deletionWrites = rXMLRPCRequest::requestsFor('d.set_custom');
+    strictAssertSame(1, count($deletionWrites), 'registered announce resets deletion once');
+    strictAssertSame(array($hash, 'chk-del', ''),
+        $deletionWrites[0]['commands'][0]->params, 'registered announce clears the deletion count');
+    $messages = ruTrackerChecker::callsFor('setMessage');
+    strictAssertSame(1, count($messages), 'registered announce clears the prior message once');
+    strictAssertSame(array($hash, ''), $messages[0]['arguments'],
+        'registered announce clears chk-msg for the same hash');
     strictAssertSame(1, count(Snoopy::$requests), 'exactly one announce request');
     strictAssertTrue(strpos(Snoopy::$requests[0][1], 'pk=') === false, 'passkey stripped from the probe URL');
     strictAssertTrue(strpos(Snoopy::$requests[0][1], 'event=stopped') !== false, 'probe carries event=stopped');

@@ -277,6 +277,20 @@ $suite->test('announce budget: cap and 403 cooldown doubling', function () {
     });
 });
 
+$suite->test('repeated 403 answers cap the cooldown at 24 hours', function () {
+    strictWithStateDir('chk-announce-cap', function () {
+        $host = 'bt.t-ru.org';
+        ratProbe($host, 1000, 403, RAT_WINDOW);
+        for ($i = 1; $i <= 6; $i++)
+            RuTrackerAnnounce::recordOutcome($host, 1000 + $i, 403);
+        $entry = RuTrackerState::load('announce')[$host];
+        strictAssertSame(86400, $entry['cooldown_length'],
+            '403 doubling stops at one day');
+        strictAssertSame(1006 + 86400, $entry['cooldown_until'],
+            'the final refusal extends the same bounded period from its own time');
+    });
+});
+
 // probeDecision() answers WHY, not just whether, so a skipped layer 2 can name
 // the budget that stopped it instead of leaving the log with a bare "denied".
 $suite->test('probeDecision names the budget that denied a probe', function () {

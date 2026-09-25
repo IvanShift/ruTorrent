@@ -392,6 +392,19 @@ $suite->test('cleanup schedule is independent of rutracker update interval', fun
         'the stale checker schedule is removed before the independent cleanup schedule request is sent');
 });
 
+$suite->test('checker schedule keeps its aligned interval and user argv', function () {
+    $calls = epFunctionCallArguments(EP_DIR . '/init.php', 'getScheduleCommand');
+    strictAssertSame(1, count($calls), 'the checker registers one aligned schedule');
+    $call = $calls[0];
+    strictAssertTrue(strpos($call, "'rutracker_check',".'$updateInterval'.",") === 0,
+        'the schedule key and minute interval remain unchanged');
+    strictAssertTrue(strpos($call, "getCmd('execute')") !== false
+        && strpos($call, "escapeshellarg(Utility::getPHP())") !== false
+        && strpos($call, "escapeshellarg(dirname(__FILE__).'/update.php')") !== false
+        && strpos($call, "escapeshellarg(User::getUser())") !== false,
+        'the scheduled command passes the PHP executable, update entrypoint, and quoted user');
+});
+
 $suite->test('targeted kick and scheduled retry execute the same collector entrypoint', function () {
     $helper = dirname(EP_DIR) . '/erasedata/removewithdata.php';
     strictAssertSame(array('erasedataCollectorCommand'),

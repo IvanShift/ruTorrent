@@ -1729,6 +1729,10 @@ $suite->test('pump preserves the exact raw predecessor claim in its conditional 
         'hash comparison keeps the exact raw bytes instead of uppercasing them');
     strictAssertTrue(strpos($condition, 'equal=d.get_custom=chk-meta-until,cat=' . $rawDeadline) !== false,
         'deadline comparison keeps the exact canonical raw bytes instead of intval normalization');
+    $clear = $branches[0]['commands'][0]->params[2];
+    strictAssertTrue(strpos($clear, '$d.set_custom=chk-meta-until,') !== false
+        && strpos($clear, '$d.set_custom=chk-meta-new,') !== false,
+        'retiring the exact predecessor generation clears both metadata marks');
 });
 
 $suite->test('malformed predecessor fetch generation fails closed without clearing or probing a normalized target', function () use ($oldHash, $newHash) {

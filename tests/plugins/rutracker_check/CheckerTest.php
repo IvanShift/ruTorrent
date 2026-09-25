@@ -2578,6 +2578,12 @@ class CheckerTest
 		strictAssertSame(1, count($stops[0]['commands']), 'the boundary is not a top-level multicall');
 		strictAssertSame('branch', $stops[0]['commands'][0]->command, 'the one command selects live state inside rTorrent');
 		strictAssertSame(self::OLD_HASH, $stops[0]['commands'][0]->params[0], 'the branch target is OLD');
+		$erases = $this->branchRequestsContaining('$d.erase=');
+		strictAssertSame(1, count($erases), 'commit erases the predecessor through one conditional branch');
+		$eraseParams = $erases[0]['commands'][0]->params;
+		strictAssertSame(self::OLD_HASH, $eraseParams[0], 'the commit erase targets the predecessor');
+		strictAssertTrue(strpos($eraseParams[1], 'equal=d.get_custom=chk-replacing,cat=') !== false,
+			'the commit erase compares its replacing generation, not a foreign custom field');
 		foreach($snapshots[0]['commands'] as $command)
 			strictAssertTrue($command->command !== 'd.get_state' && $command->command !== 'd.is_open',
 				'no stale PHP-side run-state snapshot may drive activation');
@@ -3102,6 +3108,23 @@ class CheckerTest
 			'a short reply is accepted only after the complete desired projection is observed');
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
 			'the lost-response case is still measured rather than trusted');
+	}
+
+	public function testUpToDateStateWritesTheExactSuccessTimeField()
+	{
+		$this->resetFakes();
+		rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array(0, 0, 0));
+		strictAssertSame(true, ruTrackerChecker::setState(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE),
+			'a complete up-to-date projection is accepted');
+		$writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
+		strictAssertSame(1, count($writes), 'one three-field state projection was sent');
+		$commands = $writes[0]['commands'];
+		strictAssertSame(array(self::OLD_HASH, 'chk-state', (string) ruTrackerChecker::STE_UPTODATE),
+			$commands[0]->params, 'the verdict field stays first');
+		strictAssertSame('chk-time', $commands[1]->params[1], 'the check clock stays second');
+		strictAssertSame('chk-stime', $commands[2]->params[1], 'the success clock uses chk-stime');
+		strictAssertSame($commands[1]->params[2], $commands[2]->params[2],
+			'the two clocks share one captured time');
 	}
 
 	public function testNewStatusConstantsAreAppendedWithoutRenumbering()
@@ -4769,6 +4792,37 @@ class CheckerTest
 		}
 	}
 
+
+	public function testPredecessorRollbackClearsOnlyItsMatchingReplacingGeneration()
+	{
+		$marker = self::NEW_HASH . '-started-1786899620';
+		foreach(array(
+			'stopped' => array(false, false, RuTrackerAtomicOwnership::SENTINEL_CLEARED),
+			'started' => array(true, true, RuTrackerAtomicOwnership::SENTINEL_ACTED),
+		) as $label => $wasRunning)
+		{
+			$this->resetFakes();
+			rXMLRPCRequest::queue('branch', true, false, array($wasRunning[2]));
+			strictAssertSame(true, strictInvoke('ruTrackerChecker', 'restoreExistingTorrent',
+				array(self::OLD_HASH, $wasRunning[0], $wasRunning[1], $marker)),
+				$label . ': rollback succeeds for its own generation');
+			$branches = rXMLRPCRequest::requestsFor('branch');
+			strictAssertSame(1, count($branches), $label . ': one atomic rollback branch');
+			$params = $branches[0]['commands'][0]->params;
+			strictAssertTrue(strpos($params[1], 'equal=d.get_custom=chk-replacing,cat=' . $marker) !== false,
+				$label . ': rollback compares the exact replacing marker');
+			$clearToken = '$d.set_custom=chk-replacing,';
+			$clearAt = strpos($params[2], $clearToken);
+			strictAssertTrue($clearAt !== false,
+				$label . ': rollback writes the replacing field');
+			$tail = substr($params[2], $clearAt + strlen($clearToken));
+			$quoteAt = strpos($tail, '"');
+			// runState nests this command and escapes its closing quote; the
+			// bytes before it must be only escaping, never a field value.
+			strictAssertTrue($quoteAt !== false && strspn($tail, chr(92)) === $quoteAt,
+				$label . ': rollback clears chk-replacing to an empty value');
+		}
+	}
 
 	// --- Persisted/RPC integers at the checker's own boundaries -------------
 	//
