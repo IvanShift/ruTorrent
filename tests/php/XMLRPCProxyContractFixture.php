@@ -657,8 +657,7 @@ $cases = array(
 		"trusted" => false,
 		"payload" => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>system.multicall</methodName><params><param><value><array><data><value><struct><member><name>methodName</name><value><string>d.name</string></value></member><member><name>params</name><value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></data></array></value></member></struct></value></data></array></value></param></params></methodCall>",
 		"log" => array(
-			"xmlrpc-proxy: untrusted: system.multicall (1 members)",
-			"xmlrpc-proxy: [slot 1] untrusted: d.name"
+			"xmlrpc-proxy: untrusted: system.multicall (1 members)"
 		),
 	),
 	"passthrough_unsafe is not subject to the refusal list" => array(

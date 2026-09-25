@@ -135,6 +135,97 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			null, null, null, null, null, array());
 	}
 
+
+
+	public function testDisabledProxyDoesNotSendSocketAllocationRequests()
+	{
+		$xml = '<methodCall><methodName>system.sockets.adjust_alloc</methodName><params></params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$result = $this->runEntrypoint($door, $xml, true, 'success', 'off');
+			$this->assertTrue(strpos($result['status'], '403 Forbidden') !== false
+				&& $result['state']['sends'] === 0,
+				$door.' disabled proxy refuses before any socket action send');
+		}
+	}
+	public function testBothDoorsRejectMalformedOrMixedSocketRequestsWithoutSend()
+	{
+		$malformed = '<methodCall><methodName>system.sockets.adjust_alloc</methodName>';
+		$badShape = '<methodCall><methodName>system.sockets.adjust_alloc</methodName>'
+			.'<params><param><value><string>extra</string></value></param></params></methodCall>';
+		$denied = '<methodCall><methodName>system.multicall</methodName><params><param>'
+			.'<value><array><data>'
+			.'<value><struct><member><name>methodName</name><value><string>system.sockets.adjust_alloc</string></value></member>'
+			.'<member><name>params</name><value><array><data></data></array></value></member></struct></value>'
+			.'<value><struct><member><name>methodName</name><value><string>execute.capture</string></value></member>'
+			.'<member><name>params</name><value><array><data></data></array></value></member></struct></value>'
+			.'</data></array></value></param></params></methodCall>';
+		$plainText = '<methodCall><methodName>d.custom1.set</methodName><params>'
+			.'<param><value><string>'.str_repeat('A', 40).'</string></value></param>'
+			.'<param><value><string>system.sockets. is plain text</string></value></param>'
+			.'</params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			foreach(array($malformed, $denied) as $xml)
+			{
+				$r = $this->runEntrypoint($door, $xml, true);
+				$this->assertTrue(strpos($r['status'], '403') !== false && $r['state']['sends'] === 0,
+					$door.' refuses malformed or denied socket XML without contacting rTorrent');
+			}
+			$r = $this->runEntrypoint($door, $badShape, true);
+			$this->assertTrue(strpos($r['status'], '200') !== false && $r['state']['sends'] === 1
+				&& $r['state']['trusted'] === false && $r['state']['payload'] === $badShape,
+				$door.' leaves even an extra socket argument to the daemon untrusted gate');
+			$r = $this->runEntrypoint($door, $plainText, true);
+			$this->assertTrue(strpos($r['status'], '200') !== false && $r['state']['sends'] === 1,
+				$door.' sends a harmless argument containing a socket method name only once');
+		}
+	}
+
+	public function testBothDoorsForwardSocketMutatorsWithoutTrustAndRelayDaemonRefusal()
+	{
+		$xml = '<methodCall><methodName>system.sockets.adjust_alloc</methodName><params></params></methodCall>';
+		$setter = '<methodCall><methodName>system.sockets.files.max_alloc.set</methodName>'
+			.'<params><param><value><string></string></value></param>'
+			.'<param><value><i8>1048576</i8></value></param></params></methodCall>';
+		$batch = $this->systemBatchXml(array(
+			array('system.sockets.files.max_alloc.set', array('', 1048576)),
+			array('system.sockets.adjust_alloc', array()),
+		));
+		foreach(array('action', 'rpc2') as $door)
+		{
+			foreach(array($xml, $setter) as $direct)
+			{
+				$r = $this->runEntrypoint($door, $direct, true, 'socket-refused');
+				$this->assertTrue(strpos($r['status'], '200 OK') !== false
+					&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false
+					&& $r['state']['payload'] === $direct,
+					$door.' forwards the direct socket method once without trust');
+				$this->assertTrue(strpos($r['body'], '<i4>-507</i4>') !== false,
+					$door.' relays the daemon untrusted refusal without changing its fault code');
+			}
+			$r = $this->runEntrypoint($door, $batch, true);
+			$this->assertTrue(strpos($r['status'], '200 OK') !== false
+				&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false,
+				$door.' forwards a homogeneous socket batch untrusted once');
+		}
+	}
+
+	public function testBothDoorsApplySharedPolicyFromSymlinkedConfVolume()
+	{
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$r = $this->runEntrypoint($door, $this->viewActionXml(), true,
+				'success', 'symlink');
+			$this->assertTrue($r['policy_exists'],
+				$door.' sees the shipped policy through the conf volume symlink');
+			$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
+				&& $r['state']['sends'] === 0
+				&& strpos($r['body'], '<i4>-501</i4>') !== false,
+				$door.' applies the volume policy override and refuses the write');
+		}
+	}
+
 	public function testBothDoorsDecideTheSameTrustForTheSameRequest()
 	{
 		$httprpc = $this->runEntrypoint('action', $this->viewActionXml(), true);
@@ -216,6 +307,79 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$door.' accepts the exact read-only tracker expression');
 			$this->assertTrue(strpos($r['state']['payload'], $expression) !== false,
 				$door.' retains the captured tracker expression');
+		}
+	}
+
+	public function testBothDoorsSendStopBatchAndDeferGetSavePathBatches()
+	{
+		$hash = str_repeat('A', 40);
+		$stop = $this->systemBatchXml(array(
+			array('d.stop', array($hash)), array('d.close', array($hash)),
+		));
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$result = $this->runEntrypoint($door, $stop, true, 'success', 'none');
+			$this->assertTrue(strpos($result['status'], '200 OK') !== false
+				&& $result['state']['sends'] === 1 && $result['state']['trusted'] === true,
+				$door.' sends the checked raw WebUI stop batch once');
+			$log = ($door === 'rpc2') ? $result['rpc2logs'] : implode("\n", $result['state']['logs']);
+			$this->assertEquals(1, substr_count($log, '[built-in policy]'),
+				$door.' marks only the outer stop batch with the fallback policy');
+			$this->assertEquals(1, count(array_filter(explode("\n", trim($log)), 'strlen')),
+				$door.' writes one normal summary line for the successful stop batch');
+			foreach(array('d.base_path', 'd.get_base_path') as $method)
+			{
+				$path = $this->systemBatchXml(array(
+					array('d.open', array($hash)), array($method, array($hash)),
+					array('d.close', array($hash)),
+				));
+				$r = $this->runEntrypoint($door, $path, true);
+				$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
+					&& $r['state']['sends'] === 0,
+					$door.' defers the '.$method.' getsavepath batch without sending it');
+			}
+			$bad = $this->systemBatchXml(array(
+				array('d.stop', array($hash)), array('d.close', array($hash, 'extra')),
+			));
+			$result = $this->runEntrypoint($door, $bad, true);
+			$this->assertTrue(strpos($result['status'], '403 Forbidden') !== false
+				&& $result['state']['sends'] === 0,
+				$door.' rejects an unvalidated close member without sending any batch');
+		}
+	}
+
+	public function testBothDoorsKeepHomogeneousFallbackUntrustedAndRejectReverseMixedBatch()
+	{
+		$hash = str_repeat('A', 40);
+		$fallback = $this->systemBatchXml(array(
+			array('d.views.push_back_unique', array($hash, 'sonarr_imported')),
+			array('d.views.push_back_unique', array($hash, 'radarr_imported')),
+		));
+		$mixed = $this->systemBatchXml(array(
+			array('d.wibble.set', array($hash, '1')),
+			array('d.stop', array($hash)),
+		));
+		foreach(array('action', 'rpc2') as $door)
+		{
+			foreach(array('sonarr_imported', 'radarr_imported') as $view)
+			{
+				$direct = '<methodCall><methodName>d.views.push_back_unique</methodName><params>'
+					.'<param><value><string>'.$hash.'</string></value></param>'
+					.'<param><value><string>'.$view.'</string></value></param>'
+					.'</params></methodCall>';
+				$single = $this->runEntrypoint($door, $direct, true);
+				$this->assertTrue(strpos($single['status'], '200 OK') !== false
+					&& $single['state']['sends'] === 1 && $single['state']['trusted'] === false,
+					$door.' forwards '.$view.' individually without trust');
+			}
+			$ok = $this->runEntrypoint($door, $fallback, true);
+			$this->assertTrue(strpos($ok['status'], '200 OK') !== false
+				&& $ok['state']['sends'] === 1 && $ok['state']['trusted'] === false,
+				$door.' sends a homogeneous fallback batch without trust');
+			$no = $this->runEntrypoint($door, $mixed, true);
+			$this->assertTrue(strpos($no['status'], '403 Forbidden') !== false
+				&& $no['state']['sends'] === 0,
+				$door.' refuses an untrusted-first mixed batch without any send');
 		}
 	}
 
@@ -308,6 +472,26 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$xml = str_replace('d.stop=', 'd.name=', $this->viewActionXml());
 				$r = $this->runEntrypoint($door, $xml, true, 'success', $policy);
 				$this->assertTrue($r['state']['sends'] === 1 && $r['state']['trusted'] === true, 'read-only listing remains available under a restricted setter policy');
+			}
+	}
+
+	public function testInvalidExplicitPolicyFailsVisiblyAtBothDoors()
+	{
+		foreach(array(true, false) as $logging)
+			foreach(array(array('action', 'null'), array('rpc2', 'null'),
+				array('action', 'plugin_null')) as $case)
+			{
+				list($door, $policy) = $case;
+				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', $policy);
+				$this->assertTrue(strpos($r['status'], '503') !== false,
+					$door.' refuses an invalid policy with a visible HTTP status');
+				$this->assertTrue(strpos($r['body'], 'XMLRPCProxySafeParams') !== false,
+					$door.' names the invalid policy key in the response');
+				$this->assertTrue($r['state']['sends'] === 0,
+					$door.' does not reach rTorrent with an invalid policy');
+				$log = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
+				$this->assertTrue(strpos($log, 'XMLRPCProxySafeParams must be an array') !== false,
+					$door.' logs the configuration error with routine logging '.($logging ? 'on' : 'off'));
 			}
 	}
 
@@ -666,6 +850,23 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	 * d.stop to an untrusted caller, so a door that forwards this untrusted
 	 * answers a fault where the other door succeeds.
 	 */
+	private function systemBatchXml($calls)
+	{
+		$members = '';
+		foreach($calls as $call)
+		{
+			$members .= '<value><struct><member><name>methodName</name><value><string>'
+				.$call[0].'</string></value></member><member><name>params</name>'
+				.'<value><array><data>';
+			foreach($call[1] as $param)
+				$members .= '<value><string>'.$param.'</string></value>';
+			$members .= '</data></array></value></member></struct></value>';
+		}
+		return '<methodCall><methodName>system.multicall</methodName><params>'
+			.'<param><value><array><data>'.$members.'</data></array></value></param>'
+			.'</params></methodCall>';
+	}
+
 	private function viewActionXml()
 	{
 		return '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
@@ -783,8 +984,24 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			file_put_contents($file, "\n\$XMLRPCProxyLog = (getenv('XMLRPC_ENTRYPOINT_LOGGING') === '1');\n", FILE_APPEND);
 			if($policy === 'restricted' || $policy === 'empty')
 				file_put_contents($file, "\$XMLRPCProxySafeParams = ".($policy === 'empty' ? 'array()' : "array('d.custom1.set')").";\n", FILE_APPEND);
+			if($policy === 'off')
+				file_put_contents($file, "\$XMLRPCProxy = 'off';\n", FILE_APPEND);
+			if($policy === 'null')
+				file_put_contents($file, "\$XMLRPCProxySafeParams = null;\n", FILE_APPEND);
+			if($policy === 'plugin_null')
+				file_put_contents($tree . '/plugins/httprpc/conf.php',
+					"\$XMLRPCProxySafeParams = null;\n", FILE_APPEND);
 			if($policy === 'unreadable' && !chmod($file, 0000))
 				throw new Exception('could not make policy unreadable');
+			if($policy === 'symlink')
+				file_put_contents($file, "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
+			if($policy === 'symlink')
+			{
+				$volume = $tree . '/config-volume';
+				if(!mkdir($volume, 0700) || !rename($tree . '/conf', $volume . '/conf')
+					|| !symlink($volume . '/conf', $tree . '/conf'))
+					throw new Exception('could not model a symlinked conf volume');
+			}
 		}
 
 	}
@@ -829,6 +1046,10 @@ class rSCGITransport
 			return null;
 		}
 
+		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
+		if($send === 'socket-refused' && !$trusted
+			&& strpos($payload, '<methodName>system.sockets.') !== false)
+			return '<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
 		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}
 }
@@ -893,6 +1114,10 @@ class rXMLRPCRequest
 		entrypoint_state('send', array($payload, $trusted));
 		if(getenv('XMLRPC_ENTRYPOINT_SEND') === 'false')
 			return false;
+		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
+		if($send === 'socket-refused' && !$trusted
+			&& strpos($payload, '<methodName>system.sockets.') !== false)
+			return 'HTTP/1.1 200 OK'."\r\n".'Content-Type: text/xml'."\r\n\r\n".'<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
 		return "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}
 }
@@ -1051,7 +1276,9 @@ PHP
 			if(($entry !== '.') && ($entry !== '..'))
 			{
 				$child = $path . '/' . $entry;
-				if(is_dir($child))
+				if(is_link($child))
+					@unlink($child);
+				else if(is_dir($child))
 					$this->deleteTree($child);
 				else
 					@unlink($child);

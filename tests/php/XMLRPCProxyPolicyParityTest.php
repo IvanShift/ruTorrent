@@ -1,18 +1,14 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 
 /**
- * One safe-parameter policy, for every entry point.
+ * One safe-parameter policy for both HTTP entrypoints.
  *
- * conf/xmlrpc_proxy.php states which command names a caller may attach to a
- * load.* or to a multicall. A second $XMLRPCProxySafeParams elsewhere in the
- * shipped tree replaces it for whichever entry point loads that file, and
- * nothing about two lists says they are meant to agree: they drift, and a
- * client that works through one entry point is refused through the other.
- *
- * A shipped file may still restate the policy. This asserts only that it does
- * not restate it differently.
+ * The shipped conf file calls XMLRPCProxy::defaultSafeParams(); the proxy
+ * also uses that list when an older persisted conf volume lacks the file.
+ * Other shipped overrides must agree with this default if they define a list.
  */
 class XMLRPCProxyPolicyParityTest extends TestCase
 {
@@ -85,17 +81,9 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 		}
 	}
 
-	/**
-	 * The proxy carries the same list in code, as what applies when no policy
-	 * file defines one -- a container that replaces conf/ with a volume seeded
-	 * before this file existed has no policy file at all, and used to get
-	 * "forbid every parameter" for it. A default that has drifted from the
-	 * shipped policy is two policies again, which is the thing this suite
-	 * exists to prevent.
-	 */
+	/** The shipped configuration must resolve to the proxy's built-in list. */
 	public function testTheBuiltInDefaultMatchesTheSharedPolicy()
 	{
-		require_once($this->root . '/php/xmlrpc_proxy.php');
 		$builtIn = XMLRPCProxy::defaultSafeParams();
 		$this->assertTrue(is_array($builtIn) && (count($builtIn) > 0),
 			'the proxy carries a built-in default');

@@ -89,7 +89,8 @@ class XMLRPCProxy
 	// Direct calls that match a listed shape are rebuilt and sent trusted.
 	// An unmatched original elevation is refused locally. For names added to
 	// serve checked WebUI batches, an unmatched direct call retains the older
-	// untrusted route; the batch carrier still refuses any untrusted member.
+	// untrusted route. A batch may send all-untrusted members without trust,
+	// but mixed trust or a locally rejected member refuses the whole batch.
 	//
 	// The claim being made is per call, not per command: not "d.custom1.set is
 	// safe" but "this call, naming one download by hash, with a value rtorrent
@@ -100,6 +101,7 @@ class XMLRPCProxy
 		'd.open'                        => array('hash'),
 		'd.start'                       => array('hash'),
 		'd.stop'                        => array('hash'),
+		'd.close'                       => array('hash'),
 		'd.custom1.set'                 => array('hash', 'text'),
 		'd.custom2.set'                 => array('hash', 'text'),
 		'd.custom3.set'                 => array('hash', 'text'),
@@ -109,9 +111,7 @@ class XMLRPCProxy
 		'd.priority.set'                => array('hash', 'int'),
 		'd.delete_tied'                 => array('hash'),
 		'network.xmlrpc.size_limit.set' => array('empty', 'size'),
-		// Some are WebUI batch members; socket setters are reachable to direct
-		// RPC clients even though the current WebUI route does not call them.
-		// Only matching shapes are elevated; other direct calls use rTorrent's gate.
+		// Checked WebUI batch members. Unmatched direct calls use rTorrent's gate.
 		'f.prioritize_first.enable'     => array('file_target'),
 		'f.prioritize_first.disable'    => array('file_target'),
 		'f.prioritize_last.enable'      => array('file_target'),
@@ -124,32 +124,28 @@ class XMLRPCProxy
 		'view.set_not_visible'          => array('hash', 'ratio_view'),
 		'd.views.push_back_unique'      => array('hash', 'ratio_view'),
 		'd.views.remove'                => array('hash', 'ratio_view'),
-		'system.sockets.files.min_alloc.set' => array('empty', 'socket_alloc'),
-		'system.sockets.files.max_alloc.set' => array('empty', 'socket_alloc'),
-		'system.sockets.http.min_alloc.set'  => array('empty', 'socket_alloc'),
-		'system.sockets.http.max_alloc.set'  => array('empty', 'socket_alloc'),
-		'system.sockets.adjust_alloc'   => array(),
 	);
 
 	// These names were added for checked WebUI batches. An unmatched direct
 	// call must retain its pre-batch untrusted route (for example Sonarr's
-	// d.views.push_back_unique(hash, sonarr_imported)). The carrier accepts
-	// only trusted members, so this fallback cannot borrow batch trust.
+	// d.views.push_back_unique(hash, sonarr_imported)). A homogeneous
+	// untrusted batch stays untrusted; it cannot borrow another member's trust.
 	private static $batchElevations = array(
 		'f.prioritize_first.enable', 'f.prioritize_first.disable',
 		'f.prioritize_last.enable', 'f.prioritize_last.disable',
+		'd.close',
 		'd.update_priorities', 'd.set_throttle_name', 'd.throttle_name.set',
 		'd.set_custom', 'view.set_visible', 'view.set_not_visible',
 		'd.views.push_back_unique', 'd.views.remove',
-		'system.sockets.files.min_alloc.set', 'system.sockets.files.max_alloc.set',
-		'system.sockets.http.min_alloc.set', 'system.sockets.http.max_alloc.set',
-		'system.sockets.adjust_alloc',
 	);
 
 	// Ceiling for network.xmlrpc.size_limit.set. A client raises it to add a
 	// large torrent by file; without a bound it is also how a caller makes
 	// rtorrent buffer as much as it likes.
 	private static $sizeLimitMax = 16777216;
+	// rTorrent v0.16.24 enforces 1024; older daemons need the same recovery floor.
+	// A compact one-command XMLRPC request to raise the limit still fits.
+	private static $sizeLimitMin = 1024;
 
 	// These filesystem mutators have no confined argument contract here.
 	// Refuse them locally even when an old daemon ignores the untrusted flag.
@@ -205,8 +201,9 @@ class XMLRPCProxy
 		'd.custom.if_z' => 2,
 	);
 
-	// The policy conf/xmlrpc_proxy.php ships, repeated here as what applies
-	// when no policy file defines one.
+	// The shipped conf/xmlrpc_proxy.php calls defaultSafeParams() directly.
+	// Keep the list here so an older persisted conf/ volume without that file
+	// still gets a usable policy. Explicit installed lists remain overrides.
 	//
 	// An install without that file is not an install that decided to forbid
 	// every command parameter, and treating it as one costs a client its
@@ -215,12 +212,12 @@ class XMLRPCProxy
 	// with a volume seeded once, years before this file existed, so the list
 	// reached the door only while a second copy of it lived in
 	// plugins/httprpc/conf.php -- and #3251 removed that copy as duplication.
-	// The duplication was the only thing holding the policy up.
+	// That removed duplicate explained why the fallback is kept in code.
 	//
-	// Kept in step with the shipped file by XMLRPCProxyPolicyParityTest, which
-	// fails if the two ever disagree. A policy file that does define the list
-	// still wins outright: this is a default, not a floor. A multicall result
-	// applies an allowed setter to every download in the selected view;
+	// XMLRPCProxyPolicyParityTest checks the shipped file and policy overrides.
+	// An explicit policy still wins outright: this is a default, not a floor.
+	// A multicall result applies an allowed setter to every download in the
+	// selected view;
 	// d.delete_tied can unlink each download's tied .torrent. Both doors use
 	// this same intentional view-wide write policy.
 	private static $defaultSafeParams = array(
@@ -245,18 +242,31 @@ class XMLRPCProxy
 	public static function policySettings($vars)
 	{
 		$mode = isset($vars['XMLRPCProxy']) ? $vars['XMLRPCProxy'] : 'sanitize';
-		$builtIn = !isset($vars['XMLRPCProxySafeParams']);
+		$builtIn = !array_key_exists('XMLRPCProxySafeParams', $vars);
+		$policyError = (!$builtIn && !is_array($vars['XMLRPCProxySafeParams']))
+			? 'XMLRPCProxySafeParams must be an array; proxy disabled' : null;
+		$safeParams = $builtIn ? self::defaultSafeParams() :
+			($policyError === null ? $vars['XMLRPCProxySafeParams'] : array());
 		return array(
 			'mode' => $mode,
 			'log' => isset($vars['XMLRPCProxyLog']) ? $vars['XMLRPCProxyLog'] : true,
-			'safeParams' => $builtIn
-				? self::defaultSafeParams() : $vars['XMLRPCProxySafeParams'],
+			'safeParams' => $safeParams,
+			'policyError' => $policyError,
 			'allowLocalPaths' => isset($vars['XMLRPCProxyAllowLocalPaths'])
 				? $vars['XMLRPCProxyAllowLocalPaths'] : false,
 			'allowRootDirectory' => isset($vars['XMLRPCProxyAllowRootDirectory'])
 				? $vars['XMLRPCProxyAllowRootDirectory'] : false,
 			'logSuffix' => ($builtIn && $mode === 'sanitize') ? ' [built-in policy]' : '',
 		);
+	}
+
+	/** Attach the built-in fallback hint to the outer decision, not each member. */
+	public static function decisionLogLines($decision, $policy)
+	{
+		$lines = $decision['log'];
+		if(count($lines) && !empty($policy['logSuffix']))
+			$lines[0] .= $policy['logSuffix'];
+		return $lines;
 	}
 
 	public static function safeGetters()
@@ -1037,7 +1047,9 @@ class XMLRPCProxy
 	{
 		$name = self::commandName($value);
 		$note = '';
-		if($name === 'd.directory.base.set' && is_array($safeParams)
+		if($name === 'd.directory.base.set'
+			&& in_array($method, self::$sanitizeMethods, true)
+			&& is_array($safeParams)
 			&& in_array('d.directory_base.set', $safeParams, true)
 			&& !in_array('d.directory.base.set', $safeParams, true))
 		{
@@ -1103,13 +1115,6 @@ class XMLRPCProxy
 					return null;
 				return '<param><value><string>' . $val . '</string></value></param>';
 
-			case 'socket_alloc':
-				if(($param['type'] !== 'int' && $param['type'] !== 'string')
-					|| !preg_match('/^(?:0|[1-9][0-9]{0,6})$/', $val)
-					|| (int)$val > 1048576)
-					return null;
-				return '<param><value><i8>' . $val . '</i8></value></param>';
-
 			case 'empty':
 				if($param['type'] !== 'string' || $val !== '')
 					return null;
@@ -1131,7 +1136,7 @@ class XMLRPCProxy
 					$size = self::$sizeLimitMax;
 				else
 					$size = (int)$val;
-				return '<param><value><i8>' . $size . '</i8></value></param>';
+				return '<param><value><i8>' . max(self::$sizeLimitMin, $size) . '</i8></value></param>';
 
 			case 'text':
 				if($param['type'] !== 'string')
@@ -1251,12 +1256,15 @@ class XMLRPCProxy
 					return self::rejectSystemMember($index, $innerMethod);
 				$innerDecision = self::decide($innerXml, $mode, $safeParams, $allowLocalPaths, $options);
 				if($innerDecision['action'] !== 'send'
-					|| (!$innerDecision['trusted'] && in_array($innerMethod, self::$batchElevations, true))
 					|| ($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted))
 					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log']);
 				$batchTrusted = $innerDecision['trusted'];
-				$memberLogs = array_merge($memberLogs,
-					self::memberDecisionLogs($index, $innerDecision['log']));
+				// Routine per-member decisions can turn one WebUI action into
+				// thousands of lines. Keep only exceptional member warnings.
+				foreach($innerDecision['log'] as $line)
+					if(strpos($line, 'WARNING:') === 0)
+						$memberLogs = array_merge($memberLogs,
+							self::memberDecisionLogs($index, array($line)));
 				// Fail closed if a future decision path changes the method or emits
 				// a member value that this scalar-only carrier cannot encode.
 				$checked = self::decodeCall($innerDecision['payload']);
@@ -1780,7 +1788,8 @@ class XMLRPCProxy
 			return null;
 
 		$command = self::rawCommandName($paramValue);
-		if(self::isDeniedCommand($command))
+		// A nested global setter would bypass the direct call's recovery floor.
+		if($command === 'network.xmlrpc.size_limit.set' || self::isDeniedCommand($command))
 			return null;
 		if(!in_array($command, $safeParams, true))
 			return null;

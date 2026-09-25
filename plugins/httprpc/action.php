@@ -668,6 +668,13 @@ switch($mode)
 			$policy = XMLRPCProxy::policySettings(get_defined_vars());
 			$proxyMode = $policy['mode'];
 			$proxyLog = $policy['log'];
+			if($policy['policyError'] !== null)
+			{
+				FileUtil::toLog('xmlrpc-proxy: '.$policy['policyError']);
+				header('HTTP/1.0 503 Service Unavailable');
+				CachedEcho::send($policy['policyError'], 'text/html');
+				exit;
+			}
 			if($HTTP_RAW_POST_DATA === false)
 			{
 				if($proxyLog)
@@ -684,9 +691,8 @@ switch($mode)
 				CachedEcho::send("Empty XMLRPC request.", "text/html");
 				exit;
 			}
-			// isset(), not count(): a policy file that sets the list empty on
-			// purpose means it, and is not the same thing as a tree with no
-			// policy file in it at all.
+			// An explicit empty or invalid list remains an override, not a
+			// request to use the built-in fallback.
 			$proxySafeParams = $policy['safeParams'];
 			$proxyLocalPaths = $policy['allowLocalPaths'];
 			$allowRootDirectory = $policy['allowRootDirectory'];
@@ -717,8 +723,8 @@ switch($mode)
 			// metadata; rpc2.php uses the same decide() contract.
 			$decision = XMLRPCProxy::decide($HTTP_RAW_POST_DATA, $proxyMode, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
 			if($proxyLog)
-				foreach($decision['log'] as $line)
-					FileUtil::toLog("xmlrpc-proxy: ".$line . $policy['logSuffix']);
+				foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
+					FileUtil::toLog("xmlrpc-proxy: ".$line);
 			if($decision['action'] !== 'send')
 			{
 				// This filter refused the call; rtorrent never saw it. Name the

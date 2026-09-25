@@ -39,6 +39,220 @@ class XMLRPCProxyTest extends TestCase
 {
 	// 0.16.22 keeps directory_base.set as a redirect to directory.base.set.
 	const DIRECTORY_SETTERS = array('d.directory.set', 'd.directory_base.set', 'd.directory.base.set');
+
+
+	public function testMulticallDirectoryRefusalDoesNotSuggestAnIneffectivePolicyEdit()
+	{
+		$xml = $this->methodCallXml('d.multicall2',
+			array('', 'main', 'd.directory.base.set=/downloads/x'));
+		foreach(array(
+			array('d.directory_base.set'),
+			array('d.directory_base.set', 'd.directory.base.set'),
+		) as $safeParams)
+		{
+			$decision = XMLRPCProxy::decide($xml, 'sanitize', $safeParams);
+			$this->assertTrue($decision['action'] === 'reject',
+				'a directory setter never belongs in a multicall result slot');
+			$this->assertTrue(strpos(implode(' ', $decision['log']), 'add it to conf/xmlrpc_proxy.php') === false,
+				'the refusal does not suggest a policy edit that cannot allow this slot');
+		}
+	}
+
+	public function testHomogeneousUntrustedFallbackMembersCanShareAnUntrustedCarrier()
+	{
+		$hash = str_repeat('A', 40);
+		foreach(array('sonarr_imported', 'radarr_imported') as $view)
+		{
+			$single = XMLRPCProxy::decide($this->methodCallXml('d.views.push_back_unique',
+				array($hash, $view)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($single['action'] === 'send' && !$single['trusted'],
+				$view.' individually takes the unchanged untrusted route');
+		}
+		$xml = $this->systemMulticallXml(array(
+			array('d.views.push_back_unique', array($hash, 'sonarr_imported')),
+			array('d.views.push_back_unique', array($hash, 'radarr_imported')),
+		));
+		$decision = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
+			'members that individually forward untrusted can share one untrusted carrier');
+		$this->assertTrue(strpos($decision['payload'], 'sonarr_imported') !== false
+			&& strpos($decision['payload'], 'radarr_imported') !== false,
+			'both member values survive canonical rebuilding');
+	}
+
+	public function testSuccessfulSystemMulticallLogsOnlySummaryAndNonroutineWarnings()
+	{
+		$hash = str_repeat('A', 40);
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.stop', array($hash)), array('d.close', array($hash)),
+			array('d.open', array($hash)),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertEquals(1, count($decision['log']),
+			'routine member decisions do not multiply a successful batch log');
+		$this->assertTrue(strpos($decision['log'][0], 'system.multicall (3 members)') !== false,
+			'the summary still says what request was sent');
+		$warning = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('load.start', array('', '/tmp/sample.torrent')),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams(), true);
+		$this->assertTrue($warning['action'] === 'send' && count($warning['log']) === 2
+			&& strpos($warning['log'][1], 'WARNING: operator-enabled local path') !== false,
+			'a nonroutine local-path warning remains visible with its member slot');
+	}
+
+	public function testUntrustedFirstThenTrustedSystemBatchIsRejected()
+	{
+		$hash = str_repeat('A', 40);
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.wibble.set', array($hash, '1')),
+			array('d.stop', array($hash)),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'reject' && !$decision['trusted']
+			&& $decision['payload'] === '',
+			'an untrusted first member cannot be upgraded by a later trusted member');
+	}
+
+	public function testStopBatchElevatesCloseWhileGetSavePathRemainsDeferred()
+	{
+		$hash = str_repeat('A', 40);
+		$stop = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.stop', array($hash)), array('d.close', array($hash)),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($stop['action'] === 'send' && $stop['trusted'],
+			'the raw WebUI stop batch keeps its checked close member');
+		$badClose = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.stop', array($hash)), array('d.close', array($hash, 'extra')),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($badClose['action'] === 'reject',
+			'an unvalidated close member cannot borrow batch trust');
+		foreach(array('d.base_path', 'd.get_base_path') as $method)
+		{
+			$xml = $this->methodCallXml($method, array($hash));
+			$direct = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($direct['action'] === 'send' && !$direct['trusted']
+				&& $direct['payload'] === $xml,
+				$method.' stays on the direct untrusted read path');
+			$batch = XMLRPCProxy::decide($this->systemMulticallXml(array(
+				array('d.open', array($hash)), array($method, array($hash)),
+				array('d.close', array($hash)),
+			)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($batch['action'] === 'reject',
+				$method.' getsavepath batch remains deferred under the mixed-trust rule');
+		}
+	}
+
+	public function testSocketAllocationMutatorsStayUntrustedForDirectAndHomogeneousCalls()
+	{
+		$mutators = array(
+			'system.sockets.files.min_alloc.set', 'system.sockets.files.max_alloc.set',
+			'system.sockets.http.min_alloc.set', 'system.sockets.http.max_alloc.set',
+			'system.sockets.adjust_alloc',
+		);
+		foreach($mutators as $method)
+		{
+			$params = $method === 'system.sockets.adjust_alloc' ? array() : array('', 1048576);
+			$xml = $this->methodCallXml($method, $params);
+			$decision = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
+				&& $decision['payload'] === $xml,
+				$method.' is forwarded unchanged to the daemon untrusted gate');
+		}
+		$call = $this->systemMulticallXml(array(
+			array('system.sockets.files.max_alloc.set', array('', 1048576)),
+			array('system.sockets.adjust_alloc', array()),
+		));
+		$decision = XMLRPCProxy::decide($call, 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
+			'homogeneous socket allocation batch reaches the daemon untrusted gate');
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.stop', array(str_repeat('A', 40))),
+			array('system.sockets.adjust_alloc', array()),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'reject',
+			'a socket mutator cannot borrow trust from another batch member');
+		$read = XMLRPCProxy::decide($this->methodCallXml('system.sockets.files.max_alloc'),
+			'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($read['action'] === 'send' && !$read['trusted'],
+			'a socket allocation getter remains a normal untrusted read');
+	}
+
+	public function testXmlrpcSizeLimitCannotBeLoweredBelowRecoveryRequestSize()
+	{
+		$xml = $this->methodCallXml('network.xmlrpc.size_limit.set', array('', '1'));
+		$decision = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+			'size-limit setter keeps its checked elevation');
+		$this->assertTrue(strpos($decision['payload'], '<i8>1024</i8>') !== false,
+			'the proxy retains enough XMLRPC budget for a follow-up recovery request');
+		$recovery = XMLRPCProxy::decide($this->methodCallXml('network.xmlrpc.size_limit.set',
+			array('', '16777216')), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($recovery['action'] === 'send' && $recovery['trusted']
+			&& strlen($recovery['payload']) < 1024,
+			'the actual emitted recovery setter fits below the enforced floor');
+	}
+
+	public function testExplicitPolicyCannotSetXmlrpcLimitThroughNestedCommands()
+	{
+		$safeParams = array('network.xmlrpc.size_limit.set');
+		$expression = 'network.xmlrpc.size_limit.set=1';
+		$cases = array(
+			'load tail' => $this->methodCallXml('load.start',
+				array('', 'https://example.test/a.torrent', $expression)),
+			'multicall result' => $this->methodCallXml('d.multicall2',
+				array('', 'main', $expression)),
+			'multicall filter' => $this->methodCallXml('d.multicall.filtered',
+				array('', 'main', $expression, 'd.name=')),
+			'view-first multicall' => $this->methodCallXml('d.multicall',
+				array('main', $expression)),
+		);
+		foreach($cases as $label => $xml)
+		{
+			$decision = XMLRPCProxy::decide($xml, 'sanitize', $safeParams);
+			$this->assertTrue($decision['action'] === 'reject'
+				&& !$decision['trusted'] && $decision['payload'] === '',
+				$label.' cannot bypass the direct size-limit floor under an explicit policy');
+		}
+		$direct = XMLRPCProxy::decide($this->methodCallXml('network.xmlrpc.size_limit.set',
+			array('', '1')), 'sanitize', $safeParams);
+		$this->assertTrue($direct['action'] === 'send' && $direct['trusted']
+			&& strpos($direct['payload'], '<i8>1024</i8>') !== false,
+			'the direct recovery setter still clamps an explicit-policy call');
+		$member = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('network.xmlrpc.size_limit.set', array('', '1')),
+		)), 'sanitize', $safeParams);
+		$this->assertTrue($member['action'] === 'send' && $member['trusted']
+			&& strpos($member['payload'], '<i8>1024</i8>') !== false,
+			'a system.multicall member uses the same direct size shape and floor');
+	}
+
+	public function testBuiltInPolicyHintAppearsOnceOnMulticallDecision()
+	{
+		$policy = XMLRPCProxy::policySettings(array());
+		$hash = str_repeat('A', 40);
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.stop', array($hash)), array('d.start', array($hash)),
+		)), 'sanitize', $policy['safeParams']);
+		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
+		$this->assertEquals(1, substr_count(implode("\n", $lines), '[built-in policy]'),
+			'the carrier decision names the fallback only once');
+		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
+			'the summary line carries the policy source');
+	}
+
+	public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()
+	{
+		$settings = XMLRPCProxy::policySettings(array('XMLRPCProxySafeParams' => null));
+		$this->assertEquals(array(), $settings['safeParams'],
+			'an explicitly invalid policy fails closed');
+		$this->assertEquals('', $settings['logSuffix'],
+			'an explicit policy cannot claim the built-in fallback');
+		$this->assertEquals('XMLRPCProxySafeParams must be an array; proxy disabled',
+			$settings['policyError'], 'an invalid policy names its failing key and consequence');
+		$call = $this->methodCallXml('load.start',
+			array('', 'https://example.test/a.torrent', 'd.custom1.set=secret'));
+		$decision = XMLRPCProxy::decide($call, 'sanitize', $settings['safeParams']);
+		$this->assertTrue($decision['action'] === 'reject',
+			'an explicit null policy cannot authorize a custom-field write');
+	}
 	private function resetMocks()
 	{
 		rXMLRPCRequest::$lastPayload = null;
@@ -237,7 +451,7 @@ class XMLRPCProxyTest extends TestCase
 		}
 	}
 
-	public function testWebUiFileSchedulerRatioAndSocketActionsHaveCheckedBatchShapes()
+	public function testWebUiFileSchedulerAndRatioActionsHaveCheckedBatchShapes()
 	{
 		$hash = str_repeat('B', 40);
 		$webUiCalls = array(
@@ -250,26 +464,25 @@ class XMLRPCProxyTest extends TestCase
 			array('d.views.remove', array($hash, 'rat_0')),
 			array('d.views.push_back_unique', array($hash, 'rat_1')),
 			array('view.set_visible', array($hash, 'rat_1')),
-			array('system.sockets.files.min_alloc.set', array('', 8)),
-			array('system.sockets.files.max_alloc.set', array('', 128)),
-			array('system.sockets.adjust_alloc', array()),
 		);
-		$decision = XMLRPCProxy::decide($this->systemMulticallXml($webUiCalls), 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml($webUiCalls),
+			'sanitize', XMLRPCProxy::defaultSafeParams());
 		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
 			'the shipped WebUI multicall methods are accepted with their real argument shapes');
 		foreach(array(
 			array('f.prioritize_first.enable', array($hash.':f0;execute.capture=id')),
 			array('d.set_custom', array($hash, 'sch_ignore', '$execute.capture=id')),
 			array('view.set_visible', array($hash, 'other_view')),
-			array('system.sockets.files.min_alloc.set', array('', 999999999)),
 		) as $bad)
 		{
-			$decision = XMLRPCProxy::decide($this->systemMulticallXml(array($bad)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'reject', $bad[0].' rejects an unsafe argument shape');
+			$decision = XMLRPCProxy::decide($this->systemMulticallXml(array($bad)),
+				'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
+				$bad[0].' with an unchecked shape stays untrusted even inside a carrier');
 		}
 	}
 
-	public function testSchedulerUnignoreAndSocketLimitBoundaries()
+	public function testSchedulerUnignoreAcceptsEmptyThrottleAndState()
 	{
 		$hash = str_repeat('A', 40);
 		foreach(array(
@@ -284,24 +497,7 @@ class XMLRPCProxyTest extends TestCase
 			$this->assertTrue($d['action'] === 'send' && $d['trusted'],
 				'scheduler unignore uses the empty throttle and state forms');
 		}
-		foreach(array('system.sockets.files.min_alloc.set',
-			'system.sockets.http.max_alloc.set') as $method)
-		{
-			$d = XMLRPCProxy::decide($this->systemMulticallXml(array(
-				array($method, array('', '1048576')),
-			)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'send' && $d['trusted']
-				&& strpos($d['payload'], '<i8>1048576</i8>') !== false,
-				$method.' accepts the exact ceiling with a canonical integer');
-			foreach(array('1048577', '9999999') as $over)
-			{
-				$d = XMLRPCProxy::decide($this->systemMulticallXml(array(
-					array($method, array('', $over)),
-				)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-				$this->assertTrue($d['action'] === 'reject',
-					$method.' refuses '.$over.' above its ceiling');
-			}
-		}
+
 	}
 
 	public function testRecreateFilesUsesTheRegisteredRTorrentSetterSpellings()

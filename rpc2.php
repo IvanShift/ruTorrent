@@ -55,9 +55,15 @@ if(!require(dirname(__FILE__).'/php/xmlrpc_proxy_policy.php'))
 $policy = XMLRPCProxy::policySettings(get_defined_vars());
 $mode = $policy['mode'];
 $logging = $policy['log'];
-// isset(), not count(): a policy file that sets the list empty on purpose means
-// it. A tree with no policy file at all gets the shipped list, so this door and
-// httprpc still decide the same request the same way.
+if($policy['policyError'] !== null)
+{
+	// Configuration errors stay visible even when routine decision logging is off.
+	$logging = true;
+	rpc2_log($policy['policyError']);
+	rpc2_fault('503 Service Unavailable', $policy['policyError']);
+}
+// An explicit empty list stays an override. A tree with no policy file at
+// all gets the shipped list, so this door and httprpc decide the same request.
 //
 // This door reads conf/xmlrpc_proxy.php and nothing else -- not
 // plugins/httprpc/conf.php, where an install older than the shared file may
@@ -149,15 +155,13 @@ if($raw === '')
 	rpc2_fault('400 Bad Request', 'Empty XMLRPC request.');
 }
 
-$decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, array(
-	'directory' => array(
-		'root'    => ($topDirectory === '') ? '/' : $topDirectory,
-		'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
-	),
+$proxyOptions = array('directory' => array(
+	'root'    => ($topDirectory === '') ? '/' : $topDirectory,
+	'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 ));
-// Name the fallback in the decision line, without a second warning per poll.
-foreach($decision['log'] as $line)
-	rpc2_log($line . $policy['logSuffix']);
+$decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, $proxyOptions);
+foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
+	rpc2_log($line);
 
 if($decision['action'] !== 'send')
 {
