@@ -8,6 +8,8 @@
 |---|---|
 | [2026-08-28-upstream-delivery/](2026-08-28-upstream-delivery/) | **Главный статус заливки в upstream.** Реестр 18 packages: 5 реализованы, package 5 partial, 13 ещё открыты; refs, dependencies, upstream/local-only delivery |
 | [2026-09-01-gemini-rtorrent-alias-surface/](2026-09-01-gemini-rtorrent-alias-surface/) | Завершённый delegated brief package 13; candidate `3146f741`, fork integration `4d779ff9`, APPROVED |
+| [2026-09-12-iconv-missing/](2026-09-12-iconv-missing/) | **В контейнере нет `iconv()`.** Историческая диагностика пропуска удаления Tapochek и мёртвой ветки Kinozal; оба дефекта исправлены в `af56990f` и проверены без расширения. Fatal'ов нет — первое впечатление было ошибочным |
+| [2026-09-12-app-log-findings/](2026-09-12-app-log-findings/) | **Разбор rutorrent-app-errors.log 2026-09-12.** [Итог исправлений CHECK-RECHECK2](2026-09-12-app-log-findings/FIX-CHECK-RECHECK2-5eba5135.md): 44/45 закрыты локально; условный consumers9 открыт. |
 | [2026-09-01-gemini-xmlrpc-proxy-policy/](2026-09-01-gemini-xmlrpc-proxy-policy/) | Следующее подробное RED-first ТЗ для Gemini: package 14, exact seven-path XMLRPC proxy policy |
 | [2026-08-28-fileutil-defects/](2026-08-28-fileutil-defects/) | Четыре дефекта `FileUtil` + бриф на **независимую перепроверку другой моделью**. Часть находок измерена, часть нет, одна опровергнута |
 | [2026-08-28-harness-defects.md](2026-08-28-harness-defects.md) | 42 дефекта тест-харнесса (`php-test.sh`, `TestCase.php`), 7 разделов. Пред-существующие, ничьим PR не являются. **Адверсальный проход по `[reported]` не доделан** |
