@@ -12,10 +12,10 @@
 #   tasks/matrix.sh last            show the last green run
 #
 # Why legs run in parallel on separate exports: one leg is ~100 s and most of
-# it is two single-threaded files (AGENTS.md, "The Pre-Commit Suite Is 200
-# Seconds"), so three legs side by side cost about one leg -- but two runs
+# it is two single-threaded files (AGENTS.md, "PHP Suite Timing and the
+# Matrix"), so three legs side by side cost about one leg -- but two runs
 # over ONE tree corrupt each other (AGENTS.md, "This Machine Will Lie To You"),
-# and a container writes as root. So every leg gets `git ls-files` of the
+# and a default container could write as root. So every leg gets `git ls-files` of the
 # working tree (staged and unstaged edits, untracked new files) exported to a
 # disk-backed directory of its own, plus its own TMPDIR, and containers run as
 # this user. Never under /tmp: it is a small tmpfs here.
@@ -31,15 +31,15 @@
 # exactly like that on a 68-byte TMPDIR. The guard below refuses to start
 # rather than fail four tests 90 seconds in.
 #
-# The digest covers every exported non-Markdown file and its mode/type. Markdown-only edits do
-# not change the suite inputs. A changed runner invalidates its old green
-# marker because tasks/matrix.sh is part of the export.
+# The source digest covers every exported non-Markdown file and its mode/type.
+# The marker also includes the runtime fingerprint below. Markdown-only edits
+# do not change the source inputs; editing this runner does.
 set -u -o pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 base="${HOME}/.cache/rtm"
 marker="${base}/last-green"
-tmpdir_budget=59  # Verified with SCGITransportTest; the socket suffix is 49 bytes.
+tmpdir_budget=58  # 58 + the 49-byte socket suffix fits the 107-byte sun_path limit.
 
 # A tracked path removed in the working tree is deliberately absent. A file
 # vanishing while it is hashed or archived remains an error.
@@ -89,7 +89,7 @@ print(digest.hexdigest())
 PYHASH
 )
 
-digest() (
+source_digest() (
     files=$(mktemp "${TMPDIR:-/tmp}/rutorrent-matrix-files.XXXXXX") || exit 1
     trap 'rm -f "$files"' EXIT
     suite_files | grep -zvE '\.md$' > "$files" || exit 1
@@ -99,6 +99,51 @@ digest() (
     fi
     hash_files "$root" "$files"
 )
+
+# The pre-commit marker also names the runtimes that executed the suite. Docker
+# image IDs change on a tag refresh; PHP bytes, ini files, extension binaries
+# and loaded modules cover local package/configuration changes without a remote query.
+runtime_fingerprint() (
+    set -o pipefail
+    include_local=0
+    if [ "$#" -eq 0 ]; then
+        # `digest` without legs describes the full pre-commit matrix.
+        include_local=1
+    else
+        for leg in "$@"; do
+            [ "$leg" = local ] && include_local=1
+        done
+    fi
+    {
+        if [ "$include_local" -eq 1 ]; then
+            php_binary="$(command -v php)" || {
+                echo "matrix.sh: local PHP unavailable for runtime fingerprint" >&2
+                return 1
+            }
+            sha256sum "$php_binary" || return 1
+            php -v || return 1
+            php -m || return 1
+            php -r '$files = array_merge(array(php_ini_loaded_file()), explode(",", (string) php_ini_scanned_files())); foreach ($files as $file) { $file = trim($file); if ($file !== "") { $hash = hash_file("sha256", $file); if ($hash === false) exit(1); echo $file, ":", $hash, "\n"; } } foreach (get_loaded_extensions() as $name) echo $name, ":", phpversion($name), "\n"; $dir = rtrim((string) ini_get("extension_dir"), DIRECTORY_SEPARATOR); foreach (glob($dir . DIRECTORY_SEPARATOR . "*.so") ?: array() as $file) { $hash = hash_file("sha256", $file); if ($hash === false) exit(1); echo $file, ":", $hash, "\n"; }' || return 1
+        else
+            printf 'local PHP: not selected\n'
+        fi
+        for image in php:8.1-cli php:7.4-cli ivanshift/rutorrent:latest; do
+            printf '%s ' "$image"
+            timeout 5s docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || printf 'unavailable\n'
+        done
+    } | sha256sum | cut -d ' ' -f 1
+)
+
+combine_digest() {
+    printf '%s\n%s\n' "$1" "$2" | sha256sum | cut -d ' ' -f 1
+}
+
+digest() {
+    local source runtime
+    source="$(source_digest)" || return 1
+    runtime="$(runtime_fingerprint "$@")" || return 1
+    combine_digest "$source" "$runtime"
+}
 
 case "${1:-}" in
 	digest) digest; exit $? ;;
@@ -113,24 +158,37 @@ if [ "${#legs[@]}" -eq 0 ]; then
 fi
 
 stamp="$(date -u +%y%m%d%H%M%S)"
+declare -A seen_legs=()
 for leg in "${legs[@]}"; do
     case "$leg" in
         local|7.4|8.1|prod-kinozal) ;;
         *) echo "matrix.sh: unknown leg: $leg" >&2; exit 2 ;;
     esac
+    if [ -n "${seen_legs[$leg]+set}" ]; then
+        echo "matrix.sh: duplicate leg: $leg" >&2
+        exit 2
+    fi
+    seen_legs[$leg]=1
 done
 if [[ " ${legs[*]} " == *" local "* ]]; then
     # The template and mktemp result have the same number of bytes.
     local_tmp="${base}/${stamp}.XXXXXX/local/tmp"
-    if [ "${#local_tmp}" -gt "$tmpdir_budget" ]; then
-        echo "matrix.sh: TMPDIR '$local_tmp' is ${#local_tmp} bytes; UNIX socket fixtures need it <= $tmpdir_budget" >&2
+    local_tmp_bytes="$(printf '%s' "$local_tmp" | wc -c)"
+    if [ "$local_tmp_bytes" -gt "$tmpdir_budget" ]; then
+        echo "matrix.sh: TMPDIR '$local_tmp' is $local_tmp_bytes bytes; UNIX socket fixtures need it <= $tmpdir_budget" >&2
         exit 2
     fi
 fi
 
-before="$(digest)" || exit 1
+source_before="$(source_digest)" || exit 1
+runtime_before="$(runtime_fingerprint "${legs[@]}")" || exit 1
+before="$(combine_digest "$source_before" "$runtime_before")" || exit 1
 mkdir -p "$base" || exit 1
 run="$(mktemp -d "${base}/${stamp}.XXXXXX")" || exit 1
+# Descendant legs inherit this lock. A SIGKILL of the runner cannot make an
+# active export eligible for retention cleanup while a leg still uses it.
+exec {run_fd}>"$run/.lock" || exit 1
+flock -x "$run_fd" || exit 1
 started=$(date +%s)
 declare -A pid=()
 declare -A container_name=()
@@ -184,11 +242,15 @@ fail_setup() {
 }
 on_signal() {
     local code="$1"
-    trap - INT TERM
+    trap - HUP INT TERM
+    # Start the diagnostic grace period when the signal arrived, even if a
+    # very long run created its root directory more than a day earlier.
+    touch "$run" 2>/dev/null || :
     stop_legs
     echo "matrix.sh: interrupted; logs under $run" >&2
     exit "$code"
 }
+trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
@@ -200,10 +262,10 @@ suite_files > "$run/manifest" || fail_setup "cannot list suite inputs"
 grep -zvE '\.md$' "$run/manifest" > "$run/digest-manifest" \
     || fail_setup "no non-Markdown suite inputs"
 (cd "$root" && tar --null -T "$run/manifest" -cf -) \
-    | tar -xf - -C "$export_dir" || fail_setup "archive export failed"
+    | tar -xpf - -C "$export_dir" || fail_setup "archive export failed"
 export_digest="$(hash_files "$export_dir" "$run/digest-manifest")" \
     || fail_setup "archive export is incomplete"
-[ "$export_digest" = "$before" ] || fail_setup "archive export differs from the source digest"
+[ "$export_digest" = "$source_before" ] || fail_setup "archive export differs from the source digest"
 expected_files="$(find "$root/tests/php" "$root/tests/plugins" -type f -name '*Test.php' | wc -l)" \
     || fail_setup "cannot count source tests"
 [ "$expected_files" -gt 0 ] || fail_setup "source has no PHP test files"
@@ -279,7 +341,7 @@ for leg in "${legs[@]}"; do
     [ "$code" = 0 ] && [ "$fails" = 0 ] || status=1
 done
 elapsed=$(( $(date +%s) - started ))
-after="$(digest)" || status=1
+after="$(digest "${legs[@]}")" || status=1
 
 if [ "$status" = 0 ] && [ "$before" = "$after" ]; then
     if [ "$record_green" = 1 ]; then
@@ -301,17 +363,56 @@ else
     echo "NOT green (${elapsed}s); logs under $run"
 fi
 
-# Other matrix invocations can be running in older directories. Retain the
-# three newest completed runs and never delete a directory still in use.
+# Serialise cleanup, then keep the three most recently *finished* runs.
+# Keep incomplete logs for a day so an interrupted run can be diagnosed.
+# After that, remove them only when the inherited lock is free; this also
+# handles old-format directories that had no lock. The current log is retained.
 touch "$run/.finished"
-completed=()
-for candidate in "$base"/[0-9]*; do
-    [ -d "$candidate" ] && [ -f "$candidate/.finished" ] && completed+=("$candidate")
-done
-if [ "${#completed[@]}" -gt 3 ]; then
-    mapfile -d '' -t completed < <(printf '%s\0' "${completed[@]}" | LC_ALL=C sort -zr)
-    for ((i=3; i<${#completed[@]}; i++)); do
-        rm -rf -- "${completed[$i]}"
-    done
-fi
+exec {cleanup_fd}>"$base/.cleanup.lock"
+flock -x "$cleanup_fd"
+python3 - "$base" "$run" <<'PYCLEAN' || echo "matrix.sh: retention cleanup failed; logs under $run" >&2
+import fcntl
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+base, current = map(Path, sys.argv[1:])
+now = time.time()
+completed = []
+locks = []
+for candidate in base.iterdir():
+    if not re.fullmatch(r'[0-9]{12}\.[A-Za-z0-9]{6}', candidate.name):
+        continue
+    if not candidate.is_dir() or candidate.is_symlink():
+        continue
+    finished = candidate / '.finished'
+    if candidate == current:
+        completed.append((finished.stat().st_mtime_ns, candidate))
+        continue
+    lock_path = candidate / '.lock'
+    # A recent interrupted run keeps its logs; old unlocked runs are stale.
+    if not finished.exists() and now - candidate.stat().st_mtime < 86400:
+        continue
+    lock = lock_path.open('a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        continue
+    locks.append(lock)
+    if finished.exists():
+        completed.append((finished.stat().st_mtime_ns, candidate))
+    else:
+        shutil.rmtree(candidate)
+
+completed.sort(key=lambda item: item[0], reverse=True)
+for _, candidate in completed[3:]:
+    if candidate != current:
+        shutil.rmtree(candidate)
+for lock in locks:
+    lock.close()
+PYCLEAN
+flock -u "$cleanup_fd"
 exit "$status"

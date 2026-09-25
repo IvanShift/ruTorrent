@@ -22,19 +22,83 @@ overlay() (
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/rt-lab.XXXXXX")
     trap 'rm -rf "$scratch"' EXIT HUP INT TERM
     files="$scratch/files.z"
+    deleted="$scratch/deleted.z"
+    previous="$scratch/previous.z"
     archive="$scratch/overlay.tar"
     container_archive="/tmp/$(basename "$scratch").tar"
-    # git-tracked files only, plus anything modified but not yet committed. Untracked
-    # scratch (task notes, logs, images) must not reach the container.
-    # conf/config.php is TRACKED in the repo but the entrypoint GENERATES its own on
-    # boot, pointing at the unix socket the image runs rtorrent on. Overlaying the
-    # repo copy replaces that with the repo default (TCP 127.0.0.1:5000) and every
-    # RPC call then fails with "cannot reach rtorrent ... Connection refused".
-    # Same for conf/users/, which holds per-profile state the container owns.
-    ( cd "$REPO" && git ls-files -z ':!conf/config.php' ':!conf/users' ) > "$files"
+    container_deleted="/tmp/$(basename "$scratch").deleted.z"
+    container_files="/tmp/rt-lab-managed-$name.z"
+    container_pending="$container_files.pending"
+    # The pending inventory is written before extraction. If extraction or the
+    # final rename fails, the next sync can still remove a staged addition.
+    : > "$previous"
+    for inventory in "$container_files" "$container_pending"; do
+        # A missing manifest is normal on the first sync. A failed read of an
+        # existing one must stop before changing the app.
+        manifest_state=$(docker exec "$name" sh -c \
+            'if [ -f "$1" ]; then printf present; elif [ -e "$1" ]; then printf invalid; else printf absent; fi' \
+            _ "$inventory") || { echo "rt-lab: cannot check overlay manifest in $name" >&2; exit 1; }
+        case "$manifest_state" in
+            present)
+                inventory_copy="$scratch/$(basename "$inventory")"
+                docker cp "$name:$inventory" "$inventory_copy" || {
+                    echo "rt-lab: cannot read overlay manifest in $name" >&2
+                    exit 1
+                }
+                cat "$inventory_copy" >> "$previous"
+                ;;
+            absent) ;;
+            *) echo "rt-lab: invalid overlay manifest in $name" >&2; exit 1 ;;
+        esac
+    done
+    # conf/config.php and conf/users belong to the image at runtime. Track the
+    # files we overlaid so a later staged or unstaged deletion removes only our
+    # own former files, while image-added plugins and configuration survive.
+    python3 - "$REPO" "$files" "$previous" "$deleted" <<'MANIFEST'
+import os
+import stat
+import subprocess
+import sys
+
+repo, current_file, previous_file, deleted_file = sys.argv[1:]
+excluded = [':!conf/config.php', ':!conf/users']
+def git(*args):
+    return subprocess.check_output(['git', '-C', repo, *args])
+def paths(data):
+    return set(filter(None, data.split(b'\0')))
+def valid(path):
+    return not path.startswith(b'/') and all(part not in (b'', b'.', b'..') for part in path.split(b'/'))
+
+tracked = paths(git('ls-files', '-z', *excluded))
+def exportable(path):
+    source = os.path.join(os.fsencode(repo), path)
+    try:
+        mode = os.lstat(source).st_mode
+    except FileNotFoundError:
+        return False
+    return stat.S_ISREG(mode) or stat.S_ISLNK(mode)
+current = {path for path in tracked if exportable(path)}
+previous = paths(open(previous_file, 'rb').read()) if os.path.exists(previous_file) else set()
+removed_from_head = paths(git('diff', '--name-only', '--diff-filter=D', '-z', 'HEAD', '--', *excluded))
+removed = (previous | removed_from_head) - current
+if any(not valid(path) for path in current | removed):
+    raise ValueError('rt-lab: unsafe tracked path in overlay manifest')
+with open(current_file, 'wb') as stream:
+    stream.write(b''.join(path + b'\0' for path in sorted(current)))
+with open(deleted_file, 'wb') as stream:
+    stream.write(b''.join(b'./' + path + b'\0' for path in sorted(removed)))
+MANIFEST
     tar -C "$REPO" --null -T "$files" -cf "$archive"
+    if [ -s "$deleted" ]; then
+        docker cp "$deleted" "$name:$container_deleted"
+        docker exec -u root "$name" sh -c "cd $APP && xargs -0 -r rm -f -- < $container_deleted && rm -f $container_deleted"
+    fi
     docker cp "$archive" "$name":"$container_archive"
-    docker exec -u root "$name" sh -c "tar -C $APP -xf $container_archive && rm -f $container_archive"
+    # A failed manifest upload cannot leave an unrecorded newly overlaid file.
+    docker cp "$files" "$name:$container_pending"
+    docker exec -u root "$name" sh -c \
+        'tar -C "$1" -xf "$2" && mv -f "$3" "$4" && rm -f "$2"' \
+        _ "$APP" "$container_archive" "$container_pending" "$container_files"
     # The entrypoint runs everything as `torrent`; files arrive owned by root.
     docker exec -u root "$name" sh -c "chown -R torrent:torrent $APP" 2>/dev/null || true
     n=$(tr -cd '\0' < "$files" | wc -c)
