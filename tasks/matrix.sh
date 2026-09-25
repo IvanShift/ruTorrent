@@ -202,11 +202,21 @@ marker_unlock() {
     exec {marker_fd}>&-
 }
 revoke_marker() {
-    local observed="$1"
+    local observed="$1" recorded full_runtime full_observed
     [ -n "$observed" ] || return 0
     marker_lock
-    if [ "$(sed -n 1p "$marker" 2>/dev/null)" = "$observed" ]; then
+    recorded="$(sed -n 1p "$marker" 2>/dev/null)"
+    if [ "$recorded" = "$observed" ]; then
         rm -f "$marker"
+    elif [ -n "$recorded" ]; then
+        # A selected Docker leg omits local PHP from its digest. Reconstruct
+        # the full marker for the source snapshot that the failed leg tested.
+        # Keep the lock while checking so another run cannot publish between
+        # the comparison and removal.
+        if full_runtime="$(runtime_fingerprint 2>/dev/null)"; then
+            full_observed="$(combine_digest "$source_before" "$full_runtime")"
+            [ "$recorded" != "$full_observed" ] || rm -f "$marker"
+        fi
     fi
     marker_unlock
 }

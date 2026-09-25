@@ -416,6 +416,69 @@ image_after="$(HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID
 [ "$image_before" != "$image_after" ] || {
     echo 'runtime image replacement did not invalidate digest' >&2; exit 1
 }
+# The full marker must change when local PHP bytes or reported runtime inputs change.
+# Keep the fake Docker image ID fixed so each comparison isolates host PHP.
+mkdir -p "$short_home/php-bin"
+cat > "$short_home/php-bin/php" <<'FINGERPRINT_PHP'
+#!/bin/sh
+case "$1" in
+    -v) printf 'PHP fixture 8.5\n' ;;
+    -m) cat "$MATRIX_TEST_PHP_MODULES" ;;
+    -r) cat "$MATRIX_TEST_PHP_INI" "$MATRIX_TEST_PHP_EXTENSION" ;;
+    *) exit 99 ;;
+esac
+FINGERPRINT_PHP
+chmod +x "$short_home/php-bin/php"
+printf 'ini:before\n' > "$short_home/php-ini"
+printf 'extension:before\n' > "$short_home/php-extension"
+printf 'module:before\n' > "$short_home/php-modules"
+fingerprint_digest() {
+    HOME="$short_home" PATH="$short_home/php-bin:$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
+        MATRIX_TEST_PHP_INI="$short_home/php-ini" MATRIX_TEST_PHP_EXTENSION="$short_home/php-extension" \
+        MATRIX_TEST_PHP_MODULES="$short_home/php-modules" "$scratch/tasks/matrix.sh" digest
+}
+fingerprint_before="$(fingerprint_digest)"
+printf 'ini:after\n' > "$short_home/php-ini"
+fingerprint_ini="$(fingerprint_digest)"
+[ "$fingerprint_before" != "$fingerprint_ini" ] || { echo 'PHP ini change did not invalidate digest' >&2; exit 1; }
+printf 'extension:after\n' > "$short_home/php-extension"
+fingerprint_extension="$(fingerprint_digest)"
+[ "$fingerprint_ini" != "$fingerprint_extension" ] || { echo 'PHP extension change did not invalidate digest' >&2; exit 1; }
+printf 'module:after\n' > "$short_home/php-modules"
+fingerprint_modules="$(fingerprint_digest)"
+[ "$fingerprint_extension" != "$fingerprint_modules" ] || { echo 'PHP module change did not invalidate digest' >&2; exit 1; }
+printf '# changed binary bytes\n' >> "$short_home/php-bin/php"
+fingerprint_binary="$(fingerprint_digest)"
+[ "$fingerprint_modules" != "$fingerprint_binary" ] || { echo 'PHP binary change did not invalidate digest' >&2; exit 1; }
+
+# A failed selected Docker leg invalidates a full-matrix marker for this source.
+# Image IDs and fake PHP inputs remain fixed throughout the run.
+cat > "$scratch/bin/docker" <<'DOCKER_RED'
+#!/bin/sh
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+    cat "$MATRIX_TEST_IMAGE_ID"
+    exit 0
+fi
+if [ "$1" = run ]; then
+    printf '> php php/aTest.php\nFailed: synthetic Docker leg\n'
+    exit 1
+fi
+exit 0
+DOCKER_RED
+chmod +x "$scratch/bin/docker"
+full_marker="$(fingerprint_digest)"
+printf '%s\n2026-09-25T00:00:00Z\nlocal 8.1 7.4 prod-kinozal\n' "$full_marker" \
+    > "$short_home/.cache/rtm/last-green"
+if HOME="$short_home" PATH="$short_home/php-bin:$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
+    MATRIX_TEST_PHP_INI="$short_home/php-ini" MATRIX_TEST_PHP_EXTENSION="$short_home/php-extension" \
+    MATRIX_TEST_PHP_MODULES="$short_home/php-modules" \
+    "$scratch/tasks/matrix.sh" 7.4 > "$short_home/docker-red.log" 2>&1; then
+    echo 'red Docker leg was accepted' >&2; exit 1
+fi
+[ ! -e "$short_home/.cache/rtm/last-green" ] || {
+    cat "$short_home/docker-red.log" >&2
+    echo 'red Docker leg left the full marker in place' >&2; exit 1
+}
 # A Docker-only leg must remain usable when host PHP is absent or broken.
 cat > "$scratch/bin/php" <<'NO_HOST_PHP'
 #!/bin/sh
@@ -466,4 +529,4 @@ grep -q 'runtime changed while it ran' "$short_home/runtime-drift.log" || {
     cat "$short_home/runtime-drift.log" >&2
     echo 'runtime drift was reported as source drift' >&2; exit 1
 }
-echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, source/runtime drift, Docker-only without host PHP passed'
+echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, source/runtime drift, local PHP fingerprint, selected-leg marker revocation, Docker-only without host PHP passed'

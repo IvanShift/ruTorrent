@@ -362,7 +362,8 @@ Both of those exist now (2026-09-14), local to this checkout like the hook itsel
   `tasks/matrix.sh local 7.4` selects legs. Its digest hashes exported
   non-Markdown working-tree files, tracked or new, plus the PHP and Docker
   runtimes; `last` shows the last
-  full green run. A red repeat on the same digest revokes that marker.
+  full green run. A failed leg revokes the matching full marker for the same
+  source and runtime, even when only Docker legs were selected.
   The matrix guard caps the local leg's `TMPDIR` at 58 bytes: the socket
   suffix is 49 bytes and `sun_path` holds 107. PHP
   truncates a longer path with a silenced Notice; bind then lands on the
