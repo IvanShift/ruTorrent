@@ -316,10 +316,10 @@ class NNMClubCheckImpl
      * Extract a typed credential from announce metadata.
      *
      * @param  string|array|null $announce
-     * @param  string|null       $requiredMode Optional `path` or `query` filter
+     * @param  string            $requiredMode `path` or `query` filter
      * @return array|null
      */
-    private static function extractAuth($announce, $requiredMode = null)
+    private static function extractAuth($announce, $requiredMode)
     {
         if ($announce === null) return null;
 
@@ -333,7 +333,7 @@ class NNMClubCheckImpl
         if (!is_string($announce)) return null;
 
         $auth = self::parseAuthUrl($announce);
-        if ($auth !== null && ($requiredMode === null || $auth['mode'] === $requiredMode)) {
+        if ($auth !== null && $auth['mode'] === $requiredMode) {
             return $auth;
         }
         return null;

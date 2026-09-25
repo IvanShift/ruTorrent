@@ -686,9 +686,8 @@ class RuTrackerUpdatePass
 
     // Learns topic_id -> forum_id pairs from RuTracker's Atom feed (design
     // spec 4.3, source 2) once per cycle, via a conditional GET so an
-    // unchanged feed (the common case inside its ~9h refresh window) costs a
-    // 304 instead of a full parse. Feeds forum ids the plugin's own torrents
-    // are waiting on straight into chk-forum.
+    // unchanged feed costs a 304 instead of a full parse. Feeds forum ids
+    // into chk-forum for the plugin's own torrents.
     //
     // A missing/unreachable/unchanged feed is not an error, just a missed
     // optimisation for this cycle -- callers still have the chk-forum cache
@@ -799,9 +798,8 @@ class RuTrackerUpdatePass
                 $changed[] = $hash;
                 // The other half of the handler's "layer3 forum=N from the
                 // chk-forum cache": this is where a cached id came from when
-                // the feed, rather than a sweep, resolved it. Bounded by the
-                // torrents whose forum is still unknown, never the whole
-                // fleet.
+                // the feed, rather than a sweep, resolved it. This includes
+                // previously mapped topics whose forum id changed.
                 ruTrackerChecker::logDebug('pollFeed: ' . $hash . ' forum=' . (int) $map[$topic]['forum']
                     . ' for topic ' . $topic . ($was === '' ? ', learned from the feed'
                         : ', corrected from ' . $was . ': the topic moved'));

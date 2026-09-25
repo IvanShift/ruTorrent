@@ -4609,18 +4609,15 @@ upTest($suite, 'every Kinozal topic host is accepted by its declared owner', fun
     }
 });
 
-upTest($suite, 'legacy two-argument announce authority uses its comment', function () {
+upTest($suite, 'announce authority follows the declared topic owner', function () {
     upLoadKinozalRegistration();
     $comment = 'https://kinozal.tv/details.php?id=1';
-    $expected = ruTrackerChecker::announceAuthorityFor($comment);
-    strictAssertTrue(is_array($expected) && in_array('kinozal.tv', $expected['authority'], true),
-        'the one-argument form resolves a declared tracker authority');
-    strictAssertSame($expected,
-        ruTrackerChecker::announceAuthorityFor(array('http://unrelated.invalid/announce'), $comment),
-        'the compatibility trackers argument cannot replace the authoritative comment');
+    $authority = ruTrackerChecker::announceAuthorityFor($comment);
+    strictAssertTrue(is_array($authority) && in_array('kinozal.tv', $authority['authority'], true),
+        'the declared owner resolves its trusted announce host');
     strictAssertSame(null,
-        ruTrackerChecker::announceAuthorityFor(array('http://kinozal.tv/announce'), ''),
-        'an explicitly empty legacy comment stays empty');
+        ruTrackerChecker::announceAuthorityFor(''),
+        'an empty comment has no declared owner');
 });
 
 upTest($suite, 'an untimed NOT_NEED successor pointer still reaches its handler', function () {

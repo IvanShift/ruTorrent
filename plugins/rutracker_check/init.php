@@ -25,9 +25,9 @@ else
 		// and re-enables the new one at now+start). The absolute form starts its
 		// countdown at registration time, so each reload pushed the next check a
 		// whole hour away and a user who kept refreshing never got one at all.
-		// This form aligns the start to the next wall-clock boundary, which a
-		// reload recomputes to the same instant. Same choice as plugins/trafic;
-		// note it takes the interval in minutes rather than seconds.
+		// This form uses a stable interval slot derived from the scheduler
+		// key instead of restarting a countdown on each reload. Same choice
+		// as plugins/trafic; the interval is in minutes, not seconds.
 		$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
 			getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' &}' );
 	}

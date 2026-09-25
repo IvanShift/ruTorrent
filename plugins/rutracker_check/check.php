@@ -198,18 +198,13 @@ class ruTrackerChecker
 	 * that owns this comment. announceVerdict() is the single place that
 	 * checks enabled rows in that jurisdiction and trusted announce hosts.
 	 *
-	 * The optional second argument retains the former ($trackers, $comment)
-	 * call shape. Tracker rows are ignored because the comment determines
-	 * ownership; the scheduler calls the one-argument form.
-	 *
-	 * @param mixed $commentOrTrackers comment, or legacy tracker rows
-	 * @param string|null $comment legacy comment when supplied
+	 * @param string $comment topic comment used to resolve ownership
 	 * @return array|null owner's jurisdiction and authority, or null when no
 	 *                    owner can be established or it has not opted in
 	 */
-	static public function announceAuthorityFor($commentOrTrackers, $comment = null)
+	static public function announceAuthorityFor($comment)
 	{
-		$owner = self::ownerOf(func_num_args() > 1 ? $comment : $commentOrTrackers);
+		$owner = self::ownerOf($comment);
 		if($owner === null || empty($owner['announceAuthority']))
 			return null;
 		return array(

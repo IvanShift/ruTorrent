@@ -74,7 +74,7 @@ class RuTrackerFetchError
 		$error = trim(preg_replace('/\s+/', ' ', $error));
 		if($error === '') return('');
 		// Classify Snoopy's own errors. A refused credential redirect
-		// retains HTTP status 302, so the current plugin consumers that log only
+		// retains the redirect response status, so plugin consumers that log only
 		// status < 100 do not emit redirect-refused; the class remains available
 		// to callers that inspect the error field directly.
 		$classes = array(

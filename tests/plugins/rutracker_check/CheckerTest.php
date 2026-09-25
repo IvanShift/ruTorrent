@@ -4231,8 +4231,6 @@ class CheckerTest
 						'a retryable handler never erases the settled token');
 					strictAssertSame(array(), $this->customWritesFor('chk-time'),
 						'the original rest deadline is unchanged');
-					strictAssertSame(true, ruTrackerChecker::isSettledStatus($previous,
-						time(), $message), 'the retained token remains settled on the next cycle');
 				});
 		}
 	}

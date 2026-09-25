@@ -41,11 +41,10 @@ class KinozalCheckImpl
 
     // The DOWNLOAD endpoint's own verdict for an id it does not serve: HTTP 200
     // carrying the site's ordinary error page, whose one-line body is this.
-    // Measured 2026-09-12 against the live endpoint on the stored session: the
-    // whole 3100-byte page is byte-identical (same md5) for an id that never
-    // existed and for a topic that was in the fleet and is gone. It means what
-    // MISSING_MARKER above means -- this id serves no torrent -- read at the
-    // door the challenge left open.
+    // KinozalHandlerTest pins a 4010-byte live answer. The error page was
+    // identical for an id that never existed and a vanished fleet topic.
+    // It means what MISSING_MARKER above means: this id serves no torrent.
+    // The verdict is read at the door the challenge left open.
     //
     // The captured answer is windows-1251; the UTF-8 spelling is a defensive
     // compatibility case, not an observed answer from download.php. Both are

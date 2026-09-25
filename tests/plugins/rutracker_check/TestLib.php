@@ -25,7 +25,7 @@ function testFindRepoRoot()
 // -- they eval the class body out of check.php and never run that file's
 // require_once lines -- so the leaf its classifyFetchError() delegates to has
 // to be loaded here. It is required rather than restated: a stub copy of the
-// eight token/pattern pairs is exactly the drift this extraction removed, and
+// token/pattern pairs is exactly the drift this extraction removed, and
 // a test suite carrying its own copy could not see the production one change.
 // The file is a leaf with no dependencies of its own, so requiring it costs
 // the suites nothing.
@@ -458,7 +458,7 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 // the other only trimmed -- so a re-spaced or wrapped sentence landed on its
 // token down one path and on 'unclassified' down the other.
 //
-// The first rows are php/Snoopy.class.inc's own error strings.
+// The cases include errors emitted by php/Snoopy.class.inc.
 function fetchErrorParityCases()
 {
     return array(
