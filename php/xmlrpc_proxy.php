@@ -237,6 +237,8 @@ class XMLRPCProxy
 
 	/**
 	 * Normalize policy variables after the caller has loaded its own conf.
+	 * Httprpc loads its plugin conf after the shared policy, so that override
+	 * applies only there; rpc2 passes the shared policy without plugin conf.
 	 * No file access happens here; both HTTP doors pass their current scope.
 	 */
 	public static function policySettings($vars)

@@ -473,6 +473,20 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			}
 	}
 
+	public function testPluginOnlyEmptyPolicyOverridesHttprpcButNotRpc2()
+	{
+		$action = $this->runEntrypoint('action', $this->viewActionXml(), true,
+			'success', 'plugin_empty');
+		$this->assertHttp($action, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertTrue($action['state']['sends'] === 0,
+			'the plugin override refuses httprpc before reaching the daemon');
+		$rpc2 = $this->runEntrypoint('rpc2', $this->viewActionXml(), true,
+			'success', 'plugin_empty');
+		$this->assertHttp($rpc2, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertTrue($rpc2['state']['sends'] === 1 && $rpc2['state']['trusted'] === true,
+			'rpc2 keeps the shared policy and does not import the plugin override');
+	}
+
 	public function testInvalidExplicitPolicyFailsVisiblyAtBothDoors()
 	{
 		foreach(array(true, false) as $logging)
@@ -995,9 +1009,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				file_put_contents($file, "\$XMLRPCProxy = 'off';\n", FILE_APPEND);
 			if($policy === 'null')
 				file_put_contents($file, "\$XMLRPCProxySafeParams = null;\n", FILE_APPEND);
-			if($policy === 'plugin_null')
+			if($policy === 'plugin_null' || $policy === 'plugin_empty')
 				file_put_contents($tree . '/plugins/httprpc/conf.php',
-					"\$XMLRPCProxySafeParams = null;\n", FILE_APPEND);
+					$policy === 'plugin_null' ? "\$XMLRPCProxySafeParams = null;\n"
+						: "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
 			if($policy === 'unreadable' && !chmod($file, 0000))
 				throw new Exception('could not make policy unreadable');
 			if($policy === 'symlink')

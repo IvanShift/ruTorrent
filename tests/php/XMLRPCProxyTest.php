@@ -345,8 +345,10 @@ class XMLRPCProxyTest extends TestCase
 		foreach(array(
 			array('d.views.push_back_unique', array($hash, 'sonarr_imported')),
 			array('view.set_visible', array($hash, 'main')),
+			array('view.set_visible', array($hash, 'sonarr_imported')),
 			array('d.throttle_name.set', array($hash, 'thr_1')),
 			array('d.views.remove', array($hash)),
+			array('d.views.remove', array($hash, 'sonarr_imported')),
 		) as $call)
 		{
 			$xml = $this->methodCallXml($call[0], $call[1]);
@@ -367,6 +369,25 @@ class XMLRPCProxyTest extends TestCase
 			'sanitize', XMLRPCProxy::defaultSafeParams());
 		$this->assertTrue($oldElevation['action'] === 'reject',
 			'an existing elevation keeps its terminal shape refusal');
+		$missingHash = XMLRPCProxy::decide($this->methodCallXml('d.start', array()),
+			'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($missingHash['action'] === 'reject' && !$missingHash['trusted']
+			&& $missingHash['payload'] === '',
+			'd.start without a download hash is refused before reaching the daemon');
+	}
+
+	public function testWebUiGetTotalReadBatchRemainsUntrusted()
+	{
+		$xml = $this->systemMulticallXml(array(
+			array('throttle.global_up.total', array()),
+			array('throttle.global_down.total', array()),
+			array('throttle.global_up.max_rate', array()),
+			array('throttle.global_down.max_rate', array()),
+		));
+		$decision = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
+			&& strpos($decision['log'][0], 'untrusted: system.multicall (4 members)') === 0,
+			'the four gettotal readers need no trusted XMLRPC connection');
 	}
 
 	public function testSavedPolicyRefusalNamesBothRecreateFilesSetters()
@@ -411,8 +432,9 @@ class XMLRPCProxyTest extends TestCase
 		$d = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false,
 			array('directory' => array('root' => '/downloads')));
 		$this->assertTrue($d['action'] === 'reject', 'the outside path is refused');
-		$this->assertTrue(strpos($d['log'][0], 'directory outside boundary') !== false,
-			'the log identifies the boundary rather than the command allowlist');
+		$this->assertTrue(strpos($d['log'][0], 'directory outside boundary') !== false
+			&& strpos($d['log'][0], '$topDirectory') === false,
+			'a configured boundary reports the path refusal without a missing-configuration hint');
 		$d = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false,
 			array('directory' => array('root' => '')));
 		$this->assertTrue(strpos($d['log'][0], '$topDirectory') !== false
