@@ -258,7 +258,9 @@ changes-required) have held up well in review; measured numbers have not.
   Two reboots confirmed it on different numbers: a boot that started with ~3.3 GB produced
   `size=1736012k` (1.7 GiB), and the next one, which started with ~9 GB, produced `size=4701512k`
   (4.5 GiB) -- same rule, different starting RAM, and in both cases exactly half of it. So the size
-  of `/tmp` varies from boot to boot and cannot be relied on.
+  of `/tmp` follows the starting RAM. On 2026-09-25 the owner pinned the VM's startup RAM at about
+  9 GB, so every boot now gives 4.5 GiB. The unit still says `size=50%`: changing the startup RAM
+  changes `/tmp` again.
   **On this host a percentage is always wrong -- use an absolute size.** Several suites write 64 MiB
   fixtures there
   (`SCGITransportTest`, the retrackers bounded-reader cases), and once it fills, a dozen unrelated
@@ -381,6 +383,76 @@ on behaviour changes. It is not worth its cost on a comment.
   rounds caught one each. So the check that pays is not "did a reviewer look at it" but "did anyone
   open the line the new sentence cites". Do that, always, and prefer a shorter true sentence.
 
+## Ship In Small Steps: The Review And Delivery Protocol
+
+A review can always find something, so "ship when the review finds nothing" never ships. The
+2026-09 app-log campaign showed where that leads:
+
+- the review of three commits listed 106 items;
+- the first fix round introduced 30 new defects, and the second introduced 30 of the next 46
+  findings;
+- after the third round the unpushed range had grown to 72 files, +5804/-1117.
+
+Meanwhile the fix for a live break sat inside that range: production answered 403 to every
+multi-command WebUI action (measured 2026-09-24). Every round added surface for the next one.
+These rules keep delivery moving:
+
+- **One topic, one commit, one deployment.** Deploy each topic and see it working before the next
+  one starts on top of it. Do not let reviewed work pile up unpushed; a fix for something broken in
+  production ships on its own, ahead of everything else.
+- **A review covers only its own delta:** `git diff <tip of the previous round>..HEAD`. Old debt
+  and nits found outside the delta go to the backlog. A broad audit of a subsystem is scheduled
+  separately and never gates the acceptance of a fix.
+- **Only a reproduced P1 or P2 blocks a deployment.** A reproduction is a RED test, a mutation, a
+  live probe or a captured real answer. Everything else is recorded in one backlog file under
+  `tasks/` and handled in batches. The levels:
+  - **P1:** production breaks or corrupts on a realistic input.
+  - **P2:** wrong behaviour on a narrower realistic input, or a security weakness.
+  - **P3:** latent, or a test that does not pin what it claims.
+  - **nit:** a comment, name or piece of structure that misleads.
+- **At most two fix rounds per deployment.** If a P2 of the same class is still found after the
+  second round, the design is what needs to change; reconsider the model instead of running a third
+  round.
+
+"Stable enough to deploy" therefore means:
+
+- CI is green on the PHP legs and on Jest;
+- the delta has no open reproduced P1 or P2;
+- the deployed change passes a read-only probe on the live instance (see "Verify Against the Live
+  Service").
+
+It does not mean "no findings left".
+
+## Run Independent Work In Parallel
+
+The owner's standing rule: finish work sooner by running every independent part of it at the
+same time. A single agent walking a long list one item at a time is the slow default to avoid.
+
+- **Split by file, area or batch, one agent each.** Review, verification, sweeps over reports and
+  critics all parallelise: one agent per source file (or per batch of small files), per review
+  area, per document. On 2026-09-25 a sweep of 196 task reports took about 10 minutes as 48
+  agents in one wave; the same sweep as 6 grouped agents was estimated at 25-35 minutes.
+- **Pipeline, not barrier.** Let each item move to its next stage as soon as its own previous stage
+  is done; wait for everything only when a stage genuinely needs all results (deduplication, a
+  total).
+- **Sequential only where there is a real dependency:** edits to the same file (one editor per
+  file; split critics by part of a large file, but give that file a single fixer), git history
+  operations, and a step that consumes a previous step's result.
+- **Parallel is safe here only with isolation**, because of the traps in "This Machine Will Lie To
+  You About Test Results":
+  - every suite run or probe has its own `TMPDIR` and its own export (`tasks/matrix.sh` does this
+    per leg);
+  - never run two full suites over the same tree at once;
+  - every rt-lab container has its own name and port;
+  - before a large wave, check the task budget. `systemctl show user-$(id -u).slice -p TasksMax
+    -p TasksCurrent` read 30000 / 1971 on 2026-09-25. A `fork()` failure shows up as a command
+    that exits 1 with no output.
+  - `/tmp` and the scratchpad under it are one 4.5 GiB tmpfs (`size=4701512k`; 3.8 GiB free on
+    2026-09-25), fixed because the startup RAM is pinned. Many parallel `git archive` exports
+    and 64 MiB fixtures still belong under `~/.cache`, which is on disk.
+- The workflow concurrency cap is raised to 50 through `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS`
+  in `~/.claude/settings.json`.
+
 ## Test Hygiene Traps Found The Hard Way
 
 - **Do not trust the inode allocator.** Simulating "this file was replaced" with `unlink()` then
@@ -450,15 +522,16 @@ Know before you interpret the result:
   the machine idle. Exclude that one file when running the suite in a container you care about.
   `php:7.4-cli` and `php:8.1-cli` do not ship `pgrep`, so the path silently does nothing there --
   which is why a version matrix does not show it. The plugin is untouched by any current work; the
-  underlying defect is written up in `tasks/2026-09-05-consolidated-fixes/SIDE-FINDINGS.md`.
+  underlying defect is written up in `backup/2026-09-25/tasks/2026-09-05-consolidated-fixes/SIDE-FINDINGS.md`.
 - **Suites that write fixtures into the checkout make two concurrent runs corrupt each other.**
   `PermissionTest` built its directories in `tests/php/fixtures` until this was fixed. Six parallel
   runs then passed 3 or 4 of 5 assertions instead of 5, and a run as root left the fixtures
   root-owned so the next ordinary-user run failed on `unlink: Permission denied` -- a wrong answer
   that reads exactly like a real one, and one that hides the `posix` gap above. Give every run its
   own tree, or its own `TMPDIR`, before comparing results across PHP versions or uids.
-- **The scratchpad is a tmpfs whose size varies between boots.** Two `git archive` exports of
-  this repository filled it, and
+- **The scratchpad is a tmpfs sized at boot.** It is 4.5 GiB since the startup RAM was pinned on
+  2026-09-25, and was 1.7 GiB on smaller boots before that. Two `git archive` exports of this
+  repository once filled the small one, and
   a full `/tmp` does not announce itself: `Write` returned `EDQUOT` and then *every* shell command,
   down to `true`, exited 1 with no output. If the shell starts failing universally, check `df`
   before anything else. Export trees somewhere under `/home`, and delete a finished agent's scratch
