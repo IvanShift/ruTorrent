@@ -25,13 +25,11 @@ class RuTrackerMetaFetch
     const REPLACEMENT_UNPROVED = 'unproved';
     const REPLACEMENT_OWNED = 'owned';
 
-    // The label the service download carries. The leading dot is the
-    // convention that marks a download as a plugin's own bookkeeping rather
-    // than the user's; the history plugin skips such entries, which is what
-    // keeps a replacement from being logged as two deletions -- the stub
-    // takes the real torrent's name once metadata arrives, and only the
-    // label still tells the two apart. Unlike the inline chk-meta-* customs,
-    // a label is a field rTorrent's event handlers actually pass on.
+    // The service download carries this exact label; history skips this value
+    // while keeping user labels such as '.private'. The stub takes the real
+    // torrent's name once metadata arrives, so its label still distinguishes
+    // it from the user torrent. Unlike inline chk-meta-* customs, a label is
+    // a field rTorrent's event handlers actually pass on.
     const SERVICE_LABEL = '.chk-meta';
 
     // A replacement nonce identifies the writer, not the transaction. Only a

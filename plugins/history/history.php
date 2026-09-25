@@ -114,14 +114,11 @@ class rHistoryData
 		return(preg_match('/^[0-9A-Fa-f]{40}\.meta$/', (string) $name) === 1);
 	}
 
-	// A dot-prefixed label marks a download a plugin loaded for its own
-	// bookkeeping rather than for the user (e.g. a metadata fetcher's
-	// '.chk-meta'). Such a stub inherits the real torrent's name once
-	// metadata arrives, so without this its removal reads as the user's
-	// own torrent being deleted twice.
+	// The metadata fetcher uses this exact label for its temporary download.
+	// Other dot-prefixed labels do not establish that a download is internal.
 	static public function isServiceEntry( $name, $label )
 	{
-		return(self::isMagnetPlaceholder($name) || strncmp((string) $label, '.', 1) === 0);
+		return(self::isMagnetPlaceholder($name) || (string) $label === '.chk-meta');
 	}
 
 	public function add( $e, $limit )

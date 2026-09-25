@@ -165,11 +165,11 @@ $tests = array(
             historyAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
     },
 
-    // A plugin that loads a download for its own bookkeeping marks it with a
-    // dot-prefixed label; on a live instance such a fetcher stub was logged
+    // The metadata fetcher marks its own download with an exact service label;
+    // on a live instance such a fetcher stub was logged
     // as added, then deleted a cycle later under the same name as the real
     // torrent, so a single replacement read as two deletions.
-    'a dot-labelled service download is not the user\'s event either' => function () {
+    'only the metadata fetcher label suppresses a user event' => function () {
         $service = array(
             'a dot-labelled service download' => array('Some Release 1080p', '.chk-meta'),
             'a placeholder that is also labelled' => array(str_repeat('C', 40) . '.meta', '.chk-meta'),
@@ -182,9 +182,56 @@ $tests = array(
             'a normal download' => array('Some Release 1080p', 'Video/Movies'),
             'an unlabelled download' => array('Some Release 1080p', ''),
             'a label that merely contains a dot' => array('Some Release', 'Video/4K.HDR'),
+            'a private user label' => array('Some Release', '.private'),
+            'a similar prefix' => array('Some Release', '.chk-meta-extra'),
         );
         foreach ($real as $label => $row)
             historyAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be kept');
+    },
+
+    'update.php records a private-label addition and deletion but skips the service stub' => function () {
+        $scratch = sys_get_temp_dir() . '/history-label-' . bin2hex(random_bytes(6));
+        if (!mkdir($scratch, 0700))
+            throw new RuntimeException('Cannot create isolated history profile');
+        $update = realpath(__DIR__ . '/../../../plugins/history/update.php');
+        $runner = '$_ENV["RU_PROFILE_PATH"]=$argv[1]; $script=$argv[2]; $argv=array_slice($argv,2); include $script; echo json_encode(array_values(rHistoryData::load()->data));';
+        $invoke = function ($action, $label) use ($scratch, $update, $runner) {
+            $args = array(
+                PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r', $runner, '--',
+                $scratch, $update, (string) $action, 'A real release', '100', '0', '0',
+                '0', '1', '2', '3', 'https://tracker.test/announce',
+                rawurlencode($label), '1', 'historytest',
+            );
+            $process = proc_open($args, array(
+                0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'),
+            ), $pipes);
+            if (!is_resource($process))
+                throw new RuntimeException('Cannot run history update.php');
+            fclose($pipes[0]);
+            $output = stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exit = proc_close($process);
+            if ($exit !== 0 || $errors !== '')
+                throw new RuntimeException('history update.php failed: ' . $errors);
+            $rows = json_decode($output, true);
+            if (!is_array($rows))
+                throw new RuntimeException('history update.php returned invalid rows: ' . $output);
+            return $rows;
+        };
+        try {
+            $rows = $invoke(1, '.private');
+            historyAssertSame(1, count($rows), 'the user-labelled addition is recorded');
+            $rows = $invoke(3, '.private');
+            historyAssertSame(2, count($rows), 'the user-labelled deletion is recorded');
+            historyAssertSame(array(1, 3), array_column($rows, 'action'),
+                'both user events reach the history cache in event order');
+            $rows = $invoke(1, '.chk-meta');
+            historyAssertSame(2, count($rows), 'the metadata stub is not recorded');
+        } finally {
+            FileUtil::deleteDirectory($scratch);
+        }
     },
 
     'the stored format carries nothing but what it always carried' => function () {
