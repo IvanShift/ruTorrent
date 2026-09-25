@@ -1161,12 +1161,44 @@ class rRSSManager
 			}
 			else
 			{
+				if($this->rssList->isExist($rssNew))
+				{
+					$this->rssList->addError("theUILang.rssAlreadyExist", $rssNew->getMaskedURL());
+					return(false);
+				}
+				// Fetch and cache the replacement before retiring the old feed.
+				if(!$this->tryFetch($rssNew))
+					return(false);
 				$enabled = $this->rssList->getEnabled($rssOld);
-				$this->remove($hash);
-				$this->changeFiltersHash($hash,$rssNew->hash);
-				$this->add($rssURL, $rssLabel, $rssAuto, $enabled);
+				$this->addFetched($rssNew, $rssLabel, $rssAuto, $enabled, false);
+				$this->changeFiltersHash($hash, $rssNew->hash);
+				$this->changeGroupsHash($hash, $rssNew->hash);
+				$this->rssList->remove($rssOld);
+				$this->saveState(false);
+				$this->cache->remove($rssOld);
+				$this->checkFilters($rssNew);
+				$this->saveHistory();
+				return(true);
 			}
 		}
+	}
+	private function changeGroupsHash($oldHash, $newHash)
+	{
+		$changed = false;
+		foreach($this->groups->lst as $group)
+		{
+			foreach($group->lst as &$member)
+			{
+				if($member === $oldHash)
+				{
+					$member = $newHash;
+					$changed = true;
+				}
+			}
+			unset($member);
+		}
+		if($changed)
+			$this->saveGroups();
 	}
 	public function addGroup( $label, $rssList )
 	{
@@ -1179,27 +1211,29 @@ class rRSSManager
 	public function add( $rssURL, $rssLabel = null, $rssAuto = 0, $enabled = 1 )
 	{
 		$rss = new rRSS($rssURL);
-		if(!$this->rssList->isExist($rss))
+		if($this->rssList->isExist($rss))
 		{
-			if($this->tryFetch($rss))
-			{
-			        if($rssLabel)
-			        	$rssLabel = trim($rssLabel);
-				if(!$rssLabel || !strlen($rssLabel))
-				{
-					if(array_key_exists('title',$rss->channel))
-						$rssLabel = $rss->channel['title'];
-					else
-						$rssLabel = 'New RSS';
-				}
-				$this->rssList->add($rss,$rssLabel,$rssAuto,$enabled);
-               	               	$this->saveState(false);
-				$this->checkFilters($rss);
-				$this->saveHistory();
-			}
-		}
-		else
 			$this->rssList->addError( "theUILang.rssAlreadyExist", $rss->getMaskedURL() );
+			return(false);
+		}
+		if(!$this->tryFetch($rss))
+			return(false);
+		$this->addFetched($rss, $rssLabel, $rssAuto, $enabled);
+		return(true);
+	}
+	private function addFetched($rss, $rssLabel, $rssAuto, $enabled, $applyFilters = true)
+	{
+		if($rssLabel)
+			$rssLabel = trim($rssLabel);
+		if(!$rssLabel || !strlen($rssLabel))
+			$rssLabel = array_key_exists('title', $rss->channel) ? $rss->channel['title'] : 'New RSS';
+		$this->rssList->add($rss, $rssLabel, $rssAuto, $enabled);
+		$this->saveState(false);
+		if($applyFilters)
+		{
+			$this->checkFilters($rss);
+			$this->saveHistory();
+		}
 	}
 	public function getTorrents( $rss, $url, $isStart, $isAddPath, $directory, $label, $throttle, $ratio, $needFlush = true )
 	{
