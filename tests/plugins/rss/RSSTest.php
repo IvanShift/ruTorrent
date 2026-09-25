@@ -21,6 +21,7 @@ require_once(__DIR__ . '/../../../plugins/rss/rss.php');
 class SnoopyMock
 {
 	public $status = 200, $results = NULL, $headers = array(), $error = "";
+	public function get_filename() { return false; }
 }
 
 final class RSSTest extends TestCase
@@ -134,6 +135,54 @@ final class RSSTest extends TestCase
 		$this->assertEquals(false, $result, 'a refused redirect cannot save the source response');
 		$this->assertEquals(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $feed->lastTorrentError,
 			'the classified reason remains visible');
+	}
+
+	public function testTorrentDownloadChecksBodyAndKeepsTrailingLineBreak(): void
+	{
+		$root = tempnam(sys_get_temp_dir(), 'rss-torrent-');
+		unlink($root);
+		mkdir($root);
+		mkdir($root . '/torrents');
+		$profile = new ReflectionProperty(FileUtil::class, 'profilePathInstance');
+		if(PHP_VERSION_ID < 80100) $profile->setAccessible(true);
+		$previous = $profile->getValue();
+		$profile->setValue(null, $root);
+		$body = 'd4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:abcdefghijklmnopqrstee';
+		try
+		{
+			foreach(array(
+				'HTML with HTTP 200' => array('<html>Login required</html>', false),
+				'valid metainfo' => array($body, true),
+				'valid metainfo with a line break' => array($body . "\n", true),
+			) as $label => $case)
+			{
+				$feed = new rRSS('https://tracker.example/feed', function () use ($case) {
+					$client = new SnoopyMock();
+					$client->results = $case[0];
+					return $client;
+				});
+				$result = $feed->getTorrent('https://tracker.example/download?id=1');
+				$files = glob($root . '/torrents/*');
+				if($case[1])
+				{
+					$this->assertTrue(is_string($result) && is_file($result), $label . ' becomes a file');
+					$this->assertEquals($case[0], file_get_contents($result), $label . ' keeps response bytes');
+					unlink($result);
+				}
+				else
+				{
+					$this->assertEquals(false, $result, $label . ' is rejected');
+					$this->assertEquals(array(), $files, $label . ' does not create a file');
+				}
+			}
+		}
+		finally
+		{
+			$profile->setValue(null, $previous);
+			foreach(glob($root . '/torrents/*') as $file) unlink($file);
+			rmdir($root . '/torrents');
+			rmdir($root);
+		}
 	}
 
 	public function testAtom(): void

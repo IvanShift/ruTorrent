@@ -82,7 +82,8 @@ else
 					else
 					{
 						$cli = new Snoopy();
-						if(@$cli->fetchComplex($url) && Snoopy::isTorrentResponse($cli))
+						$fetched = @$cli->fetchComplex($url);
+						if($fetched && Snoopy::isTorrentResponse($cli))
 						{
 							$name = $cli->get_filename();
 							if($name===false)
@@ -98,7 +99,8 @@ else
 							}
 						}
 						else
-							$uploaded_url['status'] = "FailedURL";
+							$uploaded_url['status'] = ($fetched && Snoopy::isSuccessfulResponse($cli))
+								? "FailedFile" : "FailedURL";
 					}
 					$uploaded_files[] = $uploaded_url;
 				}
