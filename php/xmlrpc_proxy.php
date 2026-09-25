@@ -494,6 +494,80 @@ class XMLRPCProxy
 		return false;
 	}
 
+	/**
+	 * Return the first refused name in an rTorrent command expression.
+	 *
+	 * Multicall slots and httprpc cmd= values can contain nested commands
+	 * introduced by a comma or $, so checking only the text before the first
+	 * '=' misses a command rtorrent will execute. Keep the same deny policy as
+	 * direct raw XMLRPC calls. '=' is deliberately not a separator: the value
+	 * of d.custom=imported is an argument, not another command.
+	 */
+	public static function refusedCommandName($value)
+	{
+		$elements = preg_split('/[,\$\{\}()"\s]+/', (string)$value, -1, PREG_SPLIT_NO_EMPTY);
+		if($elements === false)
+			return null;
+		foreach($elements as $element)
+		{
+			if(!preg_match('/^[A-Za-z0-9_.]+/', $element, $match))
+				continue;
+			if(self::isDirectDenied($match[0]))
+				return $match[0];
+		}
+		return null;
+	}
+
+	/**
+	 * Validate a cmd= value in the httprpc modes that execute it.
+	 *
+	 * The direct modes only add readers. Global settings/total extensions
+	 * use exact legacy getter aliases shipped for this rtorrent version; a
+	 * dynamically inserted get_* name proves nothing about side effects.
+	 * prp uses the existing download reader registry. Multicall modes use the same slot
+	 * rebuilder as the raw XMLRPC door, so arguments are quoted before sending.
+	 * A null result is terminal for this HTTP request.
+	 */
+	public static function sanitizeHttprpcCommandParameter($raw, $mapped, $mode, $aliases = array())
+	{
+		if($mode === 'stg' || $mode === 'ttl' || $mode === 'prp')
+		{
+			if(self::refusedCommandName($raw) !== null
+				|| self::refusedCommandName($mapped) !== null
+				|| !preg_match('/^[A-Za-z][A-Za-z0-9_.]*$/D', $mapped)
+				|| self::isDirectDenied($mapped))
+				return null;
+			if($mode === 'prp')
+				return in_array($mapped, self::$safeGetters, true) ? $mapped : null;
+			foreach($aliases as $legacy => $definition)
+				if(strncmp($legacy, 'get_', 4) === 0
+					&& isset($definition['name']) && $definition['name'] === $mapped
+					&& ($raw === $legacy || $raw === $mapped))
+					return $mapped;
+			return null;
+		}
+		if($mode === 'trkall')
+		{
+			// trkall embeds each slot in an already quoted cat expression.
+			// A rebuilt argument would introduce its own quotes into that
+			// expression, so only plain zero-argument readers fit this form.
+			if(!preg_match('/^([A-Za-z0-9_.]+)=$/D', $mapped, $match)
+				|| self::isDirectDenied($match[1])
+				|| !in_array($match[1], self::$safeGetters, true))
+				return null;
+			return $mapped;
+		}
+		if(in_array($mode, array('list', 'fls', 'prs', 'trk'), true))
+		{
+			// The rebuilder knows argument arity. A comma before a fallback
+			// string is data in d.custom.if_z, but can introduce an executable
+			// command in an arbitrary nested expression.
+			$rebuilt = self::rebuildMulticallParam($mapped, self::$safeGetters, true);
+			return ($rebuilt === false) ? null : $rebuilt;
+		}
+		return null;
+	}
+
 	private static function isDirectDenied($name)
 	{
 		if(in_array($name, self::$directoryCommands, true))

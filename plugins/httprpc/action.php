@@ -22,9 +22,7 @@ if(isset($HTTP_RAW_POST_DATA))
 		{
 			case "cmd":
 			{
-				$c = getCmd(rawurldecode($parts[1]));
-				if(strpos($c,"execute")===false)
-					$add[] = $c;
+				$add[] = rawurldecode($parts[1]);
 				break;
 			}
 			case "s":
@@ -54,6 +52,30 @@ if(isset($HTTP_RAW_POST_DATA))
 			}
 		}
 	}
+}
+
+// mode= can follow cmd= in the body. Validate every extension after parsing
+// the whole request, before a mode can turn it into a trusted RPC call.
+foreach($add as $ndx=>$rawCommand)
+{
+	$mappedCommand = getCmd($rawCommand);
+	$safeCommand = XMLRPCProxy::sanitizeHttprpcCommandParameter(
+		$rawCommand, $mappedCommand, $mode, rTorrentSettings::get()->aliases);
+	if($safeCommand === null)
+	{
+		$refusedCommand = XMLRPCProxy::refusedCommandName($mappedCommand);
+		$name = ($refusedCommand === null) ? $mappedCommand : $refusedCommand;
+		$name = XMLRPCProxy::normalizeMethodName(explode('=', $name, 2)[0]);
+		if($name === null)
+			$name = 'command';
+		FileUtil::toLog("httprpc: refused a command parameter naming ".$name);
+		header("HTTP/1.0 403 Forbidden");
+		CachedEcho::send("Refused: this server does not allow ".
+			htmlspecialchars($name, ENT_QUOTES, "UTF-8").
+			" on this connection.", "text/html");
+		exit;
+	}
+	$add[$ndx] = $safeCommand;
 }
 
 function makeMulticall($cmds,$hash,$add,$prefix)
