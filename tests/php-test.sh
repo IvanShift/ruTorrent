@@ -40,17 +40,21 @@ do
 	printf '> php %s\n' "$t"
 	# Execute the file itself so PHP resolves __FILE__ and __DIR__ from its
 	# real source path, including spaces and sed delimiter characters.
-	out=$(php -c php-test.ini -d auto_append_file="$script_dir/php/TestCaseRunner.php" \
-		-f "$t" 2>&1)
+	out=$(RUTORRENT_PHP_TEST_RUNNER=1 php -c php-test.ini \
+		-d auto_append_file="$script_dir/php/TestCaseRunner.php" -f "$t" 2>&1)
 	code=$?
 	printf '%s\n' "$out"
-	# A present *Test.php is not proof that its tests ran. TestCase emits a
-	# method marker and an assertion; self-running suites emit a case marker
-	# and a positive zero-failure summary. Require one of those observed runs.
+	# A present *Test.php is not proof that its tests ran. Once TestCase starts,
+	# require its final marker; child standalone summaries cannot replace it.
+	# Standalone suites emit a case marker and a positive zero-failure summary.
 	checked=0
-	if printf '%s\n' "$out" | grep -qE '^>>[^>].*>>$' \
-		&& printf '%s\n' "$out" | grep -q '^Passed: '; then
-		checked=1
+	if printf '%s\n' "$out" | grep -qE '^(Test: |>>[^>].*>>$)'; then
+		if printf '%s\n' "$out" | grep -q '^Passed: ' \
+			&& printf '%s\n' "$out" | grep -qE '^TestCase runner finished: [1-9][0-9]* classes, [1-9][0-9]* methods$'; then
+			checked=1
+		elif ! printf '%s\n' "$out" | grep -q '^TestCase runner finished: '; then
+			printf 'php-test.sh: TestCase runner did not finish in %s\n' "$t"
+		fi
 	elif printf '%s\n' "$out" | grep -q '^ok - ' \
 		&& printf '%s\n' "$out" | grep -qE '^[1-9][0-9]* tests?, 0 failures$'; then
 		checked=1

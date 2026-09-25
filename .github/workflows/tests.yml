@@ -33,6 +33,8 @@ jobs:
           # Keep timing gates independent of runner-installed coverage drivers.
           coverage: none
           extensions: posix, dom, xml, mbstring, iconv, json, curl
+      - name: PHP harness fixture tests
+        run: bash tests/tools/php-harness-test.sh
       - name: PHP test suite
         id: php_tests
         run: |

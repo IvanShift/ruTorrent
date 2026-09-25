@@ -190,4 +190,77 @@ if ! (cd "$scratch" && bash tests/php-test.sh) > "$scratch/quoted.log" 2>&1; the
     exit 1
 fi
 rm "$scratch/tests/plugins/a b/QuotedFailureTest.php"
-echo 'php-harness-test.sh: root, source identity, delimiter path, empty, assertion, subclass, Throwable, and quoted-error gates passed'
+expect_rejected_test() {
+    local name="$1" expected="$2" false_green="$3"
+    local log="$scratch/$name.log"
+    if (cd "$scratch" && bash tests/php-test.sh) > "$log" 2>&1; then
+        printf '%s\n' "$false_green" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$expected" "$log"; then
+        cat "$log" >&2
+        printf '%s: expected rejection was not reported\n' "$name" >&2
+        exit 1
+    fi
+    rm -- "$scratch/tests/plugins/a b/$name.php"
+}
+
+# A passing method marker must not hide a second concrete class with no
+# runnable test methods in the same file.
+cat > "$scratch/tests/plugins/a b/EmptySecondClassTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class FirstRunnableCase extends TestCase {
+    public function testPasses() { $this->assertTrue(true, 'the first class ran'); }
+}
+class EmptySecondCase extends TestCase {}
+PHP
+expect_rejected_test EmptySecondClassTest 'EmptySecondCase has no test methods' 'a second TestCase class with no methods was silently accepted'
+
+# exit() inside the first method skips both a later method and the runner's
+# final count. A single earlier Passed line is not proof of file completion.
+cat > "$scratch/tests/plugins/a b/EarlyExitTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class EarlyExitCase extends TestCase {
+    public function testExitsEarly() {
+        $this->assertTrue(true, 'the first assertion ran');
+        exit(0);
+    }
+    public function testNeverReached() { $this->assertTrue(false, 'this method must run'); }
+}
+PHP
+expect_rejected_test EarlyExitTest 'TestCase runner did not finish' 'exit in a test method silently skipped the rest of the file'
+
+# A TestCase method can print standalone-style output before exiting. Its
+# partial run must not use the standalone summary as a fallback success.
+cat > "$scratch/tests/plugins/a b/ChildSummaryExitTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class ChildSummaryExitCase extends TestCase {
+    public function testExitsAfterChildSummary() {
+        echo "ok - child\n1 tests, 0 failures\n";
+        exit(0);
+    }
+    public function testNeverReached() { $this->assertTrue(false, 'this method must run'); }
+}
+PHP
+expect_rejected_test ChildSummaryExitTest 'TestCase runner did not finish' 'an incomplete TestCase used a child summary to pass'
+
+# A custom run() that skips a declared method must not be treated as a
+# complete TestCase merely because it reports one passing method.
+cat > "$scratch/tests/plugins/a b/SkippingMethodTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class SkippingMethodCase extends TestCase {
+    public function testFirst() { $this->assertTrue(true, 'the first method ran'); }
+    public function testSecond() { $this->assertTrue(false, 'this method must run'); }
+    public function run(): int {
+        echo ">>testFirst>>\n";
+        $this->testFirst();
+        return 1;
+    }
+}
+PHP
+expect_rejected_test SkippingMethodTest 'ran 1 of 2 test methods' 'a declared TestCase method was silently skipped'
+echo 'php-harness-test.sh: source paths, empty classes, early exits, and skipped TestCase methods passed'

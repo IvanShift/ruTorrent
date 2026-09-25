@@ -9,19 +9,32 @@ class TestCase
 		return $this->failures;
 	}
 
-	function run() {
-		foreach (get_class_methods($this) as $method) {
-			if (strncasecmp($method, 'test', 4) === 0) {
-				echo ">>{$method}>>\n";
-				try {
-					call_user_func([$this, $method]);
-				} catch (Throwable $e) {
-					$this->failures++;
-					echo "Test {$method} failed with error: {$e->getMessage()}\n";
-				}
-				echo "<<{$method}<<\n\n";
+	public function runnableMethodCount(): int
+	{
+		return count($this->runnableMethods());
+	}
+
+	private function runnableMethods(): array
+	{
+		return array_values(array_filter(get_class_methods($this), function ($method) {
+			return strncasecmp($method, 'test', 4) === 0;
+		}));
+	}
+
+	function run(): int {
+		$executed = 0;
+		foreach ($this->runnableMethods() as $method) {
+			echo ">>{$method}>>\n";
+			try {
+				call_user_func([$this, $method]);
+			} catch (Throwable $e) {
+				$this->failures++;
+				echo "Test {$method} failed with error: {$e->getMessage()}\n";
 			}
+			echo "<<{$method}<<\n\n";
+			$executed++;
 		}
+		return $executed;
 	}
 
 	public function setUp()

@@ -226,7 +226,9 @@ class EraseWithDataCommandTest extends TestCase
 	}
 }
 
-if(isset($_SERVER['SCRIPT_FILENAME']) && realpath($_SERVER['SCRIPT_FILENAME']) === __FILE__)
+// Direct invocation keeps its original output contract; php-test.sh uses the shared runner.
+if(getenv('RUTORRENT_PHP_TEST_RUNNER') !== '1' && isset($_SERVER['SCRIPT_FILENAME'])
+	&& realpath($_SERVER['SCRIPT_FILENAME']) === __FILE__)
 {
 	$test = new EraseWithDataCommandTest();
 	$test->setUp();
