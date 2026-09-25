@@ -4,24 +4,32 @@ script_dir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "$script_dir" || exit 1
 
 TEST_RUN='
+$failures = 0;
 foreach(get_declared_classes() as $cls) {
-	if (get_parent_class($cls) == "TestCase") {
+	if (is_subclass_of($cls, "TestCase") && (new ReflectionClass($cls))->isInstantiable()) {
 		echo "Test: {$cls}\n";
 		$obj = new $cls();
 		try {
 			$obj->setUp();
 			$obj->run();
-		} catch (Exception $e) {
-			echo $e->getMessage()."\n";
-			echo $e->getTraceAsString()."\n";
+		} catch (Throwable $e) {
+			echo "Test {$cls} failed with error: ".$e->getMessage()."\n";
+			$failures++;
 		}
-		$obj->tearDown();
+		try {
+			$obj->tearDown();
+		} catch (Throwable $e) {
+			echo "Test {$cls} tearDown failed with error: ".$e->getMessage()."\n";
+			$failures++;
+		}
+		$failures += $obj->failureCount();
 	}
-}'
+}
+if ($failures > 0) exit(1);'
 
-# Exit non-zero if any test file fails, so the suite can gate CI. Two failure
-# signals are honoured: a non-zero exit (the self-running TestLib suites end
-# with exit($failures)) and failure output (the TestCase runner only prints).
+# Exit non-zero if any test file fails, so the suite can gate CI. Counted
+# TestCase and self-running TestLib failures set a non-zero exit; the output
+# matcher still catches diagnostics from other self-running fixtures.
 # Several suites write large fixtures (SCGITransportTest streams 64 MiB, the
 # retrackers bounded-reader cases write 64 MiB each) into the temporary
 # filesystem. A small tmpfs shared with other processes can fill. Then

@@ -22,6 +22,19 @@ class TestCaseTest extends TestCase
 		echo "Passed: a false value is reported as Failed when assertions are disabled\n";
 	}
 
+	public function testFailedAssertionsIncrementRunnerFailureCount(): void
+	{
+		$probe = new TestCase();
+		ob_start();
+		try {
+			$probe->assertTrue(false, 'count this failed assertion');
+		} finally {
+			ob_end_clean();
+		}
+		$this->assertEquals(1, $probe->failureCount(),
+			'a failed assertion is counted independently of output formatting');
+	}
+
 	public function testRunnerUsesStrictDiagnosticSettings(): void
 	{
 		$actual = array(
