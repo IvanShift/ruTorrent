@@ -152,4 +152,29 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 				"{$name} states the same safe-parameter policy as conf/xmlrpc_proxy.php");
 		}
 	}
+
+	public function testDefinitionScannerFindsAnAssignmentInAPluginConf()
+	{
+		$root = sys_get_temp_dir() . '/xmlrpc-policy-scan-' . uniqid('', true);
+		$plugin = $root . '/plugins/example';
+		if(!mkdir($plugin, 0700, true))
+			throw new RuntimeException('policy scanner fixture directory was not created');
+		$definition = $plugin . '/conf.php';
+		$nonDefinition = $plugin . '/conf.local.php';
+		$previousRoot = $this->root;
+		try {
+			file_put_contents($definition, '<?php $XMLRPCProxySafeParams' . "\n = array('d.start');");
+			file_put_contents($nonDefinition, '<?php $XMLRPCProxySafeParamsCopy = array();');
+			$this->root = $root;
+			$this->assertEquals(array($definition), $this->otherDefiners(),
+				'the scanner finds a policy assignment across whitespace, not a similarly named variable');
+		} finally {
+			$this->root = $previousRoot;
+			@unlink($definition);
+			@unlink($nonDefinition);
+			@rmdir($plugin);
+			@rmdir($root . '/plugins');
+			@rmdir($root);
+		}
+	}
 }

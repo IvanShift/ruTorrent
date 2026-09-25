@@ -332,7 +332,9 @@ class XMLRPCProxy
 	// Read commands are rebuilt exactly as setters are, through
 	// rebuildSafeLoadParam(), so an argument -- d.custom=chk-state names a
 	// key -- is quoted, and a $-prefixed one, which rtorrent would call
-	// rather than store, is refused.
+	// rather than store, is refused. The three exact read-only cat expressions
+	// from bundled plugins are handled separately in rebuildMulticallParam();
+	// they do not authorize arbitrary cat expressions or add to this list.
 	private static $safeGetters = array(
 		// downloads
 		'd.accepting_seeders', 'd.base_filename', 'd.base_filename.as_binary',
@@ -1328,8 +1330,9 @@ class XMLRPCProxy
 				if($member === null)
 					return self::rejectSystemMember($index);
 				$innerMethod = $member['method'];
-				// Defensive even though today's scalar-only members and the inner
-				// decide() would also reject a nested carrier.
+				// Defense for future member shapes. Today's scalar-only parsing and
+				// inner decide() also reject a nested carrier; the tests pin the
+				// refusal, not this particular early exit.
 				if($innerMethod === 'system.multicall')
 					return self::rejectSystemMember($index, $innerMethod);
 				$innerXml = self::emitCallFromScalars($innerMethod, $member['params']);

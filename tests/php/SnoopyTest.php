@@ -617,6 +617,22 @@ $tests = array(
         testAssertSame(1, count($client->requests), 'HTTP sibling receives no cookie');
         testAssertSame('credential-redirect-refused', $client->error, 'downgrade refusal is classified');
     },
+    'account trust requires an HTTPS source for a cross-host cookie redirect' => function () {
+        $client = new SnoopyRedirectProbe();
+        // A custom account may accept both schemes on this tracker host.
+        $client->redirectTrust = function ($url) {
+            return UrlHost::isOneOf(UrlHost::of($url), array('tracker.example'));
+        };
+        $client->cookies = array('sid' => 'secret');
+        $client->replies = array(
+            array(true, 'https://dl.tracker.example/file', array(), 302),
+            array(true, false, array(), 200),
+        );
+        testAssertSame(true, $client->fetch('http://tracker.example/start'), 'source responds');
+        testAssertSame(1, count($client->requests), 'HTTP source cannot authorize a cross-host cookie hop');
+        testAssertSame('credential-redirect-refused', $client->error,
+            'the refusal keeps the source response and names its reason');
+    },
     'account trust checks the source URL before forwarding a session' => function () {
         $client = new SnoopyRedirectProbe();
         $client->redirectTrust = function ($url) {

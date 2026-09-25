@@ -552,8 +552,8 @@ class Snoopy
 		// Account redirect trust scopes its cookie jar, never URL Basic or raw credentials.
 		if($this->carriesOwnCredentials())
 			return(false);
-		// Account selection is also the authority to send that account's session.
-		// It never authorizes a downgrade, even if a custom account accepts HTTP.
+		// Account selection may send its cookie jar across hosts only when
+		// both hops use HTTPS, even if a custom account also accepts HTTP.
 		return(strtolower((string) parse_url($source, PHP_URL_SCHEME)) === 'https'
 			&& strtolower((string) parse_url($target, PHP_URL_SCHEME)) === 'https'
 			&& is_callable($this->redirectTrust)

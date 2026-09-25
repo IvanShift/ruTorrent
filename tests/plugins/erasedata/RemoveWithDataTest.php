@@ -10925,7 +10925,8 @@ class RemoveWithDataTest extends TestCase
 		$mirror = $this->mirror('double"quote${HOME}');
 		$mirror->scriptRpc($this->drainScript());
 		$mirror->shortenAcknowledgementWait(1.0);
-		// No clock step occurs in this case; measure the real wait duration.
+		// This fixture injects no clock step. Measure with the wall clock used
+		// by the scheduler-aligned side of the child's acknowledgement wait.
 		$began = microtime(true);
 		$producer = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$finished = $producer->wait(20);
@@ -12968,6 +12969,19 @@ class RemoveWithDataTest extends TestCase
 			'no erase is sent without a file list');
 		$this->assertNote($notes, 'paths-unknown', $generation, $hash,
 			'obligation-retained', 'the surviving obligation keeps its accurate reason');
+	}
+
+	public function testDefaultAcknowledgementClockPairsSchedulerWallAndElapsedTime()
+	{
+		$this->reset();
+		$body = $this->guardedFunctionBody('removewithdata.php',
+			'function erasedataWaitForDrainAcknowledgement(');
+		$factory = '/if\s*\(\s*\$clock\s*===\s*null\s*\)\s*'
+			.'\$clock\s*=\s*function\s*\(\s*\)\s*\{\s*'
+			.'return\s*\(\s*array\s*\(\s*microtime\s*\(\s*true\s*\)\s*,\s*'
+			.'hrtime\s*\(\s*true\s*\)\s*\/\s*1000000000\s*\)\s*\)\s*;\s*\}\s*;/';
+		$this->assertTrue(is_string($body) && preg_match($factory, $body) === 1,
+			'the default wait clock pairs scheduler wall time with monotonic elapsed time');
 	}
 
 	public function testDrainAcknowledgementWaitSurvivesClockStepsInBothDirections()

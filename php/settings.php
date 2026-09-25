@@ -338,9 +338,7 @@ class rTorrentSettings
 							$this->uid = intval(trim($line[0]));
 							$this->gid = explode(' ',trim($line[1]));
 							$this->home = trim($line[2]);
-							if(!empty($this->directory) &&
-								($this->directory[0]=='~'))
-								$this->directory = $this->home.substr($this->directory,1);
+							$this->expandHomePath($this->directory);
 						}
 						else
 							$this->idNotFound = true;
@@ -505,12 +503,26 @@ class rTorrentSettings
 	{
 		return(	new rXMLRPCCommand("schedule_remove", $name.User::getUser()) );
 	}
+	private function expandHomePath(&$path)
+	{
+		if(strlen($path) && $path[0]=='~')
+		{
+			// A remote daemon may have no known home; ~user is not its home.
+			if($this->home==='' || $this->home[0]!='/' || (strlen($path)>1 && $path[1]!='/'))
+				return(false);
+			$path = $this->home.substr($path,1);
+		}
+		return(true);
+	}
 	public function correctDirectory(&$dir,$resolve_links = false)
 	{
 		global $topDirectory;
-		if(strlen($dir) && ($dir[0]=='~'))
-			$dir = $this->home.substr($dir,1);
-		$dir = FileUtil::fullpath($dir,$this->directory);
+		if(!$this->expandHomePath($dir))
+			return(false);
+		$base = $this->directory;
+		if((!strlen($dir) || $dir[0]!='/') && !$this->expandHomePath($base))
+			return(false);
+		$dir = FileUtil::fullpath($dir,$base);
 		if($resolve_links)
 		{
 			$path = realpath($dir);

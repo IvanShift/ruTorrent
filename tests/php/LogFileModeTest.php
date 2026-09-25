@@ -169,8 +169,8 @@ class LogFileModeTest extends TestCase
 	// must not hand the log write bits back.
 	public function testMaskIsAnUpperBoundNotAFloor()
 	{
-		// An unprivileged PHP process may warn when it opens the intentionally
-		// read-only log. Capture only that expected warning.
+		// FileUtil::toLog() may warn when it opens the intentionally
+		// read-only log under unprivileged PHP. Capture only that warning.
 		set_error_handler(function($severity, $message) {
 			return $severity === E_WARNING && strpos($message, 'read-only.log') !== false;
 		});

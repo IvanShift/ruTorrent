@@ -526,7 +526,7 @@ class XMLRPCProxyTest extends TestCase
 	public function testWebUiFileSchedulerAndRatioActionsHaveCheckedBatchShapes()
 	{
 		$hash = str_repeat('B', 40);
-		$webUiCalls = array(
+		$bundledCalls = array(
 			array('f.prioritize_first.enable', array($hash.':f0')),
 			array('f.prioritize_last.disable', array($hash.':f0')),
 			array('d.update_priorities', array($hash)),
@@ -537,10 +537,10 @@ class XMLRPCProxyTest extends TestCase
 			array('d.views.push_back_unique', array($hash, 'rat_1')),
 			array('view.set_visible', array($hash, 'rat_1')),
 		);
-		$decision = XMLRPCProxy::decide($this->systemMulticallXml($webUiCalls),
+		$decision = XMLRPCProxy::decide($this->systemMulticallXml($bundledCalls),
 			'sanitize', XMLRPCProxy::defaultSafeParams());
 		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'the shipped WebUI multicall methods are accepted with their real argument shapes');
+			'the bundled WebUI and plugin multicall methods are accepted with their real argument shapes');
 		foreach(array(
 			array('f.prioritize_first.enable', array($hash.':f0;execute.capture=id')),
 			array('d.set_custom', array($hash, 'sch_ignore', '$execute.capture=id')),
@@ -838,8 +838,8 @@ class XMLRPCProxyTest extends TestCase
 	}
 
 	/**
-	 * Legacy method identifier preserved for test surface compatibility.
-	 * The contract is terminal rejection, not forwarding.
+	 * The legacy method name says "ForwardsUntrusted" for compatibility with
+	 * test inventories; the current contract is terminal rejection.
 	 */
 	public function testInvalidXmlForwardsUntrusted()
 	{
@@ -1892,6 +1892,16 @@ class XMLRPCProxyTest extends TestCase
 		}
 	}
 
+	public function testEmptyMethodNameHasNoRefusedMethodOrEmptyLogSuffix()
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName></methodName></methodCall>';
+		$decision = XMLRPCProxy::decide($xml, 'sanitize');
+		$this->assertEquals('reject', $decision['action'], 'empty method name is rejected');
+		$this->assertEquals(null, $decision['method'], 'empty method name identifies no method');
+		$this->assertEquals(array('rejected (invalid XML)'), $decision['log'],
+			'empty method name adds no method suffix to the log');
+	}
+
 	public function testMalformedOwnedLoadsAreTerminallyRejected()
 	{
 		$badXmls = array(
@@ -2258,8 +2268,8 @@ class XMLRPCProxyTest extends TestCase
 			. '</params></methodCall>';
 		$safeParams = array('d.custom1.set', 'd.custom.set');
 		$d = XMLRPCProxy::decide($xml, 'sanitize', $safeParams);
-		$this->assertTrue($d['action'] === 'send', 'allowed filter must be admitted for send');
-		$this->assertTrue($d['trusted'] === true, 'allowed filter multicall must be trusted');
+		$this->assertTrue($d['action'] === 'send', 'allowlisted setter filter must be admitted for send');
+		$this->assertTrue($d['trusted'] === true, 'setter-only filter multicall must be trusted');
 		$this->assertTrue(strpos($d['payload'], 'd.custom1.set="filter value"') !== false,
 			'filter must become canonical rebuilt form');
 		$this->assertTrue(strpos($d['payload'], 'd.custom1.set=filter value') === false,
