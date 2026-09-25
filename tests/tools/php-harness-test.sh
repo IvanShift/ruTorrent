@@ -6,6 +6,7 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/rt-php-harness.XXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir -p "$scratch/tests/php" "$scratch/tests/plugins/a b"
 cp "$root/tests/php-test.sh" "$root/tests/php-failure-pattern.sh" "$root/tests/php-test.ini" "$scratch/tests/"
+cp "$root/tests/php/TestCaseRunner.php" "$scratch/tests/php/"
 cat > "$scratch/tests/plugins/a b/One Test.php" <<'PHP'
 <?php
 echo "ok - fixture executed\n1 tests, 0 failures\n";
@@ -19,6 +20,41 @@ grep -q 'ok - fixture executed' <<< "$output" || {
     exit 1
 }
 
+# PHP must execute the source file itself: __FILE__ is used by fixtures
+# that reopen their own source, and __DIR__ must survive special path bytes.
+cat > "$scratch/tests/plugins/a b/FileIdentityTest.php" <<'PHP'
+<?php
+if (!is_file(__FILE__) || dirname(__FILE__) !== __DIR__) {
+    echo "not ok - source file identity was replaced by a pipe\n1 tests, 1 failures\n";
+    exit(1);
+}
+echo "ok - source file identity survived\n1 tests, 0 failures\n";
+PHP
+if ! output="$(cd "$scratch" && bash tests/php-test.sh)"; then
+    printf '%s\n' "$output" >&2
+    echo 'the PHP runner did not preserve __FILE__ and __DIR__' >&2
+    exit 1
+fi
+grep -q 'ok - source file identity survived' <<< "$output" || {
+    echo 'the source identity fixture did not run' >&2
+    exit 1
+}
+rm "$scratch/tests/plugins/a b/FileIdentityTest.php"
+mkdir -p "$scratch/tests/plugins/a@b"
+cat > "$scratch/tests/plugins/a@b/AtPathTest.php" <<'PHP'
+<?php
+echo "ok - delimiter in source path survived\n1 tests, 0 failures\n";
+PHP
+if ! output="$(cd "$scratch" && bash tests/php-test.sh)"; then
+    printf '%s\n' "$output" >&2
+    echo 'the PHP runner could not execute a path containing @' >&2
+    exit 1
+fi
+grep -q 'ok - delimiter in source path survived' <<< "$output" || {
+    echo 'the @ path fixture did not run' >&2
+    exit 1
+}
+rm "$scratch/tests/plugins/a@b/AtPathTest.php"
 rm "$scratch/tests/plugins/a b/One Test.php"
 if (cd "$scratch" && bash tests/php-test.sh) > "$scratch/empty.log" 2>&1; then
     echo 'empty PHP suite reported success' >&2
@@ -154,4 +190,4 @@ if ! (cd "$scratch" && bash tests/php-test.sh) > "$scratch/quoted.log" 2>&1; the
     exit 1
 fi
 rm "$scratch/tests/plugins/a b/QuotedFailureTest.php"
-echo 'php-harness-test.sh: root, path, empty, assertion, subclass, Throwable, and quoted-error gates passed'
+echo 'php-harness-test.sh: root, source identity, delimiter path, empty, assertion, subclass, Throwable, and quoted-error gates passed'

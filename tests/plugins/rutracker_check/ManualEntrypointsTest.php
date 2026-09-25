@@ -76,9 +76,8 @@ class ManualEntrypointsTest
 	 * exits -- because the response bytes and the status line are the thing
 	 * being measured.
 	 *
-	 * Generated source deliberately uses dirname(__FILE__): the suite runner
-	 * rewrites the token __DIR__ in this file's text before executing it, and a
-	 * generated file must not inherit that rewrite.
+	 * Generated source uses dirname(__FILE__) so its paths resolve from the
+	 * generated fixture at runtime, independent of the caller's cwd.
 	 */
 	private function writeUtilStub($tree)
 	{

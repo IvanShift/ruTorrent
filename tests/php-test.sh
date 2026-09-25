@@ -38,11 +38,10 @@ fi
 for t in "${test_files[@]}"
 do
 	printf '> php %s\n' "$t"
-	# Absolute: this stands in for __DIR__ below, and a relative path makes a
-	# fixture symlink resolve against the wrong directory.
-	DIR=$(CDPATH= cd -- "$(dirname "$t")" && pwd)
+	# Execute the file itself so PHP resolves __FILE__ and __DIR__ from its
+	# real source path, including spaces and sed delimiter characters.
 	out=$(php -c php-test.ini -d auto_append_file="$script_dir/php/TestCaseRunner.php" \
-		-f <(sed "s@__DIR__@\"$DIR\"@g" "$t") 2>&1)
+		-f "$t" 2>&1)
 	code=$?
 	printf '%s\n' "$out"
 	# A present *Test.php is not proof that its tests ran. TestCase emits a

@@ -6914,9 +6914,8 @@ class RemoveWithDataTest extends TestCase
 
 	// -- package 6 harness --------------------------------------------------
 
-	// The repository root, anchored at __DIR__. The focused runner executes
-	// this file through process substitution, so __FILE__ and dirname(__FILE__)
-	// point at /proc/<pid>/fd/N and __DIR__ is the only correct anchor.
+	// Anchor the repository root to the test source, independent of the
+	// caller's working directory.
 	private function repositoryRoot()
 	{
 		return(__DIR__.'/../../..');

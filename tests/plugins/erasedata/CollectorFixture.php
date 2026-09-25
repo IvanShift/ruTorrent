@@ -851,7 +851,7 @@ class ErasedataTestProcess
 
 // A byte-verified copy of plugins/erasedata plus test-owned adapters for the
 // two core files the plugin includes. $sourceRoot must be the repository root,
-// handed in from the test's __DIR__ so it survives process substitution.
+// handed in from the test's __DIR__ so it does not depend on the caller's cwd.
 class ErasedataProductionMirror
 {
 	public $root;
