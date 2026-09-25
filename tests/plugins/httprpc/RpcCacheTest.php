@@ -1,11 +1,14 @@
 <?php
 
+// The cache constructor creates a profile directory before useDirectory().
+$_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rpccache-profile-'.getmypid().'-'.bin2hex(random_bytes(4));
+
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../../plugins/httprpc/rpccache.php');
 
 // The cache keeps its state files in a directory taken from the profile path.
-// Point it at a scratch directory instead, and let a test take that directory
-// away to stand in for an evicted or unwritable cache.
+// Point it at a scratch directory, where a test can remove state files
+// to stand in for an evicted cache.
 class TestRpcCache extends rpcCache
 {
 	public function useDirectory($dir)
@@ -19,19 +22,30 @@ class RpcCacheTest extends TestCase
 {
 	private $dir;
 	private $cache;
+	private $profile;
 
 	public function setUp()
 	{
-		$this->dir = sys_get_temp_dir().'/rpccache-test-'.getmypid();
+		$this->profile = $_ENV['RU_PROFILE_PATH'];
+		$this->dir = $this->profile.'/test-cache';
 		$this->cache = new TestRpcCache();
 		$this->cache->useDirectory($this->dir);
 	}
 
 	public function tearDown()
 	{
-		foreach(glob($this->dir.'/*') as $f)
-			@unlink($f);
-		@rmdir($this->dir);
+		if (is_dir($this->profile)) {
+			FileUtil::deleteDirectory($this->profile);
+		}
+	}
+
+	public function testConstructorKeepsItsDirectoryInTheScratchProfile()
+	{
+		$this->assertEquals($this->profile.'/settings/httprpc',
+			FileUtil::getSettingsPath().'/httprpc',
+			'The constructor uses the isolated profile before useDirectory');
+		$this->assertEquals(true, is_dir($this->profile.'/settings/httprpc'),
+			'The constructor created its directory under the scratch profile');
 	}
 
 	private function torrents($hashes)

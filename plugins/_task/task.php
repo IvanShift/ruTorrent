@@ -63,7 +63,14 @@ class rTask
 			if(($sh = fopen($dir."/start.sh","w"))!==false)
 		        {
 				fputs($sh,'#!/bin/sh'."\n");
-				fputs($sh,'dir="$(dirname $0)"'."\n");
+				fputs($sh,'dir="$(dirname "$0")"'."\n");
+				// Publish the process birth before the PID. If /proc cannot be read,
+				// a later kill refuses the task rather than trusting a reused PID.
+				fputs($sh,'rm -f "${dir}/pid" "${dir}/pid.identity" "${dir}/pid.identity.tmp"'."\n");
+				fputs($sh,'if [ -r /proc/sys/kernel/random/boot_id ] && [ -r "/proc/$$/stat" ]; then'."\n");
+				fputs($sh,'  cat /proc/sys/kernel/random/boot_id "/proc/$$/stat" > "${dir}/pid.identity.tmp" && mv -f "${dir}/pid.identity.tmp" "${dir}/pid.identity"'."\n");
+				fputs($sh,'  chmod a+rw "${dir}/pid.identity"'."\n");
+				fputs($sh,'fi'."\n");
 				fputs($sh,'echo $$ > "${dir}"/pid'."\n");
 				fputs($sh,'chmod a+rw "${dir}"/pid'."\n");
 				file_put_contents($dir."/flags",$flags);
@@ -294,8 +301,7 @@ class rTask
 			$params.=" &";
 		if($flags & self::FLG_RUN_AS_WEB)
 		{
-			if(self::FLG_RUN_AS_CMD)
-				$cmd = '-c "'.$cmd.'"';
+			$cmd = ($flags & self::FLG_RUN_AS_CMD) ? '-c '.escapeshellarg($cmd) : escapeshellarg($cmd);
 			exec('sh '.$cmd.$params, $output, $ret);
 		}
 		else
@@ -309,6 +315,14 @@ class rTask
 				$ret = intval($req->val[0]);
 		}
 		return($ret);
+	}
+
+	static protected function failKill( $dir, $reason )
+	{
+		$message = 'rtask: TaskKill failed for '.$dir.' ('.$reason.'); task directory kept for diagnosis';
+		@file_put_contents($dir.'/errors', $message."\n", FILE_APPEND | LOCK_EX);
+		error_log($message);
+		return(false);
 	}
 
 	static public function kill( $taskNo, $flags = null )
@@ -335,15 +349,20 @@ class rTask
 			{
 				if(is_null($flags))
 					$flags = intval(file_get_contents($dir.'/flags'));
-				// A pid is a number: it is read from a file and reaches a shell.
-				// 0 is excluded as well, since kill(1) reads it as the whole
-				// process group of the caller.
-				$pid = intval(trim(file_get_contents($dir.'/pid')));
-				if($pid>0)
-				{
-					self::run("kill -9 `".Utility::getExternal("pgrep")." -P ".$pid."` ; kill -9 ".$pid, ($flags & self::FLG_RUN_AS_WEB) | self::FLG_WAIT | self::FLG_RUN_AS_CMD );
-					self::notify($dir,"TaskKill");
-				}
+				$pidText = trim(file_get_contents($dir.'/pid'));
+				$pid = filter_var($pidText, FILTER_VALIDATE_INT, array('options'=>array('min_range'=>2)));
+				if($pid===false)
+					return(self::failKill($dir, 'pid identity: invalid pid, including pid 1; no signal sent'));
+				// The helper checks /proc and signals from one shell process, minimizing
+				// the PID reuse window between verification and kill.
+				$cmd = 'sh '.escapeshellarg(dirname(__FILE__).'/kill-verified.sh').' '.
+					$pid.' '.escapeshellarg($dir.'/pid.identity');
+				$result = self::run($cmd, ($flags & self::FLG_RUN_AS_WEB) | self::FLG_WAIT | self::FLG_RUN_AS_CMD);
+				if($result===3)
+					return(self::failKill($dir, 'pid identity: missing or mismatched pid.identity; no signal sent'));
+				if($result!==0)
+					return(self::failKill($dir, 'verified kill command failed; signal state uncertain'));
+				self::notify($dir,"TaskKill");
 			}
 			self::clean($dir);
 		}

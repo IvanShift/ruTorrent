@@ -1,5 +1,8 @@
 <?php
 
+// Each file runs in its own PHP process; keep task fixtures off the checkout.
+$_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent-task-test-'.getmypid().'-'.bin2hex(random_bytes(4));
+
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../../plugins/_task/task.php');
 
@@ -34,11 +37,15 @@ class TaskTest extends TestCase
 	{
 		@unlink($this->marker);
 		$this->removeDir($this->outside);
+		$profile = $_ENV['RU_PROFILE_PATH'];
+		if (is_dir($profile)) {
+			FileUtil::deleteDirectory($profile);
+		}
 	}
 
 	protected function removeDir($dir)
 	{
-		foreach (array('pid', 'status', 'flags', 'params') as $file) {
+		foreach (array('pid', 'pid.identity', 'status', 'flags', 'params', 'errors') as $file) {
 			@unlink($dir.'/'.$file);
 		}
 		@rmdir($dir);
@@ -59,24 +66,53 @@ class TaskTest extends TestCase
 		return array($id, $dir);
 	}
 
+	public function testFixturesUseAnIsolatedProfile()
+	{
+		$this->assertEquals($_ENV['RU_PROFILE_PATH'].'/settings', FileUtil::getSettingsPath(),
+			'Task fixtures stay under TMPDIR rather than the checkout');
+	}
+
 	public function testKillRunsNothingFromANonNumericPidFile()
 	{
-		list($id, $dir) = $this->makeTask('1$(touch '.$this->marker.')');
-		rTask::kill($id);
-		sleep(1);
+		list($id, $dir) = $this->makeTask('not-a-pid$(touch '.$this->marker.')');
+		$result = rTask::kill($id);
 		$this->assertEquals(false, file_exists($this->marker),
 			'The contents of a pid file cannot reach the shell');
-		$this->assertEquals(false, is_dir($dir), 'The task is still cleaned up');
+		$this->assertEquals(false, $result, 'A malformed PID refuses the kill');
+		$this->assertEquals(true, is_dir($dir), 'The refused task stays available for diagnosis');
 	}
 
 	public function testKillStopsTheProcessThePidFileNames()
 	{
-		$pid = intval(exec('sh -c \'sleep 30 >/dev/null 2>&1 & echo $!\''));
-		$this->assertEquals(true, $pid > 0, 'A process to kill was started');
-		list($id, $dir) = $this->makeTask($pid);
-		rTask::kill($id);
-		sleep(1);
-		$this->assertEquals(false, posix_kill($pid, 0), 'The named process is gone');
+		$process = proc_open(array('sleep', '30'), array(
+			0 => array('file', '/dev/null', 'r'),
+			1 => array('file', '/dev/null', 'w'),
+			2 => array('file', '/dev/null', 'w'),
+		), $pipes);
+		if (!is_resource($process)) {
+			throw new RuntimeException('Could not start the isolated process witness');
+		}
+		try {
+			$pid = proc_get_status($process)['pid'];
+			if ($pid <= 1 || $pid === getmypid()) {
+				throw new RuntimeException('Unsafe process witness PID');
+			}
+			list($id, $dir) = $this->makeTask($pid);
+			file_put_contents($dir.'/pid.identity',
+				file_get_contents('/proc/sys/kernel/random/boot_id').
+				file_get_contents('/proc/'.$pid.'/stat'));
+			$result = rTask::kill($id);
+			$this->assertEquals(true, $result, 'A matching PID identity permits the kill');
+			for ($attempt = 0; $attempt < 20 && proc_get_status($process)['running']; $attempt++) {
+				usleep(50000);
+			}
+			$this->assertEquals(false, proc_get_status($process)['running'], 'The named process is gone');
+		} finally {
+			if (proc_get_status($process)['running']) {
+				proc_terminate($process);
+			}
+			proc_close($process);
+		}
 	}
 
 	public function testCheckDoesNotConstructClassesNamedByTheParamsFile()
