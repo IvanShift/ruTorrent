@@ -148,6 +148,8 @@ class ErasedataFake
 	public static $recoverResult = ERASEDATA_CLEANUP_NONE;
 	public static $generationCancelResult = ERASEDATA_CLEANUP_NONE;
 	public static $kickResult = true;
+	public static $claimPaths = array();
+	public static $scanUnknown = false;
 
 	public static function reset()
 	{
@@ -158,6 +160,8 @@ class ErasedataFake
 		self::$recoverResult = ERASEDATA_CLEANUP_NONE;
 		self::$generationCancelResult = ERASEDATA_CLEANUP_NONE;
 		self::$kickResult = true;
+		self::$claimPaths = array();
+		self::$scanUnknown = false;
 	}
 
 	public static function record($name, $arguments)
@@ -192,6 +196,18 @@ function erasedataPathsOverlap($left, $right)
 		return(true);
 	return(erasedataPathContains($leftIdentity['path'], $rightIdentity['path'])
 		|| erasedataPathContains($rightIdentity['path'], $leftIdentity['path']));
+}
+
+function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	return(ErasedataFake::$scanUnknown ? false
+		: array('paths' => ErasedataFake::$claimPaths, 'inodes' => array()));
+}
+
+function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+{
+	return(isset($snapshot['paths']["p\0".$path]) ? 'claimed' : 'unclaimed');
 }
 
 function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $base, array $entries)
@@ -611,7 +627,8 @@ class CheckerTest
 		$newInfo = $this->realisticInfo($newInfo);
 		$old = new Torrent(array('hash' => self::OLD_HASH, 'info' => $oldInfo));
 		$new = new Torrent(array('hash' => self::NEW_HASH, 'info' => $newInfo));
-		return(strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array($old, $new, $base)));
+		return(strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array($old, $new, $base,
+			self::OLD_HASH, self::NEW_HASH, self::PLUGIN_MARKER, self::OLD_HASH.'-started-1787587200')));
 	}
 
 	private function erasedataCalls($name)
@@ -653,6 +670,30 @@ class CheckerTest
 				'the job owns only the exact old metainfo path');
 			strictAssertTrue($entries[0]['path'] !== $base && is_file($base . '/another-film.mkv')
 				&& is_file($base . '/personal.txt'), 'the shared base and unrelated files are never ownership entries');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffProtectsThirdTorrentClaimAndKeepsOrphanObligation()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-cross-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		$shared = $base.'/shared.bin';
+		$orphan = $base.'/orphan.bin';
+		file_put_contents($shared, 'shared');
+		file_put_contents($orphan, 'orphan');
+		ErasedataFake::$claimPaths["p\0".$shared] = true;
+		try
+		{
+			$entries = $this->cleanupEntries(
+				array('files' => array(array('path' => array('shared.bin')),
+					array('path' => array('orphan.bin')))),
+				array('name' => 'replacement.bin'), $base);
+			strictAssertSame(1, count($entries),
+				'a third-torrent path is protected while a genuine orphan stays in the job');
+			strictAssertSame($orphan, $entries[0]['path'],
+				'the orphan alone remains the cleanup obligation');
 		}
 		finally { strictRemoveTree($base); }
 	}
@@ -1005,6 +1046,32 @@ class CheckerTest
 		finally { strictRemoveTree($base); }
 	}
 
+	public function testUnknownThirdOwnerScanAbortsBeforePredecessorErase()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-fleet-unknown-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		ErasedataFake::$scanUnknown = true;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'an unknown fleet scan must abort replacement');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases),
+				'only the staged successor may be erased after ownership becomes unknown');
+			strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
+				'the predecessor remains present when fleet ownership is unknown');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
 	public function testFailedCommitCancelsCleanupBeforeRollback()
 	{
 		$this->resetFakes();
@@ -1130,7 +1197,8 @@ class CheckerTest
 			strictAssertSame(1, count($publish), 'the exact prepared generation is published once');
 			strictAssertTrue($publish[0]['request_count'] <= array_search($activation[0], rXMLRPCRequest::$requests, true),
 				'publication precedes successor activation');
-			strictAssertSame(array('erasedataPrepareObsoleteCleanup', 'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
+			strictAssertSame(array('erasedataCleanupOtherOwnerSnapshot', 'erasedataPrepareObsoleteCleanup',
+				'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
 				array_column(ErasedataFake::$calls, 'name'), 'the producer lifecycle has one prepare, publish and post-activation kick');
 		}
 		finally { strictRemoveTree($base); }

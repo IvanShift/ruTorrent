@@ -31,6 +31,18 @@ class CheckerMetaFetchErasedata
     }
 }
 
+// This composition evals check.php with erasedata collaborators replaced by
+// recorders. The owner scanner is unclaimed for this isolated replacement case.
+function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
+{
+    return array('paths' => array(), 'inodes' => array());
+}
+
+function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+{
+    return 'unclaimed';
+}
+
 function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $base, array $entries)
 {
     CheckerMetaFetchErasedata::record(__FUNCTION__, func_get_args());

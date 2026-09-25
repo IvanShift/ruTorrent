@@ -424,7 +424,8 @@ class ruTrackerChecker
 		return($identity);
 	}
 
-	static private function buildObsoleteCleanupFiles($oldTorrent, $newTorrent, $baseDir)
+	static private function buildObsoleteCleanupFiles($oldTorrent, $newTorrent, $baseDir,
+		$oldHash, $newHash, $marker, $record)
 	{
 		self::$obsoleteCleanupSummary = array('old' => 0, 'new' => 0, 'obsolete' => 0, 'missing' => 0);
 		$oldPaths = self::collectTorrentPaths($oldTorrent);
@@ -454,6 +455,10 @@ class ruTrackerChecker
 			return(false);
 		$base = rtrim($base, DIRECTORY_SEPARATOR);
 		$basePrefix = $base . DIRECTORY_SEPARATOR;
+		$otherOwners = erasedataCleanupOtherOwnerSnapshot(
+			$oldHash, $newHash, $marker, $record);
+		if($otherOwners === false)
+			return(false);
 		$newIdentityIndex = array();
 		foreach($newPaths as $path)
 		{
@@ -493,6 +498,12 @@ class ruTrackerChecker
 				|| $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino'])
 				return(false);
 
+			$owner = erasedataCleanupOtherOwnerState($otherOwners,
+				$candidate, $identity['stat']);
+			if($owner === 'unknown')
+				return(false);
+			if($owner === 'claimed')
+				continue;
 			$key = self::fileIdentityIndexKey($identity);
 			if($key === false)
 				return(false);
@@ -1699,7 +1710,8 @@ class ruTrackerChecker
 			return self::STE_ERROR;
 		}
 
-		$cleanupFiles = self::buildObsoleteCleanupFiles($oldTorrent, $torrent, $baseDir);
+		$cleanupFiles = self::buildObsoleteCleanupFiles($oldTorrent, $torrent, $baseDir,
+			$hash, $newHash, $marker, $stagedRecordStr);
 		self::logDebug('createTorrent: cleanup prepare ' . $hash . ' -> ' . $newHash
 			. ' old=' . self::$obsoleteCleanupSummary['old']
 			. ' new=' . self::$obsoleteCleanupSummary['new']

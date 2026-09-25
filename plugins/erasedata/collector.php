@@ -910,7 +910,7 @@ function erasedataCleanupParents($manifest)
 }
 
 function erasedataResumeCleanupCapturedTargets($manifest, $reservationKey,
-	$successorSnapshot, ErasedataFilesystemOps $filesystem)
+	$successorSnapshot, $otherSnapshot, ErasedataFilesystemOps $filesystem, &$reason)
 {
 	if(!is_array($successorSnapshot)
 		|| !isset($successorSnapshot['observations'], $successorSnapshot['by_identity'])
@@ -1009,6 +1009,13 @@ function erasedataResumeCleanupCapturedTargets($manifest, $reservationKey,
 			'lstat' => $entryIdentity['lstat'],
 			'stat' => $targetIdentity['stat'],
 		);
+		$owner = erasedataCleanupOtherOwnerState($otherSnapshot,
+			$file, $capturedIdentity['stat']);
+		if($owner !== 'unclaimed')
+		{
+			$reason = $owner === 'claimed' ? 'ownership-claimed' : 'rpc-unknown';
+			return(false);
+		}
 		$key = erasedataCleanupExactIdentityKey($capturedIdentity);
 		if($key === false)
 			return(false);
@@ -1459,6 +1466,13 @@ final class ErasedataCollector
 			$this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
 			return(false);
 		}
+		$otherSnapshot = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+		if($otherSnapshot === false)
+		{
+			$this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
+			return(false);
+		}
 		$successorSnapshot = erasedataCleanupSuccessorSnapshot($successorFiles, $this->filesystem);
 		if($successorSnapshot === false)
 		{
@@ -1475,10 +1489,12 @@ final class ErasedataCollector
 		// Cleanup captures live beside payload targets, not in the queue directory.
 		// Preflight their aliases against the stable successor snapshot before a
 		// missing public name can satisfy the exact job.
+		$resumeReason = null;
 		if(!erasedataResumeCleanupCapturedTargets(
-			$manifest, $path, $successorSnapshot, $this->filesystem))
+			$manifest, $path, $successorSnapshot, $otherSnapshot, $this->filesystem, $resumeReason))
 		{
-			$this->cleanupLog($hash, 'retained', 'unlink-failure', $path, $jobKey);
+			$this->cleanupLog($hash, 'retained',
+				$resumeReason === null ? 'unlink-failure' : $resumeReason, $path, $jobKey);
 			return(false);
 		}
 		$complete = true;
@@ -1516,6 +1532,15 @@ final class ErasedataCollector
 			}
 			if(!erasedataCleanupIdentityMatches($expected, $current))
 				continue; // A replacement object satisfies the old object's obligation.
+			$owner = erasedataCleanupOtherOwnerState($otherSnapshot, $file, $current['stat']);
+			if($owner === 'unknown')
+			{
+				$complete = false;
+				$reason = 'rpc-unknown';
+				break;
+			}
+			if($owner === 'claimed')
+				continue; // A present third-owner claim intentionally protects this path.
 			$key = erasedataCleanupExactIdentityKey($current);
 			if($key === false)
 			{

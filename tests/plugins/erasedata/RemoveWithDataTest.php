@@ -809,6 +809,8 @@ class RemoveWithDataTest extends TestCase
 			'cleanupUnlinkFail' => null, 'commitTokenUnlinkFail' => null,
 			'artifactReadCountFile' => null, 'successorTransition' => null,
 			'successorObservationCountFile' => null,
+			'fleetRows' => array(), 'fleetFault' => false,
+			'fleetSources' => array(), 'fleetReplies' => array(),
 		));
 	}
 
@@ -951,6 +953,18 @@ class RemoveWithDataTest extends TestCase
 				? $successor['stored'] + array('swap'=>null)
 				: array('ok'=>false, 'fault'=>false, 'val'=>array(), 'swap'=>null),
 		);
+		$responses['d.multicall'] = array('ok'=>true, 'fault'=>$options['fleetFault'],
+			'val'=>$options['fleetRows'], 'swap'=>null);
+		foreach($options['fleetReplies'] as $hash => $reply)
+		{
+			foreach(array('frozen' => 'd.get_base_path', 'stored' => 'd.get_directory') as $key => $command)
+				if(isset($reply[$key]))
+				{
+					if(!isset($responses[$command]['byHash']))
+						$responses[$command]['byHash'] = array();
+					$responses[$command]['byHash'][$hash] = $reply[$key] + array('swap'=>null);
+				}
+		}
 		$source = is_array($successor) && array_key_exists('source', $successor)
 			? $successor['source'] : false;
 		return($this->collectorCrashes($options['filesystem'])
@@ -968,6 +982,7 @@ class RemoveWithDataTest extends TestCase
 			'erased' => rXMLRPCRequest::$erased,
 			'calls' => rXMLRPCRequest::$commandCalls,
 			'source' => ErasedataCollectorTestState::$source,
+			'fleetSources' => ErasedataCollectorTestState::$fleetSources,
 			'countFile' => ErasedataCollectorTestState::$indexCountFile,
 			'debug' => isset($erasedebug_enabled) ? $erasedebug_enabled : false,
 			'argv' => $argv,
@@ -975,6 +990,7 @@ class RemoveWithDataTest extends TestCase
 		);
 		rXMLRPCRequest::$responses = $responses;
 		ErasedataCollectorTestState::$source = $source;
+		ErasedataCollectorTestState::$fleetSources = $options['fleetSources'];
 		ErasedataCollectorTestState::$indexCountFile = $options['indexCountFile'];
 		$erasedebug_enabled = (bool)$options['debug'];
 		$argv = array('update.php', 'rutorrent');
@@ -999,6 +1015,7 @@ class RemoveWithDataTest extends TestCase
 		rXMLRPCRequest::$erased = $saved['erased'];
 		rXMLRPCRequest::$commandCalls = $saved['calls'];
 		ErasedataCollectorTestState::$source = $saved['source'];
+		ErasedataCollectorTestState::$fleetSources = $saved['fleetSources'];
 		ErasedataCollectorTestState::$indexCountFile = $saved['countFile'];
 		$erasedebug_enabled = $saved['debug'];
 		$argv = $saved['argv'];
@@ -3496,6 +3513,132 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(false, $this->onlyManifest($oldHash), 'the completed cleanup list must be consumed');
 	}
 
+	public function testCleanupKeepsFileClaimedByThirdTorrent()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/cross-seed';
+		@mkdir($base, 0777, true);
+		$shared = $base.'/shared.bin';
+		file_put_contents($shared, 'third torrent still owns these bytes');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($shared));
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array(
+				'hash' => $thirdHash,
+				'info' => array('name' => 'shared.bin', 'length' => 36))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 0, 'shared.bin')))),
+		));
+		$this->assertEquals(0, $status, 'a third-torrent claim must not crash cleanup');
+		$this->assertEquals('third torrent still owns these bytes', @file_get_contents($shared),
+			'a file claimed by a third torrent must survive cleanup');
+	}
+
+	public function testCleanupKeepsHardlinkedThirdTorrentObject()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/cross-hardlink';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		$alias = $base.'/third.bin';
+		file_put_contents($old, 'shared inode');
+		$this->assertTrue(link($old, $alias), 'the fixture must create a real hardlink');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array(
+				'hash' => $thirdHash,
+				'info' => array('name' => 'third.bin', 'length' => 12))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 0, 'third.bin')))),
+		));
+		$this->assertEquals(0, $status, 'a third-torrent hardlink claim must not crash cleanup');
+		$this->assertEquals('shared inode', @file_get_contents($old),
+			'an old path hardlinked to a third torrent must survive');
+	}
+
+	public function testCleanupUnknownFleetRetainsObligationAndBytes()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/cross-unknown';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'retain');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($this->hash('C')),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'an incomplete fleet scan must not crash cleanup');
+		$this->assertEquals('retain', @file_get_contents($old),
+			'unknown ownership must not authorize deletion');
+		$this->assertTrue(is_string($this->onlyManifest($oldHash)),
+			'unknown ownership must retain the exact cleanup obligation');
+		$this->assertTrue(strpos($output, 'cleanup retained') !== false
+			&& strpos($output, 'rpc-unknown') !== false,
+			'the refusal must be visible as a classified cleanup retention');
+
+		$this->reset();
+		@mkdir($base, 0777, true);
+		file_put_contents($old, 'fault retain');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('fleetFault' => true));
+		$this->assertEquals(0, $status, 'a fleet RPC fault must not crash cleanup');
+		$this->assertEquals('fault retain', @file_get_contents($old),
+			'a fleet RPC fault must not be treated as an empty owner set');
+		$this->assertTrue(is_string($this->onlyManifest($oldHash)),
+			'a fleet RPC fault retains the exact obligation');
+	}
+
+	public function testCleanupExcludesOnlyExactTransactionRowsFromOtherOwners()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/cross-generation';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'orphan');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('fleetRows' => array(
+			$oldHash, '', '', $newHash.'-started-1787587200',
+			$newHash, '0123456789abcdef0123456789abcdef',
+				$oldHash.'-started-1787587200', '',
+		)));
+		$this->assertEquals(0, $status, 'the matching transaction fleet rows must not crash cleanup');
+		$this->assertTrue(!file_exists($old),
+			'the exact predecessor and successor rows must not disguise an orphan as shared');
+		$this->assertEquals(false, $this->onlyManifest($oldHash),
+			'the exact transaction orphan obligation must complete');
+
+		$this->reset();
+		@mkdir($base, 0777, true);
+		file_put_contents($old, 'foreign takeover');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($oldHash, '', '', 'foreign-generation'),
+			'fleetSources' => array($oldHash => array(
+				'hash' => $oldHash,
+				'info' => array('name' => 'old.bin', 'length' => 16))),
+			'fleetReplies' => array($oldHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 0, 'old.bin')))),
+		));
+		$this->assertEquals(0, $status, 'a foreign same-hash occupant must not crash cleanup');
+		$this->assertEquals('foreign takeover', @file_get_contents($old),
+			'a foreign occupant on the old hash is still another owner');
+	}
+
 	public function testCleanupMissingTargetCompletes()
 	{
 		$this->reset();
@@ -3548,6 +3691,43 @@ class RemoveWithDataTest extends TestCase
 			'the retry may consume its job only after captured obsolete data is reconciled');
 		$this->assertEquals('neighbor', is_file($neighbor) ? file_get_contents($neighbor) : null,
 			'capture recovery must preserve unrelated files in the shared base');
+	}
+
+	public function testCleanupRetryRetainsCaptureClaimedByThirdTorrent()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/captured-third-owner';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		$alias = $base.'/third.bin';
+		file_put_contents($old, 'captured bytes');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$token = substr($tmp, 0, -4).'.list';
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $old, 'action' => 'exit', 'at' => 'after'),
+		)));
+		$roots = glob($base.'/.erasedata-entry-*');
+		$this->assertEquals(1, count($roots), 'the crash fixture must capture exactly one obsolete entry');
+		$entry = count($roots) === 1 ? $roots[0].'/entry' : '';
+		$this->assertTrue($entry !== '' && link($entry, $alias),
+			'the third torrent must acquire the captured inode through a hardlink');
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array(
+				'hash' => $thirdHash,
+				'info' => array('name' => 'third.bin', 'length' => 14))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 0, 'third.bin')))),
+		));
+		$this->assertEquals(0, $status, 'claimed captured-entry retry must not crash');
+		$this->assertEquals('captured bytes', @file_get_contents($entry),
+			'the claimed captured entry must not be deleted during recovery');
+		$this->assertTrue(is_file($tmp) && is_file($token),
+			'the unresolved captured entry must keep its durable obligation');
 	}
 
 	public function testCleanupRetryProtectsSuccessorAliasToCapturedObsoleteFile()

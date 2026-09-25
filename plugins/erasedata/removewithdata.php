@@ -335,6 +335,80 @@ if(!function_exists('erasedataCollectPaths'))
 require_once(dirname(__FILE__)."/manifest.php");
 require_once(dirname(__FILE__)."/filesystem.php");
 
+// A cleanup may discard only names and inodes unclaimed by every other torrent.
+// Keep the scan in erasedata so producer and delayed consumer use one rule.
+function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
+{
+	$oldHash = erasedataCanonicalHash($oldHash);
+	$newHash = erasedataCanonicalHash($newHash);
+	if($oldHash === false || $newHash === false || $oldHash === $newHash
+		|| !is_string($marker) || !preg_match('/^[a-fA-F0-9]{32}$/D', $marker)
+		|| !is_string($record)
+		|| !preg_match('/^([a-fA-F0-9]{40})-(started|open|stopped)-([1-9][0-9]*)$/D',
+			$record, $parts) || strtoupper($parts[1]) !== $oldHash)
+		return(false);
+	$oldMarker = $newHash.'-'.$parts[2].'-'.$parts[3];
+	$scan = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', array('main',
+		getCmd('d.get_hash='),
+		getCmd('d.get_custom=').'chk-replacement',
+		getCmd('d.get_custom=').'chk-replaces',
+		getCmd('d.get_custom=').'chk-replacing')));
+	$scan->important = false;
+	if(!$scan->success() || !is_array($scan->val) || count($scan->val) % 4 !== 0)
+		return(false);
+	$seenHashes = array();
+	$paths = array();
+	$inodes = array();
+	for($index = 0; $index < count($scan->val); $index += 4)
+	{
+		$row = array_slice($scan->val, $index, 4);
+		$hash = erasedataCanonicalHash($row[0]);
+		if($hash === false || !is_string($row[0]) || strtoupper($row[0]) !== $hash
+			|| !is_string($row[1]) || !is_string($row[2]) || !is_string($row[3])
+			|| isset($seenHashes[$hash]))
+			return(false);
+		$seenHashes[$hash] = true;
+		if($hash === $oldHash && $row[1] === '' && $row[2] === ''
+			&& $row[3] === $oldMarker)
+			continue;
+		if($hash === $newHash && $row[1] === $marker && $row[2] === $record
+			&& $row[3] === '')
+			continue;
+		$owned = erasedataCollectPhysicalPaths($hash);
+		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
+			return(false);
+		foreach($owned['files'] as $file)
+		{
+			$identity = erasedataPathIdentity($file);
+			if(!is_array($identity) || !isset($identity['path']))
+				return(false);
+			$paths["p\0".$identity['path']] = true;
+			if(!empty($identity['exists']))
+			{
+				if(!isset($identity['stat']['dev'], $identity['stat']['ino']))
+					return(false);
+				$inodes['i:'.$identity['stat']['dev'].':'.$identity['stat']['ino']] = true;
+			}
+		}
+	}
+	return(array('paths' => $paths, 'inodes' => $inodes));
+}
+
+function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+{
+	if(!is_array($snapshot) || !isset($snapshot['paths'], $snapshot['inodes'])
+		|| !is_array($snapshot['paths']) || !is_array($snapshot['inodes'])
+		|| !is_string($path) || !is_array($stat)
+		|| !isset($stat['dev'], $stat['ino']))
+		return('unknown');
+	$identity = erasedataPathIdentity($path);
+	if(!is_array($identity) || !isset($identity['path']))
+		return('unknown');
+	return(isset($snapshot['paths']["p\0".$identity['path']])
+		|| isset($snapshot['inodes']['i:'.$stat['dev'].':'.$stat['ino']])
+		? 'claimed' : 'unclaimed');
+}
+
 if(!function_exists('erasedataCanonicalHash'))
 {
 	function erasedataCanonicalHash($hash)

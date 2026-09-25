@@ -224,8 +224,8 @@ if(!class_exists('rTorrentSettings'))
 	}
 }
 
-// Replaceable metainfo lookup: the collector harness scripts the successor
-// source instead of reaching rTorrent.
+// Replaceable metainfo lookup: the collector harness scripts successor and
+// other-torrent sources instead of reaching rTorrent.
 class ErasedataCollectorTestSource
 {
 	public $info;
@@ -241,6 +241,7 @@ class ErasedataCollectorTestSource
 class ErasedataCollectorTestState
 {
 	public static $source = false;
+	public static $fleetSources = array();
 	public static $indexBuilds = 0;
 	public static $indexCountFile = null;
 }
@@ -249,8 +250,11 @@ if(!function_exists('erasedataLoadTorrentSource'))
 {
 	function erasedataLoadTorrentSource($hash)
 	{
-		return(is_array(ErasedataCollectorTestState::$source)
-			? new ErasedataCollectorTestSource(ErasedataCollectorTestState::$source) : false);
+		$source = isset(ErasedataCollectorTestState::$fleetSources[$hash])
+			? ErasedataCollectorTestState::$fleetSources[$hash]
+			: ErasedataCollectorTestState::$source;
+		return(is_array($source)
+			? new ErasedataCollectorTestSource($source) : false);
 	}
 }
 
