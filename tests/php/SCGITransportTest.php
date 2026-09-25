@@ -653,6 +653,64 @@ class SCGITransportTest extends TestCase
 			'core emits exactly one classified transport failure line');
 	}
 
+	public function testCoreExposesClosedBeforeHeadersToCaller()
+	{
+		if(!$this->transportIsAvailable()) return;
+		global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut;
+		global $rpcLogCalls, $log_file;
+		$peer = SCGITransportFixture::start('');
+		$log_file = sys_get_temp_dir().'/rutorrent-scgi-core-eof-'.uniqid('', true).'.log';
+		try
+		{
+			$scgi_host = $peer->host();
+			$scgi_port = $peer->port();
+			$rpcTimeOut = 1;
+			$rpcTransferTimeOut = 1;
+			$rpcLogCalls = false;
+			$failure = 'stale';
+			$result = rXMLRPCRequest::send('<request/>', true, $failure);
+			$this->assertTrue($result === false, 'core preserves its legacy false transport result');
+			$this->assertEquals('closed-before-headers', $failure,
+				'core exposes the fake SCGI peer closing before response headers');
+		}
+		finally { @unlink($log_file); $peer->close(); }
+	}
+
+	public function testRequestRunRetainsItsOwnHeaderlessEofReason()
+	{
+		if(!$this->transportIsAvailable()) return;
+		global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut;
+		global $rpcLogCalls, $log_file;
+		$settingsClass = new ReflectionClass('rTorrentSettings');
+		$singleton = $settingsClass->getProperty('theSettings');
+		if(PHP_VERSION_ID < 80100)
+			$singleton->setAccessible(true);
+		$previous = $singleton->getValue();
+		$peer = null;
+		$log_file = sys_get_temp_dir().'/rutorrent-scgi-run-eof-'.uniqid('', true).'.log';
+		try
+		{
+			$singleton->setValue(null, $settingsClass->newInstanceWithoutConstructor());
+			$peer = SCGITransportFixture::start('');
+			$scgi_host = $peer->host();
+			$scgi_port = $peer->port();
+			$rpcTimeOut = 1;
+			$rpcTransferTimeOut = 1;
+			$rpcLogCalls = false;
+			$req = new rXMLRPCRequest(new rXMLRPCCommand('system.client_version'));
+			$this->assertTrue($req->run() === false, 'request fails after the fake peer closes without headers');
+			$this->assertEquals('closed-before-headers', $req->transportFailure,
+				'run retains the classified failure on its request instance');
+		}
+		finally
+		{
+			$singleton->setValue(null, $previous);
+			@unlink($log_file);
+			if($peer !== null)
+				$peer->close();
+		}
+	}
+
 	public function testCoreConsumerForwardsRawModeAndConfiguredLimit()
 	{
 		if(!$this->transportIsAvailable()) return;

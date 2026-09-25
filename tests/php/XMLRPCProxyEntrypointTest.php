@@ -94,6 +94,23 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			));
 	}
 
+	public function testHttprpcHeaderlessEofExplainsAcceptedConnection()
+	{
+		$result = $this->runEntrypoint('action', $this->allowedXml(), true, 'closed-before-headers');
+		$this->assertHttp($result, '500 Server Error', 'text/html; charset=UTF-8',
+			'rTorrent closed the SCGI connection before sending response headers. '
+			.'A long-running request may have hit the daemon\'s SCGI timeout.');
+		$this->assertTrue(strpos($result['body'], 'Is rTorrent running?') === false,
+			'headerless EOF does not imply the daemon was unreachable');
+		$this->assertFullTranscript('httprpc headerless EOF', $result['state'], 1,
+			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
+			null, null, false, null, null,
+			array(
+				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
+				array('event' => 'response', 'door' => 'httprpc'),
+			));
+	}
+
 	public function testRpc2OptInCallTranscriptIncludesSentAndReturnedXml()
 	{
 		$xml = $this->allowedXml();
@@ -1153,12 +1170,16 @@ class FileUtil
 }
 class rXMLRPCRequest
 {
-	public static function send($payload, $trusted)
+	public static function send($payload, $trusted, &$failure = null)
 	{
+		$failure = null;
 		entrypoint_state('send', array($payload, $trusted));
-		if(getenv('XMLRPC_ENTRYPOINT_SEND') === 'false')
-			return false;
 		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
+		if($send === 'false' || $send === 'closed-before-headers')
+		{
+			$failure = ($send === 'false') ? 'connect-failed' : $send;
+			return false;
+		}
 		if($send === 'socket-refused' && !$trusted
 			&& strpos($payload, '<methodName>system.sockets.') !== false)
 			return 'HTTP/1.1 200 OK'."\r\n".'Content-Type: text/xml'."\r\n\r\n".'<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';

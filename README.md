@@ -65,6 +65,16 @@ of waiting for the peer to close the socket. `$rpcMaxResponseBytes` defaults to
 64 MiB and may be raised only as far as rTorrent's supported 100 MiB wire
 ceiling.
 
+The tested rTorrent 0.16.21 has a separate 60-second SCGI request deadline.
+A long synchronous call can finish its work after that deadline but lose its
+reply: in a measured 65-second call, rTorrent closed the connection without
+response headers when the call ended. Raising `$rpcTransferTimeOut` cannot
+recover a reply discarded by that daemon timer, and the client need not fail
+at exactly 60 seconds. Check other rTorrent releases separately before
+assuming the same limit. A connection closed before response headers can
+also have other causes; ruTorrent reports the close and offers the deadline
+as a possible explanation.
+
 Note that the browser gives up independently: `webui.reqtimeout` (Settings →
 Interface, default 10 seconds) aborts the request no matter how patient PHP is.
 Raising `$rpcTransferTimeOut` past that only helps the paths the browser is not

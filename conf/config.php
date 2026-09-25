@@ -31,7 +31,9 @@
 	// longer than it takes to open the socket. Keeping both phases on
 	// $rpcTimeOut cut every reply off at five seconds.
 	// null = PHP's default_socket_timeout (usually 60), which is what ruTorrent
-	// waited before this budget became explicit.
+	// waited before this budget became explicit. The tested rTorrent 0.16.21
+	// has its own 60-second SCGI request deadline; increasing this PHP value
+	// cannot recover a reply that daemon discards.
 	$rpcTransferTimeOut = null;
 	// Bound one daemon reply so a broken peer cannot exhaust a PHP worker.
 	$rpcMaxResponseBytes = 67108864;

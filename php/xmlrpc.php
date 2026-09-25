@@ -78,6 +78,8 @@ class rXMLRPCRequest
 	public $val = array();
 	public $fault = false;
 	public $faultString = '';
+	// Keep the transport reason on this request for its HTTP endpoint.
+	public $transportFailure = null;
 	public $rawFaultString = null;
 	public $parseByTypes = false;
 	public $important = true;
@@ -94,7 +96,7 @@ class rXMLRPCRequest
 		}
 	}
 
-	public static function send( $data, $trusted = true )
+	public static function send( $data, $trusted = true, &$failure = null )
 	{
 		global $rpcLogCalls;
 		if($rpcLogCalls)
@@ -180,11 +182,12 @@ class rXMLRPCRequest
 		$this->i8s = array();
 		$this->strings = array();
 		$this->val = array();
+		$this->transportFailure = null;
 		rTorrentSettings::get()->patchDeprecatedRequest($this->commands);
 		$this->commandOffset = 0;
 		while($this->makeNextCall())
 		{
-			$answer = self::send($this->content,$trusted);
+			$answer = self::send($this->content,$trusted,$this->transportFailure);
 			if(!empty($answer))
 			{
 				if($this->parseByTypes)

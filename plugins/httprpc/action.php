@@ -196,6 +196,12 @@ function makeSimpleCall($cmds,$hash)
        	return($req->success(true) ? $req->val : false);
 }
 
+function httprpcClosedBeforeHeadersMessage()
+{
+	return "rTorrent closed the SCGI connection before sending response headers. "
+		."A long-running request may have hit the daemon's SCGI timeout.";
+}
+
 $result = null;
 
 switch($mode)
@@ -765,11 +771,15 @@ switch($mode)
 				CachedEcho::send(XMLRPCProxy::rejectionFault($decision['method']), "text/xml");
 				exit;
 			}
-			$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted']);
+			$transportFailure = null;
+			$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted'], $transportFailure);
 			if($result === false)
 			{
 				header("HTTP/1.0 500 Server Error");
-				CachedEcho::send("Could not complete the rTorrent XMLRPC request.", "text/html");
+				$message = ($transportFailure === 'closed-before-headers')
+					? httprpcClosedBeforeHeadersMessage()
+					: "Could not complete the rTorrent XMLRPC request.";
+				CachedEcho::send($message, "text/html");
 				exit;
 			}
 			if(!empty($result))
@@ -788,8 +798,13 @@ if(is_null($result))
 {
 	header("HTTP/1.0 500 Server Error");
 	$message = "Could not reach rTorrent over XMLRPC. Is rTorrent running?";
-	if(isset($req) && $req->fault)
-		$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
+	if(isset($req))
+	{
+		if($req->fault)
+			$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
+		else if($req->transportFailure === 'closed-before-headers')
+			$message = httprpcClosedBeforeHeadersMessage();
+	}
 	CachedEcho::send($message,"text/html");
 }
 else

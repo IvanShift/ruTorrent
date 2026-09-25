@@ -9,7 +9,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
  */
 class HttprpcSettingsEntrypointTest extends TestCase
 {
-	private function runRequest($body)
+	private function runRequest($body, $rpcFailure = null)
 	{
 		$root = sys_get_temp_dir().'/httprpc-settings-'.getmypid().'-'.bin2hex(random_bytes(6));
 		mkdir($root.'/plugins/httprpc', 0700, true);
@@ -30,7 +30,18 @@ class rXMLRPCCommand {
     public function __construct($method, $parameters = null) {}
     public function addParameters($parameters) {}
 }
-class rXMLRPCRequest { public function __construct() { echo "RPC-CONSTRUCTED"; exit(72); } }
+class rXMLRPCRequest {
+    public $fault = false;
+    public $faultString = "";
+    public $transportFailure = null;
+    public function __construct() {
+        if(!getenv("HTTPRPC_TEST_FAILURE")) { echo "RPC-CONSTRUCTED"; exit(72); }
+    }
+    public function success($trusted = true) {
+        $this->transportFailure = getenv("HTTPRPC_TEST_FAILURE");
+        return false;
+    }
+}
 ');
 		file_put_contents($root.'/php/xmlrpc_path.php', '<?php');
 		file_put_contents($root.'/plugins/httprpc/rpccache.php', '<?php');
@@ -38,7 +49,8 @@ class rXMLRPCRequest { public function __construct() { echo "RPC-CONSTRUCTED"; e
 		$script = '$HTTP_RAW_POST_DATA = '.var_export($body, true).'; include "action.php";';
 		$process = proc_open(array(PHP_BINARY, '-r', $script),
 			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-			$pipes, $root.'/plugins/httprpc');
+			$pipes, $root.'/plugins/httprpc',
+			array_merge($_ENV, array('HTTPRPC_TEST_FAILURE' => (string)$rpcFailure)));
 		if(!is_resource($process))
 			throw new Exception('could not start isolated action.php fixture');
 		fclose($pipes[0]);
@@ -107,6 +119,21 @@ class rXMLRPCRequest { public function __construct() { echo "RPC-CONSTRUCTED"; e
 				$mode.' remains available without a real RPC connection');
 			$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
 		}
+	}
+
+	public function testListModeExplainsHeaderlessEofButKeepsConnectFailureMessage()
+	{
+		$closed = $this->runRequest('mode=list', 'closed-before-headers');
+		$this->assertEquals(0, $closed['status'], 'list mode returns a classified error');
+		$this->assertEquals('500|rTorrent closed the SCGI connection before sending response headers. '
+			.'A long-running request may have hit the daemon\'s SCGI timeout.', $closed['output'],
+			'list mode explains an accepted connection that closed before headers');
+		$this->assertEquals('', $closed['error'], 'headerless EOF emits no PHP diagnostic');
+
+		$connect = $this->runRequest('mode=list', 'connect-failed');
+		$this->assertEquals(0, $connect['status'], 'connect failure still returns an error');
+		$this->assertEquals('500|Could not reach rTorrent over XMLRPC. Is rTorrent running?',
+			$connect['output'], 'a refused connection keeps its established message');
 	}
 
 	public function testOrdinarySettingReachesTheStubbedRpcBoundary()
