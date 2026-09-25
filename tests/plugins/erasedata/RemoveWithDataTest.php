@@ -11977,6 +11977,16 @@ class RemoveWithDataTest extends TestCase
 
 	public function testProducerDeathAfterFirstAggregateEraseKeepsEveryObligation()
 	{
+		$this->assertProducerDeathAfterFirstAggregateErase(1);
+	}
+
+	public function testForceTwoProducerDeathKeepsEveryAggregateObligation()
+	{
+		$this->assertProducerDeathAfterFirstAggregateErase(2);
+	}
+
+	private function assertProducerDeathAfterFirstAggregateErase($force)
+	{
 		$this->reset();
 		$invariant = 'a producer killed between the first and second executed'
 			.' d.erase of ONE aggregate batch discharges nothing: the daemon it'
@@ -11985,9 +11995,10 @@ class RemoveWithDataTest extends TestCase
 			.' each member\'s own payload';
 		if(!$this->requireApi(array('ErasedataProductionMirror::scriptAggregate',
 			'ErasedataProductionMirror::daemonCommand', 'ErasedataTestProcess::kill',
-			'erasedataTestLockProbeCommand()'), $invariant))
+			'erasedataTestLockProbeCommand()',
+			'erasedataTestDescriptorsNaming()'), $invariant))
 			return;
-		$mirror = $this->mirror('aggregate-producer-death');
+		$mirror = $this->mirror('aggregate-producer-death-'.$force);
 		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
 		$decoy = $this->hash('D');
 		$payloads = $this->aggregatePayloads(array_merge($hashes, array($decoy)));
@@ -12002,7 +12013,7 @@ class RemoveWithDataTest extends TestCase
 			'hashes' => $this->aggregateHashTable($payloads),
 		)), 'the daemon fixture is configured to stop at the first executed erase');
 		$daemon = $this->startAggregateDaemon($mirror, 'producer-death');
-		$producer = $this->actionDoor($mirror, $hashes, 1);
+		$producer = $this->actionDoor($mirror, $hashes, $force);
 		// The generation-bound acknowledgement of a REAL guarded child, first:
 		// without one the producer waits out ERASEDATA_DRAIN_ACK_TIMEOUT and
 		// takes the no-ack rollback, and no erase is ever built at all. The
@@ -12062,6 +12073,19 @@ class RemoveWithDataTest extends TestCase
 		$producerPid = $producer->pid();
 		$this->assertTrue(is_int($producerPid) && $producerPid > 0,
 			'the producer child has a pid of its own to kill');
+		if($force === 2)
+		{
+			foreach($hashes as $hash)
+			{
+				$naming = erasedataTestDescriptorsNaming($producerPid, $payloads[$hash]);
+				$this->assertTrue(is_array($naming) && count($naming) >= 1,
+					'the force-2 producer holds an open base-directory descriptor for '
+						.$hash.' before it dies ('.json_encode($naming).')');
+			}
+			$this->assertEquals(array(),
+				erasedataTestDescriptorsNaming($producerPid, $payloads[$decoy]),
+				'the force-2 producer holds no descriptor on the unrelated download');
+		}
 		$this->assertTrue($producer->kill(9),
 			'the producer is signalled inside the half-applied aggregate erase');
 		$this->assertTrue($producer->wait(20), 'and really died there');
@@ -12309,7 +12333,10 @@ class RemoveWithDataTest extends TestCase
 			'a real guarded child acknowledged the exact generation the producer armed');
 		$this->assertTrue($daemon->wait(30),
 			'the daemon stopped itself at the second executed erase');
-		$daemon->reap();
+		$daemonCode = $daemon->reap();
+		$this->assertTrue($daemonCode === 0,
+			'the fixture daemon stopped at its configured second-erase boundary (exit '
+				.var_export($daemonCode, true).')');
 		$barrier = $this->barrierRecord($mirror);
 		$this->assertTrue(is_array($barrier) && $barrier['ordinal'] === 6
 			&& $barrier['erased'] === 2 && $barrier['hash'] === $hashes[1],
@@ -12323,7 +12350,10 @@ class RemoveWithDataTest extends TestCase
 			'and the half-executed batch was answered with nothing at all');
 		$this->assertTrue($producer->wait(30),
 			'the producer, which was never killed, finished by itself');
-		$producer->reap();
+		$producerCode = $producer->reap();
+		$this->assertTrue($producerCode === 0,
+			'the producer survived the lost daemon transport and exited normally (exit '
+				.var_export($producerCode, true).')');
 		foreach($hashes as $hash)
 			$this->assertEquals(array(
 				'daemon' => $hash === $hashes[2] ? 'present' : 'absent',
@@ -12364,6 +12394,60 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(file_get_contents($payloads[$decoy].'/a.bin') === $decoyBytes,
 			'and its payload is byte-for-byte what it was');
 		$this->stopAggregateDaemon($mirror, $daemon, 'second-erase-restart');
+	}
+
+	public function testAggregateDaemonContinuesAfterMissingFirstHash()
+	{
+		$this->reset();
+		$mirror = $this->mirror('aggregate-missing-first');
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$payloads = $this->aggregatePayloads($hashes);
+		$table = $this->aggregateHashTable($payloads);
+		$table[$hashes[0]]['present'] = false;
+		$this->assertTrue($mirror->scriptAggregate(array(
+			'aggregate' => array('after_erase' => 0, 'mode' => 'none',
+				'barrier' => 'none'),
+			'hashes' => $table,
+		)), 'the daemon starts with the first hash absent and the next two present');
+		$daemon = $this->startAggregateDaemon($mirror, 'missing-first');
+		$report = $mirror->settings.'/missing-first-result.json';
+		$runner = $mirror->writeRunner('missing-first-client',
+			'require_once('.var_export($mirror->pluginDir.'/removewithdata.php', true).");\n"
+			.'$hashes = '.var_export($hashes, true).";\n"
+			.'$request = erasedataEraseRequest($hashes);'."\n"
+			.'$ran = $request->run();'."\n"
+			.'$report = array("ran" => $ran, "fault" => $request->fault,'."\n"
+			.'    "outcomes" => erasedataClassifyEraseOutcomes($hashes, $request));'."\n"
+			.'file_put_contents('.var_export($report, true).', json_encode($report));'."\n");
+		$client = ErasedataTestProcess::start($mirror->php($runner));
+		$this->assertTrue($client->wait(30), 'the production aggregate request received a reply');
+		$clientCode = $client->reap();
+		$this->assertTrue($clientCode === 0,
+			'the client finished after the faulted aggregate reply (exit '
+				.var_export($clientCode, true).', stderr: '.trim($client->err).')');
+		$answer = json_decode((string)@file_get_contents($report), true);
+		$this->assertEquals(array('ran' => true, 'fault' => true,
+			'outcomes' => array_fill_keys($hashes, 'unknown')), $answer,
+			'the faulted aggregate is answered, but no member is accepted as erased');
+		$this->assertEquals(array('9/3'), $this->aggregateSends($mirror),
+			'the client sent all three members in one nine-command request');
+		$this->assertEquals(array('9/2/answered'), $this->aggregateExecutions($mirror),
+			'the daemon answered after all nine commands and erased both later members');
+		$this->assertEquals(array($hashes[1], $hashes[2]),
+			$mirror->daemonExecutedErases(),
+			'the first missing-hash fault did not prevent the later erases');
+		$applied = $mirror->daemonEventsOf('command-applied');
+		$this->assertEquals(array(1, 2, 3), array_map(function($event) {
+			return($event['ordinal']);
+		}, array_slice($applied, 0, 3)),
+			'the missing member faulted in the first three positions');
+		foreach(array_slice($applied, 0, 3) as $event)
+			$this->assertEquals('invalid parameters: info-hash not found',
+				$event['fault'], 'the first member returned the daemon missing-hash fault');
+		foreach($hashes as $hash)
+			$this->assertTrue(file_exists($payloads[$hash].'/a.bin'),
+				'the aggregate request alone did not delete '.$hash.' payload');
+		$this->stopAggregateDaemon($mirror, $daemon, 'missing-first');
 	}
 
 	public function testRestartAfterVolatileScheduleLossRearmsTheExactGeneration()

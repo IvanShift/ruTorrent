@@ -67,8 +67,22 @@ class RtorrentCommandArgTest extends TestCase
 		$this->previousSettings = $property->getValue();
 		$property->setValue(null, $this->settings);
 
-		$this->torrentFile = tempnam(sys_get_temp_dir(), 'rtca') . '.torrent';
+		$tempFile = tempnam(sys_get_temp_dir(), 'rtca');
+		if ($tempFile === false) {
+			throw new RuntimeException('Could not allocate a torrent fixture file');
+		}
+		$this->torrentFile = $tempFile . '.torrent';
+		if (!rename($tempFile, $this->torrentFile)) {
+			@unlink($tempFile);
+			throw new RuntimeException('Could not name the torrent fixture file');
+		}
 		file_put_contents($this->torrentFile, $this->minimalTorrent());
+	}
+
+	public function testTorrentFixtureHasNoUnusedTemporarySibling()
+	{
+		$this->assertTrue(!file_exists(substr($this->torrentFile, 0, -strlen('.torrent'))),
+			'the torrent fixture leaves no unused tempnam file beside its .torrent file');
 	}
 
 	public function tearDown()
