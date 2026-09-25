@@ -15,4 +15,6 @@
  theUILang.acAutoWeek		= "Todos as semanas";
  theUILang.acAutoMonth		= "Todos os meses";
 
+theUILang.accOriginRequired = "Set $yggTorrentOrigin in conf/config.php (or a loginmgr override) to a trusted HTTPS origin. Session downloads and automatic login are disabled.";
+
 thePlugins.get("loginmgr").langLoaded();

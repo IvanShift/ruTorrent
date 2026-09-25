@@ -14,7 +14,7 @@ class MMATrackerEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'http://www.mma-tracker.net';
+		$url = 'https://www.mma-tracker.net';
 		if($useGlobalCats)
 			$categories = array( 'all'=>'' );
 		else

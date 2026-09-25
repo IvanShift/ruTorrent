@@ -37,9 +37,12 @@ http://snoopy.sourceforge.com
 
 require_once( 'util.php' );
 require_once( 'settings.php' );
+require_once( 'urlhost.php' );
 
 class Snoopy
 {
+	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
+
 	/**** Public variables ****/
 
 	/* user definable vars */
@@ -58,6 +61,8 @@ class Snoopy
 
 	var $maxredirs		=	5;			// http redirection depth maximum. 0 = disallow
 	var $lastredirectaddr	=	"";			// contains address of last redirected address
+	// Scoped by loginmgr; both HTTPS URLs must belong to the selected account.
+	public $redirectTrust = null;
 	var $passcookies	=	true;			// pass set cookies back through redirects
 
 	var $user		=	"";			// user for http authentication
@@ -256,6 +261,35 @@ class Snoopy
 
 	public function fetch($URI,$method="GET",$content_type="",$body="")
 	{
+		$parts = @parse_url((string) $URI);
+		$scopedCredentials = is_array($parts) && isset($parts['user']);
+		if($scopedCredentials)
+		{
+			$previousUser = $this->user;
+			$previousPass = $this->pass;
+			$this->user = isset($parts['user']) ? rawurldecode($parts['user']) : '';
+			$this->pass = isset($parts['pass']) ? rawurldecode($parts['pass']) : '';
+		}
+		try
+		{
+			return $this->fetchRequest($URI,$method,$content_type,$body);
+		}
+		finally
+		{
+			// URL userinfo belongs to this request chain, not to a reused client.
+			if($scopedCredentials)
+			{
+				$this->user = $previousUser;
+				$this->pass = $previousPass;
+			}
+		}
+	}
+
+	private function fetchRequest($URI,$method,$content_type,$body)
+	{
+		$this->error = "";
+		if($this->_redirectdepth === 0)
+			$this->lastredirectaddr = "";
 		$parts = parse_url($URI);
 		if( !is_array($parts) || !isset($parts["scheme"]) || !isset($parts["host"]) )
 		{
@@ -270,10 +304,6 @@ class Snoopy
 			"body" => &$body
 		) );
 		$this->port = empty($parts["port"]) ? (($parts["scheme"]=="https") ? 443 : 80) : $parts["port"];
-		if(!empty($parts["user"]))
-			$this->user = $parts["user"];
-		if(!empty($parts["pass"]))
-			$this->pass = $parts["pass"];
 		$this->host = $parts["host"];
 		$this->_isproxy = (!empty($this->proxy_host) && !empty($this->proxy_port));
 		$this->_pinnedaddr = false;
@@ -328,16 +358,110 @@ class Snoopy
 			) );
 			if($this->_redirectaddr)
 			{
-				/* url was redirected, check if we've hit the max depth */
+				// Callers classify login redirects even when credentials prevent following them.
+				$this->lastredirectaddr = $this->_redirectaddr;
+				$redirect = $this->_redirectaddr;
 				if($this->maxredirs > $this->_redirectdepth)
 				{
+					$trusted = $this->trustsRedirect($URI, $redirect);
+					if(!$trusted)
+					{
+						// Do not import this response's cookies on a different origin,
+						// including a later explicit fetch on the same client.
+						$this->_redirectaddr = false;
+						// Account operations must not import cookies from a foreign
+						// landing page into Snoopy's flat jar, even before login.
+						if($this->redirectTrust !== null || $this->hasRedirectCredentials())
+						{
+							$this->error = self::CREDENTIAL_REDIRECT_REFUSED;
+							$this->logRedirectRefusal($URI, $redirect);
+							// The origin answered. A login caller may explicitly retain
+							// its Set-Cookie without following the refused redirect.
+							return($ret);
+						}
+					}
 					$this->_redirectdepth++;
-					$this->lastredirectaddr=$this->_redirectaddr;
-					$ret = $this->fetch($this->_redirectaddr);
+					try
+					{
+						$ret = $this->fetch($redirect);
+					}
+					finally
+					{
+						// A failed nested target may return before its transport clears this
+						// pending import. Never carry the source response into a later fetch.
+						$this->_redirectaddr = false;
+						$this->_redirectdepth--;
+					}
 				}
+				else
+					$this->_redirectaddr = false;
 			}
 		}
+		else
+			$this->_redirectaddr = false;
 		return($ret);
+	}
+
+	protected static function redirectOriginForLog($url)
+	{
+		$parts = @parse_url((string) $url);
+		if(!is_array($parts) || !isset($parts['scheme']))
+			return 'unknown';
+		$scheme = strtolower($parts['scheme']);
+		if($scheme !== 'http' && $scheme !== 'https')
+			return 'unknown';
+		$host = UrlHost::of($url);
+		if($host === null)
+			return 'unknown';
+		// A Location header is remote input: never log its path, query or userinfo.
+		$host = preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $host);
+		$port = isset($parts['port']) ? (int)$parts['port'] : ($scheme === 'https' ? 443 : 80);
+		return $scheme . '://' . $host . ':' . $port;
+	}
+
+	protected function logRedirectRefusal($source, $target)
+	{
+		static $logged = array();
+		$key = self::redirectOriginForLog($source) . ' -> ' . self::redirectOriginForLog($target);
+		if(isset($logged[$key]))
+			return;
+		$logged[$key] = true;
+		FileUtil::toLog('Snoopy: ' . self::CREDENTIAL_REDIRECT_REFUSED . ': ' . $key . '; session not sent, original response retained');
+	}
+
+	protected function trustsRedirect($source, $target)
+	{
+		$targetParts = @parse_url((string) $target);
+		if(!is_array($targetParts) || isset($targetParts['user']))
+			return(false);
+		if(UrlHost::sameOrigin($source, $target) || UrlHost::isHttpsUpgrade($source, $target))
+			return(true);
+		// Account redirect trust scopes its cookie jar, never URL Basic or raw credentials.
+		if($this->carriesOwnCredentials())
+			return(false);
+		// Account selection is also the authority to send that account's session.
+		// It never authorizes a downgrade, even if a custom account accepts HTTP.
+		return(strtolower((string) parse_url($source, PHP_URL_SCHEME)) === 'https'
+			&& strtolower((string) parse_url($target, PHP_URL_SCHEME)) === 'https'
+			&& is_callable($this->redirectTrust)
+			&& call_user_func($this->redirectTrust, $source)
+			&& call_user_func($this->redirectTrust, $target));
+	}
+
+	protected function carriesOwnCredentials()
+	{
+		if($this->user !== '' || $this->pass !== '')
+			return(true);
+		// Conditional validators may follow anonymous redirects; these headers may not.
+		foreach($this->rawheaders as $name => $value)
+			if(in_array(strtolower($name), array('cookie', 'authorization', 'proxy-authorization'), true))
+				return(true);
+		return(false);
+	}
+
+	protected function hasRedirectCredentials()
+	{
+		return(!empty($this->cookies) || $this->carriesOwnCredentials());
 	}
 
 	protected function checkTarget($host)
@@ -498,8 +622,12 @@ class Snoopy
 			if(preg_match("/^(Location:|URI:|Refresh:)/i",$currentHeader))
 			{
 				// get URL portion of the redirect
-				if(!preg_match("/^(Location:|URI:)\s+(.*)/i",chop($currentHeader),$matches))
-					preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.*)/i",chop($currentHeader),$matches);
+				if(!preg_match("/^(Location:|URI:)[ \t]*(.+)/i",chop($currentHeader),$matches) &&
+					!preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i",chop($currentHeader),$matches))
+					continue;
+				$matches[2] = trim($matches[2]);
+				if($matches[2]==='')
+					continue;
 				// a "//host/path" Location is a network-path reference (RFC 3986
 				// 4.2): it carries its own authority and inherits only the
 				// scheme. Resolved against the requested host it would become
@@ -668,8 +796,12 @@ class Snoopy
 				if(preg_match("/^(Location:|URI:|Refresh:)/i",$header))
 				{
 					// get URL portion of the redirect
-					if(!preg_match("/^(Location: |URI:)(.*)/i",chop($header),$matches))
-						preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.*)/i",chop($header),$matches);
+					if(!preg_match("/^(Location:|URI:)[ \t]*(.+)/i",chop($header),$matches) &&
+						!preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i",chop($header),$matches))
+						continue;
+					$matches[2] = trim($matches[2]);
+					if($matches[2]==='')
+						continue;
 
 					// a "//host/path" Location is a network-path reference
 					// (RFC 3986 4.2): it carries its own authority and

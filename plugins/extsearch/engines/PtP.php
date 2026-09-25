@@ -16,7 +16,7 @@ class PtPEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'http://passthepopcorn.me';
+		$url = 'https://passthepopcorn.me';
 		if($useGlobalCats)
 			$categories = array( 'all'=>'' );
 		else

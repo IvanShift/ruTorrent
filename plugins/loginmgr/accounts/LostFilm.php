@@ -19,10 +19,11 @@ class LostFilmAccount extends commonAccount
 		// answer the caller asked for. Judging the fallthrough on it would be
 		// judging the wrong response.
 		$answered = $this->classifyAnswer($client);
-		if(	preg_match("`/download\.php\?id=(\d+)&`si", $url, $matches) &&
+		$id = $this->getDownloadId($url);
+		if(	$id !== false &&
 			preg_match("`/browse.php\?cat=`si", (string) $client->lastredirectaddr) &&
-			$client->fetch($this->url."/details.php?id=".$matches[1]) &&
-			preg_match("`/download\.php\?id=".$matches[1]."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^']*)'`si", $client->results, $md5))
+			$client->fetch($this->url."/details.php?id=".$id) &&
+			preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^']*)'`si", $client->results, $md5))
 		{
 			$client->cookies["dlt_2"] = $md5[1];
 			// The retry is an answer like any other. get_filename() reads only
@@ -41,6 +42,13 @@ class LostFilmAccount extends commonAccount
 		// skipped isOK() with it, leaving this account checking nothing.
 		return($answered===commonAccount::ANSWER_LIVE);
 	}
+	protected function getDownloadId($url)
+	{
+		if(!$this->test($url) || strcasecmp((string) parse_url($url, PHP_URL_PATH), '/download.php') !== 0)
+			return(false);
+		return(self::queryDigits($url, 'id'));
+	}
+
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
 	{
 		$is_result_fetched = false;

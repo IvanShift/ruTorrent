@@ -47,6 +47,6 @@ class KinozalTVAccount extends commonAccount
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,array("kinozal.tv","kinozal.me","kinozal.guru")));
+		return(self::urlAddresses($url,array("kinozal.tv","kinozal.me","kinozal.guru"),"https"));
 	}
 }

@@ -20,11 +20,85 @@ require_once(__DIR__ . '/../../../plugins/rss/rss.php');
 
 class SnoopyMock
 {
-	public $status = 200, $results = NULL, $headers = array();
+	public $status = 200, $results = NULL, $headers = array(), $error = "";
 }
 
 final class RSSTest extends TestCase
 {
+	public function testRefusedCredentialRedirectNamesTheReason(): void
+	{
+		$feed = new rRSS('https://tracker.example/feed', function ($url, $cookies, $headers) {
+			$client = new SnoopyMock();
+			$client->status = 302;
+			$client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			return $client;
+		});
+		$this->assertEquals(false, $feed->fetch(new rRSSHistory()), 'a refused redirect is not a feed');
+		$this->assertEquals(array('[RSS-HTTP-Error] Status: 302; credential-redirect-refused'),
+			$feed->lastErrorMsgs, 'the user can distinguish policy refusal from an HTTP failure');
+	}
+
+	public function testRefusedCredentialRedirectWith2xxLocationIsNotAFeed(): void
+	{
+		$feed = new rRSS('https://tracker.example/feed', function () {
+			$client = new SnoopyMock();
+			$client->status = 200;
+			$client->results = file_get_contents(__DIR__ . '/atom-sample.xml');
+			$client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			return $client;
+		});
+		$this->assertEquals(false, $feed->fetch(new rRSSHistory()),
+			'a 2xx source response with a refused Location is not a feed');
+		$this->assertEquals(array('[RSS-HTTP-Error] Status: 200; credential-redirect-refused'),
+			$feed->lastErrorMsgs, 'the classified refusal remains visible');
+	}
+
+	public function testTorrentDownloadRefusalAppearsInRssUiError(): void
+	{
+		$href = 'https://tracker.example/dl.php?id=5&passkey=private';
+		$feed = new rRSS('https://tracker.example/rss.php:COOKIE:uid=1',
+			function ($url, $cookies) use ($href) {
+				$this->assertEquals($href, $url);
+				$this->assertEquals(array('uid' => '1'), $cookies);
+				$client = new SnoopyMock();
+				$client->status = 302;
+				$client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+				return $client;
+			});
+		$feed->items[$href] = array('timestamp' => 0, 'guid' => 'item-5');
+		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+		$manager->rssList = new rRSSMetaList();
+		$manager->history = new rRSSHistory();
+		$manager->getTorrents($feed, $href, false, false, '', '', '', '', false);
+		$errors = $manager->rssList->formatErrors();
+		$this->assertEquals("theUILang.rssCantLoadTorrent + '; credential-redirect-refused'",
+			$errors[0]['desc'], 'torrent item failure identifies the redirect policy');
+		$this->assertEquals('Failed', $manager->history->lst[$href]['hash']);
+	}
+
+	public function testTorrentDownloadRefusalWith2xxLocationCannotBecomeAFile(): void
+	{
+		$feed = new rRSS('https://tracker.example/feed', function () {
+			$client = new class extends SnoopyMock {
+				public function get_filename() { throw new RuntimeException('refused body was treated as a torrent'); }
+			};
+			$client->status = 200;
+			$client->results = 'a 2xx response body with Location';
+			$client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			return $client;
+		});
+		// Snoopy parses Location independently of status, so this is a real
+		// response shape. Catch the old write path before it creates a file.
+		try {
+			$result = $feed->getTorrent('https://tracker.example/dl.php?id=6');
+		} catch (RuntimeException $error) {
+			$result = $error->getMessage();
+		}
+		$this->assertEquals(false, $result, 'a refused redirect cannot save the source response');
+		$this->assertEquals(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $feed->lastTorrentError,
+			'the classified reason remains visible');
+	}
+
 	public function testAtom(): void
 	{
 		$exp_url = 'https://example.org/rss';
@@ -33,7 +107,7 @@ final class RSSTest extends TestCase
 		$rssFetchURL = function ($url, $cookies, $headers) use ($exp_url, $exp_etag, $exp_lastModified) {
 			$this->assertEquals($exp_url, $url);
 			$this->assertEquals(['key' => 'value', 'key2'=> 'value2'], $cookies);
-			$this->assertEquals(['If-None-Match' => $exp_etag, 'If-Last-Modified' => $exp_lastModified], $headers);
+			$this->assertEquals(['If-None-Match' => $exp_etag, 'If-Modified-Since' => $exp_lastModified], $headers);
 			$cliMock = new SnoopyMock();
 			$cliMock->results = file_get_contents(__DIR__ . '/atom-sample.xml');
 			return $cliMock;

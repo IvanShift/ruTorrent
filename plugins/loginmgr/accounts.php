@@ -1,8 +1,11 @@
 <?php
 
 require_once( dirname(__FILE__)."/../../php/util.php" );
+require_once( dirname(__FILE__)."/../../php/urlhost.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc");
+// accounts.php can be first included from Snoopy::fetchComplex() method scope.
+global $yggTorrentOrigin;
 eval( FileUtil::getPluginConf( 'loginmgr' ) );
 
 class privateData
@@ -59,7 +62,8 @@ class privateData
 
 abstract class commonAccount
 {
-	public $url = 'http://abstract.com';
+	public $url = '';
+	private static $missingOriginLogged = array();
 
 	public function getName()
 	{
@@ -91,39 +95,24 @@ abstract class commonAccount
 	// True when $url's host is one of $hosts, or a subdomain of one, and its
 	// scheme is $scheme when a scheme is named. Subclasses that accept several
 	// domains, or a whole domain's subdomains, say so here instead of matching
-	// the name anywhere in the URL string -- which also accepts
-	// "https://evil.test/path/tracker.example/x", whose host is the attacker's.
+	// the name anywhere in the URL string. The test itself, and why it is
+	// what it is, live in UrlHost (php/urlhost.php), shared with
+	// plugins/rutracker_check.
 	static protected function urlAddresses($url,$hosts,$scheme = null,$pathPrefix = null)
 	{
+		return(UrlHost::urlIsOneOf($url,$hosts,$scheme,$pathPrefix));
+	}
+
+	protected static function queryDigits($url, $name)
+	{
+		// Match what PHP receives: parse_str() decodes names and takes the last
+		// repeated value. \z rejects a trailing line feed that $ would accept.
 		$parts = @parse_url((string) $url);
-		if(!is_array($parts) || empty($parts["host"]))
+		if(!is_array($parts))
 			return(false);
-		// The URL may not weaken the site's scheme. An https site matched over
-		// http would have this account's cookies put on the wire in clear by
-		// the very first request, before any redirect could upgrade it, and a
-		// feed link is not written by the user. The other direction is allowed:
-		// an https URL to a site still configured http simply fails to
-		// connect, and costs nothing to permit.
-		if($scheme!==null)
-		{
-			$urlScheme = strtolower(isset($parts["scheme"]) ? $parts["scheme"] : '');
-			if(($urlScheme!==strtolower($scheme)) && ($urlScheme!=='https'))
-				return(false);
-		}
-		if($pathPrefix!==null)
-		{
-			$path = isset($parts["path"]) ? $parts["path"] : '/';
-			if(strncasecmp($path,$pathPrefix,strlen($pathPrefix))!==0)
-				return(false);
-		}
-		$host = strtolower($parts["host"]);
-		foreach($hosts as $candidate)
-		{
-			$candidate = strtolower($candidate);
-			if(($host===$candidate) || (substr($host,-strlen($candidate)-1)==='.'.$candidate))
-				return(true);
-		}
-		return(false);
+		parse_str(isset($parts['query']) ? $parts['query'] : '', $params);
+		return(isset($params[$name]) && is_string($params[$name]) &&
+			preg_match('/^\d+\z/', $params[$name]) ? $params[$name] : false);
 	}
 
 	protected function loadData( $client = null )
@@ -213,65 +202,100 @@ abstract class commonAccount
 		return($this->classifyAnswer($client)===self::ANSWER_LIVE);
 	}
 
+	protected function withRedirectTrust($client, callable $body)
+	{
+		$scopedTrust = $client instanceof Snoopy;
+		$previousTrust = $scopedTrust ? $client->redirectTrust : null;
+		if($scopedTrust)
+			$client->redirectTrust = array($this, 'test');
+		try
+		{
+			return($body());
+		}
+		finally
+		{
+			if($scopedTrust)
+				$client->redirectTrust = $previousTrust;
+		}
+	}
+
 	public function fetch( $client, $url, $login, $password, $method, $content_type, $body )
 	{
-		$is_result_fetched = false;
-		$data = $this->loadData($client);
-		if($data->loaded &&
-			$this->updateCached($client,$url,$method,$content_type,$body))
+		return($this->withRedirectTrust($client, function() use($client,$url,$login,$password,$method,$content_type,$body)
 		{
-			if(!$client->fetch($url,$method,$content_type,$body))
-				return(false);
-			// Taken before isOKPostFetch(), because an override may fetch
-			// further pages onto this client and the question here is about
-			// the answer to the caller's own URL.
-			$answer = $this->classifyAnswer($client);
-			if($this->isOKPostFetch($client,$url,$method,$content_type,$body))
-				return(true);
-			// Only a guest answer is evidence that the session died. Anything
-			// else leaves that unproven, so report the failure and keep the
-			// cookies rather than log in again against a tracker that is not
-			// answering: one outage would otherwise cost a credential POST per
-			// call for every caller looping over a torrent list, which is how
-			// an account gets locked out.
-			if($answer!==self::ANSWER_GUEST)
-				return(false);
-		}
-		$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
-			$this->loginWasNotRefused($client) &&
-			($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
-			$this->isOKPostFetch($client,$url,$method,$content_type,$body) &&
-			$data->store($client) );
-		if(!$ret)
-			$data->remove();
-		return($ret);
+			$is_result_fetched = false;
+			$data = $this->loadData($client);
+			if($data->loaded &&
+				$this->updateCached($client,$url,$method,$content_type,$body))
+			{
+				if(!$client->fetch($url,$method,$content_type,$body))
+					return(false);
+				// Taken before isOKPostFetch(), because an override may fetch
+				// further pages onto this client and the question here is about
+				// the answer to the caller's own URL.
+				$answer = $this->classifyAnswer($client);
+				if($this->isOKPostFetch($client,$url,$method,$content_type,$body))
+					return(true);
+				// Only a guest answer is evidence that the session died. Anything
+				// else leaves that unproven, so report the failure and keep the
+				// cookies rather than log in again against a tracker that is not
+				// answering: one outage would otherwise cost a credential POST per
+				// call for every caller looping over a torrent list, which is how
+				// an account gets locked out.
+				if($answer!==self::ANSWER_GUEST)
+					return(false);
+			}
+			$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
+				$this->loginWasNotRefused($client) &&
+				($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
+				$this->isOKPostFetch($client,$url,$method,$content_type,$body) &&
+				$data->store($client) );
+			if(!$ret)
+				$data->remove();
+			return($ret);
+		}));
 	}
 
 	public function check( $client, $login, $password, $auto )
 	{
-		$modified = privateData::getModified($this->getName());
-		if( ($modified===false) || ((time()-$modified)>=$auto))
+		return($this->withRedirectTrust($client, function() use($client,$login,$password,$auto)
 		{
-			// login() takes these by reference and several accounts read them
-			// before writing: undeclared, they arrived as null, and an account
-			// whose login() starts by fetching $url could never authenticate
-			// from here at all.
-			$url = $this->url;
-			$method = "GET";
-			$content_type = "";
-			$body = "";
-			$is_result_fetched = false;
-			$data = $this->loadData();
-			if($this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
-				$this->loginWasNotRefused($client))
-				$data->store($client);
-			// A login that did not come back is not evidence that the stored
-			// session is stale, and this job exists to REFRESH a session:
-			// deleting one it merely failed to renew leaves the user worse off
-			// than not running at all. A session that really has died is
-			// discovered, and replaced, by the next fetch().
-		}
+			// An account without a configured origin cannot renew a session.
+			if(UrlHost::of($this->url) === null)
+			{
+				$name = $this->getName();
+				if(!isset(self::$missingOriginLogged[$name]))
+				{
+					self::$missingOriginLogged[$name] = true;
+					FileUtil::toLog('loginmgr: missing-origin: ' . $name . '; automatic refresh skipped');
+				}
+				return;
+			}
+			$modified = privateData::getModified($this->getName());
+			if( ($modified===false) || ((time()-$modified)>=$auto))
+			{
+				// login() takes these by reference and several accounts read them
+				// before writing: undeclared, they arrived as null, and an account
+				// whose login() starts by fetching $url could never authenticate
+				// from here at all.
+				$url = $this->url;
+				$method = "GET";
+				$content_type = "";
+				$body = "";
+				$is_result_fetched = false;
+				$data = $this->loadData();
+				if($this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
+					$this->loginWasNotRefused($client))
+					$data->store($client);
+				// A login that did not come back is not evidence that the stored
+				// session is stale, and this job exists to REFRESH a session:
+				// deleting one it merely failed to renew leaves the user worse off
+				// than not running at all. A session that really has died is
+				// discovered, and replaced, by the next fetch().
+			}
+		}));
 	}
+
 }
 
 class accountManager
@@ -322,11 +346,26 @@ class accountManager
 		$this->setHandlers();
 	}
 
+	private function configurationRequired($name, $nfo, $account = null)
+	{
+		if($name !== 'YggTorrent')
+			return(false);
+		if($account === null)
+		{
+			require_once($nfo["path"]);
+			$account = new $nfo["object"]();
+		}
+		return($account->configurationError() !== '');
+	}
+
 	public function get()
 	{
                 $ret = "theWebUI.theAccounts = {";
 		foreach( $this->accounts as $name=>$nfo )
-			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem($nfo["password"]).", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"]." },";
+		{
+			$configurationRequired = $this->configurationRequired($name, $nfo);
+			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem($nfo["password"]).", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"].", configurationRequired: ".($configurationRequired ? 'true' : 'false')." },";
+		}
 		$len = strlen($ret);
 		if($ret[$len-1]==',')
 			$ret = substr($ret,0,$len-1);
@@ -354,6 +393,10 @@ class accountManager
 
 	public function getAccount( $url )
 	{
+		$httpHost = strtolower((string) @parse_url((string) $url, PHP_URL_SCHEME)) === 'http'
+			? UrlHost::of($url) : null;
+		$httpsUrl = $httpHost === null ? null : preg_replace('/^http:/i', 'https:', (string) $url, 1);
+		$httpCandidates = array();
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			if($nfo["enabled"])
@@ -362,7 +405,23 @@ class accountManager
 				$object = new $nfo["object"]();
 				if($object->test($url))
 					return( $name );
+				if($httpsUrl !== null)
+					$httpCandidates[$name] = $object;
 			}
+		}
+		// Diagnose only after every account has declined the original HTTP URL.
+		foreach($httpCandidates as $name => $object)
+		{
+			if(!$object->test($httpsUrl))
+				continue;
+			static $httpWarnings = array();
+			$key = $name . ' ' . preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $httpHost);
+			if(!isset($httpWarnings[$key]))
+			{
+				$httpWarnings[$key] = true;
+				FileUtil::toLog('loginmgr: http-url-not-authenticated: ' . $key . '; use the tracker HTTPS URL');
+			}
+			break;
 		}
 		return(false);
 	}
@@ -388,6 +447,7 @@ class accountManager
 			$nfo["name"] = $name;
 			$object = new $nfo["object"]();
 			$nfo["url"] = $object->url;
+			$nfo["configurationRequired"] = $this->configurationRequired($name, $nfo, $object);
 			unset($nfo["object"]);
 			unset($nfo["path"]);
 			$ret[] = $nfo;

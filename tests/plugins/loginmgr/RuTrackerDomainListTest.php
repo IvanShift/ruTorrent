@@ -6,14 +6,14 @@
  * host list plugins/rutracker_check keeps.
  *
  * Two lists name RuTracker hosts in this repository and they answer different
- * questions. RuTrackerDetector::TRACKER_HOST_PATTERN answers "is this host
+ * questions. RuTrackerDetector::TRACKER_HOSTS answers "is this host
  * RuTracker's?", for attribution and for the requests that plugin sends
  * itself, so it carries t-ru.org and rutracker.cc as well as the forum
  * mirrors. The list here answers "may this host be handed this account's
- * cookies, and a credential POST when they go stale?", which is the forum
- * mirrors and nothing else.
+ * cookies and download POSTs?", which is the forum mirrors and nothing else.
+ * The password is posted only to the account's configured rutracker.org URL.
  *
- * They cannot be merged into one constant: plugin.info declares
+ * Keep the trust decisions separate. plugin.info declares
  * rutracker_check dependent on loginmgr, so loginmgr may not require a file
  * from it. This suite is the substitute, and it is deliberately asymmetric:
  * it fails when FORUM_HOSTS is edited, and when the detector stops calling

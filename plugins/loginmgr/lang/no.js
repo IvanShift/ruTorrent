@@ -15,4 +15,6 @@
  theUILang.acAutoWeek		= "Hver uke";
  theUILang.acAutoMonth		= "Hver måned";
 
+theUILang.accOriginRequired = "Set $yggTorrentOrigin in conf/config.php (or a loginmgr override) to a trusted HTTPS origin. Session downloads and automatic login are disabled.";
+
 thePlugins.get("loginmgr").langLoaded();

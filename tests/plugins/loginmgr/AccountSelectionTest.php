@@ -9,9 +9,13 @@
  */
 
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
+$productionAccountClasses = array();
 foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $accountFile) {
     require_once($accountFile);
+    $productionAccountClasses[] = basename($accountFile, ".php") . "Account";
 }
+
+$yggTorrentOrigin = 'https://www.ygg.re';
 
 // A site still configured http, to pin the direction the rule allows.
 class ProbeHttpSiteAccount extends commonAccount
@@ -19,6 +23,48 @@ class ProbeHttpSiteAccount extends commonAccount
     public $url = 'http://http-only.example';
     protected function isOK($client) { return true; }
     protected function login($c, $l, $p, &$u, &$m, &$ct, &$b, &$f) { return false; }
+}
+
+// Selection and download preparation read the host the same way. The host
+// test folds the root dot, so it must not leave getDownloadId() blind, or
+// the account is chosen and the download goes out as a plain GET without
+// bb_dl -- measured 2026-09-14 before the id was read out of the parsed
+// URL instead of a regex over the string.
+class ProbeRuTrackerDownload extends ruTrackerAccount
+{
+    public $cached = true;
+    protected function loadData($client = null)
+    {
+        $client->cookies = array('probe-session' => 'stored');
+        return new ProbeStoredData($this->cached);
+    }
+}
+
+class ProbeStoredData
+{
+    public $loaded;
+    public function __construct($loaded) { $this->loaded = $loaded; }
+    public function store($client) { return true; }
+    public function remove() {}
+}
+
+// Records what would have gone on the wire; answers a page the account
+// reads as logged in.
+class ProbeRecordingTransport
+{
+    public $cookies = array();
+    public $referer = '';
+    public $status = 200;
+    public $results = 'a readable page with no login form';
+    public $requests = array();
+    public function setcookies() {}
+    public function fetch($url, $method = 'GET', $contentType = '', $body = '')
+    {
+        $this->requests[] = array('url' => $url, 'method' => $method,
+            'contentType' => $contentType, 'body' => $body,
+            'bb_dl' => isset($this->cookies['bb_dl']) ? $this->cookies['bb_dl'] : null);
+        return true;
+    }
 }
 
 function selAssertSame($expected, $actual, $message)
@@ -32,6 +78,108 @@ function selAssertSame($expected, $actual, $message)
 }
 
 $tests = array(
+    'the first download after login is prepared with the complete POST contract' => function () {
+        $account = new ProbeRuTrackerDownload();
+        $account->cached = false;
+        $client = new ProbeRecordingTransport();
+        $url = 'https://rutracker.cr/forum/dl.php?t=42';
+        selAssertSame(true, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'login and download');
+        selAssertSame(2, count($client->requests), 'login then download');
+        selAssertSame('https://rutracker.org/forum/login.php', $client->requests[0]['url'], 'password goes to the configured login origin');
+        selAssertSame(array('url' => $url, 'method' => 'POST', 'contentType' => 'application/x-www-form-urlencoded', 'body' => '', 'bb_dl' => '42'), $client->requests[1], 'download after login');
+    },
+    'a rutracker download url in either spelling of the host is prepared as a download' => function () {
+        foreach (array('https://rutracker.org/forum/dl.php?t=12345', 'https://rutracker.org./forum/dl.php?t=12345',
+                       'https://RUTRACKER.ORG/forum/dl.php?t=12345') as $url) {
+            $account = new ProbeRuTrackerDownload();
+            $client = new ProbeRecordingTransport();
+            selAssertSame(true, $account->test($url), $url . ' is claimed');
+            selAssertSame(true, $account->fetch($client, $url, '', '', 'GET', '', ''), $url . ' is fetched');
+            selAssertSame(1, count($client->requests), 'one request went out for ' . $url);
+            selAssertSame('POST', $client->requests[0]['method'], $url . ' goes out as the download POST');
+            selAssertSame('application/x-www-form-urlencoded', $client->requests[0]['contentType'], 'download content type');
+            selAssertSame('', $client->requests[0]['body'], 'empty download POST body');
+            selAssertSame('12345', $client->requests[0]['bb_dl'], 'with the bb_dl cookie naming the topic');
+        }
+        // What the id is read from, and what it is not.
+        $account = new ProbeRuTrackerDownload();
+        foreach (array(
+            'https://rutracker.org/forum/dl.php?t=12345&x=1' => true,      // t anywhere in the query
+            'https://rutracker.org/forum/viewtopic.php?t=12345' => false,  // the topic page is not the download
+            'https://rutracker.org/x/forum/dl.php?t=12345' => false,       // not the download path
+            'https://evil.test/rutracker.org/forum/dl.php?t=12345' => false, // the name in the path
+            'https://evil.test/forum/dl.php?t=12345' => false,
+            'https://rutracker.org/forum/dl.php/?t=1' => false,
+            'https://rutracker.org/forum/dl.php.bak?t=1' => false,
+            'https://rutracker.org/forum/dl.php?t=abc' => false,           // not an id
+            'https://rutracker.org/forum/dl.php?t[]=12345' => false,       // not a scalar
+            'https://rutracker.org/forum/dl.php?t=12345%0A' => false,      // a line feed is not part of an id
+        ) as $url => $isDownload) {
+            $client = new ProbeRecordingTransport();
+            $account->fetch($client, $url, '', '', 'GET', '', '');
+            selAssertSame($isDownload ? 'POST' : 'GET', $client->requests[0]['method'], $url);
+        }
+    },
+    // The query goes out untouched, so the id the cookie names has to be the
+    // id the forum will read from that query. The forum is PHP: the last of a
+    // repeated parameter wins and an encoded name is decoded before it is
+    // matched. A reader that took the FIRST t=, or only a literal "t", named
+    // topic 111 in bb_dl while the request asked for 222.
+    'the bb_dl cookie names the topic the forum will read from the query' => function () {
+        $account = new ProbeRuTrackerDownload();
+        foreach (array(
+            'https://rutracker.org/forum/dl.php?t=111&t=222'   => '222',
+            'https://rutracker.org/forum/dl.php?t=111&%74=222' => '222',
+        ) as $url => $id) {
+            $client = new ProbeRecordingTransport();
+            $account->fetch($client, $url, '', '', 'GET', '', '');
+            selAssertSame($url, $client->requests[0]['url'], 'the query is sent as given');
+            selAssertSame('POST', $client->requests[0]['method'], $url . ' is a download');
+            selAssertSame($id, $client->requests[0]['bb_dl'], $url . ': bb_dl names the id the forum reads');
+        }
+    },
+    'an nnmclub url in either spelling of the host reaches the account, and login.php never does' => function () {
+        $account = new NNMClubAccount();
+        foreach (array(
+            'https://nnmclub.to/forum/viewtopic.php?t=1'  => true,
+            'https://nnmclub.to./forum/viewtopic.php?t=1' => true,
+            'https://nnmclub.to:8080/forum/dl.php?id=1' => true,
+            'https://user@nnmclub.to/forum/dl.php?id=1' => true,
+            'https://user:pass@nnmclub.to/forum/dl.php?id=1' => true,
+            'https://nnmclub.to/forum/loginXphp' => true,
+            'https://nnmclub.to/forum/login.php.bak' => false,
+            'https://nnmclub.to/forum/login.php/extra' => false,
+            'https://nnmclub.to/forum/login.phpx' => false,
+            'https://nnmclub.to/forum/login.ph' => true,
+            'https://nnmclub.to/x/nnmclub.to/forum/a' => false,
+            'https://NNM-CLUB.ME/forum/dl.php?t=1'        => true,
+            'https://nnmclub.to/forum/login.php'          => false,
+            'https://nnmclub.to/forum//login.php'         => false,
+            'https://nnmclub.to/forum/./login.php'        => false,
+            'https://nnmclub.to/forum/x/../login.php'   => false,
+            'https://nnmclub.to/forum/%2e%2e/forum/login.php' => false,
+            'https://nnmclub.to/forum/../dl.php?id=1'   => false,
+            'https://nnmclub.to/forum/login%2Ephp'        => false,
+            'https://nnmclub.to./forum/login.php?x=1'     => false,
+            'https://nnmclub.to/other/viewtopic.php?t=1'  => false,
+            'https://evil.test/nnmclub.to/forum/dl.php'   => false,
+        ) as $url => $expected) {
+            selAssertSame($expected, (bool) $account->test($url), $url);
+        }
+    },
+    // Whoever writes the URL picks the spelling of the host. Case is one
+    // spelling DNS ignores; a trailing dot is the DNS root and names the same
+    // host -- "abtorrents.me." is "abtorrents.me" -- and an anchored test that
+    // forgot it once sent RuTracker's own announce row down the foreign path
+    // in rutracker_check. The host test is shared with that plugin now
+    // (php/urlhost.php), so the same folding holds here.
+    'two spellings of the same host reach the same account' => function () {
+        $account = new ABTorrentsAccount();
+        selAssertSame(true, $account->test('https://ABTORRENTS.ME/x'), 'a host has no case');
+        selAssertSame(true, $account->test('https://abtorrents.me./x'), 'the root dot names the same host');
+        selAssertSame(false, $account->test('https://abtorrents.me.evil.test./x'),
+            'and the root dot does not rescue a look-alike');
+    },
     'an account is chosen by the url host, not by a substring of the url' => function () {
         // A prefix match accepts https://tracker.example@evil.test/ (the name
         // is userinfo) and https://tracker.example.evil.test/ (the name is one
@@ -61,6 +209,12 @@ $tests = array(
             list($class, $url, $expected) = $case;
             $account = new $class();
             selAssertSame($expected, (bool) $account->test($url), $class . ' vs ' . $url);
+            if ($expected) {
+                $host = parse_url($url, PHP_URL_HOST);
+                foreach (array(strtoupper($host), $host . '.') as $spelling) {
+                    selAssertSame(true, $account->test(str_replace($host, $spelling, $url)), $class . ' normalized host');
+                }
+            }
         }
     },
 
@@ -81,6 +235,46 @@ $tests = array(
         }
     },
 
+    'every production HTTPS account rejects its HTTP download form' => function () {
+        global $productionAccountClasses;
+        $paths = array('RUTrackerAccount' => '/forum/dl.php?t=1',
+            'NNMClubAccount' => '/forum/dl.php?id=1', 'TfileAccount' => '/forum/dl.php?id=1',
+            'LostFilmAccount' => '/download.php?id=1', 'NovaFilmAccount' => '/download/1',
+            'YggTorrentAccount' => '/engine/download_torrent?id=1');
+        foreach ($productionAccountClasses as $class) {
+            $account = new $class();
+            selAssertSame('https', parse_url($account->url, PHP_URL_SCHEME), $class . ' has an HTTPS origin');
+            $url = rtrim($account->url, '/') . (isset($paths[$class]) ? $paths[$class] : '/x');
+            selAssertSame(true, $account->test($url), $class . ' positive control');
+            selAssertSame(false, $account->test(preg_replace('/^https:/', 'http:', $url)), $class . ' refuses HTTP');
+        }
+    },
+
+    'an HTTP link matching an HTTPS account logs one redacted migration hint' => function () {
+        global $log_file;
+        $previous = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'http-account-');
+        try {
+            $manager = new accountManager();
+            $manager->accounts = array('RUTracker' => array(
+                'enabled' => 1,
+                'path' => __DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php',
+                'object' => 'ruTrackerAccount',
+            ));
+            $url = 'http://rutracker.org/forum/dl.php?t=42&passkey=private';
+            selAssertSame(false, $manager->getAccount($url), 'HTTP URL receives no loginmgr session');
+            selAssertSame(false, $manager->getAccount($url), 'repeat HTTP URL still receives no session');
+            $log = file_get_contents($log_file);
+            selAssertSame(1, substr_count($log, 'loginmgr: http-url-not-authenticated: RUTracker rutracker.org'),
+                'one host-only migration hint is logged');
+            selAssertSame(false, strpos($log, 'passkey') !== false, 'URL query stays out of the log');
+            selAssertSame('RUTracker', $manager->getAccount('https://rutracker.org/forum/dl.php?t=42'),
+                'HTTPS URL still selects its account');
+        } finally {
+            unlink($log_file);
+            $log_file = $previous;
+        }
+    },
     'an https url still reaches a site whose own scheme is http' => function () {
         // The other direction costs nothing to allow: an https url to a site
         // that really is http-only simply fails to connect.
@@ -96,10 +290,8 @@ $tests = array(
         // the path rather than the host -- but an acceptance is always wrong,
         // and this is what catches the next test() written against the raw
         // url string instead of the parsed host.
-        foreach (get_declared_classes() as $class) {
-            if (!is_subclass_of($class, 'commonAccount') || $class === 'ProbeHttpSiteAccount') {
-                continue;
-            }
+        global $productionAccountClasses;
+        foreach ($productionAccountClasses as $class) {
             $account = new $class();
             $host = parse_url((string) $account->url, PHP_URL_HOST);
             if (!$host) {
@@ -122,10 +314,8 @@ $tests = array(
     },
 
     'a url with no host at all matches nothing' => function () {
-        foreach (get_declared_classes() as $class) {
-            if (!is_subclass_of($class, 'commonAccount') || $class === 'ProbeHttpSiteAccount') {
-                continue;
-            }
+        global $productionAccountClasses;
+        foreach ($productionAccountClasses as $class) {
             $account = new $class();
             foreach (array('', 'not a url', '/relative/path', 'javascript:alert(1)') as $url) {
                 selAssertSame(false, (bool) $account->test($url),

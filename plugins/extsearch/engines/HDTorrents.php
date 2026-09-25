@@ -16,7 +16,7 @@ class HDTorrentsEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'http://hd-torrents.org';
+		$url = 'https://hd-torrents.org';
 		if($useGlobalCats)
 			$categories = array
 			(

@@ -62,7 +62,8 @@ if(plugin.canChangeOptions())
 }
 
 plugin.onLangLoaded = function() {
-	const s = Object.entries(theWebUI.theAccounts).map(([name, acct]) => $("<fieldset>").append(
+	const s = Object.entries(theWebUI.theAccounts).map(([name, acct]) => {
+		const fieldset = $("<fieldset>").append(
 		$("<legend>").text(name),
 		$("<div>").addClass("row").append(
 			$("<div>").addClass("col-md-6").append(
@@ -94,7 +95,17 @@ plugin.onLangLoaded = function() {
 				$("<input>").attr({type:"password", id:`${name}_lmpassword`, maxlength:64}),
 			),
 		),
-	));
+		);
+		if(acct.configurationRequired)
+		{
+			const warning = $("<div>").addClass("alert alert-warning").attr("role", "alert")
+				.text(theUILang.accOriginRequired || "Set $yggTorrentOrigin in conf/config.php (or a loginmgr override) to a trusted HTTPS origin. Session downloads and automatic login are disabled.");
+			warning.toggle(acct.enabled == 1);
+			fieldset.append(warning);
+			fieldset.find(`#${name}_lmenabled`).on("change", function() { warning.toggle(this.checked); });
+		}
+		return fieldset;
+	});
 	this.attachPageToOptions(
 		$("<div>").attr("id","st_loginmgr").append(...s)[0],
 		theUILang.accAccounts,

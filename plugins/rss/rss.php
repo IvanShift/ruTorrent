@@ -32,6 +32,7 @@ class rRSS
 	public $encoding = null;
 	public $version = 0;
 	public $lastErrorMsgs = [];
+	public $lastTorrentError = '';
 	private $fetchURL = 'rssFetchURL';
 
 	public function __construct( $url = null, $fetchURL = 'rssFetchURL' )
@@ -79,10 +80,17 @@ class rRSS
 
 	public function getTorrent( $href )
 	{
+		$this->lastTorrentError = '';
 		if(strpos($href,"magnet:")===0)
 			return("magnet");
 		global $profileMask;
 		$cli = call_user_func($this->fetchURL, Snoopy::linkencode($href),$this->cookies);
+		if($cli && $cli->status >= 100 && isset($cli->error) && $cli->error === Snoopy::CREDENTIAL_REDIRECT_REFUSED)
+		{
+			$this->lastTorrentError = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			// Snoopy can see Location on a 2xx response; its refusal still wins.
+			return(false);
+		}
 		if($cli && $cli->status>=200 && $cli->status<300)
 		{
 			$name = $cli->get_filename();
@@ -141,8 +149,14 @@ class rRSS
 		if($this->etag)
 			$headers['If-None-Match'] = $this->etag;
 		if($this->lastModified)
-			$headers['If-Last-Modified'] = $this->lastModified;
+			$headers['If-Modified-Since'] = $this->lastModified;
 		$cli = call_user_func($this->fetchURL, $this->url, $this->cookies, $headers);
+		if($cli->status >= 100 && isset($cli->error) && $cli->error === Snoopy::CREDENTIAL_REDIRECT_REFUSED)
+		{
+			$this->lastErrorMsgs[] = '[RSS-HTTP-Error] Status: ' . $cli->status
+				. '; ' . Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			return false;
+		}
 		if($cli->status<200 || $cli->status>=300) {
 			if ($cli->status != 304) {
                                 $msg = $cli->status == -100
@@ -1216,7 +1230,11 @@ class rRSSManager
 				}
 			}
 			if($ret===false)
-				$this->rssList->addError( "theUILang.rssCantLoadTorrent", $url );
+			{
+				$reason = $rss->lastTorrentError === Snoopy::CREDENTIAL_REDIRECT_REFUSED
+					? " + '; " . Snoopy::CREDENTIAL_REDIRECT_REFUSED . "'" : '';
+				$this->rssList->addError( "theUILang.rssCantLoadTorrent" . $reason, $url );
+			}
 			$this->history->add($url, $thash, $rss->getItemTimestamp($url), $rss->items[$url]['guid']);
 			if($needFlush)
 				$this->saveHistory();

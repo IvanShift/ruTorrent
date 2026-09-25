@@ -29,6 +29,6 @@ class ZamundaNetAccount extends commonAccount
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,array("zamunda.net","zamunda.ch")));
+		return(self::urlAddresses($url,array("zamunda.net","zamunda.ch"),"https"));
 	}
 }

@@ -27,16 +27,32 @@ class NNMClubAccount extends commonAccount
 	}
 	public function test($url)
 	{
-		// The conditions below are unchanged. They are reached only once the
-		// url's own host is known to be one of this tracker's: matching the
-		// name anywhere in the string also accepted
+		// Check the host and path components: matching
+		// the name anywhere in the string also accepted
 		// https://evil.test/x/nnmclub.to/forum/dl.php, whose host is the
-		// attacker's, and this account's cookies would have gone there.
+		// attacker's, and this account's cookies would have gone there; and a
+		// regex over the whole string could not see a host spelled with the
+		// root dot that the host test had just accepted.
 		if(!self::urlAddresses($url,array(
 			"nnm-club.ru","nnm-club.me","nnm-club.to","nnm-club.name","nnm-club.tv",
-			"nnmclub.ru","nnmclub.me","nnmclub.to","nnmclub.name","nnmclub.tv")))
+			"nnmclub.ru","nnmclub.me","nnmclub.to","nnmclub.name","nnmclub.tv"),"https"))
 			return(false);
-		return(preg_match( "/(\.|\/)(nnm-club|nnmclub)\.(ru|me|to|name|tv)\/forum\//si", $url ) &&
-			!preg_match( "/(\.|\/)(nnm-club|nnmclub)\.(ru|me|to|name|tv)\/forum\/login.php/si", $url ));
+		$path = rawurldecode((string) @parse_url((string) $url, PHP_URL_PATH));
+		// Equivalent login paths must not trigger a credential refresh loop.
+		$segments = array();
+		foreach(explode('/', $path) as $segment)
+		{
+			if($segment === '' || $segment === '.')
+				continue;
+			if($segment === '..')
+				array_pop($segments);
+			else
+				$segments[] = $segment;
+		}
+		$normalizedPath = '/' . implode('/', $segments);
+		if($normalizedPath !== '/' && preg_match('~/(?:\.{0,2})?$~', $path))
+			$normalizedPath .= '/';
+		return(strncasecmp($normalizedPath, '/forum/', strlen('/forum/')) === 0 &&
+			strncasecmp($normalizedPath, "/forum/login.php", strlen("/forum/login.php")) !== 0);
 	}
 }

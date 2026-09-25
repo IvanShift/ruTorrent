@@ -11,20 +11,20 @@ class ruTrackerAccount extends commonAccount
 	// mirror added to the first alone is claimed and then fetched as a plain
 	// GET with neither.
 	//
-	// Deliberately not the same list as RuTrackerDetector::TRACKER_HOST_PATTERN
+	// Deliberately not the same list as RuTrackerDetector::TRACKER_HOSTS
 	// (plugins/rutracker_check/detector.php), which also carries t-ru.org and
 	// rutracker.cc. That constant answers "is this host RuTracker's?", for
 	// attribution and for the requests that plugin sends itself; this one
-	// answers "may this host be handed this account's cookies, and a credential
-	// POST when they go stale?". t-ru.org is the BitTorrent announce host, and
+	// answers "may this host receive this account's cookies and download
+	// POSTs?". t-ru.org is the BitTorrent announce host, and
 	// rutracker.cc reaches this repository only as api.rutracker.cc/v1/static/
 	// and feed.rutracker.cc/atom/ (RuTrackerForumIndex): no account claims
 	// those URLs today, and listing .cc here would leave them one path test
 	// away from this account's login flow.
 	//
-	// Nor can the two lists become one constant: plugin.info has
-	// rutracker_check depending on loginmgr, so the dependency may not run the
-	// other way, and this account has to work with that plugin absent.
+	// These are separate trust decisions. Keep loginmgr independent of
+	// rutracker_check, which depends on it and may be absent. Passwords go
+	// only to the configured $url, not to each forum mirror.
 	// tests/plugins/loginmgr/RuTrackerDomainListTest.php pins the difference
 	// instead. It is not a symmetric guard, and it is worth knowing which half
 	// it holds: editing THIS list fails it, and so does dropping rutracker.cc,
@@ -50,14 +50,23 @@ class ruTrackerAccount extends commonAccount
 		}
 		return(true);
 	}
+	// The download URL, read the way test() reads the host: parsed, never
+	// searched for in the string. The forum mirrors are the hosts above; the
+	// path is the one download script; the id is the t= parameter. A regex
+	// over the whole URL had anchored the host with "(\.|)", which is what
+	// #3206 warned about, and could not see a host spelled with the root
+	// dot that test() had just accepted -- the account was chosen and the
+	// download then went out as a plain GET without bb_dl.
 	protected function getDownloadId($url)
 	{
-		$hosts = array();
-		foreach(self::FORUM_HOSTS as $host)
-			$hosts[] = preg_quote($host,"/");
-		if(preg_match( "/(\.|)(".implode("|",$hosts).")\/forum\/dl\.php\?t=(?P<id>\d+)$/si", $url, $matches ))
-			return($matches["id"]);
-		return(false);
+		$parts = @parse_url((string) $url);
+		if(!is_array($parts) || empty($parts["host"]) || !isset($parts["path"]))
+			return(false);
+		if(!UrlHost::isOneOf($parts["host"], self::FORUM_HOSTS))
+			return(false);
+		if(strcasecmp($parts["path"], "/forum/dl.php") !== 0)
+			return(false);
+		return(self::queryDigits($url, 't'));
 	}
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
 	{
@@ -96,6 +105,6 @@ class ruTrackerAccount extends commonAccount
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,self::FORUM_HOSTS,null,"/forum/"));
+		return(self::urlAddresses($url,self::FORUM_HOSTS,"https","/forum/"));
 	}
 }

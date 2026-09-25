@@ -19,7 +19,7 @@ class MMATorrentsEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'http://mma-torrents.com';
+		$url = 'https://mma-torrents.com';
 		if($useGlobalCats)
 			$categories = array( 'all'=>'&cat=69' );
 		else

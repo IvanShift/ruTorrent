@@ -9,7 +9,7 @@ class SceneHDEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'http://scenehd.org';
+		$url = 'https://scenehd.org';
 		if($useGlobalCats)
 			$categories = array( 'all'=>'', 'movies'=>'&cat=1,4,8,22', 'tv'=>'&cat=5,7' );
 		else

@@ -30,6 +30,6 @@ class TapochekNetAccount extends commonAccount
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,array("tapochek.net")));
+		return(self::urlAddresses($url,array("tapochek.net"),"https"));
 	}
 }

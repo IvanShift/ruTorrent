@@ -15,4 +15,6 @@
  theUILang.acAutoWeek		= "Каждую неделю";
  theUILang.acAutoMonth		= "Каждый месяц";
 
+theUILang.accOriginRequired = "Укажите доверенный HTTPS origin в $yggTorrentOrigin файла conf/config.php, plugins/loginmgr/conf.local.php или conf/users/<user>/plugins/loginmgr/conf.php. Загрузки с сессией и автовход отключены.";
+
 thePlugins.get("loginmgr").langLoaded();
