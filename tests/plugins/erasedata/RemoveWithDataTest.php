@@ -61,39 +61,29 @@ if(!class_exists('ErasedataOversizeStream'))
 	}
 }
 
-// A queue-directory wrapper that writes part of the first chunk and then
-// stalls, so a genuinely partial staged manifest reaches the production writer.
-if(!class_exists('ErasedataPartialWriteStream'))
+// Shared filesystem forwarding for two write-failure fixtures. Keeping rename()
+// here matters: a production writer that ignores the scripted failure must be
+// able to publish, so the named tests fail for the intended reason.
+if(!class_exists('ErasedataWriteFailureStream'))
 {
-	class ErasedataPartialWriteStream
+	abstract class ErasedataWriteFailureStream
 	{
-		const SCHEME = 'erasedatapartial';
 		public $context;
-		private $handle = null;
-		private $wrote = false;
+		protected $handle = null;
 
 		public static function register()
 		{
-			if(!in_array(self::SCHEME, stream_get_wrappers(), true))
-				stream_wrapper_register(self::SCHEME, 'ErasedataPartialWriteStream');
+			if(!in_array(static::SCHEME, stream_get_wrappers(), true))
+				stream_wrapper_register(static::SCHEME, get_called_class());
 		}
 		public static function real($path)
 		{
-			return(substr($path, strlen(self::SCHEME.'://')));
+			return(substr($path, strlen(static::SCHEME.'://')));
 		}
 		public function stream_open($path, $mode, $options, &$openedPath)
 		{
-			$this->handle = @fopen(self::real($path), $mode);
+			$this->handle = @fopen(static::real($path), $mode);
 			return($this->handle !== false);
-		}
-		public function stream_write($data)
-		{
-			if($this->wrote || !is_resource($this->handle))
-				return(0);
-			$this->wrote = true;
-			$half = strlen($data) > 1 ? intdiv(strlen($data), 2) : 1;
-			$written = @fwrite($this->handle, substr($data, 0, $half));
-			return($written === false ? 0 : $written);
 		}
 		public function stream_flush() { return(true); }
 		public function stream_eof() { return(true); }
@@ -105,79 +95,51 @@ if(!class_exists('ErasedataPartialWriteStream'))
 		}
 		public function url_stat($path, $flags)
 		{
-			$real = self::real($path);
+			$real = static::real($path);
 			return(($flags & STREAM_URL_STAT_LINK) ? @lstat($real) : @stat($real));
 		}
-		public function unlink($path) { return(@unlink(self::real($path))); }
-		// Without this the wrapper refuses every rename, and a durable writer
-		// that ignored its own byte count would still look correct here: the
-		// publication would fail on the missing wrapper method rather than on
-		// the short write. With it, the byte count is the only thing between a
-		// stalled write and a published record.
+		public function unlink($path) { return(@unlink(static::real($path))); }
 		public function rename($from, $to)
 		{
-			return(@rename(self::real($from), self::real($to)));
+			return(@rename(static::real($from), static::real($to)));
+		}
+		abstract public function stream_write($data);
+	}
+}
+
+// A partial first write leaves genuinely incomplete staged bytes.
+if(!class_exists('ErasedataPartialWriteStream'))
+{
+	class ErasedataPartialWriteStream extends ErasedataWriteFailureStream
+	{
+		const SCHEME = 'erasedatapartial';
+		private $wrote = false;
+
+		public function stream_write($data)
+		{
+			if($this->wrote || !is_resource($this->handle))
+				return(0);
+			$this->wrote = true;
+			$half = strlen($data) > 1 ? intdiv(strlen($data), 2) : 1;
+			$written = @fwrite($this->handle, substr($data, 0, $half));
+			return($written === false ? 0 : $written);
 		}
 	}
 }
 
-// A queue-directory wrapper whose writes all take but whose flush reports a
-// failure -- the shape a buffered filesystem takes when the bytes are accepted
-// and the device then refuses them. Every byte is counted in, so a writer that
-// trusted its own byte count alone would publish a record the storage never
-// took; only a CHECKED fflush() refuses. Nothing else about it is scripted: it
-// renames, unlinks and stats through the real filesystem.
+// Every byte is accepted, but the flush fails as a buffered filesystem can.
 if(!class_exists('ErasedataFlushFailureStream'))
 {
-	class ErasedataFlushFailureStream
+	class ErasedataFlushFailureStream extends ErasedataWriteFailureStream
 	{
 		const SCHEME = 'erasedatanoflush';
-		public $context;
-		private $handle = null;
 
-		public static function register()
-		{
-			if(!in_array(self::SCHEME, stream_get_wrappers(), true))
-				stream_wrapper_register(self::SCHEME, 'ErasedataFlushFailureStream');
-		}
-		public static function real($path)
-		{
-			return(substr($path, strlen(self::SCHEME.'://')));
-		}
-		public function stream_open($path, $mode, $options, &$openedPath)
-		{
-			$this->handle = @fopen(self::real($path), $mode);
-			return($this->handle !== false);
-		}
 		public function stream_write($data)
 		{
 			$written = @fwrite($this->handle, $data);
 			return($written === false ? 0 : $written);
 		}
-		// The whole point: the bytes went in, the flush did not come back.
 		public function stream_flush() { return(false); }
-		public function stream_eof() { return(true); }
-		public function stream_stat() { return(@fstat($this->handle)); }
-		public function stream_close()
-		{
-			if(is_resource($this->handle))
-				@fclose($this->handle);
-		}
-		public function url_stat($path, $flags)
-		{
-			$real = self::real($path);
-			return(($flags & STREAM_URL_STAT_LINK) ? @lstat($real) : @stat($real));
-		}
-		public function unlink($path) { return(@unlink(self::real($path))); }
-		// Present for the same reason as the neighbouring wrapper's: without a
-		// rename method a writer that ignored its failing fflush would still
-		// look correct here, because publication would fail on the missing
-		// wrapper method instead of on the flush. With it, the checked fflush
-		// is the only thing between an unflushed write and a published record.
-		public function rename($from, $to)
-		{
-			return(@rename(self::real($from), self::real($to)));
-		}
 	}
 }
 
@@ -11239,8 +11201,8 @@ class RemoveWithDataTest extends TestCase
 		$this->runChildren($children, 30, $invariant);
 		$state = $this->mirrorState($mirror);
 		$this->assertTrue(is_array($state) && isset($state['journal'])
-			&& is_array($state['journal']) && count($state['journal']) > 0,
-			'the inverse batches leave a durable generation-bound journal');
+			&& is_array($state['journal']) && count($state['journal']) === 2,
+			'both inverse batches leave their generation-bound journal entries');
 		$sorted = true;
 		if(is_array($state) && isset($state['journal']) && is_array($state['journal']))
 			foreach($state['journal'] as $entry)

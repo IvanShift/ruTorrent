@@ -142,9 +142,8 @@ class rRatio
 	// execute would block rtorrent while the helper waits for rtorrent to answer.
 	public function getEraseWithDataCommand($force)
 	{
-		// $force is interpolated into a shell-ish command line below, so only
-		// the two exact literals the UI can ask for are accepted; anything else
-		// degrades to a no-op instead of building a command out of it.
+		// Only the two force literals supported by erase.php may be passed as
+		// execute.nothrow.bg argv; any other value becomes a no-op.
 		if(!is_string($force) || ($force !== "1" && $force !== "2"))
 			return(getCmd("cat="));
 		$prefix = getCmd("d.stop=")."; ".getCmd("d.close=")."; ";
@@ -161,9 +160,10 @@ class rRatio
 			FileUtil::toLog('ratio: erasedata-helper-unavailable');
 			return(getCmd("cat="));
 		}
-		$user = preg_replace('/[^\w\.\-]/', '', (string)User::getUser());
+		// User::getUser() already normalizes the login for an rTorrent argv
+		// component; filtering it again here would define a second user policy.
 		return($prefix.'execute.nothrow.bg={'.Utility::getPHP().','.$helper.
-			',$'.getCmd("d.get_hash").'=,'.$force.','.$user.'}');
+			',$'.getCmd("d.get_hash").'=,'.$force.','.(string)User::getUser().'}');
 	}
 
 	public function correct()
