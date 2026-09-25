@@ -15,8 +15,8 @@ function boundarySame($expected, $actual, $message)
     }
 }
 
-// The transport double also mirrors cookie import and header parsing; core
-// transport behavior is covered separately by SnoopyTest with a fake curl.
+// The transport double mirrors cookie import using fixture headers.
+// SnoopyTest exercises the real HTTP parser with socket pairs and HTTPS with fake curl.
 class BoundaryTransport extends Snoopy
 {
     public $requests = array();

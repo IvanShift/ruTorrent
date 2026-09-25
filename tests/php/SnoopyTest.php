@@ -141,6 +141,37 @@ class SnoopyRejectedRedirectProbe extends SnoopyRedirectProbe
     }
 }
 
+// Keep the real HTTP request and response parser while replacing only TCP.
+class SnoopySocketReplies extends Snoopy
+{
+    public $responses = array();
+    private $peers = array();
+
+    public function connect()
+    {
+        if (!$this->responses) {
+            throw new RuntimeException('Unexpected HTTP connection');
+        }
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        snoopyAssertTrue(is_array($pair), 'Unable to create the HTTP socket pair');
+        $response = array_shift($this->responses);
+        snoopyAssertSame(strlen($response), fwrite($pair[1], $response),
+            'Complete HTTP fixture response was written');
+        stream_socket_shutdown($pair[1], STREAM_SHUT_WR);
+        $this->peers[] = $pair[1];
+        return $pair[0];
+    }
+
+    public function request($index)
+    {
+        snoopyAssertTrue(isset($this->peers[$index]), 'Expected HTTP request was sent');
+        $request = stream_get_contents($this->peers[$index]);
+        fclose($this->peers[$index]);
+        unset($this->peers[$index]);
+        return $request;
+    }
+}
+
 function snoopyPlainHttpReply($header, $body, $limit = null, $client = null)
 {
     $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
@@ -162,6 +193,76 @@ function snoopyPlainHttpReply($header, $body, $limit = null, $client = null)
 }
 
 $tests = array(
+    'plain HTTP preserves unparsed redirect-like headers' => function () {
+        $client = new SnoopySocketReplies();
+        $client->responses = array("HTTP/1.1 200 OK\r\nLocation:\r\nRefresh: 5\r\n\r\n");
+        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+            'plain HTTP reply completes');
+        snoopyAssertSame('', $client->get_header('Location'),
+            'empty Location remains visible to callers');
+        snoopyAssertSame(true, in_array("Refresh: 5\r\n", $client->headers, true),
+            'Refresh without a URL remains visible to callers');
+        snoopyAssertSame('', $client->lastredirectaddr,
+            'neither header starts a redirect');
+        $client->request(0);
+    },
+    'plain HTTP follows Location without a space' => function () {
+        $client = new SnoopySocketReplies();
+        $client->responses = array(
+            "HTTP/1.1 302 Found\r\nLocation:http://destination.test/file\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n",
+        );
+        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+            'plain HTTP redirect chain completes');
+        snoopyAssertSame('http://destination.test/file', $client->lastredirectaddr,
+            'Location without a space names the destination');
+        $client->request(0);
+        snoopyAssertTrue(strpos($client->request(1), "Host: destination.test\r\n") !== false,
+            'socket transport requests the named host');
+    },
+    'plain HTTP Basic uses decoded URL username and password' => function () {
+        $client = new SnoopySocketReplies();
+        $client->responses = array("HTTP/1.1 200 OK\r\n\r\n");
+        snoopyAssertSame(true,
+            $client->fetch('http://bob%40mail.test:p%40ss@tracker.example/file'),
+            'encoded userinfo request completes');
+        $request = $client->request(0);
+        $expected = "Authorization: Basic " . base64_encode('bob@mail.test:p@ss') . "\r\n";
+        snoopyAssertSame(1, substr_count($request, $expected),
+            'socket transport sends decoded Basic credentials exactly once');
+        snoopyAssertSame('', $client->user, 'URL username is restored after fetch');
+        snoopyAssertSame('', $client->pass, 'URL password is restored after fetch');
+    },
+    'plain HTTP imports redirect cookies only when passcookies permits it' => function () {
+        foreach (array(true, false) as $passcookies) {
+            $client = new SnoopySocketReplies();
+            $client->passcookies = $passcookies;
+            $client->responses = array(
+                "HTTP/1.1 302 Found\r\nLocation: http://tracker.example/next\r\nSet-Cookie: fresh=secret; Path=/\r\n\r\n",
+                "HTTP/1.1 200 OK\r\n\r\n",
+            );
+            snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+                'same-origin HTTP redirect completes');
+            $client->request(0);
+            $request = $client->request(1);
+            snoopyAssertSame($passcookies, strpos($request, "Cookie: fresh=secret\r\n") !== false,
+                'redirect cookie import follows passcookies');
+        }
+
+        $client = new SnoopySocketReplies();
+        $client->responses = array(
+            "HTTP/1.1 200 OK\r\nSet-Cookie: fresh=secret; Path=/\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n",
+        );
+        snoopyAssertSame(true, $client->fetch('http://tracker.example/start'),
+            'non-redirect response completes');
+        snoopyAssertSame(true, $client->fetch('http://tracker.example/independent'),
+            'independent HTTP request completes');
+        $client->request(0);
+        snoopyAssertSame(false,
+            strpos($client->request(1), "Cookie: fresh=secret\r\n") !== false,
+            'non-redirect response cookie is not imported later');
+    },
     'gzip content encoding is parsed as an exact header' => function () {
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding:gzip', gzencode('decoded body'));
         snoopyAssertSame(true, $ok, 'a valid gzip reply completes');

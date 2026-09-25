@@ -896,9 +896,8 @@ class Snoopy
 			if(preg_match('/^(Location:|URI:|Refresh:)/i', $currentHeader))
 			{
 				$redirect = $this->redirectFromHeader($currentHeader, 'http');
-				if($redirect === false)
-					continue;
-				$this->_redirectaddr = $redirect;
+				if($redirect !== false)
+					$this->_redirectaddr = $redirect;
 			}
 			if(preg_match("|^HTTP/|",$currentHeader))
 			{
