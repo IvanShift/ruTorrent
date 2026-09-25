@@ -45,8 +45,8 @@ class RARbgTorrentAPIEngine extends commonEngine
 			sleep( $delta );
 
 			$this->lastRequestTime = time();
-			$client->fetchComplex($url, $method, $content_type, $body);
-			if($client->status>=200 && $client->status<300)
+			$fetched = $client->fetchComplex($url, $method, $content_type, $body);
+			if($fetched && Snoopy::isSuccessfulResponse($client))
 			{
 				ini_set( "pcre.backtrack_limit", max(strlen($client->results),100000) );
 				return($client);

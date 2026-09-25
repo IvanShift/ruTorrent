@@ -17,6 +17,7 @@ class Torrent
 	protected $basedir = null;
 	protected $pointer = 0;
 	private $data;
+	private $rawBytes = false;
 	protected $log_callback = null;
 	protected $err_callback = null;
 	protected $filename = null;
@@ -126,6 +127,12 @@ class Torrent
 		return $meta;
 	}
 
+	/** Parse downloaded metainfo bytes without interpreting them as a file path. */
+	static public function fromRawBytes( $bytes )
+	{
+		return new self( $bytes, array(), 256, null, null, true );
+	}
+
 	/** Read and decode torrent file/data OR build a torrent from source folder/file(s)
 	 * Supported signatures:
 	 *  - Torrent( string $torrent );
@@ -140,15 +147,17 @@ class Torrent
 	 * @param string|array torrent to read or source folder/file(s)
 	 * @param string|array announce url or meta informations (optional)
 	 * @param int piece length (optional)
+	 * @param bool $raw_bytes internal raw-data switch used by fromRawBytes()
 	 */
-	public function __construct( $data, $meta = array(), $piece_length = 256, $log_callback = null, $err_callback = null )
+	public function __construct( $data, $meta = array(), $piece_length = 256, $log_callback = null, $err_callback = null, $raw_bytes = false )
 	{
         	try {
 		if( is_string( $meta ) )
 			$meta =  array( 'announce' => $meta );
 		$this->log_callback = $log_callback;
 		$this->err_callback = $err_callback;
-		if( $this->build( $data, $piece_length * 1024 ) )
+		$this->rawBytes = (bool) $raw_bytes;
+		if( !$raw_bytes && $this->build( $data, $piece_length * 1024 ) )
 		{
 			$this->built = true;
 			$this->touch();
@@ -302,7 +311,7 @@ class Torrent
 
 	public function decode( $string )
 	{
-		if(self::isPathCandidate( $string ) && is_file( $string ))
+		if(!$this->rawBytes && self::isPathCandidate( $string ) && is_file( $string ))
 		{
 			$this->data = file_get_contents( $string );
 			$this->filename = $string;
@@ -310,7 +319,10 @@ class Torrent
 		else
 			$this->data = $string;
 		$this->pointer = 0;
-		return($this->decode_data());
+		$decoded = $this->decode_data();
+		if($this->rawBytes && $this->pointer !== strlen($this->data))
+			$this->notify_err('Trailing torrent data');
+		return($decoded);
 	}
 
 	protected function decode_data()

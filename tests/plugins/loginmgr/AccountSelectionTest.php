@@ -142,6 +142,9 @@ $tests = array(
         $account = new NNMClubAccount();
         foreach (array(
             'https://nnmclub.to/forum/viewtopic.php?t=1'  => true,
+            'https://nnmclub.to/forum/' => true,
+            'https://nnmclub.to/forum/x/..' => true,
+            'https://nnmclub.to/forum' => false,
             'https://nnmclub.to./forum/viewtopic.php?t=1' => true,
             'https://nnmclub.to:8080/forum/dl.php?id=1' => true,
             'https://user@nnmclub.to/forum/dl.php?id=1' => true,

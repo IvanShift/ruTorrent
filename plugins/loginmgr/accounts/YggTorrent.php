@@ -99,8 +99,11 @@ class YggTorrentAccount extends commonAccount
     // A moving domain is an operator trust decision, never a domain-name pattern.
     public function test($url)
     {
-        if (strcasecmp((string) @parse_url($url, PHP_URL_PATH), '/engine/download_torrent') !== 0
-            || preg_match('/(^|&)id=/', (string) @parse_url($url, PHP_URL_QUERY)) !== 1) {
+        if (strcasecmp((string) @parse_url($url, PHP_URL_PATH), '/engine/download_torrent') !== 0) {
+            return false;
+        }
+        $id = self::queryValue($url, 'id');
+        if ($id === false || $id === '') {
             return false;
         }
         return $this->trusts($url);

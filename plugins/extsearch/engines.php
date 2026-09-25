@@ -48,8 +48,8 @@ class commonEngine
 		$client = $this->makeClient($url);
 		if($encode)
 			$url = Snoopy::linkencode($url);
-		$client->fetchComplex($url, $method, $content_type, $body);
-		if($client->status>=200 && $client->status<300)
+		$fetched = $client->fetchComplex($url, $method, $content_type, $body);
+		if($fetched && Snoopy::isSuccessfulResponse($client))
 		{
 			ini_set( "pcre.backtrack_limit", max(strlen($client->results),100000) );
 			return($client);
@@ -60,7 +60,7 @@ class commonEngine
 	{
 		global $profileMask;
 		$cli = $this->fetch( $url );
-		if($cli)
+		if(Snoopy::isTorrentResponse($cli))
 		{
 			$name = $cli->get_filename();
 			if($name===false)

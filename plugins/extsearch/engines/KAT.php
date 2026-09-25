@@ -21,8 +21,8 @@ class KATEngine extends commonEngine
 		$client = $this->makeClient($url);
 		if($cookie)
 			$client->cookies = $cookie;
-		$client->fetchComplex( $url, $method, $content_type, $body );
-		if($client->status>=200 && $client->status<300)
+		$fetched = $client->fetchComplex( $url, $method, $content_type, $body );
+		if($fetched && Snoopy::isSuccessfulResponse($client))
 		{
 			if(!$cookie)
 			{

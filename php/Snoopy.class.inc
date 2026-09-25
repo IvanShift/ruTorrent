@@ -100,6 +100,11 @@ class Snoopy
 	var $_mime_boundary	=	"";			// MIME boundary for multipart/form-data submit type
 	var $_redirectaddr	=	false;			// will be set if page fetched is a redirect
 	var $_redirectdepth	=	0;			// increments on an http redirect
+	protected $requestCookieHost = null;
+	protected $requestCookieScheme = '';
+	protected $requestScopedCookies = array();
+	protected $requestOriginalCookies = array();
+	protected $requestAccountCookies = array();
 
 	var $_isproxy		=	false;			// set if using a proxy server
 	var $_fp_timeout	=	30;			// timeout for socket connection
@@ -219,44 +224,149 @@ class Snoopy
 		$pos = strpos($url,':COOKIE:');
 		if($pos!==false)
 		{
-			$tmp = explode(";",substr($url,$pos+8));
-			foreach($tmp as $item)
+			foreach(explode(';',substr($url,$pos+8)) as $item)
 			{
-				list($name,$val) = explode("=",$item);
-				$cookies[$name] = $val;
+				$pair = explode('=',trim($item),2);
+				if(count($pair) === 2 && $pair[0] !== '')
+					$cookies[$pair[0]] = $pair[1];
 			}
 			$url = substr($url,0,$pos);
 		}
 		return($cookies);
 	}
 
+	static public function isSuccessfulResponse($client)
+	{
+		return is_object($client) && isset($client->status)
+			&& $client->status >= 200 && $client->status < 300
+			&& (!isset($client->error) || $client->error !== self::CREDENTIAL_REDIRECT_REFUSED);
+	}
+
+	static public function isTorrentResponse($client)
+	{
+		if(!self::isSuccessfulResponse($client) || !isset($client->results))
+			return false;
+		$body = $client->results;
+		// Metainfo is a bencoded dictionary. The parser's raw mode avoids
+		// interpreting a remote response as a local filename.
+		if(!is_string($body) || $body === '' || $body[0] !== 'd')
+			return false;
+		require_once(dirname(__FILE__) . '/Torrent.php');
+		$torrent = Torrent::fromRawBytes($body);
+		return !$torrent->errors() && is_array($torrent->info) && count($torrent->info) > 0;
+	}
+
 	public function fetchComplex($URI,$method="GET",$content_type="",$body="")
 	{
-		$parts = parse_url($URI);
-		$this->host = $parts["host"];
-		if(rTorrentSettings::get()->isPluginRegistered('cookies') && !empty($this->host))
+		$parts = @parse_url($URI);
+		$this->host = is_array($parts) && isset($parts["host"]) ? $parts["host"] : '';
+		$originalCookies = $this->cookies;
+		$previousScope = array($this->requestCookieHost, $this->requestCookieScheme,
+			$this->requestScopedCookies, $this->requestOriginalCookies, $this->requestAccountCookies);
+		$this->requestCookieHost = UrlHost::of($URI);
+		$this->requestCookieScheme = is_array($parts) && isset($parts['scheme'])
+			? strtolower($parts['scheme']) : '';
+		$this->requestScopedCookies = array();
+		$this->requestOriginalCookies = $originalCookies;
+		$this->requestAccountCookies = array();
+		try
 		{
-			// Go back to ruTorrent root folder and include cookies.php plugin file
-			require_once(dirname(__FILE__)."/../plugins/cookies/cookies.php");
-			$cookies = rCookies::load();
-			$this->cookies = array_merge($this->cookies,$cookies->getCookiesForHost($this->host));
-		}
-		$this->cookies = array_merge($this->cookies,self::getURLCookies($URI));
-		if(rTorrentSettings::get()->isPluginRegistered('loginmgr'))
-		{
-			// Go back to ruTorrent root folder and include accounts.php plugin file
-			require_once(dirname(__FILE__)."/../plugins/loginmgr/accounts.php");
-			$am = accountManager::load();
-			if($am===false)
+			$pluginCookies = array();
+			$pluginCookieRefused = false;
+			if(rTorrentSettings::get()->isPluginRegistered('cookies') && $this->requestCookieHost !== null)
 			{
-				$am = new accountManager();
-				$am->obtain();
+				// Go back to ruTorrent root folder and include cookies.php plugin file
+				require_once(dirname(__FILE__)."/../plugins/cookies/cookies.php");
+				$store = rCookies::load();
+				$pluginCookies = $store->getCookiesForURL($URI);
+				$pluginCookieRefused = $this->requestCookieScheme === 'http'
+					&& !empty($store->getCookiesForHost($this->requestCookieHost));
 			}
-			$acc = $am->getAccount($URI);
+			$urlCookies = self::getURLCookies($URI);
+			$this->requestScopedCookies = array_merge($pluginCookies, $urlCookies);
+			$this->cookies = array_merge($this->cookies, $this->requestScopedCookies);
+			$acc = false;
+			$httpsAccount = null;
+			if(rTorrentSettings::get()->isPluginRegistered('loginmgr'))
+			{
+				// Go back to ruTorrent root folder and include accounts.php plugin file
+				require_once(dirname(__FILE__)."/../plugins/loginmgr/accounts.php");
+				$am = accountManager::load();
+				if($am===false)
+				{
+					$am = new accountManager();
+					$am->obtain();
+				}
+				$acc = $am->getAccount($URI, $httpsAccount);
+			}
+			if($pluginCookieRefused)
+				self::logPluginCookieRefusal($this->requestCookieHost, $acc ? $acc : $httpsAccount);
 			if($acc)
 				return($am->fetch( $acc, $this, $URI, $method, $content_type, $body ));
+			return($this->fetch($URI,$method,$content_type,$body));
 		}
-		return($this->fetch($URI,$method,$content_type,$body));
+		finally
+		{
+			// Source cookies and account sessions belong to this call.
+			$this->cookies = $originalCookies;
+			list($this->requestCookieHost, $this->requestCookieScheme,
+				$this->requestScopedCookies, $this->requestOriginalCookies,
+				$this->requestAccountCookies) = $previousScope;
+		}
+	}
+
+	/** Log a suppressed plugin cookie without exposing cookie data or URL userinfo. */
+	private static function logPluginCookieRefusal($host, $account)
+	{
+		static $logged = array();
+		$key = $host . "\0" . (string) $account;
+		if(isset($logged[$key]))
+			return;
+		$logged[$key] = true;
+		$safeHost = preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $host);
+		$details = 'source=cookies host=' . $safeHost;
+		if(is_string($account) && $account !== '')
+			$details .= ' account=' . preg_replace('/[^a-z0-9_.-]/i', '?', $account);
+		FileUtil::toLog('cookies: http-refused: ' . $details . '; use HTTPS URL');
+	}
+
+	/** Keep caller cookies and account sessions on allowed redirects. */
+	private function withoutSourceCookies($cookies)
+	{
+		foreach($this->requestScopedCookies as $name => $value)
+		{
+			if(!array_key_exists($name, $cookies) || $cookies[$name] !== $value
+				|| isset($this->requestAccountCookies[$name]))
+				continue;
+			if(array_key_exists($name, $this->requestOriginalCookies))
+				$cookies[$name] = $this->requestOriginalCookies[$name];
+			else
+				unset($cookies[$name]);
+		}
+		return $cookies;
+	}
+
+	protected function cookiesForRequest($url)
+	{
+		$host = UrlHost::of($url);
+		$scheme = strtolower((string) @parse_url($url, PHP_URL_SCHEME));
+		if($this->requestCookieHost !== null && $host === $this->requestCookieHost
+			&& ($this->requestCookieScheme !== 'https' || $scheme === 'https'))
+			return $this->cookies;
+		return $this->withoutSourceCookies($this->cookies);
+	}
+
+	/** Source-specific cookies must not turn into a saved loginmgr session. */
+	public function cookiesForAccountStorage()
+	{
+		return $this->withoutSourceCookies($this->cookies);
+	}
+
+	/** A cached account session may legitimately reuse a source cookie name. */
+	public function markAccountCookies($cookies)
+	{
+		foreach((array) $cookies as $name => $value)
+			$this->requestAccountCookies[$name] = true;
 	}
 
 	public function fetch($URI,$method="GET",$content_type="",$body="")
@@ -556,6 +666,26 @@ class Snoopy
 		return( $value ? strtotime($value) : false );
 	}
 
+	protected function redirectFromHeader($header, $scheme)
+	{
+		$header = rtrim($header, "\r\n");
+		if(!preg_match('/^(Location:|URI:)[ \t]*(.+)/i', $header, $matches)
+			&& !preg_match('/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i', $header, $matches))
+			return false;
+		$target = trim($matches[2]);
+		if($target === '')
+			return false;
+		// A network-path reference names its own authority and inherits only
+		// the current scheme; it is not a path on the requested host.
+		if(strpos($target, '//') === 0)
+			return $scheme . ':' . $target;
+		if(strpos($target, '://') !== false)
+			return $target;
+		$host = isset($this->rawheaders['Host']) ? $this->rawheaders['Host'] : $this->host;
+		return $scheme . '://' . $host . ':' . $this->port
+			. ($target[0] === '/' ? $target : '/' . $target);
+	}
+
 	function _httprequest($url,$fp,$URI,$http_method,$content_type="",$body="")
 	{
 		if($this->passcookies && $this->_redirectaddr)
@@ -573,10 +703,11 @@ class Snoopy
 			$headers .= "Accept-encoding: gzip\r\n";
 		if(!empty($this->referer))
 			$headers .= "Referer: ".$this->referer."\r\n";
-		if(count($this->cookies))
+		$requestCookies = $this->cookiesForRequest($URI);
+		if(count($requestCookies))
 		{
 			$cookie_headers = 'Cookie: ';
-			foreach( $this->cookies as $cookieKey => $cookieVal )
+			foreach( $requestCookies as $cookieKey => $cookieVal )
 				$cookie_headers .= $cookieKey."=".$cookieVal."; ";
 			$headers .= substr($cookie_headers,0,-2) . "\r\n";
 		}
@@ -618,36 +749,12 @@ class Snoopy
 			if(preg_match("/^\r?\n$/", $currentHeader))
 			      break;
 
-			// if a header begins with Location: or URI:, set the redirect
-			if(preg_match("/^(Location:|URI:|Refresh:)/i",$currentHeader))
+			if(preg_match('/^(Location:|URI:|Refresh:)/i', $currentHeader))
 			{
-				// get URL portion of the redirect
-				if(!preg_match("/^(Location:|URI:)[ \t]*(.+)/i",chop($currentHeader),$matches) &&
-					!preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i",chop($currentHeader),$matches))
+				$redirect = $this->redirectFromHeader($currentHeader, 'http');
+				if($redirect === false)
 					continue;
-				$matches[2] = trim($matches[2]);
-				if($matches[2]==='')
-					continue;
-				// a "//host/path" Location is a network-path reference (RFC 3986
-				// 4.2): it carries its own authority and inherits only the
-				// scheme. Resolved against the requested host it would become
-				// http://old.host:80//new.host/path, which redirects again
-				// until maxredirs runs out.
-				if(preg_match("|^//|",$matches[2]))
-					$this->_redirectaddr = "http:".$matches[2];
-				// look for :// in the Location header to see if hostname is included
-				else if(!preg_match("|\:\/\/|",$matches[2]))
-				{
-					$host = isset($this->rawheaders['Host']) ? $this->rawheaders['Host'] : $this->host;
-					$this->_redirectaddr = "http://".$host.":".$this->port;
-					// eliminate double slash
-					if(!preg_match("|^/|",$matches[2]))
-						$this->_redirectaddr .= "/".$matches[2];
-					else
-						$this->_redirectaddr .= $matches[2];
-				}
-				else
-					$this->_redirectaddr = $matches[2];
+				$this->_redirectaddr = $redirect;
 			}
 			if(preg_match("|^HTTP/|",$currentHeader))
 			{
@@ -719,10 +826,11 @@ class Snoopy
 			$headers[] = "Accept: ".$this->accept;
 		if(!empty($this->referer))
 			$headers[] = "Referer: ".$this->referer;
-		if( count($this->cookies) )
+		$requestCookies = $this->cookiesForRequest($url);
+		if( count($requestCookies) )
 		{
 			$cookie_str = 'Cookie: ';
-			foreach( $this->cookies as $cookieKey => $cookieVal )
+			foreach( $requestCookies as $cookieKey => $cookieVal )
 				$cookie_str .= $cookieKey."=".$cookieVal."; ";
 			$headers[] = substr($cookie_str,0,-2);
 		}
@@ -792,38 +900,12 @@ class Snoopy
 			$result_headers = file($headerfile);
 			foreach($result_headers as $header)
 			{
-				// if a header begins with Location: or URI:, set the redirect
-				if(preg_match("/^(Location:|URI:|Refresh:)/i",$header))
+				if(preg_match('/^(Location:|URI:|Refresh:)/i', $header))
 				{
-					// get URL portion of the redirect
-					if(!preg_match("/^(Location:|URI:)[ \t]*(.+)/i",chop($header),$matches) &&
-						!preg_match("/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i",chop($header),$matches))
+					$redirect = $this->redirectFromHeader($header, 'https');
+					if($redirect === false)
 						continue;
-					$matches[2] = trim($matches[2]);
-					if($matches[2]==='')
-						continue;
-
-					// a "//host/path" Location is a network-path reference
-					// (RFC 3986 4.2): it carries its own authority and
-					// inherits only the scheme. Resolved against the requested
-					// host it would become https://old.host:443//new.host/path,
-					// which redirects again until maxredirs runs out.
-					if(preg_match("|^//|",$matches[2]))
-						$this->_redirectaddr = "https:".$matches[2];
-					// look for :// in the Location header to see if hostname is included
-					else if(!preg_match("|\:\/\/|",$matches[2]))
-					{
-						// no host in the path, so prepend
-						$host = isset($this->rawheaders['Host']) ? $this->rawheaders['Host'] : $this->host;
-						$this->_redirectaddr = "https://".$host.":".$this->port;
-						// eliminate double slash
-						if(!preg_match("|^/|",$matches[2]))
-							$this->_redirectaddr .= "/".$matches[2];
-						else
-							$this->_redirectaddr .= $matches[2];
-					}
-					else
-						$this->_redirectaddr = $matches[2];
+					$this->_redirectaddr = $redirect;
 				}
 				if(preg_match("|^HTTP/|",$header))
 				{
@@ -873,9 +955,14 @@ class Snoopy
 			if(preg_match("/^set-cookie:[\s]+([^=]+)=([^;]+)/i", $header,$match))
 			{
 				if($match[2]=="deleted")
-					unset($this->cookies[$match[1]]);
+				{
+					unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]]);
+				}
 				else
+				{
 					$this->cookies[$match[1]] = $match[2];
+					$this->requestAccountCookies[$match[1]] = true;
+				}
 			}
 		}
 	}

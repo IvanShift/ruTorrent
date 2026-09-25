@@ -133,6 +133,65 @@ class SnoopyRejectedRedirectProbe extends SnoopyRedirectProbe
 }
 
 $tests = array(
+    'URL cookie suffix keeps equals in values and ignores malformed pairs' => function () {
+        $url = 'https://tracker.example/file:COOKIE:token=abc=def;broken;sid=2';
+        snoopyAssertSame(array('token' => 'abc=def', 'sid' => '2'), Snoopy::getURLCookies($url),
+            'cookie parser keeps the full value and skips incomplete pairs');
+        snoopyAssertSame('https://tracker.example/file', $url, 'suffix removed from URL');
+    },
+    'a credential redirect refusal is not a successful download' => function () {
+        $client = new Snoopy();
+        $client->status = 200;
+        $client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+        snoopyAssertSame(false, Snoopy::isSuccessfulResponse($client),
+            '2xx with a refused Location is not a successful response');
+        $client->error = '';
+        snoopyAssertSame(true, Snoopy::isSuccessfulResponse($client),
+            'ordinary 2xx response remains successful');
+    },
+    'torrent response guard rejects HTML and accepts parsed metainfo' => function () {
+        $client = new Snoopy();
+        $client->status = 200;
+        $client->results = '<html>Login required</html>';
+        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            'HTML must not be saved as a torrent');
+        $client->results = 'd4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:abcdefghijklmnopqrstee';
+        snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+            'valid metainfo remains downloadable');
+        $rawBody = $client->results;
+        $client->results = $rawBody . '<html>unexpected extra response</html>';
+        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            'a bencoded prefix followed by HTML is not a complete torrent');
+        $client->results = 'd4:infodee';
+        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            'an empty info dictionary is not metainfo');
+        $client->results = $rawBody;
+        $conflictDir = sys_get_temp_dir() . '/snoopy-raw-' . getmypid();
+        @mkdir($conflictDir);
+        $previousDir = getcwd();
+        try {
+            chdir($conflictDir);
+            file_put_contents($rawBody, 'a conflicting local file');
+            snoopyAssertSame(true, Snoopy::isTorrentResponse($client),
+                'download validation parses raw bytes even when they name a local file');
+        } finally {
+            chdir($previousDir);
+            @unlink($conflictDir . '/' . $rawBody);
+            @rmdir($conflictDir);
+        }
+        $localPath = tempnam(sys_get_temp_dir(), 'local-metainfo-');
+        try {
+            file_put_contents($localPath, $client->results);
+            $client->results = $localPath;
+            snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+                'a remote body naming a local file cannot make the downloader read that file');
+        } finally {
+            @unlink($localPath);
+        }
+        $client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+        snoopyAssertSame(false, Snoopy::isTorrentResponse($client),
+            'classified refusal wins even over valid source bytes');
+    },
     'a failed transport cannot import an earlier response cookie into the next request' => function () {
         $client = new SnoopyRedirectProbe();
         $client->replies = array(
@@ -426,6 +485,40 @@ $tests = array(
         snoopyAssertTrue(in_array('https://destination.test/file', snoopyCurlArgs(), true),
             'destination host is requested');
         snoopyRespondWith('');
+    },
+    'source URL cookie stays on its host in real HTTPS curl headers' => function () {
+        $source = new Snoopy();
+        $source->maxredirs = 0;
+        snoopyAssertSame(true, $source->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+            'source request completes');
+        snoopyAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+            'source host receives its explicit URL cookie');
+
+        putenv('SNOOPY_TEST_REDIRECT=https://dl.tracker.test/next');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $sibling = new Snoopy();
+            $sibling->redirectTrust = function ($url) {
+                return UrlHost::urlIsOneOf($url, array('tracker.test'), 'https');
+            };
+            snoopyAssertSame(true, $sibling->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+                'account-allowed sibling redirect completes');
+            snoopyAssertTrue(in_array('https://dl.tracker.test/next', snoopyCurlArgs(), true),
+                'fake curl captured the sibling request');
+            snoopyAssertSame(false, in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+                'source URL cookie stays off the sibling curl header');
+
+            putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+            $same = new Snoopy();
+            snoopyAssertSame(true, $same->fetchComplex('https://tracker.test/start:COOKIE:url_marker=private'),
+                'same-host redirect completes');
+            snoopyAssertTrue(in_array('Cookie: url_marker=private', snoopyCurlArgs(), true),
+                'same-host curl redirect keeps the URL cookie');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+        }
     },
     'a real HTTPS cross-origin redirect never imports the source cookie' => function () {
         putenv('SNOOPY_TEST_REDIRECT=https://cdn.test/file');

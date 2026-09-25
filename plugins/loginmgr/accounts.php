@@ -24,7 +24,11 @@ class privateData
 			$cache = new rCache('/accounts');
 			if($cache->get($rt))
 			{
-				$client->cookies = $rt->cookies;
+				// Keep cookies already supplied for this request; the saved session
+				// keeps its previous priority when names overlap.
+				$client->cookies = array_merge((array) $client->cookies, (array) $rt->cookies);
+				if($client instanceof Snoopy)
+					$client->markAccountCookies($rt->cookies);
 //				$client->referer = $rt->referer;
 				$rt->loaded = true;
 			}
@@ -46,7 +50,8 @@ class privateData
 
 	public function store( $client )
 	{
-	        $this->cookies = $client->cookies;
+	        $this->cookies = ($client instanceof Snoopy)
+			? $client->cookiesForAccountStorage() : $client->cookies;
 		$this->referer = $client->referer;
 		$cache = new rCache('/accounts');
 		return($cache->set($this));
@@ -103,16 +108,21 @@ abstract class commonAccount
 		return(UrlHost::urlIsOneOf($url,$hosts,$scheme,$pathPrefix));
 	}
 
-	protected static function queryDigits($url, $name)
+	protected static function queryValue($url, $name)
 	{
-		// Match what PHP receives: parse_str() decodes names and takes the last
-		// repeated value. \z rejects a trailing line feed that $ would accept.
+		// Match PHP's decoded names and last-value rule for repeated keys.
 		$parts = @parse_url((string) $url);
 		if(!is_array($parts))
 			return(false);
 		parse_str(isset($parts['query']) ? $parts['query'] : '', $params);
-		return(isset($params[$name]) && is_string($params[$name]) &&
-			preg_match('/^\d+\z/', $params[$name]) ? $params[$name] : false);
+		return(isset($params[$name]) && is_string($params[$name]) ? $params[$name] : false);
+	}
+
+	protected static function queryDigits($url, $name)
+	{
+		$value = self::queryValue($url, $name);
+		// \z rejects a trailing line feed that $ would accept.
+		return($value !== false && preg_match('/^\d+\z/', $value) ? $value : false);
 	}
 
 	protected function loadData( $client = null )
@@ -391,8 +401,11 @@ class accountManager
 		$this->setHandlers();
 	}
 
-	public function getAccount( $url )
+	public function getAccount( $url, &$httpsAccount = null )
 	{
+		// Report the already-tested HTTPS candidate for diagnostics only.
+		// An HTTP URL still does not select that account.
+		$httpsAccount = null;
 		$httpHost = strtolower((string) @parse_url((string) $url, PHP_URL_SCHEME)) === 'http'
 			? UrlHost::of($url) : null;
 		$httpsUrl = $httpHost === null ? null : preg_replace('/^http:/i', 'https:', (string) $url, 1);
@@ -414,6 +427,7 @@ class accountManager
 		{
 			if(!$object->test($httpsUrl))
 				continue;
+			$httpsAccount = $name;
 			static $httpWarnings = array();
 			$key = $name . ' ' . preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $httpHost);
 			if(!isset($httpWarnings[$key]))

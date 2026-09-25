@@ -12,6 +12,7 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 class SourceRecordingSnoopy extends Snoopy
 {
     public $requests = array();
+    public $redirectTo = null;
 
     public function connect() { return fopen('php://memory', 'r+'); }
 
@@ -29,12 +30,14 @@ class SourceRecordingSnoopy extends Snoopy
 
     private function record($url)
     {
-        $this->requests[] = array('url' => $url, 'cookies' => $this->cookies);
+        $this->requests[] = array('url' => $url, 'cookies' => $this->cookiesForRequest($url));
         $this->status = 200;
         $this->results = 'readable tracker page';
-        $this->_redirectaddr = false;
+        $this->_redirectaddr = count($this->requests) === 1 ? $this->redirectTo : false;
     }
 }
+
+require_once(__DIR__ . '/RedirectProbeAccountFixture.php');
 
 function sourceSame($expected, $actual, $message)
 {
@@ -42,6 +45,12 @@ function sourceSame($expected, $actual, $message)
         throw new RuntimeException($message . ': expected ' . var_export($expected, true)
             . ', got ' . var_export($actual, true));
     }
+}
+
+function sourceLog()
+{
+    $path = $_ENV['RU_LOG_FILE'];
+    return is_file($path) ? file_get_contents($path) : '';
 }
 
 function sourceRemoveTree($path)
@@ -61,6 +70,9 @@ try {
 
     $pluginCookies = new rCookies();
     $pluginCookies->list['rutracker.org'] = array('plugin_marker' => 'plugin-value');
+    $pluginCookies->list['cookie.test'] = array('plugin_marker' => 'plugin-value');
+    $pluginCookies->list['tracker.example'] = array('plugin_marker' => 'plugin-value');
+    $pluginCookies->list['mteam.fr'] = array('plugin_marker' => 'plugin-value');
     sourceSame(true, $pluginCookies->store(), 'cookies plugin fixture saved');
 
     $manager = new accountManager();
@@ -73,17 +85,40 @@ try {
         'enabled' => 1,
         'auto' => 0,
     );
+    $manager->accounts['RedirectProbe'] = array(
+        'name' => 'RedirectProbe',
+        'path' => realpath(__DIR__ . '/RedirectProbeAccountFixture.php'),
+        'object' => 'RedirectProbeAccount',
+        'login' => 'fixture-user',
+        'password' => 'fixture-password',
+        'enabled' => 1,
+        'auto' => 0,
+    );
+    $manager->accounts['mTeam'] = array(
+        'name' => 'mTeam',
+        'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/mTeam.php'),
+        'object' => 'mTeamAccount',
+        'login' => 'fixture-user',
+        'password' => 'fixture-password',
+        'enabled' => 1,
+        'auto' => 0,
+    );
     sourceSame(true, $manager->store(), 'loginmgr account fixture saved');
 
     $session = new privateData('ruTracker');
     $session->cookies = array('loginmgr_marker' => 'session-value');
     sourceSame(true, (new rCache('/accounts'))->set($session), 'loginmgr session fixture saved');
+    $mteamSession = new privateData('mTeam');
+    $mteamSession->cookies = array('loginmgr_marker' => 'mteam-session');
+    $mteamSession->referer = 'https://mteam.fr/landing';
+    sourceSame(true, (new rCache('/accounts'))->set($mteamSession),
+        'mTeam session fixture saved');
 
-    // These sources are present in the input. N-S1 remains open: this test
-    // deliberately makes no assertion that sending either one over HTTP is safe.
+    // Legacy host-only cookies are treated as HTTPS-only. A URL's own
+    // :COOKIE: source remains an explicit choice by the caller.
     sourceSame(array('plugin_marker' => 'plugin-value'),
         rCookies::load()->getCookiesForHost('rutracker.org'), 'cookies plugin source');
-    $urlWithCookie = 'http://rutracker.org/forum/index.php:COOKIE:url_marker=url-value';
+    $urlWithCookie = 'http://RuTracker.Org./forum/index.php:COOKIE:url_marker=url-value';
     $urlForSourceCheck = $urlWithCookie;
     sourceSame(array('url_marker' => 'url-value'), Snoopy::getURLCookies($urlForSourceCheck), ':COOKIE: source');
 
@@ -93,6 +128,22 @@ try {
     sourceSame($urlForSourceCheck, $httpClient->requests[0]['url'], ':COOKIE: suffix removed from URL');
     sourceSame(false, isset($httpClient->requests[0]['cookies']['loginmgr_marker']),
         'HTTPS loginmgr session must not reach the HTTP request');
+    sourceSame(false, isset($httpClient->requests[0]['cookies']['plugin_marker']),
+        'legacy host-only plugin cookie must not reach HTTP');
+    sourceSame('url-value', $httpClient->requests[0]['cookies']['url_marker'] ?? null,
+        'explicit URL cookie remains available to its own request');
+    sourceSame(1, substr_count(sourceLog(),
+        'cookies: http-refused: source=cookies host=rutracker.org account=RUTracker; use HTTPS URL'),
+        'plugin refusal logs its normalized host and known HTTPS account');
+
+    $explicitClient = new SourceRecordingSnoopy();
+    $logBeforeExplicit = sourceLog();
+    sourceSame(true, $explicitClient->fetchComplex('http://explicit.test/file:COOKIE:url_marker=url-value'),
+        'explicit-only HTTP request completed');
+    sourceSame('url-value', $explicitClient->requests[0]['cookies']['url_marker'] ?? null,
+        'explicit URL cookie is a separate permitted HTTP source');
+    sourceSame($logBeforeExplicit, sourceLog(),
+        'an explicit-only cookie does not trigger the plugin refusal log');
 
     // Positive control: the same persisted session is loaded for the HTTPS
     // account, so the HTTP assertion cannot pass merely because cache setup failed.
@@ -102,6 +153,138 @@ try {
     sourceSame(1, count($httpsClient->requests), 'one HTTPS request');
     sourceSame('session-value', $httpsClient->requests[0]['cookies']['loginmgr_marker'] ?? null,
         'loginmgr session positive control');
+    sourceSame(true, $httpsClient->fetchComplex('http://rutracker.org/forum/index.php'),
+        'account client can be reused over HTTP');
+    sourceSame(false, isset($httpsClient->requests[1]['cookies']['loginmgr_marker']),
+        'HTTPS account session cannot survive into a later HTTP request');
+
+    sourceSame(true, $httpClient->fetchComplex('http://other.test/file'),
+        'client can be reused on a different host');
+    sourceSame(false, isset($httpClient->requests[1]['cookies']['url_marker']),
+        'URL cookie cannot survive into an unrelated later request');
+    $pluginClient = new SourceRecordingSnoopy();
+    sourceSame(true, $pluginClient->fetchComplex('https://cookie.test/file'),
+        'HTTPS plugin-cookie request completed');
+    sourceSame('plugin-value', $pluginClient->requests[0]['cookies']['plugin_marker'] ?? null,
+        'legacy host-only plugin cookie remains available on HTTPS');
+    sourceSame(true, $pluginClient->fetchComplex('http://cookie.test/file'),
+        'reused client can make a later HTTP request');
+    sourceSame(false, isset($pluginClient->requests[1]['cookies']['plugin_marker']),
+        'earlier HTTPS plugin cookie must not survive into a later HTTP request');
+    $upgrade = new SourceRecordingSnoopy();
+    $upgrade->redirectTo = 'https://cookie.test/file/next';
+    sourceSame(true, $upgrade->fetchComplex('http://COOKIE.TEST./file'),
+        'anonymous HTTP to HTTPS upgrade completed');
+    sourceSame(2, count($upgrade->requests), 'upgrade has HTTP and HTTPS requests');
+    foreach($upgrade->requests as $request)
+        sourceSame(false, isset($request['cookies']['plugin_marker']),
+            'plugin cookie is absent on both hops when the source URL is HTTP');
+    sourceSame(1, substr_count(sourceLog(),
+        'cookies: http-refused: source=cookies host=cookie.test; use HTTPS URL'),
+        'plugin refusal without loginmgr account logs only the normalized host');
+    preg_match_all('/cookies: http-refused: [^\n]*host=cookie\.test[^\n]*/',
+        sourceLog(), $unknownAccountLogs);
+    sourceSame(1, count($unknownAccountLogs[0]),
+        'HTTP plugin-cookie refusal is logged once for the account-free host');
+    sourceSame(false, strpos($unknownAccountLogs[0][0], 'account=') !== false,
+        'account-free refusal does not invent a loginmgr account');
+
+    // An account may trust a sibling download host, but persisted and URL
+    // cookies were supplied for the source host alone.
+    $sibling = new SourceRecordingSnoopy();
+    $sibling->cookies = array('preset_marker' => 'preset-value');
+    $sibling->redirectTo = 'https://dl.tracker.example/file/next';
+    sourceSame(true, $sibling->fetchComplex('https://tracker.example/file/start:COOKIE:url_marker=url-value'),
+        'allowed sibling redirect completed');
+    sourceSame(2, count($sibling->requests), 'source and sibling each made a request');
+    sourceSame(1, RedirectProbeAccount::$loginCalls,
+        'first account request exercises the commonAccount login lifecycle');
+    sourceSame('plugin-value', $sibling->requests[0]['cookies']['plugin_marker'] ?? null,
+        'persisted cookie reaches its exact source host');
+    sourceSame('url-value', $sibling->requests[0]['cookies']['url_marker'] ?? null,
+        'explicit URL cookie reaches its source host');
+    sourceSame(false, isset($sibling->requests[1]['cookies']['plugin_marker']),
+        'persisted host-only cookie stays off the allowed sibling wire');
+    sourceSame(false, isset($sibling->requests[1]['cookies']['url_marker']),
+        'explicit URL cookie stays off the allowed sibling wire');
+    sourceSame('session-value', $sibling->requests[1]['cookies']['loginmgr_marker'] ?? null,
+        'loginmgr account session still follows its allowed redirect');
+    sourceSame('preset-value', $sibling->requests[1]['cookies']['preset_marker'] ?? null,
+        'caller pre-set cookie retains its existing redirect behavior');
+    $saved = new privateData('RedirectProbe');
+    sourceSame(true, (new rCache('/accounts'))->get($saved), 'account session cache saved');
+    sourceSame(false, isset($saved->cookies['plugin_marker']),
+        'source plugin cookie is not promoted into a reusable account session');
+    sourceSame(false, isset($saved->cookies['url_marker']),
+        'source URL cookie is not promoted into a reusable account session');
+    sourceSame('session-value', $saved->cookies['loginmgr_marker'] ?? null,
+        'account session cookie remains persisted');
+
+    $sameHost = new SourceRecordingSnoopy();
+    $sameHost->cookies = array('preset_marker' => 'preset-value');
+    $sameHost->redirectTo = 'https://tracker.example/file/next';
+    sourceSame(true, $sameHost->fetchComplex('https://tracker.example/file/start:COOKIE:url_marker=url-value'),
+        'same-host redirect completed');
+    sourceSame(1, RedirectProbeAccount::$loginCalls,
+        'saved account session is reused without another login');
+    foreach($sameHost->requests as $request)
+    {
+        sourceSame('plugin-value', $request['cookies']['plugin_marker'] ?? null,
+            'cached account keeps the persisted cookie on both same-host requests');
+        sourceSame('url-value', $request['cookies']['url_marker'] ?? null,
+            'cached account keeps the explicit URL cookie on both same-host requests');
+        sourceSame('preset-value', $request['cookies']['preset_marker'] ?? null,
+            'cached account keeps the caller cookie on both same-host requests');
+        sourceSame('session-value', $request['cookies']['loginmgr_marker'] ?? null,
+            'cached account keeps its loginmgr session on both same-host requests');
+    }
+
+    $mteamClient = new SourceRecordingSnoopy();
+    $mteamClient->cookies = array('preset_marker' => 'preset-value');
+    sourceSame(true, $mteamClient->fetchComplex('https://mteam.fr/file:COOKIE:url_marker=url-value'),
+        'mTeam cached account request completed');
+    sourceSame('plugin-value', $mteamClient->requests[0]['cookies']['plugin_marker'] ?? null,
+        'mTeam keeps the persisted cookie with its cached session');
+    sourceSame('url-value', $mteamClient->requests[0]['cookies']['url_marker'] ?? null,
+        'mTeam keeps the URL cookie with its cached session');
+    sourceSame('preset-value', $mteamClient->requests[0]['cookies']['preset_marker'] ?? null,
+        'mTeam keeps the caller cookie with its cached session');
+    sourceSame('mteam-session', $mteamClient->requests[0]['cookies']['loginmgr_marker'] ?? null,
+        'mTeam keeps its cached loginmgr cookie');
+    sourceSame('https://mteam.fr/landing', $mteamClient->referer,
+        'mTeam still restores its cached referer');
+
+    $rootDotClient = new SourceRecordingSnoopy();
+    sourceSame(true, $rootDotClient->fetchComplex('https://cookie.test./file'),
+        'trailing-root-dot request completed');
+    sourceSame('plugin-value', $rootDotClient->requests[0]['cookies']['plugin_marker'] ?? null,
+        'normalized equivalent host finds the existing plugin cookie');
+    $legacy = new rCookies();
+    $legacy->list['legacy.test.'] = array('old' => 'secret');
+    sourceSame(true, (new rCache())->set($legacy), 'legacy root-dot key saved verbatim');
+    sourceSame(array('old' => 'secret'), rCookies::load()->getCookiesForHost('legacy.test'),
+        'old root-dot key is readable under its canonical host');
+    sourceSame(array('legacy.test' => array('old' => 'secret')), rCookies::load()->getInfo(),
+        'loading legacy keys exposes only the normalized host');
+    $legacy = rCookies::load();
+    $legacy->add('legacy.test', '');
+    sourceSame(array(), rCookies::load()->getCookiesForHost('legacy.test.'),
+        'deleting a normalized host cannot resurrect its old root-dot key');
+    $equalsCookie = new rCookies();
+    $equalsCookie->add('equal.test', 'token=abc==; malformed; other=ok');
+    sourceSame(array('token' => 'abc==', 'other' => 'ok'),
+        rCookies::load()->getCookiesForHost('equal.test'),
+        'plugin add keeps equals inside values and ignores malformed pairs');
+    $postedCookie = new rCookies();
+    $postedCookie->set('cookie=' . rawurlencode('equal.test|token=abc==;other=ok'));
+    sourceSame(array('token' => 'abc==', 'other' => 'ok'),
+        rCookies::load()->getCookiesForHost('equal.test'),
+        'plugin form input keeps equals inside cookie values');
+    $log = sourceLog();
+    foreach(array('plugin-value', 'url-value', 'session-value', 'mteam-session') as $secret)
+        sourceSame(false, strpos($log, $secret) !== false,
+            'refusal and account diagnostics never log cookie values');
+
     echo "ok - fetchComplex keeps the HTTPS loginmgr session off HTTP\n";
 } catch (Throwable $error) {
     $failed = 1;

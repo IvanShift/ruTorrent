@@ -139,6 +139,60 @@ class TorrentMetaTest extends TestCase
 			'The binary pieces field is preserved byte for byte');
 	}
 
+	public function testRawBytesModeIgnoresAConflictingLocalFile()
+	{
+		$raw = 'd4:infod4:name1:xee'; // valid dictionary, with no NUL byte
+		$before = getcwd();
+		if($before === false)
+			throw new RuntimeException('Could not read the current directory for raw metainfo test');
+		$dir = sys_get_temp_dir() . '/torrent-raw-' . bin2hex(random_bytes(8));
+		if(!@mkdir($dir, 0700))
+			throw new RuntimeException('Could not create a unique raw metainfo test directory');
+		try
+		{
+			if(!@chdir($dir))
+				throw new RuntimeException('Could not enter the raw metainfo test directory');
+			$contents = 'this local file is not metainfo';
+			if(file_put_contents($raw, $contents) !== strlen($contents))
+				throw new RuntimeException('Could not write the conflicting local file');
+			$fromPath = new Torrent($raw);
+			$this->assertTrue($fromPath->errors() === false && $fromPath->info['name'] === $raw,
+				'the existing constructor still accepts a path by default');
+			$fromBytes = Torrent::fromRawBytes($raw);
+			$this->assertTrue($fromBytes->errors() === false && $fromBytes->info['name'] === 'x',
+				'raw mode parses the supplied bytes, never the conflicting local file');
+		}
+		finally
+		{
+			$restored = @chdir($before);
+			$removedFile = !is_file($dir . '/' . $raw) || @unlink($dir . '/' . $raw);
+			$removedDir = @rmdir($dir);
+			if(!$restored || !$removedFile || !$removedDir)
+				throw new RuntimeException('Could not clean up the raw metainfo test directory');
+		}
+	}
+
+	public function testOneArgumentDecodeOverrideRemainsCompatible()
+	{
+		$path = realpath(__DIR__ . '/../../php/Torrent.php');
+		$script = 'require ' . var_export($path, true) . '; '
+			. 'class OneArgumentDecoder extends Torrent { '
+			. 'public function decode($bytes) { return parent::decode($bytes); } } '
+			. '$torrent = new OneArgumentDecoder("d4:infod4:name1:xee"); '
+			. 'if ($torrent->errors() !== false || $torrent->info["name"] !== "x") exit(1);';
+		$process = proc_open(array(PHP_BINARY, '-r', $script),
+			array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+		$this->assertTrue(is_resource($process), 'A PHP child starts for the override compatibility check');
+		if(!is_resource($process)) return;
+		$output = stream_get_contents($pipes[1]);
+		$error = stream_get_contents($pipes[2]);
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		$exitCode = proc_close($process);
+		$this->assertTrue($exitCode === 0,
+			'A subclass may retain the original decode($bytes) signature: ' . $output . $error);
+	}
+
 	public function testGettersReadTheKeysThatAreNotIdentifiers()
 	{
 		$torrent = new Torrent($this->fixture());

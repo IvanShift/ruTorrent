@@ -253,6 +253,17 @@ CHILD;
             'stale or foreign download link is refused before a request');
         yggSame(1, count($engine->requests), 'foreign download attempted no fetch');
     },
+    'Ygg download selection uses a parsed nonempty id parameter' => function () {
+        global $yggTorrentOrigin;
+        $yggTorrentOrigin = 'https://trusted.example';
+        $account = new YggTorrentAccount();
+        foreach (array('?id=', '?id[]=1', '?id=9&id=', '?ref=1') as $query) {
+            yggSame(false, $account->test('https://trusted.example/engine/download_torrent' . $query),
+                'invalid final id must not select account: ' . $query);
+        }
+        yggSame(true, $account->test('https://trusted.example/engine/download_torrent?i%64=abc'),
+            'encoded parameter name is parsed as id; Ygg id need not be numeric');
+    },
     'a later Ygg search page outage keeps earlier results without a PHP warning' => function () {
         global $yggTorrentOrigin;
         $yggTorrentOrigin = 'https://trusted.example';

@@ -82,7 +82,7 @@ else
 					else
 					{
 						$cli = new Snoopy();
-						if(@$cli->fetchComplex($url) && $cli->status>=200 && $cli->status<300)
+						if(@$cli->fetchComplex($url) && Snoopy::isTorrentResponse($cli))
 						{
 							$name = $cli->get_filename();
 							if($name===false)

@@ -11,17 +11,9 @@ class mTeamAccount extends commonAccount
 
 	protected function loadData( $client = null )
 	{
-		$rt = new privateData($this->getName());
-		if($client)
-		{
-			$cache = new rCache('/accounts');
-			if($cache->get($rt))
-			{
-				$client->cookies = $rt->cookies;
-				$client->referer = $rt->referer;
-				$rt->loaded = true;
-			}
-		}
+		$rt = parent::loadData($client);
+		if($client && $rt->loaded)
+			$client->referer = $rt->referer;
 		return($rt);
 	}
 
