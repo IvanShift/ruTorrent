@@ -5211,6 +5211,93 @@ PHP;
 			'unrelated event actions remain valid in an otherwise empty BOOTSTRAP sample');
 	}
 
+	public function testHookWithEmptyLedgerReportsObservedMismatchWithoutAdoptingIt()
+	{
+		$this->installRtorrentQuoteDouble();
+		$classifier = new RetrackersHistoricalBindingClassifier();
+		$cases = array(
+			'legacy single hook' => array('tadd_trackers1alice' => 'legacy-insert-action'),
+			'legacy hook pair' => array('tadd_trackers1alice' => 'legacy-insert-action',
+				'tadd_trackers2alice' => 'legacy-recovery-action'),
+			'current pair with lost claim' => array('tadd_trackers1alice' =>
+				'functional-alice-exact-bytes', 'tadd_trackers2alice' =>
+				$this->historicalSafetyActionFixture()),
+		);
+		foreach ($cases as $name => $actions) {
+			$sample = $this->historicalProjectionFixture($actions, array());
+			$this->assertTrue($classifier->classify($sample, 'alice', null)['status'] ===
+				'hook-ledger-mismatch', $name . ' reports only the observed hook and empty ledger');
+			$adapter = $this->historicalQueueAdapter(array($sample, $sample));
+			$called = false;
+			$outcome = (new RetrackersStableHistoricalBinding($adapter))->consume('alice', null,
+				new RetrackersHistoricalLedgerAttestation(true, true, true, true),
+				function () use (&$called) { $called = true; });
+			$this->assertTrue($outcome === array('ok' => false,
+				'failure' => 'hook-ledger-mismatch-restart-required') &&
+				$adapter->calls === 2 && !$called,
+				$name . ' remains a two-read refusal before any consumer mutation');
+			$readback = new class($sample) extends RetrackersLifecycleRpcAdapter {
+				private $samples;
+				public function __construct($sample) { $this->samples = array($sample, $sample); }
+				public function historicalBindingSample(&$failure = null) {
+					$failure = null;
+					return(array_shift($this->samples));
+				}
+			};
+			$readback->setFamily(2);
+			$readbackFailure = null;
+			$this->assertTrue($readback->coherentLifecycleReadback('alice', null,
+				$readbackFailure) === false &&
+				$readbackFailure === 'hook-ledger-mismatch-restart-required',
+				$name . ' keeps the same closed reason at direct lifecycle readback');
+			foreach (array('init', 'done') as $door) {
+				$entryAdapter = $this->lifecycleQueueAdapter(array($sample, $sample));
+				$jResult = '';
+				$failure = null;
+				$ok = $door === 'init' ? retrackersRunLifecycleInit('alice', '/plugin/run.sh',
+					'/usr/bin/php', $jResult, $failure, $entryAdapter) :
+					retrackersRunLifecycleDone('alice', $jResult, $failure, $entryAdapter);
+				$this->assertTrue($ok === false &&
+					$failure === 'hook-ledger-mismatch-restart-required' &&
+					strpos($jResult, 'restart rTorrent and recheck') !== false &&
+					$entryAdapter->callbackHistory === array(),
+					$name . ' gives the closed reason at the ' . $door . ' entrypoint');
+			}
+		}
+		$legacy = $this->historicalProjectionFixture($cases['legacy hook pair'], array());
+		$current = $this->historicalProjectionFixture($cases['current pair with lost claim'], array());
+		$unstable = (new RetrackersStableHistoricalBinding(
+			$this->historicalQueueAdapter(array($legacy, $current))))->consume('alice', null,
+			new RetrackersHistoricalLedgerAttestation(true, true, true, true),
+			function () { throw new Exception('unstable hook reached consumer'); });
+		$this->assertTrue($unstable === array('ok' => false,
+			'failure' => 'profile-binding-unstable'),
+			'a changing hook still gets the unstable readback classification');
+		$untrusted = (new RetrackersStableHistoricalBinding(
+			$this->historicalQueueAdapter(array($legacy, $legacy))))->consume('alice', null,
+			new RetrackersHistoricalLedgerAttestation(false, true, true, true),
+			function () { throw new Exception('untrusted ledger reached consumer'); });
+		$this->assertTrue($untrusted === array('ok' => false,
+			'failure' => 'receipt-ledger-corrupt'),
+			'ledger attestation corruption outranks the neutral hook diagnosis');
+		$markedRow = array(str_repeat('A', 40), str_repeat('B', 40),
+			'v1:original:1:' . str_repeat('B', 40) . ':' . str_repeat('c', 64), '');
+		$marked = $this->historicalProjectionFixture($cases['legacy hook pair'], array(),
+			$this->packedRecoveryRows4(array($markedRow)));
+		$this->assertTrue($classifier->classify($marked, 'alice', null)['status'] ===
+			'ledger-corrupt', 'a persisted recovery marker still means structural corruption');
+		$markedOutcome = (new RetrackersStableHistoricalBinding(
+			$this->historicalQueueAdapter(array($marked, $marked))))->consume('alice', null,
+			new RetrackersHistoricalLedgerAttestation(true, true, true, true),
+			function () { throw new Exception('marked recovery reached consumer'); });
+		$this->assertTrue($markedOutcome === array('ok' => false,
+			'failure' => 'receipt-ledger-corrupt'),
+			'a real persisted marker remains visible as receipt-ledger-corrupt');
+		$this->assertTrue(strpos(retrackersLifecycleDiagnosticJavascript('init',
+			'receipt-ledger-corrupt'), 'restart rTorrent and recheck') === false,
+			'the ledger corruption message does not claim a restart will repair a persisted marker');
+	}
+
 	/**
 	 * An ordinary download is not an outstanding recovery.
 	 *
@@ -11396,6 +11483,7 @@ PHP;
 		// the failure instead of hidden behind a fingerprint.
 		$added = array(
 			'testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre',
+			'testHookWithEmptyLedgerReportsObservedMismatchWithoutAdoptingIt',
 			'testReviewPostEventRuntimeTrackersRemainAuthoritative',
 			'testReviewProductionRoutePollsAndRealShellPreservesEveryArgument',
 			'testReviewSourceAndResumeTopologyRefuseLossBeforeMutation',

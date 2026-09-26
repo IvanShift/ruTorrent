@@ -610,6 +610,43 @@ switch($mode)
 	}
 	case "setprops":	/**/
 	{
+		// This mode sends trusted RPC. Accept only the properties exposed by
+		// the shipped Properties dialog, before sending any member of a batch.
+		$allowedProps = array('peers_max', 'peers_min', 'tracker_numwant',
+			'ulslots', 'pex', 'superseed');
+		$propertyRefusal = null;
+		if($malformedForm || count($hash) !== 1
+			|| !preg_match('/^[A-Fa-f0-9]{40}$/D', $hash[0]))
+			$propertyRefusal = 'missing or invalid torrent hash';
+		else if(count($ss) === 0 || count($ss) !== count($vs))
+			$propertyRefusal = 'missing or mismatched properties';
+		else
+		{
+			foreach($ss as $ndx=>$s)
+			{
+				if(!in_array($s, $allowedProps, true))
+				{
+					$propertyRefusal = 'unsupported property';
+					break;
+				}
+				$value = $vs[$ndx];
+				if(!preg_match('/^-?(?:0|[1-9][0-9]*)$/D', $value)
+					|| strlen(ltrim($value, '-')) > 10
+					|| (float)$value < -2147483648 || (float)$value > 2147483647
+					|| (($s === 'pex' || $s === 'superseed')
+						&& $value !== '0' && $value !== '1'))
+				{
+					$propertyRefusal = 'invalid property value';
+					break;
+				}
+			}
+		}
+		if($propertyRefusal !== null)
+		{
+			FileUtil::toLog('httprpc: setprops refused: '.$propertyRefusal);
+			header('HTTP/1.0 400 Bad Request');
+			CachedEcho::send('Refused: '.$propertyRefusal.'.', 'text/plain');
+		}
 		$req = new rXMLRPCRequest();
 		foreach($ss as $ndx=>$s)
 		{

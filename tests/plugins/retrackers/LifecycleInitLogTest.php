@@ -49,14 +49,18 @@ class LifecycleInitLogTest extends TestCase
         }
     }
 
-    public function testInPlaceUpgradeHintIsConditionalAndDoesNotReplaceTheFailureCode()
+    public function testHookLedgerMismatchHintIsSpecificAndDoesNotMaskCorruption()
     {
-        $legacy = retrackersLifecycleDiagnosticJavascript('init', 'receipt-ledger-corrupt');
-        $this->assertTrue(strpos($legacy, 'receipt-ledger-corrupt') !== false &&
-            strpos($legacy, 'if an in-place upgrade left old hooks, restart rTorrent and recheck') !== false,
-            'init keeps the classified refusal and names the conditional legacy-hook remedy');
-        $other = retrackersLifecycleDiagnosticJavascript('done', 'receipt-ledger-corrupt');
-        $this->assertTrue(strpos($other, 'restart rTorrent') === false,
-            'the upgrade hint is limited to the startup path with the documented old-hook case');
+        foreach (array('init', 'done') as $door) {
+            $mismatch = retrackersLifecycleDiagnosticJavascript($door,
+                'hook-ledger-mismatch-restart-required');
+            $this->assertTrue(strpos($mismatch, 'hook-ledger-mismatch-restart-required') !== false &&
+                strpos($mismatch, 'restart rTorrent and recheck') !== false,
+                $door.' keeps the mismatch code and names the restart remedy');
+            $corrupt = retrackersLifecycleDiagnosticJavascript($door, 'receipt-ledger-corrupt');
+            $this->assertTrue(strpos($corrupt, 'receipt-ledger-corrupt') !== false &&
+                strpos($corrupt, 'restart rTorrent') === false,
+                $door.' does not claim a restart repairs structural ledger corruption');
+        }
     }
 }

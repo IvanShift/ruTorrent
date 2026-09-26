@@ -4126,22 +4126,17 @@ class RetrackersHistoricalBindingClassifier
 			return($this->ledgerCorrupt());
 		}
 		$profiles = $this->profiles($value['actions'], $ledger['claims']);
-		// An empty ledger is not by itself corruption: it is what a daemon that
-		// has just started looks like, because these keys live only in its
-		// memory. It becomes corruption when something SURVIVED the ledger --
-		// a hook this code cannot account for, one of our own pairs with no
-		// receipt behind it, or a recovery marker on a torrent, since markers
-		// live in the session files and outlive the daemon.
-		//
-		// The last of those asks marked_count and not count. count is the row
-		// count of an unfiltered d.multicall2 over the whole main view, so
-		// asking it made every install that holds a single torrent answer
-		// 'receipt-ledger-corrupt' for ever -- measured on a live container,
-		// zero torrents initialised and one marker-free torrent did not.
-		if (count($value['ledger_keys']) === 0 && (!$profiles['valid'] ||
-			count($profiles['profiles']) !== 0 || $recovery['marked_count'] !== 0)) {
+		// Ledger keys live only in daemon memory. A hook with no keys may be
+		// historical, or a current hook whose claim was lost; neither origin
+		// can be proved from this read. A persisted recovery marker with no
+		// ledger is structural corruption and must retain its stronger refusal.
+		// Use marked_count, not the count of ordinary torrents in the main view.
+		$emptyLedger = count($value['ledger_keys']) === 0;
+		if ($emptyLedger && $recovery['marked_count'] !== 0) {
 			return($this->ledgerCorrupt());
 		}
+		$hookWithoutLedger = $emptyLedger && (!$profiles['valid'] ||
+			count($profiles['profiles']) !== 0);
 		$semanticValid = $profiles['valid'] && !$ledger['claim_duplicate'];
 		$profileCount = count($profiles['profiles']);
 		$claimCount = $ledger['claim_count'];
@@ -4251,8 +4246,10 @@ class RetrackersHistoricalBindingClassifier
 			'binding' => array('family' => $sample['family'], 'digest' => $value['digest'],
 				'counts' => $value['counts']),
 		);
+		$status = $hookWithoutLedger ? 'hook-ledger-mismatch' :
+			($semanticValid ? 'valid' : 'semantic-invalid');
 		$stable = array(
-			'status' => $semanticValid ? 'valid' : 'semantic-invalid',
+			'status' => $status,
 			'family' => $sample['family'],
 			'digest' => $value['digest'],
 			'counts' => $value['counts'],
@@ -4267,7 +4264,7 @@ class RetrackersHistoricalBindingClassifier
 			'ledger' => $ledger['packed'],
 			'recovery' => $recovery['packed'],
 		);
-		return(array('status' => $semanticValid ? 'valid' : 'semantic-invalid',
+		return(array('status' => $status,
 			'phase' => $phase, 'observation' => $observation, 'stable' => $stable,
 			'decision' => $decision));
 	}
@@ -4336,6 +4333,9 @@ class RetrackersStableHistoricalBinding
 			return(array('ok' => false, 'failure' => 'profile-binding-unstable'));
 		}
 		$decision = $second['decision'];
+		if ($second['status'] === 'hook-ledger-mismatch') {
+			return(array('ok' => false, 'failure' => 'hook-ledger-mismatch-restart-required'));
+		}
 		if ($second['status'] !== 'valid') {
 			return(array('ok' => false, 'failure' => 'historical-hook-restart-required'));
 		}
@@ -7901,6 +7901,12 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			$failure = 'receipt-ledger-corrupt';
 			return(false);
 		}
+		if ($first['stable'] === $second['stable'] &&
+			$second['decision']['binding']['family'] === $this->getFamily() &&
+			$second['status'] === 'hook-ledger-mismatch') {
+			$failure = 'hook-ledger-mismatch-restart-required';
+			return(false);
+		}
 		if ($first['status'] !== 'valid' || $second['status'] !== 'valid' ||
 			$first['stable'] !== $second['stable'] ||
 			$second['decision']['binding']['family'] !== $this->getFamily()) {
@@ -9389,6 +9395,7 @@ function retrackersBoundedFailureReason($failure)
 		'handoff-release-changed' => true,
 		'handoff-release-pending' => true,
 		'historical-hook-restart-required' => true,
+		'hook-ledger-mismatch-restart-required' => true,
 		'hook-ack-capability-missing' => true,
 		'hook-active-unconfirmed' => true,
 		'hook-deferred-replay-pending' => true,
@@ -9473,9 +9480,8 @@ function retrackersLifecycleDiagnosticJavascript($context, $failure)
 	$message = $reason;
 	if ($context === 'done' && $reason === 'hook-teardown-pending') {
 		$message .= '; daemon restart required after active recovery finishes';
-	} elseif ($context === 'init' && $reason === 'receipt-ledger-corrupt') {
-		// An old hook and missing claims can look alike; the refusal stays closed.
-		$message .= '; if an in-place upgrade left old hooks, restart rTorrent and recheck';
+	} elseif ($reason === 'hook-ledger-mismatch-restart-required') {
+		$message .= '; restart rTorrent and recheck';
 	}
 	return('noty(' . json_encode('retrackers: ' . $message) . ",'error');");
 }

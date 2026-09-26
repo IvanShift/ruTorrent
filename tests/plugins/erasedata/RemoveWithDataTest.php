@@ -6089,6 +6089,34 @@ class RemoveWithDataTest extends TestCase
 			'a prior zero-byte token must leave the strict tmp available for the collector');
 	}
 
+	public function testCleanupTokenPublicationRechecksPairAfterLastTokenRead()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$job = $this->prepareCleanupJob($oldHash);
+		$tmp = $job['tmp_path'];
+		$list = $job['list_path'];
+		$foreignToken = $this->dir.'/late-foreign-token';
+		$backup = $list.'.owned';
+		$marker = $this->dir.'/late-token-swap.triggered';
+		file_put_contents($foreignToken, '');
+		$foreign = lstat($foreignToken);
+		// The sixth token identity read is the last read of the first
+		// committed-pair check. Swap only after it has returned the old inode.
+		$fixture = new ErasedataCollectorFixture(array(
+			'entryIdentity:6' => array('path' => $list,
+				'action' => 'replace-entry', 'at' => 'after',
+				'backup' => $backup, 'replacement' => $foreignToken,
+				'marker' => $marker),
+		));
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $fixture),
+			'a token changed after the first committed-pair read must not be reported as published');
+		$this->assertTrue(is_file($marker) && is_file($backup)
+			&& is_file($list) && lstat($list)['ino'] === $foreign['ino']
+			&& is_file($tmp),
+			'the scripted swap reached the exact gap between the two pair checks');
+	}
+
 	public function testCleanupTokenPublicationRetainsSwappedTmpAndToken()
 	{
 		$this->reset();
