@@ -143,6 +143,7 @@ class ErasedataFake
 {
 	public static $calls = array();
 	public static $prepareResult = true;
+	public static $armResult = true;
 	public static $publishResult = true;
 	public static $cancelResult = true;
 	public static $recoverResult = ERASEDATA_CLEANUP_NONE;
@@ -155,6 +156,7 @@ class ErasedataFake
 	{
 		self::$calls = array();
 		self::$prepareResult = true;
+		self::$armResult = true;
 		self::$publishResult = true;
 		self::$cancelResult = true;
 		self::$recoverResult = ERASEDATA_CLEANUP_NONE;
@@ -223,6 +225,12 @@ function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $
 		'base' => $base,
 		'entries' => $entries,
 	));
+}
+
+function erasedataArmObsoleteCleanup($job)
+{
+	ErasedataFake::record(__FUNCTION__, func_get_args());
+	return(ErasedataFake::$armResult);
 }
 
 function erasedataPublishObsoleteCleanup(&$job)
@@ -1019,6 +1027,35 @@ class CheckerTest
 		finally { strictRemoveTree($base); }
 	}
 
+	public function testMissingDrainAcknowledgementKeepsPredecessorBeforeErase()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-arm-no-ack-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		ErasedataFake::$armResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'a missing guarded-child acknowledgement keeps the replacement retryable');
+			strictAssertSame(array('erasedataCleanupOtherOwnerSnapshot',
+				'erasedataPrepareObsoleteCleanup', 'erasedataArmObsoleteCleanup',
+				'erasedataCancelObsoleteCleanup'), array_column(ErasedataFake::$calls, 'name'),
+				'the exact prepared cleanup job is cancelled after refused arm');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases), 'only the staged successor may be discarded');
+			strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
+				'the predecessor is never erased without drain acknowledgement');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
 	public function testCleanupPrepareFailureAbortsBeforeCommit()
 	{
 		$this->resetFakes();
@@ -1194,7 +1231,7 @@ class CheckerTest
 			strictAssertTrue($publish[0]['request_count'] <= array_search($activation[0], rXMLRPCRequest::$requests, true),
 				'publication precedes successor activation');
 			strictAssertSame(array('erasedataCleanupOtherOwnerSnapshot', 'erasedataPrepareObsoleteCleanup',
-				'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
+				'erasedataArmObsoleteCleanup', 'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
 				array_column(ErasedataFake::$calls, 'name'), 'the producer lifecycle has one prepare, publish and post-activation kick');
 		}
 		finally { strictRemoveTree($base); }

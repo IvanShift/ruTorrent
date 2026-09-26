@@ -50,6 +50,12 @@ function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $
         'replacement_record' => $record, 'base' => $base, 'entries' => $entries);
 }
 
+function erasedataArmObsoleteCleanup($job)
+{
+    CheckerMetaFetchErasedata::record(__FUNCTION__, array($job));
+    return true;
+}
+
 function erasedataPublishObsoleteCleanup(&$job)
 {
     CheckerMetaFetchErasedata::record(__FUNCTION__, array($job));
@@ -403,6 +409,7 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'the harvest claims no authorship of someone else\'s torrent');
     strictAssertSame(array(
         'erasedataPrepareObsoleteCleanup',
+        'erasedataArmObsoleteCleanup',
         'erasedataPublishObsoleteCleanup',
         'erasedataKickCollector',
     ), array_column(CheckerMetaFetchErasedata::$calls, 'name'),

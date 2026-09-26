@@ -8,6 +8,8 @@
 
  theUILang.tskCommand		= "Running...";
  theUILang.tskCommandDone	= "Done.";
+ theUILang.tskKillRefused	= "Cancellation was refused; see task diagnostics.";
+ theUILang.tskKillUnknown	= "Cancellation outcome is unknown; check task diagnostics.";
  theUILang.tskConsole		= "Console";
  theUILang.tskErrors		= "Diagnostics";
  theUILang.tskBackground	= "Hide";

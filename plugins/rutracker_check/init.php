@@ -36,6 +36,9 @@ else
 		require( 'done.php' );
 	}
 	$req = new rXMLRPCRequest($commands);
+	// The cleanup drain is independent of the ordinary collector and survives
+	// a daemon restart through its durable state, even with erasedata disabled.
+	erasedataRearmDrainSchedule();
 	if($req->success())
 		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	else

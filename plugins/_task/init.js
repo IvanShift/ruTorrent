@@ -158,10 +158,11 @@ plugin.toBackground = function()
 
 plugin.shutdown = function()
 {
-	this.kill();
-	this.callNotification("HideInterface");
-	this.callNotification("Shutdown");
-	this.clear();
+	this.kill(function() {
+		this.callNotification("HideInterface");
+		this.callNotification("Shutdown");
+		this.clear();
+	});
 }
 
 plugin.clearForeTimeout = function()
@@ -198,14 +199,19 @@ plugin.onStart = function(data)
 		if(!data.status)
 		{
 			this.foreground.no = data.no;
-			this.kill();
-			this.callNotification("Shutdown");
-			this.clear();
+			this.kill(function() {
+				this.callNotification("Shutdown");
+				this.clear();
+			});
 		}
 }
 
 plugin.check = function(data)
 {
+	// A regular poll may finish while cancellation is still awaiting its own
+	// answer. That poll cannot confirm whether the kill request succeeded.
+	if(this.killPending === data.no)
+		return;
 	this.clearForeTimeout();
         this.foreground.no = data.no;
         this.foreground.pid = data.pid;
@@ -239,11 +245,52 @@ plugin.isInBackground = function()
 	return($type(plugin.background[plugin.foreground.no]));
 }
 
-plugin.kill = function()
+plugin.kill = function(onSuccess)
 {
-	theWebUI.requestWithoutTimeout("?action=taskkill&hash="+this.foreground.no);
-	if(this.foreground.status<0)
-		plugin.callNotification("Finished");
+	var taskNo = this.foreground.no;
+	var attempt = this.killAttempt = (this.killAttempt || 0) + 1;
+	var self = this;
+	this.killPending = taskNo;
+	this.clearForeTimeout();
+	var finish = function(killed, uncertain) {
+		if(self.foreground.no !== taskNo || self.killAttempt !== attempt)
+			return;
+		self.killPending = null;
+		if(killed === true && !uncertain)
+		{
+			if(self.foreground.status<0)
+				self.callNotification("Finished");
+			if(onSuccess)
+				onSuccess.call(self);
+		}
+		else
+			self.showKillRefusal(taskNo, attempt, uncertain);
+	};
+	theWebUI.requestWithTimeout("?action=taskkill&hash="+taskNo,
+		[function(killed) { finish(killed, false); },this],
+		function() { finish(null, true); },
+		function() { finish(null, true); });
+}
+
+plugin.showKillRefusal = function(taskNo, attempt, uncertain)
+{
+	// A server refusal has a classified reason in the task errors file. A
+	// transport failure leaves the cancellation outcome unknown; show that
+	// distinction and fetch the newest task state in either case.
+	this.foreground.options = this.foreground.options || {};
+	this.foreground.options.noclose = true;
+	noty(uncertain
+		? (theUILang.tskKillUnknown || "Cancellation outcome is unknown; check task diagnostics.")
+		: (theUILang.tskKillRefused || "Cancellation was refused; see task diagnostics."), "error");
+	theWebUI.requestWithoutTimeout("?action=taskcheck&hash="+taskNo,[function(data) {
+		if(this.foreground.no !== taskNo || this.killAttempt !== attempt
+			|| !data || typeof data !== "object")
+			return;
+		this.callNotification("ShowInterface", $.extend(this.foreground,data));
+		$("#tskConsole-header").html(theUILang.tskCommand);
+		theDialogManager.show("tskConsole");
+		this.check(data);
+	},this]);
 }
 
 plugin.setConsoleControls = function(errPresent) {

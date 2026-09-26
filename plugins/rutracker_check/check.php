@@ -1743,6 +1743,21 @@ class ruTrackerChecker
 			return self::STE_ERROR;
 		}
 
+		if($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob))
+		{
+			self::logCleanupFailure('obsolete cleanup drain not confirmed before predecessor erase; replacement remains retryable');
+			if(!erasedataCancelObsoleteCleanup($cleanupJob))
+			{
+				self::logCleanupFailure('prepared obsolete cleanup cancellation failed after drain refusal; both generations and recovery markers were retained');
+				return self::STE_ERROR;
+			}
+			if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker))
+				self::eraseStaged($newHash, $marker, $stagedRecordStr);
+			else
+				self::logDebug('createTorrent: predecessor restore failed after cleanup drain refusal; keeping staged successor for sweep');
+			return self::STE_ERROR;
+		}
+
 		// Commit point: erase the old torrent.
 		$eraseStatus = RuTrackerAtomicOwnership::erase(
 			$hash,

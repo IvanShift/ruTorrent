@@ -5642,6 +5642,97 @@ class RemoveWithDataTest extends TestCase
 			erasedataReleaseHashLock($contender);
 	}
 
+	public function testPreparedCleanupCannotArmWithoutGuardedChildAcknowledgement()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$job = $this->prepareCleanupJob($oldHash);
+		$this->assertTrue(is_array($job), 'the cleanup obligation is staged before arm');
+		if(!is_array($job))
+			return;
+		$queue = $this->queuePath();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$this->assertTrue(!erasedataArmObsoleteCleanupRun($this->dependencies(array(
+			'ackTimeout' => 0.02, 'ackPoll' => 0.005)), $job),
+			'a successful schedule RPC without a real child acknowledgement refuses the commit');
+		$state = erasedataReadDrainState($queue);
+		$this->assertEquals('0000000000000001', $state['generation'],
+			'the wake generation is durable before the wait');
+		$this->assertEquals('0000000000000000', $state['acknowledged'],
+			'registration cannot forge a child acknowledgement');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the existing aligned drain schedule is registered once');
+		$this->assertTrue(is_file($job['tmp_path']), 'the prepared job remains byte-addressable on refusal');
+		$log = implode("\n", FileUtil::$log);
+		$this->assertTrue(strpos($log, 'cleanup-drain-no-ack') !== false
+			&& strpos($log, $job['base']) === false,
+			'the refusal is classified and does not disclose the payload path');
+		$this->assertTrue(erasedataCancelObsoleteCleanup($job),
+			'the checker can cancel the exact prepared job after refusal');
+	}
+
+	public function testPreparedCleanupReportsScheduleRefusalBeforeAcknowledgementWait()
+	{
+		$this->reset();
+		$job = $this->prepareCleanupJob($this->hash('A'));
+		$this->assertTrue(is_array($job), 'the exact cleanup job is staged');
+		if(!is_array($job))
+			return;
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => false, 'val' => array());
+		$this->assertTrue(!erasedataArmObsoleteCleanupRun($this->dependencies(array(
+			'ackTimeout' => 0.02, 'ackPoll' => 0.005)), $job),
+			'a failed schedule registration refuses pre-erase arm');
+		$log = implode("\n", FileUtil::$log);
+		$this->assertTrue(strpos($log, 'cleanup-arm-rearm') !== false
+			&& strpos($log, 'cleanup-drain-no-ack') === false,
+			'the log names registration failure instead of claiming an ack timeout');
+		$this->assertTrue(is_file($job['tmp_path']) && erasedataCancelObsoleteCleanup($job),
+			'the exact prepared job remains cancellable after registration failure');
+	}
+
+	public function testPreparedCleanupArmIsRetainedAcrossRestartUntilCollection()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$job = $this->prepareCleanupJob($oldHash);
+		$this->assertTrue(is_array($job), 'the cleanup obligation is staged before arm');
+		if(!is_array($job))
+			return;
+		$queue = $this->queuePath();
+		$child = null;
+		$script = 'require '.var_export(__FILE__, true).'; '
+			.'FileUtil::$settingsPath = '.var_export($this->dir, true).'; '
+			.'usleep(10000); '
+			.'exit(is_array(erasedataAcknowledgeDrainGeneration('
+			.var_export($queue, true).', '.var_export(User::getUser(), true)
+			.', array("FileUtil", "toLog"))) ? 0 : 1);';
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0),
+			'callback' => function() use (&$child, $script) {
+				$child = ErasedataTestProcess::start('exec '.escapeshellarg(PHP_BINARY)
+					.' -r '.escapeshellarg($script));
+			});
+		try
+		{
+			$this->assertTrue(erasedataArmObsoleteCleanupRun($this->dependencies(), $job),
+				'an independently started PHP child acknowledges the durable generation');
+		}
+		finally
+		{
+			$this->assertTrue($child instanceof ErasedataTestProcess && $child->wait(2)
+					&& $child->reap() === 0, 'the acknowledgement child exited cleanly');
+		}
+		$scan = erasedataRetirementScan($this->dependencies());
+		$this->assertTrue($scan['classes']['cleanup'] === 1 && !$scan['empty'],
+			'the prepared cleanup file prevents drain retirement before predecessor erase');
+		$this->assertTrue(erasedataPublishObsoleteCleanup($job),
+			'the exact cleanup job publishes after the simulated commit');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()),
+			'a restart re-arms the pending cleanup job from durable state');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'one repeating drain can collect a published cleanup job without the ordinary schedule');
+	}
+
 	public function testCleanupPublishCreatesTokenForOnlyTheExactGeneration()
 	{
 		$this->reset();

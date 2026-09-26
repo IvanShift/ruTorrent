@@ -8,6 +8,8 @@
 
  theUILang.tskCommand		= "Выполнение команды...";
  theUILang.tskCommandDone	= "Команда выполнена.";
+ theUILang.tskKillRefused	= "Отмена отклонена; подробности в диагностике задачи.";
+ theUILang.tskKillUnknown	= "Результат отмены неизвестен; проверьте диагностику задачи.";
  theUILang.tskConsole		= "Консоль";
  theUILang.tskErrors		= "Диагностика";
  theUILang.tskBackground	= "Спрятать";

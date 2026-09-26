@@ -914,10 +914,31 @@ class RuTrackerForumIndex
     // sees the newer marker and skips its write. Positive evidence commits
     // only after the setter answers or the daemon confirms both target and
     // fence. A crawl compares its snapshot under the same topic lock.
+    const FORUM_EVIDENCE_LIMIT = 1024;
+
     static private function forumEvidence($versions, $topicId)
     {
         return is_array($versions) && array_key_exists((int) $topicId, $versions)
             ? $versions[(int) $topicId] : null;
+    }
+
+    // A missing version can mean either "never mapped" or "evicted". The
+    // global epoch distinguishes those cases across a long-running crawl;
+    // retained topic versions still allow unrelated commits to proceed.
+    static private function forumEvidenceStatus($observed, $state, $topicId)
+    {
+        if (!is_array($observed) || !array_key_exists('versions', $observed)
+            || !array_key_exists('epoch', $observed)) return 'unknown';
+        $before = self::forumEvidence($observed['versions'], $topicId);
+        $after = self::forumEvidence($state['forum_evidence'] ?? null, $topicId);
+        // A retained version can disappear through pruning alone. That is
+        // uncertainty, not proof that another writer superseded this topic.
+        if ($before !== null && $after === null) return 'unknown';
+        if ($before !== $after) return 'superseded';
+        if ($before !== null) return 'current';
+        return !empty($observed['complete'])
+            && $observed['epoch'] === ($state['forum_evidence_epoch'] ?? null)
+            ? 'current' : 'unknown';
     }
 
     // Both reconciliation and the writer need the same two fields from one
@@ -946,11 +967,20 @@ class RuTrackerForumIndex
         }
     }
 
-    static private function withForumEvidence($state, $topicId, $version)
+    static private function withForumEvidence($state, $topicId, $version, &$previousEpoch = null)
     {
+        $previousEpoch = $state['forum_evidence_epoch'] ?? null;
         self::seatBook($state, 'forum_evidence', 'topic ' . (int) $topicId);
         self::seatBook($state, 'misses', 'topic ' . (int) $topicId);
+        // Move refreshed topics to the end. Every positive commit also
+        // changes the epoch in this same document update, so pruning cannot
+        // turn an in-flight snapshot's absent entry back into false equality.
+        unset($state['forum_evidence'][(int) $topicId]);
         $state['forum_evidence'][(int) $topicId] = $version;
+        if (count($state['forum_evidence']) > self::FORUM_EVIDENCE_LIMIT)
+            $state['forum_evidence'] = array_slice($state['forum_evidence'],
+                -self::FORUM_EVIDENCE_LIMIT, null, true);
+        $state['forum_evidence_epoch'] = $version;
         unset($state['misses'][(int) $topicId]);
         return $state;
     }
@@ -1071,17 +1101,19 @@ class RuTrackerForumIndex
         return $read->success() && isset($read->val[0]) ? (string) $read->val[0] : null;
     }
 
-    static private function commitForumMapping($topicId, $record)
+    static private function commitForumMapping($topicId, $record, &$previousEpoch = null)
     {
         $committed = false;
-        $stored = RuTrackerState::update('forumindex', function ($state) use ($topicId, $record, &$committed) {
+        $stored = RuTrackerState::update('forumindex', function ($state) use (
+            $topicId, $record, &$committed, &$previousEpoch
+        ) {
             $topic = (int) $topicId;
             $hash = $record['hash'];
             if (!isset($state['forum_pending'][$topic])
                 || !is_array($state['forum_pending'][$topic])
                 || ($state['forum_pending'][$topic][$hash] ?? null) !== $record)
                 return $state;
-            $state = self::withForumEvidence($state, $topicId, $record['version']);
+            $state = self::withForumEvidence($state, $topicId, $record['version'], $previousEpoch);
             unset($state['forum_pending'][$topic][$hash]);
             if (!count($state['forum_pending'][$topic])) unset($state['forum_pending'][$topic]);
             $committed = true;
@@ -1181,13 +1213,16 @@ class RuTrackerForumIndex
     {
         $version = self::newForumVersion($topicId);
         if ($version === false) return false;
-        $stored = RuTrackerState::update('forumindex', function ($state) use ($topicId, $version) {
-            return self::withForumEvidence($state, $topicId, $version);
+        $previousEpoch = null;
+        $stored = RuTrackerState::update('forumindex', function ($state) use (
+            $topicId, $version, &$previousEpoch
+        ) {
+            return self::withForumEvidence($state, $topicId, $version, $previousEpoch);
         });
         if (!$stored)
             ruTrackerChecker::logUnrepairable('forumindex: forumindex.json crawl evidence for topic ' . (int) $topicId
                 . ' could not be persisted; the result must be retried');
-        return $stored ? $version : false;
+        return $stored ? array('version' => $version, 'before' => $previousEpoch) : false;
     }
 
     // Queues $topicId for the next sweep, unless markMiss() already recorded
@@ -1310,8 +1345,12 @@ class RuTrackerForumIndex
         $versions = array();
         foreach ($topics as $topic) $versions[(int) $topic] = self::queueVersion($stored, (int) $topic);
         return array('topics' => array_map('intval', $topics), 'versions' => $versions,
-            'evidence' => isset($state['forum_evidence']) && is_array($state['forum_evidence'])
-                ? $state['forum_evidence'] : array());
+            'evidence' => array(
+                'versions' => isset($state['forum_evidence']) && is_array($state['forum_evidence'])
+                    ? $state['forum_evidence'] : array(),
+                'epoch' => $state['forum_evidence_epoch'] ?? null,
+                'complete' => true,
+            ));
     }
 
     // One queued topic's generation. An ABSENT entry is the legacy zero, which
@@ -1525,14 +1564,20 @@ class RuTrackerForumIndex
                     . (int) $topicId . ' is unconfirmed; crawl miss and backoff deferred');
                 return false;
             }
-            $stored = RuTrackerState::update('forumindex', function ($state) use ($topicId, $now, $observedEvidence) {
-                // The snapshot was taken before the long sweep. If positive
-                // evidence arrived while it ran, this absence is already stale.
-                // Direct callers without a snapshot keep the original behaviour.
-                if ($observedEvidence !== null
-                    && self::forumEvidence($observedEvidence, $topicId)
-                        !== self::forumEvidence($state['forum_evidence'] ?? null, $topicId))
-                    return $state;
+            $retry = false;
+            $stored = RuTrackerState::update('forumindex', function ($state) use (
+                $topicId, $now, $observedEvidence, &$retry
+            ) {
+                // A changed topic has a newer answer. If its version was
+                // evicted, a changed global epoch is only uncertainty: leave
+                // the old request queued so a later crawl can decide it.
+                if ($observedEvidence !== null) {
+                    $evidence = self::forumEvidenceStatus($observedEvidence, $state, $topicId);
+                    if ($evidence !== 'current') {
+                        $retry = $evidence === 'unknown';
+                        return $state;
+                    }
+                }
                 $misses = isset($state['misses']) && is_array($state['misses']) ? $state['misses'] : array();
                 $prior = $misses[(int) $topicId] ?? null;
                 // missCount() answers null for a count nobody can read, and
@@ -1560,7 +1605,7 @@ class RuTrackerForumIndex
             if (!$stored)
                 ruTrackerChecker::logUnrepairable('forumindex: forumindex.json miss for topic ' . (int) $topicId
                     . ' could not be persisted; crawl result must be retried');
-            return $stored;
+            return $stored && !$retry;
         } finally {
             RuTrackerState::releaseScopedLock($topicLock);
         }
@@ -1757,9 +1802,9 @@ class RuTrackerForumIndex
                         . (int) $topicId . ' is unreadable; crawl writeback deferred');
                     return self::FORUM_WRITE_FAILED;
                 }
-                if (self::forumEvidence($observedEvidence, $topicId)
-                    !== self::forumEvidence($state['forum_evidence'] ?? null, $topicId))
-                    return self::FORUM_WRITE_SUPERSEDED;
+                $evidence = self::forumEvidenceStatus($observedEvidence, $state, $topicId);
+                if ($evidence === 'superseded') return self::FORUM_WRITE_SUPERSEDED;
+                if ($evidence === 'unknown') return self::FORUM_WRITE_FAILED;
             }
 
             // All writers of this topic take the topic lock first. The
@@ -1838,8 +1883,11 @@ class RuTrackerForumIndex
                         . ' the mapping intent remains pending');
                     return self::FORUM_WRITE_FAILED;
                 }
-                if (!self::commitForumMapping($topicId, $pending)) return self::FORUM_WRITE_FAILED;
-                $committedEvidence = $pending['version'];
+                $previousEpoch = null;
+                if (!self::commitForumMapping($topicId, $pending, $previousEpoch))
+                    return self::FORUM_WRITE_FAILED;
+                $committedEvidence = array('version' => $pending['version'],
+                    'before' => $previousEpoch);
                 return self::FORUM_WRITE_WRITTEN;
             } finally {
                 RuTrackerState::releaseScopedLock($lock);
@@ -2065,7 +2113,18 @@ class RuTrackerForumIndex
                 $status = self::writeForumMapping($hash, $topic, $forum,
                     (string) ($currentForum[$hash] ?? ''), false, null,
                     $crawlEvidence, $writtenEvidence);
-                if ($writtenEvidence !== null) $crawlEvidence[(int) $topic] = $writtenEvidence;
+                if ($writtenEvidence !== null) {
+                    $crawlEvidence['versions'][(int) $topic] = $writtenEvidence['version'];
+                    // A later own write may acknowledge only the exact epoch
+                    // it followed. A feed on another topic can commit before
+                    // this write and then be hidden by its new epoch; keep
+                    // missing-topic comparisons fail-closed after that gap.
+                    if ($crawlEvidence['complete']
+                        && $crawlEvidence['epoch'] === $writtenEvidence['before'])
+                        $crawlEvidence['epoch'] = $writtenEvidence['version'];
+                    else
+                        $crawlEvidence['complete'] = false;
+                }
                 if ($status === self::FORUM_WRITE_FAILED) {
                     $complete = false;
                     continue;
@@ -2099,13 +2158,13 @@ class RuTrackerForumIndex
         if (!empty($outcome['complete'])) {
             $missRetries = array();
             foreach ($unresolved as $topic)
-                if (!self::markMiss($topic, $now, $queueSnapshot['evidence'])) {
+                if (!self::markMiss($topic, $now, $crawlEvidence)) {
                     $missRetries[] = (int) $topic;
                     self::ensureQueued($topic);
                 }
             self::settleQueue($queueSnapshot, array_merge($requeued, $missRetries));
             return 'wanted ' . count($wanted) . ', resolved ' . count($resolved)
-                . (count($missRetries) ? ', ' . count($missRetries) . ' requeued: miss state unavailable' : '');
+                . (count($missRetries) ? ', ' . count($missRetries) . ' requeued: miss result unconfirmed' : '');
         }
         foreach ($unresolved as $topic) self::ensureQueued($topic);
         self::settleQueue($queueSnapshot, array_merge($requeued, $unresolved));

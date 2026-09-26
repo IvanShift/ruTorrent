@@ -52,6 +52,24 @@ function fiStateTest($suite, $name, $callback)
 }
 
 
+function fiFillEvidenceAfter($topicId)
+{
+    RuTrackerState::update('forumindex', function ($state) use ($topicId) {
+        // One older topic plus 1023 newer topics fills the production limit.
+        // The next positive commit must evict this oldest topic.
+        strictAssertTrue(isset($state['forum_evidence'][$topicId]),
+            'the topic to be evicted has an existing positive version');
+        for ($id = 10000; $id < 11023; $id++)
+            $state['forum_evidence'][$id] = sprintf('%032x', $id);
+        $state['forum_evidence_epoch'] = sprintf('%032x', 11022);
+        return $state;
+    });
+    strictAssertSame(RuTrackerForumIndex::FORUM_EVIDENCE_LIMIT,
+        count(RuTrackerState::load('forumindex')['forum_evidence']),
+        'the evidence book is full before the concurrent commit');
+}
+
+
 $suite->test('parseFeed maps each topic to its forum', function () {
     $map = RuTrackerForumIndex::parseFeed(fiFeed());
     strictAssertSame(array('forum' => 1106), $map[6880555], 'updated entry');
@@ -1800,6 +1818,188 @@ fiStateTest($suite, 'a lost forum RPC reply commits its pending evidence only wh
         'replay preserves a later complete crawl backoff');
 });
 
+fiStateTest($suite, 'positive evidence prunes retired topic versions to a fixed bound', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerState::update('forumindex', function ($state) {
+        $state['forum_evidence'] = array_fill_keys(range(10000, 11100), str_repeat('a', 32));
+        return $state;
+    });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', false),
+        'a current crawl publishes fresh positive evidence');
+    $evidence = RuTrackerState::load('forumindex')['forum_evidence'];
+    strictAssertTrue(count($evidence) <= 1024,
+        'one positive write retires old evidence instead of retaining every historical topic');
+    strictAssertTrue(isset($evidence[777]), 'the current topic remains in the bounded book');
+});
+
+fiStateTest($suite, 'a pruned positive mapping cannot make an old empty snapshot current again', function () {
+    $hash = str_repeat('A', 40);
+    $method = new ReflectionMethod('RuTrackerForumIndex', 'queueSnapshot');
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+    $snapshot = $method->invoke(null);
+    strictAssertSame(array(), $snapshot['evidence']['versions'], 'the crawl began without topic evidence');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'a later feed commits a positive mapping');
+    RuTrackerState::update('forumindex', function ($state) {
+        // Simulate the same eviction that a bounded recent-topic book performs.
+        unset($state['forum_evidence'][777]);
+        return $state;
+    });
+    RuTrackerForumIndex::markMiss(777, time(), $snapshot['evidence']);
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'absent before and after eviction is not evidence that nothing happened');
+});
+
+fiStateTest($suite, 'an external commit cannot hide behind a later crawl write after eviction', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', false);
+    RuTrackerForumIndex::queueTopic(555);
+    RuTrackerForumIndex::queueTopic(777);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    $feedStatus = null;
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash, &$feedStatus) {
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('555', '3'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        $feedStatus = RuTrackerForumIndex::writeForumMapping($hash, 555, 4, '3', true);
+        RuTrackerState::update('forumindex', function ($state) {
+            unset($state['forum_evidence'][555]);
+            return $state;
+        });
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+        return array('resolved' => array(777 => 2), 'complete' => true);
+    });
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN, $feedStatus,
+        'the external feed committed while the crawl was sweeping');
+    strictAssertTrue(isset(RuTrackerState::load('forumindex')['forum_evidence'][777]),
+        'the crawl later published its own positive write');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the crawl own later write cannot erase evidence of the external change');
+});
+
+fiStateTest($suite, 'an uncertain evicted topic keeps its unresolved crawl request', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(555);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array());
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash) {
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', '3'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        RuTrackerForumIndex::writeForumMapping($hash, 888, 4, '3', true);
+        return array('resolved' => array(), 'complete' => true);
+    });
+    strictAssertSame(array(555), RuTrackerForumIndex::takeQueuePeek(),
+        'global evidence uncertainty cannot silently retire an explicit crawl request');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the uncertain result does not record absence either');
+});
+
+fiStateTest($suite, 'an uncertain evicted topic keeps its resolved writeback request', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(777);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash) {
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', '3'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        RuTrackerForumIndex::writeForumMapping($hash, 888, 4, '3', true);
+        return array('resolved' => array(777 => 267), 'complete' => true);
+    });
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'an uncertain positive writeback is retried instead of being counted resolved');
+    $branches = rXMLRPCRequest::requestsFor('branch');
+    strictAssertSame(1, count($branches),
+        'only the external feed sends a setter after the evidence change');
+    testAssertForumBranch($branches[0], $hash, '4', 'the older crawl sends no setter');
+});
+
+fiStateTest($suite, 'evicting a queued unresolved topic version preserves its crawl request', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', false),
+        'the queued topic starts with durable positive evidence');
+    fiFillEvidenceAfter(777);
+    RuTrackerForumIndex::queueTopic(777);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array());
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash) {
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', '3'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+            RuTrackerForumIndex::writeForumMapping($hash, 888, 4, '3', true),
+            'one newer positive commit evicts the observed topic version');
+        strictAssertTrue(!isset(RuTrackerState::load('forumindex')['forum_evidence'][777]),
+            'the observed version was evicted during the crawl');
+        return array('resolved' => array(), 'complete' => true);
+    });
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'eviction alone cannot retire an unresolved explicit request');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'eviction alone cannot prove a crawl miss');
+});
+
+fiStateTest($suite, 'evicting a queued resolved topic version preserves its writeback request', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', false),
+        'the queued topic starts with durable positive evidence');
+    fiFillEvidenceAfter(777);
+    RuTrackerForumIndex::queueTopic(777);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash) {
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', '3'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+            RuTrackerForumIndex::writeForumMapping($hash, 888, 4, '3', true),
+            'one newer positive commit evicts the observed topic version');
+        strictAssertTrue(!isset(RuTrackerState::load('forumindex')['forum_evidence'][777]),
+            'the observed version was evicted during the crawl');
+        return array('resolved' => array(777 => 267), 'complete' => true);
+    });
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'an unconfirmed resolved writeback must be retried after eviction');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+        'the stale crawl sends no second setter after eviction');
+});
+
+fiStateTest($suite, 'a retained topic version survives unrelated evidence changes', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', false),
+        'the crawl establishes topic evidence');
+    $method = new ReflectionMethod('RuTrackerForumIndex', 'queueSnapshot');
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+    $snapshot = $method->invoke(null);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', '3'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 888, 3, '3', false),
+        'an unrelated topic also publishes evidence');
+    RuTrackerForumIndex::markMiss(777, time(), $snapshot['evidence']);
+    strictAssertTrue(isset(RuTrackerState::load('forumindex')['misses'][777]),
+        'a retained unchanged topic is not stalled by unrelated positive evidence');
+});
+
 fiStateTest($suite, 'a crawl snapshot between mapping intent and RPC cannot authorise a later miss', function () {
     $hash = str_repeat('A', 40);
     RuTrackerForumIndex::queueTopic(777);
@@ -2213,7 +2413,7 @@ fiStateTest($suite, 'an uncertain mapping leaves a complete crawl queued without
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
-    strictAssertSame('wanted 1, resolved 0, 1 requeued: miss state unavailable',
+    strictAssertSame('wanted 1, resolved 0, 1 requeued: miss result unconfirmed',
         RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
             return array('resolved' => array(), 'complete' => true);
         }), 'the complete sweep cannot prove absence while a setter may land later');

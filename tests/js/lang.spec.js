@@ -129,10 +129,13 @@ describe("localization", () => {
         if (!name.endsWith(".js") || name === "en.js") continue;
         const theirs = keysOf([path.join(dir, name)]);
         for (const key of Object.keys(en)) {
-          // init.js has a full English fallback for this key; Russian
-          // supplies a translation and must keep it.
-          const explicitFallback = path.relative(ROOT, dir) === "plugins/loginmgr/lang"
-            && key === "accOriginRequired" && name !== "ru.js";
+          // These call sites provide an English fallback; Russian supplies
+          // a translation and must keep it. Their behavior is covered by
+          // loginmgr-warning.spec.js and task-kill-refusal.spec.js.
+          const langDir = path.relative(ROOT, dir);
+          const explicitFallback = name !== "ru.js" && (
+            (langDir === "plugins/loginmgr/lang" && key === "accOriginRequired") ||
+            (langDir === "plugins/_task/lang" && (key === "tskKillRefused" || key === "tskKillUnknown")));
           if (!(key in theirs) && !explicitFallback)
             missing.push(`${path.relative(ROOT, dir)}/${name}: ${key}`);
         }
