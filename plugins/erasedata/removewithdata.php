@@ -2956,9 +2956,9 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				//
 				// The claim is durable and rTorrent's table is not, so a daemon
 				// restart that lands while the phase is `armed` leaves this claim
-				// standing over an emptied schedule table. plugins/erasedata/init.php
-				// repairs that on the next full web-UI load -- it is the only place
-				// that re-arms -- so until then a queue driven only by erase.php
+				// standing over an emptied schedule table. A later full web-UI load
+				// re-arms it through erasedata init, or Ratio init when erasedata is
+				// disabled; until then a queue driven only by erase.php
 				// times out visibly on the acknowledgement and logs `drain-no-ack`,
 				// retaining the torrents and rolling back only its own staging.
 				$live = $state['phase'] === 'armed' && $state['user'] === $user;
@@ -4964,9 +4964,10 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 
 if(!function_exists('erasedataRearmDrainSchedule'))
 {
-	// The public startup-recovery entry point, called by init.php and by
-	// nothing else. It builds every real dependency itself; nothing below it
-	// reads a test switch, an environment override or a global.
+	// The public startup-recovery entry point, called by erasedata init or
+	// Ratio init when erasedata is not registered. It builds every real
+	// dependency itself; nothing below reads a test switch, an environment
+	// override or a global.
 	function erasedataRearmDrainSchedule()
 	{
 		$listPath = FileUtil::getSettingsPath()."/erasedata";

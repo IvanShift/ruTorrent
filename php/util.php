@@ -39,7 +39,10 @@ Requests::makeCSRFCheck();
 if(function_exists('ini_set'))
 {
 	ini_set('display_errors',false);
-	ini_set('log_errors',true);
+	// A caller with a classified fatal logger owns its engine log setting.
+	// Keep that setting through profile loading as well as base config loading.
+	if(!defined('RUTORRENT_FATAL_LOG_IS_MANAGED'))
+		ini_set('log_errors',true);
 }
 
 if(!isset($_SERVER['REMOTE_USER']))

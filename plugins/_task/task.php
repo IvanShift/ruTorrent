@@ -1,6 +1,9 @@
 <?php
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 
+if(!defined('RTASK_KILL_HELPER'))
+	define('RTASK_KILL_HELPER', '/usr/local/bin/rutorrent-task-kill-pidfd');
+
 class rTask
 {
 	const MAX_CONSOLE_SIZE = 80;
@@ -353,10 +356,11 @@ class rTask
 				$pid = filter_var($pidText, FILTER_VALIDATE_INT, array('options'=>array('min_range'=>2)));
 				if($pid===false)
 					return(self::failKill($dir, 'pid identity: invalid pid, including pid 1; no signal sent'));
-				// The helper checks /proc and signals from one shell process, minimizing
-				// the PID reuse window between verification and kill.
-				$cmd = 'sh '.escapeshellarg(dirname(__FILE__).'/kill-verified.sh').' '.
-					$pid.' '.escapeshellarg($dir.'/pid.identity');
+				// A missing native helper cannot safely fall back to numeric kill.
+				if(!is_file(RTASK_KILL_HELPER) || !is_executable(RTASK_KILL_HELPER))
+					return(self::failKill($dir, 'pidfd helper unavailable; no signal sent'));
+				$cmd = escapeshellarg(RTASK_KILL_HELPER).' '.$pid.' '.
+					escapeshellarg($dir.'/pid.identity');
 				$result = self::run($cmd, ($flags & self::FLG_RUN_AS_WEB) | self::FLG_WAIT | self::FLG_RUN_AS_CMD);
 				if($result===3)
 					return(self::failKill($dir, 'pid identity: missing or mismatched pid.identity; no signal sent'));

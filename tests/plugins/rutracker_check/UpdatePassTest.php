@@ -1817,9 +1817,9 @@ upTest($suite, 'an ignored label still short-circuits a foreign-tracker torrent'
 // record this plugin wrote itself decodes AND the recorded predecessor is
 // provably gone. Everything else is left exactly as found.
 
-// Rows of (hash, chk-replacement, chk-replaces[, chk-replacing]). The fourth
-// column is the predecessor's own recovery key; most rows do not carry one, so
-// it defaults to empty rather than being repeated at every call site.
+// Rows of (hash, chk-replacement, chk-replaces[, chk-replacing, state,
+// is_open, chk-state, chk-time, chk-meta-new]). Most rows need only the first
+// columns; sweepScan fills the rest with empty values.
 function sweepFixtureMarker($marker)
 {
     // Historical fixtures called genuine plugin generations nonce/nonce2/etc.
@@ -2066,7 +2066,7 @@ upTest($suite, 'testOneRetainedCleanupDoesNotStopFollowingRows', function () {
     strictAssertSame(0, count(sweepBranchRequestsForHash($firstHash)), 'the retained row itself keeps its keys');
 });
 
-upTest($suite, 'testReplacingRowCannotClearRecoveryKeyBeforeCleanupCancel', function () {
+upTest($suite, 'a marked successor keeps the predecessor key for the marked-row sweep', function () {
     $old = str_repeat('A', 40);
     $successor = str_repeat('B', 40);
     $encoded = $successor . '-started-1000';
@@ -2074,38 +2074,18 @@ upTest($suite, 'testReplacingRowCannotClearRecoveryKeyBeforeCleanupCancel', func
     $record = $old . '-started-1000';
 
     rXMLRPCRequest::reset();
-    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_RETRY);
     sweepScan(array(array($old, '', '', $encoded)));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
         array($encoded, 0, 0));
     rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
         array($successor, $marker, $record));
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
-    strictAssertSame(array(array($old, $successor, $marker, $record)), UpdatePassErasedataFake::$cancelCalls,
-        'the coherent successor generation is passed to cleanup cancellation');
+    strictAssertSame(array(), UpdatePassErasedataFake::$cancelCalls,
+        'cleanup cancellation belongs to the marked-row sweep after it proves ownership');
     strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
-        'cancellation RETRY keeps the predecessor recovery key');
-
-    rXMLRPCRequest::reset();
-    UpdatePassErasedataFake::reset();
-    UpdatePassErasedataFake::$cancelResults = array(ERASEDATA_CLEANUP_READY);
-    sweepScan(array(array($old, '', '', $encoded)));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
-        array($encoded, 0, 0));
-    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
-        array($successor, $marker, $record));
-    rXMLRPCRequest::queue('branch', true, false, function () use ($old) {
-        UpdatePassErasedataFake::$events[] = 'clear:' . $old;
-        return array(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
-    });
-
-    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-
-    strictAssertSame(array('cancel:' . $old, 'clear:' . $old), UpdatePassErasedataFake::$events,
-        'READY cancellation precedes the exact predecessor-key clear');
+        'the predecessor key is still present for marked-row revival');
 });
 
 function sweepAssertNoncanonicalReplacingPairRetained($label, $encoded, $successorRecord)
@@ -2153,7 +2133,7 @@ upTest($suite, 'testReplacingRowRetainsLeadingZeroEpochSuccessorRecord', functio
         str_repeat('A', 40) . '-started-01000');
 });
 
-upTest($suite, 'sweepReplacements scans main for the hash, both markers and the record', function () {
+upTest($suite, 'sweepReplacements scans main once for replacement and legacy state', function () {
     rXMLRPCRequest::reset();
     sweepScan(array());
 
@@ -2163,7 +2143,8 @@ upTest($suite, 'sweepReplacements scans main for the hash, both markers and the 
     strictAssertSame(1, count($scans), 'one fleet scan per cycle');
     strictAssertSame(
         array('main', 'd.get_hash=', 'd.get_custom=chk-replacement', 'd.get_custom=chk-replaces',
-              'd.get_custom=chk-replacing'),
+              'd.get_custom=chk-replacing', 'd.get_state=', 'd.is_open=',
+              'd.get_custom=chk-state', 'd.get_custom=chk-time', 'd.get_custom=chk-meta-new'),
         $scans[0]['commands'][0]->params,
         'the scan must walk main: BOTH halves of a stranded transaction are stopped and closed,'
         . ' so neither is in seeding -- the staged copy carries chk-replacement, the predecessor chk-replacing'
@@ -2215,7 +2196,7 @@ upTest($suite, 'a predecessor stopped for a replacement that never staged is put
     }
 
     // A transaction that DID stage owns itself through the marked-row branch;
-    // the predecessor's key is then only a leftover to clear.
+    // that branch still needs the predecessor's key to revive it.
     rXMLRPCRequest::reset();
     $old = str_repeat('A', 40);
     $successor = str_repeat('B', 40);
@@ -2224,12 +2205,11 @@ upTest($suite, 'a predecessor stopped for a replacement that never staged is put
         array($successor . '-started-1000', 0, 0));
     rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
         array($successor, str_repeat('d', 32), $old . '-started-1000'));
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
-
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
         'a staged transaction is not restored from this branch');
-    strictAssertSame(1, count(sweepBranchRequestsForHash($old)), 'the exact leftover generation goes atomically');
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'the marked successor still needs the predecessor recovery key');
 
     // The key moved between the scan and the act: a fresh replacement started
     // under this sweep, and acting on the old record would restart a torrent
@@ -2256,6 +2236,40 @@ upTest($suite, 'a predecessor stopped for a replacement that never staged is put
     sweepScan(array(array($old, '', '', $successor . '-started-1000')));
     RuTrackerUpdatePass::sweepReplacements(1000 + 1);
     strictAssertSame(1, count(rXMLRPCRequest::$requests), 'a young transaction is not touched at all');
+});
+
+upTest($suite, 'predecessor row keeps its key until the later staged row revives it', function () {
+    rXMLRPCRequest::reset();
+    $old = str_repeat('A', 40);
+    $successor = str_repeat('B', 40);
+    $encoded = $successor . '-started-1000';
+    $record = $old . '-started-1000';
+    sweepScan(array(
+        array($old, '', '', $encoded),
+        array($successor, 'nonce', $record),
+    ));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
+        array($encoded, 0, 0));
+    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
+        array($successor, sweepFixtureMarker('nonce'), $record));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '1', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
+
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    });
+
+    strictAssertTrue(strpos($log, 'revive status=acted') !== false,
+        'confirmed revival reaches the application log even with debug disabled');
+    strictAssertTrue(strpos($log, 'discard status=acted') !== false,
+        'confirmed staged-copy disposal is visible too');
+    strictAssertSame(1, count(sweepBranchRequestsForHash($old)),
+        'the first row retains ownership so the second can revive the predecessor');
+    strictAssertSame(1, count(sweepBranchRequestsForHash($successor)),
+        'the staged copy is discarded after confirmed revival');
+    sweepAssertNoStandaloneOwnershipMutation('two-row revival');
 });
 
 upTest($suite, 'sweepReplacements restores predecessor when successor hash is foreign or record-less', function () {
@@ -2485,7 +2499,7 @@ upTest($suite, 'an unknown marked-row run token is malformed, never record-less 
         'and no staged copy is discarded');
 });
 
-upTest($suite, 'sweepReplacements does not clear predecessor recovery key if generation changed before clear', function () {
+upTest($suite, 'a marked successor never clears the predecessor recovery key from its first row', function () {
     rXMLRPCRequest::reset();
     $old = str_repeat('A', 40);
     $successor = str_repeat('B', 40);
@@ -2494,20 +2508,31 @@ upTest($suite, 'sweepReplacements does not clear predecessor recovery key if gen
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
         array($generation, 0, 0));
     rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
-        array($successor, str_repeat('d', 32), $old . '-started-1000')); // owned
-    // The atomic branch observes that chk-replacing moved after the coherent
-    // owner probe but before its conditional clear.
-    rXMLRPCRequest::queue('branch', true, false,
-        array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+        array($successor, str_repeat('d', 32), $old . '-started-1000'));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-    $branches = sweepBranchRequestsForHash($old);
-    strictAssertSame(1, count($branches),
-        'the exact generation is checked at the clear boundary');
-    strictAssertTrue(strpos($branches[0]['commands'][0]->params[1], 'cat=' . $generation) !== false,
-        'the atomic condition names the generation observed before the race');
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'first-row sweep has no authority to clear a key its second row needs');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
-        'a skipped conditional clear never falls back to an unconditional write');
+        'it does not fall back to an unconditional clear');
+});
+
+upTest($suite, 'legacy stopped checked rows are reported without guessing prior run state', function () {
+    rXMLRPCRequest::reset();
+    $old = str_repeat('A', 40);
+    $new = str_repeat('B', 40);
+    $now = 10000;
+    sweepScan(array(array($old, '', $old . '-started-1000', '',
+        0, 0, '1', '1000', $new)));
+    $log = testCapturedAppLog(function () use ($now) {
+        RuTrackerUpdatePass::sweepReplacements($now);
+    });
+
+    strictAssertTrue(strpos($log, $old) !== false
+        && strpos($log, 'prior run state is unproved') !== false,
+        'the candidate is visible at the shipped debug setting');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'a manually selected stopped torrent has the same old fingerprint, so no restart is authorized');
 });
 
 upTest($suite, 'sweepReplacements ignores a row with no marker', function () {

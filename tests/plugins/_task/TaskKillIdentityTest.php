@@ -3,6 +3,8 @@
 // Keep process witnesses and task records out of the shared checkout.
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent task kill-'.getmypid().'-'.bin2hex(random_bytes(4));
 require_once(__DIR__.'/../../php/TestCase.php');
+require_once(__DIR__.'/TaskNativeHelperFixture.php');
+define('RTASK_KILL_HELPER', taskNativeHelperFixture());
 require_once(__DIR__.'/../../../plugins/_task/task.php');
 
 class TaskKillIdentityTest extends TestCase
@@ -89,6 +91,189 @@ class TaskKillIdentityTest extends TestCase
 		$this->assertEquals(true,
 			is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'pid identity') !== false,
 			'The refusal explains the pid identity problem in the task errors');
+	}
+
+	public function testNativeHelperSourceIsAvailableForIdentityBoundSignals()
+	{
+		$source = __DIR__.'/../../../plugins/_task/kill-verified.c';
+		$this->assertEquals(true, is_file($source),
+			'The task killer has a native source for identity-bound pidfd signals');
+	}
+
+	public function testParentExitDuringChildPassKeepsOrphanAndTaskVisible()
+	{
+		$process = proc_open(array('sh', '-c', 'sleep 30 & wait'), array(
+			0 => array('file', '/dev/null', 'r'),
+			1 => array('file', '/dev/null', 'w'),
+			2 => array('file', '/dev/null', 'w'),
+		), $pipes);
+		if (!is_resource($process)) {
+			throw new RuntimeException('Could not start the isolated parent and child witnesses');
+		}
+		$parent = proc_get_status($process)['pid'];
+		$child = null;
+		$worker = null;
+		$cleanupIdentity = $_ENV['RU_PROFILE_PATH'].'/orphan-identity';
+		$go = null;
+		try {
+			if ($parent <= 1 || $parent === getmypid()) {
+				throw new RuntimeException('Unsafe parent witness PID');
+			}
+			for ($attempt = 0; $attempt < 20; ++$attempt) {
+				$children = trim((string)@file_get_contents('/proc/'.$parent.'/task/'.$parent.'/children'));
+				if (preg_match('/^([0-9]+)(?:\s|$)/', $children, $match)) {
+					$child = (int)$match[1];
+					break;
+				}
+				usleep(50000);
+			}
+			if ($child === null || $child <= 1 || $child === $parent) {
+				throw new RuntimeException('Could not identify the isolated task child');
+			}
+			list($id, $dir) = $this->makeTask($parent, $this->identityFor($parent));
+			file_put_contents($cleanupIdentity, $this->identityFor($child));
+			$ready = $dir.'/helper-ready';
+			$go = $dir.'/helper-go';
+			$binary = taskNativeHelperFixture(true);
+			$code = '$_ENV["RU_PROFILE_PATH"] = $argv[2]; '.
+				'define("RTASK_KILL_HELPER", $argv[3]); require $argv[4]; '.
+				'exit(rTask::kill($argv[1]) ? 0 : 1);';
+			$environment = array_merge($_ENV, array(
+				'RTASK_KILL_TEST_READY' => $ready,
+				'RTASK_KILL_TEST_GO' => $go,
+			));
+			$worker = proc_open(array(PHP_BINARY, '-c', __DIR__.'/../../php-test.ini',
+				'-r', $code, '--', $id, $_ENV['RU_PROFILE_PATH'], $binary,
+				__DIR__.'/../../../plugins/_task/task.php'), array(
+				0 => array('file', '/dev/null', 'r'),
+				1 => array('file', '/dev/null', 'w'),
+				2 => array('file', '/dev/null', 'w'),
+			), $pipes, null, $environment);
+			if (!is_resource($worker)) {
+				throw new RuntimeException('Could not start the isolated kill request');
+			}
+			for ($attempt = 0; $attempt < 100 && !is_file($ready); ++$attempt) {
+				usleep(10000);
+			}
+			$this->assertEquals(true, is_file($ready),
+				'The helper reached the verified parent before its child pass');
+			if (!is_file($ready)) return;
+			proc_terminate($process);
+			for ($attempt = 0; $attempt < 100 && proc_get_status($process)['running']; ++$attempt) {
+				usleep(10000);
+			}
+			$this->assertEquals(false, proc_get_status($process)['running'],
+				'The parent exited while its child remains alive');
+			$this->assertEquals(false, $this->processIsGoneOrZombie($child),
+				'The orphaned child is still alive at the signal boundary');
+			file_put_contents($go, 'go');
+			$this->assertEquals(1, proc_close($worker),
+				'A parent exit with an unverified child refuses the kill request');
+			$worker = null;
+			$this->assertEquals(true, is_dir($dir),
+				'The task record remains available for the orphan diagnosis');
+			$this->assertEquals(true,
+					is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'signal state uncertain') !== false,
+					'The task error reports the uncertain child signal state');
+		} finally {
+			if ($go !== null) @file_put_contents($go, 'go');
+			if (is_resource($worker)) {
+				if (proc_get_status($worker)['running']) proc_terminate($worker);
+				proc_close($worker);
+			}
+			if (proc_get_status($process)['running']) proc_terminate($process);
+			proc_close($process);
+			if ($child !== null && is_file($cleanupIdentity) && !$this->processIsGoneOrZombie($child)) {
+				$cleanup = proc_open(array(RTASK_KILL_HELPER, (string)$child, $cleanupIdentity),
+					array(0 => array('file', '/dev/null', 'r'),
+						1 => array('file', '/dev/null', 'w'),
+						2 => array('file', '/dev/null', 'w')), $pipes);
+				if (is_resource($cleanup)) proc_close($cleanup);
+			}
+			@unlink($cleanupIdentity);
+		}
+	}
+
+	protected function assertExitedWitnessAtNativeBoundary($readyVariable, $goVariable, $boundary)
+	{
+		$this->withWitness(function($process, $pid) use ($readyVariable, $goVariable, $boundary) {
+			$binary = taskNativeHelperFixture(true);
+			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
+			$ready = $dir.'/helper-ready';
+			$go = $dir.'/helper-go';
+			$environment = array_merge($_ENV, array(
+				$readyVariable => $ready,
+				$goVariable => $go,
+			));
+			$helper = proc_open(array($binary, (string)$pid, $dir.'/pid.identity'), array(
+				0 => array('file', '/dev/null', 'r'),
+				1 => array('file', '/dev/null', 'w'),
+				2 => array('file', '/dev/null', 'w'),
+			), $pipes, null, $environment);
+			if (!is_resource($helper)) {
+				throw new RuntimeException('Could not start the paused native task killer');
+			}
+			try {
+				for ($attempt = 0; $attempt < 100 && !is_file($ready); ++$attempt) {
+					usleep(10000);
+				}
+				$this->assertEquals(true, is_file($ready),
+					'The native helper reached '.$boundary);
+				if (!is_file($ready)) return;
+				proc_terminate($process);
+				for ($attempt = 0; $attempt < 100 && proc_get_status($process)['running']; ++$attempt) {
+					usleep(10000);
+				}
+				$this->assertEquals(false, proc_get_status($process)['running'],
+					'The witnessed process exited at '.$boundary);
+				file_put_contents($go, 'go');
+				$this->assertEquals(4, proc_close($helper),
+					'An unobserved exit at '.$boundary.' refuses uncertain descendants');
+				$helper = null;
+			} finally {
+				@file_put_contents($go, 'go');
+				if (is_resource($helper)) {
+					if (proc_get_status($helper)['running']) proc_terminate($helper);
+					proc_close($helper);
+				}
+			}
+		});
+	}
+
+	public function testExitedWitnessAfterVerificationRefusesUncertainDescendants()
+	{
+		$this->assertExitedWitnessAtNativeBoundary(
+			'RTASK_KILL_TEST_READY', 'RTASK_KILL_TEST_GO', 'the identity check boundary');
+	}
+
+	public function testExitedWitnessAfterChildEnumerationRefusesUncertainDescendants()
+	{
+		$this->assertExitedWitnessAtNativeBoundary(
+			'RTASK_KILL_TEST_AFTER_CHILDREN_READY', 'RTASK_KILL_TEST_AFTER_CHILDREN_GO',
+			'the final parent signal boundary');
+	}
+
+	public function testMissingNativeHelperRefusesVisibly()
+	{
+		$this->withWitness(function($process, $pid) {
+			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
+			$held = RTASK_KILL_HELPER.'.held';
+			if (!rename(RTASK_KILL_HELPER, $held)) {
+				throw new RuntimeException('Could not isolate the native helper fixture');
+			}
+			try {
+				$result = rTask::kill($id);
+				$this->assertEquals(false, $result, 'A missing native helper refuses the kill');
+				$this->assertEquals(true, proc_get_status($process)['running'],
+					'The missing helper does not trigger a numeric-kill fallback');
+				$this->assertEquals(true, is_dir($dir), 'The refused task stays for diagnosis');
+				$this->assertEquals(true,
+					strpos(file_get_contents($dir.'/errors'), 'pidfd helper unavailable') !== false,
+					'The task error identifies the missing native helper');
+			} finally {
+				rename($held, RTASK_KILL_HELPER);
+			}
+		});
 	}
 
 	public function testReusedPidDoesNotKillAnUnrelatedProcess()

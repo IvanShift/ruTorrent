@@ -6,6 +6,10 @@ if( !chdir( dirname( __FILE__) ) )
 if( count( $argv ) > 1 )
 	$_SERVER['REMOTE_USER'] = $argv[1];
 
+require_once( "cli_log.php" );
+RuTrackerCliLog::install("update");
+require_once( "../../php/util.php" );
+RuTrackerCliLog::useConfiguredLog();
 require_once( "check.php" );
 require_once( "updatepass.php" );
 
@@ -20,11 +24,9 @@ if($cycleLock === false)
 	exit();
 }
 
-// The scheduler starts this file as a detached "sh -c ... &", so PHP's own
-// stderr goes nowhere. A fatal partway through the cycle therefore leaves no
-// trace whatsoever, and the summary at the bottom never runs -- indistinguishable
-// from a cycle that was never scheduled at all. This line brackets the cycle from
-// the front, so a start without its matching summary pins the death to this file.
+// The scheduler starts this file detached and discards stderr. cli_log.php
+// records a classified fatal on shutdown; this line brackets the normal
+// cycle from the front so its missing summary is easy to spot.
 // The rTorrent version rides along: an upgrade on the live system turned out to
 // change how a cycle behaves, and nothing recorded which version produced which
 // cycle. It is asked of the daemon rather than of the cached settings, which go
@@ -85,5 +87,5 @@ else
 	// the summary included, hangs off this request succeeding, so a daemon that
 	// is down, busy or refusing the call produced an empty log and looked exactly
 	// like a plugin with diagnostics switched off.
-	ruTrackerChecker::logDebug("update: aborted, the seeding multicall failed"
-		.($req->fault ? ": ".$req->faultString : ""));
+	ruTrackerChecker::logUnrepairable('update: aborted, seeding multicall '
+		. ($req->fault ? 'rpc-fault' : 'transport-failed'));

@@ -463,10 +463,14 @@ $suite->test('update.php still composes the whole cycle, in the order the cycle 
     ) as $call)
         strictAssertTrue(epAt($calls, $call) >= 0, $call . ' is part of the cycle');
 
-    // The lock is first, or the whole point of it is gone: two cycles three
-    // seconds apart is what it was added for.
-    strictAssertSame(0, epAt($calls, 'RuTrackerState::acquireCycleLock'),
-        'the cycle lock is taken before anything else happens');
+    // The fatal logger must cover bootstrap and lock acquisition; the lock
+    // still precedes every cycle operation that can touch a torrent.
+    strictAssertSame(0, epAt($calls, 'RuTrackerCliLog::install'),
+        'the fatal logger is installed before the cycle starts');
+    strictAssertSame(1, epAt($calls, 'RuTrackerCliLog::useConfiguredLog'),
+        'the logger adopts the profile path after configuration loads');
+    strictAssertSame(2, epAt($calls, 'RuTrackerState::acquireCycleLock'),
+        'the cycle lock is taken before any torrent work');
 
     // The stranded-replacement sweep runs BEFORE the pass creates new work:
     // a replacement whose transaction died is stopped and closed, so it is
@@ -487,9 +491,8 @@ $suite->test('update.php still composes the whole cycle, in the order the cycle 
 
 $suite->test('update.php brackets the cycle with a start and a summary line', function () {
     $source = file_get_contents(EP_DIR . '/update.php');
-    // A fatal partway through a detached cycle leaves no trace at all: the
-    // scheduler's own "sh -c ... &" discards stderr. A start line without its
-    // summary is the only evidence that the file died, so both must stay.
+    // A fatal partway through a detached cycle is classified by the shutdown
+    // logger. Start and done lines still bracket the normal cycle.
     strictAssertTrue(strpos($source, 'update: cycle start') !== false, 'the cycle announces itself');
     strictAssertTrue(strpos($source, 'update: cycle done') !== false, 'and reports its summary');
     strictAssertTrue(strpos($source, 'liveVersionLabel') !== false,
@@ -501,6 +504,8 @@ $suite->test('update.php brackets the cycle with a start and a summary line', fu
 $suite->test('batch_check.php checks every handed-over hash and then removes the handover file', function () {
     $calls = epCalls('batch_check.php');
     strictAssertTrue(epAt($calls, 'ruTrackerChecker::run') >= 0, 'the click still checks its torrents');
+    strictAssertTrue(epAt($calls, 'ruTrackerChecker::logUnrepairable') >= 0,
+        'caught manual-worker refusals use the ungated application log');
     strictAssertTrue(epAt($calls, 'RuTrackerForumIndex::spawnCrawl') >= 0,
         'and still spawns the crawl: the hourly cycle may never come, the scheduler can be off');
     epAssertOrder($calls, 'ruTrackerChecker::run', 'RuTrackerForumIndex::spawnCrawl',
@@ -1004,6 +1009,250 @@ $suite->test('RuTrackerBatchRequest::parseHashes parses, normalizes, deduplicate
     // Non-string body
     strictAssertSame(array(), RuTrackerBatchRequest::parseHashes(null), 'null body returns empty');
     strictAssertSame(array(), RuTrackerBatchRequest::parseHashes(array()), 'array body returns empty');
+});
+
+$suite->test('both detached CLI entrypoints suppress raw engine fatal after util resets logging', function () {
+    foreach (array('update.php' => 'update', 'batch_check.php' => 'batch_check') as $entry => $scope) {
+        $calls = epCalls($entry);
+        strictAssertTrue(epAt($calls, 'RuTrackerCliLog::install') >= 0,
+            $entry . ' installs fatal logging before checker work');
+        $log = tempnam(sys_get_temp_dir(), 'rt-cli-fatal-');
+        strictAssertTrue($log !== false, 'temporary log file exists');
+        try {
+            $code = 'require "cli_log.php"; RuTrackerCliLog::install('
+                . var_export($scope, true) . '); '
+                . '$log_file = ' . var_export($log, true) . '; '
+                . 'ini_set("log_errors", "1"); RuTrackerCliLog::useConfiguredLog(); '
+                . 'throw new Error("https://tracker.invalid/?pk=TOP_SECRET");';
+            $pipes = array();
+            $process = proc_open(array(PHP_BINARY, '-r', $code),
+                array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+                $pipes, EP_DIR);
+            strictAssertTrue(is_resource($process), $entry . ' child starts');
+            fclose($pipes[0]);
+            stream_get_contents($pipes[1]);
+            stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $status = proc_close($process);
+            $body = file_get_contents($log);
+            strictAssertTrue($status !== 0, $entry . ' child really died');
+            strictAssertTrue(strpos($body, $scope . ': cycle died:') !== false,
+                $entry . ' records the fatal with its own scope');
+            strictAssertTrue(strpos($body, 'TOP_SECRET') === false,
+                $entry . ' never records an arbitrary exception payload');
+        } finally {
+            @unlink($log);
+        }
+    }
+});
+
+$suite->test('CLI profile bootstrap fatal never writes the raw engine message', function () {
+    $temp = sys_get_temp_dir() . '/rt-cli-profile-fatal-' . bin2hex(random_bytes(6));
+    strictAssertTrue(mkdir($temp, 0700), 'profile fixture directory created');
+    strictAssertTrue(mkdir($temp . '/php', 0700), 'profile PHP directory created');
+    strictAssertTrue(mkdir($temp . '/conf', 0700), 'profile config directory created');
+    $util = $temp . '/php/util.php';
+    $config = $temp . '/conf/config.php';
+    $profile = $temp . '/profile.php';
+    $log = $temp . '/app.log';
+    try {
+        strictAssertTrue(copy(testFindRepoRoot() . '/php/util.php', $util),
+            'the child loads the shipped util.php bytes');
+        file_put_contents($config, '<?php class Requests { '
+            . 'public static function disableUnsupportedMethods() {} '
+            . 'public static function makeCSRFCheck() {} } '
+            . 'class FileUtil { public static function getProfilePath() {} '
+            . 'public static function getConfFile($name) { return '
+            . var_export($profile, true) . '; } }');
+        file_put_contents($profile, '<?php throw new Error("TOP_SECRET_PROFILE_URL");');
+        $code = '$log_file = ' . var_export($log, true) . '; '
+            . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
+            . 'require ' . var_export($util, true) . ';';
+        $pipes = array();
+        $process = proc_open(array(PHP_BINARY, '-r', $code),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, EP_DIR);
+        strictAssertTrue(is_resource($process), 'profile bootstrap child starts');
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        strictAssertTrue(proc_close($process) !== 0, 'profile config fatal really occurred');
+        $body = (string) file_get_contents($log);
+        strictAssertTrue(strpos($body, 'update: cycle died: php-fatal') !== false,
+            'the classified shutdown line reaches the app log');
+        strictAssertTrue(strpos($body, 'TOP_SECRET_PROFILE_URL') === false,
+            'util.php cannot re-enable the raw engine fatal while loading profile config');
+    } finally {
+        @unlink($log);
+        @unlink($profile);
+        @unlink($config);
+        @unlink($util);
+        @rmdir($temp . '/conf');
+        @rmdir($temp . '/php');
+        @rmdir($temp);
+    }
+});
+
+$suite->test('CLI shutdown records a missing-class fatal by safe class name', function () {
+    $log = tempnam(sys_get_temp_dir(), 'rt-cli-class-');
+    strictAssertTrue($log !== false, 'temporary log file exists');
+    try {
+        $code = '$log_file = ' . var_export($log, true) . '; '
+            . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
+            . 'new MissingResolverForTest;';
+        $pipes = array();
+        $process = proc_open(array(PHP_BINARY, '-r', $code),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, EP_DIR);
+        strictAssertTrue(is_resource($process), 'fatal child starts');
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        strictAssertTrue(proc_close($process) !== 0, 'unknown class is a real fatal');
+        strictAssertTrue(strpos((string) file_get_contents($log),
+            'update: cycle died: missing-class') !== false,
+            'the log classifies the missing dependency');
+        strictAssertTrue(strpos((string) file_get_contents($log), 'MissingResolverForTest') === false,
+            'an arbitrary class identifier is never copied into the log');
+    } finally {
+        @unlink($log);
+    }
+});
+
+$suite->test('detached CLI fatal logger falls back when the configured app log is unwritable', function () {
+    $temp = sys_get_temp_dir() . '/rt-cli-fallback-' . bin2hex(random_bytes(6));
+    strictAssertTrue(mkdir($temp, 0700), 'fallback fixture directory created');
+    $primary = $temp . '/missing-parent/app.log';
+    $fallback = $temp . '/errors.log';
+    try {
+        $code = '$log_file = ' . var_export($primary, true) . '; '
+            . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
+            . 'throw new Error("https://tracker.invalid/?pk=TOP_SECRET");';
+        $pipes = array();
+        $env = array_merge($_ENV, array('TMPDIR' => $temp));
+        $process = proc_open(array(PHP_BINARY, '-r', $code),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, EP_DIR, $env);
+        strictAssertTrue(is_resource($process), 'fatal child starts');
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        strictAssertTrue(proc_close($process) !== 0, 'child died after logger installation');
+        strictAssertTrue(is_file($fallback), 'fallback log is written when the primary path is unusable');
+        $body = (string) file_get_contents($fallback);
+        strictAssertTrue(strpos($body, 'update: cycle died: php-fatal') !== false
+            && strpos($body, 'log-target-failed') !== false,
+            'fallback line gives a classified cause and explains the primary failure');
+        strictAssertTrue(strpos($body, 'TOP_SECRET') === false,
+            'fallback never includes the remote exception payload');
+    } finally {
+        @unlink($fallback);
+        @rmdir($temp);
+    }
+});
+
+$suite->test('CLI fatal logger uses a second file when the historical log is unwritable', function () {
+    $temp = sys_get_temp_dir() . '/rt-cli-second-fallback-' . bin2hex(random_bytes(6));
+    strictAssertTrue(mkdir($temp, 0700), 'fallback fixture directory created');
+    $historical = $temp . '/errors.log';
+    $fallback = $temp . '/rutorrent-checker-cli-errors.log';
+    strictAssertTrue(mkdir($historical, 0700), 'historical path is occupied by a directory');
+    try {
+        $code = 'require "cli_log.php"; RuTrackerCliLog::install("batch_check"); '
+            . 'throw new Error("TOP_SECRET");';
+        $pipes = array();
+        $process = proc_open(array(PHP_BINARY, '-r', $code),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, EP_DIR, array_merge($_ENV, array('TMPDIR' => $temp)));
+        strictAssertTrue(is_resource($process), 'fatal child starts');
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        strictAssertTrue(proc_close($process) !== 0, 'child really died');
+        strictAssertTrue(is_file($fallback), 'secondary fallback records the fatal');
+        $body = (string) file_get_contents($fallback);
+        strictAssertTrue(strpos($body, 'batch_check: cycle died: php-fatal') !== false
+            && strpos($body, 'log-target-failed') !== false
+            && strpos($body, 'TOP_SECRET') === false,
+            'secondary fallback keeps the scope and classified reason without raw text');
+    } finally {
+        @unlink($fallback);
+        @rmdir($historical);
+        @rmdir($temp);
+    }
+});
+
+$suite->test('CLI bootstrap fatal reaches the historical log before config exists', function () {
+    $temp = sys_get_temp_dir() . '/rt-cli-bootstrap-' . bin2hex(random_bytes(6));
+    strictAssertTrue(mkdir($temp, 0700), 'bootstrap fixture directory created');
+    $fallback = $temp . '/errors.log';
+    $config = $temp . '/profile-config.php';
+    try {
+        file_put_contents($config, '<?php missingConfigDependencyForTest();');
+        $code = 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
+            . 'require ' . var_export($config, true) . ';';
+        $pipes = array();
+        $process = proc_open(array(PHP_BINARY, '-r', $code),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, EP_DIR, array_merge($_ENV, array('TMPDIR' => $temp)));
+        strictAssertTrue(is_resource($process), 'bootstrap fatal child starts');
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        strictAssertTrue(proc_close($process) !== 0, 'bootstrap child really died');
+        strictAssertTrue(is_file($fallback), 'bootstrap fatal reaches the historical log');
+        $body = (string) file_get_contents($fallback);
+        strictAssertTrue(strpos($body, 'update: cycle died: undefined-function') !== false,
+            'bootstrap line gives a safe classified reason');
+        strictAssertTrue(strpos($body, 'profile-config.php') !== false
+            && strpos($body, 'missingConfigDependencyForTest') === false,
+            'bootstrap line identifies the local file without copying the raw fatal');
+    } finally {
+        @unlink($fallback);
+        @unlink($config);
+        @rmdir($temp);
+    }
+});
+
+$suite->test('both CLI entrypoints install fatal logging before profile config loads', function () {
+    foreach (array('update.php', 'batch_check.php') as $entry) {
+        $source = file_get_contents(EP_DIR . '/' . $entry);
+        $install = strpos($source, 'RuTrackerCliLog::install(');
+        $util = strpos($source, 'require_once( "../../php/util.php" )');
+        strictAssertTrue($install !== false && $util !== false && $install < $util,
+            $entry . ' can log a fatal thrown while util.php loads config.php');
+    }
+});
+
+$suite->test('CLI checker bootstrap loads the filesystem resolver without a test preload', function () {
+    $code = 'require "check.php"; '
+        . '$identity = XMLRPCPathResolver::filesystemIdentity(realpath("check.php")); '
+        . 'if (!is_array($identity) || !$identity["exists"]) exit(23); '
+        . 'echo "resolver-loaded";';
+    $pipes = array();
+    $process = proc_open(array(PHP_BINARY, '-r', $code),
+        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        $pipes, EP_DIR);
+    strictAssertTrue(is_resource($process), 'the isolated PHP CLI process starts');
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $status = proc_close($process);
+    strictAssertSame(0, $status, 'check.php loads the resolver in its own CLI process: ' . $stderr);
+    strictAssertSame('resolver-loaded', $stdout, 'the real filesystemIdentity method runs');
 });
 
 exit($suite->run());

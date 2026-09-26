@@ -79,6 +79,78 @@ class EraseWithDataCommandTest extends TestCase
 		}
 	}
 
+	public function testRatioInitRearmsTheQueueWhenErasedataIsNotRegistered()
+	{
+		$fixture = sys_get_temp_dir().'/ratio-rearm-'.bin2hex(random_bytes(4));
+		mkdir($fixture.'/plugins/ratio', 0700, true);
+		mkdir($fixture.'/plugins/erasedata', 0700, true);
+		copy(__DIR__.'/../../../plugins/ratio/init.php', $fixture.'/plugins/ratio/init.php');
+		file_put_contents($fixture.'/plugins/ratio/ratio.php', '<?php class rRatio {'
+			.'public static function load() { return new self(); } '
+			.'public function obtain() { return $GLOBALS["test_mode"] !== "ratio-disabled"; } '
+			.'public function get() { return ""; }}');
+		$helper = $fixture.'/plugins/erasedata/removewithdata.php';
+		file_put_contents($helper, '<?php function erasedataRearmDrainSchedule() {'
+			.'$GLOBALS["rearms"]++; if($GLOBALS["test_mode"] === "rearm-refused") {'
+			.'FileUtil::toLog("erasedata: rearm-refused generation=1 members=1 consequence=obligations-retained"); return false; } return true; }');
+		$probe = <<<'PHP'
+<?php
+class FileUtil {
+    public static $log = array();
+    public static function toLog($message) { self::$log[] = $message; }
+}
+class FakeSettings {
+    private $plugins = array();
+    public function registerPlugin($name, $data) { $this->plugins[$name] = $data; }
+    public function isPluginRegistered($name) { return array_key_exists($name, $this->plugins); }
+}
+$GLOBALS['rearms'] = 0;
+$GLOBALS['test_mode'] = $argv[1];
+$theSettings = new FakeSettings();
+if($argv[1] === 'registered') $theSettings->registerPlugin('erasedata', 0);
+$plugin = array('name' => 'ratio');
+$pInfo = array('perms' => 0);
+$jResult = '';
+require __DIR__.'/plugins/ratio/init.php';
+echo json_encode(array('rearms' => $GLOBALS['rearms'], 'log' => FileUtil::$log));
+PHP;
+		file_put_contents($fixture.'/probe.php', $probe);
+		try {
+			foreach(array('missing-registration' => 1, 'registered' => 0, 'ratio-disabled' => 1) as $mode => $expected)
+			{
+				$output = array();
+				$status = 0;
+				exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
+					.' '.escapeshellarg($mode).' 2>&1', $output, $status);
+				$this->assertEquals(0, $status, 'copied ratio init exits normally: '.implode("\n", $output));
+				$this->assertEquals(array('rearms' => $expected, 'log' => array()),
+					json_decode(implode("\n", $output), true),
+					'erasedata absent re-arms once; an already initialized erasedata is not re-registered');
+			}
+			$output = array();
+			$status = 0;
+			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
+				.' rearm-refused 2>&1', $output, $status);
+			$this->assertEquals(0, $status, 'failed rearm is a visible refusal, not a fatal');
+			$this->assertEquals(array('rearms' => 1,
+				'log' => array('erasedata: rearm-refused generation=1 members=1 consequence=obligations-retained')),
+				json_decode(implode("\n", $output), true),
+				'the shared helper keeps its classified refusal without a duplicate generic log');
+			unlink($helper);
+			$output = array();
+			$status = 0;
+			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
+				.' missing-registration 2>&1', $output, $status);
+			$this->assertEquals(0, $status, 'missing helper is a visible refusal, not a fatal');
+			$this->assertEquals(array('rearms' => 0,
+				'log' => array('ratio: erasedata-rearm-helper-unavailable')),
+				json_decode(implode("\n", $output), true),
+				'ratio names the missing recovery helper while leaving the queue untouched');
+		} finally {
+			$this->removeTree($fixture);
+		}
+	}
+
 	public function testRunsInTheBackground()
 	{
 		$this->assertTrue(strpos($this->command("1"), "execute.nothrow.bg={") !== false,

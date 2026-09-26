@@ -20,7 +20,7 @@ class ruTrackerBatchCheck
 			if($logger !== null)
 				call_user_func($logger, $message);
 			elseif(class_exists('ruTrackerChecker', false))
-				ruTrackerChecker::logDebug($message);
+				ruTrackerChecker::logUnrepairable($message);
 		}
 		catch(Throwable $e)
 		{
@@ -113,6 +113,10 @@ if( count( $argv ) > 2 )
 
 if(( count( $argv ) > 1 ) && chdir(dirname( __FILE__)))
 {
+	require_once( "cli_log.php" );
+	RuTrackerCliLog::install("batch_check");
+	require_once( "../../php/util.php" );
+	RuTrackerCliLog::useConfiguredLog();
 	require_once( "check.php" );
 
 	ruTrackerBatchCheck::runHandover($argv[1]);

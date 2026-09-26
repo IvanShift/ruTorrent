@@ -22,9 +22,9 @@ if($req->success())
 	// would keep a complete record of work with nothing left to fire the worker
 	// that serves it.
 	//
-	// This is the one moment that loss is plausible, and it is the only place
-	// in the shipped plugin that re-arms. It re-arms only when the same
-	// conservative scan the worker and retirement use proves something is still
+	// Full WebUI initialization is the usual recovery point. Ratio init
+	// uses this same helper if erasedata did not register. It re-arms only
+	// when the conservative scan shared with worker and retirement proves work
 	// owed, and it fails closed on a durable state it cannot parse rather than
 	// trusting a *.pending name it cannot bind to a generation.
 	erasedataRearmDrainSchedule();

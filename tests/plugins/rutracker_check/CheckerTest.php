@@ -2028,6 +2028,25 @@ class CheckerTest
 		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'a hash of unknown ownership must not be erased blindly');
 	}
 
+	public function testFailedStagingLogsClassifiedOwnerLoadAndRestoreAtDefaultDebug()
+	{
+		$this->withoutDebugLog(function () {
+			$this->resetFakes();
+			$this->stageTorrents();
+			rTorrent::$sendResult = false;
+			$this->queueTransactionStart(sys_get_temp_dir(), 1, 1);
+			// sendTorrent() returns false, and the marker never appears.
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'the replacement is refused');
+			$log = implode("\n", FileUtil::$log);
+			strictAssertTrue(strpos($log,
+				'load=dispatch-failed owner=missing restore=confirmed') !== false,
+				'the ungated log names the three facts that decide the refusal');
+		});
+	}
+
 	public function testCommitEraseWithUnknownOldStateLeavesStagedCopy()
 	{
 		$this->resetFakes();

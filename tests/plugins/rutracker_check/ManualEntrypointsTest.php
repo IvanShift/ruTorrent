@@ -49,21 +49,16 @@ class ManualEntrypointsTest
 			if(!mkdir($tree . '/' . $sub, 0700, true))
 				throw new RuntimeException('could not create ' . $sub);
 
-		// The production entrypoints, copied rather than described. launcher.php
-		// is copied when the tree has one, so this fixture works both before and
-		// after the entrypoints grow a shared helper.
-		$copied = 0;
-		foreach(array('action.php', 'batch_check.php', 'launcher.php') as $name)
+		// Copy the shipped entrypoints and their helpers. A missing dependency
+		// is a fixture error, not a reason for the worker to silently check nothing.
+		foreach(array('action.php', 'batch_check.php', 'launcher.php', 'cli_log.php') as $name)
 		{
 			$source = $this->root . '/plugins/rutracker_check/' . $name;
 			if(!is_file($source))
-				continue;
+				throw new RuntimeException('the production ' . $name . ' was not found');
 			if(!copy($source, $tree . '/plugins/rutracker_check/' . $name))
 				throw new RuntimeException('could not copy ' . $name);
-			$copied++;
 		}
-		if($copied < 2)
-			throw new RuntimeException('the production manual entrypoints were not found');
 
 		$this->writeUtilStub($tree);
 		$this->writeRecorder($tree);
@@ -311,7 +306,7 @@ class ManualEntrypointsTest
 			. '		if($hash === getenv("MANUAL_TEST_THROW"))' . "\n"
 			. '			throw new RuntimeException("checker blew up on " . $hash);' . "\n"
 			. '	}' . "\n"
-			. '	public static function logDebug($message)' . "\n"
+			. '	public static function logUnrepairable($message)' . "\n"
 			. '	{' . "\n"
 			. '		file_put_contents(getenv("MANUAL_TEST_LOG"), $message . "\n", FILE_APPEND);' . "\n"
 			. '	}' . "\n"

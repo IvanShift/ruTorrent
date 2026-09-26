@@ -4,6 +4,8 @@
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent-task-test-'.getmypid().'-'.bin2hex(random_bytes(4));
 
 require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__.'/TaskNativeHelperFixture.php');
+define('RTASK_KILL_HELPER', taskNativeHelperFixture());
 require_once(__DIR__ . '/../../../plugins/_task/task.php');
 
 // A payload class for the params test: unserialize() must not construct it, so

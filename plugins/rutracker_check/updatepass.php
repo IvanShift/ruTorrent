@@ -945,12 +945,10 @@ class RuTrackerUpdatePass
         return ruTrackerChecker::isSettledStatus($row['state'], $row['time'], $row['msg'], $foreign);
     }
 
-    // Columns of the sweep's own fleet scan, in the order it asks for them:
-    // hash, the staged copy's ownership marker (chk-replacement), its
-    // inheritance record (chk-replaces), and the PREDECESSOR's own pointer at
-    // a successor (chk-replacing). The fourth is what makes a predecessor
-    // whose transaction died before it staged anything reachable at all.
-    const SWEEP_COLUMNS = 4;
+    // The first four columns reach both halves of a replacement transaction.
+    // The remaining five diagnose stopped predecessors whose recovery key was
+    // already lost by an older release, without another fleet-wide RPC.
+    const SWEEP_COLUMNS = 9;
 
     /**
      * Finish or diagnose a replacement transaction that never closed.
@@ -974,11 +972,21 @@ class RuTrackerUpdatePass
             getCmd("d.get_custom=") . ruTrackerChecker::REPLACEMENT_MARKER_KEY,
             getCmd("d.get_custom=") . ruTrackerChecker::INHERIT_KEY,
             getCmd("d.get_custom=") . ruTrackerChecker::REPLACING_KEY,
+            getCmd("d.get_state="),
+            getCmd("d.is_open="),
+            getCmd("d.get_custom=") . "chk-state",
+            getCmd("d.get_custom=") . "chk-time",
+            getCmd("d.get_custom=") . "chk-meta-new",
         )));
         $scan->important = false;
-        if (!$scan->success()) return;
+        if (!$scan->success() || !is_array($scan->val)
+            || count($scan->val) % self::SWEEP_COLUMNS !== 0) {
+            ruTrackerChecker::logUnrepairable('sweepReplacements: fleet scan failed; recovery deferred');
+            return;
+        }
 
-        for ($i = 0; $i + self::SWEEP_COLUMNS <= count($scan->val); $i += self::SWEEP_COLUMNS) {
+        for ($i = 0; $i < count($scan->val); $i += self::SWEEP_COLUMNS) {
+            self::diagnoseLegacyRow($scan->val, $i, $now);
             $hash = (string) $scan->val[$i];
             if ((string) $scan->val[$i + 1] === '') {
                 // No staged copy was ever marked -- but this row may be a
@@ -1005,6 +1013,33 @@ class RuTrackerUpdatePass
         }
     }
 
+    // Older releases could clear chk-replacing before the staged row tried to
+    // revive its predecessor. The old run policy is then irrecoverable: a
+    // manual check can stamp chk-state=1 on an intentionally stopped torrent.
+    // The exact legacy fingerprint is diagnostic only, never restart authority.
+    static private function diagnoseLegacyRow($values, $i, $now)
+    {
+        $hash = $values[$i];
+        $successor = $values[$i + 8];
+        $state = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 4]);
+        $open = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 5]);
+        $checked = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 6]);
+        $checkedAt = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 7]);
+        if (!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)
+            || !is_string($successor)
+            || !preg_match('/^[0-9a-fA-F]{40}$/D', $successor)
+            || $state !== 0 || $open !== 0
+            || $checked !== ruTrackerChecker::STE_INPROGRESS
+            || $checkedAt === null || $checkedAt <= 0
+            || $checkedAt > $now - 3600
+            || (string) $values[$i + 3] !== '')
+            return;
+        ruTrackerChecker::logUnrepairable('update: legacy-strand candidate '
+            . $hash . ' -> ' . $successor
+            . ': stopped/closed, chk-state=1 and no recovery key; prior run state is unproved'
+            . '; not restarted; explicit repair required');
+    }
+
     // Clear the predecessor's chk-replacing key only if its current stored value
     // matches the expected generation, preventing a sweep from erasing a newer transaction's key.
     static private function clearReplacingGeneration($hash, $expected, $expectedValues = array())
@@ -1015,10 +1050,8 @@ class RuTrackerUpdatePass
             array(ruTrackerChecker::REPLACING_KEY),
             $expectedValues
         );
-        if ($status === RuTrackerAtomicOwnership::UNKNOWN
-            || $status === RuTrackerAtomicOwnership::UNCONFIRMED)
-            ruTrackerChecker::logDebug("sweepReplacements: " . $hash
-                . " chk-replacing clear is unconfirmed; retaining the recovery generation");
+        ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $hash
+            . ' clear chk-replacing status=' . $status);
         return $status;
     }
 
@@ -1186,12 +1219,8 @@ class RuTrackerUpdatePass
             }
 
             if ($isOurSuccessor) {
-                // It DID stage: the marked-row branch above owns that transaction
-                // and this key is a leftover from a rollback that could not finish.
-                if (!self::reconcileObsoleteCleanup($hash, $successorHash, $succMarker,
-                    (string) $succProbe->val[2], true)) return;
-                self::clearReplacingGeneration($hash, $encoded,
-                    array('state' => $observedState, 'is_open' => $observedOpen));
+                // The marked-row branch needs this exact key to prove ownership
+                // before it revives the predecessor. Do not retire it here.
                 return;
             }
 
@@ -1499,6 +1528,8 @@ class RuTrackerUpdatePass
             $record['staged']
         );
 
+        ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $old
+            . ' revive status=' . $reviveStatus . ' staged=' . $hash);
         if ($reviveStatus === RuTrackerAtomicOwnership::ACTED) {
             ruTrackerChecker::logDebug("sweepReplacements: revived " . $old . " ("
                 . ($wantStarted ? "started" : "open") . ", as its record says) so its own check"
@@ -1532,6 +1563,9 @@ class RuTrackerUpdatePass
                 return;
             $activeReplacing = (string) $probe->val[3];
             if ($activeReplacing !== $expectedReplacing) {
+                if ($activeReplacing === '')
+                    ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $old
+                        . ' revive skipped: chk-replacing empty while staged=' . $hash);
                 // Empty/different ownership means this transaction has no
                 // authority over predecessor run state. Its own exact staged
                 // generation can still be removed safely.
@@ -1579,6 +1613,8 @@ class RuTrackerUpdatePass
                 'is_open' => 0,
             )
         );
+        ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $hash
+            . ' discard status=' . $status);
         if ($status === RuTrackerAtomicOwnership::ACTED) {
             return;
         }

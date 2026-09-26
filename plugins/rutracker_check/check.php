@@ -13,6 +13,7 @@ require_once( "trackers/tfile.php" );
 require_once( "trackers/toloka.php" );
 require_once( dirname(__FILE__) . "/fetcherror.php" );
 require_once( dirname(__FILE__) . "/runstate.php" );
+require_once( dirname(__FILE__) . "/../../php/xmlrpc_path.php" );
 require_once( dirname(__FILE__) . "/../erasedata/removewithdata.php" );
 require_once( "metafetch.php" );
 
@@ -1696,6 +1697,15 @@ class ruTrackerChecker
 			// staged copy, which is exactly what turns this into a stranded
 			// transaction the sweep knows how to finish.
 			$restored = self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker);
+			$loadResult = $loadedHash === false ? 'dispatch-failed'
+				: ($loadedHash === null ? 'pending'
+					: (is_string($loadedHash) && strcasecmp($loadedHash, $newHash) === 0
+						? 'expected-hash' : 'different-hash'));
+			self::logUnrepairable('createTorrent: ' . $hash . ' -> ' . $newHash
+				. ' staging refused: load=' . $loadResult
+				. ' owner=' . (in_array($owner, array('ours', 'foreign', 'missing'), true)
+					? $owner : 'unknown')
+				. ' restore=' . ($restored ? 'confirmed' : 'unconfirmed'));
 			// A successful restore clears its exact recovery marker inside the
 			// same conditional command. A failed restore keeps it for the sweep.
 			if($owner === 'ours')
