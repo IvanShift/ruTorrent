@@ -357,6 +357,7 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 	$seenHashes = array();
 	$paths = array();
 	$inodes = array();
+	$bindings = array();
 	for($index = 0; $index < count($scan->val); $index += 4)
 	{
 		$row = array_slice($scan->val, $index, 4);
@@ -380,7 +381,10 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 			$identity = erasedataPathIdentity($file);
 			if(!is_array($identity) || !isset($identity['path']))
 				return(false);
-			$paths["p\0".$identity['path']] = true;
+			$key = "p\0".$identity['path'];
+			$paths[$key] = true;
+			if(!isset($bindings[$key])) $bindings[$key] = array();
+			$bindings[$key]["r\0".$file] = true;
 			if(!empty($identity['exists']))
 			{
 				if(!isset($identity['stat']['dev'], $identity['stat']['ino']))
@@ -389,7 +393,8 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 			}
 		}
 	}
-	return(array('paths' => $paths, 'inodes' => $inodes));
+	return(array('paths' => $paths, 'inodes' => $inodes,
+		'bindings' => $bindings));
 }
 
 function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)

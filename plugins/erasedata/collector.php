@@ -106,6 +106,64 @@ function erasedataRemoveReservationContainer($reserved, $path, $reservationKey,
 			basename(erasedataPrivateMarkerPath($reserved)))));
 }
 
+// The shell survives a PHP process crash, so a missing private directory needs
+// an operation phase. An inode number cannot distinguish a restored parent from
+// a new directory after rmdir. These flags do not claim power-loss durability:
+// PHP 7.4 has no portable directory fsync for their new directory entries.
+function erasedataCleanupPhasePath($reservation, $phase)
+{
+	return($reservation.'/.cleanup-'.$phase.'-intent');
+}
+
+function erasedataCleanupPhaseState($reservation)
+{
+	$present = array();
+	foreach(array('delete', 'restore') as $phase)
+	{
+		$path = erasedataCleanupPhasePath($reservation, $phase);
+		if(!erasedataPathExists($path)) continue;
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000
+			|| $stat['size'] !== 0)
+			return(false);
+		$present[$phase] = true;
+	}
+	// A failed rmdir can be followed by restore. Its later intent wins.
+	if(isset($present['restore'])) return('restore');
+	if(isset($present['delete'])) return('delete');
+	return(null);
+}
+
+function erasedataCleanupMarkPhase($reservation, $phase)
+{
+	if($phase !== 'delete' && $phase !== 'restore') return(false);
+	$path = erasedataCleanupPhasePath($reservation, $phase);
+	if(erasedataPathExists($path))
+		return(erasedataCleanupPhaseState($reservation) !== false);
+	$handle = @fopen($path, 'x');
+	if($handle === false) return(false);
+	$closed = @fclose($handle);
+	@chmod($path, 0600);
+	return($closed && erasedataCleanupPhaseState($reservation) !== false);
+}
+
+function erasedataCleanupRemoveReservationContainer($reservation, $path,
+	$reservationKey, ErasedataFilesystemOps $filesystem)
+{
+	if(erasedataCleanupPhaseState($reservation) === false) return(false);
+	// Delete first: a crash with only restore-intent remaining stays safe.
+	foreach(array('delete', 'restore') as $phase)
+	{
+		$flag = erasedataCleanupPhasePath($reservation, $phase);
+		if(erasedataPathExists($flag)
+			&& (!$filesystem->unlink($flag) || erasedataPathExists($flag)))
+			return(false);
+	}
+	return(erasedataRemoveReservationContainer(
+		$reservation, $path, $reservationKey, $filesystem));
+}
+
 function erasedataReservationLinkMatches($path, $reserved,
 	ErasedataFilesystemOps $filesystem)
 {
@@ -889,6 +947,100 @@ function erasedataCleanupIdentityMatches($expected, $current)
 		&& $expected['size'] === $current['size'] && $expected['mtime'] === $current['mtime']);
 }
 
+// A cleanup capture has a different authority from ordinary forced deletion:
+// recovery restores it before another ownership decision, and never publishes
+// a public symlink to private bytes.
+function erasedataCleanupRestoreCapturedFile($path, $info,
+	ErasedataFilesystemOps $filesystem, &$reason)
+{
+	$entry = $info['entry'];
+	$captured = $filesystem->entryIdentity($entry);
+	if(!is_array($captured))
+	{
+		$reason = 'capture-missing';
+		return(false);
+	}
+	if(erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem)
+		&& !erasedataRemoveCapturedEntryBridge(
+			$path, $entry, $info['root'], $filesystem, false))
+	{
+		$reason = 'legacy-bridge-retained';
+		return(false);
+	}
+	if(erasedataPathExists($path))
+	{
+		$reason = 'restore-occupied';
+		return(false);
+	}
+	if(!$filesystem->renameNoReplace($entry, $path))
+	{
+		$reason = erasedataPathExists($path) ? 'restore-occupied' : 'restore-failed';
+		return(false);
+	}
+	$restored = $filesystem->entryIdentity($path);
+	if(!erasedataSameEntryIdentity($captured, $restored)
+		|| erasedataPathExists($entry))
+	{
+		$reason = 'restore-unverified';
+		return(false);
+	}
+	if(!erasedataRemoveCapturedEntryRoot($info['root'], $filesystem))
+	{
+		$reason = 'capture-root-retained';
+		return(false);
+	}
+	return(true);
+}
+
+function erasedataCleanupCaptureReferencedByName($entry, $public,
+	$successorSnapshot, $otherSnapshot)
+{
+	$key = "p\0".$entry;
+	if(isset($otherSnapshot['paths'][$key]))
+	{
+		// The previous release published a bridge at $public. A torrent
+		// naming that bridge keeps working after exact restoration; a direct
+		// reference to the private name would break, so keep the capture.
+		if(!isset($otherSnapshot['bindings'][$key])
+			|| !is_array($otherSnapshot['bindings'][$key]))
+			return(true);
+		foreach($otherSnapshot['bindings'][$key] as $raw => $_)
+			if($raw !== "r\0".$public)
+				return(true);
+	}
+	foreach($successorSnapshot['observations'] as $observation)
+		if(!empty($observation['identity']['exists'])
+			&& $observation['identity']['path'] === $entry
+			&& $observation['path'] !== $public)
+			return(true);
+	return(false);
+}
+
+function erasedataCleanupCapturedFileMatches($entry, $expected, $original,
+	ErasedataFilesystemOps $filesystem)
+{
+	$current = $filesystem->entryIdentity($entry);
+	if(!erasedataSameEntryIdentity($original, $current)
+		|| !isset($expected['lstat']['dev'], $expected['lstat']['ino'])
+		|| $current['dev'] !== $expected['lstat']['dev']
+		|| $current['ino'] !== $expected['lstat']['ino'])
+		return(false);
+	if(!empty($current['is_link']))
+	{
+		// Moving a relative symlink changes how stat() resolves its target.
+		// Its own inode and link text are the properties that remain stable.
+		return(isset($original['link']) && $filesystem->readLink($entry) === $original['link']);
+	}
+	if(empty($current['is_file']))
+		return(false);
+	$target = $filesystem->targetIdentity($entry);
+	return(is_array($target) && !empty($target['is_file'])
+		&& $target['dev'] === $expected['stat']['dev']
+		&& $target['ino'] === $expected['stat']['ino']
+		&& $target['size'] === $expected['size']
+		&& $target['mtime'] === $expected['mtime']);
+}
+
 function erasedataCleanupParents($manifest)
 {
 	$dirs = array();
@@ -909,134 +1061,262 @@ function erasedataCleanupParents($manifest)
 	return($dirs);
 }
 
+function erasedataCleanupParentOwnerState($snapshot, $path)
+{
+	if(!is_array($snapshot) || !isset($snapshot['paths'])
+		|| !is_array($snapshot['paths']))
+		return('unknown');
+	foreach($snapshot['paths'] as $key => $_)
+	{
+		if(strpos($key, "p\0") !== 0)
+			return('unknown');
+		if(erasedataPathsOverlap($path, substr($key, 2)))
+			return('claimed');
+	}
+	return('unclaimed');
+}
+
+// Legacy cleanup used a public symlink to a reserved directory. Move only
+// that exact link to a private tombstone and remove it; never publish a new
+// bridge while restoring the directory itself.
+function erasedataCleanupDropReservationBridge($path, $reserved, $reservation,
+	ErasedataFilesystemOps $filesystem, &$reason)
+{
+	$entries = $filesystem->scanDirectory($reservation);
+	if($entries === false)
+	{
+		$reason = 'legacy-capture-retained';
+		return(false);
+	}
+	$tombstones = array_values(array_filter($entries, function($name) {
+		return((bool)preg_match('/^\.bridge-[0-9]+-[0-9]+$/D', $name));
+	}));
+	if(count($tombstones) > 1)
+	{
+		$reason = 'legacy-capture-retained';
+		return(false);
+	}
+	if(!count($tombstones))
+	{
+		if(!erasedataReservationLinkMatches($path, $reserved, $filesystem))
+		{
+			if(erasedataPathExists($path))
+			{
+				$reason = 'restore-occupied';
+				return(false);
+			}
+			return(true);
+		}
+		$identity = $filesystem->entryIdentity($path);
+		if(!is_array($identity) || empty($identity['is_link']))
+		{
+			$reason = 'legacy-capture-retained';
+			return(false);
+		}
+		$tombstone = $reservation.'/.bridge-'.$identity['dev'].'-'.$identity['ino'];
+		if(!$filesystem->renameNoReplace($path, $tombstone))
+		{
+			$reason = 'legacy-capture-retained';
+			return(false);
+		}
+	}
+	else
+		$tombstone = $reservation.'/'.$tombstones[0];
+	if(!preg_match('/^\.bridge-([0-9]+)-([0-9]+)$/D',
+		basename($tombstone), $matches))
+	{
+		$reason = 'legacy-capture-retained';
+		return(false);
+	}
+	$current = $filesystem->entryIdentity($tombstone);
+	if(!is_array($current) || empty($current['is_link'])
+		|| (string)$current['dev'] !== $matches[1]
+		|| (string)$current['ino'] !== $matches[2]
+		|| $filesystem->readLink($tombstone) !== $reserved
+		|| !$filesystem->unlink($tombstone))
+	{
+		$reason = 'legacy-capture-retained';
+		return(false);
+	}
+	return(!erasedataPathExists($tombstone));
+}
+
+function erasedataCleanupRestoreReservation($path, $reservation, $reservationKey,
+	ErasedataFilesystemOps $filesystem, &$reason, &$skipParent)
+{
+	$reserved = erasedataReservationDataPath($reservation);
+	if(!erasedataPathExists($reserved))
+	{
+		if(erasedataReservationEncodedIdentity(
+				$reservation, $path, $reservationKey) === false
+			|| !erasedataPrivateMarkerIsValid($reservation))
+		{
+			$reason = 'capture-identity';
+			return(false);
+		}
+		$phase = erasedataCleanupPhaseState($reservation);
+		if($phase !== 'delete')
+		{
+			// After restore, even matching dev:ino cannot prove that the public
+			// name still holds the old directory. Retain both job and shell.
+			$reason = ($phase === 'restore' ? 'restore-uncertain' : 'phase-unknown')
+				.' parent-key='.substr(hash('sha256', $path), 0, 16);
+			return(false);
+		}
+		if((!erasedataPathExists($path)
+				|| erasedataReservationLinkMatches($path, $reserved, $filesystem))
+			&& !erasedataCleanupDropReservationBridge(
+				$path, $reserved, $reservation, $filesystem, $reason))
+			return(false);
+		if(!erasedataCleanupRemoveReservationContainer(
+			$reservation, $path, $reservationKey, $filesystem))
+		{
+			$reason = 'legacy-capture-retained';
+			return(false);
+		}
+		$skipParent = true;
+		return(true);
+	}
+	$encoded = erasedataReservationEncodedIdentity(
+		$reservation, $path, $reservationKey);
+	if($encoded === false || !erasedataPrivateMarkerIsValid($reservation))
+	{
+		$reason = 'capture-identity';
+		return(false);
+	}
+	$captured = $filesystem->entryIdentity($reserved);
+	if(!is_array($captured) || empty($captured['is_dir'])
+		|| !erasedataCleanupDropReservationBridge(
+			$path, $reserved, $reservation, $filesystem, $reason))
+	{
+		if($reason === null) $reason = 'capture-identity';
+		return(false);
+	}
+	if(!erasedataCleanupMarkPhase($reservation, 'restore'))
+	{
+		$reason = 'phase-write-failed';
+		return(false);
+	}
+	if(!$filesystem->renameNoReplace($reserved, $path))
+	{
+		$reason = erasedataPathExists($path) ? 'restore-occupied' : 'restore-failed';
+		return(false);
+	}
+	$restored = $filesystem->entryIdentity($path);
+	if(!erasedataSameEntryIdentity($captured, $restored)
+		|| erasedataPathExists($reserved)
+		|| !erasedataCleanupRemoveReservationContainer(
+			$reservation, $path, $reservationKey, $filesystem))
+	{
+		$reason = 'restore-unverified';
+		return(false);
+	}
+	if((string)$captured['dev'] !== $encoded['device']
+		|| (string)$captured['ino'] !== $encoded['inode'])
+		$skipParent = true;
+	return(true);
+}
+
 function erasedataResumeCleanupCapturedTargets($manifest, $reservationKey,
 	$successorSnapshot, $otherSnapshot, ErasedataFilesystemOps $filesystem, &$reason)
 {
 	if(!is_array($successorSnapshot)
-		|| !isset($successorSnapshot['observations'], $successorSnapshot['by_identity'])
+		|| !isset($successorSnapshot['observations'])
 		|| !is_array($successorSnapshot['observations'])
-		|| !is_array($successorSnapshot['by_identity']))
+		|| !is_array($otherSnapshot) || !isset($otherSnapshot['paths'])
+		|| !is_array($otherSnapshot['paths']))
+	{
+		$reason = 'rpc-unknown';
 		return(false);
+	}
 	$parents = array();
 	$targets = array();
-	$observedRoots = array();
-	$captureParents = array();
 	foreach($manifest['files'] as $file)
 	{
 		if(!erasedataPathContains($manifest['base'], $file)
 			|| $file === $manifest['base'])
+		{
+			$reason = 'unsafe-path';
 			return(false);
-		$parent = dirname($file);
-		$parents["p\0".$parent] = $parent;
+		}
+		$parents["p\0".dirname($file)] = dirname($file);
 		$targets["p\0".$file] = $file;
 	}
+	// Refuse an unknown capture in a job parent; otherwise a later missing
+	// public name could retire a job while its private payload is still there.
 	foreach($parents as $parent)
 	{
-		$identity = $filesystem->entryIdentity($parent);
-		if($identity === false)
-		{
-			if(erasedataPathExists($parent))
-				return(false);
-			continue;
-		}
 		$entries = $filesystem->scanDirectory($parent);
 		if($entries === false)
-			return(false);
-		foreach($entries as $entry)
 		{
-			if(strpos($entry, '.erasedata-entry-') !== 0)
+			if(!erasedataPathExists($parent))
 				continue;
-			$root = $parent.'/'.$entry;
-			$name = erasedataCapturedEntryName($root);
-			if($name === false)
-				return(false);
-			$candidate = $parent.'/'.$name;
-			if(strpos($root,
-				erasedataCapturedEntryPrefix($candidate, $reservationKey)) === 0)
+			$reason = 'capture-scan-failed';
+			return(false);
+		}
+		foreach($entries as $name)
+		{
+			if(strpos($name, '.erasedata-entry-') !== 0)
+				continue;
+			$root = $parent.'/'.$name;
+			$original = erasedataCapturedEntryName($root);
+			$candidate = $parent.'/'.$original;
+			if($original === false || !isset($targets["p\0".$candidate])
+				|| strpos($root,
+					erasedataCapturedEntryPrefix($candidate, $reservationKey)) !== 0)
 			{
-				$targetKey = "p\0".$candidate;
-				if(!isset($targets[$targetKey]))
-					return(false);
-				if(!isset($observedRoots[$targetKey]))
-					$observedRoots[$targetKey] = array();
-				$observedRoots[$targetKey][] = $root;
-				$captureParents["p\0".$parent] = $parent;
+				$reason = 'capture-unbound';
+				return(false);
 			}
 		}
 	}
-	$hasCaptures = false;
 	foreach($targets as $file)
 	{
-		$roots = erasedataCapturedEntryRoots(
-			$file, $reservationKey, $filesystem);
-		$targetKey = "p\0".$file;
-		$observed = isset($observedRoots[$targetKey])
-			? $observedRoots[$targetKey] : array();
-		if($roots === false || count($roots) > 1
-			|| count($roots) !== count($observed)
-			|| (count($roots) === 1 && $roots[0] !== $observed[0]))
+		$roots = erasedataCapturedEntryRoots($file, $reservationKey, $filesystem);
+		if($roots === false || count($roots) > 1)
+		{
+			$reason = 'capture-ambiguous';
 			return(false);
+		}
 		if(!count($roots))
 			continue;
-		$hasCaptures = true;
 		$info = erasedataCapturedEntryRootInfo(
 			$roots[0], $file, $reservationKey, $filesystem);
 		if($info === false)
-			return(false);
-		$entryIdentity = $filesystem->entryIdentity($info['entry']);
-		if($entryIdentity === false)
 		{
-			if(erasedataPathExists($info['entry']))
-				return(false);
-			continue;
-		}
-		if(erasedataEntryIdentityParts($entryIdentity) !== $info['identity']
-			|| (empty($entryIdentity['is_file']) && empty($entryIdentity['is_link'])))
-			return(false);
-		$targetIdentity = $filesystem->targetIdentity($info['entry']);
-		if($targetIdentity === false)
-		{
-			if(empty($entryIdentity['is_link']))
-				return(false);
-			continue;
-		}
-		if(empty($targetIdentity['is_file'])
-			|| !isset($entryIdentity['lstat'], $targetIdentity['stat']))
-			return(false);
-		$capturedIdentity = array(
-			'exists' => true,
-			'path' => $info['entry'],
-			'lstat' => $entryIdentity['lstat'],
-			'stat' => $targetIdentity['stat'],
-		);
-		$owner = erasedataCleanupOtherOwnerState($otherSnapshot,
-			$file, $capturedIdentity['stat']);
-		if($owner !== 'unclaimed')
-		{
-			$reason = $owner === 'claimed' ? 'ownership-claimed' : 'rpc-unknown';
+			$reason = 'capture-unbound';
 			return(false);
 		}
-		$key = erasedataCleanupExactIdentityKey($capturedIdentity);
-		if($key === false)
-			return(false);
-		if(isset($successorSnapshot['by_identity'][$key]))
-			foreach($successorSnapshot['by_identity'][$key] as $observationKey)
+		$captured = $filesystem->entryIdentity($info['entry']);
+		if($captured === false)
+		{
+			// A crash after restore or after private unlink leaves this shell.
+			// Never infer a new deletion from a public inode seen here.
+			if((!erasedataPathExists($file)
+					|| erasedataCapturedEntryBridgeMatches(
+						$file, $info['entry'], $filesystem))
+				&& !erasedataRemoveCapturedEntryBridge(
+					$file, $info['entry'], $info['root'], $filesystem, false))
 			{
-				if(!isset($successorSnapshot['observations'][$observationKey]['identity'])
-					|| erasedataExactFileAlias($capturedIdentity,
-						$successorSnapshot['observations'][$observationKey]['identity'])
-					!== ERASEDATA_FILE_ALIAS_DISTINCT)
-					return(false);
+				$reason = 'legacy-bridge-retained';
+				return(false);
 			}
-	}
-	if(!$hasCaptures)
-		return(true);
-	if(!erasedataCleanupSuccessorSnapshotStillMatches($successorSnapshot, $filesystem))
-		return(false);
-	foreach($captureParents as $parent)
-		if(!erasedataResumeCapturedEntries(
-				$parent, $reservationKey, $filesystem))
+			if(!erasedataRemoveCapturedEntryRoot($info['root'], $filesystem))
+			{
+				$reason = 'capture-root-retained';
+				return(false);
+			}
+			continue;
+		}
+		if(erasedataCleanupCaptureReferencedByName(
+			$info['entry'], $file, $successorSnapshot, $otherSnapshot))
+		{
+			$reason = 'capture-aliased';
 			return(false);
+		}
+		if(!erasedataCleanupRestoreCapturedFile($file, $info, $filesystem, $reason))
+			return(false);
+	}
 	return(true);
 }
 
@@ -1426,6 +1706,9 @@ final class ErasedataCollector
 		}
 		if(isset($this->cleanupLogState['retained'][$key])) return;
 		$this->cleanupLogState['retained'][$key] = true;
+		if(is_string($reason) && (strpos($reason, 'restore-uncertain') === 0
+			|| strpos($reason, 'phase-unknown') === 0))
+			$reason .= ' job='.basename($jobPath);
 		// The cleanup half of the one rule manifestLog() names. 'unreadable-manifest'
 		// and 'generation-mismatch' are healed by no retry and pruned by nothing, so
 		// on the drain's schedule this line repeated for the life of the daemon.
@@ -1441,6 +1724,265 @@ final class ErasedataCollector
 			return;
 		}
 		FileUtil::toLog('erasedata: cleanup retained '.$hash.' '.$reason);
+	}
+
+	private function cleanupEmptyParent($dir, $reservationKey, $manifest, &$reason)
+	{
+		$reservations = erasedataDirectoryReservations(
+			$dir, $reservationKey, $this->filesystem);
+		if($reservations === false || count($reservations) > 1)
+		{
+			$reason = 'legacy-capture-retained';
+			return(false);
+		}
+		$restoredIdentity = null;
+		if(count($reservations))
+		{
+			$encoded = erasedataReservationEncodedIdentity(
+				$reservations[0], $dir, $reservationKey);
+			$skipParent = false;
+			if(!erasedataCleanupRestoreReservation($dir, $reservations[0],
+				$reservationKey, $this->filesystem, $reason, $skipParent))
+				return(false);
+			if($skipParent)
+				return(true);
+			$restoredIdentity = $encoded;
+		}
+		if(is_link($dir))
+		{
+			$target = $this->filesystem->readLink($dir);
+			if(is_string($target) && strpos($target,
+				erasedataDirectoryReservationPrefix($dir, $reservationKey)) === 0)
+			{
+				$reason = 'legacy-bridge-retained';
+				return(false);
+			}
+			return(true);
+		}
+		if(!erasedataPathExists($dir))
+			return(true);
+		if(!is_dir($dir))
+		{
+			$reason = 'unsafe-path';
+			return(false);
+		}
+		$owners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+		$state = erasedataCleanupParentOwnerState($owners, $dir);
+		if($state === 'unknown')
+		{
+			$reason = 'rpc-unknown';
+			return(false);
+		}
+		if($state === 'claimed')
+			return(true);
+		$entries = $this->filesystem->scanDirectory($dir);
+		if($entries === false)
+		{
+			$reason = 'unsafe-path';
+			return(false);
+		}
+		if(count(array_diff($entries, array('.', '..'))) > 0)
+			return(true);
+		$expected = $this->filesystem->pathIdentity($dir);
+		$before = $this->filesystem->entryIdentity($dir);
+		if(!is_array($expected) || empty($expected['exists'])
+			|| !is_array($before) || empty($before['is_dir'])
+			|| ($restoredIdentity !== null
+				&& (!is_array($restoredIdentity)
+					|| (string)$before['dev'] !== $restoredIdentity['device']
+					|| (string)$before['ino'] !== $restoredIdentity['inode']))
+			|| $before['dev'] !== $expected['lstat']['dev']
+			|| $before['ino'] !== $expected['lstat']['ino']
+			|| !erasedataSameFilesystemEntry(
+				$expected, $this->filesystem->pathIdentity($dir)))
+		{
+			$reason = 'unsafe-path';
+			return(false);
+		}
+		$reservation = erasedataDirectoryReservationPath($dir, $reservationKey, $expected);
+		if($reservation === false
+			|| !$this->filesystem->makeDirectory($reservation, 0700))
+		{
+			$reason = 'capture-failed';
+			return(false);
+		}
+		if(!erasedataCreatePrivateMarker($reservation))
+		{
+			$this->filesystem->removeDirectory($reservation);
+			$reason = 'capture-failed';
+			return(false);
+		}
+		$reserved = erasedataReservationDataPath($reservation);
+		if(!$this->filesystem->rename($dir, $reserved))
+		{
+			erasedataRemoveReservationContainer(
+				$reservation, $dir, $reservationKey, $this->filesystem);
+			$reason = 'capture-failed';
+			return(false);
+		}
+		$captured = $this->filesystem->entryIdentity($reserved);
+		if(!is_array($captured) || !erasedataSameEntryIdentity($before, $captured)
+			|| !erasedataReservationHasEncodedIdentity(
+				$reservation, $dir, $reservationKey))
+		{
+			$skipParent = false;
+			if(!erasedataCleanupRestoreReservation($dir, $reservation,
+				$reservationKey, $this->filesystem, $reason, $skipParent))
+				return(false);
+			return(true); // A different directory is not this job's parent.
+		}
+		$postOwners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+		$postState = erasedataCleanupParentOwnerState($postOwners, $dir);
+		if($postState !== 'unclaimed')
+		{
+			$skipParent = false;
+			if(!erasedataCleanupRestoreReservation($dir, $reservation,
+				$reservationKey, $this->filesystem, $reason, $skipParent))
+				return(false);
+			if($postState === 'claimed')
+				return(true);
+			$reason = 'rpc-unknown';
+			return(false);
+		}
+		$after = $this->filesystem->scanDirectory($reserved);
+		if(!is_array($after) || count(array_diff($after, array('.', '..'))) > 0
+			|| erasedataPathExists($dir)
+			|| !erasedataSameEntryIdentity(
+				$captured, $this->filesystem->entryIdentity($reserved)))
+		{
+			if(!erasedataPathExists($dir))
+			{
+				$skipParent = false;
+				erasedataCleanupRestoreReservation($dir, $reservation,
+					$reservationKey, $this->filesystem, $reason, $skipParent);
+			}
+			$reason = 'unsafe-path';
+			return(false);
+		}
+		if(!erasedataCleanupMarkPhase($reservation, 'delete'))
+		{
+			$reason = 'phase-write-failed';
+			return(false);
+		}
+		if(!$this->filesystem->removeDirectory($reserved))
+		{
+			$skipParent = false;
+			erasedataCleanupRestoreReservation($dir, $reservation,
+				$reservationKey, $this->filesystem, $reason, $skipParent);
+			$reason = 'rmdir-failure';
+			return(false);
+		}
+		if(!erasedataCleanupRemoveReservationContainer(
+			$reservation, $dir, $reservationKey, $this->filesystem))
+		{
+			$reason = 'capture-root-retained';
+			return(false);
+		}
+		return(true);
+	}
+
+	private function cleanupCapturedFile($file, $current, $expected, $reservationKey,
+		$manifest, $successorFiles, $successorSnapshot, &$reason)
+	{
+		$original = $this->filesystem->entryIdentity($file);
+		if(!is_array($original) || (empty($original['is_file']) && empty($original['is_link'])))
+		{
+			$reason = 'capture-identity';
+			return(false);
+		}
+		if(!empty($original['is_link']))
+		{
+			$original['link'] = $this->filesystem->readLink($file);
+			if(!is_string($original['link']))
+			{
+				$reason = 'capture-identity';
+				return(false);
+			}
+		}
+		$root = erasedataCreateCapturedEntryRoot(
+			$file, $reservationKey, $original, $this->filesystem);
+		if($root === false)
+		{
+			$reason = 'capture-failed';
+			return(false);
+		}
+		$entry = erasedataCapturedEntryDataPath($root);
+		if(!$this->filesystem->rename($file, $entry))
+		{
+			erasedataRemoveCapturedEntryRoot($root, $this->filesystem);
+			$reason = 'capture-failed';
+			return(false);
+		}
+		$info = erasedataCapturedEntryRootInfo(
+			$root, $file, $reservationKey, $this->filesystem);
+		if($info === false)
+		{
+			$reason = 'capture-unbound';
+			return(false);
+		}
+		if(!erasedataCleanupCapturedFileMatches(
+			$entry, $expected, $original, $this->filesystem))
+		{
+			erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			$reason = 'capture-identity';
+			return(false);
+		}
+
+		// Rebuild both authorities while the public name is absent. The old
+		// snapshots were only permission to begin capture, never to unlink.
+		$postOwners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+		$postPaths = $this->cleanupSuccessorPaths($manifest['new_hash']);
+		$postSuccessor = is_array($postPaths) && $postPaths === $successorFiles
+			? erasedataCleanupSuccessorSnapshot($postPaths, $this->filesystem) : false;
+		$owner = $postOwners === false ? 'unknown'
+			: erasedataCleanupOtherOwnerState($postOwners, $file, $current['stat']);
+		if($postSuccessor === false)
+			$owner = 'unknown';
+		else
+			foreach($postSuccessor['observations'] as $observation)
+			{
+				$alias = erasedataExactFileAlias($current, $observation['identity']);
+				if($alias === ERASEDATA_FILE_ALIAS_SAME)
+					$owner = 'claimed';
+				else if($alias === ERASEDATA_FILE_ALIAS_UNKNOWN)
+					$owner = 'unknown';
+			}
+		if($owner !== 'unclaimed')
+		{
+			if(!erasedataCleanupRestoreCapturedFile(
+				$file, $info, $this->filesystem, $reason))
+				return(false);
+			if($owner === 'claimed')
+				return(true);
+			$reason = 'rpc-unknown';
+			return(false);
+		}
+		if(erasedataPathExists($file)
+			|| !erasedataCleanupSuccessorSnapshotStillMatches(
+				$postSuccessor, $this->filesystem)
+			|| !erasedataCleanupCapturedFileMatches(
+					$entry, $expected, $original, $this->filesystem))
+		{
+			if(!erasedataPathExists($file))
+				erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			$reason = 'unsafe-path';
+			return(false);
+		}
+		if(!$this->filesystem->unlink($entry) || erasedataPathExists($entry))
+		{
+			erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			$reason = 'unlink-failure';
+			return(false);
+		}
+		if(!erasedataRemoveCapturedEntryRoot($root, $this->filesystem))
+		{
+			$reason = 'capture-root-retained';
+			return(false);
+		}
+		return(true);
 	}
 
 	private function consumeCleanupManifest($path, $expectedStat, $hash, $token, $jobKey = null)
@@ -1495,6 +2037,16 @@ final class ErasedataCollector
 		{
 			$this->cleanupLog($hash, 'retained',
 				$resumeReason === null ? 'unlink-failure' : $resumeReason, $path, $jobKey);
+			return(false);
+		}
+		// Recovery can restore a public inode. Refresh other ownership, while
+		// keeping the original successor observation as the comparison baseline:
+		// accepting a changed successor here would authorize stale deletion.
+		$otherSnapshot = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+		if($otherSnapshot === false)
+		{
+			$this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
 			return(false);
 		}
 		$complete = true;
@@ -1609,55 +2161,21 @@ final class ErasedataCollector
 				$captured = $this->filesystem->entryIdentity($action['file']);
 				if(!is_array($captured)
 					|| !erasedataSameStatIdentity($captured['lstat'], $current['lstat'])
-					|| !$this->filesystem->unlinkCapturedEntry(
-						$action['file'], $captured, $path))
+					|| !$this->cleanupCapturedFile($action['file'], $current,
+						$action['expected'], $path, $manifest, $successorFiles,
+						$successorSnapshot, $reason))
 				{
 					$complete = false;
-					$reason = 'unlink-failure';
+					if($reason === null) $reason = 'unlink-failure';
 					break;
 				}
 			}
-		// A directory cannot be captured and restored without an atomic
-		// no-replace operation. Keep the exact job until its parent is resolved.
 		if($complete)
 			foreach(erasedataCleanupParents($manifest) as $dir)
 			{
-				// Previous releases may already have captured this parent. Never
-				// retire its job while the private reservation still holds data.
-				$reservations = erasedataDirectoryReservations(
-					$dir, $path, $this->filesystem);
-				if($reservations === false || count($reservations) > 0)
+				if(!$this->cleanupEmptyParent($dir, $path, $manifest, $reason))
 				{
 					$complete = false;
-					$reason = $reservations === false
-						? 'unsafe-path' : 'legacy-capture-retained';
-					break;
-				}
-				if(is_link($dir))
-				{
-					$target = $this->filesystem->readLink($dir);
-					if(is_string($target) && strpos($target,
-						erasedataDirectoryReservationPrefix($dir, $path)) === 0)
-					{
-						$complete = false;
-						$reason = 'legacy-capture-retained';
-						break;
-					}
-					continue;
-				}
-				if(!is_dir($dir))
-					continue;
-				$entries = $this->filesystem->scanDirectory($dir);
-				if(!is_array($entries))
-				{
-					$complete = false;
-					$reason = 'unsafe-path';
-					break;
-				}
-				if(count(array_diff($entries, array('.', '..'))) === 0)
-				{
-					$complete = false;
-					$reason = 'parent-no-atomic-restore';
 					break;
 				}
 			}

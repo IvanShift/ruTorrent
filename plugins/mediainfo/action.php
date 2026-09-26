@@ -59,7 +59,7 @@ if(isset($_REQUEST['hash']) &&
 						$flags = "--Inform=file://".escapeshellarg($randName);
 					}
 					$commands[] = Utility::getExternal("mediainfo")." ".$flags." ".escapeshellarg($filename);
-					$ret = $task->start($commands, rTask::FLG_WAIT);
+					$ret = $task->start($commands, 0);
 				}
 			}
 			break;

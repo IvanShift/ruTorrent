@@ -1,48 +1,41 @@
 <?php
 
-// Run inside the shipped image as the torrent user after its native helper is installed.
+// Run inside the shipped image as the torrent user after the task kill and supervisor helpers are installed.
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent-task-image-'.getmypid().'-'.bin2hex(random_bytes(4));
 require_once(__DIR__.'/../../../plugins/_task/task.php');
 
-if (!is_executable(RTASK_KILL_HELPER)) {
-    throw new RuntimeException('The shipped image lacks the native task killer');
-}
-$process = proc_open(array('sleep', '30'), array(
-    0 => array('file', '/dev/null', 'r'),
-    1 => array('file', '/dev/null', 'w'),
-    2 => array('file', '/dev/null', 'w'),
-), $pipes);
-if (!is_resource($process)) {
-    throw new RuntimeException('Could not create the isolated image smoke witness');
+if (!is_executable(RTASK_KILL_HELPER) || !is_executable(RTASK_SUPERVISOR_HELPER)) {
+    throw new RuntimeException('The shipped image lacks a native task helper');
 }
 $profile = $_ENV['RU_PROFILE_PATH'];
+$marker = $profile.'/grandchild-pid';
+$inner = 'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($marker).'; wait';
+$middle = 'sh -c '.escapeshellarg($inner).' & wait';
+$task = new rTask(array('name'=>'image supervisor smoke'));
+$result = $task->start(array('setsid sh -c '.escapeshellarg($middle).' & wait'), rTask::FLG_RUN_AS_WEB);
+$dir = rTask::formatPath($task->id);
+$grandchild = 0;
 try {
-    $pid = proc_get_status($process)['pid'];
-    if ($pid <= 1 || $pid === getmypid()) {
-        throw new RuntimeException('Unsafe image smoke witness PID');
+    for ($attempt=0; $attempt<200 && !is_file($marker); ++$attempt) usleep(10000);
+    if (!is_file($marker)) throw new RuntimeException('The image did not start the detached grandchild');
+    $grandchild = (int)trim(file_get_contents($marker));
+    if ($grandchild<=1 || $result['status'] >= 0 || !is_file($dir.'/supervisor.version')
+        || !is_file($dir.'/pid.identity')) {
+        throw new RuntimeException('The image did not start a supervised process tree');
     }
-    $id = uniqid(time(), true);
-    $dir = rTask::formatPath($id);
-    if (!mkdir($dir, 0700, true)) {
-        throw new RuntimeException('Could not create the isolated task record');
+    if (!rTask::kill($task->id) || is_dir($dir) || is_dir('/proc/'.$grandchild)) {
+        throw new RuntimeException('The image did not prove detached-grandchild cancellation');
     }
-    file_put_contents($dir.'/pid', (string)$pid);
-    file_put_contents($dir.'/pid.identity',
-        file_get_contents('/proc/sys/kernel/random/boot_id').
-        file_get_contents('/proc/'.$pid.'/stat'));
-    file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-    if (!rTask::kill($id)) {
-        throw new RuntimeException('The image native helper did not kill its witness');
-    }
-    for ($attempt = 0; $attempt < 20 && proc_get_status($process)['running']; ++$attempt) {
-        usleep(50000);
-    }
-    if (proc_get_status($process)['running'] || is_dir($dir)) {
-        throw new RuntimeException('The image task process or record remained after kill');
-    }
-    echo "ok - shipped image pidfd task killer\n";
+    echo "ok - shipped image supervised setsid grandchild cancellation\n";
 } finally {
-    if (proc_get_status($process)['running']) proc_terminate($process);
-    proc_close($process);
+    if (is_file($dir.'/pid') && is_file($dir.'/pid.identity')) {
+        $pid = trim(file_get_contents($dir.'/pid'));
+        if (ctype_digit($pid) && (int)$pid > 1) {
+            $cleanup = proc_open(array(RTASK_KILL_HELPER, $pid, $dir.'/pid.identity'), array(
+                0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
+                2=>array('file','/dev/null','w')), $pipes);
+            if (is_resource($cleanup)) proc_close($cleanup);
+        }
+    }
     if (is_dir($profile)) FileUtil::deleteDirectory($profile);
 }

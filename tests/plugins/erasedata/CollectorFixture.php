@@ -451,6 +451,14 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 				$this->recordInode($path);
 				$this->mark($entry);
 				break;
+			case 'fleet-change':
+				rXMLRPCRequest::$responses['d.multicall'] = array(
+					'ok' => true, 'fault' => !empty($entry['fault']),
+					'val' => isset($entry['rows']) ? $entry['rows'] : array());
+				if(isset($entry['sources']))
+					ErasedataCollectorTestState::$fleetSources = $entry['sources'];
+				$this->mark($entry);
+				break;
 			case 'transition':
 				$this->transition($entry);
 				break;
@@ -561,6 +569,22 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 		$result = parent::removeDirectory($path);
 		if($result)
 			$this->act($entry, $path, 'after');
+		return($result);
+	}
+
+	// Model the helper's no-clobber contract without requiring a C compiler in
+	// each PHP matrix container; the compiled helper has its own syscall test.
+	public function renameNoReplace($from, $to)
+	{
+		$entry = $this->directive('renameNoReplace', $to);
+		if($entry !== false)
+		{
+			$this->act($entry, $to, 'before');
+			if($this->forced($entry)) return($entry['result']);
+		}
+		if(erasedataPathExists($to)) return(false);
+		$result = parent::rename($from, $to);
+		if($result && $entry !== false) $this->act($entry, $to, 'after');
 		return($result);
 	}
 

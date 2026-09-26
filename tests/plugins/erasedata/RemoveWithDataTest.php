@@ -866,8 +866,8 @@ class RemoveWithDataTest extends TestCase
 		if($options['containerRemovalFail'] !== null)
 			$scenario['removePrivateContainer:*'] = array('result' => false);
 		if($options['cleanupUnlinkFail'] !== null)
-			$scenario['unlinkCapturedEntry:*'] = array(
-				'path' => $options['cleanupUnlinkFail'], 'result' => false);
+			$scenario['unlink:*'] = array('basename' => 'entry',
+				'contains' => '/.erasedata-entry-', 'result' => false);
 		if($options['commitTokenUnlinkFail'] !== null)
 			$scenario['unlink:*'] = array(
 				'path' => $options['commitTokenUnlinkFail'], 'result' => false);
@@ -3574,6 +3574,791 @@ class RemoveWithDataTest extends TestCase
 		return($tmp);
 	}
 
+	public function testCleanupRechecksOwnerAfterCaptureWithoutPublishingBridge()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/late-owner';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'late owned bytes');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'old.bin')))),
+			'filesystem' => array('rename:1' => array('path' => $old,
+				'action' => 'fleet-change', 'at' => 'after',
+				'rows' => array($thirdHash, '', '', ''),
+				'sources' => array($thirdHash => array('hash' => $thirdHash,
+					'info' => array('name' => 'old.bin', 'length' => 16))))),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'a late third-owner claim must not crash cleanup: '.$output);
+		$roots = glob($base.'/.erasedata-entry-*');
+		$restored = @lstat($old);
+		$this->assertEquals('late owned bytes', @file_get_contents($old),
+			'a late owner keeps the exact obsolete bytes');
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino'] && !is_link($old),
+			'the captured inode must be restored at the public name without a bridge');
+		$this->assertTrue(count($roots) === 0 && !is_file($tmp),
+			'a proved late claim ends this obsolete-file obligation without a private hardlink');
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array('hash' => $thirdHash,
+				'info' => array('name' => 'old.bin', 'length' => 16))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'old.bin')))),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'claimed capture retry must run: '.$output);
+		$again = @lstat($old);
+		$this->assertTrue(is_array($again) && $again['ino'] === $original['ino']
+			&& count(glob($base.'/.erasedata-entry-*')) === 0,
+			'a later collector pass cannot delete a file now owned by the third torrent');
+	}
+
+
+	public function testCleanupUnknownAfterCaptureRetainsBytesAndJob()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/late-unknown';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'unknown bytes');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'filesystem' => array('rename:1' => array('path' => $old,
+				'action' => 'fleet-change', 'at' => 'after', 'fault' => true)),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'a failed post-capture scan must not crash: '.$output);
+		$roots = glob($base.'/.erasedata-entry-*');
+		$restored = @lstat($old);
+		$this->assertEquals('unknown bytes', @file_get_contents($old),
+			'unknown post-capture ownership must restore the original bytes');
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino'] && !is_link($old)
+			&& count($roots) === 0 && is_file($tmp)
+			&& strpos($output, 'rpc-unknown') !== false,
+			'unknown ownership restores the exact inode but retains the job visibly');
+		list($retryStatus, $retryOutput) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $retryStatus, 'the later readable retry runs: '.$retryOutput);
+		$this->assertTrue(!erasedataPathExists($old) && !is_file($tmp),
+			'a later unclaimed retry completes the retained obligation');
+	}
+
+
+
+	public function testCleanupRestoreNeverReplacesAConcurrentPublicOccupant()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/restore-occupied';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		$replacement = $base.'/new-owner.bin';
+		file_put_contents($old, 'captured obsolete bytes');
+		file_put_contents($replacement, 'concurrent new bytes');
+		$original = lstat($old);
+		$newcomer = lstat($replacement);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'old.bin')))),
+			'filesystem' => array(
+				'rename:1' => array('path' => $old, 'action' => 'fleet-change',
+					'at' => 'after', 'rows' => array($thirdHash, '', '', ''),
+					'sources' => array($thirdHash => array('hash' => $thirdHash,
+						'info' => array('name' => 'old.bin', 'length' => 23)))),
+				'renameNoReplace:1' => array('path' => $old,
+					'action' => 'replace-public', 'at' => 'before',
+					'public_path' => $old, 'replacement' => $replacement),
+			),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'an occupied restore must not crash: '.$output);
+		$roots = glob($base.'/.erasedata-entry-*');
+		$visible = @lstat($old);
+		$private = count($roots) === 1 ? @lstat($roots[0].'/entry') : false;
+		$this->assertTrue(is_array($visible) && $visible['dev'] === $newcomer['dev']
+			&& $visible['ino'] === $newcomer['ino']
+			&& @file_get_contents($old) === 'concurrent new bytes',
+			'the no-replace restore must never clobber a concurrent public object');
+		$this->assertTrue(is_array($private) && $private['dev'] === $original['dev']
+			&& $private['ino'] === $original['ino']
+			&& @file_get_contents($roots[0].'/entry') === 'captured obsolete bytes'
+			&& is_file($tmp) && strpos($output, 'restore-occupied') !== false,
+			'the original inode and its obligation remain visible in private quarantine');
+	}
+
+	public function testCleanupRequiresNoPublicBridgeForUnclaimedDeletion()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/no-bridge';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$bridgeCalls = $this->dir.'/cleanup-bridge-calls';
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'makeSymlink:*' => array('path' => $old, 'result' => false,
+				'count_file' => $bridgeCalls))));
+		$this->assertEquals(0, $status, 'the no-bridge collector must run: '.$output);
+		$this->assertTrue(!file_exists($old) && !is_link($old)
+			&& $this->onlyManifest($oldHash) === false
+			&& !is_file($bridgeCalls),
+			'an unclaimed obsolete file must complete without attempting a public bridge');
+	}
+
+
+	public function testCleanupRestoresRelativeSymlinkClaimedAfterCapture()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/relative-link';
+		@mkdir($base, 0777, true);
+		$target = $base.'/shared.bin';
+		$old = $base.'/old-link';
+		file_put_contents($target, 'shared bytes');
+		$this->assertTrue(symlink('shared.bin', $old), 'fixture creates a relative obsolete symlink');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'old-link')))),
+			'filesystem' => array('rename:1' => array('path' => $old,
+				'action' => 'fleet-change', 'at' => 'after',
+				'rows' => array($thirdHash, '', '', ''),
+				'sources' => array($thirdHash => array('hash' => $thirdHash,
+					'info' => array('name' => 'old-link', 'length' => 12))))),
+			'captureLogs' => true,
+		));
+		$restored = @lstat($old);
+		$this->assertEquals(0, $status, 'relative symlink retry must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino'] && is_link($old)
+			&& readlink($old) === 'shared.bin' && file_get_contents($old) === 'shared bytes'
+			&& file_get_contents($target) === 'shared bytes',
+			'a late claim restores the exact relative link and original target');
+		$this->assertTrue(!is_file($tmp) && count(glob($base.'/.erasedata-entry-*')) === 0,
+			'claimed relative symlink leaves no private capture');
+	}
+
+	public function testCleanupRechecksPhysicalHardlinkClaimAfterCapture()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/late-hardlink';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		$alias = $base.'/third.bin';
+		file_put_contents($old, 'same bytes');
+		$this->assertTrue(link($old, $alias), 'fixture creates a physical alias');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'third.bin')))),
+			'filesystem' => array('rename:1' => array('path' => $old,
+				'action' => 'fleet-change', 'at' => 'after',
+				'rows' => array($thirdHash, '', '', ''),
+				'sources' => array($thirdHash => array('hash' => $thirdHash,
+					'info' => array('name' => 'third.bin', 'length' => 10))))),
+		));
+		$restored = @lstat($old);
+		$this->assertEquals(0, $status, 'late hardlink claimant must not crash: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino']
+			&& file_get_contents($alias) === 'same bytes'
+			&& file_get_contents($old) === 'same bytes',
+			'post-capture physical ownership restores the exact hardlinked inode');
+		$this->assertTrue(!is_file($tmp) && count(glob($base.'/.erasedata-entry-*')) === 0,
+			'a proved hardlink claim completes without private residue');
+	}
+
+	public function testCleanupRestoresParentClaimedAfterCapture()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/late-parent';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 1, 'season/missing.bin')))),
+			'filesystem' => array('rename:*' => array('path' => $nested,
+				'action' => 'fleet-change', 'at' => 'after',
+				'rows' => array($thirdHash, '', '', ''),
+				'sources' => array($thirdHash => array('hash' => $thirdHash,
+					'info' => array('name' => basename($base), 'files' => array(
+						array('path' => array('season', 'missing.bin'), 'length' => 1))))))),
+			'captureLogs' => true,
+		));
+		$restored = @lstat($nested);
+		$this->assertEquals(0, $status, 'late parent owner must not crash: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino'] && is_dir($nested)
+			&& !is_link($nested) && !erasedataPathExists($old),
+			'a missing descendant claim restores the exact empty parent inode');
+		$this->assertTrue(!is_file($tmp) && count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'a proved parent claim ends the reservation without a bridge: job='.(is_file($tmp) ? 'yes' : 'no').' roots='.count(glob($base.'/.erasedata-rmdir-*')));
+	}
+
+	public function testCleanupParentRestoreNeverClobbersConcurrentDirectory()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/occupied-parent';
+		$nested = $base.'/season';
+		$replacement = $base.'/other-season';
+		@mkdir($nested, 0777, true);
+		@mkdir($replacement, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		file_put_contents($replacement.'/active.bin', 'active bytes');
+		$original = lstat($nested);
+		$newcomer = lstat($replacement);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 1, 'season/missing.bin')))),
+			'filesystem' => array(
+				'rename:*' => array('path' => $nested, 'action' => 'fleet-change',
+					'at' => 'after', 'rows' => array($thirdHash, '', '', ''),
+					'sources' => array($thirdHash => array('hash' => $thirdHash,
+						'info' => array('name' => basename($base), 'files' => array(
+						array('path' => array('season', 'missing.bin'), 'length' => 1)))))),
+				'renameNoReplace:1' => array('path' => $nested,
+					'action' => 'replace-public', 'at' => 'before',
+					'public_path' => $nested, 'replacement' => $replacement)),
+			'captureLogs' => true,
+		));
+		$visible = @lstat($nested);
+		$roots = glob($base.'/.erasedata-rmdir-*');
+		$private = count($roots) === 1 ? @lstat($roots[0].'/directory') : false;
+		$this->assertEquals(0, $status, 'occupied parent restore must not crash: '.$output);
+		$this->assertTrue(is_array($visible) && $visible['ino'] === $newcomer['ino']
+			&& file_get_contents($nested.'/active.bin') === 'active bytes',
+			'the no-replace restore does not overwrite a concurrent directory');
+		$this->assertTrue(is_array($private) && $private['ino'] === $original['ino']
+			&& is_file($tmp) && strpos($output, 'restore-occupied') !== false,
+			'the captured empty parent and exact job remain visible for recovery');
+	}
+
+	public function testCleanupRetryRestoresParentCapturedBeforeCrash()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/parent-capture-crash';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('path' => $nested, 'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'capture crash fixture must exit: '.$output);
+		$roots = glob($base.'/.erasedata-rmdir-*');
+		$this->assertTrue(!erasedataPathExists($nested) && count($roots) === 1
+			&& is_file($tmp) && is_dir($roots[0].'/directory'),
+			'crash retains the exact hidden directory and cleanup obligation');
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array('hash' => $thirdHash,
+				'info' => array('name' => basename($base), 'files' => array(
+					array('path' => array('season', 'missing.bin'), 'length' => 1))))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 1, 'season/missing.bin')))),
+		));
+		$restored = @lstat($nested);
+		$this->assertEquals(0, $status, 'captured parent retry must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& !is_link($nested) && count(glob($base.'/.erasedata-rmdir-*')) === 0
+			&& !is_file($tmp),
+			'claim on retry restores original directory before any deletion');
+	}
+
+	public function testCleanupCrashAfterFileRestoreNeverReDeletesClaimedInode()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/file-restore-crash';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'original bytes');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$third = array('hash' => $thirdHash,
+			'info' => array('name' => 'old.bin', 'length' => 14));
+		$reply = array('stored' => array('ok' => true, 'fault' => false,
+			'val' => array($base, 0, 'old.bin')));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => $reply),
+			'filesystem' => array(
+				'rename:1' => array('path' => $old, 'action' => 'fleet-change',
+					'at' => 'after', 'rows' => array($thirdHash, '', '', ''),
+					'sources' => array($thirdHash => $third)),
+				'renameNoReplace:1' => array('path' => $old,
+					'action' => 'exit', 'at' => 'after')),
+		));
+		$this->assertEquals(0, $status, 'restore crash fixture must exit: '.$output);
+		$this->assertTrue(is_file($tmp) && is_file($old)
+			&& count(glob($base.'/.erasedata-entry-*')) === 1,
+			'crash after restore leaves the exact job and an empty private shell');
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => $third),
+			'fleetReplies' => array($thirdHash => $reply),
+		));
+		$restored = @lstat($old);
+		$this->assertEquals(0, $status, 'restored file retry must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& file_get_contents($old) === 'original bytes'
+			&& count(glob($base.'/.erasedata-entry-*')) === 0 && !is_file($tmp),
+			'an empty shell cannot authorize deleting the restored claimed inode');
+	}
+
+	public function testCleanupCrashAfterParentRestoreNeverDeletesClaimedDirectory()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/parent-restore-crash';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$third = array('hash' => $thirdHash, 'info' => array(
+			'name' => basename($base), 'files' => array(
+				array('path' => array('season', 'missing.bin'), 'length' => 1))));
+		$reply = array('stored' => array('ok' => true, 'fault' => false,
+			'val' => array($base, 1, 'season/missing.bin')));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => $reply),
+			'filesystem' => array(
+				'rename:*' => array('path' => $nested, 'action' => 'fleet-change',
+					'at' => 'after', 'rows' => array($thirdHash, '', '', ''),
+					'sources' => array($thirdHash => $third)),
+				'renameNoReplace:1' => array('path' => $nested,
+					'action' => 'exit', 'at' => 'after')),
+		));
+		$this->assertEquals(0, $status, 'parent restore crash fixture must exit: '.$output);
+		$this->assertTrue(is_dir($nested) && is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 1,
+			'crash leaves the restored directory and an empty private shell');
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => $third),
+			'fleetReplies' => array($thirdHash => $reply),
+			'captureLogs' => true,
+		));
+		$restored = @lstat($nested);
+		$this->assertEquals(0, $status, 'restored parent retry must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& !is_link($nested) && count(glob($base.'/.erasedata-rmdir-*')) === 1
+			&& is_file($tmp),
+			'crash after restore keeps the claimed directory, shell and cleanup obligation');
+		$this->assertTrue(strpos($output, 'restore-uncertain') !== false
+			&& strpos($output, 'parent-key=') !== false
+			&& strpos($output, 'job='.basename($tmp)) !== false,
+			'uncertain restored parent is visible with its parent key and exact job');
+	}
+
+	public function testCleanupRetryRetainsDirectOwnerOfPrivateCapture()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/private-alias';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('path' => $old, 'action' => 'exit', 'at' => 'after'))));
+		$roots = glob($base.'/.erasedata-entry-*');
+		$this->assertEquals(0, $status, 'file capture crash fixture must exit: '.$output);
+		$this->assertTrue(count($roots) === 1 && !erasedataPathExists($old)
+			&& is_file($roots[0].'/entry'),
+			'crash leaves the old file under its private capture name');
+		$private = $roots[0].'/entry';
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array('hash' => $thirdHash,
+				'info' => array('name' => 'entry', 'length' => 8))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array(dirname($private), 0, 'entry')))),
+			'captureLogs' => true));
+		$this->assertEquals(0, $status, 'private alias retry must run: '.$output);
+		$this->assertTrue(is_file($private) && file_get_contents($private) === 'obsolete'
+			&& !erasedataPathExists($old) && is_file($tmp),
+			'a direct third-owner binding to the private entry prevents restoration and retirement');
+		$this->assertTrue(strpos($output, 'capture-aliased') !== false,
+			'the retained job explains the direct private alias');
+	}
+
+	public function testCleanupRetryAfterParentRestoreWithoutClaimRetainsForDiagnosis()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/parent-restore-no-claim';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$third = array('hash' => $thirdHash, 'info' => array(
+			'name' => basename($base), 'files' => array(
+				array('path' => array('season', 'missing.bin'), 'length' => 1))));
+		$reply = array('stored' => array('ok' => true, 'fault' => false,
+			'val' => array($base, 1, 'season/missing.bin')));
+		list($status, $output) = $this->runCollector(array(
+			'fleetReplies' => array($thirdHash => $reply),
+			'filesystem' => array(
+				'rename:*' => array('path' => $nested, 'action' => 'fleet-change',
+					'at' => 'after', 'rows' => array($thirdHash, '', '', ''),
+					'sources' => array($thirdHash => $third)),
+				'renameNoReplace:1' => array('path' => $nested,
+					'action' => 'exit', 'at' => 'after')),
+		));
+		$this->assertEquals(0, $status, 'parent restore crash fixture must exit: '.$output);
+		$restored = @lstat($nested);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& is_file($tmp) && count(glob($base.'/.erasedata-rmdir-*')) === 1,
+			'crash leaves exact original parent and an empty reservation shell');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'retry without claim must run: '.$output);
+		$visible = @lstat($nested);
+		$this->assertTrue(is_array($visible) && $visible['ino'] === $original['ino']
+			&& is_file($tmp) && count(glob($base.'/.erasedata-rmdir-*')) === 1,
+			'the restored original parent and obligation remain for manual diagnosis');
+		$this->assertTrue(strpos($output, 'restore-uncertain') !== false,
+			'the crash-after-restore window fails closed and explains its uncertainty');
+	}
+
+	public function testCleanupCrashAfterPrivateFileUnlinkCompletesWithoutPublicDelete()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/file-unlink-crash';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'unlink:*' => array('basename' => 'entry',
+				'contains' => '/.erasedata-entry-', 'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'private unlink crash fixture must exit: '.$output);
+		$this->assertTrue(!erasedataPathExists($old) && is_file($tmp)
+			&& count(glob($base.'/.erasedata-entry-*')) === 1,
+			'crash after unlink retains only the private protocol shell');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'private unlink retry must run: '.$output);
+		$this->assertTrue(!erasedataPathExists($old) && !is_file($tmp)
+			&& count(glob($base.'/.erasedata-entry-*')) === 0,
+			'empty shell retry completes without touching a public payload');
+	}
+
+	public function testCleanupCrashAfterPrivateParentRmdirCompletesWithoutPublicDelete()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-rmdir-crash';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'private parent rmdir crash fixture must exit: '.$output);
+		$this->assertTrue(!erasedataPathExists($nested) && is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 1,
+			'crash after rmdir retains only the private reservation shell');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'private parent rmdir retry must run: '.$output);
+		$this->assertTrue(!erasedataPathExists($nested) && !is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'empty reservation retry completes without touching a public directory');
+	}
+
+	public function testCleanupRetryPreservesNewParentEvenIfInodeIsReused()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-reused-inode';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'private rmdir crash fixture must exit: '.$output);
+		$roots = glob($base.'/.erasedata-rmdir-*');
+		$this->assertTrue(!erasedataPathExists($nested) && is_file($tmp)
+			&& count($roots) === 1,
+			'the old directory is gone but its reservation shell remains');
+		$this->assertTrue(is_file($roots[0].'/.cleanup-delete-intent'),
+			'the recorded delete intent distinguishes a later occupant even on filesystems without reuse');
+		$replacement = false;
+		for($attempt = 0; $attempt < 128; $attempt++)
+		{
+			$this->assertTrue(mkdir($nested), 'a new empty directory occupies the public name');
+			$replacement = lstat($nested);
+			if($replacement['dev'] === $original['dev']
+				&& $replacement['ino'] === $original['ino'])
+				break;
+			$this->assertTrue(rmdir($nested), 'the allocator can retry for the recycled inode');
+		}
+		$reused = is_array($replacement)
+			&& $replacement['dev'] === $original['dev']
+			&& $replacement['ino'] === $original['ino'];
+		// Allocator reuse is observed locally but cannot be required of every FS.
+		list($status, $output) = $this->runCollector(array());
+		$visible = @lstat($nested);
+		$this->assertEquals(0, $status, 'reused-inode retry must run: '.$output);
+		$this->assertTrue(is_array($visible) && $visible['ino'] === $replacement['ino']
+			&& is_dir($nested) && !is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			$reused ? 'the new directory survives despite a matching dev:ino'
+				: 'the new directory survives on a filesystem that did not recycle the inode');
+	}
+
+	public function testCleanupRetryRetainsShellWhenPhaseWasLostBeforeRemoval()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-phase-lost';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'exit', 'at' => 'after'))));
+		$roots = glob($base.'/.erasedata-rmdir-*');
+		$this->assertEquals(0, $status, 'private rmdir crash fixture must exit: '.$output);
+		$this->assertTrue(count($roots) === 1
+			&& is_file($roots[0].'/.cleanup-delete-intent'),
+			'the reservation has a recorded delete phase before simulated marker loss');
+		$this->assertTrue(unlink($roots[0].'/.cleanup-delete-intent'),
+			'the fixture models a crash during phase cleanup before shell rmdir');
+		$this->assertTrue(mkdir($nested), 'a new empty parent occupies the old name');
+		$replacement = lstat($nested);
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$visible = @lstat($nested);
+		$this->assertEquals(0, $status, 'ambiguous phase retry must run: '.$output);
+		$this->assertTrue(is_array($visible) && $visible['ino'] === $replacement['ino']
+			&& is_file($tmp) && is_dir($roots[0]),
+			'the unknown phase preserves the public directory, shell and exact job');
+		$this->assertTrue(strpos($output, 'phase-unknown') !== false
+			&& strpos($output, 'parent-key=') !== false
+			&& strpos($output, 'job='.basename($tmp)) !== false,
+			'the retained unknown phase names the job and parent key for diagnosis');
+	}
+
+	public function testCleanupRetryAfterPrivateParentRmdirPreservesNewOccupant()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-new-occupant';
+		$nested = $base.'/season';
+		$replacement = $base.'/ready';
+		@mkdir($nested, 0777, true);
+		@mkdir($replacement, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		file_put_contents($replacement.'/active.bin', 'active bytes');
+		$original = lstat($nested);
+		$newcomer = lstat($replacement);
+		$this->assertTrue($original['ino'] !== $newcomer['ino'],
+			'the future occupant is allocated while the original inode is alive');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'private parent rmdir crash fixture must exit: '.$output);
+		$this->assertTrue(!erasedataPathExists($nested) && is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 1,
+			'crash leaves an empty reservation shell after deleting the old parent');
+		$this->assertTrue(rename($replacement, $nested),
+			'a separately allocated directory occupies the public name');
+		list($status, $output) = $this->runCollector(array());
+		$visible = @lstat($nested);
+		$this->assertEquals(0, $status, 'new occupant retry must run: '.$output);
+		$this->assertTrue(is_array($visible) && $visible['ino'] === $newcomer['ino']
+			&& file_get_contents($nested.'/active.bin') === 'active bytes'
+			&& !is_file($tmp) && count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'the new directory is preserved while the old parent obligation retires');
+	}
+
+	public function testCleanupUnclaimedRelativeSymlinkLeavesItsTarget()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/unclaimed-relative-link';
+		@mkdir($base, 0777, true);
+		$target = $base.'/shared.bin';
+		$old = $base.'/old-link';
+		file_put_contents($target, 'shared bytes');
+		$this->assertTrue(symlink('shared.bin', $old), 'fixture creates a relative link');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$bridges = $this->dir.'/relative-link-bridge-calls';
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'makeSymlink:*' => array('path' => $old, 'result' => false,
+				'count_file' => $bridges))));
+		$this->assertEquals(0, $status, 'unclaimed symlink cleanup must run: '.$output);
+		$this->assertTrue(!erasedataPathExists($old) && !is_file($tmp)
+			&& file_get_contents($target) === 'shared bytes'
+			&& !is_file($bridges) && count(glob($base.'/.erasedata-entry-*')) === 0,
+			'only the obsolete link is removed and its target remains intact');
+	}
+
+	public function testCleanupSiblingOwnerDoesNotProtectEmptyParent()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/sibling-parent';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array('hash' => $thirdHash,
+				'info' => array('name' => basename($base), 'files' => array(
+					array('path' => array('season2', 'other.bin'), 'length' => 1))))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false,
+				'val' => array($base, 1, 'season2/other.bin')))),
+		));
+		$this->assertEquals(0, $status, 'sibling owner cleanup must run: '.$output);
+		$this->assertTrue(!erasedataPathExists($old) && !erasedataPathExists($nested)
+			&& is_dir($base) && !is_file($tmp),
+			'a sibling component does not claim the empty obsolete parent');
+	}
+
+	public function testCleanupUnknownParentAfterCaptureRestoresAndRetains()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/unknown-parent';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array(
+			'filesystem' => array('rename:*' => array('path' => $nested,
+				'action' => 'fleet-change', 'at' => 'after', 'fault' => true)),
+			'captureLogs' => true,
+		));
+		$restored = @lstat($nested);
+		$this->assertEquals(0, $status, 'unknown parent scan must not crash: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& !is_link($nested) && is_file($tmp)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0
+			&& strpos($output, 'rpc-unknown') !== false,
+			'unknown ownership restores the exact parent and retains the job visibly');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'readable parent retry must run: '.$output);
+		$this->assertTrue(!erasedataPathExists($nested) && !is_file($tmp),
+			'a later unclaimed retry completes the retained parent obligation');
+	}
+
+	public function testCleanupLegacyCapturedFileBridgeRestoresWithoutNewBridge()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$thirdHash = $this->hash('C');
+		$base = $this->dir.'/legacy-file-bridge';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'obsolete bytes');
+		$original = lstat($old);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:1' => array('path' => $old, 'action' => 'exit', 'at' => 'after'))));
+		$roots = glob($base.'/.erasedata-entry-*');
+		$this->assertTrue($status === 0 && count($roots) === 1,
+			'fixture leaves one authentic captured obsolete inode');
+		$this->assertTrue(symlink(basename($roots[0]).'/entry', $old),
+			'fixture publishes the historical relative public bridge');
+		$bridges = $this->dir.'/legacy-file-new-bridges';
+		list($status, $output) = $this->runCollector(array(
+			'fleetRows' => array($thirdHash, '', '', ''),
+			'fleetSources' => array($thirdHash => array('hash' => $thirdHash,
+				'info' => array('name' => 'old.bin', 'length' => 14))),
+			'fleetReplies' => array($thirdHash => array('stored' => array(
+				'ok' => true, 'fault' => false, 'val' => array($base, 0, 'old.bin')))),
+			'filesystem' => array('makeSymlink:*' => array('path' => $old,
+				'result' => false, 'count_file' => $bridges)),
+	));
+		$restored = @lstat($old);
+		$this->assertEquals(0, $status, 'legacy file bridge retry must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& !is_link($old) && file_get_contents($old) === 'obsolete bytes'
+			&& !is_file($tmp) && !is_file($bridges)
+			&& count(glob($base.'/.erasedata-entry-*')) === 0,
+			'legacy bridge disappears and the exact claimed inode is restored');
+	}
+
 	public function testCleanupDeletesMatchingOriginalFile()
 	{
 		$this->reset();
@@ -3596,7 +4381,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(false, $this->onlyManifest($oldHash), 'the completed cleanup list must be consumed');
 	}
 
-	public function testCleanupRetainsEmptyParentWithoutRiskingDirectoryCapture()
+	public function testCleanupDeletesEmptyParentWithoutPublishingBridge()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -3609,26 +4394,24 @@ class RemoveWithDataTest extends TestCase
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
 		$captures = $this->dir.'/parent-capture-calls';
+		$bridges = $this->dir.'/parent-bridge-calls';
 		list($status, $output) = $this->runCollector(array(
-			'filesystem' => array('rename:*' => array('path' => $nested,
-				'count_file' => $captures)),
+			'filesystem' => array(
+				'rename:*' => array('path' => $nested, 'count_file' => $captures),
+				'makeSymlink:*' => array('path' => $nested, 'result' => false,
+					'count_file' => $bridges)),
 			'captureLogs' => true,
 		));
 		$this->assertEquals(0, $status, 'empty parent cleanup must exit normally: '.$output);
-		$this->assertTrue(!file_exists($old) && is_dir($nested) && !is_link($nested)
-			&& !is_file($captures) && is_file($tmp) && is_file($token),
-			'the obsolete file is removed while the empty parent keeps its durable job');
-		$this->assertTrue(strpos($output,
-			'erasedata: cleanup retained '.$oldHash.' parent-no-atomic-restore') !== false,
-			'the parent obligation has a classified retained reason');
-		$this->assertTrue(rmdir($nested), 'the fixture can resolve the empty parent independently');
-		list($status, $output) = $this->runCollector(array('captureLogs' => true));
-		$this->assertEquals(0, $status, 'resolved parent retry must exit normally: '.$output);
-		$this->assertTrue(!is_file($tmp) && !is_file($token),
-			'the exact job retires once the parent obligation is resolved');
+		$this->assertTrue(!erasedataPathExists($old) && !erasedataPathExists($nested)
+			&& is_dir($base) && is_file($captures) && !is_file($bridges),
+			'an unclaimed empty parent is captured and removed without a public bridge');
+		$this->assertTrue(!is_file($tmp) && !is_file($token)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'the parent reservation and exact job retire together');
 	}
 
-	public function testCleanupNeverCapturesRacingParentReplacement()
+	public function testCleanupRestoresRacingParentReplacementWithoutDeletingIt()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -3651,14 +4434,44 @@ class RemoveWithDataTest extends TestCase
 			'captureLogs' => true,
 		));
 		$this->assertEquals(0, $status, 'racing parent fixture must run: '.$output);
-		$this->assertTrue(!is_file($captures) && is_dir($nested)
-			&& !file_exists($old) && is_file($tmp) && is_file($token)
-			&& is_file($replacement.'/active.bin')
-			&& file_get_contents($replacement.'/active.bin') === 'active bytes',
-			'cleanup avoids directory capture and retains its unfinished parent job');
+		$this->assertTrue(is_file($captures) && is_dir($nested)
+			&& !file_exists($old) && is_dir($base.'/old-parent')
+			&& is_file($nested.'/active.bin')
+			&& file_get_contents($nested.'/active.bin') === 'active bytes'
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'a racing replacement is restored intact and never reaches rmdir');
+		$this->assertTrue(!is_file($tmp) && !is_file($token),
+			'a restored foreign parent completes this old cleanup obligation');
 	}
 
-	public function testCleanupRetainsLegacyCapturedParentUntilReconciled()
+	public function testCleanupRestoresParentWhenChildAppearsBeforePrivateRmdir()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-child-race';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$original = lstat($nested);
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'recreate', 'content' => array(
+					'name' => 'active.bin', 'bytes' => 'active bytes'))),
+			'captureLogs' => true));
+		$restored = @lstat($nested);
+		$this->assertEquals(0, $status, 'late child fixture must run: '.$output);
+		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
+			&& file_get_contents($nested.'/active.bin') === 'active bytes'
+			&& is_file($tmp) && count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'a child inserted before private rmdir restores the exact directory and retains the job');
+		$this->assertTrue(strpos($output, 'rmdir-failure') !== false,
+			'the retained cleanup names the failed private rmdir');
+	}
+
+	public function testCleanupRestoresLegacyCapturedParentWithoutBridge()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -3680,20 +4493,22 @@ class RemoveWithDataTest extends TestCase
 			&& is_dir($roots[0].'/directory'),
 			'the upgrade fixture must contain an authentic reservation and public bridge');
 		file_put_contents($nested.'/active.bin', 'active bytes');
+		$reservedIdentity = lstat($roots[0].'/directory');
 		list($status, $output) = $this->runCollector(array('captureLogs' => true));
 		$this->assertEquals(0, $status, 'legacy captured-parent retry must not crash: '.$output);
-		$this->assertTrue(is_file($tmp) && is_file($token)
-			&& is_link($nested) && count(glob($base.'/.erasedata-rmdir-*')) === 1
+		$restored = @lstat($nested);
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $reservedIdentity['dev']
+			&& $restored['ino'] === $reservedIdentity['ino'] && !is_link($nested)
+			&& count(glob($base.'/.erasedata-rmdir-*')) === 0
 			&& file_get_contents($nested.'/active.bin') === 'active bytes',
-			'the collector cannot consume a job while its prior private parent still holds data');
-		$this->assertTrue(strpos($output, 'legacy-capture-retained') !== false,
-			'the unresolved upgrade capture must retain a visible classified obligation');
+			'the legacy captured parent returns with its exact inode and active child');
+		$this->assertTrue(!is_file($tmp) && !is_file($token),
+			'a restored nonempty parent completes the old cleanup obligation');
 		list($status, $output) = $this->runCollector(array('captureLogs' => true));
-		$this->assertEquals(0, $status, 'later legacy capture retry must run: '.$output);
-		$this->assertTrue(is_file($tmp) && is_file($token)
-			&& file_get_contents($nested.'/active.bin') === 'active bytes'
-			&& strpos($output, 'legacy-capture-retained') !== false,
-			'the unresolved legacy reservation remains visible on every retry');
+		$this->assertEquals(0, $status, 'later collector pass must run: '.$output);
+		$this->assertTrue(is_dir($nested) && !is_link($nested)
+			&& file_get_contents($nested.'/active.bin') === 'active bytes',
+			'a later pass leaves the recovered active directory intact');
 	}
 
 	public function testCleanupKeepsFileClaimedByThirdTorrent()
@@ -3876,7 +4691,7 @@ class RemoveWithDataTest extends TestCase
 			'capture recovery must preserve unrelated files in the shared base');
 	}
 
-	public function testCleanupRetryRetainsCaptureClaimedByThirdTorrent()
+	public function testCleanupRetryRestoresCaptureClaimedByThirdTorrent()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -3887,6 +4702,7 @@ class RemoveWithDataTest extends TestCase
 		$old = $base.'/old.bin';
 		$alias = $base.'/third.bin';
 		file_put_contents($old, 'captured bytes');
+		$original = lstat($old);
 		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 		$token = substr($tmp, 0, -4).'.list';
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
@@ -3907,10 +4723,15 @@ class RemoveWithDataTest extends TestCase
 				'val' => array($base, 0, 'third.bin')))),
 		));
 		$this->assertEquals(0, $status, 'claimed captured-entry retry must not crash');
-		$this->assertEquals('captured bytes', @file_get_contents($entry),
-			'the claimed captured entry must not be deleted during recovery');
-		$this->assertTrue(is_file($tmp) && is_file($token),
-			'the unresolved captured entry must keep its durable obligation');
+		$restored = @lstat($old);
+		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
+			&& $restored['ino'] === $original['ino'] && !is_link($old)
+			&& file_get_contents($old) === 'captured bytes'
+			&& file_get_contents($alias) === 'captured bytes',
+			'a hardlink claim restores the exact public inode and preserves the alias');
+		$this->assertTrue(!is_file($tmp) && !is_file($token)
+			&& count(glob($base.'/.erasedata-entry-*')) === 0,
+			'a proved claim completes without keeping an unnecessary private link');
 	}
 
 	public function testCleanupRetryProtectsSuccessorAliasToCapturedObsoleteFile()
@@ -4445,7 +5266,7 @@ class RemoveWithDataTest extends TestCase
 			$this->collectorLogs($output), true), 'the batched final guard reports changed successor identity');
 	}
 
-	public function testCleanupCollectorRevalidatesSuccessorSnapshotOncePerBatch()
+	public function testCleanupCollectorRevalidatesSuccessorSnapshotForEachCapture()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -4472,8 +5293,9 @@ class RemoveWithDataTest extends TestCase
 			'val' => array($newHash),
 			'owned' => $owned, 'successorObservationCountFile' => $countFile));
 		$this->assertEquals(0, $status, 'linear successor revalidation must not crash: '.$output);
-		$this->assertEquals(6, is_file($countFile) ? count(file($countFile)) : 0,
-			'three successor paths are observed once initially and once after all four OLD seams');
+		$expectedReads = count($newFiles) * (2 + 2 * count($oldFiles));
+		$this->assertEquals($expectedReads, is_file($countFile) ? count(file($countFile)) : 0,
+			'each captured file gets one fresh successor observation and one final revalidation');
 		foreach($oldFiles as $old)
 			$this->assertTrue(!file_exists($old), 'the stable non-alias OLD file is deleted after the batch guard');
 		$this->assertEquals(false, $this->onlyManifest($oldHash, 'tmp'),
@@ -4513,7 +5335,7 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
-	public function testCleanupCollectorRetainsUnresolvedIdentityAndLeavesNestedParents()
+	public function testCleanupCollectorRetainsUnresolvedIdentityAndRemovesNestedEmptyParents()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -4544,26 +5366,16 @@ class RemoveWithDataTest extends TestCase
 		list($status, $output) = $this->runCollector(array('captureLogs' => true));
 		$this->assertEquals(0, $status, 'nested parent cleanup must not crash the collector: '.$output);
 		$token = substr($list, 0, -4).'.list';
-		$this->assertTrue(!file_exists($old) && is_file($list) && is_file($token)
-			&& is_dir($nested) && is_dir($base.'/one'),
-			'cleanup removes the file while preserving both parent and job obligations');
-		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' parent-no-atomic-restore',
-			$this->collectorLogs($output), true),
-			'the retained parent has a classified reason');
-
+		$this->assertTrue(!erasedataPathExists($old) && !is_file($list) && !is_file($token)
+			&& !erasedataPathExists($nested) && !erasedataPathExists($base.'/one')
+			&& is_dir($base),
+			'cleanup removes both empty nested parents and retires their exact job');
+		$this->assertTrue(count(glob($base.'/.erasedata-rmdir-*')) === 0,
+			'no private parent reservation remains after completion');
 		list($status, $output) = $this->runCollector(array('captureLogs' => true));
-		$this->assertEquals(0, $status, 'the pending parent retry must exit normally: '.$output);
-		$this->assertTrue(is_file($list) && is_file($token)
-			&& is_dir($nested) && is_dir($base.'/one') && is_dir($base),
-			'later passes retain the exact job until the parents are resolved');
-		$this->assertTrue(rmdir($nested) && rmdir($base.'/one'),
-			'the fixture can resolve both empty parents independently');
-		list($status, $output) = $this->runCollector(array('captureLogs' => true));
-		$this->assertEquals(0, $status, 'resolved nested parent retry must exit normally: '.$output);
+		$this->assertEquals(0, $status, 'completed nested parent retry must exit normally: '.$output);
 		$this->assertTrue(!is_file($list) && !is_file($token) && is_dir($base),
-			'the exact job retires after both empty parents are resolved');
-		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
-			'the cleanup branch must never capture a shared parent');
+			'a later pass preserves the shared base and completed job state');
 	}
 
 	public function testCleanupCollectorIsolatesMalformedArtifactAndRejectsInvalidTarget()

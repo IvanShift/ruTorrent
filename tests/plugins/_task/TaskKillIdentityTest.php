@@ -4,7 +4,9 @@
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent task kill-'.getmypid().'-'.bin2hex(random_bytes(4));
 require_once(__DIR__.'/../../php/TestCase.php');
 require_once(__DIR__.'/TaskNativeHelperFixture.php');
+require_once(__DIR__.'/TaskNativeSupervisorFixture.php');
 define('RTASK_KILL_HELPER', taskNativeHelperFixture());
+define('RTASK_SUPERVISOR_HELPER', taskNativeSupervisorFixture());
 require_once(__DIR__.'/../../../plugins/_task/task.php');
 
 class TaskKillIdentityTest extends TestCase
@@ -100,7 +102,7 @@ class TaskKillIdentityTest extends TestCase
 			'The task killer has a native source for identity-bound pidfd signals');
 	}
 
-	public function testParentExitDuringChildPassKeepsOrphanAndTaskVisible()
+	public function testNativeHelperRefusesParentExitDuringChildPass()
 	{
 		$process = proc_open(array('sh', '-c', 'sleep 30 & wait'), array(
 			0 => array('file', '/dev/null', 'r'),
@@ -135,16 +137,11 @@ class TaskKillIdentityTest extends TestCase
 			$ready = $dir.'/helper-ready';
 			$go = $dir.'/helper-go';
 			$binary = taskNativeHelperFixture(true);
-			$code = '$_ENV["RU_PROFILE_PATH"] = $argv[2]; '.
-				'define("RTASK_KILL_HELPER", $argv[3]); require $argv[4]; '.
-				'exit(rTask::kill($argv[1]) ? 0 : 1);';
 			$environment = array_merge($_ENV, array(
 				'RTASK_KILL_TEST_READY' => $ready,
 				'RTASK_KILL_TEST_GO' => $go,
 			));
-			$worker = proc_open(array(PHP_BINARY, '-c', __DIR__.'/../../php-test.ini',
-				'-r', $code, '--', $id, $_ENV['RU_PROFILE_PATH'], $binary,
-				__DIR__.'/../../../plugins/_task/task.php'), array(
+			$worker = proc_open(array($binary, (string)$parent, $dir.'/pid.identity'), array(
 				0 => array('file', '/dev/null', 'r'),
 				1 => array('file', '/dev/null', 'w'),
 				2 => array('file', '/dev/null', 'w'),
@@ -167,14 +164,16 @@ class TaskKillIdentityTest extends TestCase
 			$this->assertEquals(false, $this->processIsGoneOrZombie($child),
 				'The orphaned child is still alive at the signal boundary');
 			file_put_contents($go, 'go');
-			$this->assertEquals(1, proc_close($worker),
-				'A parent exit with an unverified child refuses the kill request');
+			$this->assertEquals(4, proc_close($worker),
+				'The native helper refuses an unverified orphan');
 			$worker = null;
 			$this->assertEquals(true, is_dir($dir),
 				'The task record remains available for the orphan diagnosis');
+			$this->assertEquals(false, rTask::kill($id),
+				'The unsupervised record cannot claim complete-tree cancellation');
 			$this->assertEquals(true,
-					is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'signal state uncertain') !== false,
-					'The task error reports the uncertain child signal state');
+					is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'legacy') !== false,
+					'The task error identifies its legacy cancellation limit');
 		} finally {
 			if ($go !== null) @file_put_contents($go, 'go');
 			if (is_resource($worker)) {
@@ -257,6 +256,7 @@ class TaskKillIdentityTest extends TestCase
 	{
 		$this->withWitness(function($process, $pid) {
 			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
+			file_put_contents($dir.'/supervisor.version', "1\n");
 			$held = RTASK_KILL_HELPER.'.held';
 			if (!rename(RTASK_KILL_HELPER, $held)) {
 				throw new RuntimeException('Could not isolate the native helper fixture');
@@ -282,6 +282,7 @@ class TaskKillIdentityTest extends TestCase
 			// Model a persisted task whose PID was later assigned to this witness.
 			// The recorded PID and boot match, but its start tick is stale.
 			list($id, $dir) = $this->makeTask($pid, $this->staleIdentityFor($pid));
+			file_put_contents($dir.'/supervisor.version', "1\n");
 			$result = rTask::kill($id);
 			usleep(100000);
 			$this->assertEquals(true, proc_get_status($process)['running'],
@@ -298,11 +299,14 @@ class TaskKillIdentityTest extends TestCase
 			usleep(100000);
 			$this->assertEquals(true, proc_get_status($process)['running'],
 				'A legacy PID alone cannot authorize a signal');
-			$this->assertRefusalVisible($result, $dir);
+			$this->assertEquals(false, $result, 'Legacy task refuses cancellation');
+			$this->assertEquals(true, is_dir($dir), 'Legacy task record remains');
+			$this->assertEquals(true, strpos(file_get_contents($dir.'/errors'), 'legacy') !== false,
+				'The refusal explains the missing supervisor');
 		});
 	}
 
-	public function testMatchingProcessBirthCanBeKilled()
+	public function testMatchingBirthDoesNotAuthorizeLegacyTreeCancellation()
 	{
 		$this->withWitness(function($process, $pid) {
 			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
@@ -310,14 +314,14 @@ class TaskKillIdentityTest extends TestCase
 			for ($attempt = 0; $attempt < 20 && proc_get_status($process)['running']; $attempt++) {
 				usleep(50000);
 			}
-			$this->assertEquals(false, proc_get_status($process)['running'],
-				'The verified task process stops');
-			$this->assertEquals(true, $result, 'A verified kill succeeds');
-			$this->assertEquals(false, is_dir($dir), 'The completed task record is removed');
+			$this->assertEquals(true, proc_get_status($process)['running'],
+				'Legacy task process remains unsignalled');
+			$this->assertEquals(false, $result, 'A PID identity alone does not prove its tree');
+			$this->assertEquals(true, is_dir($dir), 'The legacy record remains for diagnosis');
 		});
 	}
 
-	public function testVerifiedTaskWithChildStopsBothProcesses()
+	public function testLegacyTaskWithChildRefusesCompleteTreeCancellation()
 	{
 		$process = proc_open(array('sh', '-c', 'sleep 3 & wait'), array(
 			0 => array('file', '/dev/null', 'r'),
@@ -352,9 +356,10 @@ class TaskKillIdentityTest extends TestCase
 			for ($attempt = 0; $attempt < 20 && !$this->processIsGoneOrZombie($child); $attempt++) {
 				usleep(50000);
 			}
-			$this->assertEquals(true, $result, 'The verified shell and its child are cancelled');
-			$this->assertEquals(false, proc_get_status($process)['running'], 'The task shell stopped');
-			$this->assertEquals(true, $this->processIsGoneOrZombie($child), 'The task child stopped');
+			$this->assertEquals(false, $result, 'Legacy tree cancellation is refused');
+			$this->assertEquals(true, proc_get_status($process)['running'], 'The legacy shell stays running');
+			$this->assertEquals(false, $this->processIsGoneOrZombie($child), 'The child stays running');
+			$this->assertEquals(true, is_dir($dir), 'The task record remains');
 		} finally {
 			if (proc_get_status($process)['running']) {
 				proc_terminate($process);
@@ -405,6 +410,8 @@ class TaskKillIdentityTest extends TestCase
 			'The harmless task completed successfully');
 		$this->assertEquals(true, is_file($dir.'/pid.identity'),
 			'The task recorded a verifiable process birth beside its PID');
+		$this->assertEquals(true, is_file($dir.'/supervisor.complete'),
+			'The waiting task completed after its supervisor proved the tree empty');
 		if (is_file($dir.'/pid.identity')) {
 			$identity = file_get_contents($dir.'/pid.identity');
 			$this->assertEquals(true, strpos($identity, trim(file_get_contents('/proc/sys/kernel/random/boot_id'))."\n")===0,

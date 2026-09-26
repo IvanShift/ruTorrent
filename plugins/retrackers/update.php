@@ -8010,8 +8010,28 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 			$failure = 'commit-request-limit-invalid';
 			return(false);
 		}
+		// A single-command getter does not enter the multicall splitter that
+		// consults rTorrentSettings::maxContentSize(). Read the daemon limit
+		// before preparing the commit: it may be below the API ceiling.
+		$read = new rXMLRPCRequest(new rXMLRPCCommand('get_xmlrpc_size_limit'));
+		$read->important = false;
+		if (!$read->success() || !isset($read->val[0])) {
+			$failure = 'commit-request-limit-invalid';
+			return(false);
+		}
+		$daemonLimit = $read->val[0];
+		if (is_string($daemonLimit) && preg_match('/^[1-9][0-9]*$/D', $daemonLimit) === 1
+			&& retrackersRestrictedIntegerInRange($daemonLimit, 'i8')
+			&& strlen($daemonLimit) <= strlen((string)PHP_INT_MAX)
+			&& (strlen($daemonLimit) < strlen((string)PHP_INT_MAX)
+				|| strcmp($daemonLimit, (string)PHP_INT_MAX) <= 0))
+			$daemonLimit = (int)$daemonLimit;
+		if (!is_int($daemonLimit) || $daemonLimit < 1) {
+			$failure = 'commit-request-limit-invalid';
+			return(false);
+		}
 		$failure = null;
-		return($limit);
+		return(min($limit, $daemonLimit));
 	}
 
 	protected function normalizeWorkerMethodAndParams(&$method, array &$params)
@@ -9359,6 +9379,7 @@ function retrackersBoundedFailureReason($failure)
 		'commit-builder-headroom' => true,
 		'commit-completion-pending' => true,
 		'commit-dispatch-pending' => true,
+		'commit-not-sent' => true,
 		'commit-request-limit-invalid' => true,
 		'commit-request-too-large' => true,
 		'commit-response-inconsistent' => true,
@@ -9750,7 +9771,7 @@ class RetrackersRecoveryCoordinator
 			$stage->abortBeforeArm();
 			return(self::terminalCleanup($tx, $adapter, $failure, $waitForCompletion));
 		}
-		if ($commitFailure !== 'commit-skipped' &&
+		if (!in_array($commitFailure, array('commit-skipped', 'commit-not-sent'), true) &&
 			!self::isDeterministicBuilderFailure($commitFailure)) {
 			$failure = $commitFailure;
 			return('not-deterministic');
@@ -9869,7 +9890,7 @@ class RetrackersRecoveryCoordinator
 
 		$dispatchFailure = null;
 		$reply = $adapter->executeOldGenerationCommit($callback, $dispatchFailure);
-		return(self::awaitRead(function (&$failure) use ($adapter, $tx, $hash, $observer, $reply, $localId, $handoff, $snapshot) {
+		return(self::awaitRead(function (&$failure) use ($adapter, $tx, $hash, $observer, $reply, $dispatchFailure, $localId, $handoff, $snapshot) {
 			$receiptFailure = null;
 			$receipts = $adapter->oldGenerationCommitReceipts($tx, $receiptFailure);
 			if ($observer === null) {
@@ -9895,7 +9916,12 @@ class RetrackersRecoveryCoordinator
 					return(false);
 				}
 				if ($reply === false) {
-					$failure = 'commit-dispatch-pending';
+					// A failed connect precedes every request byte. Only an exact
+					// untouched owner and empty commit receipts permit retirement.
+					$failure = $dispatchFailure === 'connect-failed' &&
+						self::sameOwnedGeneration($observation, $localId, $handoff) &&
+						self::sameCommitTuple($observation, $snapshot, false) ?
+						'commit-not-sent' : 'commit-dispatch-pending';
 					return(false);
 				}
 				if (!is_array($observation) || !isset($observation['ok']) ||

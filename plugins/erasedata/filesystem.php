@@ -65,6 +65,22 @@ class ErasedataFilesystemOps
 		return(@rename($from, $to));
 	}
 
+	// PHP rename() may replace $to. The image builds this narrow Linux helper
+	// from this plugin's source; an absent or unsupported helper refuses restore.
+	public function renameNoReplace($from, $to)
+	{
+		$helper = '/usr/local/bin/rutorrent-erasedata-rename-noreplace';
+		if(!is_executable($helper))
+			return(false);
+		$descriptors = array(
+			0 => array('file', '/dev/null', 'r'),
+			1 => array('file', '/dev/null', 'w'),
+			2 => array('file', '/dev/null', 'w'),
+		);
+		$process = @proc_open(array($helper, $from, $to), $descriptors, $pipes);
+		return(is_resource($process) && proc_close($process) === 0);
+	}
+
 	public function unlink($path)
 	{
 		return(@unlink($path));
@@ -835,7 +851,7 @@ function erasedataPublishCapturedEntryBridge($path, $entry,
 }
 
 function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $publishOnMismatch = true)
 {
 	$entries = $filesystem->scanDirectory($root);
 	if($entries === false)
@@ -871,7 +887,7 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 		|| (string)$current['ino'] !== $matches[2]
 		|| $filesystem->readLink($tombstone) !== $target)
 	{
-		if(!erasedataPathExists($path))
+		if($publishOnMismatch && !erasedataPathExists($path))
 			$filesystem->makeSymlink(
 				basename($root).'/'.basename($tombstone), $path);
 		return(false);

@@ -5,7 +5,9 @@ $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent-task-test-'.getmypid()
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__.'/TaskNativeHelperFixture.php');
+require_once(__DIR__.'/TaskNativeSupervisorFixture.php');
 define('RTASK_KILL_HELPER', taskNativeHelperFixture());
+define('RTASK_SUPERVISOR_HELPER', taskNativeSupervisorFixture());
 require_once(__DIR__ . '/../../../plugins/_task/task.php');
 
 // A payload class for the params test: unserialize() must not construct it, so
@@ -84,7 +86,7 @@ class TaskTest extends TestCase
 		$this->assertEquals(true, is_dir($dir), 'The refused task stays available for diagnosis');
 	}
 
-	public function testKillStopsTheProcessThePidFileNames()
+	public function testLegacyKillRetainsMatchingPidWithoutSupervisor()
 	{
 		$process = proc_open(array('sleep', '30'), array(
 			0 => array('file', '/dev/null', 'r'),
@@ -104,11 +106,11 @@ class TaskTest extends TestCase
 				file_get_contents('/proc/sys/kernel/random/boot_id').
 				file_get_contents('/proc/'.$pid.'/stat'));
 			$result = rTask::kill($id);
-			$this->assertEquals(true, $result, 'A matching PID identity permits the kill');
+			$this->assertEquals(false, $result, 'A matching PID alone cannot prove complete-tree cancellation');
 			for ($attempt = 0; $attempt < 20 && proc_get_status($process)['running']; $attempt++) {
 				usleep(50000);
 			}
-			$this->assertEquals(false, proc_get_status($process)['running'], 'The named process is gone');
+			$this->assertEquals(true, proc_get_status($process)['running'], 'The unsupervised process remains alive');
 		} finally {
 			if (proc_get_status($process)['running']) {
 				proc_terminate($process);

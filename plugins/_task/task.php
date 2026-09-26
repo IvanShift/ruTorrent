@@ -3,6 +3,8 @@ require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 
 if(!defined('RTASK_KILL_HELPER'))
 	define('RTASK_KILL_HELPER', '/usr/local/bin/rutorrent-task-kill-pidfd');
+if(!defined('RTASK_SUPERVISOR_HELPER'))
+	define('RTASK_SUPERVISOR_HELPER', '/usr/local/bin/rutorrent-task-supervise');
 
 class rTask
 {
@@ -67,15 +69,7 @@ class rTask
 		        {
 				fputs($sh,'#!/bin/sh'."\n");
 				fputs($sh,'dir="$(dirname "$0")"'."\n");
-				// Publish the process birth before the PID. If /proc cannot be read,
-				// a later kill refuses the task rather than trusting a reused PID.
-				fputs($sh,'rm -f "${dir}/pid" "${dir}/pid.identity" "${dir}/pid.identity.tmp"'."\n");
-				fputs($sh,'if [ -r /proc/sys/kernel/random/boot_id ] && [ -r "/proc/$$/stat" ]; then'."\n");
-				fputs($sh,'  cat /proc/sys/kernel/random/boot_id "/proc/$$/stat" > "${dir}/pid.identity.tmp" && mv -f "${dir}/pid.identity.tmp" "${dir}/pid.identity"'."\n");
-				fputs($sh,'  chmod a+rw "${dir}/pid.identity"'."\n");
-				fputs($sh,'fi'."\n");
-				fputs($sh,'echo $$ > "${dir}"/pid'."\n");
-				fputs($sh,'chmod a+rw "${dir}"/pid'."\n");
+				// The native subreaper publishes pid and identity before it starts this shell.
 				file_put_contents($dir."/flags",$flags);
 				@chmod($dir."/flags",0666);
 				fputs($sh,'touch "${dir}"/status'."\n");
@@ -114,20 +108,33 @@ class rTask
 					}
 				}
 				fputs($sh,'echo $last > "${dir}"/status'."\n");
-				fputs($sh,Utility::getPHP().' '.escapeshellarg(dirname(__FILE__).'/notify.php').' '.
-					'$last "${dir}" '.
-					escapeshellarg(User::getUser()).' '.
-					'> /dev/null 2>> /dev/null &'."\n");
-				fclose($sh);
+					fclose($sh);
 				@chmod($dir."/start.sh",0755);
 				file_put_contents( $dir."/params", serialize($this->params) );
-				rTorrentSettings::get()->pushEvent( 'TaskStart', $this->params );
-				if(!self::run($dir."/start.sh",$flags))
+				if(!is_file(RTASK_SUPERVISOR_HELPER) || !is_executable(RTASK_SUPERVISOR_HELPER))
 				{
-					if(!($flags & self::FLG_WAIT))
-						sleep(1);
-					return(self::check($this->id,$flags));
+					return(self::startFailure($dir, $this->id, 'supervisor unavailable; task not started'));
 				}
+				$launcher = $dir.'/launch.sh';
+				$line = 'exec '.escapeshellarg(RTASK_SUPERVISOR_HELPER).' '.escapeshellarg($dir).' '.
+					escapeshellarg(Utility::getPHP()).' '.
+					escapeshellarg(dirname(__FILE__).'/notify.php').' '.
+					escapeshellarg(User::getUser())."\n";
+				if(file_put_contents($launcher, '#!/bin/sh'."\n".$line)===false || !@chmod($launcher, 0755))
+				{
+					return(self::startFailure($dir, $this->id, 'could not write supervisor launcher; task not started'));
+				}
+				rTorrentSettings::get()->pushEvent( 'TaskStart', $this->params );
+				$launchStatus = self::run($launcher, $flags);
+				if($launchStatus!==0)
+				{
+					if(!is_file($dir.'/pid'))
+						return(self::startFailure($dir, $this->id, 'supervisor launch failed; task not started'));
+					self::logRefusal($dir, 'TaskStart', 'supervisor exited without complete-tree proof');
+					return(self::check($this->id, $flags));
+				}
+				if(!($flags & self::FLG_WAIT)) sleep(1);
+				return(self::check($this->id, $flags));
 			}
 			self::clean($dir);
 		}
@@ -163,8 +170,10 @@ class rTask
 			if( is_array($params) )
 			{
 				rTorrentSettings::get()->pushEvent( $subject, $params );
+				return(true);
 			}
 		}
+		return(false);
 	}
 
 	static protected function tail($filename, $lines = 128, $buffer = 16384)
@@ -260,6 +269,17 @@ class rTask
 		}
 	}
 
+	static public function supervisorMarker($dir, $name)
+	{
+		return(@file_get_contents($dir.'/'.$name)==="1\n");
+	}
+
+	static public function supervisorOutcome($dir)
+	{
+		$outcome = @file_get_contents($dir.'/supervisor.outcome');
+		return(($outcome==="normal\n" || $outcome==="cancelled\n") ? trim($outcome) : null);
+	}
+
 	static public function check( $taskNo, $flags = null )
 	{
 		$dir = self::formatPath($taskNo);
@@ -284,16 +304,81 @@ class rTask
 				$status = trim(file_get_contents($dir.'/status'));
 				if(strlen($status))
 				{
-					$ret["status"] = intval($status);
-					$ret["finish"] = filemtime($dir.'/status');
+					if((!is_file($dir.'/supervisor.version') && !is_file($dir.'/supervisor.complete')) ||
+						(self::supervisorMarker($dir, 'supervisor.version') &&
+						 self::supervisorMarker($dir, 'supervisor.complete') &&
+						 self::supervisorOutcome($dir)!==null))
+					{
+						$ret["status"] = intval($status);
+						$ret["finish"] = filemtime($dir.'/status');
+					}
 				}
 			}
 			if(is_file($dir.'/params') && is_readable($dir.'/params'))
 				$ret["params"] = unserialize(file_get_contents($dir.'/params'), array( 'allowed_classes'=>false ));
 			self::processLog($dir, 'log', $ret, ($flags & self::FLG_STRIP_LOGS), ($flags & self::FLG_REMOVE_ASCII), ($flags & self::FLG_DO_NOT_TRIM) );
 			self::processLog($dir, 'errors', $ret, ($flags & self::FLG_STRIP_ERRS), ($flags & self::FLG_REMOVE_ASCII), false);
+			if(!is_file($dir.'/supervisor.version'))
+				$ret['errors'][] = 'rtask: legacy task lacks supervisor; complete-tree state cannot be proved';
+			if(is_file($dir.'/supervisor.notify-pending'))
+				$ret['errors'][] = 'rtask: normal completion notification is still pending';
+			if(is_file($dir.'/supervisor.notify-failed'))
+				$ret['errors'][] = 'rtask: normal completion notification failed: '.
+					trim((string)@file_get_contents($dir.'/supervisor.notify-failed')).'; task retained';
+			if(is_file($dir.'/supervisor.version') && !self::supervisorMarker($dir, 'supervisor.version'))
+			{
+				$ret['status'] = -2;
+				$ret['errors'][] = 'rtask: invalid supervisor.version; task retained';
+			}
+			else if(is_file($dir.'/supervisor.complete') && !self::supervisorMarker($dir, 'supervisor.complete'))
+			{
+				$ret['status'] = -2;
+				$ret['errors'][] = 'rtask: invalid supervisor.complete; task retained';
+			}
+			else if(is_file($dir.'/supervisor.complete') && self::supervisorOutcome($dir)===null)
+			{
+				$ret['status'] = -2;
+				$ret['errors'][] = 'rtask: invalid supervisor.outcome; task retained';
+			}
+			else if(is_file($dir.'/supervisor.version') && !self::supervisorMarker($dir, 'supervisor.complete')
+				&& !self::supervisorAlive($dir, $ret['pid']))
+			{
+				$ret['status'] = -2;
+				$ret['errors'][] = 'rtask: supervisor exited before proving all descendants stopped; task retained';
+			}
+		}
+		else if(is_file($dir.'/errors') && filesize($dir.'/errors')>0)
+		{
+			$ret['status'] = 255;
+			self::processLog($dir, 'errors', $ret, false, false, false);
 		}
 		return($ret);
+	}
+
+	static protected function supervisorAlive($dir, $pid)
+	{
+		if($pid<=1 || !is_file($dir.'/pid.identity')) return(false);
+		$record = @file_get_contents($dir.'/pid.identity');
+		$current = @file_get_contents('/proc/'.$pid.'/stat');
+		$boot = @file_get_contents('/proc/sys/kernel/random/boot_id');
+		if($record===false || $current===false || $boot===false || strpos($record, $boot)!==0)
+			return(false);
+		$expected = @stat(RTASK_SUPERVISOR_HELPER);
+		$executable = @stat('/proc/'.$pid.'/exe');
+		if($expected===false || $executable===false ||
+			$expected['dev']!==$executable['dev'] || $expected['ino']!==$executable['ino'])
+			return(false);
+		$recordedStat = substr($record, strlen($boot));
+		$recordedTick = self::statStartTick($recordedStat, $pid);
+		return($recordedTick!==null && $recordedTick===self::statStartTick($current, $pid));
+	}
+
+	static protected function statStartTick($stat, $pid)
+	{
+		$end = strrpos($stat, ') ');
+		if($end===false || substr($stat, 0, strpos($stat, ' '))!==(string)$pid) return(null);
+		$fields = preg_split('/\s+/', trim(substr($stat, $end+2)));
+		return(isset($fields[19]) && ctype_digit($fields[19])) ? $fields[19] : null;
 	}
 
 	static public function run( $cmd, $flags = 0 )
@@ -320,35 +405,42 @@ class rTask
 		return($ret);
 	}
 
-	static protected function failKill( $dir, $reason )
+	static protected function logRefusal($dir, $operation, $reason)
 	{
-		$message = 'rtask: TaskKill failed for '.$dir.' ('.$reason.'); task directory kept for diagnosis';
+		$message = 'rtask: '.$operation.' failed for '.$dir.' ('.$reason.'); task directory kept for diagnosis';
 		@file_put_contents($dir.'/errors', $message."\n", FILE_APPEND | LOCK_EX);
 		error_log($message);
+	}
+
+	static protected function startFailure($dir, $id, $reason)
+	{
+		self::logRefusal($dir, 'TaskStart', $reason);
+		return(array('no'=>$id, 'pid'=>0, 'status'=>255, 'log'=>array(),
+			'params'=>array(), 'errors'=>array($reason)));
+	}
+
+	static protected function failKill( $dir, $reason )
+	{
+		self::logRefusal($dir, 'TaskKill', $reason);
 		return(false);
 	}
 
 	static public function kill( $taskNo, $flags = null )
 	{
 		$dir = self::formatPath($taskNo);
-		$ret = array
-		(
-			"no"=>$taskNo,
-			"pid"=>0,
-			"status"=>-1,
-			"log"=>array(),
-			"params"=>array(),
-			"errors"=>array()
-		);
 		if(is_file($dir.'/pid') && is_readable($dir.'/pid'))
 		{
-			if(is_file($dir.'/status') && is_readable($dir.'/status'))
-			{
-				$status = trim(file_get_contents($dir.'/status'));
-				if(strlen($status))
-					$ret["status"] = intval($status);
-			}
-			if($ret["status"]<0)
+			if(!is_file($dir.'/supervisor.version'))
+				return(self::failKill($dir, 'legacy task has no supervisor; complete-tree cancellation cannot be proved; no signal sent'));
+			if(!self::supervisorMarker($dir, 'supervisor.version'))
+				return(self::failKill($dir, 'invalid supervisor.version; no signal sent'));
+			if(is_file($dir.'/supervisor.complete') && !self::supervisorMarker($dir, 'supervisor.complete'))
+				return(self::failKill($dir, 'invalid supervisor.complete; task retained'));
+			if(is_file($dir.'/supervisor.complete') && self::supervisorOutcome($dir)===null)
+				return(self::failKill($dir, 'invalid supervisor.outcome; task retained'));
+			if(is_file($dir.'/supervisor.notify-pending'))
+				return(self::failKill($dir, 'normal completion notification pending; task retained'));
+			if(!self::supervisorMarker($dir, 'supervisor.complete'))
 			{
 				if(is_null($flags))
 					$flags = intval(file_get_contents($dir.'/flags'));
@@ -360,13 +452,32 @@ class rTask
 				if(!is_file(RTASK_KILL_HELPER) || !is_executable(RTASK_KILL_HELPER))
 					return(self::failKill($dir, 'pidfd helper unavailable; no signal sent'));
 				$cmd = escapeshellarg(RTASK_KILL_HELPER).' '.$pid.' '.
-					escapeshellarg($dir.'/pid.identity');
+					escapeshellarg($dir.'/pid.identity').' --supervisor-cancel '.escapeshellarg(RTASK_SUPERVISOR_HELPER);
 				$result = self::run($cmd, ($flags & self::FLG_RUN_AS_WEB) | self::FLG_WAIT | self::FLG_RUN_AS_CMD);
+				if($result===3 && self::supervisorMarker($dir, 'supervisor.complete'))
+					return(self::kill($taskNo, $flags));
 				if($result===3)
-					return(self::failKill($dir, 'pid identity: missing or mismatched pid.identity; no signal sent'));
+					return(self::failKill($dir, 'pid identity: supervisor absent or mismatched pid.identity; no signal sent'));
 				if($result!==0)
-					return(self::failKill($dir, 'verified kill command failed; signal state uncertain'));
-				self::notify($dir,"TaskKill");
+					return(self::failKill($dir, 'verified supervisor cancellation failed; signal state uncertain'));
+				for($attempt=0; $attempt<300; $attempt++)
+				{
+					clearstatcache(true, $dir.'/supervisor.complete');
+					if(self::supervisorMarker($dir, 'supervisor.complete')) break;
+					usleep(10000);
+				}
+				if(!self::supervisorMarker($dir, 'supervisor.complete'))
+					return(self::failKill($dir, 'supervisor cancellation pending or uncertain; task retained'));
+				$outcome = self::supervisorOutcome($dir);
+				if($outcome===null)
+					return(self::failKill($dir, 'invalid supervisor.outcome; task retained'));
+				if($outcome==='normal')
+				{
+					if(is_file($dir.'/supervisor.notify-pending'))
+						return(self::failKill($dir, 'normal completion notification pending; task retained'));
+				}
+				else
+					self::notify($dir,"TaskKill");
 			}
 			self::clean($dir);
 		}
@@ -432,7 +543,15 @@ class rTaskManager
 		foreach( $tasks as $id=>$task )
 		{
 			$finished_with_error = ($task["status"]>0);
-			$in_progress = !$finished_with_error && $task["pid"] && self::isPIDExists($task["pid"]);
+			$dir = rTask::formatPath($id);
+			$unproved_supervisor = is_file($dir.'/supervisor.version') &&
+				(!rTask::supervisorMarker($dir, 'supervisor.version') ||
+				 !rTask::supervisorMarker($dir, 'supervisor.complete') ||
+				 rTask::supervisorOutcome($dir)===null ||
+				 is_file($dir.'/supervisor.notify-pending'));
+			$unproved_legacy = !is_file($dir.'/supervisor.version') && is_file($dir.'/pid');
+			$in_progress = $unproved_supervisor || $unproved_legacy ||
+				(!$finished_with_error && $task["pid"] && self::isPIDExists($task["pid"]));
 			if( !$finished_with_error && !$in_progress && ($counter>=self::MAX_TASK_COUNT) )
 				rTask::clean(rTask::formatPath($id));
 			else

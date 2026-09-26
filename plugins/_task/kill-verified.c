@@ -7,11 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-/* Exit 3: identity refusal; exit 4: signal state uncertain. No numeric kill(2). */
+/* Exit 3: identity refusal; exit 4: signal state uncertain. No numeric kill(2).
+   The plain mode remains for bounded diagnostic cleanup; rTask uses the
+   supervisor-cancel mode and accepts success only after its completion marker. */
 struct process_identity {
     pid_t pid;
     pid_t parent;
@@ -105,9 +108,9 @@ static int open_pidfd(pid_t pid)
 }
 
 /* A pidfd stays attached to its original process when its numeric PID is reused. */
-static int send_kill(int fd, bool allow_gone)
+static int send_signal(int fd, int signal_number, bool allow_gone)
 {
-    if (syscall(SYS_pidfd_send_signal, fd, SIGKILL, NULL, 0) == 0)
+    if (syscall(SYS_pidfd_send_signal, fd, signal_number, NULL, 0) == 0)
         return 0;
     if (allow_gone && errno == ESRCH) return 0;
     return 4;
@@ -145,7 +148,8 @@ int main(int argc, char **argv)
     size_t capacity = 0;
     FILE *input;
     int parent_fd, status = 0;
-    if (argc != 3 || !parse_pid(argv[1], &pid)
+    bool supervisor_cancel = argc == 5 && strcmp(argv[3], "--supervisor-cancel") == 0;
+    if ((argc != 3 && !supervisor_cancel) || !parse_pid(argv[1], &pid)
         || !read_recorded(argv[2], pid, &recorded)) return 3;
 
     /* Open before reading /proc: all later signals target this exact process. */
@@ -159,6 +163,19 @@ int main(int argc, char **argv)
     if (status != 0) {
         close(parent_fd);
         return 4; /* Descendants may survive an unobserved parent exit. */
+    }
+    if (supervisor_cancel) {
+        struct stat executable, expected;
+        snprintf(path, sizeof(path), "/proc/%ld/exe", (long)pid);
+        if (stat(path, &executable) != 0 || stat(argv[4], &expected) != 0
+            || executable.st_dev != expected.st_dev
+            || executable.st_ino != expected.st_ino) {
+            close(parent_fd);
+            return 3;
+        }
+        status = send_signal(parent_fd, SIGUSR1, false);
+        close(parent_fd);
+        return status;
     }
 #ifdef RTASK_KILL_TEST_HOOK
     pause_for_test("RTASK_KILL_TEST_READY", "RTASK_KILL_TEST_GO");
@@ -203,7 +220,7 @@ int main(int argc, char **argv)
                 status = 4;
                 break;
             }
-            status = send_kill(child_fd, true);
+            status = send_signal(child_fd, SIGKILL, true);
             close(child_fd);
             if (status != 0) break;
         }
@@ -215,7 +232,7 @@ int main(int argc, char **argv)
 #endif
     if (status == 0) {
         int exited = has_exited(parent_fd);
-        status = exited == 0 ? send_kill(parent_fd, false) : 4;
+        status = exited == 0 ? send_signal(parent_fd, SIGKILL, false) : 4;
     }
     close(parent_fd);
     return status;

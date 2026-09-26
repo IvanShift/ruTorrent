@@ -196,6 +196,16 @@ class RtorrentCompatibilityTest extends TestCase
 		}
 	}
 
+	public function testXmlrpcSizeGetterAliasCoversSupportedWorkerVersions()
+	{
+		foreach (array(0x908 => '0.9.8', 0x1018 => '0.16.24') as $version => $label) {
+			$settings = $this->makeSettings($version);
+			$this->assertEquals('network.xmlrpc.size_limit',
+				$settings->getCommand('get_xmlrpc_size_limit'),
+				'rTorrent '.$label.' maps the worker cap getter to the daemon command');
+		}
+	}
+
 	public function testRtorrent0102MethodAliasGateUsesBytewiseVersion()
 	{
 		// iVersion packs one version component per byte, so 0.10.2 is 0x0a02

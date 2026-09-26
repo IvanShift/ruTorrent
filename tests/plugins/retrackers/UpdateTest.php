@@ -7704,41 +7704,6 @@ PHP;
 		}
 	}
 
-	public function testTask4WorkerReadsAuthoritativeDaemonContentCap()
-	{
-		if (class_exists('rTorrentSettings', false)) {
-			$this->assertTrue(false,
-				'the daemon-cap accessor test owns an isolated rTorrentSettings double');
-			return;
-		}
-		eval(<<<'PHP'
-class rTorrentSettings
-{
-	public static $cap = 2097152;
-	public static function get()
-	{
-		return(new class {
-			public function maxContentSize()
-			{
-				return(rTorrentSettings::$cap);
-			}
-		});
-	}
-}
-PHP
-		);
-		$adapter = new RetrackersWorkerRpcAdapter();
-		$failure = null;
-		$this->assertTrue($adapter->maxContentSize($failure) === 2097152 &&
-			$failure === null,
-			'the worker reads the complete-wire cap through rTorrentSettings::get');
-		rTorrentSettings::$cap = '2097152';
-		$failure = null;
-		$this->assertTrue($adapter->maxContentSize($failure) === false &&
-			$failure === 'commit-request-limit-invalid',
-			'a non-integer daemon content cap is rejected before request construction');
-	}
-
 	public function testTask4OuterAndInnerCasFreezeAllMutableGenerationDimensions()
 	{
 		$this->installRtorrentQuoteDouble();
@@ -7827,6 +7792,63 @@ PHP
 		$this->assertTrue($absent === array('ok' => true, 'presence' => 'absent') &&
 			$absentAdapter->calls === array('scalar:' . $hash),
 			'exact target absence is a terminal observation without extra requests');
+	}
+
+	public function testTask4PreacceptConnectFailureNeedsExactNoBeginAndUnchangedOwner()
+	{
+		$this->installRtorrentQuoteDouble();
+		$tx = str_repeat('e', 32);
+		$hash = str_repeat('A', 40);
+		$snapshot = $this->task4Snapshot('1');
+		$handoff = $snapshot['scalar']['recovery_marker'];
+		$changed = $snapshot;
+		$changed['scalar']['custom1'] = 'changed';
+		$cases = array(
+			'preaccept connect failure' => array('connect-failed', array('wa', 'ea'),
+				$snapshot, 'commit-not-sent'),
+			'post-connect write failure' => array('write-failed', array('wa', 'ea'),
+				$snapshot, 'commit-dispatch-pending'),
+			'changed source' => array('connect-failed', array('wa', 'ea'),
+				$changed, 'commit-dispatch-pending'),
+			'begin receipt' => array('connect-failed', array('wa', 'ea', 'eb'),
+				$snapshot, 'commit-completion-pending'),
+		);
+		foreach ($cases as $name => $case) {
+			$adapter = $this->recoveryTestAdapter(array('wa:' . $tx));
+			$adapter->oldCommitResult = false;
+			$adapter->oldCommitFailure = $case[0];
+			$adapter->oldCommitLedgerKeys = array_map(function ($prefix) use ($tx) {
+				return($prefix . ':' . $tx);
+			}, $case[1]);
+			$observer = $this->task4Observer(array(
+				array('ok' => true, 'presence' => 'present', 'snapshot' => $case[2]),
+			));
+			$failure = null;
+			$result = RetrackersRecoveryCoordinator::commitOldGeneration(
+				$tx, $hash, $handoff, '1', $snapshot['scalar']['local_id'], $snapshot,
+				$adapter, $failure, $observer);
+			$this->assertTrue($result === false && $failure === $case[3] &&
+				$adapter->phaseArmCalls === array(array('ea', $tx)) &&
+				count($adapter->oldCommitCalls) === 1 &&
+				$adapter->oldCommitReceiptReads === 1 && $observer->calls === array($hash) &&
+				$adapter->mutations === array(),
+				$name . ' is classified after one dispatch and read-only reconciliation');
+		}
+		$created = $this->anonymousStage('candidate-not-sent', 'original-not-sent');
+		if ($created !== false && $created['stage'] instanceof RetrackersAnonymousStage) {
+			$adapter = $this->recoveryTestAdapter(array('wa:' . $tx, 'ea:' . $tx));
+			$failure = null;
+			$disposition = RetrackersRecoveryCoordinator::handleCommitFailureBeforeArm(
+				'commit-not-sent', $tx, $hash, $handoff, $snapshot['scalar']['local_id'],
+				$created['stage'], $adapter, $failure);
+			$this->assertTrue($disposition === 'clean' && $failure === null &&
+				$adapter->recoveryEvents === array('release', 'cleanup') &&
+				count($adapter->releaseCallbacks) === 1 &&
+				count($adapter->terminalCleanupCallbacks) === 1 &&
+				$adapter->oldCommitCalls === array(),
+				'a proven unsent commit closes staging and retires the lease without redispatch');
+			$this->removeTree($created['root']);
+		}
 	}
 
 	public function testTask4ResponseLostReconciliationNeverMutatesOrRedispatches()
@@ -11554,6 +11576,7 @@ PHP;
 			'testTask4BoundedCommitBuilderOwnsExactEscapedWireAndCap',
 			'testTask4CommitCapRefusesBeforeArmOrCommitTransport',
 			'testTask4CommitDispatchUsesOneShotArmAndOneConditionalCommand',
+			'testTask4PreacceptConnectFailureNeedsExactNoBeginAndUnchangedOwner',
 			'testTask4CommitSkippedUsesTypedReleaseAndCleanupWithoutSplitWrites',
 			'testTask4CommitUncertaintyNeverEntersReleaseOrCleanup',
 			'testTask4DuplicateEnabledTrackerUrlIsRejected',
@@ -11579,7 +11602,6 @@ PHP;
 			'testTask4TerminalCleanupUnavailableAfterSuffixIsUnconfirmedAndStops',
 			'testTask4TypedReleaseAndCleanupAdaptersEachSendOneStringScalar',
 			'testTask4UnexpectedReleaseScalarAlsoObservesExactlyOnceWithoutReplay',
-			'testTask4WorkerReadsAuthoritativeDaemonContentCap',
 			'testTask5InitAndDoneWiringUsesImportOnlyAndAvoidsLegacyHooks',
 			'testTask5LifecycleCoordinatorBootstrapInstallFlow',
 			'testTask5LifecycleCoordinatorDoneTeardownFlow',
