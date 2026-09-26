@@ -1457,6 +1457,208 @@ final class ErasedataCollector
 		$this->collectHashIndexed($listPath, $hash, null, null);
 	}
 
+	// Resolve intermediate directories from owned descriptors. File deletion
+	// uses the bound path; directory reservations need their own race guard.
+	// A missing component is distinct from an unprovable lookup: old jobs whose
+	// parents are already gone still finish as no-ops.
+	private function containedParent($path, $base, $baseReference, $physicalBase, $item)
+	{
+		if($baseReference === false)
+		{
+			$missing = $this->filesystem->pathIdentity($path);
+			return(is_array($missing) && empty($missing['exists'])
+				? array('state' => 'missing') : array('state' => 'unsafe'));
+		}
+		if($base === '/' ? ($path === '/' || $path[0] !== '/')
+			: (!erasedataPathContains($base, $path) || $path === $base))
+			return(array('state' => 'unsafe'));
+		$relative = substr($path, $base === '/' ? 1 : strlen($base) + 1);
+		$pieces = explode('/', $relative);
+		array_pop($pieces);
+		$reference = $baseReference;
+		$owned = false;
+		$logicalParent = $base;
+		foreach($pieces as $piece)
+		{
+			$logicalParent .= '/'.$piece;
+			$candidate = $reference['path'].'/'.$piece;
+			$identity = $this->filesystem->entryIdentity($candidate);
+			if(is_array($identity) && !empty($identity['is_link']))
+			{
+				$recovery = $this->trustedNonForceRecoveryLink($logicalParent, $item);
+				if($owned) $this->filesystem->closeDirectoryReference($reference);
+				$missing = $this->filesystem->pathIdentity($path);
+				return($recovery && is_array($missing) && empty($missing['exists'])
+					? array('state' => 'missing') : array('state' => 'unsafe'));
+			}
+			if(!is_array($identity))
+			{
+				$absent = $this->filesystem->pathIdentity($candidate);
+				if($owned) $this->filesystem->closeDirectoryReference($reference);
+				$logical = $this->filesystem->pathIdentity($path);
+				return(is_array($absent) && empty($absent['exists'])
+					&& is_array($logical) && empty($logical['exists'])
+					? array('state' => 'missing') : array('state' => 'unsafe'));
+			}
+			if(empty($identity['is_dir']) || !empty($identity['is_link']))
+			{
+				if($owned) $this->filesystem->closeDirectoryReference($reference);
+				return(array('state' => 'unsafe'));
+			}
+			$next = $this->filesystem->openDirectoryReference($candidate, $identity);
+			if(!is_array($next) || !isset($next['path']))
+			{
+				if($owned) $this->filesystem->closeDirectoryReference($reference);
+				return(array('state' => 'unsafe'));
+			}
+			if($owned) $this->filesystem->closeDirectoryReference($reference);
+			$reference = $next;
+			$owned = true;
+			$bound = $this->filesystem->pathIdentity($reference['path']);
+			if(!is_array($bound) || empty($bound['exists'])
+				|| !erasedataSameStatIdentity($bound['stat'], $identity['lstat'])
+				|| ($physicalBase !== '/'
+					&& !erasedataPathContains($physicalBase, $bound['path'])))
+			{
+				$this->filesystem->closeDirectoryReference($reference);
+				return(array('state' => 'unsafe'));
+			}
+		}
+		$bound = $this->filesystem->pathIdentity($reference['path']);
+		if(!is_array($bound) || empty($bound['exists'])
+			|| ($physicalBase !== '/'
+				&& !erasedataPathContains($physicalBase, $bound['path'])))
+		{
+			if($owned) $this->filesystem->closeDirectoryReference($reference);
+			return(array('state' => 'unsafe'));
+		}
+		return(array('state' => 'pinned', 'reference' => $reference,
+			'owned' => $owned, 'path' => $reference['path'].'/'.basename($path)));
+	}
+
+	private function trustedNonForceRecoveryLink($path, $item)
+	{
+		$layout = erasedataRecoveryLinkLayout($path, $this->filesystem);
+		if(!is_array($layout) || !isset($layout['reservationRoot'])
+			|| !is_string($layout['reservationRoot'])
+			|| strpos(basename($layout['reservationRoot']),
+				basename(erasedataDirectoryReservationPrefix($path, $item))) !== 0)
+			return(false);
+		$recovery = erasedataRecoveryLinkTarget($path, $this->filesystem);
+		return(is_array($recovery) && !empty($recovery['safe']));
+	}
+
+	private function unsafeManifestReportPrefix($item)
+	{
+		// This marker is outside the obligation queue, whose scan treats any
+		// unfamiliar entry as a reason to keep the drain armed.
+		return(dirname(dirname($item)).'/.erasedata-unsafe-'
+			.hash('sha256', $item).'-');
+	}
+
+	private function clearUnsafeManifestReports($item, $except = null)
+	{
+		$prefix = $this->unsafeManifestReportPrefix($item);
+		$paths = glob($prefix.'*.notice');
+		if(!is_array($paths)) return;
+		foreach($paths as $path)
+			if($path !== $except
+				&& preg_match('/^[0-9]{8}\.notice$/D', substr($path, strlen($prefix))))
+				@unlink($path);
+	}
+
+	private function logUnsafeManifestPath($item)
+	{
+		$hash = preg_match('/^([0-9A-Fa-f]{40})/D', basename($item), $matches)
+			? strtoupper($matches[1]) : '';
+		$this->manifestLog($hash, $item, 'unsafe-path');
+		$this->log('Retain unsafe-path manifest '.basename($item));
+		if($this->retentionSink !== null) return;
+
+		// A legacy manifest can have no drain. The ordinary 15-second pass must
+		// report its refusal without writing the same line on every tick. An
+		// exclusive day marker is durable across processes and retries tomorrow.
+		$prefix = $this->unsafeManifestReportPrefix($item);
+		$marker = $prefix.gmdate('Ymd').'.notice';
+		$line = 'erasedata: unsafe-path '.basename($item)
+			.' retained; listed parent changed or is not a directory within the base';
+		$handle = @fopen($marker, 'xb');
+		if(is_resource($handle))
+		{
+			FileUtil::toLog($line);
+			// A zero-byte marker after a crash is retried, never treated as a
+			// successful report that could hide this refusal until tomorrow.
+			@fwrite($handle, '1');
+			@fflush($handle);
+			@fclose($handle);
+			$this->clearUnsafeManifestReports($item, $marker);
+			return;
+		}
+		$stat = @lstat($marker);
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000
+			|| $stat['size'] !== 1)
+			FileUtil::toLog($line.'; diagnostic marker unavailable');
+	}
+
+	private function deleteBoundFile($logical, $bound, $item, $ownedPaths)
+	{
+		$entry = $this->filesystem->entryIdentity($bound);
+		$publicEntry = $this->filesystem->entryIdentity($logical);
+		if((is_array($entry) !== is_array($publicEntry))
+			|| (is_array($entry) && !erasedataSameEntryIdentity($entry, $publicEntry)))
+		{
+			$this->log('Retain changed public file '.$logical);
+			return(false);
+		}
+		if(!is_array($entry))
+		{
+			if(erasedataPathExists($bound))
+			{
+				$this->log('Retain unresolved file '.$logical);
+				return(false);
+			}
+			if($this->filesystem->unlinkCapturedEntry($bound, null, $item))
+			{
+				$this->log('Successfully delete file '.$logical);
+				return(true);
+			}
+			$this->log('FAIL resume captured file '.$logical);
+			return(false);
+		}
+		if(erasedataPathTouchesOwnedPaths($logical, $ownedPaths)
+			|| erasedataPathTouchesOwnedPaths($bound, $ownedPaths))
+		{
+			$this->log('Retain active file '.$logical);
+			return(false);
+		}
+		if(empty($entry['is_link']))
+		{
+			$identity = $this->filesystem->pathIdentity($bound);
+			if($identity === false)
+			{
+				$this->log('Retain unresolved file '.$logical);
+				return(false);
+			}
+			if(empty($identity['exists']))
+			{
+				$this->log('Retain identity-changed file '.$logical);
+				return(false);
+			}
+			if(!empty($entry['is_dir']))
+			{
+				$this->log('Retain directory in file manifest '.$logical);
+				return(false);
+			}
+		}
+		if($this->filesystem->unlinkCapturedEntry($bound, $entry, $item))
+		{
+			$this->log('Successfully delete file '.$logical);
+			return(true);
+		}
+		$this->log('FAIL Delete file '.$logical);
+		return(false);
+	}
+
 	private function parseOneItem($item, $manifest, $ownedPaths)
 	{
 		$this->log('*** Parse item '.$item);
@@ -1476,79 +1678,83 @@ final class ErasedataCollector
 		$base_path = $manifest['base'];
 		$files = $manifest['files'];
 
+		$baseReference = false;
+		$physicalBase = null;
+		$baseState = 'unsafe';
+		if(!$force_delete && $is_multi)
+		{
+			$baseIdentity = $this->filesystem->pathIdentity($base_path);
+			$baseEntry = $this->filesystem->entryIdentity($base_path);
+			if(is_array($baseIdentity) && empty($baseIdentity['exists'])
+				&& $baseEntry === false)
+				$baseState = 'missing';
+			else if(is_array($baseEntry) && !empty($baseEntry['is_link'])
+				&& !is_array($baseIdentity))
+			{
+				$recovery = erasedataRecoveryLinkTarget($base_path, $this->filesystem);
+				if(is_array($recovery) && !empty($recovery['safe'])
+					&& empty($recovery['exists']))
+					$baseState = 'recovery';
+			}
+			else if(is_array($baseIdentity) && !empty($baseIdentity['exists'])
+				&& is_array($baseEntry))
+			{
+				$expected = !empty($baseEntry['is_link'])
+					? $this->filesystem->targetIdentity($base_path) : $baseEntry;
+				if(is_array($expected) && !empty($expected['is_dir']))
+				{
+					$baseReference = $this->filesystem->openDirectoryReference(
+						$base_path, $expected);
+					if(is_array($baseReference) && isset($baseReference['path']))
+					{
+						$boundBase = $this->filesystem->pathIdentity($baseReference['path']);
+						$expectedStat = isset($expected['stat'])
+							? $expected['stat'] : $expected['lstat'];
+						if(is_array($boundBase) && !empty($boundBase['exists'])
+							&& erasedataSameStatIdentity($boundBase['stat'], $expectedStat)
+							&& $boundBase['path'] === $baseIdentity['path'])
+						{
+							$physicalBase = $boundBase['path'];
+							$baseState = 'pinned';
+						}
+						else
+						{
+							$this->filesystem->closeDirectoryReference($baseReference);
+							$baseReference = false;
+						}
+					}
+				}
+			}
+		}
+		else if(!$is_multi)
+		{
+			$rootEntry = $this->filesystem->entryIdentity('/');
+			if(is_array($rootEntry) && !empty($rootEntry['is_dir'])
+				&& empty($rootEntry['is_link']))
+			{
+				$baseReference = $this->filesystem->openDirectoryReference('/', $rootEntry);
+				if(is_array($baseReference) && isset($baseReference['path']))
+				{
+					$boundRoot = $this->filesystem->pathIdentity($baseReference['path']);
+					if(is_array($boundRoot) && !empty($boundRoot['exists'])
+						&& erasedataSameStatIdentity($boundRoot['stat'], $rootEntry['lstat'])
+						&& $boundRoot['path'] === '/')
+					{
+						$physicalBase = '/';
+						$baseState = 'pinned';
+					}
+					else
+					{
+						$this->filesystem->closeDirectoryReference($baseReference);
+						$baseReference = false;
+					}
+				}
+			}
+		}
 		if(!$force_delete || !$is_multi)
 		{
 			foreach($files as $file)
 			{
-				$entry = $this->filesystem->entryIdentity($file);
-				if(!is_array($entry))
-				{
-					if(erasedataPathExists($file))
-					{
-						$this->log('Retain unresolved file '.$file);
-						$complete = false;
-					}
-					else if($this->filesystem->unlinkCapturedEntry(
-						$file, null, $item))
-						$this->log('Successfully delete file '.$file);
-					else
-					{
-						$this->log('FAIL resume captured file '.$file);
-						$complete = false;
-					}
-				}
-				else if(!empty($entry['is_link']))
-				{
-					if(erasedataPathTouchesOwnedPaths($file, $ownedPaths))
-					{
-						$this->log('Retain active file '.$file);
-						$complete = false;
-					}
-					else
-					{
-						if($this->filesystem->unlinkCapturedEntry($file, $entry, $item))
-							$this->log('Successfully delete file '.$file);
-						else
-						{
-							$this->log('FAIL Delete file '.$file);
-							$complete = false;
-						}
-					}
-				}
-				else
-				{
-					$identity = $this->filesystem->pathIdentity($file);
-					if($identity === false)
-					{
-						$this->log('Retain unresolved file '.$file);
-						$complete = false;
-					}
-					else if(empty($identity['exists']))
-					{
-						$this->log('Retain identity-changed file '.$file);
-						$complete = false;
-					}
-					else if(erasedataPathTouchesOwnedPaths($file, $ownedPaths))
-					{
-						$this->log('Retain active file '.$file);
-						$complete = false;
-					}
-					else if(!empty($entry['is_dir']))
-					{
-						$this->log('Retain directory in file manifest '.$file);
-						$complete = false;
-					}
-					else
-					{
-						if($this->filesystem->unlinkCapturedEntry($file, $entry, $item))
-							$this->log('Successfully delete file '.$file);
-						else
-						{
-							$this->log('FAIL Delete file '.$file);
-							$complete = false;
-						}
-					}
-				}
 				if($is_multi)
 				{
 					$dir = $base_path;
@@ -1559,7 +1765,52 @@ final class ErasedataCollector
 						$dir .= '/'.$pieces[$i];
 						$dirs[] = $dir;
 					}
+					if($baseState === 'unsafe')
+						$parent = array('state' => 'unsafe');
+					else if($baseState === 'recovery')
+					{
+						$missing = $this->filesystem->pathIdentity($file);
+						$parent = is_array($missing) && empty($missing['exists'])
+							? array('state' => 'missing') : array('state' => 'unsafe');
+					}
+					else
+						$parent = $this->containedParent(
+							$file, $base_path, $baseReference, $physicalBase, $item);
+					if($parent['state'] === 'unsafe')
+					{
+						$this->logUnsafeManifestPath($item);
+						$complete = false;
+						continue;
+					}
+					if($parent['state'] === 'missing')
+					{
+						$this->log('Successfully delete file '.$file);
+						continue;
+					}
+					$bound = $parent['path'];
 				}
+				else
+				{
+					$parent = $baseState === 'pinned'
+						? $this->containedParent($file, '/', $baseReference, '/', $item)
+						: array('state' => 'unsafe');
+					if($parent['state'] === 'unsafe')
+					{
+						$this->logUnsafeManifestPath($item);
+						$complete = false;
+						continue;
+					}
+					if($parent['state'] === 'missing')
+					{
+						$this->log('Successfully delete file '.$file);
+						continue;
+					}
+					$bound = $parent['path'];
+				}
+				if(!$this->deleteBoundFile($file, $bound, $item, $ownedPaths))
+					$complete = false;
+				if(!empty($parent['owned']))
+					$this->filesystem->closeDirectoryReference($parent['reference']);
 			}
 		}
 		if($is_multi)
@@ -1596,7 +1847,33 @@ final class ErasedataCollector
 				usort($dirs, "sortByLevel");
 				foreach($dirs as $dir)
 				{
-					if(erasedataPathTouchesOwnedPaths($dir, $ownedPaths))
+					$parent = $baseState === 'pinned'
+						? $this->containedParent($dir, $base_path,
+							$baseReference, $physicalBase, $item)
+						: array('state' => $baseState === 'missing' ? 'missing' : 'unsafe');
+					if($parent['state'] === 'unsafe')
+					{
+						$this->logUnsafeManifestPath($item);
+						$complete = false;
+						continue;
+					}
+					if($parent['state'] === 'missing')
+						continue;
+					$logicalEntry = $this->filesystem->entryIdentity($dir);
+					$boundEntry = $this->filesystem->entryIdentity($parent['path']);
+					$matches = (is_array($logicalEntry) === is_array($boundEntry))
+						&& (!is_array($logicalEntry)
+							|| erasedataSameEntryIdentity($logicalEntry, $boundEntry));
+					if(!empty($parent['owned']))
+						$this->filesystem->closeDirectoryReference($parent['reference']);
+					if(!$matches)
+					{
+						$this->logUnsafeManifestPath($item);
+						$complete = false;
+						continue;
+					}
+					if(erasedataPathTouchesOwnedPaths($dir, $ownedPaths)
+						|| erasedataPathTouchesOwnedPaths($parent['path'], $ownedPaths))
 					{
 						$this->log('Retain active dir '.$dir);
 						$complete = false;
@@ -1618,7 +1895,12 @@ final class ErasedataCollector
 						}
 					}
 				}
-				if(erasedataPathTouchesOwnedPaths($base_path, $ownedPaths))
+				if($baseState === 'unsafe')
+				{
+					$this->logUnsafeManifestPath($item);
+					$complete = false;
+				}
+				else if(erasedataPathTouchesOwnedPaths($base_path, $ownedPaths))
 				{
 					$this->log('Retain active dir '.$base_path);
 					$complete = false;
@@ -1643,6 +1925,8 @@ final class ErasedataCollector
 				}
 			}
 		}
+		if(is_array($baseReference))
+			$this->filesystem->closeDirectoryReference($baseReference);
 		return($complete);
 	}
 
@@ -1753,6 +2037,8 @@ final class ErasedataCollector
 		$ret = $complete && $this->filesystem->unlinkCapturedEntry(
 			$path, $stat, 'manifest-consumption');
 		@fclose($handle);
+		if($ret)
+			$this->clearUnsafeManifestReports($path);
 		return($ret);
 	}
 

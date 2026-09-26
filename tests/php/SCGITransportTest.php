@@ -820,7 +820,7 @@ class SCGITransportTest extends TestCase
 	{
 		if(!$this->transportIsAvailable()) return;
 		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
-		$peer = SCGITransportFixture::startUnix("Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: ".strlen($body)."\r\n\r\n".$body);
+		$peer = SCGITransportFixture::startWithVersionProbe(array(array(0, "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: ".strlen($body)."\r\n\r\n".$body)), false, true);
 		try
 		{
 			$result = $this->runCopiedRpc2($peer->host(), '0', $this->allowedXml(), array('legacy' => true));
@@ -846,7 +846,7 @@ class SCGITransportTest extends TestCase
 	{
 		if(!$this->transportIsAvailable()) return;
 		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
-		$peer = SCGITransportFixture::startUnix("Content-Length: ".strlen($body)."\r\n\r\n".$body);
+		$peer = SCGITransportFixture::startWithVersionProbe(array(array(0, "Content-Length: ".strlen($body)."\r\n\r\n".$body)), false, true);
 		try
 		{
 			$jitWarning = 'JIT is incompatible with third party extensions that override '
@@ -869,7 +869,7 @@ class SCGITransportTest extends TestCase
 	{
 		if(!$this->transportIsAvailable()) return;
 		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
-		$peer = SCGITransportFixture::startUnix("Content-Length: ".strlen($body)."\r\n\r\n".$body);
+		$peer = SCGITransportFixture::startWithVersionProbe(array(array(0, "Content-Length: ".strlen($body)."\r\n\r\n".$body)), false, true);
 		try
 		{
 			$result = $this->runCopiedRpc2($peer->host(), '0', $this->allowedXml(), array(
@@ -886,8 +886,10 @@ class SCGITransportTest extends TestCase
 	public function testCopiedRealRpc2ReturnsNeutral502AndOneClassifiedLog()
 	{
 		if(!$this->transportIsAvailable()) return;
-		$port = $this->reservePort();
-		$result = $this->runCopiedRpc2('127.0.0.1', (string)$port, $this->allowedXml(), array('legacy' => true));
+		$probe = SCGITransportFixture::startVersionProbeOnly();
+		try { $result = $this->runCopiedRpc2($probe->host(), (string)$probe->port(),
+			$this->allowedXml(), array('legacy' => true)); }
+		finally { $probe->close(); }
 		$this->assertTrue(strpos($result['status'], '502 Bad Gateway') !== false,
 			'copied real rpc2 maps transport null to HTTP 502');
 		$this->assertTrue(substr_count($result['body'], 'Could not complete the rTorrent XMLRPC request.') === 1,
@@ -902,7 +904,7 @@ class SCGITransportTest extends TestCase
 	{
 		if(!$this->transportIsAvailable()) return;
 		$body = '<?xml version="1.0"?><methodResponse><params></params></methodResponse>';
-		$peer = SCGITransportFixture::startChunks(array(
+		$peer = SCGITransportFixture::startWithVersionProbe(array(
 			array(0.06, "Content-Length: ".strlen($body)."\r\n\r\n"),
 			array(0.04, $body),
 		), false, false);
@@ -916,11 +918,11 @@ class SCGITransportTest extends TestCase
 		}
 		finally { $peer->close(); }
 
-		$oversize = SCGITransportFixture::start("Content-Length: 2\r\n\r\nok");
+		$oversize = SCGITransportFixture::startWithVersionProbe(array(array(0, "Content-Length: 200\r\n\r\n".str_repeat("x", 200))));
 		try
 		{
 			$result = $this->runCopiedRpc2($oversize->host(), (string)$oversize->port(), $this->allowedXml(), array(
-				'connect' => 1, 'transfer' => 1, 'max' => 1,
+				'connect' => 1, 'transfer' => 1, 'max' => 160,
 			));
 			$this->assertTrue(strpos($result['status'], '502 Bad Gateway') !== false,
 				'rpc2 forwards the configured response cap to the transport');
@@ -959,7 +961,8 @@ class SCGITransportTest extends TestCase
 			if(!mkdir($tree, 0700, true))
 				throw new Exception('could not create copied rpc2 tree');
 			foreach(array('rpc2.php', 'php/xmlrpc_path.php', 'php/xmlrpc_proxy.php',
-				'php/xmlrpc_proxy_policy.php', 'php/scgitransport.php') as $relative)
+				'php/xmlrpc_proxy_policy.php', 'php/xmlrpc_proxy_native.php',
+				'php/scgitransport.php') as $relative)
 			{
 				$source = $this->sourceRoot.'/'.$relative;
 				$target = $tree.'/'.$relative;

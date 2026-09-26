@@ -768,7 +768,7 @@ class RemoveWithDataTest extends TestCase
 			'ok' => true, 'fault' => false, 'val' => array(''), 'faultString' => '',
 			'swap' => null, 'owned' => null, 'generation' => null,
 			'successorOverride' => null, 'onlyHash' => null, 'debug' => false,
-			'captureLogs' => false, 'indexCountFile' => null,
+			'captureLogs' => false, 'retentionSink' => null, 'indexCountFile' => null,
 			'publicCollectorHash' => null, 'filesystem' => array(),
 			'rmdirFail' => null, 'rmdirSwap' => null, 'rmdirCrash' => null,
 			'restoreCollision' => null, 'reservedSwap' => null,
@@ -969,7 +969,15 @@ class RemoveWithDataTest extends TestCase
 		$output = '';
 		ob_start();
 		try {
-			if($options['publicCollectorHash'] !== null)
+			if($options['retentionSink'] !== null)
+			{
+				$collector = erasedataCollectorService(
+					new ErasedataCollectorFixture($options['filesystem']));
+				$collector->reportRetentionsTo($options['retentionSink']);
+				$collector->run(FileUtil::getSettingsPath().'/erasedata',
+					$options['onlyHash']);
+			}
+			else if($options['publicCollectorHash'] !== null)
 				erasedataRunCollector(FileUtil::getSettingsPath().'/erasedata',
 					$options['publicCollectorHash']);
 			else
@@ -7253,9 +7261,11 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifest($hash.'.list', $path);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $path, 'action' => 'replace-entry',
+			'rename:1' => array('basename' => basename($path), 'target' => $path,
+				'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
-			'unlink:1' => array('path' => $path, 'action' => 'replace-entry',
+			'unlink:1' => array('basename' => basename($path), 'target' => $path,
+				'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
 		)));
 
@@ -7375,6 +7385,182 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(0, $status, 'collector exits 0: '.$output);
 		$this->assertTrue(!is_link($dangling), 'dangling symlink entry must be unlinked');
 		$this->assertEquals(false, $this->onlyManifest($hash), 'manifest must be consumed after unlinking dangling symlink');
+	}
+
+	public function testNonForceManifestCannotUnlinkThroughAnIntermediateSymlink()
+	{
+		$this->reset();
+		$hash = $this->hash('C');
+		$base = $this->dir.'/linked-child-root';
+		$outside = $this->dir.'/linked-child-outside';
+		mkdir($base);
+		mkdir($outside);
+		file_put_contents($base.'/own.txt', 'own');
+		file_put_contents($outside.'/secret.txt', 'outside');
+		symlink($outside, $base.'/away');
+		$this->writeManifestLines($hash.'.list', array(
+			$base.'/own.txt', $base.'/away/secret.txt'), $base, 1, 1);
+
+		$notes = array();
+		list($status, $output) = $this->runCollector(array('captureLogs' => true,
+			'retentionSink' => function($kind, $reportedHash, $generation, $reason)
+				use (&$notes) {
+				$notes[] = array($kind, $reportedHash, $generation, $reason);
+			}));
+		$this->assertEquals(0, $status, 'non-force symlink collector exits: '.$output);
+		$this->assertEquals('outside', file_get_contents($outside.'/secret.txt'),
+			'an intermediate symlink never authorizes deleting an outside file');
+		$this->assertTrue(!is_file($base.'/own.txt'),
+			'the independent owned file is still collected');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the unsafe manifest remains retryable');
+		$this->assertTrue(in_array(array('manifest', $hash, 'none', 'unsafe-path'),
+			$notes, true), 'the drain sink receives the classified refusal');
+		$this->assertTrue(strpos($output, 'erasedata: unsafe-path') === false,
+			'the ordinary pass does not repeat a direct unsafe-path line');
+	}
+
+	public function testOrdinaryUnsafePathRefusalIsVisibleAndBoundedWithoutDrain()
+	{
+		$this->reset();
+		$hash = $this->hash('8');
+		$base = $this->dir.'/ordinary-unsafe-root';
+		$outside = $this->dir.'/ordinary-unsafe-outside';
+		mkdir($base);
+		mkdir($outside);
+		file_put_contents($outside.'/secret.txt', 'outside');
+		symlink($outside, $base.'/away');
+		$listed = $base.'/away/secret.txt';
+		$this->writeManifestLines($hash.'.list', array($listed), $listed, 0, 1);
+
+		list($status, $first) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'first ordinary refusal exits: '.$first);
+		$this->assertTrue(strpos($first, 'erasedata: unsafe-path '.$hash.'.list retained') !== false,
+			'the first refusal is visible without an armed drain or debug flag');
+		$markers = glob($this->dir.'/.erasedata-unsafe-*.notice');
+		$this->assertEquals(1, count($markers), 'one durable report marker is outside the obligation queue');
+
+		list($status, $second) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'repeated ordinary refusal exits: '.$second);
+		$this->assertTrue(strpos($second, 'erasedata: unsafe-path') === false,
+			'an unchanged refusal does not fill the log every 15 seconds');
+		$this->assertEquals('outside', file_get_contents($outside.'/secret.txt'),
+			'the repeated refusal never deletes through the symlink');
+
+		unlink($base.'/away');
+		mkdir($base.'/away');
+		file_put_contents($listed, 'now-owned');
+		list($status, $completed) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'repaired ordinary job exits: '.$completed);
+		$this->assertTrue(!file_exists($listed), 'the repaired path is collected');
+		$this->assertTrue(!is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the repaired manifest is consumed');
+		$this->assertEquals(array(), glob($this->dir.'/.erasedata-unsafe-*.notice'),
+			'completion clears its durable report marker');
+	}
+
+	public function testSingleFileManifestDeletesARegularFile()
+	{
+		$this->reset();
+		$hash = $this->hash('9');
+		$base = $this->dir.'/single-regular-root';
+		mkdir($base);
+		$file = $base.'/payload.bin';
+		file_put_contents($file, 'owned');
+		$this->writeManifestLines($hash.'.list', array($file), $file, 0, 1);
+
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'single-file collector exits: '.$output);
+		$this->assertTrue(!file_exists($file), 'an ordinary single file is removed');
+		$this->assertTrue(!is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the completed single-file manifest is consumed');
+	}
+
+	public function testSingleFileManifestCannotUnlinkThroughAnIntermediateSymlink()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$base = $this->dir.'/single-linked-root';
+		$outside = $this->dir.'/single-linked-outside';
+		mkdir($base);
+		mkdir($outside);
+		file_put_contents($outside.'/secret.txt', 'outside');
+		symlink($outside, $base.'/away');
+		$this->writeManifestLines($hash.'.list',
+			array($base.'/away/secret.txt'), $base.'/away/secret.txt', 0, 1);
+
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'single-file symlink collector exits: '.$output);
+		$this->assertEquals('outside', file_get_contents($outside.'/secret.txt'),
+			'an intermediate symlink never authorizes deleting an outside single file');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the unsafe single-file manifest remains retryable');
+	}
+
+	public function testNonForceManifestCannotRemoveEmptyOutsideDirectoryThroughSymlink()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$base = $this->dir.'/linked-dir-root';
+		$outside = $this->dir.'/linked-dir-outside';
+		mkdir($base);
+		mkdir($outside.'/nested', 0777, true);
+		symlink($outside, $base.'/away');
+		$this->writeManifestLines($hash.'.list',
+			array($base.'/away/nested/gone.txt'), $base, 1, 1);
+
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'nested symlink collector exits: '.$output);
+		$this->assertTrue(is_dir($outside.'/nested'),
+			'an empty directory beyond the symlink is not removed');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the unsafe directory keeps the manifest');
+	}
+
+	public function testNonForceParentSwapAfterPreflightCannotUnlinkOutsideFile()
+	{
+		$this->reset();
+		$hash = $this->hash('D');
+		$base = $this->dir.'/parent-swap-root';
+		$parent = $base.'/inside';
+		$outside = $this->dir.'/parent-swap-outside';
+		$backup = $base.'/inside.checked';
+		$marker = $this->dir.'/parent-swap.triggered';
+		mkdir($parent, 0777, true);
+		mkdir($outside);
+		file_put_contents($parent.'/secret.txt', 'old');
+		file_put_contents($outside.'/secret.txt', 'outside');
+		$this->writeManifestLines($hash.'.list', array($parent.'/secret.txt'), $base, 1, 1);
+
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'entryIdentity:1' => array('basename' => 'secret.txt',
+				'action' => 'replace-entry', 'target' => $parent,
+				'backup' => $backup, 'symlink_target' => $outside,
+				'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'parent-swap collector exits: '.$output);
+		$this->assertTrue(is_file($marker), 'the swap reached the leaf read after preflight');
+		$this->assertEquals('outside', file_get_contents($outside.'/secret.txt'),
+			'the replacement parent does not redirect deletion outside the base');
+		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'the uncertain parent retains the manifest');
+	}
+
+	public function testNonForceMissingParentReplayCompletesWithoutCreatingData()
+	{
+		$this->reset();
+		$hash = $this->hash('E');
+		$base = $this->dir.'/missing-parent-root';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list',
+			array($base.'/absent/old.txt'), $base, 1, 1);
+
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'missing-parent replay exits: '.$output);
+		$this->assertTrue(!is_file($this->dir.'/erasedata/'.$hash.'.list'),
+			'a proven absent parent lets the old no-op obligation complete');
+		$this->assertTrue(!file_exists($base.'/absent'),
+			'no directory or payload is created to complete the replay');
 	}
 
 	public function testNestedChildSwapAfterParentScanSurvives()
@@ -7712,9 +7898,11 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifest($hash.'.list', $path);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $path, 'action' => 'replace-entry',
+			'rename:1' => array('basename' => basename($path), 'target' => $path,
+				'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
-			'unlink:1' => array('path' => $path, 'action' => 'replace-entry',
+			'unlink:1' => array('basename' => basename($path), 'target' => $path,
+				'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
 		)));
 

@@ -18,6 +18,7 @@ class HttprpcSettingsEntrypointTest extends TestCase
 		copy($source.'action.php', $root.'/plugins/httprpc/action.php');
 		copy($source.'settingspolicy.php', $root.'/plugins/httprpc/settingspolicy.php');
 		copy(__DIR__.'/../../../php/xmlrpc_proxy.php', $root.'/php/xmlrpc_proxy.php');
+		copy(__DIR__.'/../../../php/xmlrpc_proxy_native.php', $root.'/php/xmlrpc_proxy_native.php');
 		file_put_contents($root.'/php/xmlrpc.php', '<?php
 class FileUtil { public static function toLog($message) {} }
 class CachedEcho { public static function send($body, $type = null) { echo http_response_code()."|".$body; exit(0); } }
@@ -31,6 +32,13 @@ class rXMLRPCCommand {
     public function addParameters($parameters) {}
 }
 class rXMLRPCRequest {
+    public static function send($data, $trusted = false) {
+        if($trusted || strpos($data, "<methodName>system.client_version</methodName>") === false) {
+            fwrite(STDERR, "unexpected version probe"); exit(73);
+        }
+        $body = "<?xml version=\"1.0\"?><methodResponse><params><param><value><string>0.16.24</string></value></param></params></methodResponse>";
+        return "Content-Length: ".strlen($body)."\r\n\r\n".$body;
+    }
     public $fault = false;
     public $faultString = "";
     public $transportFailure = null;
@@ -62,6 +70,7 @@ class rXMLRPCRequest {
 
 		foreach(array('plugins/httprpc/action.php', 'plugins/httprpc/settingspolicy.php',
 			'plugins/httprpc/rpccache.php', 'php/xmlrpc.php', 'php/xmlrpc_proxy.php',
+			'php/xmlrpc_proxy_native.php',
 			'php/xmlrpc_path.php') as $file)
 			unlink($root.'/'.$file);
 		rmdir($root.'/plugins/httprpc');

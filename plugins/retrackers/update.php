@@ -9070,13 +9070,19 @@ class RetrackersLifecycleCoordinator
 					return(false);
 				}
 				$values = $scalar['values'];
-				if (isset($values['local_id'], $values['recovery_marker'], $values['recovery_ack']) &&
-					$values['local_id'] === $localId &&
-					preg_match('/^v1:original:[01]:' . preg_quote($localId, '/') . ':' .
-						preg_quote($owner['user_hash'], '/') . '$/D', $values['recovery_marker']) === 1 &&
-					$values['recovery_ack'] === $values['recovery_marker']) {
-					$handoff = $values['recovery_marker'];
+				// A shared daemon can hold a pending worker from another profile.
+				// Cancel its exact marker and ack; never call that live object stale.
+				if (!isset($values['local_id'], $values['recovery_marker'], $values['recovery_ack']) ||
+					$values['local_id'] !== $localId ||
+					!is_string($values['recovery_marker']) ||
+					!is_string($values['recovery_ack']) ||
+					preg_match('/^v1:original:[01]:' . preg_quote($localId, '/') .
+						':[0-9a-f]{64}$/D', $values['recovery_marker']) !== 1 ||
+					$values['recovery_ack'] !== $values['recovery_marker']) {
+					$failure = 'hook-teardown-unconfirmed';
+					return(false);
 				}
+				$handoff = $values['recovery_marker'];
 			}
 			$callback = $handoff === null ?
 				RetrackersLifecycleCallbacks::deleteStalePending(

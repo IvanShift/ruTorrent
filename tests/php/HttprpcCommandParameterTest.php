@@ -9,6 +9,27 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
  */
 class HttprpcCommandParameterTest extends TestCase
 {
+	public function testD4CommandExtensionsRequireNativeMethodsForTheDaemonVersion()
+	{
+		$old = 0x0908;
+		$modern = 0x1016;
+		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
+			'd.get_name=', 'd.name=', 'list', array(), $old) === 'd.name=""',
+			'httprpc maps a client alias to a native old-daemon reader');
+		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
+			'd.get_name=', 'd.get_name=', 'list', array(), $modern) === null,
+			'a client-only spelling cannot become a trusted alias in an extension');
+		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
+			'd.base_path.realpath.or_empty=', 'd.base_path.realpath.or_empty=',
+			'list', array(), $old) === null,
+			'a newer getter cannot be used as a trusted old-daemon command extension');
+		$aliases = array('get_up_total' => array('name' => 'throttle.global_up.total', 'prm' => 0));
+		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
+			'get_up_total', 'throttle.global_up.total', 'ttl', $aliases, $old)
+			=== 'throttle.global_up.total',
+			'a natively registered old-daemon global reader stays available');
+	}
+
 	public function testRefusedCommandsAreRecognizedForEveryCmdMode()
 	{
 		$this->assertTrue(method_exists('XMLRPCProxy', 'refusedCommandName'),
@@ -111,8 +132,8 @@ class HttprpcCommandParameterTest extends TestCase
 				'd.erase=', 'd.erase=', $mode) === null,
 				$mode.' refuses a state-changing multicall slot');
 			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
-				'd.get_custom=imported', 'd.get_custom=imported', $mode)
-					=== 'd.get_custom="imported"',
+				'd.get_custom=imported', 'd.custom=imported', $mode)
+					=== 'd.custom="imported"',
 				$mode.' keeps a safe reader and quotes its argument');
 		}
 	}

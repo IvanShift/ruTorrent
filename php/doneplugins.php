@@ -19,32 +19,45 @@ if(!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 if(isset($HTTP_RAW_POST_DATA))
 {
+	$processedPlugins = array();
 	$vars = explode('&', $HTTP_RAW_POST_DATA);
 	foreach($vars as $var)
 	{
-		$parts = explode("=",$var);
-		if($parts[0]=="plg")
+		$parts = explode("=", $var, 2);
+		if($parts[0] == "plg" && isset($parts[1]) &&
+			!isset($processedPlugins[$parts[1]]))
 		{
-			$perms = $theSettings->getPluginData($parts[1]);
+			$pluginName = $parts[1];
+			$processedPlugins[$pluginName] = true;
+			$perms = $theSettings->getPluginData($pluginName);
 			switch($cmd)
 			{
 				case "unlaunch":
-				{
-					if(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH))
-					{
-						$userPermissions[$parts[1]] = false;
-						$jResult.="thePlugins.get('".$parts[1]."').unlaunch();";
-					}
-				}
 				case "done":
 				{
-					if(!is_null($perms) && !($perms & FLAG_CANT_SHUTDOWN))
+					$unlaunch = $cmd == "unlaunch" &&
+						(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH));
+					$canShutdown = !is_null($perms) && !($perms & FLAG_CANT_SHUTDOWN);
+					// A done.php can veto removal by setting $pluginDone to false.
+					$pluginDone = true;
+					if($canShutdown)
 					{
-						$php = "../plugins/".$parts[1]."/done.php";
+						$php = "../plugins/".$pluginName."/done.php";
 						if(is_file($php) && is_readable($php))
 							require_once($php);
-						$theSettings->unregisterPlugin($parts[1]);
-						$jResult.="thePlugins.get('".$parts[1]."').remove();";
+					}
+					if($pluginDone !== false)
+					{
+						if($unlaunch)
+						{
+							$userPermissions[$pluginName] = false;
+							$jResult.="thePlugins.get('".$pluginName."').unlaunch();";
+						}
+						if($canShutdown)
+						{
+							$theSettings->unregisterPlugin($pluginName);
+							$jResult.="thePlugins.get('".$pluginName."').remove();";
+						}
 					}
 					break;
 				}
@@ -52,12 +65,11 @@ if(isset($HTTP_RAW_POST_DATA))
 				{
 					if(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH))
 					{
-						$userPermissions[$parts[1]] = true;
-						$jResult.="thePlugins.get('".$parts[1]."').launch();";
+						$userPermissions[$pluginName] = true;
+						$jResult.="thePlugins.get('".$pluginName."').launch();";
 					}
 					break;
 				}
-
 			}
 		}
 	}

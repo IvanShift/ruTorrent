@@ -2989,14 +2989,23 @@ PHP
 		$info = $this->rawInfoFixture();
 		$capture = $this->metainfoWithRawInfo($info, '8:announce3:old');
 		$current = getcwd();
-		chdir($retrackersUpdateTestProfile);
-		file_put_contents($capture, 'this file must never become Torrent input');
+		if ($current === false || !is_dir($retrackersUpdateTestProfile) ||
+			!chdir($retrackersUpdateTestProfile)) {
+			$this->assertTrue(false, 'the isolated profile exists before creating a relative-path fixture');
+			return;
+		}
 		try {
+			$fixture = 'this file must never become Torrent input';
+			$this->assertTrue(file_put_contents($capture, $fixture) === strlen($fixture),
+				'the relative-path fixture is created inside the isolated profile');
 			$result = (new RetrackersTorrentProjector())->project($capture,
 				array(array('new')), array(), false);
 		} finally {
+			@unlink($capture);
 			chdir($current);
 		}
+		$this->assertTrue(!file_exists($retrackersUpdateTestProfile . '/' . $capture),
+			'the relative-path fixture is removed after the projection');
 		$this->assertTrue($result['ok'] === true && $result['announce'] === 'old' &&
 			$result['announce_list'] === array(array('old'), array('new')),
 			'captured bencode remains byte input even when identical bytes name a readable local file');
@@ -6896,6 +6905,61 @@ PHP;
 					count($adapter->callbackHistory) === 2,
 					'adoption-first makes cancellation a no-op and keeps the d owner sticky');
 			}
+		}
+	}
+
+	public function testDoneCancelsAPendingLeaseOwnedByAnotherWellFormedUser()
+	{
+		$this->installRtorrentQuoteDouble();
+		$localId = str_repeat('A', 40);
+		$hash = str_repeat('B', 40);
+		$otherUserHash = hash('sha256', 'bob');
+		$handoff = 'v1:original:0:' . $localId . ':' . $otherUserHash;
+		$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+		$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+		$adapter->ledgerKeys = array('wp:' . $localId);
+		$adapter->downloadRowsQueue = array(array(array($hash, $localId)));
+		$adapter->sourceScalarQueue = array(array('family' => 2, 'values' => array(
+			'local_id' => $localId, 'recovery_marker' => $handoff,
+			'recovery_ack' => $handoff,
+		)));
+		$adapter->callbackResults = array('ACQUIRED', 'ACQUIRED', 'ACQUIRED');
+		$failure = null;
+		$result = RetrackersLifecycleCoordinator::done('alice', $failure, $adapter);
+		$this->assertTrue($result === true && $failure === null &&
+			isset($adapter->callbackHistory[1]) &&
+			$adapter->callbackHistory[1]->name() === 'pending-cancel' &&
+			strpos($adapter->callbackHistory[1]->params()[1], $handoff) !== false,
+			'done cancels the other user pending lease only against its exact handoff');
+	}
+
+	public function testDonePreservesAnUnrecognizedPendingObject()
+	{
+		$this->installRtorrentQuoteDouble();
+		$localId = str_repeat('A', 40);
+		$hash = str_repeat('B', 40);
+		$otherUserHash = hash('sha256', 'bob');
+		$valid = 'v1:original:0:' . $localId . ':' . $otherUserHash;
+		foreach (array(
+			array('local_id' => $localId, 'recovery_marker' => $valid,
+				'recovery_ack' => 'wrong'),
+			array('local_id' => $localId, 'recovery_marker' => 'unknown',
+				'recovery_ack' => 'unknown'),
+			array('local_id' => str_repeat('C', 40), 'recovery_marker' => $valid,
+				'recovery_ack' => $valid),
+		) as $values) {
+			$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+			$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+			$adapter->ledgerKeys = array('wp:' . $localId);
+			$adapter->downloadRowsQueue = array(array(array($hash, $localId)));
+			$adapter->sourceScalarQueue = array(array('family' => 2, 'values' => $values));
+			$adapter->callbackResults = array('ACQUIRED');
+			$failure = null;
+			$result = RetrackersLifecycleCoordinator::done('alice', $failure, $adapter);
+			$this->assertTrue($result === false && $failure === 'hook-teardown-unconfirmed' &&
+				count($adapter->callbackHistory) === 1 &&
+				in_array('wp:' . $localId, $adapter->ledgerKeys, true),
+				'an unknown pending object cannot be declared stale from a live local id');
 		}
 	}
 
@@ -11482,6 +11546,8 @@ PHP;
 		// Keep the frozen methods explicit so a new or missing one is named by
 		// the failure instead of hidden behind a fingerprint.
 		$added = array(
+			'testDoneCancelsAPendingLeaseOwnedByAnotherWellFormedUser',
+			'testDonePreservesAnUnrecognizedPendingObject',
 			'testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre',
 			'testHookWithEmptyLedgerReportsObservedMismatchWithoutAdoptingIt',
 			'testReviewPostEventRuntimeTrackersRemainAuthoritative',

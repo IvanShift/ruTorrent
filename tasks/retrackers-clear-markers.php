@@ -3,7 +3,8 @@
 // Clear retrackers recovery markers from a live rTorrent.
 //
 //   docker exec <container> php85 /tmp/retrackers-clear-markers.php          report only
-//   docker exec <container> php85 /tmp/retrackers-clear-markers.php apply    clear them
+//   docker exec <container> php85 /tmp/retrackers-clear-markers.php apply HASH FINGERPRINT
+//      clear one exact, previously reviewed marker generation
 //
 // WHY THIS EXISTS, and when reaching for it is right.
 //
@@ -32,6 +33,14 @@
 // than retire it.
 
 $apply = isset($argv[1]) && $argv[1] === 'apply';
+if (($apply && (count($argv) !== 4 ||
+        preg_match('/^[0-9a-fA-F]{40}$/D', $argv[2]) !== 1 ||
+        preg_match('/^[0-9a-f]{64}$/D', $argv[3]) !== 1)) ||
+    (!$apply && count($argv) !== 1)) {
+    fwrite(STDERR, "usage: retrackers-clear-markers.php [apply HASH FINGERPRINT]\n"
+        . "report first, then select one exact hash and its printed fingerprint\n");
+    exit(2);
+}
 
 $scgi_host = '127.0.0.1';
 $scgi_port = 5000;
@@ -59,9 +68,10 @@ function rpc($target, $method, $arguments)
 	fwrite($socket, strlen($header) . ':' . $header . ',' . $body);
 	$answer = stream_get_contents($socket);
 	fclose($socket);
-	if (strpos($answer, 'faultString') !== false) {
+	if (preg_match('~<fault(?:\s[^>]*)?>~', $answer) === 1) {
+		$faultAt = strpos($answer, 'faultString');
 		fwrite(STDERR, 'rtorrent refused ' . $method . ': '
-			. substr(strstr($answer, 'faultString'), 0, 160) . "\n");
+			. ($faultAt === false ? 'XML-RPC fault' : substr($answer, $faultAt, 160)) . "\n");
 		exit(2);
 	}
 	// A peer that accepts the request and closes without answering is not a
@@ -79,63 +89,127 @@ function rpc($target, $method, $arguments)
 	return($answer);
 }
 
+function markerFingerprint($row)
+{
+    return hash('sha256', implode("\0", array($row[0], $row[4], $row[2], $row[3])));
+}
+
+// This standalone operator tool is often copied to /tmp, outside the app's
+// autoloader. Quote the same command grammar as rTorrent::quoteCommandArg().
+function quoteCommandArg($value)
+{
+    return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"';
+}
+
+function scalarString($response)
+{
+    if (preg_match_all('|<value><string>(.*?)</string></value>|s', $response, $matches) !== 1)
+        return false;
+    return html_entity_decode($matches[1][0], ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
 echo 'rtorrent: ' . $target . "\n";
 
-// Four requested columns means four <string> cells per row, in order, so the
-// flat list chunks exactly. Cell text is XML-escaped, so no name can forge a
-// </string> and shift the chunking.
+// A fifth column binds the public hash to its current daemon local_id.
+// Values are XML-escaped and the flat list chunks exactly.
 preg_match_all('|<value><string>(.*?)</string></value>|s',
-	rpc($target, 'd.multicall2', array('', 'main', 'd.hash=', 'd.name=',
-		'd.custom=retrackers-recovery', 'd.custom=retrackers-recovery-ack')), $cells);
+    rpc($target, 'd.multicall2', array('', 'main', 'd.hash=', 'd.name=',
+        'd.custom=retrackers-recovery', 'd.custom=retrackers-recovery-ack',
+        'd.local_id=')), $cells);
 $flat = $cells[1];
-if (count($flat) % 4 !== 0) {
-	fwrite(STDERR, 'unexpected reply shape: ' . count($flat) . " cells is not a multiple of 4\n");
-	exit(2);
+if (count($flat) % 5 !== 0) {
+    fwrite(STDERR, 'unexpected reply shape: ' . count($flat) . " cells is not a multiple of 5\n");
+    exit(2);
 }
 $marked = array();
-for ($index = 0; $index < count($flat); $index += 4)
-	if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '')
-		$marked[] = array($flat[$index], $flat[$index + 1],
-			$flat[$index + 2], $flat[$index + 3]);
+for ($index = 0; $index < count($flat); $index += 5)
+    if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '')
+        $marked[] = array($flat[$index], $flat[$index + 1],
+            $flat[$index + 2], $flat[$index + 3], $flat[$index + 4]);
 
-printf("%d torrents, %d carry a recovery marker\n", count($flat) / 4, count($marked));
+printf("%d torrents, %d carry a recovery marker\n", count($flat) / 5, count($marked));
 foreach ($marked as $row) {
-	$kind = preg_match('/^v1:candidate-claim:[0-9a-f]{32}$/D', $row[2]) === 1
-		? 'candidate-claim' : 'other';
-	printf("  %s  %s  [%s; ack %s]\n", $row[0],
-		substr(html_entity_decode($row[1]), 0, 60), $kind,
-		$row[3] === '' ? 'empty' : 'present');
+    $kind = preg_match('/^v1:candidate-claim:[0-9a-f]{32}$/D', $row[2]) === 1
+        ? 'candidate-claim' : 'other';
+    printf("  %s  %s  [%s; ack %s; fingerprint %s]\n", $row[0],
+        substr(html_entity_decode($row[1]), 0, 60), $kind,
+        $row[3] === '' ? 'empty' : 'present', markerFingerprint($row));
 }
-if (!$marked) exit(0);
+if (!$marked) {
+    if ($apply) {
+        fwrite(STDERR, "selected marker absent; report again\n");
+        exit(2);
+    }
+    exit(0);
+}
 if (!$apply) {
-	echo "\nreport only -- apply clears every marked torrent; inspect every row first\n";
-	exit(0);
+    echo "\nreport only -- apply requires one hash and its exact fingerprint\n";
+    exit(0);
 }
 
-foreach ($marked as $row)
-	foreach (array('retrackers-recovery', 'retrackers-recovery-ack') as $key)
-		rpc($target, 'd.custom.set', array($row[0], $key, ''));
+$selected = null;
+foreach ($marked as $row) {
+    if (strtoupper($row[0]) !== strtoupper($argv[2])) continue;
+    if ($selected !== null) {
+        fwrite(STDERR, "duplicate hash in daemon inventory; refusing\n");
+        exit(2);
+    }
+    $selected = $row;
+}
+if ($selected === null || markerFingerprint($selected) !== $argv[3]) {
+    fwrite(STDERR, "selected hash or marker fingerprint changed; report again\n");
+    exit(2);
+}
+list($hash, $name, $marker, $ack, $localId) = $selected;
+if (preg_match('/^[0-9a-fA-F]{40}$/D', $hash) !== 1 ||
+    preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1 ||
+    strlen($marker) > 512 || strlen($ack) > 512 ||
+    preg_match('/^[A-Za-z0-9:._-]*$/D', $marker) !== 1 ||
+    preg_match('/^[A-Za-z0-9:._-]*$/D', $ack) !== 1) {
+    fwrite(STDERR, "selected marker/local_id is not safe for a conditional clear; retain it\n");
+    exit(2);
+}
 
-// d.custom.set writes to memory; the value reaches disk only with a session
-// save. Without this a daemon restart brings the old markers back -- measured,
-// it does.
+// The full ledger must be empty at the very instant the marker is cleared.
+// This branch checks the exact local_id, marker and ack under one daemon lock;
+// a worker changing any of them after the inventory scan makes it refuse.
+$equals = function ($getter, $value) {
+    return 'equal=' . quoteCommandArg($getter) . ','
+        . quoteCommandArg('cat=' . quoteCommandArg($value));
+};
+$conditions = array(
+    'not=(method.list_keys,rr.receipts.v1)',
+    $equals('d.local_id=', $localId),
+    $equals('d.custom=retrackers-recovery', $marker),
+    $equals('d.custom=retrackers-recovery-ack', $ack),
+);
+$condition = array_shift($conditions);
+foreach ($conditions as $next)
+    $condition = 'and=' . quoteCommandArg($condition) . ',' . quoteCommandArg($next);
+$clear = 'cat=' . quoteCommandArg('$d.custom.set=retrackers-recovery,') . ','
+    . quoteCommandArg('$d.custom.set=retrackers-recovery-ack,') . ',CLEARED';
+$status = scalarString(rpc($target, 'branch', array($hash, $condition, $clear,
+    'cat=REFUSED')));
+if ($status !== 'CLEARED') {
+    fwrite(STDERR, 'conditional clear refused or unconfirmed; marker/ledger may have changed' . "\n");
+    exit(3);
+}
+foreach (array('retrackers-recovery', 'retrackers-recovery-ack') as $key) {
+    $current = scalarString(rpc($target, 'd.custom', array($hash, $key)));
+    if ($current !== '') {
+        fwrite(STDERR, 'clear reply did not match daemon state; not saving session' . "\n");
+        exit(3);
+    }
+}
+
+// Persist only after the selected generation was confirmed clear.
 rpc($target, 'session.save', array());
-echo "session saved\n";
-
-// Count what is left by the SAME rule the selection used -- either custom
-// non-empty -- and not by a 'v1:' prefix, which would call a marker in any other
-// shape "gone" while it still sits on the torrent.
-preg_match_all('|<value><string>(.*?)</string></value>|s',
-	rpc($target, 'd.multicall2', array('', 'main', 'd.hash=', 'd.name=',
-		'd.custom=retrackers-recovery', 'd.custom=retrackers-recovery-ack')), $after);
-$rest = $after[1];
-if (count($rest) % 4 !== 0) {
-	fwrite(STDERR, 'unexpected reply shape on the read-back: ' . count($rest)
-		. " cells is not a multiple of 4\n");
-	exit(2);
+echo "session.save requested; verify persistence before daemon restart\n";
+foreach (array('retrackers-recovery', 'retrackers-recovery-ack') as $key) {
+    $current = scalarString(rpc($target, 'd.custom', array($hash, $key)));
+    if ($current !== '') {
+        fwrite(STDERR, 'marker changed after save; inspect the daemon again' . "\n");
+        exit(3);
+    }
 }
-$remaining = 0;
-for ($index = 0; $index < count($rest); $index += 4)
-	if ($rest[$index + 2] !== '' || $rest[$index + 3] !== '') $remaining++;
-printf("cleared %d, remaining %d\n", count($marked), $remaining);
-if ($remaining !== 0) exit(3);
+echo 'marker empty in daemon memory ' . $hash . "\n";

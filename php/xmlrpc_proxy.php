@@ -447,6 +447,75 @@ class XMLRPCProxy
 		't.multicall', 'f.multicall', 'p.multicall',
 	);
 
+	// A source-pinned ceiling for every expression we elevate. The table is
+	// separate from permission lists: a name must be both allowed here and
+	// registered natively by the stated daemon version.
+	private static function nativeOnDaemon($name, $version)
+	{
+		// An omitted version gets the intersection of native methods across
+		// supported daemons. It must never admit an rc alias on 0.9.8.
+		if($version === null)
+			$mask = 0x3FFFFFF;
+		if($version === 0x0908)
+			$mask = 1;
+		elseif(is_int($version) && $version >= 0x1000 && $version <= 0x1018)
+			$mask = 1 << (($version & 0xff) + 1);
+		elseif($version !== null)
+			return false;
+		static $native = null;
+		if($native === null)
+			$native = require(__DIR__.'/xmlrpc_proxy_native.php');
+		return isset($native[$name]) && (($native[$name] & $mask) === $mask);
+	}
+
+	/** One read-only probe, shared by both HTTP doors. */
+	public static function daemonVersionProbe()
+	{
+		return '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName>'
+			.'<params></params></methodCall>';
+	}
+
+	/** Parse the one read-only system.client_version reply into a supported version. */
+	public static function daemonVersionFromReply($xml)
+	{
+		if(!is_string($xml) || $xml === '')
+			return null;
+		$doc = new DOMDocument();
+		$prior = libxml_use_internal_errors(true);
+		$loaded = $doc->loadXML($xml, LIBXML_NONET);
+		libxml_clear_errors();
+		libxml_use_internal_errors($prior);
+		if(!$loaded)
+			return null;
+		$xp = new DOMXPath($doc);
+		$nodes = $xp->query('/methodResponse/params/param/value/string');
+		if($nodes === false || $nodes->length !== 1 ||
+			$xp->query('/methodResponse/fault')->length !== 0)
+			return null;
+		return self::daemonVersionFromString($nodes->item(0)->textContent);
+	}
+
+	/** Parse a version string read directly from the daemon. */
+	public static function daemonVersionFromString($value)
+	{
+		if(!is_string($value))
+			return null;
+		if(preg_match('/^0\.9\.8(?:[-+][A-Za-z0-9._-]+)?$/D', $value))
+			return 0x0908;
+		if(preg_match('/^0\.16\.(\d{1,2})(?:[-+][A-Za-z0-9._-]+)?$/D', $value, $m))
+			return ((int)$m[1] <= 24) ? 0x1000 + (int)$m[1] : null;
+		return null;
+	}
+
+	private static function oldDaemonDirectRead($name, $version)
+	{
+		return self::nativeOnDaemon($name, $version) &&
+			(in_array($name, self::$safeGetters, true) ||
+			in_array($name, array('system.client_version', 'system.api_version',
+				'system.library_version', 'system.hostname', 'system.pid',
+				'system.listMethods', 'view.list', 'directory.default'), true));
+	}
+
 	private static $log = true;
 
 	private static function log($msg)
@@ -533,8 +602,10 @@ class XMLRPCProxy
 	 * rebuilder as the raw XMLRPC door, so arguments are quoted before sending.
 	 * A null result is terminal for this HTTP request.
 	 */
-	public static function sanitizeHttprpcCommandParameter($raw, $mapped, $mode, $aliases = array())
+	public static function sanitizeHttprpcCommandParameter($raw, $mapped, $mode, $aliases = array(), $version = null)
 	{
+		if(!self::nativeOnDaemon(self::rawCommandName($mapped), $version))
+			return null;
 		if($mode === 'stg' || $mode === 'ttl' || $mode === 'prp')
 		{
 			if(self::refusedCommandName($raw) !== null
@@ -567,7 +638,7 @@ class XMLRPCProxy
 			// The rebuilder knows argument arity. A comma before a fallback
 			// string is data in d.custom.if_z, but can introduce an executable
 			// command in an arbitrary nested expression.
-			$rebuilt = self::rebuildMulticallParam($mapped, self::$safeGetters, true);
+			$rebuilt = self::rebuildMulticallParam($mapped, self::$safeGetters, true, $version);
 			return ($rebuilt === false) ? null : $rebuilt;
 		}
 		return null;
@@ -1145,8 +1216,11 @@ class XMLRPCProxy
 		return self::rejectWithSlot($reason, $method, $index, $name, $note);
 	}
 
-	private static function unmatchedElevation($methodName, $rawData)
+	private static function unmatchedElevation($methodName, $rawData, $version = null)
 	{
+		if($version === null || $version < 0x1009)
+			return self::reject('rejected (arguments did not match allowed shape): '.
+				self::normalizeMethodName($methodName), $methodName);
 		if(in_array($methodName, self::$batchElevations, true))
 			return self::forward($rawData, false,
 				'untrusted: '.self::normalizeMethodName($methodName).' (shape not elevated)');
@@ -1291,6 +1365,8 @@ class XMLRPCProxy
 	public static function decide($rawData, $mode = 'sanitize', $safeParams = array(), $allowLocalPaths = false, $options = array())
 	{
 		$directory = isset($options['directory']) ? $options['directory'] : null;
+		$version = array_key_exists('rtorrentVersion', $options)
+			? $options['rtorrentVersion'] : null;
 
 		if($mode === 'off' || ($mode !== 'passthrough_unsafe' && $mode !== 'sanitize'))
 			return self::reject("rejected (proxy disabled)");
@@ -1310,6 +1386,19 @@ class XMLRPCProxy
 
 		$methodName = $decoded['method'];
 		$params = $decoded['params'];
+		if(array_key_exists('rtorrentVersion', $options) && $version !== 0x0908 &&
+			(!is_int($version) || $version < 0x1000 || $version > 0x1018))
+			return self::reject('rejected (unsupported or unreadable rTorrent version): '.
+				self::normalizeMethodName($methodName), $methodName);
+
+		if($methodName !== 'system.multicall'
+			&& !self::nativeOnDaemon($methodName, $version)
+			&& ($version === null || $version < 0x1009
+				|| in_array($methodName, self::$sanitizeMethods, true)
+				|| in_array($methodName, self::$multicallMethods, true)
+				|| isset(self::$elevate[$methodName])))
+			return self::reject('rejected (method is not native on this rTorrent version): '.
+				self::normalizeMethodName($methodName), $methodName);
 
 		if(self::isDirectDenied($methodName))
 			return self::reject("rejected (not allowed on this connection): ".
@@ -1454,7 +1543,7 @@ class XMLRPCProxy
 					return self::rejectCommandSlot('malformed load call', $methodName, $i);
 
 				$cmdVal = $cmdParam['value'];
-				$rebuilt = self::rebuildSafeLoadParam($cmdVal, $safeParams, $directory);
+				$rebuilt = self::rebuildSafeLoadParam($cmdVal, $safeParams, $directory, $version);
 				if($rebuilt === false)
 				{
 					$reason = 'directory outside boundary';
@@ -1515,7 +1604,7 @@ class XMLRPCProxy
 			// executable escape. f./t./p.multicall use this slot only as data.
 			if($isViewFirst)
 			{
-				$viewVal = self::rebuildMulticallParam($viewVal, $resultCommands, true);
+				$viewVal = self::rebuildMulticallParam($viewVal, $resultCommands, true, $version);
 				if($viewVal === null || $viewVal === false)
 					return self::rejectCommandSlot('not allowed on this connection', $methodName, 1, $params[1]['value']);
 			}
@@ -1529,7 +1618,7 @@ class XMLRPCProxy
 				if($params[2]['type'] !== 'string')
 					return self::rejectCommandSlot('not allowed on this connection', $methodName, 2);
 				$rawFilter = $params[2]['value'];
-				$rebuiltFilter = self::rebuildMulticallParam($rawFilter, $safeParams);
+				$rebuiltFilter = self::rebuildMulticallParam($rawFilter, $safeParams, false, $version);
 				if($rebuiltFilter === null || $rebuiltFilter === false)
 				{
 					return self::rejectCommandSlot('not allowed on this connection', $methodName, 2, $rawFilter);
@@ -1551,7 +1640,7 @@ class XMLRPCProxy
 					return self::rejectCommandSlot('not allowed on this connection', $methodName, $i);
 
 				$cmd = $params[$i]['value'];
-				$rebuilt = self::rebuildMulticallParam($cmd, $resultCommands, true);
+				$rebuilt = self::rebuildMulticallParam($cmd, $resultCommands, true, $version);
 				if($rebuilt === null || $rebuilt === false)
 				{
 					return self::rejectCommandSlot('not allowed on this connection', $methodName, $i, $cmd, $safeParams);
@@ -1575,7 +1664,7 @@ class XMLRPCProxy
 		{
 			$shapes = self::$elevate[$methodName];
 			if(count($params) !== count($shapes))
-				return self::unmatchedElevation($methodName, $rawData);
+				return self::unmatchedElevation($methodName, $rawData, $version);
 
 			$canonicalParams = array();
 			$adjustedSize = null;
@@ -1585,7 +1674,7 @@ class XMLRPCProxy
 				$param = $params[$i];
 				$emitted = self::emitArgumentFromDecoded($shape, $param, $adjustedSize);
 				if($emitted === null)
-					return self::unmatchedElevation($methodName, $rawData);
+					return self::unmatchedElevation($methodName, $rawData, $version);
 				$canonicalParams[] = $emitted;
 			}
 
@@ -1599,7 +1688,12 @@ class XMLRPCProxy
 			return $decision;
 		}
 
-		// Unknown method — pass through as untrusted.
+		// Old rTorrent ignores UNTRUSTED_CONNECTION. A direct fallback must
+		// therefore be a source-pinned native reader, never an rc alias.
+		if(($version === null || $version < 0x1009)
+			&& !self::oldDaemonDirectRead($methodName, $version))
+			return self::reject('rejected (direct command is not an approved native read): '.
+				self::normalizeMethodName($methodName), $methodName);
 		return self::forward($rawData, false, "untrusted: " . self::normalizeMethodName($methodName));
 	}
 
@@ -1852,7 +1946,7 @@ class XMLRPCProxy
 
 	// Both filter and result slots execute per download and refuse directory
 	// setters outright. The directory boundary is checked only for load.* tails.
-	private static function rebuildMulticallParam($value, $allowed, $resultSlot = false)
+	private static function rebuildMulticallParam($value, $allowed, $resultSlot = false, $version = null)
 	{
 		// These exact read expressions are shipped by ratio and
 		// show_peers_like_wtorrent. The two tracker forms returned 0#0# in a
@@ -1861,11 +1955,16 @@ class XMLRPCProxy
 		if($resultSlot && ($value === 'cat=$d.views='
 			|| $value === 'cat="$t.multicall=d.hash=,t.scrape_complete=,cat={#}"'
 			|| $value === 'cat="$t.multicall=d.hash=,t.scrape_incomplete=,cat={#}"'))
-			return $value;
+			return (self::nativeOnDaemon('cat', $version)
+				&& self::nativeOnDaemon('d.views', $version)
+				&& self::nativeOnDaemon('d.hash', $version)
+				&& self::nativeOnDaemon('t.multicall', $version)
+				&& self::nativeOnDaemon('t.scrape_complete', $version)
+				&& self::nativeOnDaemon('t.scrape_incomplete', $version)) ? $value : null;
 		$name = self::rawCommandName($value);
 		if($name === null || self::isDirectDenied($name))
 			return null;
-		return self::rebuildSafeLoadParam($value, $allowed);
+		return self::rebuildSafeLoadParam($value, $allowed, null, $version);
 	}
 
 	/**
@@ -1885,7 +1984,7 @@ class XMLRPCProxy
 	 * re-quoted, rather than dropped: cross-seed and others send
 	 * d.custom1.set="label".
 	 */
-	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null)
+	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null, $version = null)
 	{
 		$separator = strpos($paramValue, '=');
 		if($separator === false)
@@ -1895,7 +1994,8 @@ class XMLRPCProxy
 		// A nested global setter would bypass the direct call's recovery floor.
 		if($command === 'network.xmlrpc.size_limit.set' || self::isDeniedCommand($command))
 			return null;
-		if(!in_array($command, $safeParams, true))
+		if(!in_array($command, $safeParams, true)
+			|| !self::nativeOnDaemon($command, $version))
 			return null;
 
 		$maxArguments = isset(self::$multiArgCommands[$command])

@@ -43,6 +43,9 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
  */
 class XMLRPCProxyContractTest extends TestCase
 {
+	// The fixture describes the modern daemon contract, not an unknown daemon.
+	private const DAEMON_OPTIONS = array('rtorrentVersion' => 0x1018);
+
 	private $cases = array();
 
 	public function setUp()
@@ -58,7 +61,8 @@ class XMLRPCProxyContractTest extends TestCase
 		rXMLRPCRequest::$sent = 0;
 
 		$returned = XMLRPCProxy::process($case['request'], $case['mode'],
-			$case['enableLog'], $case['safeParams'], $case['allowLocalPaths']);
+			$case['enableLog'], $case['safeParams'], $case['allowLocalPaths'],
+			self::DAEMON_OPTIONS);
 
 		return array(
 			'returned' => $returned,
@@ -168,7 +172,7 @@ class XMLRPCProxyContractTest extends TestCase
 		foreach($this->cases as $name => $case)
 		{
 			$decision = XMLRPCProxy::decide($case['request'], $case['mode'],
-				$case['safeParams'], $case['allowLocalPaths']);
+				$case['safeParams'], $case['allowLocalPaths'], self::DAEMON_OPTIONS);
 
 			$this->assertTrue($decision['action'] === (($case['sends'] === 1) ? 'send' : 'reject'),
 				$name.' — decides to send exactly when process() sent');
@@ -198,7 +202,7 @@ class XMLRPCProxyContractTest extends TestCase
 			FileUtil::$log = array();
 
 			XMLRPCProxy::decide($case['request'], $case['mode'], $case['safeParams'],
-				$case['allowLocalPaths']);
+				$case['allowLocalPaths'], self::DAEMON_OPTIONS);
 
 			$this->assertTrue(rXMLRPCRequest::$sent === 0,
 				$name.' — decide() reaches no socket');
@@ -212,7 +216,7 @@ class XMLRPCProxyContractTest extends TestCase
 		foreach($this->cases as $name => $case)
 		{
 			$decision = XMLRPCProxy::decide($case['request'], $case['mode'],
-				$case['safeParams'], $case['allowLocalPaths']);
+				$case['safeParams'], $case['allowLocalPaths'], self::DAEMON_OPTIONS);
 
 			// A decision always reports its outer reason; a system.multicall
 			// can also report classified decisions of its members. The caller

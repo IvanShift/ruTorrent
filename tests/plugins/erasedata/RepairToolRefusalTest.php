@@ -3,20 +3,12 @@
 require_once(__DIR__ . '/../../php/TestCase.php');
 
 /**
- * The retrackers marker-clearing tool must refuse, not report success, when the
- * daemon does not answer.
+ * Exercise the shipped standalone repair tool against a controlled SCGI peer.
  *
- * tasks/retrackers-clear-markers.php is run by hand against a live rTorrent to
- * retire recovery markers no code can clear any more. Its output is the only
- * thing an operator has to go on, so an answer it never received must never read
- * as "nothing to do" or as "cleared". It used to: the transport check looked for
- * faultString and nothing else, an empty body decoded to zero cells, the
- * multiple-of-four shape check accepted that, and the script printed
- * "0 torrents, 0 carry a recovery marker" -- or, in apply mode, "session saved"
- * and "cleared 1, remaining 0" -- and exited 0.
- *
- * This drives the real script against a real UNIX socket whose peer accepts the
- * request and closes without replying.
+ * The operator needs a refusal on missing answers, changed markers, and real
+ * XML-RPC faults. A torrent name containing faultString remains ordinary data.
+ * The peer can answer an exact number of calls and then close, so both report
+ * and apply paths can be checked without touching a running daemon.
  */
 class RepairToolRefusalTest extends TestCase
 {
@@ -79,11 +71,14 @@ class RepairToolRefusalTest extends TestCase
 		$descriptors = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
 		// 'exec ' so proc_open's /bin/sh does not fork and leave the real child
 		// behind a shell that proc_terminate would signal instead.
+		$args = $argument === '' ? array() : (is_array($argument) ? $argument : array($argument));
 		$process = proc_open('exec ' . PHP_BINARY . ' ' . escapeshellarg($tool)
-			. ($argument === '' ? '' : ' ' . escapeshellarg($argument)),
+			. ($args ? ' ' . implode(' ', array_map('escapeshellarg', $args)) : ''),
 			$descriptors, $pipes);
 		$this->assertTrue(is_resource($process), 'the tool starts');
 		$answered = 0;
+		$replyCount = is_array($replies) ? count($replies) : $replies;
+		$requests = array();
 		$observedExitCode = null;
 		$deadline = time() + 20;
 		while (time() < $deadline) {
@@ -97,16 +92,18 @@ class RepairToolRefusalTest extends TestCase
 				continue;
 			}
 			stream_set_timeout($client, 1);
-			@fread($client, 65536);
-			if ($answered < $replies) {
+			$requests[] = @fread($client, 65536);
+			if ($answered < $replyCount) {
 				$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
 					. '<array><data><value><array><data>'
 					. '<value><string>' . str_repeat('A', 40) . '</string></value>'
 					. '<value><string>probe.bin</string></value>'
 					. '<value><string>' . htmlspecialchars($marker, ENT_XML1) . '</string></value>'
 					. '<value><string></string></value>'
+					. '<value><string>' . str_repeat('C', 40) . '</string></value>'
 					. '</data></array></value></data></array></value></param></params>'
 					. '</methodResponse>';
+				if (is_array($replies)) $body = $replies[$answered];
 				@fwrite($client, strlen($body) . ':' . $body);
 				$answered++;
 			}
@@ -120,7 +117,7 @@ class RepairToolRefusalTest extends TestCase
 		if ($code === -1 && $observedExitCode !== null) $code = $observedExitCode;
 		@fclose($this->server);
 		$this->server = null;
-		return(array($code, $out, $err));
+		return(array($code, $out, $err, $requests));
 	}
 
 	public function testAnUnansweredReadIsNotReportedAsNothingToDo()
@@ -141,10 +138,94 @@ class RepairToolRefusalTest extends TestCase
 		list($code, $out, $err) = $this->runAgainstPeer('', 1,
 			'v1:candidate-claim:' . $transaction);
 		$this->assertTrue($code === 0, 'the read-only report succeeds: ' . $err);
-		$this->assertTrue(strpos($out, '[candidate-claim; ack empty]') !== false,
+		$this->assertTrue(strpos($out, '[candidate-claim; ack empty; fingerprint ') !== false,
 			'the operator can distinguish an incomplete replacement claim');
 		$this->assertTrue(strpos($out, $transaction) === false,
 			'the transaction identifier is not printed in a routine report');
+	}
+
+	public function testTorrentNameContainingFaultStringIsReportable()
+	{
+		$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
+			. '<array><data><value><array><data>'
+			. '<value><string>' . str_repeat('A', 40) . '</string></value>'
+			. '<value><string>faultString</string></value>'
+			. '<value><string>marker</string></value>'
+			. '<value><string></string></value>'
+			. '<value><string>' . str_repeat('C', 40) . '</string></value>'
+			. '</data></array></value></data></array></value></param></params></methodResponse>';
+		list($code, $out, $err) = $this->runAgainstPeer('', array($body));
+		$this->assertTrue($code === 0 && strpos($out, '1 carry a recovery marker') !== false,
+			'a valid torrent name containing faultString remains reportable: ' . $err);
+	}
+
+	public function testActualXmlRpcFaultIsRefused()
+	{
+		$fault = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
+			. '<member><name>faultString</name><value><string>denied</string></value>'
+			. '</member></struct></value></fault></methodResponse>';
+		list($code, $out, $err) = $this->runAgainstPeer('', array($fault));
+		$this->assertTrue($code !== 0 && strpos($err, 'rtorrent refused') !== false,
+			'a real XML-RPC fault is still visible: ' . $err);
+	}
+
+	public function testBareApplyCannotClearEveryMarkedTorrent()
+	{
+		list($code, $out, $err, $requests) = $this->runAgainstPeer('apply', 1);
+		$this->assertTrue($code !== 0, 'bulk apply is refused');
+		$this->assertTrue(count($requests) <= 1,
+			'bare apply sends no mutation after the inventory scan');
+		$this->assertTrue(strpos($err, 'hash') !== false,
+			'the operator is told to select one exact hash');
+	}
+
+	public function testApplyRefusesWhenSelectedMarkerIsAbsent()
+	{
+		$empty = '<?xml version="1.0"?><methodResponse><params><param><value>'
+			. '<array><data></data></array></value></param></params></methodResponse>';
+		list($code, $out, $err, $requests) = $this->runAgainstPeer(
+			array('apply', str_repeat('A', 40), str_repeat('a', 64)),
+			array($empty));
+		$this->assertTrue($code !== 0, 'an absent selected marker is a refusal');
+		$this->assertTrue(strpos($err, 'selected marker absent') !== false,
+			'the operator is told to report again: ' . $err);
+		$this->assertTrue(count($requests) === 1,
+			'no mutation follows an empty inventory');
+	}
+
+	public function testChangedGenerationRefusesTheConditionalClear()
+	{
+		$marker = 'v1:original:0:' . str_repeat('B', 40);
+		$fingerprint = hash('sha256', implode("\0", array(str_repeat('A', 40),
+			str_repeat('C', 40), $marker, '')));
+		$branchRefused = '<?xml version="1.0"?><methodResponse><params><param>'
+			. '<value><string>REFUSED</string></value></param></params></methodResponse>';
+		// The first body is replaced by runAgainstPeer's normal inventory fixture.
+		$inventory = '<?xml version="1.0"?><methodResponse><params><param><value>'
+			. '<array><data><value><array><data>'
+			. '<value><string>' . str_repeat('A', 40) . '</string></value>'
+			. '<value><string>probe.bin</string></value>'
+			. '<value><string>' . $marker . '</string></value>'
+			. '<value><string></string></value>'
+			. '<value><string>' . str_repeat('C', 40) . '</string></value>'
+			. '</data></array></value></data></array></value></param></params></methodResponse>';
+		list($code, $out, $err, $requests) = $this->runAgainstPeer(
+			array('apply', str_repeat('A', 40), $fingerprint),
+			array($inventory, $branchRefused), $marker);
+		$this->assertTrue($code !== 0 && strpos($err, 'conditional clear refused') !== false,
+			'a changed marker or live ledger is reported as a refusal');
+		$this->assertTrue(count($requests) === 2,
+			'the refusal sends inventory and one atomic branch only');
+		$this->assertTrue(strpos($requests[0], 'd.local_id=') !== false,
+			'the inventory reads the immutable daemon local_id getter');
+		$this->assertTrue(strpos($requests[1], 'method.list_keys') !== false
+			&& strpos($requests[1], 'd.local_id=') !== false
+			&& strpos($requests[1], 'retrackers-recovery-ack') !== false,
+			'the branch compares ledger, local_id, marker and ack');
+		$this->assertTrue(substr_count($requests[1], 'and=') === 3,
+			'four CAS predicates use nested binary and commands');
+		$this->assertTrue(strpos(implode('', $requests), 'session.save') === false,
+			'a refused clear never saves a session');
 	}
 
 	public function testAnUnansweredClearIsNotReportedAsCleared()
@@ -152,7 +233,11 @@ class RepairToolRefusalTest extends TestCase
 		// The first read succeeds, so the tool has a real marker to act on; every
 		// call after it is accepted and dropped. Before the fix this printed
 		// "session saved" and "cleared 1, remaining 0" and exited 0.
-		list($code, $out, $err) = $this->runAgainstPeer('apply', 1);
+		$marker = 'v1:original:0:' . str_repeat('B', 40);
+		$fingerprint = hash('sha256', implode("\0", array(str_repeat('A', 40),
+			str_repeat('C', 40), $marker, '')));
+		list($code, $out, $err) = $this->runAgainstPeer(array('apply',
+			str_repeat('A', 40), $fingerprint), 1, $marker);
 		$this->assertTrue($code !== 0,
 			'an unanswered clear is not a successful run: exit ' . $code
 				. ' out=' . $out);

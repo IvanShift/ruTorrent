@@ -28,6 +28,75 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			throw new Exception('could not locate the production source root');
 	}
 
+	public function testD4BothDoorsRejectOldAliasesAndKeepNativeListings()
+	{
+		$alias = '<?xml version="1.0"?><methodCall><methodName>my_shell_alias</methodName>'
+			.'<params></params></methodCall>';
+		$newGetter = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			.'<params><param><value><string></string></value></param>'
+			.'<param><value><string>main</string></value></param>'
+			.'<param><value><string>d.base_path.realpath.or_empty=/outside</string></value></param>'
+			.'</params></methodCall>';
+		$native = str_replace('d.base_path.realpath.or_empty=/outside', 'd.name=', $newGetter);
+		foreach(array('action', 'rpc2') as $door)
+		{
+			foreach(array($alias, $newGetter) as $xml)
+			{
+				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.9.8');
+				$this->assertHttp($result, '403 Forbidden',
+					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+				$this->assertEquals(0, $result['state']['sends'],
+					$door.' refuses the old-daemon alias without forwarding it');
+			}
+			$result = $this->runEntrypoint($door, $native, true, 'success', 'shipped', false, '0.9.8');
+			$this->assertHttp($result, '200 OK',
+				$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+			$this->assertEquals(1, $result['state']['sends'],
+				$door.' preserves a native 0.9.8 listing');
+		}
+	}
+
+	public function testD4Rpc2RejectsUnreadableVersionBeforeForwarding()
+	{
+		$result = $this->runEntrypoint('rpc2', $this->allowedXml(), true,
+			'success', 'shipped', false, 'unparseable');
+		$this->assertHttp($result, '503 Service Unavailable', 'text/xml;charset=UTF-8');
+		$this->assertTrue(strpos($result['body'], 'Could not verify the rTorrent version.') !== false,
+			'the caller sees why the version gate refused this request');
+		$this->assertEquals(0, $result['state']['sends'],
+			'no client command is sent when the version probe is unparseable');
+		$this->assertTrue(strpos($result['rpc2logs'], 'rTorrent version unavailable or unsupported') !== false,
+			'the refusal is visible even when routine proxy logging is disabled');
+	}
+
+
+	public function testD4HttprpcFreshVersionOverridesStaleNewerSettingsCache()
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			.'<params><param><value><string></string></value></param>'
+			.'<param><value><string>main</string></value></param>'
+			.'<param><value><string>d.base_path.realpath.or_empty=</string></value></param>'
+			.'</params></methodCall>';
+		$result = $this->runEntrypoint('action', $xml, true, 'success', 'shipped', false,
+			'0.9.8', '0.16.22');
+		$this->assertHttp($result, '403 Forbidden', 'text/xml; charset=UTF-8');
+		$this->assertEquals(1, $result['state']['version_probes'],
+			'httprpc checks the live daemon rather than the cached settings version');
+		$this->assertEquals(0, $result['state']['sends'],
+			'a newer cached version cannot authorize a nonnative trusted slot');
+	}
+
+	public function testD4HttprpcUnreadableFreshVersionStopsBeforeClientCommand()
+	{
+		$result = $this->runEntrypoint('action', $this->allowedXml(), true,
+			'success', 'shipped', false, 'unparseable', '0.16.22');
+		$this->assertHttp($result, '503 Service Unavailable', 'text/html; charset=UTF-8');
+		$this->assertEquals(0, $result['state']['sends'],
+			'httprpc cannot authorize a request with an unreadable fresh version');
+		$this->assertTrue(in_array('httprpc: refusing request: rTorrent version unavailable or unsupported',
+			$result['state']['logs'], true), 'the refusal is visible in the app log');
+	}
+
 	public function testHttprpcUnreadableInputReturnsClassified400()
 	{
 		$result = $this->runEntrypoint('action', 'unreadable', true);
@@ -979,7 +1048,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '<params></params></methodCall>';
 	}
 
-	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false)
+	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null)
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
 		$process = null;
@@ -1004,6 +1073,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'XMLRPC_ENTRYPOINT_LOGGING' => $logging ? '1' : '0',
 				'XMLRPC_ENTRYPOINT_LOG_CALLS' => $logCalls ? '1' : '0',
 				'XMLRPC_ENTRYPOINT_SEND' => $send,
+				'XMLRPC_ENTRYPOINT_VERSION' => $daemonVersion,
+				'XMLRPC_ENTRYPOINT_CACHED_VERSION' => ($cachedVersion === null) ? $daemonVersion : $cachedVersion,
 				'XMLRPC_ENTRYPOINT_UNREADABLE' => ($body === 'unreadable') ? '1' : '0',
 			));
 			// Replace the command shell so proc_terminate() always targets the
@@ -1050,6 +1121,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'plugins/httprpc/settingspolicy.php',
 			'php/xmlrpc_path.php',
 			'php/xmlrpc_proxy.php',
+			'php/xmlrpc_proxy_native.php',
 			'php/xmlrpc_proxy_policy.php',
 			'rpc2.php',
 		);
@@ -1120,6 +1192,15 @@ class rSCGITransport
 				'payload_base64' => null, 'payload_sha256' => null, 'payload_length' => null,
 				'timeouts' => null, 'response_mode' => null, 'events' => array());
 
+		if(strpos($payload, '<methodName>system.client_version</methodName>') !== false
+			&& empty($state['version_probes']))
+		{
+			$state['version_probes'] = 1;
+			file_put_contents($path, json_encode($state));
+			return '<?xml version="1.0"?><methodResponse><params><param><value>'
+				.'<string>'.htmlspecialchars(getenv('XMLRPC_ENTRYPOINT_VERSION'), ENT_NOQUOTES, 'UTF-8')
+				.'</string></value></param></params></methodResponse>';
+		}
 		$state['sends']++;
 		$state['host'] = $host;
 		$state['port'] = $port;
@@ -1201,11 +1282,39 @@ class FileUtil
 	}
 	public static function toLog($message) { entrypoint_state('log', $message); }
 }
+class rTorrentSettings
+{
+	public $iVersion = 0x1016;
+	public $aliases = array();
+	public static function get()
+	{
+		static $self = null;
+		if($self === null)
+		{
+			$self = new self();
+			if(getenv('XMLRPC_ENTRYPOINT_CACHED_VERSION') === '0.9.8')
+				$self->iVersion = 0x0908;
+		}
+		return $self;
+	}
+}
 class rXMLRPCRequest
 {
 	public static function send($payload, $trusted, &$failure = null)
 	{
 		$failure = null;
+		$statePath = getenv('XMLRPC_ENTRYPOINT_STATE');
+		$state = json_decode(@file_get_contents($statePath), true);
+		if(strpos($payload, '<methodName>system.client_version</methodName>') !== false
+			&& empty($state['version_probes']))
+		{
+			$state['version_probes'] = 1;
+			file_put_contents($statePath, json_encode($state));
+			return "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n"
+				.'<?xml version="1.0"?><methodResponse><params><param><value><string>'
+				.htmlspecialchars(getenv('XMLRPC_ENTRYPOINT_VERSION'), ENT_NOQUOTES, 'UTF-8')
+				.'</string></value></param></params></methodResponse>';
+		}
 		entrypoint_state('send', array($payload, $trusted));
 		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
 		if($send === 'false' || $send === 'closed-before-headers')

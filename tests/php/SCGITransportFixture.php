@@ -58,6 +58,22 @@ class SCGITransportFixture
 		return $fixture;
 	}
 
+	/** Answer a live-version probe before serving the request under test. */
+	public static function startWithVersionProbe($chunks, $holdOpen = false, $unix = false)
+	{
+		$fixture = new self();
+		$fixture->boot($chunks, $holdOpen, $unix, 0, false, true);
+		return $fixture;
+	}
+
+	/** Answer the version probe, then make the next connection fail. */
+	public static function startVersionProbeOnly()
+	{
+		$fixture = new self();
+		$fixture->boot(array(), false, false, 0, false, true, true);
+		return $fixture;
+	}
+
 	public static function startRepeatedBody($length, $unix = false)
 	{
 		$fixture = new self();
@@ -137,7 +153,8 @@ class SCGITransportFixture
 		}
 	}
 
-	private function boot($chunks, $holdOpen, $unix, $repeatBytes = 0, $closeSecond = false)
+	private function boot($chunks, $holdOpen, $unix, $repeatBytes = 0, $closeSecond = false,
+		$versionProbe = false, $probeOnly = false)
 	{
 		$this->dir = sys_get_temp_dir().'/rutorrent-scgi-'.uniqid('', true);
 		if(!mkdir($this->dir, 0700, true))
@@ -165,6 +182,8 @@ class SCGITransportFixture
 			'chunks' => $configChunks,
 			'repeat' => $repeatBytes,
 			'closeSecond' => $closeSecond,
+			'versionProbe' => $versionProbe,
+			'probeOnly' => $probeOnly,
 		)));
 		$script = <<<'PHP'
 <?php
@@ -176,61 +195,82 @@ if($server === false)
 	exit(2);
 }
 file_put_contents($argv[2], stream_socket_get_name($server, false));
+function readRequest($client)
+{
+	$length = '';
+	while(true)
+	{
+		$byte = fread($client, 1);
+		if($byte === false || $byte === '')
+			exit(4);
+		if($byte === ':')
+			break;
+		if(($byte < '0') || ($byte > '9') || (strlen($length) >= 12))
+			exit(5);
+		$length .= $byte;
+	}
+	if($length === '')
+		exit(6);
+	$need = (int)$length + 1;
+	$request = '';
+	while(strlen($request) < $need)
+	{
+		$part = fread($client, $need - strlen($request));
+		if($part === false || $part === '')
+			exit(7);
+		$request .= $part;
+	}
+	if(substr($request, -1) !== ',')
+		exit(8);
+	$header = substr($request, 0, -1);
+	$parts = explode("\0", $header);
+	if(array_pop($parts) !== '')
+		exit(9);
+	$fields = array();
+	for($i = 0; $i < count($parts); $i += 2)
+	{
+		if(!isset($parts[$i + 1]))
+			exit(10);
+		$fields[$parts[$i]] = $parts[$i + 1];
+	}
+	if(!isset($fields['CONTENT_LENGTH']) || !preg_match('/^[0-9]+$/', $fields['CONTENT_LENGTH']))
+		exit(11);
+	$payload = '';
+	$payloadLength = (int)$fields['CONTENT_LENGTH'];
+	while(strlen($payload) < $payloadLength)
+	{
+		$part = fread($client, $payloadLength - strlen($payload));
+		if($part === false || $part === '')
+			exit(12);
+		$payload .= $part;
+	}
+	return array('header' => base64_encode($header), 'payload' => base64_encode($payload));
+}
+if(!empty($config['versionProbe']))
+{
+	$probe = @stream_socket_accept($server, 5);
+	if($probe === false)
+		exit(18);
+	touch($argv[3]);
+	$record = readRequest($probe);
+	if(base64_decode($record['payload']) !== '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>')
+		exit(19);
+	$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>0.16.24</string></value></param></params></methodResponse>';
+	$frame = 'Content-Length: '.strlen($body)."\r\n\r\n".$body;
+	fwrite($probe, $frame);
+	if(!empty($config['probeOnly']))
+	{
+		fclose($server);
+		fclose($probe);
+		exit(0);
+	}
+	fclose($probe);
+}
 $client = @stream_socket_accept($server, 5);
 if($client === false)
 	exit(3);
 touch($argv[3]);
-$length = '';
-while(true)
-{
-	$byte = fread($client, 1);
-	if($byte === false || $byte === '')
-		exit(4);
-	if($byte === ':')
-		break;
-	if(($byte < '0') || ($byte > '9') || (strlen($length) >= 12))
-		exit(5);
-	$length .= $byte;
-}
-if($length === '')
-	exit(6);
-$need = (int)$length + 1;
-$request = '';
-while(strlen($request) < $need)
-{
-	$part = fread($client, $need - strlen($request));
-	if($part === false || $part === '')
-		exit(7);
-	$request .= $part;
-}
-if(substr($request, -1) !== ',')
-	exit(8);
-$header = substr($request, 0, -1);
-$parts = explode("\0", $header);
-if(array_pop($parts) !== '')
-	exit(9);
-$fields = array();
-for($i = 0; $i < count($parts); $i += 2)
-{
-	if(!isset($parts[$i + 1]))
-		exit(10);
-	$fields[$parts[$i]] = $parts[$i + 1];
-}
-if(!isset($fields['CONTENT_LENGTH']) || !preg_match('/^[0-9]+$/', $fields['CONTENT_LENGTH']))
-	exit(11);
-$payload = '';
-$payloadLength = (int)$fields['CONTENT_LENGTH'];
-while(strlen($payload) < $payloadLength)
-{
-	$part = fread($client, $payloadLength - strlen($payload));
-	if($part === false || $part === '')
-		exit(12);
-	$payload .= $part;
-}
-file_put_contents($argv[4], json_encode(array(
-	'header' => base64_encode($header),
-	'payload' => base64_encode($payload),
-)));
+file_put_contents($argv[4], json_encode(readRequest($client)));
 foreach($config['chunks'] as $chunk)
 {
 	if($chunk['delay'] > 0)

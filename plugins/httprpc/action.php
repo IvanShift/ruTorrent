@@ -61,13 +61,35 @@ if(isset($HTTP_RAW_POST_DATA))
 	}
 }
 
+// The settings object is cached across daemon restarts. A newer cached version
+// could authorize an rc alias on an older daemon, so query this SCGI endpoint.
+function httprpcVerifiedDaemonVersion()
+{
+	static $version = false;
+	if($version !== false)
+		return $version;
+	$reply = rXMLRPCRequest::send(XMLRPCProxy::daemonVersionProbe(), false);
+	$separator = is_string($reply) ? strpos($reply, "\r\n\r\n") : false;
+	$version = ($separator === false) ? null
+		: XMLRPCProxy::daemonVersionFromReply(substr($reply, $separator + 4));
+	if($version === null)
+	{
+		FileUtil::toLog('httprpc: refusing request: rTorrent version unavailable or unsupported');
+		header('HTTP/1.0 503 Service Unavailable');
+		CachedEcho::send('Could not verify the rTorrent version.', 'text/html');
+		exit;
+	}
+	return $version;
+}
+
 // mode= can follow cmd= in the body. Validate every extension after parsing
 // the whole request, before a mode can turn it into a trusted RPC call.
 foreach($add as $ndx=>$rawCommand)
 {
 	$mappedCommand = getCmd($rawCommand);
 	$safeCommand = XMLRPCProxy::sanitizeHttprpcCommandParameter(
-		$rawCommand, $mappedCommand, $mode, rTorrentSettings::get()->aliases);
+		$rawCommand, $mappedCommand, $mode, rTorrentSettings::get()->aliases,
+		httprpcVerifiedDaemonVersion());
 	if($safeCommand === null)
 	{
 		$refusedCommand = XMLRPCProxy::refusedCommandName($mappedCommand);
@@ -837,6 +859,8 @@ switch($mode)
 				'root' => $rootBoundary,
 				'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 			));
+			if($proxyMode === 'sanitize')
+				$proxyOptions['rtorrentVersion'] = httprpcVerifiedDaemonVersion();
 			// decide() here, not process(): this endpoint owns its own
 			// connection to rtorrent and needs the refused method for its
 			// named XMLRPC fault. The process() adapter returns no decision

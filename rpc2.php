@@ -166,6 +166,20 @@ $proxyOptions = array('directory' => array(
 	'root'    => ($topDirectory === '') ? '/' : $topDirectory,
 	'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
 ));
+if($mode === 'sanitize')
+{
+	// rpc2 does not load ruTorrent settings. Pin the native command ceiling
+	// from the daemon itself before any caller-selected command is classified.
+	$probe = XMLRPCProxy::daemonVersionProbe();
+	$reply = rpc2_send($probe, false);
+	$version = XMLRPCProxy::daemonVersionFromReply($reply);
+	if($version === null)
+	{
+		rpc2_log('refusing request: rTorrent version unavailable or unsupported', true);
+		rpc2_fault('503 Service Unavailable', 'Could not verify the rTorrent version.');
+	}
+	$proxyOptions['rtorrentVersion'] = $version;
+}
 $decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, $proxyOptions);
 foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
 	rpc2_log($line);
