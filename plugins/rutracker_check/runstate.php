@@ -303,14 +303,26 @@ class RuTrackerAtomicOwnership
         return false;
     }
 
+    // These two fields can guard a one-time legacy recovery, but callers
+    // must never write them through the generic ownership setters.
+    static private function validateExpectedCustomKeyAndValue($key, $value)
+    {
+        if ($key === 'chk-state' || $key === 'chk-time') {
+            $number = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
+            return $number !== null && $number > 0 && (string) $number === (string) $value;
+        }
+        return self::validateCustomKeyAndValue($key, $value);
+    }
+
     static private function validateExpectedValues($expectedValues)
     {
         if (!is_array($expectedValues)) return false;
         foreach ($expectedValues as $k => $v) {
-            if (!in_array($k, array('state', 'is_open', 'is_meta'), true)) {
-                return false;
-            }
-            if ($v !== 0 && $v !== 1 && $v !== '0' && $v !== '1') {
+            if (in_array($k, array('state_changed', 'state_counter'), true)) {
+                if (RuTrackerRpcValue::canonicalNonnegativeInteger($v) === null) return false;
+            } elseif (in_array($k, array('state', 'is_open', 'is_meta'), true)) {
+                if ($v !== 0 && $v !== 1 && $v !== '0' && $v !== '1') return false;
+            } else {
                 return false;
             }
         }
@@ -324,7 +336,7 @@ class RuTrackerAtomicOwnership
         }
         $conditions = array();
         foreach ($expectedCustoms as $k => $v) {
-            if (!self::validateCustomKeyAndValue($k, $v)) {
+            if (!self::validateExpectedCustomKeyAndValue($k, $v)) {
                 return null;
             }
             // Every accepted value is deliberately comma/quote/backslash-free.
@@ -337,11 +349,16 @@ class RuTrackerAtomicOwnership
         foreach ($expectedValues as $k => $v) {
             // Through the one canonical parser, not a second weaker cast.
             $intVal = RuTrackerRpcValue::canonicalNonnegativeInteger($v);
-            if (!in_array($intVal, array(0, 1), true)) return null;
+            if ($intVal === null || (in_array($k, array('state', 'is_open', 'is_meta'), true)
+                && !in_array($intVal, array(0, 1), true))) return null;
             if ($k === 'state') {
                 $conditions[] = 'equal=' . getCmd('d.get_state=') . ',value=' . $intVal;
             } elseif ($k === 'is_open') {
                 $conditions[] = 'equal=' . getCmd('d.is_open=') . ',value=' . $intVal;
+            } elseif ($k === 'state_changed') {
+                $conditions[] = 'equal=' . getCmd('d.get_state_changed=') . ',value=' . $intVal;
+            } elseif ($k === 'state_counter') {
+                $conditions[] = 'equal=' . getCmd('d.get_state_counter=') . ',value=' . $intVal;
             } elseif ($k === 'is_meta') {
                 $conditions[] = 'equal=' . getCmd('d.is_meta=') . ',value=' . $intVal;
             }
@@ -489,11 +506,14 @@ class RuTrackerAtomicOwnership
     }
 
     /**
-     * Conditionally revive a predecessor torrent: checks active chk-replacing, state=0, is_open=0,
-     * checks if chk-revived is already equal to stamp (SPENT), otherwise opens/starts, verifies postcondition,
-     * writes chk-revived and clears chk-replacing on verified success.
+     * Conditionally revive a predecessor torrent: checks the expected chk-replacing value,
+     * state=0 and is_open=0, then refuses a spent chk-revived stamp. An exact
+     * legacy generation may also require its original metadata/check keys.
+     * Ordinary revival stamps success after verifying run state. Legacy
+     * revival reserves its one-time stamp before opening or starting.
      */
-    static public function revivePredecessor($hash, $expectedReplacing, $recordedRun, $stamp, $expectedValues = array())
+    static public function revivePredecessor($hash, $expectedReplacing, $recordedRun, $stamp,
+        $expectedValues = array(), $legacyExpected = array())
     {
         $stampInt = RuTrackerRpcValue::canonicalNonnegativeInteger($stamp);
         if ($stampInt === null || $stampInt <= 0) return self::UNKNOWN;
@@ -508,7 +528,13 @@ class RuTrackerAtomicOwnership
             return self::UNKNOWN;
         }
 
-        $expectedCustoms = array('chk-replacing' => $expectedReplacing);
+        if (!is_array($legacyExpected) || ($legacyExpected &&
+            (count($legacyExpected) !== 5 || count(array_diff(array('chk-meta-new', 'chk-state', 'chk-time',
+                'chk-replacement', 'chk-replaces'),
+                array_keys($legacyExpected))) !== 0)))
+            return self::UNKNOWN;
+        $expectedCustoms = array_merge($legacyExpected,
+            array('chk-replacing' => $expectedReplacing));
         // Revival is authorized only for the stopped+closed crash signature.
         // Caller predicates may add is_meta, but can never weaken these two.
         $allExpectedValues = array_merge((array) $expectedValues,
@@ -519,23 +545,41 @@ class RuTrackerAtomicOwnership
         $wantStarted = !empty($recordedRun['started']);
         $postCmd = $wantStarted ? getCmd('d.get_state=') : getCmd('d.is_open=');
 
-        $successActions = 'cat='
-            . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-revived,' . $stampInt)
-            . ',' . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-replacing,')
-            . ',' . self::SENTINEL_REVIVED;
+        // Legacy recovery has no surviving run-policy key. Reserve its
+        // one-time stamp before touching run state: a crash after d.start
+        // must never allow a later user stop to trigger another restart.
+        $legacyOnce = count($legacyExpected) !== 0;
+        $successActions = 'cat=';
+        if (!$legacyOnce)
+            $successActions .= self::quoteRtorrentArgument('$' . getCmd('d.set_custom=')
+                . 'chk-revived,' . $stampInt) . ',';
+        $successActions .= self::quoteRtorrentArgument('$' . getCmd('d.set_custom=')
+            . 'chk-replacing,') . ',' . self::SENTINEL_REVIVED;
 
         $verifyBranch = '$branch=' . $postCmd . ',' . self::quoteRtorrentArgument($successActions)
             . ',cat=' . self::SENTINEL_UNCONFIRMED;
 
-        $unspentParts = array();
-        $unspentParts[] = self::quoteRtorrentArgument('$' . getCmd('d.open='));
-        if ($wantStarted) {
-            $unspentParts[] = self::quoteRtorrentArgument('$' . getCmd('d.start='));
-        }
-        $unspentParts[] = self::quoteRtorrentArgument($verifyBranch);
-        $unspentBody = 'cat=' . implode(',', $unspentParts);
+        $runParts = array(self::quoteRtorrentArgument('$' . getCmd('d.open=')));
+        if ($wantStarted)
+            $runParts[] = self::quoteRtorrentArgument('$' . getCmd('d.start='));
+        $runParts[] = self::quoteRtorrentArgument($verifyBranch);
+        $runBody = 'cat=' . implode(',', $runParts);
 
         $spentCheck = 'equal=' . getCmd('d.get_custom=') . 'chk-revived,cat=' . $stampInt;
+        if ($legacyOnce) {
+            // The set is followed by a read in the same rTorrent evaluation.
+            // A failed stamp may leave the old row stopped; it may not start it.
+            $latchBranch = '$branch=' . self::quoteRtorrentArgument($spentCheck)
+                . ',' . self::quoteRtorrentArgument($runBody)
+                . ',' . self::quoteRtorrentArgument('cat=' . self::SENTINEL_UNCONFIRMED);
+            $unspentBody = 'cat='
+                . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=')
+                    . 'chk-revived,' . $stampInt)
+                . ',' . self::quoteRtorrentArgument($latchBranch);
+        } else {
+            $unspentBody = $runBody;
+        }
+
         $spentBranch = 'branch=' . self::quoteRtorrentArgument($spentCheck)
             . ',' . self::quoteRtorrentArgument('cat=' . self::SENTINEL_SPENT)
             . ',' . self::quoteRtorrentArgument($unspentBody);

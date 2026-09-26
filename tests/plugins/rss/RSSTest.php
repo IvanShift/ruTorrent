@@ -135,6 +135,45 @@ final class RSSTest extends TestCase
 		$this->assertEquals(2, $manager->cache->saved, 'each metadata edit is persisted once');
 	}
 
+	public function testDuplicateFeedErrorsKeepLocalizableKeys(): void
+	{
+		$first = new rRSS('https://tracker.example/first');
+		$second = new rRSS('https://tracker.example/second');
+		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+		$manager->rssList = new rRSSMetaList();
+		$manager->rssList->add($first, 'First', 0, 1);
+		$manager->rssList->add($second, 'Second', 0, 1);
+		$this->assertSame(false, $manager->add($first->srcURL), 'duplicate add is refused');
+		$this->assertSame(false, $manager->change($first->hash, $second->srcURL, 'Renamed'),
+			'duplicate edit is refused');
+		$errors = $manager->rssList->formatErrors();
+		$this->assertSame('rssAlreadyExist', $errors[0]['key'], 'add error uses a language key');
+		$this->assertSame('rssAlreadyExist', $errors[1]['key'], 'edit error uses the same language key');
+	}
+
+	public function testFeedFailureKeepsExternalDetailSeparateFromLanguageKey(): void
+	{
+		// Snoopy preserves the status token from an HTTP response line.
+		$external = "500'+(window.__rssErrorEval='RAN')+'";
+		$feed = new rRSS('https://tracker.example/feed', function () use ($external) {
+			$client = new SnoopyMock();
+			$client->status = $external;
+			return $client;
+		});
+		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+		$manager->rssList = new rRSSMetaList();
+		$manager->history = new rRSSHistory();
+		$method = new ReflectionMethod(rRSSManager::class, 'tryFetch');
+		if(PHP_VERSION_ID < 80100) $method->setAccessible(true);
+		$this->assertSame(false, $method->invoke($manager, $feed), 'external HTTP failure refuses fetch');
+		$errors = $manager->rssList->formatErrors();
+		$this->assertSame('cantFetchRSS', $errors[0]['key'], 'error uses a language key');
+		$this->assertSame('[RSS-HTTP-Error] Status: ' . $external, $errors[0]['detail'],
+			'external text remains a separate inert detail');
+		$this->assertSame('https://tracker.example/feed', $errors[0]['prm'],
+			'the feed address identifies the failure');
+	}
+
 	public function testRefusedCredentialRedirectNamesTheReason(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed', function ($url, $cookies, $headers) {
@@ -181,8 +220,10 @@ final class RSSTest extends TestCase
 		$manager->history = new rRSSHistory();
 		$manager->getTorrents($feed, $href, false, false, '', '', '', '', false);
 		$errors = $manager->rssList->formatErrors();
-		$this->assertEquals("theUILang.rssCantLoadTorrent + '; credential-redirect-refused'",
-			$errors[0]['desc'], 'torrent item failure identifies the redirect policy');
+		$this->assertSame('rssCantLoadTorrent', $errors[0]['key'],
+			'torrent item failure uses a language key');
+		$this->assertSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $errors[0]['detail'],
+			'torrent item failure identifies the redirect policy');
 		$this->assertEquals('Failed', $manager->history->lst[$href]['hash']);
 	}
 

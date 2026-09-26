@@ -783,11 +783,14 @@ class rRSSMetaList
 	{
 		return($this->err);
 	}
-	public function addError( $desc, $prm = null )
+	// Keep the localized key separate from free text returned by an RSS server.
+	public function addError( $key, $prm = null, $detail = null )
 	{
-		$e = array( 'time'=>time(), 'desc'=>$desc, 'prm'=>'' );
+		$e = array( 'time'=>time(), 'key'=>$key, 'prm'=>'' );
 		if($prm)
 			$e['prm'] = $prm;
+		if($detail !== null && $detail !== '')
+			$e['detail'] = $detail;
 		$this->err[] = $e;
 	}
 	public function clearErrors()
@@ -963,17 +966,17 @@ class rRSSManager
 			}
 		}
 		else
-			$this->rssList->addError("theUILang.rssDontExist");
+			$this->rssList->addError("rssDontExist");
 		return($hrefs);
 	}
 	public function testFilter($filter,$hash = null)
 	{
 		$hrefs = array();
 		if(!$filter->isCorrect())
-			$this->rssList->addError("theUILang.rssIncorrectFilter",$filter->pattern);
+			$this->rssList->addError("rssIncorrectFilter",$filter->pattern);
 		else
 		if(!$filter->isCorrectExclude())
-			$this->rssList->addError("theUILang.rssIncorrectFilter",$filter->exclude);
+			$this->rssList->addError("rssIncorrectFilter",$filter->exclude);
 		else
 		{
 			if($hash)
@@ -1009,7 +1012,7 @@ class rRSSManager
 	private function tryFetch($rss) {
 		$success = $rss->fetch($this->history) && $this->cache->set($rss);
 		if (!$success) {
-			$this->rssList->addError( "theUILang.cantFetchRSS + ' - ".join("; ", $rss->lastErrorMsgs)."'", $rss->getMaskedURL() );
+			$this->rssList->addError( "cantFetchRSS", $rss->getMaskedURL(), join("; ", $rss->lastErrorMsgs) );
 		}
 		return($success);
 	}
@@ -1036,7 +1039,7 @@ class rRSSManager
 				}
 			}
 			else
-				$this->rssList->addError("theUILang.rssDontExist");
+				$this->rssList->addError("rssDontExist");
 		}
 	}
 	public function setStartTime( $startAt )
@@ -1208,7 +1211,7 @@ class rRSSManager
 			{
 				if($this->rssList->isExist($rssNew))
 				{
-					$this->rssList->addError("theUILang.rssAlreadyExist", $rssNew->getMaskedURL());
+					$this->rssList->addError("rssAlreadyExist", $rssNew->getMaskedURL());
 					return(false);
 				}
 				// Fetch and cache the replacement before retiring the old feed.
@@ -1258,7 +1261,7 @@ class rRSSManager
 		$rss = new rRSS($rssURL);
 		if($this->rssList->isExist($rss))
 		{
-			$this->rssList->addError( "theUILang.rssAlreadyExist", $rss->getMaskedURL() );
+			$this->rssList->addError( "rssAlreadyExist", $rss->getMaskedURL() );
 			return(false);
 		}
 		if(!$this->tryFetch($rss))
@@ -1314,9 +1317,9 @@ class rRSSManager
 			}
 			if($ret===false)
 			{
-				$reason = $rss->lastTorrentError === Snoopy::CREDENTIAL_REDIRECT_REFUSED
-					? " + '; " . Snoopy::CREDENTIAL_REDIRECT_REFUSED . "'" : '';
-				$this->rssList->addError( "theUILang.rssCantLoadTorrent" . $reason, $url );
+				$detail = $rss->lastTorrentError === Snoopy::CREDENTIAL_REDIRECT_REFUSED
+					? Snoopy::CREDENTIAL_REDIRECT_REFUSED : null;
+				$this->rssList->addError( "rssCantLoadTorrent", $url, $detail );
 			}
 			$this->history->add($url, $thash, $rss->getItemTimestamp($url),
 					$rss->items[$url]['guid'], $pendingReceipt);

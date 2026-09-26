@@ -712,6 +712,29 @@ theWebUI.showRSS = function()
 		theDialogManager.toggle("dlgAddRSS");
 }
 
+// Older persisted errors contain JavaScript expressions. Recognize only the
+// formats this plugin wrote and display remote diagnostics as inert text.
+theWebUI.rssErrorText = function(err)
+{
+	if(typeof err.key === 'string')
+		return (theUILang[err.key] || err.key) + (err.detail ? ' - '+err.detail : '');
+	const desc = err.desc == null ? '' : String(err.desc);
+	const legacyKeys = ['rssDontExist', 'rssIncorrectFilter',
+		'rssAlreadyExist', 'rssCantLoadTorrent'];
+	for(const key of legacyKeys)
+		if(desc === 'theUILang.'+key)
+			return theUILang[key] || desc;
+	const legacyDetails = [
+		['cantFetchRSS', "theUILang.cantFetchRSS + ' - ", ' - '],
+		['rssCantLoadTorrent', "theUILang.rssCantLoadTorrent + '; ", '; ']
+	];
+	for(const [key, prefix, separator] of legacyDetails)
+		if(desc.startsWith(prefix) && desc.endsWith("'"))
+			return (theUILang[key] || key) + separator
+				+ desc.slice(prefix.length, -1);
+	return desc;
+}
+
 theWebUI.showErrors = function(errors)
 {
 	for( const err of errors)
@@ -721,7 +744,7 @@ theWebUI.showErrors = function(errors)
 		const args = [
 			'['+theConverter.date('time' in err ? iv(err.time) : new Date().getTime()/1000)+'] '
 			+ (name ? '<'+name+'> ' : '')
-			+ eval(err.desc)
+			+ theWebUI.rssErrorText(err)
 			+ (err.prm ? ' ('+err.prm+')' : ''),
 			'error',
 			true

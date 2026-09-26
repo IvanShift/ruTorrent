@@ -115,4 +115,45 @@ class SetpropsTest extends TestCase
 			&& strpos($request['payload'], 'seed') !== false,
 			'superseed=0 uses the normal seed branch');
 	}
+
+	public function testRecheckRejectsMixedHashBatchBeforeTrustedRpc()
+	{
+		$out = $this->post('mode=recheck&hash='.self::HASH.'&hash=not-a-hash');
+		$this->assertTrue(strpos($out, 'Refused: missing or invalid torrent hash') !== false,
+			'the mixed recheck receives a classified refusal: '.$out);
+		$this->assertTrue(!$this->peer->accepted(),
+			'no recheck starts before every hash is validated');
+		$this->assertTrue(strpos((string)@file_get_contents($this->base.'/refusals.log'),
+			'httprpc: recheck refused: missing or invalid torrent hash') !== false,
+			'the refusal is recorded');
+	}
+
+	public function testRemoveRejectsEmptyHashBatchBeforeTrustedRpc()
+	{
+		$out = $this->post('mode=remove');
+		$this->assertTrue(strpos($out, 'Refused: missing or invalid torrent hash') !== false,
+			'the empty removal receives a classified refusal: '.$out);
+		$this->assertTrue(!$this->peer->accepted(),
+			'empty removal sends no trusted RPC');
+		$this->assertTrue(strpos((string)@file_get_contents($this->base.'/refusals.log'),
+			'httprpc: remove refused: missing or invalid torrent hash') !== false,
+			'the refusal is recorded');
+	}
+
+	public function testRecheckAndRemoveKeepMultiHashDelivery()
+	{
+		foreach(array('recheck' => 'd.check_hash', 'remove' => 'd.erase') as $mode => $method)
+		{
+			$this->post('mode='.$mode.'&hash='.self::HASH.'&hash='.str_repeat('B', 40));
+			$request = $this->peer->request();
+			$this->assertTrue(strpos($request['header'], "UNTRUSTED_CONNECTION\0".'0') !== false,
+				$mode.' uses the trusted server connection');
+			$this->assertTrue(strpos($request['payload'], $method) !== false
+				&& strpos($request['payload'], self::HASH) !== false
+				&& strpos($request['payload'], str_repeat('B', 40)) !== false,
+				$mode.' sends both requested hashes');
+			$this->peer->close();
+			$this->peer = null;
+		}
+	}
 }

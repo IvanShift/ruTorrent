@@ -193,6 +193,25 @@ function logSettingsWrite($names,$values,$before,$after,$accepted,$faultString)
 		((!$accepted && ($faultString!=='')) ? " (".$faultString.")" : ""));
 }
 
+function validTorrentHashBatch($hash, $malformedForm, $single = false)
+{
+	if($malformedForm || !count($hash) || ($single && count($hash) !== 1))
+		return false;
+	foreach($hash as $h)
+		if(!preg_match('/^[A-Fa-f0-9]{40}$/D', $h))
+			return false;
+	return true;
+}
+
+function refuseTrustedHashBatch($mode)
+{
+	$reason = 'missing or invalid torrent hash';
+	FileUtil::toLog('httprpc: '.$mode.' refused: '.$reason);
+	header('HTTP/1.0 400 Bad Request');
+	CachedEcho::send('Refused: '.$reason.'.', 'text/plain');
+	exit;
+}
+
 function makeSimpleCall($cmds,$hash)
 {
 	$req = new rXMLRPCRequest();
@@ -383,6 +402,8 @@ switch($mode)
 	}
 	case "recheck":	/**/
 	{
+		if(!validTorrentHashBatch($hash, $malformedForm))
+			refuseTrustedHashBatch('recheck');
         	$result = makeSimpleCall(array("d.check_hash"), $hash);
 		break;
 	}
@@ -470,6 +491,8 @@ switch($mode)
 	}
 	case "remove":	/**/
 	{
+		if(!validTorrentHashBatch($hash, $malformedForm))
+			refuseTrustedHashBatch('remove');
 		$result = makeSimpleCall(array("d.erase"), $hash);
 		break;
 	}
@@ -615,8 +638,7 @@ switch($mode)
 		$allowedProps = array('peers_max', 'peers_min', 'tracker_numwant',
 			'ulslots', 'pex', 'superseed');
 		$propertyRefusal = null;
-		if($malformedForm || count($hash) !== 1
-			|| !preg_match('/^[A-Fa-f0-9]{40}$/D', $hash[0]))
+		if(!validTorrentHashBatch($hash, $malformedForm, true))
 			$propertyRefusal = 'missing or invalid torrent hash';
 		else if(count($ss) === 0 || count($ss) !== count($vs))
 			$propertyRefusal = 'missing or mismatched properties';

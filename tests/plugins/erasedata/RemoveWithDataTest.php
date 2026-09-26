@@ -2625,8 +2625,10 @@ class RemoveWithDataTest extends TestCase
 		$external = $this->dir.'/swap-external-manifest';
 		$list = $this->dir.'/erasedata/'.$hash.'.list';
 		file_put_contents($data, 'swap-target-data');
-		file_put_contents($external, $data."\n".$data."\n0\n1\n");
-		file_put_contents($list, "ignored\nignored\n0\n1\n");
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $data, 'multi' => false, 'files' => array($data)), 1);
+		file_put_contents($external, $bytes);
+		file_put_contents($list, $bytes);
 		list($status, $output) = $this->runCollector(array('val' => array(""), 'swap' => array($list, $external)));
 		$this->assertEquals(0, $status, 'collector exits normally after a manifest inode swap: '.$output);
 		$this->assertTrue(is_file($data), 'post-scan symlink swap cannot authorize data deletion');
@@ -2641,8 +2643,10 @@ class RemoveWithDataTest extends TestCase
 		$replacement = $this->dir.'/regular-swap-manifest';
 		$list = $this->dir.'/erasedata/'.$hash.'.list';
 		file_put_contents($data, 'regular-swap-target-data');
-		file_put_contents($replacement, $data."\n".$data."\n0\n1\n");
-		file_put_contents($list, "ignored\nignored\n0\n1\n");
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $data, 'multi' => false, 'files' => array($data)), 1);
+		file_put_contents($replacement, $bytes);
+		file_put_contents($list, $bytes);
 		list($status, $output) = $this->runCollector(array(
 			'val' => array(""), 'swap' => array($list, $replacement, 'rename')));
 		$this->assertEquals(0, $status, 'collector exits normally after a regular manifest inode swap: '.$output);
@@ -3061,7 +3065,7 @@ class RemoveWithDataTest extends TestCase
 		return($handle);
 	}
 
-	public function testEveryManifestGenerationDecodesToOneNormalizedRecordShape()
+	public function testEverySupportedManifestGenerationDecodesToOneNormalizedRecordShape()
 	{
 		$this->reset();
 		$hash = $this->hash();
@@ -3081,10 +3085,12 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_string($cleanup), 'the codec must produce v3 cleanup bytes');
 
 		$generations = array(
-			'legacy v1' => array($file."\n".$file."\n0\n1\n", $hash, 1, 'remove_payload', true),
 			'v2' => array($v2, $hash, 2, 'remove_payload', false),
 			'v3 cleanup' => array($cleanup, $oldHash, 3, 'cleanup_obsolete', false),
 		);
+		$this->assertEquals(false, ErasedataManifestCodec::decodeBytes(
+			$file."\n".$file."\n0\n1\n", $hash),
+			'unverified plaintext has no normalized record');
 		foreach($generations as $label => $case)
 		{
 			list($bytes, $expectedHash, $version, $operation, $legacy) = $case;
@@ -3123,6 +3129,7 @@ class RemoveWithDataTest extends TestCase
 			'truncated v2 JSON' => substr($valid, 0, strlen($valid) - 8),
 			'v2 with a non-canonical base64 path' => str_replace(
 				base64_encode($file), rtrim(base64_encode($file), '=').'=====', $valid),
+			'legacy plaintext with valid-looking footer' => $file."\n".$file."\n0\n1\n",
 			'legacy with a missing force line' => $file."\n".$file."\n0\n",
 			'legacy with a non-canonical force token' => $file."\n".$file."\n0\n01\n",
 			'legacy ambiguity: a JSON body without a version' => "{\"files\":[]}\n",
@@ -6795,14 +6802,13 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals($expected, $actual, 'remove-payload v2 encoding must remain byte-compatible');
 	}
 
-	public function testLegacyAndVersionTwoDecodeAsRemovePayload()
+	public function testPlaintextLegacyIsRejectedButVersionTwoDecodesAsRemovePayload()
 	{
 		$this->reset();
 		$hash = $this->hash('b');
 		$legacy = "/d/single.bin\n/d/single.bin\n0\n1\n";
-		$legacyRecord = ErasedataManifestCodec::decodeBytes($legacy, $hash);
-		$this->assertEquals('remove_payload', $legacyRecord['operation'], 'legacy manifests must decode as remove-payload');
-		$this->assertTrue(!$legacyRecord['keep_base'], 'legacy manifests must permit their historical base handling');
+		$this->assertEquals(false, ErasedataManifestCodec::decodeBytes($legacy, $hash),
+			'plaintext legacy manifests cannot prove their base and must be refused');
 		$v2 = ErasedataManifestCodec::encode($hash, array(
 			'base' => '/d/single.bin',
 			'multi' => false,
@@ -6829,22 +6835,99 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(file_exists($victim.'/sentinel.txt'), 'victim sentinel must survive');
 	}
 
-	public function testSafeLegacyForceOneRemainsConsumable()
+	public function testBarePlaintextListCannotDeleteClaimedPayload()
 	{
 		$this->reset();
 		$hash = $this->hash();
-		$base = $this->dir.'/legacy_multi';
-		$file = $base.'/file.bin';
+		$base = $this->dir.'/unverified_plaintext';
+		$file = $base.'/keep.bin';
 		@mkdir($base, 0777, true);
-		file_put_contents($file, 'data');
+		file_put_contents($file, 'keep');
+		$source = $this->dir.'/erasedata/'.$hash.'.list';
 		$this->writeLegacyManifestLines($hash.'.list', array($file), $base, 1, 1);
+		$bytes = file_get_contents($source);
 		list($status, $output) = $this->runCollector(array());
-		$this->assertEquals(0, $status, 'collector must exit 0: '.$output);
-		$this->assertTrue(!file_exists($file), 'listed file must be deleted');
-		$this->assertEquals(false, $this->onlyManifest($hash), 'legacy manifest must be consumed');
+		$this->assertEquals(0, $status, 'collector exits normally: '.$output);
+		$this->assertEquals('keep', @file_get_contents($file),
+			'plaintext queue bytes cannot authorize deleting their claimed file');
+		$quarantined = glob($source.'.*.unverified');
+		$this->assertTrue(count($quarantined) === 1 && file_get_contents($quarantined[0]) === $bytes,
+			'the exact source bytes move to a private quarantine name');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'unverified-legacy-list') !== false,
+			'the refusal is visible without debug logging');
 	}
 
-	public function testLegacyForceTwoNeverRecursivelyDeletesUnlistedContent()
+	public function testPlaintextListIsQuarantinedEvenWhenTorrentPresenceIsUnknown()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$base = $this->dir.'/unverified_unknown_presence';
+		@mkdir($base, 0777, true);
+		$file = $base.'/keep.bin';
+		file_put_contents($file, 'keep');
+		$source = $this->dir.'/erasedata/'.$hash.'.list';
+		$this->writeLegacyManifestLines($hash.'.list', array($file), $base, 1, 1);
+		$bytes = file_get_contents($source);
+		list($status, $output) = $this->runCollector(array('ok' => false));
+		$this->assertEquals(0, $status, 'collector exits normally: '.$output);
+		$quarantined = glob($source.'.*.unverified');
+		$this->assertTrue(is_file($file) && count($quarantined) === 1
+			&& file_get_contents($quarantined[0]) === $bytes,
+			'unverified plaintext is quarantined independent of an RPC verdict');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'unverified-legacy-list') !== false,
+			'the quarantine is visible when rTorrent cannot answer');
+	}
+
+	public function testFailedPlaintextQuarantineRetainsOriginalAndLogs()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$base = $this->dir.'/legacy_failed_quarantine';
+		@mkdir($base, 0777, true);
+		$file = $base.'/keep.bin';
+		file_put_contents($file, 'keep');
+		$source = $this->dir.'/erasedata/'.$hash.'.list';
+		$this->writeLegacyManifestLines($hash.'.list', array($file), $base, 1, 1);
+		$bytes = file_get_contents($source);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'renameNoReplace:*' => array('result' => false))));
+		$this->assertEquals(0, $status, 'collector exits normally: '.$output);
+		$this->assertTrue(is_file($file) && file_get_contents($source) === $bytes,
+			'failed quarantine keeps both payload and original bytes');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'could not be quarantined') !== false,
+			'the refusal remains visible when the no-replace helper is unavailable');
+	}
+
+	public function testPlaintextQuarantineNeverReplacesEarlierBytes()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$base = $this->dir.'/legacy_collision';
+		@mkdir($base, 0777, true);
+		$first = $base.'/first.bin';
+		$second = $base.'/second.bin';
+		file_put_contents($first, 'first');
+		file_put_contents($second, 'second');
+		$source = $this->dir.'/erasedata/'.$hash.'.list';
+		$this->writeLegacyManifestLines($hash.'.list', array($first), $base, 1, 1);
+		$firstBytes = file_get_contents($source);
+		$this->runCollector(array());
+		$this->writeLegacyManifestLines($hash.'.list', array($second), $base, 1, 1);
+		$secondBytes = file_get_contents($source);
+		$this->runCollector(array());
+		$quarantined = glob($source.'.*.unverified');
+		$kept = array_map('file_get_contents', $quarantined);
+		$this->assertTrue(count($quarantined) === 2
+			&& in_array($firstBytes, $kept, true)
+			&& in_array($secondBytes, $kept, true),
+			'each plaintext list is kept under a separate quarantine name');
+		$this->assertTrue(is_file($first) && is_file($second),
+			'no plaintext list deletes its claimed payload');
+	}
+
+	public function testPlaintextForceTwoIsQuarantinedWithoutDeletingContent()
 	{
 		$this->reset();
 		$hash = $this->hash();
@@ -6857,9 +6940,10 @@ class RemoveWithDataTest extends TestCase
 		$this->writeLegacyManifestLines($hash.'.list', array($listed), $base, 1, 2);
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'collector must exit 0: '.$output);
-		$this->assertTrue(!file_exists($listed), 'listed file must be deleted');
-		$this->assertTrue(file_exists($unlisted), 'unlisted file under legacy force 2 must survive (no whole-tree recursion)');
-		$this->assertTrue(is_file($this->onlyManifest($hash)), 'manifest must be retained because unlisted directory contents remain');
+		$this->assertTrue(file_exists($listed), 'the unverified plaintext list deletes no file');
+		$this->assertTrue(file_exists($unlisted), 'unlisted file under legacy force 2 must survive');
+		$this->assertTrue(count(glob($this->dir.'/erasedata/'.$hash.'.list.*.unverified')) === 1,
+			'legacy force-2 list is quarantined rather than interpreted');
 	}
 
 	public function testMalformedJSONIsNotReinterpretedAsLegacy()
@@ -10555,7 +10639,7 @@ class RemoveWithDataTest extends TestCase
 		foreach(array($first, $second) as $hash)
 		{
 			$paths[$hash] = $queue.'/'.$hash.'.'.$generation.'.1.tmp';
-			@file_put_contents($paths[$hash], "manifest of ".$hash."\n");
+			@file_put_contents($paths[$hash], "{manifest of ".$hash."\n");
 		}
 		// The second final name is already a directory, so its publish cannot land.
 		@mkdir($queue.'/'.$second.'.'.$generation.'.1.list', 0777, true);

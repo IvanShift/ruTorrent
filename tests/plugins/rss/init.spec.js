@@ -92,3 +92,57 @@ describe("rss details", () => {
     );
   });
 });
+
+describe("rss error messages", () => {
+  let previousNoty;
+  let previousFetchMessage;
+
+  beforeEach(() => {
+    previousNoty = window.noty;
+    previousFetchMessage = theUILang.cantFetchRSS;
+    theUILang.cantFetchRSS = "Error loading feed.";
+    theUILang.rssDontExist = "The feed doesn't exist.";
+    window.noty = jest.fn();
+    theWebUI.rssShowErrorsDelayed = false;
+    theWebUI.rssLabels = {};
+    delete window.__rssErrorEval;
+  });
+
+  afterEach(() => {
+    window.noty = previousNoty;
+    theUILang.cantFetchRSS = previousFetchMessage;
+    delete theUILang.rssDontExist;
+    delete window.__rssErrorEval;
+  });
+
+  it("shows a saved legacy error without executing its description", () => {
+    const status = "500'+(window.__rssErrorEval='RAN')+'";
+    const description = "theUILang.cantFetchRSS + ' - [RSS-HTTP-Error] Status: " +
+      status + "'";
+    theWebUI.showErrors([{ time: 0, desc: description, prm: "" }]);
+    expect(window.__rssErrorEval).toBeUndefined();
+    expect(window.noty).toHaveBeenCalledWith(
+      expect.stringContaining(theUILang.cantFetchRSS + " - [RSS-HTTP-Error] Status: " + status),
+      "error", true
+    );
+  });
+
+  it("localizes a known saved legacy key without evaluating unknown text", () => {
+    expect(theWebUI.rssErrorText({ desc: "theUILang.rssDontExist" }))
+      .toBe(theUILang.rssDontExist);
+    expect(theWebUI.rssErrorText({ desc: "theUILang.unknown + window.__rssErrorEval=1" }))
+      .toBe("theUILang.unknown + window.__rssErrorEval=1");
+    expect(window.__rssErrorEval).toBeUndefined();
+  });
+
+  it("localizes a feed error and keeps the external detail as text", () => {
+    const detail = "[RSS-HTTP-Error] Status: 500'+(window.__rssErrorEval='RAN')+'";
+    theWebUI.showErrors([{
+      time: 0, key: "cantFetchRSS", detail, prm: "https://feed.example/rss"
+    }]);
+    expect(window.__rssErrorEval).toBeUndefined();
+    expect(window.noty).toHaveBeenCalledWith(
+      expect.stringContaining(theUILang.cantFetchRSS + " - " + detail), "error", true
+    );
+  });
+});

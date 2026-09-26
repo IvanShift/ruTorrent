@@ -365,14 +365,25 @@ rTorrentStub.prototype.doneplugins = function()
 		this.content += ("&plg="+encodeURIComponent(this.hashes[i]));
 }
 
+function postHttprpcMode(stub, mode)
+{
+	stub.mountPoint = "plugins/httprpc/action.php";
+	stub.dataType = "json";
+	stub.contentType = "application/x-www-form-urlencoded";
+	stub.content = "mode="+mode;
+	for(var i=0; i<stub.hashes.length; i++)
+		stub.content += "&hash="+encodeURIComponent(stub.hashes[i]);
+	for(i=0; i<stub.vs.length; i++)
+		stub.content += "&v="+encodeURIComponent(stub.vs[i]);
+	for(i=0; i<stub.ss.length; i++)
+		stub.content += "&s="+encodeURIComponent(stub.ss[i]);
+}
+
 rTorrentStub.prototype.recheck = function()
 {
-	for(var i=0; i<this.hashes.length; i++)
-	{
-		var cmd = new rXMLRPCCommand("d.check_hash");
-		cmd.addParameter("string",this.hashes[i]);
-		this.commands.push( cmd );
-	}
+	// The raw XMLRPC proxy's untrusted d.check_hash route does not start a
+	// check on supported rtorrent versions.
+	postHttprpcMode(this, "recheck");
 }
 
 rTorrentStub.prototype.setsettings = function()
@@ -607,12 +618,8 @@ rTorrentStub.prototype.unpause = function()
 
 rTorrentStub.prototype.remove = function()
 {
-	for(var i=0; i<this.hashes.length; i++)
-	{
-		var cmd = new rXMLRPCCommand("d.erase");
-		cmd.addParameter("string",this.hashes[i]);
-		this.commands.push( cmd );
-	}
+	// The trusted server route preserves rtorrent's download.erased event.
+	postHttprpcMode(this, "remove");
 }
 
 rTorrentStub.prototype.dsetprio = function()
@@ -722,37 +729,9 @@ rTorrentStub.prototype.getprops = function()
 
 rTorrentStub.prototype.setprops = function()
 {
-	var cmd = null;
-	for(var i=0; i<this.ss.length; i++)
-	{
-		if(this.ss[i]=="superseed")
-		{
-        		var conn = (this.vs[i]!=0) ? "initial_seed" : "seed";
-			cmd = new rXMLRPCCommand("branch");
-			cmd.addParameter("string",this.hashes[0]);
-			cmd.addParameter("string",theRequestManager.map("d.is_active="));
-			cmd.addParameter("string",theRequestManager.map("cat")+
-				'=$'+theRequestManager.map("d.stop=")+
-				',$'+theRequestManager.map("d.close=")+
-				',$'+theRequestManager.map("d.set_connection_seed=")+conn+
-				',$'+theRequestManager.map("d.open=")+
-				',$'+theRequestManager.map("d.start="));
-			cmd.addParameter("string",theRequestManager.map("d.set_connection_seed=")+conn);
-		}
-		else
-		{
-			if(this.ss[i]=="ulslots")
-				cmd = new rXMLRPCCommand("d.set_uploads_max");
-			else
-			if(this.ss[i]=="pex")
-				cmd = new rXMLRPCCommand("d.set_peer_exchange");
-			else
-				cmd = new rXMLRPCCommand("d.set_"+this.ss[i]);
-			cmd.addParameter("string",this.hashes[0]);
-			cmd.addParameter("i4",this.vs[i]);
-		}
-		this.commands.push( cmd );
-	}
+	// The raw XMLRPC proxy refuses branch and untrusted setters. Use the
+	// validated server-side mode, even with the httprpc JavaScript disabled.
+	postHttprpcMode(this, "setprops");
 }
 
 rTorrentStub.prototype.setulrate = function()

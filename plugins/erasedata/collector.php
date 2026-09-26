@@ -1471,8 +1471,7 @@ final class ErasedataCollector
 
 		$dirs = array();
 		$complete = true;
-		$force_delete = ($manifest['force'] === 2 && empty($manifest['legacy']))
-			&& $this->enableForceDeletion;
+		$force_delete = $manifest['force'] === 2 && $this->enableForceDeletion;
 		$is_multi = !empty($manifest['multi']);
 		$base_path = $manifest['base'];
 		$files = $manifest['files'];
@@ -1632,8 +1631,6 @@ final class ErasedataCollector
 						if($existed && erasedataPathExists($base_path))
 						{
 							$this->log('Leave unrelated dir '.$base_path);
-							if(!empty($manifest['legacy']) && $manifest['force'] === 2)
-								$complete = false;
 						}
 						else
 							$this->log('Successfully delete dir '.$base_path);
@@ -1647,6 +1644,74 @@ final class ErasedataCollector
 			}
 		}
 		return($complete);
+	}
+
+	private function quarantineUnverifiedManifest($path, $expectedStat, $hash)
+	{
+		$token = erasedataPrivateToken();
+		$aside = $token === false ? false : $path.'.'.$token.'.unverified';
+		$current = $this->filesystem->entryIdentity($path);
+		$stat = is_array($current) ? $current['lstat'] : false;
+		if($aside === false || is_link($path) || !is_array($stat)
+			|| !erasedataSameStatIdentity($expectedStat, $stat)
+			|| !$this->filesystem->renameNoReplace($path, $aside))
+		{
+			FileUtil::toLog('erasedata: unverified-legacy-list '.basename($path)
+				.' for '.$hash.' could not be quarantined; original manifest and payload retained');
+			return(false);
+		}
+		$quarantined = $this->filesystem->entryIdentity($aside);
+		$asideStat = is_array($quarantined) ? $quarantined['lstat'] : false;
+		if(!is_array($asideStat) || !erasedataSameStatIdentity($expectedStat, $asideStat)
+			|| erasedataPathExists($path))
+		{
+			FileUtil::toLog('erasedata: unverified-legacy-list '.basename($path)
+				.' for '.$hash.' has uncertain quarantine state; payload retained; inspect '
+				.basename($aside));
+			return(false);
+		}
+		FileUtil::toLog('erasedata: unverified-legacy-list '.basename($path)
+			.' for '.$hash.' moved to '.basename($aside)
+			.'; payload retained for manual inspection');
+		return(true);
+	}
+
+	private function quarantinePlaintextCandidate($item)
+	{
+		if($item['type'] !== 'list')
+			return(null);
+		$path = $item['path'];
+		$handle = @fopen($path, 'rb');
+		if($handle === false)
+			return(null);
+		$stat = @fstat($handle);
+		$identity = $this->filesystem->entryIdentity($path);
+		$current = is_array($identity) ? $identity['lstat'] : false;
+		if(is_link($path) || !is_array($stat) || !is_array($current)
+			|| !erasedataSameStatIdentity($stat, $item['stat'])
+			|| !erasedataSameStatIdentity($stat, $current))
+		{
+			@fclose($handle);
+			return(null);
+		}
+		// Every current writer starts JSON with '{'. A one-byte peek keeps
+		// normal jobs on their existing single-read path.
+		$first = @fread($handle, 1);
+		if($first === '{')
+		{
+			@fclose($handle);
+			return(null);
+		}
+		@rewind($handle);
+		$bytes = ErasedataManifestCodec::readBoundedHandle($handle);
+		if(!is_string($bytes) || !ErasedataManifestCodec::isUnverifiedPlaintext($bytes))
+		{
+			@fclose($handle);
+			return(null);
+		}
+		$result = $this->quarantineUnverifiedManifest($path, $stat, $item['hash']);
+		@fclose($handle);
+		return($result);
 	}
 
 	private function consumeManifest($path, $expectedStat, $ownedPaths)
@@ -1665,7 +1730,17 @@ final class ErasedataCollector
 			return(false);
 		}
 		$hash = preg_match('/^([0-9A-Fa-f]{40})/D', basename($path), $m) ? $m[1] : '';
-		$manifest = ErasedataManifestCodec::decodeStream($handle, $hash);
+		$bytes = ErasedataManifestCodec::readBoundedHandle($handle);
+		if(is_string($bytes) && ErasedataManifestCodec::isUnverifiedPlaintext($bytes))
+		{
+			// Keep the inode open while moving the exact entry out of the
+			// collector namespace. A missing no-replace helper retains it.
+			$quarantined = $this->quarantineUnverifiedManifest($path, $stat, $hash);
+			@fclose($handle);
+			return($quarantined);
+		}
+		$manifest = is_string($bytes)
+			? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
 		if($manifest === false || !isset($manifest['operation'])
 			|| $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD)
 		{
@@ -2223,6 +2298,12 @@ final class ErasedataCollector
 		}
 
 		$legacyItems = isset($hashIndex['legacy']) && is_array($hashIndex['legacy']) ? $hashIndex['legacy'] : array();
+		// Refuse plaintext independent of rTorrent's current presence answer.
+		$processable = array();
+		foreach($legacyItems as $item)
+			if($this->quarantinePlaintextCandidate($item) === null)
+				$processable[] = $item;
+		$legacyItems = $processable;
 		if(count($legacyItems))
 		{
 			$presence = $this->probePresence($hash);

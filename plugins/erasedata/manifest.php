@@ -467,102 +467,36 @@ final class ErasedataManifestCodec
 			return(false);
 		$canonicalExpectedHash = strtoupper($expectedHash);
 
-		$firstChar = '';
-		$len = strlen($bytes);
-		for($i = 0; $i < $len; $i++)
+		// A legacy newline-delimited list cannot prove its base: a path element
+		// may itself contain a newline and forge the trailing base/mode fields.
+		// Keep this decision in the codec so no caller can accidentally revive
+		// the old destructive interpretation.
+		if(self::isUnverifiedPlaintext($bytes))
+			return(false);
+		$json = json_decode($bytes, true);
+		if(!is_array($json))
+			return(false);
+		// Serialized member names are required to be unique for cleanup jobs:
+		// those artifacts are capabilities authorizing deletion under another
+		// torrent's base. The v2 payload writer cannot emit duplicate keys.
+		if(isset($json['version']) && $json['version'] === self::CLEANUP_VERSION
+			&& !self::hasUniqueJSONObjectMembers($bytes))
+			return(false);
+		return(self::decodeJSON($json, $canonicalExpectedHash));
+	}
+
+	public static function isUnverifiedPlaintext($bytes)
+	{
+		if(!is_string($bytes))
+			return(false);
+		$length = strlen($bytes);
+		for($i = 0; $i < $length; $i++)
 		{
-			$c = $bytes[$i];
-			if($c !== " " && $c !== "\t" && $c !== "\r" && $c !== "\n")
-			{
-				$firstChar = $c;
-				break;
-			}
+			if($bytes[$i] !== ' ' && $bytes[$i] !== "\t"
+				&& $bytes[$i] !== "\r" && $bytes[$i] !== "\n")
+				return($bytes[$i] !== '{');
 		}
-
-		if($firstChar === '{')
-		{
-			$json = json_decode($bytes, true);
-			if(!is_array($json))
-				return(false);
-			// Serialized member names are required to be unique for the
-			// cleanup version only, and that asymmetry is deliberate.
-			// hasUniqueJSONObjectMembers() is a second, hand-written parser run
-			// over the whole document, and it earns that only where the bytes
-			// are a capability: a v3 artifact is re-read and re-matched against
-			// its token repeatedly within one run and authorizes deletion under
-			// ANOTHER torrent's base, so one serialization must mean one thing.
-			// A v2 payload manifest has a single writer -- encode(), which
-			// serializes a PHP array and cannot emit a repeated key -- and a
-			// single reader, the json_decode above, which takes the last value.
-			// No second reader exists to disagree with it, and whoever could
-			// put a repeated "force" in the queue directory could as easily
-			// write "force":2 once, so the rule would prevent nothing there
-			// while costing roughly four times the whole decode on the path
-			// every erase takes. See
-			// testPayloadManifestTakesTheLastValueForDuplicateSerializedMembers.
-			if(isset($json['version']) && $json['version'] === self::CLEANUP_VERSION
-				&& !self::hasUniqueJSONObjectMembers($bytes))
-				return(false);
-			return(self::decodeJSON($json, $canonicalExpectedHash));
-		}
-
-		$lines = preg_split("/\r\n|\n|\r/", $bytes);
-		if(count($lines) > 0 && end($lines) === '')
-			array_pop($lines);
-
-		$cnt = count($lines);
-		if($cnt <= 3 || $cnt > self::MAX_FILES + 3)
-			return(false);
-
-		$rawForce = $lines[$cnt - 1];
-		$rawMulti = $lines[$cnt - 2];
-		$rawBase = $lines[$cnt - 3];
-
-		if($rawForce !== "1" && $rawForce !== "2")
-			return(false);
-		if($rawMulti !== "0" && $rawMulti !== "1")
-			return(false);
-
-		if(!self::isValidAbsolutePath($rawBase) || rtrim($rawBase, '/') === '' || $rawBase === '.' || $rawBase === '..')
-			return(false);
-
-		$isMulti = ($rawMulti === "1");
-		$numFiles = $cnt - 3;
-		if($numFiles <= 0 || $numFiles > self::MAX_FILES)
-			return(false);
-
-		$decodedFiles = array();
-		$seen = array();
-		for($i = 0; $i < $numFiles; $i++)
-		{
-			$f = $lines[$i];
-			if(!self::isValidAbsolutePath($f))
-				return(false);
-			if($isMulti && !self::isUnderBase($f, $rawBase))
-				return(false);
-			if(isset($seen[$f]))
-				return(false);
-			$seen[$f] = true;
-			$decodedFiles[] = $f;
-		}
-
-		if(!$isMulti)
-		{
-			if($numFiles !== 1 || $decodedFiles[0] !== $rawBase)
-				return(false);
-		}
-
-		return(array(
-			'version' => 1,
-			'operation' => self::OPERATION_REMOVE_PAYLOAD,
-			'hash' => $canonicalExpectedHash,
-			'files' => $decodedFiles,
-			'base' => $rawBase,
-			'multi' => $isMulti,
-			'force' => ($rawForce === "2" ? 2 : 1),
-			'keep_base' => false,
-			'legacy' => true,
-		));
+		return(false);
 	}
 
 	private static function decodeJSON(array $json, $canonicalExpectedHash)

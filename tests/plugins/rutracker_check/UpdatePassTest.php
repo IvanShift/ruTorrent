@@ -77,6 +77,7 @@ function erasedataKickCollector($oldHash)
     return UpdatePassErasedataFake::next(UpdatePassErasedataFake::$kickResults, true);
 }
 
+require_once(testFindRepoRoot() . '/plugins/rutracker_check/conf.php');
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/updatepass.php');
 
 // The real checker delegates META_PENDING rows to this collaborator. Its own
@@ -2666,7 +2667,7 @@ upTest($suite, 'legacy stopped checked rows are reported without guessing prior 
     $old = str_repeat('A', 40);
     $new = str_repeat('B', 40);
     $now = 10000;
-    sweepScan(array(array($old, '', $old . '-started-1000', '',
+    sweepScan(array(array($old, '', '', '',
         0, 0, '1', '1000', $new)));
     $log = testCapturedAppLog(function () use ($now) {
         RuTrackerUpdatePass::sweepReplacements($now);
@@ -2677,6 +2678,108 @@ upTest($suite, 'legacy stopped checked rows are reported without guessing prior 
         'the candidate is visible at the shipped debug setting');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
         'a manually selected stopped torrent has the same old fingerprint, so no restart is authorized');
+});
+
+// The 2026-09-26 incident has a known predecessor/successor pair and a
+// recorded check generation. It is the only old, unkeyed transaction whose
+// restart the owner requested; a similar manually stopped row is not evidence.
+upTest($suite, 'the exact Yomi legacy generation is revived once', function () {
+    rXMLRPCRequest::reset();
+    $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
+    $successor = '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A';
+    $checkedAt = '1790391624';
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, $successor)));
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+
+    $log = testCapturedAppLog(function () use ($checkedAt) {
+        RuTrackerUpdatePass::sweepReplacements((int) $checkedAt + 3601);
+    });
+
+    $branches = sweepBranchRequestsForHash($old);
+    strictAssertSame(1, count($branches), 'the exact legacy pair gets one atomic revival');
+    strictAssertTrue(strpos((string)$branches[0]['commands'][0]->params[1],
+        'chk-meta-new') !== false, 'revival checks the successor in the same branch');
+    strictAssertTrue(strpos((string)$branches[0]['commands'][0]->params[1],
+        'chk-time') !== false, 'revival checks the old generation in the same branch');
+    strictAssertTrue(strpos((string)$branches[0]['commands'][0]->params[1],
+        'state_changed') !== false, 'a later manual start and stop cannot keep the same authority');
+    strictAssertTrue(strpos((string)$branches[0]['commands'][0]->params[1],
+        'state_counter') !== false, 'revival checks the observed run-state generation');
+    $action = (string)$branches[0]['commands'][0]->params[2];
+    strictAssertTrue(strpos($action, 'd.start') !== false,
+        'the authorized predecessor is reopened and started');
+    strictAssertTrue(strpos($action, 'chk-revived') !== false
+        && strpos($action, 'd.open') !== false
+        && strpos($action, 'chk-revived') < strpos($action, 'd.open'),
+        'the one-time latch is reserved before any restart action');
+    strictAssertTrue(strpos($log, 'legacy-strand recovery acted') !== false,
+        'the recovery result is visible to the operator');
+    sweepAssertNoStandaloneOwnershipMutation('legacy recovery');
+});
+
+upTest($suite, 'a lookalike or changed Yomi generation is not restarted', function () {
+    foreach (array(
+        'different predecessor' => array(str_repeat('A', 40), '1790391624'),
+        'later manual check' => array('E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09', '1790391625'),
+    ) as $label => $case) {
+        rXMLRPCRequest::reset();
+        sweepScan(array(array($case[0], '', '', '', 0, 0, '1', $case[1],
+            '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
+        RuTrackerUpdatePass::sweepReplacements(1790391624 + 3601);
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': fingerprint alone cannot authorize a restart');
+    }
+});
+
+upTest($suite, 'a concurrent manual check keeps the Yomi recovery claim', function () {
+    rXMLRPCRequest::reset();
+    $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
+    $now = 1790391624 + 3601;
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624',
+        '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
+    $token = ruTrackerChecker::claimCheckForWorker($old, $now);
+    strictAssertTrue(is_string($token), 'the competing check owns the hash');
+    try {
+        RuTrackerUpdatePass::sweepReplacements($now);
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.hash')),
+            'recovery does not probe a successor while another check owns the predecessor');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            'recovery cannot restart a hash held by a manual check');
+    } finally {
+        ruTrackerChecker::releaseCheckForWorker($old, $token);
+    }
+});
+
+upTest($suite, 'a still present Yomi successor leaves the old row stopped', function () {
+    rXMLRPCRequest::reset();
+    sweepScan(array(array('E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09',
+        '', '', '', 0, 0, '1', '1790391624',
+        '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
+    rXMLRPCRequest::queue('d.hash', true, false,
+        array('0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A'));
+    RuTrackerUpdatePass::sweepReplacements(1790391624 + 3601);
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'a successor still in the client owns the recovery path');
+});
+
+upTest($suite, 'a spent Yomi recovery never restarts after a user stop', function () {
+    rXMLRPCRequest::reset();
+    $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624',
+        '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_SPENT));
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::sweepReplacements(1790391624 + 3601);
+    });
+    strictAssertSame(1, count(sweepBranchRequestsForHash($old)),
+        'the branch checks its durable spent marker');
+    strictAssertTrue(strpos($log, 'legacy-strand recovery spent') !== false,
+        'a later deliberate stop is reported without restarting');
+    sweepAssertNoStandaloneOwnershipMutation('spent legacy recovery');
 });
 
 upTest($suite, 'sweepReplacements ignores a row with no marker', function () {

@@ -1019,7 +1019,7 @@ class RuTrackerUpdatePass
     // Older releases could clear chk-replacing before the staged row tried to
     // revive its predecessor. The old run policy is then irrecoverable: a
     // manual check can stamp chk-state=1 on an intentionally stopped torrent.
-    // The exact legacy fingerprint is diagnostic only, never restart authority.
+    // Only an explicitly approved hash pair and check generation may be revived.
     static private function diagnoseLegacyRow($values, $i, $now)
     {
         $hash = $values[$i];
@@ -1035,12 +1035,61 @@ class RuTrackerUpdatePass
             || $checked !== ruTrackerChecker::STE_INPROGRESS
             || $checkedAt === null || $checkedAt <= 0
             || $checkedAt > $now - 3600
+            || (string) $values[$i + 1] !== ''
+            || (string) $values[$i + 2] !== ''
             || (string) $values[$i + 3] !== '')
             return;
-        ruTrackerChecker::logUnrepairable('update: legacy-strand candidate '
-            . $hash . ' -> ' . $successor
-            . ': stopped/closed, chk-state=1 and no recovery key; prior run state is unproved'
-            . '; not restarted; explicit repair required');
+        $allowed = isset($GLOBALS['rutrackerLegacyRecoveryPairs'])
+            && is_array($GLOBALS['rutrackerLegacyRecoveryPairs'])
+            && isset($GLOBALS['rutrackerLegacyRecoveryPairs'][$hash])
+            ? $GLOBALS['rutrackerLegacyRecoveryPairs'][$hash] : null;
+        if (!is_array($allowed)
+            || !isset($allowed['successor'], $allowed['checked_at'],
+                $allowed['state_changed'], $allowed['state_counter'])
+            || $allowed['successor'] !== $successor
+            || (string) $allowed['checked_at'] !== (string) $checkedAt) {
+            ruTrackerChecker::logUnrepairable('update: legacy-strand candidate '
+                . $hash . ' -> ' . $successor
+                . ': stopped/closed, chk-state=1 and no recovery key; prior run state is unproved'
+                . '; not restarted; explicit repair required');
+            return;
+        }
+
+        // A manual check has no cycle lock. Hold the same per-hash claim as
+        // replacement and ordinary sweep before checking the successor.
+        $token = ruTrackerChecker::claimCheckForWorker($hash, $now);
+        if (!is_string($token)) {
+            ruTrackerChecker::logUnrepairable('update: legacy-strand recovery skipped for '
+                . $hash . ' -> ' . $successor . ': predecessor claim '
+                . ($token === false ? 'held' : 'unavailable'));
+            return;
+        }
+        try {
+            // A present staged successor belongs to the marked-row sweep.
+            // An unknown presence answer grants no authority.
+            $successorExists = ruTrackerChecker::torrentExists($successor);
+            if ($successorExists !== false) {
+                ruTrackerChecker::logUnrepairable('update: legacy-strand recovery skipped for '
+                    . $hash . ' -> ' . $successor . ': successor presence '
+                    . ($successorExists === true ? 'present' : 'unknown'));
+                return;
+            }
+
+            // The approved generation is checked again in the daemon branch.
+            // A later deliberate stop returns SPENT instead of starting again.
+            $status = RuTrackerAtomicOwnership::revivePredecessor($hash, '',
+                array('started' => true, 'open' => true), $checkedAt,
+                array('state' => 0, 'is_open' => 0,
+                    'state_changed' => $allowed['state_changed'],
+                    'state_counter' => $allowed['state_counter']),
+                array('chk-meta-new' => $successor, 'chk-state' => '1',
+                    'chk-time' => (string) $checkedAt, 'chk-replacement' => '',
+                    'chk-replaces' => ''));
+            ruTrackerChecker::logUnrepairable('update: legacy-strand recovery '
+                . $status . ' for ' . $hash . ' -> ' . $successor);
+        } finally {
+            ruTrackerChecker::releaseCheckForWorker($hash, $token);
+        }
     }
 
     // Clear the predecessor's chk-replacing key only if its current stored value

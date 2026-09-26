@@ -8,7 +8,22 @@ $ignoreLabels 	= ['tv-sonarr', 'radarr'];	// list of labels to ignore
 // runs it in global scope after conf/config.php has already been loaded,
 // so a plain assignment silently discards a value the administrator set
 // there. The default applies only when nothing else has set the variable.
-$rutrackerCheckDebug ??= false;	// opt in to diagnostics in ruTorrent's shared application log
+$rutrackerCheckDebug ??= false; // opt in to diagnostics in ruTorrent's shared application log
+
+// One exact old generation for which the owner requested a single restart.
+// Older releases lost the run-state key during a failed replacement, and the
+// remaining fingerprint also occurs after a manual check of a stopped torrent.
+// Bind recovery to this predecessor, successor and original check timestamp;
+// any later check or a different torrent remains diagnostic only. The atomic
+// chk-revived stamp prevents a second restart after the user stops it again.
+$rutrackerLegacyRecoveryPairs ??= array(
+    'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09' => array(
+        'successor' => '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A',
+        'checked_at' => '1790391624',
+        'state_changed' => '1790391635',
+        'state_counter' => '9',
+    ),
+);
 
 // The fuse share is a fraction, not a percentage. A value above 1 uses the
 // default 0.2 and writes one operator-visible log line per process; a negative
