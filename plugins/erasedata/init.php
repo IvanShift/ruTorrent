@@ -6,9 +6,8 @@ eval(FileUtil::getPluginConf($plugin["name"]));
 
 $listPath = FileUtil::getSettingsPath()."/erasedata";
 @FileUtil::makeDirectory($listPath);
-// The list of files to delete is written by the RPC handler (removewithdata)
-// straight into $listPath, so the plugin only needs to schedule the garbage
-// collector that applies and clears those lists.
+// The ordinary collector handles published manifests, including those left by
+// older releases. The generation drain has its own schedule and startup rearm.
 $req = new rXMLRPCRequest( array(
 	erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval)
 	) );

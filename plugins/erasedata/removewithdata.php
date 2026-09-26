@@ -1,10 +1,8 @@
 <?php
 
-// Shared "remove with data" logic used by both the httprpc RPC handler and the
-// direct (non-httprpc) endpoint plugins/erasedata/action.php. Records the list
-// of files to delete -- read over RPC, which works on every rtorrent version --
-// into the erasedata list directory for the garbage collector, then erases the
-// torrents. The caller must have already loaded php/xmlrpc.php.
+// Shared admission and durable deletion obligations for the web and CLI
+// removal entrypoints. The legacy producer remains for compatibility; active
+// entrypoints use erasedataAdmitRemoval(). The caller loads php/xmlrpc.php.
 if(!defined('ERASEDATA_TORRENT_PRESENT'))
 	define('ERASEDATA_TORRENT_PRESENT', 1);
 if(!defined('ERASEDATA_TORRENT_ABSENT'))
@@ -1405,9 +1403,9 @@ if(!function_exists('erasedataKickCollector'))
 // ---------------------------------------------------------------------------
 // One generation-bound public admission transaction.
 //
-// Both public doors -- plugins/erasedata/action.php (the web endpoint) and
-// plugins/erasedata/erase.php (the CLI one the ratio group commands run) --
-// enter here through erasedataAdmitRemoval(). Neither calls the destructive
+// All removal doors -- plugins/erasedata/action.php, plugins/httprpc/action.php
+// and plugins/erasedata/erase.php -- enter here through erasedataAdmitRemoval().
+// None calls the destructive
 // producer directly any more, because "record the delete list and then erase"
 // is not a thing one process can do safely: rTorrent answers one request at a
 // time, and a firing that covers several hundred downloads used to block on it
@@ -1987,6 +1985,65 @@ if(!function_exists('erasedataIsStagingObjectName'))
 	}
 }
 
+if(!function_exists('erasedataAdmissionRefusalReason'))
+{
+	// The request scope begins when the public admission wrapper resets this value.
+	// Diagnostics below record a classified reason without exposing remote text.
+	function erasedataAdmissionRefusalReason($reason = null)
+	{
+		static $last = 'admission-refused';
+		if($reason !== null)
+			$last = is_string($reason)
+				&& preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $reason)
+				? $reason : 'admission-refused';
+		return($last);
+	}
+}
+
+if(!function_exists('erasedataRemovalRefusalMessage'))
+{
+	function erasedataRemovalRefusalMessage($reason)
+	{
+		switch($reason)
+		{
+			case 'hash-lock': return('Torrent busy; try again.');
+			case 'state-lock': return('Deletion queue busy; try again.');
+			case 'queue-unavailable': return('Deletion queue unavailable.');
+			case 'drain-no-ack': return('Deletion queue did not acknowledge the request.');
+			case 'invalid-hash': return('Invalid deletion request: missing or invalid hash.');
+			case 'invalid-request': return('Invalid deletion request.');
+			default: return('Deletion refused ('.$reason.'). Check the server log.');
+		}
+	}
+}
+
+if(!function_exists('erasedataReportPartialRemovalRefusal'))
+{
+	// Admission can erase accepted members while refusing others. Keep the
+	// partial result, but make the refusal visible without logging raw inputs.
+	function erasedataReportPartialRemovalRefusal($result)
+	{
+		if(!is_array($result) || !isset($result['refused'])
+			|| !is_array($result['refused']))
+			return;
+		$counts = array('invalid-hash' => 0, 'descriptor-unavailable' => 0,
+			'unknown' => 0);
+		foreach($result['refused'] as $member)
+		{
+			if(is_string($member) && strpos($member, 'invalid-hash:') === 0)
+				$counts['invalid-hash']++;
+			else if(erasedataIsCanonicalPendingHash($member))
+				$counts['descriptor-unavailable']++;
+			else
+				$counts['unknown']++;
+		}
+		foreach($counts as $reason => $members)
+			if($members)
+				FileUtil::toLog('erasedata: removewithdata partially refused: reason='
+					.$reason.' members='.$members);
+	}
+}
+
 if(!function_exists('erasedataDrainDiagnostic'))
 {
 	// One bounded, classified, unconditional line: reason, the generation it
@@ -2002,6 +2059,7 @@ if(!function_exists('erasedataDrainDiagnostic'))
 	function erasedataDrainDiagnostic($log, $reason, $generation, $members,
 		$consequence, $hash = null, $object = null)
 	{
+		erasedataAdmissionRefusalReason($reason);
 		$message = 'erasedata: '.$reason
 			.' generation='.(erasedataGenerationIsValid($generation) ? $generation : 'none')
 			.' members='.(int)$members
@@ -2028,7 +2086,7 @@ if(!function_exists('erasedataAdmissionPartition'))
 	// handed: a refusal must be reportable without echoing whatever arrived.
 	//
 	// Force is the integer 1 or 2 and nothing else. The wire spellings "1" and
-	// "2" are normalized at the door by ErasedataManifestCodec::normalizeForce();
+	// "2" are normalized by erasedataAdmitRemoval() before this function;
 	// accepting them here as well would make that boundary optional and let a
 	// footer-injection string reach a decision about which root to delete.
 	function erasedataAdmissionPartition($hashes, $force)
@@ -2441,9 +2499,8 @@ if(!function_exists('erasedataEraseRequest'))
 	// manifest -- a licence to delete a payload -- is published for a download
 	// rTorrent still holds. The constant's own comment demands that every
 	// builder stay in step with it, and the way to guarantee that is to have
-	// ONE builder. All three destructive call sites -- the producer, the drain
-	// pass and the legacy httprpc producer -- come through here, so no two of
-	// them can drift apart, and this function checks its own output against the
+	// ONE builder. The admission producer, the drain pass and the retained
+	// legacy producer all come through here, so they cannot drift apart, and this function checks its own output against the
 	// constant so a change to erasedataEraseCommandsForHash() cannot drift away
 	// from it either. A mismatch refuses to build the request at all: every
 	// caller then reads it as an erase that did not run, retains its
@@ -2763,19 +2820,28 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
 			return(false);
 		if(erasedataDrainScheduleKey($user) === false)
+		{
+			erasedataDrainDiagnostic($log, 'invalid-user', null, 0, 'admission-refused');
 			return(false);
+		}
 
 		// (1) The complete partition, before any side effect at all. Members of
 		// F stop here: no marker, no journal record, no staging, no RPC and no
 		// filesystem mutation of any kind is made on their behalf.
 		$partition = erasedataAdmissionPartition($hashes, $force);
 		if($partition === false)
+		{
+			erasedataDrainDiagnostic($log, 'invalid-request', null, 0, 'admission-refused');
 			return(false);
+		}
 		$accepted = $partition['accepted'];
 		$force = $partition['force'];
 		$members = count($accepted);
 		if(!$members)
+		{
+			erasedataDrainDiagnostic($log, 'invalid-hash', null, 0, 'admission-refused');
 			return(false);
+		}
 		if(!is_dir($listPath))
 			@FileUtil::makeDirectory($listPath);
 		if(!is_dir($listPath))
@@ -4689,10 +4755,10 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 	// whole conservative scan. The scan is written for RETIREMENT, which must
 	// refuse on anything it cannot account for, so it also counts `final`,
 	// `malformed`, `residue` and `unknown` entries. Arming on those made the
-	// arm predicate and the retire predicate disagree, and the disagreement is
-	// reachable on a stock install: plugins/httprpc/action.php still runs the
-	// legacy producer, which publishes a <HASH>.<pid>.<uniqid>.list that lives
-	// about a collector interval, classifies as `malformed` and never touches
+	// arm predicate and the retire predicate disagree, and the disagreement was
+	// reachable on a stock install when plugins/httprpc/action.php ran the
+	// legacy producer, which published a <HASH>.<pid>.<uniqid>.list that lived
+	// about a collector interval, classified as `malformed` and never touched
 	// the drain state. One full UI load in that window used to arm
 	// erasedata-drain<User> at the zero generation, which retirement then
 	// refuses for ever -- a five-second child spawn for the life of the daemon
@@ -4779,7 +4845,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		// conservative scan counts. The scan is written for RETIREMENT, which
 		// must refuse on anything it cannot account for, so it also counts
 		// `final`, `malformed` and `residue` entries -- a legacy
-		// <HASH>.<pid>.<uniqid>.list from plugins/httprpc/action.php, the
+		// <HASH>.<pid>.<uniqid>.list formerly published by httprpc, or the
 		// staging of an interrupted durable write. Those belong to the ordinary
 		// erasedata<User> collector, or to nobody; the drain worker cannot
 		// discharge one, and arming for one is what created a schedule
@@ -5117,7 +5183,7 @@ if(!function_exists('erasedataDrainWorkerMain'))
 
 if(!function_exists('erasedataAdmitRemoval'))
 {
-	// The one public admission door. Both public entry points come through
+	// The one public admission door. All removal entry points come through
 	// here, and it takes nothing but the request: every dependency below it is
 	// the real one, constructed here.
 	//
@@ -5133,9 +5199,9 @@ if(!function_exists('erasedataAdmitRemoval'))
 	// It used to be built as !empty($enableForceDeletion) and read by nobody,
 	// which is worse than either honest alternative: a key that looks like a
 	// policy and decides nothing. Reading it was considered and rejected,
-	// because the value cannot be constructed truthfully at this door. Neither
-	// public door evaluates the plugin configuration -- erase.php and
-	// action.php both require removewithdata.php and go straight on. Two files
+	// because the value cannot be constructed truthfully at this door. None of
+	// erase.php, action.php or plugins/httprpc/action.php evaluates the
+	// plugin configuration before admission. Two files
 	// do evaluate it, and neither puts it in reach of this door: update.php
 	// does it at file scope, which is what both erasedataCollectorService()
 	// and the drain tick's own collector read, and it never calls this
@@ -5163,9 +5229,13 @@ if(!function_exists('erasedataAdmitRemoval'))
 	// own traversal.
 	function erasedataAdmitRemoval($hashes, $force)
 	{
+		erasedataAdmissionRefusalReason('admission-refused');
 		$normalizedForce = ErasedataManifestCodec::normalizeForce($force);
 		if(is_null($normalizedForce))
+		{
+			erasedataAdmissionRefusalReason('invalid-force');
 			return(false);
+		}
 		$listPath = FileUtil::getSettingsPath()."/erasedata";
 		@FileUtil::makeDirectory($listPath);
 		return(erasedataRemovalAdmissionRun(array(
@@ -5187,14 +5257,9 @@ if(!function_exists('erasedataRemoveWithData'))
 		// and "2" ARE accepted here and normalized exactly once, and every
 		// value below this line is the integer 1 or 2.
 		//
-		// This door has to accept them. plugins/httprpc/action.php is the path
-		// the web UI really takes -- plugins/erasedata/init.js only falls back
-		// to plugins/erasedata/action.php when the httprpc plugin is absent,
-		// and httprpc is core and enabled by default -- and it reads the force
-		// out of the POST body, validates it with normalizeForce() and hands
-		// this function the RAW STRING. A producer that took the integer only
-		// would fail "Remove and delete data" closed on a stock install while
-		// every test that calls it with an integer stayed green.
+		// Keep this compatibility boundary for direct or external callers of
+		// the legacy helper. The active web and CLI doors use the shared admission
+		// wrapper, which also accepts exact decimal wire spellings.
 		//
 		// Accepting the spelling is not coercing a value. normalizeForce()
 		// answers null for everything that is not exactly 1, 2, "1" or "2" --

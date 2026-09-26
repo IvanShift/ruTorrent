@@ -640,7 +640,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($this->dir.'/erasedata/'.$name, implode("\n", $lines)."\n");
 	}
 
-	private function runCopiedAction($source, $rawBody, $withErasedataHelper)
+	private function runCopiedAction($source, $rawBody, $withErasedataHelper, $admissionFailure = false)
 	{
 		$fixture = $this->dir.'/action-fixture-'.bin2hex(random_bytes(4));
 		$plugin = strpos($source, '/httprpc/') !== false ? 'httprpc' : 'erasedata';
@@ -652,7 +652,7 @@ class RemoveWithDataTest extends TestCase
 		if($plugin === 'httprpc')
 			copy(__DIR__.'/../../../plugins/httprpc/settingspolicy.php', $actionDir.'/settingspolicy.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', '<?php '
-			.'class FileUtil { public static function toLog($message) {} public static function getPluginConf($plugin) { return ""; } } '
+			.'class FileUtil { public static function toLog($message) { echo "LOG:".$message."\n"; } public static function getPluginConf($plugin) { return ""; } } '
 			.'class rXMLRPCCommand { public $command; public $params; public function __construct($command,$params=null) {'
 			.'$this->command=$command;$this->params=$params;} } '
 			.'class rXMLRPCRequest { public static $commands=array(); public $val=array(); public $fault=false; public $faultString=""; '
@@ -660,7 +660,7 @@ class RemoveWithDataTest extends TestCase
 			.'else if($items!==null)$this->items=array($items); } public function addCommand($item) {$this->items[]=$item;} '
 			.'public function success($trusted=true) { foreach($this->items as $item)self::$commands[]=$item->command; return true; } } '
 			.'function getCmd($command) { return $command; } '
-			.'class CachedEcho { public static function send($content,$type) {} } '
+			.'class CachedEcho { public static function send($content,$type) { echo "BODY:".$content."\n"; } } '
 			.'class JSON { public static function safeEncode($value) { return json_encode($value); } }');
 		file_put_contents($fixture.'/php/xmlrpc_proxy.php', "<?php\n");
 		file_put_contents($fixture.'/php/xmlrpc_path.php', "<?php\n");
@@ -678,8 +678,15 @@ class RemoveWithDataTest extends TestCase
 				// records the exact PHP type it was handed, so a door that
 				// forwarded the wire spelling instead of the integer force is
 				// visible here rather than deep inside the producer.
-				.'function erasedataAdmitRemoval($hashes,$force) { rXMLRPCRequest::$commands[]="admit:".'
-				.'(is_int($force)?$force:gettype($force)); return array(); }');
+				.'function erasedataReportPartialRemovalRefusal($result) {} '
+				.'function erasedataAdmissionRefusalReason() { return isset($GLOBALS["fixtureRemovalReason"]) '
+				.'? $GLOBALS["fixtureRemovalReason"] : "hash-lock"; } '
+				.'function erasedataRemovalRefusalMessage($reason) { return "Torrent busy; try again."; } '
+				.'function erasedataAdmitRemoval($hashes,$force) { '
+				.'$normalized=ErasedataManifestCodec::normalizeForce($force); '
+				.'if($normalized===null) { $GLOBALS["fixtureRemovalReason"]="invalid-force"; return false; } '
+				.'rXMLRPCRequest::$commands[]="admit:".$normalized; '
+				.($admissionFailure ? 'return false;' : 'return array();').'}');
 		}
 		// The copied production action needs its own include tree, so it runs in
 		// a real script that receives one absolute JSON scenario filename.
@@ -693,6 +700,7 @@ class RemoveWithDataTest extends TestCase
 			.'||!is_string($scenario["log"]))exit(2);'
 			.'$HTTP_RAW_POST_DATA=$scenario["body"];chdir(dirname($scenario["action"]));'
 			.'require($scenario["action"]);'
+			.'echo "HTTP_STATUS:".http_response_code()."\\n";'
 			.'file_put_contents($scenario["log"],json_encode(rXMLRPCRequest::$commands));');
 		$output = array();
 		$status = 0;
@@ -2682,18 +2690,10 @@ class RemoveWithDataTest extends TestCase
 			'a refused force reaches no RPC at all');
 	}
 
-	// The regression this case exists for: the wire spelling reaching the
-	// PUBLIC doors from plugins/httprpc/action.php.
-	//
-	// plugins/erasedata/init.js routes "Remove and delete data" through the
-	// httprpc plugin whenever it is loaded, which on a stock install it always
-	// is, and plugins/httprpc/action.php hands the producer the RAW POST
-	// STRING after validating it with normalizeForce(). A producer or door
-	// that demanded the integer refused that call and the feature failed
-	// closed on every default install, while every in-repo test that passed an
-	// integer stayed green. So the acceptance is pinned here, at both public
-	// doors, together with what invariant 13 actually requires: what arrives
-	// in the marker, the journal and the staging record is the INTEGER.
+	// The shared admission API and retained compatibility producer both accept
+	// the exact wire spellings. The HTTP RPC and direct doors now enter the
+	// admission API, which normalizes force before writing the marker, journal
+	// and staging record. This case also pins the producer's legacy contract.
 	public function testWireForceSpellingsAreAcceptedAtThePublicDoorsAsIntegers()
 	{
 		$invariant = 'the exact wire spellings "1" and "2" are accepted at the'
@@ -2706,8 +2706,7 @@ class RemoveWithDataTest extends TestCase
 			list($wire, $expected) = $pair;
 			$this->assertTrue($wire === (string)$expected,
 				'the case really hands the doors the STRING "'.$expected.'"');
-			// (a) The destructive producer, called exactly as
-			// plugins/httprpc/action.php calls it.
+			// (a) The retained compatibility producer.
 			$this->reset();
 			$hash = $this->hash();
 			$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
@@ -2795,8 +2794,7 @@ class RemoveWithDataTest extends TestCase
 				'the manifest the admission published carries the integer force '
 					.$expected.' for wire force "'.$wire.'"');
 		}
-		// Both public doors are reachable with the wire spelling because they
-		// normalize it themselves, not because some caller happened to.
+		// Both callable boundaries accept the wire spelling themselves.
 		$producer = $this->productionFunctionBody('removewithdata.php',
 			'function erasedataRemoveWithData($hashes, $forceDelete)');
 		$this->assertTrue(is_string($producer)
@@ -2814,6 +2812,129 @@ class RemoveWithDataTest extends TestCase
 			'the shared admission door normalizes its own force argument');
 		$this->sourceHas('removewithdata.php', '), $hashes, $normalizedForce));',
 			'and hands the internal runner the normalized integer, not the raw value');
+	}
+
+	public function testBothRemovalDoorsExplainAndLogMissingForce()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		foreach(array('httprpc', 'erasedata') as $plugin)
+		{
+			list($status, $output, $commands) = $this->runCopiedAction(
+				__DIR__.'/../../../plugins/'.$plugin.'/action.php',
+				'mode=removewithdata&hash='.$hash, true);
+			$this->assertEquals(0, $status, $plugin.' door exits normally: '.$output);
+			$this->assertEquals(array(), $commands, $plugin.' door admits no deletion');
+			$this->assertTrue(strpos($output, 'HTTP_STATUS:400') !== false,
+				$plugin.' door returns bad-request status');
+			$this->assertTrue(strpos($output, 'LOG:erasedata: removewithdata refused: missing or invalid v') !== false,
+				$plugin.' door logs its exact refusal');
+			$this->assertTrue(strpos($output, 'BODY:Invalid deletion request: missing or invalid v.') !== false,
+				$plugin.' door tells the client what to fix');
+		}
+	}
+
+	public function testBothRemovalDoorsRejectNoncanonicalForceThroughSharedAdmission()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		foreach(array('httprpc', 'erasedata') as $plugin)
+		{
+			list($status, $output, $commands) = $this->runCopiedAction(
+				__DIR__.'/../../../plugins/'.$plugin.'/action.php',
+				'mode=removewithdata&hash='.$hash.'&v=01', true);
+			$this->assertEquals(0, $status, $plugin.' door exits normally: '.$output);
+			$this->assertEquals(array(), $commands, $plugin.' door never reaches erase');
+			$this->assertTrue(strpos($output, 'LOG:erasedata: removewithdata refused: missing or invalid v') !== false,
+				$plugin.' door logs a noncanonical force refusal');
+			$this->assertTrue(strpos($output, 'BODY:Invalid deletion request: missing or invalid v.') !== false,
+				$plugin.' door explains the invalid force');
+		}
+	}
+
+	public function testHttprpcRemovalExplainsMissingHelper()
+	{
+		$this->reset();
+		list($status, $output, $commands) = $this->runCopiedAction(
+			__DIR__.'/../../../plugins/httprpc/action.php',
+			'mode=removewithdata&hash='.$this->hash().'&v=1', false);
+		$this->assertEquals(0, $status, 'httprpc door exits normally: '.$output);
+		$this->assertEquals(array(), $commands, 'no raw erase without the helper');
+		$this->assertTrue(strpos($output, 'HTTP_STATUS:409') !== false,
+			'missing helper returns a refusal status');
+		$this->assertTrue(strpos($output, 'LOG:erasedata: removewithdata refused: helper unavailable') !== false,
+			'missing helper is visible in the server log');
+		$this->assertTrue(strpos($output, 'BODY:Deletion handler unavailable.') !== false,
+			'missing helper is named in the HTTP response');
+	}
+
+	public function testBothRemovalDoorsShowClassifiedBusyAdmissionRefusal()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		foreach(array('httprpc', 'erasedata') as $plugin)
+		{
+			list($status, $output, $commands) = $this->runCopiedAction(
+				__DIR__.'/../../../plugins/'.$plugin.'/action.php',
+				'mode=removewithdata&hash='.$hash.'&v=1', true, true);
+			$this->assertEquals(0, $status, $plugin.' door exits normally: '.$output);
+			$this->assertEquals(array('admit:1'), $commands,
+				$plugin.' door attempts exactly one admission');
+			$this->assertTrue(strpos($output, 'HTTP_STATUS:409') !== false,
+				$plugin.' door returns conflict status for a busy torrent');
+			$this->assertTrue(strpos($output, 'LOG:erasedata: removewithdata refused: hash-lock') !== false,
+				$plugin.' door records the classified cause');
+			$this->assertTrue(strpos($output, 'BODY:Torrent busy; try again.') !== false,
+				$plugin.' door sends the classified cause to its client');
+			$this->assertTrue(strpos($output, 'Could not reach rTorrent') === false,
+				$plugin.' door does not mislabel a busy torrent as disconnected rTorrent');
+		}
+		erasedataAdmissionRefusalReason('admission-refused');
+		erasedataDrainDiagnostic(array('FileUtil', 'toLog'), 'hash-lock', null, 1,
+			'admission-refused');
+		$this->assertEquals('hash-lock', erasedataAdmissionRefusalReason(),
+			'the production diagnostic records the reason exposed by the door');
+		$this->assertEquals('Torrent busy; try again.',
+			erasedataRemovalRefusalMessage(erasedataAdmissionRefusalReason()),
+			'the production response explains an occupied torrent');
+	}
+
+	public function testPartialAdmissionRefusalHasOneBoundedSummaryLog()
+	{
+		$this->reset();
+		erasedataReportPartialRemovalRefusal(array('refused' => array('invalid-hash:string',
+			'invalid-hash:string', $this->hash())));
+		$this->assertEquals(array('erasedata: removewithdata partially refused: reason=invalid-hash members=2',
+			'erasedata: removewithdata partially refused: reason=descriptor-unavailable members=1'),
+			FileUtil::$log, 'partial refusal reports a count without the submitted values');
+	}
+
+	public function testHttprpcRemovalEntersAdmissionWithValidWireForceOnly()
+	{
+		$this->reset();
+		$hash = $this->hash();
+		$door = __DIR__.'/../../../plugins/httprpc/action.php';
+		foreach(array('1', '2') as $force)
+		{
+			list($status, $output, $commands) = $this->runCopiedAction($door,
+				'mode=removewithdata&hash='.$hash.'&v='.$force, true);
+			$this->assertEquals(0, $status,
+				'copied httprpc action exits normally for force '.$force.': '.$output);
+			$this->assertEquals(array('admit:'.$force), $commands,
+				'httprpc uses the shared admission door with integer force '.$force);
+		}
+		foreach(array('', '01', '1=2') as $force)
+		{
+			$body = 'mode=removewithdata&hash='.$hash;
+			if($force !== '')
+				$body .= '&v='.$force;
+			list($status, $output, $commands) = $this->runCopiedAction($door,
+				$body, true);
+			$this->assertEquals(0, $status,
+				'copied httprpc action exits normally for invalid force: '.$output);
+			$this->assertEquals(array(), $commands,
+				'invalid force never reaches either deletion producer');
+		}
 	}
 
 	public function testHttprpcRemovalFailsClosedWithoutErasedataHelper()
@@ -7114,7 +7235,8 @@ class RemoveWithDataTest extends TestCase
 	{
 		$callers = array();
 		$unreadable = array();
-		foreach(ErasedataProductionMirror::pluginFiles() as $file)
+		foreach(array_merge(ErasedataProductionMirror::pluginFiles(),
+			array('../httprpc/action.php')) as $file)
 		{
 			$bytes = @file_get_contents($this->repositoryRoot().'/plugins/erasedata/'.$file);
 			if(!is_string($bytes) || $bytes === '')
@@ -8319,7 +8441,7 @@ class RemoveWithDataTest extends TestCase
 	public function testPublicDoorsShareOneAdmissionApiAndExposeNoTestSeams()
 	{
 		$this->reset();
-		$invariant = 'both public doors go through the same admission API, and'
+		$invariant = 'all three public doors go through the same admission API, and'
 			.' the public production wrapper takes no injection parameters';
 		$this->sourceHas('action.php', 'erasedataAdmitRemoval',
 			'action.php calls the shared admission API');
@@ -8515,7 +8637,7 @@ class RemoveWithDataTest extends TestCase
 					.' (found in: '.implode(', ', $callers).')');
 		}
 		$doors = $this->productionCallers('erasedataAdmitRemoval(');
-		foreach(array('action.php', 'erase.php') as $door)
+		foreach(array('action.php', 'erase.php', '../httprpc/action.php') as $door)
 			$this->assertTrue(in_array($door, $doors, true),
 				$door.' enters the shared admission API (found in: '
 					.implode(', ', $doors).')');
@@ -13184,15 +13306,36 @@ class RemoveWithDataTest extends TestCase
 					.trim(substr($door->out, 0, 160)));
 	}
 
+	public function testHistoricalFinalIsCollectedAfterRestartWithoutDrain()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$hash = $this->hash();
+		$payload = $this->dir.'/historical-final-payload.bin';
+		file_put_contents($payload, 'old published payload');
+		$bytes = ErasedataManifestCodec::encode($hash,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$final = $queue.'/'.$hash.'.0000000000000001.12345678.list';
+		file_put_contents($final, $bytes);
+		$this->probe(true, true, array(), 'info-hash not found');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()),
+			'startup recovery accepts a historical final without inventing a drain obligation');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'no generation drain is armed for a final outside the admission journal');
+		erasedataRunCollector($queue);
+		$this->assertTrue(!is_file($payload) && !is_file($final),
+			'the ordinary collector discharges the historical final after restart');
+	}
+
 	// F1. Startup recovery must never arm a schedule retirement could not take
 	// away.
 	//
 	// The conservative scan is written for RETIREMENT, which must refuse on
 	// anything it cannot account for, so it also counts `final`, `malformed`,
 	// `residue` and `unknown` entries. Arming on those made the arm predicate
-	// and the retire predicate disagree, and the disagreement is reachable on a
-	// stock install: plugins/httprpc/action.php still runs the legacy producer,
-	// whose <HASH>.<pid>.<uniqid>.list lives about a collector interval,
+	// and the retire predicate disagree, and the disagreement is reachable in
+	// legacy releases: the httprpc producer wrote a
+	// <HASH>.<pid>.<uniqid>.list that lives about a collector interval,
 	// classifies as `malformed` and never touches the drain state. One full UI
 	// load in that window armed erasedata-drain<User> on the ZERO generation --
 	// which retirement refuses for ever, silently, for the life of the daemon.
@@ -13211,8 +13354,8 @@ class RemoveWithDataTest extends TestCase
 		$queue = $this->queuePath();
 		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
 		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
-		// (a) The stock install: the legacy httprpc producer has published its
-		// manifest and the collector has not taken it yet.
+		// (a) A legacy manifest from before the HTTP RPC admission route;
+		// the ordinary collector has not taken it yet.
 		$legacy = $queue.'/'.$this->hash('A').'.31337.65f0a1b2c3d4e5.12345678.list';
 		@file_put_contents($legacy, "x\n");
 		$scan = erasedataRetirementScan($this->dependencies());

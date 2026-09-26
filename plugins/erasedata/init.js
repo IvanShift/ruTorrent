@@ -51,6 +51,21 @@ if(plugin.canChangeMenu())
 	    }
 	}
 
+	// A successful HTTP status can still contain members that admission refused
+	// or whose erase result is unresolved. The desktop action immediately follows
+	// with a list refresh, so show the classified count before that response is
+	// replaced by the fresh torrent list.
+	rTorrentStub.prototype.removewithdataResponse = function(data)
+	{
+		if(data && Array.isArray(data.refused) && data.refused.length)
+			noty("Deletion partly refused: " + data.refused.length +
+				" torrent(s). Check the server log.", "error");
+		if(data && Array.isArray(data.retained) && data.retained.length)
+			noty("Deletion outcome unresolved for " + data.retained.length +
+				" torrent(s). Check the server log.", "error");
+		return data;
+	}
+
 	rTorrentStub.prototype.removewithdata = function()
 	{
 		if (plugin.debug) console.log("erasedata: removewithdata called, hashes:", this.hashes, "getCommon available:", typeof this.getCommon === "function");

@@ -182,7 +182,7 @@ plugin.backListener = function() {
   }
 };
 
-plugin.request = function(url, func) {
+plugin.request = function(url, func, onError) {
   theWebUI.requestWithTimeout(url,
     function(d) {
       if (func == undefined) {
@@ -197,12 +197,14 @@ plugin.request = function(url, func) {
       }
     },
     function() {
-      // Failures are swallowed by design — the next poll retries — but
-      // leave a trace in the console
+      // Polling callers rely on the next poll; destructive calls can
+      // handle this timeout explicitly through onError.
       console.warn('mobile: request timed out: ' + url);
+      if (onError) onError('timeout', '');
     },
     function(status, text) {
-      console.warn('mobile: request failed: ' + url + ' (' + status + (text ? ': ' + text : '') + ')');
+      console.warn('mobile: request failed: ' + url + ' (' + status + ')');
+      if (onError) onError(status, text);
     });
 };
 
@@ -1593,10 +1595,41 @@ plugin.delete = function() {
 
 plugin.deleteConfirmed = function() {
   if ((this.eraseWithDataLoaded) && ($('#deleteWithData input').prop('checked'))) {
-    this.request('?action=removewithdata&hash=' + this.torrent.hash);
-  } else {
-    this.request('?action=remove&hash=' + this.torrent.hash);
+    var hash = this.torrent.hash;
+    this.request('?action=removewithdata&hash=' + hash + '&v=1', function(data) {
+      // A retained obligation means erase/publication is unresolved. Do not
+      // leave a retry button in front of the user when the torrent may be gone.
+      if (data && Array.isArray(data.retained) && data.retained.length) {
+        plugin.showAlert('Deletion outcome unresolved for ' + data.retained.length +
+          ' torrent(s). Check the server log.', 'alert-danger');
+        if (plugin.torrent && plugin.torrent.hash === hash) {
+          plugin.torrent = undefined;
+          plugin.showList();
+        }
+        return;
+      }
+      if (data && Array.isArray(data.refused) && data.refused.length) {
+        plugin.showAlert('Deletion partly refused: ' + data.refused.length +
+          ' torrent(s). Check the server log.', 'alert-danger');
+        return;
+      }
+      // Keep the confirmation and selected torrent until the server accepts
+      // the deletion; an HTTP refusal must not look like a completed remove.
+      if (plugin.torrent && plugin.torrent.hash === hash) {
+        plugin.torrent = undefined;
+        plugin.showList();
+      }
+    }, function(status, text) {
+      // Only server-owned, classified messages reach the toast. The response
+      // may instead be a proxy error page; never render arbitrary HTML here.
+      var message = typeof text === 'string' &&
+        /^(?:Invalid deletion request\.|Invalid deletion request: missing or invalid (?:v|hash(?: or (?:mode|form entry))?)\.|Torrent busy; try again\.|Deletion queue (?:busy; try again\.|unavailable\.|did not acknowledge the request\.)|Deletion handler unavailable\.|Deletion refused \([a-z0-9-]+\)\. Check the server log\.)$/.test(text)
+        ? text : 'Deletion request failed. Check the server log.';
+      plugin.showAlert(message, 'alert-danger');
+    });
+    return;
   }
+  this.request('?action=remove&hash=' + this.torrent.hash);
   this.torrent = undefined;
   this.showList();
 };

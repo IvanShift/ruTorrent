@@ -11,6 +11,7 @@ $add = array();
 $ss = array();
 $vs = array();
 $hash = array();
+$malformedForm = false;
 if (!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 if(isset($HTTP_RAW_POST_DATA))
@@ -18,7 +19,12 @@ if(isset($HTTP_RAW_POST_DATA))
 	$vars = explode('&', $HTTP_RAW_POST_DATA);
 	foreach($vars as $var)
 	{
-		$parts = explode("=",$var);
+		$parts = explode("=", $var, 2);
+		if(count($parts) !== 2 || $parts[0] === "")
+		{
+			$malformedForm = true;
+			continue;
+		}
 		switch($parts[0])
 		{
 			case "cmd":
@@ -425,18 +431,41 @@ switch($mode)
 	}
 	case "removewithdata":	/**/
 	{
-		$forceDelete = isset($vs[0]) ? $vs[0] : null;
-		// Delegate to the shared erasedata helper so the httprpc and direct
-		// (plugins/erasedata/action.php) paths record the identical delete list.
-		// Without that helper there is no durable data-deletion obligation, so
-		// fail closed instead of erasing the torrent by itself.
+		// This route must use the same generation-bound admission as the
+		// direct erasedata door. Without the helper, deletion is refused.
 		$helper = dirname(__FILE__)."/../erasedata/removewithdata.php";
-		if(is_file($helper))
+		if(!is_file($helper))
 		{
-			require_once($helper);
-			if(!is_null(ErasedataManifestCodec::normalizeForce($forceDelete)))
-				$result = erasedataRemoveWithData($hash, $forceDelete);
+			$removalRefusal = 'helper unavailable';
+			$removalMessage = 'Deletion handler unavailable.';
+			break;
 		}
+		require_once($helper);
+		if($malformedForm || !count($hash))
+		{
+			$removalRefusal = 'invalid request';
+			$removalMessage = 'Invalid deletion request: missing or invalid hash or form entry.';
+			break;
+		}
+		$forceDelete = isset($vs[0]) ? $vs[0] : null;
+		if(is_null($forceDelete))
+		{
+			$removalRefusal = 'missing or invalid v';
+			$removalMessage = 'Invalid deletion request: missing or invalid v.';
+			break;
+		}
+		$result = erasedataAdmitRemoval($hash, $forceDelete);
+		if($result === false)
+		{
+			$reason = erasedataAdmissionRefusalReason();
+			$removalRefusal = ($reason === 'invalid-force') ? 'missing or invalid v' : $reason;
+			$removalMessage = ($reason === 'invalid-force')
+				? 'Invalid deletion request: missing or invalid v.'
+				: erasedataRemovalRefusalMessage($reason);
+			$result = null;
+		}
+		else
+			erasedataReportPartialRemovalRefusal($result);
 		break;
 	}
 	case "remove":	/**/
@@ -794,7 +823,15 @@ switch($mode)
 	}
 }
 
-if(is_null($result))
+if(isset($removalRefusal))
+{
+	header(in_array($removalRefusal, array('invalid request', 'invalid-request', 'invalid-hash',
+		'missing or invalid v'), true)
+		? 'HTTP/1.0 400 Bad Request' : 'HTTP/1.0 409 Conflict');
+	FileUtil::toLog('erasedata: removewithdata refused: '.$removalRefusal);
+	CachedEcho::send($removalMessage, 'text/plain');
+}
+else if(is_null($result))
 {
 	header("HTTP/1.0 500 Server Error");
 	$message = "Could not reach rTorrent over XMLRPC. Is rTorrent running?";

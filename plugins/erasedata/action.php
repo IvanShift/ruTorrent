@@ -54,22 +54,45 @@ if(is_string($HTTP_RAW_POST_DATA) && $HTTP_RAW_POST_DATA !== "")
 }
 
 $result = null;
-if($malformed === 0 && $mode == "removewithdata" && count($hash))
+$refusal = null;
+if($malformed !== 0 || $mode != "removewithdata" || !count($hash))
 {
-	// The wire boundary, and the only place a decimal spelling becomes the
-	// integer force everything below this line speaks. An unreadable force is
-	// refused here; it is never coerced to "delete the download's own files".
-	$forceDelete = isset($vs[0]) ? ErasedataManifestCodec::normalizeForce($vs[0]) : null;
-	if(!is_null($forceDelete))
-		// One generation-bound admission transaction, shared with the CLI door
-		// in erase.php. Neither door reaches the destructive producer directly.
-		$result = erasedataAdmitRemoval($hash, $forceDelete);
-}
-
-if(is_null($result))
-{
-	header("HTTP/1.0 500 Server Error");
-	CachedEcho::send("Could not reach rTorrent over XMLRPC. Is rTorrent running?", "text/html");
+	$refusal = 'invalid request';
+	$message = 'Invalid deletion request: missing or invalid hash or mode.';
 }
 else
-	CachedEcho::send(JSON::safeEncode($result), "application/json");
+{
+	// The shared public admission wrapper normalizes the raw wire spelling.
+	$forceDelete = isset($vs[0]) ? $vs[0] : null;
+	if(is_null($forceDelete))
+	{
+		$refusal = 'missing or invalid v';
+		$message = 'Invalid deletion request: missing or invalid v.';
+	}
+	else
+	{
+		$result = erasedataAdmitRemoval($hash, $forceDelete);
+		if($result === false)
+		{
+			$reason = erasedataAdmissionRefusalReason();
+			$refusal = ($reason === 'invalid-force') ? 'missing or invalid v' : $reason;
+			$message = ($reason === 'invalid-force')
+				? 'Invalid deletion request: missing or invalid v.'
+				: erasedataRemovalRefusalMessage($reason);
+		}
+	}
+}
+
+if($refusal !== null)
+{
+	header(in_array($refusal, array('invalid request', 'invalid-request', 'invalid-hash',
+		'missing or invalid v'), true)
+		? 'HTTP/1.0 400 Bad Request' : 'HTTP/1.0 409 Conflict');
+	FileUtil::toLog('erasedata: removewithdata refused: '.$refusal);
+	CachedEcho::send($message, 'text/plain');
+}
+else
+{
+	erasedataReportPartialRemovalRefusal($result);
+	CachedEcho::send(JSON::safeEncode($result), 'application/json');
+}

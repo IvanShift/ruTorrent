@@ -167,7 +167,7 @@ Rules that follow:
 
 ### Capturing a real answer
 
-Read-only, and the passkey never reaches a file or the terminal:
+Read-only, and the passkey never reaches a file or the terminal. Fetch tracker URLs with a separate `t.multicall` per hash: the proxy rejects a nested dispatcher inside `d.multicall2` with 403.
 
 ```sh
 # 1. an announce URL from the running instance -- never type a passkey by hand
@@ -176,7 +176,9 @@ import re, subprocess, xmlrpc.client
 gw = re.search(r'via (\d+\.\d+\.\d+\.\d+)', subprocess.run(
     ['ip','route','show','default'], capture_output=True, text=True).stdout).group(1)
 srv = xmlrpc.client.ServerProxy('http://%s:8080/plugins/httprpc/action.php' % gw)
-for h, urls in ((r[0], r[1]) for r in srv.d.multicall2('', 'main', 'd.hash=', 't.multicall=,t.url=')):
+for row in srv.d.multicall2('', 'main', 'd.hash='):
+    h = row[0]
+    urls = srv.t.multicall(h, '', 't.url=')
     u = next((x[0] for x in (urls or []) if x and 't-ru.org' in x[0]), None)
     if u: print(h, re.sub(r'(?i)(pk=)[0-9a-f]+', r'\1<PK>', u)); break
 PY
