@@ -1617,14 +1617,50 @@ final class ErasedataCollector
 					break;
 				}
 			}
+		// A directory cannot be captured and restored without an atomic
+		// no-replace operation. Keep the exact job until its parent is resolved.
 		if($complete)
 			foreach(erasedataCleanupParents($manifest) as $dir)
-				if(!erasedataCompleteNonForceDirectory($dir, $path, $this->filesystem))
+			{
+				// Previous releases may already have captured this parent. Never
+				// retire its job while the private reservation still holds data.
+				$reservations = erasedataDirectoryReservations(
+					$dir, $path, $this->filesystem);
+				if($reservations === false || count($reservations) > 0)
 				{
 					$complete = false;
-					$reason = 'rmdir-failure';
+					$reason = $reservations === false
+						? 'unsafe-path' : 'legacy-capture-retained';
 					break;
 				}
+				if(is_link($dir))
+				{
+					$target = $this->filesystem->readLink($dir);
+					if(is_string($target) && strpos($target,
+						erasedataDirectoryReservationPrefix($dir, $path)) === 0)
+					{
+						$complete = false;
+						$reason = 'legacy-capture-retained';
+						break;
+					}
+					continue;
+				}
+				if(!is_dir($dir))
+					continue;
+				$entries = $this->filesystem->scanDirectory($dir);
+				if(!is_array($entries))
+				{
+					$complete = false;
+					$reason = 'unsafe-path';
+					break;
+				}
+				if(count(array_diff($entries, array('.', '..'))) === 0)
+				{
+					$complete = false;
+					$reason = 'parent-no-atomic-restore';
+					break;
+				}
+			}
 		if(!$complete)
 		{
 			$this->cleanupLog($hash, 'retained', ($reason === null ? 'unsafe-path' : $reason), $path, $jobKey);
@@ -1790,7 +1826,7 @@ final class ErasedataCollector
 			{
 				$recoveryReason = null;
 				if(erasedataRecoverObsoleteCleanupLocked($listPath, $hash, $tmp['manifest']['new_hash'], $tmp['manifest']['marker'],
-					$tmp['manifest']['replacement_record'], $recoveryReason, $index) !== ERASEDATA_CLEANUP_READY)
+					$tmp['manifest']['replacement_record'], $recoveryReason, $index, $this->filesystem) !== ERASEDATA_CLEANUP_READY)
 				{
 					$this->cleanupLog($hash, 'retained',
 						$recoveryReason === null ? 'generation-mismatch' : $recoveryReason, $tmp['candidate']['path'], $jobKey);

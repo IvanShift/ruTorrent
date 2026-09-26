@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Kiểm tra xem có cập nhật";
+ theUILang.checkTorrentRejected	= "Yêu cầu kiểm tra cập nhật không hợp lệ";
+ theUILang.checkTorrentRefused	= "Không thể bắt đầu kiểm tra cập nhật";
+ theUILang.checkTorrentUnexpected	= "Phản hồi không mong đợi khi kiểm tra cập nhật";
  theUILang.chkHdr		= "Kiểm tra cập nhật Torrent";
  theUILang.checkedAt		= "Lần kiểm tra cuối";
  theUILang.checkedResult	= "Kết quả";

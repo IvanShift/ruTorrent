@@ -999,7 +999,7 @@ if(!function_exists('erasedataPublishObsoleteCleanup'))
 				$job['old_hash'], $filesystem);
 			$reason = null;
 			$artifacts = erasedataCleanupGenerationArtifacts($index, $job['old_hash'], $job['new_hash'], $job['marker'],
-				$job['replacement_record'], $reason);
+				$job['replacement_record'], $reason, $filesystem);
 			if($artifacts === false || $artifacts === null || $artifacts['tmp']['candidate']['path'] !== $job['tmp_path']
 				|| !erasedataSameStatIdentity($artifacts['tmp']['candidate']['stat'], $job['tmp_stat']))
 				return(false);
@@ -1144,7 +1144,8 @@ if(!function_exists('erasedataBuildCollectorIndex'))
 
 if(!function_exists('erasedataCleanupGenerationArtifacts'))
 {
-	function erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker, $replacementRecord, &$reason = null)
+	function erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker, $replacementRecord,
+		&$reason = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = null;
 		if($index === false || !is_array($index))
@@ -1155,7 +1156,7 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 		if(!isset($index[$oldHash]['cleanup']) || !is_array($index[$oldHash]['cleanup']))
 			return(null);
 		if(!isset($index[$oldHash]['cleanup_transactions']) || !is_array($index[$oldHash]['cleanup_transactions']))
-			$index = erasedataAnalyzeCleanupIndex($index);
+			$index = erasedataAnalyzeCleanupIndex($index, $filesystem);
 		if($index === false || !isset($index[$oldHash]['cleanup_transactions']))
 		{
 			$reason = 'unreadable-manifest';
@@ -1182,7 +1183,7 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 			return(false);
 		}
 		$artifactReason = null;
-		$tmp = erasedataReadExactCleanupArtifact($tmpItems[0], $oldHash, $artifactReason);
+		$tmp = erasedataReadExactCleanupArtifact($tmpItems[0], $oldHash, $artifactReason, $filesystem);
 		if($tmp === false)
 		{
 			$reason = $artifactReason === null ? 'unreadable-manifest' : $artifactReason;
@@ -1197,8 +1198,8 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 		if(count($tokenItems))
 		{
 			$tokenReason = null;
-			$token = erasedataReadExactCleanupToken($tokenItems[0], $tokenReason);
-			if($token === false || !erasedataCleanupCommittedPairStillMatches($tmp, $token, $oldHash))
+			$token = erasedataReadExactCleanupToken($tokenItems[0], $tokenReason, $filesystem);
+			if($token === false || !erasedataCleanupCommittedPairStillMatches($tmp, $token, $oldHash, $filesystem))
 			{
 				$reason = $tokenReason === null ? 'unreadable-manifest' : $tokenReason;
 				return(false);
@@ -1234,12 +1235,14 @@ if(!function_exists('erasedataCleanupSuccessorMatches'))
 
 if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 {
-	function erasedataRecoverObsoleteCleanupLocked($listPath, $oldHash, $newHash, $marker, $replacementRecord, &$reason = null, $index = null)
+	function erasedataRecoverObsoleteCleanupLocked($listPath, $oldHash, $newHash, $marker, $replacementRecord,
+		&$reason = null, $index = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'generation-mismatch';
 		if($index === null)
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash);
-		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker, $replacementRecord, $reason);
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
+		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker,
+			$replacementRecord, $reason, $filesystem);
 		if($artifacts === false)
 		{
 			return(ERASEDATA_CLEANUP_RETRY);
@@ -1254,7 +1257,7 @@ if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 		{
 			if(erasedataRepairExactCleanupTokenMode($artifacts['token']['candidate']['path'],
 				$artifacts['token']['candidate']['stat'])
-				&& erasedataCleanupCommittedPairStillMatches($tmp, $artifacts['token'], $oldHash))
+				&& erasedataCleanupCommittedPairStillMatches($tmp, $artifacts['token'], $oldHash, $filesystem))
 			{
 				$reason = null;
 				return(ERASEDATA_CLEANUP_READY);
@@ -1277,7 +1280,8 @@ if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 			return(ERASEDATA_CLEANUP_RETRY);
 		}
 		$listPathname = substr($tmp['candidate']['path'], 0, -4).'.list';
-		if(!erasedataPublishExactStagedFile($tmp['candidate']['path'], $tmp['candidate']['stat'], $listPathname, $tmp['manifest']))
+		if(!erasedataPublishExactStagedFile($tmp['candidate']['path'], $tmp['candidate']['stat'],
+			$listPathname, $tmp['manifest'], $filesystem))
 		{
 			$reason = 'generation-mismatch';
 			return(ERASEDATA_CLEANUP_RETRY);
@@ -1295,7 +1299,8 @@ if(!function_exists('erasedataCancelObsoleteCleanupGenerationLocked'))
 		if($index === null)
 			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
 		$reason = null;
-		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker, $replacementRecord, $reason);
+		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker,
+			$replacementRecord, $reason, $filesystem);
 		if($artifacts === false)
 			return(ERASEDATA_CLEANUP_RETRY);
 		if($artifacts === null)
@@ -1314,7 +1319,8 @@ if(!function_exists('erasedataCancelObsoleteCleanupGenerationLocked'))
 
 if(!function_exists('erasedataRecoverObsoleteCleanup'))
 {
-	function erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord, &$reason = null)
+	function erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord,
+		&$reason = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'generation-mismatch';
 		$oldHash = erasedataCanonicalHash($oldHash);
@@ -1329,8 +1335,9 @@ if(!function_exists('erasedataRecoverObsoleteCleanup'))
 		if($lock === false)
 			return(ERASEDATA_CLEANUP_RETRY);
 		try {
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash);
-			return(erasedataRecoverObsoleteCleanupLocked($listPath, $oldHash, $newHash, $marker, $replacementRecord, $reason, $index));
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
+			return(erasedataRecoverObsoleteCleanupLocked($listPath, $oldHash, $newHash, $marker,
+				$replacementRecord, $reason, $index, $filesystem));
 		}
 		finally { erasedataReleaseHashLock($lock); }
 	}
@@ -1338,7 +1345,8 @@ if(!function_exists('erasedataRecoverObsoleteCleanup'))
 
 if(!function_exists('erasedataCancelObsoleteCleanupGeneration'))
 {
-	function erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $replacementRecord)
+	function erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $replacementRecord,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$oldHash = erasedataCanonicalHash($oldHash);
 		$newHash = erasedataCanonicalHash($newHash);
@@ -1352,8 +1360,9 @@ if(!function_exists('erasedataCancelObsoleteCleanupGeneration'))
 		if($lock === false)
 			return(ERASEDATA_CLEANUP_RETRY);
 		try {
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash);
-			return(erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash, $marker, $replacementRecord, $index));
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
+			return(erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash, $marker,
+				$replacementRecord, $index, $filesystem));
 		}
 		finally { erasedataReleaseHashLock($lock); }
 	}

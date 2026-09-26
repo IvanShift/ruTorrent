@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Sök efter uppdateringar";
+ theUILang.checkTorrentRejected	= "Ogiltig begäran om uppdateringskontroll";
+ theUILang.checkTorrentRefused	= "Det gick inte att starta uppdateringskontrollen";
+ theUILang.checkTorrentUnexpected	= "Oväntat svar från uppdateringskontrollen";
  theUILang.chkHdr		= "Torrent-uppdateringskontroll";
  theUILang.checkedAt		= "Senaste sökning";
  theUILang.checkedResult	= "Resultat";

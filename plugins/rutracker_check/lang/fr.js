@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Vérifier les MAJ";
+ theUILang.checkTorrentRejected	= "Demande de vérification des mises à jour invalide";
+ theUILang.checkTorrentRefused	= "Impossible de lancer la vérification des mises à jour";
+ theUILang.checkTorrentUnexpected	= "Réponse inattendue à la vérification des mises à jour";
  theUILang.chkHdr		= "Vérification de la MAJ du torrent";
  theUILang.checkedAt		= "Dernière vérification";
  theUILang.checkedResult	= "Resultat";

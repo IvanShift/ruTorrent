@@ -130,10 +130,11 @@ class XMLRPCProxy
 	// call must retain its pre-batch untrusted route (for example Sonarr's
 	// d.views.push_back_unique(hash, sonarr_imported)). A homogeneous
 	// untrusted batch stays untrusted; it cannot borrow another member's trust.
+	// Do not list d.close: rTorrent 0.16.22 accepts surplus arguments on an
+	// untrusted connection, closes the download, and skips event.download.closed.
 	private static $batchElevations = array(
 		'f.prioritize_first.enable', 'f.prioritize_first.disable',
 		'f.prioritize_last.enable', 'f.prioritize_last.disable',
-		'd.close',
 		'd.update_priorities', 'd.set_throttle_name', 'd.throttle_name.set',
 		'd.set_custom', 'view.set_visible', 'view.set_not_visible',
 		'd.views.push_back_unique', 'd.views.remove',

@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "업데이트 검사";
+ theUILang.checkTorrentRejected	= "업데이트 확인 요청이 올바르지 않습니다";
+ theUILang.checkTorrentRefused	= "업데이트 확인을 시작할 수 없습니다";
+ theUILang.checkTorrentUnexpected	= "업데이트 확인 중 예기치 않은 응답을 받았습니다";
  theUILang.chkHdr		= "토렌트 업데이트 검사";
  theUILang.checkedAt		= "마지막 검사";
  theUILang.checkedResult	= "결과";

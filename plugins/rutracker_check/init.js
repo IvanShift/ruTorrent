@@ -41,7 +41,12 @@ if(plugin.canChangeMenu())
 		if( data && (data.status === "queued") )
 			log( theUILang.checkTorrent+": "+theUILang.Queued+" ("+iv(data.accepted)+")" );
 		else
-			noty( theUILang.checkTorrent+": "+theUILang.Error, "error" );
+		{
+			var reason = data && data.status === "rejected" ? theUILang.checkTorrentRejected :
+				data && data.status === "refused" ? theUILang.checkTorrentRefused :
+					theUILang.checkTorrentUnexpected;
+			noty( theUILang.checkTorrent+": "+reason, "error" );
+		}
 		return( data );
 	}
 }

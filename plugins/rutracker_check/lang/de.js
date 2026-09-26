@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Auf Update prüfen";
+ theUILang.checkTorrentRejected	= "Ungültige Anfrage zur Updateprüfung";
+ theUILang.checkTorrentRefused	= "Updateprüfung konnte nicht gestartet werden";
+ theUILang.checkTorrentUnexpected	= "Unerwartete Antwort auf die Updateprüfung";
  theUILang.chkHdr		= "Torrent auf Update prüfen";
  theUILang.checkedAt		= "Letzte Prüfung";
  theUILang.checkedResult	= "Resultat";

@@ -1534,6 +1534,8 @@ $suite->test('22: layer 3 reports an unavailable dump and a missing row distinct
         'and says which failure it was, in the shared status vocabulary: ' . $line);
     strictAssertSame(array(), strictLogsMatching(ruTrackerChecker::$logs, 'layer3 topic='),
         'no classification is claimed for a dump that was never read');
+    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+        'a temporary refusal does not launch a tracker-wide crawl');
 
     // Present but missing our row: that IS a classification outcome.
     hReset();
@@ -1548,6 +1550,66 @@ $suite->test('22: layer 3 reports an unavailable dump and a missing row distinct
         'the missing row is logged as a classification outcome');
     strictAssertTrue(strpos($line, 'row missing from the dump') !== false, 'named as missing: ' . $line);
     strictAssertEnglish($line, 'the missing-row classification line');
+});
+
+// Live GET to /v1/static/pvc/f/267 returned 404 on 2026-09-26. The feed can
+// name this archive forum after a move; a known chk-forum must not exclude
+// its topic from the next crawl when that forum has no dump.
+$suite->test('a feed-mapped forum without a dump queues its topic for resolution', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(267);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+        'an absent forum dump is not a verdict about the topic');
+    strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(),
+        'the queued topic is eligible for a crawl despite its stored chk-forum');
+    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer3 dump forum=267',
+        'the absence and recovery path are visible');
+    strictAssertTrue(strpos($line, 'http-status=404') !== false
+        && strpos($line, 'resolution attempted') !== false,
+        'the diagnostic names the absence and recovery request: ' . $line);
+});
+
+$suite->test('a new feed forum mapping lifts an old crawl miss before an absent-dump retry', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    RuTrackerForumIndex::markMiss($topicId, time());
+
+    // Control: the same 404 alone does not override a completed crawl's
+    // backoff, or this path would request a full sweep on every cycle.
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(267);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
+    RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
+    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+        'an old 404 without new feed evidence still respects miss backoff');
+
+    // The feed's authoritative write changes chk-forum from 2 to 267. The
+    // response queues model the real read and write under the mapping lock.
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+        array((string) $topicId, '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, $topicId, 267, '2', true),
+        'the new feed mapping really landed');
+
+    rXMLRPCRequest::reset();
+    Snoopy::reset();
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hCandidateRow()));
+    hQueueForum(267);
+    Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+        'the archive dump remains unavailable after the feed correction');
+    strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(),
+        'the new mapping invalidates the old miss and makes its topic crawlable');
 });
 
 // A stopped torrent never announces, so its tracker counters stay at zero and

@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Проверить обновление";
+ theUILang.checkTorrentRejected	= "Неверный запрос проверки обновления";
+ theUILang.checkTorrentRefused	= "Не удалось запустить проверку обновления";
+ theUILang.checkTorrentUnexpected	= "Неожиданный ответ проверки обновления";
  theUILang.chkHdr		= "Проверка обновления торрента";
  theUILang.checkedAt		= "Произведена";
  theUILang.checkedResult	= "Результат";

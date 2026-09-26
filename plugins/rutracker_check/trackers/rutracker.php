@@ -810,20 +810,23 @@ class RuTrackerCheckImpl
         // not a dump, a reservation it could not take, a cached body that
         // went missing, a fetch that could not become the durable one -- and
         // this is the consumer that prints the word, so it prints the
-        // classification with it. Only dump-refused, dump-empty and
-        // dump-malformed go through crawlFailureReason(), so only they carry
-        // the shared 'statuses=' detail (http-status=N, or a named transport
+        // classification with it. Only dump-absent, dump-refused,
+        // dump-empty and dump-malformed go through crawlFailureReason(), so
+        // only they carry the shared 'statuses=' detail (http-status=N, or a named transport
         // failure below 100); the rest are bare codes. Either way it is a
         // classification, never third-party payload text.
         $dumpReason = null;
-        $dump = RuTrackerForumIndex::fetchDump($forumId, null, $dumpReason);
-        // Same as layer 2's inconclusive answer: nothing was learned, so
-        // nothing is written and the stored token stands. An empty dump is NOT
-        // this case -- it is the forum answering that it lists nothing.
+        $dumpAbsent = false;
+        $dump = RuTrackerForumIndex::fetchDump($forumId, null, $dumpReason, $dumpAbsent);
+        // An empty parsed dump is not null. For a 404/410, re-resolve the
+        // topic even though chk-forum is filled; a transient refusal proves
+        // nothing and must not launch a tracker-wide crawl.
         if ($dump === null) {
+            if ($dumpAbsent) RuTrackerForumIndex::queueTopic($topicId);
             ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
                 . ' unavailable'
-                . (($dumpReason === null || $dumpReason === '') ? '' : ': ' . $dumpReason));
+                . (($dumpReason === null || $dumpReason === '') ? '' : ': ' . $dumpReason)
+                . ($dumpAbsent ? '; topic ' . $topicId . ' resolution attempted' : ''));
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
         $rows = $dump['rows'];

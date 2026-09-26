@@ -95,14 +95,20 @@ if (count($flat) % 4 !== 0) {
 $marked = array();
 for ($index = 0; $index < count($flat); $index += 4)
 	if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '')
-		$marked[] = array($flat[$index], $flat[$index + 1]);
+		$marked[] = array($flat[$index], $flat[$index + 1],
+			$flat[$index + 2], $flat[$index + 3]);
 
 printf("%d torrents, %d carry a recovery marker\n", count($flat) / 4, count($marked));
-foreach ($marked as $row)
-	printf("  %s  %s\n", $row[0], substr(html_entity_decode($row[1]), 0, 60));
+foreach ($marked as $row) {
+	$kind = preg_match('/^v1:candidate-claim:[0-9a-f]{32}$/D', $row[2]) === 1
+		? 'candidate-claim' : 'other';
+	printf("  %s  %s  [%s; ack %s]\n", $row[0],
+		substr(html_entity_decode($row[1]), 0, 60), $kind,
+		$row[3] === '' ? 'empty' : 'present');
+}
 if (!$marked) exit(0);
 if (!$apply) {
-	echo "\nreport only -- rerun with the argument: apply\n";
+	echo "\nreport only -- apply clears every marked torrent; inspect every row first\n";
 	exit(0);
 }
 

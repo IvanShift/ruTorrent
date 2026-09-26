@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Check for Update";
+ theUILang.checkTorrentRejected	= "Invalid update check request";
+ theUILang.checkTorrentRefused	= "Could not start the update check";
+ theUILang.checkTorrentUnexpected	= "Unexpected update check response";
  theUILang.chkHdr		= "Torrent Update Check";
  theUILang.checkedAt		= "Last Checked";
  theUILang.checkedResult	= "Result";

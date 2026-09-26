@@ -202,6 +202,7 @@ function upProjectionValues($model, $commands)
     return $values;
 }
 
+
 function upFeed()
 {
     return '<?xml version="1.0" encoding="utf-8"?>'
@@ -672,38 +673,181 @@ upTest($suite, 'the production default checker calls ruTrackerChecker::run with 
 // nothing, and with layer 2 confirming "unregistered" for the re-uploaded topic
 // that path ends in a DELETED verdict for a topic that plainly still exists.
 upTest($suite, 'pollFeed corrects a stale chk-forum and leaves a correct one alone', function () {
+    $unknown = str_repeat('A', 40);
+    $moved = str_repeat('B', 40);
+    $current = str_repeat('C', 40);
     rXMLRPCRequest::reset();
     $client = (object) array('status' => 200, 'results' => upFeed());
     rXMLRPCRequest::queue('d.multicall', true, false, array(
-        'HASH1', '100', '',    // topic 100 known to the feed, forum not yet cached
-        'HASH2', '200', '55',  // topic 200 moved: the feed says f-22, the cache says 55
+        $unknown, '100', '',    // topic 100 known to the feed, forum not yet cached
+        $moved, '200', '55',  // topic 200 moved: the feed says f-22, the cache says 55
         'HASH3', '0', '',      // no chk-topic yet
         'HASH4', '999', '',    // chk-topic the feed does not know about
-        'HASH5', '100', '11',  // already carries exactly what the feed says
+        $current, '100', '11',  // already carries exactly what the feed says
     ));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('100', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     $changed = RuTrackerUpdatePass::pollFeed($client);
 
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    $writes = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(2, count($writes), 'the unknown one and the stale one, and nothing else');
-    strictAssertSame(array('HASH1', 'chk-forum', '11'), $writes[0]['commands'][0]->params,
-        'forum id learned from the feed');
-    strictAssertSame(array('HASH2', 'chk-forum', '22'), $writes[1]['commands'][0]->params,
+    testAssertForumBranch($writes[0], $unknown, '11', 'forum id learned from the feed');
+    testAssertForumBranch($writes[1], $moved, '22',
         'and the stale id is corrected to where the topic is now');
-    strictAssertSame(array('HASH1', 'HASH2'), $changed,
+    strictAssertSame(array($unknown, $moved), $changed,
         'successfully changed rows are returned so this cycle can recheck them');
     // HASH5 is the reason the correction is affordable: asking about known
     // topics would otherwise mean a request per fleet topic per cycle for
     // nothing at all.
     foreach ($writes as $w)
-        strictAssertTrue($w['commands'][0]->params[0] !== 'HASH5',
+        strictAssertTrue($w['commands'][0]->params[0] !== $current,
             'a row that already carries the right id is not rewritten');
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom'),
         'chk-feed-upd is no longer written at all');
+});
+
+upTest($suite, 'a newer feed correction progresses after an earlier setter reply was lost', function () {
+    $hash = str_repeat('B', 40);
+    $first = (object) array('status' => 200, 'results' => upFeed());
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerUpdatePass::pollFeed($first);
+    $oldFence = RuTrackerState::load('forumindex')['forum_pending'][200][$hash]['fence'];
+    strictAssertSame('22', RuTrackerState::load('forumindex')['forum_pending'][200][$hash]['to'],
+        'the first feed target remains uncertain after its lost setter reply');
+
+    $second = (object) array('status' => 200,
+        'results' => str_replace('f-22', 'f-33', upFeed()));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerUpdatePass::pollFeed($second);
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame('33', $state['forum_pending'][200][$hash]['to'] ?? null,
+        'the newer target supersedes the uncertain old intent durably');
+    strictAssertSame(33, RuTrackerState::load('updatepass')['forum_corrections'][$hash]['forum'],
+        'the durable feed obligation and mapping intent now agree');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+        'a fenced setter for the newer target was sent to rTorrent');
+    strictAssertTrue(strcmp($state['forum_pending'][200][$hash]['fence'], $oldFence) > 0,
+        'the newer target has a larger daemon fence than the old pending setter');
+
+    // The first setter can still execute after the newer feed was staged.
+    // Its lower daemon fence must not strand the latest target.
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '200', '22'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($oldFence));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    RuTrackerUpdatePass::pollFeed($second);
+    $confirmed = RuTrackerState::load('forumindex');
+    strictAssertSame(array(), $confirmed['forum_pending'],
+        'a successful retry retires the newest pending target');
+    strictAssertTrue(isset($confirmed['forum_evidence'][200]),
+        'the newest target becomes committed positive evidence');
+});
+
+upTest($suite, 'a returning feed forum fences a lost setter without rewriting a clean sibling hash', function () {
+    $first = str_repeat('B', 40);
+    $second = str_repeat('C', 40);
+    Snoopy::reset();
+    Snoopy::queue(200, upFeed(), array('ETag: "v1"'));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($first, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerUpdatePass::pollFeed();
+    $oldFence = RuTrackerState::load('forumindex')['forum_pending'][200][$first]['fence'];
+    strictAssertSame(22, RuTrackerState::load('updatepass')['forum_corrections'][$first]['forum'],
+        'the old target remains durable after its reply is lost');
+
+    $returning = str_replace('f-22', 'f-55', upFeed());
+    Snoopy::queue(200, $returning, array('ETag: "v2"'));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(
+        $first, '200', '55', $second, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    $changed = RuTrackerUpdatePass::pollFeed();
+    strictAssertSame(array($first), $changed,
+        'only the hash with the uncertain old setter needs a correction');
+    $branches = rXMLRPCRequest::requestsFor('branch');
+    strictAssertSame(1, count($branches), 'the clean sibling sends no branch');
+    testAssertForumBranch($branches[0], $first, '55', 'the returning feed fences the old setter');
+    $body = $branches[0]['commands'][0]->params[2];
+    strictAssertTrue(preg_match('/chk-forum-version,([0-9]{16})/', $body, $newFence) === 1
+        && strcmp($newFence[1], $oldFence) > 0,
+        'the returning forum receives a later daemon fence');
+    $updateState = RuTrackerState::load('updatepass');
+    strictAssertSame(55, $updateState['forum_corrections'][$first]['forum'],
+        'the durable checker obligation follows the returning feed');
+    strictAssertSame('"v2"', $updateState['feed_etag'] ?? null,
+        'the returning feed ETag is committed only after the newer fence lands');
+    strictAssertTrue(!isset(RuTrackerState::load('updatepass')['forum_corrections'][$second]),
+        'the clean sibling has no unnecessary correction');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'] ?? array(),
+        'the new confirmed branch retires the old pending target');
+});
+
+upTest($suite, 'a returning feed updates an older correction even after its mapping intent was retired', function () {
+    $first = str_repeat('B', 40);
+    $second = str_repeat('C', 40);
+    RuTrackerState::save('updatepass', array('forum_corrections' => array(
+        $first => array('topic' => 200, 'forum' => 22, 'at' => time()),
+    )));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(
+        $first, '200', '55', $second, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    $feed = str_replace('f-22', 'f-55', upFeed());
+    strictAssertSame(array($first), RuTrackerUpdatePass::pollFeed((object) array(
+        'status' => 200, 'results' => $feed)),
+        'only the old correction requires a fresh checker obligation');
+    strictAssertSame(55, RuTrackerState::load('updatepass')['forum_corrections'][$first]['forum'],
+        'the old durable target cannot be replayed after the feed returns');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the already current daemon forum needs no setter once no intent remains');
+});
+
+upTest($suite, 'a current feed forum fences an uncertain crawl setter without a correction row', function () {
+    $first = str_repeat('B', 40);
+    $second = str_repeat('C', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($first, 200, 22, '55', false),
+        'a crawl target has an uncertain setter without an updatepass correction');
+    $oldFence = RuTrackerState::load('forumindex')['forum_pending'][200][$first]['fence'];
+    strictAssertSame(array(), RuTrackerState::load('updatepass')['forum_corrections'] ?? array(),
+        'the crawl does not create a feed correction row');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array(
+        $first, '200', '55', $second, '200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    $feed = str_replace('f-22', 'f-55', upFeed());
+    strictAssertSame(array($first), RuTrackerUpdatePass::pollFeed((object) array(
+        'status' => 200, 'results' => $feed)),
+        'the feed fences only the hash with an uncertain crawl setter');
+    $branches = rXMLRPCRequest::requestsFor('branch');
+    strictAssertSame(1, count($branches), 'the clean second hash sends no setter');
+    testAssertForumBranch($branches[0], $first, '55', 'feed revokes the uncertain crawl target');
+    $body = $branches[0]['commands'][0]->params[2];
+    strictAssertTrue(preg_match('/chk-forum-version,([0-9]{16})/', $body, $newFence) === 1
+        && strcmp($newFence[1], $oldFence) > 0,
+        'the feed installs a newer daemon marker');
 });
 
 upTest($suite, 'a feed forum correction rechecks a fresh settled candidate in the same cycle', function () {
@@ -711,7 +855,7 @@ upTest($suite, 'a feed forum correction rechecks a fresh settled candidate in th
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '200', '55'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     $changed = RuTrackerUpdatePass::pollFeed((object) array('status' => 200, 'results' => upFeed()));
     strictAssertSame(array($hash), $changed, 'the successful correction is carried into dispatch');
 
@@ -749,7 +893,7 @@ upTest($suite, 'pollFeed persists the recheck obligation before committing its E
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
 
     $mappingChecked = false;
-    rXMLRPCRequest::queue('d.set_custom', true, false, function ($commands) use ($hash, &$mappingChecked) {
+    rXMLRPCRequest::queue('branch', true, false, function ($commands) use ($hash, &$mappingChecked) {
         $state = RuTrackerState::load('updatepass');
         $pending = $state['forum_corrections'][$hash] ?? null;
         strictAssertSame(200, $pending['topic'] ?? null,
@@ -759,7 +903,7 @@ upTest($suite, 'pollFeed persists the recheck obligation before committing its E
         strictAssertTrue(!isset($state['feed_etag']),
             'at mapping time the feed ETag has NOT yet been committed');
         $mappingChecked = true;
-        return array(0);
+        return array('APPLIED');
     });
 
     RuTrackerUpdatePass::pollFeed();
@@ -854,15 +998,15 @@ upTest($suite, 'a durable feed correction repairs an old mapping left behind by 
     });
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     RuTrackerUpdatePass::run($rows);
 
     strictAssertSame(array($hash), $checked,
         'the persisted target is installed and checked even when the feed is unavailable later');
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    $writes = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(1, count($writes), 'the old mapping is repaired once');
-    strictAssertSame(array($hash, 'chk-forum', '22'), $writes[0]['commands'][0]->params,
+    testAssertForumBranch($writes[0], $hash, '22',
         'the durable feed target, not the stale mapping, is restored');
 });
 
@@ -913,11 +1057,11 @@ upTest($suite, 'a corrupt durable correction writes no forum and dispatches noth
         });
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
         RuTrackerUpdatePass::run($rows);
 
-        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
             $label . ': a stored spelling no reader accepts writes no chk-forum');
         strictAssertSame(array(), $checked,
             $label . ': and buys no destructive checker run');
@@ -946,7 +1090,7 @@ upTest($suite, 'a corrupt durable correction writes no forum and dispatches noth
         });
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
         RuTrackerUpdatePass::run($rows);
     });
     strictAssertTrue(strpos($log, 'updatepass.json') !== false,
@@ -974,12 +1118,12 @@ upTest($suite, 'a corrupt durable correction writes no forum and dispatches noth
     });
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     RuTrackerUpdatePass::run($rows);
     strictAssertSame(array($hash), $checked, 'control: the well-formed obligation still dispatches');
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    $writes = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(1, count($writes), 'control: the well-formed obligation still repairs the mapping');
-    strictAssertSame(array($hash, 'chk-forum', '22'), $writes[0]['commands'][0]->params,
+    testAssertForumBranch($writes[0], $hash, '22',
         'control: with the id the feed actually named');
 });
 
@@ -3395,7 +3539,7 @@ upTest($suite, 'the feed ETag is committed only once the feed has been applied',
     Snoopy::queue(200, upFeed(), array('ETag: "v9"'));
     rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '100', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('100', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     RuTrackerUpdatePass::pollFeed();
     strictAssertSame('v9', trim(RuTrackerState::load('updatepass')['feed_etag'], '"'),
         'an applied feed records its ETag');
@@ -3406,7 +3550,7 @@ upTest($suite, 'the feed ETag is committed only once the feed has been applied',
     // map that never landed.
     Snoopy::queue(200, upFeed(), array('ETag: "v10"'));
     rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '100', ''));
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());
+    rXMLRPCRequest::queue('branch', false, false, array());
     RuTrackerUpdatePass::pollFeed();
     strictAssertSame('v9', trim(RuTrackerState::load('updatepass')['feed_etag'], '"'),
         'a lost write withholds the ETag, so the next cycle may redo it');

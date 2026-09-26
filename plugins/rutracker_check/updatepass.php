@@ -769,15 +769,18 @@ class RuTrackerUpdatePass
         // that never landed, leaving the tracker-wide crawl to redo work the
         // feed had already done.
         $applied = true;
+        $corrections = self::forumCorrections();
         foreach ($awaiting as $topic => $hashes) {
             if (!isset($map[$topic])) continue;
             foreach ($hashes as $hash) {
                 $was = (string) ($current[$hash] ?? '');
-                // Asking about known topics means most rows now carry the
-                // answer already. Rewriting the same id every time the feed's
-                // ETag moves would be a request per fleet topic per cycle for
-                // nothing.
-                if ($was === (string) $map[$topic]['forum']) continue;
+                // Most rows already carry the feed's forum and need no daemon
+                // request. A durable correction or pending mapping is
+                // different: its setter may still execute after a lost reply,
+                // so a return to the current forum needs a newer fence.
+                if ($was === (string) $map[$topic]['forum']
+                    && !array_key_exists(strtoupper($hash), $corrections)
+                    && !RuTrackerForumIndex::hasPendingForumMapping($topic, $hash)) continue;
                 // Not (int): parseFeed() already admits this id only through
                 // canonicalPositiveInt32(), so the cast normalises nothing --
                 // and if that ever stopped being true, a cast would coerce the

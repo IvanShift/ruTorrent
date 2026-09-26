@@ -65,9 +65,10 @@ class RepairToolRefusalTest extends TestCase
 
 	// Run the tool while this process plays a peer that answers $replies
 	// requests and then accepts-and-closes for ever.
-	private function runAgainstPeer($argument, $replies)
+	private function runAgainstPeer($argument, $replies, $marker = null)
 	{
 		$tool = $this->stagedTool();
+		if ($marker === null) $marker = 'v1:original:0:' . str_repeat('B', 40);
 		// A UNIX socket leaves its node behind, and a second bind on the same
 		// path fails with "Address already in use" -- which would read as a
 		// broken test rather than as the leftover it is.
@@ -83,12 +84,16 @@ class RepairToolRefusalTest extends TestCase
 			$descriptors, $pipes);
 		$this->assertTrue(is_resource($process), 'the tool starts');
 		$answered = 0;
+		$observedExitCode = null;
 		$deadline = time() + 20;
 		while (time() < $deadline) {
 			$client = @stream_socket_accept($this->server, 1);
 			if (!is_resource($client)) {
 				$status = proc_get_status($process);
-				if (!$status['running']) break;
+				if (!$status['running']) {
+					$observedExitCode = $status['exitcode'];
+					break;
+				}
 				continue;
 			}
 			stream_set_timeout($client, 1);
@@ -98,7 +103,7 @@ class RepairToolRefusalTest extends TestCase
 					. '<array><data><value><array><data>'
 					. '<value><string>' . str_repeat('A', 40) . '</string></value>'
 					. '<value><string>probe.bin</string></value>'
-					. '<value><string>v1:original:0:' . str_repeat('B', 40) . '</string></value>'
+					. '<value><string>' . htmlspecialchars($marker, ENT_XML1) . '</string></value>'
 					. '<value><string></string></value>'
 					. '</data></array></value></data></array></value></param></params>'
 					. '</methodResponse>';
@@ -111,6 +116,8 @@ class RepairToolRefusalTest extends TestCase
 		$err = stream_get_contents($pipes[2]);
 		foreach ($pipes as $pipe) @fclose($pipe);
 		$code = proc_close($process);
+		// PHP before 8.3 may return -1 after proc_get_status reaps an exited child.
+		if ($code === -1 && $observedExitCode !== null) $code = $observedExitCode;
 		@fclose($this->server);
 		$this->server = null;
 		return(array($code, $out, $err));
@@ -126,6 +133,18 @@ class RepairToolRefusalTest extends TestCase
 			'and no count is reported from an answer that never arrived: ' . $out);
 		$this->assertTrue(strpos($err, 'no complete answer') !== false,
 			'and it says which call went unanswered: ' . $err);
+	}
+
+	public function testReportIdentifiesCandidateClaimWithoutPrintingTransactionId()
+	{
+		$transaction = str_repeat('a', 32);
+		list($code, $out, $err) = $this->runAgainstPeer('', 1,
+			'v1:candidate-claim:' . $transaction);
+		$this->assertTrue($code === 0, 'the read-only report succeeds: ' . $err);
+		$this->assertTrue(strpos($out, '[candidate-claim; ack empty]') !== false,
+			'the operator can distinguish an incomplete replacement claim');
+		$this->assertTrue(strpos($out, $transaction) === false,
+			'the transaction identifier is not printed in a routine report');
 	}
 
 	public function testAnUnansweredClearIsNotReportedAsCleared()

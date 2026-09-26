@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Перевірити оновлення";
+ theUILang.checkTorrentRejected	= "Недійсний запит на перевірку оновлення";
+ theUILang.checkTorrentRefused	= "Не вдалося запустити перевірку оновлення";
+ theUILang.checkTorrentUnexpected	= "Неочікувана відповідь на перевірку оновлення";
  theUILang.chkHdr		= "Перевірка оновлення torrent-файлу";
  theUILang.checkedAt		= "Виконано";
  theUILang.checkedResult	= "Результат";

@@ -384,6 +384,39 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 	}
 
+	public function testBothDoorsRejectMalformedCloseBeforeItCanSkipClosedHook()
+	{
+		$hash = str_repeat('A', 40);
+		$direct = function($params) {
+			$xml = '<methodCall><methodName>d.close</methodName><params>';
+			foreach($params as $param)
+				$xml .= '<param><value><string>'.$param.'</string></value></param>';
+			return $xml.'</params></methodCall>';
+		};
+		$malformedBatch = $this->systemBatchXml(array(
+			array('d.close', array($hash, 'extra')),
+			array('d.close', array($hash, 'extra')),
+		));
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$valid = $this->runEntrypoint($door, $direct(array($hash)), true, 'success', 'none');
+			$this->assertTrue(strpos($valid['status'], '200 OK') !== false
+				&& $valid['state']['sends'] === 1 && $valid['state']['trusted'] === true,
+				$door.' forwards exact d.close(hash) trusted so event.download.closed can run');
+			foreach(array('extra', '') as $extra)
+			{
+				$bad = $this->runEntrypoint($door, $direct(array($hash, $extra)), true, 'success', 'none');
+				$this->assertTrue(strpos($bad['status'], '403 Forbidden') !== false
+					&& $bad['state']['sends'] === 0,
+					$door.' refuses extra d.close argument before untrusted close can skip the hook');
+			}
+			$batch = $this->runEntrypoint($door, $malformedBatch, true, 'success', 'none');
+			$this->assertTrue(strpos($batch['status'], '403 Forbidden') !== false
+				&& $batch['state']['sends'] === 0,
+				$door.' refuses a homogeneous malformed close batch before any hook bypass');
+		}
+	}
+
 	public function testBothDoorsKeepHomogeneousFallbackUntrustedAndRejectReverseMixedBatch()
 	{
 		$hash = str_repeat('A', 40);

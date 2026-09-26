@@ -7,6 +7,7 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/forumindex.php');
 
 $suite = new StrictTestSuite();
 
+
 function fiFeed()
 {
     return '<?xml version="1.0" encoding="utf-8"?>'
@@ -1363,7 +1364,7 @@ fiStateTest($suite, 'runCrawl requeues the whole wanted set when the crawl fails
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '777', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     $at += $cycle;
     $line = RuTrackerForumIndex::runCrawl($at, function ($wanted) {
         sort($wanted);
@@ -1372,10 +1373,10 @@ fiStateTest($suite, 'runCrawl requeues the whole wanted set when the crawl fails
     });
     strictAssertSame('wanted 2, resolved 1', $line, 'the completed crawl is reported');
     strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(), 'nothing is requeued');
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    $writes = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(1, count($writes), 'one chk-forum write');
-    strictAssertSame(array(str_repeat('A', 40), 'chk-forum', '1106'),
-        $writes[0]['commands'][0]->params, 'the resolved forum lands on the torrent that wanted it');
+    testAssertForumBranch($writes[0], str_repeat('A', 40), '1106',
+        'the resolved forum lands on the torrent that wanted it');
     strictAssertTrue(isset(RuTrackerState::load('forumindex')['misses'][555]),
         'the topic the completed crawl proved absent is marked missed');
     strictAssertTrue(!isset(RuTrackerState::load('forumindex')['misses'][777]),
@@ -1510,7 +1511,7 @@ fiStateTest($suite, 'a crawl that finds the window already claimed stands down a
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '777', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     $swept = 0;
     $line = RuTrackerForumIndex::runCrawl($at, function ($wanted) use (&$swept) {
         $swept++;
@@ -1558,7 +1559,7 @@ fiStateTest($suite, 'a queued topic may overwrite the stale forum id it was queu
     // The torrent already HAS a forum -- the wrong one, 1106.
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         strictAssertSame(array(777), $wanted, 'the queued topic is looked for');
@@ -1566,9 +1567,9 @@ fiStateTest($suite, 'a queued topic may overwrite the stale forum id it was queu
     });
 
     strictAssertSame('wanted 1, resolved 1', $line, 'the crawl reports the resolution');
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom');
+    $writes = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(1, count($writes), 'and it is actually written somewhere');
-    strictAssertSame(array($hash, 'chk-forum', '2222'), $writes[0]['commands'][0]->params,
+    testAssertForumBranch($writes[0], $hash, '2222',
         'the new forum replaces the stale one on the torrent that wanted it');
 
     // A topic nobody asked about keeps its cached id: the scan stays
@@ -1638,13 +1639,13 @@ fiStateTest($suite, 'runCrawl treats an incomplete crawl as inconclusive: writte
         str_repeat('A', 40), '777', '',
         str_repeat('C', 40), '555', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         return array('resolved' => array(777 => 1106), 'complete' => false); // some dumps went unread
     });
     strictAssertSame('wanted 2, resolved 1, 1 requeued: some dumps went unread', $line,
         'the log says what was left open');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
         'what WAS resolved is still written back');
     strictAssertSame(array(555), RuTrackerForumIndex::takeQueuePeek(),
         'the unresolved topic is requeued for the next sweep');
@@ -1676,7 +1677,7 @@ fiStateTest($suite, 'runCrawl keeps its explicit queue durable until the sweep f
     // make a later crawl look at it again after this process dies.
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     $duringSweep = null;
     RuTrackerForumIndex::runCrawl(time(), function ($wanted) use (&$duringSweep) {
@@ -1696,7 +1697,7 @@ fiStateTest($suite, 'runCrawl does not retire a same-topic request queued during
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         // This represents another request discovering that the same
@@ -1711,12 +1712,573 @@ fiStateTest($suite, 'runCrawl does not retire a same-topic request queued during
         'resolved topic does not become a miss');
 });
 
+fiStateTest($suite, 'a feed correction during a complete crawl keeps its later absent-dump request queueable', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(777);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+
+    $feedStatus = null;
+    RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash, &$feedStatus) {
+        $feedStatus = RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true);
+        return array('resolved' => array(), 'complete' => true);
+    });
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN, $feedStatus,
+        'the feed changes the mapping while the old crawl is walking forums');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the old crawl cannot record absence after newer positive feed evidence');
+
+    RuTrackerForumIndex::queueTopic(777); // the new forum has no dump (HTTP 404)
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'a later absent-dump request is not suppressed by the stale crawl');
+});
+
+fiStateTest($suite, 'replaying a current feed correction preserves a fresh crawl miss', function () {
+    $hash = str_repeat('A', 40);
+    $now = time();
+    RuTrackerForumIndex::markMiss(777, $now);
+    $before = RuTrackerState::load('forumindex')['misses'][777];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+            RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '267', true),
+            'a repeated pending feed correction sees the same current mapping');
+        strictAssertSame($before, RuTrackerState::load('forumindex')['misses'][777] ?? null,
+            'replay does not erase a miss earned by a later complete crawl');
+    }
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+        'the fresh miss still holds the normal backoff');
+});
+
+fiStateTest($suite, 'a lost forum RPC reply commits its pending evidence only when CURRENT is confirmed', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::markMiss(777, time());
+    $oldMiss = RuTrackerState::load('forumindex')['misses'][777];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the uncertain RPC reply withholds success from the feed');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertTrue(isset($state['forum_pending'][777]),
+        'the mapping intent was durable before the uncertain RPC write');
+    strictAssertSame($oldMiss, $state['misses'][777] ?? null,
+        'an uncertain write does not erase the old backoff yet');
+
+    // The RPC may have landed despite its lost reply. Its forum AND fence
+    // confirm this exact intent, then remove only the earlier miss.
+    $fence = $state['forum_pending'][777][$hash]['fence'];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($fence));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '267', true),
+        'the pending correction confirms a write whose reply was lost');
+    $committed = RuTrackerState::load('forumindex');
+    strictAssertTrue(isset($committed['forum_evidence'][777]),
+        'the confirmed mapping has a committed version');
+    strictAssertSame(array(), $committed['misses'], 'the earlier miss is cleared once');
+    strictAssertSame(array(), $committed['forum_pending'], 'the intent is retired');
+
+    RuTrackerForumIndex::markMiss(777, time());
+    $freshMiss = RuTrackerState::load('forumindex')['misses'][777];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '267', true),
+        'the same pending correction can be replayed again');
+    strictAssertSame($freshMiss, RuTrackerState::load('forumindex')['misses'][777] ?? null,
+        'replay preserves a later complete crawl backoff');
+});
+
+fiStateTest($suite, 'a crawl snapshot between mapping intent and RPC cannot authorise a later miss', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(777);
+    $snapshot = null;
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, function () use (&$snapshot) {
+        $method = new ReflectionMethod('RuTrackerForumIndex', 'queueSnapshot');
+        if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+        $snapshot = $method->invoke(null); // the crawler starts before chk-forum changes
+        return array('APPLIED');
+    });
+
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the new mapping lands after the crawler took its snapshot');
+    strictAssertTrue(is_array($snapshot), 'the snapshot was taken inside the RPC gap');
+    RuTrackerForumIndex::markMiss(777, time(), $snapshot['evidence']);
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the old crawl cannot stamp a miss over the committed feed mapping');
+});
+
+fiStateTest($suite, 'failed forum RPC retries do not renew feed evidence or erase miss backoff', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::markMiss(777, time());
+    $miss = RuTrackerState::load('forumindex')['misses'][777];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the first RPC refusal keeps the correction pending');
+    $first = RuTrackerState::load('forumindex');
+    strictAssertSame($miss, $first['misses'][777] ?? null,
+        'a failed write does not erase a completed crawl miss');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the same correction is retried without becoming new evidence');
+    $second = RuTrackerState::load('forumindex');
+    strictAssertSame($miss, $second['misses'][777] ?? null,
+        'the retry still respects the old miss backoff');
+    strictAssertSame($first['forum_evidence'] ?? array(), $second['forum_evidence'] ?? array(),
+        'the refused mapping has not published another committed version');
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+        'an old miss still suppresses a redundant crawl while the write is uncertain');
+});
+
+fiStateTest($suite, 'an old read after a lost setter reply cannot prove the pending write will not land', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the setter reply is lost after its request may have reached rTorrent');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    $missResult = null;
+    $log = fiCapturedAppLog(function () use (&$missResult) {
+        $missResult = RuTrackerForumIndex::markMiss(777, time());
+    });
+    strictAssertSame(false, $missResult,
+        'a read of FROM cannot authorise a miss while the setter may execute later');
+    strictAssertTrue(strpos($log, 'forumindex.json forum_pending for topic 777') !== false
+        && strpos($log, 'miss and backoff deferred') !== false,
+        'the refused miss is visible with its durable document and consequence');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(array(), $state['misses'] ?? array(),
+        'no false absence is persisted before the setter outcome is known');
+    strictAssertTrue(isset($state['forum_pending'][777]),
+        'the ambiguous intent remains durable');
+
+    $oldFence = $state['forum_pending'][777][$hash]['fence'];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 300, '2', true),
+        'a newer fenced target may supersede the uncertain old setter');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'],
+        'the newer confirmed mapping retires the superseded intent');
+    $body = rXMLRPCRequest::requestsFor('branch')[0]['commands'][0]->params[2];
+    strictAssertTrue(preg_match('/chk-forum-version,([0-9]{16})/', $body, $writtenFence) === 1
+        && strcmp($writtenFence[1], $oldFence) > 0,
+        'the newer branch installs a strictly larger daemon marker');
+});
+
+fiStateTest($suite, 'a conflicting CURRENT cannot hide an uncertain earlier setter', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', true),
+        'CURRENT still needs a newer daemon fence against the earlier setter');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'],
+        'the newer fence lets the current mapping retire the earlier intent');
+});
+
+fiStateTest($suite, 'a second hash cannot erase an uncertain first hash mapping for one topic', function () {
+    $first = str_repeat('A', 40);
+    $second = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', true);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($second, 777, 267, '2', true),
+        'the second torrent receives the same authoritative mapping');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame(false, RuTrackerForumIndex::markMiss(777, time()),
+        'the first hash can still complete its delayed setter after the second hash commits');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the second hash cannot license a false absence over the first pending hash');
+    $pending = RuTrackerState::load('forumindex')['forum_pending'][777] ?? array();
+    strictAssertSame(array($first), array_keys($pending),
+        'the confirmed second hash retires only its own mapping intent');
+    $firstFence = $pending[$first]['fence'];
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($firstFence));
+    RuTrackerForumIndex::queueTopic(777);
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'] ?? array(),
+        'the first hash later confirms and retires its own mapping intent');
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'the 404 can now queue resolution after every pending hash is confirmed');
+});
+
+fiStateTest($suite, 'one pending hash with an unreadable answer does not block a different hash mapping', function () {
+    $first = str_repeat('A', 40);
+    $second = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', true),
+        'the first hash has an ambiguous setter outcome');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    ruTrackerChecker::queueResult('torrentExists', true);
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($second, 777, 267, '2', true),
+        'the other hash can advance independently while the first answer is unknown');
+    $pending = RuTrackerState::load('forumindex')['forum_pending'][777] ?? array();
+    strictAssertSame(array($first), array_keys($pending),
+        'the unreadable first intent is retained after the independent commit');
+});
+
+fiStateTest($suite, 'one unreadable hash does not prevent confirming another hash after a lost reply', function () {
+    $first = str_repeat('A', 40);
+    $second = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', true);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    ruTrackerChecker::queueResult('torrentExists', true);
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($second, 777, 267, '2', true);
+    $fence = RuTrackerState::load('forumindex')['forum_pending'][777][$second]['fence'];
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    ruTrackerChecker::queueResult('torrentExists', true);
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($fence));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_CURRENT,
+        RuTrackerForumIndex::writeForumMapping($second, 777, 267, '2', true),
+        'the second lost reply is confirmed without waiting for the first hash');
+    $pending = RuTrackerState::load('forumindex')['forum_pending'][777] ?? array();
+    strictAssertSame(array($first), array_keys($pending),
+        'only the uncertain first hash remains pending');
+});
+
+fiStateTest($suite, 'a stale crawl cannot replace a pending authoritative feed target at the same current forum', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the feed target stays pending after the setter reply is lost');
+    $before = RuTrackerState::load('forumindex')['forum_pending'][777][$hash];
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_SUPERSEDED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 300, '2', false),
+        'the crawl observed the old forum but cannot revoke the newer feed target');
+    strictAssertSame($before, RuTrackerState::load('forumindex')['forum_pending'][777][$hash],
+        'the feed intent and its daemon fence remain durable');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the stale crawl sends no conflicting setter');
+});
+
+fiStateTest($suite, 'a feed promotes a matching pending crawl target to authoritative', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', false),
+        'a lost crawl setter leaves an uncertain target');
+    $crawl = RuTrackerState::load('forumindex')['forum_pending'][777][$hash];
+    strictAssertSame(false, $crawl['authoritative'], 'the first intent came from a crawl');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the matching feed target remains pending when its setter reply is lost');
+    $feed = RuTrackerState::load('forumindex')['forum_pending'][777][$hash];
+    strictAssertSame(true, $feed['authoritative'],
+        'the feed owns the pending target even though the forum id did not change');
+    strictAssertTrue(strcmp($feed['fence'], $crawl['fence']) > 0,
+        'the feed has a newer fence against the earlier uncertain crawl setter');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'a replay retries the feed setter without claiming new authority');
+    strictAssertSame($feed, RuTrackerState::load('forumindex')['forum_pending'][777][$hash],
+        'a failed replay keeps the same feed fence and evidence version');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_SUPERSEDED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 300, '2', false),
+        'the later crawl cannot replace the feed-owned target');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the stale crawl sends no setter');
+    strictAssertSame($feed, RuTrackerState::load('forumindex')['forum_pending'][777][$hash],
+        'the feed intent remains durable after the stale crawl');
+});
+
+fiStateTest($suite, 'a matching feed target protects another hash while its setter is uncertain', function () {
+    $first = str_repeat('A', 40);
+    $second = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', false);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', true);
+    $feed = RuTrackerState::load('forumindex')['forum_pending'][777][$first];
+    strictAssertSame(true, $feed['authoritative'], 'the matching feed target is authoritative');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_SUPERSEDED,
+        RuTrackerForumIndex::writeForumMapping($second, 777, 300, '2', false),
+        'a sibling crawl cannot override the topic-wide feed authority');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the sibling sends no conflicting setter');
+});
+
+fiStateTest($suite, 'one hash with a pending feed target protects its sibling from stale crawl writeback', function () {
+    $first = str_repeat('A', 40);
+    $second = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($first, 777, 267, '2', true);
+    $before = RuTrackerState::load('forumindex')['forum_pending'][777][$first];
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_SUPERSEDED,
+        RuTrackerForumIndex::writeForumMapping($second, 777, 300, '2', false),
+        'the older crawl cannot give another torrent a forum contrary to the feed');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the sibling sends no stale setter');
+    strictAssertSame($before, RuTrackerState::load('forumindex')['forum_pending'][777][$first],
+        'the pending feed target remains available to both hashes');
+});
+
+fiStateTest($suite, 'a crawl snapshot cannot overwrite a feed that returned to the old forum and committed', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(777);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true);
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    $feedStatus = null;
+    $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) use ($hash, &$feedStatus) {
+        strictAssertSame(array(777), $wanted, 'the crawl began before the feed returned');
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        $feedStatus = RuTrackerForumIndex::writeForumMapping($hash, 777, 2, '2', true);
+        // This answer belongs to the crawl's later writeback, after the feed
+        // confirmed its new fence while the visible forum stayed at 2.
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+        return array('resolved' => array(777 => 300), 'complete' => true);
+    });
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN, $feedStatus,
+        'the returning feed committed a newer fence during the sweep');
+    strictAssertSame('wanted 1, resolved 1', $line, 'the stale crawl finishes without retry');
+    $branches = rXMLRPCRequest::requestsFor('branch');
+    strictAssertSame(1, count($branches),
+        'the crawl cannot send a setter after the newer feed evidence committed');
+    testAssertForumBranch($branches[0], $hash, '2', 'only the returning feed wrote a forum');
+});
+
+fiStateTest($suite, 'a stale crawl cannot replace a newer pending feed intent', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true);
+    $before = RuTrackerState::load('forumindex');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '4'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '4'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_SUPERSEDED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 300, '2', false),
+        'a crawl whose expected forum is stale cannot change the feed intent');
+    $after = RuTrackerState::load('forumindex');
+    strictAssertSame($before['forum_pending'], $after['forum_pending'],
+        'the feed intent and daemon fence remain intact');
+    strictAssertSame($before['forum_serial'], $after['forum_serial'],
+        'no new fence was allocated for a stale crawl');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'the stale crawl sends no setter');
+});
+
+fiStateTest($suite, 'a later 404 confirms an uncertain mapping before applying old miss backoff', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::markMiss(777, time());
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true);
+
+    $fence = RuTrackerState::load('forumindex')['forum_pending'][777][$hash]['fence'];
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '267'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array($fence));
+    RuTrackerForumIndex::queueTopic(777);
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'the 404 request is queued after the daemon confirms the mapping');
+    strictAssertSame(array(), $state['misses'], 'the old miss is cleared exactly on confirmation');
+    strictAssertSame(array(), $state['forum_pending'], 'the confirmed intent is retired');
+});
+
+fiStateTest($suite, 'an uncertain mapping leaves a complete crawl queued without a false miss', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerForumIndex::queueTopic(777);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the intended forum did not land');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '2'));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    strictAssertSame('wanted 1, resolved 0, 1 requeued: miss state unavailable',
+        RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
+            return array('resolved' => array(), 'complete' => true);
+        }), 'the complete sweep cannot prove absence while a setter may land later');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['misses'] ?? array(),
+        'the uncertain setter cannot create a false miss');
+    strictAssertSame(array(777), RuTrackerForumIndex::takeQueuePeek(),
+        'the old queue generation is retained for later reconciliation');
+});
+
+fiStateTest($suite, 'a malformed branch reply cannot commit positive forum evidence', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED', 'unexpected'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'an ambiguous branch answer cannot confirm the setter');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertTrue(isset($state['forum_pending'][777]),
+        'the intent stays available for reconciliation');
+    strictAssertSame(array(), $state['forum_evidence'] ?? array(),
+        'the malformed answer cannot publish positive evidence');
+});
+
+fiStateTest($suite, 'an oversized current forum cannot create an unreadable pending intent', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+        array('777', str_repeat('9', 33)));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, null, true),
+        'the current value cannot be used as a valid pending FROM field');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'] ?? array(),
+        'no unparseable durable intent was published');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'an invalid pending record cannot license a daemon write');
+});
+
+fiStateTest($suite, 'a pending forum intent for a vanished hash releases its old topic', function () {
+    $hash = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2'));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_FAILED,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '2', true),
+        'the uncertain write leaves a durable intent');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    ruTrackerChecker::queueResult('torrentExists', false);
+    strictAssertSame(true, RuTrackerForumIndex::markMiss(777, time()),
+        'a hash proved absent cannot hold the topic lockout forever');
+    $state = RuTrackerState::load('forumindex');
+    strictAssertSame(array(), $state['forum_pending'] ?? array(),
+        'the obsolete intent is retired');
+    strictAssertTrue(isset($state['misses'][777]),
+        'the completed crawl can establish backoff for the remaining topic');
+});
+
 fiStateTest($suite, 'a stale crawl cannot overwrite a forum mapping corrected while it was sweeping', function () {
     $hash = str_repeat('A', 40);
     RuTrackerForumIndex::queueTopic(777);
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
-    // The feed wins while the detached crawl is away walking the tree.
+    // An external raw setter wins while the detached crawl is away walking the tree.
     rXMLRPCRequest::queue('d.set_custom', true, false, array());
     // The crawl re-reads under the shared mapping lock after the feed.
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '2222'));
@@ -1747,8 +2309,8 @@ fiStateTest($suite, 'a partial multi-hash forum writeback keeps the topic queued
     ));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    rXMLRPCRequest::queue('branch', false, false, array());
 
     $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         return array('resolved' => array(777 => 2222), 'complete' => true);
@@ -2250,8 +2812,8 @@ fiStateTest($suite, 'a resolved topic forgets an old miss only after its forum w
     ));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', ''));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('888', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    rXMLRPCRequest::queue('branch', false, false, array());
 
     RuTrackerForumIndex::runCrawl($now, function ($wanted) {
         return array('resolved' => array(777 => 1106, 888 => 1107), 'complete' => true);
@@ -2870,7 +3432,7 @@ fiStateTest($suite, 'a reseeded queue serial cannot hand a running crawl its own
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         // Another request discovers that the same topic needs a fresh crawl
@@ -3102,19 +3664,18 @@ fiStateTest($suite, 'a chk-topic that will not parse authorises no chk-forum wri
         strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_OBSOLETE,
             RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, 2222),
             $label . ': the row does not provably carry the topic this mapping is about');
-        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
             $label . ': and nothing is written to it');
     }
 
     // The control: the canonical spelling still writes.
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', ''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
     strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
         RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, 2222),
         'a canonical chk-topic still authorises the mapping');
-    strictAssertSame(array(str_repeat('A', 40), 'chk-forum', '2222'),
-        rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+    testAssertForumBranch(rXMLRPCRequest::requestsFor('branch')[0], str_repeat('A', 40), '2222',
         'and writes exactly the resolved forum');
 });
 
@@ -3138,7 +3699,7 @@ fiStateTest($suite, 'a forum id that will not parse authorises no chk-forum writ
         strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_OBSOLETE,
             RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, $forum),
             $label . ': a forum id no reader can accept is an impossible obligation, not a stale one');
-        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
             $label . ': and no chk-forum is written for it');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
             $label . ': the row is not even read for a write that can never land');
@@ -3159,12 +3720,12 @@ fiStateTest($suite, 'a forum id that will not parse authorises no chk-forum writ
         'widest positive int32' => 2147483647) as $label => $forum) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('7', ''));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
         strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
             RuTrackerForumIndex::writeForumMapping(str_repeat('A', 40), 7, $forum),
             'control ' . $label . ': a canonical forum id still writes');
-        strictAssertSame(array(str_repeat('A', 40), 'chk-forum', (string) (int) $forum),
-            rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+        testAssertForumBranch(rXMLRPCRequest::requestsFor('branch')[0],
+            str_repeat('A', 40), (string) (int) $forum,
             'control ' . $label . ': and writes exactly that id');
     }
     rXMLRPCRequest::reset();
@@ -3547,7 +4108,7 @@ fiStateTest($suite, 'a misses book that is not an array does not wedge the queue
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($hash, '777', '1106'));
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', '1106'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
 
     $line = RuTrackerForumIndex::runCrawl(time(), function ($wanted) {
         return array('resolved' => array(777 => 2222), 'complete' => true);
@@ -3555,8 +4116,7 @@ fiStateTest($suite, 'a misses book that is not an array does not wedge the queue
 
     strictAssertSame('wanted 1, resolved 1', $line,
         'the crawl completes and reports its resolution instead of dying on the book');
-    strictAssertSame(array($hash, 'chk-forum', '2222'),
-        rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
+    testAssertForumBranch(rXMLRPCRequest::requestsFor('branch')[0], $hash, '2222',
         'and the forum it resolved still reaches the torrent that wanted it');
     strictAssertSame(true, is_array(RuTrackerState::load('forumindex')['misses'] ?? null),
         'with the book it had to clear a record out of left a book');
@@ -3827,6 +4387,35 @@ fiStateTest($suite, 'fetchDump says which failure it was, in the same vocabulary
         strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, null, $reason),
             $label . ': still not an answer');
         strictAssertSame($case[2], $reason, $label . ': and the caller is told which one it was');
+    }
+});
+
+fiStateTest($suite, 'a missing forum dump stays distinguishable from a transient refusal through memoisation', function () {
+    foreach (array(
+        404 => true,
+        410 => true,
+        503 => false,
+    ) as $status => $expectedAbsent) {
+        strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+        Snoopy::reset();
+        Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '921', $status, '');
+
+        $reason = null;
+        $absent = null;
+        strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, null, $reason, $absent),
+            'status ' . $status . ' has no parsed dump');
+        strictAssertSame($expectedAbsent, $absent, 'status ' . $status . ' absence classification');
+        strictAssertSame($expectedAbsent ? 'dump-absent statuses=http-status=' . $status
+            : 'dump-refused statuses=http-status=' . $status, $reason,
+            'status ' . $status . ' has a classified reason');
+
+        $memoReason = null;
+        $memoAbsent = null;
+        strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, null, $memoReason, $memoAbsent),
+            'the memo preserves the null answer');
+        strictAssertSame($reason, $memoReason, 'the memo preserves the classified reason');
+        strictAssertSame($absent, $memoAbsent, 'the memo preserves the absence classification');
+        strictAssertSame(1, count(Snoopy::$requests), 'the second lookup makes no HTTP request');
     }
 });
 

@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Controlla agiornamenti";
+ theUILang.checkTorrentRejected	= "Richiesta di verifica aggiornamenti non valida";
+ theUILang.checkTorrentRefused	= "Impossibile avviare la verifica degli aggiornamenti";
+ theUILang.checkTorrentUnexpected	= "Risposta inattesa alla verifica degli aggiornamenti";
  theUILang.chkHdr		= "Controlla aggiornamento torrent";
  theUILang.checkedAt		= "Ultimo controllo";
  theUILang.checkedResult	= "Risultato";

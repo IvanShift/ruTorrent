@@ -335,6 +335,20 @@ function strictAssertTrue($condition, $message)
     testAssertTrue($condition, $message);
 }
 
+// Verify the target and the daemon-side fence in a forum mapping branch.
+function testAssertForumBranch($request, $hash, $forum, $message)
+{
+    $params = $request['commands'][0]->params;
+    strictAssertSame($hash, $params[0], $message . ': target hash');
+    strictAssertTrue(strpos($params[1], 'chk-topic') !== false
+        && strpos($params[1], 'less=') !== false
+        && strpos($params[1], 'chk-forum-version') !== false,
+        $message . ': daemon-side generation fence');
+    strictAssertTrue(strpos($params[2], 'chk-forum,' . $forum . '"') !== false
+        && strpos($params[2], 'chk-forum-version,') !== false,
+        $message . ': requested forum in branch body');
+}
+
 function strictAssertSame($expected, $actual, $message)
 {
     testAssertSame($expected, $actual, $message);

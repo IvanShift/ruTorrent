@@ -8,6 +8,9 @@
  */
 
  theUILang.checkTorrent		= "Güncellemeleri denetle";
+ theUILang.checkTorrentRejected	= "Geçersiz güncelleme kontrolü isteği";
+ theUILang.checkTorrentRefused	= "Güncelleme kontrolü başlatılamadı";
+ theUILang.checkTorrentUnexpected	= "Güncelleme kontrolünden beklenmeyen yanıt";
  theUILang.chkHdr		= "Torrent Güncelleme Kontrolü";
  theUILang.checkedAt		= "Son kontrol";
  theUILang.checkedResult	= "Sonuç";

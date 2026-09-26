@@ -239,6 +239,18 @@ describe("language files", () => {
     expect(languages.length).toBeGreaterThan(20);
   });
 
+  const translatedManualLanguages = [
+    "de", "el", "fr", "it", "ko", "no", "pl", "pt-br", "pt-pt", "sv", "tr", "uk", "vi",
+  ];
+
+  it.each(translatedManualLanguages)("%s keeps manual errors localized", (language) => {
+    const translated = load(language);
+    const english = load("en");
+    for (const key of ["checkTorrentRejected", "checkTorrentRefused", "checkTorrentUnexpected"]) {
+      expect(translated[key]).not.toBe(english[key]);
+    }
+  });
+
   it.each(languages)("%s defines the whole chk vocabulary", (language) => {
     const lang = load(language);
 
@@ -253,6 +265,10 @@ describe("language files", () => {
     for (const result of lang.chkResults) {
       expect(typeof result).toBe("string");
       expect(result.trim()).not.toBe("");
+    }
+    for (const key of ["checkTorrentRejected", "checkTorrentRefused", "checkTorrentUnexpected"]) {
+      expect(typeof lang[key]).toBe("string");
+      expect(lang[key].trim()).not.toBe("");
     }
   });
 });
@@ -421,11 +437,11 @@ describe("the manual check", () => {
   });
 
   it.each([
-    ["a refused batch", { status: "refused", accepted: 0 }],
-    ["a rejected batch", { status: "rejected", accepted: 0 }],
-    ["a legacy success answer", { status: "success" }],
-    ["a malformed answer", null],
-  ])("surfaces %s as an error notification", (_name, data) => {
+    ["a refused batch", { status: "refused", accepted: 0 }, "checkTorrentRefused"],
+    ["a rejected batch", { status: "rejected", accepted: 0 }, "checkTorrentRejected"],
+    ["a legacy success answer", { status: "success" }, "checkTorrentUnexpected"],
+    ["a malformed answer", null, "checkTorrentUnexpected"],
+  ])("surfaces %s with its own reason", (_name, data, reasonKey) => {
     const logs = [];
     const notices = [];
     global.log = (msg) => logs.push(msg);
@@ -436,7 +452,7 @@ describe("the manual check", () => {
     expect(rTorrentStub.prototype.checktorrentResponse.call(stub, data)).toBe(data);
     expect(logs).toHaveLength(0);
     expect(notices).toEqual([{
-      msg: theUILang.checkTorrent + ": Error",
+      msg: theUILang.checkTorrent + ": " + theUILang[reasonKey],
       status: "error",
     }]);
     expect(notices[0].msg).not.toContain("undefined");

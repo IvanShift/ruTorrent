@@ -3596,6 +3596,106 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(false, $this->onlyManifest($oldHash), 'the completed cleanup list must be consumed');
 	}
 
+	public function testCleanupRetainsEmptyParentWithoutRiskingDirectoryCapture()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/safe-parent';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$token = substr($tmp, 0, -4).'.list';
+		$captures = $this->dir.'/parent-capture-calls';
+		list($status, $output) = $this->runCollector(array(
+			'filesystem' => array('rename:*' => array('path' => $nested,
+				'count_file' => $captures)),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'empty parent cleanup must exit normally: '.$output);
+		$this->assertTrue(!file_exists($old) && is_dir($nested) && !is_link($nested)
+			&& !is_file($captures) && is_file($tmp) && is_file($token),
+			'the obsolete file is removed while the empty parent keeps its durable job');
+		$this->assertTrue(strpos($output,
+			'erasedata: cleanup retained '.$oldHash.' parent-no-atomic-restore') !== false,
+			'the parent obligation has a classified retained reason');
+		$this->assertTrue(rmdir($nested), 'the fixture can resolve the empty parent independently');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'resolved parent retry must exit normally: '.$output);
+		$this->assertTrue(!is_file($tmp) && !is_file($token),
+			'the exact job retires once the parent obligation is resolved');
+	}
+
+	public function testCleanupNeverCapturesRacingParentReplacement()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-race';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$token = substr($tmp, 0, -4).'.list';
+		$replacement = $base.'/active-replacement';
+		@mkdir($replacement, 0777, true);
+		file_put_contents($replacement.'/active.bin', 'active bytes');
+		$captures = $this->dir.'/racing-parent-captures';
+		list($status, $output) = $this->runCollector(array(
+			'filesystem' => array('rename:*' => array('path' => $nested,
+				'action' => 'replace-entry', 'backup' => $base.'/old-parent',
+				'replacement' => $replacement, 'count_file' => $captures)),
+			'captureLogs' => true,
+		));
+		$this->assertEquals(0, $status, 'racing parent fixture must run: '.$output);
+		$this->assertTrue(!is_file($captures) && is_dir($nested)
+			&& !file_exists($old) && is_file($tmp) && is_file($token)
+			&& is_file($replacement.'/active.bin')
+			&& file_get_contents($replacement.'/active.bin') === 'active bytes',
+			'cleanup avoids directory capture and retains its unfinished parent job');
+	}
+
+	public function testCleanupRetainsLegacyCapturedParentUntilReconciled()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/legacy-parent-capture';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		$token = substr($tmp, 0, -4).'.list';
+		$this->assertTrue(unlink($old), 'the old file was already cleaned before the parent capture');
+		$filesystem = new ErasedataCollectorFixture(array(
+			'removeDirectory:*' => array('basename' => 'directory', 'result' => false)));
+		$this->assertTrue(!erasedataCompleteNonForceDirectory($nested, $tmp, $filesystem),
+			'the previous implementation must leave a real failed directory reservation');
+		$roots = glob($base.'/.erasedata-rmdir-*');
+		$this->assertTrue(count($roots) === 1 && is_link($nested)
+			&& is_dir($roots[0].'/directory'),
+			'the upgrade fixture must contain an authentic reservation and public bridge');
+		file_put_contents($nested.'/active.bin', 'active bytes');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'legacy captured-parent retry must not crash: '.$output);
+		$this->assertTrue(is_file($tmp) && is_file($token)
+			&& is_link($nested) && count(glob($base.'/.erasedata-rmdir-*')) === 1
+			&& file_get_contents($nested.'/active.bin') === 'active bytes',
+			'the collector cannot consume a job while its prior private parent still holds data');
+		$this->assertTrue(strpos($output, 'legacy-capture-retained') !== false,
+			'the unresolved upgrade capture must retain a visible classified obligation');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'later legacy capture retry must run: '.$output);
+		$this->assertTrue(is_file($tmp) && is_file($token)
+			&& file_get_contents($nested.'/active.bin') === 'active bytes'
+			&& strpos($output, 'legacy-capture-retained') !== false,
+			'the unresolved legacy reservation remains visible on every retry');
+	}
+
 	public function testCleanupKeepsFileClaimedByThirdTorrent()
 	{
 		$this->reset();
@@ -3919,6 +4019,34 @@ class RemoveWithDataTest extends TestCase
 			$this->assertEquals(1, count($matches),
 				'a '.$case[0].' retry must retain its actual '.$case[3].' reason exactly once');
 		}
+	}
+
+	public function testCleanupCollectorRecoveryUsesItsFilesystemForTheSelectedGeneration()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/collector-recovery-seam';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'old');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old), 'tmp');
+		$list = substr($tmp, 0, -4).'.list';
+		$generation = $this->cleanupGenerationResponses($oldHash, $newHash,
+			$this->collectorResponse(true, false, array('')),
+			$this->collectorResponse(true, false, array($newHash,
+				'0123456789abcdef0123456789abcdef', $oldHash.'-started-1787587200')));
+		list($status, $output) = $this->runCollector(array(
+			'generation' => $generation,
+			'filesystem' => array('entryIdentity:5' => array('path' => $tmp, 'result' => false)),
+			'debug' => true,
+		));
+		$this->assertEquals(0, $status, 'a selected generation identity race does not crash the collector: '.$output);
+		$this->assertTrue(is_file($tmp) && is_file($old) && !file_exists($list),
+			'collector recovery must not publish a token after its fifth identity read is refused');
+		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' unreadable-manifest',
+			$this->collectorLogs($output), true),
+			'the collector leaves a classified retry reason for the identity race');
 	}
 
 	public function testCleanupUnlinkFailureRetries()
@@ -4385,7 +4513,7 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
-	public function testCleanupCollectorRetainsUnresolvedIdentityAndRetriesNestedParents()
+	public function testCleanupCollectorRetainsUnresolvedIdentityAndLeavesNestedParents()
 	{
 		$this->reset();
 		$oldHash = $this->hash('A');
@@ -4413,22 +4541,29 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($old, 'old');
 		$list = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
 
-		list($status, $output) = $this->runCollector(array(
-			'rmdirFail' => $nested, 'debug' => true));
-		$this->assertEquals(0, $status, 'an injected cleanup rmdir failure must not crash the collector: '.$output);
-		$this->assertTrue(!file_exists($old) && is_file($list),
-			'a cleanup rmdir failure must retain the durable list after deleting the exact target');
-		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' rmdir-failure', $this->collectorLogs($output), true),
-			'a cleanup rmdir failure must retain the rmdir-failure reason');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'nested parent cleanup must not crash the collector: '.$output);
+		$token = substr($list, 0, -4).'.list';
+		$this->assertTrue(!file_exists($old) && is_file($list) && is_file($token)
+			&& is_dir($nested) && is_dir($base.'/one'),
+			'cleanup removes the file while preserving both parent and job obligations');
+		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' parent-no-atomic-restore',
+			$this->collectorLogs($output), true),
+			'the retained parent has a classified reason');
 
-		list($status, $output) = $this->runCollector(array());
-		$this->assertEquals(0, $status, 'the cleanup nested-parent retry must exit normally: '.$output);
-		$this->assertTrue(!file_exists($nested) && !file_exists($base.'/one') && is_dir($base),
-			'a retry must remove empty target-derived parents deepest-first and never remove the shared base');
-		$this->assertEquals(false, $this->onlyManifest($oldHash),
-			'a cleanup list is consumed only after all target-derived parents complete');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'the pending parent retry must exit normally: '.$output);
+		$this->assertTrue(is_file($list) && is_file($token)
+			&& is_dir($nested) && is_dir($base.'/one') && is_dir($base),
+			'later passes retain the exact job until the parents are resolved');
+		$this->assertTrue(rmdir($nested) && rmdir($base.'/one'),
+			'the fixture can resolve both empty parents independently');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'resolved nested parent retry must exit normally: '.$output);
+		$this->assertTrue(!is_file($list) && !is_file($token) && is_dir($base),
+			'the exact job retires after both empty parents are resolved');
 		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
-			'the cleanup branch must not leave a reservation for the shared base');
+			'the cleanup branch must never capture a shared parent');
 	}
 
 	public function testCleanupCollectorIsolatesMalformedArtifactAndRejectsInvalidTarget()
@@ -4752,8 +4887,10 @@ class RemoveWithDataTest extends TestCase
 			'generation' => $generation, 'artifactReadCountFile' => $counter, 'debug' => true));
 		$reads = is_file($counter) ? count(file($counter, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
 		$this->assertEquals(0, $status, 'several prepared generations under one old hash must not crash: '.$output);
-		$this->assertTrue($reads >= $count && $reads <= $count * 4,
-			'exact artifact reads and decodes for prepared same-hash generations must remain linearly bounded');
+		// The index, collector and recovery each re-read the selected artifact through
+		// the same filesystem seam; each read checks identity before and after.
+		$this->assertTrue($reads >= $count && $reads <= $count * 6,
+			'exact artifact reads and decodes for prepared same-hash generations must remain linearly bounded (observed '.$reads.' for '.$count.' jobs)');
 		$this->assertEquals($count, count(array_filter($staged, 'is_file')),
 			'an old-present recovery probe must retain every independently indexed prepared generation');
 	}
@@ -4980,6 +5117,80 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(ERASEDATA_CLEANUP_NONE,
 			erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $record),
 			'rollback cancellation has the same absent-queue NONE contract');
+	}
+
+	public function testCleanupRecoveryUsesFilesystemSeamForQueueAndSelectedArtifact()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$input = $this->cleanupJobInput($oldHash);
+		$job = erasedataPrepareObsoleteCleanup($oldHash, $input['new_hash'], $input['marker'],
+			$input['replacement_record'], $input['base'], $input['entries']);
+		$this->assertTrue(is_array($job), 'the selected cleanup generation is staged');
+		$tmp = $job['tmp_path'];
+		$list = $job['list_path'];
+		erasedataReleaseObsoleteCleanupJob($job);
+		$this->configureMatchingCleanupRecovery($oldHash, $input);
+		$queue = $this->queuePath();
+		$index = erasedataBuildCollectorIndex($queue, $oldHash);
+		$filesystem = new ErasedataCollectorFixture(array(
+			'entryIdentity:*' => array('path' => $tmp, 'result' => false),
+		));
+		$reason = null;
+		$this->assertEquals(ERASEDATA_CLEANUP_RETRY,
+			erasedataRecoverObsoleteCleanupLocked($queue, $oldHash, $input['new_hash'],
+				$input['marker'], $input['replacement_record'], $reason, $index, $filesystem),
+			'a selected artifact that the supplied filesystem cannot identify refuses recovery');
+		$this->assertEquals('unreadable-manifest', $reason,
+			'the refusal reports the selected artifact rather than pretending it is absent');
+		$this->assertTrue(is_file($tmp) && !file_exists($list),
+			'the refused recovery keeps the staged artifact and does not publish a token');
+	}
+
+	public function testCleanupRecoveryUsesFilesystemSeamForQueueEnumeration()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$input = $this->cleanupJobInput($oldHash);
+		$filesystem = new ErasedataCollectorFixture(array(
+			'scanDirectory:*' => array('result' => false),
+		));
+		$reason = null;
+		$this->assertEquals(ERASEDATA_CLEANUP_RETRY,
+			erasedataRecoverObsoleteCleanup($oldHash, $input['new_hash'],
+				$input['marker'], $input['replacement_record'], $reason, $filesystem),
+			'an unreadable queue from the supplied filesystem must not look empty');
+		$this->assertEquals('unreadable-manifest', $reason,
+			'the queue enumeration failure remains classified');
+	}
+
+	public function testCleanupPublicationRevalidatesThroughTheSuppliedFilesystem()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$job = $this->prepareCleanupJob($oldHash);
+		$tmp = $job['tmp_path'];
+		$list = $job['list_path'];
+		$filesystem = new class extends ErasedataFilesystemOps {
+			public $deniedSelectedRead = false;
+			public function entryIdentity($path)
+			{
+				if(substr($path, -4) === '.tmp')
+					foreach(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $frame)
+						if($frame['function'] === 'erasedataCleanupGenerationArtifacts')
+						{
+							$this->deniedSelectedRead = true;
+							return(false);
+						}
+				return(parent::entryIdentity($path));
+			}
+		};
+		$this->assertEquals(false, erasedataPublishObsoleteCleanup($job, $filesystem),
+			'publication refuses when the supplied filesystem loses the selected generation after indexing');
+		$this->assertTrue($filesystem->deniedSelectedRead,
+			'the selected generation is re-read through the caller filesystem');
+		$this->assertTrue(is_file($tmp) && !file_exists($list),
+			'failed revalidation leaves only the staged manifest');
 	}
 
 	public function testMatchingCleanupTmpPromotesToList()

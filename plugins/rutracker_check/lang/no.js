@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Søk etter oppdateringer";
+ theUILang.checkTorrentRejected	= "Ugyldig forespørsel om oppdateringssjekk";
+ theUILang.checkTorrentRefused	= "Kunne ikke starte oppdateringssjekken";
+ theUILang.checkTorrentUnexpected	= "Uventet svar på oppdateringssjekken";
  theUILang.chkHdr		= "Torrent-oppdateringssjekk";
  theUILang.checkedAt		= "Sist sjekket";
  theUILang.checkedResult	= "Resultat";

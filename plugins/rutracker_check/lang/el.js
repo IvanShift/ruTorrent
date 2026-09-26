@@ -7,6 +7,9 @@
  */
 
  theUILang.checkTorrent		= "Έλεγχος για ενημέρωση";
+ theUILang.checkTorrentRejected	= "Μη έγκυρο αίτημα ελέγχου ενημέρωσης";
+ theUILang.checkTorrentRefused	= "Δεν ήταν δυνατή η έναρξη του ελέγχου ενημέρωσης";
+ theUILang.checkTorrentUnexpected	= "Μη αναμενόμενη απάντηση στον έλεγχο ενημέρωσης";
  theUILang.chkHdr		= "Έλεγχος ενημέρωσης Torrent";
  theUILang.checkedAt		= "Τελευταίος έλεγχος";
  theUILang.checkedResult	= "Αποτέλεσμα";
