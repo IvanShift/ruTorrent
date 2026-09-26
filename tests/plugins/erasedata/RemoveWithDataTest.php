@@ -823,7 +823,7 @@ class RemoveWithDataTest extends TestCase
 				'action' => 'swap-destination', 'at' => 'after');
 		if($options['forceTargetSwap'] !== null)
 			$scenario['rename:*'] = array(
-				'path' => $this->collectorRecoveryTarget($options['forceTargetSwap']),
+				'realpath' => $this->collectorRecoveryTarget($options['forceTargetSwap']),
 				'action' => 'swap-source',
 				'content' => array('name' => 'replacement.bin', 'bytes' => 'replacement'));
 		if($options['forceTargetRecreate'] !== null)
@@ -7317,6 +7317,250 @@ class RemoveWithDataTest extends TestCase
 			'the manifest opened and parsed by the collector remains isolated');
 	}
 
+	public function testBoundRecoveryLinksUsePersistentLogicalTargets()
+	{
+		$this->reset();
+		$hash = $this->hash('D');
+		$base = $this->dir.'/bound-recovery-link-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
+		$this->assertTrue(is_link($base), 'the first pass leaves a recovery link');
+		$filesystem = new ErasedataFilesystemOps();
+		$parent = dirname($base);
+		$entry = $filesystem->entryIdentity($parent);
+		$reference = $filesystem->openDirectoryReference($parent, $entry);
+		$this->assertTrue(is_array($reference), 'the parent has a bound reference');
+		if(!is_array($reference))
+			return;
+		$recovery = erasedataRecoveryLinkTarget(
+			$reference['path'].'/'.basename($base), $filesystem, $base);
+		$this->assertTrue(is_array($recovery) && !empty($recovery['safe']),
+			'the existing recovery layout is valid from the bound path');
+		if(is_array($recovery) && !empty($recovery['safe']))
+		{
+			$this->assertEquals(dirname($recovery['linkTarget']).'/'
+				.basename($recovery['captureRoot']).'/directory',
+				isset($recovery['linkCapture']) ? $recovery['linkCapture'] : null,
+				'the published capture link never contains the process-local descriptor');
+		}
+		$filesystem->closeDirectoryReference($reference);
+	}
+
+	public function testForcedDirectoryParentSwapCannotRemoveDifferentDirectory()
+	{
+		$this->reset();
+		$hash = $this->hash('E');
+		$root = $this->dir.'/forced-parent-root';
+		$parent = $root.'/inside';
+		$base = $parent.'/payload';
+		$outside = $this->dir.'/forced-parent-outside';
+		$backup = $root.'/inside.checked';
+		$marker = $this->dir.'/forced-parent-swapped';
+		mkdir($base, 0777, true);
+		file_put_contents($base.'/original.bin', 'original');
+		mkdir($outside.'/payload', 0777, true);
+		file_put_contents($outside.'/payload/sentinel.bin', 'outside-sentinel');
+		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'scanDirectory:*' => array('realpath' => $parent, 'action' => 'replace-entry',
+				'at' => 'after', 'target' => $parent, 'backup' => $backup,
+				'symlink_target' => $outside, 'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'forced directory collector exits: '.$output);
+		$this->assertTrue(is_file($marker), 'the parent changed after its reservation scan');
+		$this->assertEquals('outside-sentinel',
+			@file_get_contents($outside.'/payload/sentinel.bin'),
+			'a changed parent cannot redirect forced directory removal');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'the exact manifest remains until its original directory is handled');
+	}
+
+	public function testForcedParentSwapAfterPreparedIntentRetainsOriginalManifest()
+	{
+		$this->reset();
+		$hash = $this->hash('F');
+		$root = $this->dir.'/forced-replay-parent-root';
+		$parent = $root.'/inside';
+		$base = $parent.'/payload';
+		$backup = $root.'/inside.checked';
+		$outside = $this->dir.'/forced-replay-outside';
+		$marker = $this->dir.'/forced-replay-prepared';
+		mkdir($base, 0777, true);
+		file_put_contents($base.'/original.bin', 'original');
+		mkdir($outside.'/payload', 0777, true);
+		file_put_contents($outside.'/payload/sentinel.bin', 'outside-sentinel');
+		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'),
+			$base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'makeDirectory:*' => array('basename_prefix' => '.erasedata-rmdir-',
+				'action' => 'exit', 'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'prepared forced collector exits: '.$output);
+		$this->assertTrue(is_file($marker), 'intent was written before reservation setup');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents), 'the parent identity remains durable');
+		if(count($intents) !== 1)
+			return;
+		$this->assertTrue(rename($parent, $backup), 'the original parent remains held aside');
+		$this->assertTrue(symlink($outside, $parent), 'a different parent takes its public name');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'changed-parent replay exits: '.$output);
+		$this->assertEquals('outside-sentinel',
+			@file_get_contents($outside.'/payload/sentinel.bin'),
+			'replay never removes data through the changed parent');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'parent mismatch keeps the exact manifest');
+		$this->assertTrue(strpos($output, 'directory-intent-unresolved') !== false,
+			'the refusal is visible without debug logging');
+		$this->assertEquals(1,
+			count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')),
+			'the recorded original parent remains available for recovery');
+		$this->assertTrue(unlink($parent), 'the changed public parent is removed');
+		$this->assertTrue(rename($backup, $parent), 'the original parent returns');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'restored-parent retry exits: '.$output);
+		$this->assertTrue(!file_exists($base) && !is_link($base),
+			'the original forced directory is removed after restoration');
+		$this->assertTrue(!is_file($manifestPath),
+			'the proved original-parent operation consumes the manifest');
+		$this->assertEquals(array(),
+			glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'the completed forced operation clears its intent');
+		$this->assertEquals('outside-sentinel',
+			@file_get_contents($outside.'/payload/sentinel.bin'),
+			'the external data remains after recovery');
+	}
+
+	public function testForcedParentSwapDuringRecoveryTraversalKeepsOutsideData()
+	{
+		$this->reset();
+		$hash = $this->hash('C');
+		$root = $this->dir.'/forced-deep-race-root';
+		$parent = $root.'/inside';
+		$base = $parent.'/payload';
+		$backup = $root.'/inside.checked';
+		$outside = $this->dir.'/forced-deep-race-outside';
+		$marker = $this->dir.'/forced-deep-race-triggered';
+		mkdir($base, 0777, true);
+		file_put_contents($base.'/original.bin', 'original');
+		mkdir($outside.'/payload', 0777, true);
+		file_put_contents($outside.'/payload/sentinel.bin', 'outside-sentinel');
+		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'),
+			$base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'openDirectoryReference:*' => array('contains' => '.force-',
+				'action' => 'replace-entry', 'at' => 'after',
+				'target' => $parent, 'backup' => $backup,
+				'symlink_target' => $outside, 'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'forced deep-race collector exits: '.$output);
+		$this->assertTrue(is_file($marker),
+			'the parent changed after the private traversal reference opened');
+		$this->assertEquals('outside-sentinel',
+			@file_get_contents($outside.'/payload/sentinel.bin'),
+			'bound traversal never removes data in the new public parent');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'a parent change during traversal retains the exact manifest');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents),
+			'the interrupted operation retains its durable parent intent');
+		if(count($intents) !== 1)
+			return;
+		$record = json_decode(file_get_contents($intents[0]), true);
+		$this->assertEquals('completed', isset($record['phase']) ? $record['phase'] : null,
+			'bound completion is recorded even when the public parent changed');
+		$this->assertTrue(unlink($parent), 'the changed public parent is removed');
+		$this->assertTrue(rename($backup, $parent), 'the original parent returns');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'restored deep-race retry exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'retry clears the exact manifest after restoring the parent');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'retry clears the completed forced intent');
+		$this->assertEquals('outside-sentinel',
+			@file_get_contents($outside.'/payload/sentinel.bin'),
+			'external data remains untouched after recovery');
+	}
+
+	public function testForcedCompletedIntentReplaysAfterExitBeforeClear()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$base = $this->dir.'/forced-completed-intent-base';
+		mkdir($base);
+		file_put_contents($base.'/payload.bin', 'payload');
+		$this->writeManifestLines($hash.'.list', array($base.'/payload.bin'),
+			$base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'unlink:*' => array('basename_prefix' => '.erasedata-rmdir-intent-',
+				'action' => 'exit'),
+		)));
+		$this->assertEquals(0, $status, 'forced collector exits before intent clear: '.$output);
+		$this->assertTrue(!file_exists($base), 'the forced directory was removed');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'the exact manifest remains before intent clear');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents), 'the completed forced intent remains');
+		if(count($intents) !== 1)
+			return;
+		$record = json_decode(file_get_contents($intents[0]), true);
+		$this->assertEquals('completed', isset($record['phase']) ? $record['phase'] : null,
+			'successful forced deletion is recorded before intent clear');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'forced replay exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'forced replay consumes the completed manifest');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'forced replay clears the completed intent');
+	}
+
+	public function testForcedMovedPrivateDirectoryKeepsItsManifest()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$base = $this->dir.'/forced-moved-private-base';
+		mkdir($base);
+		file_put_contents($base.'/payload.bin', 'held-data');
+		$this->writeManifestLines($hash.'.list', array($base.'/payload.bin'),
+			$base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('to_contains' => '/.erasedata-rmdir-',
+				'action' => 'exit', 'at' => 'after'),
+		)));
+		$this->assertEquals(0, $status, 'forced collector exits after capture: '.$output);
+		$reserved = glob($this->dir.'/.erasedata-rmdir-*/directory');
+		$this->assertEquals(1, count($reserved), 'one private directory was captured');
+		if(count($reserved) !== 1)
+			return;
+		$moved = $this->dir.'/forced-moved-private-data';
+		$this->assertTrue(rename($reserved[0], $moved),
+			'another actor moves the captured directory with data');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'forced replay exits: '.$output);
+		$this->assertEquals('held-data', @file_get_contents($moved.'/payload.bin'),
+			'moved data remains unchanged');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'missing private directory cannot settle the forced manifest');
+		$this->assertTrue(strpos($output, 'directory-intent-unresolved') !== false,
+			'the ambiguous capture is visible');
+		$this->assertEquals(1, count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')),
+			'the ambiguous capture keeps its intent');
+	}
+
 	public function testForceRootSwapBeforeCaptureSurvives()
 	{
 		$this->reset();
@@ -7333,7 +7577,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/orig.bin'), $base, 1, 2);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+			'rename:1' => array('realpath' => $base, 'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
 			'unlink:1' => array('path' => $base, 'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement, 'marker' => $marker),
@@ -7363,7 +7607,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/orig.bin'), $base, 1, 2);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+			'rename:1' => array('realpath' => $base, 'action' => 'replace-entry',
 				'backup' => $backup, 'symlink_target' => $external, 'marker' => $marker),
 		)));
 		$this->assertEquals(0, $status, 'forced symlink race collector exits normally: '.$output);
@@ -7915,7 +8159,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $base, 'action' => 'recreate', 'at' => 'after',
+			'rename:1' => array('realpath' => $base, 'action' => 'recreate', 'at' => 'after',
 				'content' => array('name' => 'sentinel.bin', 'bytes' => 'recreated-public'),
 				'marker' => $marker),
 		)));
@@ -7943,7 +8187,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $base, 'action' => 'replace-entry',
+			'rename:1' => array('realpath' => $base, 'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement),
 			'unlink:1' => array('path' => $base, 'action' => 'replace-entry',
 				'backup' => $backup, 'replacement' => $replacement),
@@ -7970,7 +8214,7 @@ class RemoveWithDataTest extends TestCase
 		$this->writeManifestLines($hash.'.list', array($base.'/data.bin'), $base, 1, 2);
 
 		list($status, $output) = $this->runCollector(array('filesystem' => array(
-			'rename:1' => array('path' => $base, 'action' => 'exit',
+			'rename:1' => array('realpath' => $base, 'action' => 'exit',
 				'at' => 'after', 'marker' => $marker),
 		)));
 		$this->assertEquals(0, $status, 'capture-crash worker exits at the scripted boundary: '.$output);

@@ -278,6 +278,8 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 	{
 		if(isset($entry['path']) && $path !== $entry['path'])
 			return(false);
+		if(isset($entry['realpath']) && @realpath($path) !== $entry['realpath'])
+			return(false);
 		if(isset($entry['basename']) && basename($path) !== $entry['basename'])
 			return(false);
 		if(isset($entry['basename_prefix'])
@@ -629,6 +631,8 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 				"1\n", FILE_APPEND);
 		}
 		$entry = $this->directive('scanDirectory', $path);
+		if($entry !== false)
+			$this->act($entry, $path, 'after');
 		if($entry !== false && $this->forced($entry))
 			return($entry['result']);
 		return($entries);
