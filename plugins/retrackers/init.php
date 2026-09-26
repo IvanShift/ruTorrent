@@ -19,9 +19,13 @@ $user = User::getUser();
 
 $failure = null;
 $ok = retrackersRunLifecycleInit($user, $script, $php, $jResult, $failure);
+// A failed init may retain a daemon hook; getplugins can also disable us
+// after successful init if its deferred daemon PHP check fails. Preserve
+// the guarded done path in either case.
+$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
+$jResult .= "plugin.shutdownWhileDisabled = true;";
 if($ok)
 {
-	$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	$trks = rRetrackers::load();
 	$jResult.=$trks->get();
 }

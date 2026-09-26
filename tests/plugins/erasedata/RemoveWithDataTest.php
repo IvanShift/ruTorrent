@@ -9694,6 +9694,57 @@ class RemoveWithDataTest extends TestCase
 			'exactly one unconditional drain-no-ack diagnostic is written');
 	}
 
+
+	public function testHeadlessNoAckRearmsAnArmedQueueAfterVolatileScheduleLoss()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		rXMLRPCRequest::$responses['schedule.if_absent'] = array('ok' => true, 'val' => array(0));
+		$dependencies = $this->dependencies(array('ackTimeout' => 0.08, 'ackPoll' => 0.01));
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('A')), 1) === false,
+			'the first unanswered admission retains its torrent and leaves an armed obligation');
+		$before = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($before) && $before['phase'] === 'armed',
+			'the persisted phase survives a daemon restart while its schedule does not');
+		// rTorrent loses its volatile schedule on restart. This headless caller
+		// never loads erasedata/init.php, so only its no-ack path can restore it.
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('B')), 1) === false,
+			'a second unanswered admission remains safe and retryable');
+		$records = $this->scheduleRecords('schedule.if_absent');
+		$this->assertEquals(1, count($records),
+			'the no-ack path reuses conservative queue rearm after the producer releases its locks');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($records) ? $records[0]['key'] : null,
+			'headless recovery registers the exact per-user key');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'a missed acknowledgement never sends the command that resets a live countdown');
+		// A daemon without schedule.if_absent must stay visibly retryable. It
+		// cannot distinguish a lost schedule from a busy but live worker.
+		rXMLRPCRequest::$responses['schedule.if_absent'] = array('ok' => true,
+			'fault' => true, 'faultString' => 'method unavailable');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('C')), 1) === false,
+			'an older daemon that rejects the idempotent command retains the torrent');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'no compatibility fallback may reset a possibly live countdown');
+		$visible = false;
+		foreach(FileUtil::$log as $line)
+			if(strpos($line, 'rearm-refused') !== false
+				&& strpos($line, 'headless-recovery-refused') !== false)
+				$visible = true;
+		$this->assertTrue($visible,
+			'the older daemon refusal is classified and visible');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'none of the unanswered admissions erases a torrent');
+	}
+
 	public function testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding()
 	{
 		$this->reset();
@@ -16237,19 +16288,65 @@ class RemoveWithDataTest extends TestCase
 			'without leaking the queue directory or the settings root: '.$line);
 	}
 
-	// P6-2: what the accepted conservative retention actually costs, measured.
+	// The preview is only an optimization. A sibling's RPC can race the human
+	// who removes an unbound object, so a skipped hash gets UNKNOWN for that
+	// tick and is probed on the next one rather than discharged on stale proof.
+	public function testUnboundProbePreviewCannotDischargeAfterTheObjectChanges()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$generation = '0000000000000001';
+		$orphan = $this->hash('A');
+		$sibling = $this->hash('B');
+		$payload = $this->dir.'/unbound-preview.bin';
+		file_put_contents($payload, 'retained payload');
+		$bytes = ErasedataManifestCodec::encode($orphan,
+			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+		$object = erasedataStageAdmittedManifest($queue, $orphan, $generation, $bytes);
+		$this->assertTrue(is_array($object), 'the preview sees a complete unbound object');
+		if(!is_array($object))
+			return;
+		foreach(array($orphan, $sibling) as $hash)
+			$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
+				'the generation owes '.$hash);
+		$this->armQueue($queue, $generation, array());
+		$this->probe(true, false, array($sibling));
+		rXMLRPCRequest::$responses['d.hash']['callback'] = function($commands) use ($sibling, $object) {
+			if($commands[0]->params === $sibling)
+				@unlink($object['path']);
+		};
+		erasedataDrainWorkerRun($this->dependencies());
+		$probed = array();
+		foreach(rXMLRPCRequest::$commandCalls as $calls)
+			if($calls[0]->command === 'd.hash')
+				$probed[] = $calls[0]->params;
+		$this->assertEquals(array($sibling), $probed,
+			'only the sibling is probed after the preview');
+		$this->assertTrue(erasedataPendingMarkerStands($queue, $orphan, $generation),
+			'the stale preview cannot discharge the unbound member');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'probe-deferred') !== false,
+			'the one-tick uncertainty is visible');
+		$this->assertTrue(file_exists($payload),
+			'the payload is untouched after the staging identity changes');
+		rXMLRPCRequest::$commandCalls = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$next = array();
+		foreach(rXMLRPCRequest::$commandCalls as $calls)
+			if($calls[0]->command === 'd.hash')
+				$next[] = $calls[0]->params;
+		$this->assertTrue(in_array($orphan, $next, true),
+			'the next tick probes the member whose unbound object was removed');
+	}
+
+	// P6-2: an unbound object makes its presence probe unnecessary until repaired.
 	//
 	// A queue holding one unbound staging object never retires, so the drain
-	// child runs again every ERASEDATA_DRAIN_INTERVAL seconds for the life of
-	// the daemon and re-probes that hash on every tick until a human deletes
-	// the file. Nothing here changes that policy -- adopting the object by
-	// filename stays forbidden and the retention is the accepted repair. This
-	// pins the cost, which nobody had measured: the classification is identical
-	// from tick to tick, so the report memory writes it on the first tick and on
-	// no later one, while the RPC probe is paid on every tick. A silent log
-	// after tick one is therefore NOT a resolved queue, and the last assertions
-	// say so: the object, its marker and its obligation are all still there.
-	public function testTheUnboundStagingRetentionCostsOneReportAndOneProbePerTick()
+	// child runs every ERASEDATA_DRAIN_INTERVAL seconds. It still scans the
+	// physical object and retains the marker, but a hash probe cannot alter
+	// that decision while the object stands. Once a human removes it, the next
+	// tick must resume the probe; a skipped probe must never become a permanent
+	// cached absence or quietly discharge an obligation.
+	public function testUnboundStagingSkipsProbesUntilThePhysicalObjectIsRemoved()
 	{
 		$this->reset();
 		$queue = $this->queuePath();
@@ -16296,9 +16393,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(array_fill(0, 9, 0), array_slice($lines, 1),
 			'the report converges to complete silence after tick one: '
 				.json_encode($lines));
-		// The part that does NOT converge, which is the cost worth knowing.
-		$this->assertTrue(count(array_unique($probes)) === 1 && $probes[0] > 0,
-			'while every tick still pays the same RPC probe: '.json_encode($probes));
+		$this->assertEquals(array_fill(0, 10, 0), $probes,
+			'unbound staging requires no repeated hash probe: '.json_encode($probes));
 		// And why it is paid for ever: the schedule cannot retire while the
 		// obligation stands, which the first tick says in its own line.
 		$this->assertTrue(strpos(implode("\n", $captured[0]),
@@ -16312,5 +16408,11 @@ class RemoveWithDataTest extends TestCase
 			'and so is the obligation it strands');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased,
 			'nothing was erased across any of those ticks');
+		$this->assertTrue(@unlink($object['path']),
+			'a human removes the exact unbound object while the marker stands');
+		rXMLRPCRequest::$requested = array();
+		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertTrue(in_array('d.hash', rXMLRPCRequest::$requested, true),
+			'the very next tick resumes the live presence probe');
 	}
 }

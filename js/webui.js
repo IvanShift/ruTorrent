@@ -569,7 +569,7 @@ var theWebUI = {
 			else
 			{
 				var plugin = thePlugins.get(id.substr(5));
-				theContextMenu.add([theUILang.plgShutdown, (plugin.enabled && plugin.canShutdown()) ? "theWebUI.plgShutdown()" : null]);
+				theContextMenu.add([theUILang.plgShutdown, (plugin.canRequestShutdown()) ? "theWebUI.plgShutdown()" : null]);
 				theContextMenu.add([CMENU_CHILD, theUILang.plgLaunch,
 					[
 						[theUILang.EnableTracker, !plugin.launched && plugin.canBeLaunched() ? "theWebUI.plgLaunch(true)" : null],
@@ -598,7 +598,7 @@ var theWebUI = {
       			{
       				var name = k.substr(5);
 	      			var plugin = thePlugins.get(name);
-      			        if(plugin.enabled && plugin.canShutdown())
+				if(plugin.canRequestShutdown())
             				str += "&hash=" + name;
          		}
       		}

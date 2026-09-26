@@ -104,6 +104,7 @@ function rPlugin( name, version, author, descr, restictions, help )
 	this.author = (author==null) ? "unknown" : author;
 	this.allStuffLoaded = false;
 	this.enabled = true;
+	this.shutdownWhileDisabled = false;
 	this.launched = true;
 	this.restictions = restictions;
 	this.help = help;
@@ -143,6 +144,7 @@ rPlugin.prototype.remove = function()
 {
 	if($type(this["onRemove"])=="function")
 		this.onRemove();
+	this.shutdownWhileDisabled = false;
 	this.disable();
 	return(this);
 }
@@ -241,6 +243,11 @@ rPlugin.prototype.canChangeCategory = function()
 rPlugin.prototype.canShutdown = function()
 {
 	return(!(this.restictions & thePlugins.restictions.cantShutdown));
+}
+
+rPlugin.prototype.canRequestShutdown = function()
+{
+	return(this.canShutdown() && (this.enabled || this.shutdownWhileDisabled));
 }
 
 rPlugin.prototype.canBeLaunched = function()

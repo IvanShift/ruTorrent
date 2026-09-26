@@ -3084,11 +3084,10 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				//
 				// The claim is durable and rTorrent's table is not, so a daemon
 				// restart that lands while the phase is `armed` leaves this claim
-				// standing over an emptied schedule table. A later full web-UI load
-				// re-arms it through erasedata init, or Ratio init when erasedata is
-				// disabled; until then a queue driven only by erase.php
-				// times out visibly on the acknowledgement and logs `drain-no-ack`,
-				// retaining the torrents and rolling back only its own staging.
+				// standing over an emptied schedule table. Plugin init can re-arm it
+				// on a later full web-UI load; a headless admission first times out
+				// visibly, retains the torrents, rolls back its own staging, then
+				// attempts an idempotent re-arm after releasing its locks.
 				$live = $state['phase'] === 'armed' && $state['user'] === $user;
 				$state['user'] = $user;
 				$state['generation'] = $generation;
@@ -3311,6 +3310,13 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					$acknowledged ? 'binding-mismatch' : 'drain-no-ack',
 					$generation, $members,
 					'torrents-retained-own-staging-rolled-back');
+				// A daemon restart can lose the volatile schedule while the durable
+				// phase remains armed. Once every admission lock is released, let the
+				// existing conservative recovery scan re-arm owed work. No-ack alone
+				// is not authority to rewrite the phase or erase this torrent.
+				if(!$acknowledged && $live)
+					erasedataRearmDrainScheduleRun(array('listPath' => $listPath,
+						'user' => $user, 'log' => $log, 'context' => 'headless'));
 				return(false);
 			}
 			$state['journal'][$generation]['phase'] = 'erase-started';
@@ -3861,6 +3867,32 @@ if(!function_exists('erasedataCancelPreparedStaging'))
 	}
 }
 
+if(!function_exists('erasedataUnboundStagingCandidates'))
+{
+	// A filename is evidence for retention only when the journal does not bind
+	// that exact path. The preview before the RPC and the locked decision after
+	// it must use the same classifier; a stale preview can only defer a probe
+	// for one tick, never authorize deletion or discharge.
+	function erasedataUnboundStagingCandidates(array $entries, $generation,
+		array $hashes, array $staging, $listPath)
+	{
+		$wanted = array_fill_keys($hashes, true);
+		$unbound = array();
+		foreach($entries as $name)
+			if(preg_match('/^([0-9A-Fa-f]{40})\\.([0-9a-f]{16})\\..+\\.tmp$/D', $name, $match) === 1
+				&& $match[2] === $generation)
+			{
+				$hash = strtoupper($match[1]);
+				if(!isset($wanted[$hash]) || isset($unbound[$hash]))
+					continue;
+				if(!isset($staging[$hash]['path'])
+					|| $staging[$hash]['path'] !== $listPath.'/'.$name)
+					$unbound[$hash] = $name;
+			}
+		return($unbound);
+	}
+}
+
 if(!function_exists('erasedataDrainGenerationPass'))
 {
 	// One generation, under its own blocking sorted hash locks.
@@ -3886,7 +3918,7 @@ if(!function_exists('erasedataDrainGenerationPass'))
 	// nothing under it. `erase-started` is the opposite case and stays
 	// conservative: presence and publication recovery only, rebinding nothing.
 	function erasedataDrainGenerationPass($listPath, $user, $generation, array $job,
-		ErasedataFilesystemOps $filesystem, array &$notes)
+		ErasedataFilesystemOps $filesystem, array &$notes, array $stateSnapshot = array())
 	{
 		$hashes = $job['hashes'];
 		$members = count($hashes);
@@ -3902,12 +3934,34 @@ if(!function_exists('erasedataDrainGenerationPass'))
 			return($result);
 		}
 
-		// (1) The live-hash probe, one per member, with NO state lock held.
-		// Transport, fault or parse uncertainty is UNKNOWN: it publishes
-		// nothing, unlinks nothing and resolves nothing.
+		// A matched unbound staging object already decides retention for its
+		// hash. Re-probing it every five seconds cannot change that decision and
+		// scales linearly with stranded members. The acknowledged state is only a
+		// preview: if the object or journal changes before the locked read below,
+		// an omitted answer remains UNKNOWN for this tick and is probed next time.
+		$unboundBeforeProbe = array();
+		if(isset($stateSnapshot['journal']) && is_array($stateSnapshot['journal']))
+		{
+			$preview = isset($stateSnapshot['journal'][$generation]['staging'])
+				&& is_array($stateSnapshot['journal'][$generation]['staging'])
+				? $stateSnapshot['journal'][$generation]['staging'] : array();
+			$previewEntries = $filesystem->scanDirectory($listPath);
+			if(is_array($previewEntries))
+				$unboundBeforeProbe = erasedataUnboundStagingCandidates($previewEntries,
+					$generation, $hashes, $preview, $listPath);
+		}
+		// (1) The live-hash probe, one per member whose physical staging does
+		// not already force retention, with NO state lock held. Transport, fault
+		// or parse uncertainty is UNKNOWN: it publishes nothing, unlinks nothing
+		// and resolves nothing.
 		$presence = array();
 		foreach($hashes as $hash)
 		{
+			if(isset($unboundBeforeProbe[$hash]))
+			{
+				$presence[$hash] = ERASEDATA_TORRENT_UNKNOWN;
+				continue;
+			}
 			$presence[$hash] = erasedataTorrentPresence($hash);
 			// Classified here, against its own canonical hash and generation,
 			// and not at the end of the pass: every later refusal is reached
@@ -4008,18 +4062,12 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		// human can clear this state, so the line has to say which file. scandir()
 		// sorts, so when one member has several stray objects the first is named
 		// deterministically and the next tick after it is removed names the next.
-		$unbound = array();
-		foreach($entries as $name)
-			if(preg_match('/^([0-9A-Fa-f]{40})\\.([0-9a-f]{16})\\..+\\.tmp$/D', $name, $match) === 1
-				&& $match[2] === $generation
-				&& in_array(strtoupper($match[1]), $hashes, true))
-			{
-				$hash = strtoupper($match[1]);
-				if(!isset($unbound[$hash])
-					&& (!isset($staging[$hash]['path'])
-						|| $staging[$hash]['path'] !== $listPath.'/'.$name))
-					$unbound[$hash] = $name;
-			}
+		$unbound = erasedataUnboundStagingCandidates($entries, $generation,
+			$hashes, $staging, $listPath);
+		foreach($unboundBeforeProbe as $hash => $name)
+			if(!isset($unbound[$hash]))
+				$notes[] = array('probe-deferred', $generation, $members,
+					'staging-changed-presence-rechecked-next-tick', $hash);
 		foreach($unbound as $hash => $name)
 			$notes[] = array('staging-unbound', $generation, $members,
 				'physical-staging-retained-journal-binding-recovery-required',
@@ -4923,12 +4971,14 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		$listPath = isset($dependencies['listPath']) ? $dependencies['listPath'] : null;
 		$user = isset($dependencies['user']) ? $dependencies['user'] : null;
 		$log = isset($dependencies['log']) ? $dependencies['log'] : null;
+		$context = isset($dependencies['context']) && $dependencies['context'] === 'headless'
+			? 'headless-recovery' : 'startup-recovery';
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
 			return(false);
 		if(erasedataDrainScheduleKey($user) === false)
 		{
 			erasedataDrainDiagnostic($log, 'rearm-user', null, 0,
-				'startup-recovery-refused');
+				$context . '-refused');
 			return(false);
 		}
 		if(!is_dir($listPath))
@@ -4936,21 +4986,17 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		if(!is_dir($listPath))
 		{
 			erasedataDrainDiagnostic($log, 'queue-unavailable', null, 0,
-				'startup-recovery-refused');
+				$context . '-refused');
 			return(false);
 		}
-		// NONBLOCKING, and that is the whole point of it here. This runs on
-		// php/getplugins.php, so a blocking acquisition put every full load of
-		// the web interface behind whoever holds the state lock -- a producer
-		// holds it across one RPC per accepted hash, a retirement across the
-		// removal RPC. A re-arm that cannot get the lock has learned something
-		// real: another actor is already managing this state, and the next page
-		// load retries at no cost.
+		// NONBLOCKING: plugin init must not stall a full web-UI load, and a
+		// headless admission must not wait behind another actor after its own
+		// acknowledgement timeout. A later caller can retry a busy re-arm.
 		$stateLock = erasedataAcquireDrainStateLock($listPath, true);
 		if(!is_resource($stateLock))
 		{
 			erasedataDrainDiagnostic($log, 'rearm-state-busy', null, 0,
-				'startup-recovery-deferred-another-actor-owns-the-state');
+				$context . '-deferred-another-actor-owns-the-state');
 			return(false);
 		}
 		$state = erasedataReadDrainState($listPath);
@@ -4958,7 +5004,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-state-unreadable', null, 0,
-				'startup-recovery-refused-nothing-armed');
+				$context . '-refused-nothing-armed');
 			return(false);
 		}
 		// This user's own queue, or one nobody has ever claimed. '' is a real
@@ -4967,7 +5013,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-user-mismatch',
-				$state['generation'], 0, 'startup-recovery-refused-nothing-armed');
+				$state['generation'], 0, $context . '-refused-nothing-armed');
 			return(false);
 		}
 		$scan = erasedataRetirementScan($dependencies);
@@ -5059,12 +5105,20 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		// stays classified rather than surfacing as the neighbouring
 		// `rearm-refused`.
 		$command = erasedataDrainScheduleCommand($user, ERASEDATA_DRAIN_INTERVAL);
+		if($command !== false && $context === 'headless-recovery')
+		{
+			// Reuse the already encoded arguments: rXMLRPCCommand's constructor
+			// expects raw values, not the rXMLRPCParam objects in $command->params.
+			// rTorrent 0.16.21+ leaves an existing countdown untouched. Older
+			// daemons refuse this command; never fall back to resetting schedule.
+			$command->command = getCmd('schedule.if_absent');
+		}
 		if($command === false)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-unavailable',
 				$state['generation'], $scan['candidates'],
-				'startup-recovery-refused-obligations-retained');
+				$context . '-refused-obligations-retained');
 			return(false);
 		}
 		$request = new rXMLRPCRequest($command);
@@ -5072,7 +5126,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-refused', $state['generation'],
-				$scan['candidates'], 'startup-recovery-refused-obligations-retained');
+				$scan['candidates'], $context . '-refused-obligations-retained');
 			return(false);
 		}
 		// The generation is NEVER touched here. What a restart lost is the
@@ -5222,7 +5276,8 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			{
 				$notes = array();
 				$outcome = erasedataDrainGenerationPass($listPath, $user,
-					(string)$jobGeneration, $job, $filesystem, $notes);
+					(string)$jobGeneration, $job, $filesystem, $notes,
+					$acknowledgement['state']);
 				erasedataDrainReportGroup($log, (string)$jobGeneration, $notes,
 					$memory, $fresh);
 				$published += $outcome['published'];

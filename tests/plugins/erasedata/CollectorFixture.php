@@ -158,6 +158,8 @@ if(!class_exists('rXMLRPCRequest'))
 			$command = (string)$command;
 			if($command === 'schedule' || $command === 'schedule2')
 				return('schedule');
+			if($command === 'schedule.if_absent')
+				return('schedule.if_absent');
 			if($command === 'schedule_remove' || $command === 'schedule.remove'
 				|| $command === 'schedule_remove2')
 				return('schedule_remove');
