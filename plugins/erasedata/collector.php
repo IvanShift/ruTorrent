@@ -27,17 +27,25 @@ function erasedataSamePathIdentity($expected, $current)
 		&& $expected['path'] === $current['path']);
 }
 
-function erasedataDirectoryReservationPrefix($path, $reservationKey)
+function erasedataDirectoryReservationPrefix($path, $reservationKey, $logicalPath = null)
 {
-	return(dirname($path).'/.erasedata-rmdir-'.hash('sha256', $reservationKey."\0".$path).'-');
+	if($logicalPath === null) $logicalPath = $path;
+	return(dirname($path).'/.erasedata-rmdir-'.hash('sha256',
+		$reservationKey."\0".$logicalPath).'-');
 }
 
-function erasedataDirectoryReservationPath($path, $reservationKey, $identity)
+function erasedataLogicalReservationPath($reservation, $logicalPath)
+{
+	return(dirname($logicalPath).'/'.basename($reservation));
+}
+
+function erasedataDirectoryReservationPath($path, $reservationKey, $identity,
+	$logicalPath = null)
 {
 	$token = erasedataPrivateToken();
 	if($token === false)
 		return(false);
-	return(erasedataDirectoryReservationPrefix($path, $reservationKey)
+	return(erasedataDirectoryReservationPrefix($path, $reservationKey, $logicalPath)
 		.$identity['lstat']['dev'].'-'.$identity['lstat']['ino'].'-'.$token);
 }
 
@@ -47,7 +55,7 @@ function erasedataReservationDataPath($reservation)
 }
 
 function erasedataDirectoryReservations($path, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $logicalPath = null)
 {
 	$directory = dirname($path);
 	if(!is_dir($directory))
@@ -55,7 +63,8 @@ function erasedataDirectoryReservations($path, $reservationKey,
 	$entries = $filesystem->scanDirectory($directory);
 	if($entries === false)
 		return(false);
-	$prefix = basename(erasedataDirectoryReservationPrefix($path, $reservationKey));
+	$prefix = basename(erasedataDirectoryReservationPrefix(
+		$path, $reservationKey, $logicalPath));
 	$ret = array();
 	foreach($entries as $entry)
 		if(strpos($entry, $prefix) === 0
@@ -65,9 +74,11 @@ function erasedataDirectoryReservations($path, $reservationKey,
 	return($ret);
 }
 
-function erasedataReservationEncodedIdentity($reserved, $path, $reservationKey)
+function erasedataReservationEncodedIdentity($reserved, $path, $reservationKey,
+	$logicalPath = null)
 {
-	$prefix = erasedataDirectoryReservationPrefix($path, $reservationKey);
+	$prefix = erasedataDirectoryReservationPrefix($path, $reservationKey,
+		$logicalPath);
 	if(strpos($reserved, $prefix) !== 0)
 		return(false);
 	$suffix = substr($reserved, strlen($prefix));
@@ -77,10 +88,11 @@ function erasedataReservationEncodedIdentity($reserved, $path, $reservationKey)
 	return(array('device'=>$matches[1], 'inode'=>$matches[2]));
 }
 
-function erasedataReservationHasEncodedIdentity($reserved, $path, $reservationKey)
+function erasedataReservationHasEncodedIdentity($reserved, $path, $reservationKey,
+	$logicalPath = null)
 {
 	$encoded = erasedataReservationEncodedIdentity(
-		$reserved, $path, $reservationKey);
+		$reserved, $path, $reservationKey, $logicalPath);
 	if($encoded === false || !erasedataPrivateMarkerIsValid($reserved))
 		return(false);
 	$data = erasedataReservationDataPath($reserved);
@@ -97,9 +109,10 @@ function erasedataReservationHasEncodedIdentity($reserved, $path, $reservationKe
 // verified here; the allowlist, the marker and the removal itself belong to the
 // container owner.
 function erasedataRemoveReservationContainer($reserved, $path, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $logicalPath = null)
 {
-	if(erasedataReservationEncodedIdentity($reserved, $path, $reservationKey) === false)
+	if(erasedataReservationEncodedIdentity(
+		$reserved, $path, $reservationKey, $logicalPath) === false)
 		return(false);
 	return(!erasedataPathExists($reserved)
 		|| $filesystem->removePrivateContainer($reserved, array('.', '..',
@@ -165,33 +178,40 @@ function erasedataCleanupRemoveReservationContainer($reservation, $path,
 }
 
 function erasedataReservationLinkMatches($path, $reserved,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $linkTarget = null)
 {
-	return(is_link($path) && $filesystem->readLink($path) === $reserved);
+	if($linkTarget === null) $linkTarget = $reserved;
+	return(is_link($path) && $filesystem->readLink($path) === $linkTarget);
 }
 
 function erasedataPublishReservationLink($reserved, $path,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $linkTarget = null, $parentGuard = null)
 {
-	if(erasedataReservationLinkMatches($path, $reserved, $filesystem))
+	if(is_callable($parentGuard) && !call_user_func($parentGuard))
+		return(false);
+	if($linkTarget === null) $linkTarget = $reserved;
+	if(erasedataReservationLinkMatches($path, $reserved, $filesystem, $linkTarget))
 		return(true);
 	if(erasedataPathExists($path))
 		return(false);
 	// symlink() is the portable PHP 7.4 filesystem primitive that creates the
 	// original name only when it is still absent. Unlike rename(), it cannot
 	// replace a concurrently created empty directory.
-	if(!$filesystem->makeSymlink($reserved, $path))
+	if(!$filesystem->makeSymlink($linkTarget, $path))
 		return(false);
-	return(erasedataReservationLinkMatches($path, $reserved, $filesystem));
+	return(erasedataReservationLinkMatches(
+		$path, $reserved, $filesystem, $linkTarget));
 }
 
 function erasedataDropReservationLink($path, $reserved, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $linkTarget = null)
 {
-	if(!erasedataReservationLinkMatches($path, $reserved, $filesystem))
+	if($linkTarget === null) $linkTarget = $reserved;
+	if(!erasedataReservationLinkMatches(
+		$path, $reserved, $filesystem, $linkTarget))
 		return(!erasedataPathExists($path));
 	return(erasedataUnlinkRecoveryLink(
-		$path, $reserved, $reservationKey, $filesystem));
+		$path, $linkTarget, $reservationKey, $filesystem));
 }
 
 function erasedataRecoveryCapturePrefix($target)
@@ -222,20 +242,25 @@ function erasedataNewRecoveryCaptureRoot($target)
 	return($token === false ? false : erasedataRecoveryCapturePrefix($target).$token);
 }
 
-function erasedataRecoveryLinkLayout($path, ErasedataFilesystemOps $filesystem)
+function erasedataRecoveryLinkLayout($path, ErasedataFilesystemOps $filesystem,
+	$logicalPath = null)
 {
+	if($logicalPath === null) $logicalPath = $path;
 	if(!is_link($path))
 		return(false);
 	$target = $filesystem->readLink($path);
+	$logicalParent = dirname($logicalPath);
 	if(!is_string($target) || $target === '' || $target[0] !== '/'
-		|| (dirname($target) !== dirname($path)
-			&& dirname(dirname($target)) !== dirname($path)))
+		|| (dirname($target) !== $logicalParent
+			&& dirname(dirname($target)) !== $logicalParent))
 		return(false);
+	$relative = substr($target, strlen($logicalParent));
+	$boundTarget = rtrim(dirname($path), '/').'/'.ltrim($relative, '/');
 	$reservationRoot = null;
 	$reservationName = basename($target);
 	if($reservationName === 'directory')
 	{
-		$reservationRoot = dirname($target);
+		$reservationRoot = dirname($boundTarget);
 		$reservationName = basename($reservationRoot);
 	}
 	if(!preg_match('/^\.erasedata-rmdir-[a-f0-9]{64}-([0-9]+)-([0-9]+)-[a-f0-9]{32}$/D',
@@ -243,42 +268,45 @@ function erasedataRecoveryLinkLayout($path, ErasedataFilesystemOps $filesystem)
 		return(false);
 	return(array(
 		'target' => $target,
+		'boundTarget' => $boundTarget,
 		'reservationRoot' => $reservationRoot,
 		'dev' => $matches[1],
 		'ino' => $matches[2],
 	));
 }
 
-function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
+function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem,
+	$logicalPath = null)
 {
-	$linkLayout = erasedataRecoveryLinkLayout($path, $filesystem);
+	$linkLayout = erasedataRecoveryLinkLayout($path, $filesystem, $logicalPath);
 	if($linkLayout === false)
 		return(false);
-	$target = $linkLayout['target'];
+	$linkTarget = $linkLayout['target'];
+	$target = $linkLayout['boundTarget'];
 	$reservationRoot = $linkLayout['reservationRoot'];
 	if(!is_null($reservationRoot) && erasedataPathExists($reservationRoot))
 	{
 		if(is_link($reservationRoot) || !is_dir($reservationRoot))
-			return(array('safe'=>false, 'linkTarget'=>$target));
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
 		$reservationEntries = $filesystem->scanDirectory($reservationRoot);
 		if(!erasedataPrivateMarkerIsValid($reservationRoot))
 		{
 			if($reservationEntries === false || count(array_diff(
 				$reservationEntries, array('.', '..'))) > 0)
-				return(array('safe'=>false, 'linkTarget'=>$target));
+				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
 			if(!$filesystem->removePrivateContainer(
 				$reservationRoot, array('.', '..')))
-				return(array('safe'=>false, 'linkTarget'=>$target));
+				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
 		}
 	}
 	$layout = array('reservationRoot'=>$reservationRoot);
 	$captureRoots = erasedataRecoveryCaptureRoots($target, $filesystem);
 	if($captureRoots === false || count($captureRoots) > 1)
-		return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	$captureRoot = count($captureRoots) === 1
 		? $captureRoots[0] : erasedataNewRecoveryCaptureRoot($target);
 	if($captureRoot === false)
-		return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	if(count($captureRoots) === 1)
 	{
 		$captureEntries = $filesystem->scanDirectory($captureRoot);
@@ -286,14 +314,14 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 		{
 			if($captureEntries === false || count(array_diff(
 				$captureEntries, array('.', '..'))) > 0)
-				return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 			if(!$filesystem->removePrivateContainer(
 				$captureRoot, array('.', '..')))
-				return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 			$captureRoots = array();
 			$captureRoot = erasedataNewRecoveryCaptureRoot($target);
 			if($captureRoot === false)
-				return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 		}
 	}
 	if(!is_null($reservationRoot) && erasedataPathExists($reservationRoot))
@@ -305,7 +333,7 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 			$allowed[] = basename($captureRoot);
 		if($reservationEntries === false
 			|| count(array_diff($reservationEntries, $allowed)) > 0)
-			return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	}
 	$capture = $captureRoot.'/directory';
 	$deleted = $captureRoot.'/deleted';
@@ -315,12 +343,12 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 	{
 		if(is_link($captureRoot) || !is_dir($captureRoot)
 			|| !erasedataPrivateMarkerIsValid($captureRoot))
-			return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 		$entries = $filesystem->scanDirectory($captureRoot);
 		if($entries === false || count(array_diff(
 			$entries, array('.', '..', 'directory',
 				basename(erasedataPrivateMarkerPath($captureRoot))))) > 0)
-			return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	}
 	$captureExists = $rootExists && erasedataPathExists($capture);
 	$captured = $rootExists && !$targetExists;
@@ -329,7 +357,7 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 	if($targetExists && is_link($target))
 	{
 		if($filesystem->readLink($target) !== $capture)
-			return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 		$captured = true;
 		$candidate = $capture;
 		$targetExists = false;
@@ -339,17 +367,17 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 		if($captureExists && is_link($capture)
 			&& $filesystem->readLink($capture) === $deleted)
 			return(array('safe'=>true, 'exists'=>false, 'captured'=>true,
-				'linkTarget'=>$target, 'path'=>$capture, 'deleted'=>$deleted,
+				'linkTarget'=>$linkTarget, 'boundTarget'=>$target, 'path'=>$capture, 'deleted'=>$deleted,
 				'captureRoot'=>$captureRoot) + $layout);
 		if(!$captureExists)
 			return(array('safe'=>true, 'exists'=>false, 'captured'=>$captured,
-				'linkTarget'=>$target, 'path'=>$candidate, 'deleted'=>$deleted,
+				'linkTarget'=>$linkTarget, 'boundTarget'=>$target, 'path'=>$candidate, 'deleted'=>$deleted,
 				'captureRoot'=>$captureRoot) + $layout);
 		$captured = true;
 		$candidate = $capture;
 	}
 	else if($captureExists)
-		return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 
 	$identity = $filesystem->pathIdentity($candidate);
 	if(!is_array($identity) || empty($identity['exists']) || is_link($candidate)
@@ -358,9 +386,9 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem)
 		|| (string)$identity['lstat']['ino'] !== $linkLayout['ino']
 		|| $identity['lstat']['dev'] !== $identity['stat']['dev']
 		|| $identity['lstat']['ino'] !== $identity['stat']['ino'])
-		return(array('safe'=>false, 'linkTarget'=>$target) + $layout);
+		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	return(array('safe'=>true, 'exists'=>true, 'captured'=>$captured,
-		'linkTarget'=>$target, 'path'=>$candidate, 'identity'=>$identity,
+		'linkTarget'=>$linkTarget, 'boundTarget'=>$target, 'path'=>$candidate, 'identity'=>$identity,
 		'deleted'=>$deleted, 'captureRoot'=>$captureRoot) + $layout);
 }
 
@@ -387,28 +415,29 @@ function erasedataUnlinkRecoveryLink($path, $target, $reservationKey,
 }
 
 function erasedataCompleteRecoveryLink($path, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $logicalPath = null)
 {
-	$linkLayout = erasedataRecoveryLinkLayout($path, $filesystem);
+	$linkLayout = erasedataRecoveryLinkLayout($path, $filesystem, $logicalPath);
 	if(is_array($linkLayout))
 	{
 		$roots = erasedataCapturedEntryRoots(
-			$linkLayout['target'], $reservationKey, $filesystem);
+			$linkLayout['boundTarget'], $reservationKey, $filesystem);
 		if($roots === false || count($roots) > 1)
 			return(false);
 		if(count($roots) === 1 && !$filesystem->unlinkCapturedEntry(
-			$linkLayout['target'], null, $reservationKey, true))
+			$linkLayout['boundTarget'], null, $reservationKey, true))
 			return(false);
 	}
-	$recovery = erasedataRecoveryLinkTarget($path, $filesystem);
+	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
 	if($recovery === false)
 		return(null);
 	if(empty($recovery['safe']) || !empty($recovery['captured']))
 		return(false);
-	$target = $recovery['linkTarget'];
+	$target = $recovery['boundTarget'];
+	$linkTarget = $recovery['linkTarget'];
 	if(empty($recovery['exists']))
 		return(erasedataUnlinkRecoveryLink(
-			$path, $target, $reservationKey, $filesystem));
+			$path, $linkTarget, $reservationKey, $filesystem));
 	$reference = erasedataOpenDirectoryReference($target, $recovery['identity'], $filesystem);
 	if($reference === false)
 		return(false);
@@ -433,14 +462,14 @@ function erasedataCompleteRecoveryLink($path, $reservationKey,
 		$target, $capturedIdentity, $reservationKey, true))
 		return(false);
 	return(erasedataUnlinkRecoveryLink(
-		$path, $target, $reservationKey, $filesystem));
+		$path, $linkTarget, $reservationKey, $filesystem));
 }
 
 function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $filesystem)
 {
 	if(!empty($recovery['captured']))
 		return($recovery);
-	$target = $recovery['linkTarget'];
+	$target = $recovery['boundTarget'];
 	$captureRoot = $recovery['captureRoot'];
 	$capture = $captureRoot.'/directory';
 	if(!erasedataPathExists($captureRoot))
@@ -503,7 +532,8 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 {
 	if(empty($recovery['safe']))
 		return(false);
-	$target = $recovery['linkTarget'];
+	$target = $recovery['boundTarget'];
+	$linkTarget = $recovery['linkTarget'];
 	if(empty($recovery['exists']))
 	{
 		if(!erasedataRemoveExactLinkOrAbsent(
@@ -518,7 +548,7 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 		if(!erasedataRemoveRecoveryContainers($recovery, $filesystem))
 			return(false);
 		return(erasedataUnlinkRecoveryLink(
-			$path, $target, $reservationKey, $filesystem));
+			$path, $linkTarget, $reservationKey, $filesystem));
 	}
 
 	$captured = erasedataCaptureRecoveryDirectory($recovery, $filesystem);
@@ -557,19 +587,31 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 	if(!erasedataRemoveRecoveryContainers($captured, $filesystem))
 		return(false);
 	return(erasedataUnlinkRecoveryLink(
-		$path, $target, $reservationKey, $filesystem));
+		$path, $linkTarget, $reservationKey, $filesystem));
 }
 
 function erasedataRecoverNonForceDirectory($path, $reservationKey, $reservations,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $logicalPath = null,
+	$markPhase = null, $parentGuard = null)
 {
+	if($logicalPath === null) $logicalPath = $path;
+	if(is_callable($parentGuard) && !call_user_func($parentGuard))
+		return(false);
 	if(count($reservations) !== 1)
 		return(false);
 	$reservation = $reservations[0];
 	$reserved = erasedataReservationDataPath($reservation);
-	$restoredLink = erasedataReservationLinkMatches($path, $reserved, $filesystem);
+	$linkTarget = erasedataReservationDataPath(
+		erasedataLogicalReservationPath($reservation, $logicalPath));
+	$restoredLink = erasedataReservationLinkMatches(
+		$path, $reserved, $filesystem, $linkTarget);
 	if(!erasedataPathExists($reserved))
 	{
+		// The shell can disappear after the intent was checked. A captured
+		// phase cannot settle without the recorded successful rmdir.
+		if(is_callable($markPhase)
+			&& !call_user_func($markPhase, $reservation, 'verify-missing'))
+			return(false);
 		$entries = $filesystem->scanDirectory($reservation);
 		$marker = erasedataPrivateMarkerPath($reservation);
 		// Both mkdir-before-marker and marker-before-rename crashes contain no
@@ -577,57 +619,75 @@ function erasedataRecoverNonForceDirectory($path, $reservationKey, $reservations
 		if($entries === false || count(array_diff(
 			$entries, array('.', '..', basename($marker)))) > 0
 			|| !erasedataRemoveReservationContainer(
-				$reservation, $path, $reservationKey, $filesystem))
+				$reservation, $path, $reservationKey, $filesystem, $logicalPath))
 			return(false);
 		if($restoredLink)
 			return(erasedataUnlinkRecoveryLink(
-				$path, $reserved, $reservationKey, $filesystem));
+				$path, $linkTarget, $reservationKey, $filesystem));
 		if(erasedataPathExists($path))
-			return(erasedataCompleteNonForceDirectory($path, $reservationKey, $filesystem));
+			return(erasedataCompleteNonForceDirectory(
+				$path, $reservationKey, $filesystem, $logicalPath,
+				$markPhase, $parentGuard));
 		return(true);
 	}
 	if(erasedataPathExists($path) && !$restoredLink)
 		return(false);
-	if(!erasedataReservationHasEncodedIdentity($reservation, $path, $reservationKey))
+	if(!erasedataReservationHasEncodedIdentity(
+		$reservation, $path, $reservationKey, $logicalPath)
+		|| (is_callable($markPhase)
+			&& !call_user_func($markPhase, $reservation, 'captured')))
 		return(false);
 	$entries = $filesystem->scanDirectory($reserved);
 	if($entries === false)
 	{
 		if(!$restoredLink)
-			erasedataPublishReservationLink($reserved, $path, $filesystem);
+			erasedataPublishReservationLink(
+				$reserved, $path, $filesystem, $linkTarget, $parentGuard);
 		return(false);
 	}
 	if(count(array_diff($entries, array('.', '..'))) > 0)
-		return($restoredLink || erasedataPublishReservationLink($reserved, $path, $filesystem));
+		return($restoredLink || erasedataPublishReservationLink(
+			$reserved, $path, $filesystem, $linkTarget, $parentGuard));
 
-	if(!erasedataReservationHasEncodedIdentity($reservation, $path, $reservationKey))
+	if(!erasedataReservationHasEncodedIdentity(
+		$reservation, $path, $reservationKey, $logicalPath))
 		return(false);
 	if($restoredLink
 		&& !erasedataDropReservationLink(
-			$path, $reserved, $reservationKey, $filesystem))
+			$path, $reserved, $reservationKey, $filesystem, $linkTarget))
 		return(false);
 	$removed = $filesystem->removeDirectory($reserved);
-	if($removed || !erasedataPathExists($reserved))
+	if($removed && is_callable($markPhase)
+		&& !call_user_func($markPhase, $reservation, 'completed'))
+		return(false);
+	if($removed || (!is_callable($markPhase) && !erasedataPathExists($reserved)))
 		return(erasedataRemoveReservationContainer(
-			$reservation, $path, $reservationKey, $filesystem));
-	if(!erasedataReservationLinkMatches($path, $reserved, $filesystem))
-		erasedataPublishReservationLink($reserved, $path, $filesystem);
+			$reservation, $path, $reservationKey, $filesystem, $logicalPath));
+	if(!erasedataReservationLinkMatches($path, $reserved, $filesystem, $linkTarget))
+		erasedataPublishReservationLink(
+			$reserved, $path, $filesystem, $linkTarget, $parentGuard);
 	return(false);
 }
 
 function erasedataCompleteNonForceDirectory($path, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $logicalPath = null,
+	$markPhase = null, $parentGuard = null)
 {
-	$reservations = erasedataDirectoryReservations($path, $reservationKey, $filesystem);
+	if($logicalPath === null) $logicalPath = $path;
+	if(is_callable($parentGuard) && !call_user_func($parentGuard))
+		return(false);
+	$reservations = erasedataDirectoryReservations(
+		$path, $reservationKey, $filesystem, $logicalPath);
 	if($reservations === false)
 		return(false);
 	if(count($reservations) > 0)
 		return(erasedataRecoverNonForceDirectory(
-			$path, $reservationKey, $reservations, $filesystem));
+			$path, $reservationKey, $reservations, $filesystem, $logicalPath,
+			$markPhase, $parentGuard));
 	if(!erasedataPathExists($path))
 		return(true);
 	$recoveryComplete = erasedataCompleteRecoveryLink(
-		$path, $reservationKey, $filesystem);
+		$path, $reservationKey, $filesystem, $logicalPath);
 	if(!is_null($recoveryComplete))
 		return($recoveryComplete);
 	// A directory alias is not the directory entry the manifest can remove.
@@ -649,7 +709,8 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 
 	// Rename atomically captures one checked directory entry. A concurrent
 	// replacement at the original name is never passed to rmdir().
-	$reservation = erasedataDirectoryReservationPath($path, $reservationKey, $expected);
+	$reservation = erasedataDirectoryReservationPath(
+		$path, $reservationKey, $expected, $logicalPath);
 	if($reservation === false || !$filesystem->makeDirectory($reservation, 0700))
 		return(false);
 	if(!erasedataCreatePrivateMarker($reservation))
@@ -658,6 +719,8 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 		return(false);
 	}
 	$reserved = erasedataReservationDataPath($reservation);
+	$linkTarget = erasedataReservationDataPath(
+		erasedataLogicalReservationPath($reservation, $logicalPath));
 	if(!$filesystem->rename($path, $reserved))
 	{
 		$filesystem->unlink(erasedataPrivateMarkerPath($reservation));
@@ -669,13 +732,24 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	{
 		// Publish only through the no-replace link helper. If another directory
 		// owns the original name, both objects and the manifest remain untouched.
-		erasedataPublishReservationLink($reserved, $path, $filesystem);
+		erasedataPublishReservationLink(
+			$reserved, $path, $filesystem, $linkTarget, $parentGuard);
+		return(false);
+	}
+	if(is_callable($markPhase)
+		&& !call_user_func($markPhase, $reservation, 'captured'))
+	{
+		erasedataPublishReservationLink(
+			$reserved, $path, $filesystem, $linkTarget, $parentGuard);
 		return(false);
 	}
 	$removed = $filesystem->removeDirectory($reserved);
-	if($removed || !erasedataPathExists($reserved))
+	if($removed && is_callable($markPhase)
+		&& !call_user_func($markPhase, $reservation, 'completed'))
+		return(false);
+	if($removed || (!is_callable($markPhase) && !erasedataPathExists($reserved)))
 		return(erasedataRemoveReservationContainer(
-			$reservation, $path, $reservationKey, $filesystem));
+			$reservation, $path, $reservationKey, $filesystem, $logicalPath));
 
 	// Restore a failed removal to the manifest's exact path. A nonempty
 	// directory contains unrelated data and completes only after restoration;
@@ -683,7 +757,8 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	$after = $filesystem->scanDirectory($reserved);
 	$hasUnrelated = is_array($after)
 		&& count(array_diff($after, array('.', '..'))) > 0;
-	if(!erasedataPublishReservationLink($reserved, $path, $filesystem))
+	if(!erasedataPublishReservationLink(
+			$reserved, $path, $filesystem, $linkTarget, $parentGuard))
 		return(false);
 	return($hasUnrelated);
 }
@@ -1536,6 +1611,45 @@ final class ErasedataCollector
 			'owned' => $owned, 'path' => $reference['path'].'/'.basename($path)));
 	}
 
+	private function pinnedBaseParent($path)
+	{
+		$logicalParent = dirname($path);
+		$public = $this->filesystem->pathIdentity($logicalParent);
+		$entry = $this->filesystem->entryIdentity($logicalParent);
+		if(!is_array($public) || empty($public['exists']) || !is_array($entry))
+			return(array('state' => 'unsafe'));
+		$expected = !empty($entry['is_link'])
+			? $this->filesystem->targetIdentity($logicalParent) : $entry;
+		if(!is_array($expected) || empty($expected['is_dir']))
+			return(array('state' => 'unsafe'));
+		$reference = $this->filesystem->openDirectoryReference(
+			$logicalParent, $expected);
+		if(!is_array($reference) || !isset($reference['path']))
+			return(array('state' => 'unsafe'));
+		$bound = $this->filesystem->pathIdentity($reference['path']);
+		$expectedStat = isset($expected['stat'])
+			? $expected['stat'] : $expected['lstat'];
+		if(!is_array($bound) || empty($bound['exists'])
+			|| !erasedataSameStatIdentity($bound['stat'], $expectedStat)
+			|| $bound['path'] !== $public['path'])
+		{
+			$this->filesystem->closeDirectoryReference($reference);
+			return(array('state' => 'unsafe'));
+		}
+		return(array('state' => 'pinned', 'reference' => $reference,
+			'owned' => true, 'path' => $reference['path'].'/'.basename($path)));
+	}
+
+	private function publicParentMatchesReference($path, $reference)
+	{
+		$public = $this->filesystem->pathIdentity(dirname($path));
+		$bound = $this->filesystem->pathIdentity($reference['path']);
+		return(is_array($public) && !empty($public['exists'])
+			&& is_array($bound) && !empty($bound['exists'])
+			&& erasedataSameStatIdentity($public['stat'], $bound['stat'])
+			&& $public['path'] === $bound['path']);
+	}
+
 	private function trustedNonForceRecoveryLink($path, $item)
 	{
 		$layout = erasedataRecoveryLinkLayout($path, $this->filesystem);
@@ -1563,25 +1677,30 @@ final class ErasedataCollector
 		if(!is_array($paths)) return;
 		foreach($paths as $path)
 			if($path !== $except
-				&& preg_match('/^[0-9]{8}\.notice$/D', substr($path, strlen($prefix))))
+				&& preg_match('/^(?:intent-)?[0-9]{8}\.notice$/D', substr($path, strlen($prefix))))
 				@unlink($path);
 	}
 
-	private function logUnsafeManifestPath($item)
+	private function logUnsafeManifestPath($item, $reason = 'unsafe-path')
 	{
+		$intent = $reason === 'directory-intent-unresolved';
 		$hash = preg_match('/^([0-9A-Fa-f]{40})/D', basename($item), $matches)
 			? strtoupper($matches[1]) : '';
-		$this->manifestLog($hash, $item, 'unsafe-path');
-		$this->log('Retain unsafe-path manifest '.basename($item));
+		$this->manifestLog($hash, $item, $intent ? 'directory-intent-unresolved' : 'unsafe-path');
+		$this->log('Retain '.($intent ? 'directory-intent-unresolved' : 'unsafe-path')
+			.' manifest '.basename($item));
 		if($this->retentionSink !== null) return;
 
 		// A legacy manifest can have no drain. The ordinary 15-second pass must
 		// report its refusal without writing the same line on every tick. An
 		// exclusive day marker is durable across processes and retries tomorrow.
 		$prefix = $this->unsafeManifestReportPrefix($item);
-		$marker = $prefix.gmdate('Ymd').'.notice';
-		$line = 'erasedata: unsafe-path '.basename($item)
-			.' retained; listed parent changed or is not a directory within the base';
+		$marker = $prefix.($intent ? 'intent-' : '').gmdate('Ymd').'.notice';
+		$line = $intent
+			? 'erasedata: directory-intent-unresolved '.basename($item)
+				.' retained; inspect '.basename($this->directoryIntentPath($item))
+			: 'erasedata: unsafe-path '.basename($item)
+				.' retained; listed parent changed or is not a directory within the base';
 		$handle = @fopen($marker, 'xb');
 		if(is_resource($handle))
 		{
@@ -1598,6 +1717,241 @@ final class ErasedataCollector
 		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000
 			|| $stat['size'] !== 1)
 			FileUtil::toLog($line.'; diagnostic marker unavailable');
+	}
+
+	// One outstanding directory capture per manifest. The queue marker survives a
+	// process exit even when a renamed parent makes the private shell unreachable
+	// through the public path on the next pass.
+	private function directoryIntentPath($item)
+	{
+		return(dirname($item).'/.erasedata-rmdir-intent-'.hash('sha256', $item));
+	}
+
+	private function readDirectoryIntent($item)
+	{
+		$path = $this->directoryIntentPath($item);
+		$before = $this->filesystem->entryIdentity($path);
+		if($before === false)
+		{
+			$missing = $this->filesystem->pathIdentity($path);
+			return(is_array($missing) && empty($missing['exists']) ? null : false);
+		}
+		if(empty($before['is_file']) || !empty($before['is_link']))
+			return(false);
+		$handle = @fopen($path, 'rb');
+		if($handle === false)
+			return(false);
+		$opened = @fstat($handle);
+		$bytes = ErasedataManifestCodec::readBoundedHandle($handle, 16384);
+		$closed = @fclose($handle);
+		$after = $this->filesystem->entryIdentity($path);
+		if(!is_array($opened) || !is_array($after) || !$closed
+			|| !erasedataSameStatIdentity($before['lstat'], $opened)
+			|| !erasedataSameEntryIdentity($before, $after)
+			|| !is_string($bytes))
+			return(false);
+		$record = json_decode($bytes, true);
+		if(!is_array($record) || array_keys($record) !== array(
+			'version', 'manifest', 'logical', 'parent', 'parentDev', 'parentIno',
+			'targetDev', 'targetIno', 'phase', 'reservation')
+			|| $record['version'] !== 1
+			|| !is_string($record['manifest']) || strlen($record['manifest']) !== 64
+			|| !is_string($record['logical']) || $record['logical'] === ''
+			|| !is_string($record['parent']) || $record['parent'] === ''
+			|| !is_string($record['parentDev']) || !is_string($record['parentIno'])
+			|| !(is_null($record['targetDev']) || is_string($record['targetDev']))
+			|| !(is_null($record['targetIno']) || is_string($record['targetIno']))
+			|| !in_array($record['phase'], array('prepared', 'captured', 'completed'), true)
+			|| !(is_null($record['reservation'])
+				|| (is_string($record['reservation'])
+					&& preg_match('/^\.erasedata-rmdir-[a-f0-9]{64}-[0-9]+-[0-9]+-[a-f0-9]{32}$/D',
+						$record['reservation']) === 1))
+			|| ($record['phase'] === 'prepared') !== ($record['reservation'] === null))
+			return(false);
+		return($record);
+	}
+
+	private function prepareDirectoryIntent($item, $manifestDigest, $logical, $parent)
+	{
+		$boundParent = $this->filesystem->pathIdentity($parent['reference']['path']);
+		if(!is_array($boundParent) || empty($boundParent['exists']))
+			return(false);
+		$current = $this->readDirectoryIntent($item);
+		if($current === false)
+			return(false);
+		$entry = $this->filesystem->entryIdentity($parent['path']);
+		if(is_array($current))
+		{
+			$reservations = erasedataDirectoryReservations(
+				$parent['path'], $item, $this->filesystem, $logical);
+			if($reservations === false || count($reservations) > 1
+				|| ($current['reservation'] !== null && count($reservations) === 1
+					&& basename($reservations[0]) !== $current['reservation']))
+				return(false);
+			// Only a completed phase proves removal when the private shell is
+			// gone. A captured shell whose directory vanished may have moved.
+			if($current['phase'] === 'captured'
+				&& (count($reservations) === 0
+					|| !erasedataPathExists(
+						erasedataReservationDataPath($reservations[0]))))
+				return(false);
+			if($current['phase'] === 'completed'
+				&& (is_array($entry)
+					|| (count($reservations) === 1 && erasedataPathExists(
+						erasedataReservationDataPath($reservations[0])))))
+				return(false);
+			if($current['phase'] === 'prepared'
+				&& ((count($reservations) === 0
+					&& ($current['targetDev'] === null ? is_array($entry)
+						: (!is_array($entry)
+							|| $current['targetDev'] !== (string)$entry['dev']
+							|| $current['targetIno'] !== (string)$entry['ino'])))
+					|| (count($reservations) === 1
+						&& !erasedataPathExists(erasedataReservationDataPath(
+							$reservations[0])) && $current['targetDev'] !== null
+						&& !is_array($entry))))
+				return(false);
+			if($current['manifest'] !== $manifestDigest
+				|| $current['logical'] !== $logical
+				|| $current['parent'] !== $boundParent['path']
+				|| $current['parentDev'] !== (string)$boundParent['stat']['dev']
+				|| $current['parentIno'] !== (string)$boundParent['stat']['ino'])
+				return(false);
+			if(is_array($entry))
+			{
+				if(!empty($entry['is_link']))
+				{
+					if($current['targetDev'] === null
+						|| !$this->trustedNonForceRecoveryLink($logical, $item))
+						return(false);
+				}
+				else if($current['targetDev'] === null
+					|| $current['targetDev'] !== (string)$entry['dev']
+					|| $current['targetIno'] !== (string)$entry['ino'])
+					return(false);
+			}
+			return(true);
+		}
+		$record = array('version' => 1, 'manifest' => $manifestDigest,
+			'logical' => $logical, 'parent' => $boundParent['path'],
+			'parentDev' => (string)$boundParent['stat']['dev'],
+			'parentIno' => (string)$boundParent['stat']['ino'],
+			'targetDev' => is_array($entry) ? (string)$entry['dev'] : null,
+			'targetIno' => is_array($entry) ? (string)$entry['ino'] : null,
+			'phase' => 'prepared', 'reservation' => null);
+		$bytes = json_encode($record, JSON_UNESCAPED_SLASHES);
+		return(is_string($bytes)
+			&& erasedataWriteDurableFile($this->directoryIntentPath($item), $bytes)
+			&& $this->readDirectoryIntent($item) === $record);
+	}
+
+	private function markDirectoryIntentPhase($item, $manifestDigest,
+		$logical, $reservation, $phase)
+	{
+		$record = $this->readDirectoryIntent($item);
+		if(!is_array($record) || $record['manifest'] !== $manifestDigest
+			|| $record['logical'] !== $logical)
+			return(false);
+		$name = basename($reservation);
+		if($phase === 'verify-missing')
+		{
+			if($record['reservation'] !== null
+				&& $record['reservation'] !== $name)
+				return(false);
+			$path = $record['parent'].'/'.basename($logical);
+			$entry = $this->filesystem->entryIdentity($path);
+			$observed = $this->filesystem->pathIdentity($path);
+			if($entry === false
+				&& (!is_array($observed) || !empty($observed['exists'])))
+				return(false);
+			if($record['phase'] === 'completed')
+				return($entry === false);
+			if($record['phase'] !== 'prepared')
+				return(false);
+			return($record['targetDev'] === null ? $entry === false
+				: is_array($entry) && empty($entry['is_link'])
+					&& $record['targetDev'] === (string)$entry['dev']
+					&& $record['targetIno'] === (string)$entry['ino']);
+		}
+		if($record['phase'] === $phase)
+			return($record['reservation'] === $name);
+		if($record['reservation'] !== null && $record['reservation'] !== $name)
+			return(false);
+		if(($phase === 'captured' && $record['phase'] !== 'prepared')
+			|| ($phase === 'completed' && $record['phase'] !== 'captured'))
+			return(false);
+		$record['phase'] = $phase;
+		$record['reservation'] = $name;
+		$bytes = json_encode($record, JSON_UNESCAPED_SLASHES);
+		return(is_string($bytes)
+			&& erasedataWriteDurableFile($this->directoryIntentPath($item), $bytes)
+			&& $this->readDirectoryIntent($item) === $record);
+	}
+
+	private function clearDirectoryIntent($item, $manifestDigest, $logical)
+	{
+		$record = $this->readDirectoryIntent($item);
+		if(!is_array($record) || $record['manifest'] !== $manifestDigest
+			|| $record['logical'] !== $logical)
+			return(false);
+		$path = $this->directoryIntentPath($item);
+		return($this->filesystem->unlink($path)
+			&& $this->readDirectoryIntent($item) === null);
+	}
+
+	private function completeBoundDirectory($item, $manifestDigest, $logical,
+		$parent, $ownedPaths)
+	{
+		$logicalEntry = $this->filesystem->entryIdentity($logical);
+		$boundEntry = $this->filesystem->entryIdentity($parent['path']);
+		if((is_array($logicalEntry) !== is_array($boundEntry))
+			|| (is_array($logicalEntry)
+				&& !erasedataSameEntryIdentity($logicalEntry, $boundEntry))
+			|| !$this->publicParentMatchesReference($logical, $parent['reference']))
+		{
+			$this->logUnsafeManifestPath($item);
+			return(false);
+		}
+		if(erasedataPathTouchesOwnedPaths($logical, $ownedPaths)
+			|| erasedataPathTouchesOwnedPaths($parent['path'], $ownedPaths))
+		{
+			$this->log('Retain active dir '.$logical);
+			return(false);
+		}
+		if(!$this->prepareDirectoryIntent(
+			$item, $manifestDigest, $logical, $parent))
+		{
+			$this->logUnsafeManifestPath($item, 'directory-intent-unresolved');
+			return(false);
+		}
+		$existed = erasedataPathExists($parent['path']);
+		$markPhase = function($reservation, $phase) use ($item, $manifestDigest, $logical) {
+			return($this->markDirectoryIntentPhase(
+				$item, $manifestDigest, $logical, $reservation, $phase));
+		};
+		$parentGuard = function() use ($logical, $parent) {
+			return($this->publicParentMatchesReference(
+				$logical, $parent['reference']));
+		};
+		$finished = erasedataCompleteNonForceDirectory(
+			$parent['path'], $item, $this->filesystem, $logical,
+			$markPhase, $parentGuard);
+		if(!$this->publicParentMatchesReference($logical, $parent['reference']))
+		{
+			$this->logUnsafeManifestPath($item, 'directory-intent-unresolved');
+			return(false);
+		}
+		if(!$finished || !$this->clearDirectoryIntent(
+			$item, $manifestDigest, $logical))
+		{
+			$this->logUnsafeManifestPath($item, 'directory-intent-unresolved');
+			$this->log('FAIL delete dir '.$logical);
+			return(false);
+		}
+		$this->log($existed && erasedataPathExists($parent['path'])
+			? 'Leave unrelated dir '.$logical
+			: 'Successfully delete dir '.$logical);
+		return(true);
 	}
 
 	private function deleteBoundFile($logical, $bound, $item, $ownedPaths)
@@ -1659,7 +2013,7 @@ final class ErasedataCollector
 		return(false);
 	}
 
-	private function parseOneItem($item, $manifest, $ownedPaths)
+	private function parseOneItem($item, $manifest, $ownedPaths, $manifestDigest)
 	{
 		$this->log('*** Parse item '.$item);
 		// Callers hand over a record the codec already normalized; nothing here
@@ -1858,42 +2212,19 @@ final class ErasedataCollector
 						continue;
 					}
 					if($parent['state'] === 'missing')
-						continue;
-					$logicalEntry = $this->filesystem->entryIdentity($dir);
-					$boundEntry = $this->filesystem->entryIdentity($parent['path']);
-					$matches = (is_array($logicalEntry) === is_array($boundEntry))
-						&& (!is_array($logicalEntry)
-							|| erasedataSameEntryIdentity($logicalEntry, $boundEntry));
-					if(!empty($parent['owned']))
-						$this->filesystem->closeDirectoryReference($parent['reference']);
-					if(!$matches)
 					{
-						$this->logUnsafeManifestPath($item);
-						$complete = false;
-						continue;
-					}
-					if(erasedataPathTouchesOwnedPaths($dir, $ownedPaths)
-						|| erasedataPathTouchesOwnedPaths($parent['path'], $ownedPaths))
-					{
-						$this->log('Retain active dir '.$dir);
-						$complete = false;
-					}
-					else
-					{
-						$existed = erasedataPathExists($dir);
-						if(erasedataCompleteNonForceDirectory($dir, $item, $this->filesystem))
+						if($this->readDirectoryIntent($item) !== null)
 						{
-							if($existed && erasedataPathExists($dir))
-								$this->log('Leave unrelated dir '.$dir);
-							else
-								$this->log('Successfully delete dir '.$dir);
-						}
-						else
-						{
-							$this->log('FAIL delete dir '.$dir);
+							$this->logUnsafeManifestPath($item, 'directory-intent-unresolved');
 							$complete = false;
 						}
+						continue;
 					}
+					if(!$this->completeBoundDirectory(
+						$item, $manifestDigest, $dir, $parent, $ownedPaths))
+						$complete = false;
+					if(!empty($parent['owned']))
+						$this->filesystem->closeDirectoryReference($parent['reference']);
 				}
 				if($baseState === 'unsafe')
 				{
@@ -1907,20 +2238,18 @@ final class ErasedataCollector
 				}
 				else
 				{
-					$existed = erasedataPathExists($base_path);
-					if(erasedataCompleteNonForceDirectory($base_path, $item, $this->filesystem))
+					$parent = $this->pinnedBaseParent($base_path);
+					if($parent['state'] !== 'pinned')
 					{
-						if($existed && erasedataPathExists($base_path))
-						{
-							$this->log('Leave unrelated dir '.$base_path);
-						}
-						else
-							$this->log('Successfully delete dir '.$base_path);
+						$this->logUnsafeManifestPath($item);
+						$complete = false;
 					}
 					else
 					{
-						$this->log('FAIL delete dir '.$base_path);
-						$complete = false;
+						if(!$this->completeBoundDirectory(
+							$item, $manifestDigest, $base_path, $parent, $ownedPaths))
+							$complete = false;
+						$this->filesystem->closeDirectoryReference($parent['reference']);
 					}
 				}
 			}
@@ -2031,7 +2360,7 @@ final class ErasedataCollector
 			@fclose($handle);
 			return(false);
 		}
-		$complete = $this->parseOneItem($path, $manifest, $ownedPaths);
+		$complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes));
 		// $stat is the fstat of the handle this function still holds open, so the
 		// deletion below is bound to the exact inode that was decoded.
 		$ret = $complete && $this->filesystem->unlinkCapturedEntry(

@@ -816,7 +816,7 @@ class RemoveWithDataTest extends TestCase
 				'content' => array('name' => 'crash-data.bin', 'bytes' => 'reserved-bytes'));
 		if($options['restoreCollision'] !== null)
 			$scenario['makeSymlink:*'] = array(
-				'path' => $options['restoreCollision'], 'action' => 'collide');
+				'basename' => basename($options['restoreCollision']), 'action' => 'collide');
 		if($options['reservedSwap'] !== null)
 			$scenario['rename:*'] = array(
 				'inode' => $this->collectorInode($options['reservedSwap']),
@@ -1577,6 +1577,13 @@ class RemoveWithDataTest extends TestCase
 			$this->removePath($reserved);
 		if(is_dir($moved))
 			rename($moved, $base);
+		// The test manually discards the checked shell. The prepared intent
+		// cannot infer safety from a persisted inode number alone after that.
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertTrue(count($intents) === 1,
+			'the uncertain capture keeps its durable intent for manual recovery');
+		if(count($intents) === 1)
+			unlink($intents[0]);
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'identity-swap retry exits normally: '.$output);
 		$this->assertTrue(!file_exists($base), 'retry removes the restored original directory');
@@ -7544,6 +7551,306 @@ class RemoveWithDataTest extends TestCase
 			'the replacement parent does not redirect deletion outside the base');
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$hash.'.list'),
 			'the uncertain parent retains the manifest');
+	}
+
+	public function testNonForceDirectoryParentSwapAfterGuardCannotMoveOutsideDirectory()
+	{
+		$this->reset();
+		$hash = $this->hash('F');
+		$base = $this->dir.'/directory-parent-swap-root';
+		$parent = $base.'/inside';
+		$nested = $parent.'/empty';
+		$outside = $this->dir.'/directory-parent-swap-outside';
+		$backup = $base.'/inside.checked';
+		$marker = $this->dir.'/directory-parent-swap.triggered';
+		mkdir($nested, 0777, true);
+		mkdir($outside.'/empty', 0777, true);
+		$this->writeManifestLines($hash.'.list',
+			array($nested.'/already-gone.txt'), $base, 1, 1);
+		$manifest = file_get_contents($this->dir.'/erasedata/'.$hash.'.list');
+
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'entryIdentity:1' => array('path' => $nested,
+				'action' => 'replace-entry', 'at' => 'after',
+				'target' => $parent, 'backup' => $backup,
+				'symlink_target' => $outside, 'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'directory parent-swap collector exits: '.$output);
+		$this->assertTrue(is_file($marker), 'the parent swap reached the directory guard');
+		$this->assertTrue(is_dir($outside.'/empty'),
+			'the swapped parent cannot redirect a directory reservation outside');
+		$this->assertEquals($manifest,
+			is_file($this->dir.'/erasedata/'.$hash.'.list')
+				? file_get_contents($this->dir.'/erasedata/'.$hash.'.list') : null,
+			'the changed public parent retains the exact manifest');
+	}
+
+	public function testNonForceDirectoryParentSwapDuringBoundRenameRetainsIntent()
+	{
+		$this->reset();
+		$hash = $this->hash('7');
+		$base = $this->dir.'/directory-rename-swap-root';
+		$parent = $base.'/inside';
+		$nested = $parent.'/empty';
+		$outside = $this->dir.'/directory-rename-swap-outside';
+		$backup = $base.'/inside.checked';
+		$marker = $this->dir.'/directory-rename-swap.triggered';
+		mkdir($nested, 0777, true);
+		mkdir($outside.'/empty', 0777, true);
+		$this->writeManifestLines($hash.'.list',
+			array($nested.'/already-gone.bin'), $base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('to_contains' => '/.erasedata-rmdir-',
+				'action' => 'replace-entry', 'at' => 'after',
+				'target' => $parent, 'backup' => $backup,
+				'symlink_target' => $outside, 'marker' => $marker),
+		), 'captureLogs' => true));
+		$this->assertEquals(0, $status, 'post-rename parent swap exits: '.$output);
+		$this->assertTrue(is_file($marker), 'the swap follows the bound rename');
+		$this->assertTrue(is_dir($outside.'/empty'),
+			'the external directory is untouched after the parent changes');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'the exact manifest survives a parent change during capture');
+		$this->assertTrue(count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')) === 1,
+			'the captured directory keeps a durable replay intent');
+	}
+
+	public function testNonForceDirectoryCaptureCrashAndMissingParentKeepsIntent()
+	{
+		$this->reset();
+		$hash = $this->hash('D');
+		$base = $this->dir.'/directory-intent-root';
+		$parent = $base.'/inside';
+		$nested = $parent.'/empty';
+		$outside = $this->dir.'/directory-intent-outside';
+		$backup = $base.'/inside.checked';
+		mkdir($nested, 0777, true);
+		mkdir($outside.'/empty', 0777, true);
+		$this->writeManifestLines($hash.'.list',
+			array($nested.'/already-gone.txt'), $base, 1, 1);
+		$manifestPath = $this->dir.'/erasedata/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('to_contains' => '/.erasedata-rmdir-',
+				'action' => 'exit', 'at' => 'after'),
+		)));
+		$this->assertEquals(0, $status, 'the scripted child exits after capture');
+		$this->assertTrue(count(glob($parent.'/.erasedata-rmdir-*/directory')) === 1,
+			'the captured directory survives the process exit');
+		$this->assertTrue(rename($parent, $backup), 'another actor moves the parent');
+		$this->assertTrue(symlink($outside, $parent), 'the public parent points outside');
+		unlink($parent);
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'replay exits: '.$output);
+		$this->assertTrue(strpos($output,
+			'erasedata: directory-intent-unresolved '.$hash.'.list retained') !== false,
+			'the lost parent and durable intent are visibly classified');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'a missing public parent cannot consume a manifest with unresolved capture intent');
+		$this->assertTrue(is_dir($outside.'/empty'),
+			'replay never removes the external directory');
+		$this->assertTrue(count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')) === 1,
+			'the durable intent remains while its parent is missing');
+		$this->assertTrue(rename($backup, $parent), 'the original parent is restored');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'restored-parent replay exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'the restored parent lets the exact captured directory finish');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'the completed operation clears its durable intent');
+		$this->assertTrue(is_dir($outside.'/empty'),
+			'recovery still never removes the external directory');
+	}
+
+	public function testCapturedIntentDoesNotSettleWhenPrivateShellMovesAway()
+	{
+		$this->reset();
+		$hash = $this->hash('9');
+		$base = $this->dir.'/captured-shell-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/already-gone.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory', 'action' => 'exit'),
+		)));
+		$this->assertEquals(0, $status, 'collector exits after the capture: '.$output);
+		$shells = glob($this->dir.'/.erasedata-rmdir-*');
+		$this->assertEquals(1, count($shells), 'the private shell stands after capture');
+		if(count($shells) !== 1)
+			return;
+		$payload = $shells[0].'/directory/secret.bin';
+		$this->assertTrue(file_put_contents($payload, 'held data') !== false,
+			'the reserved directory still contains data');
+		$moved = $this->dir.'/moved-private-shell';
+		$this->assertTrue(rename($shells[0], $moved),
+			'another actor moves the private shell without removing its data');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'replay exits: '.$output);
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'a missing private shell cannot settle the manifest');
+		$this->assertEquals(1,
+			count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')),
+			'the unresolved capture keeps its durable intent');
+		$this->assertEquals('held data', @file_get_contents($moved.'/directory/secret.bin'),
+			'moved private data remains unchanged');
+	}
+
+	public function testMissingPrivateDirectoryBetweenIntentCheckAndRecoveryRemainsPending()
+	{
+		$this->reset();
+		$hash = $this->hash('8');
+		$base = $this->dir.'/missing-reserved-directory-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory', 'action' => 'exit'),
+		)));
+		$this->assertEquals(0, $status, 'capture exits: '.$output);
+		$shells = glob($this->dir.'/.erasedata-rmdir-*');
+		$this->assertEquals(1, count($shells), 'capture leaves one private shell');
+		if(count($shells) !== 1)
+			return;
+		$moved = $this->dir.'/moved-reserved-directory';
+		$this->assertTrue(rename($shells[0].'/directory', $moved),
+			'another actor moves the private directory but leaves its shell');
+		file_put_contents($moved.'/payload.bin', 'held');
+		$markPhase = function($reservation, $phase) {
+			return($phase !== 'verify-missing');
+		};
+		$finished = erasedataRecoverNonForceDirectory($base, $manifestPath,
+			array($shells[0]), new ErasedataFilesystemOps(), $base,
+			$markPhase, function() { return(true); });
+		$this->assertTrue(!$finished,
+			'a captured intent without its private directory cannot settle');
+		$this->assertEquals('held', file_get_contents($moved.'/payload.bin'),
+			'the moved data remains untouched');
+		$this->assertTrue(is_dir($shells[0]),
+			'the unresolved private shell remains for inspection');
+	}
+
+	public function testNonForceLegacyReservationReplaysWithoutIntent()
+	{
+		$this->reset();
+		$hash = $this->hash('C');
+		$base = $this->dir.'/legacy-reservation-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		list($status) = $this->runCollector(array('filesystem' => array(
+			'rename:*' => array('to_contains' => '/.erasedata-rmdir-',
+				'action' => 'exit', 'at' => 'after'),
+		)));
+		$this->assertEquals(0, $status, 'the original reservation survives a crash');
+		$reservations = glob(dirname($base).'/.erasedata-rmdir-*/directory');
+		$this->assertTrue(count($reservations) === 1,
+			'the exact old-style directory reservation exists');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertTrue(count($intents) === 1, 'the new collector wrote its intent');
+		if(count($intents) === 1)
+			unlink($intents[0]); // Model a reservation published by the old collector.
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'legacy reservation replay exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'an old reservation with the logical SHA is replayed to completion');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'replay leaves no new intent behind');
+	}
+
+	public function testPreparedIntentWithoutShellCannotAuthorizeRestartedDeletion()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$base = $this->dir.'/prepared-intent-base';
+		$moved = $base.'.moved';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status) = $this->runCollector(array('filesystem' => array(
+			'makeDirectory:*' => array('basename_prefix' => '.erasedata-rmdir-',
+				'action' => 'exit'),
+		)));
+		$this->assertEquals(0, $status, 'the child exits before creating the shell');
+		$this->assertTrue(count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')) === 1,
+			'the prepared intent precedes the first shell mutation');
+		$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
+			'no private shell was created');
+		$this->assertTrue(rename($base, $moved), 'the original inode stays allocated');
+		$this->assertTrue(mkdir($base), 'a replacement occupies the public name');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'prepared-intent replay exits: '.$output);
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'a pre-capture intent cannot authorize deletion of a new occupant');
+		$this->assertTrue(is_dir($base) && is_dir($moved),
+			'both the replacement and original directories survive');
+	}
+
+	public function testNonForceDirectoryIntentClearFailureRetainsManifest()
+	{
+		$this->reset();
+		$hash = $this->hash('B');
+		$base = $this->dir.'/intent-clear-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'unlink:*' => array('basename_prefix' => '.erasedata-rmdir-intent-',
+				'result' => false),
+		)));
+		$this->assertEquals(0, $status, 'intent-clear refusal exits: '.$output);
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'failed intent clear cannot consume the manifest');
+		$this->assertTrue(count(glob($this->queuePath().'/.erasedata-rmdir-intent-*')) === 1,
+			'the unresolved intent remains durable');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'retry after the intent-clear failure exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'a proved completion retries intent clear and consumes the manifest');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'the retry clears a completed intent');
+	}
+
+	public function testCompletedDirectoryIntentReplaysAfterProcessExitBeforeClear()
+	{
+		$this->reset();
+		$hash = $this->hash('7');
+		$base = $this->dir.'/completed-intent-exit-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'unlink:*' => array('basename_prefix' => '.erasedata-rmdir-intent-',
+				'action' => 'exit'),
+		)));
+		$this->assertEquals(0, $status, 'collector exits before intent clear: '.$output);
+		$this->assertTrue(!file_exists($base), 'the checked directory was removed');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'the process exit leaves the exact manifest');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents), 'the durable intent remains');
+		if(count($intents) !== 1)
+			return;
+		$record = json_decode(file_get_contents($intents[0]), true);
+		$this->assertEquals('completed', isset($record['phase']) ? $record['phase'] : null,
+			'the intent records the successful rmdir before the process exit');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'the next collector pass exits: '.$output);
+		$this->assertTrue(!is_file($manifestPath),
+			'the replay consumes the completed manifest');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'the replay clears the completed intent');
 	}
 
 	public function testNonForceMissingParentReplayCompletesWithoutCreatingData()
