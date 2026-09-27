@@ -23,6 +23,9 @@ const langCode = {
   ru: readFileSync("../plugins/rutracker_check/lang/ru.js", {
     encoding: "utf-8",
   }),
+  fr: readFileSync("../plugins/rutracker_check/lang/fr.js", {
+    encoding: "utf-8",
+  }),
 };
 
 let plugin;
@@ -81,6 +84,25 @@ describe("chkResultText", () => {
     expect(plugin.chkMessageText("fuse|bt2.t-ru.org")).toBe(
       "Tracker bt2.t-ru.org looks unavailable; the check is postponed"
     );
+  });
+
+  it("shows the missing successor cause instead of a generic rTorrent error", () => {
+    const hash = "B".repeat(40);
+    const marker = "successor-missing|" + hash;
+    const english = "The replacement torrent " + hash +
+      " is missing; the update check will retry";
+    expect(plugin.chkResultText(torrent(6, marker))).toBe(english);
+    expect(plugin.chkResultText(torrent(7, marker))).toBe(english);
+
+    useLanguage("ru");
+    const russian = "Торрент-замена " + hash +
+      " отсутствует; проверка обновления повторится";
+    expect(plugin.chkResultText(torrent(6, marker))).toBe(russian);
+    expect(plugin.chkResultText(torrent(7, marker))).toBe(russian);
+
+    useLanguage("fr");
+    expect(plugin.chkResultText(torrent(6, marker))).toBe(english);
+    expect(plugin.chkResultText(torrent(7, marker))).toBe(english);
   });
 
   it("turns an absorbed topic id into a plain URL, with no sentence of its own", () => {
@@ -212,7 +234,8 @@ describe("the details pane and the row wiring", () => {
  * URL for it), each with the single %s that carries the parameter, and a
  * chkResults entry for every chk-state. A file that drops a key or a
  * placeholder renders an empty detail rather than failing loudly, so the files
- * are checked here instead of at the user's screen.
+ * are checked here instead of at the user's screen. The successor-missing
+ * token has a factual English fallback until each locale adds its translation.
  */
 describe("language files", () => {
   const SENTENCE_TOKENS = ["superseded", "deleting", "topic-status", "fuse"];
@@ -255,9 +278,9 @@ describe("language files", () => {
     const lang = load(language);
 
     expect(Object.keys(lang.chkMessages).sort()).toEqual(
-      [...SENTENCE_TOKENS].sort()
+      [...SENTENCE_TOKENS, ...(language === "ru" ? ["successor-missing"] : [])].sort()
     );
-    for (const token of SENTENCE_TOKENS) {
+    for (const token of Object.keys(lang.chkMessages)) {
       expect(lang.chkMessages[token].match(/%s/g)).toHaveLength(1);
     }
 

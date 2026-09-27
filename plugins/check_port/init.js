@@ -64,7 +64,7 @@ function updateProtocolStatus(data, proto, getStatusText) {
 }
 
 plugin.getPortStatus = function(d) {
-	plugin.currentPort = d.ipv4_port || d.ipv6_port || plugin.currentPort;
+	plugin.currentPort = d.listen_port || d.ipv4_port || d.ipv6_port || plugin.currentPort;
 	const getStatusText = function(statusCode) {
 		return theUILang.portStatus[statusCode] || theUILang.portStatus[0] || "Unknown";
 	};

@@ -1,10 +1,32 @@
 <?php
 
+// Older persisted conf/config.php checks getenv() but reads $_ENV. Make the
+// setting available from the same source before that configuration runs.
+if(!isset($_ENV['RU_LOCALHOSTS']))
+{
+    $localhostsEnv = getenv('RU_LOCALHOSTS');
+    if(($localhostsEnv !== false) && ($localhostsEnv !== ''))
+        $_ENV['RU_LOCALHOSTS'] = $localhostsEnv;
+}
+
 // Include our base configuration file
 $rootPath = realpath(dirname(__FILE__)."/..");
 // Avoid reusing $rootPath here becuase it calls realpath
 // dirname is a more stable option becuase it's not file system aware
 require_once( dirname(__FILE__).'/../conf/config.php' );
+
+// Persisted configs may still pass an octal-looking environment string to
+// mkdir/chmod as decimal. Only normalize values matching the raw environment setting.
+function rutorrent_normalize_profile_mask($value)
+{
+    if(($value === null) || ($value === '')) return 0777;
+    if(!is_string($value) || !isset($_ENV['RU_PROFILE_MASK']) ||
+        ($value !== $_ENV['RU_PROFILE_MASK'])) return $value;
+    if(preg_match('/^0?[0-7]{3}$/D', $value)) return intval($value, 8);
+    error_log('RU_PROFILE_MASK/profileMask is invalid; using the 0777 default.');
+    return 0777;
+}
+$profileMask = rutorrent_normalize_profile_mask($profileMask ?? null);
 
 // Automatically include only the used utility classes
 spl_autoload_register(function ($class)
@@ -59,8 +81,7 @@ $conf = FileUtil::getConfFile('config.php');
 if($conf)
 	require_once($conf);
 
-if(!isset($profileMask))
-	$profileMask = 0777;
+$profileMask = rutorrent_normalize_profile_mask($profileMask ?? null);
 if(!isset($locale))
 	$locale = "UTF8";
 setlocale(LC_CTYPE, $locale, "UTF-8", "en_US.UTF-8", "en_US.UTF8");

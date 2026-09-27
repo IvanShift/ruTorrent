@@ -227,9 +227,9 @@ $suite->test('begin refuses to build a magnet around a foreign announce host', f
         rTorrent::$magnets = array();
         ruTrackerChecker::queueResult('torrentExists', true);
         mfQueueCollisionOwner('');
-        strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
+        strictAssertSame(ruTrackerChecker::STE_ERROR,
             RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, $announce, 1000),
-            $announce . ' reaches the ordinary flow');
+            'authoritative host still refuses a foreign same-hash occupant retryably');
     }
 });
 
@@ -237,22 +237,18 @@ $suite->test('begin refuses when the new hash already exists', function () use (
     ruTrackerChecker::reset();
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner(''); // neither our stub nor our staged copy
-    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'the topic\'s current version is already present');
+    $logged = testCapturedAppLog(function () use ($oldHash, $newHash, &$state) {
+        $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+            'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+    });
+    strictAssertSame(ruTrackerChecker::STE_ERROR, $state, 'hash equality is not successor ownership');
     strictAssertSame(array($newHash), ruTrackerChecker::callsFor('torrentExists')[0]['arguments'],
         'begin delegates its collision check to the checker seam');
-    strictAssertSame(0, count(rTorrent::$magnets), 'no magnet loaded');
-    strictAssertSame(1, count(mfMessages()), 'exactly one chk-msg write');
-    strictAssertSame(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
-        mfMessages()[0]['arguments'][1], 'superseded token carries the successor hash');
-    strictAssertSame(array($oldHash, ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash),
-        ruTrackerChecker::callsFor('setMessage')[0]['arguments'],
-        'the terminal token is handed to the observational message seam');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
-        'the checker double does not copy the production message write');
+    strictAssertSame(0, count(rTorrent::$magnets), 'no magnet loaded over the foreign occupant');
+    strictAssertSame(0, count(mfMessages()), 'no superseded message invented for a foreign occupant');
+    strictAssertTrue(strpos($logged, 'collision-foreign-occupant') !== false,
+        'classified collision is visible at shipped debug=false');
 
-    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'nothing left to fetch',
-        'the already-present successor says so');
     strictAssertLogsClean(ruTrackerChecker::$logs, 's3cr3t', 'begin');
 });
 
@@ -891,10 +887,33 @@ $suite->test('harvest names the STE_* code when createTorrent refuses the replac
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array($newHash, '999999'));
     mfQueueStubOwner($newHash, $oldHash, '6879823', '999999', 0);
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
-    strictAssertSame(ruTrackerChecker::STE_ERROR, RuTrackerMetaFetch::pump($oldHash, 1000), 'refusal propagated');
+    strictAssertSame(ruTrackerChecker::STE_ERROR, RuTrackerMetaFetch::pump($oldHash, 1000), 'refusal propagated after exact marks clear');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'returned STE_ERROR', 'refusal is logged with code');
     strictAssertEnglish($line, 'refusal log line');
+});
+
+$suite->test('harvest refusal keeps META_PENDING until exact old marks are cleared', function () use ($oldHash) {
+    foreach (array(
+        'unconfirmed' => array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED, ruTrackerChecker::STE_META_PENDING),
+        'confirmed' => array(RuTrackerAtomicOwnership::SENTINEL_CLEARED, ruTrackerChecker::STE_ERROR),
+    ) as $label => $case) {
+        ruTrackerChecker::reset();
+        ruTrackerChecker::queueResult('createTorrent', ruTrackerChecker::STE_ERROR);
+        $fixture = @new Torrent(strictTorrentRaw('Youjo Senki II', 'http://bt.t-ru.org/ann?pk=s3cr3t'));
+        $newHash = strtoupper($fixture->hash_info());
+        rTorrent::$source = $fixture;
+        mfQueueArrived($newHash);
+        rXMLRPCRequest::queue('branch', true, false, array($case[0]));
+
+        strictAssertSame($case[1], RuTrackerMetaFetch::pump($oldHash, 1000),
+            $label . ': refusal cannot escape with live old marks');
+        $branches = rXMLRPCRequest::requestsFor('branch');
+        strictAssertSame(2, count($branches), $label . ': stub erase and exact old-mark retirement');
+        strictAssertTrue(strpos($branches[1]['commands'][0]->params[2], 'chk-meta-new') !== false,
+            $label . ': second branch targets the fetch generation');
+    }
 });
 
 $suite->test('a healthy pending stub logs that it is still a stub, with the reason it keeps waiting', function () use ($oldHash, $newHash) {
@@ -935,6 +954,111 @@ $suite->test('begin adopts its own stub left by an earlier cycle', function () u
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'adopted its own stub',
         'the adoption is logged');
     strictAssertEnglish($line, 'the adoption line');
+});
+
+$suite->test('begin refuses a same-predecessor service stub from another topic', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    rTorrent::$magnets = array();
+    ruTrackerChecker::queueResult('torrentExists', true);
+    mfQueueCollisionOwner($oldHash);
+    rXMLRPCRequest::queue(
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        true,
+        false,
+        array($oldHash, '6879824', '900', 1)
+    );
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+    $written = testCapturedAppLog(function () use ($oldHash, $newHash) {
+        strictAssertSame(ruTrackerChecker::STE_ERROR,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+            'another topic does not own this fetch generation');
+    });
+    strictAssertTrue(strpos($written, 'stub-topic-mismatch') !== false,
+        'the classified collision is visible with debug disabled');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'the foreign service stub is never started or changed');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+        'the predecessor is never marked for another topic');
+    strictAssertSame(0, count(rTorrent::$magnets), 'no duplicate magnet is loaded');
+});
+
+$suite->test('malformed same-predecessor stub adoption stays untouched and logs each retry', function () use ($oldHash, $newHash) {
+    foreach (array(
+        'topic' => array($oldHash, 'broken', '900', 1, 'malformed chk-meta-topic'),
+        'zero topic' => array($oldHash, '0', '900', 1, 'malformed chk-meta-topic'),
+        'deadline' => array($oldHash, '6879823', 'broken', 1, 'malformed chk-meta-until'),
+        'zero deadline' => array($oldHash, '6879823', '0', 1, 'malformed chk-meta-until'),
+        'both fields' => array($oldHash, 'broken', '0', 1, 'chk-meta-topic, chk-meta-until'),
+        'meta status' => array($oldHash, '6879823', '900', 'broken', 'unreadable d.is_meta'),
+    ) as $label => $case) {
+        ruTrackerChecker::reset();
+        rTorrent::$magnets = array();
+        for ($cycle = 0; $cycle < 2; $cycle++) {
+            ruTrackerChecker::queueResult('torrentExists', true);
+            mfQueueCollisionOwner($oldHash);
+            rXMLRPCRequest::queue(
+                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+                true,
+                false,
+                array_slice($case, 0, 4)
+            );
+        }
+        $log = testCapturedAppLog(function () use ($oldHash, $newHash, $label) {
+            for ($cycle = 0; $cycle < 2; $cycle++) {
+                strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                    RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                        'http://bt.t-ru.org/ann?pk=s3cr3t', 1000 + $cycle),
+                    $label . ': malformed tuple remains a retryable refusal');
+            }
+        });
+        strictAssertSame(2, substr_count($log, $case[4]),
+            $label . ': every retry has a classified cause in the default app log');
+        strictAssertTrue(strpos($log, $newHash) !== false,
+            $label . ': the diagnostic identifies the blocked service item');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': no malformed item is started or changed');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            $label . ': no predecessor claim is written');
+        strictAssertSame(0, count(rTorrent::$magnets),
+            $label . ': no second service item is loaded');
+    }
+});
+
+$suite->test('unreadable stub owner projection stays untouched and logs each retry', function () use ($oldHash, $newHash) {
+    foreach (array(
+        'RPC refusal' => array(false, false, array()),
+        'truncated is_meta' => array(true, false, array($oldHash, '6879823', '900')),
+    ) as $label => $response) {
+        ruTrackerChecker::reset();
+        for ($cycle = 0; $cycle < 2; $cycle++) {
+            ruTrackerChecker::queueResult('torrentExists', true);
+            mfQueueCollisionOwner($oldHash);
+            rXMLRPCRequest::queue(
+                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+                $response[0], $response[1], $response[2]
+            );
+        }
+        $log = testCapturedAppLog(function () use ($oldHash, $newHash, $label) {
+            for ($cycle = 0; $cycle < 2; $cycle++) {
+                strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                    RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                        'http://bt.t-ru.org/ann?pk=s3cr3t', 1000 + $cycle),
+                    $label . ': unreadable owner remains retryable');
+            }
+        });
+        strictAssertSame(2, substr_count($log, 'unreadable-stub-ownership'),
+            $label . ': every repeated refusal is visible with debug disabled');
+        strictAssertTrue(strpos($log, 'd.is_meta') !== false,
+            $label . ': the diagnostic names the unreadable projection');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': an unreadable owner grants no action');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            $label . ': the predecessor is not marked');
+    }
 });
 
 // The sibling branch: the stub adopted here is no longer a stub, its metadata
@@ -985,16 +1109,17 @@ $suite->test('pump leaves a foreign item at the successor hash alone and retires
     mfQueueStubOwner($newHash, str_repeat('C', 40)); // somebody else's
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
-    $state = RuTrackerMetaFetch::pump($oldHash, 1000);
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $state, 'a taken-over hash is a terminal outcome, not an error');
+    $logged = testCapturedAppLog(function () use ($oldHash, &$state) {
+        $state = RuTrackerMetaFetch::pump($oldHash, 1000);
+    });
+    strictAssertSame(ruTrackerChecker::STE_ERROR, $state, 'foreign hash is a retryable collision');
     strictAssertSame(0, count(mfRequestsForErase()), 'the foreign item is never erased');
     strictAssertSame(0, count(mfCreates()), 'and never harvested');
-    strictAssertSame(1, count(mfMessages()), 'exactly one chk-msg write');
-    strictAssertSame(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
-        mfMessages()[0]['arguments'][1], 'the superseded token carries the successor hash');
-    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'belongs to someone else',
-        'the hand-off is logged');
-    strictAssertEnglish($line, 'the hand-off line');
+    strictAssertSame(0, count(mfMessages()), 'no superseded message invented');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+        'only the exact predecessor fetch marks are retired');
+    strictAssertTrue(strpos($logged, 'collision-foreign-occupant') !== false,
+        'classified collision is visible at shipped debug=false');
 });
 
 $suite->test('the service download goes under rTorrent\'s own download directory', function () use ($oldHash, $newHash) {
@@ -1108,15 +1233,19 @@ $suite->test('a stub whose d.is_meta cannot be read is left alone, not started',
         array()
     );
 
-    $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+    $state = null;
+    $written = testCapturedAppLog(function () use ($oldHash, $newHash, &$state) {
+        $state = RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+            'http://bt.t-ru.org/ann?pk=s3cr3t', 1000);
+    });
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'retryable: nothing was established');
     strictAssertSame(0, count(mfRequestsForRunState()),
         'nothing is started on an answer that established nothing');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
         'and the stub is left unclaimed, so the next cycle asks again');
-    strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'could not read whether its stub',
-        'the unreadable answer is logged'), 'the unreadable-stub line');
+    strictAssertTrue(strpos($written, 'unreadable-stub-ownership') !== false,
+        'the unreadable answer reaches the default application log');
 });
 
 $suite->test('a stub that will not start is left unclaimed for the next cycle', function () use ($oldHash, $newHash) {
@@ -1277,11 +1406,11 @@ $suite->test('arbitrary replacement markers are foreign in begin and pump owners
     rTorrent::$magnets = array();
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner('', 'not-a-plugin-marker', $oldHash . '-started-1000');
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
+    strictAssertSame(ruTrackerChecker::STE_ERROR,
         RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
-        'begin treats an untrusted marker as an ordinary foreign occupant');
-    strictAssertSame(1, count(mfMessages()),
-        'begin records the ordinary superseded outcome rather than staged ownership');
+        'begin refuses an untrusted marker retryably');
+    strictAssertSame(0, count(mfMessages()),
+        'begin does not invent a superseded outcome');
     strictAssertSame(0, count(rTorrent::$magnets), 'begin never loads over the occupant');
 
     ruTrackerChecker::reset();
@@ -1289,10 +1418,10 @@ $suite->test('arbitrary replacement markers are foreign in begin and pump owners
         array($newHash, '999999'));
     mfQueueStubOwner($newHash, '', '6879823', '999999', 0, 'not-a-plugin-marker', $oldHash . '-started-1000');
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, RuTrackerMetaFetch::pump($oldHash, 1000),
-        'pump also treats an untrusted marker as a foreign occupant');
-    strictAssertSame(1, count(mfMessages()),
-        'pump records the ordinary superseded outcome');
+    strictAssertSame(ruTrackerChecker::STE_ERROR, RuTrackerMetaFetch::pump($oldHash, 1000),
+        'pump refuses an untrusted marker retryably after exact mark retirement');
+    strictAssertSame(0, count(mfMessages()),
+        'pump does not invent a superseded outcome');
     strictAssertSame(0, count(mfRequestsForErase()),
         'pump never erases the foreign occupant');
 });
@@ -1355,19 +1484,33 @@ $suite->test('an expired unproved plugin collision retires only the predecessor 
         'no superseded token is invented for an unproved occupant');
 });
 
-$suite->test('an unreadable marker defers instead of declaring the successor foreign', function () use ($oldHash, $newHash) {
-    ruTrackerChecker::reset();
-    rTorrent::$magnets = array();
-    ruTrackerChecker::queueResult('torrentExists', true);
-    mfQueueCollisionOwnerFailure();
-
-    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
-        'a failed read is not evidence of anything');
-    strictAssertSame(0, count(mfMessages()),
-        'and must not leave a terminal verdict behind on nothing but a transport failure');
-    strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'could not read the marker',
-        'the deferral is logged'), 'the deferral line');
+$suite->test('an unreadable successor marker defers visibly on every retry', function () use ($oldHash, $newHash) {
+    foreach (array(
+        'failed RPC' => array(false, array()),
+        'truncated reply' => array(true, array($oldHash, '')),
+    ) as $label => $reply) {
+        ruTrackerChecker::reset();
+        rTorrent::$magnets = array();
+        for ($cycle = 0; $cycle < 2; $cycle++) {
+            ruTrackerChecker::queueResult('torrentExists', true);
+            rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom'),
+                $reply[0], false, $reply[1]);
+        }
+        $written = testCapturedAppLog(function () use ($oldHash, $newHash, $label) {
+            for ($cycle = 0; $cycle < 2; $cycle++) {
+                strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                    RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                        'http://bt.t-ru.org/ann?pk=s3cr3t', 1000 + $cycle),
+                    $label . ': a failed marker read proves no successor ownership');
+            }
+        });
+        strictAssertSame(2, substr_count($written, 'unreadable-successor-marker'),
+            $label . ': every retry names the refusal in the default application log');
+        strictAssertTrue(strpos($written, $newHash) !== false,
+            $label . ': the log identifies the blocked successor');
+        strictAssertSame(0, count(mfMessages()), 'the predecessor verdict stays unchanged');
+        strictAssertSame(0, count(rTorrent::$magnets), 'no service item is loaded');
+    }
 });
 
 $suite->test('a failing dht:// row does not count as the tracker rejecting the hash', function () use ($oldHash, $newHash) {
@@ -1545,7 +1688,7 @@ $suite->test('a claim that does not land is not reported as a pending fetch', fu
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823, 'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
         'retryable: nothing would ever advance that stub');
-    strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'the claim did not land',
+    strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'could not confirm the claim publication',
         'the failure is logged'), 'the unclaimed line');
 });
 
@@ -1560,7 +1703,7 @@ $suite->test('begin leaves a readded predecessor unmarked after its stub starts'
         true, false, array($oldHash, '6879823', '87400', 1));
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
+    rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('2', 40)));
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
@@ -1574,6 +1717,79 @@ $suite->test('begin leaves a readded predecessor unmarked after its stub starts'
     strictAssertTrue(strpos($branches[1]['commands'][0]->params[1], str_repeat('1', 40)) !== false,
         'the claim compares the predecessor identity captured before the fetch');
     ruTrackerChecker::$runLocalId = null;
+});
+
+$suite->test('begin publishes META_PENDING before owned predecessor marks in one guarded branch', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$runLocalId = str_repeat('1', 40);
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    try {
+        strictAssertSame(true, strictInvoke('RuTrackerMetaFetch', 'markOldTorrent',
+            array($oldHash, $newHash, 999999)), 'the guarded predecessor publication is confirmed');
+        $branches = rXMLRPCRequest::requestsFor('branch');
+        strictAssertSame(1, count($branches), 'state and both marks use one local-id branch');
+        $body = (string) $branches[0]['commands'][0]->params[2];
+        $state = strpos($body, 'chk-state');
+        $new = strpos($body, 'chk-meta-new');
+        $until = strpos($body, 'chk-meta-until');
+        strictAssertTrue($state !== false && $new !== false && $until !== false
+            && $state < $new && $new < $until,
+            'M is published before either successor mark in the daemon callback');
+    } finally {
+        ruTrackerChecker::$runLocalId = null;
+    }
+});
+
+$suite->test('ambiguous partial begin publication keeps the predecessor pending for retry', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$runLocalId = str_repeat('1', 40);
+    try {
+        ruTrackerChecker::queueResult('torrentExists', true);
+        mfQueueCollisionOwner($oldHash);
+        rXMLRPCRequest::queue(
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+            true, false, array($oldHash, '6879823', '900', 1));
+        rXMLRPCRequest::queue('branch', true, false,
+            array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // stub start
+        rXMLRPCRequest::queue('branch', true, false, array('unreadable-result')); // old publication
+        rXMLRPCRequest::queue(
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
+            true, false, array((string) ruTrackerChecker::STE_META_PENDING, $newHash, '', str_repeat('1', 40)));
+        rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('1', 40)));
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+            'unknown branch with partially published marks cannot produce a final CANT_REACH verdict');
+        strictAssertSame(0, count(mfMessages()), 'no false successor verdict is written');
+    } finally {
+        ruTrackerChecker::$runLocalId = null;
+    }
+});
+
+$suite->test('an empty same-generation read after unknown publication still preserves M', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$runLocalId = str_repeat('1', 40);
+    try {
+        ruTrackerChecker::queueResult('torrentExists', true);
+        mfQueueCollisionOwner($oldHash);
+        rXMLRPCRequest::queue(
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+            true, false, array($oldHash, '6879823', '900', 1));
+        rXMLRPCRequest::queue('branch', true, false,
+            array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        rXMLRPCRequest::queue('branch', true, false, array('unreadable-result'));
+        rXMLRPCRequest::queue(
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
+            true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+                '', '', str_repeat('1', 40)));
+        rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('1', 40)));
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+            'an in-flight daemon callback may publish after this empty read');
+    } finally {
+        ruTrackerChecker::$runLocalId = null;
+    }
 });
 
 $suite->test('a truncated predecessor-marker reply cannot claim a partial two-field bundle', function () use ($oldHash, $newHash) {
@@ -1782,9 +1998,9 @@ $suite->test('pump preserves the exact raw predecessor claim in its conditional 
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED,
+    strictAssertSame(ruTrackerChecker::STE_ERROR,
         RuTrackerMetaFetch::pump($oldHash, 1000),
-        'a foreign occupant retires only the predecessor claim read by this pump');
+        'a foreign occupant retires only the predecessor claim and remains retryable');
     $branches = rXMLRPCRequest::requestsFor('branch');
     strictAssertSame(1, count($branches), 'the predecessor claim is cleared conditionally once');
     $condition = $branches[0]['commands'][0]->params[1];
@@ -1796,6 +2012,22 @@ $suite->test('pump preserves the exact raw predecessor claim in its conditional 
     strictAssertTrue(strpos($clear, '$d.set_custom=chk-meta-until,') !== false
         && strpos($clear, '$d.set_custom=chk-meta-new,') !== false,
         'retiring the exact predecessor generation clears both metadata marks');
+});
+
+$suite->test('a META_PENDING row with two retired marks recovers after the clear-to-verdict crash cut', function () use ($oldHash, $newHash) {
+    foreach (array(
+        'both retired' => array('', '', ruTrackerChecker::STE_ERROR),
+        'missing hash alone' => array('', '999999', ruTrackerChecker::STE_META_PENDING),
+        'missing deadline alone' => array($newHash, '', ruTrackerChecker::STE_META_PENDING),
+    ) as $label => $case) {
+        ruTrackerChecker::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
+            array($case[0], $case[1]));
+        strictAssertSame($case[2], RuTrackerMetaFetch::pump($oldHash, 1000),
+            $label . ': only a fully retired generation may leave META_PENDING');
+        strictAssertSame(1, count(rXMLRPCRequest::$requests),
+            $label . ': no successor or destructive RPC is authorized by empty or corrupt marks');
+    }
 });
 
 $suite->test('malformed predecessor fetch generation fails closed without clearing or probing a normalized target', function () use ($oldHash, $newHash) {

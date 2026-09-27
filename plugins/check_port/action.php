@@ -3,6 +3,7 @@ require_once(dirname(__FILE__) . "/../../php/settings.php");
 require_once(dirname(__FILE__) . "/../../php/Snoopy.class.inc");
 require_once(dirname(__FILE__) . "/parse.php");
 require_once(dirname(__FILE__) . "/providers.php");
+require_once(dirname(__FILE__) . "/ports.php");
 
 // Load the plugin's configuration settings from conf.php
 eval(FileUtil::getPluginConf('check_port'));
@@ -128,8 +129,9 @@ function get_and_check_ip($ip_version, $use_website, $rtorrent_ip, $rtorrent_por
 }
 
 // --- Main Execution ---
-$port = rTorrentSettings::get()->port;
-$ip_glob = rTorrentSettings::get()->ip;
+$settings = rTorrentSettings::get();
+$port = $settings->port;
+$ip_glob = $settings->ip;
 
 if (isset($_REQUEST['setport'])) {
 	$newport = (int)$_REQUEST['setport'];
@@ -140,19 +142,30 @@ if (isset($_REQUEST['setport'])) {
 	}
 }
 
+$ports = check_port_effective_ports($port, $settings->iVersion, function($command) {
+	$req = new rXMLRPCRequest(new rXMLRPCCommand($command));
+	$req->important = false;
+	if (!$req->success() || !isset($req->val[0])) {
+		$fallback = $command === 'network.listen.port' ? 'cached listening port' : 'listening port';
+		FileUtil::toLog("check_port: $command unavailable; using $fallback");
+		return null;
+	}
+	return $req->val[0];
+});
 $response = [
-	"ipv4" => "-", "ipv4_port" => (int)$port, "ipv4_status" => -1,
-	"ipv6" => "-", "ipv6_port" => (int)$port, "ipv6_status" => -1,
+	"listen_port" => $ports['listen'],
+	"ipv4" => "-", "ipv4_port" => $ports['ipv4'], "ipv4_status" => -1,
+	"ipv6" => "-", "ipv6_port" => $ports['ipv6'], "ipv6_status" => -1,
 ];
 
 if ($currentUseWebsiteIPv4 !== false) {
-	$ipv4_result = get_and_check_ip('4', $currentUseWebsiteIPv4, $ip_glob, $port, $currentCheckPortTimeout);
+	$ipv4_result = get_and_check_ip('4', $currentUseWebsiteIPv4, $ip_glob, $ports['ipv4'], $currentCheckPortTimeout);
 	$response["ipv4"] = $ipv4_result["ip"];
 	$response["ipv4_status"] = $ipv4_result["status"];
 }
 
 if ($currentUseWebsiteIPv6 !== false) {
-	$ipv6_result = get_and_check_ip('6', $currentUseWebsiteIPv6, $ip_glob, $port, $currentCheckPortTimeout);
+	$ipv6_result = get_and_check_ip('6', $currentUseWebsiteIPv6, $ip_glob, $ports['ipv6'], $currentCheckPortTimeout);
 	$response["ipv6"] = $ipv6_result["ip"];
 	$response["ipv6_status"] = $ipv6_result["status"];
 }

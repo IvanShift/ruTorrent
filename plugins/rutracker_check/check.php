@@ -67,6 +67,7 @@ class ruTrackerChecker
 	// is only of interest while debugging goes to logDebug() instead, and
 	// clears chk-msg.
 	const CHKMSG_SUPERSEDED		= 'superseded';		// param: 40-hex successor hash
+	const CHKMSG_SUCCESSOR_MISSING = 'successor-missing'; // param: 40-hex missing hash
 	const CHKMSG_DELETING		= 'deleting';		// param: "N/M" confirmation cycles
 	const CHKMSG_TOPIC_STATUS	= 'topic-status';	// param: dump tor_status
 	const CHKMSG_FUSE		= 'fuse';		// param: announce host
@@ -114,6 +115,7 @@ class ruTrackerChecker
 	private static $activeRunIdentity = null;
 	private static $terminalMessageHash = null;
 	private static $pendingTerminalMessage = null;
+	private static $missingSuccessorMarker = null;
 	private static $obsoleteCleanupSummary = array(
 		'old' => 0,
 		'new' => 0,
@@ -217,6 +219,15 @@ class ruTrackerChecker
 			'jurisdiction' => $owner['announceFilter'],
 			'authority' => $owner['announceAuthority'],
 		);
+	}
+
+	// A scheduling/telemetry bucket records the first handler asked by run_ex().
+	// The filter is not proof that this handler owns the topic.
+	static public function schedulingBucket($comment)
+	{
+		foreach(self::$TRACKERS as $commentFilter => $tracker)
+			if(preg_match($commentFilter, (string)$comment)) return $commentFilter;
+		return 'fallback';
 	}
 
 	static public function supportedTrackers()
@@ -535,10 +546,10 @@ class ruTrackerChecker
 		return(count($entries) ? $entries : null);
 	}
 
-	static public function setState( $hash, $state, $localId = null )
+	static public function setState( $hash, $state, $localId = null, $expectedCustoms = array() )
 	{
 		return(self::writeCustomProjection($hash,
-			self::stateCommands($hash, $state, time()), "setState", $localId));
+			self::stateCommands($hash, $state, time()), "setState", $localId, $expectedCustoms));
 	}
 
 	// Build every timestamped state projection from one captured clock value.
@@ -565,9 +576,11 @@ class ruTrackerChecker
 	 * short positive response is therefore just as ambiguous as a failed one:
 	 * some setters may have landed, or the reply may have been cut short.
 	 */
-	static private function writeCustomProjection($hash, $commands, $context, $localId = null)
+	static private function writeCustomProjection($hash, $commands, $context, $localId = null,
+		$expectedCustoms = array())
 	{
-		return(RuTrackerCustomProjection::write($hash, $commands, $context, $localId));
+		return(RuTrackerCustomProjection::write($hash, $commands, $context, $localId,
+			$expectedCustoms));
 	}
 
 	/**
@@ -582,7 +595,8 @@ class ruTrackerChecker
 	 * @return bool|null true when the whole desired projection is observed,
 	 *                   null when the target is confirmed absent, false otherwise
 	 */
-	static public function setFastVerdict($hash, $state, $message = null, $clearDeletion = false, $localId = null)
+	static public function setFastVerdict($hash, $state, $message = null, $clearDeletion = false,
+		$localId = null, $expectedCustoms = array())
 	{
 		$now = time();
 		$commands = self::stateCommands($hash, $state, $now);
@@ -593,7 +607,82 @@ class ruTrackerChecker
 			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
 				array($hash, "chk-del", ""));
 
-		return(self::writeCustomProjection($hash, $commands, "setFastVerdict", $localId));
+		return(self::writeCustomProjection($hash, $commands, "setFastVerdict", $localId,
+			$expectedCustoms));
+	}
+
+	// Retire an empty metadata generation only while the callback has not
+	// published another claim. All predicates and writes run in one daemon
+	// branch, so a late mark callback either blocks this verdict or restores M.
+	static private function setRetiredMetaVerdict($hash, $state, $ignored, $localId)
+	{
+		$commands = self::stateCommands($hash, $state, time());
+		if($ignored)
+			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
+				array($hash, "chk-msg", ""));
+		return(self::writeCustomProjection($hash, $commands, "setRetiredMetaVerdict", $localId,
+			array("chk-state" => (string) self::STE_META_PENDING,
+				"chk-meta-new" => "", "chk-meta-until" => "")));
+	}
+
+	// Replace a disproved successor token with a durable retry marker before
+	// asking later layers. A retained terminal's ordinary setMessage() buffer
+	// cannot do this: an inconclusive answer would discard the clear.
+	static public function recordMissingSuccessor($hash, $successor)
+	{
+		$localId = self::activeRunLocalId($hash);
+		if($localId === null || !is_string($successor)
+			|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
+		{
+			self::logUnrepairable('recordMissingSuccessor: ' . $hash
+				. ' invalid run identity or successor; chk-msg superseded verdict retained');
+			return(false);
+		}
+		$marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
+		$write = self::writeCustomProjection($hash, array(
+			new rXMLRPCCommand(getCmd('d.set_custom'),
+				array($hash, 'chk-msg', $marker))), 'recordMissingSuccessor', $localId);
+		if($write !== true)
+		{
+			self::logUnrepairable('recordMissingSuccessor: ' . $hash
+				. ' chk-msg marker write unconfirmed; successor verdict needs retry');
+			return(false);
+		}
+		self::logRoutine('recordMissingSuccessor: ' . $hash . ' successor-missing=' . $successor
+			. '; durable marker published; retry pending');
+		return(self::retainMissingSuccessor($hash, $successor));
+	}
+
+	// A worker may resume after the marker landed but before ERROR did.
+	// Confirm the same daemon generation before allowing later layers to
+	// replace it, and buffer their messages until a final verdict exists.
+	static public function retainMissingSuccessor($hash, $successor)
+	{
+		$localId = self::activeRunLocalId($hash);
+		if($localId === null || !is_string($successor)
+			|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
+		{
+			self::logUnrepairable('retainMissingSuccessor: ' . $hash
+				. ' invalid run identity or successor; chk-msg marker cannot be confirmed');
+			return(false);
+		}
+		$marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
+		$read = new rXMLRPCRequest(array(
+			new rXMLRPCCommand(getCmd('d.get_custom'), array($hash, 'chk-msg')),
+			new rXMLRPCCommand(getCmd('d.get_local_id'), array($hash))));
+		$read->important = false;
+		if(!$read->success() || $read->fault || !is_array($read->val)
+			|| count($read->val) !== 2 || $read->val[0] !== $marker
+			|| $read->val[1] !== $localId)
+		{
+			self::logUnrepairable('retainMissingSuccessor: ' . $hash
+				. ' chk-msg marker readback unconfirmed; successor verdict needs retry');
+			return(false);
+		}
+		self::$missingSuccessorMarker = $marker;
+		self::$terminalMessageHash = $hash;
+		self::$pendingTerminalMessage = '';
+		return(true);
 	}
 
 	// Writes chk-msg outside a retained-terminal dispatch. Inside it, stage
@@ -631,12 +720,13 @@ class ruTrackerChecker
 		return($req->success());
 	}
 
-	static protected function getState( $hash, &$state, &$time, &$label, &$localId = null )
+	static protected function getState( $hash, &$state, &$time, &$label, &$localId = null, &$message = null )
 	{
 		$state = self::STE_INPROGRESS;
 		$time = time();
 		$label = "";
 		$localId = null;
+		$message = null;
 
 		// Read first, probe only if that fails. The existence probe used to run
 		// unconditionally ahead of the read, so every manual check paid two
@@ -653,10 +743,17 @@ class ruTrackerChecker
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-state")  ),
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-time") ),
 			new rXMLRPCCommand( getCmd("d.get_custom1"), $hash ),
-			new rXMLRPCCommand( getCmd("d.get_local_id"), $hash )
+			new rXMLRPCCommand( getCmd("d.get_local_id"), $hash ),
+			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-msg") )
 			));
 		$req->important = false;
-		if($req->success() && isset($req->val[0], $req->val[1], $req->val[2], $req->val[3]))
+		$readOk = $req->success();
+		$complete = $readOk && isset($req->val[0], $req->val[1], $req->val[2], $req->val[3], $req->val[4])
+			&& is_string($req->val[4]);
+		if($readOk && !$complete)
+			self::logUnrepairable("getState: " . $hash
+				. " chk-state/chk-time/chk-msg read incomplete; deferring without state mutation");
+		if($complete)
 		{
 			// An UNSET custom reads back as '' -- that alone is the absent 0.
 			// A reading that will not parse is NOT state 0 ("never checked"),
@@ -685,6 +782,7 @@ class ruTrackerChecker
 			$time = $readTime;
 			$label = $req->val[2];
 			$localId = $req->val[3];
+			$message = $req->val[4];
 			return(true);
 		}
 
@@ -1222,15 +1320,19 @@ class ruTrackerChecker
 	 * rejected for. A refusal must be self-healing or visible; anything that
 	 * cannot be the first has to be the second, and this is how.
 	 *
-	 * Public, and not one copy per file: the refusals that qualify live in
-	 * forumindex.php, announce.php, metafetch.php and here, and four copies of
-	 * one three-line writer is exactly the duplication this branch exists to
-	 * remove. announce.php calls it behind class_exists() because that file is
-	 * also loaded standalone.
+	 * The public logUnrepairable() wrapper serves refusals in forumindex.php,
+	 * announce.php, metafetch.php and here; announce.php guards its call because
+	 * that file also loads standalone. Successful publication of a durable
+	 * missing-successor marker uses this same writer to expose the retry cause.
 	 */
-	static public function logUnrepairable($message)
+	static private function logRoutine($message)
 	{
 		FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
+	}
+
+	static public function logUnrepairable($message)
+	{
+		self::logRoutine($message);
 	}
 
 	// A cleanup that could not be confirmed leaves a durable inconsistency
@@ -1583,6 +1685,14 @@ class ruTrackerChecker
 		return($torrent);
 	}
 
+	// A collision is a retryable transaction refusal, not topic evidence.
+	// It must remain visible even when a truthful terminal state is retained.
+	static private function logReplacementCollision($oldHash, $newHash, $kind)
+	{
+		self::logUnrepairable('createTorrent: same-hash-collision old=' . $oldHash
+			. ' new=' . $newHash . ' kind=' . $kind . '; retaining both torrents');
+	}
+
 	/**
 	 * Replace $hash with an already parsed replacement.
 	 *
@@ -1631,10 +1741,8 @@ class ruTrackerChecker
 				new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, self::INHERIT_KEY)),
 			) );
 			$markerReq->important = false;
-			// When the newly downloaded torrent hash is already present in rTorrent
-			// but has no replacement marker, the predecessor has been superseded
-			// by external means. Mark the predecessor as STE_NOT_NEED with
-			// CHKMSG_SUPERSEDED so the scheduler will not retry the check endlessly.
+			// A matching hash alone cannot prove external supersession or this
+			// transaction's ownership. Leave both torrents untouched and retry.
 			if(!$markerReq->success() || !isset($markerReq->val[3]))
 			{
 				self::logDebug("createTorrent: " . $hash . " could not read the marker of the existing "
@@ -1643,16 +1751,12 @@ class ruTrackerChecker
 			}
 			if((string) $markerReq->val[0] === '')
 			{
-				self::logDebug("createTorrent: " . $hash . " -> " . $newHash
-					. " is already in the client and is not this plugin's: there is nothing to"
-					. " replace, and neither torrent is touched");
-				$setMsgOk = self::setMessage($hash, self::CHKMSG_SUPERSEDED . '|' . $newHash);
-				return $setMsgOk ? self::STE_NOT_NEED : self::STE_ERROR;
+				self::logReplacementCollision($hash, $newHash, 'unmarked');
+				return self::STE_ERROR;
 			}
 			if(!self::isPluginReplacementMarker((string) $markerReq->val[0]))
 			{
-				self::logDebug("createTorrent: " . $hash . " -> " . $newHash
-					. " carries a non-plugin replacement marker; neither torrent is touched");
+				self::logReplacementCollision($hash, $newHash, 'foreign-marker');
 				return self::STE_ERROR;
 			}
 			// A nonce proves only that this plugin wrote something at this hash.
@@ -1664,13 +1768,8 @@ class ruTrackerChecker
 			if($stagedRecord === null
 				|| strcasecmp($stagedRecord['old'], (string) $hash) !== 0)
 			{
-				self::logDebug("createTorrent: " . $hash . " found " . $newHash
-					. " with a replacement nonce but "
-					. ($stagedRecord === null
-						? "no strict record"
-						: "a strict record staged for " . $stagedRecord['old'])
-					. " for this predecessor;"
-					. " retaining the occupant and its recovery keys and leaving that transaction to the sweep");
+				self::logReplacementCollision($hash, $newHash,
+					$stagedRecord === null ? 'invalid-record' : 'different-predecessor');
 				return self::STE_ERROR;
 			}
 			// d.get_state and d.is_open are 0/1 and nothing else, proved BEFORE
@@ -2331,7 +2430,7 @@ class ruTrackerChecker
 		return( in_array($label, $ignoreLabels) || in_array(rawurldecode((string) $label), $ignoreLabels) );
 	}
 
-	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null )
+	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null )
 	{
 		// $performed is deliberately narrower than "this invocation changed
 		// something": it acknowledges only a real tracker-handler run. The
@@ -2356,7 +2455,7 @@ class ruTrackerChecker
 		$previousIdentity = self::$activeRunIdentity;
 		try
 		{
-			if(!self::getState( $hash, $state, $time, $label, $localId ))
+			if(!self::getState( $hash, $state, $time, $label, $localId, $storedMessage ))
 			{
 				// The torrent is gone: a stale worker, and a successful no-op.
 				if($state == self::STE_NOT_NEED)
@@ -2371,34 +2470,100 @@ class ruTrackerChecker
 			}
 
 			self::$activeRunIdentity = array('hash' => $hash, 'localId' => $localId);
+			self::$missingSuccessorMarker = null;
 
-			// Skip torrent if its label is in the ignore list
-			if(self::isIgnoredLabel($label))
+			$recoverableP = $state == self::STE_INPROGRESS
+				&& ($expiredPrevious || (time()-$time)>self::MAX_LOCK_TIME);
+			$emptyPGuard = array();
+			$promotedMeta = false;
+			if($state == self::STE_INPROGRESS)
 			{
-				// Keep the ignored state and its cleared message on the same
-				// daemon generation. The scheduler applies the same projection.
-				return(self::setFastVerdict($hash, self::STE_IGNORED, '', false, $localId) !== false);
+				// Older workers published the owned marks before the M state.
+				// Observe the same daemon generation before an ignored label or
+				// an alive shortcut can hide that unfinished fetch.
+				$marks = new rXMLRPCRequest(array(
+					new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-meta-new")),
+					new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-meta-until")),
+					new rXMLRPCCommand(getCmd("d.get_local_id"), $hash),
+				));
+				$marks->important = false;
+				if(!$marks->success() || $marks->fault || !is_array($marks->val)
+					|| count($marks->val) !== 3 || (string) $marks->val[2] !== $localId)
+				{
+					self::logUnrepairable('run: ' . $hash
+						. ' chk-meta-new/chk-meta-until generation read unconfirmed; deferring P verdict');
+					return(false);
+				}
+				if((string) $marks->val[0] !== '' || (string) $marks->val[1] !== '')
+				{
+					if(!$recoverableP) return(true); // the fresh P worker still owns this fetch
+					if(self::setState($hash, self::STE_META_PENDING, $localId) !== true)
+					{
+						self::logUnrepairable('run: ' . $hash
+							. ' chk-state META_PENDING promotion unconfirmed;'
+							. ' retaining chk-meta-new/chk-meta-until for retry');
+						return(false);
+					}
+					$state = self::STE_META_PENDING;
+					$promotedMeta = true;
+				}
+				else
+					$emptyPGuard = array("chk-state" => (string) self::STE_INPROGRESS,
+						"chk-meta-new" => "", "chk-meta-until" => "");
 			}
 
 			if($state == self::STE_META_PENDING)
 			{
-				$claim = self::setState($hash, self::STE_INPROGRESS, $localId);
-				if($claim === null) return(true);	// the torrent is gone
-				if(!$claim) return(false);
+				// Keep the durable state until pump() has retired its exact
+				// generation. The per-hash claim already excludes other workers;
+				// INPROGRESS here could strand the marks after a worker crash.
 				$state = RuTrackerMetaFetch::pump($hash, time());
 				// null is pump()'s success contract: createTorrent() committed,
 				// so this hash no longer exists and there is nothing to write.
-				if(!is_null($state)) self::setState($hash, $state, $localId);
-				return($state != self::STE_CANT_REACH_TRACKER);
+				if(is_null($state)) return(true);
+				if($state == self::STE_META_PENDING)
+					return($promotedMeta || self::setState($hash, $state, $localId) !== false);
+				$ignored = self::isIgnoredLabel($label);
+				$written = self::setRetiredMetaVerdict($hash,
+					$ignored ? self::STE_IGNORED : $state, $ignored, $localId);
+				if($written === false)
+				{
+					self::logUnrepairable('run: ' . $hash . ' metafetch-final-verdict-unconfirmed;'
+						. ' chk-state after retired chk-meta-new/chk-meta-until needs retry');
+					return(false);
+				}
+				return($ignored || $state != self::STE_CANT_REACH_TRACKER);
 			}
+
+			// Keep the ignored state and its cleared message on the same
+			// daemon generation. The scheduler applies the same projection.
+			if(self::isIgnoredLabel($label))
+				return(self::setFastVerdict($hash, self::STE_IGNORED, '', false, $localId,
+					$emptyPGuard) !== false);
 
 			// The claim may have expired on monotonic time while chk-time is still
 			// future-dated after a wall-clock rollback. Only that proved takeover
 			// may bypass the old wall-clock in-progress check.
-			if(($state==self::STE_INPROGRESS)
-				&& ($expiredPrevious || (time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
+			if($recoverableP) $state = 0;
+			$recoveredEmptyP = $recoverableP && $emptyPGuard !== array();
 
 			if($state!==self::STE_INPROGRESS){
+				if($prepareOrdinaryCheck !== null && !call_user_func($prepareOrdinaryCheck, $hash)) return(false);
+				// The marker may predate this process. Arm its retry guard before
+				// INPROGRESS can replace the old clock or a handler can clear chk-msg.
+				if(strpos($storedMessage, self::CHKMSG_SUCCESSOR_MISSING) === 0)
+				{
+					$prefix = self::CHKMSG_SUCCESSOR_MISSING . '|';
+					$successor = substr($storedMessage, strlen($prefix));
+					if(strpos($storedMessage, $prefix) !== 0
+						|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
+					{
+						self::logUnrepairable('run: ' . $hash
+							. ' malformed chk-msg successor-missing marker; check deferred');
+						return(false);
+					}
+					if(!self::retainMissingSuccessor($hash, $successor)) return(false);
+				}
 				$previous = $state;
 				$terminal = in_array($previous, array(self::STE_DELETED, self::STE_ABSORBED), true);
 				if($previous === self::STE_NOT_NEED && $time > 0)
@@ -2417,7 +2582,8 @@ class ruTrackerChecker
 						new rXMLRPCCommand(getCmd("d.set_custom"),
 							array($hash, "chk-state", (string) $previous))), "confirmTerminalState", $localId);
 				else
-					$stateWrite = self::setState( $hash, $state, $localId );
+					$stateWrite = self::setState( $hash, $state, $localId,
+						$recoveredEmptyP ? $emptyPGuard : array() );
 				if($stateWrite === null) return(true);
 				if(!$stateWrite) return(false);
 				$handlerPerformed = false;
@@ -2442,7 +2608,7 @@ class ruTrackerChecker
 				}
 				finally
 				{
-					if($terminal)
+					if($terminal || self::$missingSuccessorMarker !== null)
 					{
 						$pendingMessage = self::$pendingTerminalMessage;
 						self::$terminalMessageHash = null;
@@ -2455,11 +2621,34 @@ class ruTrackerChecker
 				// Do not refresh its rest clock without a new answer: the next
 				// scheduled recheck must still arrive at its original deadline.
 				$resultState = $state;
-				$retainedTerminal = $terminal
+				$finalPGuard = $recoveredEmptyP && $state !== self::STE_META_PENDING
+					? $emptyPGuard : array();
+				$missingRetry = self::$missingSuccessorMarker !== null
+					&& ($handlerVerdict === null || in_array($handlerVerdict,
+						array(self::STE_UNCHANGED, self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true));
+				$retainedTerminal = $terminal && !$missingRetry
 					&& in_array($state, array(self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true);
 				if($retainedTerminal) $state = $previous;
 				$finalWrite = null;
-				if(!is_null($state) && !($terminal
+				if($missingRetry)
+				{
+					// The marker makes even an intermediate NOT_NEED schedulable.
+					// Publish ERROR without moving the original retry deadline.
+					$state = self::STE_ERROR;
+					$resultState = self::STE_CANT_REACH_TRACKER;
+					$finalWrite = self::writeCustomProjection($hash, array(
+						new rXMLRPCCommand(getCmd('d.set_custom'),
+							array($hash, 'chk-state', (string) $state)),
+						new rXMLRPCCommand(getCmd('d.set_custom'),
+							array($hash, 'chk-time', $time > 0 ? (string) $time : '')),
+						new rXMLRPCCommand(getCmd('d.set_custom'),
+							array($hash, 'chk-msg', self::$missingSuccessorMarker))),
+						'recordMissingSuccessorError', $localId, $finalPGuard);
+					if($finalWrite !== true)
+						self::logUnrepairable('run: ' . $hash
+							. ' chk-state/chk-time/chk-msg successor-missing verdict unconfirmed; retry pending');
+				}
+				elseif(!is_null($state) && !($terminal
 					&& ($retainedTerminal || $handlerVerdict === self::STE_UNCHANGED)))
 				{
 					if($handlerVerdict === self::STE_UNCHANGED)
@@ -2469,10 +2658,20 @@ class ruTrackerChecker
 							new rXMLRPCCommand(getCmd("d.set_custom"),
 								array($hash, "chk-state", (string) $previous)),
 							new rXMLRPCCommand(getCmd("d.set_custom"),
-								array($hash, "chk-time", $time > 0 ? (string) $time : ""))), "restoreUnchanged", $localId);
-					else $finalWrite = $terminal && $pendingMessage !== null
-						? self::setFastVerdict($hash, $state, $pendingMessage, false, $localId)
-						: self::setState($hash, $state, $localId);
+								array($hash, "chk-time", $time > 0 ? (string) $time : ""))), "restoreUnchanged", $localId,
+							$finalPGuard);
+					else
+					{
+						// A conclusive answer retires a persisted missing-successor
+						// marker even if the handler had no sentence to publish.
+						$finalMessage = self::$missingSuccessorMarker !== null
+							? ($pendingMessage === null ? '' : $pendingMessage)
+							: ($terminal ? $pendingMessage : null);
+						$finalWrite = $finalMessage !== null
+							? self::setFastVerdict($hash, $state, $finalMessage, false, $localId,
+								$finalPGuard)
+							: self::setState($hash, $state, $localId, $finalPGuard);
+					}
 				}
 				// Handler invocation is not durable consumption. In particular,
 				// STE_UNCHANGED means it learned nothing, and a false/null final
@@ -2487,6 +2686,14 @@ class ruTrackerChecker
 		}
 		finally
 		{
+			// An early state/message read or preflight failure may skip the
+			// handler's finally block after arming this process-local buffer.
+			if(self::$terminalMessageHash === $hash)
+			{
+				self::$terminalMessageHash = null;
+				self::$pendingTerminalMessage = null;
+			}
+			self::$missingSuccessorMarker = null;
 			self::$activeRunIdentity = $previousIdentity;
 			self::releaseCheck($hash, $claimToken);
 		}

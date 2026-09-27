@@ -1031,6 +1031,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // these constants rather than on the literals, exactly like the
         // production call sites do.
         const CHKMSG_SUPERSEDED = 'superseded';
+        const CHKMSG_SUCCESSOR_MISSING = 'successor-missing';
         const CHKMSG_DELETING = 'deleting';
         // Mirrors check.php: metafetch reads it to tell an activation the
         // replacement confirmed from one it left unfinished.
@@ -1181,6 +1182,26 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 		{
 			return RuTrackerReplacementRecord::decode($value);
 		}
+
+        public static function recordMissingSuccessor($hash, $successor)
+        {
+            self::$calls[] = array(
+                'method' => __FUNCTION__,
+                'arguments' => array($hash, $successor),
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
+            );
+            return true;
+        }
+
+        public static function retainMissingSuccessor($hash, $successor)
+        {
+            self::$calls[] = array(
+                'method' => __FUNCTION__,
+                'arguments' => array($hash, $successor),
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
+            );
+            return true;
+        }
 
         public static function setMessage($hash, $message)
         {

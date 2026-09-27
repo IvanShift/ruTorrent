@@ -520,22 +520,13 @@ class RuTrackerCheckImpl
             . $count . ' of ' . $cycles . ' consecutive cycles, with the tracker confirming the deletion');
     }
 
-    // Fix A: "the topic's current version is already in the client" is a
-    // terminal outcome -- nothing about it can change until the user removes
-    // that successor -- yet the old code re-ran the whole chain every cycle,
-    // spending one of the host's ten announce probes and a forum dump fetch
-    // on a settled case, forever. The chk-msg token metafetch.php wrote IS
-    // the record (no new custom field), and one d.hash probe re-verifies it.
+    // The superseded token is a settled verdict only while this topic's
+    // successor remains in the client. The missing token is a durable retry
+    // obligation and is recognized under any intermediate checker state.
     //
-    // check.php's run() writes STE_INPROGRESS only for nonterminal states;
-    // a direct call may still see STE_NOT_NEED. DELETED/ABSORBED remain
-    // visible during dispatch and deliberately fail this shortcut, sending
-    // the topic through normal revalidation instead. Any other state makes
-    // the successor token insufficient evidence for this shortcut.
-    //
-    // @return string|null the recorded successor hash, or null when there is
-    //         no usable record and the normal flow must run
-    static private function supersededBy($hash)
+    // @return array|null the recorded successor and whether it is already
+    //         missing, or null when the normal flow must run
+    static private function successorRecord($hash)
     {
         $req = new rXMLRPCRequest(array(
             new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
@@ -545,12 +536,16 @@ class RuTrackerCheckImpl
         if (!$req->success() || !isset($req->val[0], $req->val[1])) return null;
 
         $state = RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
-        if ($state !== ruTrackerChecker::STE_NOT_NEED && $state !== ruTrackerChecker::STE_INPROGRESS)
-            return null;
-
         $parts = explode('|', (string) $req->val[1], 2);
-        if (count($parts) !== 2 || $parts[0] !== ruTrackerChecker::CHKMSG_SUPERSEDED) return null;
-        return self::normalizeHash($parts[1]);
+        if (count($parts) !== 2) return null;
+        $successor = self::normalizeHash($parts[1]);
+        if ($successor === null) return null;
+        if ($parts[0] === ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING)
+            return array('hash' => $successor, 'missing' => true);
+        if ($parts[0] !== ruTrackerChecker::CHKMSG_SUPERSEDED
+            || ($state !== ruTrackerChecker::STE_NOT_NEED
+                && $state !== ruTrackerChecker::STE_INPROGRESS)) return null;
+        return array('hash' => $successor, 'missing' => false);
     }
 
     // How long the paced probe actually sleeps. A misconfigured non-positive
@@ -584,20 +579,21 @@ class RuTrackerCheckImpl
         $localHash = self::normalizeHash($hash);
         if ($localHash === null) return ruTrackerChecker::STE_NOT_NEED;
 
-        // Layer 0: a settled "superseded" verdict is re-verified with one
-        // existence probe and nothing else (see supersededBy()), ahead of
-        // even the local bookkeeping below -- chk-topic was already recorded
-        // by the run that wrote the token. If the user has since removed the
-        // successor, the stale token is cleared and the normal flow decides
-        // again.
-        $successor = self::supersededBy($hash);
+        // Layer 0: a settled successor needs one existence probe. A missing successor
+        // already carries a durable retry marker and needs no second probe;
+        // the checker revalidates it under this run's local-id guard.
+        $successor = self::successorRecord($hash);
         if ($successor !== null) {
-            // Only a definite "gone" reopens the question: a failed probe
-            // (null) is no evidence the user removed anything, and spending
-            // the whole chain on that guess is exactly what this avoids.
-            if (ruTrackerChecker::torrentExists($successor) !== false)
-                return ruTrackerChecker::STE_NOT_NEED;
-            ruTrackerChecker::setMessage($hash, '');
+            if ($successor['missing']) {
+                if (!ruTrackerChecker::retainMissingSuccessor($hash, $successor['hash']))
+                    return ruTrackerChecker::STE_ERROR;
+            } else {
+                // Unknown presence is not evidence of removal.
+                if (ruTrackerChecker::torrentExists($successor['hash']) !== false)
+                    return ruTrackerChecker::STE_NOT_NEED;
+                if (!ruTrackerChecker::recordMissingSuccessor($hash, $successor['hash']))
+                    return ruTrackerChecker::STE_ERROR;
+            }
         }
 
         self::rememberTopic($hash, $topicId);
@@ -619,15 +615,20 @@ class RuTrackerCheckImpl
         // used to overwrite a perfectly good verdict, and a stopped torrent is
         // outside the seeding view the hourly cycle walks, so it never recovered.
         if ($verdict === 'cold') return ruTrackerChecker::STE_UNCHANGED;
+        if ($verdict === 'none') {
+            // A parsed reply with no enabled RuTracker row says nothing about
+            // the owned topic. Keep the prior verdict and its explanation.
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' no-enabled-row');
+            return ruTrackerChecker::STE_UNCHANGED;
+        }
         // The sentence goes with the state it explained: init.js appends
         // chk-msg to whatever chk-state is current, so a token an earlier
         // cycle stored ('deleting|2/3', 'fuse|<host>', 'topic-status|5')
         // would render under a verdict it does not describe -- "No need --
         // the topic is missing from the forum list; confirmation cycle 2/3".
-        // Two exits are deliberately NOT in this list. 'cold' returns
-        // STE_UNCHANGED, which puts the PREVIOUS verdict back, so that
-        // verdict's sentence is still the right one. And the inconclusive
-        // exits further down -- a chk-forum that could not be read, an
+        // The no-signal 'cold' and 'none' exits above keep the previous
+        // verdict and its sentence. The inconclusive exits further down --
+        // a chk-forum that could not be read, an
         // unavailable dump -- learn nothing at all: they leave the row
         // untouched, token included, because the deletion counter the token
         // names is untouched too. An ambiguous tor_status is NOT one of them

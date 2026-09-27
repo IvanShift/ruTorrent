@@ -29,6 +29,7 @@ $rutrackerLegacyRecoveryPairs ??= array(
 // default 0.2 and writes one operator-visible log line per process; a negative
 // value clamps to 0. Other numeric bounds are clamped where they are read:
 // a delete-cycle count of 0 would settle a deletion on its first sighting.
+$rutrackerForeignMaxRest ??= 86400; // maximum foreign UPTODATE rest in seconds; hash jitter spreads due checks
 $rutrackerFuseShare	??= 0.2;	// 0.0-1.0: candidate SHARE (a fraction, not a percent) per announce host that trips the fuse
 $rutrackerFuseFloor	??= 3;	// >= 1: minimum absolute candidates before the fuse may trip
 $rutrackerDeleteCycles	??= 3;	// >= 1: dump+tracker confirmations required for STE_DELETED

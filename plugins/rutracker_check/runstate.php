@@ -185,8 +185,9 @@ class RuTrackerCustomProjection
     }
 
     /** @return bool|null true when complete, null only when target absence is confirmed */
-    static public function write($hash, $commands, $context, $localId = null)
+    static public function write($hash, $commands, $context, $localId = null, $expectedCustoms = array())
     {
+        if (!is_array($expectedCustoms) || ($expectedCustoms && $localId === null)) return false;
         $expected = array();
         foreach ($commands as $command) {
             $field = self::parameterValue($command->params[1]);
@@ -194,7 +195,8 @@ class RuTrackerCustomProjection
         }
 
         if ($localId !== null) {
-            $outcome = RuTrackerAtomicOwnership::setFastProjection($hash, $localId, $expected);
+            $outcome = RuTrackerAtomicOwnership::setFastProjection($hash, $localId, $expected,
+                $expectedCustoms);
             if ($outcome === RuTrackerAtomicOwnership::ACTED) return true;
             if ($outcome === RuTrackerAtomicOwnership::SKIPPED) return false;
         } else {
@@ -489,7 +491,7 @@ class RuTrackerAtomicOwnership
     }
 
     /** Write a checker projection only while this exact daemon torrent exists. */
-    static public function setFastProjection($hash, $localId, $fields)
+    static public function setFastProjection($hash, $localId, $fields, $expectedCustoms = array())
     {
         if (!self::isValidHash($hash)
             || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
@@ -502,7 +504,10 @@ class RuTrackerAtomicOwnership
             $parts[] = self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . $key
                 . ',' . self::quoteRtorrentArgument($value));
         }
-        $condition = self::localIdCondition($localId);
+        $condition = $expectedCustoms
+            ? self::buildCondition($expectedCustoms, array('local_id' => $localId))
+            : self::localIdCondition($localId);
+        if ($condition === null) return self::UNKNOWN;
         $body = 'cat=' . implode(',', $parts) . ',' . self::SENTINEL_ACTED;
         return self::executeBranch($hash, $condition, $body,
             'cat=' . self::SENTINEL_SKIPPED, array(

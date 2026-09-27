@@ -25,6 +25,7 @@ class RuTrackerUpdatePass
     // "use the production default".
     private static $checker = null;
     private static $invalidFuseShareReported = false;
+    private static $invalidForeignRestReported = false;
 
     // Use the supplied comment, or read the session copy when the row has
     // none. The cycle multicall carries no comment, so run() reads it once
@@ -162,14 +163,19 @@ class RuTrackerUpdatePass
      */
     static private function installForumCorrection($hash, $record)
     {
-        if (!is_array($record)) return false;
+        if (!is_array($record)) {
+            ruTrackerChecker::logUnrepairable('updatepass: ' . strtoupper((string) $hash)
+                . ' updatepass.json forum_corrections record is not an array;'
+                . ' no chk-forum write or ordinary check; retained for inspection');
+            return false;
+        }
         $hash = strtoupper((string) $hash);
         $canonical = self::forumCorrectionRecord($record);
         if ($canonical === null) {
-            // Nothing is dispatched, nothing is written, and this returns
-            // BEFORE writeForumMapping(), so a retained row costs one log line
-            // per cycle -- not the checker run per cycle that made dropping it
-            // look necessary. Both call sites dispatch nothing on false.
+            // No ordinary handler is dispatched and no mapping is written.
+            // META_PENDING may still pump its owned generation. A retained
+            // malformed row costs one classified log line per cycle, rather
+            // than a checker run against the old mapping.
             //
             // So the bytes stay. Deleting them destroyed the only copy of the
             // evidence while this diagnostic names the document and the hash
@@ -179,9 +185,9 @@ class RuTrackerUpdatePass
             // unreadable row the next time the feed applies anything at all.
             // Same rule as a malformed checker claim, which is likewise
             // RETAINED with a sanitised diagnostic (check.php claimCheck()).
-            ruTrackerChecker::logDebug('updatepass: the stored forum correction for ' . $hash
+            ruTrackerChecker::logUnrepairable('updatepass: the stored forum correction for ' . $hash
                 . ' in updatepass.json is not a canonical topic/forum/at record, so no chk-forum'
-                . ' is written and no check is dispatched; the row is kept for inspection and the'
+                . ' is written and no ordinary handler is dispatched; the row is kept for inspection and the'
                 . ' next feed application prunes it');
             return false;
         }
@@ -214,17 +220,27 @@ class RuTrackerUpdatePass
         return false;
     }
 
-    static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null)
+    static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null,
+        $correctionPresent = null)
     {
+        if ($correctionPresent === null) $correctionPresent = is_array($correction);
+        $needsClaimedCorrection = $row['state'] === ruTrackerChecker::STE_INPROGRESS
+            && $correctionPresent;
+        $prepared = false;
+        $prepare = $needsClaimedCorrection
+            ? function ($hash) use ($correction, &$prepared) {
+                $prepared = self::installForumCorrection($hash, $correction);
+                return $prepared;
+            } : null;
         if ($defaultChecker) {
             $performed = false;
             ruTrackerChecker::run(
-                $row['hash'], $row['state'], $row['time'], $row['label'], $performed);
+                $row['hash'], $row['state'], $row['time'], $row['label'], $performed, $prepare);
         } else {
-            call_user_func($checker, $row['hash'], $row);
-            // An override is the test seam standing in for an actual checker;
-            // production always uses the branch above and its stronger signal.
-            $performed = true;
+            call_user_func($checker, $row['hash'], $row, $prepare);
+            // The test seam must invoke the claimed preparation callback
+            // before it can acknowledge an INPROGRESS correction.
+            $performed = !$needsClaimedCorrection || $prepared;
         }
         if ($performed && is_array($correction))
             self::clearForumCorrection($row['hash'], $correction);
@@ -328,9 +344,80 @@ class RuTrackerUpdatePass
         return '';
     }
 
+    // A recent foreign UPTODATE may rest, but every hash gets a stable
+    // half-to-full-window offset so old fleet-wide fast writes do not all
+    // expire in one scheduler cycle.
+    static private function foreignRestSeconds($hash, $maximum)
+    {
+        if ($maximum <= 1) return $maximum;
+        $floor = intdiv($maximum, 2);
+        $spread = $maximum - $floor;
+        return $floor + (hexdec(substr(hash('sha256', strtoupper((string) $hash)), 0, 8))
+            % ($spread + 1));
+    }
+
+    static private function withinRestWindow($row, $seconds, $now)
+    {
+        return $seconds > 0 && $row['time'] <= $now + ruTrackerChecker::MAX_LOCK_TIME
+            && $now - $row['time'] <= $seconds;
+    }
+
+    // Report each bad stored clock on first sight, when it changes, and once
+    // per day while it remains bad. The shared state survives CLI cycles;
+    // logging before its atomic update keeps a killed process from publishing
+    // a silent suppression marker.
+    static private function reportFutureClocks($clocks, $now)
+    {
+        if (!$clocks) return;
+        $stored = RuTrackerState::load('updatepass');
+        $notices = isset($stored['future_chk_time_notices'])
+            && is_array($stored['future_chk_time_notices'])
+            ? $stored['future_chk_time_notices'] : array();
+        $due = array();
+        foreach ($clocks as $hash => $time) {
+            $old = $notices[$hash] ?? null;
+            $last = is_array($old)
+                ? RuTrackerRpcValue::canonicalNonnegativeInteger($old['logged_at'] ?? null) : null;
+            if (is_array($old) && ($old['time'] ?? null) === $time
+                && $last !== null && $last <= $now && $now - $last < 86400)
+                continue;
+            ruTrackerChecker::logUnrepairable('update: ' . $hash
+                . ' has far-future chk-time=' . $time
+                . '; rest bypassed, stored value retained');
+            $due[$hash] = array('time' => $time, 'logged_at' => $now);
+        }
+        if (!$due) return;
+        $failure = null;
+        if (!RuTrackerState::update('updatepass', function ($state) use ($due, $now) {
+            $notices = isset($state['future_chk_time_notices'])
+                && is_array($state['future_chk_time_notices'])
+                ? $state['future_chk_time_notices'] : array();
+            foreach ($notices as $hash => $notice) {
+                $last = is_array($notice)
+                    ? RuTrackerRpcValue::canonicalNonnegativeInteger($notice['logged_at'] ?? null) : null;
+                if (!preg_match('/^[A-F0-9]{40}$/D', (string) $hash)
+                    || $last === null || $last > $now || $now - $last > 172800)
+                    unset($notices[$hash]);
+            }
+            foreach ($due as $hash => $notice) $notices[$hash] = $notice;
+            $state['future_chk_time_notices'] = $notices;
+            return $state;
+        }, $failure))
+            ruTrackerChecker::logUnrepairable('update: future chk-time notice was not saved: ' . $failure);
+    }
+
     static public function run($rows, $forumChanged = array())
     {
-        global $rutrackerFuseShare, $rutrackerFuseFloor;
+        global $rutrackerFuseShare, $rutrackerFuseFloor, $rutrackerForeignMaxRest;
+        $now = time();
+        $foreignMaxRest = RuTrackerRpcValue::canonicalNonnegativeInteger($rutrackerForeignMaxRest ?? null);
+        if ($foreignMaxRest === null) {
+            if (!self::$invalidForeignRestReported) {
+                ruTrackerChecker::logUnrepairable('config: invalid rutrackerForeignMaxRest; using 86400 seconds');
+                self::$invalidForeignRestReported = true;
+            }
+            $foreignMaxRest = 86400;
+        }
         // A FRACTION of 1, not a percentage. An accidental 20 instead of
         // 0.2 would clamp to 1.0 and make the fuse nearly inert whenever even
         // one torrent on a host is healthy. Restore the safe default and tell
@@ -361,9 +448,32 @@ class RuTrackerUpdatePass
         $verdicts = array();
         $hosts = array();
         $comments = array();
+        $buckets = array();
+        $foreignMetrics = array();
+        $futureClocks = array();
         $hostStats = array();
         foreach ($rows as $index => $row) {
             $comments[$index] = self::commentOf($row);
+            $bucket = ruTrackerChecker::schedulingBucket($comments[$index]);
+            $buckets[$index] = $bucket;
+            if (!isset($foreignMetrics[$bucket]))
+                $foreignMetrics[$bucket] = array('rows' => 0, 'foreign_rows' => 0,
+                    'eligible' => 0, 'postponed' => 0, 'dispatched' => 0, 'capped' => 0,
+                    'cant_reach' => 0, 'error' => 0, 'max_age' => 0,
+                    'time_unset' => 0, 'time_future' => 0);
+            $foreignMetrics[$bucket]['rows']++;
+            if ($row['state'] === ruTrackerChecker::STE_CANT_REACH_TRACKER)
+                $foreignMetrics[$bucket]['cant_reach']++;
+            if ($row['state'] === ruTrackerChecker::STE_ERROR)
+                $foreignMetrics[$bucket]['error']++;
+            if ($row['time'] <= 0) $foreignMetrics[$bucket]['time_unset']++;
+            else if ($row['time'] > $now) {
+                $foreignMetrics[$bucket]['time_future']++;
+                if ($row['time'] > $now + ruTrackerChecker::MAX_LOCK_TIME)
+                    $futureClocks[strtoupper((string) $row['hash'])] = $row['time'];
+            }
+            else $foreignMetrics[$bucket]['max_age'] = max(
+                $foreignMetrics[$bucket]['max_age'], $now - $row['time']);
             if (self::requiresForeignDispatch($row, $comments[$index])) {
                 $verdicts[$index] = 'none';
                 $hosts[$index] = '';
@@ -389,33 +499,39 @@ class RuTrackerUpdatePass
             $hostStats[$host]['total']++;
             if ($verdict === 'candidate') $hostStats[$host]['candidates']++;
         }
+        self::reportFutureClocks($futureClocks, $now);
         $fused = RuTrackerDetector::fuseTrips($hostStats, $share, $floor);
 
-        // Pass 2: act. A torrent already fetching replacement metadata must
-        // reach the checker every cycle no matter what layer 1 says about
-        // its counters -- that is what advances the pending download.
+        // Pass 2: act. META_PENDING and INPROGRESS must reach the checker
+        // before an announce or ignore fast path can overwrite an owned fetch.
+        // The checker claim decides whether another worker is still active.
         $checked = array();
         $uptodate = 0;
         // The fast-path verdicts below are buffered rather than written where
         // they are decided; see flushVerdicts() for why.
         $deferred = array();
         foreach ($rows as $index => $row) {
-            $correction = $corrections[strtoupper((string) $row['hash'])] ?? null;
-            if ($row['state'] === ruTrackerChecker::STE_META_PENDING) {
+            $correctionKey = strtoupper((string) $row['hash']);
+            $hasCorrection = array_key_exists($correctionKey, $corrections);
+            $correction = $hasCorrection ? $corrections[$correctionKey] : null;
+            if (in_array($row['state'], array(ruTrackerChecker::STE_META_PENDING,
+                ruTrackerChecker::STE_INPROGRESS), true)) {
+                // A live or expired INPROGRESS worker owns the per-hash
+                // check. Keep its forum correction durable until the checker
+                // can claim and inspect that generation.
+                $correctionReady = $row['state'] === ruTrackerChecker::STE_META_PENDING
+                    && $hasCorrection && self::installForumCorrection($row['hash'], $correction);
                 self::dispatchChecker($checker, $defaultChecker, $row,
-                    self::installForumCorrection($row['hash'], $correction) ? $correction : null);
+                    $row['state'] === ruTrackerChecker::STE_INPROGRESS
+                        ? $correction : ($correctionReady ? $correction : null), $hasCorrection);
                 $checked[] = $row['hash'];
                 continue;
             }
 
-            // check.php's run() has always honoured $ignoreLabels before
-            // doing anything else; this pass's direct setState() writes
-            // below must match, or an ignored torrent flaps between
-            // STE_IGNORED (a manual check, or a cycle that falls through to
-            // the checker) and a scheduler-derived state (this pass's own
-            // fast-path writes) depending only on which path last ran.
-            //
-            // Ahead of the settled gate below, and for that same reason: a
+            // Ordinary ignored rows take the same fast verdict as manual
+            // checks. META_PENDING above must first finish its owned fetch
+            // generation through the checker, even after gaining a label in
+            // the ignore list. Ahead of the settled gate below: a
             // label added AFTER a torrent settled into DELETED/ABSORBED must
             // take effect on the next cycle like any other, not a week later
             // when the recheck clock happens to run out.
@@ -430,6 +546,16 @@ class RuTrackerUpdatePass
             }
 
 
+            // A durable feed correction must be installed before either the
+            // foreign rest gate or the RuTracker marker/alive shortcuts can
+            // dispatch against the old forum. A failed install retains the
+            // record for the next cycle without consuming the old verdict.
+            $correctionReady = false;
+            if ($hasCorrection) {
+                $correctionReady = self::installForumCorrection($row['hash'], $correction);
+                if (!$correctionReady) continue;
+            }
+
             // This pass carries every registered tracker: update.php admits a
             // row when ANY announce filter matches (isTrackerSupported), and
             // this is the scheduler's only route into ruTrackerChecker::run().
@@ -441,44 +567,40 @@ class RuTrackerUpdatePass
             // announce authority below; hostOf() answered '' for
             // exactly this case in pass 1.
             if ($hosts[$index] === '') {
+                $bucket = $buckets[$index];
+                $foreignMetrics[$bucket]['foreign_rows']++;
+                if ($correctionReady) {
+                    self::dispatchChecker($checker, $defaultChecker, $row, $correction);
+                    $foreignMetrics[$bucket]['eligible']++;
+                    $foreignMetrics[$bucket]['dispatched']++;
+                    $checked[] = $row['hash'];
+                    continue;
+                }
                 // Foreign superseded rows retain their existing rest window.
                 // A terminal verdict, an unfinished check, or an unresolved
                 // successor pointer is stronger than a cached announce.
                 $settled = self::isSettled($row, true);
-                if ($settled && (time() - $row['time']) <= self::SETTLED_RECHECK)
+                if ($settled && self::withinRestWindow($row, self::SETTLED_RECHECK, $now))
                     continue;
+                $foreignMetrics[$bucket]['eligible']++;
 
-                // The same free pass the RuTracker rows below take, for a
-                // handler that has declared its announce authoritative -- see
-                // ruTrackerChecker::registerTracker() -- and that OWNS this
-                // torrent. The comment names the owner, the way run() picks
-                // the handler, and it is passed along because the rows alone
-                // cannot: a torrent cross-seeded on a second tracker carries
-                // that tracker's row beside its own, and a live announce
-                // there certifies nothing about the topic this torrent came
-                // from. The counters are already in this row; reading them
-                // costs nothing, and a handler that would otherwise have to
-                // fetch the tracker to learn the same thing does not have to.
-                //
-                // Only 'alive' short-circuits. 'cold' means the daemon has not
-                // announced yet, which is the normal state for minutes after a
-                // restart and says nothing, and 'candidate' means the announce
-                // is failing -- which is exactly when the handler must look.
-                $unresolvedSuccessor = $row['state'] !== ruTrackerChecker::STE_UPTODATE
-                    && explode('|', (string) $row['msg'], 2)[0] === ruTrackerChecker::CHKMSG_SUPERSEDED;
-                $noFreePass = in_array($row['state'], array(
-                    ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED,
-                    ruTrackerChecker::STE_INPROGRESS), true);
-                $authority = ($noFreePass || $unresolvedSuccessor) ? null
-                    : ruTrackerChecker::announceAuthorityFor($comments[$index]);
-                if (($authority !== null)
-                    && (RuTrackerDetector::announceVerdict($row['trackers'],
-                        $authority['jurisdiction'], $authority['authority']) === 'alive')) {
-                    $deferred[] = self::deferVerdict($row, ruTrackerChecker::STE_UPTODATE, null, true, true);
-                    continue;
+                // Authority only postpones a recent UPTODATE. An alive
+                // announce is a scheduling hint, not a topic verdict, and
+                // cannot overwrite a foreign handler's other state.
+                if ($row['state'] === ruTrackerChecker::STE_UPTODATE) {
+                    $authority = ruTrackerChecker::announceAuthorityFor($comments[$index]);
+                    if ($authority !== null
+                        && RuTrackerDetector::announceVerdict($row['trackers'],
+                            $authority['jurisdiction'], $authority['authority']) === 'alive'
+                        && self::withinRestWindow($row,
+                            self::foreignRestSeconds($row['hash'], $foreignMaxRest), $now)) {
+                        $foreignMetrics[$bucket]['postponed']++;
+                        continue;
+                    }
                 }
 
                 self::dispatchChecker($checker, $defaultChecker, $row);
+                $foreignMetrics[$bucket]['dispatched']++;
                 $checked[] = $row['hash'];
                 continue;
             }
@@ -489,11 +611,19 @@ class RuTrackerUpdatePass
             // it ahead of even the free alive path: that path buffers its write
             // until the end of the cycle, so clearing the obligation there
             // could lose it if the flush or the process then failed.
-            $correctionReady = self::installForumCorrection($row['hash'], $correction);
             if ($correctionReady
-                || isset($forumChangedSet[strtoupper((string) $row['hash'])])) {
+                || isset($forumChangedSet[$correctionKey])) {
                 self::dispatchChecker($checker, $defaultChecker, $row,
                     $correctionReady ? $correction : null);
+                $checked[] = $row['hash'];
+                continue;
+            }
+            // The old successor was confirmed absent, but a crash may have
+            // happened before ERROR landed. Neither cached announce success
+            // nor the ordinary settled rest can consume this durable retry.
+            if (strpos((string) $row['msg'],
+                ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|') === 0) {
+                self::dispatchChecker($checker, $defaultChecker, $row);
                 $checked[] = $row['hash'];
                 continue;
             }
@@ -519,7 +649,7 @@ class RuTrackerUpdatePass
             // wrong, it costs no request to act on, and making a wrongly
             // settled torrent wait a week for the obvious is the one thing
             // the rest period must not do.
-            if (self::isSettled($row) && (time() - $row['time']) <= self::SETTLED_RECHECK)
+            if (self::isSettled($row) && self::withinRestWindow($row, self::SETTLED_RECHECK, $now))
                 continue;
 
             if ($verdict === 'transport') {
@@ -558,6 +688,11 @@ class RuTrackerUpdatePass
             $checked[] = $row['hash'];
         }
         $uptodate += self::flushVerdicts($deferred);
+        // The row/state denominator is the full selected seeding snapshot;
+        // eligible/postponed/dispatched describe only the foreign dispatch branch.
+        foreach ($foreignMetrics as $bucket => $counts)
+            ruTrackerChecker::logDebug('update: metrics '
+                . json_encode(array_merge(array('bucket' => $bucket), $counts)));
         return array('checked' => $checked, 'fused' => $fused, 'uptodate' => $uptodate);
     }
 
@@ -883,8 +1018,8 @@ class RuTrackerUpdatePass
             $rawUntil = (string) $scan->val[$i + 2];
             $until = RuTrackerRpcValue::canonicalNonnegativeInteger($rawUntil);
             if ($until === null || $until <= 0) {
-                ruTrackerChecker::logDebug("reapOrphans: " . $hash
-                    . " has a malformed ownership deadline; leaving it untouched");
+                ruTrackerChecker::logUnrepairable('reapOrphans: ' . $hash
+                    . ' has malformed chk-meta-until; service item cannot be reaped automatically');
                 continue;
             }
 

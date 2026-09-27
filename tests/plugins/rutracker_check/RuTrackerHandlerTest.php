@@ -998,12 +998,8 @@ $suite->test('12: layer2 enabled but the announce budget denies the probe -- no 
 // be about the same torrent.
 $suite->test('an exit that changes the verdict clears the sentence that explained the old one', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     foreach (array(
-        // No RuTracker row at all: not a candidate, nothing to check.
-        'the torrent is no longer a candidate' => array(
-            'rows' => array(array('url' => 'http://other.example/ann', 'enabled' => 1, 'failed' => 0, 'success' => 5)),
-            'state' => ruTrackerChecker::STE_NOT_NEED,
-        ),
-        // rTorrent itself blames the network.
+        // rTorrent itself blames the network. A missing enabled row is the
+        // separate H05 no-signal case and preserves the old verdict/message.
         'the tracker cannot be reached at all' => array(
             'rows' => array(hCandidateRow()),
             'message' => 'Tracker: [Could not connect to server]',
@@ -1425,7 +1421,7 @@ $suite->test('14b: the short-circuit also fires under the in-flight STE_INPROGRE
     strictAssertSame(array(), Snoopy::$requests, 'still no HTTP request');
 });
 
-$suite->test('15: the short-circuit falls through once the successor is gone, clearing the stale token', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+$suite->test('15: the short-circuit falls through once the successor is gone and a live answer clears its marker', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueSuperseded($newHash);
     ruTrackerChecker::queueResult('torrentExists', false);      // the user deleted the successor
@@ -1436,9 +1432,70 @@ $suite->test('15: the short-circuit falls through once the successor is gone, cl
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'the normal flow decides again');
-    strictAssertSame('', hMessage(0), 'the stale superseded token is cleared before falling through');
+    strictAssertSame(array($hash, $newHash),
+        ruTrackerChecker::callsFor('recordMissingSuccessor')[0]['arguments'],
+        'the absent successor was recorded before the live layer decided');
+    strictAssertSame('', hMessage(0), 'the live answer clears the pending retry marker');
     strictAssertSame(array($hash, ''),
         ruTrackerChecker::callsFor('setMessage')[0]['arguments'], 'cleared on the checked torrent');
+});
+
+$suite->test('H07: absent successor records a retry marker before a cold answer', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    hQueueSuperseded($newHash);
+    ruTrackerChecker::queueResult('torrentExists', false);
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hColdRow()));
+
+    strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+        'a cold tracker does not invent a topic verdict');
+    strictAssertSame(array($hash, $newHash),
+        ruTrackerChecker::callsFor('recordMissingSuccessor')[0]['arguments'] ?? null,
+        'the durable marker precedes inconclusive layers');
+    strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+        'the old settled token is not merely cleared into an invisible buffer');
+});
+
+$suite->test('H07: a persisted missing-successor marker is rearmed without another presence probe', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
+    hReset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+        (string) ruTrackerChecker::STE_ERROR,
+        ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . $newHash,
+    ));
+    hQueueTopicKnown($topicId);
+    hQueueLayer1(array(hColdRow()));
+
+    strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
+        RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+        'a later cold answer still decides nothing');
+    strictAssertSame(array($hash, $newHash),
+        ruTrackerChecker::callsFor('retainMissingSuccessor')[0]['arguments'] ?? null,
+        'the marker is revalidated for the current run');
+    strictAssertSame(array(), ruTrackerChecker::callsFor('torrentExists'),
+        'a confirmed-absent successor is not probed again');
+    strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+        'the retry marker stays until a conclusive answer');
+});
+
+$suite->test('H05: owned topic without an enabled RuTracker row retains its verdict and message', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
+    foreach (array('missing' => array(), 'disabled' => array(
+        array('http://bt.t-ru.org/ann?pk=x', 0, 6, 0),
+    )) as $label => $rows) {
+        hReset();
+        hQueueTopicKnown($topicId);
+        hQueueLayer1($rows);
+
+        strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
+            RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
+            $label . ': no enabled canonical row supplies a topic verdict');
+        strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+            $label . ': the existing verdict explanation remains untouched');
+        strictAssertSame(array(), Snoopy::$requests,
+            $label . ': no network request can make up for absent local authority');
+        strictAssertOneLogMatching(ruTrackerChecker::$logs, 'no-enabled-row',
+            $label . ': the no-signal branch is classified');
+    }
 });
 
 $suite->test('16: a superseded token recorded against another state is stale and never short-circuits', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {

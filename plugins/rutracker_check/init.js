@@ -1,4 +1,5 @@
 plugin.loadLang();
+var missingSuccessorToken = "successor-missing";
 
 if(plugin.canChangeMenu())
 {
@@ -103,6 +104,9 @@ plugin.chkMessageText = function(message)
 	if(token == "absorbed")
 		return(/^[0-9]+$/.test(param) ? "https://rutracker.org/forum/viewtopic.php?t=" + param : "");
 	var sentence = theUILang.chkMessages ? theUILang.chkMessages[token] : null;
+	// New token translations are optional; keep its cause visible in every locale.
+	if(token == missingSuccessorToken && typeof sentence != "string")
+		sentence = "The replacement torrent %s is missing; the update check will retry";
 	if(typeof sentence != "string")
 		return("");
 	// Function replacement: a parameter containing "$&" or "$1" must be
@@ -117,6 +121,9 @@ plugin.chkResultText = function(torrent)
 	if(typeof text != "string")
 		text = "";
 	var detail = torrent.chkmsg ? plugin.chkMessageText(torrent.chkmsg) : "";
+	// The durable marker can precede its final ERROR state after a worker crash.
+	if(detail && ("" + torrent.chkmsg).indexOf(missingSuccessorToken + "|")==0)
+		return(detail);
 	if(detail)
 		text += (text ? " — " : "") + detail;
 	return(text);

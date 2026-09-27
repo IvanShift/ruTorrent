@@ -401,8 +401,8 @@ class CheckerTest
 	const SNAPSHOT_KEY_COMMANDS = array('d.get_directory_base', 'd.get_custom1', 'd.get_throttle_name', 'd.get_connection_seed', 'd.get_custom', 'd.get_custom');
 	const STOP_KEY = 'branch';
 	const STOP_KEY_COMMANDS = array('branch');
-	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom1|d.get_local_id';
-	const GETSTATE_KEY_COMMANDS = array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id');
+	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom1|d.get_local_id|d.get_custom';
+	const GETSTATE_KEY_COMMANDS = array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id', 'd.get_custom');
 	const LOCAL_ID = '1111111111111111111111111111111111111111';
 	const PREFLIGHT_KEY = 'd.get_custom|d.get_state|d.is_open|d.get_custom';
 	const PREFLIGHT_KEY_COMMANDS = array('d.get_custom', 'd.get_state', 'd.is_open', 'd.get_custom');
@@ -415,19 +415,32 @@ class CheckerTest
 
 	private static function queueStateRead($ok, $fault, $values = array())
 	{
-		// Existing fixtures describe three custom fields; this helper gives
-		// each live daemon row the stable identity returned in the fourth slot.
+		// Existing fixtures describe three custom fields; complete the live
+		// identity and message slots without changing each independent case.
 		if($values instanceof Closure)
 		{
 			$answer = $values;
 			$values = function($commands) use ($answer) {
 				$row = $answer($commands);
 				if(count($row) === 3) $row[] = self::LOCAL_ID;
+				if(count($row) === 4) $row[] = '';
 				return $row;
 			};
 		}
-		elseif(count($values) === 3) $values[] = self::LOCAL_ID;
+		else {
+			if(count($values) === 3) $values[] = self::LOCAL_ID;
+			if(count($values) === 4) $values[] = '';
+		}
 		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, $ok, $fault, $values);
+	}
+
+	private static function branchGuardsEmptyMeta($condition, $state)
+	{
+		return strpos($condition, 'chk-state,cat=' . $state) !== false
+			&& strpos($condition, 'chk-meta-new,cat="') !== false
+			&& strpos($condition, 'chk-meta-until,cat="') !== false
+			&& strpos($condition, 'd.get_local_id=') !== false
+			&& strpos($condition, self::LOCAL_ID) !== false;
 	}
 
 	private function resetFakes()
@@ -1507,8 +1520,9 @@ class CheckerTest
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
 				'the other transaction keeps its only recovery marker');
 			strictAssertSame(null, rTorrent::$lastSend, 'and nothing is staged on top of it');
-			strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'leaving that transaction to the sweep') !== false,
-				'the deferral is logged with the predecessor it belongs to');
+			strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'same-hash-collision') !== false
+				&& strpos(implode("\n", FileUtil::$log), 'kind=different-predecessor') !== false,
+				'the foreign transaction is classified without touching its recovery keys');
 		}
 		finally
 		{
@@ -1774,20 +1788,14 @@ class CheckerTest
 		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
-		rXMLRPCRequest::queue('d.set_custom', true, false, array());
 
 		strictAssertSame(
-			ruTrackerChecker::STE_NOT_NEED,
+			ruTrackerChecker::STE_ERROR,
 			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
-			'an unmarked pre-existing target hash must mark old torrent superseded without touching either torrent'
+			'an unmarked target hash is a retryable conflict, not proof of supersession'
 		);
-		$customWrites = rXMLRPCRequest::requestsFor('d.set_custom');
-		strictAssertTrue(count($customWrites) >= 1, 'setMessage must issue d.set_custom write');
-		strictAssertSame(
-			array(self::OLD_HASH, 'chk-msg', ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH),
-			$customWrites[0]['commands'][0]->params,
-			'setMessage must record superseded|<newHash> on the predecessor hash'
-		);
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+			'no false superseded token is written to the predecessor');
 		$probes = rXMLRPCRequest::requestsFor('d.hash');
 		strictAssertSame(1, count($probes), 'the preflight must issue exactly one hash probe');
 		strictAssertSame(self::NEW_HASH, $probes[0]['commands'][0]->params, 'the preflight probe must target the new hash, not the old one');
@@ -1799,19 +1807,72 @@ class CheckerTest
 		strictAssertSame(null, rTorrent::$lastSend, 'a preflight conflict must not enqueue a load');
 	}
 
-	public function testPreExistingForeignHashReturnsErrorWhenSetMessageFails()
+	public function testRunningUnmarkedSameHashOccupantIsNeverAdopted()
+	{
+		$this->resetFakes();
+		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH,
+			'info' => array('name' => 'new.mkv'));
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 1, 1, ''));
+		strictAssertSame(ruTrackerChecker::STE_ERROR,
+			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			"even a running occupant is not proved to be this predecessor's successor");
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+			'no terminal successor token is written');
+		$this->assertNoRequestKeyContains('d.erase', 'the running occupant is retained');
+		$this->assertNoRequestKeyContains('d.stop', 'the predecessor is untouched');
+		strictAssertSame(null, rTorrent::$lastSend, 'no replacement is loaded');
+	}
+
+	public function testH11ForeignHashCollisionKeepsTerminalVerdictAndLogsReason()
+	{
+		$past = time() - 700000;
+		$this->withVerdictSession('h11-conflict', ruTrackerChecker::STE_DELETED, $past,
+			function($url, $hash) {
+				return ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $hash);
+			},
+			function() use ($past) {
+				Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH,
+					'info' => array('name' => 'new.mkv'));
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // terminal preflight
+				rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+				rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
+				$performed = null;
+				$this->withoutDebugLog(function() use (&$performed, $past) {
+					strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_DELETED, $past, '', $performed),
+						'a collision is a retryable handler result');
+				});
+				$log = implode("\n", FileUtil::$log);
+				strictAssertSame(false, $performed, 'a collision consumed no handler correction');
+				strictAssertSame(array((string) ruTrackerChecker::STE_DELETED),
+					$this->customWritesFor('chk-state'), 'a truthful terminal verdict remains');
+				strictAssertSame(array(), $this->customWritesFor('chk-time'),
+					'the original terminal clock is not refreshed');
+				strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+					'the old terminal explanation is retained');
+				strictAssertTrue(strpos($log, 'same-hash-collision') !== false
+					&& strpos($log, self::OLD_HASH) !== false
+					&& strpos($log, self::NEW_HASH) !== false,
+					'the classified collision is visible with debug disabled');
+				$this->assertNoRequestKeyContains('d.erase', 'neither torrent is erased');
+			});
+	}
+
+	public function testPreExistingForeignHashRemainsRetryableOnNextAttempt()
 	{
 		$this->resetFakes();
 		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH, 'info' => array('name' => 'new.mkv'));
-		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
-		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
-		rXMLRPCRequest::queue('d.set_custom', false, false, array());
-
-		strictAssertSame(
-			ruTrackerChecker::STE_ERROR,
-			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
-			'when setMessage fails to record superseded token, createTorrent must return STE_ERROR to allow later retry'
-		);
+		for($attempt = 0; $attempt < 2; $attempt++)
+		{
+			rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'unmarked occupancy is still retryable on attempt ' . ($attempt + 1));
+		}
+		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+			'neither attempt persists an unproven successor token');
 	}
 
 	public function testOnlyAPluginNonceAndTrustworthyRecordAuthorizeExistingTargetRecovery()
@@ -3968,12 +4029,156 @@ class CheckerTest
 				'chk-' . $which . ' is stamped now, not left at zero');
 	}
 
+	public function testExpiredPPreHandlerCorrectionRunsUnderClaimBeforeStateWrite()
+	{
+		$this->resetFakes();
+		$seen = false;
+		self::queueStateRead(true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+			(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2), ''));
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'), true, false, array('', '', self::LOCAL_ID));
+		$prepare = function ($hash) use (&$seen) {
+			$seen = true;
+			strictAssertSame(self::OLD_HASH, $hash, 'correction uses the claimed hash');
+			strictAssertSame(array(), $this->customWritesFor('chk-state'),
+				'correction is installed before ordinary checker prewrite');
+			return false; // An unknown correction must stop the handler and keep the durable obligation.
+		};
+		strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+			ruTrackerChecker::STE_INPROGRESS, time() - ruTrackerChecker::MAX_LOCK_TIME - 2,
+			'', $performed, $prepare), 'unknown correction defers ordinary handler');
+		strictAssertSame(true, $seen, 'expired P without marks reaches correction under claim');
+		strictAssertSame(array(), $this->customWritesFor('chk-state'),
+			'no ordinary state prewrite follows an unknown correction');
+	}
+
+	public function testExpiredPForumCorrectionPrecedesTheRealHandler()
+	{
+		$this->resetFakes();
+		$prepared = false;
+		$handlerCalls = 0;
+		ruTrackerChecker::registerTracker('/topic\.correction-order\.invalid/',
+			'/tracker\.correction-order\.invalid/',
+			function ($url) use (&$prepared, &$handlerCalls) {
+				$handlerCalls++;
+				strictAssertSame(true, $prepared,
+					'the handler cannot judge the old forum before its correction');
+				return ruTrackerChecker::STE_UPTODATE;
+			});
+		$dir = sys_get_temp_dir() . '/rut-p-forum-' . bin2hex(random_bytes(4)) . '/';
+		mkdir($dir, 0777, true);
+		file_put_contents($dir . self::OLD_HASH . '.torrent', 'x');
+		rTorrentSettings::get()->session = $dir;
+		Torrent::$fixtures[$dir . self::OLD_HASH . '.torrent'] = array(
+			'comment' => 'http://topic.correction-order.invalid/1',
+			'announce' => 'http://tracker.correction-order.invalid/announce',
+		);
+		try
+		{
+			self::queueStateRead(true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+				(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2), ''));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'), true, false, array('', '', self::LOCAL_ID));
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
+			$prepare = function ($hash) use (&$prepared) {
+				strictAssertSame(self::OLD_HASH, $hash, 'preparation uses the claimed hash');
+				$prepared = true;
+				return true;
+			};
+			$performed = false;
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+				ruTrackerChecker::STE_INPROGRESS, time() - ruTrackerChecker::MAX_LOCK_TIME - 2,
+				'', $performed, $prepare), 'reclaimed P reaches the real handler');
+			strictAssertSame(true, $prepared, 'the correction was prepared');
+			strictAssertSame(1, $handlerCalls, 'one handler judged the corrected topic');
+			strictAssertSame(true, $performed, 'the committed verdict may acknowledge the correction');
+		}
+		finally
+		{
+			strictRemoveTree($dir);
+		}
+	}
+
+	public function testFreshPDoesNotPrepareTheForumCorrection()
+	{
+		$this->resetFakes();
+		$called = 0;
+		self::queueStateRead(true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+			(string) time(), ''));
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'), true, false, array('', '', self::LOCAL_ID));
+		$prepare = function () use (&$called) { $called++; return true; };
+		$performed = false;
+		strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+			ruTrackerChecker::STE_INPROGRESS, time(), '', $performed, $prepare),
+			'a fresh P remains with its worker');
+		strictAssertSame(0, $called, 'no correction is installed while the worker is protected');
+		strictAssertSame(array(), $this->customWritesFor('chk-state'), 'no state write crosses fresh P');
+	}
+
+	public function testHeldClaimNeverPreparesForumCorrection()
+	{
+		$this->resetFakes();
+		$owner = ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, time());
+		strictAssertTrue(is_string($owner), 'fixture holds the per-hash claim');
+		$called = 0;
+		$prepare = function () use (&$called) { $called++; return true; };
+		try
+		{
+			$performed = false;
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+				ruTrackerChecker::STE_INPROGRESS, time() - ruTrackerChecker::MAX_LOCK_TIME - 2,
+				'', $performed, $prepare), 'the claimed worker owns the P row');
+			strictAssertSame(0, $called, 'no correction runs outside the holder claim');
+			strictAssertSame(array(), rXMLRPCRequest::$requests, 'the contender sends no daemon request');
+		}
+		finally
+		{
+			ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, $owner);
+		}
+	}
+
+	public function testExpiredPWithMetadataMarksDefersForumCorrection()
+	{
+		$this->resetFakes();
+		$called = 0;
+		self::queueStateRead(true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+			(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2), ''));
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'), true, false,
+			array(self::NEW_HASH, (string) (time() + 3600), self::LOCAL_ID));
+		$prepare = function () use (&$called) { $called++; return true; };
+		$performed = false;
+		strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+			ruTrackerChecker::STE_INPROGRESS, time() - ruTrackerChecker::MAX_LOCK_TIME - 2,
+			'', $performed, $prepare), 'owned metadata marks keep the P protected');
+		strictAssertSame(0, $called, 'forum correction cannot race the owned metadata generation');
+		strictAssertSame(array((string) ruTrackerChecker::STE_META_PENDING), $this->customWritesFor('chk-state'), 'owned marks are promoted to M without an ordinary verdict');
+	}
+
+	public function testUnreadablePMetadataMarksRefuseForumCorrectionVisibly()
+	{
+		$this->resetFakes();
+		$called = 0;
+		self::queueStateRead(true, false, array((string) ruTrackerChecker::STE_INPROGRESS,
+			(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2), ''));
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'), false, false, array());
+		$prepare = function () use (&$called) { $called++; return true; };
+		$performed = false;
+		strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+			ruTrackerChecker::STE_INPROGRESS, time() - ruTrackerChecker::MAX_LOCK_TIME - 2,
+			'', $performed, $prepare), 'unknown mark read cannot authorize the old forum');
+		strictAssertSame(0, $called, 'forum correction did not run under uncertain ownership');
+		strictAssertSame(array(), $this->customWritesFor('chk-state'), 'the stored P remains retryable');
+		strictAssertOneLogMatching(FileUtil::$log, 'chk-meta-new/chk-meta-until generation read unconfirmed',
+			'the refusal is operator visible');
+	}
+
 	public function testTheInProgressLockIsHonouredWhileFreshAndExpiresWhenStale()
 	{
 		$this->resetFakes();
 		RuTrackerState::save('meta-claims', array());
 		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), ''));
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+			true, false, array('', '', self::LOCAL_ID));
 
 		// Fresh: another worker is inside this check, and nothing is written.
 		strictAssertSame(true,
@@ -3997,6 +4202,8 @@ class CheckerTest
 			self::queueStateRead( true, false,
 				array((string) ruTrackerChecker::STE_INPROGRESS,
 					(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 1), ''));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array('', '', self::LOCAL_ID));
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 
@@ -4083,12 +4290,307 @@ class CheckerTest
 		strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'run must hand the meta-pending state to pump exactly once');
 		strictAssertSame(self::OLD_HASH, RuTrackerMetaFetch::$calls[0]['hash'], 'pump must be called with the torrent hash');
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'pump must reach the XMLRPC layer, not a no-op stub');
-		// Two writes: the claim that stops a concurrent cycle from pumping the
-		// same fetch, and then the verdict pump() reached.
+		// The durable META_PENDING state survives a worker crash during pump().
+		// The per-hash claim already excludes concurrent workers.
 		$stateWrites = $this->customWritesFor('chk-state');
-		strictAssertSame(array((string) ruTrackerChecker::STE_INPROGRESS,
-			(string) ruTrackerChecker::STE_META_PENDING), $stateWrites,
-			'pump() sees the claim first, then its result is persisted');
+		strictAssertSame(array((string) ruTrackerChecker::STE_META_PENDING), $stateWrites,
+			'a failed or interrupted pump keeps the durable generation retryable');
+	}
+
+	public function testIgnoredMetaPendingRetriesBeforeApplyingIgnore()
+	{
+		$this->resetFakes();
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			// First pump could not confirm clearMarks(). A killed worker must
+			// leave META_PENDING, so the next invocation still reaches pump().
+			RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), 'tv-sonarr'));
+			rXMLRPCRequest::queue('d.get_custom', true, false, array(self::NEW_HASH));
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'unconfirmed clear keeps the check retryable');
+			strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'ignored pending generation was pumped');
+			strictAssertSame(array((string) ruTrackerChecker::STE_META_PENDING),
+				$this->customWritesFor('chk-state'), 'no ignored or in-progress gap can strand the generation');
+			strictAssertSame(array(), RuTrackerState::load('meta-claims'), 'claim released for retry');
+
+			rXMLRPCRequest::reset();
+			RuTrackerMetaFetch::$result = ruTrackerChecker::STE_ERROR;
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), 'tv-sonarr'));
+			rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'after the exact generation retires, ignore applies');
+			strictAssertSame(2, count(RuTrackerMetaFetch::$calls), 'retry pumps before ignore');
+			strictAssertSame(array((string) ruTrackerChecker::STE_IGNORED),
+				$this->customWritesFor('chk-state'), 'only the final ignored verdict is written');
+			strictAssertSame(array(''), $this->customWritesFor('chk-msg'), 'old message is cleared');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
+	public function testLateMetadataMarkCallbackCannotLoseFinalVerdictRace()
+	{
+		$this->resetFakes();
+		RuTrackerMetaFetch::$result = ruTrackerChecker::STE_ERROR;
+		self::queueStateRead(true, false,
+			array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+		$daemon = array('state' => ruTrackerChecker::STE_META_PENDING,
+			'new' => '', 'until' => '');
+		rXMLRPCRequest::queue('branch', true, false, function($commands) use (&$daemon) {
+			// The earlier mark callback lands after pump saw empty marks, just
+			// before the final verdict reaches rTorrent's one-command branch.
+			$daemon['new'] = self::NEW_HASH;
+			$daemon['until'] = '9999999999';
+			$daemon['state'] = ruTrackerChecker::STE_META_PENDING;
+			$condition = $commands[0]->params[1];
+			$guarded = self::branchGuardsEmptyMeta($condition,
+				ruTrackerChecker::STE_META_PENDING);
+			if($guarded) return array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+			$daemon['state'] = ruTrackerChecker::STE_ERROR;
+			return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		});
+		strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+			'a late callback makes the final verdict defer to the durable M generation');
+		strictAssertSame(ruTrackerChecker::STE_META_PENDING, $daemon['state'],
+			'the final verdict cannot overwrite marks published by the callback');
+		strictAssertSame(self::NEW_HASH, $daemon['new'], 'the callback retains its service hash');
+		strictAssertSame('9999999999', $daemon['until'], 'the callback retains its deadline');
+	}
+
+	public function testExpiredInProgressEmptyMarksCannotOverwriteLateMetadataClaim()
+	{
+		foreach(array('before prewrite', 'before final') as $cut)
+		{
+			$this->resetFakes();
+			$daemon = array('state' => ruTrackerChecker::STE_INPROGRESS,
+				'new' => '', 'until' => '');
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_INPROGRESS,
+					(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 1), ''));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array('', '', self::LOCAL_ID));
+			if($cut === 'before final')
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+			rXMLRPCRequest::queue('branch', true, false, function($commands) use (&$daemon, $cut) {
+				$daemon['state'] = ruTrackerChecker::STE_META_PENDING;
+				$daemon['new'] = self::NEW_HASH;
+				$daemon['until'] = '9999999999';
+				$condition = $commands[0]->params[1];
+				$guarded = self::branchGuardsEmptyMeta($condition,
+					ruTrackerChecker::STE_INPROGRESS);
+				if($guarded) return array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				$daemon['state'] = $cut === 'before prewrite'
+					? ruTrackerChecker::STE_INPROGRESS : ruTrackerChecker::STE_ERROR;
+				return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			});
+			strictAssertSame($cut === 'before prewrite' ? false : true,
+				ruTrackerChecker::run(self::OLD_HASH),
+				$cut . ': the recovered P run must not overwrite the late callback');
+			strictAssertSame(ruTrackerChecker::STE_META_PENDING, $daemon['state'],
+				$cut . ': the M state survives the guarded write');
+			strictAssertSame(self::NEW_HASH, $daemon['new'], $cut . ': owned hash survives');
+			strictAssertSame('9999999999', $daemon['until'], $cut . ': owned deadline survives');
+		}
+	}
+
+	public function testIgnoredInProgressEmptyMarksCannotOverwriteLateMetadataClaim()
+	{
+		$this->resetFakes();
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			$daemonState = ruTrackerChecker::STE_INPROGRESS;
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), 'tv-sonarr'));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array('', '', self::LOCAL_ID));
+			rXMLRPCRequest::queue('branch', true, false, function($commands) use (&$daemonState) {
+				$daemonState = ruTrackerChecker::STE_META_PENDING;
+				$condition = $commands[0]->params[1];
+				if(self::branchGuardsEmptyMeta($condition,
+					ruTrackerChecker::STE_INPROGRESS))
+					return array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				$daemonState = ruTrackerChecker::STE_IGNORED;
+				return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			});
+			strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+				'ignore defers when an earlier worker publishes M during its final branch');
+			strictAssertSame(ruTrackerChecker::STE_META_PENDING, $daemonState,
+				'ignore cannot strand the late metadata claim');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
+	public function testFreshInProgressWithOwnedMarksDoesNotPumpEvenWithoutClaim()
+	{
+		$this->resetFakes();
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), 'tv-sonarr'));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array(self::NEW_HASH, '9999999999', self::LOCAL_ID));
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'a fresh P is still owned by its worker even if its claim record has gone');
+			strictAssertSame(0, count(RuTrackerMetaFetch::$calls),
+				'a second worker never pumps fresh owned marks');
+			strictAssertSame(array(), $this->customWritesFor('chk-state'),
+				'neither M nor IGNORED overwrites the fresh owner');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
+	public function testLegacyInProgressWithOwnedMarksPumpsBeforeIgnore()
+	{
+		$this->resetFakes();
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_INPROGRESS,
+					(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 1), 'tv-sonarr'));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array(self::NEW_HASH, '9999999999', self::LOCAL_ID));
+			rXMLRPCRequest::queue('d.get_custom', true, false, array(self::NEW_HASH));
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'legacy P with owned marks stays retryable under its claim');
+			strictAssertSame(1, count(RuTrackerMetaFetch::$calls),
+				'owned marks are pumped before the ignored verdict can erase the predecessor state');
+			strictAssertSame(array((string) ruTrackerChecker::STE_META_PENDING),
+				$this->customWritesFor('chk-state'), 'only M is persisted for this generation');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
+	public function testOrdinaryInProgressWithoutMarksStillHonoursIgnore()
+	{
+		$this->resetFakes();
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), 'tv-sonarr'));
+			rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+				true, false, array('', '', self::LOCAL_ID));
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'ordinary P with no generation still applies T02 ignore');
+			strictAssertSame(0, count(RuTrackerMetaFetch::$calls), 'no metadata pump without marks');
+			strictAssertSame(array((string) ruTrackerChecker::STE_IGNORED),
+				$this->customWritesFor('chk-state'), 'the ignored verdict is confirmed');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
+	public function testUnprovedInProgressMarksCannotBecomeIgnored()
+	{
+		foreach(array(
+			'unreadable' => array(false, false, array()),
+			'foreign-generation' => array(true, false,
+				array(self::NEW_HASH, '9999999999', str_repeat('2', 40))),
+		) as $case => $reply)
+		{
+			$this->resetFakes();
+			$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+			$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+			try
+			{
+				self::queueStateRead(true, false,
+					array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), 'tv-sonarr'));
+				rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+					$reply[0], $reply[1], $reply[2]);
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					$case . ': unknown or foreign marks defer the ignored verdict');
+				strictAssertSame(0, count(RuTrackerMetaFetch::$calls),
+					$case . ': no unsafe pump');
+				strictAssertSame(array(), $this->customWritesFor('chk-state'),
+					$case . ': no state change on unproved generation');
+				strictAssertOneLogMatching(FileUtil::$log,
+					'chk-meta-new/chk-meta-until generation read unconfirmed',
+					$case . ': refusal is visible with debugging disabled');
+			}
+			finally
+			{
+				if($saved === null) unset($GLOBALS['ignoreLabels']);
+				else $GLOBALS['ignoreLabels'] = $saved;
+			}
+		}
+	}
+
+	public function testRetiredMetaMarksRetryWhenFinalVerdictWriteIsUnconfirmed()
+	{
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
+		try
+		{
+			foreach(array('ordinary' => '', 'ignored' => 'tv-sonarr') as $case => $label)
+			{
+				$this->resetFakes();
+				RuTrackerMetaFetch::$result = ruTrackerChecker::STE_ERROR; // exact marks retired
+				self::queueStateRead(true, false,
+					array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), $label));
+				rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					$case . ': unconfirmed final write is a failed check');
+				strictAssertSame(array(), $this->customWritesFor('chk-state'),
+					$case . ': no final state was confirmed');
+				strictAssertOneLogMatching(FileUtil::$log, 'metafetch-final-verdict-unconfirmed',
+					$case . ': the refused final write is visible without debug');
+				strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+					$case . ': claim released for recovery');
+
+				// After worker death the daemon may still hold M with both marks
+				// empty. MetaFetchTest proves that exact projection returns ERROR.
+				rXMLRPCRequest::reset();
+				self::queueStateRead(true, false,
+					array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), $label));
+				rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+					$case . ': retry leaves the retired generation behind');
+				strictAssertSame(array((string) ($label === ''
+					? ruTrackerChecker::STE_ERROR : ruTrackerChecker::STE_IGNORED)),
+					$this->customWritesFor('chk-state'),
+					$case . ': final verdict is confirmed on retry');
+			}
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
 	}
 
 	public function testMetaPendingCompletedReplacementSkipsStateWrite()
@@ -4103,11 +4605,8 @@ class CheckerTest
 		$result = ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_META_PENDING, time(), '');
 
 		strictAssertSame(true, $result, 'a completed replacement is a successful check');
-		strictAssertSame(
-			1,
-			count($this->customWritesFor('chk-state')),
-			'only the claim is written: after a successful replacement the old hash is gone, so no verdict follows it'
-		);
+		strictAssertSame(array(), $this->customWritesFor('chk-state'),
+			'after a successful replacement the old hash is gone, so no verdict follows it');
 	}
 
 	public function testSetMessageWritesChkMsgCustom()
@@ -4249,7 +4748,7 @@ class CheckerTest
 			'waitForLoad uses the configured interval, not a hard-coded delay');
 	}
 
-	private function withVerdictSession($slug, $previous, $checkedAt, $handler, $callback)
+	private function withVerdictSession($slug, $previous, $checkedAt, $handler, $callback, $storedMessage = '')
 	{
 		$this->resetFakes();
 		$dir = sys_get_temp_dir() . '/rut-' . $slug . '-' . bin2hex(random_bytes(5)) . '/';
@@ -4269,7 +4768,7 @@ class CheckerTest
 				'/tracker\.' . preg_quote($host, '/') . '/', $handler);
 			$initialState = $previous === 0 && $checkedAt === '' ? '' : (string) $previous;
 			self::queueStateRead( true, false,
-				array($initialState, (string) $checkedAt, ''));
+				array($initialState, (string) $checkedAt, '', self::LOCAL_ID, $storedMessage));
 			return $callback();
 		}
 		finally
@@ -4458,6 +4957,460 @@ class CheckerTest
 						$label . ': no-answer cannot stamp successful-check time');
 			});
 		}
+	}
+
+	public function testH05NoEnabledRowRetainsTerminalStateClockAndMessageInRealRun()
+	{
+		// The handler class is real; skip announce.php's application bootstrap,
+		// which this request-free layer-1 branch never reaches.
+		if(!class_exists('RuTrackerCheckImpl', false))
+		{
+			require_once(testFindRepoRoot() . '/plugins/rutracker_check/detector.php');
+			eval(loadClassDefinition(testFindRepoRoot()
+				. '/plugins/rutracker_check/trackers/rutracker.php', 'RuTrackerCheckImpl'));
+		}
+		$past = time() - 700000;
+		$oldMessage = ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|4';
+		foreach (array('missing' => array(0, ''),
+			'disabled' => array(1, 'http://bt.t-ru.org/ann?pk=x', 0, 6, 0, '')) as $label => $reply)
+		{
+			$this->withVerdictSession('h05-' . $label, ruTrackerChecker::STE_DELETED, $past,
+				function($url, $hash, $torrent) {
+					return RuTrackerCheckImpl::download_torrent(
+						'https://rutracker.org/forum/viewtopic.php?t=42', $hash, $torrent);
+				},
+				function() use ($reply, $past, $oldMessage, $label) {
+					rXMLRPCRequest::queue('d.get_custom', true, false, array($oldMessage));
+					rXMLRPCRequest::queue('d.get_custom', true, false, array('42'));
+					rXMLRPCRequest::queue(
+						'd.get_tracker_size|t.multicall|d.get_message', true, false, $reply);
+					$performed = null;
+					strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_DELETED, $past, '', $performed),
+						$label . ': no signal completes without a new verdict');
+					strictAssertSame(false, $performed, $label . ': no correction was consumed');
+					strictAssertSame(array((string) ruTrackerChecker::STE_DELETED),
+						$this->customWritesFor('chk-state'), $label . ': terminal verdict stays');
+					strictAssertSame(array(), $this->customWritesFor('chk-time'),
+						$label . ': terminal clock stays');
+					strictAssertSame(array(), $this->customWritesFor('chk-msg'),
+						$label . ': terminal explanation stays');
+				});
+		}
+	}
+
+	public function testH07MissingRetryCannotOverwriteLateMetadataClaim()
+	{
+		$past = time() - ruTrackerChecker::MAX_LOCK_TIME - 1;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$daemon = array('state' => ruTrackerChecker::STE_INPROGRESS,
+			'new' => '', 'until' => '');
+		$this->withVerdictSession('h07-late-meta', ruTrackerChecker::STE_INPROGRESS,
+			$past, function() {
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+			}, function() use (&$daemon, $marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id',
+					true, false, array('', '', self::LOCAL_ID));
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // guarded preflight
+				rXMLRPCRequest::queue('branch', true, false,
+					function($commands) use (&$daemon) {
+						$daemon['state'] = ruTrackerChecker::STE_META_PENDING;
+						$daemon['new'] = self::NEW_HASH;
+						$daemon['until'] = '9999999999';
+						if(self::branchGuardsEmptyMeta($commands[0]->params[1],
+							ruTrackerChecker::STE_INPROGRESS))
+							return array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+						$daemon['state'] = ruTrackerChecker::STE_ERROR;
+						return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+					});
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'the retry stays pending after a late metadata claim');
+				strictAssertSame(ruTrackerChecker::STE_META_PENDING, $daemon['state'],
+					'the H07 ERROR projection must obey the empty-P metadata guard');
+				strictAssertSame(self::NEW_HASH, $daemon['new'],
+					'the late callback keeps its metadata service hash');
+			}, $marker);
+	}
+
+	public function testH07PersistedMarkerKeepsOldClockWhenHandlerClearsMessageOnTransportFailure()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-persisted-transport', ruTrackerChecker::STE_ERROR,
+			$past, function() {
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+			}, function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'the transport failure remains retryable');
+				$timeWrites = $this->customWritesFor('chk-time');
+				strictAssertSame((string) $past, end($timeWrites),
+					'the persisted marker preserves the original retry clock');
+				$messageWrites = $this->customWritesFor('chk-msg');
+				strictAssertSame($marker, end($messageWrites),
+					'the transient handler clear cannot erase the persisted marker');
+			}, $marker);
+	}
+
+	public function testH07FailedPreflightReleasesPersistedMarkerMessageBuffer()
+	{
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-preflight-cleanup', ruTrackerChecker::STE_ERROR,
+			time() - 700000, function() {
+				throw new RuntimeException('failed preflight must stop before handler');
+			}, function() use ($marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				rXMLRPCRequest::queue('branch', false, false, array());
+				rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id',
+					false, false, array());
+				rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'unconfirmed preflight defers the check');
+				strictAssertSame(null, strictGetPrivateStatic('ruTrackerChecker', 'terminalMessageHash'),
+					'the failed preflight releases its process-local message buffer');
+				rXMLRPCRequest::queue('d.set_custom', true, false, array());
+				strictAssertSame(true, ruTrackerChecker::setMessage(self::OLD_HASH, 'later'),
+					'a later independent message write reaches the daemon');
+				strictAssertSame(array('later'), $this->customWritesFor('chk-msg'),
+					'the failed preflight cannot absorb a later write');
+			}, $marker);
+	}
+
+	public function testH07EarlyReadFailureReleasesPersistedMarkerMessageBuffer()
+	{
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-buffer-cleanup', ruTrackerChecker::STE_NOT_NEED,
+			time() - 700000, function() {
+				throw new RuntimeException('failed read must stop before handler');
+			}, function() use ($marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				rXMLRPCRequest::queue('d.get_custom', false, false, array());
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'unreadable settled message defers the check');
+				strictAssertSame(null, strictGetPrivateStatic('ruTrackerChecker', 'terminalMessageHash'),
+					'the failed run releases its process-local message buffer');
+				rXMLRPCRequest::queue('d.set_custom', true, false, array());
+				strictAssertSame(true, ruTrackerChecker::setMessage(self::OLD_HASH, 'later'),
+					'a later independent message write must use the daemon');
+				strictAssertSame(array('later'), $this->customWritesFor('chk-msg'),
+					'the old run cannot silently absorb a later write');
+			}, $marker);
+	}
+
+	public function testH07MalformedPersistedMarkerDefersWithoutMutationAndLogsReason()
+	{
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|invalid';
+		$this->withVerdictSession('h07-bad-marker', ruTrackerChecker::STE_ERROR,
+			time() - 700000, function() {
+				throw new RuntimeException('malformed marker must stop before handler');
+			}, function() {
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'malformed persisted marker defers the check');
+				strictAssertSame(array(), $this->customWritesFor('chk-state'),
+					'no lock or verdict can erase the malformed evidence');
+				strictAssertOneLogMatching(FileUtil::$log, 'malformed chk-msg successor-missing marker',
+					'the exact stored key and refusal are visible');
+			}, $marker);
+	}
+
+	public function testH07UnconfirmedPersistedMarkerReadbackDefersWithoutMutation()
+	{
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-bad-readback', ruTrackerChecker::STE_ERROR,
+			time() - 700000, function() {
+				throw new RuntimeException('unconfirmed marker must stop before handler');
+			}, function() {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', false, false, array());
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'unconfirmed persisted marker defers the check');
+				strictAssertSame(array(), $this->customWritesFor('chk-state'),
+					'no lock or verdict is written before marker confirmation');
+				strictAssertOneLogMatching(FileUtil::$log, 'chk-msg marker readback unconfirmed',
+					'the failed revalidation is visible');
+			}, $marker);
+	}
+
+	public function testH07ConclusiveAnswerClearsPersistedMarkerFromPriorError()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-persisted-conclusive', ruTrackerChecker::STE_ERROR,
+			$past, function() {
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				return ruTrackerChecker::STE_UPTODATE;
+			}, function() use ($marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+					'the new answer settles the pending check');
+				$messages = $this->customWritesFor('chk-msg');
+				strictAssertSame('', end($messages),
+					'a conclusive answer retires the durable missing-successor marker');
+				$states = $this->customWritesFor('chk-state');
+				strictAssertSame((string) ruTrackerChecker::STE_UPTODATE, end($states),
+					'the marker clear and new verdict belong to one projection');
+			}, $marker);
+	}
+
+	public function testH07UnreadableHandlerRecordCannotErasePersistedMarker()
+	{
+		if(!class_exists('RuTrackerCheckImpl', false))
+		{
+			require_once(testFindRepoRoot() . '/plugins/rutracker_check/detector.php');
+			eval(loadClassDefinition(testFindRepoRoot()
+				. '/plugins/rutracker_check/trackers/rutracker.php', 'RuTrackerCheckImpl'));
+		}
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-unreadable-record', ruTrackerChecker::STE_ERROR,
+			$past, function($url, $hash, $torrent) {
+				return RuTrackerCheckImpl::download_torrent(
+					'https://rutracker.org/forum/viewtopic.php?t=42', $hash, $torrent);
+			}, function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				rXMLRPCRequest::queue('d.get_custom|d.get_custom', false, false, array());
+				rXMLRPCRequest::queue('d.get_custom', true, false, array('42'));
+				rXMLRPCRequest::queue('d.get_tracker_size|t.multicall|d.get_message',
+					false, false, array());
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'unreadable handler record remains retryable');
+				strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
+					'the handler record read really failed');
+				$times = $this->customWritesFor('chk-time');
+				strictAssertSame((string) $past, end($times),
+					'the original retry clock survives the transient read failure');
+				$messages = $this->customWritesFor('chk-msg');
+				strictAssertSame($marker, end($messages),
+					'the marker remains after an inconclusive later layer');
+			}, $marker);
+	}
+
+	public function testH07PersistedMarkerKeepsOldClockWhenSourceIsUnreadable()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-persisted-source', ruTrackerChecker::STE_ERROR,
+			$past, function() {
+				throw new RuntimeException('source is unreadable; handler must not run');
+			}, function() use ($past, $marker) {
+				rTorrent::$sourceQueue[] = false;
+				rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH),
+					'the missing source leaves the retry pending');
+				$timeWrites = $this->customWritesFor('chk-time');
+				strictAssertSame((string) $past, end($timeWrites),
+					'the unreadable source cannot reset the original retry clock');
+				$messageWrites = $this->customWritesFor('chk-msg');
+				strictAssertSame($marker, end($messageWrites),
+					'the durable marker remains after the source read failure');
+			}, $marker);
+	}
+
+	public function testH07MissingSuccessorPersistsRetryableVerdictAndOriginalClock()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-missing', ruTrackerChecker::STE_NOT_NEED, $past,
+			function() {
+				strictAssertSame(true, ruTrackerChecker::recordMissingSuccessor(
+					self::OLD_HASH, self::NEW_HASH), 'the absent successor is recorded');
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+			},
+			function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom', true, false,
+					array(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH));
+			rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				$performed = null;
+				$this->withoutDebugLog(function() use ($past, &$performed) {
+					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+						ruTrackerChecker::STE_NOT_NEED, $past, '', $performed),
+						'the failed recheck remains retryable');
+				});
+				strictAssertOneLogMatching(FileUtil::$log,
+					'recordMissingSuccessor: ' . self::OLD_HASH . ' successor-missing=' . self::NEW_HASH,
+					'the successful durable marker has a classified routine log');
+				strictAssertSame(false, $performed, 'no correction was consumed');
+				strictAssertSame(array((string) ruTrackerChecker::STE_NOT_NEED,
+					(string) ruTrackerChecker::STE_ERROR), $this->customWritesFor('chk-state'),
+					'the settled state becomes a retryable error after marker proof');
+				strictAssertSame(array((string) $past), $this->customWritesFor('chk-time'),
+					'the original recheck clock is retained');
+				strictAssertSame(array($marker, $marker), $this->customWritesFor('chk-msg'),
+					'the marker survives the later inconclusive message clear and is republished with ERROR');
+			});
+	}
+
+	public function testH07PersistedMarkerSurvivesAnotherInconclusiveCycle()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		foreach(array(ruTrackerChecker::STE_NOT_NEED, ruTrackerChecker::STE_ERROR) as $previous)
+		{
+			$this->withVerdictSession('h07-resume-' . $previous, $previous, $past,
+				function() {
+					strictAssertSame(true, ruTrackerChecker::retainMissingSuccessor(
+						self::OLD_HASH, self::NEW_HASH), 'the existing marker is confirmed');
+					ruTrackerChecker::setMessage(self::OLD_HASH, '');
+					return ruTrackerChecker::STE_UNCHANGED;
+				},
+				function() use ($past, $marker, $previous) {
+					if($previous === ruTrackerChecker::STE_NOT_NEED)
+						rXMLRPCRequest::queue('d.get_custom', true, false, array($marker));
+					rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+						array($marker, self::LOCAL_ID));
+					$performed = null;
+					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+						$previous, $past, '', $performed), 'the retry remains pending');
+					strictAssertSame(false, $performed, 'the cold answer consumed no work');
+					$states = $this->customWritesFor('chk-state');
+					$times = $this->customWritesFor('chk-time');
+					strictAssertSame((string) ruTrackerChecker::STE_ERROR,
+						end($states), 'ERROR stays retryable');
+					strictAssertSame((string) $past, end($times),
+						'the original clock survives a later inconclusive check');
+					strictAssertSame(array($marker), $this->customWritesFor('chk-msg'),
+						'the marker is republished with the error rather than cleared');
+				});
+		}
+	}
+
+	public function testH07CrashAfterMarkerLeavesSchedulableEvidence()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-crash', ruTrackerChecker::STE_NOT_NEED, $past,
+			function() {
+				strictAssertSame(true, ruTrackerChecker::recordMissingSuccessor(
+					self::OLD_HASH, self::NEW_HASH), 'the marker landed before the crash');
+				throw new RuntimeException('simulated interruption');
+			},
+			function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom', true, false,
+					array(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH));
+			rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+				try {
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_NOT_NEED,
+						$past, '');
+					throw new RuntimeException('handler did not interrupt');
+				} catch(RuntimeException $error) {
+					strictAssertSame('simulated interruption', $error->getMessage(),
+						'the interruption reached the caller');
+				}
+				strictAssertSame(array((string) ruTrackerChecker::STE_NOT_NEED),
+					$this->customWritesFor('chk-state'), 'the old state can remain until recovery');
+				strictAssertSame(array(), $this->customWritesFor('chk-time'),
+					'the original clock was not changed before the crash');
+				strictAssertSame(array($marker), $this->customWritesFor('chk-msg'),
+					'the distinct marker survives the interrupted worker');
+				strictAssertSame(null, strictGetPrivateStatic('ruTrackerChecker', 'missingSuccessorMarker'),
+					'process-local state is cleared after the interruption');
+			});
+	}
+
+	public function testH07UnconfirmedErrorProjectionKeepsMarkerAndLogsRefusal()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-partial', ruTrackerChecker::STE_NOT_NEED, $past,
+			function() {
+				strictAssertSame(true, ruTrackerChecker::recordMissingSuccessor(
+						self::OLD_HASH, self::NEW_HASH), 'the marker landed');
+				return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+			},
+			function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom', true, false,
+					array(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH));
+			rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+			rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+			rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+			rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+			$performed = null;
+			strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_NOT_NEED, $past, '', $performed),
+					'the unconfirmed final projection remains retryable');
+			strictAssertSame(array($marker), $this->customWritesFor('chk-msg'),
+					'the already confirmed marker survives a refused final write');
+			strictAssertSame(array(), $this->customWritesFor('chk-time'),
+					'the original clock is intact');
+			strictAssertOneLogMatching(FileUtil::$log,
+				'chk-state/chk-time/chk-msg successor-missing verdict unconfirmed',
+					'the exact failed projection is visible without debug logging');
+			});
+	}
+
+	public function testH07UncertainMarkerWriteIsVisibleAndStopsTheTransition()
+	{
+		$past = time() - 700000;
+		$accepted = null;
+		$this->withVerdictSession('h07-marker-unknown', ruTrackerChecker::STE_NOT_NEED, $past,
+			function() use (&$accepted) {
+				$accepted = ruTrackerChecker::recordMissingSuccessor(
+					self::OLD_HASH, self::NEW_HASH);
+				return ruTrackerChecker::STE_ERROR;
+			},
+			function() use ($past, &$accepted) {
+				rXMLRPCRequest::queue('d.get_custom', true, false,
+					array(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH));
+			rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // preflight
+			rXMLRPCRequest::queue('branch', true, false, array('unreadable-branch')); // marker
+			rXMLRPCRequest::queue('d.get_custom|d.get_local_id', false, false, array());
+			rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+			ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_NOT_NEED, $past, '');
+			strictAssertSame(false, $accepted, 'the unknown marker write is not accepted');
+			strictAssertSame(array((string) ruTrackerChecker::STE_NOT_NEED),
+					$this->customWritesFor('chk-state'), 'no unsupported final verdict is emitted');
+			strictAssertSame(array(), $this->customWritesFor('chk-time'),
+					'the prior clock is not advanced');
+			strictAssertOneLogMatching(FileUtil::$log, 'chk-msg marker write unconfirmed',
+					'the unknown marker write is visible without debug logging');
+			});
+	}
+
+	public function testH07ConclusiveAnswerReplacesMarkerAndVerdictTogether()
+	{
+		$past = time() - 700000;
+		$marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . self::NEW_HASH;
+		$this->withVerdictSession('h07-conclusive', ruTrackerChecker::STE_NOT_NEED, $past,
+			function() {
+				strictAssertSame(true, ruTrackerChecker::recordMissingSuccessor(
+					self::OLD_HASH, self::NEW_HASH), 'the absent successor was recorded');
+				ruTrackerChecker::setMessage(self::OLD_HASH, '');
+				return ruTrackerChecker::STE_UPTODATE;
+			},
+			function() use ($past, $marker) {
+				rXMLRPCRequest::queue('d.get_custom', true, false,
+					array(ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . self::NEW_HASH));
+			rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
+					array($marker, self::LOCAL_ID));
+			$performed = null;
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+				ruTrackerChecker::STE_NOT_NEED, $past, '', $performed),
+					'the new answer is conclusive');
+			strictAssertSame(true, $performed, 'the final answer consumes checker work');
+			strictAssertSame(array((string) ruTrackerChecker::STE_NOT_NEED,
+					(string) ruTrackerChecker::STE_UPTODATE), $this->customWritesFor('chk-state'),
+					'the authoritative result replaces the old state');
+			strictAssertSame(array($marker, ''), $this->customWritesFor('chk-msg'),
+					'the marker is cleared in the final verdict projection');
+			});
 	}
 
 	public function testTransientFailurePreservesTerminalVerdict()
@@ -5570,6 +6523,8 @@ class CheckerTest
 				strictAssertTrue(isset($entry['lease_observed']), 'the exact owner was observed');
 				$entry['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
 				RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+				rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+					true, false, array('', '', self::LOCAL_ID));
 				$performed = null;
 				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
 					ruTrackerChecker::STE_INPROGRESS, $future, '', $performed),

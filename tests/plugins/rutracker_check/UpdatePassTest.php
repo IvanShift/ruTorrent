@@ -752,14 +752,49 @@ upTest($suite, 'an ignored-label row is written STE_IGNORED, never UPTODATE/CANT
 });
 
 upTest($suite, 'META_PENDING torrents are always dispatched to the checker', function () {
-    $values = upRow(str_repeat('A', 40), 0, 'bt.t-ru.org', '9');
-    $rows = RuTrackerUpdatePass::parseMulticall($values);
+    $saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+    $GLOBALS['ignoreLabels'] = array('tv-sonarr');
+    try {
+        $values = upRow(str_repeat('A', 40), 0, 'bt.t-ru.org', '9', '', 'tv-sonarr');
+        $rows = RuTrackerUpdatePass::parseMulticall($values);
+        $checked = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
+        rXMLRPCRequest::reset();
+        $result = RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array(str_repeat('A', 40)), $checked, 'meta-pending dispatched despite alive counters');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'no quiet state write races the checker for a meta-pending row');
+    } finally {
+        if ($saved === null) unset($GLOBALS['ignoreLabels']);
+        else $GLOBALS['ignoreLabels'] = $saved;
+    }
+});
+
+upTest($suite, 'an expired INPROGRESS with a live announce reaches the checker before a fast verdict', function () {
+    // The scheduler snapshot has no chk-meta-new/until columns. A P row could
+    // therefore be a killed begin() worker with owned fetch marks, even when
+    // its cached announce says alive; only the checker can read those marks.
+    $hash = str_repeat('A', 40);
+    $correction = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $correction)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_INPROGRESS, '', '', '', '',
+        (string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2)));
     $checked = array();
-    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($candidate) use (&$checked) {
+        $checked[] = $candidate;
+    });
     rXMLRPCRequest::reset();
+
     $result = RuTrackerUpdatePass::run($rows);
-    strictAssertSame(array(str_repeat('A', 40)), $checked, 'meta-pending dispatched despite alive counters');
-    strictAssertSame(array(), rXMLRPCRequest::$requests, 'no quiet state write races the checker for a meta-pending row');
+    strictAssertSame(array($hash), $checked,
+        'legacy P plus unscanned owned marks must reach the checker despite a live announce');
+    strictAssertSame(0, $result['uptodate'], 'no UPTODATE fast verdict is counted for P');
+    strictAssertSame(array(), upGuardedWrites(), 'no fast state write masks the recoverable generation');
+    strictAssertSame(array(), rXMLRPCRequest::$requests,
+        'no forum mapping is installed while an in-progress worker may own the hash');
+    strictAssertSame($correction,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the correction remains durable for the claimed handler check');
 });
 
 upTest($suite, 'the production default checker calls ruTrackerChecker::run with the parsed row', function () {
@@ -1079,9 +1114,9 @@ upTest($suite, 'a metadata pump keeps a durable forum correction for a later han
     RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id'),
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id', 'd.get_custom'),
         true, false, array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), '',
-            str_repeat('1', 40)));
+            str_repeat('1', 40), ''));
     rXMLRPCRequest::queue('branch', true, false,
         array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     rXMLRPCRequest::queue('branch', true, false,
@@ -1488,6 +1523,28 @@ upTest($suite, 'reapOrphans never touches an ordinary torrent with no chk-meta-o
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.erase'), 'no erase either');
 });
 
+upTest($suite, 'malformed service deadline remains untouched and visible on every orphan sweep', function () {
+    $stub = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false, array($stub, $old, 'broken'));
+    rXMLRPCRequest::queue('d.multicall', true, false, array($stub, $old, 'broken'));
+
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::reapOrphans(1000);
+        RuTrackerUpdatePass::reapOrphans(100000);
+    });
+
+    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.multicall')),
+        'the malformed service item is revisited on the next cycle');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'an untrusted deadline never authorizes a destructive branch');
+    strictAssertSame(2, substr_count($log, 'malformed chk-meta-until'),
+        'every permanent refusal reaches the default application log');
+    strictAssertTrue(strpos($log, $stub) !== false,
+        'the operator can identify the service item that cannot be reaped');
+});
+
 upTest($suite, 'reapOrphans reaps a stub whose old torrent no longer exists, once past the deadline', function () {
     $stub = str_repeat('A', 40);
     $old = str_repeat('B', 40);
@@ -1641,25 +1698,335 @@ function upWithRegistry($callback)
     finally { strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', $saved); }
 }
 
-upTest($suite, 'a declared-authoritative announce answers for a foreign handler without a request', function () {
+upTest($suite, 'a recent authoritative foreign row rests while cold and failing rows dispatch', function () {
     upLoadKinozalRegistration();
     $alive   = str_repeat('A', 40);
     $cold    = str_repeat('B', 40);
     $failing = str_repeat('C', 40);
-    $rows = array(
-        upKinozalRow($alive, 0, 5),
-        upKinozalRow($cold, 0, 0),
-        upKinozalRow($failing, 6, 0),
-    );
+    $recent = upKinozalRow($alive, 0, 5);
+    $recent['time'] = time();
+    $rows = array($recent, upKinozalRow($cold, 0, 0), upKinozalRow($failing, 6, 0));
 
     $result = upRunPass($rows, $checked);
 
     strictAssertSame(array($cold, $failing), $checked,
-        'only the rows the announce cannot answer for reach the handler');
+        'only the recent authoritative row rests');
     strictAssertSame(array($cold, $failing), $result['checked'],
-        'and only those are reported as checked');
-    strictAssertSame(1, $result['uptodate'],
-        'the live announce wrote UPTODATE on the free path');
+        'the cold and failing rows reach the handler');
+    strictAssertSame(0, $result['uptodate'], 'no foreign verdict is manufactured');
+    upAssertNoCustomWrites('the scheduler does not write any foreign state');
+});
+
+upTest($suite, 'authoritative foreign UPTODATE rests without writes then reaches its handler', function () {
+    upLoadKinozalRegistration();
+    $hash = str_repeat('A', 40);
+    $row = upKinozalRow($hash, 0, 5);
+    $row['state'] = ruTrackerChecker::STE_UPTODATE;
+    $row['time'] = time() - 10;
+
+    $first = upRunPass(array($row), $checked);
+    strictAssertSame(array(), $checked, 'a recent authoritative answer postpones the check');
+    strictAssertSame(0, $first['uptodate'], 'a postponed row is not counted as a new verdict');
+    upAssertNoCustomWrites('postponement does not refresh chk-time or any other custom');
+
+    $second = upRunPass(array($row), $checked);
+    strictAssertSame(array(), $second['checked'], 'another cycle does not rewrite the same recent row');
+    upAssertNoCustomWrites('rest remains read-only across cycles');
+
+    $row['time'] = time() - 86401;
+    $due = upRunPass(array($row), $checked);
+    strictAssertSame(array($hash), $due['checked'], 'a due row reaches the real handler');
+    strictAssertSame(0, $due['uptodate'], 'a live announce is not a final topic verdict');
+    upAssertNoCustomWrites('the scheduler never writes a foreign verdict');
+});
+
+upTest($suite, 'zero foreign rest dispatches even on the same second', function () {
+    upLoadKinozalRegistration();
+    $saved = $GLOBALS['rutrackerForeignMaxRest'] ?? null;
+    $GLOBALS['rutrackerForeignMaxRest'] = 0;
+    try {
+        $hash = str_repeat('F', 40);
+        $row = upKinozalRow($hash, 0, 5);
+        $row['state'] = ruTrackerChecker::STE_UPTODATE;
+        $row['time'] = time();
+        $result = upRunPass(array($row), $checked);
+        strictAssertSame(array($hash), $result['checked'], 'zero disables the foreign rest window');
+        upAssertNoCustomWrites('the handler owns the result even when rest is disabled');
+    } finally {
+        if ($saved === null) unset($GLOBALS['rutrackerForeignMaxRest']);
+        else $GLOBALS['rutrackerForeignMaxRest'] = $saved;
+    }
+});
+
+upTest($suite, 'authoritative foreign alive signal cannot overwrite a non-UPTODATE verdict', function () {
+    upLoadKinozalRegistration();
+    $hash = str_repeat('B', 40);
+    $row = upKinozalRow($hash, 0, 5);
+    $row['state'] = ruTrackerChecker::STE_ERROR;
+    $row['time'] = time();
+    $row['msg'] = '';
+
+    $result = upRunPass(array($row), $checked);
+    strictAssertSame(array($hash), $result['checked'], 'the handler judges the topic');
+    strictAssertSame(0, $result['uptodate'], 'no invented UPTODATE');
+    upAssertNoCustomWrites('a foreign ERROR row receives no scheduler state write');
+});
+
+upTest($suite, 'scheduler bucket follows first registered comment filter', function () {
+    upLoadKinozalRegistration();
+    upWithRegistry(function ($registry) {
+        $comment = 'https://nnmclub.to/forum/viewtopic.php?t=12&source=kinozal.tv';
+        $expected = null;
+        foreach ($registry as $filter => $handler) {
+            if (preg_match($filter, $comment)) { $expected = $filter; break; }
+        }
+        strictAssertTrue($expected !== null, 'the production registry has a matching filter');
+        strictAssertSame($expected, ruTrackerChecker::schedulingBucket($comment),
+            'telemetry uses the first asked handler, not an inferred owner');
+        strictAssertSame('fallback', ruTrackerChecker::schedulingBucket('https://unrelated.invalid/topic'),
+            'an unknown comment has a stable fallback bucket');
+    });
+});
+
+upTest($suite, 'foreign bucket counts reconcile postponed and dispatched rows', function () {
+    upLoadKinozalRegistration();
+    $fresh = upKinozalRow(str_repeat('A', 40), 0, 5);
+    $fresh['state'] = ruTrackerChecker::STE_UPTODATE;
+    $fresh['time'] = time() - 10;
+    $due = upKinozalRow(str_repeat('B', 40), 0, 5);
+    $due['state'] = ruTrackerChecker::STE_UPTODATE;
+    $due['time'] = time() - 86401;
+    $settled = upKinozalRow(str_repeat('C', 40), 0, 5);
+    $settled['state'] = ruTrackerChecker::STE_NOT_NEED;
+    $settled['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('F', 40);
+    $settled['time'] = time() - 10;
+    $error = upKinozalRow(str_repeat('D', 40), 0, 5);
+    $error['state'] = ruTrackerChecker::STE_ERROR;
+    $error['time'] = 0;
+    $log = upCapturedLog(function () use ($fresh, $due, $settled, $error, &$result, &$checked) {
+        $result = upRunPass(array($fresh, $due, $settled, $error), $checked);
+    });
+    strictAssertSame(array($due['hash'], $error['hash']), $checked,
+        'only due rows reach the handler');
+    strictAssertTrue(preg_match('/update: metrics (\{[^\r\n]+\})/', $log, $matches) === 1,
+        'the cycle has a classified aggregate metrics line');
+    $metric = json_decode($matches[1], true);
+    strictAssertTrue(is_array($metric), 'the metrics line is machine-readable');
+    strictAssertSame(4, $metric['rows'], 'all selected rows are in the denominator');
+    strictAssertSame(4, $metric['foreign_rows'], 'all four enter the foreign branch');
+    strictAssertSame(3, $metric['eligible'], 'only the active settled rest is excluded');
+    strictAssertSame(1, $metric['postponed'], 'a fresh authoritative UPTODATE rests');
+    strictAssertSame(2, $metric['dispatched'], 'both due rows were dispatched');
+    strictAssertSame(0, $metric['capped'], 'R1 has no dispatch quota');
+    strictAssertSame($metric['eligible'] - $metric['postponed'],
+        $metric['dispatched'] + $metric['capped'], 'no eligible row disappears');
+    strictAssertSame(1, $metric['error'], 'snapshot ERROR count');
+    strictAssertSame(1, $metric['time_unset'], 'unset time is not an enormous age');
+    strictAssertTrue($metric['max_age'] >= 86401 && $metric['max_age'] <= 86403,
+        'oldest valid snapshot age is preserved');
+    upAssertNoCustomWrites('metrics and postponement do not write custom fields');
+});
+
+upTest($suite, 'every selected handler bucket logs even without foreign eligibility', function () {
+    upLoadKinozalRegistration();
+    $meta = upKinozalRow(str_repeat('E', 40), 0, 5);
+    $meta['state'] = ruTrackerChecker::STE_META_PENDING;
+    $own = upParsedRow(str_repeat('F', 40), 'http://bt.t-ru.org/ann|1|0|0#',
+        'https://rutracker.org/forum/viewtopic.php?t=12');
+    $log = upCapturedLog(function () use ($meta, $own, &$result, &$checked) {
+        $result = upRunPass(array($meta, $own), $checked);
+    });
+    strictAssertSame(array($meta['hash']), $checked, 'META_PENDING keeps its separate pump');
+    preg_match_all('/update: metrics (\{[^\r\n]+\})/', $log, $matches);
+    $metrics = array();
+    foreach ($matches[1] as $encoded) {
+        $row = json_decode($encoded, true);
+        $metrics[$row['bucket']] = $row;
+    }
+    foreach (array($meta, $own) as $row) {
+        $bucket = ruTrackerChecker::schedulingBucket($row['comment']);
+        strictAssertTrue(isset($metrics[$bucket]), 'each selected handler has a log line');
+        strictAssertSame(1, $metrics[$bucket]['rows'], 'one selected seeding row');
+        strictAssertSame(0, $metrics[$bucket]['eligible'], 'neither entered the foreign branch');
+        strictAssertSame(0, $metrics[$bucket]['dispatched'], 'the META_PENDING pump is separate');
+    }
+});
+
+upTest($suite, 'NNMClub has no authority to postpone a fresh UPTODATE row', function () {
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+    $hash = str_repeat('1', 40);
+    $row = upParsedRow($hash, 'http://bt.searchtor.to/announce|1|0|5#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12345',
+        array('state' => ruTrackerChecker::STE_UPTODATE, 'time' => time()));
+    $log = upCapturedLog(function () use ($row, &$result, &$checked) {
+        $result = upRunPass(array($row), $checked);
+    });
+    strictAssertSame(array($hash), $checked, 'the registered NNMClub handler is dispatched');
+    preg_match('/update: metrics (\{[^\r\n]+\})/', $log, $matches);
+    $metric = json_decode($matches[1] ?? '', true);
+    strictAssertSame(0, $metric['postponed'], 'no undeclared announce authority');
+    strictAssertSame(1, $metric['dispatched'], 'the bucket records dispatch');
+});
+
+upTest($suite, 'foreign rest jitter is stable per hash and spreads due times', function () {
+    $values = array();
+    for ($i = 0; $i < 16; $i++) {
+        $hash = sprintf('%040X', $i);
+        $seconds = strictInvoke('RuTrackerUpdatePass', 'foreignRestSeconds', array($hash, 86400));
+        strictAssertTrue($seconds >= 43200 && $seconds <= 86400, 'inside half-to-full window');
+        strictAssertSame($seconds, strictInvoke('RuTrackerUpdatePass', 'foreignRestSeconds',
+            array(strtolower($hash), 86400)), 'case-stable hash jitter');
+        $values[$seconds] = true;
+    }
+    strictAssertTrue(count($values) > 1, 'a fleet does not expire in one scheduler cycle');
+});
+
+upTest($suite, 'far-future settled chk-time is visible and due', function () {
+    upLoadKinozalRegistration();
+    $foreign = str_repeat('C', 40);
+    $own = str_repeat('D', 40);
+    $foreignRow = upKinozalRow($foreign, 0, 5);
+    $foreignRow['state'] = ruTrackerChecker::STE_NOT_NEED;
+    $foreignRow['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('E', 40);
+    $foreignRow['time'] = time() + ruTrackerChecker::MAX_LOCK_TIME + 3600;
+    $ownRow = RuTrackerUpdatePass::parseMulticall(upRow($own, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_DELETED, '', '', '', '', (string) $foreignRow['time']))[0];
+
+    $log = upCapturedLog(function () use ($foreignRow, $ownRow, &$result, &$checked) {
+        $result = upRunPass(array($foreignRow, $ownRow), $checked);
+    });
+    strictAssertSame(array($foreign, $own), $result['checked'],
+        'far-future clocks cannot indefinitely postpone either settled class');
+    strictAssertTrue(strpos($log, 'chk-time=' . $foreignRow['time']) !== false
+        && strpos($log, $foreign) !== false && strpos($log, $own) !== false,
+        'the exact bad clock and affected hashes are visible');
+    upAssertNoCustomWrites('the scheduler leaves the bad persisted clock untouched');
+
+    $foreignRow['time'] = time() + 30;
+    $ownRow['time'] = $foreignRow['time'];
+    $near = upRunPass(array($foreignRow, $ownRow), $checked);
+    strictAssertSame(array(), $near['checked'], 'small clock skew stays in the rest window');
+});
+
+upTest($suite, 'far-future clock warning survives cycles without flooding the log', function () {
+    upLoadKinozalRegistration();
+    strictWithStateDir('chk-future-clock', function () {
+        $row = upKinozalRow(str_repeat('9', 40), 0, 5);
+        $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+        $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('8', 40);
+        $row['time'] = time() + ruTrackerChecker::MAX_LOCK_TIME + 3600;
+        $log = testCapturedAppLog(function () use ($row) {
+            upRunPass(array($row), $checked);
+            upRunPass(array($row), $checked);
+        });
+        strictAssertSame(1, substr_count($log, 'has far-future chk-time=' . $row['time']),
+            'the exact bad clock is visible and its repeat is suppressed');
+        $notice = RuTrackerState::load('updatepass')['future_chk_time_notices'][$row['hash']] ?? null;
+        strictAssertTrue(is_array($notice), 'the suppression evidence is durable state');
+        strictAssertSame($row['time'], $notice['time'], 'the exact bad time is recorded');
+
+        $row['time']++;
+        $changed = testCapturedAppLog(function () use ($row) {
+            upRunPass(array($row), $checked);
+        });
+        strictAssertSame(1, substr_count($changed, 'has far-future chk-time'),
+            'a changed bad value is reported again');
+    });
+});
+
+upTest($suite, 'future-clock daily reminder preserves forum corrections', function () {
+    upLoadKinozalRegistration();
+    strictWithStateDir('chk-future-reminder', function () {
+        $hash = str_repeat('3', 40);
+        $row = upKinozalRow($hash, 0, 5);
+        $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+        $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('2', 40);
+        $row['time'] = time() + ruTrackerChecker::MAX_LOCK_TIME + 3600;
+        $corrections = array(str_repeat('1', 40) => array('topic' => 12, 'forum' => 34, 'at' => time()));
+        RuTrackerState::save('updatepass', array(
+            'forum_corrections' => $corrections,
+            'future_chk_time_notices' => array($hash => array(
+                'time' => $row['time'], 'logged_at' => time() - 86401)),
+        ));
+        $log = testCapturedAppLog(function () use ($row) {
+            upRunPass(array($row), $checked);
+        });
+        strictAssertSame(1, substr_count($log, 'has far-future chk-time=' . $row['time']),
+            'a stale exact notice emits a daily reminder');
+        $stored = RuTrackerState::load('updatepass');
+        strictAssertSame($corrections, $stored['forum_corrections'],
+            'the notice update merges with existing forum work');
+        strictAssertSame($row['time'], $stored['future_chk_time_notices'][$hash]['time'],
+            'the exact bad clock remains identified');
+        strictAssertTrue($stored['future_chk_time_notices'][$hash]['logged_at'] >= time() - 2,
+            'the reminder clock was refreshed');
+    });
+});
+
+upTest($suite, 'far-future warning latch survives a fresh CLI process', function () {
+    strictWithStateDir('chk-future-child', function ($dir) {
+        $root = testFindRepoRoot();
+        $hash = str_repeat('7', 40);
+        $future = time() + ruTrackerChecker::MAX_LOCK_TIME + 3600;
+        $log = $dir . '/app.log';
+        $script = $dir . '/probe.php';
+        $code = '<?php' . "\n"
+            . 'require_once(' . var_export($root . '/tests/plugins/rutracker_check/TestLib.php', true) . ');' . "\n"
+            . 'eval(loadClassDefinition(' . var_export($root . '/plugins/rutracker_check/check.php', true)
+            . ', "ruTrackerChecker"));' . "\n"
+            . 'require_once(' . var_export($root . '/plugins/rutracker_check/updatepass.php', true) . ');' . "\n"
+            . 'strictSetPrivateStatic("RuTrackerState", "dir", ' . var_export($dir, true) . ');' . "\n"
+            . '$GLOBALS["log_file"] = ' . var_export($log, true) . ';' . "\n"
+            . 'strictInvoke("RuTrackerUpdatePass", "reportFutureClocks", array(array('
+            . var_export($hash, true) . ' => ' . var_export($future, true) . '), time()));' . "\n";
+        file_put_contents($script, $code);
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $output = array();
+            exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg($root . '/tests/php-test.ini')
+                . ' -f ' . escapeshellarg($script) . ' 2>&1', $output, $status);
+            strictAssertSame(0, $status, 'fresh process ' . $attempt . ': ' . implode(' ', $output));
+        }
+        strictAssertSame(1, substr_count((string) file_get_contents($log), 'has far-future chk-time'),
+            'the second CLI process reads the same durable warning latch');
+    });
+});
+
+upTest($suite, 'corrupt future-clock notice store cannot silence or postpone a row', function () {
+    upLoadKinozalRegistration();
+    strictWithStateDir('chk-future-corrupt', function ($dir) {
+        file_put_contents($dir . '/updatepass.json', '{broken');
+        $hash = str_repeat('6', 40);
+        $row = upKinozalRow($hash, 0, 5);
+        $row['state'] = ruTrackerChecker::STE_NOT_NEED;
+        $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('5', 40);
+        $row['time'] = time() + ruTrackerChecker::MAX_LOCK_TIME + 3600;
+        $log = testCapturedAppLog(function () use ($row, &$result, &$checked) {
+            $result = upRunPass(array($row), $checked);
+        });
+        strictAssertSame(array($hash), $checked, 'corrupt diagnostic state cannot grant rest');
+        strictAssertTrue(strpos($log, 'has far-future chk-time') !== false
+            && strpos($log, 'notice was not saved: unreadable') !== false,
+            'both bad clock and unsaved latch are visible with debug disabled');
+        strictAssertSame('{broken', file_get_contents($dir . '/updatepass.json'),
+            'a corrupt state document is not overwritten by one notice');
+    });
+});
+
+upTest($suite, 'fallback bucket logs but cycle metrics remain debug gated', function () {
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+    $row = upParsedRow(str_repeat('4', 40), 'http://bt.searchtor.to/announce|1|0|5#', '',
+        array('state' => ruTrackerChecker::STE_UPTODATE, 'time' => time()));
+    $debugLog = upCapturedLog(function () use ($row, &$checked) {
+        upRunPass(array($row), $checked);
+    });
+    strictAssertSame(array($row['hash']), $checked, 'anonymous foreign row is dispatched');
+    strictAssertTrue(strpos($debugLog, '"bucket":"fallback"') !== false,
+        'unknown comments still have a visible planning bucket');
+    $quietLog = testCapturedAppLog(function () use ($row) {
+        upRunPass(array($row), $checked);
+    });
+    strictAssertTrue(strpos($quietLog, 'update: metrics') === false,
+        'routine aggregate metrics obey the shipped debug switch');
 });
 
 upTest($suite, 'a look-alike announce host cannot certify a foreign topic alive', function () {
@@ -1712,16 +2079,17 @@ upTest($suite, 'a RuTracker topic whose own rows are disabled is not answered by
     strictAssertSame(0, $result['uptodate'], 'and gets no free verdict from Kinozal');
 });
 
-upTest($suite, 'a live announce on a kinozal.guru host takes the free pass too', function () {
+upTest($suite, 'a live kinozal.guru announce can postpone a recent UPTODATE', function () {
     upLoadKinozalRegistration();
     $alive = str_repeat('A', 40);
-    $rows = array(upKinozalRow($alive, 0, 5, 'tracker.kinozal.guru'));
-
-    $result = upRunPass($rows, $checked);
+    $row = upKinozalRow($alive, 0, 5, 'tracker.kinozal.guru');
+    $row['time'] = time();
+    $result = upRunPass(array($row), $checked);
 
     strictAssertSame(array(), $checked,
-        'the hosts the authority list certifies are the hosts the registry filter admits: one list, two spellings');
-    strictAssertSame(1, $result['uptodate'], 'and the live announce answered for free');
+        'the authority list certifies a bounded rest for this host');
+    strictAssertSame(0, $result['uptodate'], 'the announce does not write a final verdict');
+    upAssertNoCustomWrites('rest is read-only');
 });
 
 // This fixture mirrors production order. Both the earlier undeclared owner
@@ -1807,7 +2175,7 @@ upTest($suite, 'an announce authority declared without a topic test is not honou
 // Through the production comment reader, not a synthetic $row['comment']: the
 // cycle multicall carries no comment, so what the gate actually trusts in
 // production is the session copy's comment as sessionComment() reads it.
-upTest($suite, 'the free pass reads the owner from the session copy when the row carries no comment', function () {
+upTest($suite, 'foreign rest reads the owner from the session copy when the row carries no comment', function () {
     upLoadKinozalRegistration();
     // The production Torrent class, the way sessionComment() will read the
     // copy: it includes a helper by a path relative to php/, so it is loaded
@@ -1826,12 +2194,14 @@ upTest($suite, 'the free pass reads the owner from the session copy when the row
         rTorrentSettings::get()->session = $tmp . '/';
         file_put_contents($tmp . '/' . $alive . '.torrent', $raw);
         $row = upKinozalRow($alive, 0, 5);
+        $row['time'] = time();
         unset($row['comment']);
 
         $result = upRunPass(array($row), $checked);
 
-        strictAssertSame(array(), $checked, 'the session copy names Kinozal as the owner, so the live announce answers');
-        strictAssertSame(1, $result['uptodate'], 'and the free verdict is written');
+        strictAssertSame(array(), $checked, 'the session copy names Kinozal, so recent UPTODATE rests');
+        strictAssertSame(0, $result['uptodate'], 'the scheduler writes no verdict');
+        upAssertNoCustomWrites('the bounded rest keeps the existing checker result');
     });
 });
 
@@ -3882,6 +4252,27 @@ upTest($suite, 'a settled verdict is healed at once when the tracker answers aga
 // one, but it is stored as the general-purpose STE_NOT_NEED -- so without a
 // rule of its own it bought a paced probe and a dump fetch every hour for
 // ever. A BARE NOT_NEED, which many transient paths write, keeps its checks.
+upTest($suite, 'H07 missing successor marker dispatches before alive and rest shortcuts', function () {
+    $marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . str_repeat('F', 40);
+    $rows = RuTrackerUpdatePass::parseMulticall(array_merge(
+        upRow(str_repeat('A', 40), 0, 'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time()),
+        upRow(str_repeat('B', 40), 6, 'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time()),
+        upRow(str_repeat('C', 40), 0, 'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time())
+    ));
+    // C has no local announce evidence, so neither alive nor a candidate
+    // may be needed to keep the retry obligation schedulable.
+    $rows[2]['trackers'][0]['success'] = 0;
+    $rows[2]['trackers'][0]['failed'] = 0;
+    $result = upRunPass($rows, $checked);
+    strictAssertSame(array(str_repeat('A', 40), str_repeat('B', 40), str_repeat('C', 40)),
+        $checked, 'all marker rows reach the claimed handler despite cached announce shortcuts');
+    strictAssertSame($checked, $result['checked'], 'the pass reports every dispatch');
+    upAssertNoCustomWrites('the scheduler does not replace the retry marker with a fast verdict');
+});
+
 upTest($suite, 'a closed topic rests, a bare NOT_NEED does not', function () {
     foreach (array(
         'closed by its moderators' => array(ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|5', false),
@@ -5173,15 +5564,259 @@ upTest($suite, 'supported tracker filters follow first registration order withou
         'the scoped registration cannot leak announce filters');
 });
 
-upTest($suite, 'a true uptodate verdict may clear a stale superseded pointer on the next free pass', function () {
+upTest($suite, 'a due foreign UPTODATE with stale superseded pointer reaches its handler', function () {
     upLoadKinozalRegistration();
     $row = upKinozalRow(str_repeat('A', 40), 0, 5);
     $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
+    $row['time'] = time() - 86401;
     $result = upRunPass(array($row), $checked, array(4));
-    strictAssertSame(array(), $checked, 'a real successful verdict retires the failure-only protection');
-    strictAssertSame(1, $result['uptodate'], 'the healthy row is not permanently excluded');
-    strictAssertSame(1, count(upGuardedWrites()),
-        'the stale successor message is cleared along with the free verdict');
+    strictAssertSame(array($row['hash']), $checked, 'the handler decides whether the pointer is stale');
+    strictAssertSame(0, $result['uptodate'], 'an announce does not settle the topic');
+    upAssertNoCustomWrites('the scheduler leaves the pointer to the handler');
+});
+
+upTest($suite, 'expired INPROGRESS with a durable correction cannot dispatch against the stale forum', function () {
+    $hash = str_repeat('D', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_INPROGRESS, '', '', '', '',
+        (string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2)));
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($candidate, $row, $prepare) use (&$checked) {
+        strictAssertTrue(is_callable($prepare), 'the scheduler passes a preparation hook to the checker');
+        strictAssertSame(true, $prepare($candidate), 'the old mapping is repaired before the handler');
+        $checked[] = $candidate;
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+            'the durable forum correction must be installed before a reclaimed P reaches its ordinary handler');
+    });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array($hash), $checked, 'the expired P is checked');
+});
+
+upTest($suite, 'unreadable P forum mapping keeps its obligation and skips ordinary handler', function () {
+    $hash = str_repeat('D', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_INPROGRESS, '', '', '', '',
+        (string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2)));
+    $handlerCalls = 0;
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+        function ($candidate, $row, $prepare) use (&$handlerCalls) {
+            strictAssertTrue(is_callable($prepare), 'the checker receives the pending correction');
+            if ($prepare($candidate)) $handlerCalls++;
+        });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    $log = testCapturedAppLog(function () use ($rows) { RuTrackerUpdatePass::run($rows); });
+    strictAssertSame(0, $handlerCalls, 'uncertain mapping is never used by a handler');
+    strictAssertSame($record, RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the exact durable obligation remains for retry');
+    strictAssertTrue(strpos($log, 'chk-forum read unavailable') !== false,
+        'the failed RPC is visible in the application log');
+});
+
+upTest($suite, 'H07 marker cannot bypass an uninstalled durable forum correction', function () {
+    $hash = str_repeat('D', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    $marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . str_repeat('F', 40);
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time()));
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($candidate) use (&$checked) {
+        $checked[] = $candidate;
+    });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array(), $checked,
+        'a failed authoritative forum correction cannot authorize the H07 handler on the stale forum');
+    strictAssertSame($record,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the durable forum obligation remains for the next cycle');
+});
+
+
+upTest($suite, 'disabled RuTracker announce cannot bypass a durable forum correction', function () {
+    $hash = str_repeat('E', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_ERROR, '', '', '', '', (string) time()));
+    $rows[0]['trackers'][0]['enabled'] = false;
+    $rows[0]['comment'] = 'https://rutracker.org/forum/viewtopic.php?t=200';
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($candidate) use (&$checked) {
+        $checked[] = $candidate;
+    });
+    rXMLRPCRequest::reset();
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array(), $checked,
+        'a RuTracker-owned row with no enabled announce must not dispatch before its correction lands');
+    strictAssertSame($record,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the forum obligation remains for retry');
+});
+
+
+upTest($suite, 'disabled RuTracker settled row cannot postpone a durable forum correction', function () {
+    $hash = str_repeat('A', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_NOT_NEED, '', '', '',
+        ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('F', 40), (string) time()));
+    $rows[0]['trackers'][0]['enabled'] = false;
+    $rows[0]['comment'] = 'https://rutracker.org/forum/viewtopic.php?t=200';
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($candidate) use (&$checked) {
+        $checked[] = $candidate;
+    });
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array($hash), $checked,
+        'durable correction is applied before the settled rest even without an enabled RuTracker announce');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+        'the authoritative forum mapping is written before the handler');
+});
+
+upTest($suite, 'failed H07 forum correction retries and dispatches only after mapping install', function () {
+    $hash = str_repeat('D', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    $marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . str_repeat('F', 40);
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time()));
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($candidate) use (&$checked) {
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+            'the authoritative forum mapping is installed before the handler');
+        $checked[] = $candidate;
+    });
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), false, false, array());
+    $first = RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array(), $first['checked'], 'the failed install defers this cycle');
+    strictAssertSame(array(), $checked, 'the stale forum is never checked');
+    strictAssertSame($record,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the durable correction survives the failed attempt');
+    upAssertNoCustomWrites('the failed attempt preserves state, clock, and H07 marker');
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    $second = RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array($hash), $second['checked'], 'the next cycle retries the same row');
+    strictAssertSame(array($hash), $checked, 'handler runs after the forum correction lands');
+    strictAssertSame(null,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the handled correction is acknowledged once');
+});
+
+upTest($suite, 'malformed durable forum correction visibly holds ordinary H07 dispatch', function () {
+    $hash = str_repeat('D', 40);
+    $marker = ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . str_repeat('F', 40);
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_NOT_NEED, '', '', '', $marker, (string) time()));
+    foreach (array('null row' => null,
+        'noncanonical forum' => array('topic' => 200, 'forum' => '022', 'at' => time())) as $label => $record) {
+        RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+        $checked = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($candidate) use (&$checked) {
+            $checked[] = $candidate;
+        });
+        rXMLRPCRequest::reset();
+        $log = testCapturedAppLog(function() use ($rows) { RuTrackerUpdatePass::run($rows); });
+        strictAssertSame(array(), $checked, $label . ': stale forum cannot reach a handler');
+        $stored = RuTrackerState::load('updatepass')['forum_corrections'] ?? array();
+        strictAssertTrue(array_key_exists($hash, $stored),
+            $label . ': malformed evidence remains inspectable');
+        strictAssertTrue(strpos($log, 'updatepass.json') !== false
+            && strpos($log, $hash) !== false
+            && strpos($log, 'no chk-forum') !== false,
+            $label . ': the document, hash and consequence are visible without debug logging');
+        upAssertNoCustomWrites($label . ': marker, state and clock are untouched');
+    }
+});
+
+upTest($suite, 'malformed durable correction cannot bypass claimed P preparation', function () {
+    $hash = str_repeat('D', 40);
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_INPROGRESS, '', '', '', '',
+        (string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 2)));
+    foreach (array('null row' => null, 'scalar row' => 'invalid') as $label => $record) {
+        RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+        $handlerCalls = 0;
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+            function($candidate, $row, $prepare) use (&$handlerCalls) {
+                if ($prepare === null || $prepare($candidate)) $handlerCalls++;
+            });
+        rXMLRPCRequest::reset();
+        $log = testCapturedAppLog(function() use ($rows) { RuTrackerUpdatePass::run($rows); });
+        strictAssertSame(0, $handlerCalls,
+            $label . ': P cannot call the handler on an uninstalled forum');
+        $stored = RuTrackerState::load('updatepass')['forum_corrections'] ?? array();
+        strictAssertTrue(array_key_exists($hash, $stored),
+            $label . ': malformed durable evidence remains inspectable');
+        strictAssertTrue(strpos($log, 'updatepass.json') !== false
+            && strpos($log, $hash) !== false
+            && strpos($log, 'no chk-forum') !== false,
+            $label . ': the P refusal is visible without debug logging');
+    }
+});
+
+upTest($suite, 'fresh P with a correction leaves the owning worker and record alone', function () {
+    $hash = str_repeat('D', 40);
+    $record = array('topic' => 200, 'forum' => 22, 'at' => time());
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => $record)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 6, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_INPROGRESS, '', '', '', '', (string) time()));
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
+        'd.get_local_id', 'd.get_custom'), true, false,
+        array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), '',
+            str_repeat('1', 40), ''));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_local_id'),
+        true, false, array('', '', str_repeat('1', 40)));
+    RuTrackerUpdatePass::run($rows);
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'a fresh P causes neither forum installation nor a second checker write');
+    strictAssertSame($record,
+        RuTrackerState::load('updatepass')['forum_corrections'][$hash] ?? null,
+        'the active worker retains its correction for later');
+});
+
+upTest($suite, 'malformed correction cannot suppress META_PENDING pump', function () {
+    $hash = str_repeat('E', 40);
+    RuTrackerState::save('updatepass', array('forum_corrections' => array($hash => null)));
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org',
+        (string) ruTrackerChecker::STE_META_PENDING));
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
+    RuTrackerMetaFetch::$calls = array();
+    RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
+        'd.get_local_id', 'd.get_custom'), true, false,
+        array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), '',
+            str_repeat('1', 40), ''));
+    $log = testCapturedAppLog(function() use ($rows) { RuTrackerUpdatePass::run($rows); });
+    strictAssertSame(1, count(RuTrackerMetaFetch::$calls),
+        'owned metadata progresses before any ordinary forum check');
+    $stored = RuTrackerState::load('updatepass')['forum_corrections'] ?? array();
+    strictAssertTrue(array_key_exists($hash, $stored),
+        'the malformed correction is retained for inspection');
+    strictAssertTrue(strpos($log, 'updatepass.json') !== false && strpos($log, $hash) !== false,
+        'the malformed correction remains visible while M progresses');
 });
 
 exit($suite->run());
