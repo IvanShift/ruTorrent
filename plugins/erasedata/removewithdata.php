@@ -3924,6 +3924,9 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		$members = count($hashes);
 		$result = array('published' => 0, 'retained' => $members,
 			'cancelled' => 0, 'unrecoverable' => 0);
+		// A restart can lower soft nofile below an already durable batch.
+		// The hard limit still bounds recovery; lock acquisition remains atomic.
+		erasedataTryRaiseRecoveryHashLockLimit($members);
 		// Invariant 7: blocking, in the canonical sorted order this one
 		// function decides for every caller. Nothing is held while it waits.
 		$locks = erasedataLockObligations($listPath, $hashes);

@@ -4178,6 +4178,14 @@ class RemoveWithDataTest extends TestCase
 				break;
 			$this->assertTrue(rmdir($nested), 'the allocator can retry for the recycled inode');
 		}
+		// The last unsuccessful attempt was removed too; keep a real new
+		// occupant for the retry on filesystems that never reuse this inode.
+		clearstatcache(true, $nested);
+		if(!is_dir($nested))
+		{
+			$this->assertTrue(mkdir($nested), 'a final new directory occupies the public name');
+			$replacement = lstat($nested);
+		}
 		$reused = is_array($replacement)
 			&& $replacement['dev'] === $original['dev']
 			&& $replacement['ino'] === $original['ino'];

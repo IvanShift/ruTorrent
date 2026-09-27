@@ -323,6 +323,37 @@ if(!function_exists('erasedataEncodePendingMarker'))
 		return($obligations);
 	}
 
+	// A persisted generation may be larger than this worker's current soft
+	// descriptor limit after a service restart. Raise only the soft limit and
+	// leave room for state, RPC and directory handles. If the hard limit is too
+	// low or POSIX is unavailable, the normal all-or-nothing lock attempt below
+	// still refuses visibly; it must never process an unlocked subset.
+	function erasedataTryRaiseRecoveryHashLockLimit($members)
+	{
+		if(!is_int($members) || $members < 0
+			|| $members > ERASEDATA_PENDING_MAX_MARKERS
+			|| !function_exists('posix_getrlimit')
+			|| !function_exists('posix_setrlimit')
+			|| !defined('POSIX_RLIMIT_NOFILE'))
+			return(false);
+		$limits = @posix_getrlimit();
+		if(!is_array($limits) || !isset($limits['soft openfiles'],
+			$limits['hard openfiles']))
+			return(false);
+		$needed = $members + 64;
+		$soft = $limits['soft openfiles'];
+		if($soft === 'unlimited' || (is_int($soft) && $soft >= $needed))
+			return(true);
+		$hard = $limits['hard openfiles'];
+		$infinity = defined('POSIX_RLIMIT_INFINITY') ? POSIX_RLIMIT_INFINITY : null;
+		if($hard === 'unlimited')
+			$hard = $infinity;
+		if(!is_int($soft) || !is_int($hard)
+			|| ($hard !== $infinity && $hard < $needed))
+			return(false);
+		return(@posix_setrlimit(POSIX_RLIMIT_NOFILE, $needed, $hard));
+	}
+
 	// Take the per-hash locks for one batch, BLOCKING, in canonical order.
 	//
 	// Invariant 7: the order is decided here, before the first lock is taken,

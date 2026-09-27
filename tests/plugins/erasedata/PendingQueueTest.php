@@ -459,6 +459,80 @@ class PendingQueueTest extends TestCase
 			'and neither does a malformed generation');
 	}
 
+	// A recorded generation can outlive a daemon restart with a lower soft
+	// nofile limit. The worker must still take its whole sorted lock set when
+	// the process hard limit leaves enough room. Run in a child so the suite's
+	// own descriptor limit never changes.
+	public function testRecoveryDrainerRaisesSoftFdLimitForRecordedGeneration()
+	{
+		$this->fresh();
+		$runner = $this->tree . '/fd-limit-runner.php';
+		$script = <<<'RUNNER'
+<?php
+require_once __TREE__ . '/php/xmlrpc.php';
+require_once __TREE__ . '/plugins/erasedata/removewithdata.php';
+$limits = function_exists('posix_getrlimit') ? posix_getrlimit() : false;
+$hard = is_array($limits) && isset($limits['hard openfiles'])
+    ? $limits['hard openfiles'] : null;
+$hardForRun = isset($argv[1]) && $argv[1] === 'low-hard' ? 64 : $hard;
+if (!function_exists('posix_setrlimit') || !defined('POSIX_RLIMIT_NOFILE')
+    || !is_int($hard) || $hard < 256
+    || !@posix_setrlimit(POSIX_RLIMIT_NOFILE, 64, $hardForRun)) {
+    echo "FD_LIMIT_UNAVAILABLE\n";
+    exit(3);
+}
+$hashes = array();
+for ($i = 0; $i < 192; $i++) $hashes[] = strtoupper(sha1('fd-generation-'.$i));
+$notes = array();
+$result = erasedataDrainGenerationPass(__LIST__, 'fd-lab', '0000000000000001',
+    array('hashes' => $hashes, 'force' => 1, 'markers' => array()),
+    new ErasedataFilesystemOps(), $notes);
+echo json_encode(array('reasons' => array_values(array_unique(array_map(
+    function($note) { return $note[0]; }, $notes))),
+    'lockFiles' => count(glob(__LIST__.'/*.lock')),
+    'soft' => posix_getrlimit()['soft openfiles'])), "\n";
+RUNNER;
+		$script = str_replace(array('__TREE__', '__LIST__'),
+			array(var_export($this->tree, true), var_export($this->listPath, true)), $script);
+		file_put_contents($runner, $script);
+		foreach (array('hard-capped' => 'low-hard', 'recoverable' => '') as $case => $mode)
+		{
+			$pipes = array();
+			$process = proc_open('exec '.escapeshellarg(PHP_BINARY).' '.escapeshellarg($runner)
+				.' '.escapeshellarg($mode),
+				array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+			$this->assertTrue(is_resource($process), $case.': FD-limit child starts');
+			if (!is_resource($process)) continue;
+			$output = stream_get_contents($pipes[1]);
+			$error = stream_get_contents($pipes[2]);
+			fclose($pipes[1]);
+			fclose($pipes[2]);
+			$exit = proc_close($process);
+			$report = json_decode($output, true);
+			$this->assertTrue($exit === 0 && is_array($report),
+				$case.': child runs the real drain pass: '.$error.' '.$output);
+			if (!is_array($report)) continue;
+			if ($case === 'recoverable')
+			{
+				$this->assertTrue((in_array('state-unreadable', $report['reasons'], true)
+					|| in_array('worker-user-mismatch', $report['reasons'], true))
+					&& !in_array('hash-lock', $report['reasons'], true),
+					'the pass reaches state validation after taking all hash locks');
+				$this->assertEquals(192, $report['lockFiles'],
+					'the worker opened a lock file for every recorded hash');
+				$this->assertTrue($report['soft'] >= 256,
+					'the child soft limit was raised with reserve space');
+			}
+			else
+			{
+				$this->assertTrue(in_array('hash-lock', $report['reasons'], true),
+					'a hard-capped worker retains the whole generation visibly');
+				$this->assertTrue($report['lockFiles'] < 192 && $report['soft'] === 64,
+					'no partial hash set is processed when the hard limit is too low');
+			}
+		}
+	}
+
 	/**
 	 * A batch that cannot be taken whole releases every lock it did take.
 	 *
