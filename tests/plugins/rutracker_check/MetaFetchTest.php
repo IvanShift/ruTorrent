@@ -1549,6 +1549,33 @@ $suite->test('a claim that does not land is not reported as a pending fetch', fu
         'the failure is logged'), 'the unclaimed line');
 });
 
+$suite->test('begin leaves a readded predecessor unmarked after its stub starts', function () use ($oldHash, $newHash) {
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$runLocalId = str_repeat('1', 40);
+    rTorrent::$magnets = array();
+    rTorrent::$sendResult = $newHash;
+    ruTrackerChecker::queueResult('torrentExists', false);
+    ruTrackerChecker::queueResult('awaitMetadata', false);
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        true, false, array($oldHash, '6879823', '87400', 1));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
+
+    strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+            'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+        'a metadata stub cannot claim a different predecessor generation');
+    strictAssertSame(1, count(rTorrent::$magnets), 'the service stub was already loaded');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+        'no old marker may be sent directly by hash');
+    $branches = rXMLRPCRequest::requestsFor('branch');
+    strictAssertSame(2, count($branches), 'stub start and predecessor claim are conditional');
+    strictAssertTrue(strpos($branches[1]['commands'][0]->params[1], str_repeat('1', 40)) !== false,
+        'the claim compares the predecessor identity captured before the fetch');
+    ruTrackerChecker::$runLocalId = null;
+});
+
 $suite->test('a truncated predecessor-marker reply cannot claim a partial two-field bundle', function () use ($oldHash, $newHash) {
     ruTrackerChecker::reset();
     $model = array('chk-meta-new' => '', 'chk-meta-until' => '');

@@ -173,6 +173,25 @@ class RemoveWithDataTest extends TestCase
 	private $dir;
 	private $schedulerTicks = 0;
 
+	private function scriptLegacyDaemonMarker($version = '0.9.8')
+	{
+		$marker = erasedataLegacyDrainMarkerName('rutorrent');
+		$missing = "Method '".$marker."' not defined";
+		$absent = array('ok' => true, 'fault' => true,
+			'rawFaultString' => $missing, 'faultString' => $missing,
+			'val' => array('-506', $missing));
+		rXMLRPCRequest::$responses['system.client_version'] = array('ok' => true,
+			'val' => array($version));
+		rXMLRPCRequest::$responses[$marker] = $absent;
+		rXMLRPCRequest::$responses['system.method.insert'] = array('ok' => true,
+			'val' => array(0), 'callback' => function($commands) use ($marker)
+			{
+				rXMLRPCRequest::$responses[$marker] = array('ok' => true,
+					'val' => array(1));
+			});
+		return(array($marker, $absent));
+	}
+
 	public function testDrainCollectsPayloadAndRetiresBeforeReleasingPassLocks()
 	{
 		$this->reset();
@@ -402,7 +421,8 @@ class RemoveWithDataTest extends TestCase
 		foreach(array_diff(scandir($this->dir.'/erasedata'), array('.', '..')) as $entry)
 			$this->removePath($this->dir.'/erasedata/'.$entry);
 		FileUtil::$log = array();
-		rXMLRPCRequest::$responses = array();
+		rXMLRPCRequest::$responses = array('system.client_version' =>
+			array('ok' => true, 'val' => array('0.16.24')));
 		rXMLRPCRequest::$requested = array();
 		rXMLRPCRequest::$erased = array();
 		rXMLRPCRequest::$commandCalls = array();
@@ -10329,14 +10349,14 @@ class RemoveWithDataTest extends TestCase
 			'headless recovery registers the exact per-user key');
 		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
 			'a missed acknowledgement never sends the command that resets a live countdown');
-		// A daemon without schedule.if_absent must stay visibly retryable. It
-		// cannot distinguish a lost schedule from a busy but live worker.
+		// Simulate an unexpected rejection on the modern fixture. The legacy
+		// marker protocol is exercised in its own version-specific cases.
 		rXMLRPCRequest::$responses['schedule.if_absent'] = array('ok' => true,
 			'fault' => true, 'faultString' => 'method unavailable');
 		rXMLRPCRequest::$scheduledCommands = array();
 		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
 			array($this->hash('C')), 1) === false,
-			'an older daemon that rejects the idempotent command retains the torrent');
+			'a refused idempotent command retains the torrent');
 		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
 			'no compatibility fallback may reset a possibly live countdown');
 		$visible = false;
@@ -10348,6 +10368,280 @@ class RemoveWithDataTest extends TestCase
 			'the older daemon refusal is classified and visible');
 		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
 			'none of the unanswered admissions erases a torrent');
+	}
+
+
+	public function testHeadlessNoAckRearmsLegacyDaemonOnlyAfterMarkerLoss()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		list($marker, $absent) = $this->scriptLegacyDaemonMarker();
+		$dependencies = $this->dependencies(array('ackTimeout' => 0.08, 'ackPoll' => 0.01));
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('A')), 1) === false,
+			'the first unanswered admission retains its torrent');
+		$first = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($first) && $first['phase'] === 'armed'
+			&& isset($first['legacy_marker']) && $first['legacy_marker'] === true,
+			'the initial arm durably records that its volatile marker exists');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('B')), 1) === false,
+			'a busy live scheduler still retains the second torrent');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'a live marker prevents any replacement of its schedule key');
+		$stillArmed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($stillArmed) && $stillArmed['phase'] === 'armed'
+			&& isset($stillArmed['legacy_marker']),
+			'the live schedule remains durably armed');
+
+		// A daemon restart loses both volatile objects. The durable state
+		// remembers that this marker protocol previously armed the schedule.
+		rXMLRPCRequest::$responses[$marker] = $absent;
+		$generationAtRearm = null;
+		rXMLRPCRequest::$responses['schedule']['callback'] = function($commands)
+			use ($queue, &$generationAtRearm)
+		{
+			$state = erasedataReadDrainState($queue);
+			$generationAtRearm = is_array($state) ? $state['generation'] : null;
+		};
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('C')), 1) === false,
+			'the first post-restart attempt leaves its torrent retryable');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the absent daemon marker permits exactly one legacy rearm');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule.if_absent')),
+			'0.9.8 is not sent its unsupported if-absent command');
+		$rearmed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($rearmed) && $rearmed['phase'] === 'armed'
+			&& isset($rearmed['legacy_marker'])
+			&& $rearmed['generation'] === $generationAtRearm,
+			'rearm restores the witness without changing generation or phase');
+
+		rXMLRPCRequest::$responses[$marker] = $absent;
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'fault' => true,
+			'faultString' => 'scheduler refused');
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('D')), 1) === false,
+			'a refused legacy schedule leaves the removal retryable');
+		$failed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($failed) && $failed['phase'] === 'armed'
+			&& !isset($failed['legacy_marker']),
+			'a failed rearm keeps obligations but revokes the unverified witness');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'rearm-refused') !== false,
+			'the scheduler refusal is classified');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('E')), 1) === false,
+			'an unverified old state remains retryable');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'an unverified old state cannot repeatedly reset a possibly live schedule');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'rearm-legacy-unproven') !== false,
+			'the need for startup recovery is visible');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'no unanswered admission erases a torrent');
+	}
+
+
+
+	public function testSchedulerVersionBoundaryUsesLegacyMarkerBefore01621()
+	{
+		foreach(array('0.16.8' => true, '0.16.20' => true,
+			'0.16.21' => false) as $version => $legacy)
+		{
+			$this->reset();
+			$queue = $this->queuePath();
+			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+			$this->eraseOk();
+			list($marker, $absent) = $this->scriptLegacyDaemonMarker($version);
+			rXMLRPCRequest::$responses['schedule'] = array('ok' => true,
+				'val' => array(0));
+			rXMLRPCRequest::$responses['schedule.if_absent'] = array('ok' => true,
+				'val' => array(0));
+			$this->assertEquals($legacy, erasedataLegacyDrainVersion(),
+				$version.' selects the measured scheduler capability boundary');
+			$dependencies = $this->dependencies(array('ackTimeout' => 0.08,
+				'ackPoll' => 0.01));
+			$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+				array($this->hash('A')), 1) === false,
+				$version.' first unanswered admission remains retryable');
+			$armed = erasedataReadDrainState($queue);
+			$this->assertTrue(is_array($armed) && $armed['phase'] === 'armed'
+				&& isset($armed['legacy_marker']) === $legacy,
+				$version.' publishes only the witness its schedule supports');
+			if($legacy)
+				rXMLRPCRequest::$responses[$marker] = $absent;
+			rXMLRPCRequest::$scheduledCommands = array();
+			$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+				array($this->hash('B')), 1) === false,
+				$version.' post-restart admission remains retryable');
+			$this->assertEquals($legacy ? 1 : 0,
+				count($this->scheduleRecords('schedule')),
+				$version.' uses legacy schedule only after proven marker loss');
+			$this->assertEquals($legacy ? 0 : 1,
+				count($this->scheduleRecords('schedule.if_absent')),
+				$version.' uses the supported scheduler command');
+			$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+				$version.' never erases an unanswered torrent');
+		}
+	}
+
+	public function testUnknownDaemonVersionRefusesInitialArmUntilRetry()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->scriptLegacyDaemonMarker();
+		rXMLRPCRequest::$responses['system.client_version'] = array('ok' => false);
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$dependencies = $this->dependencies(array('ackTimeout' => 0.08, 'ackPoll' => 0.01));
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('A')), 1) === false,
+			'a transient version failure refuses the initial admission');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'unknown daemon version sends no unverified schedule');
+		$failed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($failed) && $failed['phase'] !== 'armed'
+			&& !isset($failed['legacy_marker']),
+			'failed version probe does not publish an armed witness');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'arm-version-unknown') !== false,
+			'the version refusal is classified');
+		rXMLRPCRequest::$responses['system.client_version'] = array('ok' => true,
+			'val' => array('0.9.8'));
+		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
+			array($this->hash('A')), 1) === false,
+			'the same torrent can retry after the version probe recovers');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the retry sends the legacy schedule exactly once');
+		$armed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($armed) && $armed['phase'] === 'armed'
+			&& isset($armed['legacy_marker']),
+			'the retry publishes the verified legacy arm');
+		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
+			'no torrent is erased without acknowledgement');
+	}
+
+	public function testUnknownDaemonVersionRefusesHeadlessRearmUntilRetry()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['phase'] = 'armed';
+		$state['legacy_marker'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a verified obligation is durable');
+		$this->assertTrue(erasedataQueueRequest($queue, $this->hash('A'), 1,
+			$state['generation']), 'a pending obligation remains');
+		$this->scriptLegacyDaemonMarker();
+		rXMLRPCRequest::$responses['system.client_version'] = array('ok' => false);
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$dependencies = $this->dependencies(array('context' => 'headless'));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
+			'headless recovery refuses an unknown daemon version');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule'))
+			+ count($this->scheduleRecords('schedule.if_absent')),
+			'no scheduler command is sent before identifying the daemon');
+		$failed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($failed) && $failed['phase'] === 'armed'
+			&& isset($failed['legacy_marker']),
+			'the obligation and its prior witness remain untouched');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'rearm-version-unknown') !== false,
+			'the rearm version refusal is classified');
+		rXMLRPCRequest::$responses['system.client_version'] = array('ok' => true,
+			'val' => array('0.9.8'));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'headless recovery retries successfully after the probe recovers');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'the verified retry restores one schedule');
+		$rearmed = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($rearmed) && $rearmed['phase'] === 'armed'
+			&& isset($rearmed['legacy_marker']),
+			'retry retains the durable obligation and witness');
+	}
+
+	public function testLegacyPreMarkerStateRequiresStartupRecovery()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['phase'] = 'armed';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a pre-marker seven-field state remains readable');
+		$this->assertTrue(erasedataQueueRequest($queue, $this->hash('A'), 1,
+			$state['generation']), 'a pending obligation is present');
+		$this->scriptLegacyDaemonMarker();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
+		$dependencies = $this->dependencies(array('context' => 'headless'));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
+			'headless recovery cannot infer loss from a pre-marker state');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'it does not reset a possibly live old schedule');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'rearm-legacy-unproven') !== false,
+			'the migration boundary is classified and visible');
+		$unverified = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($unverified) && $unverified['phase'] === 'armed',
+			'the old durable obligation is retained');
+		$dependencies['context'] = 'startup';
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'a normal startup rearm seeds both the schedule and marker protocol');
+		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
+			'startup registers the legacy schedule once');
+		$verified = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($verified) && $verified['phase'] === 'armed'
+			&& isset($verified['legacy_marker'])
+			&& $verified['generation'] === $state['generation'],
+			'startup records the witness without changing the obligation');
+	}
+
+
+	public function testLegacyRearmRejectsRestartBetweenMarkerAndSchedule()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['phase'] = 'armed';
+		$state['legacy_marker'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'the prior daemon left a verified arm');
+		$this->assertTrue(erasedataQueueRequest($queue, $this->hash('A'), 1,
+			$state['generation']), 'an obligation survived its restart');
+		list($marker, $absent) = $this->scriptLegacyDaemonMarker();
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true,
+			'val' => array(0), 'callback' => function($commands) use ($marker, $absent)
+			{
+				// A second daemon restart lands after the schedule RPC accepted.
+				rXMLRPCRequest::$responses[$marker] = $absent;
+			});
+		$dependencies = $this->dependencies(array('context' => 'headless'));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
+			'a lost marker after schedule acceptance prevents a verified arm');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && $after['phase'] === 'armed'
+			&& !isset($after['legacy_marker']),
+			'the durable obligation remains, without a false daemon witness');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'rearm-legacy-marker') !== false,
+			'the uncertain rearm is classified');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
+			'a later headless pass still refuses an unverified arm');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'it cannot blindly replace a possibly live schedule');
 	}
 
 	public function testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding()

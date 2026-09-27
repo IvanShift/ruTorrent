@@ -320,8 +320,20 @@ $checkerDefinition = loadClassDefinition(
 	__DIR__ . '/../../../plugins/rutracker_check/check.php',
 	'ruTrackerChecker'
 );
+// Keep elapsed-lease tests independent of the host's uptime. This affects
+// only the evaled test class; the shipped checker retains its 900-second lease.
+$checkerDefinition = preg_replace('/(const MAX_LOCK_TIME\s*=\s*)900;/', '${1}2;',
+	$checkerDefinition, 1, $leaseReplacementCount);
+strictAssertSame(1, $leaseReplacementCount, 'the test lease constant was shortened exactly once');
 eval($checkerDefinition);
 unset($checkerDefinition);
+
+function checkerObservedMono($ageSeconds)
+{
+	$age = $ageSeconds * 1000000000;
+	while (($now = hrtime(true)) <= $age) usleep(10000);
+	return $now - $age;
+}
 
 class CheckerProbe extends ruTrackerChecker
 {
@@ -2695,6 +2707,52 @@ class CheckerTest
 			'the selected branch writes its exact marker before stop/close and returns that marker');
 	}
 
+	public function testReplacementStopRefusesAReaddedPredecessor()
+	{
+		$localId = str_repeat('1', 40);
+		$command = strictInvoke('ruTrackerChecker', 'replacementStopCommand',
+			array(self::OLD_HASH, self::NEW_HASH, 1700000000, null, $localId));
+		strictAssertSame('branch', $command->command, 'the stop remains one daemon command');
+		strictAssertTrue(strpos($command->params[1], 'd.get_local_id=') !== false
+			&& strpos($command->params[1], $localId) !== false,
+			'the branch compares the identity captured before the replacement');
+		strictAssertTrue(strpos($command->params[2], 'd.stop=') !== false,
+			'the matching generation still reaches the daemon-selected stop');
+		strictAssertTrue(strpos($command->params[3], 'd.stop=') === false,
+			'a new same-hash generation cannot be stopped');
+	}
+
+	public function testRunCarriesOriginalLocalIdIntoReplacementStop()
+	{
+		$this->withVerdictSession('replacement-local-id', 0, '',
+			function($url, $hash, $old) {
+				return ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $hash, $old);
+			},
+			function() {
+				$this->stageTorrents();
+				rTorrent::$source = new Torrent(array('hash' => self::OLD_HASH,
+					'info' => array('name' => 'unchanged.mkv', 'length' => 1),
+					'comment' => 'http://topic.replacement-local-id-test.invalid/1'));
+				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED); // INPROGRESS
+				rXMLRPCRequest::queue('d.hash', true, true, array()); // successor absent
+				$this->queueViews(array(), false);
+				rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
+					array(sys_get_temp_dir(), 'label', '', '', '6879823', '1106'));
+				rXMLRPCRequest::queue('branch', true, false, array('stale-generation'));
+				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_SKIPPED); // final verdict
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH, 0, 0, '', $performed),
+					'the stale replacement returns a retryable outcome');
+				$stops = $this->branchRequestsContaining('$d.stop=');
+				strictAssertSame(1, count($stops), 'one daemon-side stop was attempted');
+				$condition = $stops[0]['commands'][0]->params[1];
+				strictAssertTrue(strpos($condition, 'd.get_local_id=') !== false
+					&& strpos($condition, self::LOCAL_ID) !== false,
+					'the stop compares the identity captured by run before its handler');
+				strictAssertSame(null, rTorrent::$lastSend, 'the stale stop cannot stage a successor');
+			});
+	}
+
 	public function testDaemonSelectedRunStateWinsAtReplacementCommit()
 	{
 		foreach(array(
@@ -3406,11 +3464,12 @@ class CheckerTest
 		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
 			'and it must not write the INPROGRESS lock over the holder either');
 
-		// A claim whose holder died is not held forever. The claim is stamped
-		// with the wall clock, not with run()'s $time argument (that is the
-		// row's chk-time), so the abandoned holder is staged directly.
-		RuTrackerState::save('meta-claims',
-			array(self::OLD_HASH => time() - ruTrackerChecker::MAX_LOCK_TIME - 1));
+		// The old owner is now beyond a full observed monotonic lease. The
+		// existing claim stays tokenized; only its observed clock is aged.
+		$held = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertTrue(isset($held['lease_observed']), 'the contending run observed the owner');
+		$held['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $held));
 		RuTrackerMetaFetch::$calls = array();
 		rXMLRPCRequest::reset();
 		self::queueStateRead( true, false,
@@ -3440,10 +3499,17 @@ class CheckerTest
 		$first = strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1000));
 		strictAssertTrue($first !== false, 'the first worker takes the claim');
 
-		// It overruns; the entry expires and a second worker takes it over.
+		// A wall timestamp cannot expire it. The first contender starts a
+		// monotonic observation, then an aged observation permits takeover.
+		strictAssertSame(false, strictInvoke('ruTrackerChecker', 'claimCheck',
+			array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1)),
+			'wall age alone cannot steal the owner');
+		$held = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		$held['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $held));
 		$second = strictInvoke('ruTrackerChecker', 'claimCheck',
 			array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1));
-		strictAssertTrue($second !== false, 'an expired claim is taken over');
+		strictAssertTrue(is_string($second), 'an observed expired claim is taken over');
 		strictAssertTrue($first !== $second, 'the two holders are told apart by their own tokens');
 
 		// The overrun worker finally finishes and lets go of ITS claim.
@@ -5190,7 +5256,7 @@ class CheckerTest
 			$this->resetFakes();
 			RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
 
-			// Far past any lease: a readable stamp of this age WOULD be pruned.
+			// Far past any wall lease: an unreadable stamp still cannot identify an owner.
 			$now = 1000 + ruTrackerChecker::MAX_LOCK_TIME * 10;
 			strictAssertSame(false,
 				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),
@@ -5218,29 +5284,26 @@ class CheckerTest
 				'and never echoes the unreadable stored value back into the log');
 		});
 
-		// Control: a readable stamp of the same age still expires, and a
-		// readable fresh one still blocks -- neither behaviour moved.
+		// A readable legacy stamp still lacks a generation token: neither a
+		// large wall age nor an arbitrary number proves its owner is gone.
 		$this->resetFakes();
 		RuTrackerState::save('meta-claims', array(self::OLD_HASH => 1000));
-		strictAssertTrue(
+		strictAssertSame(false,
 			strictInvoke('ruTrackerChecker', 'claimCheck',
-				array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1)) !== false,
-			'a readable expired claim is still taken over');
+				array(self::OLD_HASH, 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1)),
+			'a legacy claim stays held across a wall jump');
 
 		$this->resetFakes();
-		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccdd')));
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccddeeff0011')));
 		strictAssertSame(false,
 			strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1001)),
 			'and a readable live claim still blocks');
 	}
 
-	// And it is retained FOR EVER. A readable claim ages out of the loop above
-	// after MAX_LOCK_TIME; an unreadable one has no age to measure, and the
-	// only other way an entry leaves meta-claims is releaseCheck(), which runs
-	// solely for a worker holding the claim's own token -- a token no worker
-	// can ever be granted, because claimCheck() refuses this hash before
-	// issuing one. So the hash it names is never checked again and nothing
-	// repairs the entry. Reported through logDebug(), gated on conf.php's
+	// And it is retained indefinitely. An unreadable timestamp supplies no
+	// owner generation or lease to observe, so a contender cannot reclaim it.
+	// A token holder or an explicit untokened release can clear it. Reported
+	// through logDebug(), gated on conf.php's
 	// shipped $rutrackerCheckDebug = false, that permanent wedge said nothing
 	// at all: the fault two earlier rounds of this work were rejected for.
 	//
@@ -5276,9 +5339,8 @@ class CheckerTest
 		});
 
 		// A corrupt claim on SOMEBODY ELSE'S hash is not this caller's problem,
-		// and must not be reported to it. The loop visits every claim in the
-		// document on every call, and flushVerdicts() calls claimCheck() once
-		// per deferred verdict -- so reporting each corrupt entry it walks past
+		// and must not be reported to it. flushVerdicts() calls claimCheck() once
+		// per deferred verdict -- so reporting every corrupt entry it reads
 		// turns one wedged hash into a flood of identical lines per cycle.
 		// Silence and noise are both ways of not being read.
 		$this->resetFakes();
@@ -5294,12 +5356,11 @@ class CheckerTest
 				'a claim wedged on another hash is reported to the caller it blocks, not to every passer-by');
 		});
 
-		// Control: a readable claim -- live or expired -- writes nothing at
-		// the shipped default either way.
+		// Control: an ordinary readable claim writes nothing at the shipped default.
 		$this->resetFakes();
 		$this->withoutDebugLog(function() {
 			RuTrackerState::save('meta-claims',
-				array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccdd')));
+				array(self::OLD_HASH => array('since' => 1000, 'token' => 'aabbccddeeff0011')));
 			FileUtil::$log = array();
 			strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, 1001));
 			strictAssertSame(array(), FileUtil::$log,
@@ -5307,16 +5368,174 @@ class CheckerTest
 		});
 	}
 
-	// A daemon restart can leave a real claim behind after the wall clock moves
-	// backward. The timestamp is readable, but its lease cannot expire until
-	// the clock catches up; do not steal an active holder, and do not hide the
-	// long refusal behind the optional debug log.
+	// A forward wall-clock step must not turn a live owner into an expired
+	// claim. The real two-process version of this RED is in the GAP8 lab note.
+	public function testLiveClaimSurvivesAForwardClockJump()
+	{
+		$this->resetFakes();
+		$now = time();
+		$owner = ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now);
+		strictAssertTrue(is_string($owner), 'the original worker receives a token');
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(
+			self::OLD_HASH, $now + 25 * 3600),
+			'a wall-clock jump alone cannot grant a second worker the live hash');
+		strictAssertSame($owner, RuTrackerState::load('meta-claims')[self::OLD_HASH]['token'],
+			'the original claim remains the owner');
+		strictAssertSame(true, ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, $owner),
+			'the original owner can still release the claim');
+		strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+			'its token-checked release removes the owned entry');
+	}
+
+	public function testExpiredClaimAlsoRecoversFutureInProgressState()
+	{
+		$future = time() + 25 * 3600;
+		$handled = 0;
+		$this->withVerdictSession('future-inprogress-recovery',
+			ruTrackerChecker::STE_INPROGRESS, (string) $future,
+			function() use (&$handled) {
+				$handled++;
+				return ruTrackerChecker::STE_UPTODATE;
+			},
+			function() use ($future, &$handled) {
+				$owner = str_repeat('a', 16);
+				RuTrackerState::save('meta-claims', array(self::OLD_HASH => array(
+					'since' => $future, 'token' => $owner)));
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_INPROGRESS, $future, '', $performed),
+					'a live or unexpired owner keeps the second worker out');
+				strictAssertSame(0, $handled, 'the live owner was not bypassed');
+				$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+				strictAssertSame($owner, $entry['token'], 'the original owner remains');
+				strictAssertTrue(isset($entry['lease_observed']), 'the exact owner was observed');
+				$entry['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+				RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_INPROGRESS, $future, '', $performed),
+					'the new claim holder can inspect the future in-progress state');
+				strictAssertSame(1, $handled,
+					'an expired owner cannot leave future chk-time wedged after takeover');
+				strictAssertSame(true, $performed, 'the recovered handler verdict is durable');
+				strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+					'the recovered run released its own claim');
+			});
+	}
+
+	public function testFutureClaimRecoversOnlyAfterAFullObservedMonotonicLease()
+	{
+		$this->resetFakes();
+		$now = time();
+		$owner = str_repeat('a', 16);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array(
+			'since' => $now + 25 * 3600, 'token' => $owner)));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'the first observer cannot expire a claim it just saw');
+		$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertTrue(isset($entry['lease_observed']) && is_array($entry['lease_observed']),
+			'the exact owner generation has a durable observation');
+		strictAssertSame($owner, $entry['lease_observed']['token'],
+			'the observation names the owner it saw');
+		strictAssertSame($entry['since'], $entry['lease_observed']['since'],
+			'the observation names the claim timestamp it saw');
+		strictAssertTrue(is_int($entry['lease_observed']['mono']),
+			'the monotonic sample survives JSON as an integer');
+		$before = $entry['lease_observed'];
+		$entry['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME - 1);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'an observation inside the lease cannot expire it');
+		$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertSame($before['clock'], $entry['lease_observed']['clock'],
+			'the comparable clock identity remains attached to the owner');
+		$entry['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+		$successor = ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now);
+		strictAssertTrue(is_string($successor) && $successor !== $owner,
+			'a full observed monotonic lease allows exactly one successor');
+		ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, $owner);
+		strictAssertSame($successor, RuTrackerState::load('meta-claims')[self::OLD_HASH]['token'],
+			'an overrun old worker cannot release its successor');
+	}
+
+	public function testChangedOwnerGenerationAndBadObservationCannotExpireAClaim()
+	{
+		$this->resetFakes();
+		$now = time();
+		$owner = str_repeat('a', 16);
+		$next = str_repeat('b', 16);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array(
+			'since' => $now + 25 * 3600, 'token' => $owner)));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'the first contender observes the published owner');
+		$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		$entry['lease_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+		$entry['token'] = $next;
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'a new token with the same since cannot inherit the previous owner\'s elapsed lease');
+		$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertSame($next, $entry['lease_observed']['token'],
+			'the observation is reset for the exact new generation');
+		strictAssertSame($next, $entry['future_notice_token'],
+			'the classified future notice is rebound to that generation');
+
+		foreach(array(-1, 1.5) as $badMono)
+		{
+			$entry['lease_observed']['mono'] = $badMono;
+			RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+			strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+				'a malformed monotonic sample cannot authorize takeover');
+			$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+			strictAssertSame($next, $entry['token'], 'the original generation remains held');
+			strictAssertTrue(is_int($entry['lease_observed']['mono'])
+				&& $entry['lease_observed']['mono'] >= 0,
+				'the bad sample is replaced with a fresh local observation');
+		}
+	}
+
+	public function testLegacyAndForeignClockClaimsRemainClosed()
+	{
+		$this->resetFakes();
+		$now = time();
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $now));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(
+			self::OLD_HASH, $now + 25 * 3600),
+			'a legacy integer has no stable generation to expire after a wall jump');
+		$legacy = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertSame($now, is_array($legacy) ? $legacy['since'] : $legacy,
+			'the legacy timestamp is retained');
+		strictAssertTrue(!is_array($legacy) || !isset($legacy['token']),
+			'the legacy entry does not invent an owner token');
+
+		$this->resetFakes();
+		$owner = str_repeat('b', 16);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array(
+			'since' => $now + 25 * 3600, 'token' => $owner)));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'the first contender starts an observation');
+		$entry = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertTrue(isset($entry['lease_observed']), 'the first clock was recorded');
+		$entry['lease_observed']['clock'] = 'another-boot-and-namespace';
+		$entry['lease_observed']['mono'] = 1;
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+		strictAssertSame(false, ruTrackerChecker::claimCheckForWorker(self::OLD_HASH, $now),
+			'foreign monotonic time cannot authorize takeover');
+		$after = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+		strictAssertSame($owner, $after['token'], 'the original owner stays held');
+		strictAssertTrue($after['lease_observed']['clock'] !== 'another-boot-and-namespace',
+			'the new local clock starts a full fresh observation');
+	}
+
+	// A backward clock step leaves the possible owner in place and writes one
+	// classified diagnostic while a monotonic observation matures.
 	public function testAFutureDatedClaimIsRetainedAndVisibleWithDebuggingOff()
 	{
 		$this->resetFakes();
 		$this->withoutDebugLog(function() {
 			$now = time();
-			$entry = array('since' => $now + 25 * 3600, 'token' => 'future-secret');
+			$entry = array('since' => $now + 25 * 3600, 'token' => 'aabbccddeeff0011');
 			RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
 			FileUtil::$log = array();
 
@@ -5334,7 +5553,7 @@ class CheckerTest
 				'a long clock rollback is visible at the shipped debug setting');
 			strictAssertTrue(strpos($line, self::OLD_HASH) !== false,
 				'the refusal names the blocked torrent');
-			strictAssertTrue(strpos($line, 'future-secret') === false,
+			strictAssertTrue(strpos($line, 'aabbccddeeff0011') === false,
 				'the owner token is never logged');
 			FileUtil::$log = array();
 			strictAssertSame(false,
@@ -5343,7 +5562,7 @@ class CheckerTest
 			strictAssertSame(array(), FileUtil::$log,
 				'the same durable claim is reported once, not on every check attempt');
 			strictAssertSame(true,
-				ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, 'future-secret'),
+				ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, 'aabbccddeeff0011'),
 				'the original owner can still release the marked claim');
 			strictAssertSame(array(), RuTrackerState::load('meta-claims'),
 				'the diagnostic marker does not trap the original owner');
@@ -5353,7 +5572,7 @@ class CheckerTest
 		$this->withoutDebugLog(function() {
 			$now = time();
 			RuTrackerState::save('meta-claims', array(self::OLD_HASH =>
-				array('since' => $now + 1, 'token' => 'ordinary-holder')));
+				array('since' => $now + 1, 'token' => '0011223344556677')));
 			FileUtil::$log = array();
 			strictAssertSame(false,
 				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),

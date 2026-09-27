@@ -968,6 +968,9 @@ class ErasedataProductionMirror
 	//     is how a case makes two real children overlap in time on purpose.
 	public function scriptRpc(array $script)
 	{
+		if(!array_key_exists('system.client_version', $script))
+			$script['system.client_version'] = array('ok' => true,
+				'val' => array('0.16.24'));
 		@file_put_contents($this->settings.'/rpc-script.json', json_encode($script));
 	}
 

@@ -482,7 +482,8 @@ class RuTrackerAtomicOwnership
         if (!self::isValidHash($hash)
             || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
             || !is_array($fields) || !count($fields)) return self::UNKNOWN;
-        $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del', 'chk-topic');
+        $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del', 'chk-topic',
+            'chk-meta-new', 'chk-meta-until');
         $parts = array();
         foreach ($fields as $key => $value) {
             if (!in_array($key, $allowed, true) || !is_string($value)) return self::UNKNOWN;

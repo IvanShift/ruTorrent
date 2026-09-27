@@ -309,4 +309,31 @@ class SkippingMethodCase extends TestCase {
 }
 PHP
 expect_rejected_test SkippingMethodTest 'ran 1 of 2 test methods' 'a declared TestCase method was silently skipped'
+# A child PHP diagnostic can be printed by a passing parent test. The output
+# matcher must catch it even when php-test.ini omits the CLI's "PHP " prefix.
+for diagnostic in Fatal Parse; do
+    cat > "$scratch/tests/plugins/a b/ChildDiagnosticTest.php" <<'PHP'
+<?php
+$code = getenv('O15_DIAGNOSTIC') === 'Parse'
+    ? 'this is invalid PHP syntax ;'
+    : 'trigger_error("O15 child failure", E_USER_ERROR);';
+$cmd = escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
+    . ' -r ' . escapeshellarg($code) . ' 2>&1';
+echo shell_exec($cmd);
+echo "ok - parent process reached its passing summary\n1 tests, 0 failures\n";
+PHP
+    if (cd "$scratch" && O15_DIAGNOSTIC="$diagnostic" bash tests/php-test.sh) > "$scratch/child-$diagnostic.log" 2>&1; then
+        cat "$scratch/child-$diagnostic.log" >&2
+        echo "child $diagnostic error was accepted as a passing test" >&2
+        exit 1
+    fi
+    grep -q "$diagnostic error:" "$scratch/child-$diagnostic.log" \
+        && grep -q 'Command line code on line 1' "$scratch/child-$diagnostic.log" \
+        && grep -q 'ok - parent process reached its passing summary' "$scratch/child-$diagnostic.log" || {
+        cat "$scratch/child-$diagnostic.log" >&2
+        echo "child $diagnostic diagnostic or parent summary was not emitted" >&2
+        exit 1
+    }
+    rm "$scratch/tests/plugins/a b/ChildDiagnosticTest.php"
+done
 echo 'php-harness-test.sh: source paths, empty classes, early exits, and skipped TestCase methods passed'

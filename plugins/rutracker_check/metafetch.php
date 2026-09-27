@@ -77,7 +77,8 @@ class RuTrackerMetaFetch
         // downloading with nobody watching it, and only reapOrphans' deadline
         // eventually clears it -- so the caller is told, and treats it as a
         // fetch that never began.
-        if (RuTrackerCustomProjection::write($oldHash, $commands, 'metafetch markOldTorrent') !== true) {
+        if (RuTrackerCustomProjection::write($oldHash, $commands, 'metafetch markOldTorrent',
+            ruTrackerChecker::activeRunLocalId($oldHash)) !== true) {
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash
                 . ' could not be marked for ' . $newHash . ', the claim did not land');
             return false;

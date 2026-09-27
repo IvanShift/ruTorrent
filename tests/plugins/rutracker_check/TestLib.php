@@ -1047,6 +1047,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static $logs = array();
         public static $messages = array();
         public static $calls = array();
+        public static $runLocalId = null;
         private static $results = array();
 
         public static function queueResult($method, $result)
@@ -1075,6 +1076,11 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             return array_shift(self::$results[$method]);
         }
 
+        public static function activeRunLocalId($hash)
+        {
+            return self::$runLocalId;
+        }
+
         public static function writeHandlerCustom($hash, $field, $value)
         {
             self::$calls[] = array('method' => __FUNCTION__,
@@ -1096,6 +1102,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$logs = array();
             self::$messages = array();
             self::$calls = array();
+            self::$runLocalId = null;
             self::$results = array();
             self::$agents = array();
             Snoopy::reset();

@@ -1896,7 +1896,12 @@ if(!function_exists('erasedataValidateDrainState'))
 			return(false);
 		$keys = array('version', 'user', 'generation', 'acknowledged', 'phase',
 			'journal', 'diagnostics');
-		if(count($state) !== count($keys))
+		// Older states have seven fields. The optional eighth field means a
+		// volatile daemon marker was verified when the legacy schedule armed.
+		if(count($state) !== count($keys)
+			&& (count($state) !== count($keys) + 1
+				|| !array_key_exists('legacy_marker', $state)
+				|| $state['legacy_marker'] !== true))
 			return(false);
 		foreach($keys as $key)
 			if(!array_key_exists($key, $state))
@@ -2314,6 +2319,78 @@ if(!function_exists('erasedataDrainScheduleCommand'))
 		return(new rXMLRPCCommand('schedule', array($key, (string)$start,
 			(string)$interval,
 			getCmd('execute').'={sh,-c,'.$command.' </dev/null >/dev/null 2>&1 &}')));
+	}
+}
+
+
+// A daemon-local witness for the old scheduler, which has no if-absent API.
+// A durable armed state may trust its absence only after this protocol has
+// marked that state. The marker itself is volatile and disappears on restart.
+if(!function_exists('erasedataLegacyDrainMarkerName'))
+{
+	function erasedataLegacyDrainMarkerName($user)
+	{
+		return(erasedataDrainScheduleKey($user) === false ? false
+			: 'erasedata.drain.epoch.'.substr(hash('sha256', $user), 0, 32));
+	}
+}
+
+// true: confirmed daemon before 0.16.21 without schedule.if_absent;
+// false: version outside that legacy range; null: unknown. A failed probe cannot choose.
+// 0.16.8 was probed live; the marker RPC still fails closed on other old builds.
+if(!function_exists('erasedataLegacyDrainVersion'))
+{
+	function erasedataLegacyDrainVersion()
+	{
+		$request = new rXMLRPCRequest(new rXMLRPCCommand('system.client_version'));
+		$request->important = false;
+		if(!$request->success() || !is_array($request->val)
+			|| count($request->val) !== 1 || !is_string($request->val[0])
+			|| preg_match('/^[0-9]+(?:\.[0-9]+){2}$/D', $request->val[0]) !== 1)
+			return(null);
+		$version = $request->val[0];
+		return($version === '0.9.8'
+			|| (version_compare($version, '0.16.0', '>=')
+				&& version_compare($version, '0.16.21', '<')));
+	}
+}
+
+if(!function_exists('erasedataLegacyDrainMarkerStatus'))
+{
+	// true: exact marker; false: missing-method fault measured on 0.9.8 and 0.16.8;
+	// null: transport, daemon or response uncertainty, which cannot prove loss.
+	function erasedataLegacyDrainMarkerStatus($user)
+	{
+		$name = erasedataLegacyDrainMarkerName($user);
+		if($name === false)
+			return(null);
+		$request = new rXMLRPCRequest(new rXMLRPCCommand($name));
+		$request->important = false;
+		if($request->success() && is_array($request->val)
+			&& count($request->val) === 1 && (string)$request->val[0] === '1')
+			return(true);
+		if($request->fault && isset($request->rawFaultString)
+			&& $request->rawFaultString === "Method '".$name."' not defined")
+			return(false);
+		return(null);
+	}
+}
+
+if(!function_exists('erasedataLegacyDrainMarkerEnsure'))
+{
+	function erasedataLegacyDrainMarkerEnsure($user)
+	{
+		$status = erasedataLegacyDrainMarkerStatus($user);
+		if($status === true)
+			return(true);
+		if($status !== false)
+			return(false);
+		$name = erasedataLegacyDrainMarkerName($user);
+		$request = new rXMLRPCRequest(new rXMLRPCCommand('system.method.insert',
+			array($name, 'value|const', '1')));
+		$request->important = false;
+		return($request->success()
+			&& erasedataLegacyDrainMarkerStatus($user) === true);
 	}
 }
 
@@ -3092,6 +3169,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				$state['user'] = $user;
 				$state['generation'] = $generation;
 				$state['phase'] = $live ? 'armed' : 'arming';
+				if(!$live)
+					unset($state['legacy_marker']);
 				if(!erasedataWriteDrainState($listPath, $state))
 				{
 					erasedataReleaseAdmissionLocks($stateLock, $locks);
@@ -3143,11 +3222,36 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 							$members, 'admission-refused');
 						return(false);
 					}
+					$legacyArm = erasedataLegacyDrainVersion();
+					if($legacyArm === null)
+					{
+						erasedataReleaseAdmissionLocks($stateLock, $locks);
+						erasedataDrainDiagnostic($log, 'arm-version-unknown', $generation,
+							$members, 'admission-refused-nothing-staged');
+						return(false);
+					}
+					if($legacyArm && !erasedataLegacyDrainMarkerEnsure($user))
+					{
+						erasedataReleaseAdmissionLocks($stateLock, $locks);
+						erasedataDrainDiagnostic($log, 'arm-legacy-marker', $generation,
+							$members, 'admission-refused-nothing-staged');
+						return(false);
+					}
 					$request = new rXMLRPCRequest($command);
 					if(!$request->success() || $request->fault)
 					{
 						erasedataReleaseAdmissionLocks($stateLock, $locks);
 						erasedataDrainDiagnostic($log, 'arm-refused', $generation,
+							$members, 'admission-refused-nothing-staged');
+						return(false);
+					}
+					// A restart between marker insertion and scheduling would leave
+					// the new daemon armed without the marker. Refuse that uncertain
+					// arm before claiming the durable witness.
+					if($legacyArm && erasedataLegacyDrainMarkerStatus($user) !== true)
+					{
+						erasedataReleaseAdmissionLocks($stateLock, $locks);
+						erasedataDrainDiagnostic($log, 'arm-legacy-marker', $generation,
 							$members, 'admission-refused-nothing-staged');
 						return(false);
 					}
@@ -3186,6 +3290,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						continue;
 					}
 					$state['phase'] = 'armed';
+					if($legacyArm)
+						$state['legacy_marker'] = true;
 					if(!erasedataWriteDrainState($listPath, $state))
 					{
 						erasedataReleaseAdmissionLocks($stateLock, $locks);
@@ -4923,11 +5029,9 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 	//
 	// It registers ONLY when this SCHEDULE is really owed something AND the
 	// durable state carries a generation the arm could later be retired on.
-	// When something IS owed the schedule is required, and this runs at plugin
-	// init -- the one moment rTorrent's volatile schedule table may have been
-	// lost with a restart -- so re-registering the identical key, interval and
-	// command is the only convergent action available: no API on either daemon
-	// version can be asked whether a key is still there.
+	// When something IS owed the schedule is required. Startup registers the
+	// same key after a restart; headless recovery uses schedule.if_absent on
+	// modern daemons or a verified volatile marker on legacy daemons.
 	//
 	// THREE guards make that convergent rather than a one-way door.
 	//
@@ -5107,18 +5211,73 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		// stays classified rather than surfacing as the neighbouring
 		// `rearm-refused`.
 		$command = erasedataDrainScheduleCommand($user, ERASEDATA_DRAIN_INTERVAL);
-		if($command !== false && $context === 'headless-recovery')
+		$legacy = erasedataLegacyDrainVersion();
+		if($legacy === null)
 		{
-			// Reuse the already encoded arguments: rXMLRPCCommand's constructor
-			// expects raw values, not the rXMLRPCParam objects in $command->params.
-			// rTorrent 0.16.21+ leaves an existing countdown untouched. Older
-			// daemons refuse this command; never fall back to resetting schedule.
+			erasedataReleaseDrainStateLock($stateLock);
+			erasedataDrainDiagnostic($log, 'rearm-version-unknown',
+				$state['generation'], $scan['candidates'],
+				$context . '-refused-obligations-retained');
+			return(false);
+		}
+		if($legacy && $context === 'headless-recovery')
+		{
+			// An armed state written before this marker protocol cannot prove
+			// whether a live legacy schedule exists. A normal WebUI rearm seeds it.
+			if(!isset($state['legacy_marker']))
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				erasedataDrainDiagnostic($log, 'rearm-legacy-unproven',
+					$state['generation'], $scan['candidates'],
+					'headless-recovery-refused-live-schedule-unknown');
+				return(false);
+			}
+			$marker = erasedataLegacyDrainMarkerStatus($user);
+			if($marker === null)
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				erasedataDrainDiagnostic($log, 'rearm-legacy-probe',
+					$state['generation'], $scan['candidates'],
+					'headless-recovery-refused-daemon-identity-unknown');
+				return(false);
+			}
+			if($marker === true && $state['phase'] === 'armed')
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				return(true);
+			}
+		}
+		if(!$legacy && $command !== false && $context === 'headless-recovery')
+		{
+			// Reuse the already encoded arguments, including the target.
 			$command->command = getCmd('schedule.if_absent');
+		}
+		if($legacy && isset($state['legacy_marker']))
+		{
+			// If any subsequent RPC fails, future callers see an unverified
+			// arm and refuse instead of trusting a marker for a failed schedule.
+			unset($state['legacy_marker']);
+			if(!erasedataWriteDrainState($listPath, $state))
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				erasedataDrainDiagnostic($log, 'rearm-legacy-state',
+					$state['generation'], $scan['candidates'],
+					$context . '-refused-obligations-retained');
+				return(false);
+			}
 		}
 		if($command === false)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-unavailable',
+				$state['generation'], $scan['candidates'],
+				$context . '-refused-obligations-retained');
+			return(false);
+		}
+		if($legacy && !erasedataLegacyDrainMarkerEnsure($user))
+		{
+			erasedataReleaseDrainStateLock($stateLock);
+			erasedataDrainDiagnostic($log, 'rearm-legacy-marker',
 				$state['generation'], $scan['candidates'],
 				$context . '-refused-obligations-retained');
 			return(false);
@@ -5131,12 +5290,22 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 				$scan['candidates'], $context . '-refused-obligations-retained');
 			return(false);
 		}
+		if($legacy && erasedataLegacyDrainMarkerStatus($user) !== true)
+		{
+			erasedataReleaseDrainStateLock($stateLock);
+			erasedataDrainDiagnostic($log, 'rearm-legacy-marker',
+				$state['generation'], $scan['candidates'],
+				$context . '-refused-obligations-retained');
+			return(false);
+		}
 		// The generation is NEVER touched here. What a restart lost is the
 		// volatile registration; the obligation it belongs to is exactly the
 		// one the durable state already names, and inventing a new generation
 		// for it would orphan every marker and journal record bound to the old.
 		$state['user'] = $user;
 		$state['phase'] = 'armed';
+		if($legacy)
+			$state['legacy_marker'] = true;
 		$written = erasedataWriteDrainState($listPath, $state);
 		erasedataReleaseDrainStateLock($stateLock);
 		if(!$written)

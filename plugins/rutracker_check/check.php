@@ -606,6 +606,13 @@ class ruTrackerChecker
 		return(self::writeHandlerCustom($hash, "chk-msg", $message));
 	}
 
+	// The hash alone cannot identify a torrent after erase + same-hash readd.
+	static public function activeRunLocalId($hash)
+	{
+		return(self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
+			? self::$activeRunIdentity['localId'] : null);
+	}
+
 	// Handler writes share the run() identity captured with live state. Outside
 	// a run, retain the ordinary single-field setter.
 	static public function writeHandlerCustom($hash, $field, $value)
@@ -613,9 +620,10 @@ class ruTrackerChecker
 		if(!in_array($field, array("chk-msg", "chk-del", "chk-topic"), true)) return(false);
 		$command = new rXMLRPCCommand(getCmd("d.set_custom"),
 			array($hash, $field, (string) $value));
-		if(self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash)
+		$localId = self::activeRunLocalId($hash);
+		if($localId !== null)
 			return(self::writeCustomProjection($hash, array($command), "writeHandlerCustom",
-				self::$activeRunIdentity['localId']) === true);
+				$localId) === true);
 		$req = new rXMLRPCRequest($command);
 		$req->important = false;
 		return($req->success());
@@ -825,108 +833,138 @@ class ruTrackerChecker
 	// fetches make minutes long. And batch_check.php takes no cycle lock, so a
 	// click during the pass is the ordinary case, not a rare one.
 	//
-	// Claims expire after MAX_LOCK_TIME, the same allowance the chk-state lock
-	// gets, so a process killed mid-check does not wedge the torrent: the next
-	// cycle takes the claim and re-derives everything from the stored markers.
-	// A claim whose timestamp READS is pruned on the next write once it is past
-	// that allowance, mirroring touchDump()'s prune-on-write. One whose
-	// timestamp does not read has no expiry path at all -- that is the point of
-	// retaining it, see claimSince() -- so MAX_LOCK_TIME never ages it out and
-	// only its own token holder (or an untokened release) can remove it. The
-	// document is therefore bounded by the claims in flight plus however many
-	// unreadable entries the store has accumulated, which is the price of never
-	// handing a live replacement's claim to a competing worker.
-	// The stored entry's timestamp, whichever shape it is in. Entries written
-	// before claims carried an owner are a bare integer, and one can still be
-	// on disk when this version starts; it ages out within MAX_LOCK_TIME when it
-	// reads at all.
-	// null when the stored timestamp cannot be believed -- deliberately NOT
-	// zero, which every lease comparison reads as expired, so a corrupted
-	// claim used to be the one claim nobody could hold.
+	// A contender observes a PUBLISHED owner under the state-document lock.
+	// Its lease begins then, not at the wall-clock stamp: a forward clock step
+	// must not give the hash to two workers, and a backward step must not leave
+	// an orphan waiting for wall time to catch up. Starting at grant would be
+	// earlier than the durable write if that write stalled.
 	static private function claimSince($entry)
 	{
 		return(RuTrackerRpcValue::canonicalNonnegativeInteger(is_array($entry) ? ($entry['since'] ?? null) : $entry));
 	}
 
-	// Returns the owner token on success, false when the hash is already
-	// claimed, and null when the claim store could not be updated. The token
-	// is what makes releasing safe: a timestamp alone
-	// cannot tell "my claim" from "the claim that replaced mine after I
-	// overran the lease", and releaseCheck() used to drop whichever it found.
-	static private function claimCheck($hash, $now)
+	static private function claimClock()
 	{
+		$boot = @file_get_contents('/proc/sys/kernel/random/boot_id');
+		$offsets = @file_get_contents('/proc/self/timens_offsets');
+		if(!is_string($boot) || !preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', trim($boot))
+			|| !is_string($offsets)
+			|| !preg_match('/^monotonic[ \t]+(-?(?:0|[1-9][0-9]*))[ \t]+(0|[1-9][0-9]*)[ \t]*$/m', $offsets, $match))
+			return(null);
+		$mono = hrtime(true);
+		if(!is_int($mono) || $mono < 0) return(null);
+		return(array('clock' => trim($boot) . ':' . $match[1] . ':' . $match[2], 'mono' => $mono));
+	}
+
+	// Returns the owner token on success, false when the hash is already
+	// claimed, and null when the claim store could not be updated. All owner
+	// changes happen in one RuTrackerState::update() transaction.
+	static private function claimCheck($hash, $now, &$expiredPrevious = null)
+	{
+		$expiredPrevious = false;
 		$token = bin2hex(random_bytes(8));
 		$granted = false;
-		// $now can be a cycle-start snapshot. Diagnose large clock jumps using a
-		// fresh reading, without treating a future stamp as proof its owner died.
-		$wallNow = time();
 		$futureNotice = false;
-		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $wallNow, $token, &$granted, &$futureNotice) {
-			foreach($claims as $held => $entry)
+		$leaseNotice = null;
+		$leaseExpired = false;
+		// $now may be a cycle-start snapshot, so diagnose future stamps with
+		// a fresh wall reading. Wall time is never used to expire ownership.
+		$wallNow = time();
+		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $wallNow, $token,
+			&$granted, &$futureNotice, &$leaseNotice, &$leaseExpired) {
+			if(array_key_exists($hash, $claims))
 			{
-				// An unreadable claim is RETAINED and goes on blocking: its
-				// holder may still be mid-replacement. The hash is named, the value never is.
-				//
-				// Ungated, because retained here means retained for ever: a
-				// readable stamp ages out on the next line, an unreadable one
-				// has no age to measure, and the only other exit from this
-				// document is releaseCheck() -- which runs solely for a worker
-				// holding this entry's own token, a token no worker can be
-				// granted while the entry blocks. The hash it names is never
-				// checked again. See logUnrepairable().
+				$entry = $claims[$hash];
 				$since = self::claimSince($entry);
 				if($since === null)
 				{
-					// Only the entry blocking THIS caller. The loop walks every
-					// claim in the document, and flushVerdicts() calls in here
-					// once per deferred verdict, so reporting each corrupt one
-					// it passes turns a single wedged hash into a flood of
-					// identical lines every cycle. Silence and noise are both
-					// ways of not being read; the caller who is actually
-					// refused is the one who needs telling.
-					if($held === $hash)
-						self::logUnrepairable("claimCheck: the claim on " . $held
-							. " carries an unreadable timestamp; it is kept and keeps blocking,"
-							. " and nothing will retire it");
+					self::logUnrepairable('claimCheck: the claim on ' . $hash
+						. ' carries an unreadable timestamp; it is kept and keeps blocking,'
+						. ' and nothing will retire it');
+					return($claims);
 				}
-				elseif($held === $hash && ($since - $wallNow) > self::MAX_LOCK_TIME)
+
+				$reason = null;
+				$owner = is_array($entry) ? ($entry['token'] ?? null) : null;
+				if(!is_string($owner) || !preg_match('/^[0-9a-f]{16}$/D', $owner))
+					$reason = 'legacy-or-invalid-token';
+				else
 				{
-					// Mark this exact generation under the claim document lock.
-					// The owner still releases by token; the notice cannot steal it.
-					if(!is_array($entry)) $entry = array('since' => $since);
-					if(!isset($entry['future_notice']) || $entry['future_notice'] !== $since)
+					$clock = self::claimClock();
+					if($clock === null) $reason = 'monotonic-clock-unavailable';
+					else
 					{
-						$entry['future_notice'] = $since;
-						$claims[$held] = $entry;
-						$futureNotice = true;
+						$observed = $entry['lease_observed'] ?? null;
+						$matches = is_array($observed)
+							&& ($observed['since'] ?? null) === $since
+							&& ($observed['token'] ?? null) === $owner
+							&& ($observed['clock'] ?? null) === $clock['clock']
+							&& isset($observed['mono']) && is_int($observed['mono'])
+							&& $observed['mono'] >= 0 && $observed['mono'] <= $clock['mono'];
+						if($matches && ($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000)
+						{
+							unset($claims[$hash]);
+							$leaseExpired = true;
+						}
+						elseif(!$matches)
+						{
+							// This sample follows the locked read of the existing entry.
+							// A changed generation or clock begins a whole new lease.
+							$entry['lease_observed'] = array('since' => $since, 'token' => $owner,
+								'clock' => $clock['clock'], 'mono' => $clock['mono']);
+							$reason = is_array($observed) ? 'monotonic-observation-reset' : null;
+						}
 					}
 				}
-				elseif(($now - $since) > self::MAX_LOCK_TIME) unset($claims[$held]);
+
+				if(array_key_exists($hash, $claims))
+				{
+					if($reason !== null && (!is_array($entry) || ($entry['lease_notice'] ?? null) !== $reason))
+					{
+						if(!is_array($entry)) $entry = array('since' => $since);
+						$entry['lease_notice'] = $reason;
+						$leaseNotice = $reason;
+					}
+					if(($since - $wallNow) > self::MAX_LOCK_TIME)
+					{
+						if(!is_array($entry)) $entry = array('since' => $since);
+						if(($entry['future_notice'] ?? null) !== $since
+							|| ($entry['future_notice_token'] ?? null) !== $owner)
+						{
+							$entry['future_notice'] = $since;
+							$entry['future_notice_token'] = $owner;
+							$futureNotice = true;
+						}
+					}
+					$claims[$hash] = $entry;
+				}
 			}
-			if(isset($claims[$hash])) return($claims);
+			if(array_key_exists($hash, $claims)) return($claims);
 			$granted = true;
 			$claims[$hash] = array('since' => (int) $now, 'token' => $token);
 			return($claims);
 		});
-		// A claim nobody could write down is not a claim: the next process
-		// would read the same free slot and pump too. Keep this distinguishable
-		// from contention so callers do not report a live worker that does not
-		// exist or accidentally release an untokened claim.
 		if(!$stored)
 		{
 			if(!self::$claimStoreFailureLogged)
 			{
-				self::logUnrepairable("claimCheck: claim storage is unavailable for meta-claims;"
-					. " torrent checks are deferred until the document and its lock are writable");
+				self::logUnrepairable('claimCheck: claim storage is unavailable for meta-claims;'
+					. ' torrent checks are deferred until the document and its lock are writable');
 				self::$claimStoreFailureLogged = true;
 			}
 			return(null);
 		}
 		self::$claimStoreFailureLogged = false;
 		if($futureNotice)
-			self::logUnrepairable("claimCheck: the claim on " . $hash
-				. " has a future timestamp; clock rollback or claim-store corruption"
-				. " can block checks until wall time catches up; retained to protect its possible owner");
+			self::logUnrepairable('claimCheck: the claim on ' . $hash
+				. ' has a future timestamp; retained for its possible owner and observed for a monotonic lease');
+		if($leaseNotice !== null)
+			self::logUnrepairable('claimCheck: the claim on ' . $hash
+				. ' is retained: ' . $leaseNotice . '; automatic expiry deferred');
+		if($leaseExpired)
+			self::logUnrepairable('claimCheck: the claim on ' . $hash
+				. ' completed its observed monotonic lease; a new owner was granted');
+		$expiredPrevious = $leaseExpired && $granted;
 		return($granted ? $token : false);
 	}
 
@@ -1358,7 +1396,7 @@ class ruTrackerChecker
 	// execution, writes the matching recovery marker before stop/close. Its
 	// exact returned marker is the only state source PHP accepts afterwards.
 	static private function replacementStopCommand($oldHash, $newHash, $stagedAt,
-		$stoppedFallback = null)
+		$stoppedFallback = null, $localId = null)
 	{
 		$started = self::encodeInheritance($newHash, true, true, $stagedAt);
 		$open = self::encodeInheritance($newHash, false, true, $stagedAt);
@@ -1368,10 +1406,23 @@ class ruTrackerChecker
 		$notStarted = getCmd('branch=') . getCmd('d.is_open=')
 			. ',' . self::quoteRtorrentArgument(self::replacementStopBody($open))
 			. ',' . self::quoteRtorrentArgument(self::replacementStopBody($stopped));
+		$startedBody = self::replacementStopBody($started);
+		if($localId !== null)
+		{
+			$stateBranch = getCmd('branch=') . getCmd('d.get_state=')
+				. ',' . self::quoteRtorrentArgument($startedBody)
+				. ',' . self::quoteRtorrentArgument($notStarted);
+			return(new rXMLRPCCommand('branch', array(
+				$oldHash,
+				'equal=' . getCmd('d.get_local_id=') . ',cat=' . $localId,
+				$stateBranch,
+				'cat=stale-generation',
+			)));
+		}
 		return(new rXMLRPCCommand('branch', array(
 			$oldHash,
 			getCmd('d.get_state='),
-			self::replacementStopBody($started),
+			$startedBody,
 			$notStarted,
 		)));
 	}
@@ -1685,7 +1736,7 @@ class ruTrackerChecker
 		$stoppedMarker = $stoppedFallback !== null ? $stoppedFallback
 			: self::encodeInheritance($newHash, false, false, $stagedAt);
 		$stop = new rXMLRPCRequest(self::replacementStopCommand(
-			$hash, $newHash, $stagedAt, $stoppedFallback));
+			$hash, $newHash, $stagedAt, $stoppedFallback, self::activeRunLocalId($hash)));
 		$stop->important = false;
 		if(!$stop->success() || $stop->fault || !is_array($stop->val)
 			|| count($stop->val) !== 1 || !is_string($stop->val[0])
@@ -2183,7 +2234,8 @@ class ruTrackerChecker
 		// per-hash claim first, then refresh state, time and label under that same
 		// claim so the branch below is chosen from one live reading. A second
 		// claim inside either branch would deadlock against our own token.
-		$claimToken = self::claimCheck($hash, time());
+		$expiredPrevious = false;
+		$claimToken = self::claimCheck($hash, time(), $expiredPrevious);
 		if($claimToken === null)
 			return(false);
 		if($claimToken === false)
@@ -2231,7 +2283,11 @@ class ruTrackerChecker
 				return($state != self::STE_CANT_REACH_TRACKER);
 			}
 
-			if(($state==self::STE_INPROGRESS) && ((time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
+			// The claim may have expired on monotonic time while chk-time is still
+			// future-dated after a wall-clock rollback. Only that proved takeover
+			// may bypass the old wall-clock in-progress check.
+			if(($state==self::STE_INPROGRESS)
+				&& ($expiredPrevious || (time()-$time)>self::MAX_LOCK_TIME)) $state = 0;
 
 			if($state!==self::STE_INPROGRESS){
 				$previous = $state;
