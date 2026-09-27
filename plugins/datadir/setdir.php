@@ -36,6 +36,7 @@ $is_ok = true;
 if( count( $argv ) < 6 )
 {
 	Debug( "called without arguments (at least 5 params wanted)" );
+	FileUtil::toLog( 'datadir: worker refused: invalid-arguments' );
 	$is_ok = false;
 }
 else {
@@ -46,7 +47,13 @@ else {
 	$move_fastresume = trim( $argv[5] );
 }
 
-if( $is_ok && $hash && strlen( $datadir ) > 0 )
+if( $is_ok && (strlen($hash) != 40 || !ctype_xdigit($hash) || $datadir == '') )
+{
+	FileUtil::toLog( 'datadir: worker refused: invalid-arguments' );
+	$is_ok = false;
+}
+
+if( $is_ok )
 {
 	Debug( "hash        : ".$hash );
 	Debug( "data dir    : ".$datadir );
@@ -57,6 +64,7 @@ if( $is_ok && $hash && strlen( $datadir ) > 0 )
 	if( !rtMkDir( $datadir, 0777 ) )
 	{
 		Debug( "can't create ".$datadir );
+		FileUtil::toLog( 'datadir: destination-create-failed hash='.$hash );
 	}
 	else
 	{
@@ -66,7 +74,10 @@ if( $is_ok && $hash && strlen( $datadir ) > 0 )
 		if( $result === null )
 			Debug( "rtSetDataDir() pending confirmation" );
 		elseif( $result === false )
+		{
 			Debug( "rtSetDataDir() fail!" );
+			FileUtil::toLog( 'datadir: transfer-failed hash='.$hash );
+		}
 	}
 }
 

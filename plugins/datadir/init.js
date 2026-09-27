@@ -22,12 +22,10 @@ theWebUI.EditDataDir = function()
 
 theWebUI.showDataDirDlg = function( d )
 {
-	var is_done = false;
 	var is_multy = false;
 	const torrent = firstSelectedTorrent();
 	if( torrent )
 	{
-		is_done = String(torrent.done).trim() === "1000";
 		is_multy = String(torrent.multi_file).trim() !== "0";
 	}
 	$('#edit_datadir').val( d.savepath.trim() );
@@ -35,8 +33,6 @@ theWebUI.showDataDirDlg = function( d )
 	// can't ignore torrent's path if not multy
 	$('#move_not_add_path').prop("disabled",!is_multy).prop("checked",false);
 	$('#move_datafiles').prop("checked",true);
-	// can't "fast resume" torrent if not completed
-	$('#move_fastresume').prop("disabled",!is_done).prop("checked",false);
 	theDialogManager.show( "dlg_datadir" );
 }
 
@@ -127,8 +123,7 @@ rTorrentStub.prototype.setdatadir = function()
 	this.content = "hash=" + id +
 		"&datadir=" + encodeURIComponent( $('#edit_datadir').val() ) +
 		"&move_addpath=" + ( $$('move_not_add_path').checked  ? '0' : '1' ) +
-		"&move_datafiles=" + ( $$('move_datafiles').checked  ? '1' : '0' ) +
-		"&move_fastresume=" + ( $$('move_fastresume').checked  ? '1' : '0' );
+		"&move_datafiles=" + ( $$('move_datafiles').checked  ? '1' : '0' );
 	this.contentType = "application/x-www-form-urlencoded";
 	this.mountPoint = "plugins/datadir/action.php";
 	this.dataType = "json";
@@ -152,10 +147,6 @@ plugin.onLangLoaded = function() {
 				$("<div>").addClass("offset-md-2 col-md-10").append(
 					$("<input>").attr({type: "checkbox", id: "move_datafiles"}),
 					$("<label>").attr({for: "move_datafiles"}).text(theUILang.DataDirMove),
-				),
-				$("<div>").addClass("offset-md-2 col-md-10").append(
-					$("<input>").attr({type: "checkbox", id: "move_fastresume"}),
-					$("<label>").attr({for: "move_fastresume"}).text(theUILang.doFastResume),
 				),
 			),
 		),

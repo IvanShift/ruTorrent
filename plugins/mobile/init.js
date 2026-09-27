@@ -1725,11 +1725,9 @@ plugin.showDataDir = function() {
   var d = this.torrent;
   var fill = function(savepath) {
     $('#datadir_edit').val(savepath);
-    // Same rules as the desktop dialog (plugins/datadir/init.js):
-    // path can't be ignored for single-file torrents, fast resume needs a completed torrent
+    // Match the desktop dialog: a single-file torrent keeps its own path.
     $('#datadir_not_add_path').prop('disabled', String(d.multi_file).trim() === '0').prop('checked', false);
     $('#datadir_move').prop('checked', true);
-    $('#datadir_fastresume').prop('disabled', String(d.done).trim() !== '1000').prop('checked', false);
     $('#dataDirOk').prop('disabled', false);
     // Remember the initial form state, so an OK without any changes can
     // be treated as a cancel (see sendDataDir)
@@ -1753,8 +1751,7 @@ plugin.showDataDir = function() {
 plugin.dataDirFormState = function() {
   return $('#datadir_edit').val() + '|' +
     $('#datadir_not_add_path').prop('checked') + '|' +
-    $('#datadir_move').prop('checked') + '|' +
-    $('#datadir_fastresume').prop('checked');
+    $('#datadir_move').prop('checked');
 };
 
 plugin.sendDataDir = function() {
@@ -1777,8 +1774,7 @@ plugin.sendDataDir = function() {
     data: 'hash=' + this.torrent.hash +
       '&datadir=' + encodeURIComponent($('#datadir_edit').val()) +
       '&move_addpath=' + ($('#datadir_not_add_path').prop('checked') ? '0' : '1') +
-      '&move_datafiles=' + ($('#datadir_move').prop('checked') ? '1' : '0') +
-      '&move_fastresume=' + ($('#datadir_fastresume').prop('checked') ? '1' : '0'),
+      '&move_datafiles=' + ($('#datadir_move').prop('checked') ? '1' : '0'),
     success: function(d) {
       $('#dataDirOk').prop('disabled', false);
       if (d && d.errors && d.errors.length) {
@@ -2714,7 +2710,6 @@ plugin.onLangLoaded = function() {
   $('#dataDirHeader').text(theUILang.datadirDlgCaption || theUILang.Save_path);
   $('#dataDirAddPath').append(' ' + theUILang.Dont_add_tname);
   $('#dataDirMove').append(' ' + (theUILang.DataDirMove || ''));
-  $('#dataDirFastResume').append(' ' + theUILang.doFastResume);
   $('#dataDirOk').text(theUILang.ok);
   $('#dataDirCancel').text(theUILang.Cancel);
 

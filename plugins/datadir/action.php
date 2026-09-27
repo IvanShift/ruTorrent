@@ -26,14 +26,14 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 	$datadir = "";
 	$move_addpath = "1";
 	$move_datafiles = "0";
-	$move_fastresume = "1";
+	$move_fastresume = "0";
 	foreach( $vars as $var )
 	{
 		$parts = explode( "=", $var );
 		if( $parts[0] == "hash" )
 		{
 			$hash = trim( $parts[1] );
-			if( !ctype_xdigit($hash) )
+			if( strlen($hash) != 40 || !ctype_xdigit($hash) )
 			{
 				$hash = null;
 			}
@@ -91,7 +91,11 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 					" ".escapeshellarg(User::getUser())." & exit 0",
 			),
 			$datadir_debug_enabled );
+		if( !$res )
+			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
 	}
+	else
+		FileUtil::toLog( 'datadir: setdatadir refused: '.($hash ? 'invalid destination' : 'invalid hash') );
 
 	if( !$res )
 	{

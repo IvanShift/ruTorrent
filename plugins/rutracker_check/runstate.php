@@ -276,6 +276,12 @@ class RuTrackerAtomicOwnership
         'chk-meta-topic',
     );
 
+    /** Keys that may carry a checker transaction or its durable revival stamp. */
+    static public function ownershipKeys()
+    {
+        return self::$allowedCustomKeys;
+    }
+
     static public function quoteRtorrentArgument($value)
     {
         return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), (string) $value) . '"';
