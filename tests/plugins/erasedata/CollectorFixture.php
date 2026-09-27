@@ -900,7 +900,7 @@ class ErasedataProductionMirror
 	{
 		return(array('action.php', 'collector.php', 'conf.php', 'done.php',
 			'erase.php', 'filesystem.php', 'init.php', 'manifest.php',
-			'pending.php', 'removewithdata.php', 'update.php'));
+			'pending.php', 'removewithdata.php', 'status.php', 'update.php'));
 	}
 
 	public static function build($root, $sourceRoot, $user = 'rutorrent')

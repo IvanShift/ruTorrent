@@ -8072,6 +8072,52 @@ class RemoveWithDataTest extends TestCase
 			'the retry clears a completed intent');
 	}
 
+	public function testCrashAfterPrivateRmdirBeforeCompletedPhaseRetainsIntent()
+	{
+		foreach(array(1, 2) as $force)
+		{
+			$this->reset();
+			$hash = $this->hash((string)$force);
+			$base = $this->dir.'/post-rmdir-before-phase-'.$force;
+			mkdir($base);
+			$file = $base.'/payload.bin';
+			if($force === 2)
+				file_put_contents($file, 'payload');
+			$this->writeManifestLines($hash.'.list', array($file),
+				$base, 1, $force);
+			$manifestPath = $this->queuePath().'/'.$hash.'.list';
+			$manifest = file_get_contents($manifestPath);
+			list($status, $output) = $this->runCollector(array('filesystem' => array(
+				'removeDirectory:*' => array('basename' => 'directory',
+					'action' => 'exit', 'at' => 'after'))));
+			$this->assertEquals(0, $status,
+				'collector exits just after private rmdir, force='.$force.': '.$output);
+			$private = glob($this->dir.'/.erasedata-rmdir-*/directory');
+			$capturedGone = !is_dir($base);
+			foreach($private as $candidate)
+				$capturedGone = $capturedGone && !is_dir($candidate);
+			$this->assertTrue($capturedGone,
+				'the captured directory is gone before the phase write, force='.$force);
+			$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+			$this->assertEquals(1, count($intents),
+				'one durable intent survives, force='.$force);
+			if(count($intents) !== 1)
+				continue;
+			$record = json_decode(file_get_contents($intents[0]), true);
+			$this->assertEquals('captured', isset($record['phase']) ? $record['phase'] : null,
+				'the successful rmdir has no durable completion proof, force='.$force);
+			list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			$this->assertEquals(0, $status, 'replay exits, force='.$force.': '.$output);
+			$this->assertEquals($manifest, @file_get_contents($manifestPath),
+				'ambiguous replay retains the exact manifest, force='.$force);
+			$this->assertTrue(strpos($output, 'directory-intent-unresolved') !== false,
+				'the unresolved intent is visible in the journal, force='.$force);
+			$this->assertEquals(1, count(glob(
+				$this->queuePath().'/.erasedata-rmdir-intent-*')),
+				'replay keeps its recovery evidence, force='.$force);
+		}
+	}
+
 	public function testCompletedDirectoryIntentReplaysAfterProcessExitBeforeClear()
 	{
 		$this->reset();
@@ -16845,6 +16891,11 @@ class RemoveWithDataTest extends TestCase
 			'a file that really is in the queue, not a reconstruction of one');
 		$this->assertTrue(strpos($line, $queue) === false,
 			'without leaking the queue directory or the settings root: '.$line);
+		$status = erasedataRetirementScan(array('listPath' => $queue));
+		$this->assertTrue(!$status['empty'] && !$status['unreadable']
+			&& $status['classes']['pending'] === 1
+			&& $status['classes']['staging'] === 1,
+			'the read-only UI status scan still sees the stranded queue after diagnostics quiet');
 	}
 
 	// The preview is only an optimization. A sibling's RPC can race the human

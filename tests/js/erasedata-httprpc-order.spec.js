@@ -13,10 +13,13 @@ test("erasedata keeps its force value after httprpc initializes", () => {
   window.theUILang = {};
   for (const src of ["../js/common.js", "../js/content.js", "../js/rtorrent.js"])
     load(src);
+  const ajax = jest.spyOn($, "ajax").mockImplementation(() => {});
   load("../plugins/erasedata/init.js",
     "(function () { var plugin = { enabled: true, replaceRemoveTorrent: true, " +
-      "force_delete: false, enableForceDeletion: false, loadLang() {}, canChangeMenu() { return true; } };\n",
+      "force_delete: false, enableForceDeletion: false, loadLang() {}, canChangeMenu() { return true; }, " +
+      "addPaneToStatusbar() {}, markLoaded() {} };\n",
     "\n})();");
+  ajax.mockRestore();
   load("../plugins/httprpc/init.js",
     "(function () { var plugin = { enabled: true };\n", "\n})();");
 

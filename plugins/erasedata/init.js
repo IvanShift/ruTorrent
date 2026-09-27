@@ -89,3 +89,84 @@ if(plugin.canChangeMenu())
 		}
 	}
 }
+
+// The drain can keep a durable obligation after the removal request has left
+// the browser. Surface a queue that stays nonempty through several worker ticks.
+plugin.init = function()
+{
+	plugin.queueSince = null;
+	plugin.queueMessage = null;
+	plugin.queueRemoved = false;
+	plugin.queueUnavailableMessage = "Deletion queue status unavailable. Inspect the erasedata queue.";
+	plugin.addPaneToStatusbar("erasedata-queue-pane",
+		$("<div>").append($("<span>").attr("id", "erasedata-queue-status")),
+		1, true);
+	$("#erasedata-queue-pane").hide();
+
+	plugin.showQueueStatus = function(message)
+	{
+		if(plugin.queueMessage === message)
+			return;
+		plugin.queueMessage = message;
+		$("#erasedata-queue-status").text(message || "");
+		$("#erasedata-queue-pane").toggle(!!message);
+		if(message)
+			noty(message, "error");
+	};
+	plugin.checkQueue = function()
+	{
+		$.ajax({
+			type: "GET",
+			url: "plugins/erasedata/status.php",
+			dataType: "json",
+			cache: false,
+			timeout: theWebUI.settings["webui.reqtimeout"],
+			success: function(status)
+			{
+				if(plugin.queueRemoved)
+					return;
+				if(!status || typeof status.candidates !== "number" || status.unreadable)
+				{
+					plugin.showQueueStatus(plugin.queueUnavailableMessage);
+					return;
+				}
+				if(plugin.queueMessage === plugin.queueUnavailableMessage)
+					plugin.showQueueStatus(null);
+				if(status.empty)
+				{
+					plugin.queueSince = null;
+					plugin.showQueueStatus(null);
+				}
+				else
+				{
+					if(plugin.queueSince === null)
+						plugin.queueSince = Date.now();
+					if(Date.now() - plugin.queueSince >= 300000)
+						plugin.showQueueStatus("Deletion queue remains nonempty. Check the server log.");
+				}
+			},
+			error: function()
+			{
+				if(!plugin.queueRemoved)
+					plugin.showQueueStatus(plugin.queueUnavailableMessage);
+			},
+			complete: function()
+			{
+				if(!plugin.queueRemoved)
+					plugin.queueTimer = window.setTimeout(plugin.checkQueue, 60000);
+			}
+		});
+	};
+	plugin.checkQueue();
+	plugin.markLoaded();
+};
+
+plugin.onRemove = function()
+{
+	plugin.queueRemoved = true;
+	if(plugin.queueTimer)
+		window.clearTimeout(plugin.queueTimer);
+	plugin.removePaneFromStatusbar("erasedata-queue-pane");
+};
+
+plugin.init();
