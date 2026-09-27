@@ -316,14 +316,16 @@ $tests = array(
             testAssertTrue(in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
                 'HTTPS request advertises gzip when enabled');
             $fallback = new SnoopyWithoutZlib();
-            testAssertSame(true, $fallback->fetch('https://example.test/file'),
-                'HTTPS external gzip fallback completes');
-            testAssertSame('https decoded', $fallback->results,
-                'HTTPS fallback reads the curl body');
-            testAssertSame('200', $fallback->status,
-                'gzip child exit does not replace curl HTTP status');
+            testAssertSame(false, $fallback->fetch('https://example.test/file'),
+                'HTTPS gzip is refused without zlib');
+            testAssertSame('', $fallback->results,
+                'unsupported compressed body is not exposed');
+            testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $fallback->status,
+                'unsupported gzip cannot look like HTTP success');
+            testAssertSame('gzip-decoder-unavailable', $fallback->error,
+                'HTTPS refusal names the missing decoder');
             testAssertSame(false, in_array('Accept-Encoding: gzip', snoopyCurlArgs(), true),
-                'fallback does not advertise gzip without zlib');
+                'no-zlib client does not advertise gzip');
             file_put_contents($bodyFile, 'invalid gzip bytes');
             testAssertSame(false, $client->fetch('https://example.test/file'),
                 'invalid gzip body is refused');
@@ -349,37 +351,15 @@ $tests = array(
             unlink($bodyFile);
         }
     },
-    'external gzip fallback keeps paths with spaces and bounds output' => function () {
-        global $pathToExternals;
-        $wrapper = sys_get_temp_dir() . '/snoopy gzip ' . getmypid() . '.sh';
-        file_put_contents($wrapper, "#!/bin/sh\nexec gzip \"\$@\"\n");
-        chmod($wrapper, 0700);
-        $previous = $pathToExternals['gzip'] ?? null;
-        $pathToExternals['gzip'] = $wrapper;
-        try {
-            list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
-                gzencode('external body'), null, new SnoopyWithoutZlib());
-            testAssertSame(true, $ok, 'fallback decoded gzip through argv-safe command');
-            testAssertSame('external body', $client->results, 'fallback keeps its body');
-            list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
-                gzencode(str_repeat('x', 4096)), 128, new SnoopyWithoutZlib());
-            testAssertSame(false, $ok, 'fallback refuses expanded body over maxlength');
-            testAssertSame('', $client->results, 'fallback does not expose oversized body');
-            list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
-                gzencode('first').gzencode('second'), null, new SnoopyWithoutZlib());
-            testAssertSame(true, $ok, 'fallback decodes every gzip member');
-            testAssertSame('firstsecond', $client->results, 'fallback keeps every member body');
-            list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
-                gzencode('first').'junk', null, new SnoopyWithoutZlib());
-            testAssertSame(false, $ok, 'fallback refuses trailing garbage');
-            list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
-                gzencode('first')."\0\0", null, new SnoopyWithoutZlib());
-            testAssertSame(true, $ok, 'fallback accepts gzip zero padding');
-            testAssertSame('first', $client->results, 'fallback padding adds no body data');
-        } finally {
-            $pathToExternals['gzip'] = $previous;
-            unlink($wrapper);
-        }
+    'no-zlib gzip response refuses bytes without a trusted decoder' => function () {
+        list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
+            gzencode('valid response'), null, new SnoopyWithoutZlib());
+        testAssertSame(false, $ok, 'no-zlib gzip response must fail closed');
+        testAssertSame('', $client->results, 'unverified gzip body stays hidden');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+            'unsupported gzip must not look like HTTP success');
+        testAssertSame('gzip-decoder-unavailable', $client->error,
+            'plain HTTP refusal names the missing decoder');
     },
     'plain HTTP chunked bodies are decoded before gzip' => function () {
         list($ok, $client) = snoopyPlainHttpReply('Transfer-Encoding: chunked',

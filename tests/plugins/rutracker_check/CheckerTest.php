@@ -2388,13 +2388,13 @@ class CheckerTest
 			try
 			{
 				Snoopy::$nextStatus = Snoopy::RESPONSE_BODY_FAILED;
-				Snoopy::$nextError = 'invalid-or-oversized-gzip';
+				Snoopy::$nextError = 'gzip-decoder-unavailable';
 				$client = ruTrackerChecker::makeClient('https://bt4.t-ru.org/ann');
 				strictAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
 					'failed body cannot retain HTTP 200 as its verdict');
 				strictAssertSame(1, count(FileUtil::$log), 'body failure is logged once');
 				strictAssertTrue(strpos(FileUtil::$log[0],
-					'transport=response-body status=-101 reason=invalid error=invalid-or-oversized-gzip') !== false,
+					'transport=response-body status=-101 reason=body-refusal error=gzip-decoder-unavailable') !== false,
 					'the log gives the classified body reason, not remote bytes');
 			}
 			finally

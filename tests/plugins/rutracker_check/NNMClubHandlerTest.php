@@ -517,11 +517,11 @@ $suite->test('a failed HTTP 200 body stays retryable and logs its classified rea
     nnmReset();
     strictInvoke('NNMClubCheckImpl', 'guestFetch',
         array(new NNMGuestFetchDouble(Snoopy::RESPONSE_BODY_FAILED,
-            'invalid-or-oversized-gzip'), $topic));
+            'gzip-decoder-unavailable'), $topic));
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
         'body failure is logged once');
     strictAssertTrue(strpos($line,
-        'transport=response-body status=-101 reason=invalid error=invalid-or-oversized-gzip') !== false,
+        'transport=response-body status=-101 reason=body-refusal error=gzip-decoder-unavailable') !== false,
         'body failure has a classified reason even when HTTP was 200');
 });
 

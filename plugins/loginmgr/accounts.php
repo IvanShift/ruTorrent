@@ -173,10 +173,9 @@ abstract class commonAccount
 	}
 
 	// True when $client->results is something a strpos() marker test can read.
-	// Snoopy does not always leave a string there: when a gzipped body arrives
-	// on a build without gzinflate() it shells out to gzip, and if the
-	// decompressed file is missing the body is lost. strpos() on a non-string
-	// is fatal in PHP 8, and every marker test under accounts/ is a strpos().
+	// Failed or unsupported decompression cannot supply a readable marker.
+	// Keep the type guard for other transports and test doubles: strpos() on
+	// a non-string is fatal in PHP 8.
 	protected function hasReadableBody($client)
 	{
 		return(is_object($client) && is_string($client->results) && ($client->results!==''));

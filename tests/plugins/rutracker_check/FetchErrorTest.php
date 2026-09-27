@@ -44,6 +44,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
         'oversized-response' => 'oversized-response',
         'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
+        'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
     );
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
@@ -73,6 +74,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
         'oversized-response' => 'oversized-response',
         'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
+        'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
     );
     strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
@@ -81,6 +83,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         $isBodyRefusal = in_array($token, array(
             'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
             'oversized-response', 'invalid-or-oversized-gzip',
+            'gzip-decoder-unavailable',
             'unreadable-or-oversized-response'), true);
         $pattern = $isBodyRefusal
             ? '/refuseResponseBody\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'

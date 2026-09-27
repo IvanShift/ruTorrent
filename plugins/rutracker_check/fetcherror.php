@@ -92,6 +92,7 @@ class RuTrackerFetchError
 			'invalid-or-oversized-chunked' => '/^invalid-or-oversized-chunked$/i',
 			'oversized-response' => '/^oversized-response$/i',
 			'invalid-or-oversized-gzip' => '/^invalid-or-oversized-gzip$/i',
+			'gzip-decoder-unavailable' => '/^gzip-decoder-unavailable$/i',
 			'unreadable-or-oversized-response' => '/^unreadable-or-oversized-response$/i',
 		);
 		foreach($classes as $token => $pattern)

@@ -282,10 +282,9 @@ $tests = array(
     },
 
     'a body the transport could not decompress is refused, not fatal' => function () {
-        // php/Snoopy.class.inc shells out to gzip when it has no gzinflate();
-        // a failed decompression used to leave exec()'s output array in
-        // ->results, and every marker test under accounts/ is a strpos(),
-        // which is fatal on an array in PHP 8.
+        // Historically, a failed Snoopy gzip shell-out left exec()'s output
+        // array in ->results; every marker test under accounts/ is a strpos().
+        // The guard remains necessary for non-string transport results.
         list($account, $client) = caWarmProbe(array(array(200, array('gzip: stdin: not in gzip format'))));
         testAssertSame(false, caFetch($account, $client), 'a non-string body is refused');
         testAssertSame(0, $account->logins, 'and is not read as a dead session either');

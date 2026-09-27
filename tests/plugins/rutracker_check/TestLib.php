@@ -485,6 +485,7 @@ function fetchErrorParityCases()
         array('invalid-or-oversized-chunked', 'invalid-or-oversized-chunked'),
         array('oversized-response', 'oversized-response'),
         array('invalid-or-oversized-gzip', 'invalid-or-oversized-gzip'),
+        array('gzip-decoder-unavailable', 'gzip-decoder-unavailable'),
         array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
@@ -510,7 +511,8 @@ function fetchErrorTokenVocabulary()
     return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
         'redirect-refused', 'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
-        'invalid-or-oversized-gzip', 'unreadable-or-oversized-response', 'unclassified');
+        'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
+        'unreadable-or-oversized-response', 'unclassified');
 }
 
 function strictInvoke($className, $method, $arguments = array())
@@ -1140,7 +1142,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         {
             $status = (int) $status;
             if ($status === Snoopy::RESPONSE_BODY_FAILED)
-                return 'transport=response-body status=' . $status . ' reason=invalid';
+                return 'transport=response-body status=' . $status . ' reason=body-refusal';
             if ($status < 0) {
                 $reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
                 $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';

@@ -2283,7 +2283,7 @@ class ruTrackerChecker
 	{
 		$status = (int) $status;
 		if($status === Snoopy::RESPONSE_BODY_FAILED)
-			return('transport=response-body status=' . $status . ' reason=invalid');
+			return('transport=response-body status=' . $status . ' reason=body-refusal');
 		if($status < 0)
 		{
 			$reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');

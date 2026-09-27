@@ -736,6 +736,13 @@ class Snoopy
 		return(false);
 	}
 
+	protected function refuseGzipBody()
+	{
+		if(!$this->hasZlibGzip())
+			return($this->refuseResponseBody('gzip-decoder-unavailable'));
+		return($this->refuseResponseBody('invalid-or-oversized-gzip'));
+	}
+
 	protected static function isGzipContentEncoding($header)
 	{
 		return(preg_match('/^Content-Encoding[ \t]*:[ \t]*gzip[ \t]*$/i',
@@ -798,7 +805,7 @@ class Snoopy
 	}
 
 	// Decode bounded chunks so a small compressed answer cannot expand without
-	// limit. The external path exists only for PHP builds without zlib.
+	// limit. The old external fallback trusted gzip's exit status, which can ignore trailing bytes.
 	protected function decodeGzipBody($encoded)
 	{
 		$limit = (int)$this->maxlength;
@@ -838,34 +845,7 @@ class Snoopy
 			}
 			return($decoded);
 		}
-		if(!function_exists('proc_open'))
-			return(false);
-		$input = @tmpfile();
-		if(!is_resource($input))
-			return(false);
-		try
-		{
-			$path = stream_get_meta_data($input)['uri'];
-			if(@fwrite($input, $encoded) !== strlen($encoded) || !@fflush($input))
-				return(false);
-			$process = @proc_open(array(Utility::getExternal('gzip'), '-dc', $path),
-				array(0 => array('file', '/dev/null', 'r'),
-					1 => array('pipe', 'w'), 2 => array('file', '/dev/null', 'w')),
-				$pipes);
-			if(!is_resource($process))
-				return(false);
-			$output = stream_get_contents($pipes[1], $limit + 1);
-			if($output === false || strlen($output) > $limit)
-				@proc_terminate($process);
-			fclose($pipes[1]);
-			$status = proc_close($process);
-			return(is_string($output) && strlen($output) <= $limit && $status === 0
-				? $output : false);
-		}
-		finally
-		{
-			fclose($input);
-		}
+		return(false);
 	}
 
 	function _httprequest($url,$fp,$URI,$http_method,$content_type="",$body="")
@@ -1000,7 +980,7 @@ class Snoopy
 			$results = $this->decodeGzipBody($results);
 			if($results === false)
 			{
-				return($this->refuseResponseBody('invalid-or-oversized-gzip'));
+				return($this->refuseGzipBody());
 			}
 		}
 
@@ -1139,7 +1119,7 @@ class Snoopy
 				{
 					@unlink($headerfile);
 					@unlink($contfile);
-					return($this->refuseResponseBody('invalid-or-oversized-gzip'));
+					return($this->refuseGzipBody());
 				}
 			}
 			$this->results = $results;
