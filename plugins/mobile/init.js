@@ -20,6 +20,7 @@ plugin.rowsPrimed = false; /* true once the first render cycle has run */
 plugin.labelList = [];
 plugin.trackerList = [];
 plugin.faviconRequests = new Set();
+plugin.faviconFailures = Object.create(null);
 plugin.faviconVersion = Object.create(null);
 plugin.torrents = null;
 plugin.torrent = undefined;
@@ -562,7 +563,14 @@ plugin.warmTrackerFavicon = function(name) {
   this.faviconRequests.add(name);
   var request = new XMLHttpRequest();
   request.onloadend = () => {
-    if (request.status !== 200) return;
+    if (request.status !== 200) {
+      if ((request.status === 0 || request.status === 408 || request.status === 429 || request.status >= 500) &&
+          (plugin.faviconFailures[name] || 0) < 2) {
+        plugin.faviconFailures[name] = (plugin.faviconFailures[name] || 0) + 1;
+        setTimeout(() => plugin.faviconRequests.delete(name), 30000);
+      }
+      return;
+    }
     var version = Date.now();
     plugin.faviconVersion[name] = version;
     $('#filterTrackersList img[data-tracker-icon]').each(function() {

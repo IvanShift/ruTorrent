@@ -40,6 +40,9 @@ $_SERVER = array_merge($_SERVER, json_decode(getenv('ROUTE_HEADERS'), true) ?: a
 $_GET = json_decode(getenv('ROUTE_GET'), true);
 $_POST = json_decode(getenv('ROUTE_POST'), true);
 $_REQUEST = array_merge($_GET, $_POST);
+register_shutdown_function(function () {
+    file_put_contents(getenv('ROUTE_STATUS_FILE'), (string) http_response_code());
+});
 // The shipped image has no SQLite extension. Keep the real GeoIP action and
 // capture its SQL when this test runtime lacks the extension as well.
 if (!class_exists('SQLite3')) {
@@ -87,6 +90,7 @@ PHP
             'ROUTE_BODY' => $body === null ? http_build_query($post) : $body,
             'ROUTE_HEADERS' => json_encode($headers),
             'ROUTE_SQL_TRACE' => $this->scratch . '/sql.log',
+            'ROUTE_STATUS_FILE' => $this->scratch . '/status',
         );
         $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
             $this->scratch . '/request.php'),
@@ -98,7 +102,9 @@ PHP
         $err = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
-        return array('exit' => proc_close($proc), 'out' => $out, 'err' => $err);
+        $exit = proc_close($proc);
+        return array('exit' => $exit, 'out' => $out, 'err' => $err,
+            'status' => (int) file_get_contents($this->scratch . '/status'));
     }
 
     private function assertRefused($route, $get)
@@ -462,6 +468,11 @@ PHP
         $same = $this->request($route, 'POST', array(),
             array('tracker' => '127.0.0.1', 'fetch' => '1'), null, $headers);
         $this->assertSame(0, $same['exit'], 'same-origin fetch exits cleanly: ' . $same['err']);
+        $this->assertSame(404, $same['status'], 'blocked favicon fetch is a permanent miss');
+        $this->assertSame('Favicon unavailable', $same['out'], 'POST returns no placeholder body');
+        $this->assertTrue(strpos(file_get_contents($this->scratch . '/errors.log'),
+            'tracklabels: favicon unavailable: invalid or refused tracker host') !== false,
+            'permanent refusal has a classified log reason');
         $this->assertTrue(!is_file($this->scratch . '/profile/settings/trackers/127.0.0.1.ico'),
             'same-origin fetch still refuses a private network address');
     }
@@ -488,7 +499,9 @@ PHP
                 'HTTP_ORIGIN' => 'http://localhost')),
             'ROUTE_SQL_TRACE' => $this->scratch . '/sql.log',
             'ROUTE_PROXY_PORT' => (string)$port,
+            'ROUTE_STATUS_FILE' => $this->scratch . '/status',
         );
+        $retryProc = null;
         $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
             $this->scratch . '/request.php'),
             array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
@@ -518,12 +531,44 @@ PHP
             $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico HTTP/') === 0,
                 'public literal remains the proxy request target');
             $this->assertSame($icon, $out, 'proxy-only favicon reaches the image response');
-            $this->assertSame($icon,
-                file_get_contents($this->scratch . '/profile/settings/trackers/93.184.216.34.ico'),
+            $cache = $this->scratch . '/profile/settings/trackers/93.184.216.34.ico';
+            $this->assertSame($icon, file_get_contents($cache),
                 'proxy-only favicon is cached');
+            unlink($cache);
+            $retryProc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
+                $this->scratch . '/request.php'),
+                array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+                $retryPipes, null, $env);
+            $this->assertTrue(is_resource($retryProc), 'unavailable favicon request starts');
+            fclose($retryPipes[0]);
+            for ($i = 0; $i < 2; $i++) {
+                $failedPeer = @stream_socket_accept($server, 3);
+                $this->assertTrue($failedPeer !== false, 'unavailable favicon reaches proxy');
+                if ($failedPeer === false) return;
+                stream_set_timeout($failedPeer, 2);
+                $request = '';
+                while (strpos($request, "\r\n\r\n") === false && strlen($request) < 8192) {
+                    $piece = fread($failedPeer, 4096);
+                    if ($piece === false || $piece === '') break;
+                    $request .= $piece;
+                }
+                fwrite($failedPeer, "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n");
+                fclose($failedPeer);
+            }
+            $failedOut = stream_get_contents($retryPipes[1]);
+            $failedErr = stream_get_contents($retryPipes[2]);
+            fclose($retryPipes[1]);
+            fclose($retryPipes[2]);
+            $this->assertSame(0, proc_close($retryProc), 'unavailable favicon exits: ' . $failedErr);
+            $this->assertSame('503', file_get_contents($this->scratch . '/status'),
+                'upstream failure is retryable to the browser');
+            $this->assertSame('Favicon unavailable', $failedOut,
+                'failed POST does not return the placeholder image');
+            $this->assertTrue(!is_file($cache), 'failed fetch does not cache a placeholder');
         } finally {
             fclose($server);
             if (is_resource($proc)) proc_terminate($proc);
+            if (is_resource($retryProc)) proc_terminate($retryProc);
         }
     }
 

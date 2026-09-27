@@ -123,6 +123,7 @@ if ($png_name !== null) {
 		try_send_image(dirname(__FILE__).substr($png_name, strlen($basepath)));
 
 
+		$retryable = false;
 		// The name below is fetched from as a host, so it has to be one: a name
 		// that is not a host name gets the placeholder instead of a request.
 		if ($isTracker && Utility::isHostname(basename($png_name, '.png'))) {
@@ -132,6 +133,7 @@ if ($png_name !== null) {
 			try_send_image(dirname(__FILE__).substr($ico_name, strlen($basepath)), 'image/x-icon');
 
 			if ($fetchRequested) {
+				$retryable = true;
 				ignore_user_abort(true);
 				set_time_limit(0);
 
@@ -155,6 +157,7 @@ if ($png_name !== null) {
 						else
 							try_send_image($ico_name, 'image/x-icon');
 					} else if (strpos($client->error, 'Refusing to fetch:') === 0) {
+						$retryable = strpos($client->error, 'non-public') === false;
 						FileUtil::toLog('tracklabels: favicon fetch refused: non-public or unresolved host');
 						break;
 					}
@@ -164,4 +167,10 @@ if ($png_name !== null) {
 	}
 }
 
+if ($fetchRequested) {
+    FileUtil::toLog('tracklabels: favicon unavailable: ' . ($retryable
+        ? 'source fetch failed' : 'invalid or refused tracker host'));
+    http_response_code($retryable ? 503 : 404);
+    exit('Favicon unavailable');
+}
 SendFile::send('./trackers/unknown.png', 'image/png');

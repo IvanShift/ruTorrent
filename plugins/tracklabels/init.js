@@ -4,6 +4,7 @@ theWebUI.torrentTrackerIds = new Map();
 plugin.injectedStyles = {};
 plugin.iconEditSuffix = {};
 plugin.faviconRequests = new Set();
+plugin.faviconFailures = Object.create(null);
 plugin.imageEditSuffix = {
 	tracker: {},
 	label: {},
@@ -171,6 +172,11 @@ plugin.imageURI = function (target, label, fetchMissing = true) {
 				catlist.refreshPanel.ptrackers();
 				theWebUI.update();
 				catlist.syncFn();
+			} else if ((request.status === 0 || request.status === 408 ||
+				request.status === 429 || request.status >= 500) &&
+				(plugin.faviconFailures[label] || 0) < 2) {
+				plugin.faviconFailures[label] = (plugin.faviconFailures[label] || 0) + 1;
+				setTimeout(() => plugin.faviconRequests.delete(label), 30000);
 			}
 		};
 		request.open('POST', 'plugins/tracklabels/action.php');
