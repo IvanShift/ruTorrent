@@ -5158,6 +5158,62 @@ class CheckerTest
 		});
 	}
 
+	// A daemon restart can leave a real claim behind after the wall clock moves
+	// backward. The timestamp is readable, but its lease cannot expire until
+	// the clock catches up; do not steal an active holder, and do not hide the
+	// long refusal behind the optional debug log.
+	public function testAFutureDatedClaimIsRetainedAndVisibleWithDebuggingOff()
+	{
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			$now = time();
+			$entry = array('since' => $now + 25 * 3600, 'token' => 'future-secret');
+			RuTrackerState::save('meta-claims', array(self::OLD_HASH => $entry));
+			FileUtil::$log = array();
+
+			strictAssertSame(false,
+				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),
+				'a future-dated claim still protects its possibly active owner');
+			$stored = RuTrackerState::load('meta-claims')[self::OLD_HASH];
+			strictAssertSame($entry['since'], $stored['since'],
+				'the future-dated claim keeps its timestamp');
+			strictAssertSame($entry['token'], $stored['token'],
+				'the future-dated claim keeps its owner token');
+			strictAssertSame($entry['since'], $stored['future_notice'],
+				'the notice is stored with this generation for the next CLI process');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'future timestamp',
+				'a long clock rollback is visible at the shipped debug setting');
+			strictAssertTrue(strpos($line, self::OLD_HASH) !== false,
+				'the refusal names the blocked torrent');
+			strictAssertTrue(strpos($line, 'future-secret') === false,
+				'the owner token is never logged');
+			FileUtil::$log = array();
+			strictAssertSame(false,
+				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),
+				'a repeated caller still cannot steal the future-dated claim');
+			strictAssertSame(array(), FileUtil::$log,
+				'the same durable claim is reported once, not on every check attempt');
+			strictAssertSame(true,
+				ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, 'future-secret'),
+				'the original owner can still release the marked claim');
+			strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+				'the diagnostic marker does not trap the original owner');
+		});
+
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			$now = time();
+			RuTrackerState::save('meta-claims', array(self::OLD_HASH =>
+				array('since' => $now + 1, 'token' => 'ordinary-holder')));
+			FileUtil::$log = array();
+			strictAssertSame(false,
+				strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, $now)),
+				'a near-current claim remains held');
+			strictAssertSame(array(), FileUtil::$log,
+				'a one-second clock difference is not reported as a stalled claim');
+		});
+	}
+
 	// d.get_state and d.is_open are 0/1 and nothing else. Anything else used
 	// to intval() to 0, which reads as "stopped and closed" -- the single
 	// reading that authorises erasing the occupant of the successor hash.

@@ -161,9 +161,10 @@ class RuTrackerRpcValue
 }
 
 /**
- * Prove a bundle of d.set_custom writes from either a complete reply or an
- * exact readback. rXMLRPCRequest::success() alone is insufficient because the
- * legacy parser can return true after extracting only a prefix of the values.
+ * Prove a custom-field projection from a complete reply or exact readback.
+ * Scheduler writes use a local-id branch so a same-hash replacement cannot
+ * receive the previous torrent's verdict. The legacy parser can still return
+ * true after extracting only a prefix of the reply.
  */
 class RuTrackerCustomProjection
 {
@@ -184,7 +185,7 @@ class RuTrackerCustomProjection
     }
 
     /** @return bool|null true when complete, null only when target absence is confirmed */
-    static public function write($hash, $commands, $context)
+    static public function write($hash, $commands, $context, $localId = null)
     {
         $expected = array();
         foreach ($commands as $command) {
@@ -192,19 +193,31 @@ class RuTrackerCustomProjection
             $expected[$field] = self::parameterValue($command->params[2]);
         }
 
-        $write = new rXMLRPCRequest($commands);
-        $write->important = false;
-        $writeOk = $write->success();
-        if ($writeOk && !$write->fault && is_array($write->val)
-            && count($write->val) === count($commands)) return true;
+        if ($localId !== null) {
+            $outcome = RuTrackerAtomicOwnership::setFastProjection($hash, $localId, $expected);
+            if ($outcome === RuTrackerAtomicOwnership::ACTED) return true;
+            if ($outcome === RuTrackerAtomicOwnership::SKIPPED) return false;
+        } else {
+            $write = new rXMLRPCRequest($commands);
+            $write->important = false;
+            $writeOk = $write->success();
+            if ($writeOk && !$write->fault && is_array($write->val)
+                && count($write->val) === count($commands)) return true;
+        }
 
         $reads = array();
         foreach ($expected as $field => $value)
             $reads[] = new rXMLRPCCommand(getCmd('d.get_custom'), array($hash, $field));
+        if ($localId !== null)
+            $reads[] = new rXMLRPCCommand(getCmd('d.get_local_id'), array($hash));
         $verify = new rXMLRPCRequest($reads);
         $verify->important = false;
         if ($verify->success() && !$verify->fault && is_array($verify->val)
-            && count($verify->val) === count($expected)) {
+            && count($verify->val) === count($reads)) {
+            // A lost branch reply can only be acknowledged for its original
+            // daemon generation, even when a replacement has the same fields.
+            if ($localId !== null && (string) $verify->val[count($expected)] !== $localId)
+                return false;
             $mismatches = array();
             $index = 0;
             foreach ($expected as $field => $value) {
@@ -461,6 +474,29 @@ class RuTrackerAtomicOwnership
             self::SENTINEL_ACTED => self::ACTED,
             self::SENTINEL_SKIPPED => self::SKIPPED,
         ));
+    }
+
+    /** Write a scheduler projection only while this exact daemon torrent exists. */
+    static public function setFastProjection($hash, $localId, $fields)
+    {
+        if (!self::isValidHash($hash)
+            || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
+            || !is_array($fields) || !count($fields)) return self::UNKNOWN;
+        $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del');
+        $parts = array();
+        foreach ($fields as $key => $value) {
+            if (!in_array($key, $allowed, true) || !is_string($value)) return self::UNKNOWN;
+            $parts[] = self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . $key
+                . ',' . self::quoteRtorrentArgument($value));
+        }
+        $condition = 'equal=' . self::quoteRtorrentArgument(getCmd('d.get_local_id='))
+            . ',' . self::quoteRtorrentArgument('cat=' . self::quoteRtorrentArgument($localId));
+        $body = 'cat=' . implode(',', $parts) . ',' . self::SENTINEL_ACTED;
+        return self::executeBranch($hash, $condition, $body,
+            'cat=' . self::SENTINEL_SKIPPED, array(
+                self::SENTINEL_ACTED => self::ACTED,
+                self::SENTINEL_SKIPPED => self::SKIPPED,
+            ));
     }
 
     /**

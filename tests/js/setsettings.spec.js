@@ -41,53 +41,45 @@ const V_SOCKET_ALLOC = [
 describe.each(V_SOCKET_ALLOC)("setsettings on rtorrent %s with adjustable socket allocation", (_name, iVersion) => {
   beforeEach(() => loadUI(iVersion));
 
-  it("sets both bounds and recomputes for max open files", () => {
-    expect(commandsFor("?action=setsettings&s=nmax_open_files&v=20000")).toStrictEqual([
-      ["system.sockets.files.min_alloc"],
-      ["system.sockets.files.max_alloc"],
-      ["system.sockets.files.min_alloc.set", "string:", "i8:20000"],
-      ["system.sockets.files.max_alloc.set", "string:", "i8:20000"],
-      ["system.sockets.adjust_alloc"],
-    ]);
+  function transaction(query) {
+    const stub = new rTorrentStub(query);
+    expect(stub.mountPoint).toBe("plugins/httprpc/action.php");
+    expect(stub.dataType).toBe("json");
+    expect(stub.contentType).toBe("application/x-www-form-urlencoded");
+    expect(stub.commands).toHaveLength(0);
+    return new URLSearchParams(stub.content);
+  }
+
+  it("sends the file allocation through the existing server transaction", () => {
+    const form = transaction("?action=setsettings&s=nmax_open_files&v=20000");
+    expect(form.get("mode")).toBe("setsettings");
+    expect(form.getAll("s")).toStrictEqual(["nmax_open_files"]);
+    expect(form.getAll("v")).toStrictEqual(["20000"]);
+    expect(form.has("hash")).toBe(false);
   });
 
-  it("sets both bounds and recomputes for max open http", () => {
-    expect(commandsFor("?action=setsettings&s=nmax_open_http&v=1024")).toStrictEqual([
-      ["system.sockets.http.min_alloc"],
-      ["system.sockets.http.max_alloc"],
-      ["system.sockets.http.min_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.http.max_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.adjust_alloc"],
-    ]);
+  it("sends the HTTP allocation through the same transaction", () => {
+    const form = transaction("?action=setsettings&s=nmax_open_http&v=1024");
+    expect(form.getAll("s")).toStrictEqual(["nmax_open_http"]);
+    expect(form.getAll("v")).toStrictEqual(["1024"]);
   });
 
-  // max_alloc alone is a ceiling and can only lower the allocation, so a raise
-  // needs min_alloc too. Neither takes effect before adjust_alloc runs.
-  it("emits adjust_alloc once at the end when both settings change together", () => {
-    const commands = commandsFor(
-      "?action=setsettings&s=nmax_open_files&v=20000&s=nmax_open_http&v=1024"
-    );
-    expect(commands).toStrictEqual([
-      ["system.sockets.files.min_alloc"],
-      ["system.sockets.files.max_alloc"],
-      ["system.sockets.http.min_alloc"],
-      ["system.sockets.http.max_alloc"],
-      ["system.sockets.files.min_alloc.set", "string:", "i8:20000"],
-      ["system.sockets.files.max_alloc.set", "string:", "i8:20000"],
-      ["system.sockets.http.min_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.http.max_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.adjust_alloc"],
-    ]);
-    expect(commands.filter(([name]) => name === "system.sockets.adjust_alloc")).toHaveLength(1);
+  it("keeps both socket settings in one transaction", () => {
+    const form = transaction("?action=setsettings&s=nmax_open_files&v=20000&s=nmax_open_http&v=1024");
+    expect(form.getAll("s")).toStrictEqual(["nmax_open_files", "nmax_open_http"]);
+    expect(form.getAll("v")).toStrictEqual(["20000", "1024"]);
   });
 
-  it("does not recompute when no socket setting changed", () => {
+  it("keeps ordinary direct Save on XML-RPC", () => {
+    const stub = new rTorrentStub("?action=setsettings&s=nmax_peers&v=100");
+    expect(stub.mountPoint).toBe(theURLs.XMLRPCMountPoint);
+    expect(stub.dataType).toBe("xml");
     expect(commandsFor("?action=setsettings&s=nmax_peers&v=100")).toStrictEqual([
       ["throttle.max_peers.normal.set", "string:", "i8:100"],
     ]);
   });
 
-  it("keeps the dht setting on its own branch", () => {
+  it("keeps the dht setting on its own direct branch", () => {
     expect(commandsFor("?action=setsettings&s=ndht&v=0")).toStrictEqual([
       ["dht.mode.set", "string:", "string:disable"],
     ]);
@@ -96,27 +88,16 @@ describe.each(V_SOCKET_ALLOC)("setsettings on rtorrent %s with adjustable socket
     ]);
   });
 
-  it("leaves other settings in the batch untouched", () => {
-    expect(
-      commandsFor("?action=setsettings&s=nmax_open_files&v=20000&s=nmax_uploads&v=50")
-    ).toStrictEqual([
-      ["system.sockets.files.min_alloc"],
-      ["system.sockets.files.max_alloc"],
-      ["system.sockets.files.min_alloc.set", "string:", "i8:20000"],
-      ["system.sockets.files.max_alloc.set", "string:", "i8:20000"],
-      ["throttle.max_uploads.set", "string:", "i8:50"],
-      ["system.sockets.adjust_alloc"],
-    ]);
+  it("keeps an ordinary setting beside a socket setting in the transaction", () => {
+    const form = transaction("?action=setsettings&s=nmax_open_files&v=20000&s=nmax_uploads&v=50");
+    expect(form.getAll("s")).toStrictEqual(["nmax_open_files", "nmax_uploads"]);
+    expect(form.getAll("v")).toStrictEqual(["20000", "50"]);
   });
 });
 
-describe("direct setsettings refusal recovery", () => {
+describe("setsettings response handling", () => {
   beforeEach(() => loadUI(V_SOCKET_ALLOC[0][1]));
   afterEach(() => jest.restoreAllMocks());
-
-  function value(v) {
-    return `<value><array><data><value><i8>${v}</i8></value></data></array></value>`;
-  }
 
   function fault(message) {
     return (
@@ -147,63 +128,6 @@ describe("direct setsettings refusal recovery", () => {
     ]);
   });
 
-  it("restores both socket categories once after a fault and keeps the snapshot across responses", () => {
-    const stub = new rTorrentStub(
-      "?action=setsettings&s=nmax_open_files&v=20000&s=nmax_open_http&v=1024"
-    );
-    const restoreCalls = [];
-    window.Ajax = jest.fn((uri, _async, complete) => {
-      restoreCalls.push(uri);
-      complete();
-    });
-    const afterFailure = jest.fn();
-    stub.onSetsettingsFailure = afterFailure;
-
-    stub.getResponse(multicallResponse([value(1024), value(4096), value(32), value(64)]));
-    expect(afterFailure).not.toHaveBeenCalled();
-    stub.getResponse(multicallResponse([value(0), value(0), value(0), value(0), fault("over budget")]));
-
-    expect(restoreCalls).toHaveLength(1);
-    expect(commandsFor(restoreCalls[0].URI)).toStrictEqual([
-      ["system.sockets.files.min_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.files.max_alloc.set", "string:", "i8:4096"],
-      ["system.sockets.http.min_alloc.set", "string:", "i8:32"],
-      ["system.sockets.http.max_alloc.set", "string:", "i8:64"],
-      ["system.sockets.adjust_alloc"],
-    ]);
-    expect(afterFailure).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not invent a restore when a bound is faulted", () => {
-    const stub = new rTorrentStub("?action=setsettings&s=nmax_open_files&v=20000");
-    window.Ajax = jest.fn();
-    stub.getResponse(multicallResponse([
-      fault("missing min bound"), value(4096), value(0), value(0), fault("over budget"),
-    ]));
-    expect(window.Ajax).not.toHaveBeenCalled();
-  });
-
-  it("restores socket bounds when an unrelated batch member faults", () => {
-    const stub = new rTorrentStub(
-      "?action=setsettings&s=nmax_open_files&v=20000&s=nmax_uploads&v=50"
-    );
-    const restores = [];
-    window.Ajax = jest.fn((request, _async, complete) => {
-      restores.push(request);
-      complete();
-    });
-
-    stub.getResponse(multicallResponse([
-      value(1024), value(4096), value(0), value(0), fault("throttle refused"), value(0),
-    ]));
-
-    expect(restores).toHaveLength(1);
-    expect(commandsFor(restores[0].URI)).toStrictEqual([
-      ["system.sockets.files.min_alloc.set", "string:", "i8:1024"],
-      ["system.sockets.files.max_alloc.set", "string:", "i8:4096"],
-      ["system.sockets.adjust_alloc"],
-    ]);
-  });
 
   it("parses a direct XML-RPC fault before showing its one diagnostic or running success", () => {
     const deferred = $.Deferred();
@@ -252,26 +176,6 @@ describe("direct setsettings refusal recovery", () => {
 		expect(notice).toHaveBeenCalledTimes(2);
 	});
 
-	it("waits for the direct restore response before completing failure recovery", () => {
-    const first = $.Deferred();
-    const restore = $.Deferred();
-    const headers = { getResponseHeader: () => null };
-    jest.spyOn($, "ajax").mockImplementationOnce(() => first).mockImplementationOnce(() => restore);
-    const recovered = jest.fn();
-    const stub = new rTorrentStub("?action=setsettings&s=nmax_open_files&v=20000");
-    stub.onSetsettingsFailure = recovered;
-
-    Ajax(stub, true);
-    first.resolve(
-      multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-      "success",
-      headers
-    );
-    expect(recovered).not.toHaveBeenCalled();
-
-    restore.resolve(multicallResponse([value(0), value(0), value(0)]), "success", headers);
-    expect(recovered).toHaveBeenCalledTimes(1);
-  });
 
   it("starts reconciliation after the HTTP setsettings response fails", () => {
     const request = $.Deferred();
@@ -406,6 +310,30 @@ describe("the options save request", () => {
 			"text/xml"
 		);
 	}
+
+  it("routes a socket Save through the server rollback path without the httprpc plugin", () => {
+    loadSettingsUI();
+    theWebUI.settings = { max_open_files: 128, max_open_http: 32, max_uploads_global: 1 };
+    $("#max_open_files").val("129");
+    $("#max_open_http").val("32");
+    $("#max_uploads_global").val("2");
+    const requests = [];
+    theWebUI.request = (request) => { requests.push(request); };
+
+    theWebUI.setSettings();
+
+    expect(requests).toHaveLength(1);
+    const request = requests[0];
+    expect(request.mountPoint).toBe("plugins/httprpc/action.php");
+    expect(request.dataType).toBe("json");
+    expect(request.contentType).toBe("application/x-www-form-urlencoded");
+    expect(request.commands).toHaveLength(0);
+    const params = new URLSearchParams(request.content);
+    expect(params.get("mode")).toBe("setsettings");
+    expect(params.has("hash")).toBe(false);
+    expect(params.getAll("s")).toStrictEqual(["nmax_open_files", "nmax_uploads_global"]);
+    expect(params.getAll("v")).toStrictEqual(["129", "2"]);
+  });
 
   it("marks every other-limiting input numeric before serializing it", () => {
     loadSettingsUI();
@@ -589,38 +517,33 @@ describe("the options save request", () => {
 		expect(save).toHaveBeenCalledTimes(1);
 	});
 
-	it("disables the real Save button until a failed direct save finishes reconciliation", () => {
+	it("disables the real Save button until a failed transactional save finishes reconciliation", () => {
 		loadSettingsUI();
 		theWebUI.settings = { max_open_files: 1024 };
 		$("#max_open_files").val("20000");
 		const save = addSettingsSaveButton();
 		const saveRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
 		const refreshRequest = $.Deferred();
 		const headers = { getResponseHeader: () => null };
 		const ajax = jest.spyOn($, "ajax")
 			.mockImplementationOnce(() => saveRequest)
-			.mockImplementationOnce(() => restoreRequest)
 			.mockImplementationOnce(() => refreshRequest);
 		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
 
 		save.click();
 		expect(save.disabled).toBe(true);
 		expect(ajax).toHaveBeenCalledTimes(1);
+		expect(ajax.mock.calls[0][0].url).toBe("plugins/httprpc/action.php");
 		$("#max_open_files").val("30000");
 		save.click();
 		expect(ajax).toHaveBeenCalledTimes(1);
 
-		saveRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
+		saveRequest.reject(
+			{ status: 500, responseText: "allocation refused after rollback", getResponseHeader: () => null },
+			"error", "error"
 		);
 		expect(ajax).toHaveBeenCalledTimes(2);
 		expect(save.disabled).toBe(true);
-		restoreRequest.resolve(multicallResponse([value(0), value(0), value(0)]), "success", headers);
-		expect(ajax).toHaveBeenCalledTimes(3);
-
 		refreshRequest.resolve(multicallResponse([fault("getsettings refused")]), "success", headers);
 		expect(notice).toHaveBeenCalledWith(expect.stringContaining("getsettings refused"), "error");
 		expect(theWebUI.settingsSavePending).toBe(false);
@@ -635,51 +558,42 @@ describe("the options save request", () => {
 		$("#" + $.escapeSelector("webui.normalize_torrent_name")).prop("checked", true);
 		const save = addSettingsSaveButton();
 		const setsettingsRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
 		const refreshRequest = $.Deferred();
 		const uiSaveRequest = $.Deferred();
 		const headers = { getResponseHeader: () => null };
 		const ajax = jest.spyOn($, "ajax")
 			.mockImplementationOnce(() => setsettingsRequest)
-			.mockImplementationOnce(() => restoreRequest)
 			.mockImplementationOnce(() => refreshRequest)
 			.mockImplementationOnce(() => uiSaveRequest);
 		const reloadStates = [];
 		const reload = jest.spyOn(theWebUI, "reload").mockImplementation(() => {
-			reloadStates.push({
-				pending: theWebUI.settingsSavePending,
-				disabled: save.disabled,
-			});
+			reloadStates.push({ pending: theWebUI.settingsSavePending, disabled: save.disabled });
 		});
 		jest.spyOn(theWebUI, "addSettings").mockImplementation(() => {});
 
 		save.click();
 		expect(ajax).toHaveBeenCalledTimes(1);
-		expect(ajax.mock.calls[0][0].data).toContain("system.sockets.files.min_alloc");
+		expect(ajax.mock.calls[0][0].url).toBe("plugins/httprpc/action.php");
+		expect(new URLSearchParams(ajax.mock.calls[0][0].data).get("mode")).toBe("setsettings");
 		expect(save.disabled).toBe(true);
 		expect(reload).not.toHaveBeenCalled();
 
-		setsettingsRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
+		setsettingsRequest.reject(
+			{ status: 500, responseText: "allocation refused after rollback", getResponseHeader: () => null },
+			"error", "error"
 		);
 		expect(ajax).toHaveBeenCalledTimes(2);
-		restoreRequest.resolve(multicallResponse([value(0), value(0), value(0)]), "success", headers);
-		expect(ajax).toHaveBeenCalledTimes(3);
-		expect(reload).not.toHaveBeenCalled();
-
 		refreshRequest.resolve(multicallResponse([value(0)]), "success", headers);
 		expect(theWebUI.settingsSavePending).toBe(true);
 		expect(save.disabled).toBe(true);
-		expect(ajax).toHaveBeenCalledTimes(4);
-		expect(ajax.mock.calls[3][0].url).toBe(theURLs.SetSettingsURL);
+		expect(ajax).toHaveBeenCalledTimes(3);
+		expect(ajax.mock.calls[2][0].url).toBe(theURLs.SetSettingsURL);
 		expect(reload).not.toHaveBeenCalled();
 
 		$("#max_open_files").val("30000");
 		const reopenedSave = addSettingsSaveButton();
 		reopenedSave.click();
-		expect(ajax).toHaveBeenCalledTimes(4);
+		expect(ajax).toHaveBeenCalledTimes(3);
 
 		uiSaveRequest.resolve("", "success", headers);
 		expect(reload).toHaveBeenCalledTimes(1);
@@ -1020,45 +934,31 @@ describe("the options save request", () => {
 		$("#max_open_files").val("20000");
 		const save = addSettingsSaveButton();
 		const saveRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
 		const refreshRequest = $.Deferred();
 		const laterSaveRequest = $.Deferred();
 		const headers = { getResponseHeader: () => null };
 		const ajax = jest.spyOn($, "ajax")
 			.mockImplementationOnce(() => saveRequest)
-			.mockImplementationOnce(() => restoreRequest)
 			.mockImplementationOnce(() => refreshRequest)
 			.mockImplementationOnce(() => laterSaveRequest);
 		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
 
 		save.click();
-		saveRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
+		saveRequest.reject(
+			{ status: 500, responseText: "allocation refused after rollback", getResponseHeader: () => null },
+			"error", "error"
 		);
-		restoreRequest.resolve(multicallResponse([value(0), value(0), value(0)]), "success", headers);
-		refreshRequest.resolve(
-			new DOMParser().parseFromString(
-				"<methodResponse><fault><value><struct>" +
-				"<member><name>faultCode</name><value><i4>-501</i4></value></member>" +
-				"<member><name>faultString</name><value><string>getsettings denied</string></value></member>" +
-				"</struct></value></fault></methodResponse>",
-				"text/xml"
-			),
-			"success",
-			headers
-		);
+		refreshRequest.resolve(topLevelFaultResponse("getsettings denied"), "success", headers);
 
 		expect(notice).toHaveBeenCalledWith(expect.stringContaining("getsettings denied"), "error");
 		expect(theWebUI.settingsSavePending).toBe(false);
 		expect(save.disabled).toBe(false);
 		$("#max_open_files").val("4096");
 		save.click();
-		expect(ajax).toHaveBeenCalledTimes(4);
+		expect(ajax).toHaveBeenCalledTimes(3);
 	});
 
-	it("fails closed when the direct restore outcome is indeterminate", () => {
+	it("fails closed when the socket transaction outcome is indeterminate", () => {
 		loadSettingsUI();
 		configureUISave();
 		theWebUI.settings = { max_open_files: 1024, "webui.normalize_torrent_name": 0 };
@@ -1066,109 +966,22 @@ describe("the options save request", () => {
 		$("#" + $.escapeSelector("webui.normalize_torrent_name")).prop("checked", true);
 		const save = addSettingsSaveButton();
 		const saveRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
-		const headers = { getResponseHeader: () => null };
-		const ajax = jest.spyOn($, "ajax")
-			.mockImplementationOnce(() => saveRequest)
-			.mockImplementationOnce(() => restoreRequest);
+		const ajax = jest.spyOn($, "ajax").mockReturnValue(saveRequest);
 		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
 		const reload = jest.spyOn(theWebUI, "reload").mockImplementation(() => {});
 
 		save.click();
-		saveRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
-		);
-		restoreRequest.reject(
+		saveRequest.reject(
 			{ status: 0, responseText: "", getResponseHeader: () => null },
-			"timeout",
-			"timeout"
+			"timeout", "timeout"
 		);
-		expect(ajax).toHaveBeenCalledTimes(2);
+		expect(ajax).toHaveBeenCalledTimes(1);
 		expect(theWebUI.settingsSavePending).toBe(true);
 		expect(save.disabled).toBe(true);
 		expect(reload).not.toHaveBeenCalled();
 		expect(notice.mock.calls.filter(([message]) =>
 			message === theUILang.Settings_save_indeterminate)).toHaveLength(1);
 		expect(notice).toHaveBeenCalledWith(theUILang.Settings_save_indeterminate, "error");
-	});
-
-	it("reconciles once after a restore HTTP-200 XML-RPC fault and unlocks Save", () => {
-		loadSettingsUI();
-		theWebUI.settings = { max_open_files: 1024 };
-		$("#max_open_files").val("20000");
-		const save = addSettingsSaveButton();
-		const saveRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
-		const refreshRequest = $.Deferred();
-		const laterSaveRequest = $.Deferred();
-		const headers = { getResponseHeader: () => null };
-		const ajax = jest.spyOn($, "ajax")
-			.mockImplementationOnce(() => saveRequest)
-			.mockImplementationOnce(() => restoreRequest)
-			.mockImplementationOnce(() => refreshRequest)
-			.mockImplementationOnce(() => laterSaveRequest);
-		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
-		const addSettings = jest.spyOn(theWebUI, "addSettings").mockImplementation(() => {});
-
-		save.click();
-		saveRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
-		);
-		expect(save.disabled).toBe(true);
-		restoreRequest.resolve(topLevelFaultResponse("restore denied"), "success", headers);
-
-		expect(notice).toHaveBeenCalledTimes(2);
-		expect(notice).toHaveBeenCalledWith(expect.stringContaining("over budget"), "error");
-		expect(notice).toHaveBeenCalledWith(expect.stringContaining("restore denied"), "error");
-		expect(ajax).toHaveBeenCalledTimes(3);
-		expect(save.disabled).toBe(true);
-		refreshRequest.resolve(multicallResponse([value(0)]), "success", headers);
-		expect(addSettings).toHaveBeenCalledTimes(1);
-		expect(theWebUI.settingsSavePending).toBe(false);
-		expect(save.disabled).toBe(false);
-		$("#max_open_files").val("4096");
-		save.click();
-		expect(ajax).toHaveBeenCalledTimes(4);
-	});
-
-	it("reports a definitive restore HTTP failure and reconciles once", () => {
-		loadSettingsUI();
-		theWebUI.settings = { max_open_files: 1024 };
-		$("#max_open_files").val("20000");
-		const save = addSettingsSaveButton();
-		const saveRequest = $.Deferred();
-		const restoreRequest = $.Deferred();
-		const refreshRequest = $.Deferred();
-		const headers = { getResponseHeader: () => null };
-		const ajax = jest.spyOn($, "ajax")
-			.mockImplementationOnce(() => saveRequest)
-			.mockImplementationOnce(() => restoreRequest)
-			.mockImplementationOnce(() => refreshRequest);
-		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
-		jest.spyOn(theWebUI, "addSettings").mockImplementation(() => {});
-
-		save.click();
-		saveRequest.resolve(
-			multicallResponse([value(1024), value(4096), value(0), value(0), fault("over budget")]),
-			"success",
-			headers
-		);
-		restoreRequest.reject(
-			{ status: 500, responseText: "restore refused", getResponseHeader: () => null },
-			"error",
-			"error"
-		);
-
-		expect(notice).toHaveBeenCalledWith(expect.stringContaining("restore refused"), "error");
-		expect(ajax).toHaveBeenCalledTimes(3);
-		expect(save.disabled).toBe(true);
-		refreshRequest.resolve(multicallResponse([value(0)]), "success", headers);
-		expect(theWebUI.settingsSavePending).toBe(false);
-		expect(save.disabled).toBe(false);
 	});
 
 	it("uses enabled httprpc JSON forms and reconciles after a definitive HTTP refusal", () => {
@@ -1261,6 +1074,21 @@ describe("the options save request", () => {
 		expect(notice).toHaveBeenCalledWith(theUILang.Settings_save_indeterminate, "error");
 	});
 });
+
+describe.each([0x1012, 0x1013, 0x1014, 0x1015, 0x1016, 0x1017, 0x1018])(
+  "captured Settings read shape on rTorrent version %i", (iVersion) => {
+    it("matches the exact zero-argument request captured from the browser", () => {
+      loadUI(iVersion);
+      const capture = readFileSync("php/fixtures/settings-read-rtorrent-0.16.24.xml", "utf8");
+      const capturedNames = Array.from(
+        capture.matchAll(/<name>methodName<\/name><value><string>([^<]+)<\/string>/g),
+        match => match[1]
+      );
+      expect(capturedNames).toHaveLength(49);
+      expect(commandsFor("?action=getsettings").map(([name]) => name)).toStrictEqual(capturedNames);
+    });
+  }
+);
 
 describe("settings read-back", () => {
   function readCommands(iVersion) {

@@ -687,22 +687,25 @@ $suite->test('the cycle asks for exactly the columns parseMulticall reads, in th
     strictAssertTrue($at !== false, 'the cycle still issues the fleet multicall');
     $end = strpos($source, '));', $at);
     $block = substr($source, $at, $end - $at);
-    // The embedded t.multicall that builds the tracker blob asks for d.get_hash
-    // again; everything from the getCmd("cat") that opens it belongs to the
-    // blob, not to the column list.
+    // The embedded tracker t.multicall has many getCmd calls, but occupies
+    // one result column. Replace only that expression with a column marker;
+    // scalar accessors after it (including local_id) keep their source order.
     $blobAt = strpos($block, 'getCmd("cat")');
-    if ($blobAt !== false) $block = substr($block, 0, $blobAt);
+    $blobEnd = strpos($block, 'getCmd("cat=#")', $blobAt);
+    strictAssertTrue($blobAt !== false && $blobEnd !== false,
+        'the tracker blob has both delimiters');
+    $block = substr($block, 0, $blobAt) . 'getCmd("tracker-blob")'
+        . substr($block, $blobEnd + strlen('getCmd("cat=#")'));
 
     // Every accessor the multicall asks for, in source order: a getCmd() name,
     // plus the custom field where one is concatenated onto d.get_custom=.
-    preg_match_all('/getCmd\("([a-z0-9_.=]+)"\)(?:\s*\.\s*"([a-z-]+)")?/i', $block, $m, PREG_SET_ORDER);
+    preg_match_all('/getCmd\("([a-z0-9_.=-]+)"\)(?:\s*\.\s*"([a-z-]+)")?/i', $block, $m, PREG_SET_ORDER);
     $columns = array();
     foreach ($m as $hit) {
         $name = $hit[0 + 1];
         if (strpos($name, 't.') === 0 || strpos($name, 'cat') === 0) continue;  // inside the blob
         $columns[] = isset($hit[2]) && $hit[2] !== '' ? $hit[2] : rtrim($name, '=');
     }
-    $columns[] = 'tracker-blob';   // the embedded t.multicall, always last
 
     // COLUMNS read out of the reader's source rather than by loading it:
     // updatepass.php pulls in half the plugin, and this suite deliberately
@@ -713,7 +716,7 @@ $suite->test('the cycle asks for exactly the columns parseMulticall reads, in th
         'the wire asks for exactly as many columns as parseMulticall reads: ' . implode(', ', $columns));
     strictAssertSame(
         array('d.get_hash', 'chk-state', 'chk-time', 'd.get_custom1', 'd.get_message',
-              'chk-del', 'chk-msg', 'tracker-blob'),
+              'chk-del', 'chk-msg', 'tracker-blob', 'd.get_local_id'),
         $columns,
         'and in the order parseMulticall indexes them');
 });

@@ -23,7 +23,7 @@ class SetpropsTest extends TestCase
 			$this->peer->close();
 			$this->peer = null;
 		}
-		foreach(array('driver.php', 'refusals.log') as $name)
+		foreach(array('driver.php', 'refusals.log', 'profile/settings/rtorrent.dat') as $name)
 			@unlink($this->base.'/'.$name);
 		@rmdir($this->base.'/profile/settings');
 		@rmdir($this->base.'/profile');
@@ -42,6 +42,16 @@ class SetpropsTest extends TestCase
 		file_put_contents($driver, "<?php\n"
 			.'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->base.'/profile', true).";\n"
 			.'require_once('.var_export($root.'/conf/config.php', true).");\n"
+			// Keep this one-shot SCGI peer for the action; use the shipped 0.9.8 alias map.
+			.'require_once('.var_export($root.'/php/settings.php', true).");\n"
+			.'$settings = (new ReflectionClass("rTorrentSettings"))->newInstanceWithoutConstructor();'."\n"
+			.'$settings->linkExist = true; $settings->version = "0.9.8"; $settings->iVersion = 0x0908;'."\n"
+			.'$settings->aliases = array('.
+				'"d.set_peer_exchange" => array("name" => "d.peer_exchange.set", "prm" => 0),'.
+				'"d.set_connection_seed" => array("name" => "d.connection_seed.set", "prm" => 0));'."\n"
+			.'(function($map) { require $map; })->call($settings, '.
+				var_export($root.'/php/methods-0.9.4.php', true).");\n"
+			.'$settings->store();'."\n"
 			.'$scgi_host = "127.0.0.1";' . "\n"
 			.'$scgi_port = '.$this->peer->port().";\n"
 			.'$rpcTimeOut = 3;' . "\n"
@@ -97,9 +107,9 @@ class SetpropsTest extends TestCase
 		$this->assertTrue($this->peer->accepted(),
 			'the property batch opens an SCGI connection');
 		$request = $this->peer->request();
-		foreach(array('d.set_peers_max', 'd.set_peers_min',
-			'd.set_tracker_numwant', 'd.set_uploads_max',
-			'd.set_peer_exchange', 'branch') as $method)
+		foreach(array('d.peers_max.set', 'd.peers_min.set',
+			'd.tracker_numwant.set', 'd.uploads_max.set',
+			'd.peer_exchange.set', 'branch') as $method)
 			$this->assertTrue(strpos($request['payload'], $method) !== false,
 				'the shipped property method reaches rtorrent: '.$method);
 		$this->assertTrue(strpos($request['payload'], 'initial_seed') !== false,

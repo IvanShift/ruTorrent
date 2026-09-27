@@ -58,7 +58,8 @@ $req =  new rXMLRPCRequest(
 				.getCmd("t.get_url")."=,".getCmd("cat=|").","
 				.getCmd("t.is_enabled=").",".getCmd("cat=|").","
 				.getCmd("t.failed_counter=").",".getCmd("cat=|").","
-				.getCmd("t.success_counter=").",".getCmd("cat=#").'"'
+				.getCmd("t.success_counter=").",".getCmd("cat=#").'"',
+			getCmd("d.get_local_id=")
 		))
 	);
 if($req->success())

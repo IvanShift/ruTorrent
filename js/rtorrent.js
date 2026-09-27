@@ -388,7 +388,14 @@ rTorrentStub.prototype.recheck = function()
 
 rTorrentStub.prototype.setsettings = function()
 {
-	var socketCategories = [];
+	for(var i=0; i<this.ss.length; i++)
+		if(theRequestManager.getSocketAllocCategory(this.ss[i])!==null)
+		{
+			// The server snapshots staged socket bounds and restores them if
+			// adjust_alloc refuses the batch. Raw /RPC2 has no safe restore route.
+			postHttprpcMode(this, "setsettings");
+			return;
+		}
 	for(var i=0; i<this.vs.length; i++)
 	{
 		var prmType = "string";
@@ -396,7 +403,6 @@ rTorrentStub.prototype.setsettings = function()
 		if(this.ss[i].charAt(0)=='n')
 			prmType = "i8";
 		var cmd = null;
-		var socketAlloc = theRequestManager.getSocketAllocCategory(this.ss[i]);
 		if(this.ss[i]=="ndht")
 		{
 			if(prm==0)
@@ -408,37 +414,9 @@ rTorrentStub.prototype.setsettings = function()
 			cmd.addParameter("string",'');
 		}
 		else
-		if(socketAlloc!==null)
-		{
-			var minCmd = new rXMLRPCCommand("system.sockets."+socketAlloc+".min_alloc.set");
-			minCmd.addParameter("string",'');
-			minCmd.addParameter(prmType,prm);
-			this.commands.push( minCmd );
-			cmd = new rXMLRPCCommand("system.sockets."+socketAlloc+".max_alloc.set");
-			cmd.addParameter("string",'');
-			if(socketCategories.indexOf(socketAlloc)<0)
-				socketCategories.push(socketAlloc);
-		}
-		else
 			cmd = new rXMLRPCCommand('set_'+this.ss[i].substr(1));
 		cmd.addParameter(prmType,prm);
 		this.commands.push( cmd );
-	}
-	// The staged min_alloc/max_alloc values only take effect once the socket
-	// manager recomputes its allocation. Send it once per batch.
-	if(socketCategories.length)
-	{
-		// Reads lead this multicall, so a rejected later member can restore the
-		// allocation in effect before this browser changed either bound.
-		var reads = [];
-		for(var c=0; c<socketCategories.length; c++)
-		{
-			reads.push(new rXMLRPCCommand("system.sockets."+socketCategories[c]+".min_alloc"));
-			reads.push(new rXMLRPCCommand("system.sockets."+socketCategories[c]+".max_alloc"));
-		}
-		this.socketAllocCategories = socketCategories;
-		this.commands = reads.concat(this.commands);
-		this.commands.push( new rXMLRPCCommand("system.sockets.adjust_alloc") );
 	}
 }
 
@@ -448,16 +426,6 @@ rTorrentStub.prototype.finishSetsettingsFailure = function()
 	{
 		var callback = this.onSetsettingsFailure;
 		this.onSetsettingsFailure = null;
-		callback();
-	}
-}
-
-rTorrentStub.prototype.finishSocketRestore = function()
-{
-	if($type(this.onSocketRestoreFinished)=="function")
-	{
-		var callback = this.onSocketRestoreFinished;
-		this.onSocketRestoreFinished = null;
 		callback();
 	}
 }
@@ -486,71 +454,9 @@ rTorrentStub.prototype.finishIndeterminateFailure = function()
 
 rTorrentStub.prototype.setsettingsParseXML = function(xml)
 {
-	if(this.socketAllocCategories)
-	{
-		var categories = this.socketAllocCategories;
-		if(!this.savedSocketAlloc)
-		{
-			var values = this.getXMLValues(xml, 2, 1)[0];
-			if(values && (values.length>=2*categories.length))
-			{
-				var bounds = values.slice(0,2*categories.length);
-				if(!bounds.some(function(bound) { return(!(/^\d+$/).test(bound)); }))
-					this.savedSocketAlloc = bounds;
-			}
-		}
-		if(this.isError())
-		{
-			// A restore is asynchronous; complete failure recovery only after its
-			// response so this WebUI cannot start another Save against stale bounds.
-			this.socketAllocCategories = null;
-			if(this.savedSocketAlloc)
-			{
-				var restore = "";
-				for(var i=0; i<categories.length; i++)
-					restore+=("&s="+categories[i]+"&v="+this.savedSocketAlloc[2*i]+","+this.savedSocketAlloc[2*i+1]);
-				var restoreStub = new rTorrentStub("?action=restoresocketalloc"+restore);
-				restoreStub.onSocketRestoreFinished = this.finishSetsettingsFailure.bind(this);
-				restoreStub.onIndeterminateFailure = this.finishIndeterminateFailure.bind(this);
-				restoreStub.onXMLFailure = restoreStub.finishSocketRestore.bind(restoreStub);
-				var finishRestoreError = function(status, text)
-				{
-					if($type(theWebUI.error)=="function")
-						theWebUI.error(status, text);
-					restoreStub.finishSocketRestore();
-				};
-				Ajax(restoreStub, true, restoreStub.finishSocketRestore.bind(restoreStub),
-					restoreStub.finishSocketRestore.bind(restoreStub), finishRestoreError);
-				return(xml);
-			}
-		}
-	}
 	if(this.isError())
 		this.finishSetsettingsFailure();
 	return(xml);
-}
-
-rTorrentStub.prototype.restoresocketallocParseXML = function(xml)
-{
-	this.finishSocketRestore();
-	return(xml);
-}
-
-rTorrentStub.prototype.restoresocketalloc = function()
-{
-	for(var i=0; i<this.ss.length; i++)
-	{
-		var bounds = this.vs[i].split(",");
-		var minCmd = new rXMLRPCCommand("system.sockets."+this.ss[i]+".min_alloc.set");
-		minCmd.addParameter("string",'');
-		minCmd.addParameter("i8",bounds[0]);
-		this.commands.push( minCmd );
-		var maxCmd = new rXMLRPCCommand("system.sockets."+this.ss[i]+".max_alloc.set");
-		maxCmd.addParameter("string",'');
-		maxCmd.addParameter("i8",bounds[1]);
-		this.commands.push( maxCmd );
-	}
-	this.commands.push( new rXMLRPCCommand("system.sockets.adjust_alloc") );
 }
 
 rTorrentStub.prototype.getsettings = function()

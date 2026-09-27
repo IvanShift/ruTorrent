@@ -143,14 +143,15 @@ function upTest($suite, $name, $callback)
     });
 }
 
-// 8 columns in the current wire-format order (hash, state, time, label,
-// message, chk-del, chk-msg, tracker blob). chk-stime was dropped from the
+// 9 columns in the current wire-format order (hash, state, time, label,
+// message, chk-del, chk-msg, tracker blob, local id). chk-stime was dropped from the
 // scan: it was carried to run() and read by nobody. The FIELD still exists and
 // the deletion logic still reads it on its own.
 function upRow($hash, $failed, $host = 'bt.t-ru.org', $state = '3', $message = '', $label = '', $del = '', $msg = '', $time = '100')
 {
     return array($hash, $state, $time, $label, $message, $del, $msg,
-        "http://{$host}/ann?pk=x|1|{$failed}|" . ($failed ? '0' : '5') . '#');
+        "http://{$host}/ann?pk=x|1|{$failed}|" . ($failed ? '0' : '5') . '#',
+        str_repeat('A', 40));
 }
 
 // run() no longer writes its fast-path verdicts where it decides them: they are
@@ -172,8 +173,47 @@ function upQueueProjection($rows, $callback = null)
     $live = array();
     foreach ($rows as $row)
         $live = array_merge($live, array($row['hash'], (string) $row['state'],
-            (string) $row['time'], (string) $row['del'], (string) $row['msg']));
+            (string) $row['time'], (string) $row['del'], (string) $row['msg'],
+            (string) $row['local_id']));
     rXMLRPCRequest::queue('d.multicall', true, false, $live);
+}
+
+function upGuardedWrites()
+{
+    return array_values(array_filter(rXMLRPCRequest::requestsFor('branch'), function ($request) {
+        return strpos((string) $request['commands'][0]->params[1], getCmd('d.get_local_id=')) !== false;
+    }));
+}
+
+function upAssertGuardedField($request, $key, $value, $message)
+{
+    $body = (string) $request['commands'][0]->params[2];
+    $atom = RuTrackerAtomicOwnership::quoteRtorrentArgument(
+        '$' . getCmd('d.set_custom=') . $key . ','
+        . RuTrackerAtomicOwnership::quoteRtorrentArgument((string) $value));
+    strictAssertTrue(strpos($body, $atom) !== false, $message);
+}
+
+function upGuardedActions($commands)
+{
+    $body = str_replace('\\"', '"', (string) $commands[0]->params[2]);
+    preg_match_all('/\$d\.set_custom=([a-z-]+),"([^"]*)"/', $body, $matches, PREG_SET_ORDER);
+    $actions = array();
+    foreach ($matches as $match) $actions[] = array($match[1], $match[2]);
+    return $actions;
+}
+
+function upApplyGuardedProjection(&$model, $commands, $prefix = null)
+{
+    $actions = upGuardedActions($commands);
+    $limit = $prefix === null ? count($actions) : min((int) $prefix, count($actions));
+    for ($index = 0; $index < $limit; $index++) {
+        list($field, $value) = $actions[$index];
+        $key = array('chk-state' => 'state', 'chk-time' => 'time',
+            'chk-stime' => 'stime', 'chk-msg' => 'msg', 'chk-del' => 'del')[$field];
+        $model[$key] = $value;
+    }
+    return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 }
 
 function upApplyVerdictCommands(&$model, $commands, $prefix = null)
@@ -194,6 +234,10 @@ function upProjectionValues($model, $commands)
 {
     $values = array();
     foreach ($commands as $command) {
+        if ($command->command === getCmd('d.get_local_id')) {
+            $values[] = str_repeat('A', 40);
+            continue;
+        }
         $field = array(
             'chk-state' => 'state', 'chk-time' => 'time', 'chk-stime' => 'stime',
             'chk-msg' => 'msg', 'chk-del' => 'del',
@@ -217,10 +261,10 @@ function upFeed()
         . '</feed>';
 }
 
-upTest($suite, 'parseMulticall maps all 8 columns and drops a trailing partial row', function () {
+upTest($suite, 'parseMulticall maps all 9 columns and drops a trailing partial row', function () {
     $values = array_merge(
         array('AAAA', '3', '100', 'lbl', 'msg', '2:150', 'дамп: строки нет, цикл 2/3',
-            'http://bt.t-ru.org/ann?pk=x|1|0|5#'),
+            'http://bt.t-ru.org/ann?pk=x|1|0|5#', 'local-A'),
         array('leftover') // fewer than COLUMNS values left over: must be dropped, not guessed at
     );
     $rows = RuTrackerUpdatePass::parseMulticall($values);
@@ -229,7 +273,7 @@ upTest($suite, 'parseMulticall maps all 8 columns and drops a trailing partial r
         'hash' => 'AAAA', 'state' => 3, 'time' => 100, 'label' => 'lbl',
         'message' => 'msg', 'del' => '2:150', 'msg' => 'дамп: строки нет, цикл 2/3',
         'trackers' => array(array('url' => 'http://bt.t-ru.org/ann?pk=x', 'enabled' => 1, 'failed' => 0, 'success' => 5)),
-        'trackers_complete' => true,
+        'trackers_complete' => true, 'local_id' => 'local-A',
     ), $rows[0], 'full field mapping');
 });
 
@@ -238,6 +282,7 @@ upTest($suite, 'a malformed tracker frame cannot lend its global message to RuTr
     $values = array(
         $hash, '3', '100', '', 'Tracker: [Could not resolve hostname]', '', '',
         'http://bt.t-ru.org/ann|1|6|0#http://foreign.example/ann?token=a|b|1|4|0#',
+        str_repeat('A', 40),
     );
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     strictAssertSame(false, $rows[0]['trackers_complete'], 'the framing loss survives parseMulticall');
@@ -286,7 +331,7 @@ upTest($suite, 'candidates go to the checker, alive stay home, fuse trips per ho
     // A/F carry state+time+stime. C/D/E carry state+time+the fuse message.
     // Both projections are three fields, and each row is written in one bundle.
     for ($i = 0; $i < 5; $i++)
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     upQueueUnchanged($rows);
     $result = RuTrackerUpdatePass::run($rows);
@@ -295,23 +340,22 @@ upTest($suite, 'candidates go to the checker, alive stay home, fuse trips per ho
     strictAssertSame(2, $result['uptodate'], 'A and F counted as up to date');
     strictAssertSame($checked, $result['checked'], 'checker callback used');
 
-    $bundles = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
-    strictAssertSame(5, count($bundles), 'two UPTODATE and three fused verdicts use one bundle each');
-    $fusedWrites = array_values(array_filter($bundles, function ($request) {
-        return $request['commands'][1]->params[1] === 'chk-time'
-            && $request['commands'][2]->params[1] === 'chk-msg';
+    $writes = upGuardedWrites();
+    strictAssertSame(5, count($writes), 'two UPTODATE and three fused verdicts use one guarded branch each');
+    $fusedWrites = array_values(array_filter($writes, function ($request) {
+        return strpos($request['commands'][0]->params[2], 'chk-msg') !== false;
     }));
-    strictAssertSame(3, count($fusedWrites), 'the three fused rows carry their message inside the verdict bundle');
+    strictAssertSame(3, count($fusedWrites), 'the three fused rows carry their message in the branch');
     foreach ($fusedWrites as $request)
-        strictAssertSame(ruTrackerChecker::CHKMSG_FUSE . '|bt2.t-ru.org', $request['commands'][2]->params[2],
-            'the fuse token carries the tripped host and nothing else');
+        upAssertGuardedField($request, 'chk-msg', ruTrackerChecker::CHKMSG_FUSE . '|bt2.t-ru.org',
+            'the fuse token carries the tripped host');
 });
 
 upTest($suite, 'cold torrents are skipped entirely: no checker call, no state write', function () {
     $values = upRow(str_repeat('A', 40), 0);
-    // The blob is the LAST column, addressed from the end so a change to the
-    // column list cannot silently append a ninth value instead of replacing it.
-    $values[count($values) - 1] = 'http://bt.t-ru.org/ann?pk=x|1|0|0#'; // failed=0, success=0 -> cold
+    // The blob is second from the end, before local_id. Address it relative
+    // to the end so a column change cannot silently append another value.
+    $values[count($values) - 2] = 'http://bt.t-ru.org/ann?pk=x|1|0|0#'; // failed=0, success=0 -> cold
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('must not run'); });
     rXMLRPCRequest::reset();
@@ -342,7 +386,7 @@ upTest($suite, 'an out-of-range fuse share uses the safe default and reports the
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) {});
         rXMLRPCRequest::reset();
         for ($i = 0; $i < 4; $i++)
-            rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+            rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
         $rows = RuTrackerUpdatePass::parseMulticall($values);
         upQueueUnchanged($rows);
         $result = null;
@@ -361,7 +405,7 @@ upTest($suite, 'an out-of-range fuse share uses the safe default and reports the
         $GLOBALS['rutrackerFuseFloor'] = 0;
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) {});
         rXMLRPCRequest::reset();
-        for ($i = 0; $i < 8; $i++) rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        for ($i = 0; $i < 8; $i++) rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
         $healthy = RuTrackerUpdatePass::parseMulticall(upRow(str_repeat('A', 40), 0, 'bt3.t-ru.org'));
         $result = RuTrackerUpdatePass::run($healthy);
         strictAssertSame(array(), $result['fused'],
@@ -402,14 +446,14 @@ upTest($suite, 'a fused host defers a settled verdict rather than eating it', fu
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
     rXMLRPCRequest::reset();
     for ($i = 0; $i < 3; $i++)
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     upQueueUnchanged($rows);
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(array('bt2.t-ru.org'), $result['fused'], 'the three live candidates trip the fuse');
 
     $written = array();
-    foreach (rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom') as $write)
+    foreach (upGuardedWrites() as $write)
         $written[] = $write['commands'][0]->params[0];
     strictAssertTrue(!in_array(str_repeat('D', 40), $written, true),
         'the settled row is left exactly as it was -- rewriting it would un-settle it');
@@ -434,7 +478,7 @@ upTest($suite, 'the fuse counts one host once, however it is spelled', function 
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) {});
     rXMLRPCRequest::reset();
     for ($i = 0; $i < 4; $i++)
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(array('bt2.t-ru.org'), $result['fused'],
@@ -450,11 +494,10 @@ upTest($suite, 'the fuse counts one host once, however it is spelled', function 
 // carried (a stale "checking..." included), with nothing ever touching it.
 upTest($suite, 'a disabled tracker row is handed to the generic dispatch, never frozen between the paths', function () {
     $values = upRow(str_repeat('A', 40), 6);
-    // From the END: the blob is the last column, and addressing it by a fixed
-    // index silently APPENDED a ninth value when the wire format shrank to
-    // eight -- leaving the original enabled=1 blob in place, so the case
-    // exercised the ordinary candidate path under the name of a disabled row.
-    $values[count($values) - 1] = 'http://bt.t-ru.org/ann?pk=x|0|6|0#'; // enabled=0
+    // The tracker blob is second from the end, before local_id. A stale fixed
+    // index can append a value and leave the original enabled=1 row intact,
+    // making this case exercise a candidate under a disabled-row name.
+    $values[count($values) - 2] = 'http://bt.t-ru.org/ann?pk=x|0|6|0#'; // enabled=0
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     $ran = array();
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$ran) { $ran[] = $hash; });
@@ -489,13 +532,14 @@ upTest($suite, 'a transport-error message marks CANT_REACH_TRACKER without runni
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('must not run'); });
     rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     upQueueUnchanged($rows);
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(array(), $result['checked'], 'transport candidates are never checked directly');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'CANT_REACH_TRACKER written once');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'no message written for transport error');
+    strictAssertSame(1, count(upGuardedWrites()), 'CANT_REACH_TRACKER written once');
+    strictAssertTrue(strpos(upGuardedWrites()[0]['commands'][0]->params[2], 'chk-msg') === false,
+        'no message write is included for transport error');
 });
 
 upTest($suite, 'a fast-path verdict is dropped when the row moved since the cycle-start snapshot', function () {
@@ -515,8 +559,85 @@ upTest($suite, 'a fast-path verdict is dropped when the row moved since the cycl
     $result = RuTrackerUpdatePass::run($rows);
 
     strictAssertSame(0, $result['uptodate'], 'a verdict that was not written is not counted');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom'),
+    strictAssertSame(array(), upGuardedWrites(),
         'the newer state a concurrent worker wrote is left alone');
+});
+
+upTest($suite, 'a fast-path verdict does not cross a same-hash delete and readd', function () {
+    $hash = str_repeat('A', 40);
+    $GLOBALS['ignoreLabels'] = array('tv-sonarr');
+    $rows = RuTrackerUpdatePass::parseMulticall(
+        upRow($hash, 0, 'bt.t-ru.org', '0', '', 'tv-sonarr', '', '', '0'));
+    $rows[0]['local_id'] = str_repeat('1', 40);
+    rXMLRPCRequest::reset();
+    // A fresh torrent can have the same infohash and empty chk fields. The
+    // local id changes even though the projection still compares equal.
+    rXMLRPCRequest::queue('d.multicall', true, false,
+        array($hash, '', '', '', '', str_repeat('2', 40)));
+
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(0, $result['uptodate'], 'the old verdict is not counted for the new generation');
+    strictAssertSame(array(), upGuardedWrites(),
+        'the newly loaded torrent keeps its own empty state');
+});
+
+upTest($suite, 'a same-hash replacement after the fresh scan is refused by the daemon branch', function () {
+    $hash = str_repeat('A', 40);
+    $GLOBALS['ignoreLabels'] = array('tv-sonarr');
+    $rows = RuTrackerUpdatePass::parseMulticall(
+        upRow($hash, 0, 'bt.t-ru.org', '0', '', 'tv-sonarr', '', '', '0'));
+    $rows[0]['local_id'] = str_repeat('1', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false,
+        array($hash, '', '', '', '', str_repeat('1', 40)));
+    // The torrent is replaced after the scan: the daemon evaluates the
+    // condition against the new local id and refuses the old projection.
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(0, $result['uptodate'], 'the refused verdict is not counted');
+    $writes = upGuardedWrites();
+    strictAssertSame(1, count($writes), 'one conditional action, not a hash-only setter');
+    $params = $writes[0]['commands'][0]->params;
+    strictAssertSame($hash, $params[0], 'target hash');
+    strictAssertTrue(strpos($params[1], getCmd('d.get_local_id=')) !== false
+        && strpos($params[1], str_repeat('1', 40)) !== false,
+        'the daemon condition binds the write to the old local id');
+    upAssertGuardedField($writes[0], 'chk-state', ruTrackerChecker::STE_IGNORED,
+        'the refused branch carried the expected old verdict');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom'),
+        'no unconditional state setter follows a refused branch');
+});
+
+upTest($suite, 'a lost guarded reply cannot be confirmed by a new same-hash torrent', function () {
+    $hash = str_repeat('A', 40);
+    $rows = RuTrackerUpdatePass::parseMulticall(
+        upRow($hash, 0, 'bt.t-ru.org', '0', '', '', '', '', '0'));
+    $rows[0]['local_id'] = str_repeat('1', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('d.multicall', true, false,
+        array($hash, '', '', '', '', str_repeat('1', 40)));
+    $written = array();
+    rXMLRPCRequest::queue('branch', false, false, function ($commands) use (&$written) {
+        foreach (upGuardedActions($commands) as $action) $written[$action[0]] = $action[1];
+        return array(); // The daemon reply was lost after the action.
+    });
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
+        true, false, function () use (&$written) {
+            return array($written['chk-state'], $written['chk-time'],
+                $written['chk-stime'], str_repeat('2', 40));
+        });
+
+    $result = RuTrackerUpdatePass::run($rows);
+
+    strictAssertSame(0, $result['uptodate'],
+        'matching custom fields on a new local id do not confirm the lost old write');
+    strictAssertSame(1, count(upGuardedWrites()), 'the action was tried only once');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
+        'd.get_custom|d.get_custom|d.get_custom|d.get_local_id')), 'readback included local id');
 });
 
 upTest($suite, 'the verification scan runs once for the whole cycle, not once per row', function () {
@@ -528,10 +649,11 @@ upTest($suite, 'the verification scan runs once for the whole cycle, not once pe
     rXMLRPCRequest::reset();
     $live = array();
     foreach (range(1, 5) as $n)
-        $live = array_merge($live, array(str_repeat(chr(64 + $n), 40), '3', '100', '', ''));
+        $live = array_merge($live, array(str_repeat(chr(64 + $n), 40), '3', '100', '', '',
+            str_repeat('A', 40)));
     rXMLRPCRequest::queue('d.multicall', true, false, $live);
     foreach (range(1, 5) as $n)
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     $result = RuTrackerUpdatePass::run($rows);
 
@@ -549,7 +671,7 @@ upTest($suite, 'a verification scan that fails writes nothing rather than guessi
     $result = RuTrackerUpdatePass::run($rows);
 
     strictAssertSame(0, $result['uptodate'], 'nothing is claimed to have been written');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom'),
+    strictAssertSame(array(), upGuardedWrites(),
         'these verdicts are cheap to derive again next cycle; a blind write is not');
 });
 
@@ -560,7 +682,7 @@ upTest($suite, 'an alive row with a leftover deletion counter and message clears
     rXMLRPCRequest::reset();
     // Everything needed (chk-del, chk-msg) already rode in on the row. The
     // state, shared timestamp and both clears are one five-field bundle.
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     upQueueUnchanged($rows);
     $result = RuTrackerUpdatePass::run($rows);
@@ -570,20 +692,17 @@ upTest($suite, 'an alive row with a leftover deletion counter and message clears
         'the cycle scan and one complete verdict bundle -- and nothing per row');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.multicall')),
         'one verification scan for the whole cycle, not one read per row');
-    $bundles = rXMLRPCRequest::requestsFor(
-        'd.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom');
-    strictAssertSame(1, count($bundles), 'one cohesive verdict multicall');
-    strictAssertSame(array(str_repeat('A', 40), 'chk-msg', ''), $bundles[0]['commands'][3]->params,
-        'stale message reset inside the verdict');
-    strictAssertSame(array(str_repeat('A', 40), 'chk-del', ''), $bundles[0]['commands'][4]->params,
-        'deletion counter reset inside the verdict');
+    $writes = upGuardedWrites();
+    strictAssertSame(1, count($writes), 'one guarded verdict branch');
+    upAssertGuardedField($writes[0], 'chk-msg', '', 'stale message reset inside the verdict');
+    upAssertGuardedField($writes[0], 'chk-del', '', 'deletion counter reset inside the verdict');
 });
 
 upTest($suite, 'an alive row with nothing to clear writes only the state, no clearing round trip', function () {
     $values = upRow(str_repeat('A', 40), 0); // chk-del and chk-msg both blank
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     upQueueUnchanged($rows);
     $result = RuTrackerUpdatePass::run($rows);
@@ -593,7 +712,9 @@ upTest($suite, 'an alive row with nothing to clear writes only the state, no cle
         'the cycle scan and the state write; nothing to clear means no clearing request');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.multicall')),
         'and still just one verification scan');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom'), 'no clearing multicall for a row with neither field set');
+    strictAssertTrue(strpos(upGuardedWrites()[0]['commands'][0]->params[2], 'chk-msg') === false
+        && strpos(upGuardedWrites()[0]['commands'][0]->params[2], 'chk-del') === false,
+        'no message or deletion clear rides in the guarded branch');
 });
 
 // Finding 4: check.php's run() has always honoured $ignoreLabels; this
@@ -610,26 +731,21 @@ upTest($suite, 'an ignored-label row is written STE_IGNORED, never UPTODATE/CANT
         $rows = RuTrackerUpdatePass::parseMulticall($values);
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('an ignored row must never reach the checker'); });
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
         upQueueUnchanged($rows);
         $result = RuTrackerUpdatePass::run($rows);
 
         strictAssertSame(array(), $result['checked'], 'an ignored row is never dispatched to the checker');
         strictAssertSame(0, $result['uptodate'], 'an ignored row must not count as up to date');
-        $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+        $writes = upGuardedWrites();
         strictAssertSame(2, count($writes), 'one STE_IGNORED write per ignored row');
-        strictAssertSame(
-            array(str_repeat('A', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
-            $writes[0]['commands'][0]->params,
-            'alive-verdict row written IGNORED, not UPTODATE'
-        );
-        strictAssertSame(
-            array(str_repeat('B', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
-            $writes[1]['commands'][0]->params,
-            'transport-verdict row written IGNORED, not CANT_REACH_TRACKER'
-        );
+        strictAssertSame(str_repeat('A', 40), $writes[0]['commands'][0]->params[0], 'alive row');
+        strictAssertSame(str_repeat('B', 40), $writes[1]['commands'][0]->params[0], 'transport row');
+        foreach ($writes as $write)
+            upAssertGuardedField($write, 'chk-state', ruTrackerChecker::STE_IGNORED,
+                'both rows are written IGNORED');
     } finally {
         unset($GLOBALS['ignoreLabels']);
     }
@@ -1456,7 +1572,7 @@ upTest($suite, 'a torrent from another supported tracker still reaches its handl
     strictAssertSame(array($kinozal, $nnmclub), $checked, 'the checker itself received them');
     strictAssertSame(array(), $result['fused'], 'a foreign announce host never feeds the RuTracker fuse');
     strictAssertSame(1, $result['uptodate'], 'only the RuTracker row took the alive fast path');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom')),
+    strictAssertSame(1, count(upGuardedWrites()),
         'a dispatched row gets no scheduler-side state write -- its own handler decides');
 });
 
@@ -1482,6 +1598,7 @@ function upParsedRow($hash, $trackerBlob, $comment, $extra = array())
         'message' => '', 'del' => '', 'msg' => '',
         'trackers' => RuTrackerDetector::parseTrackerBlob($trackerBlob),
         'trackers_complete' => true, 'comment' => $comment,
+        'local_id' => str_repeat('A', 40),
     ), $extra);
 }
 
@@ -1498,7 +1615,7 @@ function upRunPass($rows, &$checked, $writeShapes = array(3, 4))
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
     rXMLRPCRequest::reset();
     foreach ($writeShapes as $fieldCount)
-        rXMLRPCRequest::queue(array_fill(0, $fieldCount, 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     upQueueUnchanged($rows);
     return RuTrackerUpdatePass::run($rows);
 }
@@ -1508,6 +1625,7 @@ function upAssertNoCustomWrites($message)
     $writes = array();
     foreach (rXMLRPCRequest::$requests as $request)
         if (strpos($request['key'], 'd.set_custom') !== false) $writes[] = $request['key'];
+    foreach (upGuardedWrites() as $request) $writes[] = 'guarded-branch';
     strictAssertSame(array(), $writes, $message);
 }
 
@@ -1522,9 +1640,9 @@ function upWithRegistry($callback)
 
 upTest($suite, 'a declared-authoritative announce answers for a foreign handler without a request', function () {
     upLoadKinozalRegistration();
-    $alive   = str_repeat('K', 40);
-    $cold    = str_repeat('L', 40);
-    $failing = str_repeat('N', 40);
+    $alive   = str_repeat('A', 40);
+    $cold    = str_repeat('B', 40);
+    $failing = str_repeat('C', 40);
     $rows = array(
         upKinozalRow($alive, 0, 5),
         upKinozalRow($cold, 0, 0),
@@ -1593,7 +1711,7 @@ upTest($suite, 'a RuTracker topic whose own rows are disabled is not answered by
 
 upTest($suite, 'a live announce on a kinozal.guru host takes the free pass too', function () {
     upLoadKinozalRegistration();
-    $alive = str_repeat('S', 40);
+    $alive = str_repeat('A', 40);
     $rows = array(upKinozalRow($alive, 0, 5, 'tracker.kinozal.guru'));
 
     $result = upRunPass($rows, $checked);
@@ -1694,7 +1812,7 @@ upTest($suite, 'the free pass reads the owner from the session copy when the row
     $previous = getcwd(); chdir(testFindRepoRoot() . '/php');
     try { require_once(testFindRepoRoot() . '/php/Torrent.php'); } finally { chdir($previous); }
     strictWithStateDir('chk-updatepass-gate-session', function ($tmp) {
-        $alive = str_repeat('V', 40);
+        $alive = str_repeat('A', 40);
         $encode = new ReflectionMethod('Torrent', 'encode');
         if (PHP_VERSION_ID < 80100) $encode->setAccessible(true);
         $raw = $encode->invoke(null, array(
@@ -1733,7 +1851,7 @@ upTest($suite, 'missing comment with foreign and live RuTracker rows cannot take
 
 upTest($suite, 'an empty comment with a disabled foreign row can use its live RuTracker announce', function () {
     upLoadKinozalRegistration();
-    $hash = str_repeat('X', 40);
+    $hash = str_repeat('A', 40);
     $row = upParsedRow($hash,
         'http://bt.t-ru.org/ann?pk=x|1|0|5#'
         . 'http://tr2.torrent4me.com/ann?uk=x|0|0|5#', '');
@@ -1761,7 +1879,7 @@ upTest($suite, 'an empty comment with an enabled foreign row cannot use RuTracke
 
 upTest($suite, 'a RuTracker comment keeps its own live pass despite an enabled foreign cross-seed', function () {
     upLoadKinozalRegistration();
-    $hash = str_repeat('Z', 40);
+    $hash = str_repeat('A', 40);
     $row = upParsedRow($hash,
         'http://bt.t-ru.org/ann?pk=x|1|0|5#'
         . 'http://tr2.torrent4me.com/ann?uk=x|1|0|5#',
@@ -1901,15 +2019,15 @@ upTest($suite, 'F-01: production scheduler rows resolve foreign ownership from t
         // cases above. The RuTracker row stays alive: that is the fast path
         // this torrent must not be allowed to take.
         . '$values=array($hash,"3","100","","","","",'
-        . '$kinozal."|1|0|0#".$rutracker."|1|0|5#");'
+        . '$kinozal."|1|0|0#".$rutracker."|1|0|5#","local-".$hash);'
         . '$rows=RuTrackerUpdatePass::parseMulticall($values);'
-        . 'strictAssertSame(1,count($rows),"one actual eight-field scheduler row is parsed");'
+        . 'strictAssertSame(1,count($rows),"one actual nine-field scheduler row is parsed");'
         . 'strictAssertTrue(!array_key_exists("comment",$rows[0]),"the scheduler row has no synthetic comment field");'
         . '$checked=array();strictSetPrivateStatic("RuTrackerUpdatePass","checker",'
         . 'function($seen)use(&$checked){$checked[]=$seen;});'
         . '$GLOBALS["rutrackerFuseShare"]=0.2;$GLOBALS["rutrackerFuseFloor"]=3;'
         . 'rXMLRPCRequest::reset();'
-        . 'rXMLRPCRequest::queue(array("d.set_custom","d.set_custom","d.set_custom"),true,false,array());'
+        . 'rXMLRPCRequest::queue("branch",true,false,array("RUT_ATOMIC_ACTED"));'
         . 'rXMLRPCRequest::queue("d.multicall",true,false,array($hash,"3","100","",""));'
         . '$result=RuTrackerUpdatePass::run($rows);'
         . 'strictAssertSame(array($hash),$result["checked"],'
@@ -1930,22 +2048,21 @@ upTest($suite, 'an ignored label still short-circuits a foreign-tracker torrent'
     $GLOBALS['ignoreLabels'] = array('tv-sonarr');
     try {
         $rows = RuTrackerUpdatePass::parseMulticall(
-            upRow(str_repeat('K', 40), 0, 'tr2.torrent4me.com', '4', '', 'tv-sonarr'));
+            upRow(str_repeat('C', 40), 0, 'tr2.torrent4me.com', '4', '', 'tv-sonarr'));
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
             function ($hash) { throw new RuntimeException('an ignored row must never reach the checker'); });
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
         upQueueUnchanged($rows);
         $result = RuTrackerUpdatePass::run($rows);
 
         strictAssertSame(array(), $result['checked'], 'the ignore list outranks the foreign-tracker dispatch');
-        $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
-        strictAssertSame(
-            array(str_repeat('K', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
-            $writes[0]['commands'][0]->params,
-            'written IGNORED like every other ignored row'
-        );
+        $writes = upGuardedWrites();
+        strictAssertSame(1, count($writes), 'one guarded ignored verdict');
+        strictAssertSame(str_repeat('C', 40), $writes[0]['commands'][0]->params[0], 'foreign torrent target');
+        upAssertGuardedField($writes[0], 'chk-state', ruTrackerChecker::STE_IGNORED,
+            'written IGNORED like every other ignored row');
     } finally {
         unset($GLOBALS['ignoreLabels']);
     }
@@ -3537,10 +3654,10 @@ upTest($suite, 'a freshly ignored label beats the settled-verdict gate', functio
         upQueueUnchanged($rows);
         RuTrackerUpdatePass::run($rows);
 
-        $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+        $writes = upGuardedWrites();
         strictAssertSame(1, count($writes), 'the ignored label is written through');
-        strictAssertSame(array(str_repeat('A', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
-            $writes[0]['commands'][0]->params, 'as STE_IGNORED, not left at DELETED for a week');
+        upAssertGuardedField($writes[0], 'chk-state', ruTrackerChecker::STE_IGNORED,
+            'as STE_IGNORED, not left at DELETED for a week');
     } finally {
         unset($GLOBALS['ignoreLabels']);
     }
@@ -3608,15 +3725,14 @@ upTest($suite, 'an ignored label clears the sentence the previous verdict left b
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('must not run'); });
         rXMLRPCRequest::reset();
         upQueueUnchanged($rows);
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), true, false, array());
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
         RuTrackerUpdatePass::run($rows);
 
-        $state = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
-        strictAssertSame(1, count($state), 'state, time and message are written once');
-        strictAssertSame(array(str_repeat('A', 40), 'chk-state', (string) ruTrackerChecker::STE_IGNORED),
-            $state[0]['commands'][0]->params, 'as STE_IGNORED');
-        strictAssertSame(array(str_repeat('A', 40), 'chk-msg', ''), $state[0]['commands'][2]->params,
-            'the same bundle clears the stale "deleting|2/3" sentence');
+        $writes = upGuardedWrites();
+        strictAssertSame(1, count($writes), 'state, time and message are written once');
+        upAssertGuardedField($writes[0], 'chk-state', ruTrackerChecker::STE_IGNORED, 'as STE_IGNORED');
+        upAssertGuardedField($writes[0], 'chk-msg', '',
+            'the same branch clears the stale "deleting|2/3" sentence');
     } finally {
         unset($GLOBALS['ignoreLabels']);
     }
@@ -3677,17 +3793,15 @@ upTest($suite, 'a settled verdict is healed at once when the tracker answers aga
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) { throw new RuntimeException('the free path needs no checker'); });
     rXMLRPCRequest::reset();
     upQueueUnchanged($rows);
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     $result = RuTrackerUpdatePass::run($rows);
 
     strictAssertSame(1, $result['uptodate'], 'the row is healed on the spot');
-    $writes = rXMLRPCRequest::requestsFor(
-        'd.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom');
-    strictAssertSame(1, count($writes), 'the state and both cleanup fields land in one verdict bundle');
-    $keys = array();
-    foreach ($writes as $w) foreach ($w['commands'] as $c) $keys[$c->params[1]] = $c->params[2];
-    strictAssertSame('', $keys['chk-del'], 'and its deletion counter goes');
-    strictAssertSame('', $keys['chk-msg'], 'along with the sentence that explained the old verdict');
+    $writes = upGuardedWrites();
+    strictAssertSame(1, count($writes), 'the state and both cleanup fields land in one guarded verdict');
+    upAssertGuardedField($writes[0], 'chk-del', '', 'its deletion counter goes');
+    upAssertGuardedField($writes[0], 'chk-msg', '',
+        'the sentence that explained the old verdict goes too');
 });
 
 // A topic its moderators closed (tor_status 1/4/5) is as final as a deleted
@@ -3822,7 +3936,9 @@ upTest($suite, 'flushVerdicts does not count failed state write and skips messag
     rXMLRPCRequest::reset();
     upQueueUnchanged($rows);
     // Queue state write failure
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), false, false, array());
+    rXMLRPCRequest::queue('branch', false, false, array());
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
+        false, false, array());
     // The integer 0 is not a string, so erasedataTorrentPresence() answers
     // UNKNOWN and torrentExists() answers null: presence is unproved, not
     // proved. That is all this fixture needs -- the projection writer treats
@@ -3832,8 +3948,9 @@ upTest($suite, 'flushVerdicts does not count failed state write and skips messag
 
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(0, $result['uptodate'], 'failed write is not counted as applied');
+    strictAssertSame(1, count(upGuardedWrites()), 'the uncertain guarded write is tried only once');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
-        'message write is skipped when state write fails');
+        'no unconditional message setter follows the uncertain branch');
 });
 
 upTest($suite, 'fast verdict holds the claim and writes one complete daemon bundle', function () {
@@ -3849,12 +3966,12 @@ upTest($suite, 'fast verdict holds the claim and writes one complete daemon bund
     $competing = array();
     upQueueProjection($rows, function () use (&$model, &$competing, $hash) {
         $competing[] = ruTrackerChecker::claimCheckForWorker($hash, time());
-        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
     });
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false,
+    rXMLRPCRequest::queue('branch', true, false,
         function ($commands) use (&$model, &$competing, $hash) {
             $competing[] = ruTrackerChecker::claimCheckForWorker($hash, time());
-            return upApplyVerdictCommands($model, $commands);
+            return upApplyGuardedProjection($model, $commands);
         });
 
     $result = RuTrackerUpdatePass::run($rows);
@@ -3862,12 +3979,12 @@ upTest($suite, 'fast verdict holds the claim and writes one complete daemon bund
     strictAssertSame(array(false, false), $competing,
         'a cooperative competitor is rejected during both the fresh scan and the write');
     strictAssertSame(1, $result['uptodate'], 'the complete alive verdict is counted once');
-    $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom');
-    strictAssertSame(1, count($writes), 'all selected fields use one small multicall');
-    $fields = array_map(function ($command) { return $command->params[1]; }, $writes[0]['commands']);
-    strictAssertSame(array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del'), $fields,
-        'the one bundle carries the complete desired projection in deterministic order');
-    strictAssertSame($writes[0]['commands'][1]->params[2], $writes[0]['commands'][2]->params[2],
+    $writes = upGuardedWrites();
+    strictAssertSame(1, count($writes), 'all selected fields use one guarded branch');
+    $actions = upGuardedActions($writes[0]['commands']);
+    strictAssertSame(array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del'),
+        array_column($actions, 0), 'the branch carries the complete projection in order');
+    strictAssertSame($actions[1][1], $actions[2][1],
         'chk-time and chk-stime share one captured timestamp');
     strictAssertSame((string) ruTrackerChecker::STE_UPTODATE, $model['state'], 'state landed');
     strictAssertSame('', $model['msg'], 'stale message cleared in the same bundle');
@@ -3888,7 +4005,7 @@ upTest($suite, 'fresh projection preserves a completed worker message and deleti
     });
     rXMLRPCRequest::reset();
     upQueueProjection($rows, function () use (&$model, $hash) {
-        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
     });
 
     $result = RuTrackerUpdatePass::run($rows);
@@ -3896,7 +4013,7 @@ upTest($suite, 'fresh projection preserves a completed worker message and deleti
     strictAssertSame(0, $result['uptodate'], 'a changed message/deletion projection is not counted');
     strictAssertSame('deleting|3/3', $model['msg'], 'the newer worker message survives');
     strictAssertSame('3:200', $model['del'], 'the newer deletion generation survives');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom')),
+    strictAssertSame(0, count(upGuardedWrites()),
         'no stale verdict bundle is sent');
 });
 
@@ -3918,13 +4035,13 @@ upTest($suite, 'partial fast-verdict replies are read back, not counted, and con
         rXMLRPCRequest::reset();
         $rows = $makeRows();
         upQueueProjection($rows, function () use (&$model, $hash) {
-            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
         });
-        rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), false, true,
+        rXMLRPCRequest::queue('branch', false, true,
             function ($commands) use (&$model, $prefix) {
-                return upApplyVerdictCommands($model, $commands, $prefix);
+                return upApplyGuardedProjection($model, $commands, $prefix);
             });
-        rXMLRPCRequest::queue(array_fill(0, 5, 'd.get_custom'), true, false,
+        rXMLRPCRequest::queue(array_merge(array_fill(0, 5, 'd.get_custom'), array('d.get_local_id')), true, false,
             function ($commands) use (&$model) { return upProjectionValues($model, $commands); });
 
         $first = RuTrackerUpdatePass::run($rows);
@@ -3937,11 +4054,10 @@ upTest($suite, 'partial fast-verdict replies are read back, not counted, and con
         rXMLRPCRequest::reset();
         $retryRows = $makeRows();
         upQueueProjection($retryRows, function () use (&$model, $hash) {
-            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
         });
-        $retryFields = 3 + ($model['msg'] !== '' ? 1 : 0) + ($model['del'] !== '' ? 1 : 0);
-        rXMLRPCRequest::queue(array_fill(0, $retryFields, 'd.set_custom'), true, false,
-            function ($commands) use (&$model) { return upApplyVerdictCommands($model, $commands); });
+        rXMLRPCRequest::queue('branch', true, false,
+            function ($commands) use (&$model) { return upApplyGuardedProjection($model, $commands); });
         $second = RuTrackerUpdatePass::run($retryRows);
         strictAssertSame(1, $second['uptodate'], 'prefix ' . $prefix . ': next-cycle re-derivation converges');
         strictAssertSame('', $model['msg'], 'prefix ' . $prefix . ': retry completes message cleanup');
@@ -3960,17 +4076,17 @@ upTest($suite, 'lost fast-verdict response is accepted only after complete readb
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () { throw new RuntimeException('no checker'); });
     rXMLRPCRequest::reset();
     upQueueProjection($rows, function () use (&$model, $hash) {
-        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+        return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
     });
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), false, true,
-        function ($commands) use (&$model) { return upApplyVerdictCommands($model, $commands); });
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.get_custom'), true, false,
+    rXMLRPCRequest::queue('branch', false, true,
+        function ($commands) use (&$model) { return upApplyGuardedProjection($model, $commands); });
+    rXMLRPCRequest::queue(array_merge(array_fill(0, 5, 'd.get_custom'), array('d.get_local_id')), true, false,
         function ($commands) use (&$model) { return upProjectionValues($model, $commands); });
 
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(1, $result['uptodate'],
         'a lost reply after every selected field landed is truthfully accepted once');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom|d.set_custom|d.set_custom')),
+    strictAssertSame(1, count(upGuardedWrites()),
         'the ambiguous reply does not trigger a duplicate setter pipeline');
 });
 
@@ -3988,14 +4104,14 @@ upTest($suite, 'short positive fast-verdict replies require exact projection rea
         });
         rXMLRPCRequest::reset();
         upQueueProjection($rows, function () use (&$model, $hash) {
-            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg']);
+            return array($hash, $model['state'], $model['time'], $model['del'], $model['msg'], str_repeat('A', 40));
         });
-        rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false,
+        rXMLRPCRequest::queue('branch', true, false,
             function ($commands) use (&$model, $case) {
-                upApplyVerdictCommands($model, $commands, $case['prefix']);
-                return array(0); // positive but shorter than the five-command request
+                upApplyGuardedProjection($model, $commands, $case['prefix']);
+                return array(0); // positive but not an acknowledged sentinel
             });
-        rXMLRPCRequest::queue(array_fill(0, 5, 'd.get_custom'), true, false,
+        rXMLRPCRequest::queue(array_merge(array_fill(0, 5, 'd.get_custom'), array('d.get_local_id')), true, false,
             function ($commands) use (&$model) { return upProjectionValues($model, $commands); });
 
         $result = RuTrackerUpdatePass::run($rows);
@@ -4003,7 +4119,7 @@ upTest($suite, 'short positive fast-verdict replies require exact projection rea
         strictAssertSame($case['expect'], $result['uptodate'],
             $label . ': applied count follows the measured complete projection');
         strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
-            'd.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom')),
+            'd.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_local_id')),
             $label . ': a short positive write reply is always read back');
     }
 });
@@ -4022,8 +4138,9 @@ upTest($suite, 'failed fast-verdict readback distinguishes confirmed absence fro
         $GLOBALS['log_file'] = $logFile;
         rXMLRPCRequest::reset();
         upQueueProjection($rows);
-        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom', 'd.set_custom'), false, true, array());
-        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom'), false, true, array());
+        rXMLRPCRequest::queue('branch', false, true, array());
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
+            false, true, array());
         rXMLRPCRequest::queue('d.hash', $case['hashOk'], $case['hashFault'], array());
 
         $result = RuTrackerUpdatePass::run($rows);
@@ -4334,7 +4451,7 @@ upTest($suite, 'testTheFreshCasScanRefusesToCompareAgainstAnUnreadableRow', func
     });
     rXMLRPCRequest::reset();
     upQueueUnchanged($rows);
-    rXMLRPCRequest::queue(array_fill(0, 5, 'd.set_custom'), true, false, array(0, 0, 0, 0, 0));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     strictAssertSame(1, RuTrackerUpdatePass::run($rows)['uptodate'],
         'a canonical fresh reading still lets the buffered verdict through');
 });
@@ -4989,7 +5106,7 @@ upTest($suite, 'a true uptodate verdict may clear a stale superseded pointer on 
     $result = upRunPass(array($row), $checked, array(4));
     strictAssertSame(array(), $checked, 'a real successful verdict retires the failure-only protection');
     strictAssertSame(1, $result['uptodate'], 'the healthy row is not permanently excluded');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom|d.set_custom')),
+    strictAssertSame(1, count(upGuardedWrites()),
         'the stale successor message is cleared along with the free verdict');
 });
 

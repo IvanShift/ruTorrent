@@ -3,8 +3,9 @@
  * Native rTorrent command registrations used by XMLRPCProxy.
  * Bit 0: tagged v0.9.8; bits 1..25: tagged v0.16.0..v0.16.24.
  * Derived from CMD2 registrations in rakshasa/rtorrent src/ at each tag.
- * Names absent from the captured 0.16.22 registry are excluded globally:
- * source-only conditional/deprecated registrations do not prove availability.
+ * Names absent from the captured 0.16.22 registry are excluded globally,
+ * except four 0.9.8-only getters confirmed by its live method registry.
+ * Source-only conditional/deprecated registrations do not prove availability.
  * This is a provenance ceiling, not a permission list: the proxy policy
  * still decides which native commands and argument shapes are permitted.
  * A missing name or unreviewed daemon version is refused before trust.
@@ -476,6 +477,7 @@ return array(
 	'network.http.max_cache_connections.set' => 0x3FFFFFC,
 	'network.http.max_host_connections' => 0x3FFFFFC,
 	'network.http.max_host_connections.set' => 0x3FFFFFC,
+	'network.http.max_open' => 0x1,
 	'network.http.max_total_connections' => 0x3FFFFFC,
 	'network.http.max_total_connections.set' => 0x3FFFFFC,
 	'network.http.proxy_address' => 0x3FFFFFF,
@@ -512,6 +514,9 @@ return array(
 	'network.open_sockets' => 0x3FFFFFF,
 	'network.prefer.ipv6' => 0x3FFFFFE,
 	'network.prefer.ipv6.set' => 0x3FFFFFE,
+	'network.port_open' => 0x1,
+	'network.port_random' => 0x1,
+	'network.port_range' => 0x1,
 	'network.proxy.global' => 0x3FE0000,
 	'network.proxy.global.set' => 0x3FE0000,
 	'network.proxy.http' => 0x3FE0000,

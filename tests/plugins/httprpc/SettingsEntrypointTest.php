@@ -24,11 +24,16 @@ class FileUtil { public static function toLog($message) {} }
 class CachedEcho { public static function send($body, $type = null) { echo http_response_code()."|".$body; exit(0); } }
 class rTorrentSettings {
     public $aliases = array();
+    public $iVersion = 0x1018;
     public static function get() { return new self(); }
+    public function getSocketAllocCategory($name) {
+        return $name === "nmax_open_files" ? "files" : null;
+    }
 }
 function getCmd($command) { return $command; }
 class rXMLRPCCommand {
-    public function __construct($method, $parameters = null) {}
+    public $method;
+    public function __construct($method, $parameters = null) { $this->method = $method; }
     public function addParameters($parameters) {}
 }
 class rXMLRPCRequest {
@@ -42,10 +47,36 @@ class rXMLRPCRequest {
     public $fault = false;
     public $faultString = "";
     public $transportFailure = null;
+    public $important = false;
+    public $val = array();
+    private $commands = array();
     public function __construct() {
         if(!getenv("HTTPRPC_TEST_FAILURE")) { echo "RPC-CONSTRUCTED"; exit(72); }
     }
+    public function addCommand($command) { $this->commands[] = $command->method; }
+    public function getCommandsCount() { return count($this->commands); }
     public function success($trusted = true) {
+        if(getenv("HTTPRPC_TEST_FAILURE") === "socket-rollback") {
+            file_put_contents(getenv("HTTPRPC_TEST_TRACE"),
+                "RPC[".implode(",", $this->commands)."];", FILE_APPEND);
+            if($this->commands === array("system.sockets.files.min_alloc", "system.sockets.files.max_alloc")) {
+                $this->val = array(131, 131); return true;
+            }
+            if($this->commands === array("get_max_open_files")) {
+                $this->val = array(131); return true;
+            }
+            if(in_array("system.sockets.adjust_alloc", $this->commands, true)) {
+                static $adjustAttempts = 0;
+                if(++$adjustAttempts === 1) {
+                    $this->fault = true;
+                    $this->faultString = "over budget";
+                    return false;
+                }
+                $this->val = array(0, 0, 0);
+                return true;
+            }
+            fwrite(STDERR, "unexpected socket transaction call"); exit(74);
+        }
         $this->transportFailure = getenv("HTTPRPC_TEST_FAILURE");
         return false;
     }
@@ -58,7 +89,8 @@ class rXMLRPCRequest {
 		$process = proc_open(array(PHP_BINARY, '-r', $script),
 			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
 			$pipes, $root.'/plugins/httprpc',
-			array_merge($_ENV, array('HTTPRPC_TEST_FAILURE' => (string)$rpcFailure)));
+			array_merge($_ENV, array('HTTPRPC_TEST_FAILURE' => (string)$rpcFailure,
+				'HTTPRPC_TEST_TRACE' => $root.'/trace')));
 		if(!is_resource($process))
 			throw new Exception('could not start isolated action.php fixture');
 		fclose($pipes[0]);
@@ -67,6 +99,9 @@ class rXMLRPCRequest {
 		fclose($pipes[1]);
 		fclose($pipes[2]);
 		$status = proc_close($process);
+		$trace = is_file($root.'/trace') ? file_get_contents($root.'/trace') : '';
+		if(is_file($root.'/trace'))
+			unlink($root.'/trace');
 
 		foreach(array('plugins/httprpc/action.php', 'plugins/httprpc/settingspolicy.php',
 			'plugins/httprpc/rpccache.php', 'php/xmlrpc.php', 'php/xmlrpc_proxy.php',
@@ -77,7 +112,8 @@ class rXMLRPCRequest {
 		rmdir($root.'/plugins');
 		rmdir($root.'/php');
 		rmdir($root);
-		return array('status' => $status, 'output' => $output, 'error' => $error);
+		return array('status' => $status, 'output' => $output,
+			'error' => $error, 'trace' => $trace);
 	}
 
 	public function testForgedSizeSetterIsRefusedBeforeRpcConstruction()
@@ -143,6 +179,23 @@ class rXMLRPCRequest {
 		$this->assertEquals(0, $connect['status'], 'connect failure still returns an error');
 		$this->assertEquals('500|Could not reach rTorrent over XMLRPC. Is rTorrent running?',
 			$connect['output'], 'a refused connection keeps its established message');
+	}
+
+	public function testRejectedSocketTransactionRestoresItsSnapshot()
+	{
+		$result = $this->runRequest('mode=setsettings&s=nmax_open_files&v=100000', 'socket-rollback');
+		$this->assertEquals(0, $result['status'], 'the real action.php completes its refusal path');
+		$this->assertEquals('', $result['error'], 'the rollback fixture raises no PHP diagnostic');
+		preg_match_all('/RPC\[([^]]+)\];/', $result['trace'], $calls);
+		$this->assertEquals(array(
+			'system.sockets.files.min_alloc,system.sockets.files.max_alloc',
+			'get_max_open_files',
+			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
+			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
+			'get_max_open_files',
+		), $calls[1], 'a failed allocation is followed by one restore and read-back');
+		$this->assertTrue(strpos($result['output'], '500|over budget') !== false,
+			'the original rTorrent refusal reaches the caller after rollback');
 	}
 
 	public function testOrdinarySettingReachesTheStubbedRpcBoundary()

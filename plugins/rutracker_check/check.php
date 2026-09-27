@@ -562,25 +562,24 @@ class ruTrackerChecker
 	 * short positive response is therefore just as ambiguous as a failed one:
 	 * some setters may have landed, or the reply may have been cut short.
 	 */
-	static private function writeCustomProjection($hash, $commands, $context)
+	static private function writeCustomProjection($hash, $commands, $context, $localId = null)
 	{
-		return(RuTrackerCustomProjection::write($hash, $commands, $context));
+		return(RuTrackerCustomProjection::write($hash, $commands, $context, $localId));
 	}
 
 	/**
-	 * Persist one scheduler fast-path verdict as one small daemon request.
+	 * Persist one fast-path verdict as one small daemon request.
 	 *
-	 * system.multicall is one scheduling/request boundary, not a rollback
-	 * transaction. Therefore an aggregate failure is ambiguous: preceding
-	 * members may already have landed, or the reply may simply have been lost.
-	 * Read back exactly the selected projection and accept it only when every
-	 * field has the desired value. A confirmed missing hash is the sole null
-	 * outcome; every present or unknowable incomplete result stays retryable.
+	 * A scheduler-supplied local id guards the whole projection in one daemon
+	 * branch. Other callers retain the existing multicall path. Either reply
+	 * can be lost or truncated after effects landed, so read back the selected
+	 * fields, and the local id when guarded, before accepting an unknown result.
+	 * A confirmed missing hash is the sole null outcome.
 	 *
 	 * @return bool|null true when the whole desired projection is observed,
 	 *                   null when the target is confirmed absent, false otherwise
 	 */
-	static public function setFastVerdict($hash, $state, $message = null, $clearDeletion = false)
+	static public function setFastVerdict($hash, $state, $message = null, $clearDeletion = false, $localId = null)
 	{
 		$now = time();
 		$commands = self::stateCommands($hash, $state, $now);
@@ -591,7 +590,7 @@ class ruTrackerChecker
 			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
 				array($hash, "chk-del", ""));
 
-		return(self::writeCustomProjection($hash, $commands, "setFastVerdict"));
+		return(self::writeCustomProjection($hash, $commands, "setFastVerdict", $localId));
 	}
 
 	// Writes chk-msg outside a retained-terminal dispatch. Inside it, stage
@@ -837,7 +836,11 @@ class ruTrackerChecker
 	{
 		$token = bin2hex(random_bytes(8));
 		$granted = false;
-		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $token, &$granted) {
+		// $now can be a cycle-start snapshot. Diagnose large clock jumps using a
+		// fresh reading, without treating a future stamp as proof its owner died.
+		$wallNow = time();
+		$futureNotice = false;
+		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $wallNow, $token, &$granted, &$futureNotice) {
 			foreach($claims as $held => $entry)
 			{
 				// An unreadable claim is RETAINED and goes on blocking: its
@@ -865,6 +868,18 @@ class ruTrackerChecker
 							. " carries an unreadable timestamp; it is kept and keeps blocking,"
 							. " and nothing will retire it");
 				}
+				elseif($held === $hash && ($since - $wallNow) > self::MAX_LOCK_TIME)
+				{
+					// Mark this exact generation under the claim document lock.
+					// The owner still releases by token; the notice cannot steal it.
+					if(!is_array($entry)) $entry = array('since' => $since);
+					if(!isset($entry['future_notice']) || $entry['future_notice'] !== $since)
+					{
+						$entry['future_notice'] = $since;
+						$claims[$held] = $entry;
+						$futureNotice = true;
+					}
+				}
 				elseif(($now - $since) > self::MAX_LOCK_TIME) unset($claims[$held]);
 			}
 			if(isset($claims[$hash])) return($claims);
@@ -887,6 +902,10 @@ class ruTrackerChecker
 			return(null);
 		}
 		self::$claimStoreFailureLogged = false;
+		if($futureNotice)
+			self::logUnrepairable("claimCheck: the claim on " . $hash
+				. " has a future timestamp; clock rollback or claim-store corruption"
+				. " can block checks until wall time catches up; retained to protect its possible owner");
 		return($granted ? $token : false);
 	}
 

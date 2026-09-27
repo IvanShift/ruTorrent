@@ -1509,6 +1509,140 @@ class XMLRPCProxyTest extends TestCase
 		return self::processOnModernDaemon($xml, $mode, true, array('d.custom1.set'));
 	}
 
+	public function testCapturedSettingsReadBatchUsesTrustOnlyForItsExactReadShape()
+	{
+		// Captured from the actual WebUI on rt-lab rTorrent 0.16.24.
+		$xml = file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml');
+		$this->assertTrue($xml !== false, 'the captured settings request is present');
+		$policy = XMLRPCProxy::defaultSafeParams();
+		$decision = self::decideOnModernDaemon($xml, 'sanitize', $policy,
+			false, array('rtorrentVersion' => 0x1018));
+		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+			'the complete Settings read runs trusted so both listener flag getters answer');
+		$this->assertTrue(strpos($decision['payload'], 'network.scgi.dont_route') !== false,
+			'the exact read-only SCGI flag survives the rebuilt request');
+		foreach(array(
+			array('network.scgi.dont_route', 'network.scgi.open_port'),
+			array('network.scgi.dont_route', 'system.sockets.files.min_alloc.set'),
+			array('network.listen.port.range', 'execute.capture'),
+		) as $replacement)
+		{
+			$changed = str_replace('<string>'.$replacement[0].'</string>',
+				'<string>'.$replacement[1].'</string>', $xml);
+			$this->assertTrue($changed !== $xml, 'the mutation changed a captured member');
+			$blocked = self::decideOnModernDaemon($changed, 'sanitize', $policy,
+				false, array('rtorrentVersion' => 0x1018));
+			if($replacement[1] === 'system.sockets.files.min_alloc.set')
+				$this->assertTrue($blocked['action'] !== 'send' || !$blocked['trusted'],
+					'a socket setter cannot borrow trust from the settings read batch');
+			else
+				$this->assertEquals('reject', $blocked['action'],
+					$replacement[1].' cannot borrow trust from the settings read batch');
+		}
+		$slot = '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data></data>';
+		$withArgument = str_replace($slot, '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data><value><string>x</string></value></data>', $xml);
+		$this->assertTrue($withArgument !== $xml, 'the extra-argument mutation changed slot 37');
+		$blocked = self::decideOnModernDaemon($withArgument, 'sanitize', $policy,
+			false, array('rtorrentVersion' => 0x1018));
+		$this->assertEquals('reject', $blocked['action'],
+			'the settings batch cannot carry a parameter in the SCGI getter slot');
+		$mixed = self::decideOnModernDaemon($this->systemMulticallXml(array(
+			array('throttle.max_uploads.global', array()),
+			array('d.open', array(str_repeat('A', 40))),
+		)), 'sanitize', $policy);
+		$this->assertEquals('reject', $mixed['action'],
+			'an arbitrary read plus privileged write cannot use the settings exception');
+		$direct = self::decideOnModernDaemon($this->methodCallXml('network.scgi.dont_route'),
+			'sanitize', $policy);
+		$this->assertEquals('reject', $direct['action'],
+			'the exact read exception belongs to the captured batch only');
+		$short = self::decideOnModernDaemon($this->systemMulticallXml(array(
+			array('throttle.max_uploads.global', array()),
+			array('network.scgi.dont_route', array()),
+		)), 'sanitize', $policy);
+		$this->assertEquals('reject', $short['action'],
+			'an arbitrary read batch cannot gain the special settings trust');
+	}
+
+	public function testCapturedLegacyPanelReadBatchesRequireExactTrustedShapes()
+	{
+		$policy = XMLRPCProxy::defaultSafeParams();
+		foreach(array(
+			'settings-read-rtorrent-0.9.8.xml' => 49,
+			'panel-total-rtorrent-0.9.8.xml' => 4,
+			'panel-open-rtorrent-0.9.8.xml' => 2,
+		) as $fixture => $count)
+		{
+			$xml = file_get_contents(__DIR__.'/fixtures/'.$fixture);
+			$this->assertTrue($xml !== false, $fixture.' is a captured browser request');
+			$this->assertEquals($count, substr_count($xml, '<name>methodName</name>'),
+				$fixture.' keeps its captured number of result slots');
+			$decision = self::decideOnModernDaemon($xml, 'sanitize', $policy,
+				false, array('rtorrentVersion' => 0x0908));
+			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+				$fixture.' is the exact read-only batch allowed on 0.9.8');
+		}
+	}
+
+	public function testCapturedLegacyReadBatchesCannotElevateChangedCalls()
+	{
+		$policy = XMLRPCProxy::defaultSafeParams();
+		$old = array('rtorrentVersion' => 0x0908);
+		foreach(array('settings-read-rtorrent-0.9.8.xml',
+			'panel-total-rtorrent-0.9.8.xml', 'panel-open-rtorrent-0.9.8.xml') as $fixture)
+		{
+			$xml = file_get_contents(__DIR__.'/fixtures/'.$fixture);
+			$this->assertTrue($xml !== false, $fixture.' exists for the security mutations');
+			$withWrite = preg_replace('/<name>methodName<\/name><value><string>[^<]+<\/string>/',
+				'<name>methodName</name><value><string>execute.capture</string>', $xml, 1);
+			$this->assertTrue($withWrite !== $xml, $fixture.' changed its first method');
+			$blocked = self::decideOnModernDaemon($withWrite, 'sanitize', $policy, false, $old);
+			$this->assertEquals('reject', $blocked['action'],
+				$fixture.' cannot borrow trust for an execution command');
+			$withArgument = preg_replace('/<name>params<\/name><value><array><data><\/data>/',
+				'<name>params</name><value><array><data><value><string>x</string></value></data>', $xml, 1);
+			$this->assertTrue($withArgument !== $xml, $fixture.' changed its first argument list');
+			$blocked = self::decideOnModernDaemon($withArgument, 'sanitize', $policy, false, $old);
+			$this->assertEquals('reject', $blocked['action'],
+				$fixture.' cannot borrow trust with a parameter');
+			preg_match_all('/<name>methodName<\/name><value><string>([^<]+)<\/string>/',
+				$xml, $names);
+			$this->assertTrue(count($names[1]) >= 2, $fixture.' has ordered read slots');
+			$reordered = str_replace('<string>'.$names[1][0].'</string>',
+				'<string>SWAP_SLOT</string>', $xml);
+			$reordered = str_replace('<string>'.$names[1][1].'</string>',
+				'<string>'.$names[1][0].'</string>', $reordered);
+			$reordered = str_replace('<string>SWAP_SLOT</string>',
+				'<string>'.$names[1][1].'</string>', $reordered);
+			$blocked = self::decideOnModernDaemon($reordered, 'sanitize', $policy, false, $old);
+			$this->assertEquals('reject', $blocked['action'],
+				$fixture.' cannot reorder the captured read slots');
+			$wrongVersion = self::decideOnModernDaemon($xml, 'sanitize', $policy,
+				false, array('rtorrentVersion' => 0x1016));
+			$this->assertTrue(!$wrongVersion['trusted'],
+				$fixture.' exact legacy trust does not apply to a newer daemon');
+		}
+		$mixed = self::decideOnModernDaemon($this->systemMulticallXml(array(
+			array('throttle.global_up.total', array()),
+			array('d.open', array(str_repeat('A', 40))),
+		)), 'sanitize', $policy, false, $old);
+		$this->assertEquals('reject', $mixed['action'],
+			'a shorter read and write batch cannot borrow the captured read grant');
+		foreach(array('dht.statistics', 'throttle.global_up.total',
+			'network.http.current_open', 'network.http.max_open', 'network.port_open') as $name)
+		{
+			$direct = self::decideOnModernDaemon($this->methodCallXml($name),
+				'sanitize', $policy, false, $old);
+			$this->assertEquals('reject', $direct['action'],
+				$name.' alone cannot borrow trust from a captured batch');
+		}
+		$native = require(__DIR__.'/../../php/xmlrpc_proxy_native.php');
+		foreach(array('network.http.max_open', 'network.port_open',
+			'network.port_random', 'network.port_range') as $name)
+			$this->assertEquals(0x1, $native[$name],
+				$name.' is registered only for the live 0.9.8 daemon');
+	}
+
 	public function testExecutionPrimitivesAreRefused()
 	{
 		foreach(array('execute', 'execute.capture', 'execute.raw.bg', 'execute2',

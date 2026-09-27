@@ -8,12 +8,9 @@ require_once(__DIR__ . '/../../php/settings.php');
 /**
  * rTorrentSettings caches itself into share/settings/rtorrent.dat, and
  * php/xmlrpc.php builds its singleton from that file on the first
- * rXMLRPCCommand of every later request. Only obtain() can set linkExist, and
- * only getplugins.php / initplugins.php call obtain(); every other entry point
- * takes the cache at its word. A stored object whose probe failed therefore
- * speaks for the whole install until something probes again -- with an empty
- * alias map, so getCommand() hands back the 0.9.x spelling of every renamed
- * command.
+ * rXMLRPCCommand of every later request. Only obtain() can set linkExist.
+ * A cache miss probes the daemon before resolving command aliases, while a
+ * failed probe cannot replace a previously stored good settings object.
  */
 class SettingsCacheTest extends TestCase
 {
@@ -76,6 +73,81 @@ class SettingsCacheTest extends TestCase
 		$cached = $cached->newInstanceWithoutConstructor();
 		(new rCache())->get($cached);
 		return $cached;
+	}
+
+	public function testCacheMissProbesDaemonBeforeResolvingAliases()
+	{
+		$fixture = $this->profilePath.'/miss-fixture';
+		if (!mkdir($fixture, 0700, true)) {
+			throw new Exception('Could not create settings cache miss fixture');
+		}
+		foreach (array('settings.php', 'methods-0.9.4.php') as $name) {
+			if (!copy(__DIR__.'/../../php/'.$name, $fixture.'/'.$name)) {
+				throw new Exception('Could not copy production '.$name);
+			}
+		}
+		file_put_contents($fixture.'/cache.php', <<<'PHP'
+<?php
+class rCache
+{
+	public function get(&$settings) { return false; }
+}
+PHP
+);
+		file_put_contents($fixture.'/xmlrpc.php', <<<'PHP'
+<?php
+class rXMLRPCCommand
+{
+	public $command;
+	public function __construct($name) { $this->command = $name; }
+}
+class rXMLRPCRequest
+{
+	public static $calls = 0;
+	public $val = array();
+	private $command;
+	public function __construct($command) { $this->command = $command->command; }
+	public function run()
+	{
+		self::$calls++;
+		if ($this->command === 'system.client_version') {
+			$this->val = array('0.9.8');
+			return true;
+		}
+		return false;
+	}
+	public function success() { return false; }
+}
+PHP
+);
+		file_put_contents($fixture.'/run.php', <<<'PHP'
+<?php
+chdir(__DIR__);
+require __DIR__.'/settings.php';
+$settings = rTorrentSettings::get(false);
+echo json_encode(array(
+	'calls' => rXMLRPCRequest::$calls,
+	'version' => $settings->iVersion,
+	'mapped' => $settings->getCommand('d.get_name'),
+));
+PHP
+);
+		$process = proc_open(array(PHP_BINARY, $fixture.'/run.php'),
+			array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, $fixture);
+		if (!is_resource($process)) {
+			throw new Exception('Could not start settings cache miss fixture');
+		}
+		$output = stream_get_contents($pipes[1]);
+		$error = stream_get_contents($pipes[2]);
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		$exit = proc_close($process);
+		$this->assertEquals(0, $exit, 'The production settings fixture exits cleanly: '.$error);
+		$actual = json_decode($output, true);
+		$this->assertTrue(is_array($actual), 'The production settings fixture returned JSON');
+		$this->assertTrue($actual['calls'] > 0, 'A missing cache triggers a live version probe');
+		$this->assertEquals(0x0908, $actual['version'], 'The supported 0.9.8 version is known after the probe');
+		$this->assertEquals('d.name', $actual['mapped'], 'The renamed getter is resolved before returning settings');
 	}
 
 	public function testFailedProbeIsNotCached()

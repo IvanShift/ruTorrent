@@ -15,7 +15,7 @@ require_once(dirname(__FILE__) . "/../erasedata/removewithdata.php");
 // branch worth testing lives here instead.
 class RuTrackerUpdatePass
 {
-    const COLUMNS = 8;
+    const COLUMNS = 9;
     const FORUM_CORRECTION_MAX_AGE = 2592000; // 30 days
 
     // Test seam: run()'s production default dispatches straight to
@@ -282,6 +282,7 @@ class RuTrackerUpdatePass
                 'msg' => $values[$i + 6],
                 'trackers' => $trackers,
                 'trackers_complete' => $trackersComplete,
+                'local_id' => $values[$i + 8],
             );
         }
         return $rows;
@@ -572,6 +573,7 @@ class RuTrackerUpdatePass
             'counts' => $counts,
             'seenState' => $row['state'],   // parseMulticall() made these ints
             'seenTime' => $row['time'],
+            'local_id' => $row['local_id'] ?? '',
             'clearDeletion' => (bool) $clearDeletion,
             'del' => (string) (isset($row['del']) ? $row['del'] : ''),
             'rawMsg' => (string) (isset($row['msg']) ? $row['msg'] : ''),
@@ -594,9 +596,11 @@ class RuTrackerUpdatePass
      *
      * The claim alone would not close this: it covers only the interval while
      * the other worker is still running, and the ordinary case is a click that
-     * finished before pass 2 reached the row. Only comparing against a fresh
-     * reading does, so the verdicts are buffered and flushed behind ONE scan --
-     * per cycle, not per row.
+     * finished before pass 2 reached the row. The verdicts are buffered behind
+     * ONE fresh scan per cycle. Both scans carry d.local_id so a same-hash
+     * delete/readd is visible even when its custom fields are empty again;
+     * the final write checks that id inside rTorrent's branch to close the
+     * remaining scan-to-write window.
      *
      * A row that has left the "seeding" view since the snapshot is skipped for
      * the same reason: whatever moved it knows more than this pass does.
@@ -627,6 +631,7 @@ class RuTrackerUpdatePass
                 getCmd("d.get_custom=") . "chk-time",
                 getCmd("d.get_custom=") . "chk-del",
                 getCmd("d.get_custom=") . "chk-msg",
+                getCmd("d.get_local_id="),
             )));
             $scan->important = false;
             // Nothing is known, so nothing is written. Every verdict in this buffer
@@ -635,7 +640,7 @@ class RuTrackerUpdatePass
             if (!$scan->success()) return 0;
 
             $live = array();
-            for ($i = 0; $i + 5 <= count($scan->val); $i += 5) {
+            for ($i = 0; $i + 6 <= count($scan->val); $i += 6) {
                 // A fresh reading that will not parse is not comparable with
                 // the snapshot, so it is left out of $live -- "not seen".
                 $liveState = self::storedCounter($scan->val[$i + 1]);
@@ -650,6 +655,7 @@ class RuTrackerUpdatePass
                     'time' => $liveTime,
                     'del' => (string) $scan->val[$i + 3],
                     'msg' => (string) $scan->val[$i + 4],
+                    'local_id' => (string) $scan->val[$i + 5],
                 );
             }
 
@@ -657,7 +663,9 @@ class RuTrackerUpdatePass
             foreach ($claimableVerdicts as $verdict) {
                 $hash = $verdict['hash'];
                 if (!isset($live[$hash])) continue;
-                if ($live[$hash]['state'] !== $verdict['seenState']
+                if ($verdict['local_id'] === ''
+                    || $live[$hash]['local_id'] !== $verdict['local_id']
+                    || $live[$hash]['state'] !== $verdict['seenState']
                     || $live[$hash]['time'] !== $verdict['seenTime'])
                     continue;
                 // Compare every field this verdict may replace. A worker that
@@ -676,7 +684,7 @@ class RuTrackerUpdatePass
                     $message = '';
                 $clearDeletion = !empty($verdict['clearDeletion']) && $verdict['del'] !== '';
                 $stateRes = ruTrackerChecker::setFastVerdict(
-                    $hash, $verdict['state'], $message, $clearDeletion);
+                    $hash, $verdict['state'], $message, $clearDeletion, $verdict['local_id']);
                 if ($stateRes === true && !empty($verdict['counts']))
                     $applied++;
                 elseif ($stateRes === null)
