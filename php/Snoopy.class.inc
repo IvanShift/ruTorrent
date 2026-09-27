@@ -106,6 +106,8 @@ class Snoopy
 	protected $requestScopedCookies = array();
 	protected $requestOriginalCookies = array();
 	protected $requestAccountCookies = array();
+	private $secureResponseCookies = array();
+	private $loadedAccountCookies = array();
 
 	var $_isproxy		=	false;			// set if using a proxy server
 	var $_fp_timeout	=	30;			// timeout for socket connection
@@ -265,8 +267,10 @@ class Snoopy
 		$parts = @parse_url($URI);
 		$this->host = is_array($parts) && isset($parts["host"]) ? $parts["host"] : '';
 		$originalCookies = $this->cookies;
+		$originalSecureCookies = $this->secureResponseCookies;
 		$previousScope = array($this->requestCookieHost, $this->requestCookieScheme,
-			$this->requestScopedCookies, $this->requestOriginalCookies, $this->requestAccountCookies);
+			$this->requestScopedCookies, $this->requestOriginalCookies, $this->requestAccountCookies,
+			$this->loadedAccountCookies);
 		$this->requestCookieHost = UrlHost::of($URI);
 		$this->requestCookieScheme = is_array($parts) && isset($parts['scheme'])
 			? strtolower($parts['scheme']) : '';
@@ -312,9 +316,10 @@ class Snoopy
 		{
 			// Source cookies and account sessions belong to this call.
 			$this->cookies = $originalCookies;
+			$this->secureResponseCookies = $originalSecureCookies;
 			list($this->requestCookieHost, $this->requestCookieScheme,
 				$this->requestScopedCookies, $this->requestOriginalCookies,
-				$this->requestAccountCookies) = $previousScope;
+				$this->requestAccountCookies, $this->loadedAccountCookies) = $previousScope;
 		}
 	}
 
@@ -326,7 +331,7 @@ class Snoopy
 		if(isset($logged[$key]))
 			return;
 		$logged[$key] = true;
-		$safeHost = preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $host);
+		$safeHost = self::safeLogHost($host);
 		$details = 'source=cookies host=' . $safeHost;
 		if(is_string($account) && $account !== '')
 			$details .= ' account=' . preg_replace('/[^a-z0-9_.-]/i', '?', $account);
@@ -353,10 +358,41 @@ class Snoopy
 	{
 		$host = UrlHost::of($url);
 		$scheme = strtolower((string) @parse_url($url, PHP_URL_SCHEME));
-		if($this->requestCookieHost !== null && $host === $this->requestCookieHost
-			&& ($this->requestCookieScheme !== 'https' || $scheme === 'https'))
-			return $this->cookies;
-		return $this->withoutSourceCookies($this->cookies);
+		$cookies = $this->requestCookieHost !== null && $host === $this->requestCookieHost
+			&& ($this->requestCookieScheme !== 'https' || $scheme === 'https')
+			? $this->cookies : $this->withoutSourceCookies($this->cookies);
+		if($scheme !== 'https')
+		{
+			foreach(array('secure-response' => $this->secureResponseCookies,
+				'loginmgr-session' => $this->loadedAccountCookies) as $source => $restricted)
+			{
+				$refused = false;
+				foreach($restricted as $name => $value)
+					if(array_key_exists($name, $cookies) && $cookies[$name] === $value)
+					{
+						unset($cookies[$name]);
+						$refused = true;
+					}
+				if($refused)
+					self::logHttpsCookieRefusal($host, $source);
+			}
+		}
+		return $cookies;
+	}
+
+	private static function logHttpsCookieRefusal($host, $source)
+	{
+		static $logged = array();
+		$key = $source . ' ' . $host;
+		if(isset($logged[$key]))
+			return;
+		$logged[$key] = true;
+		FileUtil::toLog('Snoopy: ' . $source . '-cookie-http-refused host=' . self::safeLogHost($host));
+	}
+
+	private static function safeLogHost($host)
+	{
+		return preg_replace('/[^a-z0-9.\[\]:-]/i', '?', (string) $host);
 	}
 
 	/** Source-specific cookies must not turn into a saved loginmgr session. */
@@ -369,7 +405,10 @@ class Snoopy
 	public function markAccountCookies($cookies)
 	{
 		foreach((array) $cookies as $name => $value)
+		{
 			$this->requestAccountCookies[$name] = true;
+			$this->loadedAccountCookies[$name] = $value;
+		}
 	}
 
 	public function fetch($URI,$method="GET",$content_type="",$body="")
@@ -1118,12 +1157,20 @@ class Snoopy
 			{
 				if($match[2]=="deleted")
 				{
-					unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]]);
+					unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]],
+						$this->secureResponseCookies[$match[1]], $this->loadedAccountCookies[$match[1]]);
 				}
 				else
 				{
 					$this->cookies[$match[1]] = $match[2];
 					$this->requestAccountCookies[$match[1]] = true;
+					if(isset($this->loadedAccountCookies[$match[1]]))
+						$this->loadedAccountCookies[$match[1]] = $match[2];
+					$attributes = substr($header, strlen($match[0]));
+					if(preg_match('/(?:^|;)\s*secure\s*(?:=|;|$)/i', $attributes))
+						$this->secureResponseCookies[$match[1]] = $match[2];
+					else
+						unset($this->secureResponseCookies[$match[1]]);
 				}
 			}
 		}

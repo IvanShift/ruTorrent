@@ -16,6 +16,16 @@ function snoopyCurlArgs()
     return file(getenv('SNOOPY_TEST_ARGS'), FILE_IGNORE_NEW_LINES);
 }
 
+function snoopyRequestHasCookie($request, $pair)
+{
+    foreach (preg_split('/\r?\n/', $request) as $line) {
+        if (strncasecmp($line, 'Cookie:', 7) !== 0) continue;
+        foreach (explode(';', substr($line, 7)) as $entry)
+            if (trim($entry) === $pair) return true;
+    }
+    return false;
+}
+
 // Fake curl: records every argument, then fabricates a successful response.
 // $SNOOPY_TEST_ARGS holds the arguments of the LAST invocation only, so a
 // redirect test reads the request Snoopy made after following the redirect.
@@ -815,6 +825,113 @@ $tests = array(
                 'same-host curl redirect keeps the URL cookie');
         } finally {
             putenv('SNOOPY_TEST_REDIRECT');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+        }
+    },
+    'a Secure response cookie stays off a later explicit HTTP wire' => function () {
+        global $log_file;
+        $previousLog = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'snoopy-secure-refusal-');
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
+        putenv('SNOOPY_TEST_REDIRECT_COOKIE=sid=secret; sEcUrE=ignored; Path=/');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $client = new SnoopySocketReplies();
+            testAssertSame(true, $client->fetch('https://tracker.test/start'),
+                'same-origin HTTPS redirect completes');
+            testAssertSame(array('sid' => 'secret'), $client->cookies,
+                'redirect response cookie entered the public flat jar');
+            $client->responses = array("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            testAssertSame(true, $client->fetch('http://tracker.test/other'),
+                'later explicit HTTP request completes');
+            testAssertSame(false, snoopyRequestHasCookie($client->request(0), 'sid=secret'),
+                'Secure response cookie stays off HTTP wire');
+            $log = file_get_contents($log_file);
+            testAssertSame(1, substr_count($log,
+                'Snoopy: secure-response-cookie-http-refused host=tracker.test'),
+                'suppression is visible once with a normalized host');
+            testAssertSame(false, strpos($log, 'sid') !== false || strpos($log, 'secret') !== false,
+                'cookie name and value stay out of the log');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            putenv('SNOOPY_TEST_REDIRECT_COOKIE');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+            @unlink($log_file);
+            $log_file = $previousLog;
+        }
+    },
+    'a non-Secure response cookie keeps legacy explicit HTTP behavior' => function () {
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
+        putenv('SNOOPY_TEST_REDIRECT_COOKIE=sid=plain; Path=/');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $client = new SnoopySocketReplies();
+            testAssertSame(true, $client->fetch('https://tracker.test/start'),
+                'same-origin HTTPS redirect completes');
+            $client->responses = array("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            testAssertSame(true, $client->fetch('http://tracker.test/other'),
+                'later explicit HTTP request completes');
+            testAssertSame(true, snoopyRequestHasCookie($client->request(0), 'sid=plain'),
+                'plain response cookie retains existing explicit-fetch behavior');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            putenv('SNOOPY_TEST_REDIRECT_COOKIE');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+        }
+    },
+    'an explicit caller cookie can replace a Secure response cookie by name' => function () {
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
+        putenv('SNOOPY_TEST_REDIRECT_COOKIE=sid=secret; Secure; Path=/');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $client = new SnoopySocketReplies();
+            testAssertSame(true, $client->fetch('https://tracker.test/start'),
+                'same-origin HTTPS redirect completes');
+            $client->cookies['sid'] = 'secret';
+            $client->responses = array_fill(0, 2, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            testAssertSame(true, $client->fetch('http://tracker.test/same-value'),
+                'same-value explicit HTTP request completes');
+            testAssertSame(false, snoopyRequestHasCookie($client->request(0), 'sid=secret'),
+                'an indistinguishable same-value overwrite stays fail-closed');
+            $client->cookies['sid'] = 'caller-value';
+            testAssertSame(true, $client->fetch('http://tracker.test/other'),
+                'distinct-value explicit HTTP request completes');
+            testAssertSame(true, snoopyRequestHasCookie($client->request(1), 'sid=caller-value'),
+                'a distinct caller cookie retains the explicit-fetch facade');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            putenv('SNOOPY_TEST_REDIRECT_COOKIE');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+        }
+    },
+    'a later non-Secure response replaces a Secure cookie of the same name' => function () {
+        $client = new SnoopySocketReplies();
+        $client->headers = array('Set-Cookie: sid=secret; Secure; Path=/');
+        $client->setcookies();
+        $client->headers = array('Set-Cookie: sid=plain; Path=/');
+        $client->setcookies();
+        $client->responses = array("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        testAssertSame(true, $client->fetch('http://tracker.test/other'),
+            'later explicit HTTP request completes');
+        testAssertSame(true, snoopyRequestHasCookie($client->request(0), 'sid=plain'),
+            'the newer non-Secure cookie retains existing HTTP behavior');
+    },
+    'a Secure response cookie remains available to later explicit HTTPS fetch' => function () {
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');
+        putenv('SNOOPY_TEST_REDIRECT_COOKIE=sid=secret; Secure; Path=/');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $client = new Snoopy();
+            testAssertSame(true, $client->fetch('https://tracker.test/start'),
+                'same-origin HTTPS redirect completes');
+            putenv('SNOOPY_TEST_REDIRECT');
+            testAssertSame(true, $client->fetch('https://dl.tracker.test/other'),
+                'later explicit HTTPS sibling request completes');
+            testAssertSame(true, in_array('Cookie: sid=secret', snoopyCurlArgs(), true),
+                'Secure cookie retains current explicit HTTPS facade behavior');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            putenv('SNOOPY_TEST_REDIRECT_COOKIE');
             @unlink(getenv('SNOOPY_TEST_SEEN'));
         }
     },

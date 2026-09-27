@@ -715,8 +715,8 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	if(!erasedataSamePathIdentity($expected, $current))
 		return(false);
 
-	// Rename atomically captures one checked directory entry. A concurrent
-	// replacement at the original name is never passed to rmdir().
+	// Rename captures one directory entry atomically; verify its identity
+	// before passing the private name to rmdir().
 	$reservation = erasedataDirectoryReservationPath(
 		$path, $reservationKey, $expected, $logicalPath);
 	if($reservation === false || !$filesystem->makeDirectory($reservation, 0700))

@@ -141,6 +141,40 @@ try {
     $urlForSourceCheck = $urlWithCookie;
     sourceSame(array('url_marker' => 'url-value'), Snoopy::getURLCookies($urlForSourceCheck), ':COOKIE: source');
 
+    $reloaded = new SourceRecordingSnoopy();
+    $cached = privateData::load('ruTracker', $reloaded);
+    sourceSame(true, $cached->loaded, 'cached session was loaded into a new client');
+    sourceSame(true, $reloaded->fetch('http://rutracker.org/forum/index.php'),
+        'direct HTTP request after cache reload completed');
+    sourceSame(false, isset($reloaded->requests[0]['cookies']['loginmgr_marker']),
+        'cached account session stays off direct HTTP request');
+    sourceSame(1, substr_count(sourceLog(),
+        'Snoopy: loginmgr-session-cookie-http-refused host=rutracker.org'),
+        'cached account refusal is visible without cookie data');
+    sourceSame(false, strpos(sourceLog(), 'session-value') !== false,
+        'cached account cookie value stays out of the log');
+    $reloaded->requests = array();
+    sourceSame(true, $reloaded->fetchComplex('http://rutracker.org/forum/index.php'),
+        'fetchComplex after a direct cache load completed');
+    sourceSame(false, isset($reloaded->requests[0]['cookies']['loginmgr_marker']),
+        'fetchComplex keeps a previously loaded account session off HTTP');
+    $reloaded->requests = array();
+    sourceSame(true, $reloaded->fetchComplex(
+        'http://rutracker.org/forum/index.php:COOKIE:loginmgr_marker=explicit-value'),
+        'explicit URL cookie remains available on HTTP');
+    sourceSame('explicit-value', $reloaded->requests[0]['cookies']['loginmgr_marker'] ?? null,
+        'the URL source is distinct from the cached account session');
+    $reloaded->requests = array();
+    sourceSame(true, $reloaded->fetch('http://rutracker.org/forum/index.php'),
+        'client remains usable after explicit URL cookie');
+    sourceSame(false, isset($reloaded->requests[0]['cookies']['loginmgr_marker']),
+        'cached session remains protected after fetchComplex restores the facade');
+    $reloaded->requests = array();
+    sourceSame(true, $reloaded->fetchComplex('https://rutracker.org/forum/index.php'),
+        'account HTTPS request remains available');
+    sourceSame('session-value', $reloaded->requests[0]['cookies']['loginmgr_marker'] ?? null,
+        'cached session still reaches its HTTPS account');
+
     $httpClient = new SourceRecordingSnoopy();
     sourceSame(true, $httpClient->fetchComplex($urlWithCookie), 'HTTP request completed');
     sourceSame(1, count($httpClient->requests), 'one HTTP request');

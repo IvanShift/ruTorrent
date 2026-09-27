@@ -8,7 +8,7 @@
 #define RENAME_NOREPLACE 1
 #endif
 
-/* Move one captured inode back to a public name without replacing an occupant. */
+/* Rename the current source pathname only if the destination is absent. */
 int main(int argc, char **argv)
 {
     if (argc != 3 || argv[1][0] != '/' || argv[2][0] != '/'
