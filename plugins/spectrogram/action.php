@@ -4,25 +4,27 @@ require_once( dirname(__FILE__).'/../_task/task.php' );
 eval( FileUtil::getPluginConf( 'spectrogram' ) );
 
 $ret = array();
-if(isset($_REQUEST['cmd']))
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
+if(isset($input['cmd']))
 {
-	switch($_REQUEST['cmd'])
+	switch($input['cmd'])
 	{
 		case "sox":
 		{
-			if(isset($_REQUEST['hash']) &&
-				isset($_REQUEST['no']))
+			Requests::requirePost();
+			if(isset($input['hash']) &&
+				isset($input['no']))
 			{
-				$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no']))) );
+				$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no']))) );
 				if($req->success())
 				{
 					$filename = $req->val[0];
 					if($filename=='')
 					{
 						$req = new rXMLRPCRequest( array(
-							new rXMLRPCCommand( "d.open", $_REQUEST['hash'] ),
-							new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no'])) ),
-							new rXMLRPCCommand( "d.close", $_REQUEST['hash'] ) ) );
+							new rXMLRPCCommand( "d.open", $input['hash'] ),
+							new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no'])) ),
+							new rXMLRPCCommand( "d.close", $input['hash'] ) ) );
 						if($req->success())
 							$filename = $req->val[1];
 					}
@@ -40,25 +42,25 @@ if(isset($_REQUEST['cmd']))
 						$commands[] = '>-=*=-';
 						$commands[] = '}';
 						$commands[] = 'chmod a+r "${dir}"/frame.png';
+						$task = new rTask( array
+						(
+						        'arg' => FileUtil::getFileName($filename),
+							'requester'=>'spectrogram',
+							'name'=>'sox',
+							'hash'=>$input['hash'],
+							'no'=>$input['no']
+						) );
+						$ret = $task->start($commands, rTask::FLG_ONE_LOG | rTask::FLG_STRIP_LOGS);
 					}
-					$task = new rTask( array
-					(
-					        'arg' => FileUtil::getFileName($filename),
-						'requester'=>'spectrogram',
-						'name'=>'sox',
-						'hash'=>$_REQUEST['hash'],
-						'no'=>$_REQUEST['no']
-					) );
-					$ret = $task->start($commands, rTask::FLG_ONE_LOG | rTask::FLG_STRIP_LOGS);
 				}
 			}
 			break;
 		}
 		case "soxgetimage":
 		{
-			$dir = rTask::formatPath( $_REQUEST['no'] );
+			$dir = rTask::formatPath( $input['no'] );
 			$filename = $dir.'/frame.png';
-			SendFile::send($filename, 'image/png', $_REQUEST['file'].".png");
+			SendFile::send($filename, 'image/png', $input['file'].".png");
 			exit();
 		}
 	}

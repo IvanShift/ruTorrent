@@ -5,6 +5,9 @@ require_once(dirname(__FILE__) . "/parse.php");
 require_once(dirname(__FILE__) . "/providers.php");
 require_once(dirname(__FILE__) . "/ports.php");
 
+if (isset($_GET['setport']) || isset($_POST['setport']))
+	Requests::requirePost();
+
 // Load the plugin's configuration settings from conf.php
 eval(FileUtil::getPluginConf('check_port'));
 
@@ -133,8 +136,8 @@ $settings = rTorrentSettings::get();
 $port = $settings->port;
 $ip_glob = $settings->ip;
 
-if (isset($_REQUEST['setport'])) {
-	$newport = (int)$_REQUEST['setport'];
+if (isset($_POST['setport'])) {
+	$newport = (int)$_POST['setport'];
 	if ($newport >= 1 && $newport <= 65535) {
 		$sreq = new rXMLRPCRequest(new rXMLRPCCommand("network.listen.port.set", array("", $newport)));
 		if ($sreq->success())

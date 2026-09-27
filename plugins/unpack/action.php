@@ -5,13 +5,15 @@ ignore_user_abort(true);
 set_time_limit(0);
 $ret = array();
 
-if(isset($_REQUEST['cmd']))
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
+if(isset($input['cmd']))
 {
-	$cmd = $_REQUEST['cmd'];
+	$cmd = $input['cmd'];
 	switch($cmd)
 	{
 		case "set":
 		{
+			Requests::requirePost();
 			$up = rUnpack::load();
 			$up->set();
 			CachedEcho::send($up->get(),"application/javascript");
@@ -19,8 +21,9 @@ if(isset($_REQUEST['cmd']))
 		}
 		case "unpack":
 		{
+			Requests::requirePost();
 			$up = rUnpack::load();
-			$ret = $up->startTask( $_REQUEST['hash'], $_REQUEST['dir'], $_REQUEST['mode'], $_REQUEST['no'] );
+			$ret = $up->startTask( $input['hash'], $input['dir'], $input['mode'], $input['no'] );
 			break;
 		}
 	}

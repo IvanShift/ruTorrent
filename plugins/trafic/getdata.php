@@ -2,12 +2,14 @@
 require_once( 'stat.php' );
 eval(FileUtil::getPluginConf('trafic'));
 
+$request = $_SERVER['REQUEST_METHOD'] === 'POST' ? $_POST : $_GET;
+
 $ret = null;
 $storages = array( "global.csv" );
 
-if(isset($_REQUEST['tracker']))
+if(isset($request['tracker']))
 {
-	if($_REQUEST['tracker']=="none")
+	if($request['tracker']=="none")
 	{
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
@@ -26,8 +28,8 @@ if(isset($_REQUEST['tracker']))
 			$storages = $tstorages;
 	}
 	else
-		if(($_REQUEST['tracker']!="global") && rStat::isStorageName($_REQUEST['tracker']))
-			$storages = array( "trackers/".$_REQUEST['tracker'].".csv" );
+		if(($request['tracker']!="global") && rStat::isStorageName($request['tracker']))
+			$storages = array( "trackers/".$request['tracker'].".csv" );
 }
 
 function sum($e1, $e2)
@@ -35,15 +37,16 @@ function sum($e1, $e2)
 	return($e1+$e2);
 }
 
-if(isset($_REQUEST['mode']))
+if(isset($request['mode']))
 {
-	$mode = $_REQUEST['mode'];
+	$mode = $request['mode'];
 	if($mode=='clear')
 	{
+		Requests::requirePost();
 		if(!$disableClearButton)
 			foreach( $storages as $storage )
 				@unlink(FileUtil::getSettingsPath().'/trafic/'.$storage);
-		if($_REQUEST['tracker']!="none")
+		if($request['tracker']!="none")
 			$storages = array( "global.csv" );
 		$mode = 'day';
 	}

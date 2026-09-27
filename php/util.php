@@ -49,6 +49,11 @@ spl_autoload_register(function ($class)
 // Exit script and send 405 if anther method is tried
 Requests::disableUnsupportedMethods();
 
+// The Docker PHP-FPM pool passes this server-owned value after persisted
+// config.local.php has run, so an old local override cannot disable Basic-auth CSRF checks.
+if(getenv('RU_HTTP_AUTH') === 'true')
+    $enableCSRFCheck = true;
+
 // For "Cross-Site Request Forgery" checks if enabled
 Requests::makeCSRFCheck();
 

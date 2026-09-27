@@ -49,6 +49,7 @@ for (const src of [
   const scriptEl = document.createElement("script");
   let code = readFileSync(src, { encoding: "utf-8" });
   if (src.endsWith("rss/init.js")) {
+    window.theWebUI.categoryList.selection = { ids: () => [] };
     // Dynamic imports and <script type="module"> are not supported by jsdom
     // (See https://github.com/jsdom/jsdom/issues/2475)
     // Workaround: initialize module by replacing code
@@ -144,5 +145,14 @@ describe("rss error messages", () => {
     expect(window.noty).toHaveBeenCalledWith(
       expect.stringContaining(theUILang.cantFetchRSS + " - " + detail), "error", true
     );
+  });
+});
+
+describe("RSS refresh transport", () => {
+  it.each(["rssrefresh", "rssgrouprefresh"])("sends %s by POST", action => {
+    const stub = new rTorrentStub(`?action=${action}`);
+    expect(stub.mountPoint).toBe("plugins/rss/action.php");
+    expect(stub.method).toBe("POST");
+    expect(stub.cache).toBe(false);
   });
 });

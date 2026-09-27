@@ -384,14 +384,14 @@ class accountManager
 	{
 		foreach( $this->accounts as $name=>$nfo )
 		{
-			if(isset($_REQUEST[$name."_enabled"]))
-				$this->accounts[$name]["enabled"] = $_REQUEST[$name."_enabled"];
-			if(isset($_REQUEST[$name."_login"]))
-				$this->accounts[$name]["login"] = $_REQUEST[$name."_login"];
-			if(isset($_REQUEST[$name."_password"]))
-				$this->accounts[$name]["password"] = $_REQUEST[$name."_password"];
-			if(isset($_REQUEST[$name."_auto"]))
-				$this->accounts[$name]["auto"] = intval($_REQUEST[$name."_auto"]);
+			if(isset($_POST[$name."_enabled"]))
+				$this->accounts[$name]["enabled"] = $_POST[$name."_enabled"];
+			if(isset($_POST[$name."_login"]))
+				$this->accounts[$name]["login"] = $_POST[$name."_login"];
+			if(isset($_POST[$name."_password"]))
+				$this->accounts[$name]["password"] = $_POST[$name."_password"];
+			if(isset($_POST[$name."_auto"]))
+				$this->accounts[$name]["auto"] = intval($_POST[$name."_auto"]);
 			$data = new privateData( $name );
 			$data->remove();
 		}

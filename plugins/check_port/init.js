@@ -118,7 +118,8 @@ plugin.forcePort = function() {
 
 rTorrentStub.prototype.forceport = function() {
 	this.contentType = "application/x-www-form-urlencoded";
-	this.mountPoint = "plugins/check_port/action.php?setport=" + encodeURIComponent(plugin.pendingPort);
+	this.content = "setport=" + encodeURIComponent(plugin.pendingPort);
+	this.mountPoint = "plugins/check_port/action.php";
 	this.dataType = "json";
 };
 

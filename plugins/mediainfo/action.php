@@ -17,25 +17,27 @@ class mediainfoSettings
 }
 
 $ret = array( "status"=>255, "errors"=>array("Can't retrieve information") );
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 
-if(isset($_REQUEST['hash']) &&
-	isset($_REQUEST['no']) &&
-	isset($_REQUEST['cmd']))
+if(isset($input['hash']) &&
+	isset($input['no']) &&
+	isset($input['cmd']))
 {
-	switch($_REQUEST['cmd'])
+	switch($input['cmd'])
 	{
 		case "mediainfo":
 		{
-			$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no']))) );
+			Requests::requirePost();
+			$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no']))) );
 			if($req->success())
 			{
 				$filename = $req->val[0];
 				if($filename=='')
 				{
 					$req = new rXMLRPCRequest( array(
-						new rXMLRPCCommand( "d.open", $_REQUEST['hash'] ),
-						new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no'])) ),
-						new rXMLRPCCommand( "d.close", $_REQUEST['hash'] ) ) );
+						new rXMLRPCCommand( "d.open", $input['hash'] ),
+						new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no'])) ),
+						new rXMLRPCCommand( "d.close", $input['hash'] ) ) );
 					if($req->success())
 						$filename = $req->val[1];
 				}
@@ -49,8 +51,8 @@ if(isset($_REQUEST['hash']) &&
 						'arg' => FileUtil::getFileName($filename),
 						'requester'=>'mediainfo',
 						'name'=>'mediainfo',
-						'hash'=>$_REQUEST['hash'],
-						'no'=>$_REQUEST['no']
+						'hash'=>$input['hash'],
+						'no'=>$input['no']
 					) );
 					if($st && !empty($st->data["mediainfousetemplate"]))
 					{

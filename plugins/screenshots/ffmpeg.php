@@ -48,7 +48,7 @@ class ffmpegSettings
 	{
 		foreach( $this->data as $name=>&$val )
 		{
-			$val = isset($_REQUEST[$name]) ? intval($_REQUEST[$name]) : 0;
+			$val = isset($_POST[$name]) ? intval($_POST[$name]) : 0;
 		}
 		if($this->data['exfrminterval']<=0)
 			$this->data['exfrminterval'] = 5;

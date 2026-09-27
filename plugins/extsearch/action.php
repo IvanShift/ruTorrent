@@ -3,6 +3,8 @@ require_once( dirname(__FILE__)."/../../php/util.php" );
 require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
 require_once( "engines.php" );
 
+if(isset($_REQUEST['mode']) && in_array($_REQUEST['mode'], array('set', 'loadtorrents'), true))
+	Requests::requirePost();
 set_time_limit(0);
 $em = engineManager::load();
 if($em===false)

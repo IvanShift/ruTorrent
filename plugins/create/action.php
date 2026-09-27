@@ -110,9 +110,10 @@ class recentTrackers
 }
 
 $ret = array();
-if(isset($_REQUEST['cmd']))
+$cmd = $_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['cmd'] ?? null) : ($_GET['cmd'] ?? null);
+if($cmd !== null)
 {
-	switch($_REQUEST['cmd'])
+	switch($cmd)
 	{
 		case "rtget":
 		{
@@ -122,11 +123,12 @@ if(isset($_REQUEST['cmd']))
 		}
 		case "rtdelete":
 		{
-			if(isset($_REQUEST['trackers']))
+			Requests::requirePost();
+			if(isset($_POST['trackers']))
 			{
 				$rt = recentTrackers::load();
 				$trk = array();
-				$arr = explode("\r",$_REQUEST['trackers']);
+				$arr = explode("\r",$_POST['trackers']);
 				foreach( $arr as $key => $value )
 				{
 					$value = trim($value);
@@ -142,19 +144,20 @@ if(isset($_REQUEST['cmd']))
 		}
 		case "create":
 		{
+			Requests::requirePost();
 			$error = "Invalid parameters";
-			if(isset($_REQUEST['path_edit']) && strlen($_REQUEST['path_edit']))
+			if(isset($_POST['path_edit']) && strlen($_POST['path_edit']))
 			{
-				$path_edit = trim($_REQUEST['path_edit']);
+				$path_edit = trim($_POST['path_edit']);
 				if(is_dir($path_edit))
 					$path_edit = FileUtil::addslash($path_edit);
 				if(rTorrentSettings::get()->correctDirectory($path_edit))
 				{
 					$rt = recentTrackers::load();
 					$trackers = array();
-					if(isset($_REQUEST['trackers']))
+					if(isset($_POST['trackers']))
 					{
-						$trackers = explode("\r", $_REQUEST['trackers']);
+						$trackers = explode("\r", $_POST['trackers']);
 						foreach( $trackers as $key => $value )
 						{
 							$value = trim($value);
@@ -168,23 +171,23 @@ if(isset($_REQUEST['cmd']))
 					}
 					// remember checkbox and dropdown options
 					$rt->last_used = $trackers;
-					$rt->piece_size = $_REQUEST['piece_size'];
-					$rt->start_seeding = $_REQUEST['start_seeding'];
-					$rt->private_torrent = $_REQUEST['private'];
-					$rt->hybrid_torrent = $_REQUEST['hybrid'];
+					$rt->piece_size = $_POST['piece_size'];
+					$rt->start_seeding = $_POST['start_seeding'];
+					$rt->private_torrent = $_POST['private'];
+					$rt->hybrid_torrent = $_POST['hybrid'];
 					$rt->store();
 
 					$piece_size = 262144;
-					if(isset($_REQUEST['piece_size']))
-						$piece_size = $_REQUEST['piece_size']*1024;
+					if(isset($_POST['piece_size']))
+						$piece_size = $_POST['piece_size']*1024;
 					if(!$pathToCreatetorrent || ($pathToCreatetorrent==""))
 						$pathToCreatetorrent = $useExternal;
 					if($useExternal=="mktorrent")
 						$piece_size = log($piece_size,2);
-					if(isset($_REQUEST['hybrid']))
+					if(isset($_POST['hybrid']))
 					{
 						$hybrid = TRUE;
-						if ($useExternal!=="torrenttools" && $_REQUEST['hybrid']==1)
+						if ($useExternal!=="torrenttools" && $_POST['hybrid']==1)
 							$useExternal = "inner";
 					}
 					if($useExternal===false)
@@ -194,14 +197,14 @@ if(isset($_REQUEST['cmd']))
 						'arg' => FileUtil::getFileName($path_edit),
 						'requester'=>'create',
 						'name'=>'create',
-						'path_edit'=>$_REQUEST['path_edit'],
-						'trackers'=>$_REQUEST['trackers'],
-						'comment'=>$_REQUEST['comment'],
-						'source'=>$_REQUEST['source'],
-						'start_seeding'=>$_REQUEST['start_seeding'],
-						'piece_size'=>$_REQUEST['piece_size'],
-						'private'=>$_REQUEST['private'],
-						'hybrid'=>$_REQUEST['hybrid']
+						'path_edit'=>$_POST['path_edit'],
+						'trackers'=>$_POST['trackers'],
+						'comment'=>$_POST['comment'],
+						'source'=>$_POST['source'],
+						'start_seeding'=>$_POST['start_seeding'],
+						'piece_size'=>$_POST['piece_size'],
+						'private'=>$_POST['private'],
+						'hybrid'=>$_POST['hybrid']
 					) );
 					$commands = array();
 

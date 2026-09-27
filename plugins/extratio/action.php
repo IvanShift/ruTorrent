@@ -4,6 +4,8 @@ require_once('rules.php');
 $cmd = '';
 if(isset($_REQUEST['mode']))
 	$cmd = $_REQUEST['mode'];
+if($cmd === 'setrules' || $cmd === 'checklabels')
+	Requests::requirePost();
 $mngr = rRatioRulesList::load();
 $val = null;
 

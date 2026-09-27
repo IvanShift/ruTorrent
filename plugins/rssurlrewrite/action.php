@@ -1,8 +1,9 @@
 <?php
 require_once('rules.php');
 
-if(isset($_REQUEST['mode']))
-	$cmd = $_REQUEST['mode'];
+$cmd = $_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['mode'] ?? null) : ($_GET['mode'] ?? null);
+if($cmd === 'setrules')
+	Requests::requirePost();
 $mngr = rURLRewriteRulesList::load();
 $val = null;
 

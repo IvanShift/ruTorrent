@@ -120,10 +120,10 @@ class rThrottle
 	}
 	public function apply()
 	{
-		$hashes = isset($_REQUEST['hash']) ? $_REQUEST['hash'] : array();
+		$hashes = isset($_POST['hash']) ? $_POST['hash'] : array();
 		if(!is_array($hashes))
 			$hashes = array($hashes);
-		$v = isset($_REQUEST['v']) ? intval($_REQUEST['v']) : -1;
+		$v = isset($_POST['v']) ? intval($_POST['v']) : -1;
 		$name = ($v>=0) ? ("thr_".$v) : "";
 		$req = new rXMLRPCRequest();
 		foreach($hashes as $hash)
@@ -172,28 +172,28 @@ class rThrottle
 		for($i = 0; $i<MAX_THROTTLE; $i++)
 		{
 			$arr = array( "up"=>0, "down"=>0, "name"=>"" );
-			if(isset($_REQUEST['thr_up'.$i]))
+			if(isset($_POST['thr_up'.$i]))
 			{
-				$v = intval($_REQUEST['thr_up'.$i]);
+				$v = intval($_POST['thr_up'.$i]);
 				if($v>=0)
 					$arr["up"] = $v;
 			}
-			if(isset($_REQUEST['thr_down'.$i]))
+			if(isset($_POST['thr_down'.$i]))
 			{
-				$v = intval($_REQUEST['thr_down'.$i]);
+				$v = intval($_POST['thr_down'.$i]);
 				if($v>=0)
 					$arr["down"] = $v;
 			}
-			if(isset($_REQUEST['thr_name'.$i]))
+			if(isset($_POST['thr_name'.$i]))
 			{
-			        $v = trim($_REQUEST['thr_name'.$i]);
+			        $v = trim($_POST['thr_name'.$i]);
 			        if($v!='')
 					$arr["name"] = $v;
 			}
 			$this->thr[] = $arr;
 		}
-		if(isset($_REQUEST['default']))
-			$this->default = intval($_REQUEST['default']);
+		if(isset($_POST['default']))
+			$this->default = intval($_POST['default']);
                 $this->store();
 		$this->init();
 	}

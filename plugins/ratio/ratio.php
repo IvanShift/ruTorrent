@@ -300,29 +300,29 @@ class rRatio
 		for($i = 0; $i<MAX_RATIO; $i++)
 		{
 			$arr = array( "action"=>RAT_STOP, "min"=>100, "max"=>300, "upload"=>0.1, "name"=>"", "time"=>-1 );
-			if(isset($_REQUEST['rat_action'.$i]))
-				$arr["action"] = intval($_REQUEST['rat_action'.$i]);
-			if(isset($_REQUEST['rat_min'.$i]))
-			        $arr["min"] = Math::iclamp($_REQUEST['rat_min'.$i]);
-			if(isset($_REQUEST['rat_max'.$i]))
-			        $arr["max"] = Math::iclamp($_REQUEST['rat_max'.$i]);
-			if(isset($_REQUEST['rat_upload'.$i]))
+			if(isset($_POST['rat_action'.$i]))
+				$arr["action"] = intval($_POST['rat_action'.$i]);
+			if(isset($_POST['rat_min'.$i]))
+			        $arr["min"] = Math::iclamp($_POST['rat_min'.$i]);
+			if(isset($_POST['rat_max'.$i]))
+			        $arr["max"] = Math::iclamp($_POST['rat_max'.$i]);
+			if(isset($_POST['rat_upload'.$i]))
 			{
-				$upload = $_REQUEST['rat_upload'.$i];
+				$upload = $_POST['rat_upload'.$i];
 				$arr["upload"] = $upload == 0 ? 0 : Math::fRoundClamp($upload);
 			}
-			if(isset($_REQUEST['rat_time'.$i]))
-			        $arr["time"] = (is_numeric($_REQUEST['rat_time'.$i]) ? floatval($_REQUEST['rat_time'.$i]) : -1);
-			if(isset($_REQUEST['rat_name'.$i]))
+			if(isset($_POST['rat_time'.$i]))
+			        $arr["time"] = (is_numeric($_POST['rat_time'.$i]) ? floatval($_POST['rat_time'.$i]) : -1);
+			if(isset($_POST['rat_name'.$i]))
 			{
-			        $v = trim($_REQUEST['rat_name'.$i]);
+			        $v = trim($_POST['rat_name'.$i]);
 			        if($v!='')
 					$arr["name"] = $v;
 			}
 			$this->rat[] = $arr;
 		}
-		if(isset($_REQUEST['default']))
-			$this->default = floatval($_REQUEST['default']);
+		if(isset($_POST['default']))
+			$this->default = floatval($_POST['default']);
                 $this->store();
 		$this->flush();
 		$this->setHandlers();

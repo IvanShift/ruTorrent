@@ -98,7 +98,11 @@ plugin.init = function () {
 
     // Hook the log tab "Clear" button to also clear saved history
     $("#clear_log").on("click", function() {
-        fetch('plugins/log_history/log_history.php?clear=1').catch(function() {});
+        fetch('plugins/log_history/log_history.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'clear=1'
+        }).catch(function() {});
     });
 
     plugin.markLoaded();

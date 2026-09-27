@@ -51,15 +51,14 @@ function get_alias($name)
 	return $name;
 }
 
-function image_name($prefix, $req_field)
+function image_name($prefix, $req_field, $values = null)
 {
 	global $basepath;
+	$values = $values === null ? $_REQUEST : $values;
 	$res = null;
-	if (isset($_REQUEST[$req_field])) {
+	if (isset($values[$req_field])) {
 		$dir = $basepath . '/' . $prefix;
-		if (!is_dir($dir))
-			FileUtil::makeDirectory($dir);
-		$name = rawurldecode($_REQUEST[$req_field]);
+		$name = rawurldecode($values[$req_field]);
 		$name = get_alias(function_exists('mb_strtolower')
 			? mb_strtolower($name, 'utf-8')
 			: strtolower($name));
@@ -75,9 +74,27 @@ function image_name($prefix, $req_field)
 	return $res;
 }
 
-$png_name = image_name('labels', 'label');
-if ($png_name === null)
-	$png_name = image_name('trackers', 'tracker');
+$fetchRequested = isset($_POST['fetch']) && $_POST['fetch'] === '1';
+if ($fetchRequested && (isset($_POST['upload']) || isset($_POST['delete']))) {
+    error_log('tracklabels: refused conflicting icon actions');
+    bad('Conflicting icon actions');
+}
+$mutationRequested = $fetchRequested || isset($_POST['upload']) || isset($_POST['delete']);
+if ($mutationRequested && (!isset($_SERVER['REQUEST_METHOD']) ||
+    $_SERVER['REQUEST_METHOD'] !== 'POST' || !Requests::isSameOriginAjaxRequest())) {
+    error_log('tracklabels: refused mutation: same-origin AJAX POST required');
+    header('HTTP/1.0 403 Forbidden', true, 403);
+    die('Forbidden');
+}
+$isTracker = $fetchRequested;
+$png_name = $fetchRequested ? image_name('trackers', 'tracker', $_POST)
+    : image_name('labels', 'label');
+if ($png_name === null && !$fetchRequested) {
+    $png_name = image_name('trackers', 'tracker');
+    $isTracker = $png_name !== null;
+}
+if ($fetchRequested && $png_name === null)
+    bad('Missing tracker');
 
 if ($png_name !== null) {
 	$targetdir = dirname($png_name);
@@ -108,29 +125,46 @@ if ($png_name !== null) {
 
 		// The name below is fetched from as a host, so it has to be one: a name
 		// that is not a host name gets the placeholder instead of a request.
-		if (!isset($_REQUEST["label"]) && isset($_REQUEST["tracker"])
-			&& Utility::isHostname(basename($png_name, '.png'))) {
+		if ($isTracker && Utility::isHostname(basename($png_name, '.png'))) {
 			$tracker = basename($png_name, '.png');
 			$ico_name = $targetdir . '/' . $tracker . '.ico';
 			try_send_image($ico_name, 'image/x-icon');
 			try_send_image(dirname(__FILE__).substr($ico_name, strlen($basepath)), 'image/x-icon');
 
-			ignore_user_abort(true);
-			set_time_limit(0);
+			if ($fetchRequested) {
+				ignore_user_abort(true);
+				set_time_limit(0);
 
-			$client = new Snoopy();
-			$client->read_timeout = 5;
-			$client->_fp_timeout = 5;
-			foreach (['favicon.ico', 'favicon.png'] as $favicon) {
-				$url = $client->linkencode("http://{$tracker}/{$favicon}");
-				@$client->fetchComplex($url);
-				if ($client->status == 200) {
-					file_put_contents($ico_name, $client->results);
-					if (strpos(mime_content_type($ico_name), "image/")===false)
-						@unlink($ico_name);
-					else
-						try_send_image($ico_name, 'image/x-icon');
+				$client = new Snoopy();
+				$proxyConfigured = $client->proxy_host !== '' && $client->proxy_port !== '';
+				$client->block_private = true;
+				$client->private_allowlist = array();
+				// Direct connections keep Snoopy's checked DNS address pinned through connect.
+				$client->proxy_host = '';
+				$client->proxy_port = '';
+				$client->read_timeout = 5;
+				$client->_fp_timeout = 5;
+				foreach (['favicon.ico', 'favicon.png'] as $favicon) {
+					$url = $client->linkencode("http://{$tracker}/{$favicon}");
+					@$client->fetchComplex($url);
+					if ($client->status == 200) {
+						if (!is_dir($targetdir))
+							FileUtil::makeDirectory($targetdir);
+						if (!is_dir($targetdir) || file_put_contents($ico_name, $client->results) === false) {
+							FileUtil::toLog('tracklabels: favicon cache write failed');
+							break;
+						}
+						if (strpos(mime_content_type($ico_name), "image/")===false)
+							@unlink($ico_name);
+						else
+							try_send_image($ico_name, 'image/x-icon');
+					} else if (strpos($client->error, 'Refusing to fetch:') === 0) {
+						FileUtil::toLog('tracklabels: favicon fetch refused: non-public or unresolved host');
+						break;
+					}
 				}
+				if ($proxyConfigured)
+					FileUtil::toLog('tracklabels: favicon unavailable: configured proxy bypassed for DNS pinning');
 			}
 		}
 	}

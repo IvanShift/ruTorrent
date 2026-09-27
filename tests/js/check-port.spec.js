@@ -28,3 +28,19 @@ test("Force Port prompts for the listening port when advertised ports differ", (
   plugin.forcePort();
   expect(promptedPort).toBe(45001);
 });
+
+
+test("Force Port sends the requested port in the POST body", () => {
+  const plugin = { loadLang() {}, loadMainCSS() {}, pendingPort: 45001 };
+  const context = vm.createContext({
+    plugin,
+    rTorrentStub: function() {},
+    theUILang: { portStatus: { 0: "unknown" } },
+  });
+  const source = fs.readFileSync(path.join(__dirname, "../../plugins/check_port/init.js"), "utf8");
+  vm.runInContext(source, context);
+  const request = {};
+  context.rTorrentStub.prototype.forceport.call(request);
+  expect(request.content).toBe("setport=45001");
+  expect(request.mountPoint).toBe("plugins/check_port/action.php");
+});

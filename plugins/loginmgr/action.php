@@ -15,6 +15,7 @@ if(isset($_REQUEST['mode']))
 	{
 		case "set":
 		{
+			Requests::requirePost();
 			$em->set();
 			CachedEcho::send($em->get(),"application/javascript");
 			break;

@@ -1,5 +1,6 @@
 <?php
 require_once( 'scheduler.php' );
+Requests::requirePost();
 
 $sch = rScheduler::load();
 $sch->set();

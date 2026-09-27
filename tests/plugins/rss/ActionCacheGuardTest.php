@@ -26,6 +26,7 @@ $cache->set($orphan);
 $list = new rRSSMetaList();
 $list->lst['known-feed'] = array('label' => 'Known', 'auto' => 0, 'enabled' => 0, 'url' => null);
 $cache->set($list);
+$_SERVER['REQUEST_METHOD'] = 'POST';
 $_REQUEST = array('mode' => 'loadtorrents');
 $HTTP_RAW_POST_DATA = 'rss=orphan-feed&url=magnet%3A%3Forphan&rss=known-feed&url=magnet%3A%3Fknown';
 chdir(getenv('RSS_PLUGIN_DIR'));

@@ -38,9 +38,9 @@ class rTheme
 
 	public function set()
 	{
-		if(isset($_REQUEST['theme']))
+		if(isset($_POST['theme']))
 		{
-			$this->current = $_REQUEST['theme'];
+			$this->current = $_POST['theme'];
 			$this->store();
 		}
 	}

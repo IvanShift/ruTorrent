@@ -1,5 +1,6 @@
 <?php
 require_once( 'ratio.php' );
+Requests::requirePost();
 
 $rat = rRatio::load();
 $rat->set();

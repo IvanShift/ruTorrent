@@ -1240,15 +1240,11 @@ rTorrentStub.prototype.clearhistory = function()
 rTorrentStub.prototype.rssrefresh = function()
 {
 	this.rssCommon("mode=refresh", plugin.actRSSLbl());
-	this.method = 'GET';
-	this.cache = true;
 }
 
 rTorrentStub.prototype.rssgrouprefresh = function()
 {
 	this.rssCommon("mode=refreshgroup", plugin.actRSSLbl());
-	this.method = 'GET';
-	this.cache = true;
 }
 
 rTorrentStub.prototype.rsstoggle = function()

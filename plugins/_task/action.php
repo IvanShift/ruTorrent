@@ -4,16 +4,18 @@ require_once( "task.php" );
 
 $ret = array();
 
-switch($_REQUEST['cmd'])
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
+switch($input['cmd'] ?? null)
 {
 	case "kill":
 	{
-	        $ret = rTask::kill($_REQUEST['no']);
+		Requests::requirePost();
+	        $ret = rTask::kill($input['no']);
 		break;
 	}
 	case "check":
 	{
-	        $ret = rTask::check($_REQUEST['no']);
+	        $ret = rTask::check($input['no']);
 		break;
 	}
 	case "list":
@@ -24,6 +26,7 @@ switch($_REQUEST['cmd'])
 	}
 	case "remove":
 	{
+		Requests::requirePost();
 		$list = array();
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");

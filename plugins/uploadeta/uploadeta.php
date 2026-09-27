@@ -29,9 +29,9 @@ class rUploadeta
 
 	public function set()
 	{ /* Set our value */
-		if(isset($_REQUEST['uploadtarget']))
+		if(isset($_POST['uploadtarget']))
 		{
-			$this->uploadtarget = $_REQUEST['uploadtarget'];
+			$this->uploadtarget = $_POST['uploadtarget'];
 			$this->store();
 		}
 	}

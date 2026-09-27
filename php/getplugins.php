@@ -1,5 +1,8 @@
 <?php
 
+require_once(__DIR__.'/utility/requests.php');
+Requests::requirePluginBootstrapRequest();
+
 require_once( 'which.php' );
 require_once( 'pluginflags.php' );
 require_once( "settings.php" );

@@ -1,5 +1,6 @@
 <?php
 require_once( 'autotools.php' );
+Requests::requirePost();
 
 $at = new rAutoTools();
 $at->set();

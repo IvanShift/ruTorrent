@@ -8,6 +8,8 @@ $val = null;
 $cmd = "get";
 if(isset($_REQUEST['mode']))
 	$cmd = $_REQUEST['mode'];
+if(!in_array($cmd, array('getsettings', 'getfilters', 'getdesc', 'checkfilter'), true))
+	Requests::requirePost();
 $errorsReported = false;
 $mngr = new rRSSManager();
 switch($cmd)

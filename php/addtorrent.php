@@ -28,6 +28,27 @@ if(isset($_REQUEST['result']))
 }
 else
 {
+	if(($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && isset($_GET['url']))
+	{
+		if(!is_string($_GET['url']) || trim($_GET['url']) === '')
+		{
+			error_log('addtorrent: refused GET confirmation: invalid url');
+			header('HTTP/1.0 400 Bad Request', true, 400);
+			die('Invalid URL');
+		}
+		header('Content-Type: text/html; charset=UTF-8');
+		header('Cache-Control: no-store');
+		header('Referrer-Policy: same-origin');
+		header('X-Frame-Options: DENY');
+		header("Content-Security-Policy: default-src 'none'; form-action 'self'; frame-ancestors 'none'");
+		$url = htmlspecialchars($_GET['url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+		echo '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="referrer" content="same-origin"><title>Add torrent</title><body>';
+		echo '<p>Add this torrent to ruTorrent?</p><p><code>'.$url.'</code></p>';
+		echo '<form action="addtorrent.php" method="post"><input type="hidden" name="url" value="'.$url.'">';
+		echo '<button type="submit">Add torrent</button></form></body></html>';
+		exit;
+	}
+	Requests::requirePost();
 	$uploaded_files = array();
 	$label = null;
 	if(isset($_REQUEST['label']))
@@ -71,9 +92,9 @@ else
 		}
 		else
 		{
-			if(isset($_REQUEST['url']))
+			if(isset($_POST['url']))
 			{
-				$urls = preg_split('/[\r\n]+/', trim($_REQUEST['url']));
+				$urls = preg_split('/[\r\n]+/', trim($_POST['url']));
 				foreach($urls as $url)
 				{
 					$url = trim($url);

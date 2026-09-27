@@ -4,13 +4,16 @@ eval( FileUtil::getPluginConf( 'dump' ) );
 
 $ret = array( "status"=>255, "errors"=>array("Can't retrieve information") );
 
-if(isset($_REQUEST['hash']) && isset($_REQUEST['cmd']))
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
+if(isset($input['hash'], $input['cmd']))
 {
-	switch($_REQUEST['cmd'])
+	switch($input['cmd'])
 	{
 		case "dumptorrent":
 		{
-			$hash=$_REQUEST['hash'];
+			Requests::requirePost();
+			$fname = '';
+			$hash=$input['hash'];
 			$req = new rXMLRPCRequest( array(
 				new rXMLRPCCommand("get_session"),
 				new rXMLRPCCommand("d.get_tied_to_file",$hash)) );

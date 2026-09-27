@@ -3,6 +3,7 @@ theWebUI.trackerNames = [];
 theWebUI.torrentTrackerIds = new Map();
 plugin.injectedStyles = {};
 plugin.iconEditSuffix = {};
+plugin.faviconRequests = new Set();
 plugin.imageEditSuffix = {
 	tracker: {},
 	label: {},
@@ -56,7 +57,8 @@ theWebUI.config = function()
 		plugin.reqId = theRequestManager.addRequest("trk", null, function(hash,tracker,value)
 		{
 			const domain = theWebUI.getTrackerName( tracker.name );
-			tracker.icon = domain ? {src: plugin.imageURI('tracker', domain)} : 'Status_Checking';
+			tracker.icon = domain ? {src: plugin.imageURI('tracker', domain)
+				+ (plugin.imageEditSuffix.tracker[domain] ?? '')} : 'Status_Checking';
 		});
 	}
 }
@@ -158,8 +160,25 @@ theWebUI.rebuildTrackersLabels = function()
 	catlist.refreshAndSyncPanel('ptrackers', true);
 }
 
-plugin.imageURI = function (target, label) {
-	return `plugins/tracklabels/action.php?${target}=${encodeURIComponent(label)}`;
+plugin.imageURI = function (target, label, fetchMissing = true) {
+	const uri = `plugins/tracklabels/action.php?${target}=${encodeURIComponent(label)}`;
+	if (target === 'tracker' && fetchMissing && !plugin.faviconRequests.has(label)) {
+		plugin.faviconRequests.add(label);
+		const request = new XMLHttpRequest();
+		request.onloadend = () => {
+			if (request.status === 200) {
+				plugin.imageEditSuffix.tracker[label] = `&t=${Date.now()}`;
+				catlist.refreshPanel.ptrackers();
+				theWebUI.update();
+				catlist.syncFn();
+			}
+		};
+		request.open('POST', 'plugins/tracklabels/action.php');
+		request.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+		request.send(`fetch=1&tracker=${encodeURIComponent(label)}`);
+	}
+	return uri;
 }
 
 plugin.onLangLoaded = function() {
@@ -240,7 +259,7 @@ plugin.onLangLoaded = function() {
 			const trkTarget = formData.has('tracker');
 			const target = trkTarget ? 'tracker' : 'label';
 			const label = formData.get(target);
-			const uri = plugin.imageURI(target, label);
+			const uri = plugin.imageURI(target, label, false);
 			formData.delete(target);
 			const request = new XMLHttpRequest();
 			request.onloadend = () => {
@@ -248,7 +267,7 @@ plugin.onLangLoaded = function() {
 					// hide dialog if upload successful
 					theDialogManager.hide(plugin.dialogId);
 					// show uploaded image
-					plugin.imageEditSuffix[target][label] = `&t=${new Date().getTime()})`;
+					plugin.imageEditSuffix[target][label] = `&t=${Date.now()}`;
 					if (trkTarget) {
 						catlist.refreshPanel.ptrackers();
 					} else {
@@ -263,6 +282,7 @@ plugin.onLangLoaded = function() {
 			};
 			// successful POST invalidates cache for URI: see https://www.rfc-editor.org/rfc/rfc7234#section-4.4
 			request.open('POST', uri);
+			request.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
 			request.send(formData);
 		}
 		return valid;

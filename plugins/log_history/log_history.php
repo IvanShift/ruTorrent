@@ -3,6 +3,10 @@ require_once(dirname(__FILE__) . "/../../php/cache.php");
 require_once(dirname(__FILE__) . "/../../php/utility/json.php");
 require_once(dirname(__FILE__) . "/../../php/utility/fileutil.php");
 
+if (isset($_GET['clear'])) {
+    Requests::requirePost();
+}
+
 eval(FileUtil::getPluginConf('log_history'));
 
 header('Content-Type: application/json');
@@ -84,14 +88,13 @@ class LogHandler
     {
         $handler = self::load();
 
-        if (isset($_GET['clear'])) {
-            $handler->logs = [];
-            $handler->cache->set($handler);
-            echo JSON::safeEncode(['status' => 'cleared']);
-            return;
-        }
-
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            if (isset($_POST['clear'])) {
+                $handler->logs = [];
+                $handler->cache->set($handler);
+                echo JSON::safeEncode(['status' => 'cleared']);
+                return;
+            }
             $msg  = trim($_POST['message'] ?? '');
             $st   = trim($_POST['status'] ?? '');
             $ts   = $_POST['timestamp'] ?? null;

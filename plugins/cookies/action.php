@@ -17,15 +17,23 @@ switch($cmd)
 	}
 	case 'add':
 	{
+		Requests::requirePost();
 		$cookies = rCookies::load();
-		if(isset($_REQUEST['host']))
-			$cookies->add($_REQUEST['host'],rawurldecode($_REQUEST['cookies']));
+		if(isset($_POST['host'], $_POST['cookies']))
+			$cookies->add($_POST['host'], rawurldecode($_POST['cookies']));
         	CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
 	}
-	default:
+	case 'set':
+	case '':
 	{
+		Requests::requirePost();
 		$cookies = new rCookies();
 		$cookies->set();
 		CachedEcho::send($cookies->get(),"application/javascript");
+	}
+	default:
+	{
+		header('HTTP/1.0 400 Bad Request', true, 400);
+		die('Invalid mode');
 	}
 }

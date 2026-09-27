@@ -61,24 +61,24 @@ class rScheduler
 		{
 			for($j = 0; $j<24; $j++)
 			{
-				if(isset($_REQUEST['day_'.$i."_".$j]))
-					$this->week[$i][$j] = $_REQUEST['day_'.$i."_".$j];
+				if(isset($_POST['day_'.$i."_".$j]))
+					$this->week[$i][$j] = $_POST['day_'.$i."_".$j];
 			}
 		}
-		if(isset($_REQUEST['UL0']))
-			$this->UL[0] = intval($_REQUEST['UL0']);
-		if(isset($_REQUEST['DL0']))
-			$this->DL[0] = intval($_REQUEST['DL0']);
-		if(isset($_REQUEST['UL1']))
-			$this->UL[1] = intval($_REQUEST['UL1']);
-		if(isset($_REQUEST['DL1']))
-			$this->DL[1] = intval($_REQUEST['DL1']);
-		if(isset($_REQUEST['UL2']))
-			$this->UL[2] = intval($_REQUEST['UL2']);
-		if(isset($_REQUEST['DL2']))
-			$this->DL[2] = intval($_REQUEST['DL2']);
-		if(isset($_REQUEST['enabled']))
-			$this->enabled = $_REQUEST['enabled'];
+		if(isset($_POST['UL0']))
+			$this->UL[0] = intval($_POST['UL0']);
+		if(isset($_POST['DL0']))
+			$this->DL[0] = intval($_POST['DL0']);
+		if(isset($_POST['UL1']))
+			$this->UL[1] = intval($_POST['UL1']);
+		if(isset($_POST['DL1']))
+			$this->DL[1] = intval($_POST['DL1']);
+		if(isset($_POST['UL2']))
+			$this->UL[2] = intval($_POST['UL2']);
+		if(isset($_POST['DL2']))
+			$this->DL[2] = intval($_POST['DL2']);
+		if(isset($_POST['enabled']))
+			$this->enabled = $_POST['enabled'];
                 $this->apply();
 	}
 	static public function setSpeed( $ul, $dl )

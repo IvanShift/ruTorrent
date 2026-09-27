@@ -1,13 +1,14 @@
 <?php
 require_once( 'history.php' );
 
-if(isset($_REQUEST['cmd']))
+$cmd = $_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['cmd'] ?? null) : ($_GET['cmd'] ?? null);
+if($cmd !== null)
 {
-	$cmd = $_REQUEST['cmd'];
 	switch($cmd)
 	{
 		case "set":
 		{
+			Requests::requirePost();
 			$up = rHistory::load();
 			$up->set();
 			CachedEcho::send($up->get(),"application/javascript");
@@ -21,6 +22,7 @@ if(isset($_REQUEST['cmd']))
 		}
 		case "delete":
 		{
+			Requests::requirePost();
 			$up = rHistoryData::load();
 			$hashes = array();
 			if(!isset($HTTP_RAW_POST_DATA))

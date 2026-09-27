@@ -5,26 +5,28 @@ require_once( 'ffmpeg.php' );
 eval( FileUtil::getPluginConf( 'screenshots' ) );
 
 $ret = array();
-if(isset($_REQUEST['cmd']))
+$input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
+if(isset($input['cmd']))
 {
 	$st = ffmpegSettings::load();
-	switch($_REQUEST['cmd'])
+	switch($input['cmd'])
 	{
 		case "ffmpeg":
 		{
-			if(isset($_REQUEST['hash']) &&
-				isset($_REQUEST['no']))
+			Requests::requirePost();
+			if(isset($input['hash']) &&
+				isset($input['no']))
 			{
-				$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no']))) );
+				$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no']))) );
 				if($req->success())
 				{
 					$filename = $req->val[0];
 					if($filename=='')
 					{
 						$req = new rXMLRPCRequest( array(
-							new rXMLRPCCommand( "d.open", $_REQUEST['hash'] ),
-							new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no'])) ),
-							new rXMLRPCCommand( "d.close", $_REQUEST['hash'] ) ) );
+							new rXMLRPCCommand( "d.open", $input['hash'] ),
+							new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no'])) ),
+							new rXMLRPCCommand( "d.close", $input['hash'] ) ) );
 						if($req->success())
 							$filename = $req->val[1];
 					}
@@ -51,30 +53,30 @@ if(isset($_REQUEST['cmd']))
 							$offs += $st->data['exfrminterval'];
 						}
 						$commands[] = 'chmod a+r "${dir}"/frame*.*';
+						$task = new rTask( array
+						(
+							'arg' => FileUtil::getFileName($filename),
+							'requester'=>'screenshots',
+							'name'=>'ffmpeg',
+							'hash'=>$input['hash'],
+							'no'=>$input['no']
+						));
+						$ret = $task->start($commands, rTask::FLG_NO_ERR);
 					}
-					$task = new rTask( array
-					(
-						'arg' => FileUtil::getFileName($filename),
-						'requester'=>'screenshots',
-						'name'=>'ffmpeg',
-						'hash'=>$_REQUEST['hash'],
-						'no'=>$_REQUEST['no']
-					));
-					$ret = $task->start($commands, rTask::FLG_NO_ERR);
 				}
 			}
 			break;
 		}
 		case "ffmpeggetall":
 		{
-			$dir = rTask::formatPath( $_REQUEST['no'] );
+			$dir = rTask::formatPath( $input['no'] );
 			if(@chdir( $dir ))
 			{
 				$randName = FileUtil::getTempFilename('screenshots-detail');
 				exec(escapeshellarg(Utility::getExternal('tar'))." -cf ".$randName." *.".($st->data['exformat'] ? 'png' : 'jpg'),$results,$return);
 				if(is_file($randName))
 				{
-					SendFile::send( $randName, "application/x-tar",  $_REQUEST['file'].'.tar', false );
+					SendFile::send( $randName, "application/x-tar",  $input['file'].'.tar', false );
 					unlink($randName);
 					exit();
 				}
@@ -84,14 +86,15 @@ if(isset($_REQUEST['cmd']))
 		}
 		case "ffmpeggetimage":
 		{
-			$dir = rTask::formatPath( $_REQUEST['no'] );
+			$dir = rTask::formatPath( $input['no'] );
 			$ext = ($st->data['exformat'] ? '.png' : '.jpg');
-			$filename = ffmpegSettings::frameName( $dir, $_REQUEST['fno'], $st->data['exformat'] );
-			SendFile::send($filename, $st->data['exformat'] ? 'image/png' : 'image/jpeg', $_REQUEST['file']."-".str_pad($_REQUEST['fno']+1, 3, "0", STR_PAD_LEFT).$ext);
+			$filename = ffmpegSettings::frameName( $dir, $input['fno'], $st->data['exformat'] );
+			SendFile::send($filename, $st->data['exformat'] ? 'image/png' : 'image/jpeg', $input['file']."-".str_pad($input['fno']+1, 3, "0", STR_PAD_LEFT).$ext);
 			exit();
 		}
 		case "ffmpegset":
 		{
+			Requests::requirePost();
 			$ret = $st->set();
 			break;
 		}
