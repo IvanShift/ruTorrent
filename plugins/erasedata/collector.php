@@ -2492,7 +2492,8 @@ final class ErasedataCollector
 		}
 		if(isset($this->cleanupLogState['retained'][$key])) return;
 		$this->cleanupLogState['retained'][$key] = true;
-		if(is_string($reason) && (strpos($reason, 'restore-uncertain') === 0
+		if(is_string($reason) && ($reason === 'restore-unverified'
+			|| strpos($reason, 'restore-uncertain') === 0
 			|| strpos($reason, 'phase-unknown') === 0))
 			$reason .= ' job='.basename($jobPath);
 		// The cleanup half of the one rule manifestLog() names. 'unreadable-manifest'
@@ -2641,8 +2642,9 @@ final class ErasedataCollector
 			if(!erasedataPathExists($dir))
 			{
 				$skipParent = false;
-				erasedataCleanupRestoreReservation($dir, $reservation,
-					$reservationKey, $this->filesystem, $reason, $skipParent);
+				if(!erasedataCleanupRestoreReservation($dir, $reservation,
+					$reservationKey, $this->filesystem, $reason, $skipParent))
+					return(false);
 			}
 			$reason = 'unsafe-path';
 			return(false);
@@ -2655,8 +2657,9 @@ final class ErasedataCollector
 		if(!$this->filesystem->removeDirectory($reserved))
 		{
 			$skipParent = false;
-			erasedataCleanupRestoreReservation($dir, $reservation,
-				$reservationKey, $this->filesystem, $reason, $skipParent);
+			if(!erasedataCleanupRestoreReservation($dir, $reservation,
+				$reservationKey, $this->filesystem, $reason, $skipParent))
+				return(false);
 			$reason = 'rmdir-failure';
 			return(false);
 		}
@@ -2711,7 +2714,8 @@ final class ErasedataCollector
 		if(!erasedataCleanupCapturedFileMatches(
 			$entry, $expected, $original, $this->filesystem))
 		{
-			erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			if(!erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason))
+				return(false);
 			$reason = 'capture-identity';
 			return(false);
 		}
@@ -2752,14 +2756,16 @@ final class ErasedataCollector
 			|| !erasedataCleanupCapturedFileMatches(
 					$entry, $expected, $original, $this->filesystem))
 		{
-			if(!erasedataPathExists($file))
-				erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			if(!erasedataPathExists($file)
+				&& !erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason))
+				return(false);
 			$reason = 'unsafe-path';
 			return(false);
 		}
 		if(!$this->filesystem->unlink($entry) || erasedataPathExists($entry))
 		{
-			erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason);
+			if(!erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason))
+				return(false);
 			$reason = 'unlink-failure';
 			return(false);
 		}

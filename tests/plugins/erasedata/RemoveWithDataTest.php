@@ -4521,6 +4521,79 @@ class RemoveWithDataTest extends TestCase
 			'the retained cleanup names the failed private rmdir');
 	}
 
+	public function testCleanupRestoreUnverifiedNamesTheRetainedJob()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-restore-shell-refusal';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'recreate', 'content' => array(
+					'name' => 'active.bin', 'bytes' => 'active bytes')),
+			'removeDirectory:1' => array('basename_prefix' => '.erasedata-rmdir-',
+				'result' => false)),
+			'captureLogs' => true));
+		$this->assertEquals(0, $status, 'collector child must finish: '.$output);
+		$this->assertTrue(is_file($tmp) && is_file($nested.'/active.bin')
+			&& file_get_contents($nested.'/active.bin') === 'active bytes',
+			'failed shell cleanup must retain the job and restore the exact parent data');
+		$this->assertTrue(strpos($output, 'restore-unverified') !== false,
+			'the log must classify a restored parent with a retained private shell');
+		$this->assertTrue(strpos($output, 'job='.basename($tmp)) !== false,
+			'the permanent restore refusal must name its exact cleanup job');
+	}
+
+	public function testCleanupReportsRestoreFailureWhenCapturedFileUnlinkAlsoFails()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/file-restore-refusal';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'unlink:*' => array('basename' => 'entry', 'result' => false),
+			'renameNoReplace:*' => array('result' => false)),
+			'captureLogs' => true));
+		$this->assertEquals(0, $status, 'collector child must finish: '.$output);
+		$this->assertTrue(is_file($tmp), 'failed restore must retain the exact cleanup manifest');
+		$this->assertTrue(strpos($output,
+			'erasedata: cleanup retained '.$oldHash.' restore-failed') !== false,
+			'the refusal must name the failed file restore, not only the preceding unlink failure');
+	}
+
+	public function testCleanupReportsRestoreFailureWhenPrivateRmdirAlsoFails()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/parent-restore-refusal';
+		$nested = $base.'/season';
+		@mkdir($nested, 0777, true);
+		$old = $nested.'/old.bin';
+		file_put_contents($old, 'obsolete');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old));
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'recreate', 'content' => array(
+					'name' => 'active.bin', 'bytes' => 'active bytes')),
+			'renameNoReplace:*' => array('result' => false)),
+			'captureLogs' => true));
+		$this->assertEquals(0, $status, 'collector child must finish: '.$output);
+		$this->assertTrue(is_file($tmp), 'failed restore must retain the exact cleanup manifest');
+		$this->assertTrue(strpos($output,
+			'erasedata: cleanup retained '.$oldHash.' restore-failed') !== false,
+			'the refusal must name the failed restore, not only the preceding rmdir failure');
+	}
+
 	public function testCleanupRestoresLegacyCapturedParentWithoutBridge()
 	{
 		$this->reset();
