@@ -1079,10 +1079,13 @@ upTest($suite, 'a metadata pump keeps a durable forum correction for a later han
     RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '22'));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1'), true, false,
-        array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id'),
+        true, false, array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), '',
+            str_repeat('1', 40)));
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     RuTrackerUpdatePass::run($rows);
 

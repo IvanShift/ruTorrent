@@ -331,9 +331,9 @@ class CheckerProbe extends ruTrackerChecker
 	}
 
 
-	public static function getStateForTest($hash, &$state, &$time, &$label)
+	public static function getStateForTest($hash, &$state, &$time, &$label, &$localId = null)
 	{
-		return parent::getState($hash, $state, $time, $label);
+		return parent::getState($hash, $state, $time, $label, $localId);
 	}
 }
 
@@ -389,8 +389,9 @@ class CheckerTest
 	const SNAPSHOT_KEY_COMMANDS = array('d.get_directory_base', 'd.get_custom1', 'd.get_throttle_name', 'd.get_connection_seed', 'd.get_custom', 'd.get_custom');
 	const STOP_KEY = 'branch';
 	const STOP_KEY_COMMANDS = array('branch');
-	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom1';
-	const GETSTATE_KEY_COMMANDS = array('d.get_custom', 'd.get_custom', 'd.get_custom1');
+	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom1|d.get_local_id';
+	const GETSTATE_KEY_COMMANDS = array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id');
+	const LOCAL_ID = '1111111111111111111111111111111111111111';
 	const PREFLIGHT_KEY = 'd.get_custom|d.get_state|d.is_open|d.get_custom';
 	const PREFLIGHT_KEY_COMMANDS = array('d.get_custom', 'd.get_state', 'd.is_open', 'd.get_custom');
 	const PLUGIN_MARKER = '0123456789abcdef0123456789abcdef';
@@ -399,6 +400,23 @@ class CheckerTest
 	const COMMIT_SNAPSHOT_KEY = 'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom';
 	const COMMIT_SNAPSHOT_KEY_COMMANDS = array('d.get_directory_base', 'd.get_custom1', 'd.get_throttle_name',
 		'd.get_connection_seed', 'd.get_custom', 'd.get_custom');
+
+	private static function queueStateRead($ok, $fault, $values = array())
+	{
+		// Existing fixtures describe three custom fields; this helper gives
+		// each live daemon row the stable identity returned in the fourth slot.
+		if($values instanceof Closure)
+		{
+			$answer = $values;
+			$values = function($commands) use ($answer) {
+				$row = $answer($commands);
+				if(count($row) === 3) $row[] = self::LOCAL_ID;
+				return $row;
+			};
+		}
+		elseif(count($values) === 3) $values[] = self::LOCAL_ID;
+		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, $ok, $fault, $values);
+	}
 
 	private function resetFakes()
 	{
@@ -413,6 +431,7 @@ class CheckerTest
 		rTorrent::$lastSend = null;
 		rTorrent::$sends = array();
 		rXMLRPCRequest::reset();
+		rXMLRPCRequest::$defaultLocalProjectionResponse = RuTrackerAtomicOwnership::SENTINEL_ACTED;
 		FileUtil::$log = array();
 		RuTrackerMetaFetch::$calls = array();
 		RuTrackerMetaFetch::$result = null;
@@ -2986,7 +3005,7 @@ class CheckerTest
 	public function testMissingHashIsResolvedByTheFailedReadNotByAProbeBeforeIt()
 	{
 		$this->resetFakes();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, true, array()); // the read faults
+		self::queueStateRead( true, true, array()); // the read faults
 		rXMLRPCRequest::queue('d.hash', true, true, array());                    // and the probe confirms it is gone
 		$state = null;
 		$time = null;
@@ -2999,7 +3018,7 @@ class CheckerTest
 
 		// The happy path is what this reordering is for: one request, not two.
 		$this->resetFakes();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_UPTODATE, '1700', 'lbl'));
 		strictAssertSame(true, CheckerProbe::getStateForTest(self::OLD_HASH, $state, $time, $label), 'a readable state is read');
 		strictAssertSame(ruTrackerChecker::STE_UPTODATE, $state, 'and returned');
@@ -3032,7 +3051,7 @@ class CheckerTest
 		// A non-empty SCGI response with no complete XMLRPC values can make the
 		// legacy transport report success with an empty val array. The torrent is
 		// still present, so this is an unreadable state, not state zero.
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array());
+		self::queueStateRead( true, false, array());
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
 		$state = null;
 		$time = null;
@@ -3069,7 +3088,7 @@ class CheckerTest
 		{
 			$this->resetFakes();
 			$this->withoutDebugLog(function() use ($label, $stored) {
-				rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+				self::queueStateRead( true, false,
 					array($stored[0], $stored[1], 'lbl'));
 				FileUtil::$log = array();
 				$state = null;
@@ -3099,7 +3118,7 @@ class CheckerTest
 		{
 			$this->resetFakes();
 			$this->withoutDebugLog(function() use ($label, $stored) {
-				rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+				self::queueStateRead( true, false,
 					array($stored[0], $stored[1], 'lbl'));
 				FileUtil::$log = array();
 				$state = null;
@@ -3113,6 +3132,22 @@ class CheckerTest
 					$label . ': and a read that worked is nobody\'s problem');
 			});
 		}
+	}
+
+	public function testInvalidLocalIdentityDefersWithVisibleReason()
+	{
+		$this->resetFakes();
+		$this->withoutDebugLog(function() {
+			self::queueStateRead(true, false, array('3', '1700', '', 'not-a-local-id'));
+			$state = $time = $label = $localId = null;
+			strictAssertSame(false, CheckerProbe::getStateForTest(
+				self::OLD_HASH, $state, $time, $label, $localId),
+				'an invalid daemon identity cannot authorize any write');
+			strictAssertOneLogMatching(FileUtil::$log, 'invalid d.local_id',
+				'the refusal is visible with debugging disabled');
+			strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+				'no guarded write is attempted without a valid identity');
+		});
 	}
 
 	public function testStateWriteRaceReportsMissingHashWithoutAnError()
@@ -3133,10 +3168,10 @@ class CheckerTest
 
 		// run() maps the vanished target to a successful no-op.
 		rXMLRPCRequest::reset();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
-		rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, true, array());
-		rXMLRPCRequest::queue('d.get_custom|d.get_custom', false, true, array());
+		rXMLRPCRequest::queue('branch', false, false, array());
+		rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id', false, false, array());
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		strictAssertSame(
 			true,
@@ -3278,7 +3313,7 @@ class CheckerTest
 			// Released, the next caller runs normally and leaves no claim.
 			strictInvoke('ruTrackerChecker', 'releaseCheck', array(self::OLD_HASH));
 			rXMLRPCRequest::reset();
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			self::queueStateRead( true, false,
 				array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
@@ -3289,8 +3324,8 @@ class CheckerTest
 				'the next caller checks it');
 			strictAssertSame(true, $performed,
 				'an ordinary handler run acknowledges a durable scheduler obligation');
-			strictAssertTrue(count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')) > 0,
-				'and does write the lock');
+			strictAssertTrue(in_array((string) ruTrackerChecker::STE_INPROGRESS,
+				$this->customWritesFor('chk-state'), true), 'and does write the lock');
 			strictAssertSame(array(), RuTrackerState::load('meta-claims'),
 				'a finished check leaves no claim behind');
 		}
@@ -3311,7 +3346,7 @@ class CheckerTest
 			// The scheduler captured an ordinary state and an ignored label. A
 			// completed manual check subsequently moved the live row to
 			// META_PENDING and removed that label before releasing its claim.
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, function() {
+			self::queueStateRead( true, false, function() {
 				$claims = RuTrackerState::load('meta-claims');
 				strictAssertTrue(isset($claims[self::OLD_HASH]),
 					'the live state is read only after the per-hash claim is held');
@@ -3344,7 +3379,7 @@ class CheckerTest
 		RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
 
 		// Worker A: takes the claim, pumps, and releases it on the way out.
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
 		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
 		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
@@ -3378,7 +3413,7 @@ class CheckerTest
 			array(self::OLD_HASH => time() - ruTrackerChecker::MAX_LOCK_TIME - 1));
 		RuTrackerMetaFetch::$calls = array();
 		rXMLRPCRequest::reset();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
 		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
 		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
@@ -3732,7 +3767,7 @@ class CheckerTest
 		// There is intentionally no <session>/<hash>.torrent. load_raw is
 		// asynchronous and the daemon can expose its tied source first.
 		rTorrentSettings::get()->session = '/session-copy-not-written-yet/';
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
 		rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 		rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
@@ -3871,7 +3906,7 @@ class CheckerTest
 	{
 		$this->resetFakes();
 		RuTrackerState::save('meta-claims', array());
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_INPROGRESS, (string) time(), ''));
 
 		// Fresh: another worker is inside this check, and nothing is written.
@@ -3893,7 +3928,7 @@ class CheckerTest
 		);
 		try
 		{
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			self::queueStateRead( true, false,
 				array((string) ruTrackerChecker::STE_INPROGRESS,
 					(string) (time() - ruTrackerChecker::MAX_LOCK_TIME - 1), ''));
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
@@ -3903,8 +3938,8 @@ class CheckerTest
 				ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_INPROGRESS,
 					time() - ruTrackerChecker::MAX_LOCK_TIME - 1, ''),
 				'an expired lock does not wedge the torrent');
-			strictAssertTrue(count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')) > 0,
-				'the check runs and writes its own state');
+			strictAssertTrue(in_array((string) ruTrackerChecker::STE_INPROGRESS,
+				$this->customWritesFor('chk-state'), true), 'the check runs and writes its own state');
 		}
 		finally
 		{
@@ -3970,7 +4005,7 @@ class CheckerTest
 	{
 		$this->resetFakes();
 		RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
 		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // the claim
 		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
@@ -3984,25 +4019,17 @@ class CheckerTest
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'pump must reach the XMLRPC layer, not a no-op stub');
 		// Two writes: the claim that stops a concurrent cycle from pumping the
 		// same fetch, and then the verdict pump() reached.
-		$stateWrites = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
-		strictAssertSame(2, count($stateWrites), 'the row is claimed, then the pump result is persisted');
-		strictAssertSame(
-			array(self::OLD_HASH, 'chk-state', (string) ruTrackerChecker::STE_INPROGRESS),
-			$stateWrites[0]['commands'][0]->params,
-			'pump() erases stubs and can commit a replacement, so the row is claimed first'
-		);
-		strictAssertSame(
-			array(self::OLD_HASH, 'chk-state', (string) ruTrackerChecker::STE_META_PENDING),
-			$stateWrites[1]['commands'][0]->params,
-			'and what is left standing is the pump result, never the claim'
-		);
+		$stateWrites = $this->customWritesFor('chk-state');
+		strictAssertSame(array((string) ruTrackerChecker::STE_INPROGRESS,
+			(string) ruTrackerChecker::STE_META_PENDING), $stateWrites,
+			'pump() sees the claim first, then its result is persisted');
 	}
 
 	public function testMetaPendingCompletedReplacementSkipsStateWrite()
 	{
 		$this->resetFakes();
 		RuTrackerMetaFetch::$result = null; // createTorrent success: state already set by its own load additions
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_META_PENDING, (string) time(), ''));
 		rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // the claim
 		rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
@@ -4012,7 +4039,7 @@ class CheckerTest
 		strictAssertSame(true, $result, 'a completed replacement is a successful check');
 		strictAssertSame(
 			1,
-			count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			count($this->customWritesFor('chk-state')),
 			'only the claim is written: after a successful replacement the old hash is gone, so no verdict follows it'
 		);
 	}
@@ -4175,7 +4202,7 @@ class CheckerTest
 			ruTrackerChecker::registerTracker('/topic\.' . preg_quote($host, '/') . '/',
 				'/tracker\.' . preg_quote($host, '/') . '/', $handler);
 			$initialState = $previous === 0 && $checkedAt === '' ? '' : (string) $previous;
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			self::queueStateRead( true, false,
 				array($initialState, (string) $checkedAt, ''));
 			return $callback();
 		}
@@ -4190,9 +4217,129 @@ class CheckerTest
 		$writes = array();
 		foreach (rXMLRPCRequest::$requests as $request)
 			foreach ($request['commands'] as $command)
+			{
 				if ($command->command === getCmd('d.set_custom') && $command->params[1] === $field)
 					$writes[] = $command->params[2];
+				if ($command->command !== 'branch'
+					|| ($request['values'][0] ?? null) !== RuTrackerAtomicOwnership::SENTINEL_ACTED)
+					continue;
+				// Decode the simple state/message projections this suite asserts.
+				// A skipped daemon branch has no writes to count.
+				$body = str_replace('\\"', '"', $command->params[2]);
+				if (preg_match_all('~\$' . preg_quote(getCmd('d.set_custom='), '~')
+					. '(chk-[a-z]+),"([^"]*)"~', $body, $matches, PREG_SET_ORDER))
+					foreach ($matches as $match)
+						if ($match[1] === $field) $writes[] = $match[2];
+			}
 		return $writes;
+	}
+
+	// A manual worker can keep running after the browser erases and reloads the
+	// same info hash. Its final verdict belongs to the original daemon object.
+	public function testManualVerdictDoesNotWriteAReaddedTorrentAfterTheHandler()
+	{
+		$originalId = str_repeat('1', 40);
+		$currentId = $originalId;
+		$this->withVerdictSession('manual-readd', ruTrackerChecker::STE_UPTODATE, 123,
+			function() use (&$currentId) {
+				$currentId = str_repeat('2', 40); // erase + load.raw_start during run_ex()
+				return ruTrackerChecker::STE_UNCHANGED;
+			},
+			function() use (&$currentId, $originalId) {
+				// The old implementation writes both projections directly by hash.
+				rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+				rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+				rXMLRPCRequest::queue('branch', true, false, function() use (&$currentId, $originalId) {
+					return array($currentId === $originalId
+						? RuTrackerAtomicOwnership::SENTINEL_ACTED
+						: RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				});
+				rXMLRPCRequest::queue('branch', true, false, function() use (&$currentId, $originalId) {
+					return array($currentId === $originalId
+						? RuTrackerAtomicOwnership::SENTINEL_ACTED
+						: RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				});
+				$performed = null;
+				strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+					ruTrackerChecker::STE_UPTODATE, 123, '', $performed),
+					'the manual checker returns after a stale unchanged answer');
+				$branches = rXMLRPCRequest::requestsFor('branch');
+				strictAssertSame(2, count($branches),
+					'the preflight and final projection must be conditional on the original local id');
+				foreach($branches as $branch)
+				{
+					$condition = $branch['commands'][0]->params[1];
+					strictAssertTrue(strpos($condition, getCmd('d.get_local_id=')) !== false
+						&& strpos($condition, $originalId) !== false,
+						'each daemon branch compares the original local id before writing');
+				}
+				strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+					'no old verdict may be sent directly by hash after the re-add');
+				strictAssertSame(false, $performed, 'a skipped final write consumes no correction');
+			});
+	}
+
+	public function testManualHandlerMessageDoesNotTouchAReaddedTorrent()
+	{
+		$currentId = self::LOCAL_ID;
+		$messageResult = null;
+		$this->withVerdictSession('manual-message', ruTrackerChecker::STE_UPTODATE, 123,
+			function() use (&$currentId, &$messageResult) {
+				$currentId = str_repeat('2', 40);
+				$messageResult = ruTrackerChecker::setMessage(self::OLD_HASH,
+					ruTrackerChecker::CHKMSG_FUSE . '|old');
+				return ruTrackerChecker::STE_UNCHANGED;
+			},
+			function() use (&$messageResult, &$currentId) {
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // preflight
+				rXMLRPCRequest::queue('branch', true, false, function() use (&$currentId) {
+					return array($currentId === self::LOCAL_ID
+						? RuTrackerAtomicOwnership::SENTINEL_ACTED
+						: RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				});
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED)); // final restore
+				rXMLRPCRequest::queue('d.set_custom', true, false, array()); // old path
+				ruTrackerChecker::run(self::OLD_HASH);
+				strictAssertSame(false, $messageResult,
+					'a handler message is refused when its daemon generation has changed');
+				strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+					'the old message is never sent directly by hash');
+			});
+	}
+
+	public function testManualHandlerTopicAndDeletionWritesDoNotTouchAReaddedTorrent()
+	{
+		foreach(array('chk-topic' => '42', 'chk-del' => '1') as $field => $value)
+		{
+			$currentId = self::LOCAL_ID;
+			$writeResult = null;
+			$this->withVerdictSession('manual-' . $field, ruTrackerChecker::STE_UPTODATE, 123,
+				function() use (&$currentId, &$writeResult, $field, $value) {
+					$currentId = str_repeat('2', 40);
+					$writeResult = ruTrackerChecker::writeHandlerCustom(self::OLD_HASH, $field, $value);
+					return ruTrackerChecker::STE_UNCHANGED;
+				},
+				function() use (&$writeResult, &$currentId, $field) {
+					rXMLRPCRequest::queue('branch', true, false,
+						array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+					rXMLRPCRequest::queue('branch', true, false, function() use (&$currentId) {
+						return array($currentId === self::LOCAL_ID
+							? RuTrackerAtomicOwnership::SENTINEL_ACTED
+							: RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+					});
+					rXMLRPCRequest::queue('branch', true, false,
+						array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED));
+					rXMLRPCRequest::queue('d.set_custom', true, false, array());
+					ruTrackerChecker::run(self::OLD_HASH);
+					strictAssertSame(false, $writeResult, $field . ' write is refused for the new local id');
+					strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+						$field . ' is never written directly by hash');
+					strictAssertSame(3, count(rXMLRPCRequest::requestsFor('branch')),
+						'preflight, handler custom and final state each use a guarded branch');
+				});
+		}
 	}
 
 	// A handler that answers STE_UNCHANGED has no data to judge by -- layer 1
@@ -4379,9 +4526,8 @@ class CheckerTest
 				strictAssertSame(true, $performed, 'the new verdict consumed correction work');
 				strictAssertSame(array(''), $this->customWritesFor('chk-msg'),
 					'the stale token is cleared with the new verdict');
-				$writes = rXMLRPCRequest::requestsFor(
-					'd.set_custom|d.set_custom|d.set_custom|d.set_custom');
-				strictAssertSame(1, count($writes), 'the definitive projection is one daemon request');
+				$writes = rXMLRPCRequest::requestsFor('branch');
+				strictAssertSame(2, count($writes), 'preflight and definitive projection each use one guarded request');
 			});
 	}
 
@@ -4432,9 +4578,8 @@ class CheckerTest
 					'the new verdict is accepted');
 				strictAssertSame(array($newMessage), $this->customWritesFor('chk-msg'),
 					'the new token is written with the definitive verdict');
-				strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
-					'd.set_custom|d.set_custom|d.set_custom')),
-					'the definitive projection uses one daemon request');
+				strictAssertSame(2, count(rXMLRPCRequest::requestsFor('branch')),
+					'preflight and definitive projection each use one guarded request');
 			});
 	}
 
@@ -4527,8 +4672,8 @@ class CheckerTest
 					return ruTrackerChecker::STE_UPTODATE;
 				},
 				function() use ($missing, $label, &$handlerCalls) {
-					rXMLRPCRequest::queue('d.set_custom', $missing, $missing, array(),
-						$missing ? 'info-hash not found' : '');
+					rXMLRPCRequest::queue('branch', false, false, array());
+					rXMLRPCRequest::queue('d.get_custom|d.get_local_id', false, false, array());
 					rXMLRPCRequest::queue('d.hash', true, $missing,
 						$missing ? array() : array(self::OLD_HASH),
 						$missing ? 'info-hash not found' : '');
@@ -4538,7 +4683,7 @@ class CheckerTest
 						$label . ': absent is a no-op; unproved write defers');
 					strictAssertSame(0, $handlerCalls, $label . ': no tracker request follows unconfirmed preflight');
 					strictAssertSame(false, $performed, $label . ': no correction was consumed');
-					strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+					strictAssertSame(array(), $this->customWritesFor('chk-time'),
 						$label . ': neither an INPROGRESS lock nor a timestamped verdict is written');
 			});
 		}
@@ -4555,11 +4700,18 @@ class CheckerTest
 			$this->withVerdictSession('performed', ruTrackerChecker::STE_UPTODATE, 100,
 				function() { return ruTrackerChecker::STE_UPDATED; },
 				function() use ($case, $label) {
-					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
-					rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), $case['write'], false, array());
+					rXMLRPCRequest::queue('branch', true, false,
+						array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // preflight
+					rXMLRPCRequest::queue('branch', $case['write'], false,
+						$case['write'] ? array(RuTrackerAtomicOwnership::SENTINEL_ACTED) : array());
 					if(!$case['write'])
+					{
+						rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id',
+							!$case['fault'], false,
+							$case['fault'] ? array() : array('1', '0', self::LOCAL_ID));
 						rXMLRPCRequest::queue('d.hash', true, $case['fault'],
 							$case['fault'] ? array() : array(self::OLD_HASH));
+					}
 
 					$performed = null;
 					strictAssertSame(true,
@@ -4592,11 +4744,13 @@ class CheckerTest
 		$this->withVerdictSession('performed-short', ruTrackerChecker::STE_UPTODATE, 100,
 			function() { return ruTrackerChecker::STE_UPDATED; },
 			function() {
-				// The INPROGRESS claim is fully acknowledged.
-				rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0, 0));
-				// The final verdict has a truncated positive reply and a mismatching readback.
-				rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array(0));
-				rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('1', '0'));
+				// The INPROGRESS projection is acknowledged. The final branch
+				// returns a truncated reply, then readback proves no final verdict.
+				rXMLRPCRequest::queue('branch', true, false,
+					array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+				rXMLRPCRequest::queue('branch', true, false, array());
+				rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id',
+					true, false, array('1', '0', self::LOCAL_ID));
 
 				$performed = null;
 				strictAssertSame(true,
@@ -4604,8 +4758,9 @@ class CheckerTest
 					'the checker invocation itself completes');
 				strictAssertSame(false, $performed,
 					'forum correction work is not acknowledged without a measured final verdict');
-				strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
-					'the final short reply is verified exactly once');
+				strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
+					'd.get_custom|d.get_custom|d.get_local_id')),
+					'the final short reply is verified against the same local id');
 		});
 	}
 
@@ -4689,7 +4844,7 @@ class CheckerTest
 		$GLOBALS['ignoreLabels'] = array('tv-sonarr');
 		try
 		{
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			self::queueStateRead( true, false,
 				array((string) ruTrackerChecker::STE_DELETED, (string) time(), 'tv-sonarr'));
 			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // the IGNORED state
 			rXMLRPCRequest::queue('d.set_custom', true, false, array());               // the message clear
@@ -4701,15 +4856,9 @@ class CheckerTest
 			strictAssertSame(false, $performed,
 				'an ignored-label decision is not a forum-aware tracker check');
 
-			$writes = array();
-			foreach(rXMLRPCRequest::$requests as $request)
-				foreach($request['commands'] as $command)
-					if($command->command === getCmd('d.set_custom'))
-						$writes[$command->params[1]] = $command->params[2];
-
-			strictAssertSame((string) ruTrackerChecker::STE_IGNORED, $writes['chk-state'] ?? null,
-				'the state becomes IGNORED');
-			strictAssertSame('', $writes['chk-msg'] ?? null,
+			strictAssertSame(array((string) ruTrackerChecker::STE_IGNORED),
+				$this->customWritesFor('chk-state'), 'the state becomes IGNORED');
+			strictAssertSame(array(''), $this->customWritesFor('chk-msg'),
 				'and the previous verdict\'s sentence is cleared with it');
 		}
 		finally
@@ -4746,7 +4895,7 @@ class CheckerTest
 			{
 				if($fixture !== null) Torrent::$fixtures[$fname] = $fixture;
 
-				rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+				self::queueStateRead( true, false,
 					array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
 				rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // INPROGRESS
 				rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // final verdict
@@ -4793,7 +4942,7 @@ class CheckerTest
 	{
 		$this->resetFakes();
 		$this->withDebugLog(function() {
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array('3', '1000', '900', ''));
+			self::queueStateRead( true, false, array('3', '1000', '900'));
 			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // the lock
 			rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // the verdict
 
@@ -4965,7 +5114,7 @@ class CheckerTest
 		) as $label => $reply)
 		{
 			$this->resetFakes();
-			rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+			self::queueStateRead( true, false,
 				array($reply[0], $reply[1], 'lbl'));
 			$state = null;
 			$time = null;
@@ -4984,7 +5133,7 @@ class CheckerTest
 		$this->resetFakes();
 		ruTrackerChecker::registerTracker('/topic\.rpcint\.invalid/', '/tracker\.rpcint\.invalid/',
 			function() { throw new RuntimeException('an unreadable state must never dispatch a handler'); });
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array('03', '1700', ''));
+		self::queueStateRead( true, false, array('03', '1700', ''));
 		$performed = null;
 		strictAssertSame(false,
 			ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 1700, '', $performed),
@@ -4997,7 +5146,7 @@ class CheckerTest
 
 		// Control: the same shape with canonical values still runs.
 		$this->resetFakes();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false,
+		self::queueStateRead( true, false,
 			array((string) ruTrackerChecker::STE_UPTODATE, '1700', 'lbl'));
 		$state = null;
 		$time = null;
@@ -5011,7 +5160,7 @@ class CheckerTest
 		// An UNSET custom comes back as the empty string. That, and only that,
 		// is the never-checked reading.
 		$this->resetFakes();
-		rXMLRPCRequest::queue(self::GETSTATE_KEY_COMMANDS, true, false, array('', '', ''));
+		self::queueStateRead( true, false, array('', '', ''));
 		$state = null;
 		$time = null;
 		$label2 = null;

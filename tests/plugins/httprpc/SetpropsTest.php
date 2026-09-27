@@ -126,6 +126,31 @@ class SetpropsTest extends TestCase
 			'superseed=0 uses the normal seed branch');
 	}
 
+	public function testGetSavePathRejectsMalformedHashBeforeTrustedRpc()
+	{
+		$out = $this->post('mode=getsavepath&hash=bad');
+		$this->assertTrue(strpos($out, 'Refused: missing or invalid torrent hash') !== false,
+			'the request receives a classified refusal: '.$out);
+		$this->assertTrue(!$this->peer->accepted(),
+			'the invalid hash never reaches rtorrent');
+		$this->assertTrue(strpos((string)@file_get_contents($this->base.'/refusals.log'),
+			'httprpc: getsavepath refused: missing or invalid torrent hash') !== false,
+			'the refusal is recorded');
+	}
+
+	public function testGetSavePathUsesTheExistingServerTransaction()
+	{
+		$this->post('mode=getsavepath&hash='.self::HASH);
+		$this->assertTrue($this->peer->accepted(),
+			'the checked hash opens one SCGI request');
+		$request = $this->peer->request();
+		foreach(array('d.open', 'd.base_path', 'd.close') as $method)
+			$this->assertTrue(strpos($request['payload'], $method) !== false,
+				'the existing server path sends '.$method);
+		$this->assertTrue(strpos($request['payload'], self::HASH) !== false,
+			'the server uses the requested hash');
+	}
+
 	public function testRecheckRejectsMixedHashBatchBeforeTrustedRpc()
 	{
 		$out = $this->post('mode=recheck&hash='.self::HASH.'&hash=not-a-hash');

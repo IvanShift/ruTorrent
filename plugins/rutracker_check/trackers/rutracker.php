@@ -83,10 +83,7 @@ class RuTrackerCheckImpl
     // is a verdict nothing can back up later.
     static private function writeCustom($hash, $field, $value)
     {
-        $req = new rXMLRPCRequest(new rXMLRPCCommand(
-            getCmd("d.set_custom"), array($hash, $field, (string) $value)));
-        $req->important = false;
-        return $req->success();
+        return ruTrackerChecker::writeHandlerCustom($hash, $field, (string) $value);
     }
 
     // chk-topic := $topicId, but only the first time (one read, conditional

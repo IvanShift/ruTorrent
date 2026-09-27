@@ -162,7 +162,7 @@ class RuTrackerRpcValue
 
 /**
  * Prove a custom-field projection from a complete reply or exact readback.
- * Scheduler writes use a local-id branch so a same-hash replacement cannot
+ * Guarded checker writes use a local-id branch so a same-hash replacement cannot
  * receive the previous torrent's verdict. The legacy parser can still return
  * true after extracting only a prefix of the reply.
  */
@@ -476,13 +476,13 @@ class RuTrackerAtomicOwnership
         ));
     }
 
-    /** Write a scheduler projection only while this exact daemon torrent exists. */
+    /** Write a checker projection only while this exact daemon torrent exists. */
     static public function setFastProjection($hash, $localId, $fields)
     {
         if (!self::isValidHash($hash)
             || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
             || !is_array($fields) || !count($fields)) return self::UNKNOWN;
-        $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del');
+        $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del', 'chk-topic');
         $parts = array();
         foreach ($fields as $key => $value) {
             if (!in_array($key, $allowed, true) || !is_string($value)) return self::UNKNOWN;

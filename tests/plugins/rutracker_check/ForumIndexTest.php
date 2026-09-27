@@ -52,6 +52,22 @@ function fiStateTest($suite, $name, $callback)
 }
 
 
+// The row schema parseDump() stored before ebb60a7e added reg_time.
+function fiSeedPreRegTimeDump($topic, $hash, $seeders = 45)
+{
+    RuTrackerState::save('forumdump-921-1', array(
+        'generation' => 1, 'etag' => '"legacy"',
+        'rows' => array($topic => array('tor_status' => 0, 'info_hash' => $hash,
+            'seeders' => $seeders)),
+    ));
+    RuTrackerState::save('forumindex', array(
+        'etags' => array(921 => '"legacy"'),
+        'dump_documents' => array(921 => 'forumdump-921-1'),
+        'dump_generations' => array(921 => 1),
+    ));
+}
+
+
 function fiFillEvidenceAfter($topicId)
 {
     RuTrackerState::update('forumindex', function ($state) use ($topicId) {
@@ -410,6 +426,123 @@ fiStateTest($suite, 'fetchDump caches by ETag and serves 304 from state', functi
     Snoopy::queue($url, 500, '');
     strictAssertSame(null, RuTrackerForumIndex::fetchDump(921), 'error -> null');
     strictAssertSame(45, RuTrackerForumIndex::cachedDump(921)[6868321]['seeders'], 'cache survives a fetch error');
+});
+
+fiStateTest($suite, 'a 304 on a pre-reg_time dump immediately fetches a real date', function () {
+    Snoopy::reset();
+    $topic = 6868321;
+    $hash = str_repeat('F', 40);
+    $url = RuTrackerForumIndex::DUMP_URL . '921';
+    fiSeedPreRegTimeDump($topic, $hash);
+
+    Snoopy::queue($url, 304, '');
+    Snoopy::queue($url, 200, fiDumpAt($topic, 0, $hash, 46, 1700000000),
+        array('ETag: "current"'));
+    $refreshed = RuTrackerForumIndex::fetchDump(921);
+    strictAssertSame(array('If-None-Match' => '"legacy"'), Snoopy::$rawheadersLog[0],
+        'the persisted ETag was sent before the old schema could be seen');
+    strictAssertSame(2, count(Snoopy::$rawheadersLog), 'the old 304 triggers a second GET');
+    strictAssertSame(array(), Snoopy::$rawheadersLog[1],
+        'the same cycle retries without a conditional header');
+    strictAssertSame(true, $refreshed['fresh'], 'the full dump is newly published');
+    strictAssertSame(1700000000, $refreshed['rows'][$topic]['reg_time'],
+        'only the tracker-published timestamp becomes the registration date');
+    strictAssertSame('"current"', RuTrackerState::load('forumindex')['etags'][921],
+        'the fresh ETag is retained for ordinary conditional requests');
+
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    Snoopy::queue($url, 304, '');
+    $current = RuTrackerForumIndex::fetchDump(921);
+    strictAssertSame(1700000000, $current['rows'][$topic]['reg_time'],
+        'a later 304 keeps the date from the fresh body');
+    strictAssertSame(array('If-None-Match' => '"current"'), Snoopy::$rawheadersLog[2],
+        'a valid cache still uses its ETag');
+    strictAssertSame('"current"', RuTrackerState::load('forumindex')['etags'][921],
+        'a valid 304 does not schedule another full refresh');
+});
+
+fiStateTest($suite, 'an unavailable full refresh keeps old verdict rows but no invented date', function () {
+    Snoopy::reset();
+    $topic = 6868321;
+    $hash = str_repeat('F', 40);
+    $url = RuTrackerForumIndex::DUMP_URL . '921';
+    fiSeedPreRegTimeDump($topic, $hash);
+
+    Snoopy::queue($url, 304, '');
+    Snoopy::queue($url, 429, '');
+    $reason = null;
+    $cached = RuTrackerForumIndex::fetchDump(921, null, $reason);
+    strictAssertSame(false, $cached['fresh'], 'the old rows still answer the forum verdict');
+    strictAssertSame(false, array_key_exists('reg_time', $cached['rows'][$topic]),
+        'without a 200 there is no registration date to publish');
+    strictAssertSame(2, count(Snoopy::$rawheadersLog), 'the refused refresh was attempted');
+    strictAssertSame(array(), Snoopy::$rawheadersLog[1],
+        'the attempted full refresh was unconditional');
+    strictAssertTrue(strpos($reason, 'reg-time-refresh-refused') === 0
+        && strpos($reason, 'http-status=429') !== false,
+        'the failed refresh reports the HTTP refusal');
+    strictAssertTrue(!isset(RuTrackerState::load('forumindex')['etags'][921]),
+        'the stale ETag hint is cleared for the next cycle');
+    strictAssertSame('"legacy"', RuTrackerState::load('forumdump-921-1')['etag'],
+        'the old body remains readable while a real replacement is unavailable');
+});
+
+fiStateTest($suite, 'a full-refresh 404 does not serve old forum rows as current', function () {
+    Snoopy::reset();
+    $url = RuTrackerForumIndex::DUMP_URL . '921';
+    fiSeedPreRegTimeDump(6868321, str_repeat('F', 40));
+    Snoopy::queue($url, 304, '');
+    Snoopy::queue($url, 404, '');
+
+    $reason = null;
+    $absent = false;
+    strictAssertSame(null, RuTrackerForumIndex::fetchDump(921, null, $reason, $absent),
+        'a fresh 404 overrides a cached verdict for this cycle');
+    strictAssertSame(true, $absent, 'the missing dump is classified as absent');
+    strictAssertTrue(strpos($reason, 'reg-time-refresh-absent') === 0
+        && strpos($reason, 'http-status=404') !== false,
+        'the failed refresh reports the actual 404');
+    strictAssertTrue(!isset(RuTrackerState::load('forumindex')['etags'][921]),
+        'the old ETag is not sent in the next cycle');
+});
+
+fiStateTest($suite, 'a failed full-refresh transport cannot reuse the preceding 304 bytes', function () {
+    Snoopy::reset();
+    $topic = 6868321;
+    $url = RuTrackerForumIndex::DUMP_URL . '921';
+    fiSeedPreRegTimeDump($topic, str_repeat('F', 40));
+    Snoopy::queue($url, 304, '');
+    Snoopy::queueEarlyFailure($url, 'connection failed');
+
+    $reason = null;
+    $cached = RuTrackerForumIndex::fetchDump(921, null, $reason);
+    strictAssertSame(false, $cached['fresh'], 'the durable old rows survive transport failure');
+    strictAssertSame(false, array_key_exists('reg_time', $cached['rows'][$topic]),
+        'no timestamp is invented from a failed retry');
+    strictAssertSame('reg-time-refresh-transport', $reason,
+        'the stale 304 status cannot be reported as the retry status');
+    strictAssertTrue(!isset(RuTrackerState::load('forumindex')['etags'][921]),
+        'the next cycle remains eligible for a full body');
+});
+
+fiStateTest($suite, 'a newly parsed unknown reg_time does not trigger repeated full dumps', function () {
+    Snoopy::reset();
+    $url = RuTrackerForumIndex::DUMP_URL . '921';
+    Snoopy::queue($url, 200, fiDumpAt(6868321, 0, str_repeat('F', 40), 45, 'unknown'),
+        array('ETag: "unknown-date"'));
+    $first = RuTrackerForumIndex::fetchDump(921);
+    strictAssertSame(null, $first['rows'][6868321]['reg_time'],
+        'a published but unparseable date remains unknown');
+
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    Snoopy::queue($url, 304, '');
+    $second = RuTrackerForumIndex::fetchDump(921);
+    strictAssertSame(null, $second['rows'][6868321]['reg_time'],
+        'a bodyless 304 still has no date to supply');
+    strictAssertSame(array('If-None-Match' => '"unknown-date"'), Snoopy::$rawheadersLog[1],
+        'the new-schema row, even with a null date, keeps using the ETag');
+    strictAssertSame('"unknown-date"', RuTrackerState::load('forumindex')['etags'][921],
+        'unknown data is not mistaken for a pre-schema cache row');
 });
 
 fiPermissionStateTest($suite, 'fetchDump publishes no ETag hint when the dump document did not land', function ($tmp) {

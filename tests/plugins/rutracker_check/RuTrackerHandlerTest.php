@@ -406,6 +406,21 @@ $suite->test('rememberTopic writes chk-topic only when it was blank', function (
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'no write when already known');
 });
 
+$suite->test('handler topic and deletion writes use the checker ownership helper', function () use ($hash, $topicId) {
+    ruTrackerChecker::reset();
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', array($hash, $topicId));
+    strictInvoke('RuTrackerCheckImpl', 'resetDeletion', array($hash));
+    $calls = ruTrackerChecker::callsFor('writeHandlerCustom');
+    strictAssertSame(array(
+        array($hash, 'chk-topic', (string) $topicId),
+        array($hash, 'chk-del', ''),
+    ), array_column($calls, 'arguments'),
+        'both handler writes pass through the checker ownership guard');
+});
+
 $suite->test('resetDeletion clears its own custom field', function () use ($hash) {
     ruTrackerChecker::reset();
     rXMLRPCRequest::queue('d.set_custom', true, false, array());

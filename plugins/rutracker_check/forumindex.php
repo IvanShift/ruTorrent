@@ -543,6 +543,7 @@ class RuTrackerForumIndex
         // this fetch was in flight.
         @$client->fetchComplex(self::DUMP_URL . $forumId);
 
+        $parsedRows = null;
         if ((int) $client->status === 304) {
             // "Unchanged" is only an answer while the cached document is
             // actually there AND is the generation the ETag we presented
@@ -583,28 +584,77 @@ class RuTrackerForumIndex
                 $failureReason = 'cache-lost';
                 return self::remember($memoize, $forumId, null, $failureReason);
             }
-            $dropDocuments = array();
-            $touched = RuTrackerState::update('forumindex', function ($state) use (
-                $forumId,
-                $reservation,
-                $token,
-                $doc,
-                &$dropDocuments
-            ) {
-                if (!self::holdsReservation($state, $forumId, $reservation, $token))
+            // Documents published before reg_time was parsed have no such key
+            // in any row. A 304 cannot supply the date needed by a replacement
+            // in THIS cycle. Retry without If-None-Match while holding the same
+            // reservation; the ordinary 200 publication path below handles a
+            // successful full body. A present null key is current-schema data
+            // whose timestamp the tracker did not provide.
+            $needsFullDump = false;
+            foreach ($doc['rows'] as $row) {
+                if (!is_array($row) || !array_key_exists('reg_time', $row)) {
+                    $needsFullDump = true;
+                    break;
+                }
+            }
+            if ($needsFullDump) {
+                // Keep only the old document identity. The full retry body
+                // may be large, and fallback reloads the durable rows anyway.
+                unset($doc['rows']);
+                if (!is_array($client->rawheaders)) $client->rawheaders = array();
+                unset($client->rawheaders['If-None-Match']);
+                $refetched = @$client->fetchComplex(self::DUMP_URL . $forumId);
+                $refreshStatus = (int) $client->status;
+                if ($refetched && $refreshStatus === 200 && is_string($client->results)
+                    && $client->results !== '') {
+                    $malformed = false;
+                    $candidate = self::parseDump($client->results, $malformed);
+                    if (!$malformed) $parsedRows = $candidate;
+                }
+                if ($parsedRows === null) {
+                    $dumpAbsent = $refetched && $refreshStatus !== 200
+                        && !self::dumpRefused($refreshStatus);
+                    $code = !$refetched ? 'reg-time-refresh-transport'
+                        : ($refreshStatus === 200
+                            ? ($client->results === '' ? 'reg-time-refresh-empty' : 'reg-time-refresh-malformed')
+                            : ($dumpAbsent ? 'reg-time-refresh-absent' : 'reg-time-refresh-refused'));
+                    $failureReason = $refetched
+                        ? self::crawlFailureReason($code, array($client->status)) : $code;
+                }
+            }
+            if ($parsedRows === null) {
+                $dropDocuments = array();
+                $touched = RuTrackerState::update('forumindex', function ($state) use (
+                    $forumId,
+                    $reservation,
+                    $token,
+                    $doc,
+                    $sent,
+                    $needsFullDump,
+                    &$dropDocuments
+                ) {
+                    if (!self::holdsReservation($state, $forumId, $reservation, $token))
+                        return $state;
+                    if (self::stateDumpDocument($state, $forumId) !== $doc['document'])
+                        return $state;
+                    $state = self::touchDump($state, $forumId, $dropDocuments);
+                    // Keep the confirmed old rows for verdicts, but never
+                    // re-present their ETag after the full refresh failed.
+                    if ($needsFullDump && ($state['etags'][$forumId] ?? null) === $sent)
+                        unset($state['etags'][$forumId]);
                     return $state;
-                if (self::stateDumpDocument($state, $forumId) !== $doc['document'])
-                    return $state;
-                return self::touchDump($state, $forumId, $dropDocuments);
-            });
-            if ($touched) self::dropDocuments($dropDocuments);
-            $confirmed = self::durableDumpAnswer($forumId);
-            // The confirmation stands even when the retention touch above did
-            // not land; only the body going missing between the read and here
-            // makes this a non-answer.
-            if ($confirmed === null) $failureReason = 'cache-lost';
-            return self::remember($memoize, $forumId, $confirmed, $failureReason);
+                });
+                if ($touched) self::dropDocuments($dropDocuments);
+                $confirmed = self::durableDumpAnswer($forumId);
+                // The confirmation stands even when the retention touch above
+                // did not land; only the body going missing between the read
+                // and here makes this a non-answer.
+                if ($confirmed === null) $failureReason = 'cache-lost';
+                if ($dumpAbsent) $confirmed = null;
+                return self::remember($memoize, $forumId, $confirmed, $failureReason, $dumpAbsent);
+            }
         }
+
         $status = (int) $client->status;
         if ($status !== 200 || !is_string($client->results) || $client->results === '') {
             // An answered 200 carrying nothing is not the same failure as a
@@ -627,7 +677,7 @@ class RuTrackerForumIndex
         // and cost a full refetch every cycle. Only a document that could not
         // be understood is a non-answer, and parseDump says which is which.
         $malformed = false;
-        $rows = self::parseDump($client->results, $malformed);
+        $rows = $parsedRows !== null ? $parsedRows : self::parseDump($client->results, $malformed);
         if ($malformed) {
             $failureReason = self::crawlFailureReason('dump-malformed', array($client->status));
             return self::remember($memoize, $forumId, null, $failureReason);

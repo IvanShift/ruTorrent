@@ -109,6 +109,7 @@ class ruTrackerChecker
 	private static $claimStoreFailureLogged = false;
 	// Stage the handler's message while a terminal verdict remains visible.
 	// It is published with a definitive new verdict or discarded on retry.
+	private static $activeRunIdentity = null;
 	private static $terminalMessageHash = null;
 	private static $pendingTerminalMessage = null;
 	private static $obsoleteCleanupSummary = array(
@@ -532,10 +533,10 @@ class ruTrackerChecker
 		return(count($entries) ? $entries : null);
 	}
 
-	static public function setState( $hash, $state )
+	static public function setState( $hash, $state, $localId = null )
 	{
 		return(self::writeCustomProjection($hash,
-			self::stateCommands($hash, $state, time()), "setState"));
+			self::stateCommands($hash, $state, time()), "setState", $localId));
 	}
 
 	// Build every timestamped state projection from one captured clock value.
@@ -602,17 +603,30 @@ class ruTrackerChecker
 			self::$pendingTerminalMessage = (string) $message;
 			return(true);
 		}
-		$req = new rXMLRPCRequest( new rXMLRPCCommand(
-			getCmd("d.set_custom"), array($hash, "chk-msg", (string) $message) ) );
+		return(self::writeHandlerCustom($hash, "chk-msg", $message));
+	}
+
+	// Handler writes share the run() identity captured with live state. Outside
+	// a run, retain the ordinary single-field setter.
+	static public function writeHandlerCustom($hash, $field, $value)
+	{
+		if(!in_array($field, array("chk-msg", "chk-del", "chk-topic"), true)) return(false);
+		$command = new rXMLRPCCommand(getCmd("d.set_custom"),
+			array($hash, $field, (string) $value));
+		if(self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash)
+			return(self::writeCustomProjection($hash, array($command), "writeHandlerCustom",
+				self::$activeRunIdentity['localId']) === true);
+		$req = new rXMLRPCRequest($command);
 		$req->important = false;
 		return($req->success());
 	}
 
-	static protected function getState( $hash, &$state, &$time, &$label )
+	static protected function getState( $hash, &$state, &$time, &$label, &$localId = null )
 	{
 		$state = self::STE_INPROGRESS;
 		$time = time();
 		$label = "";
+		$localId = null;
 
 		// Read first, probe only if that fails. The existence probe used to run
 		// unconditionally ahead of the read, so every manual check paid two
@@ -628,10 +642,11 @@ class ruTrackerChecker
 		$req = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-state")  ),
 			new rXMLRPCCommand( getCmd("d.get_custom"), array($hash, "chk-time") ),
-			new rXMLRPCCommand( getCmd("d.get_custom1"), $hash )
+			new rXMLRPCCommand( getCmd("d.get_custom1"), $hash ),
+			new rXMLRPCCommand( getCmd("d.get_local_id"), $hash )
 			));
 		$req->important = false;
-		if($req->success() && isset($req->val[0], $req->val[1], $req->val[2]))
+		if($req->success() && isset($req->val[0], $req->val[1], $req->val[2], $req->val[3]))
 		{
 			// An UNSET custom reads back as '' -- that alone is the absent 0.
 			// A reading that will not parse is NOT state 0 ("never checked"),
@@ -651,9 +666,15 @@ class ruTrackerChecker
 					. " nothing rewrites it, so this torrent will not be checked again until it is cleared");
 				return(false);
 			}
+			if(!is_string($req->val[3]) || preg_match('/^[0-9A-F]{40}$/D', $req->val[3]) !== 1)
+			{
+				self::logUnrepairable("getState: " . $hash . " answered with an invalid d.local_id; deferring check");
+				return(false);
+			}
 			$state = $readState;
 			$time = $readTime;
 			$label = $req->val[2];
+			$localId = $req->val[3];
 			return(true);
 		}
 
@@ -2171,9 +2192,10 @@ class ruTrackerChecker
 			return(true);
 		}
 
+		$previousIdentity = self::$activeRunIdentity;
 		try
 		{
-			if(!self::getState( $hash, $state, $time, $label ))
+			if(!self::getState( $hash, $state, $time, $label, $localId ))
 			{
 				// The torrent is gone: a stale worker, and a successful no-op.
 				if($state == self::STE_NOT_NEED)
@@ -2187,31 +2209,25 @@ class ruTrackerChecker
 				return(false);
 			}
 
+			self::$activeRunIdentity = array('hash' => $hash, 'localId' => $localId);
+
 			// Skip torrent if its label is in the ignore list
 			if(self::isIgnoredLabel($label))
 			{
-				$state = self::STE_IGNORED;
-				self::setState($hash, $state);
-				// The sentence goes with the state it explained. init.js appends
-				// chk-msg to whatever state is current, so a token left by an
-				// earlier verdict reads as "Ignored -- ... confirmation cycle
-				// 2/3", which is the opposite of what IGNORED means: nobody
-				// looked. The scheduler's own STE_IGNORED write already clears it
-				// (RuTrackerUpdatePass::run()); this is the same rule for the
-				// path a "check" click takes.
-				self::setMessage($hash, '');
-				return(true);
+				// Keep the ignored state and its cleared message on the same
+				// daemon generation. The scheduler applies the same projection.
+				return(self::setFastVerdict($hash, self::STE_IGNORED, '', false, $localId) !== false);
 			}
 
 			if($state == self::STE_META_PENDING)
 			{
-				$claim = self::setState($hash, self::STE_INPROGRESS);
+				$claim = self::setState($hash, self::STE_INPROGRESS, $localId);
 				if($claim === null) return(true);	// the torrent is gone
 				if(!$claim) return(false);
 				$state = RuTrackerMetaFetch::pump($hash, time());
 				// null is pump()'s success contract: createTorrent() committed,
 				// so this hash no longer exists and there is nothing to write.
-				if(!is_null($state)) self::setState($hash, $state);
+				if(!is_null($state)) self::setState($hash, $state, $localId);
 				return($state != self::STE_CANT_REACH_TRACKER);
 			}
 
@@ -2234,9 +2250,9 @@ class ruTrackerChecker
 				if($terminal)
 					$stateWrite = self::writeCustomProjection($hash, array(
 						new rXMLRPCCommand(getCmd("d.set_custom"),
-							array($hash, "chk-state", (string) $previous))), "confirmTerminalState");
+							array($hash, "chk-state", (string) $previous))), "confirmTerminalState", $localId);
 				else
-					$stateWrite = self::setState( $hash, $state );
+					$stateWrite = self::setState( $hash, $state, $localId );
 				if($stateWrite === null) return(true);
 				if(!$stateWrite) return(false);
 				$handlerPerformed = false;
@@ -2288,10 +2304,10 @@ class ruTrackerChecker
 							new rXMLRPCCommand(getCmd("d.set_custom"),
 								array($hash, "chk-state", (string) $previous)),
 							new rXMLRPCCommand(getCmd("d.set_custom"),
-								array($hash, "chk-time", $time > 0 ? (string) $time : ""))), "restoreUnchanged");
+								array($hash, "chk-time", $time > 0 ? (string) $time : ""))), "restoreUnchanged", $localId);
 					else $finalWrite = $terminal && $pendingMessage !== null
-						? self::setFastVerdict($hash, $state, $pendingMessage)
-						: self::setState($hash, $state);
+						? self::setFastVerdict($hash, $state, $pendingMessage, false, $localId)
+						: self::setState($hash, $state, $localId);
 				}
 				// Handler invocation is not durable consumption. In particular,
 				// STE_UNCHANGED means it learned nothing, and a false/null final
@@ -2306,6 +2322,7 @@ class ruTrackerChecker
 		}
 		finally
 		{
+			self::$activeRunIdentity = $previousIdentity;
 			self::releaseCheck($hash, $claimToken);
 		}
 	}

@@ -42,20 +42,7 @@ theWebUI.showDataDirDlg = function( d )
 
 rTorrentStub.prototype.getsavepath = function()
 {
-	if(typeof this.getCommon === "function") {
-		this.getCommon("getsavepath");
-		return;
-	}
-
-	var cmd = new rXMLRPCCommand( "d.open" );
-	cmd.addParameter( "string", this.hashes[0] );
-	this.commands.push( cmd );
-	cmd = new rXMLRPCCommand( "d.get_base_path" );
-	cmd.addParameter( "string", this.hashes[0] );
-	this.commands.push( cmd );
-	cmd = new rXMLRPCCommand( "d.close" );
-	cmd.addParameter( "string", this.hashes[0] );
-	this.commands.push( cmd );
+	postHttprpcMode(this, "getsavepath");
 }
 
 rTorrentStub.prototype.getsavepathResponse = function( xml )

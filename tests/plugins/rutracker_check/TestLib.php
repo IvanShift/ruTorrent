@@ -597,6 +597,7 @@ class rXMLRPCRequest
 {
     public static $responses = array();
     public static $requests = array();
+    public static $defaultLocalProjectionResponse = null;
     private $commands = array();
     public $important = true;
     public $fault = false;
@@ -673,8 +674,13 @@ class rXMLRPCRequest
         // that did not run (see the fault rules below), so the fallback must
         // not either.
         $response = (isset(self::$responses[$key]) && count(self::$responses[$key]))
-            ? array_shift(self::$responses[$key])
-            : array(false, false, array(), '');
+            ? array_shift(self::$responses[$key]) : null;
+        if ($response === null && self::$defaultLocalProjectionResponse !== null
+            && $key === 'branch' && isset($this->commands[0]->params[1], $this->commands[0]->params[2])
+            && strpos($this->commands[0]->params[1], getCmd('d.get_local_id=')) !== false
+            && strpos($this->commands[0]->params[2], '$' . getCmd('d.set_custom=')) !== false)
+            $response = array(true, false, array(self::$defaultLocalProjectionResponse), '');
+        if ($response === null) $response = array(false, false, array(), '');
         // php/xmlrpc.php declares fault false, faultString '' and
         // rawFaultString null (:79-81) and assigns all three together, only
         // inside the branch that saw a faultCode (:223-227). Two consequences
@@ -709,6 +715,7 @@ class rXMLRPCRequest
         // did not inspect those scalars; make that shorthand realistic while
         // preserving every explicitly nonempty short list (e.g. [0] for a
         // truncated two-command response).
+        self::$requests[count(self::$requests) - 1]['values'] = $this->val;
         if ($response[0] && !$response[1] && is_array($this->val) && !count($this->val)
             && count($this->commands)) {
             $settersOnly = true;
@@ -1066,6 +1073,17 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             if (!array_key_exists($method, self::$results) || !count(self::$results[$method]))
                 throw new RuntimeException('No TestLib result queued for ruTrackerChecker::' . $method);
             return array_shift(self::$results[$method]);
+        }
+
+        public static function writeHandlerCustom($hash, $field, $value)
+        {
+            self::$calls[] = array('method' => __FUNCTION__,
+                'arguments' => array($hash, $field, $value),
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests));
+            $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.set_custom'),
+                array($hash, $field, (string) $value)));
+            $req->important = false;
+            return $req->success();
         }
 
         public static function awaitMetadata($hash)
