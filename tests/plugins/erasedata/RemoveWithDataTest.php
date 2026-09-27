@@ -8138,6 +8138,104 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
+	public function testPostRmdirAndExternallyMovedPrivateDirectoryShareCapturedEvidence()
+	{
+		foreach(array(1, 2) as $force)
+		{
+			$this->reset();
+			$hash = $this->hash((string)$force);
+			$base = $this->dir.'/ambiguous-'.$force;
+			mkdir($base);
+			$file = $base.'/payload.bin';
+			if($force === 2) file_put_contents($file, 'payload');
+			$this->writeManifestLines($hash.'.list', array($file), $base, 1, $force);
+			$manifestPath = $this->queuePath().'/'.$hash.'.list';
+			$manifest = file_get_contents($manifestPath);
+			list($status, $output) = $this->runCollector(array('filesystem' => array(
+				'removeDirectory:*' => array('basename' => 'directory',
+					'action' => 'exit', 'at' => 'before'))));
+			$this->assertEquals(0, $status, 'the child stops immediately before private rmdir: '.$output);
+			$outer = glob($this->dir.'/.erasedata-rmdir-*');
+			$this->assertEquals(1, count($outer), 'the exact private shell remains');
+			if(count($outer) !== 1) continue;
+			$private = $force === 2
+				? glob($outer[0].'/directory.force-*/directory')
+				: array($outer[0].'/directory');
+			$this->assertEquals(1, count($private), 'the checked directory is in its private slot');
+			if(count($private) !== 1) continue;
+			$private = $private[0];
+			$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+			$this->assertEquals(1, count($intents), 'the exact v1 intent survives');
+			if(count($intents) !== 1) continue;
+			$intentPath = $intents[0];
+			$record = json_decode(file_get_contents($intentPath), true);
+			$this->assertEquals('captured', $record['phase'], 'both histories start from the same captured phase');
+			$this->assertEquals(basename($outer[0]), $record['reservation'],
+				'the durable reservation names the observed shell');
+			$this->assertTrue(is_string($record['targetDev']) && is_string($record['targetIno']),
+				'the durable record carries the original checked identity');
+			$recorded = array('dev' => $record['targetDev'], 'ino' => $record['targetIno']);
+			$this->assertEquals($recorded, $this->collectorInode($private),
+				'the private directory is the inode bound by the durable intent');
+			$known = array_unique(array($base, $outer[0], $outer[0].'/directory',
+				dirname($private), $private));
+			$observation = function() use ($intentPath, $manifestPath, $known) {
+				$paths = array();
+				foreach($known as $path)
+				{
+					clearstatcache(true, $path);
+					$stat = @lstat($path);
+					if(!is_array($stat)) $paths[$path] = 'absent';
+					else if(is_link($path)) $paths[$path] = 'link:'.readlink($path);
+					else if(is_dir($path))
+					{
+						$names = array_values(array_diff(scandir($path), array('.', '..')));
+						sort($names);
+						$paths[$path] = 'directory:'.implode(',', $names);
+					}
+					else $paths[$path] = 'other';
+				}
+				return(array('intent' => file_get_contents($intentPath),
+					'manifest' => file_get_contents($manifestPath), 'paths' => $paths));
+			};
+			$moved = $this->dir.'/external-private-'.$force;
+			$this->assertTrue(rename($private, $moved), 'another actor moves the checked inode');
+			$this->assertEquals($recorded, $this->collectorInode($moved),
+				'the moved directory keeps the recorded inode');
+			file_put_contents($moved.'/held.bin', 'held');
+			$afterMove = $observation();
+			list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			$this->assertEquals(0, $status, 'moved-directory replay exits: '.$output);
+			$this->assertEquals($manifest, @file_get_contents($manifestPath),
+				'moved-directory replay retains the exact manifest');
+			$this->assertEquals($afterMove['intent'], @file_get_contents($intentPath),
+				'moved-directory replay retains the exact captured intent');
+			$this->assertTrue(is_dir(dirname($private)),
+				'moved-directory replay retains the private capture shell');
+			$this->assertTrue(strpos($output, 'directory-intent-unresolved') !== false,
+				'moved-directory replay reports its refusal');
+			$this->assertEquals('held', @file_get_contents($moved.'/held.bin'),
+				'the moved payload remains untouched');
+			if(!is_file($manifestPath) || !is_file($intentPath)
+				|| !is_dir(dirname($private)))
+				continue;
+			$this->assertTrue(unlink($moved.'/held.bin'), 'external payload can be removed before restoring');
+			$this->assertTrue(rename($moved, $private), 'the same checked inode returns to its private slot');
+			$this->assertEquals($recorded, $this->collectorInode($private),
+				'the restored directory is still the recorded inode');
+			$this->assertTrue(rmdir($private), 'rmdir succeeds on that checked inode');
+			$afterRmdir = $observation();
+			$this->assertEquals($afterMove, $afterRmdir,
+				'the exact v1 intent and every known path match after a move and successful rmdir');
+			list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			$this->assertEquals(0, $status, 'post-rmdir replay exits: '.$output);
+			$this->assertEquals($manifest, @file_get_contents($manifestPath),
+				'post-rmdir replay retains the same ambiguous manifest');
+			$this->assertEquals($afterMove['intent'], @file_get_contents($intentPath),
+				'post-rmdir replay retains the exact captured intent');
+		}
+	}
+
 	public function testCompletedDirectoryIntentReplaysAfterProcessExitBeforeClear()
 	{
 		$this->reset();

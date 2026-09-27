@@ -39,6 +39,14 @@ class SourceRecordingSnoopy extends Snoopy
 
 require_once(__DIR__ . '/RedirectProbeAccountFixture.php');
 
+class SourceAltAccount extends RedirectProbeAccount
+{
+    public function test($url)
+    {
+        return UrlHost::urlIsOneOf($url, array('rutracker.org'), 'https', '/second/');
+    }
+}
+
 function sourceSame($expected, $actual, $message)
 {
     if ($expected !== $actual) {
@@ -94,6 +102,15 @@ try {
         'enabled' => 1,
         'auto' => 0,
     );
+    $manager->accounts['SourceAlt'] = array(
+        'name' => 'SourceAlt',
+        'path' => realpath(__DIR__ . '/RedirectProbeAccountFixture.php'),
+        'object' => 'SourceAltAccount',
+        'login' => 'fixture-user',
+        'password' => 'fixture-password',
+        'enabled' => 1,
+        'auto' => 0,
+    );
     $manager->accounts['mTeam'] = array(
         'name' => 'mTeam',
         'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/mTeam.php'),
@@ -104,6 +121,8 @@ try {
         'auto' => 0,
     );
     sourceSame(true, $manager->store(), 'loginmgr account fixture saved');
+    sourceSame('SourceAlt', $manager->getAccount('https://rutracker.org/second/file'),
+        'the second path selects a different account on the same host');
 
     $session = new privateData('ruTracker');
     $session->cookies = array('loginmgr_marker' => 'session-value');
@@ -135,6 +154,18 @@ try {
     sourceSame(1, substr_count(sourceLog(),
         'cookies: http-refused: source=cookies host=rutracker.org account=RUTracker; use HTTPS URL'),
         'plugin refusal logs its normalized host and known HTTPS account');
+
+    // Both HTTPS accounts resolve to the same persisted-cookie host.
+    // N-S1 permits one HTTP refusal per host for this PHP process.
+    $secondAccount = new SourceRecordingSnoopy();
+    sourceSame(true, $secondAccount->fetchComplex('http://rutracker.org/second/file'),
+        'second account HTTP request completed');
+    sourceSame(false, isset($secondAccount->requests[0]['cookies']['plugin_marker']),
+        'the plugin cookie also stays off the second HTTP request');
+    preg_match_all('/cookies: http-refused: [^\n]*host=rutracker\.org[^\n]*/',
+        sourceLog(), $sharedHostLogs);
+    sourceSame(1, count($sharedHostLogs[0]),
+        'two accounts on one host produce only one plugin-cookie refusal');
 
     $explicitClient = new SourceRecordingSnoopy();
     $logBeforeExplicit = sourceLog();

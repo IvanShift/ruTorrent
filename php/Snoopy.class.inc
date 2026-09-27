@@ -322,7 +322,7 @@ class Snoopy
 	private static function logPluginCookieRefusal($host, $account)
 	{
 		static $logged = array();
-		$key = $host . "\0" . (string) $account;
+		$key = $host;
 		if(isset($logged[$key]))
 			return;
 		$logged[$key] = true;
