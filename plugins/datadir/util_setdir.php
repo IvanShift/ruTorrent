@@ -73,35 +73,34 @@ function rtSetDataDir( $hash, $dest_path, $add_path, $move_files, $fast_resume, 
 		}
 	}
 
-	// Open closed torrent to get d.get_base_path, d.get_base_filename
-	if( $is_ok && $move_files )
-	{
-		if( !$is_open && !rtExec( "d.open", $hash, $dbg ) )
-		{
-			$is_ok = false;
-		}
-	}
-
 	// Ask info from rTorrent
 	if( $is_ok && $move_files )
 	{
-		$req = rtExec(
-			array( 	"d.get_name",
+		$infoCmds = array( 	"d.get_name",
 				"d.get_base_path",
 				"d.get_base_filename",
-				"d.is_multi_file" ),
-			$hash, $dbg );
-		if( !$req )
+				"d.is_multi_file" );
+		if( !$is_open )
+		{
+			// One daemon request opens, reads and closes the initially closed item.
+			// A killed PHP worker cannot interrupt between these commands.
+			array_unshift( $infoCmds, "d.open" );
+			$infoCmds[] = "d.close";
+		}
+		$req = rtExec( $infoCmds, $hash, $dbg );
+		if( !$req || !is_array( $req->val ) || count( $req->val ) !== count( $infoCmds )
+			|| ( !$is_open && (string) $req->val[count( $infoCmds ) - 1] !== '0' ) )
 			$is_ok = false;
 		else {
-			$base_name     = trim( $req->val[0] );
-			$base_path     = trim( $req->val[1] );
-			$base_file     = trim( $req->val[2] );
-			$is_multy_file = ( $req->val[3] != 0 );
+			$offset = $is_open ? 0 : 1;
+			$base_name     = trim( $req->val[$offset] );
+			$base_path     = trim( $req->val[$offset + 1] );
+			$base_file     = trim( $req->val[$offset + 2] );
+			$is_multy_file = ( $req->val[$offset + 3] != 0 );
 			if( $dbg ) rtDbg( __FUNCTION__, "d.get_name          : ".$base_name );
 			if( $dbg ) rtDbg( __FUNCTION__, "d.get_base_path     : ".$base_path );
 			if( $dbg ) rtDbg( __FUNCTION__, "d.get_base_filename : ".$base_file );
-			if( $dbg ) rtDbg( __FUNCTION__, "d.is_multy_file     : ".$req->val[3] );
+			if( $dbg ) rtDbg( __FUNCTION__, "d.is_multy_file     : ".$req->val[$offset + 3] );
 		}
 	}
 
@@ -196,8 +195,6 @@ function rtSetDataDir( $hash, $dest_path, $add_path, $move_files, $fast_resume, 
 				$is_ok = rtExec( array( "d.open", "d.start" ), $hash, $dbg );
 			elseif( $is_open )
 				$is_ok = rtExec( "d.open", $hash, $dbg );
-			else
-				$is_ok = rtExec( array( "d.open", "d.close" ), $hash, $dbg );
 		}
 	}
 

@@ -962,7 +962,8 @@ class SCGITransportTest extends TestCase
 				throw new Exception('could not create copied rpc2 tree');
 			foreach(array('rpc2.php', 'php/xmlrpc_path.php', 'php/xmlrpc_proxy.php',
 				'php/xmlrpc_proxy_policy.php', 'php/xmlrpc_proxy_native.php',
-				'php/scgitransport.php') as $relative)
+				'php/scgitransport.php', 'php/urlhost.php',
+				'php/utility/requests.php') as $relative)
 			{
 				$source = $this->sourceRoot.'/'.$relative;
 				$target = $tree.'/'.$relative;

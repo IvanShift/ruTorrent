@@ -87,6 +87,64 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			}
 	}
 
+	public function testRpc2RejectsCrossOriginPlainFormBeforeForwarding()
+	{
+		// A text/plain HTML form emits name=value. Its separator can be the
+		// required equals sign in the XML declaration, yielding valid XMLRPC.
+		$formName = '<?xml version';
+		$formValue = '"1.0"?><methodCall><methodName>d.stop</methodName>'
+			. '<params><param><value><string>' . str_repeat('A', 40)
+			. '</string></value></param></params></methodCall>';
+		$formBody = $formName . '=' . $formValue . "\r\n";
+		$result = $this->runEntrypoint('rpc2', $formBody, true,
+			'success', 'shipped', false, '0.16.24', null, array(
+			'Content-Type' => 'text/plain',
+			'Origin' => 'http://foreign.test',
+			'Sec-Fetch-Site' => 'cross-site',
+		));
+		$this->assertHttp($result, '415 Unsupported Media Type', 'text/xml;charset=UTF-8');
+		$this->assertEquals(0, $result['state']['sends'],
+			'a browser form cannot forward a mutating XMLRPC call');
+		$this->assertTrue(strpos($result['rpc2logs'], 'XML Content-Type required') !== false,
+			'the media-type refusal is visible');
+		$headerless = $this->runEntrypoint('rpc2', $formBody, true,
+			'success', 'shipped', false, '0.16.24', null, array('Content-Type' => 'text/plain'));
+		$this->assertTrue(strpos($headerless['status'], '415 Unsupported Media Type') !== false,
+			'a browser without Origin or Fetch Metadata still cannot submit plain XML');
+		$this->assertEquals(0, $headerless['state']['sends'],
+			'a headerless browser form never reaches the daemon');
+	}
+
+	public function testRpc2RejectsForeignXmlOriginAndKeepsExternalClients()
+	{
+		$xml = $this->allowedXml();
+		$foreign = $this->runEntrypoint('rpc2', $xml, true,
+			'success', 'shipped', false, '0.16.24', null, array(
+			'Origin' => 'http://foreign.test',
+			'Sec-Fetch-Site' => 'cross-site',
+		));
+		$this->assertTrue(strpos($foreign['status'], '403 Forbidden') !== false,
+			'foreign XML origin is refused');
+		$this->assertEquals(0, $foreign['state']['sends'],
+			'foreign XML never reaches the daemon');
+		$opaque = $this->runEntrypoint('rpc2', $xml, true,
+			'success', 'shipped', false, '0.16.24', null, array('Origin' => 'null'));
+		$this->assertTrue(strpos($opaque['status'], '403 Forbidden') !== false,
+			'opaque browser origin is refused');
+		$this->assertEquals(0, $opaque['state']['sends'],
+			'opaque XML never reaches the daemon');
+		$same = $this->runEntrypoint('rpc2', $xml, true,
+			'success', 'shipped', false, '0.16.24', null, array(
+			'Origin' => 'http://127.0.0.1',
+			'Sec-Fetch-Site' => 'same-origin',
+		));
+		$this->assertTrue(strpos($same['status'], '200 OK') !== false && $same['state']['sends'] === 1,
+			'same-origin XML reaches the daemon');
+		$raw = $this->runEntrypoint('rpc2', $xml, true, 'success', 'shipped', false, '0.16.24');
+		$this->assertTrue(strpos($raw['status'], '200 OK') !== false && $raw['state']['sends'] === 1,
+			'headerless external XMLRPC client remains compatible');
+	}
+
 	public function testD4Rpc2RejectsUnreadableVersionBeforeForwarding()
 	{
 		$result = $this->runEntrypoint('rpc2', $this->allowedXml(), true,
@@ -1079,7 +1137,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '<params></params></methodCall>';
 	}
 
-	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null)
+	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = array())
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
 		$process = null;
@@ -1124,7 +1182,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			fclose($pipes[0]);
 			$this->waitForServer($port, $process, $tree . '/server.err');
 			$response = $this->rawPost($port, ($door === 'action')
-				? '/plugins/httprpc/action.php' : '/rpc2.php', ($body === 'unreadable') ? '' : $body);
+				? '/plugins/httprpc/action.php' : '/rpc2.php', ($body === 'unreadable') ? '' : $body, $requestHeaders);
 			$decoded = json_decode(file_get_contents($state), true);
 			if(!is_array($decoded))
 				throw new Exception('copied entrypoint did not write readable state');
@@ -1151,6 +1209,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'plugins/httprpc/action.php',
 			'plugins/httprpc/settingspolicy.php',
 			'php/xmlrpc_path.php',
+			'php/urlhost.php',
+			'php/utility/requests.php',
 			'php/xmlrpc_proxy.php',
 			'php/xmlrpc_proxy_native.php',
 			'php/xmlrpc_proxy_policy.php',
@@ -1432,13 +1492,16 @@ PHP
 		throw new Exception('copied PHP entrypoint server did not start');
 	}
 
-	private function rawPost($port, $path, $body)
+	private function rawPost($port, $path, $body, $headers = array())
 	{
 		$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 2);
 		if($socket === false)
 			throw new Exception('could not connect raw HTTP client: ' . $error);
-		$request = "POST " . $path . " HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-			. "Content-Type: text/xml\r\nContent-Length: " . strlen($body)
+		$request = "POST " . $path . " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+		$headers = array_merge(array('Content-Type' => 'text/xml'), $headers);
+		foreach($headers as $name => $value)
+			$request .= $name . ': ' . $value . "\r\n";
+		$request .= 'Content-Length: ' . strlen($body)
 			. "\r\nConnection: close\r\n\r\n" . $body;
 		if(fwrite($socket, $request) === false)
 			throw new Exception('could not write raw HTTP request');

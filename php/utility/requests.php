@@ -96,11 +96,16 @@ class Requests
 						if($sourceHost === UrlHost::normalize($allowedHost))
 							return;
 			}
-			// A raw httprpc client has no browser Fetch Metadata or Origin/Referer.
-			// Browser actions, including opaque origins, must never use this route exception.
+			// Raw XMLRPC clients at either server-owned door may omit browser headers.
+			// Browser actions, including opaque origins, never use this exception.
+			$rpc2Script = realpath(dirname(__DIR__, 2).'/rpc2.php');
 			if($source === null && !isset($_SERVER['HTTP_SEC_FETCH_SITE']) &&
-				isset($_SERVER['SCRIPT_NAME']) &&
-				substr($_SERVER['SCRIPT_NAME'], -strlen('/plugins/httprpc/action.php')) === '/plugins/httprpc/action.php')
+				((isset($_SERVER['SCRIPT_NAME']) &&
+					substr($_SERVER['SCRIPT_NAME'], -strlen('/plugins/httprpc/action.php')) === '/plugins/httprpc/action.php') ||
+					($rpc2Script !== false &&
+						(($_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] ?? null) === 'on') &&
+						isset($_SERVER['SCRIPT_FILENAME']) &&
+						realpath($_SERVER['SCRIPT_FILENAME']) === $rpc2Script)))
 				return;
 			error_log('csrf: refused POST: untrusted or missing origin');
 			header('HTTP/1.0 403 Forbidden', true, 403);

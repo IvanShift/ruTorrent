@@ -99,6 +99,40 @@ class RequestsCSRFTest extends TestCase
             'other browser action routes still require an origin');
     }
 
+    public function testHeaderlessRpc2ClientUsesOnlyServerOwnedEndpointMarker()
+    {
+        $this->assertEquals('ALLOW', $this->probe(array(
+            'SCRIPT_NAME' => '/RPC2',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../rpc2.php',
+            'RUTORRENT_XMLRPC_ENDPOINT' => 'on',
+        )), 'headerless external XMLRPC client remains compatible');
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'SCRIPT_NAME' => '/RPC2',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../rpc2.php',
+            'RUTORRENT_XMLRPC_ENDPOINT' => 'on',
+            'HTTP_ORIGIN' => 'http://foreign.test',
+        )), 'foreign XMLRPC origin cannot use the raw-client exception');
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'SCRIPT_NAME' => '/RPC2',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../rpc2.php',
+            'RUTORRENT_XMLRPC_ENDPOINT' => 'on',
+            'HTTP_SEC_FETCH_SITE' => 'cross-site',
+        )), 'browser Fetch Metadata closes the raw-client exception');
+    }
+
+    public function testRpc2MarkerOnAnotherPhpScriptCannotGrantRawClientException()
+    {
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'SCRIPT_NAME' => '/plugins/loginmgr/action.php',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../plugins/loginmgr/action.php',
+            'RUTORRENT_XMLRPC_ENDPOINT' => 'on',
+        )), 'a globally configured marker does not exempt another PHP action');
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'SCRIPT_NAME' => '/RPC2',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../rpc2.php',
+        )), 'script identity alone cannot grant the raw-client exception');
+    }
+
     public function testBrowserFetchMetadataDoesNotEnterRawRpcException()
     {
         $this->assertEquals('Forbidden', $this->probe(array(

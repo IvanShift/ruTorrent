@@ -11,6 +11,7 @@ class DataDirTestState
     public static $calls = array();
     public static $logs = array();
     public static $reloads = 0;
+    public static $crashAtFiles = false;
     public static $source;
 
     public static function reset($active = true, $open = true, $label = '', $customs = array())
@@ -22,6 +23,7 @@ class DataDirTestState
         self::$calls = array();
         self::$logs = array();
         self::$reloads = 0;
+        self::$crashAtFiles = false;
         rXMLRPCRequest::reset();
         $keys = RuTrackerAtomicOwnership::ownershipKeys();
         $commands = array('d.get_custom1');
@@ -65,10 +67,20 @@ function rtExec($commands, $hash, $debug = false)
     if ($commands === array('d.get_name', 'd.get_base_path', 'd.get_base_filename',
         'd.is_multi_file'))
         return (object) array('val' => array('file', '/data/downloads/file', 'file', 0));
+    if ($commands === array('d.open', 'd.get_name', 'd.get_base_path',
+        'd.get_base_filename', 'd.is_multi_file', 'd.close')) {
+        DataDirTestState::$open = true;
+        $values = array(0, 'file', '/data/downloads/file', 'file', 0, 0);
+        DataDirTestState::$open = false;
+        return (object) array('val' => $values);
+    }
     if ($commands === array('d.get_name', 'd.get_base_path', 'd.get_base_filename',
         'd.is_multi_file', 'd.get_complete'))
         return (object) array('val' => array('file', '/data/downloads/file', 'file', 0, 1));
-    if ($commands === 'f.multicall') return (object) array('val' => array(array('file')));
+    if ($commands === 'f.multicall') {
+        if (DataDirTestState::$crashAtFiles) throw new RuntimeException('injected worker crash');
+        return (object) array('val' => array(array('file')));
+    }
     if ($commands === array('get_session', 'd.get_tied_to_file', 'd.get_custom1',
         'd.get_connection_seed', 'd.get_throttle_name'))
         return (object) array('val' => array('', DataDirTestState::$source,
@@ -165,6 +177,28 @@ $suite->test('ordinary active request stays in place with no erase or reload', f
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'), 'no destructive branch');
     strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs), 'fast resume disabled') !== false,
         'legacy fast request receives a visible fallback reason');
+});
+
+$suite->test('closed no-move item does not reopen after changing directory', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    strictAssertSame(true, rtSetDataDir($hash, '/data/downloads/new-location', false, false, false),
+        'closed directory setter succeeds');
+    strictAssertSame(false, DataDirTestState::$open, 'closed state is preserved');
+    strictAssertTrue(!in_array('d.open', DataDirTestState::$calls, true)
+        && !in_array(array('d.open', 'd.close'), DataDirTestState::$calls, true),
+        'worker must not reopen a closed item after set_directory');
+});
+
+$suite->test('closed item stays closed when PHP dies before file projection', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    DataDirTestState::$crashAtFiles = true;
+    try {
+        rtSetDataDir($hash, '/data/downloads', true, true, false);
+        throw new RuntimeException('expected injected crash');
+    } catch (RuntimeException $e) {
+        strictAssertSame('injected worker crash', $e->getMessage(), 'injection reached file projection');
+    }
+    strictAssertSame(false, DataDirTestState::$open, 'closed item must remain closed after crash');
 });
 
 $status = $suite->run();

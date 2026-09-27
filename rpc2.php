@@ -133,6 +133,22 @@ if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST')
 	exit;
 }
 
+// Browser forms can encode valid XML using text/plain name=value. Requiring
+// an XML media type forces cross-origin browser requests through CORS preflight.
+$contentType = isset($_SERVER['CONTENT_TYPE'])
+	? strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'], 2)[0])) : '';
+if(!in_array($contentType, array('text/xml', 'application/xml'), true))
+{
+	rpc2_log('refused POST: XML Content-Type required', true);
+	rpc2_fault('415 Unsupported Media Type', 'XML Content-Type required.');
+}
+
+require_once(dirname(__FILE__).'/php/utility/requests.php');
+// This dedicated door preserves headerless raw XMLRPC clients, while browser
+// requests must pass the same Origin/Referer check as other mutation doors.
+$enableCSRFCheck = true;
+Requests::makeCSRFCheck();
+
 // A caller may name the directory a download is written into, so the endpoint
 // has to know what is out of bounds before it answers anything. $topDirectory
 // is ruTorrent's own answer and correctDirectory() already holds the panel to
