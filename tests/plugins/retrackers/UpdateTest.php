@@ -903,6 +903,9 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		if ($expression === 'method.list_keys=rr.receipts.v1') {
 			return(array_keys($this->modelLedger));
 		}
+		if (strncmp($expression, 'value=', 6) === 0) {
+			return((int)substr($expression, 6));
+		}
 		if (strncmp($expression, 'cat=', 4) === 0) {
 			$parts = $this->splitArguments(substr($expression, 4));
 			$value = '';
@@ -916,12 +919,14 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 			'd.state=' => 'state',
 			'd.custom=retrackers-recovery' => 'recovery_marker',
 			'd.custom=retrackers-recovery-ack' => 'recovery_ack',
+			'd.custom=chk-meta-old' => 'chk_meta_old',
 			'd.custom3=' => 'custom3',
 		);
 		if (isset($getters[$expression], $this->modelDownloads[$target])) {
 			$key = $getters[$expression];
-			return(isset($this->modelDownloads[$target][$key]) ?
-				$this->modelDownloads[$target][$key] : '');
+			$value = isset($this->modelDownloads[$target][$key]) ?
+				$this->modelDownloads[$target][$key] : '';
+			return($expression === 'd.state=' ? (int)$value : $value);
 		}
 		return(null);
 	}
@@ -959,6 +964,10 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 				$this->expressionValue($this->unquote($parts[0]), $target) ===
 				$this->expressionValue($this->unquote($parts[1]), $target));
 		}
+		if ($expression === 'd.custom=chk-meta-old') {
+			$value = $this->expressionValue($expression, $target);
+			return(is_string($value) && $value !== '' && $value !== '0');
+		}
 		return(false);
 	}
 
@@ -984,6 +993,16 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 
 	private function executeCommand($command, $target)
 	{
+		if (strncmp($command, '$branch=', 8) === 0) {
+			$parts = $this->splitArguments(substr($command, 8));
+			if (count($parts) === 3 &&
+				strncmp($this->unquote($parts[0]), '$execute.throw.bg=', 18) === 0 &&
+				$this->unquote($parts[1]) === 'cat=' &&
+				$this->unquote($parts[2]) === 'cat=') {
+				$this->executeCommand($this->unquote($parts[0]), $target);
+			}
+			return;
+		}
 		if (strncmp($command, '$method.set_key=', 16) === 0) {
 			$parts = $this->splitArguments(substr($command, 16));
 			if (count($parts) >= 2) {
@@ -1157,6 +1176,17 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		}
 		$failure = null;
 		return($result);
+	}
+
+	public function checkerServiceMarker($hash, &$failure = null)
+	{
+		if (!isset($this->modelDownloads[$hash])) {
+			$failure = 'target-absent';
+			return(false);
+		}
+		$failure = null;
+		return(isset($this->modelDownloads[$hash]['chk_meta_old']) ?
+			$this->modelDownloads[$hash]['chk_meta_old'] : '');
 	}
 
 	public function sourceScalarSnapshot($hash, &$failure = null)
@@ -4677,11 +4707,11 @@ PHP;
 		}
 		$action = retrackersBuildInsertAction(
 			'/opt/rutorrent/plugins/retrackers/run.sh', '/usr/bin/php', 'tester');
-		$expected = base64_decode('YnJhbmNoPSJkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5IiwiYnJhbmNoPVwiZXF1YWw9ZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeS1hY2ssZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVwiLFwiY2F0PVwiLFwiYnJhbmNoPVxcXCJlcXVhbD1kLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsJGQuY3VzdG9tPXJldHJhY2tlcnMtcmVjb3ZlcnlcXFxcXFxcIixcXFxcXFxcImQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjaywkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiXFxcIixcXFwiY2F0PVxcXCJcIiIsImJyYW5jaD1cIiRlcXVhbD1kLmN1c3RvbTM9LGNhdD0xXCIsXCJkLmN1c3RvbTMuc2V0PVwiLFwiYnJhbmNoPVxcXCJtZXRob2QuaGFzX2tleT1yci5yZWNlaXB0cy52MSxtYToxXFxcIixcXFwiY2F0PVxcXCIsXFxcImJyYW5jaD1cXFxcXFxcIm1ldGhvZC5oYXNfa2V5PXJyLnJlY2VpcHRzLnYxLHRhOjFcXFxcXFxcIixcXFxcXFxcImNhdD1cXFxcXFxcXFxcXFxcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLGRxOjEsMVxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9ZGk6LCRkLmxvY2FsX2lkPVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLDFcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXCIsXFxcXFxcXCJjYXQ9XFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9d2g6LCRkLmxvY2FsX2lkPVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLDFcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXCIkbWV0aG9kLnNldF9rZXk9cnIucmVjZWlwdHMudjEsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkY2F0PXdwOiwkZC5sb2NhbF9pZD1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwxXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFwiJGQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9djE6b3JpZ2luYWw6LCRkLnN0YXRlPSw6LCRkLmxvY2FsX2lkPSw6LFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCI5YmJhNWM1M2EwNTQ1ZTBjODAxODRiOTQ2MTUzYzlmNTgzODdlM2JkMWQ0ZWUzNTc0MGYyOWFjMmU3MThiMDE5XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFwiJGQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD12MTpvcmlnaW5hbDosJGQuc3RhdGU9LDosJGQubG9jYWxfaWQ9LDosXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIjliYmE1YzUzYTA1NDVlMGM4MDE4NGI5NDYxNTNjOWY1ODM4N2UzYmQxZDRlZTM1NzQwZjI5YWMyZTcxOGIwMTlcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCJcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXCIkZXhlY3V0ZS50aHJvdy5iZz17c2gsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIvb3B0L3J1dG9ycmVudC9wbHVnaW5zL3JldHJhY2tlcnMvcnVuLnNoXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIvdXNyL2Jpbi9waHBcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwkZC5oYXNoPSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcInRlc3RlclxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLCRkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5fVxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9d2g6LCRkLmxvY2FsX2lkPVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFwiXFxcIlwiIg==', true);
+		$expected = base64_decode('YnJhbmNoPSJkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5IiwiYnJhbmNoPVwiZXF1YWw9ZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeS1hY2ssZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVwiLFwiY2F0PVwiLFwiYnJhbmNoPVxcXCJlcXVhbD1kLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsJGQuY3VzdG9tPXJldHJhY2tlcnMtcmVjb3ZlcnlcXFxcXFxcIixcXFxcXFxcImQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjaywkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiXFxcIixcXFwiY2F0PVxcXCJcIiIsImJyYW5jaD1cIiRlcXVhbD1kLmN1c3RvbTM9LGNhdD0xXCIsXCJkLmN1c3RvbTMuc2V0PVwiLFwiYnJhbmNoPVxcXCJkLmN1c3RvbT1jaGstbWV0YS1vbGRcXFwiLFxcXCJjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsbWE6MVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiLFxcXFxcXFwiYnJhbmNoPVxcXFxcXFxcXFxcXFxcXCJtZXRob2QuaGFzX2tleT1yci5yZWNlaXB0cy52MSx0YToxXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFwiY2F0PVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLGRxOjEsMVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkY2F0PWRpOiwkZC5sb2NhbF9pZD1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLDFcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcImNhdD1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD13aDosJGQubG9jYWxfaWQ9XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwxXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkbWV0aG9kLnNldF9rZXk9cnIucmVjZWlwdHMudjEsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9d3A6LCRkLmxvY2FsX2lkPVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsMVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD12MTpvcmlnaW5hbDosJGQuc3RhdGU9LDosJGQubG9jYWxfaWQ9LDosXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCI5YmJhNWM1M2EwNTQ1ZTBjODAxODRiOTQ2MTUzYzlmNTgzODdlM2JkMWQ0ZWUzNTc0MGYyOWFjMmU3MThiMDE5XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCJcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkZC5jdXN0b20uc2V0PXJldHJhY2tlcnMtcmVjb3ZlcnksXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9djE6b3JpZ2luYWw6LCRkLnN0YXRlPSw6LCRkLmxvY2FsX2lkPSw6LFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiOWJiYTVjNTNhMDU0NWUwYzgwMTg0Yjk0NjE1M2M5ZjU4Mzg3ZTNiZDFkNGVlMzU3NDBmMjlhYzJlNzE4YjAxOVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGV4ZWN1dGUudGhyb3cuYmc9e3NoLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIvb3B0L3J1dG9ycmVudC9wbHVnaW5zL3JldHJhY2tlcnMvcnVuLnNoXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiL3Vzci9iaW4vcGhwXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwkZC5oYXNoPSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwidGVzdGVyXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeX1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD13aDosJGQubG9jYWxfaWQ9XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFwiXFxcIlwiIg==', true);
 		$this->assertTrue($action === $expected,
 			'the functional builder returns the independently frozen exact action bytes');
 		$this->assertTrue(hash('sha256', $action) ===
-			'ed597fcf31a63256e78346d442c4ca28bbd854a5ab34a00f69beb3131a8db706',
+			'ee377a980f354e313f803f0a1cf33fc94a06ea8e5875fb53028002f5b9d0d653',
 			'the functional identity retains its frozen hash');
 	}
 
@@ -4721,6 +4751,9 @@ PHP;
 		}
 		$action = retrackersBuildInsertAction(
 			'/opt/rutorrent/plugins/retrackers/run.sh', '/usr/bin/php', 'tester');
+		$this->assertTrue(strpos($action, 'd.custom=chk-meta-old') !== false &&
+			strpos($action, 'd.custom1=,cat=.chk-meta') === false,
+			'the insert path uses the checker marker without capturing a user label');
 		// The marker/ack head this action shares with the other two variants also
 		// mentions the ack key, so ordering is measured inside the ordinary path
 		// alone -- it begins at the hook-active receipt, the first thing written.
@@ -4769,13 +4802,13 @@ PHP;
 			}
 			return($value);
 		};
-		$this->assertTrue(strpos($action, $escape($script, 6)) !== false,
+		$this->assertTrue(strpos($action, $escape($script, 7)) !== false,
 			'the script path is carried escaped through every nesting layer');
-		$this->assertTrue(strpos($action, $escape($script, 5)) === false,
+		$this->assertTrue(strpos($action, $escape($script, 6)) === false,
 			'the script path is not one layer short, which is what losing its own quote looks like');
-		$this->assertTrue(strpos($action, $escape($user, 6)) !== false,
+		$this->assertTrue(strpos($action, $escape($user, 7)) !== false,
 			'the canonical user is carried escaped through every nesting layer');
-		$this->assertTrue(strpos($action, $escape($user, 5)) === false,
+		$this->assertTrue(strpos($action, $escape($user, 6)) === false,
 			'the canonical user is not one layer short');
 		// The launch is bracketed by two literals the builder never quotes. If an
 		// awkward value had escaped its argument and added structure of its own,
@@ -6823,8 +6856,43 @@ PHP;
 		$this->assertTrue($adapter->downloadRowReads === 1 &&
 			$adapter->callbackHistory[2]->params()[0] === $hash,
 			'replay uses one fresh direct scan and targets its paired hash');
+		$this->assertTrue(strpos($adapter->callbackHistory[2]->params()[1], 'value=0') !== false,
+			'deferred replay compares numeric state with numeric value');
 		$this->assertTrue(strpos($adapter->callbackHistory[2]->params()[1], 'd.state=') !== false,
 			'replay CASes the sampled state carried by the exact handoff marker');
+	}
+
+	public function testDeferredReplayDistinguishesCheckerMarkerFromUserLabel()
+	{
+		$this->installRtorrentQuoteDouble();
+		foreach (array('marker', 'label') as $kind) {
+			$fixture = $this->historicalStateFixture('BOOTSTRAP');
+			$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+			$localId = str_repeat('A', 40);
+			$hash = str_repeat('B', 40);
+			$adapter->ledgerKeys = array('dq:1', 'di:' . $localId);
+			$adapter->downloadRowsQueue = array(array(array($hash, $localId)));
+			$adapter->sourceScalarQueue = array(array('family' => 2, 'values' => array(
+				'local_id' => $localId, 'state' => '0', 'recovery_marker' => '',
+				'recovery_ack' => '', 'custom3' => '',
+				'custom1' => $kind === 'label' ? '.chk-meta' : '',
+				'chk_meta_old' => $kind === 'marker' ? str_repeat('C', 40) : '',
+			)));
+			$failure = null;
+			$result = RetrackersLifecycleCoordinator::init(
+				'alice', '/plugin/run.sh', '/usr/bin/php', $failure, $adapter);
+			$this->assertTrue($result === true && $failure === null,
+				'the ' . $kind . ' row completes initialization');
+			$this->assertEquals(array(
+				'bootstrap-acquire', 'deferred-dirty-clear',
+				$kind === 'marker' ? 'deferred-service-skip' : 'deferred-replay',
+				'init-finalization',
+			), array_map(function ($callback) { return($callback->name()); },
+				$adapter->callbackHistory),
+				'the checker marker is skipped while a user label reaches deferred replay');
+			$this->assertTrue(!in_array('di:' . $localId, $adapter->ledgerKeys, true),
+				'the ' . $kind . ' obligation is removed from the ledger');
+		}
 	}
 
 	public function testDeferredReplayDeletesOnlyAKnownStaleDiAndUnknownScanPreservesIt()
@@ -11643,6 +11711,7 @@ PHP;
 			'testCursorCountersAcceptExactValueAndMemberMaximaThenRejectNext',
 			'testDecodedTextAcceptsExactMaxAndRejectsMaxPlusOne',
 			'testDeferredReplayClearsBeforeScanAndLaunchesTheExactFreshLocalId',
+			'testDeferredReplayDistinguishesCheckerMarkerFromUserLabel',
 			'testDeferredReplayClearsDqBeforeDirectScanAndPreservesUnknownOrStaleDi',
 			'testDeferredReplayDeletesOnlyAKnownStaleDiAndUnknownScanPreservesIt',
 			'testDeferredReplayLateDqAbaMakesFinalReleaseANoOp',

@@ -150,8 +150,12 @@ function retrackersBuildInsertAction($script, $php, $user)
 		$q($grammar['defer']) . ',' . $q($ordinary);
 	$ownerOrNoop = 'branch=' . $q('method.has_key=rr.receipts.v1,ma:1') . ',' .
 		$q('cat=') . ',' . $q($deferOrOrdinary);
+	// The checker sets chk-meta-old before inserted_new runs. Guard both the
+	// ordinary worker and ta:1 deferral; a user may own the same UI label.
+	$serviceGuard = 'branch=' . $q('d.custom=chk-meta-old') . ',' .
+		$q('cat=') . ',' . $q($ownerOrNoop);
 	$legacyOrOrdinary = 'branch=' . $q('$equal=d.custom3=,cat=1') . ',' .
-		$q('d.custom3.set=') . ',' . $q($ownerOrNoop);
+		$q('d.custom3.set=') . ',' . $q($serviceGuard);
 	return('branch=' . $q('d.custom=retrackers-recovery') . ',' .
 		$q($grammar['idempotent']) . ',' . $q($legacyOrOrdinary));
 }
@@ -250,6 +254,11 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 	private static function downloadEquals($getter, $value)
 	{
 		return('equal=' . self::q($getter) . ',' . self::q('cat=' . self::q($value)));
+	}
+
+	private static function downloadIntegerEquals($getter, $value)
+	{
+		return('equal=' . self::q($getter) . ',' . self::q('value=' . $value));
 	}
 
 	private static function all(array $conditions)
@@ -473,6 +482,20 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 		), self::state(null, $epoch, $token, $mode, $userHash, array(), array('di:' . $localId))));
 	}
 
+	public static function skipDeferredService($epoch, $token, $mode, $userHash,
+		$hash, $localId)
+	{
+		$conditions = self::ownerConditions($epoch, $token, $mode, $userHash);
+		$conditions[] = self::keyAbsent('dq:1');
+		$conditions[] = self::keyPresent('di:' . $localId);
+		$conditions[] = self::downloadEquals('d.local_id=', $localId);
+		$conditions[] = 'd.custom=chk-meta-old';
+		return(self::callback('deferred-service-skip', $hash, $conditions, array(
+			'$method.set_key=rr.receipts.v1,di:' . $localId,
+		), self::state(null, $epoch, $token, $mode, $userHash,
+			array(), array('di:' . $localId))));
+	}
+
 	public static function replayDeferred($epoch, $token, $mode, $userHash, $hash,
 		$localId, $state, $handoff, $script, $php, $user)
 	{
@@ -480,19 +503,25 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 		$conditions[] = self::keyAbsent('dq:1');
 		$conditions[] = self::keyPresent('di:' . $localId);
 		$conditions[] = self::downloadEquals('d.local_id=', $localId);
-		$conditions[] = self::downloadEquals('d.state=', $state);
+		$conditions[] = self::downloadIntegerEquals('d.state=', $state);
 		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery', '');
 		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery-ack', '');
+		$conditions[] = self::downloadEquals('d.custom=chk-meta-old', '');
 		$conditions[] = 'not=(equal,' . self::q('d.custom3=') . ',' .
 			self::q('cat=' . self::q('1')) . ')';
+		$launch = '$execute.throw.bg={sh,' . self::q($script) . ',' . self::q($php) .
+			',$d.hash=,' . self::q($user) . ',$d.custom=retrackers-recovery}';
+		// execute.throw.bg returns numeric 0 on success. The outer cat callback
+		// needs an empty value so its exact ACQUIRED sentinel is preserved.
+		$quietLaunch = '$branch=' . self::q($launch) . ',' .
+			self::q('cat=') . ',' . self::q('cat=');
 		return(self::callback('deferred-replay', $hash, $conditions, array(
 			'$method.set_key=rr.receipts.v1,wh:' . $localId . ',1',
 			'$method.set_key=rr.receipts.v1,wp:' . $localId . ',1',
 			'$d.custom.set=retrackers-recovery-ack,' . self::q($handoff),
 			'$d.custom.set=retrackers-recovery,' . self::q($handoff),
 			'$method.set_key=rr.receipts.v1,di:' . $localId,
-			'$execute.throw.bg={sh,' . self::q($script) . ',' . self::q($php) . ',$d.hash=,' .
-				self::q($user) . ',$d.custom=retrackers-recovery}',
+			$quietLaunch,
 			'$method.set_key=rr.receipts.v1,wh:' . $localId,
 		), self::state(null, $epoch, $token, $mode, $userHash,
 			array(), array('wh:' . $localId, 'di:' . $localId))));
@@ -7735,6 +7764,23 @@ class RetrackersDirectRpcAdapter
 
 class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 {
+	public function checkerServiceMarker($hash, &$failure = null)
+	{
+		if (!is_string($hash) || preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1) {
+			$failure = 'invalid-request';
+			return(false);
+		}
+		$payload = retrackersBuildDirectRequest('d.custom', array($hash, 'chk-meta-old'));
+		$decoded = $this->send($payload, retrackersRestrictedPlanDirectScalar('string'), $failure);
+		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
+			!isset($decoded['value']) || !is_string($decoded['value'])) {
+			$failure = 'hook-deferred-replay-pending';
+			return(false);
+		}
+		$failure = null;
+		return($decoded['value']);
+	}
+
 	private function duplicateLedgerFault($family, $fault)
 	{
 		if (!is_array($fault) || count($fault) !== 3 ||
@@ -8965,6 +9011,21 @@ class RetrackersLifecycleCoordinator
 				$values['custom3'] === '1') {
 				$failure = 'hook-deferred-replay-pending';
 				return(false);
+			}
+			$serviceMarker = $adapter->checkerServiceMarker($hash, $failure);
+			if (!is_string($serviceMarker)) {
+				$failure = 'hook-deferred-replay-pending';
+				return(false);
+			}
+			if ($serviceMarker !== '') {
+				$skip = RetrackersLifecycleCallbacks::skipDeferredService(
+					$epoch, $owner['token'], 'i', $owner['user_hash'], $hash, $localId);
+				$decision = self::executeAndReadback($adapter, $skip, $canonicalUser,
+					$functionalAction, 'hook-deferred-replay-pending', $failure);
+				if ($decision === false) {
+					return(false);
+				}
+				continue;
 			}
 			$handoff = 'v1:original:' . $values['state'] . ':' . $localId . ':' .
 				$owner['user_hash'];

@@ -16694,9 +16694,8 @@ class RemoveWithDataTest extends TestCase
 	// failure there left behind exactly the physical object the pass refuses to
 	// resolve: an unjournaled staging candidate, which is retained
 	// conservatively and for ever until a human recovers its binding. No such
-	// failure has been observed in production; the gap is closed by
-	// construction, and this reaches it deterministically through the one bound
-	// the durable state really enforces -- a journal already holding
+	// failure has been observed in production. This case reaches it through the
+	// one bound the durable state really enforces -- a journal already holding
 	// ERASEDATA_DRAIN_MAX_JOURNAL records cannot accept one more.
 	public function testAFailedFinalJournalWriteReleasesTheStagingItWouldOrphan()
 	{
@@ -16759,6 +16758,114 @@ class RemoveWithDataTest extends TestCase
 			&& count($restored['journal']) === ERASEDATA_DRAIN_MAX_JOURNAL
 			&& !isset($restored['journal'][$generation]),
 			'the durable journal is exactly what it was before the failed write');
+	}
+
+	public function testARealFinalJournalWriteFailureReleasesUnboundStaging()
+	{
+		if(!function_exists('posix_setrlimit') || !function_exists('posix_getrlimit')
+			|| !function_exists('pcntl_signal')
+			|| !function_exists('pcntl_signal_dispatch')
+			|| !function_exists('pcntl_signal_get_handler')
+			|| !defined('POSIX_RLIMIT_FSIZE')
+			|| !defined('POSIX_RLIMIT_INFINITY') || !defined('SIGXFSZ'))
+		{
+			$this->assertTrue(true, 'skipped: process file-size limits are unavailable');
+			return;
+		}
+		$this->reset();
+		$queue = $this->queuePath();
+		$base = $this->dir.'/real-io-rollback-base';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$generation = '0000000000001000';
+		$this->assertTrue(erasedataQueueRequest($queue, $hash, 2, $generation),
+			'the member has a durable pending obligation');
+		$marker = erasedataPendingMarkerPath($queue, $hash, $generation);
+		$markerBytes = file_get_contents($marker);
+		$this->armQueue($queue, $generation, array(), 'erase-started', 2,
+			User::getUser());
+		$statePath = erasedataDrainStatePath($queue);
+		$stateBytes = file_get_contents($statePath);
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->probe(true, false, array($hash));
+		$this->eraseOk();
+		$limits = posix_getrlimit();
+		$soft = $limits['soft filesize'] === 'unlimited'
+			? POSIX_RLIMIT_INFINITY : $limits['soft filesize'];
+		$hard = $limits['hard filesize'] === 'unlimited'
+			? POSIX_RLIMIT_INFINITY : $limits['hard filesize'];
+		$priorSignal = pcntl_signal_get_handler(SIGXFSZ);
+		$sizeFaults = 0;
+		$this->assertTrue(pcntl_signal(SIGXFSZ, function() use (&$sizeFaults) {
+			$sizeFaults++;
+		}), 'a failed write cannot terminate the test process');
+		// The third descriptor recheck runs after staging. Refusing it keeps
+		// $durable false, so the final state write is the pass's only journal write.
+		$filesystem = new class($base, $hard) extends ErasedataFilesystemOps {
+			private $base;
+			private $hard;
+			public $calls = 0;
+			public $limitApplied = false;
+			public function __construct($base, $hard)
+			{
+				$this->base = $base;
+				$this->hard = $hard;
+			}
+			public function targetIdentity($path)
+			{
+				if($path === $this->base && ++$this->calls === 3)
+				{
+					$this->limitApplied = posix_setrlimit(POSIX_RLIMIT_FSIZE,
+						0, $this->hard);
+					return(false);
+				}
+				return(parent::targetIdentity($path));
+			}
+		};
+		$notes = array();
+		$outcome = null;
+		try
+		{
+			$outcome = erasedataDrainGenerationPass($queue, User::getUser(),
+				$generation, array('hashes' => array($hash), 'force' => 2),
+				$filesystem, $notes);
+		}
+		finally
+		{
+			posix_setrlimit(POSIX_RLIMIT_FSIZE, $soft, $hard);
+			pcntl_signal_dispatch();
+			pcntl_signal(SIGXFSZ, $priorSignal);
+		}
+		$this->assertTrue($sizeFaults > 0,
+			'the kernel delivered SIGXFSZ for an actual file write');
+		$this->assertTrue($filesystem->limitApplied,
+			'the real file-size limit was set after staging and before the final write');
+		$this->assertTrue(is_array($this->noteFor($notes, 'journal-write')),
+			'the final durable writer reports a real filesystem write failure');
+		$this->assertEquals(array(), glob($queue.'/*.tmp'),
+			'rollback removes staging that the failed journal cannot bind');
+		$this->assertEquals($stateBytes, file_get_contents($statePath),
+			'the previous durable state survives byte-exact');
+		$this->assertEquals($markerBytes, file_get_contents($marker),
+			'the pending obligation survives byte-exact');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'no erase occurs before a durable journal record');
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'),
+			'payload data is untouched');
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 1
+			&& $outcome['published'] === 0,
+			'the failed pass leaves the member for a later retry');
+		$retryNotes = array();
+		$retry = erasedataDrainGenerationPass($queue, User::getUser(),
+			$generation, array('hashes' => array($hash), 'force' => 2),
+			new ErasedataFilesystemOps(), $retryNotes);
+		$this->assertTrue(is_array($retry) && $retry['published'] === 1
+			&& $retry['retained'] === 0,
+			'the next pass can finish the same obligation after I/O is restored');
+		$this->assertTrue(!erasedataPendingMarkerStands($queue, $hash, $generation)
+			&& count(glob($queue.'/*.list')) === 1,
+			'the retry publishes a final manifest and discharges its marker');
 	}
 
 	// A `prepared` record whose producer is gone cancels its own bindings and

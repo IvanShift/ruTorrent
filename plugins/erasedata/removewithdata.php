@@ -4495,10 +4495,9 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				$state['journal'][$generation] = $record;
 				if(!erasedataWriteDrainState($listPath, $state))
 				{
-					// Step (3) rolls its staging back when its journal write fails
-					// and this step owes the identical rollback, by construction
-					// rather than by observation: no failure here has been
-					// reproduced. Staging this pass wrote whose binding never became
+					// Step (3) rolls its staging back when its journal write fails,
+					// and this final write owes the identical rollback. Staging
+					// this pass wrote whose binding never became
 					// durable is exactly the unjournaled-staging condition the pass
 					// refuses to resolve, so leaving it behind would manufacture, for
 					// its own member, the permanent conservative retention above.

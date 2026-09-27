@@ -56,6 +56,37 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 	}
 
+	public function testOldDaemonBothDoorsForwardNativeReadAndLoadShapes()
+	{
+		$hash = str_repeat('A', 40);
+		$param = function($value) {
+			return '<param><value><string>'.$value.'</string></value></param>';
+		};
+		$call = function($method, $params) use ($param) {
+			return '<?xml version="1.0"?><methodCall><methodName>'.$method
+				.'</methodName><params>'.implode('', array_map($param, $params))
+				.'</params></methodCall>';
+		};
+		$cases = array(
+			'listing' => $call('d.multicall2', array('', 'main', 'd.name=')),
+			'tracker URLs' => $call('t.multicall', array($hash, '', 't.url=')),
+			'torrent load' => $call('load.start', array('', 'https://example.test/x.torrent')),
+		);
+		foreach(array('action', 'rpc2') as $door)
+			foreach($cases as $name => $xml)
+			{
+				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.9.8');
+				$this->assertHttp($result, '200 OK',
+					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+				$this->assertEquals(1, $result['state']['version_probes'],
+					$door.' probes the simulated old version before '.$name);
+				$this->assertEquals(1, $result['state']['sends'],
+					$door.' forwards one '.$name.' call after the version probe');
+				$this->assertTrue($result['state']['trusted'],
+					$door.' forwards '.$name.' with the evaluated trust setting');
+			}
+	}
+
 	public function testD4Rpc2RejectsUnreadableVersionBeforeForwarding()
 	{
 		$result = $this->runEntrypoint('rpc2', $this->allowedXml(), true,
