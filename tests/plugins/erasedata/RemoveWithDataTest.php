@@ -10435,14 +10435,20 @@ class RemoveWithDataTest extends TestCase
 			'a failed rearm keeps obligations but revokes the unverified witness');
 		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'rearm-refused') !== false,
 			'the scheduler refusal is classified');
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true,
+			'val' => array(0));
 		rXMLRPCRequest::$scheduledCommands = array();
 		$this->assertTrue(erasedataRemovalAdmissionRun($dependencies,
 			array($this->hash('E')), 1) === false,
 			'an unverified old state remains retryable');
-		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
-			'an unverified old state cannot repeatedly reset a possibly live schedule');
-		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'rearm-legacy-unproven') !== false,
-			'the need for startup recovery is visible');
+		$recovery = $this->scheduleRecords('schedule');
+		$this->assertEquals('erasedata-rescue-drainrutorrent',
+			count($recovery) ? $recovery[0]['key'] : null,
+			'an uncertain original key is never replaced by headless recovery');
+		$bridged = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($bridged) && isset($bridged['legacy_rescue'])
+			&& isset($bridged['legacy_marker']),
+			'the separate rescue schedule and witness are durable');
 		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
 			'no unanswered admission erases a torrent');
 	}
@@ -10569,7 +10575,7 @@ class RemoveWithDataTest extends TestCase
 			'retry retains the durable obligation and witness');
 	}
 
-	public function testLegacyPreMarkerStateRequiresStartupRecovery()
+	public function testLegacyPreMarkerStateUsesDistinctRescueSchedule()
 	{
 		$this->reset();
 		$queue = $this->queuePath();
@@ -10584,28 +10590,171 @@ class RemoveWithDataTest extends TestCase
 		$this->scriptLegacyDaemonMarker();
 		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
 		$dependencies = $this->dependencies(array('context' => 'headless'));
-		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
-			'headless recovery cannot infer loss from a pre-marker state');
-		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
-			'it does not reset a possibly live old schedule');
-		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
-			'rearm-legacy-unproven') !== false,
-			'the migration boundary is classified and visible');
-		$unverified = erasedataReadDrainState($queue);
-		$this->assertTrue(is_array($unverified) && $unverified['phase'] === 'armed',
-			'the old durable obligation is retained');
-		$dependencies['context'] = 'startup';
 		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
-			'a normal startup rearm seeds both the schedule and marker protocol');
-		$this->assertEquals(1, count($this->scheduleRecords('schedule')),
-			'startup registers the legacy schedule once');
+			'headless recovery bridges an old queue without replacing its key');
+		$records = $this->scheduleRecords('schedule');
+		$this->assertEquals(1, count($records),
+			'one rescue schedule is registered');
+		$this->assertEquals('erasedata-rescue-drainrutorrent',
+			count($records) ? $records[0]['key'] : null,
+			'the original schedule key is left untouched');
 		$verified = erasedataReadDrainState($queue);
 		$this->assertTrue(is_array($verified) && $verified['phase'] === 'armed'
 			&& isset($verified['legacy_marker'])
+			&& isset($verified['legacy_rescue'])
 			&& $verified['generation'] === $state['generation'],
-			'startup records the witness without changing the obligation');
+			'the rescue intent and verified witness are durable');
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'a live witness is accepted on the next headless pass');
+		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
+			'neither scheduler key is replaced while the daemon is live');
 	}
 
+	public function testLegacyRescueIntentRetiresBothSchedulerKeys()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['acknowledged'] = $state['generation'];
+		$state['phase'] = 'armed';
+		$state['legacy_marker'] = true;
+		$state['legacy_rescue'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a bridge intent survives until retirement');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0));
+		$this->assertTrue($this->retire(),
+			'an empty bridged queue retires both scheduler keys');
+		$removed = array();
+		foreach($this->scheduleRecords('schedule_remove') as $record)
+			$removed[] = $record['key'];
+		$this->assertEquals(array('erasedata-drainrutorrent',
+			'erasedata-rescue-drainrutorrent'), $removed,
+			'the original key is removed before the rescue tick that can retry');
+	}
+
+	public function testLegacyRescueSurvivesOriginalKeyRemovalFailure()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['acknowledged'] = $state['generation'];
+		$state['phase'] = 'armed';
+		$state['legacy_marker'] = true;
+		$state['legacy_rescue'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a bridged queue is ready for retirement');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'fault' => true, 'faultString' => 'transient refusal');
+		$this->assertTrue(!$this->retire(),
+			'a failed original removal defers the transaction');
+		$attempts = $this->scheduleRecords('schedule_remove');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($attempts) ? $attempts[0]['key'] : null,
+			'the rescue schedule is retained to retry original removal');
+		$this->assertEquals(1, count($attempts),
+			'no rescue removal follows the original failure');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['legacy_rescue']),
+			'the durable rescue intent remains for a later retry');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0));
+		$this->assertTrue($this->retire(), 'a later tick finishes both removals');
+	}
+
+	public function testLegacyRescueRemovalFailureRetainsIntentForRetry()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['acknowledged'] = $state['generation'];
+		$state['phase'] = 'armed';
+		$state['legacy_marker'] = true;
+		$state['legacy_rescue'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a bridged empty queue is ready for retirement');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0), 'callback' => function() {
+				rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+					'fault' => true, 'faultString' => 'transient rescue refusal');
+			});
+		$notes = array();
+		$this->assertTrue(!erasedataRetirementRun($this->dependencies(), $notes),
+			'a failed rescue removal leaves the transaction retryable');
+		$this->assertEquals('retire-rescue-remove-refused',
+			count($notes) ? $notes[0][0] : null,
+			'the exact rescue failure is classified');
+		$after = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($after) && isset($after['legacy_rescue']),
+			'durable rescue intent survives the failed RPC');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0));
+		$this->assertTrue($this->retire(),
+			'a later pass completes the two-key retirement');
+	}
+
+	public function testLegacyRescueIntentCrashRetriesThenRestartRetiresMissingKey()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$state = erasedataDefaultDrainState();
+		$state['user'] = 'rutorrent';
+		$state['generation'] = '0000000000000001';
+		$state['phase'] = 'armed';
+		$state['legacy_rescue'] = true;
+		$this->assertTrue(erasedataWriteDrainState($queue, $state),
+			'a rescue intent may precede schedule acceptance');
+		$this->assertTrue(erasedataQueueRequest($queue, $this->hash('A'), 1,
+			$state['generation']), 'the obligation remains');
+		list($marker, $absent) = $this->scriptLegacyDaemonMarker();
+		rXMLRPCRequest::$responses[$marker] = array('ok' => true,
+			'val' => array(1));
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true,
+			'val' => array(0));
+		$dependencies = $this->dependencies(array('context' => 'headless'));
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'a retry converges after interruption between intent and schedule RPC');
+		$retry = $this->scheduleRecords('schedule');
+		$this->assertEquals('erasedata-rescue-drainrutorrent',
+			count($retry) ? $retry[0]['key'] : null,
+			'only the separate rescue key is retried');
+		$verified = erasedataReadDrainState($queue);
+		$this->assertTrue(is_array($verified)
+			&& isset($verified['legacy_rescue']) && isset($verified['legacy_marker']),
+			'the accepted retry records a verified marker witness');
+		rXMLRPCRequest::$responses[$marker] = $absent;
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'marker loss after durable rescue intent proves a daemon restart');
+		$scheduled = $this->scheduleRecords('schedule');
+		$this->assertEquals('erasedata-drainrutorrent',
+			count($scheduled) ? $scheduled[0]['key'] : null,
+			'only the original key is restored on the new daemon');
+		@unlink(erasedataPendingMarkerPath($queue, $this->hash('A'),
+			$state['generation']));
+		$settled = erasedataReadDrainState($queue);
+		$settled['acknowledged'] = $settled['generation'];
+		$this->assertTrue(erasedataWriteDrainState($queue, $settled),
+			'the simulated new daemon acknowledged and emptied the queue');
+		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+			'val' => array(0));
+		rXMLRPCRequest::$scheduledCommands = array();
+		$this->assertTrue($this->retire(),
+			'a post-restart missing rescue key does not block retirement');
+		$removed = array();
+		foreach($this->scheduleRecords('schedule_remove') as $record)
+			$removed[] = $record['key'];
+		$this->assertEquals(array('erasedata-drainrutorrent',
+			'erasedata-rescue-drainrutorrent'), $removed,
+			'both keys are removed even though the rescue key vanished on restart');
+	}
 
 	public function testLegacyRearmRejectsRestartBetweenMarkerAndSchedule()
 	{
@@ -10637,11 +10786,15 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
 			'rearm-legacy-marker') !== false,
 			'the uncertain rearm is classified');
+		rXMLRPCRequest::$responses['schedule'] = array('ok' => true,
+			'val' => array(0));
 		rXMLRPCRequest::$scheduledCommands = array();
-		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies) === false,
-			'a later headless pass still refuses an unverified arm');
-		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
-			'it cannot blindly replace a possibly live schedule');
+		$this->assertTrue(erasedataRearmDrainScheduleRun($dependencies),
+			'a later headless pass uses an independent rescue key');
+		$recovery = $this->scheduleRecords('schedule');
+		$this->assertEquals('erasedata-rescue-drainrutorrent',
+			count($recovery) ? $recovery[0]['key'] : null,
+			'it cannot blindly replace a possibly live original schedule');
 	}
 
 	public function testAfterTheAckTheProducerRevalidatesTheCompletePreparedBinding()
@@ -15796,7 +15949,7 @@ class RemoveWithDataTest extends TestCase
 			.' key resolves to the same absolute fire instant and no number of'
 			.' page loads can postpone a live countdown';
 		$body = $this->productionFunctionBody('removewithdata.php',
-			'function erasedataDrainScheduleCommand($user, $interval)');
+			'function erasedataDrainScheduleCommand($user, $interval, $rescue = false)');
 		$this->assertTrue(is_string($body)
 			&& strpos($body, 'rTorrentSettings::getAlignedStart(') !== false,
 			'erasedataDrainScheduleCommand() builds its start with the aligned helper');

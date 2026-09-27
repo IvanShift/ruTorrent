@@ -454,6 +454,7 @@ $suite->test('update.php still composes the whole cycle, in the order the cycle 
     foreach (array(
         'RuTrackerState::acquireCycleLock',
         'RuTrackerUpdatePass::sweepReplacements',
+        'ruTrackerChecker::sweepOrphanClaims',
         'RuTrackerUpdatePass::parseMulticall',
         'RuTrackerUpdatePass::isTrackerSupported',
         'RuTrackerUpdatePass::pollFeed',
@@ -477,6 +478,13 @@ $suite->test('update.php still composes the whole cycle, in the order the cycle 
     // outside the seeding view this pass walks and nothing else would find it.
     epAssertOrder($calls, 'RuTrackerUpdatePass::sweepReplacements', 'RuTrackerUpdatePass::run',
         'unfinished replacements are finished before new ones are started');
+    epAssertOrder($calls, 'RuTrackerState::acquireCycleLock', 'ruTrackerChecker::sweepOrphanClaims',
+        'claim cleanup runs under the cycle lock');
+    $source = file_get_contents(EP_DIR . '/update.php');
+    $sweepAt = strpos($source, 'ruTrackerChecker::sweepOrphanClaims();');
+    $scanSuccessAt = strpos($source, 'if($req->success())');
+    strictAssertTrue($sweepAt !== false && $scanSuccessAt !== false && $sweepAt < $scanSuccessAt,
+        'claim cleanup runs before the seeding success gate');
 
     // The feed refreshes topic -> forum before the pass uses it, or every
     // candidate resolved this cycle falls through to a tracker-wide crawl.

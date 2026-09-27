@@ -73,6 +73,8 @@ class ruTrackerChecker
 	const CHKMSG_ABSORBED		= 'absorbed';		// param: topic id
 
 	const MAX_LOCK_TIME		= 900;	// 15 min
+	const ORPHAN_SWEEP_BATCH	= 16;	// max direct presence probes per cycle
+	const ORPHAN_SWEEP_BUDGET_NS = 2000000000;	// stop after a slow probe
 
 	// load_raw inserts the torrent from a deferred rTorrent event-loop task,
 	// so waiting for the staged copy to appear is the only wait in the
@@ -856,6 +858,119 @@ class ruTrackerChecker
 		return(array('clock' => trim($boot) . ':' . $match[1] . ':' . $match[2], 'mono' => $mono));
 	}
 
+	static private function claimObservationMatches($observed, $since, $token, $clock)
+	{
+		return(is_array($observed)
+			&& ($observed['since'] ?? null) === $since
+			&& ($observed['token'] ?? null) === $token
+			&& ($observed['clock'] ?? null) === $clock['clock']
+			&& isset($observed['mono']) && is_int($observed['mono'])
+			&& $observed['mono'] >= 0 && $observed['mono'] <= $clock['mono']);
+	}
+
+	static private function claimObservation($since, $token, $clock)
+	{
+		return(array('since' => $since, 'token' => $token,
+			'clock' => $clock['clock'], 'mono' => $clock['mono']));
+	}
+
+	// Observe tokenized foreign generations even if nobody checks their hash
+	// again. A missing hash is proved outside the state lock; the final write
+	// still requires the exact generation and observation seen before the probe.
+	static public function sweepOrphanClaims()
+	{
+		$candidates = array();
+		$clockUnavailable = false;
+		$stored = RuTrackerState::update('meta-claims', function($claims) use (&$candidates, &$clockUnavailable) {
+			$clock = self::claimClock();
+			if($clock === null)
+			{
+				$clockUnavailable = true;
+				return($claims);
+			}
+			foreach($claims as $hash => $entry)
+			{
+				if(!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash) || !is_array($entry))
+					continue;
+				$since = self::claimSince($entry);
+				$token = $entry['token'] ?? null;
+				if($since === null || !is_string($token) || !preg_match('/^[0-9a-f]{16}$/D', $token))
+					continue;
+				$observed = $entry['orphan_observed'] ?? null;
+				if(!self::claimObservationMatches($observed, $since, $token, $clock))
+				{
+					$entry['orphan_observed'] = self::claimObservation($since, $token, $clock);
+					$claims[$hash] = $entry;
+				}
+				elseif(($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000)
+					$candidates[] = array('hash' => $hash, 'since' => $since, 'token' => $token,
+						'observed' => $observed);
+			}
+			return($claims);
+		});
+		if(!$stored || $clockUnavailable)
+		{
+			self::logUnrepairable('sweepOrphanClaims: meta-claims could not be observed; '
+				. ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
+			return(false);
+		}
+		if(!$candidates) return(true);
+		usort($candidates, function($a, $b) {
+			return($a['observed']['mono'] <=> $b['observed']['mono']);
+		});
+		$batchStarted = hrtime(true);
+		foreach(array_slice($candidates, 0, self::ORPHAN_SWEEP_BATCH) as $candidate)
+		{
+			if(hrtime(true) - $batchStarted >= self::ORPHAN_SWEEP_BUDGET_NS) break;
+			$presence = self::torrentExists($candidate['hash']);
+			$removed = false;
+			$requeued = false;
+			$clockUnavailable = false;
+			$settled = RuTrackerState::update('meta-claims', function($claims) use ($candidate, $presence, &$removed, &$requeued, &$clockUnavailable) {
+				$hash = $candidate['hash'];
+				$entry = $claims[$hash] ?? null;
+				if(!is_array($entry) || self::claimSince($entry) !== $candidate['since']
+					|| ($entry['token'] ?? null) !== $candidate['token']
+					|| ($entry['orphan_observed'] ?? null) !== $candidate['observed'])
+					return($claims);
+				$clock = self::claimClock();
+				if($clock === null)
+				{
+					$clockUnavailable = true;
+					return($claims);
+				}
+				if(!self::claimObservationMatches($candidate['observed'],
+					$candidate['since'], $candidate['token'], $clock)
+					|| ($clock['mono'] - $candidate['observed']['mono']) <= self::MAX_LOCK_TIME * 1000000000)
+					return($claims);
+				if($presence === false)
+				{
+					unset($claims[$hash]);
+					$removed = true;
+				}
+				else
+				{
+					// Requeue a present or uncertain hash behind other aged candidates.
+					$entry['orphan_observed'] = self::claimObservation(
+						$candidate['since'], $candidate['token'], $clock);
+					$claims[$hash] = $entry;
+					$requeued = true;
+				}
+				return($claims);
+			});
+			if(!$settled || $clockUnavailable)
+			{
+				self::logUnrepairable('sweepOrphanClaims: meta-claims could not be settled; '
+					. ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
+				return(false);
+			}
+			if($removed) self::logDebug('sweepOrphanClaims: reaped absent hash ' . $candidate['hash']);
+			elseif($requeued && $presence === null)
+				self::logUnrepairable('sweepOrphanClaims: retained ' . $candidate['hash'] . ': presence-unknown');
+		}
+		return(true);
+	}
+
 	// Returns the owner token on success, false when the hash is already
 	// claimed, and null when the claim store could not be updated. All owner
 	// changes happen in one RuTrackerState::update() transaction.
@@ -895,12 +1010,7 @@ class ruTrackerChecker
 					else
 					{
 						$observed = $entry['lease_observed'] ?? null;
-						$matches = is_array($observed)
-							&& ($observed['since'] ?? null) === $since
-							&& ($observed['token'] ?? null) === $owner
-							&& ($observed['clock'] ?? null) === $clock['clock']
-							&& isset($observed['mono']) && is_int($observed['mono'])
-							&& $observed['mono'] >= 0 && $observed['mono'] <= $clock['mono'];
+						$matches = self::claimObservationMatches($observed, $since, $owner, $clock);
 						if($matches && ($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000)
 						{
 							unset($claims[$hash]);
@@ -910,8 +1020,7 @@ class ruTrackerChecker
 						{
 							// This sample follows the locked read of the existing entry.
 							// A changed generation or clock begins a whole new lease.
-							$entry['lease_observed'] = array('since' => $since, 'token' => $owner,
-								'clock' => $clock['clock'], 'mono' => $clock['mono']);
+							$entry['lease_observed'] = self::claimObservation($since, $owner, $clock);
 							$reason = is_array($observed) ? 'monotonic-observation-reset' : null;
 						}
 					}

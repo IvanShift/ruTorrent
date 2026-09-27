@@ -5387,6 +5387,165 @@ class CheckerTest
 			'its token-checked release removes the owned entry');
 	}
 
+	public function testForeignClaimsRequireAnObservedLeaseAndAbsentHashBeforeReaping()
+	{
+		$this->resetFakes();
+		$now = time();
+		$absent = self::OLD_HASH;
+		$live = self::NEW_HASH;
+		$absentToken = str_repeat('a', 16);
+		$liveToken = str_repeat('b', 16);
+		RuTrackerState::save('meta-claims', array(
+			$absent => array('since' => $now + 25 * 3600, 'token' => $absentToken),
+			$live => array('since' => $now, 'token' => $liveToken),
+		));
+		strictAssertTrue(method_exists('ruTrackerChecker', 'sweepOrphanClaims'),
+			'the scheduler has a separate sweep for hashes with no future check call');
+		ruTrackerChecker::sweepOrphanClaims();
+		$claims = RuTrackerState::load('meta-claims');
+		strictAssertTrue(isset($claims[$absent]['orphan_observed'])
+			&& isset($claims[$live]['orphan_observed']),
+			'both exact owner generations receive a durable monotonic observation');
+		strictAssertSame($absentToken, $claims[$absent]['token'],
+			'a future wall stamp cannot expire an orphan on the first sweep');
+		$claims[$absent]['orphan_observed']['mono'] = checkerObservedMono(
+			ruTrackerChecker::MAX_LOCK_TIME + 1);
+		$claims[$live]['orphan_observed']['mono'] = checkerObservedMono(
+			ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', $claims);
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		ruTrackerChecker::sweepOrphanClaims();
+		$claims = RuTrackerState::load('meta-claims');
+		strictAssertTrue(!isset($claims[$absent]),
+			'only an exact missing-hash answer retires the aged orphan');
+		strictAssertSame($liveToken, $claims[$live]['token'],
+			'the other published generation remains held');
+		rXMLRPCRequest::queue('d.hash', true, false, array($live));
+		ruTrackerChecker::sweepOrphanClaims();
+		strictAssertSame($liveToken, RuTrackerState::load('meta-claims')[$live]['token'],
+			'an aged but present owner is never reaped');
+	}
+
+	public function testOrphanSweepRequeuesPresentAndUnknownHashBehindAnotherCandidate()
+	{
+		foreach(array('unknown', 'present') as $answer)
+		{
+			$this->resetFakes();
+			$now = time();
+			$first = self::OLD_HASH;
+			$second = self::NEW_HASH;
+			RuTrackerState::save('meta-claims', array(
+				$first => array('since' => $now, 'token' => str_repeat('a', 16)),
+				$second => array('since' => $now, 'token' => str_repeat('b', 16)),
+			));
+			ruTrackerChecker::sweepOrphanClaims();
+			$claims = RuTrackerState::load('meta-claims');
+			foreach(array($first, $second) as $hash)
+				$claims[$hash]['orphan_observed']['mono'] = checkerObservedMono(
+					ruTrackerChecker::MAX_LOCK_TIME + 1);
+			RuTrackerState::save('meta-claims', $claims);
+			if($answer === 'unknown')
+				rXMLRPCRequest::queue('d.hash', true, true, array(), 'Permission denied');
+			else
+				rXMLRPCRequest::queue('d.hash', true, false, array($first));
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+			ruTrackerChecker::sweepOrphanClaims();
+			$afterFirst = RuTrackerState::load('meta-claims');
+			strictAssertSame($claims[$first]['token'], $afterFirst[$first]['token'],
+				$answer . ' presence cannot authorize deletion');
+			strictAssertTrue($afterFirst[$first]['orphan_observed']['mono']
+				> $claims[$first]['orphan_observed']['mono'],
+				$answer . ' candidate is requeued behind another aged hash');
+			$afterSecond = RuTrackerState::load('meta-claims');
+			strictAssertTrue(!isset($afterSecond[$second]),
+				'a fast ' . $answer . ' response does not starve another aged hash');
+			strictAssertSame($claims[$first]['token'], $afterSecond[$first]['token'],
+				'the ' . $answer . ' owner remains published');
+		}
+	}
+
+	public function testOrphanSweepProcessesABoundedBatchAndDrainsTheRestNextCycle()
+	{
+		$this->resetFakes();
+		$claims = array();
+		for($i = 1; $i <= ruTrackerChecker::ORPHAN_SWEEP_BATCH + 1; $i++)
+			$claims[sprintf('%040x', $i)] = array('since' => time(), 'token' => str_repeat('a', 16));
+		RuTrackerState::save('meta-claims', $claims);
+		ruTrackerChecker::sweepOrphanClaims();
+		$claims = RuTrackerState::load('meta-claims');
+		foreach($claims as &$claim)
+			$claim['orphan_observed']['mono'] = checkerObservedMono(ruTrackerChecker::MAX_LOCK_TIME + 1);
+		unset($claim);
+		RuTrackerState::save('meta-claims', $claims);
+		for($i = 0; $i < ruTrackerChecker::ORPHAN_SWEEP_BATCH; $i++)
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+		ruTrackerChecker::sweepOrphanClaims();
+		strictAssertSame(1, count(RuTrackerState::load('meta-claims')),
+			'a cycle retires multiple absent claims but caps direct daemon probes');
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		ruTrackerChecker::sweepOrphanClaims();
+		strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+			'the next cycle drains the finite remainder');
+	}
+
+	public function testOrphanSweepStopsAfterASlowProbeBeforeTheNextRequest()
+	{
+		$this->resetFakes();
+		RuTrackerState::save('meta-claims', array(
+			self::OLD_HASH => array('since' => time(), 'token' => str_repeat('a', 16)),
+			self::NEW_HASH => array('since' => time(), 'token' => str_repeat('b', 16)),
+		));
+		ruTrackerChecker::sweepOrphanClaims();
+		$claims = RuTrackerState::load('meta-claims');
+		$claims[self::OLD_HASH]['orphan_observed']['mono'] = checkerObservedMono(
+			ruTrackerChecker::MAX_LOCK_TIME + 2);
+		$claims[self::NEW_HASH]['orphan_observed']['mono'] = checkerObservedMono(
+			ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', $claims);
+		rXMLRPCRequest::queue('d.hash', true, true, function() {
+			usleep(2100000);
+			return(array());
+		});
+		ruTrackerChecker::sweepOrphanClaims();
+		$remaining = RuTrackerState::load('meta-claims');
+		strictAssertTrue(!isset($remaining[self::OLD_HASH]) && isset($remaining[self::NEW_HASH]),
+			'a slow absence probe is settled, but no second RPC delays the checker cycle');
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		ruTrackerChecker::sweepOrphanClaims();
+		strictAssertSame(array(), RuTrackerState::load('meta-claims'),
+			'the deferred claim is eligible in the next cycle');
+	}
+
+	public function testOrphanSweepCannotDeleteAChangedOwnerAfterThePresenceProbe()
+	{
+		$this->resetFakes();
+		$now = time();
+		$oldToken = str_repeat('a', 16);
+		$newToken = str_repeat('b', 16);
+		RuTrackerState::save('meta-claims', array(self::OLD_HASH => array(
+			'since' => $now, 'token' => $oldToken)));
+		ruTrackerChecker::sweepOrphanClaims();
+		$claims = RuTrackerState::load('meta-claims');
+		$claims[self::OLD_HASH]['orphan_observed']['mono'] = checkerObservedMono(
+			ruTrackerChecker::MAX_LOCK_TIME + 1);
+		RuTrackerState::save('meta-claims', $claims);
+		rXMLRPCRequest::queue('d.hash', true, true, function() use ($newToken) {
+			RuTrackerState::update('meta-claims', function($current) use ($newToken) {
+				$current[self::OLD_HASH]['token'] = $newToken;
+				return($current);
+			});
+			return(array());
+		});
+		ruTrackerChecker::sweepOrphanClaims();
+		$after = RuTrackerState::load('meta-claims');
+		strictAssertSame($newToken, $after[self::OLD_HASH]['token'],
+			'an absence answer for the old generation cannot delete a newly published owner');
+		ruTrackerChecker::sweepOrphanClaims();
+		$after = RuTrackerState::load('meta-claims');
+		strictAssertSame($newToken, $after[self::OLD_HASH]['orphan_observed']['token'],
+			'a new owner starts its own complete monotonic observation');
+	}
+
 	public function testExpiredClaimAlsoRecoversFutureInProgressState()
 	{
 		$future = time() + 25 * 3600;

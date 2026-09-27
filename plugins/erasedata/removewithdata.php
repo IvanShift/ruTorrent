@@ -1719,6 +1719,15 @@ if(!function_exists('erasedataDrainScheduleKey'))
 	}
 }
 
+if(!function_exists('erasedataDrainRescueScheduleKey'))
+{
+	function erasedataDrainRescueScheduleKey($user)
+	{
+		$key = erasedataDrainScheduleKey($user);
+		return($key === false ? false : 'erasedata-rescue-drain'.$user);
+	}
+}
+
 if(!function_exists('erasedataDrainStateBelongsTo'))
 {
 	// May $user act on this durable state?
@@ -1896,12 +1905,17 @@ if(!function_exists('erasedataValidateDrainState'))
 			return(false);
 		$keys = array('version', 'user', 'generation', 'acknowledged', 'phase',
 			'journal', 'diagnostics');
-		// Older states have seven fields. The optional eighth field means a
-		// volatile daemon marker was verified when the legacy schedule armed.
-		if(count($state) !== count($keys)
-			&& (count($state) !== count($keys) + 1
-				|| !array_key_exists('legacy_marker', $state)
-				|| $state['legacy_marker'] !== true))
+		// Older states have seven fields. The optional flags record a verified
+		// legacy marker and a rescue registration that may need retirement.
+		$optional = 0;
+		foreach(array('legacy_marker', 'legacy_rescue') as $flag)
+			if(array_key_exists($flag, $state))
+			{
+				if($state[$flag] !== true)
+					return(false);
+				$optional++;
+			}
+		if(count($state) !== count($keys) + $optional)
 			return(false);
 		foreach($keys as $key)
 			if(!array_key_exists($key, $state))
@@ -2303,12 +2317,13 @@ if(!function_exists('erasedataDrainScheduleCommand'))
 	// the sibling erasedataCollectorScheduleCommand() already uses it: it
 	// resolves every registration of one key to the same absolute fire instant,
 	// so total postponement is capped at one interval however many
-	// re-registrations occur -- with no liveness probe, no new durable key and
-	// no racing children. It never returns 0, so a reload can never fire the
+	// re-registrations occur -- with no liveness probe. It never returns
+	// 0, so a reload can never fire the
 	// child at once either.
-	function erasedataDrainScheduleCommand($user, $interval)
+	function erasedataDrainScheduleCommand($user, $interval, $rescue = false)
 	{
-		$key = erasedataDrainScheduleKey($user);
+		$key = $rescue ? erasedataDrainRescueScheduleKey($user)
+			: erasedataDrainScheduleKey($user);
 		$command = erasedataDrainWorkerCommand($user);
 		$interval = (int)$interval;
 		if($key === false || $command === false || $interval < 1)
@@ -4949,17 +4964,40 @@ if(!function_exists('erasedataRetirementRun'))
 		// answers "Unsupported target type found." -- measured, not read.
 		$request = new rXMLRPCRequest(new rXMLRPCCommand('schedule_remove', $key));
 		$removed = $request->success() && !$request->fault;
-		erasedataReleaseDrainStateLock($stateLock);
 		if(!$removed)
 		{
-			// The durable settled/disarmed writes STAND. They are what makes
-			// this retryable: every later tick, and every restart, converges on
-			// re-issuing exactly this removal, and no obligation was lost to
-			// get here.
+			erasedataReleaseDrainStateLock($stateLock);
+			// The durable settled/disarmed writes stand for a later retry.
 			$notes[] = array('retire-remove-refused', $state['generation'], 0,
 				'durable-disarm-stands-removal-retried', null);
 			return(false);
 		}
+		if(isset($state['legacy_rescue']))
+		{
+			$request = new rXMLRPCRequest(new rXMLRPCCommand('schedule_remove',
+				erasedataDrainRescueScheduleKey($user)));
+			if(!$request->success() || $request->fault)
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				$notes[] = array('retire-rescue-remove-refused',
+					$state['generation'], 0,
+					'durable-disarm-stands-removal-retried', null);
+				return(false);
+			}
+		}
+		if(isset($state['legacy_rescue']))
+		{
+			unset($state['legacy_rescue']);
+			if(!erasedataWriteDrainState($listPath, $state))
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				$notes[] = array('retire-rescue-state-write',
+					$state['generation'], 0,
+					'keys-removed-rescue-intent-retained');
+				return(false);
+			}
+		}
+		erasedataReleaseDrainStateLock($stateLock);
 		return(true);
 	}
 }
@@ -5220,33 +5258,36 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 				$context . '-refused-obligations-retained');
 			return(false);
 		}
+		$rescue = false;
 		if($legacy && $context === 'headless-recovery')
 		{
-			// An armed state written before this marker protocol cannot prove
-			// whether a live legacy schedule exists. A normal WebUI rearm seeds it.
-			if(!isset($state['legacy_marker']))
+			// A seven-field state cannot tell whether the original key is live.
+			// Its first headless recovery arms a distinct guarded-worker key.
+			$rescue = !isset($state['legacy_marker'])
+				&& !isset($state['legacy_rescue']);
+			if(!$rescue)
 			{
-				erasedataReleaseDrainStateLock($stateLock);
-				erasedataDrainDiagnostic($log, 'rearm-legacy-unproven',
-					$state['generation'], $scan['candidates'],
-					'headless-recovery-refused-live-schedule-unknown');
-				return(false);
-			}
-			$marker = erasedataLegacyDrainMarkerStatus($user);
-			if($marker === null)
-			{
-				erasedataReleaseDrainStateLock($stateLock);
-				erasedataDrainDiagnostic($log, 'rearm-legacy-probe',
-					$state['generation'], $scan['candidates'],
-					'headless-recovery-refused-daemon-identity-unknown');
-				return(false);
-			}
-			if($marker === true && $state['phase'] === 'armed')
-			{
-				erasedataReleaseDrainStateLock($stateLock);
-				return(true);
+				$marker = erasedataLegacyDrainMarkerStatus($user);
+				if($marker === null)
+				{
+					erasedataReleaseDrainStateLock($stateLock);
+					erasedataDrainDiagnostic($log, 'rearm-legacy-probe',
+						$state['generation'], $scan['candidates'],
+						'headless-recovery-refused-daemon-identity-unknown');
+					return(false);
+				}
+				if($marker === true && !isset($state['legacy_marker']))
+					$rescue = true;
+				if($marker === true && !$rescue && $state['phase'] === 'armed')
+				{
+					erasedataReleaseDrainStateLock($stateLock);
+					return(true);
+				}
 			}
 		}
+		if($rescue)
+			$command = erasedataDrainScheduleCommand($user,
+				ERASEDATA_DRAIN_INTERVAL, true);
 		if(!$legacy && $command !== false && $context === 'headless-recovery')
 		{
 			// Reuse the already encoded arguments, including the target.
@@ -5281,6 +5322,20 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 				$state['generation'], $scan['candidates'],
 				$context . '-refused-obligations-retained');
 			return(false);
+		}
+		if($rescue && !isset($state['legacy_rescue']))
+		{
+			// Persist the retirement obligation before registering a second
+			// key. A crash after acceptance can never leave an endless child.
+			$state['legacy_rescue'] = true;
+			if(!erasedataWriteDrainState($listPath, $state))
+			{
+				erasedataReleaseDrainStateLock($stateLock);
+				erasedataDrainDiagnostic($log, 'rearm-rescue-state',
+					$state['generation'], $scan['candidates'],
+					'headless-recovery-refused-obligations-retained');
+				return(false);
+			}
 		}
 		$request = new rXMLRPCRequest($command);
 		if(!$request->success() || $request->fault)

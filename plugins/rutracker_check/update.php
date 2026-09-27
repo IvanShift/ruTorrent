@@ -44,6 +44,7 @@ ruTrackerChecker::logDebug("update: cycle start ".ruTrackerChecker::liveVersionL
 // request's success gate, so the repair still runs on a cycle where the
 // daemon is flaky, and under the cycle lock taken above.
 RuTrackerUpdatePass::sweepReplacements(time());
+ruTrackerChecker::sweepOrphanClaims();
 
 $req =  new rXMLRPCRequest(
 		new rXMLRPCCommand("d.multicall",array("seeding",
