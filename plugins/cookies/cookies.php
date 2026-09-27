@@ -4,6 +4,7 @@ require_once( dirname(__FILE__)."/../../php/urlhost.php" );
 
 class rCookies
 {
+	const REDACTED = '********';
 	public $hash = "cookies.dat";
 	public $modified = false;
 	public $list = array();
@@ -50,11 +51,12 @@ class rCookies
 	}
 	public function set($rawData = null)
 	{
+		$previous = self::load()->list;
 		if($rawData === null)
 			$rawData = file_get_contents('php://input');
 		if(is_string($rawData))
 		{
-			$this->list = array();
+			$updated = array();
 			foreach(explode('&', $rawData) as $var)
 			{
 				$parts = explode('=', $var, 2);
@@ -64,10 +66,19 @@ class rCookies
 				if(count($entry) !== 2)
 					continue;
 				$host = UrlHost::normalize(trim($entry[0]));
+				if(trim($entry[1]) === self::REDACTED)
+				{
+					// The browser has only a placeholder; keep the value on the server.
+					if($host === '' || !isset($previous[$host]))
+						throw new InvalidArgumentException('A masked cookie row has no saved host. Restore the original host or enter the full cookie string.');
+					$updated[$host] = $previous[$host];
+					continue;
+				}
 				$cookies = self::parseCookiePairs($entry[1]);
 				if($host !== '' && !empty($cookies))
-					$this->list[$host] = $cookies;
+					$updated[$host] = $cookies;
 			}
+			$this->list = $updated;
 		}
 		$this->store();
 	}
@@ -77,10 +88,7 @@ class rCookies
                 $ret = "hostCookies = [";
 		foreach( $this->list as $host=>$cookies )
 		{
-			$c = '';
-			foreach($cookies as $name=>$value)
-				$c.=($name."=".$value.";");
-			$ret.="{ host: ".Utility::quoteAndDeslashEachItem($host).", cookies: '".addslashes($c)."' },";
+			$ret.="{ host: ".Utility::quoteAndDeslashEachItem($host).", cookies: '".self::REDACTED."' },";
 		}
 		$len = strlen($ret);
 		if($ret[$len-1]==',')
@@ -90,7 +98,7 @@ class rCookies
 
 	public function getInfo()
 	{
-		return($this->list);
+		return(array_fill_keys(array_keys($this->list), true));
 	}
 	public function getCookiesForHost($host)
 	{

@@ -12,7 +12,8 @@ if(plugin.canChangeOptions())
 				$('#'+name+'_lmenabled').prop("checked", (val.enabled==1));
 				$('#'+name+'_lmlogin').val(val.login);
 				$('#'+name+'_lmauto').val(val.auto);
-				$('#'+name+'_lmpassword').val(val.password);
+				$('#'+name+'_lmpassword').val('');
+				$('#'+name+'_lmclear_password').prop('checked', false);
 				$('#'+name+'_lmenabled').trigger('change');
 			});
 		}
@@ -27,7 +28,8 @@ if(plugin.canChangeOptions())
 			if( ($('#'+name+'_lmenabled').prop("checked") ^ val.enabled) ||
 				($('#'+name+'_lmauto').val()!=val.auto) ||
 				($('#'+name+'_lmlogin').val()!=val.login) ||
-				($('#'+name+'_lmpassword').val()!=val.password))
+				($('#'+name+'_lmpassword').val()!='') ||
+				$('#'+name+'_lmclear_password').prop('checked'))
 			{
 				ret = true;
 				return(false);
@@ -36,12 +38,35 @@ if(plugin.canChangeOptions())
 		return(ret);
 	}
 
+	plugin.accSaved = function(_response, submitted)
+	{
+		$.each(submitted, function(name, value)
+		{
+			const password = $('#'+name+'_lmpassword');
+			if(password.val() === value.password)
+				password.val('');
+			const clear = $('#'+name+'_lmclear_password');
+			if(clear.prop('checked') === value.clear)
+				clear.prop('checked', false).trigger('change');
+		});
+	}
+
 	plugin.accSettings = theWebUI.setSettings;
 	theWebUI.setSettings = function()
 	{
 		plugin.accSettings.call(this);
 		if(plugin.enabled && plugin.accWasChanged())
-			this.request("?action=setacc");
+		{
+			const submitted = {};
+			$.each(theWebUI.theAccounts, function(name)
+			{
+				submitted[name] = {
+					password: $('#'+name+'_lmpassword').val(),
+					clear: $('#'+name+'_lmclear_password').prop('checked')
+				};
+			});
+			this.request("?action=setacc", [plugin.accSaved, plugin, submitted]);
+		}
 	}
 
 	rTorrentStub.prototype.setacc = function()
@@ -53,6 +78,8 @@ if(plugin.canChangeOptions())
 				"&"+name+"_auto="+$('#'+name+'_lmauto').val()+
 				"&"+name+"_login="+encodeURIComponent($('#'+name+'_lmlogin').val()).trim()+
 				"&"+name+"_password="+encodeURIComponent($('#'+name+'_lmpassword').val()).trim());
+			if($('#'+name+'_lmclear_password').prop('checked'))
+				s += "&"+name+"_clear_password=1";
 		});
 		this.content = "mode=set"+s;
 	        this.contentType = "application/x-www-form-urlencoded";
@@ -95,7 +122,25 @@ plugin.onLangLoaded = function() {
 				$("<input>").attr({type:"password", id:`${name}_lmpassword`, maxlength:64}),
 			),
 		),
+			$("<div>").addClass("row").append(
+				$("<div>").addClass("col-12").append(
+					$("<input>").attr({type:"checkbox", id:`${name}_lmclear_password`}),
+					$("<label>").attr({for:`${name}_lmclear_password`}).text(theUILang.accClearPassword || "Clear saved password"),
+				),
+			),
 		);
+		const enabled = fieldset.find(`#${name}_lmenabled`);
+		const clear = fieldset.find(`#${name}_lmclear_password`);
+		const password = fieldset.find(`#${name}_lmpassword`);
+		const syncPassword = () => {
+			password.prop("disabled", clear.prop("checked") || !enabled.prop("checked"));
+		};
+		clear.on("change", function() {
+			if(this.checked)
+				password.val("");
+			syncPassword();
+		});
+		enabled.on("change", syncPassword);
 		if(acct.configurationRequired)
 		{
 			const warning = $("<div>").addClass("alert alert-warning").attr("role", "alert")

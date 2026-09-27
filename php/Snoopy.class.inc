@@ -475,9 +475,20 @@ class Snoopy
 					if(($fp = $this->connect())!==false)
 					{
 						$path = (isset($parts["path"]) ? $parts["path"] : "/").(isset($parts["query"]) ? "?".$parts["query"] : "");
-						$ret = ( $this->_isproxy ?
-							$this->_httprequest($URI,$fp,$URI,$method,$content_type,$body) :
-							$this->_httprequest($path,$fp,$URI,$method,$content_type,$body) );
+						$requestTarget = $path;
+						if($this->_isproxy)
+						{
+							$requestTarget = $URI;
+							if($this->_pinnedaddr!==false)
+							{
+								$pinned = filter_var($this->_pinnedaddr,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)!==false
+									? '['.$this->_pinnedaddr.']' : $this->_pinnedaddr;
+								// A proxy must receive the checked IP in the absolute URI;
+								// Host and cookie scope still refer to the original URL.
+								$requestTarget = 'http://'.$pinned.($this->port == 80 ? '' : ':'.$this->port).$path;
+							}
+						}
+						$ret = $this->_httprequest($requestTarget,$fp,$URI,$method,$content_type,$body);
 						fclose($fp);
 					}
 					else
@@ -635,7 +646,7 @@ class Snoopy
 			}
 		// A second lookup at connect time could answer differently, so the
 		// address that passed the check is the one the request goes to.
-		if(!$literal && !$this->_isproxy)
+		if(!$literal)
 			$this->_pinnedaddr = $addresses[0];
 		return(true);
 	}
@@ -1055,8 +1066,29 @@ class Snoopy
 		{
 			$pinned = (filter_var($this->_pinnedaddr,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)!==false)
 				? "[".$this->_pinnedaddr."]" : $this->_pinnedaddr;
-			$cmdline_params .= " --resolve ".escapeshellarg($this->host.":".$this->port.":".$pinned);
+			// With a proxy, --resolve only changes local DNS; the proxy would
+			// still resolve a hostname in CONNECT or an absolute HTTP target.
+			if($this->_isproxy && parse_url($url,PHP_URL_SCHEME)==='http')
+			{
+				$path = parse_url($url,PHP_URL_PATH) ?: '/';
+				$query = parse_url($url,PHP_URL_QUERY);
+				$target = 'http://'.$pinned.($this->port == 80 ? '' : ':'.$this->port)
+					.$path.($query === null ? '' : '?'.$query);
+				$cmdline_params .= ' --request-target '.escapeshellarg($target);
+			}
+			else
+			{
+				$pinOption = $this->_isproxy ? '--connect-to' : '--resolve';
+				$pinValue = $this->_isproxy
+					? $this->host.':'.$this->port.':'.$pinned.':'.$this->port
+					: $this->host.':'.$this->port.':'.$pinned;
+				$cmdline_params .= ' '.$pinOption.' '.escapeshellarg($pinValue);
+			}
 		}
+
+		if($this->block_private)
+			// Environment NO_PROXY/HTTPS_PROXY must not change which pinning path curl uses.
+			$cmdline_params .= ' --noproxy '.escapeshellarg($this->_isproxy ? '' : '*');
 
 		if($this->_isproxy)
 			$cmdline_params .= " --proxy-insecure --proxy ".(empty($this->proxy_proto) ? '' : $this->proxy_proto.'://').$this->proxy_host.":".$this->proxy_port;

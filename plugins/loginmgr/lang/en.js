@@ -8,6 +8,7 @@
 
  theUILang.accLogin		= "Login";
  theUILang.accPassword		= "Password";
+theUILang.accClearPassword = "Clear saved password";
  theUILang.accAccounts		= "Accounts";
  theUILang.accAuto		= "Autologin";
  theUILang.acAutoNone		= "None";

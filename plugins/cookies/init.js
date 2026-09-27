@@ -44,7 +44,12 @@ if(plugin.canChangeOptions())
 	{
 		plugin.setSettings.call(this);
 		if(plugin.enabled && this.cookiesWasChanged())
-			this.request("?action=setcookies");
+			this.requestWithTimeout("?action=setcookies", null, this.timeout, function(status, response)
+			{
+				theWebUI.error(status, parseInt(status, 10) === 400
+					? "A masked cookie row has no saved host. Restore the original host or enter the full cookie string."
+					: response);
+			});
 	}
 
 	rTorrentStub.prototype.setcookies = function()

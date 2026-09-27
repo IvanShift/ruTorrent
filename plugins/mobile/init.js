@@ -19,6 +19,8 @@ plugin.rowsPrev = {};
 plugin.rowsPrimed = false; /* true once the first render cycle has run */
 plugin.labelList = [];
 plugin.trackerList = [];
+plugin.faviconRequests = new Set();
+plugin.faviconVersion = Object.create(null);
 plugin.torrents = null;
 plugin.torrent = undefined;
 plugin.lastHref = "";
@@ -555,6 +557,27 @@ plugin.makeFilterItem = function(text, count, isSelected, type, value, icon) {
   return item;
 };
 
+plugin.warmTrackerFavicon = function(name) {
+  if (this.faviconRequests.has(name)) return;
+  this.faviconRequests.add(name);
+  var request = new XMLHttpRequest();
+  request.onloadend = () => {
+    if (request.status !== 200) return;
+    var version = Date.now();
+    plugin.faviconVersion[name] = version;
+    $('#filterTrackersList img[data-tracker-icon]').each(function() {
+      if (this.getAttribute('data-tracker-icon') === name) {
+        $(this).attr('src', 'plugins/tracklabels/action.php?tracker=' +
+          encodeURIComponent(name) + '&t=' + version);
+      }
+    });
+  };
+  request.open('POST', 'plugins/tracklabels/action.php');
+  request.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+  request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+  request.send('fetch=1&tracker=' + encodeURIComponent(name));
+};
+
 plugin.renderFilterPage = function() {
   var total = $('.torrentBlock').length;
 
@@ -578,8 +601,16 @@ plugin.renderFilterPage = function() {
   var trackersList = $('#filterTrackersList').empty();
   trackersList.append(plugin.makeFilterItem(theUILang.All, total, !plugin.filters.tracker.length, 'tracker', null, 'bi-asterisk'));
   $.each(this.trackerList, function(i, t) {
-    var icon = trackLabels ? {img: 'plugins/tracklabels/action.php?tracker=' + encodeURIComponent(t.name)} : 'bi-globe2';
-    trackersList.append(plugin.makeFilterItem(t.name, t.count, $.inArray(t.name, plugin.filters.tracker) >= 0, 'tracker', t.name, icon));
+    var uri = 'plugins/tracklabels/action.php?tracker=' + encodeURIComponent(t.name);
+    if (plugin.faviconVersion[t.name]) uri += '&t=' + plugin.faviconVersion[t.name];
+    var icon = trackLabels ? {img: uri} : 'bi-globe2';
+    var item = plugin.makeFilterItem(t.name, t.count,
+      $.inArray(t.name, plugin.filters.tracker) >= 0, 'tracker', t.name, icon);
+    if (trackLabels) {
+      item.find('img').attr('data-tracker-icon', t.name);
+      plugin.warmTrackerFavicon(t.name);
+    }
+    trackersList.append(item);
   });
 };
 

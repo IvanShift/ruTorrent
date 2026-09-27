@@ -8,6 +8,7 @@
 
  theUILang.accLogin		= "Логин";
  theUILang.accPassword		= "Пароль";
+theUILang.accClearPassword = "Удалить сохранённый пароль";
  theUILang.accAccounts		= "Аккаунты";
  theUILang.accAuto		= "Автологин";
  theUILang.acAutoNone		= "Нет";

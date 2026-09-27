@@ -329,8 +329,8 @@ try {
     sourceSame(true, (new rCache())->set($legacy), 'legacy root-dot key saved verbatim');
     sourceSame(array('old' => 'secret'), rCookies::load()->getCookiesForHost('legacy.test'),
         'old root-dot key is readable under its canonical host');
-    sourceSame(array('legacy.test' => array('old' => 'secret')), rCookies::load()->getInfo(),
-        'loading legacy keys exposes only the normalized host');
+    sourceSame(array('legacy.test' => true), rCookies::load()->getInfo(),
+        'loading legacy keys exposes only the normalized host without its value');
     $legacy = rCookies::load();
     $legacy->add('legacy.test', '');
     sourceSame(array(), rCookies::load()->getCookiesForHost('legacy.test.'),

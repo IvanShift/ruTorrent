@@ -136,12 +136,8 @@ if ($png_name !== null) {
 				set_time_limit(0);
 
 				$client = new Snoopy();
-				$proxyConfigured = $client->proxy_host !== '' && $client->proxy_port !== '';
 				$client->block_private = true;
 				$client->private_allowlist = array();
-				// Direct connections keep Snoopy's checked DNS address pinned through connect.
-				$client->proxy_host = '';
-				$client->proxy_port = '';
 				$client->read_timeout = 5;
 				$client->_fp_timeout = 5;
 				foreach (['favicon.ico', 'favicon.png'] as $favicon) {
@@ -163,8 +159,6 @@ if ($png_name !== null) {
 						break;
 					}
 				}
-				if ($proxyConfigured)
-					FileUtil::toLog('tracklabels: favicon unavailable: configured proxy bypassed for DNS pinning');
 			}
 		}
 	}

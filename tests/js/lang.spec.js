@@ -134,7 +134,7 @@ describe("localization", () => {
           // loginmgr-warning.spec.js and task-kill-refusal.spec.js.
           const langDir = path.relative(ROOT, dir);
           const explicitFallback = name !== "ru.js" && (
-            (langDir === "plugins/loginmgr/lang" && key === "accOriginRequired") ||
+            (langDir === "plugins/loginmgr/lang" && (key === "accOriginRequired" || key === "accClearPassword")) ||
             (langDir === "plugins/_task/lang" && (key === "tskKillRefused" || key === "tskKillUnknown")));
           if (!(key in theirs) && !explicitFallback)
             missing.push(`${path.relative(ROOT, dir)}/${name}: ${key}`);

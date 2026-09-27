@@ -53,6 +53,11 @@ if (!class_exists('SQLite3')) {
 }
 $route = getenv('ROUTE_FILE');
 chdir(dirname($route));
+if (getenv('ROUTE_PROXY_PORT') !== false) {
+    require getenv('ROUTE_ROOT') . '/php/util.php';
+    $httpProxy = array('use' => true, 'proto' => 'http',
+        'host' => '127.0.0.1', 'port' => (int)getenv('ROUTE_PROXY_PORT'));
+}
 require basename($route);
 PHP
         );
@@ -462,6 +467,65 @@ PHP
     }
 
 
+
+    public function testTracklabelsUsesConfiguredProxyForPublicFavicon()
+    {
+        $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+        $this->assertTrue($server !== false, 'synthetic favicon proxy listens: ' . $error);
+        $port = (int)substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
+        $route = 'plugins/tracklabels/action.php';
+        $env = array(
+            'RU_PROFILE_PATH' => $this->scratch . '/profile',
+            'RU_LOG_FILE' => $this->scratch . '/errors.log',
+            'ROUTE_ROOT' => $this->root,
+            'ROUTE_FILE' => $this->root . '/' . $route,
+            'ROUTE_METHOD' => 'POST',
+            'ROUTE_GET' => '{}',
+            'ROUTE_POST' => json_encode(array('tracker' => '93.184.216.34', 'fetch' => '1')),
+            'ROUTE_BODY' => 'tracker=93.184.216.34&fetch=1',
+            'ROUTE_HEADERS' => json_encode(array('HTTP_HOST' => 'localhost',
+                'REQUEST_SCHEME' => 'http', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest',
+                'HTTP_ORIGIN' => 'http://localhost')),
+            'ROUTE_SQL_TRACE' => $this->scratch . '/sql.log',
+            'ROUTE_PROXY_PORT' => (string)$port,
+        );
+        $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
+            $this->scratch . '/request.php'),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, null, $env);
+        $this->assertTrue(is_resource($proc), 'favicon request starts');
+        fclose($pipes[0]);
+        try {
+            $peer = @stream_socket_accept($server, 3);
+            $this->assertTrue($peer !== false, 'favicon request reaches the configured proxy');
+            if ($peer === false) return;
+            stream_set_timeout($peer, 2);
+            $wire = '';
+            while (strpos($wire, "\r\n\r\n") === false && strlen($wire) < 8192) {
+                $part = fread($peer, 4096);
+                if ($part === false || $part === '') break;
+                $wire .= $part;
+            }
+            $icon = base64_decode('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=');
+            fwrite($peer, "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: "
+                . strlen($icon) . "\r\n\r\n" . $icon);
+            fclose($peer);
+            $out = stream_get_contents($pipes[1]);
+            $err = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(0, proc_close($proc), 'favicon route exits: ' . $err);
+            $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico HTTP/') === 0,
+                'public literal remains the proxy request target');
+            $this->assertSame($icon, $out, 'proxy-only favicon reaches the image response');
+            $this->assertSame($icon,
+                file_get_contents($this->scratch . '/profile/settings/trackers/93.184.216.34.ico'),
+                'proxy-only favicon is cached');
+        } finally {
+            fclose($server);
+            if (is_resource($proc)) proc_terminate($proc);
+        }
+    }
 
     public function testTracklabelsCachedIconReadNeedsNoBrowserHeaders()
     {

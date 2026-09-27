@@ -8,6 +8,9 @@ class _cloudflareHooks
 
 	static public function OnURLFetched( $prm )
 	{
+		// cloudscraper re-resolves the URL without Snoopy's private-address guard.
+		if(!empty($prm['client']->block_private))
+			return;
 		if(!self::$in_progress &&
 			($prm['method']=='GET'))
 		{

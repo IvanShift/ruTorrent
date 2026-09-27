@@ -16,7 +16,12 @@ if(isset($_REQUEST['mode']))
 		case "set":
 		{
 			Requests::requirePost();
-			$em->set();
+			if(!$em->set())
+			{
+				FileUtil::toLog('loginmgr: account-save-failed');
+				http_response_code(500);
+				exit('Account settings could not be saved.');
+			}
 			CachedEcho::send($em->get(),"application/javascript");
 			break;
 		}

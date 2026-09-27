@@ -11,7 +11,10 @@ switch($cmd)
 	{
 		$cookies = rCookies::load();
 		if(isset($_REQUEST['host']))
-			CachedEcho::send(JSON::safeEncode($cookies->getCookiesForHost($_REQUEST['host'])),"application/json");
+		{
+			$hosts = $cookies->getInfo();
+			CachedEcho::send(JSON::safeEncode(isset($hosts[UrlHost::normalize($_REQUEST['host'])])),"application/json");
+		}
 		else
 			CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
 	}
@@ -28,7 +31,15 @@ switch($cmd)
 	{
 		Requests::requirePost();
 		$cookies = new rCookies();
-		$cookies->set();
+		try
+		{
+			$cookies->set();
+		}
+		catch(InvalidArgumentException $error)
+		{
+			header('HTTP/1.0 400 Bad Request', true, 400);
+			CachedEcho::send($error->getMessage(),"text/plain");
+		}
 		CachedEcho::send($cookies->get(),"application/javascript");
 	}
 	default:

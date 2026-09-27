@@ -372,7 +372,7 @@ class accountManager
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			$configurationRequired = $this->configurationRequired($nfo);
-			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem($nfo["password"]).", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"].", configurationRequired: ".($configurationRequired ? 'true' : 'false')." },";
+			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem("").", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"].", configurationRequired: ".($configurationRequired ? 'true' : 'false')." },";
 		}
 		$len = strlen($ret);
 		if($ret[$len-1]==',')
@@ -388,15 +388,23 @@ class accountManager
 				$this->accounts[$name]["enabled"] = $_POST[$name."_enabled"];
 			if(isset($_POST[$name."_login"]))
 				$this->accounts[$name]["login"] = $_POST[$name."_login"];
-			if(isset($_POST[$name."_password"]))
+			// An empty edit keeps the stored value; only the separate clear flag removes it.
+			if(isset($_POST[$name."_clear_password"]) && $_POST[$name."_clear_password"] === '1')
+				$this->accounts[$name]["password"] = '';
+			else if(isset($_POST[$name."_password"]) && $_POST[$name."_password"] !== '')
 				$this->accounts[$name]["password"] = $_POST[$name."_password"];
 			if(isset($_POST[$name."_auto"]))
 				$this->accounts[$name]["auto"] = intval($_POST[$name."_auto"]);
+		}
+		if(!$this->store())
+			return(false);
+		foreach($this->accounts as $name=>$nfo)
+		{
 			$data = new privateData( $name );
 			$data->remove();
 		}
-		$this->store();
 		$this->setHandlers();
+		return(true);
 	}
 
 	public function getAccount( $url, &$httpsAccount = null )
@@ -459,6 +467,7 @@ class accountManager
 			$nfo["name"] = $name;
 			$object = new $nfo["object"]();
 			$nfo["url"] = $object->url;
+			$nfo["password"] = '';
 			$nfo["configurationRequired"] = $this->configurationRequired($nfo, $object);
 			unset($nfo["object"]);
 			unset($nfo["path"]);

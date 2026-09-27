@@ -94,6 +94,20 @@ class SnoopyResolvesToPublic extends Snoopy
     }
 }
 
+class SnoopyProxyTargetProbe extends SnoopyResolvesToPublic
+{
+    public $requestTarget;
+    public $requestHost;
+    public function connect() { return fopen('php://memory', 'r+'); }
+    public function _httprequest($url, $fp, $URI, $method, $content_type = '', $body = '')
+    {
+        $this->requestTarget = $url;
+        $this->requestHost = $this->host;
+        $this->status = 200;
+        return true;
+    }
+}
+
 // Records the live fetch() policy without network or another plugin's test harness.
 class SnoopyWithoutZlib extends Snoopy
 {
@@ -1053,6 +1067,76 @@ $tests = array(
             isset($args[$flag + 1]) ? $args[$flag + 1] : null,
             'Pinned address must be the one the guard validated'
         );
+    },
+    'guarded HTTPS fixes whether curl uses a configured proxy' => function () {
+        $direct = new SnoopyResolvesToPublic();
+        $direct->block_private = true;
+        testAssertTrue($direct->fetch('https://tracker.test/favicon.ico'),
+            'Guarded direct fetch completes');
+        $args = snoopyCurlArgs();
+        $flag = array_search('--noproxy', $args, true);
+        testAssertSame('*', $flag === false ? null : ($args[$flag + 1] ?? null),
+            'A curl environment proxy must not evade direct DNS pinning');
+
+        $proxied = new SnoopyResolvesToPublic();
+        $proxied->proxy_host = '127.0.0.1';
+        $proxied->proxy_port = 3128;
+        $proxied->block_private = true;
+        testAssertTrue($proxied->fetch('https://tracker.test/favicon.ico'),
+            'Guarded configured-proxy fetch completes');
+        $args = snoopyCurlArgs();
+        $flag = array_search('--noproxy', $args, true);
+        testAssertSame('', $flag === false ? null : ($args[$flag + 1] ?? null),
+            'NO_PROXY must not bypass the configured pinned proxy');
+    },
+    'an HTTP proxy receives only the checked public IP as its request target' => function () {
+        $client = new SnoopyProxyTargetProbe();
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        $client->block_private = true;
+        testAssertTrue($client->fetch('http://tracker.test/favicon.ico'),
+            'Guarded proxy request must complete: ' . $client->error);
+        testAssertSame('http://93.184.216.34/favicon.ico', $client->requestTarget,
+            'The proxy must not resolve the user-selected hostname');
+        testAssertSame('tracker.test', $client->requestHost,
+            'The origin Host header must still identify the tracker');
+    },
+    'an HTTPS proxy CONNECT uses the checked public IP' => function () {
+        $client = new SnoopyResolvesToPublic();
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        $client->block_private = true;
+        testAssertTrue($client->fetch('https://tracker.test/favicon.ico'),
+            'Guarded proxy request must complete: ' . $client->error);
+        $args = snoopyCurlArgs();
+        $flag = array_search('--connect-to', $args, true);
+        testAssertTrue($flag !== false, 'The proxy CONNECT needs a pinned public IP');
+        testAssertSame('tracker.test:443:93.184.216.34:443', $args[$flag + 1] ?? null,
+            'The proxy CONNECT destination must be the validated address');
+    },
+    'an HTTPS proxy receives a checked IP target for plain HTTP' => function () {
+        $client = new SnoopyResolvesToPublic();
+        $client->proxy_proto = 'https';
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        $client->block_private = true;
+        testAssertTrue($client->fetch('http://tracker.test/favicon.ico'),
+            'Guarded HTTPS proxy request must complete: ' . $client->error);
+        $args = snoopyCurlArgs();
+        $flag = array_search('--request-target', $args, true);
+        testAssertTrue($flag !== false, 'HTTPS proxy needs a checked absolute HTTP target');
+        testAssertSame('http://93.184.216.34/favicon.ico', $args[$flag + 1] ?? null,
+            'HTTPS proxy cannot re-resolve the tracker hostname');
+    },
+    'a guarded proxy refuses private targets before connecting' => function () {
+        $client = new SnoopyProxyTargetProbe();
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        $client->block_private = true;
+        testAssertSame(false, $client->fetch('http://127.0.0.1/favicon.ico'),
+            'A private literal must not reach the proxy');
+        testAssertSame(null, $client->requestTarget,
+            'No proxy request may be written for a private literal');
     },
     'the guard covers ranges filter_var calls public' => function () {
         $client = new Snoopy();
