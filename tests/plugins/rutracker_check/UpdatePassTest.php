@@ -2810,8 +2810,14 @@ upTest($suite, 'the exact Yomi legacy generation is revived once', function () {
     $checkedAt = '1790391624';
     sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, $successor)));
     rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
-    rXMLRPCRequest::queue('branch', true, false,
-        array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
+    rXMLRPCRequest::queue('branch', true, false, function () use ($old) {
+        $readable = false;
+        $state = RuTrackerState::load('legacy_revival', $readable);
+        strictAssertTrue($readable && isset($state['attempts'][$old]['token']),
+            'the exact intent is readable before the daemon receives a start branch');
+        return array(RuTrackerAtomicOwnership::SENTINEL_REVIVED);
+    });
 
     $log = testCapturedAppLog(function () use ($checkedAt) {
         RuTrackerUpdatePass::sweepReplacements((int) $checkedAt + 3601);
@@ -2836,7 +2842,51 @@ upTest($suite, 'the exact Yomi legacy generation is revived once', function () {
         'the one-time latch is reserved before any restart action');
     strictAssertTrue(strpos($log, 'legacy-strand recovery acted') !== false,
         'the recovery result is visible to the operator');
+    $intent = RuTrackerState::load('legacy_revival')['attempts'][$old] ?? null;
+    strictAssertTrue(is_array($intent), 'the one-shot intent was published before the branch');
+    strictAssertSame($successor, $intent['successor'], 'intent binds the approved successor');
+    strictAssertSame($checkedAt, $intent['checked_at'], 'intent binds the check generation');
+    strictAssertSame('1790391635', $intent['state_changed'], 'intent binds the run generation');
+    strictAssertSame('9', $intent['state_counter'], 'intent binds the run counter');
+    strictAssertSame(str_repeat('A', 40), $intent['local_id'], 'intent records the daemon object');
+    rXMLRPCRequest::reset();
+    $heldClaim = ruTrackerChecker::claimCheckForWorker($old, (int) $checkedAt + 3601);
+    strictAssertTrue(is_string($heldClaim), 'a killed first worker can leave its checker claim');
+    try {
+        sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, $successor)));
+        $hold = testCapturedAppLog(function () use ($checkedAt) {
+            RuTrackerUpdatePass::sweepReplacements((int) $checkedAt + 3601);
+        });
+    } finally {
+        ruTrackerChecker::releaseCheckForWorker($old, $heldClaim);
+    }
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'a later daemon session with the old empty latch does not re-run revival');
+    strictAssertTrue(strpos($hold, 'already-published') !== false
+        && strpos($hold, 'manual hold') !== false, 'the spent intent is visible');
     sweepAssertNoStandaloneOwnershipMutation('legacy recovery');
+});
+
+upTest($suite, 'a malformed published legacy intent holds without reattempt', function () {
+    rXMLRPCRequest::reset();
+    $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
+    $new = '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A';
+    strictAssertTrue(RuTrackerState::save('legacy_revival', array('attempts' => array(
+        $old => array('successor' => $new, 'checked_at' => '1790391624',
+            'token' => str_repeat('A', 24)),
+    ))), 'a prior run published the one-shot intent');
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624', $new)));
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('branch', true, false,
+        array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::sweepReplacements(1790391624 + 3601);
+    });
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'a daemon restart cannot spend the same legacy authorization twice');
+    strictAssertTrue(strpos($log, 'legacy_revival.json') !== false
+        && strpos($log, 'manual') !== false,
+        'the prestart or unknown outcome is an operator-visible hold');
 });
 
 upTest($suite, 'a lookalike or changed Yomi generation is not restarted', function () {
@@ -2890,6 +2940,7 @@ upTest($suite, 'a spent Yomi recovery never restarts after a user stop', functio
     sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624',
         '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
     rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
     rXMLRPCRequest::queue('branch', true, false,
         array(RuTrackerAtomicOwnership::SENTINEL_SPENT));
     $log = testCapturedAppLog(function () {
@@ -2900,6 +2951,26 @@ upTest($suite, 'a spent Yomi recovery never restarts after a user stop', functio
     strictAssertTrue(strpos($log, 'legacy-strand recovery spent') !== false,
         'a later deliberate stop is reported without restarting');
     sweepAssertNoStandaloneOwnershipMutation('spent legacy recovery');
+});
+
+upTest($suite, 'an ambiguous legacy branch leaves a visible one-shot manual hold', function () {
+    rXMLRPCRequest::reset();
+    $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
+    $new = '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A';
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624', $new)));
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
+    rXMLRPCRequest::queue('branch', false, false, array());
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::sweepReplacements(1790391624 + 3601);
+    });
+    strictAssertSame(1, count(sweepBranchRequestsForHash($old)), 'one attempt was sent');
+    strictAssertTrue(isset(RuTrackerState::load('legacy_revival')['attempts'][$old]),
+        'the uncertain reply does not retire its intent');
+    strictAssertTrue(strpos($log, 'recovery unknown') !== false
+        && strpos($log, 'legacy_revival.json') !== false
+        && strpos($log, 'manual hold') !== false,
+        'the ambiguous first response names the persisted manual hold');
 });
 
 upTest($suite, 'sweepReplacements ignores a row with no marker', function () {

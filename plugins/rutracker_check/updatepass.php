@@ -1024,6 +1024,48 @@ class RuTrackerUpdatePass
         }
     }
 
+    // Publish before the single daemon branch. A published intent is never an
+    // invitation to retry: after a lost reply we cannot distinguish pre-start
+    // crash from start, user Stop and daemon restart.
+    static private function reserveLegacyRevival($hash, $successor, $allowed, $localId, $token)
+    {
+        $document = 'legacy_revival';
+        $intent = array('version' => 1, 'predecessor' => $hash,
+            'successor' => $successor, 'checked_at' => (string) $allowed['checked_at'],
+            'state_changed' => (string) $allowed['state_changed'],
+            'state_counter' => (string) $allowed['state_counter'],
+            'local_id' => $localId, 'token' => $token);
+        $published = false;
+        $failure = null;
+        $stored = RuTrackerState::update($document, function ($state) use ($hash, $intent, &$published) {
+            if (array_key_exists('attempts', $state) && !is_array($state['attempts']))
+                return $state;
+            if (isset($state['attempts']) && array_key_exists($hash, $state['attempts']))
+                return $state;
+            $state['attempts'][$hash] = $intent;
+            $published = true;
+            return $state;
+        }, $failure);
+        if (!$stored || !$published) {
+            ruTrackerChecker::logUnrepairable('update: legacy-strand manual hold for '
+                . $hash . ' -> ' . $successor . ': rutracker_check/' . $document
+                . '.json attempts[' . $hash . '] '
+                . (!$stored ? 'write-' . ($failure ?: 'unknown') : 'already-published-or-malformed')
+                . '; no automatic retry');
+            return false;
+        }
+        $readable = false;
+        $readback = RuTrackerState::load($document, $readable);
+        if (!$readable || !isset($readback['attempts'][$hash])
+            || $readback['attempts'][$hash] !== $intent) {
+            ruTrackerChecker::logUnrepairable('update: legacy-strand manual hold for '
+                . $hash . ' -> ' . $successor . ': rutracker_check/' . $document
+                . '.json attempts[' . $hash . '] readback-mismatch; no automatic retry');
+            return false;
+        }
+        return true;
+    }
+
     // Older releases could clear chk-replacing before the staged row tried to
     // revive its predecessor. The old run policy is then irrecoverable: a
     // manual check can stamp chk-state=1 on an intentionally stopped torrent.
@@ -1063,6 +1105,22 @@ class RuTrackerUpdatePass
             return;
         }
 
+        // A killed worker can still own its expiring checker claim. Report a
+        // durable manual hold first; update() below remains the publication CAS.
+        $intentReadable = false;
+        $intentState = RuTrackerState::load('legacy_revival', $intentReadable);
+        $attempts = $intentState['attempts'] ?? array();
+        if (!$intentReadable || !is_array($attempts)
+            || array_key_exists($hash, $attempts)) {
+            $reason = !$intentReadable ? 'unreadable'
+                : (!is_array($attempts) ? 'malformed' : 'already-published');
+            ruTrackerChecker::logUnrepairable('update: legacy-strand manual hold for '
+                . $hash . ' -> ' . $successor
+                . ': rutracker_check/legacy_revival.json attempts[' . $hash . '] '
+                . $reason . '; no automatic retry');
+            return;
+        }
+
         // A manual check has no cycle lock. Hold the same per-hash claim as
         // replacement and ordinary sweep before checking the successor.
         $token = ruTrackerChecker::claimCheckForWorker($hash, $now);
@@ -1083,18 +1141,35 @@ class RuTrackerUpdatePass
                 return;
             }
 
-            // The approved generation is checked again in the daemon branch.
-            // A later deliberate stop returns SPENT instead of starting again.
+            $identity = new rXMLRPCRequest(
+                new rXMLRPCCommand(getCmd('d.get_local_id'), array($hash)));
+            $identity->important = false;
+            if (!$identity->success() || $identity->fault || !is_array($identity->val)
+                || count($identity->val) !== 1 || !is_string($identity->val[0])
+                || preg_match('/^[0-9A-F]{40}$/D', $identity->val[0]) !== 1) {
+                ruTrackerChecker::logUnrepairable('update: legacy-strand recovery skipped for '
+                    . $hash . ' -> ' . $successor . ': local-id-unknown; no start');
+                return;
+            }
+            if (!self::reserveLegacyRevival($hash, $successor, $allowed,
+                $identity->val[0], $token)) return;
+
+            // The approved generation and local identity are checked again in
+            // the same daemon branch that opens and starts the predecessor.
             $status = RuTrackerAtomicOwnership::revivePredecessor($hash, '',
                 array('started' => true, 'open' => true), $checkedAt,
                 array('state' => 0, 'is_open' => 0,
                     'state_changed' => $allowed['state_changed'],
-                    'state_counter' => $allowed['state_counter']),
+                    'state_counter' => $allowed['state_counter'],
+                    'local_id' => $identity->val[0]),
                 array('chk-meta-new' => $successor, 'chk-state' => '1',
                     'chk-time' => (string) $checkedAt, 'chk-replacement' => '',
                     'chk-replaces' => ''));
             ruTrackerChecker::logUnrepairable('update: legacy-strand recovery '
-                . $status . ' for ' . $hash . ' -> ' . $successor);
+                . $status . ' for ' . $hash . ' -> ' . $successor
+                . ($status === RuTrackerAtomicOwnership::ACTED ? ''
+                    : '; rutracker_check/legacy_revival.json attempts[' . $hash
+                        . '] retained for manual hold; no automatic retry'));
         } finally {
             ruTrackerChecker::releaseCheckForWorker($hash, $token);
         }

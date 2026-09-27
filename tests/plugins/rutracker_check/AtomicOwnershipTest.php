@@ -247,6 +247,31 @@ $suite->test('conditional revival checks spent stamp and updates chk-revived on 
         'success branch returns REVIVED sentinel');
 });
 
+$suite->test('legacy revival binds the start branch to the observed local id', function () use ($validHash) {
+    $localId = str_repeat('A', 40);
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    $result = RuTrackerAtomicOwnership::revivePredecessor($validHash, '',
+        array('started' => true, 'open' => true), 1234567890,
+        array('local_id' => $localId), array('chk-meta-new' => str_repeat('B', 40),
+            'chk-state' => '1', 'chk-time' => '1234567890', 'chk-replacement' => '',
+            'chk-replaces' => ''));
+    strictAssertSame(RuTrackerAtomicOwnership::ACTED, $result, 'valid local id keeps revival eligible');
+    $condition = rXMLRPCRequest::$requests[0]['commands'][0]->params[1];
+    strictAssertTrue(strpos($condition, getCmd('d.get_local_id=')) !== false
+        && strpos($condition, $localId) !== false,
+        'the same branch checks the exact observed daemon object identity');
+    rXMLRPCRequest::reset();
+    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+        RuTrackerAtomicOwnership::revivePredecessor($validHash, '',
+            array('started' => true, 'open' => true), 1234567890,
+            array('local_id' => str_repeat('Z', 40)), array(
+                'chk-meta-new' => str_repeat('B', 40), 'chk-state' => '1',
+                'chk-time' => '1234567890', 'chk-replacement' => '', 'chk-replaces' => '')),
+        'invalid local identity is rejected before a daemon command');
+    strictAssertSame(0, count(rXMLRPCRequest::$requests), 'invalid identity sends no branch');
+});
+
 $suite->test('conditional revival has the exact nested spent and verify grammar', function () use ($validHash) {
     $expectedReplacing = RuTrackerReplacementRecord::encode(str_repeat('C', 40), true, true, 1234567890);
     rXMLRPCRequest::reset();

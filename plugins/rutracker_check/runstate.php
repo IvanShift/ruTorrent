@@ -279,6 +279,12 @@ class RuTrackerAtomicOwnership
         return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), (string) $value) . '"';
     }
 
+    static private function localIdCondition($localId)
+    {
+        return 'equal=' . self::quoteRtorrentArgument(getCmd('d.get_local_id='))
+            . ',' . self::quoteRtorrentArgument('cat=' . self::quoteRtorrentArgument($localId));
+    }
+
     static private function isValidHash($hash)
     {
         return is_string($hash) && preg_match('/^[0-9a-fA-F]{40}$/D', $hash) === 1;
@@ -335,6 +341,8 @@ class RuTrackerAtomicOwnership
                 if (RuTrackerRpcValue::canonicalNonnegativeInteger($v) === null) return false;
             } elseif (in_array($k, array('state', 'is_open', 'is_meta'), true)) {
                 if ($v !== 0 && $v !== 1 && $v !== '0' && $v !== '1') return false;
+            } elseif ($k === 'local_id') {
+                if (!is_string($v) || preg_match('/^[0-9A-F]{40}$/D', $v) !== 1) return false;
             } else {
                 return false;
             }
@@ -360,6 +368,10 @@ class RuTrackerAtomicOwnership
             $conditions[] = 'equal=' . getCmd('d.get_custom=') . $k . ',cat=' . $v;
         }
         foreach ($expectedValues as $k => $v) {
+            if ($k === 'local_id') {
+                $conditions[] = self::localIdCondition($v);
+                continue;
+            }
             // Through the one canonical parser, not a second weaker cast.
             $intVal = RuTrackerRpcValue::canonicalNonnegativeInteger($v);
             if ($intVal === null || (in_array($k, array('state', 'is_open', 'is_meta'), true)
@@ -490,8 +502,7 @@ class RuTrackerAtomicOwnership
             $parts[] = self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . $key
                 . ',' . self::quoteRtorrentArgument($value));
         }
-        $condition = 'equal=' . self::quoteRtorrentArgument(getCmd('d.get_local_id='))
-            . ',' . self::quoteRtorrentArgument('cat=' . self::quoteRtorrentArgument($localId));
+        $condition = self::localIdCondition($localId);
         $body = 'cat=' . implode(',', $parts) . ',' . self::SENTINEL_ACTED;
         return self::executeBranch($hash, $condition, $body,
             'cat=' . self::SENTINEL_SKIPPED, array(
