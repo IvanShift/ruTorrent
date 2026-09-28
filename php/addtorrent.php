@@ -2,32 +2,71 @@
 
 require_once( 'Snoopy.class.inc');
 require_once( 'rtorrent.php' );
-require_once( __DIR__ . '/torrentfetch.php' );
 set_time_limit(0);
+
+/**
+ * Encode a value for use as a literal in the script this page serves.
+ *
+ * The result of this page is evaluated by the client (js/content.js), so
+ * every reflected value has to be a complete literal that no input can end.
+ * The HEX flags also keep <, >, & and both quote characters out of the bytes,
+ * so the response cannot be turned into markup by asking for it directly.
+ *
+ * A unix filename is a string of bytes and need not be valid UTF-8, and it
+ * reaches here as name[]. json_encode() answers false for bytes it cannot
+ * encode, which concatenates as nothing at all and leaves the call with an
+ * argument missing rather than an argument that is a literal. So the invalid
+ * bytes become the replacement character, and a refusal for any other reason
+ * still yields a literal.
+ */
+function addtorrent_literal($value)
+{
+	$literal = json_encode(strval($value),
+		JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_UNESCAPED_SLASHES|
+		JSON_INVALID_UTF8_SUBSTITUTE);
+	return($literal===false ? '""' : $literal);
+}
+
+// The result of one load: the hash it returned is a duplicate when it was
+// loaded before this request, or by an earlier item of it.
+function addtorrent_status($hash, &$loaded)
+{
+	if($hash===false)
+		return("Failed");
+	$hash = strtoupper($hash);
+	if(isset($loaded[$hash]))
+		return("Duplicate");
+	$loaded[$hash] = true;
+	return("Success");
+}
 
 if(isset($_REQUEST['result']))
 {
+	$results = is_array($_REQUEST['result']) ? array_values($_REQUEST['result']) : array($_REQUEST['result']);
 	if(isset($_REQUEST['json']))
-		CachedEcho::send( '{ "result" : "'.$_REQUEST['result'][0].'" }',"application/json");
+		CachedEcho::send( '{ "result" : '.addtorrent_literal(isset($results[0]) ? $results[0] : '').' }',
+			"application/json");
 	else
 	{
+		$names = (isset($_REQUEST['name']) && is_array($_REQUEST['name']))
+			? array_values($_REQUEST['name']) : array();
 		$js = '';
-		foreach( $_REQUEST['result'] as $ndx=>$result )
+		foreach( $results as $ndx=>$result )
 		{
-			$status = in_array($result, array('Success', 'Pending', 'Failed',
+			$status = in_array($result, array('Success', 'Duplicate', 'Pending', 'Failed',
 				'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
-			$message = $status === 'Pending'
-				? 'theUILang.addTorrentPending'
-				: 'theUILang.addTorrent'.$status;
-			$kind = $status === 'Success' ? 'success' : ($status === 'Pending' ? 'warning' : 'error');
-			$js.= ('noty("'.(isset($_REQUEST['name'][$ndx]) ? addslashes(rawurldecode(htmlspecialchars($_REQUEST['name'][$ndx]))).' - ' : '').
-				'"+'.$message.',"'.$kind.'");');
+			$kind = $status === 'Success' ? 'success'
+				: ($status === 'Duplicate' ? 'alert' : ($status === 'Pending' ? 'warning' : 'error'));
+			$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? ($names[$ndx].' - ') : '').
+				'+theUILang["addTorrent"+'.addtorrent_literal($status).']'.
+				','.addtorrent_literal($kind).');');
 		}
 		CachedEcho::send($js,"text/html");
 	}
 }
 else
 {
+	require_once( __DIR__ . '/torrentfetch.php' );
 	if(($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && isset($_GET['url']))
 	{
 		if(!is_string($_GET['url']) || trim($_GET['url']) === '')
@@ -60,9 +99,14 @@ else
 		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}
+	// No addition is taken from the request. An addition is an rtorrent command
+	// appended to the load call, so accepting one here would let a request name
+	// the commands the daemon runs. The parameter stays on rTorrent::sendTorrent()
+	// and rTorrent::sendMagnet() for the plugins that build one in php.
 	$addition = null;
-	if(isset($_REQUEST['addition']) && is_array($_REQUEST['addition']))
-		$addition = $_REQUEST['addition'];
+	$loaded = rTorrent::loadedHashes();
+	if($loaded===false && empty($uploaded_files))
+		$uploaded_files = array( array( 'status' => "Failed" ) );
 	if(empty($uploaded_files))
 	{
 		if(isset($_FILES['torrent_file']))
@@ -103,10 +147,10 @@ else
 					$uploaded_url = array( 'name'=>$url, 'status'=>"Failed" );
 					if(strpos($url,"magnet:")===0)
 					{
-						$uploaded_url['status'] = (rTorrent::sendMagnet($url,
+						$uploaded_url['status'] = addtorrent_status(rTorrent::sendMagnet($url,
 							!isset($_REQUEST['torrents_start_stopped']),
 							!isset($_REQUEST['not_add_path']),
-							$dir_edit,$label,$addition) ? "Success" : "Failed" );
+							$dir_edit,$label,$addition), $loaded);
 					}
 					else
 					{
@@ -167,15 +211,16 @@ else
 					!isset($_REQUEST['torrents_start_stopped']),
 					!isset($_REQUEST['not_add_path']),
 					$dir_edit,$label,$saveUploadedTorrents,isset($_REQUEST['fast_resume']),true,$addition,$pendingReceipt);
-				if($load===false)
-				{
-					@unlink($file['file']);
-					$file['status'] = "Failed";
-				}
-				elseif($load===null)
+				if($load===null)
 				{
 					$file['status'] = "Pending";
 					if(!$saveUploadedTorrents && !empty($pendingReceipt['raw']))
+						@unlink($file['file']);
+				}
+				else
+				{
+					$file['status'] = addtorrent_status($load, $loaded);
+					if($file['status']!='Success')
 						@unlink($file['file']);
 				}
 			}

@@ -135,6 +135,14 @@ class rTorrent
         return strpos((string) $command->params[2], '$' . getCmd('d.erase=')) !== false;
     }
 
+    public static function additionCommand($command, ...$values)
+    {
+        $quoted = array();
+        foreach($values as $value)
+            $quoted[] = '"'.str_replace(array('\\', '"'), array('\\\\', '\"'), (string)$value).'"';
+        return getCmd($command.'=').implode(',', $quoted);
+    }
+
     public static function sendTorrent($torrent, $isStart, $isAddPath, $directory, $label,
         $saveTorrent, $isFast, $isNew = true, $addition = null)
     {
@@ -142,10 +150,10 @@ class rTorrent
             'torrent', 'isStart', 'isAddPath', 'directory', 'label',
             'saveTorrent', 'isFast', 'isNew', 'addition'
         );
-        $prefix = getCmd('d.set_custom') . '=chk-replacement,';
+        $prefix = getCmd('d.set_custom') . '="chk-replacement","';
         foreach ((array) $addition as $command)
             if (strpos((string) $command, $prefix) === 0) {
-                self::$replacementMarker = substr((string) $command, strlen($prefix));
+                self::$replacementMarker = substr((string) $command, strlen($prefix), -1);
                 break;
             }
         return strtoupper((string) $torrent->hash_info());

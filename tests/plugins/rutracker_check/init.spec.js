@@ -442,7 +442,17 @@ describe("the manual check", () => {
     };
     theWebUI.createMenu.call(webUI, {}, "H");
 
-    expect(added[0][1][1]).toBe("theWebUI.perform( 'checktorrent' )");
+    const command = added[0][1][1];
+    expect(command).toEqual(expect.any(Function));
+    const previousPerform = theWebUI.perform;
+    theWebUI.perform = jest.fn();
+    try {
+      command();
+      expect(theWebUI.perform).toHaveBeenCalledTimes(1);
+      expect(theWebUI.perform).toHaveBeenCalledWith("checktorrent");
+    } finally {
+      theWebUI.perform = previousPerform;
+    }
   });
 
   it("reports an accepted batch as queued with its accepted count", () => {

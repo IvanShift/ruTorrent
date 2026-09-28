@@ -14,7 +14,7 @@ if(plugin.canChangeMenu())
 			{
 				theContextMenu.add( el, [theUILang.checkTorrent,
 					((this.getTable("trt").selCount>1) && this.getHashes('checktorrent')) ||
-					this.isTorrentCommandEnabled("checktorrent",id) ? "theWebUI.perform( 'checktorrent' )" : null] );
+					this.isTorrentCommandEnabled("checktorrent",id) ? () => theWebUI.perform( 'checktorrent' ) : null] );
 			}
 		}
 	}

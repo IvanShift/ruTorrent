@@ -97,8 +97,10 @@ SCRIPT;
     public function testAutoToolsRetainsItsOwnOperations()
     {
         $auto = $this->probe('autotools');
-        foreach (array('rtIsDaemon', 'rtDaemon', 'rtSemGet', 'rtRemoveDirectory') as $name)
+        foreach (array('rtIsDaemon', 'rtDaemon', 'rtSemGet', 'rtScanFiles') as $name)
             $this->assertSame(true, $auto['unused'][$name], 'AutoTools retains ' . $name);
+        $this->assertSame(false, $auto['unused']['rtRemoveDirectory'],
+            'AutoTools has no legacy Move cleanup');
         $this->assertSame(true, $auto['auto_op'], 'AutoTools retains non-Move transaction');
     }
 }

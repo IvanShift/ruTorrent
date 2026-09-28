@@ -2,6 +2,7 @@
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php");
 require_once( dirname(__FILE__)."/../../php/settings.php");
+require_once( dirname(__FILE__)."/../../php/utility/json.php");
 require_once( dirname(__FILE__).'/../_task/task.php' );
 eval( FileUtil::getPluginConf( 'unpack' ) );
 
@@ -68,8 +69,13 @@ class rUnpack
 	}
 	public function get()
 	{
-		return("theWebUI.unpackData = { enabled: ".$this->enabled.", path : '".addslashes( $this->path ).
-			"', filter : '".addslashes( $this->filter )."', addLabel: ".$this->addLabel.", addName: ".$this->addName." };\n");
+		return("theWebUI.unpackData = ".JSON::jsValue(array(
+			'enabled' => intval($this->enabled),
+			'path' => (string)$this->path,
+			'filter' => (string)$this->filter,
+			'addLabel' => intval($this->addLabel),
+			'addName' => intval($this->addName)
+		)).";\n");
 	}
 
 	protected static function log( $msg )

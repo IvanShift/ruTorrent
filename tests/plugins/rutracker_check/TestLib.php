@@ -477,6 +477,7 @@ function fetchErrorParityCases()
             'refused-non-public-address'),
         array('credential-redirect-refused', 'redirect-refused'),
         array('Error: cURL could not retrieve the document, error 6.', 'curl-transfer'),
+        array('Error: cURL could not verify the certificate of "tracker.invalid" (error 60). Install the certificate authority that signed it.', 'certificate-verification'),
         array('socket creation failed (-3)', 'socket-create'),
         array('dns lookup failure (-4)', 'dns-lookup'),
         array('connection refused or timed out (-5)', 'connect-refused'),
@@ -511,7 +512,7 @@ function fetchErrorParityCases()
 function fetchErrorTokenVocabulary()
 {
     return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
-        'redirect-refused', 'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
+        'redirect-refused', 'curl-transfer', 'certificate-verification', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',

@@ -36,6 +36,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
             => 'refused-non-public-address',
         'credential-redirect-refused' => 'redirect-refused',
         'Error: cURL could not retrieve the document, error 28.' => 'curl-transfer',
+        'Error: cURL could not verify the certificate of "tracker.invalid" (error 60). Install the certificate authority that signed it.' => 'certificate-verification',
         'socket creation failed (-3)' => 'socket-create',
         'dns lookup failure (-4)' => 'dns-lookup',
         'connection refused or timed out (-5)' => 'connect-refused',
@@ -54,10 +55,12 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
     // The original assignments, initializer, shared refusal helper and
     // second account-port refusal all use classified reasons.
-    strictAssertSame(12, count($assignments[0]),
+    strictAssertSame(14, count($assignments[0]),
         'new direct Snoopy error assignments require classification');
     strictAssertSame(11, substr_count($source, 'refuseResponseBody('),
         'new body refusals require an explicit classified case');
+    strictAssertTrue(strpos($source, "\$this->error = 'oversized-response';") !== false,
+        'the oversized response assignment stays classified');
     // Count alone misses a reworded assignment. For direct assignments,
     // include the opening quote and literal prefix: a changed first word
     // otherwise still matches a needle taken from the middle of the message.
@@ -68,6 +71,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'refused-non-public-address' => '\'Refusing to fetch: host "',
         'redirect-refused' => 'self::CREDENTIAL_REDIRECT_REFUSED',
         'curl-transfer' => '"Error: cURL could not retrieve the document, error ',
+        'certificate-verification' => '"Error: cURL could not verify the certificate of ',
         'socket-create' => '"socket creation failed (-3)"',
         'dns-lookup' => '"dns lookup failure (-4)"',
         'connect-refused' => '"connection refused or timed out (-5)"',

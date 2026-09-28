@@ -142,13 +142,15 @@ function rtScanFiles( $path, $mask, $subdir = '' )
 	$ret = array();
 	if( is_dir( $path.$subdir ) )
 	{
-		$handle = opendir( $path.$subdir );
+		$handle = @opendir( $path.$subdir );
+		if( $handle === false )
+			return $ret;
 		while( false !== ( $item = readdir( $handle ) ) )
 		{
 			if( $item == '.' || $item == '..' )
 				continue;
 			$path_to_item = $path.$subdir.$item;
-			if( is_dir( $path_to_item ) )
+			if( !is_link( $path_to_item ) && is_dir( $path_to_item ) )
 			{
 				$ret = array_merge( $ret,
 					rtScanFiles( $path, $mask, $subdir.$item ) );
@@ -164,36 +166,6 @@ function rtScanFiles( $path, $mask, $subdir = '' )
 	return ( $ret );
 }
 
-
-//------------------------------------------------------------------------------
-// Recursively remove $path directory (optionally with or without files)
-//------------------------------------------------------------------------------
-function rtRemoveDirectory( $path, $with_files = false )
-{
-	$path = rtRemoveTailSlash( $path );
-	if( !file_exists( $path ) || !is_dir( $path ) )
-		return false;
-	$handle = opendir( $path );
-	$empty = true;
-	while( false !== ( $item = readdir( $handle ) ) )
-	{
-		if( $item == '.' || $item == '..' )
-			continue;
-		$path_to_item = $path.'/'.$item;
-		if( is_dir( $path_to_item ) )
-		{
-			if( !rtRemoveDirectory( $path_to_item, $with_files ) )
-				$empty = false;
-		}
-		else
-		{
-			if( !$with_files || !unlink( $path_to_item ) )
-				$empty = false;
-		}
-	}
-	closedir( $handle );
-	return ( $empty && rmdir( $path ) );
-}
 
 // A finished hook can repeat. Keep its prepared files and old destinations until
 // a later invocation can prove that every listed name was published.

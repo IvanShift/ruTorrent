@@ -2,6 +2,8 @@
 require_once( 'xmpp.php' );
 Requests::requirePost();
 
-$at = new rXmpp();
+// Loaded rather than built empty: a request that leaves the password alone
+// has to find the stored one here for set() to keep it.
+$at = rXmpp::load();
 $at->set();
 CachedEcho::send($at->get(),"application/javascript");

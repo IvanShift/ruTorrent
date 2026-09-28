@@ -386,6 +386,30 @@ class CacheTest extends TestCase
 		}
 	}
 
+	public function testSetPublishRefusalIsLoggedWithoutCacheData()
+	{
+		global $log_file;
+		$payload = new CacheMergePayload();
+		$payload->hash = 'publish-refusal-cache-test.dat';
+		$payload->rows['secret'] = 'never-log-payload-value';
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$this->assertTrue(mkdir($cacheFile, 0700), 'a directory occupies the cache key');
+		$previousLog = $log_file;
+		$log_file = FileUtil::getSettingsPath() . '/cache-publish-refusal.log';
+		try {
+			$this->assertSame(false, (new rCache())->set($payload),
+				'publish refuses to replace a directory with a cache file');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertTrue(strpos($lines, 'rCache: set refused: cache publish failed') !== false,
+				'the publish refusal names its reason in the log');
+			$this->assertSame(false, strpos($lines, 'never-log-payload-value'),
+				'the log never includes serialized cache data');
+			$this->assertTrue(is_dir($cacheFile), 'the failed publish leaves the cache key untouched');
+		} finally {
+			$log_file = $previousLog;
+		}
+	}
+
 	public function testSetLockRefusalIsLoggedWithoutCacheData()
 	{
 		global $log_file;

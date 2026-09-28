@@ -14,7 +14,7 @@ class DataDirFailureVisibilityTest extends TestCase
                 throw new RuntimeException('Could not create DataDir fixture directory');
         symlink($this->tree . '/outside', $this->tree . '/allowed/link');
         $root = dirname(__DIR__, 3);
-        foreach (array('action.php', 'setdir.php') as $name)
+        foreach (array('action.php', 'setdir.php', 'setdircommand.php') as $name)
             if (!copy($root . '/plugins/datadir/' . $name, $this->tree . '/plugins/datadir/' . $name))
                 throw new RuntimeException('Could not copy production ' . $name);
         file_put_contents($this->tree . '/php/xmlrpc.php', '<?php require_once __DIR__ . "/util.php";');
@@ -101,7 +101,8 @@ STUB
     public function tearDown()
     {
         foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'plugins/datadir/action.php',
-            'plugins/datadir/setdir.php', 'plugins/datadir/util_rt.php',
+            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php',
+            'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
             @unlink($this->tree . '/' . $file);
         @unlink($this->tree . '/allowed/link');
@@ -306,7 +307,7 @@ STUB
             'HTTP success acknowledges launch only');
         $this->assertSame('', $log, 'Successful launch produces no refusal log');
         $args = json_decode(file_get_contents($dispatch), true);
-        $this->assertTrue(is_array($args) && strpos($args[2], ' 1 0 0 ') !== false,
+        $this->assertTrue(is_array($args) && strpos($args[2], " '1' '0' '0' ") !== false,
             'UI request without the removed option dispatches the in-place worker path');
     }
 

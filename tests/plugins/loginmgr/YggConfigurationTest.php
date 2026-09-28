@@ -161,7 +161,7 @@ $tests = array(
         $log_file = '';
         try {
             $manager = yggManager();
-            testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false,
+            testAssertSame(true, strpos($manager->get(), '"configurationRequired":true') !== false,
                 'settings show disabled account without a log');
             $engine = new YggConfigSearch();
             $results = array();
@@ -177,7 +177,7 @@ $tests = array(
         $yggTorrentOrigin = '';
         $manager = yggManager();
         testAssertSame(true, $manager->getInfo()[0]['configurationRequired'], 'settings API identifies disabled origin');
-        testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false, 'settings bootstrap identifies disabled origin');
+        testAssertSame(true, strpos($manager->get(), '"configurationRequired":true') !== false, 'settings bootstrap identifies disabled origin');
         $engine = new YggConfigSearch();
         $results = array();
         $engine->action('query', 'Tout', $results, 10, false);
@@ -402,9 +402,9 @@ CHILD;
         $manager = yggManager();
         $record = $manager->accounts['YggTorrent'];
         $manager->accounts = array('RenamedYgg' => $record);
-        testAssertSame(true, strpos($manager->get(), "'RenamedYgg':") !== false,
+        testAssertSame(true, strpos($manager->get(), '"RenamedYgg":') !== false,
             'settings include the renamed account');
-        testAssertSame(true, strpos($manager->get(), 'configurationRequired: true') !== false,
+        testAssertSame(true, strpos($manager->get(), '"configurationRequired":true') !== false,
             'settings still explain the missing origin');
         testAssertSame(true, $manager->getInfo()[0]['configurationRequired'],
             'settings API exposes the same configuration requirement');

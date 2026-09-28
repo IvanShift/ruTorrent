@@ -9,24 +9,80 @@ class rXMLRPCParam
 	public $type;
 	public $value;
 
+	// An <i8> or <i4> whose number the type cannot hold keeps a null value,
+	// and rXMLRPCRequest::run() refuses a request carrying one.
 	public function __construct( $aType, $aValue )
 	{
 		$this->type = $aType;
 		if(($this->type=="i8") || ($this->type=="i4"))
-			$this->value = number_format($aValue,0,'.','');
+			$this->value = self::integerText($this->type,$aValue);
 		else
 			$this->value = htmlspecialchars($aValue,ENT_NOQUOTES,"UTF-8");
+	}
+
+	// $value as the text of an XMLRPC $type, a float rounded half away from
+	// zero, or null if it is not a number that type holds. INF, NAN and a
+	// float beyond 64 bits have no such text: number_format() would write
+	// them as "inf", "nan" and a run of digits, none of which is an integer.
+	static public function integerText( $type, $value )
+	{
+		if(is_string($value) && is_numeric($value))
+			$value = $value + 0;
+		if(is_float($value))
+		{
+			if(!is_finite($value))
+				return(null);
+			$value = round($value);
+			// -2^63 and 2^63 are exact as floats, and the largest float
+			// below 2^63 is 2^63-1024.
+			if(($value<-9223372036854775808.0) || ($value>=9223372036854775808.0))
+				return(null);
+			$text = number_format($value,0,'.','');
+		}
+		else
+		if(is_int($value))
+			// Not number_format(), which before PHP 8.3 takes a float and
+			// turns PHP_INT_MAX into 2^63.
+			$text = strval($value);
+		else
+			return(null);
+		if(($type=="i4") && (($value<XMLRPC_MIN_I4) || ($value>XMLRPC_MAX_I4)))
+			return(null);
+		return($text);
+	}
+}
+
+class rXMLRPCInvalidCommandName extends Exception
+{
+	public function __construct( $name )
+	{
+		parent::__construct("Not an rtorrent command name: ".$name);
 	}
 }
 
 class rXMLRPCCommand
 {
+	// A command name is interpolated into <methodName> unescaped, so a name
+	// carrying markup would close that element and add calls of its own to the
+	// same request. An rtorrent method name is letters, digits, '_' and '.':
+	// of the 1001 names system.listMethods answers with on 0.9.8, not one
+	// carries another character. Anything else is refused rather than escaped,
+	// because escaping it would only send a name no daemon answers to.
+	const NAME_PATTERN = '/^[a-z0-9_.]+\z/i';
+
 	public $command;
 	public $params;
+
+	static public function isValidCommandName( $name )
+	{
+		return(is_string($name) && (preg_match(self::NAME_PATTERN,$name)===1));
+	}
 
 	public function __construct( $cmd, $args = null )
 	{
 		$this->command = getCmd($cmd);
+		if(!self::isValidCommandName($this->command))
+			throw new rXMLRPCInvalidCommandName($this->command);
 		$this->params = array();
 		rTorrentSettings::get()->patchDeprecatedCommand($this,$cmd);
 		if($args!==null)
@@ -122,6 +178,36 @@ class rXMLRPCRequest
 		return($result);
 	}
 
+	/**
+	 * Undo the escaping run() puts on every string it reads.
+	 *
+	 * run() doubles each backslash and prefixes each double quote in a value
+	 * before it hands it to the caller. That pairs with a caller that pastes
+	 * the value straight into an rtorrent command string without quoting it,
+	 * which is what the shipped plugins did: rtorrent reads '\\' as an escape,
+	 * so the doubling is what makes a path with a backslash in it arrive
+	 * whole.
+	 *
+	 * A caller that quotes the value instead needs it in its own bytes, or the
+	 * quoting escapes the escaping and rtorrent is given a path the download
+	 * never had. This returns the value as the daemon reported it.
+	 */
+	static public function unescapeValue( $value )
+	{
+		if(!is_string($value) || (strpos($value,'\\')===false))
+			return($value);
+		$out = '';
+		$len = strlen($value);
+		for($i = 0; $i<$len; $i++)
+		{
+			if(($value[$i]==='\\') && (($i+1)<$len) &&
+				(($value[$i+1]==='\\') || ($value[$i+1]==='"')))
+				$i++;
+			$out .= $value[$i];
+		}
+		return($out);
+	}
+
 	public function setParseByTypes( $enable = true )
 	{
 		$this->parseByTypes = $enable;
@@ -183,6 +269,26 @@ class rXMLRPCRequest
 		$this->strings = array();
 		$this->val = array();
 		$this->transportFailure = null;
+		// Every name is checked before the first payload is built, so a batch
+		// holding one unusable name sends no part of itself.
+		foreach($this->commands as $cmd)
+			if(!rXMLRPCCommand::isValidCommandName($cmd->command))
+			{
+				$this->fault = true;
+				$this->faultString = 'Refused: not an rtorrent command name.';
+				$this->commands = array();
+				return(false);
+			}
+		// So is every number, for the same reason.
+		foreach($this->commands as $cmd)
+			foreach($cmd->params as $prm)
+				if((($prm->type=="i8") || ($prm->type=="i4")) && ($prm->value===null))
+				{
+					$this->fault = true;
+					$this->faultString = 'Refused: not a number an XMLRPC integer can hold.';
+					$this->commands = array();
+					return(false);
+				}
 		rTorrentSettings::get()->patchDeprecatedRequest($this->commands);
 		$this->commandOffset = 0;
 		while($this->makeNextCall())

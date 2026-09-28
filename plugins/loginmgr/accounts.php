@@ -4,6 +4,7 @@ require_once( dirname(__FILE__)."/../../php/util.php" );
 require_once( dirname(__FILE__)."/../../php/urlhost.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc");
+require_once( dirname(__FILE__)."/../../php/utility/json.php");
 // accounts.php can be first included from Snoopy::fetchComplex() method scope.
 global $yggTorrentOrigin;
 eval( FileUtil::getPluginConf( 'loginmgr' ) );
@@ -339,11 +340,11 @@ class accountManager
 					$this->accounts[$name] = array( "name"=>$name, "path"=>FileUtil::fullpath($dir.'/'.$file), "object"=>$name."Account", "login"=>'', "password"=>'', "enabled"=>0, "auto"=>0 );
 					if(array_key_exists($name,$oldAccounts) && array_key_exists("login",$oldAccounts[$name]))
 					{
-						$this->accounts[$name]["login"] = $oldAccounts[$name]["login"];
-						$this->accounts[$name]["password"] = $oldAccounts[$name]["password"];
-						$this->accounts[$name]["enabled"] = $oldAccounts[$name]["enabled"];
+						$this->accounts[$name]["login"] = self::asText($oldAccounts[$name]["login"]);
+						$this->accounts[$name]["password"] = self::asText($oldAccounts[$name]["password"]);
+						$this->accounts[$name]["enabled"] = self::asFlag($oldAccounts[$name]["enabled"]);
 						if(array_key_exists("auto",$oldAccounts[$name]))
-							$this->accounts[$name]["auto"] = $oldAccounts[$name]["auto"];
+							$this->accounts[$name]["auto"] = self::asNumber($oldAccounts[$name]["auto"]);
 					}
 				}
 			}
@@ -352,6 +353,21 @@ class accountManager
 		ksort($this->accounts);
 		$this->store();
 		$this->setHandlers();
+	}
+
+	static protected function asFlag($value)
+	{
+		return(is_scalar($value) && $value && $value !== '0' ? 1 : 0);
+	}
+
+	static protected function asNumber($value)
+	{
+		return(is_scalar($value) ? intval($value) : 0);
+	}
+
+	static protected function asText($value)
+	{
+		return(is_scalar($value) ? strval($value) : '');
 	}
 
 	private function configurationRequired($nfo, $account = null)
@@ -368,16 +384,15 @@ class accountManager
 
 	public function get()
 	{
-                $ret = "theWebUI.theAccounts = {";
+		$accounts = array();
 		foreach( $this->accounts as $name=>$nfo )
-		{
-			$configurationRequired = $this->configurationRequired($nfo);
-			$ret.="'".$name."': { login: ".Utility::quoteAndDeslashEachItem($nfo["login"]).", password: ".Utility::quoteAndDeslashEachItem("").", enabled: ".$nfo["enabled"].", auto: ".$nfo["auto"].", configurationRequired: ".($configurationRequired ? 'true' : 'false')." },";
-		}
-		$len = strlen($ret);
-		if($ret[$len-1]==',')
-			$ret = substr($ret,0,$len-1);
-		return($ret."};\n");
+			$accounts[self::asText($name)] = array(
+				"login" => self::asText($nfo["login"] ?? ''),
+				"password_set" => self::asText($nfo["password"] ?? '') === '' ? 0 : 1,
+				"enabled" => self::asFlag($nfo["enabled"] ?? 0),
+				"auto" => self::asNumber($nfo["auto"] ?? 0),
+				"configurationRequired" => $this->configurationRequired($nfo));
+		return("theWebUI.theAccounts = ".JSON::jsValue((object) $accounts).";\n");
 	}
 
 	public function set()
@@ -385,26 +400,29 @@ class accountManager
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			if(isset($_POST[$name."_enabled"]))
-				$this->accounts[$name]["enabled"] = $_POST[$name."_enabled"];
+				$this->accounts[$name]["enabled"] = self::asFlag($_POST[$name."_enabled"]);
 			if(isset($_POST[$name."_login"]))
-				$this->accounts[$name]["login"] = $_POST[$name."_login"];
+				$this->accounts[$name]["login"] = self::asText($_POST[$name."_login"]);
 			// An empty edit keeps the stored value; only the separate clear flag removes it.
 			if(isset($_POST[$name."_clear_password"]) && $_POST[$name."_clear_password"] === '1')
 				$this->accounts[$name]["password"] = '';
 			else if(isset($_POST[$name."_password"]) && $_POST[$name."_password"] !== '')
-				$this->accounts[$name]["password"] = $_POST[$name."_password"];
+				$this->accounts[$name]["password"] = self::asText($_POST[$name."_password"]);
 			if(isset($_POST[$name."_auto"]))
-				$this->accounts[$name]["auto"] = intval($_POST[$name."_auto"]);
+				$this->accounts[$name]["auto"] = self::asNumber($_POST[$name."_auto"]);
 		}
 		if(!$this->store())
 			return(false);
 		foreach($this->accounts as $name=>$nfo)
-		{
-			$data = new privateData( $name );
-			$data->remove();
-		}
+			$this->forgetSession($name);
 		$this->setHandlers();
 		return(true);
+	}
+
+	protected function forgetSession( $name )
+	{
+		$data = new privateData( $name );
+		$data->remove();
 	}
 
 	public function getAccount( $url, &$httpsAccount = null )
@@ -467,10 +485,16 @@ class accountManager
 			$nfo["name"] = $name;
 			$object = new $nfo["object"]();
 			$nfo["url"] = $object->url;
-			$nfo["password"] = '';
 			$nfo["configurationRequired"] = $this->configurationRequired($nfo, $object);
 			unset($nfo["object"]);
 			unset($nfo["path"]);
+			// Nothing reads the password from here, and this answer is json
+			// served to the browser like any other.
+			$nfo["password_set"] = (self::asText($nfo["password"] ?? '')==="") ? 0 : 1;
+			unset($nfo["password"]);
+			$nfo["login"] = self::asText($nfo["login"] ?? '');
+			$nfo["enabled"] = self::asFlag($nfo["enabled"] ?? 0);
+			$nfo["auto"] = self::asNumber($nfo["auto"] ?? 0);
 			$ret[] = $nfo;
 		}
 		return($ret);

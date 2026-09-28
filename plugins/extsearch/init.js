@@ -41,20 +41,20 @@ theSearchEngines.show = function()
 		theContextMenu.clear();
 		theSearchEngines.checkForIncorrectCurrent(false);
 		if(theSearchEngines.current=='all')
-			theContextMenu.add([CMENU_SEL, theUILang.All, "theSearchEngines.set('all')"]);
+			theContextMenu.add([CMENU_SEL, theUILang.All, () => theSearchEngines.set('all')]);
 		else
-			theContextMenu.add([theUILang.All, "theSearchEngines.set('all')"]);
+			theContextMenu.add([theUILang.All, () => theSearchEngines.set('all')]);
 
 		if(this.isPublicPresent(true) && this.isPublicPresent(false))
 		{
 			if(theSearchEngines.current=='public')
-				theContextMenu.add([CMENU_SEL, theUILang.extAllPublic, "theSearchEngines.set('public')"]);
+				theContextMenu.add([CMENU_SEL, theUILang.extAllPublic, () => theSearchEngines.set('public')]);
 			else
-				theContextMenu.add([theUILang.extAllPublic, "theSearchEngines.set('public')"]);
+				theContextMenu.add([theUILang.extAllPublic, () => theSearchEngines.set('public')]);
 			if(theSearchEngines.current=='private')
-				theContextMenu.add([CMENU_SEL, theUILang.extAllPrivate, "theSearchEngines.set('private')"]);
+				theContextMenu.add([CMENU_SEL, theUILang.extAllPrivate, () => theSearchEngines.set('private')]);
 			else
-				theContextMenu.add([theUILang.extAllPrivate, "theSearchEngines.set('private')"]);
+				theContextMenu.add([theUILang.extAllPrivate, () => theSearchEngines.set('private')]);
 		}
 		theContextMenu.add([CMENU_SEP]);
 
@@ -84,24 +84,24 @@ theSearchEngines.show = function()
 				        if(val.public)
 				        {
 						if(theSearchEngines.current==ndx)
-							public.push([CMENU_SEL, ndx, "theSearchEngines.set('"+ndx+"')"]);
+							public.push([CMENU_SEL, ndx, () => theSearchEngines.set(ndx)]);
 						else
-							public.push([ndx, "theSearchEngines.set('"+ndx+"')"]);
+							public.push([ndx, () => theSearchEngines.set(ndx)]);
 					}
 					else
 				        {
 						if(theSearchEngines.current==ndx)
-							private.push([CMENU_SEL, ndx, "theSearchEngines.set('"+ndx+"')"]);
+							private.push([CMENU_SEL, ndx, () => theSearchEngines.set(ndx)]);
 						else
-							private.push([ndx, "theSearchEngines.set('"+ndx+"')"]);
+							private.push([ndx, () => theSearchEngines.set(ndx)]);
 					}
 				}
 				else
 				{
 					if(theSearchEngines.current==ndx)
-						theContextMenu.add([CMENU_SEL, ndx, "theSearchEngines.set('"+ndx+"')"]);
+						theContextMenu.add([CMENU_SEL, ndx, () => theSearchEngines.set(ndx)]);
 					else
-						theContextMenu.add([ndx, "theSearchEngines.set('"+ndx+"')"]);
+						theContextMenu.add([ndx, () => theSearchEngines.set(ndx)]);
 				}
 			}
 			else
@@ -115,9 +115,9 @@ theSearchEngines.show = function()
 		if(publicPresent || privatePresent)
 			theContextMenu.add([CMENU_SEP]);
 		if(theSearchEngines.current==-1)
-			theContextMenu.add([CMENU_SEL, theUILang.innerSearch, "theSearchEngines.set(-1)"]);
+			theContextMenu.add([CMENU_SEL, theUILang.innerSearch, () => theSearchEngines.set(-1)]);
 		else
-			theContextMenu.add([theUILang.innerSearch, "theSearchEngines.set(-1)"]);
+			theContextMenu.add([theUILang.innerSearch, () => theSearchEngines.set(-1)]);
 		var offs = $("#search").offset();
 		theContextMenu.show(offs.left-5,offs.top+5+$("#search").height());
 	}
@@ -342,7 +342,7 @@ theWebUI.extTegLoad = function()
 theWebUI.extTegOpen = function()
 {
 	for(var i = 0; i<plugin.tegArray.length; i++)
-		window.open(plugin.tegArray[i].data.desc,"_blank");
+		openExternalURL(plugin.tegArray[i].data.desc);
 }
 
 theWebUI.tegItemRemove = function()
@@ -405,10 +405,10 @@ plugin.createExtTegMenu = function(e, id)
 	{
 	        if(plugin.canChangeMenu())
 	        {
-			theContextMenu.add([ theUILang.tegMenuLoad, "theWebUI.extTegLoad()"]);
-			theContextMenu.add([ theUILang.tegMenuOpen, "theWebUI.extTegOpen()"]);
-			theContextMenu.add([ theUILang.tegMenuDeleteItem, "theWebUI.tegItemRemove()"]);
-			theContextMenu.add([ theUILang.exsURLInfo, "theWebUI.showTegURLInfo()"] );
+			theContextMenu.add([ theUILang.tegMenuLoad, () => theWebUI.extTegLoad()]);
+			theContextMenu.add([ theUILang.tegMenuOpen, () => theWebUI.extTegOpen()]);
+			theContextMenu.add([ theUILang.tegMenuDeleteItem, () => theWebUI.tegItemRemove()]);
+			theContextMenu.add([ theUILang.exsURLInfo, () => theWebUI.showTegURLInfo()] );
 		}
 		else
 			theContextMenu.hide();
@@ -443,8 +443,8 @@ catlist.contextMenuEntries = function(panelId, labelId) {
 	if (panelId === 'psearch' && idIsExTeg(labelId)) {
 		theWebUI.getTable('trt').clearSelection();
 		return plugin.canChangeMenu() ? [
-			[ theUILang.tegRefresh,  "theWebUI.tegRefresh()"],
-			[ theUILang.tegMenuDelete, "theWebUI.extTegDelete()"]
+			[ theUILang.tegRefresh,  () => theWebUI.tegRefresh()],
+			[ theUILang.tegMenuDelete, () => theWebUI.extTegDelete()]
 		] : false;
 	}
 	return plugin.contextMenuEntries(panelId, labelId);
@@ -604,7 +604,7 @@ theWebUI.tegItemDblClick = function(obj)
         		theWebUI.getTable("trt").ondblclick( tmp );
 		}
 		else
-			window.open(nfo.data.desc,"_blank");
+			openExternalURL(nfo.data.desc);
 	}
 }
 

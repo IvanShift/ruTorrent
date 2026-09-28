@@ -87,6 +87,9 @@ if [ -n "$SNOOPY_TEST_BODY_FILE" ]; then
 else
 	: > "$body_file"
 fi
+if [ -n "$SNOOPY_TEST_EXIT" ]; then
+	exit "$SNOOPY_TEST_EXIT"
+fi
 SH;
 file_put_contents($curlPath, $script);
 chmod($curlPath, 0700);
@@ -1777,6 +1780,189 @@ $tests = array(
             $client->_redirectaddr,
             'The redirect must be followed to the host it names'
         );
+    },
+    'a redirect within the same host keeps the credentials' => function () use ($seenPath) {
+        @unlink($seenPath);
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/elsewhere');
+        try {
+            $client = new Snoopy();
+            $client->cookies['session'] = 'secret-session';
+            $client->rawheaders['Authorization'] = 'Bearer secret-token';
+            testAssertTrue(
+                $client->fetch('https://user:pass@tracker.test/feed'),
+                'Redirected HTTPS request did not complete'
+            );
+            $args = snoopyCurlArgs();
+            testAssertTrue(
+                in_array('Authorization: Bearer secret-token', $args, true),
+                'A caller header must survive a redirect on the same host'
+            );
+            testAssertTrue(
+                in_array('Cookie: session=secret-session', $args, true),
+                'The cookie jar must survive a redirect on the same host'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            @unlink($seenPath);
+        }
+    },
+    // curl -k turns off certificate checking. It used to be appended to every
+    // HTTPS fetch with no way to stop it, which made every feed, torrent
+    // download and tracker login readable and changeable by anything on the
+    // path.
+    'HTTPS fetches check the certificate by default' => function () {
+        $client = new Snoopy();
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        testAssertSame(
+            false,
+            array_search('-k', snoopyCurlArgs(), true),
+            'Certificate checking was turned off without being asked'
+        );
+    },
+    'turning the check off puts -k back' => function () {
+        $client = new Snoopy();
+        $client->verify_certificates = false;
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        testAssertTrue(
+            array_search('-k', snoopyCurlArgs(), true) !== false,
+            'An install that opts out must still reach a self-signed host'
+        );
+    },
+    'the certificate check is configured from conf/config.php' => function () {
+        $GLOBALS['httpVerifyCertificates'] = false;
+        $client = new Snoopy();
+        unset($GLOBALS['httpVerifyCertificates']);
+        testAssertSame(false, $client->verify_certificates, 'Configured opt-out was not picked up');
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        testAssertTrue(
+            array_search('-k', snoopyCurlArgs(), true) !== false,
+            'Configured opt-out did not reach curl'
+        );
+    },
+    'the proxy leg is checked on the same terms' => function () {
+        $client = new Snoopy();
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'Proxied HTTPS request did not complete');
+        $args = snoopyCurlArgs();
+        testAssertSame(
+            false,
+            array_search('--proxy-insecure', $args, true),
+            'The proxy leg was made insecure while checking is on'
+        );
+        testAssertTrue(
+            array_search('--proxy', $args, true) !== false,
+            'The proxy itself must still be passed to curl'
+        );
+
+        $client = new Snoopy();
+        $client->verify_certificates = false;
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        testAssertTrue($client->fetch('https://tracker.test/feed'), 'Proxied HTTPS request did not complete');
+        testAssertTrue(
+            array_search('--proxy-insecure', snoopyCurlArgs(), true) !== false,
+            'An install that opts out must still reach a self-signed proxy'
+        );
+    },
+    // curl exits 60 when it cannot verify the peer. "error 60" on its own tells
+    // an admin with a self-signed indexer nothing about what to do.
+    'a certificate failure says what it was and how to opt out' => function () {
+        putenv('SNOOPY_TEST_EXIT=60');
+        try {
+            $client = new Snoopy();
+            testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            testAssertTrue(
+                stripos($client->error, 'certificate') !== false,
+                'The failure must say it was the certificate, got: ' . $client->error
+            );
+            testAssertTrue(
+                strpos($client->error, 'httpVerifyCertificates') !== false,
+                'The failure must name the setting that turns it off, got: ' . $client->error
+            );
+            testAssertTrue(
+                strpos($client->error, 'tracker.test') !== false,
+                'The failure must name the host, got: ' . $client->error
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    'an ordinary curl failure is reported as before' => function () {
+        putenv('SNOOPY_TEST_EXIT=7');
+        try {
+            $client = new Snoopy();
+            testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            testAssertSame(
+                'Error: cURL could not retrieve the document, error 7.',
+                $client->error,
+                'A non-certificate failure must keep its wording'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    // curl exits 35 for any failure in the TLS handshake, verification
+    // included or not: a port answering something that is not TLS reaches it,
+    // and so does a protocol or cipher mismatch. Naming the certificate there
+    // sends an operator to install a certificate authority for a server that
+    // presented no certificate at all.
+    'a handshake failure is not reported as a certificate failure' => function () {
+        putenv('SNOOPY_TEST_EXIT=35');
+        try {
+            $client = new Snoopy();
+            testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            testAssertSame(
+                'Error: cURL could not retrieve the document, error 35.',
+                $client->error,
+                'A handshake failure must not be diagnosed as a certificate'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    // The advice is to turn verification off. An install that has already
+    // turned it off is told to do the thing it did, about a check that did
+    // not run -- curl was given -k.
+    'an install that already opted out is not told to opt out' => function () {
+        foreach (array(35, 51, 60, 77) as $exit) {
+            putenv('SNOOPY_TEST_EXIT=' . $exit);
+            try {
+                $client = new Snoopy();
+                $client->verify_certificates = false;
+                testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+                testAssertTrue(
+                    strpos($client->error, 'httpVerifyCertificates') === false,
+                    'With verification off, exit ' . $exit . ' must not name the setting, got: ' . $client->error
+                );
+            } finally {
+                putenv('SNOOPY_TEST_EXIT');
+            }
+        }
+    },
+    // -k and --proxy-insecure are one setting, so either leg can be the one
+    // that failed, and the exit code does not say which. The message names
+    // the host it was fetching from; with a proxy in the way that host may
+    // have presented no certificate at all.
+    'a proxied certificate failure does not blame the origin alone' => function () {
+        putenv('SNOOPY_TEST_EXIT=60');
+        try {
+            $client = new Snoopy();
+            $client->proxy_host = '127.0.0.1';
+            $client->proxy_port = 3128;
+            $client->proxy_proto = 'https';
+            testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            testAssertTrue(
+                stripos($client->error, 'proxy') !== false,
+                'A proxied failure must say the proxy could be the one, got: ' . $client->error
+            );
+            testAssertTrue(
+                strpos($client->error, 'tracker.test') !== false,
+                'and must still name the host it was fetching, got: ' . $client->error
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
     },
 );
 

@@ -6,7 +6,7 @@ function settings(enabled = 1) {
   document.body.innerHTML = "";
   window.theWebUI = {
     theAccounts: {
-      RUTracker: { enabled, configurationRequired: false, login: "saved-user", password: "", auto: 0 },
+      RUTracker: { enabled, configurationRequired: false, login: "saved-user", password_set: 1, auto: 0 },
     },
     addAndShowSettings() {},
     setSettings() {},
@@ -43,7 +43,7 @@ test("editing login leaves a redacted password blank and clear is explicit", () 
   $(page).find("#RUTracker_lmlogin").val("edited-user");
   const edit = new window.rTorrentStub();
   edit.setacc();
-  expect(new URLSearchParams(edit.content).get("RUTracker_password")).toBe("");
+  expect(new URLSearchParams(edit.content).has("RUTracker_password")).toBe(false);
   expect(new URLSearchParams(edit.content).has("RUTracker_clear_password")).toBe(false);
 
   const clear = $(page).find("#RUTracker_lmclear_password");
@@ -60,7 +60,7 @@ test("successful account save removes typed and clear values from the form", () 
   const password = $(page).find("#RUTracker_lmpassword");
   const clear = $(page).find("#RUTracker_lmclear_password");
   window.theWebUI.request = jest.fn();
-  password.val("typed-new-password");
+  password.val("typed-new-password").trigger("input");
   window.theWebUI.setSettings();
   const reply = window.theWebUI.request.mock.calls[0][1];
   expect(password.val()).toBe("typed-new-password");
@@ -85,10 +85,10 @@ test("a later password edit survives an earlier save response", () => {
   const page = settings();
   const password = $(page).find("#RUTracker_lmpassword");
   window.theWebUI.request = jest.fn();
-  password.val("first-new-password");
+  password.val("first-new-password").trigger("input");
   window.theWebUI.setSettings();
   const reply = window.theWebUI.request.mock.calls[0][1];
-  password.val("later-new-password");
+  password.val("later-new-password").trigger("input");
   reply[0].apply(reply[1], [null, reply[2]]);
   expect(password.val()).toBe("later-new-password");
 });

@@ -1249,12 +1249,14 @@ class XMLRPCProxy
 		return self::reject($outer.$detail.']'.$note, $method, $outer);
 	}
 
-	private static function rejectSystemMember($index, $method = null, $memberLogs = array())
+	private static function rejectSystemMember($index, $method = null, $memberLogs = array(), $refused = null)
 	{
 		// A member has a literal method name; a command slot instead carries
 		// "name=value" and must have its name extracted before formatting.
 		$decision = self::rejectWithSlot('not allowed on this connection',
 			'system.multicall', $index, self::normalizeMethodName($method));
+		if($refused !== null)
+			$decision['method'] = self::normalizeMethodName($refused);
 		$decision['log'] = array_merge($decision['log'],
 			self::memberDecisionLogs($index, $memberLogs));
 		return $decision;
@@ -1293,7 +1295,9 @@ class XMLRPCProxy
 			$note .= ' [add '.implode(' and ', $missing)
 				.' to conf/xmlrpc_proxy.php or the httprpc policy override]';
 		}
-		return self::rejectWithSlot($reason, $method, $index, $name, $note);
+		$decision = self::rejectWithSlot($reason, $method, $index, $name, $note);
+		$decision['offender'] = $name;
+		return $decision;
 	}
 
 	private static function unmatchedElevation($methodName, $rawData, $version = null)
@@ -1512,8 +1516,10 @@ class XMLRPCProxy
 				$innerDecision = $capturedRead
 					? self::forward($innerXml, true, 'trusted: '.$capturedRead)
 					: self::decide($innerXml, $mode, $safeParams, $allowLocalPaths, $options);
-				if($innerDecision['action'] !== 'send'
-					|| ($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted))
+				if($innerDecision['action'] !== 'send')
+					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log'],
+						isset($innerDecision['offender']) ? $innerDecision['offender'] : $innerDecision['method']);
+				if($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted)
 					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log']);
 				$batchTrusted = $innerDecision['trusted'];
 				if(!$batchTrusted)

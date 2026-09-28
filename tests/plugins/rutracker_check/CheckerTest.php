@@ -289,6 +289,19 @@ class rTorrent
 		self::$sends[] = self::$lastSend;
 		return self::$sendResult;
 	}
+
+	// rTorrent::additionCommand(): each value quoted on its own, joined with
+	// the comma rtorrent separates arguments with. Written out rather than
+	// called through, because this file stands in for rTorrent instead of
+	// loading it -- and the exact strings the assertions below pin are what
+	// this double exists to expose.
+	public static function additionCommand($command, ...$values)
+	{
+		$quoted = array();
+		foreach($values as $value)
+			$quoted[] = '"'.str_replace(array('\\', '"'), array('\\\\', '\\"'), (string)$value).'"';
+		return getCmd($command.'=').implode(',', $quoted);
+	}
 }
 
 // Fake collaborator for run()'s STE_META_PENDING short-circuit. pump()'s own
@@ -535,13 +548,18 @@ class CheckerTest
 		$this->queueSnapshot($baseDir, $state, $open, $topic, $forum);
 	}
 
+	// The ownership marker as it goes on the wire. d.set_custom takes a key and
+	// a value, and each is quoted on its own, so the marker is the last
+	// argument and the closing quote is the last byte of the command.
+	const MARKER_PREFIX = 'd.set_custom="chk-replacement","';
+
 	private function currentReplacementMarker()
 	{
 		if(!is_array(rTorrent::$lastSend) || !is_array(rTorrent::$lastSend['addition']))
 			return '';
 		foreach(rTorrent::$lastSend['addition'] as $addition)
-			if(strpos($addition, 'd.set_custom=chk-replacement,') === 0)
-				return substr($addition, strlen('d.set_custom=chk-replacement,'));
+			if(strpos($addition, self::MARKER_PREFIX) === 0)
+				return substr($addition, strlen(self::MARKER_PREFIX), -1);
 		return '';
 	}
 
@@ -1555,21 +1573,21 @@ class CheckerTest
 		strictAssertSame(sys_get_temp_dir(), rTorrent::$lastSend['directory'], 'the staged copy must reuse the old base directory');
 		strictAssertSame('label', rTorrent::$lastSend['label'], 'the staged copy must reuse the old label');
 		$addition = rTorrent::$lastSend['addition'];
-		strictAssertTrue(strpos($addition[0], 'd.set_custom=chk-replacement,') === 0, 'the ownership marker must be the first load command');
-		strictAssertTrue(in_array('d.set_connection_seed=seed-value', $addition, true), 'the connection seed must be forwarded');
-		strictAssertTrue(in_array('d.set_throttle_name=slow', $addition, true), 'the throttle must be forwarded');
+		strictAssertTrue(strpos($addition[0], self::MARKER_PREFIX) === 0, 'the ownership marker must be the first load command');
+		strictAssertTrue(in_array('d.set_connection_seed="seed-value"', $addition, true), 'the connection seed must be forwarded');
+		strictAssertTrue(in_array('d.set_throttle_name="slow"', $addition, true), 'the throttle must be forwarded');
 		strictAssertSame(
-			array('view.set_visible=rat_2', 'view.set_visible=rat_7', 'view.set_visible=rat_9'),
+			array('view.set_visible="rat_2"', 'view.set_visible="rat_7"', 'view.set_visible="rat_9"'),
 			$this->membershipCommands($addition),
 			'exactly the rat_N view memberships must be forwarded, all visible when all are confirmed'
 		);
-		$prefix = 'd.set_custom=chk-replaces,' . self::OLD_HASH . '-started-';
+		$prefix = 'd.set_custom="chk-replaces","' . self::OLD_HASH . '-started-';
 		strictAssertTrue(strpos($addition[1], $prefix) === 0,
 			'the inheritance record must follow the marker, before any command that can abort the list');
-		$stamp = substr($addition[1], strlen($prefix));
+		$stamp = substr($addition[1], strlen($prefix), -1);
 		strictAssertTrue(ctype_digit($stamp) && abs(intval($stamp) - time()) <= 5,
 			'the record must carry the staging time, so a sweep can tell a crashed transaction from a running one');
-		$value = substr($addition[1], strlen('d.set_custom=chk-replaces,'));
+		$value = substr($addition[1], strlen('d.set_custom="chk-replaces","'), -1);
 		strictAssertSame(1, preg_match('/^[A-Za-z0-9-]+$/', $value),
 			'the record must be comma-free by construction');
 
@@ -1616,9 +1634,9 @@ class CheckerTest
 				'a missing view must cost nothing but the visible membership');
 			strictAssertSame(
 				array(
-					'view.set_visible=rat_2',
-					'd.views.push_back_unique=rat_7',
-					'view.set_visible=rat_9',
+					'view.set_visible="rat_2"',
+					'd.views.push_back_unique="rat_7"',
+					'view.set_visible="rat_9"',
 				),
 				$this->membershipCommands(rTorrent::$lastSend['addition']),
 				'a confirmed membership stays visible; the missing one becomes the d.views attribute only'
@@ -1650,7 +1668,7 @@ class CheckerTest
 			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'an unreadable view list must not abort the replacement');
 			strictAssertSame(
-				array('d.views.push_back_unique=rat_2', 'd.views.push_back_unique=rat_9'),
+				array('d.views.push_back_unique="rat_2"', 'd.views.push_back_unique="rat_9"'),
 				$this->membershipCommands(rTorrent::$lastSend['addition']),
 				'every unconfirmed membership becomes the d.views attribute, none stays view.set_visible'
 			);
@@ -1730,7 +1748,7 @@ class CheckerTest
 		strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')),
 			'a stopped torrent is never started');
 		strictAssertTrue(strpos(rTorrent::$lastSend['addition'][1],
-			'd.set_custom=chk-replaces,' . self::OLD_HASH . '-open-') === 0,
+			'd.set_custom="chk-replaces","' . self::OLD_HASH . '-open-') === 0,
 			'a paused predecessor must be recorded as open, never as started');
 	}
 
@@ -1759,7 +1777,7 @@ class CheckerTest
 			strictAssertTrue(count($clears) >= 1,
 				'a deliberately unstarted replacement closes both keys in an ownership branch');
 			strictAssertTrue(strpos(rTorrent::$lastSend['addition'][1],
-				'd.set_custom=chk-replaces,' . self::OLD_HASH . '-stopped-') === 0,
+				'd.set_custom="chk-replaces","' . self::OLD_HASH . '-stopped-') === 0,
 				'a stopped predecessor must be recorded as stopped');
 		}
 		finally
@@ -2834,7 +2852,7 @@ class CheckerTest
 
 			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), $label);
 			$addition = rTorrent::$lastSend['addition'];
-			strictAssertTrue(strpos($addition[1], 'd.set_custom=chk-replaces,' . self::OLD_HASH
+			strictAssertTrue(strpos($addition[1], 'd.set_custom="chk-replaces","' . self::OLD_HASH
 				. '-' . $case['selected'] . '-') === 0,
 				$label . ': successor record carries the daemon-selected state');
 			strictAssertSame($case['issue'] === null ? 0 : 1,
@@ -3937,9 +3955,9 @@ class CheckerTest
 		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the replacement commits');
 		$addition = implode("\n", rTorrent::$lastSend['addition']);
 
-		strictAssertTrue(strpos($addition, 'chk-topic,6879823') !== false,
+		strictAssertTrue(strpos($addition, '"chk-topic","6879823"') !== false,
 			'the successor is loaded already knowing its topic: ' . $addition);
-		strictAssertTrue(strpos($addition, 'chk-forum,1106') !== false,
+		strictAssertTrue(strpos($addition, '"chk-forum","1106"') !== false,
 			'and the forum that topic lives in, so layer 3 needs no fresh resolution');
 	}
 
@@ -3998,9 +4016,9 @@ class CheckerTest
 		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 			'the replacement commits');
 		$addition = rTorrent::$lastSend['addition'];
-		strictAssertTrue(in_array('d.set_custom=chk-topic,6879823', $addition, true),
+		strictAssertTrue(in_array('d.set_custom="chk-topic","6879823"', $addition, true),
 			'the successor is told its topic in the one spelling that names it: ' . implode("\n", $addition));
-		strictAssertTrue(in_array('d.set_custom=chk-forum,1106', $addition, true),
+		strictAssertTrue(in_array('d.set_custom="chk-forum","1106"', $addition, true),
 			'and its forum likewise: ' . implode("\n", $addition));
 	}
 
@@ -4017,8 +4035,8 @@ class CheckerTest
 		$state = null;
 		$stamps = array();
 		foreach ($addition as $command) {
-			if (preg_match('/chk-state,(\d+)$/', $command, $m)) $state = (int) $m[1];
-			if (preg_match('/chk-(time|stime),(\d+)$/', $command, $m)) $stamps[$m[1]] = (int) $m[2];
+			if (preg_match('/"chk-state","(\d+)"$/', $command, $m)) $state = (int) $m[1];
+			if (preg_match('/"chk-(time|stime)","(\d+)"$/', $command, $m)) $stamps[$m[1]] = (int) $m[2];
 		}
 		strictAssertSame(ruTrackerChecker::STE_UPDATED, $state,
 			'a replacement is loaded already marked as updated, not as never checked');

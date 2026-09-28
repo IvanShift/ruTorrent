@@ -236,7 +236,7 @@ function rtDataDirOwnership($hash)
         throw new RuntimeException('active-checker-transaction-or-service-label');
 }
 
-function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg)
+function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOnly = false)
 {
     $request = rtExec(array('d.is_open', 'd.local_id', 'd.directory'), $hash, $dbg);
     if (!$request || !is_array($request->val) || count($request->val) !== 3
@@ -245,6 +245,8 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg)
         || !is_string($request->val[2]) || $request->val[2] === '')
         throw new RuntimeException('unreadable-torrent-state');
     $wasOpen = (string) $request->val[0] === '1';
+    if ($readOnly && !$wasOpen)
+        return null;
     $localId = $request->val[1];
     $previousDirectory = $request->val[2];
     $source = '';
@@ -308,6 +310,37 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg)
         'local_id' => $localId, 'previous_directory' => $previousDirectory,
         'add' => (bool) $addPath, 'move' => (bool) $moveFiles,
         'source' => $source, 'destination' => $destination, 'files' => $files);
+}
+
+// A read-only hint for the dialog. The claimed worker remains authoritative.
+function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
+{
+    try {
+        $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, true, $dbg, true);
+        if ($snapshot === null || !$snapshot['move'])
+            return '';
+        $root = @realpath($snapshot['destination']);
+        if ($root === false)
+            return '';
+        foreach ($snapshot['files'] as $file) {
+            if (!is_string($file) || $file === '' || $file[0] === '/'
+                || strpos($file, "\0") !== false
+                || in_array('', explode('/', $file), true)
+                || in_array('.', explode('/', $file), true)
+                || in_array('..', explode('/', $file), true))
+                continue;
+            $path = $root . '/' . $file;
+            $parent = @realpath(dirname($path));
+            if ($parent === false || ($parent !== $root
+                && strpos($parent, $root . '/') !== 0))
+                continue;
+            if (@lstat($path) !== false)
+                return $path;
+        }
+    } catch (Exception $e) {
+        // The worker logs and handles uncertain metadata under its claim.
+    }
+    return '';
 }
 
 function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false)

@@ -290,13 +290,18 @@ function getClickableTrackerStatus(text)
  * Confirm again before taking action.
  * @param {string} title Title of the dialog.
  * @param {string} content Hint of the action to be confirmed.
- * @param {Function | string} funcYesName Function to be executed if confirmed.
+ * @param {Function} funcYesName Function to be executed if confirmed. Anything
+ * else is not run, and the question is not asked.
  */
 function askYesNo(title, content, funcYesName) {
+	if ($type(funcYesName) !== "function") {
+		console.warn("Confirmation action must be a function, not a string: " + funcYesName);
+		return;
+	}
 	$("#yesnoDlg-header").text(title);
 	$("#yesnoDlg-content").text(content);
 	$("#yesnoOK").off('click').on('click', () => {
-		$type(funcYesName) === "function" ? funcYesName() : eval(funcYesName);
+		funcYesName();
 		theDialogManager.hide("yesnoDlg");
 		return false;
 	});
@@ -382,7 +387,7 @@ var theConverter =
 		if((noRound==null) && (tm >= 2419200))
 			return "\u221e";
 //		var val = tm % (604800 * 52);
-		var val = tm;
+		var val = Math.max(0, tm);
 		var w = iv(val / 604800);
 		val = val % 604800;
 		var d = iv(val / 86400);
@@ -826,7 +831,7 @@ var theSearchEngines =
 	{
 		const q = $("#query").val();
 		if(theSearchEngines.current >= 0)
-			window.open(theSearchEngines.sites[theSearchEngines.current].url + encodeURIComponent(q), "_blank");
+			openInNewTab(theSearchEngines.sites[theSearchEngines.current].url + encodeURIComponent(q));
 		else
 			theWebUI.setTeg(q);
 	},
@@ -849,15 +854,15 @@ var theSearchEngines =
 				theContextMenu.add([CMENU_SEP]);
 			else
 			if(theSearchEngines.current==ndx)
-				theContextMenu.add([CMENU_SEL, val.name, "theSearchEngines.set("+ndx+")"]);
+				theContextMenu.add([CMENU_SEL, val.name, () => theSearchEngines.set(ndx)]);
 			else
-				theContextMenu.add([val.name, "theSearchEngines.set("+ndx+")"]);
+				theContextMenu.add([val.name, () => theSearchEngines.set(ndx)]);
 		});
 		theContextMenu.add([CMENU_SEP]);
 		if(theSearchEngines.current==-1)
-			theContextMenu.add([CMENU_SEL, theUILang.innerSearch, "theSearchEngines.set(-1)"]);
+			theContextMenu.add([CMENU_SEL, theUILang.innerSearch, () => theSearchEngines.set(-1)]);
 		else
-			theContextMenu.add([theUILang.innerSearch, "theSearchEngines.set(-1)"]);
+			theContextMenu.add([theUILang.innerSearch, () => theSearchEngines.set(-1)]);
 		var offs = $("#search").offset();
 		theContextMenu.show(offs.left-5,offs.top+5+$("#search").height());
         }
@@ -1629,6 +1634,32 @@ function getCRC( str, crc )
 	return(crc);
 }
 
+/**
+ * Split plain text into DOM nodes, with every http(s) run turned into a link.
+ *
+ * The text is never parsed as markup: non-url runs become text nodes and the
+ * anchors are built attribute by attribute, so nothing the text contains can
+ * become an element or an attribute. The pattern matches only http and https,
+ * which is the scheme allowlist -- no other scheme can reach an href here.
+ */
+function linkifyToNodes(text)
+{
+	var nodes = [], pattern = /https?:\/\/[^\s<>"']+/g, last = 0, match;
+	text = (text === null || text === undefined) ? '' : String(text);
+	while((match = pattern.exec(text)) !== null)
+	{
+		if(match.index > last)
+			nodes.push(document.createTextNode(text.substring(last,match.index)));
+		nodes.push($("<a>")
+			.attr({ href: match[0], target: "_blank", rel: "noopener noreferrer" })
+			.text(match[0])[0]);
+		last = pattern.lastIndex;
+	}
+	if(last < text.length)
+		nodes.push(document.createTextNode(text.substring(last)));
+	return(nodes);
+}
+
 function strip_tags(input, allowed)
 {
 	allowed = (((allowed || '') + '')
@@ -1660,6 +1691,75 @@ function socketAllocationFits(budget, files, http)
 	if(!iv(budget))
 		return true;
 	return((iv(files) + iv(http)) <= iv(budget));
+}
+
+/**
+ * Decide whether an address that came from a remote source may be opened.
+ *
+ * javascript: and data: addresses run in this origin, so an address taken from
+ * a feed, a search result or a saved look-at template cannot be handed to
+ * window.open() as it stands. Parsing it the way the browser will and then
+ * allowing only the schemes those sources legitimately use refuses both, along
+ * with every scheme that addresses something other than a web resource.
+ *
+ * @param {*} url the address to check
+ * @returns {boolean} true when it is one of the allowed schemes
+ */
+function isExternalURL(url)
+{
+	// An empty or blank string resolves to the page itself, which is not an
+	// external address at all.
+	if((typeof url !== "string") || (url.trim() === ""))
+		return(false);
+	try {
+		// Resolved against the page, which is what window.open() would do.
+		return(["http:", "https:", "ftp:", "ftps:", "magnet:"]
+			.indexOf(new URL(url, document.baseURI).protocol) >= 0);
+	} catch(e) {
+		return(false);
+	}
+}
+
+/**
+ * Open an address in a new tab that holds no handle back to this one.
+ *
+ * Without "noopener" the page that opens keeps window.opener, and a window
+ * handle carries the right to navigate the window it names whatever origin
+ * holds it. So a feed item, a search destination or an address lookup could
+ * send the tab ruTorrent is logged in to wherever it liked, with nothing shown
+ * to the user but a second tab opening. The feature is what severs that; a
+ * browser too old to know it hands back a window instead of null, and the
+ * handle is cleared on that by hand.
+ *
+ * @param {string} url the address to open
+ * @returns {Window|null} whatever window.open() gave back
+ */
+function openInNewTab(url)
+{
+	const opened = window.open(url, "_blank", "noopener");
+	if(opened)
+	{
+		try { opened.opener = null; } catch(e) {}
+	}
+	return(opened);
+}
+
+/**
+ * Open an address that came from a remote source in a new tab, if it is one
+ * this may open at all.
+ *
+ * The string is handed to window.open() exactly as given rather than in its
+ * parsed form, so nothing about the address is rewritten on the way.
+ *
+ * @param {*} url the address to open
+ * @returns {boolean} true when a tab was asked for, false when it was refused
+ */
+function openExternalURL(url)
+{
+	if(!isExternalURL(url))
+		return(false);
+	openInNewTab(url);
+	return(true);
 }
 
 if (!window.requestIdleCallback) {

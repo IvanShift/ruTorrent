@@ -36,7 +36,7 @@ function getTorrent( $url )
 	return(false);
 }
 
-function parseValue( $value )
+function parseValue( $value, &$pendingReceipt = null )
 {
 	global $saveUploadedTorrents;
         $ret = false;
@@ -45,11 +45,10 @@ function parseValue( $value )
 		$fname = getTorrent( $value );
 		if($fname)
 		{
-			$receipt = null;
 			$ret = rTorrent::sendTorrent($fname, true, true, '', '',
-				$saveUploadedTorrents, false, true, null, $receipt);
+				$saveUploadedTorrents, false, true, null, $pendingReceipt);
 			if($ret === false || ($ret === null && !$saveUploadedTorrents
-				&& !empty($receipt['raw'])))
+				&& !empty($pendingReceipt['raw'])))
 				@unlink($fname);
 		}
 	}
@@ -76,6 +75,7 @@ $result = array
 	'error' => 0,
 	'success' => 0,
 	'pending' => 0,
+	'duplicate' => 0,
 );
 
 if(!isset($HTTP_RAW_POST_DATA))
@@ -84,21 +84,38 @@ if(isset($HTTP_RAW_POST_DATA))
 {
 	$vars = explode('&', $HTTP_RAW_POST_DATA);
 	$torrents = array();
-	foreach($vars as $var)
+	$loaded = rTorrent::loadedHashes();
+	if($loaded===false)
+		$result['error']++;
+	else
 	{
-		$parts = explode("=",$var);
-		if( count($parts)>1 )
+		foreach($vars as $var)
 		{
-			$value = trim(rawurldecode($parts[1]));
-			if(strlen($value))
+			$parts = explode("=",$var);
+			if( count($parts)>1 )
 			{
-				$loaded = parseValue($value);
-				if($loaded === null)
-					$result['pending']++;
-				elseif($loaded)
-					$result['success']++;
-				else
-					$result['error']++;
+				$value = trim(rawurldecode($parts[1]));
+				if(strlen($value))
+				{
+					$receipt = null;
+					$hash = parseValue($value, $receipt);
+					if($hash === false)
+						$result['error']++;
+					elseif($hash === null)
+					{
+						if(isset($receipt['hash']) && isset($loaded[strtoupper($receipt['hash'])]))
+							$result['duplicate']++;
+						else
+							$result['pending']++;
+					}
+					elseif(isset($loaded[strtoupper($hash)]))
+						$result['duplicate']++;
+					else
+					{
+						$loaded[strtoupper($hash)] = true;
+						$result['success']++;
+					}
+				}
 			}
 		}
 	}

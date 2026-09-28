@@ -618,8 +618,9 @@ class XMLRPCProxyTest extends TestCase
 			$decision = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
 			$this->assertTrue($decision['action'] === 'reject' && !$decision['trusted'],
 				$untrusted.' must not inherit trust from another member');
-			$this->assertTrue($decision['method'] === 'system.multicall',
-				'outer method remains the client-visible refusal identity');
+			$refused = $untrusted === 'execute.capture' ? $untrusted : 'system.multicall';
+			$this->assertTrue($decision['method'] === $refused,
+				'a denied member is named; a trust mismatch names the outer carrier');
 		}
 	}
 
@@ -1722,9 +1723,10 @@ class XMLRPCProxyTest extends TestCase
 		foreach(array('not-a-hash', '', '0123456789abcdef0123456789ABCDEF0123456',
 			'0123456789abcdef0123456789ABCDEF012345678', '../../etc/passwd') as $bad)
 		{
-			$this->callMethod('d.start', array($bad));
+			$this->assertTrue($this->callMethod('d.start', array($bad)) === null,
+				var_export($bad, true) . ' is not a hash, so the call returns a refusal');
 			$this->assertTrue(rXMLRPCRequest::$sent === 0,
-				var_export($bad, true) . ' is not a hash, so the call is rejected');
+				var_export($bad, true) . ' never reaches rtorrent');
 		}
 	}
 

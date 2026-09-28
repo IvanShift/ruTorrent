@@ -730,4 +730,207 @@ final class RSSTest extends TestCase
 			'a foreign torrent is never shown as this RSS load success');
 	}
 
+
+	// An item's link and guid are handed to window.open() by
+	// plugins/rss/init.js, so anything the feed puts there that is not an
+	// http(s) address has to be dropped while the feed is parsed.
+	private function feedItems(string $xml): array
+	{
+		$rRSS = new rRSS('https://example.org/rss', function () use ($xml) {
+			$cliMock = new SnoopyMock();
+			$cliMock->results = $xml;
+			return $cliMock;
+		});
+		$this->assertTrue($rRSS->fetch(new rRSSHistory()), 'fetch success');
+		return $rRSS->items;
+	}
+
+	public function testRSSItemsWithoutAnHttpLinkAreDropped(): void
+	{
+		$items = $this->feedItems(
+			'<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>'.
+			'<item><title>good</title><link>https://example.org/ok</link></item>'.
+			'<item><title>js</title><link>javascript:window.x=1</link>'.
+				'<guid>javascript:window.x=1</guid></item>'.
+			'<item><title>data</title><link>data:text/html,&lt;b&gt;x&lt;/b&gt;</link></item>'.
+			'<item><title>file</title><link>file:///etc/passwd</link></item>'.
+			'<item><title>text</title><link>not a url at all</link></item>'.
+			'</channel></rss>');
+		$this->assertEquals(array('https://example.org/ok'), array_keys($items));
+	}
+
+	public function testRSSItemFallsBackToThePermalinkWhenOnlyItIsALink(): void
+	{
+		$items = $this->feedItems(
+			'<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>'.
+			'<item><title>t</title><link>javascript:window.x=1</link>'.
+				'<guid>https://example.org/perma</guid></item>'.
+			'</channel></rss>');
+		$this->assertEquals(array('https://example.org/perma'), array_keys($items));
+		$this->assertEquals('https://example.org/perma', $items['https://example.org/perma']['guid']);
+	}
+
+	public function testAtomEntriesWithoutAnHttpLinkAreDropped(): void
+	{
+		$items = $this->feedItems(
+			'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'.
+			'<title>C</title><link href="https://example.org/"/><updated>2003-12-13T20:30:02Z</updated>'.
+			'<entry><title>good</title><link href="https://example.org/ok"/>'.
+				'<updated>2003-12-13T18:30:02Z</updated></entry>'.
+			'<entry><title>js</title><link href="javascript:window.x=1"/>'.
+				'<updated>2003-12-13T18:30:02Z</updated></entry>'.
+			'<entry><title>data</title><link href="data:text/html,x"/>'.
+				'<updated>2003-12-13T18:30:02Z</updated></entry>'.
+			'</feed>');
+		$this->assertEquals(array('https://example.org/ok'), array_keys($items));
+	}
+
+	// An item link is handed to openExternalURL() by plugins/rss/init.js, so
+	// what a feed may carry is what isExternalURL() in js/common.js will open.
+	// Every address here is one a real indexer publishes, and dropping one
+	// loses the download with nothing shown to say so.
+	public static function openableLinks(): array
+	{
+		return array(
+			'magnet' => 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
+			'ftp' => 'ftp://ftp.example.org/pub/a.torrent',
+			'ftps' => 'ftps://ftp.example.org/pub/b.torrent',
+			'userinfo' => 'https://user:passkey@tracker.example.org/dl/c.torrent',
+			'scheme relative' => '//tracker.example.org/dl/d.torrent',
+			'underscore in host' => 'http://my_tracker.example.org/dl/e.torrent',
+			'ipv6 literal host' => 'http://[2001:db8::1]/dl/f.torrent',
+			'query and no path' => 'https://tracker.example.org?id=8',
+			'trailing dot host' => 'https://tracker.example.org./dl/g.torrent',
+		);
+	}
+
+	// The other half of the same rule: an address the browser would refuse
+	// must not reach it, whatever else the item holds.
+	public static function refusedLinks(): array
+	{
+		return array(
+			'javascript' => 'javascript:window.x=1',
+			'data' => 'data:text/html,<b>x</b>',
+			'file' => 'file:///etc/passwd',
+			'mailto' => 'mailto:someone@example.org',
+			'plain text' => 'not a url at all',
+			'page relative' => '/rtorrent/plugins/rss/rss.php',
+		);
+	}
+
+	private function rssFeed(string $link, string $guid): string
+	{
+		return('<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>'.
+			'<item><title>t</title><link>'.htmlspecialchars($link).'</link>'.
+			'<guid>'.htmlspecialchars($guid).'</guid></item>'.
+			'</channel></rss>');
+	}
+
+	private function atomFeed(string $link): string
+	{
+		return('<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'.
+			'<title>C</title><link href="https://example.org/"/>'.
+			'<updated>2003-12-13T20:30:02Z</updated>'.
+			'<entry><title>t</title><link href="'.htmlspecialchars($link).'"/>'.
+			'<updated>2003-12-13T18:30:02Z</updated></entry>'.
+			'</feed>');
+	}
+
+	public function testRSSItemsKeepEveryAddressTheBrowserMayOpen(): void
+	{
+		foreach (self::openableLinks() as $what => $link) {
+			$items = $this->feedItems($this->rssFeed($link, $link));
+			$this->assertEquals(array($link), array_keys($items), $what);
+			$this->assertEquals($link, $items[$link]['guid'], $what);
+		}
+	}
+
+	public function testAtomEntriesKeepEveryAddressTheBrowserMayOpen(): void
+	{
+		foreach (self::openableLinks() as $what => $link) {
+			$items = $this->feedItems($this->atomFeed($link));
+			$this->assertEquals(array($link), array_keys($items), $what);
+		}
+	}
+
+	public function testRSSItemsWithAnAddressTheBrowserRefusesAreDropped(): void
+	{
+		foreach (self::refusedLinks() as $what => $link) {
+			$this->assertEquals(array(), array_keys($this->feedItems(
+				$this->rssFeed($link, $link))), $what);
+			$this->assertEquals(array(), array_keys($this->feedItems(
+				$this->atomFeed($link))), $what);
+		}
+	}
+
+	// A kept item must not carry a permalink the browser would refuse, so the
+	// link stands in for it -- the same substitution an http(s) link gets.
+	public function testRSSItemReplacesAPermalinkThatCouldNotBeOpened(): void
+	{
+		$link = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567';
+		$items = $this->feedItems($this->rssFeed($link, 'javascript:window.x=1'));
+		$this->assertEquals(array($link), array_keys($items));
+		$this->assertEquals($link, $items[$link]['guid']);
+	}
+
+	// A whole feed at once, the shape an indexer that has only magnet links
+	// publishes: every item has to come through, not just the http one.
+	public function testAFeedOfMixedAddressesKeepsEveryOpenableItem(): void
+	{
+		$xml = '<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>';
+		$expected = array();
+		foreach (array_merge(self::openableLinks(), self::refusedLinks()) as $link) {
+			$xml .= '<item><title>t</title><link>'.htmlspecialchars($link).'</link>'.
+				'<guid>'.htmlspecialchars($link).'</guid></item>';
+		}
+		foreach (self::openableLinks() as $link) {
+			$expected[] = $link;
+		}
+		$this->assertEquals($expected, array_keys($this->feedItems($xml.'</channel></rss>')));
+	}
+	// rss.php asks an item for dc:date when it has no pubDate. A plain RSS 2.0
+	// feed has no reason to declare the dc prefix, and an XPath expression
+	// naming a prefix the engine does not know raises a warning -- one per
+	// item, on every poll of every such feed. php-test.sh looks for fatal and
+	// parse errors only, so any number of these is still a green run.
+	public function testAFeedWhoseItemsHaveNoPubDateRaisesNoDiagnostic(): void
+	{
+		$xml = '<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>';
+		for ($i = 0; $i < 5; $i++) {
+			$xml .= '<item><title>t'.$i.'</title>'.
+				'<link>https://example.org/'.$i.'</link></item>';
+		}
+		$raised = array();
+		set_error_handler(function ($no, $str, $file, $line) use (&$raised) {
+			$raised[] = $str.' in '.basename((string)$file).' on line '.$line;
+			return true;
+		});
+		$items = $this->feedItems($xml.'</channel></rss>');
+		restore_error_handler();
+		$this->assertEquals(array(), $raised,
+			'no diagnostic raised while parsing a feed without dates: '.
+			implode('; ', array_unique($raised)));
+		$this->assertEquals(5, count($items));
+	}
+
+	// And the prefix still resolves for a feed that does declare it, so a date
+	// an item carries there is still read.
+	public function testAFeedDeclaringTheDcPrefixStillReadsItsDates(): void
+	{
+		$items = $this->feedItems(
+			'<?xml version="1.0"?>'.
+			'<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>'.
+			'<title>C</title><link>https://example.org/</link>'.
+			'<item><title>t</title><link>https://example.org/a</link>'.
+			'<dc:date>2024-01-02T03:04:05Z</dc:date></item>'.
+			'</channel></rss>');
+		$this->assertEquals(1, count($items));
+		$this->assertEquals(strtotime('2024-01-02T03:04:05Z'),
+			$items['https://example.org/a']['timestamp']);
+	}
 }

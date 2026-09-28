@@ -136,6 +136,8 @@ plugin.wasAdded = function(data)
 	if(data['pending'])
 		noty(theUILang.addTorrentPending
 			+ " (" + data['pending'] + ')', "warning");
+	if(data['duplicate'])
+		noty(theUILang.bulkAddDuplicate + " (" + data['duplicate'] + ')', "alert");
 	if(data['success'])
 	{
 		noty( theUILang.addTorrentSuccess + " ("+data['success']+')', "success" );

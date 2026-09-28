@@ -84,6 +84,7 @@ class RuTrackerFetchError
 			'refused-non-public-address' => '/^Refusing to fetch: host .* non-public address\b/i',
 			'redirect-refused' => '/^credential-redirect-refused$/i',
 			'curl-transfer' => '/cURL could not retrieve/i',
+			'certificate-verification' => '/^Error: cURL could not verify the certificate of\b/i',
 			'socket-create' => '/^socket creation failed\b/i',
 			'dns-lookup' => '/^dns lookup failure\b/i',
 			'connect-refused' => '/^connection refused or timed out\b/i',

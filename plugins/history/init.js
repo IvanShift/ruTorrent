@@ -243,7 +243,7 @@ if(plugin.canChangeTabs() || plugin.canChangeColumns())
 	dxSTable.prototype.historyRemove = function()
 	{
 		if(theWebUI.settings["webui.confirm_when_deleting"])
-			askYesNo( theUILang.hstDelete, theUILang.hstDeletePrompt, "theWebUI.getTable('"+this.prefix+"').cmdHistory('delete')" );
+			askYesNo( theUILang.hstDelete, theUILang.hstDeletePrompt, () => this.cmdHistory('delete') );
 		else
 			this.cmdHistory('delete');
 	}
@@ -346,9 +346,8 @@ if(plugin.canChangeTabs() || plugin.canChangeColumns())
 		{
 			if(plugin.enabled && plugin.allStuffLoaded && (e.which==3))
 			{
-				var self = "theWebUI.getTable('"+this.prefix+"').";
 				theContextMenu.clear();
-				theContextMenu.add([theUILang.Remove, self+"historyRemove()"]);
+				theContextMenu.add([theUILang.Remove, () => theWebUI.getTable(this.prefix).historyRemove()]);
 				theContextMenu.show(e.clientX,e.clientY);
 			}
 		}
@@ -388,16 +387,16 @@ if(plugin.canChangeMenu())
 				{
 					theContextMenu.add(el,[CMENU_CHILD, 'Pushbullet',
 					[
-						[ theUILang.turnNotifyOn, theWebUI.torrents[id].pushbullet ? "theWebUI.setPushbullet('')" : null ],
-					 	[ theUILang.turnNotifyOff, theWebUI.torrents[id].pushbullet ? null : "theWebUI.setPushbullet('1')" ]
+						[ theUILang.turnNotifyOn, theWebUI.torrents[id].pushbullet ? () => theWebUI.setPushbullet('') : null ],
+						[ theUILang.turnNotifyOff, theWebUI.torrents[id].pushbullet ? null : () => theWebUI.setPushbullet('1') ]
 					]]);
 				}
 				else
 				{
 					theContextMenu.add(el,[CMENU_CHILD, 'Pushbullet',
 					[
-						[ theUILang.turnNotifyOn, "theWebUI.setPushbullet('1')" ],
-					 	[ theUILang.turnNotifyOff, "theWebUI.setPushbullet('')" ]
+						[ theUILang.turnNotifyOn, () => theWebUI.setPushbullet('1') ],
+						[ theUILang.turnNotifyOff, () => theWebUI.setPushbullet('') ]
 					]]);
 				}
                         }

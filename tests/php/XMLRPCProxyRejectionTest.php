@@ -77,8 +77,30 @@ class XMLRPCProxyRejectionTest extends TestCase
 		$d = XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $this->opts);
 		$this->assertTrue($d['action'] === 'reject',
 			'a system.multicall carrying system.shutdown is refused');
-		$this->assertTrue(isset($d['method']) && $d['method'] === 'system.multicall',
-			'the refusal names the outer method, system.multicall');
+		$this->assertTrue(isset($d['method']) && $d['method'] === 'system.shutdown',
+			'the refusal names the denied member, system.shutdown');
+	}
+
+	public function testSystemMulticallLoadTailNamesRefusedCommand()
+	{
+		foreach(array('view.set_visible=evening catch-up', 'execute=/bin/id') as $tail)
+		{
+			$command = substr($tail, 0, strpos($tail, '='));
+			$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+				.'<params><param><value><array><data><value><struct>'
+				.'<member><name>methodName</name><value><string>load.start</string></value></member>'
+				.'<member><name>params</name><value><array><data>'
+				.'<value><string></string></value>'
+				.'<value><string>https://example.invalid/a.torrent</string></value>'
+				.'<value><string>'.htmlspecialchars($tail, ENT_NOQUOTES, 'UTF-8').'</string></value>'
+				.'</data></array></value></member></struct></value>'
+				.'</data></array></value></param></params></methodCall>';
+			$d = XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $this->opts);
+			$this->assertTrue($d['action'] === 'reject' && $d['payload'] === '',
+				$command.' makes the whole batch terminal');
+			$this->assertEquals($command, $d['method'],
+				'the refusal names the command in the load tail');
+		}
 	}
 
 	// --- the split the door relies on: a forwardable call is sent, so a real

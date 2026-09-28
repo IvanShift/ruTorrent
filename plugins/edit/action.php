@@ -62,7 +62,6 @@ if(isset($HTTP_RAW_POST_DATA))
 				new rXMLRPCCommand("d.get_connection_seed",$hash),
 				new rXMLRPCCommand("d.get_complete",$hash),
 				) );
-			$throttle = null;
 			if(rTorrentSettings::get()->isPluginRegistered("throttle"))
 				$req->addCommand(new rXMLRPCCommand("d.get_throttle_name",$hash));
 			if($req->run() && !$req->fault)
@@ -141,23 +140,38 @@ if(isset($HTTP_RAW_POST_DATA))
 						}
 						if(isset($torrent->{'rtorrent'}))
 							unset($torrent->{'rtorrent'});
+						$addition = array(
+							getCmd("d.set_custom3")."=1",
+							rTorrent::additionCommand("d.set_connection_seed",
+								rXMLRPCRequest::unescapeValue($req->val[7])),
+						);
+						// d.get_throttle_name is only asked for when the throttle
+						// plugin is registered, so without it there is no throttle
+						// to forward and nothing is appended. An entry that is not
+						// a command would refuse the whole reload.
 						if(count($req->val)>9)
-							$throttle = getCmd("d.set_throttle_name=").$req->val[9];
-						$eReq = new rXMLRPCRequest( new rXMLRPCCommand("d.erase", $hash ) );
-						if($eReq->run() && !$eReq->fault)
-						{
-							$label = rawurldecode($req->val[5]);
-							$reloaded = rTorrent::sendTorrent($torrent, $isStart, false, $req->val[6], $label, false, ($req->val[8]==1), false,
-							        array(	getCmd("d.set_custom3")."=1",
-									getCmd("d.set_connection_seed=").$req->val[7],
-									$throttle));
-							if($reloaded === false)
-								$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
-							elseif($reloaded === null)
-								$pending = true;
-						}
+							$addition[] = rTorrent::additionCommand("d.set_throttle_name",
+								rXMLRPCRequest::unescapeValue($req->val[9]));
+						// Validate all reload commands before erasing the old torrent.
+						if(!rTorrent::areValidAdditions($addition))
+							$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
 						else
-							$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
+						{
+							$eReq = new rXMLRPCRequest( new rXMLRPCCommand("d.erase", $hash ) );
+							if($eReq->run() && !$eReq->fault)
+							{
+								$label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[5]));
+								$reloaded = rTorrent::sendTorrent($torrent, $isStart, false,
+									rXMLRPCRequest::unescapeValue($req->val[6]), $label, false,
+									($req->val[8]==1), false, $addition);
+								if($reloaded === false)
+									$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
+								elseif($reloaded === null)
+									$pending = true;
+							}
+							else
+								$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
+						}
 					}
 					else
 						$errors[] = array('desc'=>"theUILang.errorReadTorrent", 'prm'=>$fname);

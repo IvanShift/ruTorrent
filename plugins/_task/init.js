@@ -487,7 +487,7 @@ plugin.refreshTasks = function()
 dxSTable.prototype.tasksRemove = function()
 {
 	if(theWebUI.settings["webui.confirm_when_deleting"])
-		askYesNo( theUILang.tskDelete, theUILang.tskDeletePrompt, "theWebUI.getTable('tasks').tasksRemovePrim()" );
+		askYesNo( theUILang.tskDelete, theUILang.tskDeletePrompt, () => this.tasksRemovePrim() );
 	else
 		this.tasksRemovePrim();
 }
@@ -525,7 +525,7 @@ dxSTable.prototype.tasksSelect = function(e,id)
 				plugin.fromBackground( id );
 			} : null ]);
 		}
-		theContextMenu.add([theUILang.tskRemove, this.selCount ? "theWebUI.getTable('tasks').tasksRemove()" : null ]);
+		theContextMenu.add([theUILang.tskRemove, this.selCount ? () => theWebUI.getTable('tasks').tasksRemove() : null ]);
 		theContextMenu.add([CMENU_SEP]);
 		theContextMenu.add([theUILang.tskRefresh, plugin.refreshTasks]);
 		theContextMenu.show(e.clientX,e.clientY);

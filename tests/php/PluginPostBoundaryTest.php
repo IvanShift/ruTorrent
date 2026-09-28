@@ -114,6 +114,18 @@ PHP
         $this->assertSame('Method Not Allowed', $response['out'], $route . ' refuses the mutating GET');
     }
 
+    private function assignedValue($script, $name)
+    {
+        $script = trim($script);
+        $prefix = $name . ' = ';
+        if (substr($script, 0, strlen($prefix)) !== $prefix || substr($script, -1) !== ';')
+            throw new RuntimeException($name . ' must be one JavaScript assignment');
+        $value = json_decode(substr($script, strlen($prefix), -1), true);
+        if (json_last_error() !== JSON_ERROR_NONE)
+            throw new RuntimeException($name . ' must contain one JSON value');
+        return $value;
+    }
+
     public function testRssSetRulesRequiresPost()
     {
         $this->assertRefused('plugins/rssurlrewrite/action.php', array('mode' => 'setrules'));
@@ -398,23 +410,37 @@ PHP
 
     public function testRatioSchedulerAndUploadetaReadOnlyFromPostBody()
     {
+        // Ratio emits several assignments; the other two routes emit one JSON value.
+        $ratioRoute = 'plugins/ratio/action.php';
+        $ratioValues = array('default' => '2');
+        $ratioQuery = $this->request($ratioRoute, 'POST', $ratioValues);
+        $this->assertSame(0, $ratioQuery['exit'], 'ratio query-only POST exits: ' . $ratioQuery['err']);
+        $this->assertTrue(strpos($ratioQuery['out'], 'theWebUI.defaultRatio = 0;') !== false,
+            'ratio ignores query values when changing settings');
+        $ratioBody = $this->request($ratioRoute, 'POST', array(), $ratioValues);
+        $this->assertSame(0, $ratioBody['exit'], 'ratio normal POST exits: ' . $ratioBody['err']);
+        $this->assertTrue(strpos($ratioBody['out'], 'theWebUI.defaultRatio = 2;') !== false,
+            'ratio accepts the shipped POST body');
+
         $cases = array(
-            array('plugins/ratio/action.php', array('default' => '2'),
-                'theWebUI.defaultRatio = 0', 'theWebUI.defaultRatio = 2'),
             array('plugins/scheduler/action.php', array('enabled' => '1'),
-                'enabled : 0', 'enabled : 1'),
+                'theWebUI.scheduleTable', 0, 1),
             array('plugins/uploadeta/action.php', array('uploadtarget' => '31'),
-                "theWebUI.uploadtarget = '200'", "theWebUI.uploadtarget = '31'"),
+                'theWebUI.uploadtarget', 200, 31),
         );
         foreach ($cases as $case) {
-            list($route, $values, $old, $new) = $case;
+            list($route, $values, $name, $old, $new) = $case;
             $queryOnly = $this->request($route, 'POST', $values);
             $this->assertSame(0, $queryOnly['exit'], $route . ' query-only POST exits: ' . $queryOnly['err']);
-            $this->assertTrue(strpos($queryOnly['out'], $old) !== false,
+            $queryValue = $this->assignedValue($queryOnly['out'], $name);
+            if ($name === 'theWebUI.scheduleTable') $queryValue = $queryValue['enabled'] ?? null;
+            $this->assertSame($old, $queryValue,
                 $route . ' ignores query values when changing settings');
             $body = $this->request($route, 'POST', array(), $values);
             $this->assertSame(0, $body['exit'], $route . ' normal POST exits: ' . $body['err']);
-            $this->assertTrue(strpos($body['out'], $new) !== false,
+            $bodyValue = $this->assignedValue($body['out'], $name);
+            if ($name === 'theWebUI.scheduleTable') $bodyValue = $bodyValue['enabled'] ?? null;
+            $this->assertSame($new, $bodyValue,
                 $route . ' accepts the shipped POST body');
         }
     }

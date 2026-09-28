@@ -1,5 +1,6 @@
 <?php
 require_once( dirname(__FILE__)."/../../php/cache.php" );
+require_once( dirname(__FILE__)."/../../php/utility/externalurl.php" );
 
 class rLook
 {
@@ -27,29 +28,33 @@ class rLook
 		$cache = new rCache();
 		return($cache->set($this));
 	}
-	public function set()
+	// $body defaults to the request body; a caller may pass one instead.
+	public function set( $body = null )
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA))
+		if(is_null($body))
+			$body = file_get_contents("php://input");
+		$vars = explode('&', $body);
+		$this->list = array();
+		foreach($vars as $var)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			$this->list = array();
-			foreach($vars as $var)
+			$parts = explode("=",$var);
+			if($parts[0]=="look")
 			{
-				$parts = explode("=",$var);
-				if($parts[0]=="look")
+				$value = trim(rawurldecode($parts[1]));
+				if(strlen($value))
 				{
-					$value = trim(rawurldecode($parts[1]));
-					if(strlen($value))
+					$tmp = explode("|",$value);
+					// The template is completed and opened by
+					// plugins/lookat/init.js, which hands it to
+					// openExternalURL() -- the same call a feed item reaches --
+					// so what may be stored here is what that will open. set()
+					// rebuilds the whole list from the body, so a target this
+					// refuses is deleted rather than rejected.
+					if(count($tmp) > 1 && ExternalURL::isOpenable($tmp[1]))
 					{
-						$tmp = explode("|",$value);
-						if(count($tmp) > 1 && (trim($tmp[1])!=''))
-						{
-							if(strpos($tmp[1],"{title}")===false)
-								$tmp[1].="{title}";
-							$this->list[$tmp[0]] = $tmp[1];
-						}
+						if(strpos($tmp[1],"{title}")===false)
+							$tmp[1].="{title}";
+						$this->list[$tmp[0]] = $tmp[1];
 					}
 				}
 			}

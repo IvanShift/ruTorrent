@@ -45,6 +45,7 @@ class FileUtil {
 	public static function toLog($message) { file_put_contents(getenv('BULK_TEST_LOG'), $message . "\n", FILE_APPEND); }
 }
 class rTorrent {
+	public static function loadedHashes() { return array(); }
 	public static function sendTorrent($fname, $start, $addPath, $dir, $label, $save, $fast, $new,
 		$addition = null, &$receipt = null) {
 		file_put_contents(getenv('BULK_TEST_CALLS'), "send\n", FILE_APPEND);
@@ -108,7 +109,7 @@ PHPSTUB
 	public function testHtmlResponseIsRefusedBeforeSendAndLogged()
 	{
 		$result = $this->probe(200, '<html>Login required</html>');
-		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0), $result[0], 'HTML is not counted as a torrent');
+		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0, 'duplicate' => 0), $result[0], 'HTML is not counted as a torrent');
 		$this->assertEquals('', $result[1], 'HTML never reaches sendTorrent');
 		$this->assertTrue(strpos($result[2], 'bulk_magnet: torrent fetch refused: invalid-torrent-response') !== false,
 			'HTML rejection has a classified log reason');
@@ -117,7 +118,7 @@ PHPSTUB
 	public function testHttpErrorIsRefusedAndLogged()
 	{
 		$result = $this->probe(503, '<html>Unavailable</html>');
-		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0), $result[0], 'HTTP failure is not counted as a torrent');
+		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0, 'duplicate' => 0), $result[0], 'HTTP failure is not counted as a torrent');
 		$this->assertEquals('', $result[1], 'HTTP failure never reaches sendTorrent');
 		$this->assertTrue(strpos($result[2], 'bulk_magnet: torrent fetch refused: http-status-503') !== false,
 			'HTTP rejection has a classified log reason');
@@ -126,7 +127,7 @@ PHPSTUB
 	public function testLocalSaveFailureIsClassifiedBeforeSend()
 	{
 		$result = $this->probe(200, 'd4:infod4:name4:testee', true);
-		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0), $result[0],
+		$this->assertEquals(array('error' => 1, 'success' => 0, 'pending' => 0, 'duplicate' => 0), $result[0],
 			'failed local write is not counted as a dispatched torrent');
 		$this->assertEquals('', $result[1], 'failed local write never reaches sendTorrent');
 		$this->assertTrue(strpos($result[2], 'bulk_magnet: torrent save refused: local-write-failed') !== false,
@@ -136,7 +137,7 @@ PHPSTUB
 	public function testPendingRawLoadIsCountedAndDisposableSourceRemoved()
 	{
 		$result = $this->probe(200, 'd4:infod4:name4:testee', false, 'pending-raw');
-		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 1),
+		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 1, 'duplicate' => 0),
 			$result[0], 'unconfirmed is not counted as a successful add');
 		$this->assertTrue(!$result[3], 'a raw load no longer needs the downloaded source');
 	}
@@ -144,7 +145,7 @@ PHPSTUB
 	public function testPendingFileLoadRetainsSourceForDaemon()
 	{
 		$result = $this->probe(200, 'd4:infod4:name4:testee', false, 'pending-file');
-		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 1),
+		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 1, 'duplicate' => 0),
 			$result[0], 'file-backed load remains unconfirmed');
 		$this->assertTrue($result[3], 'the daemon may still need to read the source path');
 	}
@@ -152,7 +153,7 @@ PHPSTUB
 	public function testTorrentResponseReachesSend()
 	{
 		$result = $this->probe(200, 'd4:infod4:name4:testee');
-		$this->assertEquals(array('error' => 0, 'success' => 1, 'pending' => 0), $result[0], 'valid response is counted as dispatched');
+		$this->assertEquals(array('error' => 0, 'success' => 1, 'pending' => 0, 'duplicate' => 0), $result[0], 'valid response is counted as dispatched');
 		$this->assertEquals("send\n", $result[1], 'valid response reaches sendTorrent');
 		$this->assertEquals('', $result[2], 'accepted response has no refusal log');
 	}

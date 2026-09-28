@@ -4,6 +4,7 @@ require_once( '../../php/util.php' );
 require_once( '../../php/xmlrpc.php' );
 require_once( './util_setdir.php' );
 require_once( './util_rt.php' );
+require_once( './setdircommand.php' );
 eval( FileUtil::getPluginConf( 'datadir' ) );
 
 function Debug( $str )
@@ -83,6 +84,16 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 		}
 		else
 		{
+			$taken = $move_datafiles
+				? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
+				: '';
+			if($taken !== '')
+			{
+				FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
+				$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);
+			}
+			else
+			{
 			$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
 			$php = Utility::getPHP();
 			Debug( "script dir  : ".$script_dir );
@@ -95,14 +106,13 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 			$res = rtExec( "execute",
 				array( "sh",
 					"-c",
-					escapeshellarg($php)." ".escapeshellarg($script_dir."setdir.php").
-						" ".$hash." ".escapeshellarg($datadir).
-						" ".$move_addpath." ".$move_datafiles." ".$move_fastresume.
-						" ".escapeshellarg(User::getUser())." & exit 0",
+					rtSetDirCommand($php, $script_dir."setdir.php", $hash, $datadir,
+						$move_addpath, $move_datafiles, $move_fastresume, User::getUser()),
 				),
 				$datadir_debug_enabled );
 			if( !$res )
 				FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
+			}
 		}
 	}
 	else

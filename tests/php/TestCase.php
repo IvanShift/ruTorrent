@@ -4,6 +4,13 @@ class TestCase
 {
 	private $failures = 0;
 
+	protected static function makeAccessible($member)
+	{
+		if(PHP_VERSION_ID < 80100)
+			$member->setAccessible(true);
+		return $member;
+	}
+
 	public function failureCount()
 	{
 		return $this->failures;

@@ -80,11 +80,6 @@ function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,
 		if( rtOpFiles( $files, $base_path, $dest_path, $fileop_type,
 			$autodebug_enabled, $context ) )
 		{
-			if(($fileop_type=="Move") && ( $sub_dir != '' ))
-			{
-				Debug( "clean ".$base_path );
-				rtRemoveDirectory( $base_path, false );
-			}
 			$ret = true;
 		}
 	}

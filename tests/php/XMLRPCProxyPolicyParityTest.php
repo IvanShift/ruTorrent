@@ -136,6 +136,25 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			'the built-in default states the same policy as conf/xmlrpc_proxy.php');
 	}
 
+
+	/** Check the policy httprpc actually sees after its own conf is loaded. */
+	public function testTheHttprpcEntryPointRunsWithTheSharedPolicy()
+	{
+		$pluginConf = $this->root . '/plugins/httprpc/conf.php';
+		$this->assertTrue(is_file($pluginConf), 'httprpc conf is shipped');
+		$effective = function ($shared, $plugin) {
+			require($shared);
+			require($plugin);
+			return isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : null;
+		};
+		$actual = (array)$effective($this->root . '/conf/xmlrpc_proxy.php', $pluginConf);
+		$reference = (array)$this->reference;
+		sort($actual);
+		sort($reference);
+		$this->assertEquals($reference, $actual,
+			'httprpc runs with the shared safe-parameter policy');
+	}
+
 	public function testEveryOtherDefinitionOfThePolicyAgreesWithIt()
 	{
 		$reference = (array)$this->reference;

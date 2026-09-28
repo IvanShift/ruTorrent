@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 
 final class AddTorrentURLResponseTest extends TestCase
 {
@@ -42,6 +43,7 @@ SH
 			. '$_REQUEST = array_merge($_GET, $_POST);'
 			. 'set_include_path(' . var_export($phpDir, true) . ' . PATH_SEPARATOR . get_include_path());'
 			. 'require_once ' . var_export($phpDir . '/util.php', true) . ';'
+			. '$scgi_host = "127.0.0.1"; $scgi_port = (int)getenv("ADDTORRENT_TEST_SCGI_PORT");'
 			. '$pathToExternals["curl"] = getenv("ADDTORRENT_TEST_CURL");'
 			. 'register_shutdown_function(function () { global $uploaded_files;'
 			. 'echo "\n__RESULT__" . json_encode($uploaded_files ?? null); });'
@@ -58,8 +60,13 @@ SH
 			'ADDTORRENT_TEST_TOP_DIR' => $getOptions ? $root . '/profile/torrents/' : '',
 			'ADDTORRENT_TEST_LOG' => $root . '/errors.log',
 		));
+		$daemon = null;
 		try
 		{
+			$daemon = new FakeRtorrentDaemon(
+				new FakeRtorrentAddTorrentReplies(array(), array(), false),
+				$root . '/daemon-calls.log');
+			$env['ADDTORRENT_TEST_SCGI_PORT'] = (string)$daemon->port();
 			$process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', $script),
 				array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
 				$pipes, null, $env);
@@ -82,6 +89,7 @@ SH
 		}
 		finally
 		{
+			if($daemon !== null) $daemon->stop();
 			@unlink($root . '/errors.log');
 			unlink($script);
 			unlink($curl);

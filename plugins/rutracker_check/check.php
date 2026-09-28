@@ -823,31 +823,31 @@ class ruTrackerChecker
 	{
 		$now = time();
 		$addition = array(
-			getCmd("d.set_custom")."=".self::REPLACEMENT_MARKER_KEY.",".$marker,
+			rTorrent::additionCommand("d.set_custom",self::REPLACEMENT_MARKER_KEY,$marker),
 			// Shares the marker's privileged position for the same reason:
 			// the first input_error aborts every command after it, and a
 			// record that never lands leaves the row in the legacy branch --
 			// which starts nothing -- rather than in a wrong guess.
-			getCmd("d.set_custom")."=".self::INHERIT_KEY.",".$inherit,
+			rTorrent::additionCommand("d.set_custom",self::INHERIT_KEY,$inherit),
 			// d.set_connection_seed= resolves to d.connection_seed.set, which
 			// rTorrent registers PRIVATE: it works here only because a load
 			// command list is executed internally, not through the XMLRPC
 			// entry point. Moving it into a post-load system.multicall would
 			// silently fault.
-			getCmd("d.set_connection_seed=").$connectionSeed,
-			getCmd("d.set_custom")."=chk-state,".$state,
-			getCmd("d.set_custom")."=chk-time,".$now,
-			getCmd("d.set_custom")."=chk-stime,".$now,
+			rTorrent::additionCommand("d.set_connection_seed",$connectionSeed),
+			rTorrent::additionCommand("d.set_custom","chk-state",$state),
+			rTorrent::additionCommand("d.set_custom","chk-time",$now),
+			rTorrent::additionCommand("d.set_custom","chk-stime",$now),
 		);
 		// Only when the predecessor had them: an empty value would be written
 		// as an empty custom, which resolveForum() and rememberTopic() would
 		// then read as "set to nothing" rather than "never set".
 		if($topic !== '')
-			$addition[] = getCmd("d.set_custom")."=chk-topic,".$topic;
+			$addition[] = rTorrent::additionCommand("d.set_custom","chk-topic",$topic);
 		if($forum !== '')
-			$addition[] = getCmd("d.set_custom")."=chk-forum,".$forum;
+			$addition[] = rTorrent::additionCommand("d.set_custom","chk-forum",$forum);
 		if(!empty($throttle))
-			$addition[] = getCmd("d.set_throttle_name=").$throttle;
+			$addition[] = rTorrent::additionCommand("d.set_throttle_name",$throttle);
 
 		// DownloadFactory runs this whole list inside one try block: the first
 		// torrent::input_error aborts every command after it, plus the
@@ -879,10 +879,10 @@ class ruTrackerChecker
 		foreach($ratioViews as $ratioView)
 		{
 			if($existingViews !== null && isset($existingViews[$ratioView]))
-				$addition[] = getCmd("view.set_visible=").$ratioView;
+				$addition[] = rTorrent::additionCommand("view.set_visible",$ratioView);
 			else
 			{
-				$addition[] = getCmd("d.views.push_back_unique=").$ratioView;
+				$addition[] = rTorrent::additionCommand("d.views.push_back_unique",$ratioView);
 				$attributeOnly[] = $ratioView;
 			}
 		}

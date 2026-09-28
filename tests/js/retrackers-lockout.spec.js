@@ -56,9 +56,13 @@ describe("retrackers failed-init cancellation", () => {
       add: jest.fn(),
       show: jest.fn(),
     };
-    theWebUI.getTable = jest.fn(() => ({ selCount: 1 }));
+    theWebUI.getTable = jest.fn(() => ({ selCount: 1, rowSel: { _plg_retrackers: true } }));
     theWebUI.plgSelect({ which: 3 }, "_plg_retrackers");
-    expect(theContextMenu.add.mock.calls[0][0][1]).toBe("theWebUI.plgShutdown()");
+    const shutdown = theContextMenu.add.mock.calls[0][0][1];
+    expect(shutdown).toEqual(expect.any(Function));
+    shutdown();
+    expect(theWebUI.request).toHaveBeenCalledTimes(1);
+    expect(theWebUI.request.mock.calls[0][0]).toContain("&hash=retrackers");
   });
 
   it("stops offering shutdown after the plugin was removed", () => {
@@ -76,5 +80,44 @@ describe("retrackers failed-init cancellation", () => {
     plugin.disable();
     theWebUI.plgShutdown();
     expect(theWebUI.request).not.toHaveBeenCalled();
+  });
+
+  it("reloads after a completed unlaunch removed the plugin's UI hooks", () => {
+    const plugin = new rPlugin("retrackers", 5.1, "test", "test", 0x0100, "");
+    plugin.onRemove = jest.fn();
+    theWebUI.reload = jest.fn();
+
+    plugin.unlaunch();
+    plugin.remove();
+    expect(plugin.onRemove).toHaveBeenCalledTimes(1);
+    expect(plugin.enabled).toBe(false);
+
+    plugin.launch();
+    expect(plugin.launched).toBe(true);
+    expect(theWebUI.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an unremoved plugin in the same page on relaunch", () => {
+    const plugin = new rPlugin("retrackers", 5.1, "test", "test", 0x0100, "");
+    theWebUI.reload = jest.fn();
+
+    plugin.unlaunch();
+    plugin.launch();
+    expect(plugin.enabled).toBe(true);
+    expect(theWebUI.reload).not.toHaveBeenCalled();
+  });
+
+  it("requests one reload for a batch of removed plugins", () => {
+    const first = new rPlugin("retrackers", 5.1, "test", "test", 0x0100, "");
+    const second = new rPlugin("other", 1, "test", "test", 0x0100, "");
+    theWebUI.reload = jest.fn();
+
+    first.unlaunch().remove();
+    second.unlaunch().remove();
+    first.launch();
+    second.launch();
+    expect(first.launched).toBe(true);
+    expect(second.launched).toBe(true);
+    expect(theWebUI.reload).toHaveBeenCalledTimes(1);
   });
 });

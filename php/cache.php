@@ -184,7 +184,10 @@ class rCache
 		global $profileMask;
 		$name = $this->getName($rss);
 		if(is_null($name))
+		{
+			FileUtil::toLog('rCache: set refused: invalid key; cache entry unchanged');
 			return(false);
+		}
 		$lockName = $name.'.lock';
 		// One writer per cache key. The changed-since-load check, the merge
 		// and the publishing rename must form a single critical section: two
@@ -225,40 +228,46 @@ class rCache
 			{
 				flock( $lock, LOCK_UN );
 				fclose( $lock );
+				self::logRefusal('set', $name, 'merge rejected newer cache entry');
 				return(false);
 			}
 		}
 		// Use a per-process temporary file and publish it atomically under the key lock.
 		$tmpName = $name.'.'.getmypid().'.'.uniqid('', true).'.tmp';
-		$fp = fopen( $tmpName, "wb" );
+		$reason = 'temporary file open failed';
+		$fp = @fopen( $tmpName, "wb" );
 		if($fp!==false)
 		{
 			$str = serialize( $rss );
-			if((fwrite( $fp, $str ) == strlen($str)) && fflush( $fp ))
-			{
-				if(fclose( $fp ) !== false)
-				{
-					@chmod($tmpName,$profileMask & 0666);
-					if(@rename( $tmpName, $name ))
-					{
-						@chmod($name,$profileMask & 0666);
-						if(is_object($rss))
-							self::rememberLoadedState($rss, $name, self::stampOf($name), $str);
-						flock( $lock, LOCK_UN );
-						fclose( $lock );
-						return(true);
-					}
-				}
-				else
-					@unlink( $tmpName );
-			}
+			$written = @fwrite( $fp, $str );
+			$flushed = ($written === strlen($str)) && @fflush( $fp );
+			$closed = @fclose( $fp );
+			if($written !== strlen($str))
+				$reason = 'temporary file write failed';
+			else if(!$flushed)
+				$reason = 'temporary file flush failed';
+			else if(!$closed)
+				$reason = 'temporary file close failed';
 			else
-				fclose( $fp );
+			{
+				@chmod($tmpName,$profileMask & 0666);
+				if(@rename( $tmpName, $name ))
+				{
+					@chmod($name,$profileMask & 0666);
+					if(is_object($rss))
+						self::rememberLoadedState($rss, $name, self::stampOf($name), $str);
+					flock( $lock, LOCK_UN );
+					fclose( $lock );
+					return(true);
+				}
+				$reason = 'cache publish failed';
+			}
 		}
 		@unlink( $tmpName );
 		flock( $lock, LOCK_UN );
 		fclose( $lock );
-	        return(false);
+		self::logRefusal('set', $name, $reason);
+		return(false);
 	}
 	public function get( &$rss )
 	{

@@ -1,6 +1,7 @@
 <?php
 
 require_once( dirname(__FILE__).'/../../php/cache.php');
+require_once( dirname(__FILE__).'/../../php/utility/externalurl.php');
 require_once( dirname(__FILE__).'/../../php/Snoopy.class.inc');
 require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 require_once( dirname(__FILE__).'/rss_reader.php' );
@@ -202,6 +203,14 @@ class rRSS
 		// assign values to this
 		$this->items = [];
 		$this->channel = [];
+		// An item's link and permalink are what plugins/rss/init.js hands to
+		// openExternalURL(). This expression does not decide whether one may be
+		// opened -- ExternalURL::isOpenable() does that -- it only picks which of
+		// the two is the better permalink, and it describes no more than a bare
+		// http(s) host with an optional port and path. It matches no magnet link,
+		// no ftp resource, no userinfo, no ipv6 literal and no host holding an
+		// underscore, so it must never be the only thing an item is judged by.
+		$httpLinkExpr = '|^http(s)?://[a-z0-9-]+(\.[a-z0-9-]+)*(:[0-9]+)?(/.*)?$|i';
 		if (($rss = $xFirst('/rss/channel|/channel')) !== null) {
 			$this->channel = [
 				'title'=>$xText('title', $rss),
@@ -231,15 +240,34 @@ class rRSS
 					else
 						$item['timestamp'] = 0;
 				}
-				// expect permalink in guid and normal link in url
-				$httpLinkExpr = '|^http(s)?://[a-z0-9-]+(\.[a-z0-9-]+)*(:[0-9]+)?(/.*)?$|i';
-				$validPermalink = preg_match($httpLinkExpr, $item['guid']);
-				if (preg_match($httpLinkExpr, $item['link']) ) {
+				// expect permalink in guid and normal link in url.
+				// $httpLinkExpr picks between two addresses that may be
+				// opened, so it only gets to pick among those: it describes
+				// the shape of a host and path and says nothing about a port
+				// the parser refuses, and an address it liked used to be kept
+				// without ExternalURL::isOpenable() ever being asked.
+				$validPermalink = preg_match($httpLinkExpr, $item['guid']) &&
+					ExternalURL::isOpenable($item['guid']);
+				if (preg_match($httpLinkExpr, $item['link']) &&
+					ExternalURL::isOpenable($item['link'])) {
 					if (!$validPermalink) {
 						$item['guid'] = $item['link'];
 					}
 				} elseif ($validPermalink) {
 						$item['link'] = $item['guid'];
+				} elseif (ExternalURL::isOpenable($item['link'])) {
+					// An address the browser may open, but not one the
+					// expression above describes: a magnet link, an ftp
+					// resource, or an http(s) url whose host or userinfo
+					// it does not cover. Do not leave behind a permalink
+					// that could not be opened.
+					if (!ExternalURL::isOpenable($item['guid'])) {
+						$item['guid'] = $item['link'];
+					}
+				} else {
+					// Neither is an address that may be opened. Keeping the
+					// item would carry whatever the feed put there instead.
+					continue;
 				}
 				$link = $item['link'];
 				if (!empty($link)) {
@@ -271,9 +299,9 @@ class rRSS
 					'description'=> join("\n\n", $description),
 				];
 				$item['guid'] = $item['link'];
-				// only add items with an url
+				// only add items with an url that may be opened
 				$link = $item['link'];
-				if (!empty($link)) {
+				if (!empty($link) && ExternalURL::isOpenable($link)) {
 					$this->items[$link] = $item;
 				}
 			}
@@ -342,7 +370,6 @@ class rRSS
 	{
 		return( preg_replace("/\s/u"," ",$str) );
 	}
-
 }
 
 class rRSSHistory
@@ -1321,10 +1348,14 @@ class rRSSManager
 			if($ret!==false)
 			{
 				$addition = array();
+				// Both arrive in the filter as the user typed them -- unlike
+				// the name and the pattern beside them they are not URL-decoded
+				// out of the POST body -- so they are quoted rather than pasted
+				// in, and a group named with a space or a comma works.
 				if(!empty($throttle))
-					$addition[] = getCmd("d.set_throttle_name=").$throttle;
+					$addition[] = rTorrent::additionCommand("d.set_throttle_name",$throttle);
 				if(!empty($ratio))
-					$addition[] = getCmd("view.set_visible=").$ratio;
+					$addition[] = rTorrent::additionCommand("view.set_visible",$ratio);
 				global $saveUploadedTorrents;
 				$thash = ($ret==='magnet') ?
 					rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label, $addition) :

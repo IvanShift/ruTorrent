@@ -3485,8 +3485,8 @@ class RemoveWithDataTest extends TestCase
 	{
 		$this->reset();
 		$hash = $this->hash();
-		$specialFile = "/d/name/a\nb\r-\xFF.bin";
-		$base = "/d/name";
+		$base = "/d/na\nme\r-\xFF";
+		$specialFile = $base."/a\nb\r-\xFF.bin";
 		$this->frozen(true, array($base, 1, $specialFile));
 		$this->eraseOk();
 		$res = erasedataRemoveWithData(array($hash), 1);
@@ -12770,12 +12770,17 @@ class RemoveWithDataTest extends TestCase
 		}
 		$this->assertTrue(erasedataWriteDrainState($queue, $state) === true,
 			'the erase-started journal is durable before the worker runs');
+		$beforeFirst = @file_get_contents($paths[$first]);
 		$before = @file_get_contents($paths[$second]);
-		$this->assertTrue(is_string($before) && $before !== '',
-			'the staging whose publication will fail is readable before the run');
+		$this->assertTrue(is_string($beforeFirst) && $beforeFirst !== ''
+			&& is_string($before) && $before !== '',
+			'both bound stagings are readable before the run');
 		$this->eraseOk();
 		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		erasedataDrainWorkerRun($this->dependencies());
+		$this->assertEquals($beforeFirst,
+			@file_get_contents($queue.'/'.$first.'.'.$generation.'.1.list'),
+			'the first member publishes its exact manifest despite the second publication failure');
 		$this->assertEquals($before, @file_get_contents($paths[$second]),
 			'the staging that could not be published retains its exact bytes');
 		$after = erasedataReadDrainState($queue);

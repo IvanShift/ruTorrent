@@ -84,7 +84,7 @@ catlist.contextMenuEntries = function(panelId, labelId) {
 				? (labelId.startsWith('clabel__') ? labelId.substring(8) : 'nlb')
 				: labelId.substring(1);
 			return entries.concat([
-				[theUILang.EditIcon, `theWebUI.showTracklabelsDialog('${lbl}');`]
+				[theUILang.EditIcon, () => theWebUI.showTracklabelsDialog(lbl)]
 			]);
 		}
 	}
