@@ -1,6 +1,7 @@
 <?php
 
 require_once( 'xmlrpc.php' );
+require_once( __DIR__ . '/xmlrpc_path.php' );
 require_once( 'cache.php');
 
 class rTorrentSettings
@@ -522,13 +523,12 @@ class rTorrentSettings
 		$dir = FileUtil::fullpath($dir,$base);
 		if($resolve_links)
 		{
-			$path = realpath($dir);
-			if(!$path)
-				$dir = FileUtil::addslash(realpath(dirname($dir))).basename($dir);
-			else
-				$dir = $path;
+			$dir = XMLRPCPathResolver::deepestExistingAncestor($dir);
+			if($dir === '')
+				return(false);
 		}
-		return(strpos(FileUtil::addslash($dir),$topDirectory)===0);
+		$top = rtrim($topDirectory, '/');
+		return($dir === $top || strpos($dir, $top.'/') === 0);
 	}
 	// The file and HTTP socket limits belong to libtorrent's socket manager:
 	// network.max_open_files.set is an inert stub, and

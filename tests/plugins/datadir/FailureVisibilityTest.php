@@ -9,9 +9,10 @@ class DataDirFailureVisibilityTest extends TestCase
     public function setUp()
     {
         $this->tree = sys_get_temp_dir() . '/rutorrent-datadir-log-' . uniqid('', true);
-        foreach (array('', '/php', '/plugins', '/plugins/datadir') as $dir)
+        foreach (array('', '/php', '/plugins', '/plugins/datadir', '/allowed', '/outside') as $dir)
             if (!mkdir($this->tree . $dir, 0700) && !is_dir($this->tree . $dir))
                 throw new RuntimeException('Could not create DataDir fixture directory');
+        symlink($this->tree . '/outside', $this->tree . '/allowed/link');
         $root = dirname(__DIR__, 3);
         foreach (array('action.php', 'setdir.php') as $name)
             if (!copy($root . '/plugins/datadir/' . $name, $this->tree . '/plugins/datadir/' . $name))
@@ -27,7 +28,16 @@ class FileUtil
 class rTorrentSettings
 {
     public static function get() { return new self(); }
-    public function correctDirectory(&$dir) { return strpos($dir, '/data/downloads/') === 0; }
+    public function correctDirectory(&$dir, $resolve_links = false)
+    {
+        $top = getenv('DATADIR_TEST_TOP');
+        if (!$top) return strpos($dir, '/data/downloads/') === 0;
+        if ($resolve_links) {
+            $real = realpath($dir);
+            $dir = $real === false ? realpath(dirname($dir)) . '/' . basename($dir) : $real;
+        }
+        return strpos($dir . '/', rtrim($top, '/') . '/') === 0;
+    }
 }
 class Utility { public static function getPHP() { return PHP_BINARY; } }
 class User { public static function getUser() { return 'test'; } }
@@ -56,6 +66,9 @@ STUB
         );
         file_put_contents($this->tree . '/plugins/datadir/util_setdir.php', <<<'STUB'
 <?php
+function rtDataDirLock($blocking) { return true; }
+function rtDataDirRecover() {}
+function rtDataDirUnlock($lock) {}
 function rtSetDataDir($hash, $path, $add, $move, $resume, $debug)
 {
     $result = getenv('DATADIR_TEST_RESULT');
@@ -81,7 +94,8 @@ STUB
             'plugins/datadir/setdir.php', 'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
             @unlink($this->tree . '/' . $file);
-        foreach (array('plugins/datadir', 'plugins', 'php', '') as $dir)
+        @unlink($this->tree . '/allowed/link');
+        foreach (array('plugins/datadir', 'plugins', 'php', 'allowed', 'outside', '') as $dir)
             @rmdir($this->tree . ($dir === '' ? '' : '/' . $dir));
     }
 
@@ -118,6 +132,16 @@ STUB
     {
         return $this->runEntry('action_driver.php', array(),
             array_merge(array('DATADIR_TEST_BODY' => $body), $env));
+    }
+
+    public function testWorkerRefusesSymlinkEscapeBeforeDirectoryCreation()
+    {
+        $args = array(str_repeat('A', 40), $this->tree . '/allowed/link', '1', '1', '0', 'test');
+        list($code, $output, $stderr, $log) = $this->worker($args,
+            array('DATADIR_TEST_TOP' => $this->tree . '/allowed'));
+        $this->assertSame(0, $code, 'Worker responds after physical path refusal');
+        $this->assertTrue(strpos($log, 'datadir: destination-invalid hash=') !== false,
+            'Worker logs physical destination refusal before creating or moving');
     }
 
     public function testWorkerLogsDirectoryCreationFailureWithDebugDisabled()
@@ -217,6 +241,21 @@ STUB
             'Action logs classified destination refusal');
         $this->assertTrue(strpos($log, '/outside') === false,
             'Action does not put destination path in log');
+    }
+
+    public function testActionRejectsSymlinkEscapeBeforeDispatch()
+    {
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=' . rawurlencode($this->tree . '/allowed/link');
+        $dispatch = $this->tree . '/dispatch.json';
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_TOP' => $this->tree . '/allowed',
+                'DATADIR_TEST_COMMAND_LOG' => $dispatch));
+        $this->assertSame(0, $code, 'Action responds after physical path refusal');
+        $decoded = json_decode($output, true);
+        $this->assertTrue(isset($decoded['errors'][0]), 'Outside symlink target is refused');
+        $this->assertTrue(!is_file($dispatch), 'Outside symlink target is not dispatched');
+        $this->assertTrue(strpos($log, 'invalid destination') !== false,
+            'Outside symlink refusal is visible');
     }
 
     public function testActionSuccessOnlyAcknowledgesWorkerLaunch()

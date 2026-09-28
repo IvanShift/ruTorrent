@@ -925,7 +925,7 @@ if(!function_exists('erasedataReadExactCleanupJob'))
 			return(false);
 		$oldHash = erasedataCanonicalHash($job['old_hash']);
 		$newHash = erasedataCanonicalHash($job['new_hash']);
-		$listPath = FileUtil::getSettingsPath().'/erasedata';
+		$listPath = erasedataQueuePath();
 		$candidate = erasedataParseCollectorCandidate($listPath, basename($job['tmp_path']));
 		if($oldHash === false || $newHash === false || $oldHash !== $job['old_hash'] || $newHash !== $job['new_hash']
 			|| dirname($job['tmp_path']) !== $listPath || dirname($job['list_path']) !== $listPath
@@ -961,7 +961,7 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 			return(false);
 		if(!count($entries))
 			return(null);
-		$listPath = FileUtil::getSettingsPath().'/erasedata';
+		$listPath = erasedataQueuePath();
 		if(!erasedataEnsureQueueDirectory($listPath))
 			return(false);
 		$lock = erasedataAcquireHashLock($listPath, $canonicalOldHash);
@@ -1096,7 +1096,7 @@ if(!function_exists('erasedataArmObsoleteCleanup'))
 	function erasedataArmObsoleteCleanup($job)
 	{
 		return(erasedataArmObsoleteCleanupRun(array(
-			'listPath' => FileUtil::getSettingsPath().'/erasedata',
+			'listPath' => erasedataQueuePath(),
 			'user' => User::getUser(),
 			'log' => array('FileUtil', 'toLog'),
 			'ackTimeout' => ERASEDATA_DRAIN_ACK_TIMEOUT,
@@ -1113,7 +1113,7 @@ if(!function_exists('erasedataPublishObsoleteCleanup'))
 			$manifest = erasedataReadExactCleanupJob($job);
 			if($manifest === false)
 				return(false);
-			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata',
+			$index = erasedataBuildCollectorIndex(erasedataQueuePath(),
 				$job['old_hash'], $filesystem);
 			$reason = null;
 			$artifacts = erasedataCleanupGenerationArtifacts($index, $job['old_hash'], $job['new_hash'], $job['marker'],
@@ -1139,9 +1139,9 @@ if(!function_exists('erasedataCancelObsoleteCleanup'))
 		try {
 			if(erasedataReadExactCleanupJob($job) === false)
 				return(false);
-			$index = erasedataBuildCollectorIndex(FileUtil::getSettingsPath().'/erasedata',
+			$index = erasedataBuildCollectorIndex(erasedataQueuePath(),
 				$job['old_hash'], $filesystem);
-			return(erasedataCancelObsoleteCleanupGenerationLocked(FileUtil::getSettingsPath().'/erasedata',
+			return(erasedataCancelObsoleteCleanupGenerationLocked(erasedataQueuePath(),
 				$job['old_hash'], $job['new_hash'], $job['marker'], $job['replacement_record'],
 				$index, $filesystem) === ERASEDATA_CLEANUP_READY);
 		} finally {
@@ -1443,7 +1443,7 @@ if(!function_exists('erasedataRecoverObsoleteCleanup'))
 		$reason = 'generation-mismatch';
 		$oldHash = erasedataCanonicalHash($oldHash);
 		$newHash = erasedataCanonicalHash($newHash);
-		$listPath = FileUtil::getSettingsPath().'/erasedata';
+		$listPath = erasedataQueuePath();
 		if($oldHash === false || $newHash === false)
 			return(ERASEDATA_CLEANUP_RETRY);
 		if(!erasedataEnsureQueueDirectory($listPath))
@@ -1467,7 +1467,7 @@ if(!function_exists('erasedataCancelObsoleteCleanupGeneration'))
 	{
 		$oldHash = erasedataCanonicalHash($oldHash);
 		$newHash = erasedataCanonicalHash($newHash);
-		$listPath = FileUtil::getSettingsPath().'/erasedata';
+		$listPath = erasedataQueuePath();
 		if($oldHash === false || $newHash === false)
 			return(ERASEDATA_CLEANUP_RETRY);
 		if(!erasedataEnsureQueueDirectory($listPath))
@@ -5375,7 +5375,7 @@ if(!function_exists('erasedataRearmDrainSchedule'))
 	// override or a global.
 	function erasedataRearmDrainSchedule()
 	{
-		$listPath = FileUtil::getSettingsPath()."/erasedata";
+		$listPath = erasedataQueuePath();
 		// listPath, user and log, and nothing else: erasedataRearmDrainScheduleRun()
 		// and the retirement scan below it read exactly those three. A
 		// 'filesystem' key here would be built on every full web-interface load
@@ -5574,7 +5574,7 @@ if(!function_exists('erasedataDrainWorkerMain'))
 	// Returns true when the tick ran to a decision, false when it refused.
 	function erasedataDrainWorkerMain($user)
 	{
-		$listPath = FileUtil::getSettingsPath()."/erasedata";
+		$listPath = erasedataQueuePath();
 		return(erasedataDrainWorkerRun(array(
 			'listPath' => $listPath,
 			'user' => $user,
@@ -5639,7 +5639,7 @@ if(!function_exists('erasedataAdmitRemoval'))
 			erasedataAdmissionRefusalReason('invalid-force');
 			return(false);
 		}
-		$listPath = FileUtil::getSettingsPath()."/erasedata";
+		$listPath = erasedataQueuePath();
 		return(erasedataRemovalAdmissionRun(array(
 			'listPath' => $listPath,
 			'user' => User::getUser(),
@@ -5687,7 +5687,7 @@ if(!function_exists('erasedataRemoveWithData'))
 		}
 		if(!count($pending))
 			return(false);
-		$listPath = FileUtil::getSettingsPath()."/erasedata";
+		$listPath = erasedataQueuePath();
 		if(!erasedataEnsureQueueDirectory($listPath))
 			return(false);
 		$erasable = array();

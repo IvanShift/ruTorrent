@@ -1198,6 +1198,255 @@ class RemoveWithDataTest extends TestCase
 			'the default queue is private');
 	}
 
+	public function testFreshDockerProfileUsesProtectedQueueForRemoval()
+	{
+		$this->reset();
+		$share = $this->dir.'/share';
+		$settings = $share.'/settings';
+		$protected = $this->dir.'/erasedata-jobs';
+		mkdir($share, 0775);
+		mkdir($settings, 0775);
+		mkdir($protected, 0700);
+		file_put_contents($this->dir.'/.erasedata-first-use', '');
+		chmod($this->dir.'/.erasedata-first-use', 0400);
+		chmod($share, 0775);
+		chmod($settings, 0775);
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$hash = $this->hash('D');
+			$payload = $this->dir.'/fresh-docker-payload.bin';
+			file_put_contents($payload, 'payload');
+			$this->frozen(true, array($payload, 0, $payload));
+			$this->eraseOk();
+			$this->probe(true, false, array($hash));
+			$queue = $protected.'/default';
+			if(erasedataEffectiveUid() !== 0)
+			{
+				$this->assertTrue(erasedataAdmitRemoval(array($hash), 1) === false,
+					'a service-owned preplant is not a root first-use witness');
+				$this->assertEquals(array(), rXMLRPCRequest::$erased,
+					'no erase follows the forged witness');
+				return;
+			}
+			$this->acknowledgeOnRegistration($queue);
+			$this->assertTrue(erasedataAdmitRemoval(array($hash), 1) !== false,
+				'a root-provisioned stock Docker profile admits the public deletion');
+			$this->assertTrue(count(rXMLRPCRequest::$erased) === 1,
+				'the admitted request reaches the erase RPC');
+			$this->assertEquals(0700, $this->modeOf($queue),
+				'the new queue is outside group-writable share and private');
+			$this->assertTrue(count(glob($queue.'/*.list')) === 1,
+				'the removal has a durable manifest in that queue');
+			$this->assertTrue(!file_exists($settings.'/erasedata'),
+				'no second queue appears under unsafe settings');
+			$this->probe(true, true, array(), 'info-hash not found');
+			erasedataRunCollector($queue);
+			$this->assertTrue(!file_exists($payload) && count(glob($queue.'/*.list')) === 0,
+				'the same protected queue serves a later collector recovery');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			$this->removePath($share);
+			@unlink($this->dir.'/.erasedata-first-use');
+			$this->removePath($protected);
+		}
+	}
+
+	public function testVanishedLegacyQueueWithoutProtectedRootStaysHeld()
+	{
+		$this->reset();
+		$share = $this->dir.'/share';
+		$settings = $share.'/settings';
+		mkdir($share, 0775);
+		mkdir($settings, 0775);
+		chmod($share, 0775);
+		chmod($settings, 0775);
+		mkdir($settings.'/erasedata', 0700);
+		file_put_contents($settings.'/erasedata/old.list', 'unattested intent');
+		$this->assertTrue(rename($settings.'/erasedata', $settings.'/erasedata.hidden'),
+			'an old queue can vanish under an unsafe settings directory');
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$hash = $this->hash('D');
+			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+			$this->eraseOk();
+			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+				'absence of the legacy queue does not attest its history');
+			$this->assertEquals(array(), rXMLRPCRequest::$erased,
+				'no erase follows an unproved first-use claim');
+			$this->assertEquals('unattested intent',
+				file_get_contents($settings.'/erasedata.hidden/old.list'),
+				'the lost old intent remains outside the new queue');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			$this->removePath($share);
+		}
+	}
+
+	public function testProtectedRootNeverHidesUnattestedLegacyQueue()
+	{
+		$this->reset();
+		$share = $this->dir.'/share';
+		$settings = $share.'/settings';
+		$protected = $this->dir.'/erasedata-jobs';
+		mkdir($share, 0775);
+		mkdir($settings, 0775);
+		mkdir($settings.'/erasedata', 0700);
+		mkdir($protected, 0700);
+		file_put_contents($this->dir.'/.erasedata-first-use', '');
+		chmod($this->dir.'/.erasedata-first-use', 0400);
+		file_put_contents($settings.'/erasedata/old.list', 'old intent');
+		chmod($share, 0775);
+		chmod($settings, 0775);
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$hash = $this->hash('D');
+			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+			$this->eraseOk();
+			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+				'the new root does not shadow a visible legacy obligation');
+			$this->assertEquals(array(), rXMLRPCRequest::$erased,
+				'no destructive RPC follows a split legacy state');
+			$this->assertEquals('old intent',
+				file_get_contents($settings.'/erasedata/old.list'),
+				'the legacy bytes remain for operator attestation');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			$this->removePath($share);
+			@unlink($this->dir.'/.erasedata-first-use');
+			$this->removePath($protected);
+		}
+	}
+
+	public function testNamedDockerProfileHasSeparateProtectedQueue()
+	{
+		$this->reset();
+		$share = $this->dir.'/share';
+		$settings = $share.'/users/alice/settings';
+		$protected = $this->dir.'/erasedata-jobs';
+		mkdir($settings, 0775, true);
+		mkdir($protected, 0700);
+		file_put_contents($this->dir.'/.erasedata-first-use', '');
+		chmod($this->dir.'/.erasedata-first-use', 0400);
+		foreach(array($share, $share.'/users', $share.'/users/alice', $settings) as $dir)
+			chmod($dir, 0775);
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$queue = erasedataQueuePath();
+			if(erasedataEffectiveUid() !== 0)
+			{
+				$this->assertTrue($queue === false,
+					'a named profile cannot borrow a service-owned preplant');
+				return;
+			}
+			$this->assertEquals($protected.'/user-'.hash('sha256', 'alice'), $queue,
+				'a named profile maps to its own stable leaf');
+			$alias = $this->dir.'/share-alias';
+			symlink($share, $alias);
+			FileUtil::$settingsPath = $alias.'/users/alice/settings';
+			$this->assertEquals($queue, erasedataQueuePath(),
+				'web and CLI aliases resolve to one canonical named queue');
+			$this->assertTrue(erasedataEnsureQueueDirectory($queue),
+				'the protected root admits a named profile');
+			$this->assertEquals(0700, $this->modeOf($queue),
+				'the named queue is owner-only');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			@unlink($this->dir.'/share-alias');
+			$this->removePath($share);
+			@unlink($this->dir.'/.erasedata-first-use');
+			$this->removePath($protected);
+		}
+	}
+
+	public function testCustomProfileDoesNotBorrowDockerFirstUseRoot()
+	{
+		$this->reset();
+		$settings = $this->dir.'/custom-profile/settings';
+		$protected = $this->dir.'/erasedata-jobs';
+		mkdir($settings, 0775, true);
+		mkdir($protected, 0700);
+		chmod(dirname($settings), 0775);
+		chmod($settings, 0775);
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$this->assertEquals($settings.'/erasedata', erasedataQueuePath(),
+				'a custom profile has no Docker first-use witness');
+			$this->assertTrue(!erasedataEnsureQueueDirectory(erasedataQueuePath()),
+				'the unsafe custom profile remains held');
+			$this->assertTrue(!file_exists($protected.'/default'),
+				'no unrelated protected queue is selected');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			$this->removePath(dirname($settings));
+			$this->removePath($protected);
+		}
+	}
+
+	public function testOfflineSealedLegacyQueueResumesItsAbsolutePendingJournal()
+	{
+		$this->reset();
+		$share = $this->dir.'/share';
+		$settings = $share.'/settings';
+		$queue = $settings.'/erasedata';
+		mkdir($queue, 0700, true);
+		chmod($share, 0775);
+		chmod($settings, 0775);
+		chmod($queue, 0700);
+		FileUtil::$settingsPath = $settings;
+		try
+		{
+			$hash = $this->hash('D');
+			$generation = '0000000000000001';
+			$payload = $this->dir.'/legacy-payload.bin';
+			file_put_contents($payload, 'pending old data');
+			$bytes = ErasedataManifestCodec::encode($hash,
+				array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
+			$staged = erasedataStageAdmittedManifest($queue, $hash, $generation, $bytes);
+			$this->assertTrue(is_array($staged), 'the old queue has a real staging inode');
+			if(!is_array($staged)) return;
+			$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
+				'the old queue has a pending marker');
+			$this->armQueue($queue, $generation, array($hash => $staged['path']));
+			$this->probe(true, true, array(), 'info-hash not found');
+			rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
+			$this->assertTrue(!erasedataDrainWorkerMain(User::getUser()),
+				'unsafe old parents hold the pending journal before attestation');
+			$this->assertEquals('pending old data', file_get_contents($payload),
+				'the refused pass preserves the payload');
+			chmod($share, 01775);
+			chmod($settings, 01775);
+			$this->assertTrue(erasedataEnsureQueueDirectory($queue),
+				'offline sealing makes the original absolute queue safe');
+			$this->assertTrue(erasedataDrainWorkerMain(User::getUser()),
+				'the worker resumes the old journal at its original absolute path');
+			$this->assertTrue(!file_exists($payload),
+				'the resumed obligation removes its exact payload');
+			$this->assertTrue(!file_exists($staged['path'])
+				&& !erasedataPendingMarkerStands($queue, $hash, $generation),
+				'the original staging and marker are retired');
+		}
+		finally
+		{
+			FileUtil::$settingsPath = $this->dir;
+			$this->removePath($share);
+		}
+	}
+
 	public function testQueueAdmissionAcceptsOnlyAProvablyVanishedListedEntry()
 	{
 		$this->reset();

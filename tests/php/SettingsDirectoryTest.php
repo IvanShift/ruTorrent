@@ -100,4 +100,57 @@ class SettingsDirectoryTest extends TestCase
 		$this->assertEquals('/downloads/private', $path,
 			'the path remains relative to the daemon default directory');
 	}
+	public function testTopDirectoryPrefixDoesNotAllowSiblingDirectory()
+	{
+		$root = sys_get_temp_dir().'/rutorrent-settings-prefix-'.bin2hex(random_bytes(6));
+		mkdir($root, 0700);
+		mkdir($root.'/allowed', 0700);
+		mkdir($root.'/allowed-extra', 0700);
+		$GLOBALS['topDirectory'] = $root.'/allowed';
+		try
+		{
+			$path = $root.'/allowed-extra';
+			$this->assertTrue(!$this->settings('')->correctDirectory($path, true),
+				'a sibling with the same string prefix is outside topDirectory');
+			$inside = $root.'/allowed';
+			$this->assertTrue($this->settings('')->correctDirectory($inside, true),
+				'topDirectory itself remains valid');
+		}
+		finally
+		{
+			rmdir($root.'/allowed-extra');
+			rmdir($root.'/allowed');
+			rmdir($root);
+		}
+	}
+
+	public function testPhysicalDirectoryCheckRejectsSymlinkEscapeAndAllowsMissingChild()
+	{
+		$root = sys_get_temp_dir().'/rutorrent-settings-dir-'.bin2hex(random_bytes(6));
+		mkdir($root, 0700);
+		mkdir($root.'/allowed', 0700);
+		mkdir($root.'/outside', 0700);
+		symlink($root.'/outside', $root.'/allowed/link');
+		$GLOBALS['topDirectory'] = $root.'/allowed/';
+		try
+		{
+			$settings = $this->settings('');
+			$outside = $root.'/allowed/link/missing/child';
+			$this->assertTrue(!$settings->correctDirectory($outside, true),
+				'a missing child below an outside symlink is refused');
+			$inside = $root.'/allowed/new/missing/child';
+			$this->assertTrue($settings->correctDirectory($inside, true),
+				'nested missing descendants under the allowed root remain valid');
+			$this->assertSame($root.'/allowed/new/missing/child', $inside,
+				'the missing destination keeps its canonical allowed ancestry');
+		}
+		finally
+		{
+			unlink($root.'/allowed/link');
+			rmdir($root.'/outside');
+			rmdir($root.'/allowed');
+			rmdir($root);
+		}
+	}
+
 }

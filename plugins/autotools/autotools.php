@@ -141,6 +141,82 @@ class rAutoTools
 		$ret .= ", AddName: ".$this->addName;
 		return $ret." };\n";
 	}
+	private static function pathIsInside($root, $path)
+	{
+		return $path === $root || strpos($path, rtrim($root, '/') . '/') === 0;
+	}
+
+	public static function destinationWithinRoot($finishedRoot, $destination)
+	{
+		if(!is_string($finishedRoot) || !is_string($destination) || $finishedRoot === ''
+			|| $destination === '' || strpos($finishedRoot, "\0") !== false
+			|| strpos($destination, "\0") !== false) return false;
+		$root = FileUtil::fullpath($finishedRoot);
+		$path = FileUtil::fullpath($destination);
+		if(!self::pathIsInside($root, $path)) return false;
+		$realRoot = realpath($finishedRoot);
+		if($realRoot === false) return false;
+		$probe = $path;
+		while(!file_exists($probe) && !is_link($probe))
+		{
+			$parent = dirname($probe);
+			if($parent === $probe) return false;
+			$probe = $parent;
+		}
+		$realProbe = realpath($probe);
+		return $realProbe !== false && self::pathIsInside($realRoot, $realProbe);
+	}
+
+	public static function completionMailFile($destination, $finishedRoot)
+	{
+		$path = rtrim($destination, '/');
+		$root = rtrim($finishedRoot, '/');
+		while($path !== '' && $path !== $root)
+		{
+			$file = $path . '/.mailto';
+			if(is_file($file)) return $file;
+			$parent = dirname($path);
+			if($parent === $path) break;
+			$path = $parent;
+		}
+		return null;
+	}
+
+	public static function notifyCompletedFileTransfer($destination, $finishedRoot, $torrentName, $send = null)
+	{
+		$file = self::completionMailFile($destination, $finishedRoot);
+		if($file === null) return false;
+		$lines = @file($file);
+		if($lines === false)
+		{
+			FileUtil::toLog('autotools: completion mail refused: unreadable .mailto');
+			return false;
+		}
+		$fields = array('TO'=>'', 'CC'=>'', 'BCC'=>'', 'FROM'=>'', 'SUBJECT'=>'');
+		while($lines)
+		{
+			$parts = explode(':', $lines[0], 2);
+			$key = trim($parts[0]);
+			if(count($parts) < 2 || !array_key_exists($key, $fields)) break;
+			$fields[$key] = trim($parts[1]);
+			array_shift($lines);
+		}
+		if($fields['TO'] === '')
+		{
+			FileUtil::toLog('autotools: completion mail refused: .mailto missing TO');
+			return false;
+		}
+		$subject = str_replace('{TORRENT}', $torrentName, $fields['SUBJECT']);
+		$message = str_replace('{TORRENT}', $torrentName, implode('', $lines));
+		$headers = 'From: ' . $fields['FROM'] . "\r\n";
+		if($fields['CC'] !== '') $headers .= 'CC: ' . $fields['CC'] . "\r\n";
+		if($fields['BCC'] !== '') $headers .= 'BCC: ' . $fields['BCC'] . "\r\n";
+		$headers .= "Content-type: text/plain; charset=utf-8\r\n";
+		$sent = $send === null ? mail($fields['TO'], $subject, $message, $headers)
+			: call_user_func($send, $fields['TO'], $subject, $message, $headers);
+		if(!$sent) FileUtil::toLog('autotools: completion mail failed');
+		return $sent;
+	}
 	public function setHandlers()
 	{
 		global $autowatch_interval;
@@ -160,35 +236,33 @@ class rAutoTools
 		$req->addCommand($cmd);
 		if($this->enable_move && (trim($this->path_to_finished)!=''))
 		{
-			if($theSettings->iVersion<0x808)
+			$jobMarker = getCmd('d.set_custom').'=x-autotools-nonmove-job,"$'.getCmd('execute_capture').
+				'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}" ; d.save_full_session= ; ';
+			if($this->fileop_type=="Move")
 			{
-				$cmd = 	$theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-						getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
-						'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-						getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().'}" ; '.
-						getCmd('branch').'=$'.getCmd('not').'=$'.getCmd('d.get_custom').'=x-dest,,'.getCmd('d.set_directory_base').'=$'.getCmd('d.get_custom').'=x-dest'
-					));
+				$moveMarker = getCmd('d.set_custom').'=x-autotools-move-job,"$'.getCmd('execute_capture').
+					'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-move-job}" ; d.save_full_session= ; ';
+				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
+					$moveMarker.'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/move_tx.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
+					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-move-job}'
+				));
+			}
+			else if($theSettings->iVersion<0x808)
+			{
+				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
+					$jobMarker.getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
+					'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
+					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}" ; '.
+					getCmd('branch').'=$'.getCmd('not').'=$'.getCmd('d.get_custom').'=x-dest,,'.getCmd('d.set_directory_base').'=$'.getCmd('d.get_custom').'=x-dest'
+				));
 			}
 			else
 			{
-				if($this->fileop_type=="Move")
-				{
-					$cmd = 	$theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-							getCmd('d.set_directory_base').'="$'.getCmd('execute_capture').
-							'={'.Utility::getPHP().','.$pathToAutoTools.'/check.php,$'.getCmd('d.get_base_path').'=,$'.
-							getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().'}" ; '.
-							getCmd('execute').'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-							getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().'}'
-						));
-				}
-				else
-				{
-					$cmd = 	$theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-							getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
-							'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-							getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().'}"'
-						));
-				}
+				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
+					$jobMarker.getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
+					'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
+					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}"'
+				));
 			}
 		}
 		else
@@ -200,6 +274,8 @@ class rAutoTools
 		else
 			$cmd = $theSettings->getRemoveScheduleCommand('autowatch');
 		$req->addCommand($cmd);
+		$req->addCommand($theSettings->getAlignedScheduleCommand('autorecover', 60,
+			'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/recover.php,All,'.User::getUser().'}'));
 		return($req->success());
 	}
 }

@@ -39,7 +39,7 @@ function skip_move($files)
 }
 
 //------------------------------------------------------------------------------
-function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,$dest_path,$fileop_type)
+function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,$dest_path,$fileop_type,$hash,$token,$sourceBase,$finishedRoot)
 {
 	global $autodebug_enabled;
 
@@ -49,6 +49,7 @@ function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,
 	else
 		$sub_dir = '';					// $base_file - is really a file
 
+	$noticeDestination = $dest_path;
 	$base_path.=$sub_dir;
 	$dest_path.=$sub_dir;
 
@@ -71,7 +72,13 @@ function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,
 
 	if( $base_path != $dest_path && is_dir( $base_path ) )
 	{
-		if( rtOpFiles( $files, $base_path, $dest_path, $fileop_type, $autodebug_enabled ) )
+		$context = array('hash'=>$hash, 'token'=>$token, 'sourceBase'=>$sourceBase,
+			'destination'=>$dest_path);
+		if($fileop_type !== 'Move')
+			$context['notice'] = array('noticeDestination'=>$noticeDestination,
+				'finishedRoot'=>$finishedRoot, 'torrentName'=>$torrent->name());
+		if( rtOpFiles( $files, $base_path, $dest_path, $fileop_type,
+			$autodebug_enabled, $context ) )
 		{
 			if(($fileop_type=="Move") && ( $sub_dir != '' ))
 			{
@@ -96,6 +103,9 @@ $is_multi  = $argv[4];
 $label	   = rawurldecode($argv[5]);
 $name	   = $argv[6];
 $at = rAutoTools::load();
+
+$sourceBase = $base_path;
+$jobToken = isset($argv[8]) ? $argv[8] : '';
 
 if( $at->enable_move && (@preg_match($at->automove_filter.'u',$label)==1) )
 {
@@ -132,67 +142,15 @@ if( $at->enable_move && (@preg_match($at->automove_filter.'u',$label)==1) )
 		        			$dest_path.=FileUtil::addslash($label);
 			        	if($at->addName && ($name!=''))
 						$dest_path.=FileUtil::addslash($name);
-					if(operationOnTorrentFiles($torrent,$base_path,$base_name,$is_multi,$dest_path,$fileop_type))
+					if(!rtMkDir($path_to_finished))
+						FileUtil::toLog('autotools: file operation refused: finished root unavailable');
+					else if(!rAutoTools::destinationWithinRoot($path_to_finished, $dest_path))
+						FileUtil::toLog('autotools: file operation refused: destination outside finished root');
+					else if(operationOnTorrentFiles($torrent,$base_path,$base_name,$is_multi,$dest_path,$fileop_type,$hash,$jobToken,$sourceBase,$path_to_finished))
 					{
-//						if($fileop_type=="Move")
 							echo $base_path;
-						$path = rtRemoveTailSlash( $dest_path );
-						$path_to_finished = rtRemoveTailSlash( $path_to_finished );
-						$mailto_file = "";
-						while( $path != '' && $path != $path_to_finished )
-						{
-							$mailto_file = $path."/.mailto";
-							if( is_file( $mailto_file ) )
-							{
-								Debug( "\".mailto\" file   : ".$mailto_file );
-								$mail_to   = "";
-								$mail_cc   = "";
-								$mail_bcc  = "";
-								$mail_from = "";
-								$subject   = "";
-								$lines = file( $mailto_file );
-								while( count( $lines ) > 0 )
-								{
-									$params = explode( ":", $lines[0] );
-									if( count( $params ) < 2 )
-										break;
-									if     ( trim( $params[0] ) == "TO"      ) $mail_to   = trim( $params[1] );
-									else if( trim( $params[0] ) == "CC"      ) $mail_cc   = trim( $params[1] );
-									else if( trim( $params[0] ) == "BCC"     ) $mail_bcc  = trim( $params[1] );
-									else if( trim( $params[0] ) == "FROM"    ) $mail_from = trim( $params[1] );
-									else if( trim( $params[0] ) == "SUBJECT" ) $subject   = trim( $params[1] );
-									else break;
-									array_shift( $lines );
-								}
-								if( $mail_to == "" )
-									Debug( "mail recepient is not set!" );
-								else
-								{
-									Debug( "mail to          : ".$mail_to   );
-									Debug( "mail cc          : ".$mail_cc   );
-									Debug( "mail bcc         : ".$mail_bcc  );
-									Debug( "mail from        : ".$mail_from );
-									Debug( "mail subject     : ".$subject   );
-									$torrent_name = $torrent->name();
-									$subject = str_replace( "{TORRENT}", $torrent_name, $subject );
-									$message = implode( '', $lines );
-									$message = str_replace( "{TORRENT}", $torrent_name, $message );
-									$headers  = "From: ".$mail_from."\r\n";
-									if( $mail_cc != "" )
-										$headers .= "CC: ".$mail_cc."\r\n";
-									if( $mail_bcc != "" )
-										$headers .= "BCC: ".$mail_bcc."\r\n";
-									$headers .= "Content-type: text/plain; charset=utf-8"."\r\n";
-									if( !mail( $mail_to, $subject, $message, $headers ) )
-										Debug( "mail() to \"".$mail_to."\" fail!" );
-								}
-								break;
-							}
-							$path = rtRemoveLastToken( $path, "/" );
-							$mailto_file = "";
-						}
-						if( $mailto_file == '' )
-							Debug( "\".mailto\" file   : not found!" );
+						if($fileop_type === 'Move')
+							rAutoTools::notifyCompletedFileTransfer($dest_path, $path_to_finished, $torrent->name());
 					}
 				}
 			}

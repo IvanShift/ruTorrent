@@ -45,6 +45,16 @@ if( $at->enable_move && (@preg_match($at->automove_filter.'u',$label)==1) )
 	        			$dest_path.=FileUtil::addslash($label);
 		        	if($at->addName && ($name!=''))
 					$dest_path.=FileUtil::addslash($name);
+				if(!rtMkDir($path_to_finished))
+				{
+					FileUtil::toLog('autotools: directory change refused: finished root unavailable');
+					$dest_path = $base_path;
+				}
+				else if(!rAutoTools::destinationWithinRoot($path_to_finished, $dest_path))
+				{
+					FileUtil::toLog('autotools: directory change refused: destination outside finished root');
+					$dest_path = $base_path;
+				}
 			}
 		}
 	}

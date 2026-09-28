@@ -49,7 +49,7 @@ function erasedataRunCollector($listPath, $onlyHash = null)
 function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 {
 	global $argv;
-	$listPath = FileUtil::getSettingsPath()."/erasedata";
+	$listPath = erasedataQueuePath();
 	if(!erasedataEnsureQueueDirectory($listPath))
 		return(false);
 	$onlyHash = null;

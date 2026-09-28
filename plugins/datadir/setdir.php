@@ -19,8 +19,15 @@ require_once( './util_setdir.php' );
 require_once( './util_rt.php' );
 eval( FileUtil::getPluginConf( 'datadir' ) );
 
-$DataDir_Sem = rtSemGet( fileinode( __FILE__ ) );
-rtSemLock( $DataDir_Sem );
+try {
+    $DataDir_Lock = rtDataDirLock(false);
+} catch (Exception $e) {
+    FileUtil::toLog('datadir: worker refused: ' . $e->getMessage());
+    exit(1);
+}
+
+// The same lock also serializes replay with a new request.
+rtDataDirRecover();
 
 function Debug( $str )
 {
@@ -53,6 +60,12 @@ if( $is_ok && (strlen($hash) != 40 || !ctype_xdigit($hash) || $datadir == '') )
 	$is_ok = false;
 }
 
+if( $is_ok && !rTorrentSettings::get()->correctDirectory($datadir, true) )
+{
+	FileUtil::toLog( 'datadir: destination-invalid hash='.$hash );
+	$is_ok = false;
+}
+
 if( $is_ok )
 {
 	Debug( "hash        : ".$hash );
@@ -66,6 +79,8 @@ if( $is_ok )
 		Debug( "can't create ".$datadir );
 		FileUtil::toLog( 'datadir: destination-create-failed hash='.$hash );
 	}
+	else if( !rTorrentSettings::get()->correctDirectory($datadir, true) )
+		FileUtil::toLog( 'datadir: destination-invalid hash='.$hash );
 	else
 	{
 		$result = rtSetDataDir( $hash, $datadir,
@@ -83,4 +98,4 @@ if( $is_ok )
 
 Debug( "--- end ---" );
 
-rtSemUnlock( $DataDir_Sem );
+rtDataDirUnlock( $DataDir_Lock );

@@ -10,6 +10,13 @@ require_once(dirname(__FILE__)."/manifest.php");
 // calls stay inline in the collector.
 class ErasedataFilesystemOps
 {
+	const RENAME_NOREPLACE_HELPER = '/usr/local/bin/rutorrent-erasedata-rename-noreplace';
+
+	public static function canRenameNoReplace()
+	{
+		return(is_executable(self::RENAME_NOREPLACE_HELPER));
+	}
+
 	public function entryIdentity($path)
 	{
 		clearstatcache(true, $path);
@@ -75,15 +82,14 @@ class ErasedataFilesystemOps
 	// from this plugin's source; an absent or unsupported helper refuses restore.
 	public function renameNoReplace($from, $to)
 	{
-		$helper = '/usr/local/bin/rutorrent-erasedata-rename-noreplace';
-		if(!is_executable($helper))
+		if(!self::canRenameNoReplace())
 			return(false);
 		$descriptors = array(
 			0 => array('file', '/dev/null', 'r'),
 			1 => array('file', '/dev/null', 'w'),
 			2 => array('file', '/dev/null', 'w'),
 		);
-		$process = @proc_open(array($helper, $from, $to), $descriptors, $pipes);
+		$process = @proc_open(array(self::RENAME_NOREPLACE_HELPER, $from, $to), $descriptors, $pipes);
 		return(is_resource($process) && proc_close($process) === 0);
 	}
 
@@ -487,6 +493,62 @@ function erasedataIdentityDeviceAndInode($identity)
 		|| !(is_int($source['ino']) || is_float($source['ino']) || is_string($source['ino'])))
 		return(false);
 	return(array('dev' => (string)$source['dev'], 'ino' => (string)$source['ino']));
+}
+
+// A protected sibling is provisioned only on a first Docker profile boot (or
+// by an operator who has attested the old queue). It is the persistent witness
+// that an absent legacy name under a group-writable share cannot provide.
+function erasedataQueuePath()
+{
+	$settingsPath = FileUtil::getSettingsPath();
+	$legacy = $settingsPath.'/erasedata';
+	$settings = @realpath($settingsPath);
+	if($settings === false)
+		return($legacy);
+	$profile = dirname($settings);
+	if(basename($profile) === 'share')
+	{
+		$root = dirname($profile);
+		$leaf = 'default';
+	}
+	else if(basename(dirname($profile)) === 'users'
+		&& basename(dirname(dirname($profile))) === 'share')
+	{
+		$root = dirname(dirname(dirname($profile)));
+		$leaf = 'user-'.hash('sha256', basename($profile));
+	}
+	else
+		return($legacy);
+	$protected = $root.'/erasedata-jobs';
+	$witness = $root.'/.erasedata-first-use';
+	if(!erasedataPathExists($protected) && !erasedataPathExists($witness))
+		return($legacy);
+	$uid = erasedataEffectiveUid();
+	$unsealed = false;
+	clearstatcache(true, $protected);
+	$stat = @lstat($protected);
+	clearstatcache(true, $witness);
+	$marker = @lstat($witness);
+	if($uid === false || !is_array($stat)
+		|| !is_array($marker) || ($marker['mode'] & 0170000) !== 0100000
+		|| $marker['uid'] !== 0 || ($marker['mode'] & 07777) !== 0400
+		|| $marker['nlink'] !== 1
+		|| ($stat['mode'] & 0170000) !== 0040000
+		|| $stat['uid'] !== $uid || ($stat['mode'] & 0077) !== 0
+		|| !erasedataGuardParentChain($protected.'/'.$leaf, $uid, false, $unsealed)
+		|| $unsealed)
+	{
+		FileUtil::toLog('erasedata: queue refused: protected root or first-use witness is untrusted '.$protected);
+		return(false);
+	}
+	// A pre-existing legacy name can hold obligations. Never hide it behind a
+	// new queue, even if the protected root has already been provisioned.
+	if(erasedataPathExists($legacy) || erasedataPathExists($settings.'/erasedata'))
+	{
+		FileUtil::toLog('erasedata: queue refused: legacy queue needs operator attestation '.$legacy);
+		return(false);
+	}
+	return($protected.'/'.$leaf);
 }
 
 // Queue admission observes old writable ancestors and holds their contents.

@@ -4,7 +4,7 @@ require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once(dirname(__FILE__).'/removewithdata.php');
 eval(FileUtil::getPluginConf($plugin["name"]));
 
-$listPath = FileUtil::getSettingsPath()."/erasedata";
+$listPath = erasedataQueuePath();
 $queueReady = erasedataEnsureQueueDirectory($listPath);
 // The ordinary collector handles published manifests, including those left by
 // older releases. The generation drain has its own schedule and startup rearm.

@@ -56,7 +56,7 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 		}
 	}
 
-	if(!rTorrentSettings::get()->correctDirectory($datadir))
+	if(!rTorrentSettings::get()->correctDirectory($datadir, true))
 	{
 		$datadir = '';
 	}

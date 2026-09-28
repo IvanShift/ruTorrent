@@ -81,7 +81,7 @@ class SettingsCacheTest extends TestCase
 		if (!mkdir($fixture, 0700, true)) {
 			throw new Exception('Could not create settings cache miss fixture');
 		}
-		foreach (array('settings.php', 'methods-0.9.4.php') as $name) {
+		foreach (array('settings.php', 'xmlrpc_path.php', 'methods-0.9.4.php') as $name) {
 			if (!copy(__DIR__.'/../../php/'.$name, $fixture.'/'.$name)) {
 				throw new Exception('Could not copy production '.$name);
 			}
