@@ -16,6 +16,23 @@ function rtDataDirClaimRpc($method, $hash, $args)
     return $request->val[0];
 }
 
+function rtDataDirClaimCapability()
+{
+    $required = array(
+        'd.stop_close_claim_state',
+        'd.stop_close_claim',
+        'd.directory.set_if_stop_close_claim',
+        'd.directory.base.set_if_stop_close_claim',
+        'd.start_if_stop_close_claim',
+        'd.open_if_stop_close_claim',
+        'd.release_stop_close_claim',
+        'd.replay_stop_close_claim',
+        'd.ack_stop_close_claim',
+    );
+    $status = rpcMethodCapability($required);
+    return $status === 'unconfirmed' ? 'unknown' : $status;
+}
+
 function rtDataDirMoveNoReplace($source, $destination)
 {
     static $files = null;
@@ -307,11 +324,16 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         if ($moveFiles && !ErasedataFilesystemOps::canRenameNoReplace())
             throw new RuntimeException('no-replace-helper-unavailable');
         rtDataDirOwnership($hash);
-        // Detect an unsupported daemon before publishing a job or changing its state.
+        // Confirm the whole claim ABI before publishing a new job. The state
+        // probe still binds admission to this torrent and catches a later fault.
+        $capability = rtDataDirClaimCapability();
+        if ($capability !== 'available')
+            throw new RuntimeException($capability === 'unsupported'
+                ? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed');
         $probe = rtDataDirClaimRpc('d.stop_close_claim_state', $hash,
             array(str_repeat('0', 32)));
         if ($probe !== 'absent')
-            throw new RuntimeException('daemon-claim-unavailable');
+            throw new RuntimeException('daemon-claim-unconfirmed');
         $journal = rtDataDirJournal();
         $path = $journal . '/' . $hash . '.json';
         if (file_exists($path) || is_link($path))

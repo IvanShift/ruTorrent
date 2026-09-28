@@ -73,31 +73,42 @@ if( isset( $HTTP_RAW_POST_DATA ) )
 
 	if( $hash && strlen( $datadir ) > 0 )
 	{
-		$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
-		$php = Utility::getPHP();
-		Debug( "script dir  : ".$script_dir );
-		Debug( "path to php : ".$php );
-		Debug( "hash        : ".$hash );
-		Debug( "data dir    : ".$datadir );
-		Debug( "add path    : ".$move_addpath );
-		Debug( "move files  : ".$move_datafiles );
-		Debug( "fast resume : ".$move_fastresume );
-		$res = rtExec( "execute",
-			array( "sh",
-				"-c",
-				escapeshellarg($php)." ".escapeshellarg($script_dir."setdir.php").
-					" ".$hash." ".escapeshellarg($datadir).
-					" ".$move_addpath." ".$move_datafiles." ".$move_fastresume.
-					" ".escapeshellarg(User::getUser())." & exit 0",
-			),
-			$datadir_debug_enabled );
-		if( !$res )
-			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
+		$claimCapability = rtDataDirClaimCapability();
+		if( $claimCapability !== 'available' )
+		{
+			$reason = $claimCapability === 'unsupported'
+				? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed';
+			FileUtil::toLog( 'datadir: setdatadir refused hash='.$hash.' reason='.$reason );
+			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason);
+		}
+		else
+		{
+			$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
+			$php = Utility::getPHP();
+			Debug( "script dir  : ".$script_dir );
+			Debug( "path to php : ".$php );
+			Debug( "hash        : ".$hash );
+			Debug( "data dir    : ".$datadir );
+			Debug( "add path    : ".$move_addpath );
+			Debug( "move files  : ".$move_datafiles );
+			Debug( "fast resume : ".$move_fastresume );
+			$res = rtExec( "execute",
+				array( "sh",
+					"-c",
+					escapeshellarg($php)." ".escapeshellarg($script_dir."setdir.php").
+						" ".$hash." ".escapeshellarg($datadir).
+						" ".$move_addpath." ".$move_datafiles." ".$move_fastresume.
+						" ".escapeshellarg(User::getUser())." & exit 0",
+				),
+				$datadir_debug_enabled );
+			if( !$res )
+				FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
+		}
 	}
 	else
 		FileUtil::toLog( 'datadir: setdatadir refused: '.($hash ? 'invalid destination' : 'invalid hash') );
 
-	if( !$res )
+	if( !$res && !$errors )
 	{
 		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$datadir);
 	}

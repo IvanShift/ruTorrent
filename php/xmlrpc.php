@@ -273,3 +273,21 @@ function getCmd($cmd)
 {
 	return(rTorrentSettings::get()->getCommand($cmd));
 }
+
+function rpcMethodCapability($required)
+{
+	$request = new rXMLRPCRequest(new rXMLRPCCommand('system.listMethods'));
+	$request->important = false;
+	if (!$request->success() || $request->fault || !is_array($request->val))
+		return 'unconfirmed';
+	$available = array();
+	foreach ($request->val as $method)
+	{
+		if (!is_string($method) || $method === '') return 'unconfirmed';
+		$available[$method] = true;
+	}
+	if (!isset($available['system.listMethods'])) return 'unconfirmed';
+	foreach ($required as $method)
+		if (!isset($available[$method])) return 'unsupported';
+	return 'available';
+}

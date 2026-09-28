@@ -13,6 +13,7 @@ class DataDirTestState
     public static $created = array();
     public static $crashAtFiles = false;
     public static $basePath = '/data/downloads/file';
+    public static $claimCapability = 'available';
 
     public static function reset($active = true, $open = true, $label = '', $customs = array())
     {
@@ -25,6 +26,7 @@ class DataDirTestState
         self::$created = array();
         self::$crashAtFiles = false;
         self::$basePath = '/data/downloads/file';
+        self::$claimCapability = 'available';
         ErasedataFilesystemOps::$available = true;
         rXMLRPCRequest::reset();
         $keys = RuTrackerAtomicOwnership::ownershipKeys();
@@ -64,6 +66,7 @@ function rtDataDirClaimRpc($method, $hash, $args)
     DataDirTestState::$calls[] = $method;
     return 'absent';
 }
+function rtDataDirClaimCapability() { return DataDirTestState::$claimCapability; }
 function rtDataDirJournal() { return sys_get_temp_dir(); }
 function rtExec($commands, $hash, $debug = false)
 {
@@ -121,6 +124,28 @@ $suite->test('unreadable ownership refuses before claim with a visible reason', 
     strictAssertSame(array(), DataDirTestState::$calls, 'no claim after failed preflight');
     strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs),
         'unreadable-checker-ownership') !== false, 'unknown ownership is visible');
+});
+
+$suite->test('missing claim ABI refuses a direct worker request before job publication', function () use ($hash) {
+    DataDirTestState::reset();
+    DataDirTestState::$claimCapability = 'unsupported';
+    strictAssertSame(false, rtSetDataDir($hash, sys_get_temp_dir(), true, true, false),
+        'unsupported daemon cannot start a job');
+    strictAssertSame(array(), DataDirTestState::$calls, 'no claim or daemon state read follows');
+    strictAssertSame(array(), DataDirTestState::$created, 'no job is published');
+    strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs),
+        'daemon-claim-unavailable') !== false, 'missing method is classified');
+});
+
+$suite->test('unknown claim capability is not diagnosed as missing in direct worker', function () use ($hash) {
+    DataDirTestState::reset();
+    DataDirTestState::$claimCapability = 'unknown';
+    strictAssertSame(false, rtSetDataDir($hash, sys_get_temp_dir(), true, false, false),
+        'unconfirmed capability cannot start a job');
+    strictAssertSame(array(), DataDirTestState::$calls, 'no claim or daemon state read follows');
+    strictAssertSame(array(), DataDirTestState::$created, 'no job is published');
+    strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs),
+        'daemon-claim-unconfirmed') !== false, 'unknown RPC state is classified');
 });
 
 $suite->test('ordinary no-move request records a job before any stop or directory setter', function () use ($hash) {

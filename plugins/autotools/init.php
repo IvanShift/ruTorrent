@@ -35,3 +35,7 @@ if($at->setHandlers())
 }
 else
         $jResult .= "plugin.disable(); noty('autotools: '+theUILang.pluginCantStart,'error');";
+if( $at->moveAdmission === 'unsupported' )
+	$jResult .= "noty('AutoTools Move refused: this rTorrent lacks required claim commands.', 'error');";
+else if( $at->moveAdmission === 'unconfirmed' )
+	$jResult .= "noty('AutoTools Move paused: rTorrent claim support could not be verified.', 'error');";

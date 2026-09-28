@@ -53,7 +53,12 @@ STUB
 function rtSemGet($key) { return false; }
 function rtSemLock($key) {}
 function rtSemUnlock($key) {}
-function rtMkDir($path, $mode) { return getenv('DATADIR_TEST_MKDIR') !== 'fail'; }
+function rtMkDir($path, $mode)
+{
+    $log = getenv('DATADIR_TEST_MKDIR_LOG');
+    if ($log) file_put_contents($log, $path);
+    return getenv('DATADIR_TEST_MKDIR') !== 'fail';
+}
 function rtAddTailSlash($path) { return rtrim($path, '/') . '/'; }
 function rtExec($command, $args, $debug)
 {
@@ -69,6 +74,11 @@ STUB
 function rtDataDirLock($blocking) { return true; }
 function rtDataDirRecover() {}
 function rtDataDirUnlock($lock) {}
+function rtDataDirClaimCapability()
+{
+    $mode = getenv('DATADIR_TEST_CLAIM_CAPABILITY');
+    return $mode ? $mode : 'available';
+}
 function rtSetDataDir($hash, $path, $add, $move, $resume, $debug)
 {
     $result = getenv('DATADIR_TEST_RESULT');
@@ -90,7 +100,7 @@ STUB
 
     public function tearDown()
     {
-        foreach (array('app.log', 'dispatch.json', 'php/xmlrpc.php', 'php/util.php', 'plugins/datadir/action.php',
+        foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'plugins/datadir/action.php',
             'plugins/datadir/setdir.php', 'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
             @unlink($this->tree . '/' . $file);
@@ -142,6 +152,33 @@ STUB
         $this->assertSame(0, $code, 'Worker responds after physical path refusal');
         $this->assertTrue(strpos($log, 'datadir: destination-invalid hash=') !== false,
             'Worker logs physical destination refusal before creating or moving');
+    }
+
+    public function testWorkerRefusesMissingClaimBeforeDestinationCreation()
+    {
+        $mkdirLog = $this->tree . '/mkdir.log';
+        list($code, $output, $stderr, $log) = $this->worker($this->validWorkerArgs(),
+            array('DATADIR_TEST_CLAIM_CAPABILITY' => 'unsupported',
+                'DATADIR_TEST_MKDIR_LOG' => $mkdirLog));
+        $this->assertSame(0, $code, 'Worker responds to unsupported daemon');
+        $this->assertSame('', $stderr, 'Missing claim produces no PHP fatal');
+        $this->assertTrue(strpos($log, 'daemon-claim-unavailable') !== false,
+            'Worker logs a classified missing-method reason');
+        $this->assertTrue(!is_file($mkdirLog), 'Worker does not create a target before refusal');
+    }
+
+    public function testWorkerKeepsUnknownClaimDistinctBeforeDestinationCreation()
+    {
+        $mkdirLog = $this->tree . '/mkdir.log';
+        list($code, $output, $stderr, $log) = $this->worker($this->validWorkerArgs(),
+            array('DATADIR_TEST_CLAIM_CAPABILITY' => 'unknown',
+                'DATADIR_TEST_MKDIR_LOG' => $mkdirLog));
+        $this->assertSame(0, $code, 'Worker responds to unknown capability');
+        $this->assertTrue(strpos($log, 'daemon-claim-unconfirmed') !== false,
+            'Worker logs unconfirmed rather than unsupported capability');
+        $this->assertTrue(strpos($log, 'daemon-claim-unavailable') === false,
+            'Worker does not infer missing method from unknown transport');
+        $this->assertTrue(!is_file($mkdirLog), 'Unknown capability creates no target');
     }
 
     public function testWorkerLogsDirectoryCreationFailureWithDebugDisabled()
@@ -271,5 +308,41 @@ STUB
         $args = json_decode(file_get_contents($dispatch), true);
         $this->assertTrue(is_array($args) && strpos($args[2], ' 1 0 0 ') !== false,
             'UI request without the removed option dispatches the in-place worker path');
+    }
+
+    public function testActionReportsMissingDaemonClaimBeforeDispatch()
+    {
+        $body = 'hash=' . str_repeat('A', 40)
+            . '&datadir=%2Fdata%2Fdownloads%2Fnew&move_datafiles=1';
+        $dispatch = $this->tree . '/dispatch.json';
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_CLAIM_CAPABILITY' => 'unsupported',
+                'DATADIR_TEST_COMMAND_LOG' => $dispatch));
+        $decoded = json_decode($output, true);
+        $this->assertSame(0, $code, 'Action responds to an unsupported daemon');
+        $this->assertSame('daemon-claim-unavailable', $decoded['errors'][0]['prm'],
+            'UI receives the classified missing-method reason');
+        $this->assertTrue(strpos($log, 'daemon-claim-unavailable') !== false,
+            'App log records the unsupported daemon');
+        $this->assertTrue(!is_file($dispatch), 'Unsupported Move has no worker dispatch');
+    }
+
+    public function testActionReportsUnknownClaimCapabilityWithoutCallingItUnsupported()
+    {
+        $body = 'hash=' . str_repeat('A', 40)
+            . '&datadir=%2Fdata%2Fdownloads%2Fnew&move_datafiles=1';
+        $dispatch = $this->tree . '/dispatch.json';
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_CLAIM_CAPABILITY' => 'unknown',
+                'DATADIR_TEST_COMMAND_LOG' => $dispatch));
+        $decoded = json_decode($output, true);
+        $this->assertSame(0, $code, 'Action responds after an unknown RPC result');
+        $this->assertSame('daemon-claim-unconfirmed', $decoded['errors'][0]['prm'],
+            'UI distinguishes unknown transport from a missing method');
+        $this->assertTrue(strpos($log, 'daemon-claim-unconfirmed') !== false,
+            'App log records the unconfirmed capability');
+        $this->assertTrue(strpos($log, 'daemon-claim-unavailable') === false,
+            'Unknown transport is not diagnosed as a missing method');
+        $this->assertTrue(!is_file($dispatch), 'Unknown capability has no worker dispatch');
     }
 }

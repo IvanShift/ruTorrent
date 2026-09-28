@@ -5,6 +5,14 @@ eval(FileUtil::getPluginConf('autotools'));
 
 class rAutoTools
 {
+	static public function claimAbiStatus()
+	{
+		// Probe only the commands Move actually calls; a version string cannot prove the ABI.
+		return rpcMethodCapability(array('d.stop_close_claim_state', 'd.stop_close_claim',
+			'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
+			'd.directory.set_if_stop_close_claim', 'd.start_if_stop_close_claim'));
+	}
+
 	public $hash = "autotools.dat";
 	public $modified = false;
 	public $enable_label = 0;
@@ -19,6 +27,7 @@ class rAutoTools
 	public $automove_filter = "/.*/";
 	public $addName = 0;
 	public $addLabel = 0;
+	public $moveAdmission = 'available';
 
 	static public function load()
 	{
@@ -221,6 +230,7 @@ class rAutoTools
 	{
 		global $autowatch_interval;
 		$theSettings = rTorrentSettings::get();
+		$this->moveAdmission = 'available';
 		$req = new rXMLRPCRequest(
 // old version fix
 			$theSettings->getOnInsertCommand(array('autolabel'.User::getUser(), getCmd('cat=')))
@@ -240,12 +250,22 @@ class rAutoTools
 				'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}" ; d.save_full_session= ; ';
 			if($this->fileop_type=="Move")
 			{
-				$moveMarker = getCmd('d.set_custom').'=x-autotools-move-job,"$'.getCmd('execute_capture').
-					'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-move-job}" ; d.save_full_session= ; ';
-				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-					$moveMarker.'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/move_tx.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-move-job}'
-				));
+				$admission = self::claimAbiStatus();
+				$this->moveAdmission = $admission;
+				if($admission !== 'available')
+				{
+					FileUtil::toLog('autotools: move refused: daemon-claim-abi-'.$admission);
+					$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(), getCmd('cat=')));
+				}
+				else
+				{
+					$moveMarker = getCmd('d.set_custom').'=x-autotools-move-job,"$'.getCmd('execute_capture').
+						'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-move-job}" ; d.save_full_session= ; ';
+					$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
+						$moveMarker.'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/move_tx.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
+						getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-move-job}'
+					));
+				}
 			}
 			else if($theSettings->iVersion<0x808)
 			{

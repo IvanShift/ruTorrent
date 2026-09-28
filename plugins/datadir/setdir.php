@@ -68,6 +68,18 @@ if( $is_ok && !rTorrentSettings::get()->correctDirectory($datadir, true) )
 
 if( $is_ok )
 {
+    $claimCapability = rtDataDirClaimCapability();
+    if( $claimCapability !== 'available' )
+    {
+        $reason = $claimCapability === 'unsupported'
+            ? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed';
+        FileUtil::toLog( 'datadir: worker refused hash='.$hash.' reason='.$reason );
+        $is_ok = false;
+    }
+}
+
+if( $is_ok )
+{
 	Debug( "hash        : ".$hash );
 	Debug( "data dir    : ".$datadir );
 	Debug( "add path    : ".$move_addpath );

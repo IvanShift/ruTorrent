@@ -784,6 +784,29 @@ class AutoToolsMoveTransaction
             'finished_root'=>$finished, 'torrent_name'=>$torrent->name());
     }
 
+    static private function clearUnjournaledOldHookMarker($root, $hash, $marker)
+    {
+        // A persisted daemon hook has already set the marker before this worker starts.
+        // The journal lock and the daemon branch both matter: never clear a different job.
+        $journal = self::jobPath($root, $hash);
+        clearstatcache(true, $journal);
+        if (@lstat($journal) !== false) return 'journal-present';
+        $condition = 'equal=' . getCmd('d.get_custom=') . 'x-autotools-move-job,cat=' . $marker;
+        $result = self::rpc('branch', array($hash, $condition,
+            getCmd('d.set_custom') . '=x-autotools-move-job,', 'cat=SKIP'));
+        if ($result === 'SKIP') return 'changed';
+        self::rpc(getCmd('d.save_full_session'), array($hash));
+        $current = self::rpc(getCmd('d.get_custom'), array($hash, 'x-autotools-move-job'));
+        $sidecar = rtrim(rTorrentSettings::get()->session, '/') . '/' . $hash . '.torrent.rtorrent';
+        $bytes = @file_get_contents($sidecar);
+        if ($bytes === false) return 'unconfirmed';
+        $torrent = Torrent::fromRawBytes($bytes);
+        $custom = $torrent->meta('custom');
+        return $current === '' && $torrent->errors() === false && is_array($custom)
+            && (!isset($custom['x-autotools-move-job']) || $custom['x-autotools-move-job'] === '')
+            ? 'cleared' : 'unconfirmed';
+    }
+
     static public function run($args)
     {
         $hash = isset($args[0]) ? (string) $args[0] : 'unknown';
@@ -794,6 +817,21 @@ class AutoToolsMoveTransaction
                 $old = self::readJob($root, $hash);
                 if ($old !== null) {
                     if (self::reconcile($root, $old)) self::deliverNotice($root, $hash);
+                    return;
+                }
+                $admission = rAutoTools::claimAbiStatus();
+                if ($admission !== 'available') {
+                    $marker = isset($args[7]) ? (string) $args[7] : '';
+                    if ($admission === 'unsupported' && preg_match('/^[0-9a-f]{32}$/D', $marker)) {
+                        try {
+                            $cleanup = self::clearUnjournaledOldHookMarker($root, $hash, $marker);
+                            self::log($hash, ($cleanup === 'cleared' ? 'refused: ' : 'hold: ')
+                                . 'daemon-claim-abi-unsupported; old-hook-marker-' . $cleanup);
+                        } catch (Throwable $e) {
+                            self::log($hash, 'hold: daemon-claim-abi-unsupported; old-hook-marker-'
+                                . $e->getMessage());
+                        }
+                    } else self::log($hash, 'refused: daemon-claim-abi-' . $admission);
                     return;
                 }
                 try { $job = self::prepare($args); }
