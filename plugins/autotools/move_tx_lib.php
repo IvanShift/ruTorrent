@@ -9,9 +9,15 @@ class AutoToolsMoveTransaction
 {
     const JOURNAL_DIR = '.autotools-file-jobs';
 
+    static private function logHash($hash)
+    {
+        return is_string($hash) && preg_match('/^[0-9A-Fa-f]{40}$/D', $hash)
+            ? $hash : '<invalid-hash>';
+    }
+
     static private function log($hash, $reason)
     {
-        FileUtil::toLog('autotools: move ' . $hash . ' ' . $reason);
+        FileUtil::toLog('autotools: move ' . self::logHash($hash) . ' ' . $reason);
     }
 
     static private function rpc($method, $params)
@@ -63,7 +69,11 @@ class AutoToolsMoveTransaction
     static private function readJob($root, $hash)
     {
         $path = self::jobPath($root, $hash);
-        if (!is_file($path)) return null;
+        clearstatcache(true, $path);
+        if (@lstat($path) === false) return null;
+        if (!is_file($path)) throw new RuntimeException('journal-nonfile: path='
+            . self::JOURNAL_DIR . '/' . self::logHash($hash)
+            . '.move.json; Move held pending journal repair');
         $job = json_decode((string) @file_get_contents($path), true);
         if (!is_array($job) || !isset($job['hash'], $job['src'], $job['dst'], $job['identity'], $job['daemon_dir'])
             || $job['hash'] !== $hash)

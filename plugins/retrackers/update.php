@@ -1,11 +1,9 @@
 <?php
 
-// Lifecycle draining shares this timeout between done() and containment in
-// init(): expiry reports hook-teardown-pending or
-// shared-daemon-owner-ambiguous-uncontained, respectively. Recovery re-reads
-// delayed receipts at the polling interval below. Both waits are
-// declared with if(!defined()) so a caller that loads this file can shorten
-// them first; nothing else reads them, and the defaults are what shipped.
+// Lifecycle draining and terminal wp retirement share this timeout. Expiry
+// keeps the lease visible; the shipped default is five seconds. Recovery
+// receipt polling uses the separate interval below. Both constants remain
+// overridable before import for focused tests.
 if (!defined('RETRACKERS_TEARDOWN_TIMEOUT'))
 	define('RETRACKERS_TEARDOWN_TIMEOUT', 5.0);
 if (!defined('RETRACKERS_RECEIPT_POLL'))
@@ -99,18 +97,11 @@ function retrackersBuildDeferOnlyInsertAction()
 /**
  * The functional insert action, installed under tadd_trackers1<user>.
  *
- * It carries the same marker/ack and legacy-clear head as the safety-only and
- * defer-only variants, and adds the one thing they leave out: the ordinary
- * insert path that hands a freshly added download to the worker.
- *
- * Order inside the ordinary path is the contract, not a preference. The
- * hook-active receipt is written first, so a hook interrupted anywhere after it
- * is visible as interrupted; the launch-pending lease follows; ack and marker
- * are both written before the launch, so the worker reads a marker that is
- * already live rather than a handoff rebuilt in PHP; and the two-argument
- * delete of the hook-active receipt is the last command, so a launch that threw
- * or returned an unknown tail leaves that receipt sticky and blocks hook erase
- * until the daemon restarts.
+ * The native path records hook activity, asks the daemon to durably claim
+ * and publish the original owner, then records wp and launches the worker.
+ * The 0.9.8 path retains its v1 marker/ack sequence. In both paths the
+ * hook-active receipt is deleted last; a failed begin or launch keeps it
+ * visible and blocks hook erase until the daemon restarts.
  *
  * execute.throw.bg takes an argv list, not a shell string, so no shell escaping
  * happens here: every configured value goes through one rTorrent quoting layer
@@ -122,7 +113,15 @@ function retrackersBuildDeferOnlyInsertAction()
  * grandchild execvp failure. Safety comes from the action containing no d.stop,
  * d.close or d.erase in any branch.
  */
-function retrackersBuildInsertAction($script, $php, $user)
+function retrackersNativeBeginExpression($userHash)
+{
+	$q = function ($value) {
+		return(rTorrent::quoteCommandArg($value));
+	};
+	return('$d.retrackers.begin_original={$d.local_id=,' . $q($userHash) . ',$cat=$d.state=}');
+}
+
+function retrackersBuildInsertAction($script, $php, $user, $nativeOriginal = false)
 {
 	$q = function ($value) {
 		return(rTorrent::quoteCommandArg($value));
@@ -144,8 +143,10 @@ function retrackersBuildInsertAction($script, $php, $user)
 	$setMarker = '$d.custom.set=retrackers-recovery,' . $q($handoff);
 	$launch = '$execute.throw.bg={sh,' . $q($script) . ',' . $q($php) . ',$d.hash=,' .
 		$q($user) . ',$d.custom=retrackers-recovery}';
-	$ordinary = 'cat=' . $q($setActiveHook) . ',' . $q($setPending) . ',' . $q($setAck) .
-		',' . $q($setMarker) . ',' . $q($launch) . ',' . $q($clearActiveHook);
+	$handoffCommands = $nativeOriginal ? array(retrackersNativeBeginExpression($userToken),
+		$setPending) : array($setPending, $setAck, $setMarker);
+	$ordinary = 'cat=' . implode(',', array_map($q, array_merge(
+		array($setActiveHook), $handoffCommands, array($launch, $clearActiveHook))));
 	$deferOrOrdinary = 'branch=' . $q('method.has_key=rr.receipts.v1,ta:1') . ',' .
 		$q($grammar['defer']) . ',' . $q($ordinary);
 	$ownerOrNoop = 'branch=' . $q('method.has_key=rr.receipts.v1,ma:1') . ',' .
@@ -157,7 +158,7 @@ function retrackersBuildInsertAction($script, $php, $user)
 	$legacyOrOrdinary = 'branch=' . $q('$equal=d.custom3=,cat=1') . ',' .
 		$q('d.custom3.set=') . ',' . $q($serviceGuard);
 	return('branch=' . $q('d.custom=retrackers-recovery') . ',' .
-		$q($grammar['idempotent']) . ',' . $q($legacyOrOrdinary));
+		$q($nativeOriginal ? 'cat=' : $grammar['idempotent']) . ',' . $q($legacyOrOrdinary));
 }
 
 abstract class RetrackersLifecycleCallback
@@ -497,7 +498,7 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 	}
 
 	public static function replayDeferred($epoch, $token, $mode, $userHash, $hash,
-		$localId, $state, $handoff, $script, $php, $user)
+		$localId, $state, $handoff, $script, $php, $user, $nativeOriginal = false)
 	{
 		$conditions = self::ownerConditions($epoch, $token, $mode, $userHash);
 		$conditions[] = self::keyAbsent('dq:1');
@@ -515,16 +516,46 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 		// needs an empty value so its exact ACQUIRED sentinel is preserved.
 		$quietLaunch = '$branch=' . self::q($launch) . ',' .
 			self::q('cat=') . ',' . self::q('cat=');
-		return(self::callback('deferred-replay', $hash, $conditions, array(
-			'$method.set_key=rr.receipts.v1,wh:' . $localId . ',1',
-			'$method.set_key=rr.receipts.v1,wp:' . $localId . ',1',
-			'$d.custom.set=retrackers-recovery-ack,' . self::q($handoff),
-			'$d.custom.set=retrackers-recovery,' . self::q($handoff),
-			'$method.set_key=rr.receipts.v1,di:' . $localId,
-			$quietLaunch,
-			'$method.set_key=rr.receipts.v1,wh:' . $localId,
-		), self::state(null, $epoch, $token, $mode, $userHash,
+		$handoffCommands = $nativeOriginal ?
+			array(retrackersNativeBeginExpression($userHash),
+				'$method.set_key=rr.receipts.v1,wp:' . $localId . ',1') : array(
+				'$method.set_key=rr.receipts.v1,wp:' . $localId . ',1',
+				'$d.custom.set=retrackers-recovery-ack,' . self::q($handoff),
+				'$d.custom.set=retrackers-recovery,' . self::q($handoff),
+			);
+		return(self::callback('deferred-replay', $hash, $conditions, array_merge(
+			array('$method.set_key=rr.receipts.v1,wh:' . $localId . ',1'),
+			$handoffCommands,
+			array('$method.set_key=rr.receipts.v1,di:' . $localId,
+				$quietLaunch,
+				'$method.set_key=rr.receipts.v1,wh:' . $localId,
+			)), self::state(null, $epoch, $token, $mode, $userHash,
 			array(), array('wh:' . $localId, 'di:' . $localId))));
+	}
+
+	public static function retireNativePending($hash, $localId, $tx, $incarnation,
+		$epoch = null, $token = null, $mode = null, $userHash = null)
+	{
+		if (preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1 ||
+			preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1 ||
+			preg_match('/^[0-9a-f]{32}$/D', $tx) !== 1 ||
+			preg_match('/^[0-9a-f]{32}$/D', $incarnation) !== 1) {
+			return(false);
+		}
+		$conditions = $epoch === null ? array() :
+			self::ownerConditions($epoch, $token, $mode, $userHash);
+		$conditions[] = self::keyPresent('wp:' . $localId);
+		$conditions[] = self::keyAbsent('wh:' . $localId);
+		// L is the durable claim key; rTorrent changes d.local_id on cold restart.
+		$conditions[] = self::downloadEquals('d.incarnation=', $incarnation);
+		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery', '');
+		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery-ack', '');
+		$conditions[] = self::downloadEquals('system.retrackers.finalized=' . $hash,
+			'finalized:' . $tx . ':' . $incarnation);
+		return(self::callback('native-pending-retire', $hash, $conditions,
+			array('$method.set_key=rr.receipts.v1,wp:' . $localId),
+			self::state(null, $epoch, $token, $mode, $userHash,
+				array(), array('wp:' . $localId))));
 	}
 
 	public static function deleteStalePending($epoch, $token, $mode, $userHash, $localId)
@@ -2313,6 +2344,25 @@ final class RetrackersPostEraseObligation
 			}
 		}
 		return($commands);
+	}
+
+	public static function nativeWorkerCommands(array $snapshot, &$failure)
+	{
+		$failure = 'runtime-value-unrepresentable';
+		if (!isset($snapshot['scalar'], $snapshot['generic_map']) ||
+			!is_array($snapshot['scalar']) || !is_array($snapshot['generic_map']) ||
+			!isset($snapshot['scalar']['directory_base'])) {
+			return(false);
+		}
+		$directory = self::q($snapshot['scalar']['directory_base']);
+		$scalar = self::scalarCommands($snapshot['scalar']);
+		$generic = self::genericCommands($snapshot['generic_map'],
+			$snapshot['scalar'], $failure);
+		if ($directory === false || $scalar === false || $generic === false) {
+			return(false);
+		}
+		$failure = null;
+		return(array_merge(array('d.directory.set=' . $directory), $scalar, $generic));
 	}
 
 	private static function trackerType($url)
@@ -4275,6 +4325,9 @@ class RetrackersHistoricalBindingClassifier
 			'binding' => array('family' => $sample['family'], 'digest' => $value['digest'],
 				'counts' => $value['counts']),
 		);
+		if ($phase === 'IDLE_CURRENT' && $recovery['marked_count'] !== 0) {
+			return(array('status' => 'recovery-pending'));
+		}
 		$status = $hookWithoutLedger ? 'hook-ledger-mismatch' :
 			($semanticValid ? 'valid' : 'semantic-invalid');
 		$stable = array(
@@ -4353,6 +4406,9 @@ class RetrackersStableHistoricalBinding
 		}
 		if ($firstStatus === 'ledger-corrupt' || $second['status'] === 'ledger-corrupt') {
 			return(array('ok' => false, 'failure' => 'receipt-ledger-corrupt'));
+		}
+		if ($firstStatus === 'recovery-pending' || $second['status'] === 'recovery-pending') {
+			return(array('ok' => false, 'failure' => 'marked-recovery-pending'));
 		}
 		$attestationFailure = $attestation->failure();
 		if ($attestationFailure !== null) {
@@ -6324,6 +6380,11 @@ function retrackersRestrictedIntegerInRange($lexeme, $tag)
 		(strlen($digits) === strlen($maximum) && strcmp($digits, $maximum) <= 0));
 }
 
+function retrackersRestrictedPlanMethodNames()
+{
+	return(array('mode' => 'method-names'));
+}
+
 function retrackersRestrictedPlanDirectScalar($type)
 {
 	return(array('mode' => 'direct-scalar', 'type' => $type));
@@ -7173,7 +7234,7 @@ class RetrackersRestrictedRawCodec
 		$this->cursor->take('<methodResponse>');
 		$this->cursor->line();
 		$mode = isset($this->plan['mode']) ? $this->plan['mode'] : null;
-		$topLevelFaultModes = array('direct-scalar', 'family-mutation-scalar', 'direct-ledger-has',
+		$topLevelFaultModes = array('method-names', 'direct-scalar', 'family-mutation-scalar', 'direct-ledger-has',
 			'download-local-id-rows', 'tracker-five-column-rows', 'generic-string-map',
 			'scalar-batch');
 		if (in_array($mode, $topLevelFaultModes, true) && $this->cursor->at('<fault>')) {
@@ -7196,7 +7257,9 @@ class RetrackersRestrictedRawCodec
 		$this->cursor->line();
 		$this->cursor->take('<param>');
 		$this->cursor->beginValue();
-		if ($mode === 'direct-scalar') {
+		if ($mode === 'method-names') {
+			$value = $this->flatStrings('event');
+		} elseif ($mode === 'direct-scalar') {
 			$value = $this->scalar(isset($this->plan['type']) ? $this->plan['type'] : null);
 		} elseif ($mode === 'family-mutation-scalar') {
 			$value = $this->scalar($family === 1 ? 'i4' : 'i8');
@@ -7809,6 +7872,109 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 		$this->family = $family;
 	}
 
+	private function methodNames(&$failure)
+	{
+		$decoded = $this->send(retrackersBuildDirectRequest('system.listMethods', array()),
+			retrackersRestrictedPlanMethodNames(), $failure);
+		if (!is_array($decoded) || !isset($decoded['ok'], $decoded['family'], $decoded['value']) ||
+			$decoded['ok'] !== true || !in_array($decoded['family'], array(1, 2), true) ||
+			!is_array($decoded['value']) ||
+			($this->family !== null && $this->family !== $decoded['family'])) {
+			$failure = 'rpc-family-unconfirmed';
+			return(false);
+		}
+		$this->family = $decoded['family'];
+		$failure = null;
+		return($decoded['value']);
+	}
+
+	public function probeFamily(&$failure = null)
+	{
+		if ($this->family === 1 || $this->family === 2) {
+			$failure = null;
+			return($this->family);
+		}
+		$methods = $this->methodNames($failure);
+		return($methods === false ? false : $this->family);
+	}
+
+	private function nativeMethodsAvailable(array $required, $reason, &$failure)
+	{
+		if ($this->getFamily() !== 2) {
+			$failure = null;
+			return(false);
+		}
+		$methods = $this->methodNames($failure);
+		if (!is_array($methods) || $this->family !== 2) {
+			$failure = $reason;
+			return(false);
+		}
+		foreach ($required as $method) {
+			if (!in_array($method, $methods, true)) {
+				$failure = $reason;
+				return(false);
+			}
+		}
+		$failure = null;
+		return(true);
+	}
+
+	public function nativeOriginalCapability(&$failure = null)
+	{
+		return($this->nativeMethodsAvailable(array('d.retrackers.begin_original',
+			'd.retrackers.finish_original', 'd.incarnation',
+			'system.retrackers.finalized'), 'native-original-capability-unconfirmed',
+			$failure));
+	}
+
+	public function nativeSameHashCapability(&$failure = null)
+	{
+		return($this->nativeMethodsAvailable(array('d.retrackers.begin_original',
+			'd.retrackers.finish_original', 'd.incarnation',
+			'system.retrackers.finalized', 'd.retrackers.capture_erase',
+			'd.retrackers.apply', 'd.retrackers.commit',
+			'd.retrackers.release_committed', 'system.retrackers.receipt',
+			'system.retrackers.prepared', 'load.normal'),
+			'native-samehash-capability-unconfirmed', $failure));
+	}
+
+	protected function nativeOriginalScalar($method, array $params, &$failure)
+	{
+		$decoded = $this->send(retrackersBuildDirectRequest($method, $params),
+			retrackersRestrictedPlanDirectScalar('string'), $failure);
+		if (!is_array($decoded) || !isset($decoded['ok'], $decoded['family'],
+			$decoded['value']) || $decoded['ok'] !== true || $decoded['family'] !== 2 ||
+			!is_string($decoded['value'])) {
+			$failure = 'native-original-rpc-unconfirmed';
+			return(false);
+		}
+		$failure = null;
+		return($decoded['value']);
+	}
+
+	public function nativeOriginalIncarnation($hash, &$failure = null)
+	{
+		$value = $this->nativeOriginalScalar('d.incarnation', array($hash), $failure);
+		if (!is_string($value) || preg_match('/^[0-9a-f]{32}$/D', $value) !== 1) {
+			$failure = 'native-original-incarnation-unconfirmed';
+			return(false);
+		}
+		return($value);
+	}
+
+	public function nativeFinalizedReceipt($hash, &$failure = null)
+	{
+		$receipt = $this->nativeOriginalScalar('system.retrackers.finalized',
+			array('', $hash), $failure);
+		if (!is_string($receipt) ||
+			preg_match('/^finalized:([0-9a-f]{32}):([0-9a-f]{32})$/D', $receipt, $parts) !== 1) {
+			$failure = 'native-original-finalize-pending';
+			return(false);
+		}
+		$failure = null;
+		return(array('tx' => $parts[1], 'incarnation' => $parts[2]));
+	}
+
 	public function ensureLedgerExists(&$failure = null)
 	{
 		$payload = retrackersBuildDirectRequest('method.insert', array('', 'rr.receipts.v1', 'multi|private'));
@@ -8046,6 +8212,64 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 	public function recoveryFailure()
 	{
 		return($this->recoveryFailure);
+	}
+
+	public function nativeFinishOriginal($hash, $tx, $incarnation, &$failure = null)
+	{
+		return($this->nativeOriginalScalar('d.retrackers.finish_original',
+			array($hash, $tx, $incarnation), $failure));
+	}
+
+	public function nativeFinalizedOriginal($hash, $tx, $incarnation, &$failure = null)
+	{
+		$receipt = $this->nativeOriginalScalar('system.retrackers.finalized',
+			array('', $hash), $failure);
+		if ($receipt !== 'finalized:' . $tx . ':' . $incarnation) {
+			$failure = 'native-original-finalize-pending';
+			return(false);
+		}
+		return(true);
+	}
+
+	public function nativeCaptureOriginal($hash, $localId, $marker, $tx, $digest,
+		&$failure = null)
+	{
+		$decoded = $this->send(retrackersBuildDirectRequest(
+			'd.retrackers.capture_erase',
+			array($hash, $localId, $marker, $hash, $tx, $digest)),
+			retrackersRestrictedPlanDirectScalar('i8'), $failure);
+		if (!is_array($decoded) || !isset($decoded['ok'], $decoded['family'],
+			$decoded['value']) || $decoded['ok'] !== true ||
+			$decoded['family'] !== 2 || $decoded['value'] !== '1') {
+			$failure = 'native-capture-unconfirmed';
+			return(false);
+		}
+		$failure = null;
+		return(true);
+	}
+
+	public function nativeWorkerReceipt($hash, &$failure = null)
+	{
+		return($this->nativeOriginalScalar('system.retrackers.receipt',
+			array('', $hash), $failure));
+	}
+
+	public function nativePreparedReceipt($hash, &$failure = null)
+	{
+		return($this->nativeOriginalScalar('system.retrackers.prepared',
+			array('', $hash), $failure));
+	}
+
+	public function nativeCommitSameHash($hash, $localId, $tx, &$failure = null)
+	{
+		return($this->nativeOriginalScalar('d.retrackers.commit',
+			array($hash, $hash, $localId, $tx), $failure));
+	}
+
+	public function nativeReleaseSameHash($hash, $tx, $incarnation, &$failure = null)
+	{
+		return($this->nativeOriginalScalar('d.retrackers.release_committed',
+			array($hash, $tx, $incarnation), $failure));
 	}
 
 	public function maxContentSize(&$failure = null)
@@ -8686,7 +8910,9 @@ class RetrackersStableSourceSnapshot
 		$mapAck = $this->mapValue($map['pairs'], 'retrackers-recovery-ack', $ackPresent);
 		if (!$markerPresent || !$ackPresent || $values['recovery_marker'] !== $handoff ||
 			$values['recovery_ack'] !== $handoff || $mapMarker !== $handoff ||
-			$mapAck !== $handoff || $values['local_id'] !== $matched[2] ||
+			$mapAck !== $handoff ||
+			(strncmp($handoff, 'v2:', 3) !== 0 &&
+				$values['local_id'] !== $matched[2]) ||
 			$values['state'] !== $matched[1]) {
 			return(array('ok' => false, 'failure' => 'ownership-mismatch'));
 		}
@@ -8778,8 +9004,9 @@ class RetrackersStableSourceSnapshot
 	{
 		if (!is_string($hash) || preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1 ||
 			!is_string($handoff) ||
-			preg_match('/^v1:original:([01]):([0-9A-F]{40}):([0-9a-f]{64})$/D',
-				$handoff, $matched) !== 1) {
+			preg_match('/^v[12]:original:([01]):([0-9A-F]{40}):([0-9a-f]{64})(?::([0-9a-f]{32}))?$/D',
+				$handoff, $matched) !== 1 ||
+			(strncmp($handoff, 'v2:', 3) === 0) !== isset($matched[4])) {
 			return(array('ok' => false, 'failure' => 'ownership-mismatch'));
 		}
 		$mapDrift = false;
@@ -8949,7 +9176,7 @@ class RetrackersLifecycleCoordinator
 	}
 
 	private static function replayDeferredInserts($adapter, $canonicalUser, $script, $php,
-		$functionalAction, &$decision, &$failure = null)
+		$functionalAction, $nativeOriginal, &$decision, &$failure = null)
 	{
 		$owner = isset($decision['owner']) ? $decision['owner'] : null;
 		if (!is_array($owner) || $owner['mode'] !== 'i') {
@@ -9031,7 +9258,8 @@ class RetrackersLifecycleCoordinator
 				$owner['user_hash'];
 			$replay = RetrackersLifecycleCallbacks::replayDeferred(
 				$epoch, $owner['token'], 'i', $owner['user_hash'], $hash, $localId,
-				$values['state'], $handoff, $script, $php, $canonicalUser);
+				$values['state'], $handoff, $script, $php, $canonicalUser,
+				$nativeOriginal);
 			$decision = self::executeAndReadback($adapter, $replay, $canonicalUser,
 				$functionalAction, 'hook-deferred-replay-pending', $failure);
 			if ($decision === false) {
@@ -9102,20 +9330,22 @@ class RetrackersLifecycleCoordinator
 			}
 		}
 
-		$pending = self::receiptLocalIds($decision, 'wp');
-		if ($pending === false) {
-			$failure = 'hook-teardown-unconfirmed';
-			return(false);
-		}
-		$rows = array();
-		if (count($pending) > 0) {
-			$rows = $adapter->downloadLocalIdRows($failure);
-			if (!is_array($rows)) {
+		$rows = null;
+		while (true) {
+			$pending = self::receiptLocalIds($decision, 'wp');
+			if ($pending === false) {
 				$failure = 'hook-teardown-unconfirmed';
 				return(false);
 			}
-		}
-		foreach ($pending as $localId) {
+			if (count($pending) === 0) break;
+			if ($rows === null) {
+				$rows = $adapter->downloadLocalIdRows($failure);
+				if (!is_array($rows)) {
+					$failure = 'hook-teardown-unconfirmed';
+					return(false);
+				}
+			}
+			$localId = $pending[0];
 			$matches = self::exactLocalIdMatches($rows, $localId);
 			if (count($matches) > 1) {
 				$failure = 'hook-teardown-unconfirmed';
@@ -9136,9 +9366,53 @@ class RetrackersLifecycleCoordinator
 				if (!isset($values['local_id'], $values['recovery_marker'], $values['recovery_ack']) ||
 					$values['local_id'] !== $localId ||
 					!is_string($values['recovery_marker']) ||
-					!is_string($values['recovery_ack']) ||
-					preg_match('/^v1:original:[01]:' . preg_quote($localId, '/') .
-						':[0-9a-f]{64}$/D', $values['recovery_marker']) !== 1 ||
+					!is_string($values['recovery_ack'])) {
+					$failure = 'hook-teardown-unconfirmed';
+					return(false);
+				}
+				if ($adapter->getFamily() === 2 && $values['recovery_marker'] === '' &&
+					$values['recovery_ack'] === '') {
+					// A worker can die after native finish and before retiring wp:L.
+					// The daemon callback below rechecks terminal T/I and live H/L/I
+					// under one lock; it cannot erase a new worker's pending key.
+					$receipt = $adapter->nativeFinalizedReceipt($hash, $failure);
+					$incarnation = $adapter->nativeOriginalIncarnation($hash, $failure);
+					if (!is_array($receipt) || $incarnation === false ||
+						$receipt['incarnation'] !== $incarnation) {
+						$failure = 'hook-teardown-unconfirmed';
+						return(false);
+					}
+					$retire = RetrackersLifecycleCallbacks::retireNativePending(
+						$hash, $localId, $receipt['tx'], $incarnation, $epoch,
+						$owner['token'], $mode, $owner['user_hash']);
+					$decision = self::executeAndReadback($adapter, $retire,
+						$canonicalUser, $functionalAction, 'hook-teardown-unconfirmed',
+						$failure, 'hook-teardown-unconfirmed', true);
+					if ($decision === false) return(false);
+					continue;
+				}
+				if (strncmp($values['recovery_marker'], 'v2:original:', 12) === 0 &&
+					preg_match('/^v2:original:[01]:' . preg_quote($localId, '/') .
+						':[0-9a-f]{64}:[0-9a-f]{32}$/D', $values['recovery_marker']) === 1 &&
+					$values['recovery_ack'] === $values['recovery_marker']) {
+					if (hrtime(true) >= $deadline) {
+						$failure = 'hook-teardown-pending';
+						return(false);
+					}
+					usleep(50000);
+					$decision = $adapter->coherentLifecycleReadback(
+						$canonicalUser, $functionalAction, $failure);
+					if ($decision === false || !is_array($decision['owner']) ||
+						$decision['owner'] !== $owner ||
+						$decision['persistent_epoch'] !== $epoch) {
+						$failure = 'hook-teardown-unconfirmed';
+						return(false);
+					}
+					$rows = null;
+					continue;
+				}
+				if (preg_match('/^v1:original:[01]:' . preg_quote($localId, '/') .
+					':[0-9a-f]{64}$/D', $values['recovery_marker']) !== 1 ||
 					$values['recovery_ack'] !== $values['recovery_marker']) {
 					$failure = 'hook-teardown-unconfirmed';
 					return(false);
@@ -9195,14 +9469,6 @@ class RetrackersLifecycleCoordinator
 			$failure = 'invalid-caller-input';
 			return(false);
 		}
-		$functionalAction = retrackersBuildInsertAction($script, $php, $canonicalUser);
-		$safetyAction = retrackersBuildSafetyOnlyInsertAction();
-		$deferAction = retrackersBuildDeferOnlyInsertAction();
-		if (!is_string($functionalAction) || !is_string($safetyAction) || !is_string($deferAction)) {
-			$failure = 'invalid-caller-input';
-			return(false);
-		}
-
 		if ($adapter === null) {
 			$adapter = new RetrackersLifecycleRpcAdapter();
 		}
@@ -9210,6 +9476,16 @@ class RetrackersLifecycleCoordinator
 		if (!$adapter->ensureLedgerExists($failure)) {
 			return(false);
 		}
+		// Family 1 keeps the 0.9.8 v1 path. Family 2 must expose the
+		// exact native methods before a hook may publish a v2 marker.
+		$nativeOriginal = $adapter->getFamily() === 2;
+		if ($nativeOriginal && !$adapter->nativeOriginalCapability($failure)) {
+			return(false);
+		}
+		$functionalAction = retrackersBuildInsertAction($script, $php, $canonicalUser,
+			$nativeOriginal);
+		$safetyAction = retrackersBuildSafetyOnlyInsertAction();
+		$deferAction = retrackersBuildDeferOnlyInsertAction();
 
 		$attestation = $adapter->attestLedger($failure);
 		if ($attestation === false || !($attestation instanceof RetrackersHistoricalLedgerAttestation)) {
@@ -9221,6 +9497,7 @@ class RetrackersLifecycleCoordinator
 		$outcome = $binding->consume($canonicalUser, $functionalAction, $attestation,
 			function ($decision) use (
 				$adapter, $canonicalUser, $script, $php, $functionalAction, $safetyAction, $deferAction,
+				$nativeOriginal,
 				&$failure, &$consumerSuccess
 			) {
 				if ($adapter->getFamily() !== $decision['binding']['family']) {
@@ -9293,7 +9570,7 @@ class RetrackersLifecycleCoordinator
 					}
 
 					if (!self::replayDeferredInserts($adapter, $canonicalUser, $script, $php,
-						$functionalAction, $owned, $failure)) {
+						$functionalAction, $nativeOriginal, $owned, $failure)) {
 						return(false);
 					}
 					$epoch2 = self::freshToken($epoch1);
@@ -9370,7 +9647,10 @@ class RetrackersLifecycleCoordinator
 					return(true);
 				}
 
-				if ($phase !== 'IDLE_CURRENT' || $decision['caller']['membership'] !== 'profile') {
+				$resume = $phase === 'DONE_OWNER' &&
+					$decision['caller']['membership'] === 'owner';
+				if (!$resume && ($phase !== 'IDLE_CURRENT' ||
+					$decision['caller']['membership'] !== 'profile')) {
 					if ($phase === 'CONTAINED') {
 						$failure = 'shared-daemon-contained';
 						return(false);
@@ -9383,21 +9663,28 @@ class RetrackersLifecycleCoordinator
 					return(false);
 				}
 
-				$epoch0 = $decision['persistent_epoch'];
-				$token = self::freshToken();
-				$epoch1 = self::freshToken($epoch0);
-				$safetyAction = retrackersBuildSafetyOnlyInsertAction();
 				$profile = self::profileForUser($decision, $canonicalUser);
-				if ($profile === false || $profile['pair'] !== 'F/S' ||
+				if ($profile === false ||
+					$profile['pair'] !== ($resume ? 'S/S' : 'F/S') ||
 					!is_string($profile['claim_hash'])) {
 					$failure = 'historical-hook-restart-required';
 					return(false);
 				}
-				$acquire = RetrackersLifecycleCallbacks::doneAcquire(
-					$epoch0, $epoch1, $token, $userHash, $profile['claim_hash'],
-					$key1, $key2, null, $safetyAction);
-				$owned = self::executeAndReadback($adapter, $acquire, $canonicalUser,
-					null, 'lifecycle-acquire-unconfirmed', $failure, 'lifecycle-busy');
+				if ($resume) {
+					// A bounded wait may have ended while this same owner still holds D.
+					$epoch1 = $decision['persistent_epoch'];
+					$token = $decision['owner']['token'];
+					$owned = $decision;
+				} else {
+					$epoch0 = $decision['persistent_epoch'];
+					$token = self::freshToken();
+					$epoch1 = self::freshToken($epoch0);
+					$acquire = RetrackersLifecycleCallbacks::doneAcquire(
+						$epoch0, $epoch1, $token, $userHash, $profile['claim_hash'],
+						$key1, $key2, null, retrackersBuildSafetyOnlyInsertAction());
+					$owned = self::executeAndReadback($adapter, $acquire, $canonicalUser,
+						null, 'lifecycle-acquire-unconfirmed', $failure, 'lifecycle-busy');
+				}
 				if ($owned === false || !self::drainAndCancelPending(
 					$adapter, $canonicalUser, null, 'd', $owned, $failure)) {
 					return(false);
@@ -9441,6 +9728,7 @@ function retrackersBoundedFailureReason($failure)
 		'candidate-too-large' => true,
 		'candidate-tracker-projection-failed' => true,
 		'candidate-unconfirmed' => true,
+		'different-hash-unsupported' => true,
 		'cleanup-arm-pending' => true,
 		'cleanup-builder-headroom' => true,
 		'cleanup-completion-pending' => true,
@@ -9461,6 +9749,8 @@ function retrackersBoundedFailureReason($failure)
 		'foreign-generation' => true,
 		'handoff-release-changed' => true,
 		'handoff-release-pending' => true,
+		'marked-recovery-pending' => true,
+		'durable-release-required' => true,
 		'historical-hook-restart-required' => true,
 		'hook-ledger-mismatch-restart-required' => true,
 		'hook-ack-capability-missing' => true,
@@ -9488,6 +9778,23 @@ function retrackersBoundedFailureReason($failure)
 		'load-response-inconsistent' => true,
 		'load-size-invariant' => true,
 		'load-wrapper-changed' => true,
+		'native-capture-unconfirmed' => true,
+		'native-capture-readback-unconfirmed' => true,
+		'native-candidate-unconfirmed' => true,
+		'native-candidate-incarnation-unconfirmed' => true,
+		'native-candidate-owner-readback-pending' => true,
+		'native-commit-unconfirmed' => true,
+		'native-release-unconfirmed' => true,
+		'native-samehash-capability-unconfirmed' => true,
+		'native-original-capability-unconfirmed' => true,
+		'native-pending-retire-unconfirmed' => true,
+		'native-original-finalize-pending' => true,
+		'native-original-identity-invalid' => true,
+		'native-original-finalized-before-worker' => true,
+		'native-original-incarnation-unconfirmed' => true,
+		'native-original-owner-readback-pending' => true,
+		'native-original-rpc-unconfirmed' => true,
+		'native-original-unsupported' => true,
 		'ownership-mismatch' => true,
 		'partial-quiesce-ambiguous' => true,
 		'prefix-builder-headroom' => true,
@@ -9495,6 +9802,7 @@ function retrackersBoundedFailureReason($failure)
 		'profile-binding-unstable' => true,
 		'profile-binding-writer-untrusted' => true,
 		'quiesce-changed' => true,
+		'rpc-family-unconfirmed' => true,
 		'receipt-ledger-corrupt' => true,
 		'receipt-preflight-failed' => true,
 		'rollback-confirmed' => true,
@@ -9549,6 +9857,8 @@ function retrackersLifecycleDiagnosticJavascript($context, $failure)
 		$message .= '; daemon restart required after active recovery finishes';
 	} elseif ($reason === 'hook-ledger-mismatch-restart-required') {
 		$message .= '; restart rTorrent and recheck';
+	} elseif ($reason === 'marked-recovery-pending') {
+		$message .= '; inspect the retained marker and native receipt';
 	}
 	return('noty(' . json_encode('retrackers: ' . $message) . ",'error');");
 }
@@ -9792,6 +10102,10 @@ class RetrackersRecoveryCoordinator
 	public static function disposeOriginalHandoff($tx, $hash, $handoff, $localId,
 		$adapter, &$failure = null, $waitForCompletion = false)
 	{
+		if ($adapter->getFamily() !== 1) {
+			$failure = 'durable-release-required';
+			return('hold-release');
+		}
 		$releaseFailure = null;
 		$release = self::releaseSurvivingHandoff(
 			$tx, $hash, $handoff, $localId, $adapter, $releaseFailure, $waitForCompletion);
@@ -10452,8 +10766,30 @@ class RetrackersRecoveryCoordinator
 			return($class);
 		}, $adapter, $waitForCompletion, array('receipt-ledger-corrupt', 'cleanup-dispatch-pending', 'cleanup-completion-pending'), $failure));
 	}
-	public static function terminalCleanup($tx, $adapter, &$failure = null, $waitForCompletion = false)
+	public static function terminalCleanup($tx, $adapter, &$failure = null,
+		$waitForCompletion = false, $sourceHash = null, $sourceIncarnation = null)
 	{
+		if ($adapter->getFamily() !== 1) {
+			if (!is_string($sourceHash) ||
+				preg_match('/^[0-9A-F]{40}$/D', $sourceHash) !== 1 ||
+				!is_string($sourceIncarnation) ||
+				preg_match('/^[0-9a-f]{32}$/D', $sourceIncarnation) !== 1 ||
+				!$adapter->nativeFinalizedOriginal(
+					$sourceHash, $tx, $sourceIncarnation, $failure)) {
+				$failure = 'durable-release-required';
+				return(false);
+			}
+			$currentI = $adapter->nativeOriginalIncarnation($sourceHash, $failure);
+			$owner = $adapter->sourceScalarSnapshot($sourceHash, $failure);
+			$values = is_array($owner) && isset($owner['family'], $owner['values']) &&
+				$owner['family'] === 2 && is_array($owner['values']) ? $owner['values'] : null;
+			if ($currentI !== $sourceIncarnation || !is_array($values) ||
+				!isset($values['recovery_marker'], $values['recovery_ack']) ||
+				$values['recovery_marker'] !== '' || $values['recovery_ack'] !== '') {
+				$failure = 'durable-release-required';
+				return(false);
+			}
+		}
 		$callback = RetrackersTerminalCleanupCallback::build($tx);
 		if ($callback === false) {
 			$failure = 'terminal-cleanup-pending';
@@ -10557,6 +10893,10 @@ class RetrackersRecoveryCoordinator
 		if ($stage instanceof RetrackersAnonymousStage) {
 			$stage->abortBeforeArm();
 		}
+		if (strncmp($handoff, 'v2:original:', 12) === 0) {
+			$adapter->recordRecoveryFailure($reason);
+			return(self::holdUnknownLease());
+		}
 		$disposeFailure = null;
 		$decision = self::disposeOriginalHandoff(
 			$tx, $hash, $handoff, $localId, $adapter, $disposeFailure, true);
@@ -10573,8 +10913,64 @@ class RetrackersRecoveryCoordinator
 		return(false);
 	}
 
+	private static function retireNativePending($hash, $localId, $tx, $incarnation, $adapter)
+	{
+		$callback = RetrackersLifecycleCallbacks::retireNativePending(
+			$hash, $localId, $tx, $incarnation);
+		if ($callback === false) return(false);
+		$failure = null;
+		$wp = 'wp:' . $localId;
+		$wh = 'wh:' . $localId;
+		$adapter->executeLifecycleCallback($callback, $failure);
+		$deadline = hrtime(true) + ((float)RETRACKERS_TEARDOWN_TIMEOUT) * 1000000000.0;
+		while (true) {
+			$keys = $adapter->getLedgerKeys($failure);
+			if (!is_array($keys)) return(false);
+			if (!in_array($wp, $keys, true)) return(true);
+			if (!in_array($wh, $keys, true)) break;
+			if (hrtime(true) >= $deadline) return(false);
+			usleep(50000);
+		}
+		// The hook may clear wh after the first CAS. Retry only this exact
+		// terminal callback; native finish must never be sent a second time.
+		$adapter->executeLifecycleCallback($callback, $failure);
+		$keys = $adapter->getLedgerKeys($failure);
+		return(is_array($keys) && !in_array($wp, $keys, true));
+	}
+
 	private static function finishNoChange($tx, $hash, $handoff, $localId, $adapter)
 	{
+		if (strncmp($handoff, 'v2:original:', 12) === 0) {
+			$failure = null;
+			$incarnation = $adapter->nativeOriginalIncarnation($hash, $failure);
+			if ($incarnation === false) {
+				$adapter->recordRecoveryFailure($failure);
+				return(self::holdUnknownLease());
+			}
+			// A lost finish reply is reconciled only by the exact durable T/I
+			// receipt and marker-free owner readback; never send finish twice.
+			$adapter->nativeFinishOriginal($hash, $tx, $incarnation, $failure);
+			if (!$adapter->nativeFinalizedOriginal($hash, $tx, $incarnation, $failure)) {
+				$adapter->recordRecoveryFailure($failure);
+				return(self::holdUnknownLease());
+			}
+			$owner = $adapter->sourceScalarSnapshot($hash, $failure);
+			$values = is_array($owner) && isset($owner['values']) ? $owner['values'] : null;
+			$readIncarnation = $adapter->nativeOriginalIncarnation($hash, $failure);
+			// L0 changes after daemon restart; the durable I and finalized T/I
+			// receipt carry owner identity across that boundary.
+			if (!is_array($values) || !isset($values['recovery_marker'],
+				$values['recovery_ack']) || $values['recovery_marker'] !== '' ||
+				$values['recovery_ack'] !== '' || $readIncarnation !== $incarnation) {
+				$adapter->recordRecoveryFailure('native-original-owner-readback-pending');
+				return(self::holdUnknownLease());
+			}
+			if (!self::retireNativePending($hash, $localId, $tx, $incarnation, $adapter)) {
+				$adapter->recordRecoveryFailure('native-pending-retire-unconfirmed');
+				return(self::holdUnknownLease());
+			}
+			return(true);
+		}
 		$disposeFailure = null;
 		$decision = self::disposeOriginalHandoff(
 			$tx, $hash, $handoff, $localId, $adapter, $disposeFailure, true);
@@ -10665,6 +11061,145 @@ class RetrackersRecoveryCoordinator
 		return(false);
 	}
 
+	private static function nativeCommitReceiptMatches($receipt, $hash, $tx,
+		$sourceI, $candidateI, $localId, $marker, $digest)
+	{
+		$parts = is_string($receipt) ? explode('|', $receipt) : array();
+		return(count($parts) === 11 && $parts[0] === 'v1' &&
+			in_array($parts[1], array('committed', 'released'), true) &&
+			$parts[2] === $hash && $parts[3] === $hash &&
+			$parts[4] === $tx && $parts[5] === $sourceI &&
+			$parts[6] === $candidateI && $parts[7] === $localId &&
+			$parts[8] === $marker && $parts[9] === $digest &&
+			preg_match('/^(?:0|[1-9][0-9]*)$/D', $parts[10]) === 1);
+	}
+
+	private static function nativeCandidate($observation, $tx)
+	{
+		if (!is_array($observation) || !isset($observation['ok'],
+			$observation['presence'], $observation['snapshot']['scalar']) ||
+			$observation['ok'] !== true || $observation['presence'] !== 'present') {
+			return(false);
+		}
+		$scalar = $observation['snapshot']['scalar'];
+		$ready = 'v2:candidate-ready:' . $tx;
+		return(isset($scalar['recovery_marker'], $scalar['recovery_ack']) &&
+			$scalar['recovery_marker'] === $ready &&
+			$scalar['recovery_ack'] === $ready);
+	}
+
+	private static function nativeHold($reason, $adapter, RetrackersAnonymousStage $stage)
+	{
+		$adapter->recordRecoveryFailure($reason);
+		return(self::holdUnknownStage($stage));
+	}
+
+	private static function runNativeSameHash($hash, $handoff, $localId, $tx,
+		$snapshot, $prep, $adapter, $snapshotService, $php)
+	{
+		$failure = null;
+		if (!$adapter->nativeSameHashCapability($failure)) {
+			$adapter->recordRecoveryFailure($failure);
+			return(self::holdUnknownLease());
+		}
+		$commands = RetrackersPostEraseObligation::nativeWorkerCommands(
+			$snapshot, $failure);
+		if ($commands === false) {
+			$adapter->recordRecoveryFailure($failure);
+			return(self::holdUnknownLease());
+		}
+		$sourceI = $adapter->nativeOriginalIncarnation($hash, $failure);
+		if ($sourceI === false) {
+			$adapter->recordRecoveryFailure($failure);
+			return(self::holdUnknownLease());
+		}
+		$stage = RetrackersAnonymousStage::create(
+			$prep['candidate'], $prep['original'], $failure);
+		if ($stage === false) {
+			$adapter->recordRecoveryFailure(is_string($failure) ?
+				$failure : 'stage-identity-failed');
+			return(self::holdUnknownLease());
+		}
+		if ($php === null && class_exists('Utility')) $php = Utility::getPHP();
+		if (!$adapter->preflightStage($stage, $php, $failure)) {
+			return(self::finishPreFenceFailure('procfd-preflight-failed',
+				$tx, $hash, $handoff, $localId, $adapter, $stage));
+		}
+		$candidate = $stage->candidate();
+		$claim = 'v2:candidate-claim:' . $tx;
+		$ready = 'v2:candidate-ready:' . $tx;
+		$creation = array_merge(array('', $candidate['capability']),
+			array($commands[0],
+				'd.custom.set=retrackers-recovery,' . $claim,
+				'd.retrackers.apply=' . $hash . ',' . $localId . ',' . $tx),
+			array_slice($commands, 1),
+			array('d.custom.set=retrackers-recovery,' . $ready,
+				'd.custom.set=retrackers-recovery-ack,' . $ready));
+		$limit = $adapter->maxContentSize($failure);
+		if ($limit === false ||
+			strlen(retrackersBuildDirectRequest('load.normal', $creation)) > $limit) {
+			return(self::finishPreFenceFailure('commit-request-limit-invalid',
+				$tx, $hash, $handoff, $localId, $adapter, $stage));
+		}
+		if (!$adapter->nativeCaptureOriginal($hash, $localId, $handoff,
+			$tx, $candidate['sha256'], $failure)) {
+			return(self::nativeHold('native-capture-unconfirmed', $adapter, $stage));
+		}
+		$absent = $snapshotService->observe($hash);
+		if (!is_array($absent) || !isset($absent['ok'], $absent['presence']) ||
+			$absent['ok'] !== true || $absent['presence'] !== 'absent') {
+			return(self::nativeHold('native-capture-readback-unconfirmed',
+				$adapter, $stage));
+		}
+		// A lost load reply cannot authorize a second load. Reconcile the exact
+		// candidate marker and incarnation after the one dispatch.
+		$adapter->executeDirectMutation('load.normal', $creation, $failure);
+		$observation = null;
+		for ($attempt = 0; $attempt < 100; $attempt++) {
+			$observation = $snapshotService->observe($hash);
+			if (self::nativeCandidate($observation, $tx)) break;
+			if (is_array($observation) && isset($observation['ok'],
+				$observation['presence']) && $observation['ok'] === true &&
+				$observation['presence'] === 'present') break;
+			usleep(100000);
+		}
+		if (!self::nativeCandidate($observation, $tx)) {
+			return(self::nativeHold('native-candidate-unconfirmed', $adapter, $stage));
+		}
+		$candidateI = $adapter->nativeOriginalIncarnation($hash, $failure);
+		if ($candidateI === false || $candidateI === $sourceI) {
+			return(self::nativeHold('native-candidate-incarnation-unconfirmed',
+				$adapter, $stage));
+		}
+		$adapter->nativeCommitSameHash($hash, $localId, $tx, $failure);
+		$receipt = $adapter->nativeWorkerReceipt($hash, $failure);
+		if (!self::nativeCommitReceiptMatches($receipt, $hash, $tx, $sourceI,
+			$candidateI, $localId, $handoff, $candidate['sha256'])) {
+			return(self::nativeHold('native-commit-unconfirmed', $adapter, $stage));
+		}
+		$adapter->nativeReleaseSameHash($hash, $tx, $candidateI, $failure);
+		if (!$adapter->nativeFinalizedOriginal($hash, $tx, $candidateI, $failure)) {
+			return(self::nativeHold('native-release-unconfirmed', $adapter, $stage));
+		}
+		$owner = $adapter->sourceScalarSnapshot($hash, $failure);
+		$values = is_array($owner) && isset($owner['values']) ?
+			$owner['values'] : null;
+		$readI = $adapter->nativeOriginalIncarnation($hash, $failure);
+		if (!is_array($values) || !isset($values['recovery_marker'],
+			$values['recovery_ack']) || $values['recovery_marker'] !== '' ||
+			$values['recovery_ack'] !== '' || $readI !== $candidateI) {
+			return(self::nativeHold('native-candidate-owner-readback-pending',
+				$adapter, $stage));
+		}
+		if (!self::retireNativePending($hash, $localId, $tx, $candidateI, $adapter)) {
+			return(self::nativeHold('native-pending-retire-unconfirmed',
+				$adapter, $stage));
+		}
+		$stage->closeCandidateAfterFence();
+		$stage->closeOriginalAfterNoRollback();
+		return(true);
+	}
+
 	public static function run($hash, $user, $handoff, $state, $localId, $adapter = null,
 		$authority = null, $snapshotService = null, $trks = null, $php = null)
 	{
@@ -10679,14 +11214,59 @@ class RetrackersRecoveryCoordinator
 		}
 
 		$failure = null;
-		$tx = self::generateCleanTx($adapter, $failure);
-		if ($tx === false) {
-			$adapter->recordRecoveryFailure($failure);
-			return(false);
+		$nativeOriginal = preg_match(
+			'/^v2:original:([01]):([0-9A-F]{40}):([0-9a-f]{64}):([0-9a-f]{32})$/D',
+			$handoff, $nativeParts) === 1;
+		if (strncmp($handoff, 'v2:', 3) === 0 &&
+			(!$nativeOriginal || $nativeParts[1] !== $state ||
+			$nativeParts[2] !== $localId ||
+			!hash_equals(hash('sha256', $user), $nativeParts[3]))) {
+			$adapter->recordRecoveryFailure('native-original-identity-invalid');
+			return(self::holdUnknownLease());
 		}
-		if (!self::adoptWorker($tx, $hash, $handoff, $localId, $adapter, $failure)) {
-			$adapter->recordRecoveryFailure($failure);
-			return(false);
+		if ($nativeOriginal) {
+			$tx = $nativeParts[4];
+			if (!$adapter->nativeOriginalCapability($failure)) {
+				$adapter->recordRecoveryFailure($failure === null ?
+					'native-original-capability-unconfirmed' : $failure);
+				return(self::holdUnknownLease());
+			}
+			$terminal = $adapter->nativeFinalizedReceipt($hash, $failure);
+			if (is_array($terminal) && $terminal['tx'] === $tx) {
+				$currentI = $adapter->nativeOriginalIncarnation($hash, $failure);
+				$owner = $adapter->sourceScalarSnapshot($hash, $failure);
+				$values = is_array($owner) && isset($owner['values']) ?
+					$owner['values'] : null;
+				if ($currentI === $terminal['incarnation'] && is_array($values) &&
+					isset($values['recovery_marker'], $values['recovery_ack']) &&
+					$values['recovery_marker'] === '' && $values['recovery_ack'] === '') {
+					// Cold pre-ingress can finalize the original claim before this
+					// worker ran. A terminal receipt proves safety, not an update.
+					$keys = $adapter->getLedgerKeys($failure);
+					if (is_array($keys) && in_array('wp:' . $localId, $keys, true)) {
+						self::retireNativePending($hash, $localId, $tx, $currentI, $adapter);
+					}
+					$adapter->recordRecoveryFailure('native-original-finalized-before-worker');
+					return(false);
+				}
+			}
+		} else {
+			// A v1 marker has no durable T/I claim on the native daemon.
+			$family = $adapter->probeFamily($failure);
+			if ($family !== 1) {
+				$adapter->recordRecoveryFailure($family === false ? $failure :
+					'receipt-ledger-corrupt');
+				return(false);
+			}
+			$tx = self::generateCleanTx($adapter, $failure);
+			if ($tx === false) {
+				$adapter->recordRecoveryFailure($failure);
+				return(false);
+			}
+			if (!self::adoptWorker($tx, $hash, $handoff, $localId, $adapter, $failure)) {
+				$adapter->recordRecoveryFailure($failure);
+				return(false);
+			}
 		}
 
 		$snapResult = $snapshotService->capture($hash, $handoff);
@@ -10727,6 +11307,18 @@ class RetrackersRecoveryCoordinator
 			return(self::finishNoChange($tx, $hash, $handoff, $localId, $adapter));
 		}
 
+		if ($nativeOriginal) {
+			$scan = isset($prep['candidate_scan']) ? $prep['candidate_scan'] : null;
+			if (!is_array($scan) || !isset($scan['info_hash']) ||
+				!is_string($scan['info_hash']) ||
+				preg_match('/^[0-9A-F]{40}$/D', $scan['info_hash']) !== 1 ||
+				$scan['info_hash'] !== $hash) {
+				$adapter->recordRecoveryFailure('different-hash-unsupported');
+				return(self::holdUnknownLease());
+			}
+			return(self::runNativeSameHash($hash, $handoff, $localId, $tx,
+				$snapshot, $prep, $adapter, $snapshotService, $php));
+		}
 		$projection = isset($prep['projection']) && is_array($prep['projection']) ?
 			$prep['projection'] : array();
 		$stage = RetrackersAnonymousStage::create($prep['candidate'], $prep['original'], $failure);
@@ -10870,14 +11462,16 @@ function retrackersParseCliArgv($argv)
 			return(false);
 	if (preg_match('/^[0-9A-F]{40}$/D', $argv[1]) !== 1 ||
 		preg_match('/^[a-z0-9_-]*$/D', $argv[2]) !== 1 ||
-		preg_match('/^v1:original:([01]):([0-9A-F]{40}):([0-9a-f]{64})$/D', $argv[3], $handoff) !== 1 ||
-		!hash_equals(hash('sha256', $argv[2]), $handoff[3]))
+		preg_match('/^v([12]):original:([01]):([0-9A-F]{40}):([0-9a-f]{64})(?::([0-9a-f]{32}))?$/D',
+			$argv[3], $handoff) !== 1 ||
+		($handoff[1] === '1') === isset($handoff[5]) ||
+		!hash_equals(hash('sha256', $argv[2]), $handoff[4]))
 		return(false);
 	return(array(
 		'hash' => $argv[1],
 		'user' => $argv[2],
-		'state' => $handoff[1],
-		'local_id' => $handoff[2],
+		'state' => $handoff[2],
+		'local_id' => $handoff[3],
 		'handoff' => $argv[3],
 	));
 }

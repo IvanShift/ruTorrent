@@ -759,6 +759,9 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 	public $downloadRowsQueue = array();
 	public $downloadRowReads = 0;
 	public $sourceScalarQueue = array();
+	public $nativeFinalized = null;
+	public $nativeIncarnation = null;
+	public $nativeMethodsPresent = true;
 	public $beforeCallbackActionChanges = array();
 	public $beforeCallbackLedgerAdds = array();
 	public $beforeCallbackLedgerRemoves = array();
@@ -785,6 +788,13 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		}
 		$failure = null;
 		return(array_shift($this->queue));
+	}
+
+	public function nativeOriginalCapability(&$failure = null)
+	{
+		$failure = $this->nativeMethodsPresent ? null :
+			'native-original-capability-unconfirmed';
+		return($this->nativeMethodsPresent);
 	}
 
 	public function ensureLedgerExists(&$failure = null)
@@ -900,6 +910,11 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 
 	private function expressionValue($expression, $target)
 	{
+		if ($expression === 'd.incarnation=') return($this->nativeIncarnation);
+		if (strncmp($expression, 'system.retrackers.finalized=', strlen('system.retrackers.finalized=')) === 0)
+			return($this->nativeFinalized === null ? 'none' :
+				'finalized:' . $this->nativeFinalized['tx'] . ':' .
+				$this->nativeFinalized['incarnation']);
 		if ($expression === 'method.list_keys=rr.receipts.v1') {
 			return(array_keys($this->modelLedger));
 		}
@@ -1138,6 +1153,11 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		return($result);
 	}
 
+	public function queueCurrentSample()
+	{
+		$this->queue = array($this->modelSample(), $this->modelSample());
+	}
+
 	public function coherentLifecycleReadback($canonicalUser, $expectedFunctionalAction,
 		&$failure = null)
 	{
@@ -1187,6 +1207,19 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		$failure = null;
 		return(isset($this->modelDownloads[$hash]['chk_meta_old']) ?
 			$this->modelDownloads[$hash]['chk_meta_old'] : '');
+	}
+
+	public function nativeFinalizedReceipt($hash, &$failure = null)
+	{
+		$failure = $this->nativeFinalized === null ? 'native-original-finalize-pending' : null;
+		return($this->nativeFinalized === null ? false : $this->nativeFinalized);
+	}
+
+	public function nativeOriginalIncarnation($hash, &$failure = null)
+	{
+		$failure = $this->nativeIncarnation === null ?
+			'native-original-incarnation-unconfirmed' : null;
+		return($this->nativeIncarnation === null ? false : $this->nativeIncarnation);
 	}
 
 	public function sourceScalarSnapshot($hash, &$failure = null)
@@ -1278,7 +1311,8 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 	{
 		$this->ledgerKeys = $ledgerKeys;
 		$this->scalarSequence = $scalarSequence;
-		$this->family = 2;
+		// The recovery fixture exercises the legacy v1 worker on family one.
+		$this->family = 1;
 	}
 
 	public function getLedgerKeys(&$failure = null)
@@ -3627,7 +3661,7 @@ PHP;
 		preg_match_all('/^\[[^\r\n]+\] retrackers-recovery: ([0-9A-F]{40}) ([a-z0-9-]+)$/m',
 			$log, $matches);
 		$this->assertTrue(isset($matches[1], $matches[2]) && count($matches[1]) === 1 &&
-			$matches[1][0] === $hash && $matches[2][0] === 'receipt-ledger-corrupt',
+			$matches[1][0] === $hash && $matches[2][0] === 'rpc-family-unconfirmed',
 			'a valid CLI worker persistently records its hash and one bounded failure class');
 		$this->assertTrue(strpos($matches[0][0] ?? '', $socket) === false &&
 			strpos($matches[0][0] ?? '', $root) === false &&
@@ -5516,7 +5550,9 @@ PHP;
 			$adapter = $this->historicalQueueAdapter($pair);
 			$outcome = (new RetrackersStableHistoricalBinding($adapter))->consume(
 				'alice', null, $attestation, $consumer);
-			$this->assertTrue($outcome === array('ok' => false, 'failure' => 'profile-binding-unstable') &&
+			$expected = $name === 'recovery decision with equal digest/count' ?
+				'marked-recovery-pending' : 'profile-binding-unstable';
+			$this->assertTrue($outcome === array('ok' => false, 'failure' => $expected) &&
 				$adapter->calls === 2 && $consumerCalls === 0,
 				$name . ' drift refuses without digest-only acceptance or consumer exposure');
 		}
@@ -6301,6 +6337,21 @@ PHP;
 			'containment executes acquire, transition and cleanup as three typed callbacks');
 	}
 
+	public function testInitRejectsFamilyTwoWithoutExactNativeMethodsBeforeInstallingHook()
+	{
+		$this->installRtorrentQuoteDouble();
+		$fixture = $this->historicalStateFixture('BOOTSTRAP');
+		$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+		$adapter->nativeMethodsPresent = false;
+		$failure = null;
+		$this->assertTrue(RetrackersLifecycleCoordinator::init('alice',
+			'/opt/rutorrent/plugins/retrackers/run.sh', '/usr/bin/php',
+			$failure, $adapter) === false &&
+			$failure === 'native-original-capability-unconfirmed' &&
+			count($adapter->callbackHistory) === 0,
+			'family-two daemon without native methods leaves the hook uninstalled');
+	}
+
 	public function testTask5LifecycleCoordinatorDoneTeardownFlow()
 	{
 		$this->installRtorrentQuoteDouble();
@@ -6456,6 +6507,112 @@ PHP;
 			'an unknown post-acquire ledger read cannot be reinterpreted as an empty ledger');
 		$this->assertTrue(count($adapter->callbackHistory) === 1,
 			'unknown ledger state keeps the safety hook and lifecycle owner sticky');
+	}
+
+	public function testDoneResumesItsOwnPendingV2TeardownAfterWorkerFinalizes()
+	{
+		$this->installRtorrentQuoteDouble();
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$tx = str_repeat('c', 32);
+		$incarnation = str_repeat('e', 32);
+		$marker = 'v2:original:0:' . $localId . ':' . hash('sha256', 'alice') . ':' . $tx;
+		$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+		$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+		$adapter->ledgerKeys = array('wp:' . $localId);
+		$adapter->downloadRowsQueue = array_fill(0, 8, array(array($hash, $localId)));
+		$adapter->sourceScalarQueue = array_fill(0, 8, array('family' => 2,
+			'values' => array('local_id' => $localId, 'recovery_marker' => $marker,
+				'recovery_ack' => $marker)));
+		$failure = null;
+		$first = RetrackersLifecycleCoordinator::done('alice', $failure, $adapter);
+		$this->assertTrue($first === false && $failure === 'hook-teardown-pending' &&
+			in_array('wp:' . $localId, $adapter->ledgerKeys, true),
+			'first done owns D but keeps active v2 wp through its bounded wait');
+		$adapter->queueCurrentSample();
+		$adapter->downloadRowsQueue = array(array(array($hash, $localId)));
+		$adapter->sourceScalarQueue = array(array('family' => 2, 'values' => array(
+			'local_id' => $localId, 'recovery_marker' => '', 'recovery_ack' => '')));
+		$adapter->nativeFinalized = array('tx' => $tx, 'incarnation' => $incarnation);
+		$adapter->nativeIncarnation = $incarnation;
+		$failure = null;
+		$second = RetrackersLifecycleCoordinator::done('alice', $failure, $adapter);
+		$this->assertTrue($second === true && $failure === null &&
+			!in_array('wp:' . $localId, $adapter->ledgerKeys, true) &&
+			array_map(function ($callback) { return($callback->name()); },
+				$adapter->callbackHistory) === array('done-acquire',
+				'native-pending-retire', 'done-finalization'),
+			'repeated done resumes only its exact D owner and terminal T/I cleanup');
+	}
+
+	public function testNativeWpRetirementUsesTerminalIncarnationAcrossLocalIdDrift()
+	{
+		$this->installRtorrentQuoteDouble();
+		$hash = str_repeat('A', 40);
+		$originalLocalId = str_repeat('B', 40);
+		$currentLocalId = str_repeat('C', 40);
+		$tx = str_repeat('d', 32);
+		$incarnation = str_repeat('e', 32);
+		$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+		foreach (array(false, true) as $foreignIncarnation) {
+			$adapter = $this->lifecycleQueueAdapter(array($fixture['sample']));
+			$adapter->ledgerKeys = array('wp:' . $originalLocalId);
+			$adapter->sourceScalarQueue = array(array('family' => 2, 'values' => array(
+				'local_id' => $currentLocalId, 'recovery_marker' => '',
+				'recovery_ack' => '')));
+			$adapter->sourceScalarSnapshot($hash, $failure);
+			$adapter->nativeFinalized = array('tx' => $tx, 'incarnation' => $incarnation);
+			$adapter->nativeIncarnation = $foreignIncarnation ? str_repeat('f', 32) : $incarnation;
+			$callback = RetrackersLifecycleCallbacks::retireNativePending(
+				$hash, $originalLocalId, $tx, $incarnation);
+			$result = $adapter->executeLifecycleCallback($callback, $failure);
+			$this->assertTrue($result === ($foreignIncarnation ? 'CHANGED' : 'ACQUIRED') &&
+				in_array('wp:' . $originalLocalId, $adapter->ledgerKeys, true) === $foreignIncarnation,
+				$foreignIncarnation ? 'foreign same-hash I cannot retire the old wp' :
+				'cold restart L drift does not block exact terminal T/I retirement');
+		}
+	}
+
+	public function testDoneRetiresFinalizedNativeWpButKeepsActiveV2Pending()
+	{
+		$this->installRtorrentQuoteDouble();
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$tx = str_repeat('c', 32);
+		$incarnation = str_repeat('e', 32);
+		$marker = 'v2:original:0:' . $localId . ':' . hash('sha256', 'alice') . ':' . $tx;
+		$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+		$active = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+		$active->ledgerKeys = array('wp:' . $localId);
+		$active->downloadRowsQueue = array_fill(0, 8, array(array($hash, $localId)));
+		$activeScalar = array('family' => 2, 'values' => array(
+			'local_id' => $localId, 'recovery_marker' => $marker,
+			'recovery_ack' => $marker));
+		$active->sourceScalarQueue = array_fill(0, 8, $activeScalar);
+		$failure = null;
+		$this->assertTrue(RetrackersLifecycleCoordinator::done('alice', $failure, $active) === false &&
+			$failure === 'hook-teardown-pending' &&
+			in_array('wp:' . $localId, $active->ledgerKeys, true) &&
+			array_map(function ($callback) { return($callback->name()); },
+				$active->callbackHistory) === array('done-acquire'),
+			'active v2 claim stays pending without generic marker cancellation');
+
+		$finalized = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+		$finalized->ledgerKeys = array('wp:' . $localId);
+		$finalized->downloadRowsQueue = array(array(array($hash, $localId)));
+		$finalized->sourceScalarQueue = array(array('family' => 2, 'values' => array(
+			'local_id' => $localId, 'recovery_marker' => '',
+			'recovery_ack' => '')));
+		$finalized->nativeFinalized = array('tx' => $tx, 'incarnation' => $incarnation);
+		$finalized->nativeIncarnation = $incarnation;
+		$failure = null;
+		$finalizedDone = RetrackersLifecycleCoordinator::done('alice', $failure, $finalized);
+		$this->assertTrue($finalizedDone === true &&
+			$failure === null && !in_array('wp:' . $localId, $finalized->ledgerKeys, true) &&
+			array_map(function ($callback) { return($callback->name()); },
+				$finalized->callbackHistory) === array(
+				'done-acquire', 'native-pending-retire', 'done-finalization'),
+			'done retires crash-left wp only after exact native T/I and marker-free CAS');
 	}
 
 	public function testLifecycleDoneDoesNotBlindlyDeleteAPendingWorkerLease()
@@ -11607,6 +11764,173 @@ PHP;
 			'the candidate and rollback classifiers expose only the closed brief vocabulary');
 	}
 
+	public function testNativeFamilyRefusesLegacyWorkerBeforeAdoption()
+	{
+		$this->installRtorrentQuoteDouble();
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$handoff = 'v1:original:0:' . $localId . ':' . str_repeat('c', 64);
+		$adapter = $this->recoveryTestAdapter(array());
+		$adapter->setFamily(2);
+		$snapshot = new class {
+			public $reads = 0;
+			public function capture($hash, $handoff) {
+				$this->reads++;
+				return(array('ok' => false, 'failure' => 'initial-absent'));
+			}
+		};
+		$result = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff, '0',
+			$localId, $adapter, null, $snapshot);
+		$this->assertTrue($result === false &&
+			$adapter->recoveryFailure() === 'receipt-ledger-corrupt' &&
+			$adapter->adoptCallbacks === array() && $snapshot->reads === 0,
+			'a v1 marker on the native daemon cannot start an unreceipted worker');
+	}
+
+	public function testFreshLegacyWorkerProbesFamilyBeforeRejectingV1Handoff()
+	{
+		$this->installRtorrentQuoteDouble();
+		$this->recoveryTestAdapter();
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$handoff = 'v1:original:0:' . $localId . ':' . str_repeat('c', 64);
+		$makeAdapter = function ($family) {
+			return(new class(array(), array(), $family) extends RetrackersRecoveryTestAdapter {
+				public $methodReads = 0;
+				private $answerFamily;
+				public function __construct($keys, $sequence, $answerFamily) {
+					parent::__construct($keys, $sequence);
+					$this->family = null;
+					$this->answerFamily = $answerFamily;
+					$this->ledgerReadUnknown = true;
+				}
+				protected function send($payload, $plan, &$failure = null, $historical = false) {
+					if (strpos($payload, '<methodName>system.listMethods</methodName>') === false) {
+						throw new RuntimeException('family probe must be read-only');
+					}
+					$this->methodReads++;
+					$failure = null;
+					return(array('ok' => true, 'family' => $this->answerFamily,
+						'value' => array('system.listMethods')));
+				}
+			});
+		};
+		$legacy = $makeAdapter(1);
+		$result = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff, '0',
+			$localId, $legacy);
+		$this->assertTrue($result === false && $legacy->methodReads === 1 &&
+			$legacy->ledgerReadCount === 1 && $legacy->getFamily() === 1 &&
+			$legacy->adoptCallbacks === array(),
+			'a fresh legacy worker probes the daemon before deciding whether v1 adoption is safe');
+		$native = $makeAdapter(2);
+		$result = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff, '0',
+			$localId, $native);
+		$this->assertTrue($result === false && $native->methodReads === 1 &&
+			$native->ledgerReadCount === 0 && $native->adoptCallbacks === array() &&
+			$native->recoveryFailure() === 'receipt-ledger-corrupt',
+			'a fresh native worker holds a v1 handoff without adopting its owner');
+	}
+
+	public function testNativeLegacyDisposalKeepsMarkerAndWa()
+	{
+		$this->installRtorrentQuoteDouble();
+		$tx = str_repeat('2', 32);
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$handoff = 'v1:original:0:' . $localId . ':' . str_repeat('c', 64);
+		$adapter = $this->recoveryTestAdapter(array('wa:' . $tx));
+		$adapter->setFamily(2);
+		$failure = null;
+		$result = RetrackersRecoveryCoordinator::disposeOriginalHandoff(
+			$tx, $hash, $handoff, $localId, $adapter, $failure);
+		$this->assertTrue($result === 'hold-release' &&
+			$failure === 'durable-release-required' &&
+			$adapter->releaseCallbacks === array() &&
+			$adapter->terminalCleanupCallbacks === array() &&
+			in_array('wa:' . $tx, $adapter->ledgerKeys, true),
+			'a native-daemon v1 handoff cannot clear its marker before proof exists');
+	}
+
+	public function testNativeTerminalCleanupRequiresExactFinalizedOwner()
+	{
+		$this->installRtorrentQuoteDouble();
+		$this->recoveryTestAdapter();
+		$tx = str_repeat('2', 32);
+		$hash = str_repeat('A', 40);
+		$incarnation = str_repeat('a', 32);
+		$make = function ($family, $proof, $currentI, $marker) use ($tx, $hash, $incarnation) {
+			$adapter = new class($tx, $hash, $incarnation, $proof, $currentI, $marker)
+				extends RetrackersRecoveryTestAdapter {
+				private $proof;
+				private $currentI;
+				private $marker;
+				private $expected;
+				public function __construct($tx, $hash, $incarnation, $proof, $currentI, $marker) {
+					parent::__construct(array('wa:' . $tx), array());
+					$this->expected = array($hash, $tx, $incarnation);
+					$this->proof = $proof;
+					$this->currentI = $currentI;
+					$this->marker = $marker;
+				}
+				public function nativeFinalizedOriginal($hash, $tx, $incarnation, &$failure = null) {
+					$matched = $this->proof && array($hash, $tx, $incarnation) === $this->expected;
+					$failure = $matched ? null : 'native-original-finalize-pending';
+					return($matched);
+				}
+				public function nativeOriginalIncarnation($hash, &$failure = null) {
+					$failure = null;
+					return($this->currentI);
+				}
+				public function sourceScalarSnapshot($hash, &$failure = null) {
+					$failure = null;
+					return(array('family' => 2, 'values' => array(
+						'recovery_marker' => $this->marker,
+						'recovery_ack' => $this->marker)));
+				}
+			};
+			$adapter->setFamily($family);
+			return($adapter);
+		};
+		$cases = array(
+			'missing source tuple' => array(2, true, $incarnation, '', null, null, false),
+			'missing final receipt' => array(2, false, $incarnation, '', $hash, $incarnation, false),
+			'foreign incarnation' => array(2, true, str_repeat('b', 32), '', $hash, $incarnation, false),
+			'foreign source hash' => array(2, true, $incarnation, '', str_repeat('C', 40), $incarnation, false),
+			'foreign receipt incarnation' => array(2, true, $incarnation, '', $hash, str_repeat('b', 32), false),
+			'marked owner' => array(2, true, $incarnation, 'v2:foreign', $hash, $incarnation, false),
+			'exact finalized owner' => array(2, true, $incarnation, '', $hash, $incarnation, true),
+			'legacy family one' => array(1, false, '', 'v1:original', null, null, true),
+		);
+		foreach ($cases as $name => $case) {
+			$adapter = $make($case[0], $case[1], $case[2], $case[3]);
+			$failure = null;
+			$result = RetrackersRecoveryCoordinator::terminalCleanup(
+				$tx, $adapter, $failure, false, $case[4], $case[5]);
+			$this->assertTrue(($result === 'clean') === $case[6] &&
+				in_array('wa:' . $tx, $adapter->ledgerKeys, true) !== $case[6],
+				$name . ' retains wa until the exact native terminal owner is proven');
+		}
+	}
+
+	public function testMarkedIdleRowCannotHidePendingRecovery()
+	{
+		$this->installRtorrentQuoteDouble();
+		$fixture = $this->historicalStateFixture('IDLE_CURRENT');
+		$actions = array();
+		foreach ($fixture['sample']['value']['actions'] as $action)
+			$actions[$action['name']] = $action['value'];
+		$localId = str_repeat('B', 40);
+		$marker = 'v1:original:1:' . $localId . ':' . str_repeat('c', 64);
+		$sample = $this->historicalProjectionFixture($actions,
+			$fixture['sample']['value']['ledger_keys'],
+			$this->packedRecoveryRows4(array(array(str_repeat('A', 40),
+				$localId, $marker, $marker))));
+		$decision = (new RetrackersHistoricalBindingClassifier())->classify(
+			$sample, $fixture['caller'], $fixture['expected_functional']);
+		$this->assertTrue($decision['status'] === 'recovery-pending',
+			'a marked row cannot pass as an idle current profile');
+	}
+
 	public function testTask5All165PreTaskPublicMethodsRemainOnePassRunnerReachable()
 	{
 		// Everything declared after the 165 were frozen, whatever added it -- the
@@ -11614,6 +11938,15 @@ PHP;
 		// Keep the frozen methods explicit so a new or missing one is named by
 		// the failure instead of hidden behind a fingerprint.
 		$added = array(
+			'testFreshLegacyWorkerProbesFamilyBeforeRejectingV1Handoff',
+			'testNativeFamilyRefusesLegacyWorkerBeforeAdoption',
+			'testNativeLegacyDisposalKeepsMarkerAndWa',
+			'testNativeTerminalCleanupRequiresExactFinalizedOwner',
+			'testMarkedIdleRowCannotHidePendingRecovery',
+			'testInitRejectsFamilyTwoWithoutExactNativeMethodsBeforeInstallingHook',
+			'testDoneResumesItsOwnPendingV2TeardownAfterWorkerFinalizes',
+			'testNativeWpRetirementUsesTerminalIncarnationAcrossLocalIdDrift',
+			'testDoneRetiresFinalizedNativeWpButKeepsActiveV2Pending',
 			'testDoneCancelsAPendingLeaseOwnedByAnotherWellFormedUser',
 			'testDonePreservesAnUnrecognizedPendingObject',
 			'testCleanDownloadsAreNotAnOutstandingRecoveryHoweverManyThereAre',

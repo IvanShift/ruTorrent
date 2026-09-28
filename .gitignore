@@ -74,6 +74,9 @@ docs/
 .superpowers/
 tasks/
 backup/
+/.worktrees/
+/.scratch/
+/.tmp/
 
 # Operator captures kept in the checkout: CI log bundles downloaded for triage and
 # the running instance's error log. They are evidence, not sources, and a plain

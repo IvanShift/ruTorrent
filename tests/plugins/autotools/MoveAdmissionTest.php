@@ -37,6 +37,8 @@ function removeMoveAdmissionFixture($path)
 
 $suite = new StrictTestSuite();
 $hash = str_repeat('A', 40);
+$journalHold = 'journal-nonfile: path=.autotools-file-jobs/' . $hash
+    . '.move.json; Move held pending journal repair';
 $complete = array('system.listMethods', 'd.stop_close_claim_state', 'd.stop_close_claim',
     'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
     'd.directory.set_if_stop_close_claim', 'd.start_if_stop_close_claim');
@@ -200,23 +202,72 @@ $suite->test('unsupported daemon holds when the old marker remains in the saved 
         } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
     });
 
-$suite->test('unsupported daemon holds a marker when the journal name is a nonfile entry',
-    function () use ($hash) {
+$suite->test('nonfile Move journal holds an old hook marker before capability admission',
+    function () use ($hash, $journalHold) {
         $root = moveAdmissionFixture();
         try {
             $journal = $root . '/session/.autotools-file-jobs';
             mkdir($journal, 0700);
             mkdir($journal . '/' . $hash . '.move.json', 0700);
             rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', true, false, array('system.listMethods'));
             AutoToolsMoveTransaction::run(array($hash, '', '', '', '', '', '',
                 str_repeat('a', 32)));
-            strictAssertSame(array('system.listMethods'),
-                array_column(rXMLRPCRequest::$requests, 'key'),
-                'ambiguous journal path prevents marker RPC');
-            strictAssertSame('autotools: move ' . $hash
-                . ' hold: daemon-claim-abi-unsupported; old-hook-marker-journal-present',
+            strictAssertSame(array(), rXMLRPCRequest::$requests,
+                'ambiguous journal path prevents capability and marker RPC');
+            strictAssertSame('autotools: move ' . $hash . ' hold: ' . $journalHold,
                 end(FileUtil::$messages), 'ambiguous journal entry is visible');
+        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
+    });
+
+$suite->test('recovery reports a nonfile Move journal path instead of skipping it',
+    function () use ($hash, $journalHold) {
+        $root = moveAdmissionFixture();
+        try {
+            $journal = $root . '/session/.autotools-file-jobs';
+            mkdir($journal, 0700);
+            $path = $journal . '/' . $hash . '.move.json';
+            mkdir($path, 0700);
+            rXMLRPCRequest::reset(); FileUtil::$messages = array();
+            AutoToolsMoveTransaction::recoverAll();
+            strictAssertSame('autotools: move ' . $hash . ' recovery hold: ' . $journalHold,
+                end(FileUtil::$messages), 'nonfile recovery entry is visible');
+            strictAssertSame(true, is_dir($path), 'nonfile journal evidence is preserved');
+            strictAssertSame(array(), rXMLRPCRequest::$requests, 'recovery sends no daemon RPC');
+        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
+    });
+
+$suite->test('worker holds a dangling Move journal symlink before native admission',
+    function () use ($hash, $journalHold) {
+        $root = moveAdmissionFixture();
+        try {
+            $journal = $root . '/session/.autotools-file-jobs';
+            mkdir($journal, 0700);
+            $path = $journal . '/' . $hash . '.move.json';
+            symlink($root . '/temporarily-unavailable-record', $path);
+            rXMLRPCRequest::reset(); FileUtil::$messages = array();
+            AutoToolsMoveTransaction::run(array($hash));
+            strictAssertSame('autotools: move ' . $hash . ' hold: ' . $journalHold,
+                end(FileUtil::$messages), 'broken journal alias is held visibly');
+            strictAssertSame(true, is_link($path), 'journal alias is preserved');
+            strictAssertSame(array(), rXMLRPCRequest::$requests, 'no claim admission or mutation runs');
+        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
+    });
+
+$suite->test('journal refusal sanitizes an unsafe hash in the log and document name',
+    function () {
+        $root = moveAdmissionFixture();
+        $hash = "BAD\nLOG";
+        try {
+            $journal = $root . '/session/.autotools-file-jobs';
+            mkdir($journal, 0700);
+            mkdir($journal . '/' . $hash . '.move.json', 0700);
+            rXMLRPCRequest::reset(); FileUtil::$messages = array();
+            AutoToolsMoveTransaction::run(array($hash));
+            strictAssertSame('autotools: move <invalid-hash> hold: journal-nonfile: '
+                . 'path=.autotools-file-jobs/<invalid-hash>.move.json; '
+                . 'Move held pending journal repair',
+                end(FileUtil::$messages), 'untrusted hash is not copied to the log');
+            strictAssertSame(array(), rXMLRPCRequest::$requests, 'invalid document sends no daemon RPC');
         } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
     });
 
