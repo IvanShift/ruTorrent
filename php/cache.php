@@ -4,8 +4,8 @@ require_once( 'util.php' );
 class rCache
 {
 	protected $dir;
-	// How each cache file looked when this process loaded it, keyed by cache key.
-	protected static $loadStamps = [];
+	// A loaded object's exact file version, without retaining the object itself.
+	protected static $loadedStates = [];
 
 	public function __construct( $name = '' )
 	{
@@ -28,9 +28,24 @@ class rCache
 		}
 		return(true);
 	}
-	protected static function getCacheKey( $rss )
+	private static function loadedState( $object, $name )
 	{
-		return(get_class($rss).':'.$rss->hash);
+		$id = spl_object_id($object);
+		$state = self::$loadedStates[$id] ?? null;
+		return($state !== null && $state['object']->get() === $object
+			&& $state['path'] === $name ? $state : null);
+	}
+	private static function rememberLoadedState( $object, $name, $stamp, $bytes )
+	{
+		self::$loadedStates[spl_object_id($object)] = array(
+			'object' => WeakReference::create($object), 'path' => $name,
+			'stamp' => $stamp, 'digest' => hash('sha256', $bytes));
+	}
+	private static function logRefusal( $operation, $name, $reason )
+	{
+		$key = substr(preg_replace('/[^a-z0-9_.-]/i', '?', basename($name)), 0, 96);
+		FileUtil::toLog('rCache: '.$operation.' refused: '.$reason.'; key='.$key
+			.'; cache entry unchanged');
 	}
 	// A key names one file inside the cache directory: the shipped ones are a
 	// '<name>.dat', an md5 or a short fixed word. It is concatenated into a
@@ -152,16 +167,17 @@ class rCache
 		$st = @stat($name);
 		return($st===false ? null : $st['ino'].':'.$st['mtime'].':'.$st['size']);
 	}
-	// True when the file on disk is no longer the one this process loaded.
-	protected static function hasChangedSinceLoad( $name, $stamp )
+	// A matching inode/mtime/size can be an ABA after deletion and reuse.
+	// Return null when equal-stamp content cannot be read: overwriting it
+	// would silently lose a version this process could not compare.
+	protected static function hasChangedSinceLoad( $name, $state )
 	{
-		if(!is_null($stamp))
-			return($stamp !== self::stampOf($name));
-		// This process loaded nothing: the file was absent or unreadable when
-		// get() ran. Any file present now was published by someone else, and
-		// merging what is on disk is always safe for the merge-capable
-		// classes that are the only callers of this check.
-		return(is_file($name));
+		if($state === null)
+			return(is_file($name));
+		if($state['stamp'] !== self::stampOf($name))
+			return(true);
+		$bytes = @file_get_contents($name);
+		return($bytes === false ? null : hash('sha256', $bytes) !== $state['digest']);
 	}
 	public function set( $rss, $arg = null )
 	{
@@ -176,21 +192,31 @@ class rCache
 		// nothing changed, both skip merging, and the later rename erases the
 		// earlier writer's data. The lock is a sidecar file because the cache
 		// file itself is replaced by rename() on every store.
-		$lock = fopen( $lockName, "c" );
+		$lock = @fopen( $lockName, "c" );
 		if($lock===false)
+		{
+			self::logRefusal('set', $name, 'key lock open failed');
 			return(false);
+		}
 		@chmod($lockName,$profileMask & 0666);
 		if(!self::flock( $lock ))
 		{
 			fclose($lock);
+			self::logRefusal('set', $name, 'key lock unavailable');
 			return(false);
 		}
 
-		$cacheKey = is_object($rss) ? self::getCacheKey($rss) : null;
-		$stamp = ($cacheKey !== null) ? (self::$loadStamps[$cacheKey] ?? null) : null;
-		if(     is_object($rss) &&
-			method_exists($rss,"merge") &&
-			self::hasChangedSinceLoad($name, $stamp))
+		$state = is_object($rss) ? self::loadedState($rss, $name) : null;
+		$changed = is_object($rss) && method_exists($rss, "merge")
+			? self::hasChangedSinceLoad($name, $state) : false;
+		if($changed === null)
+		{
+			flock($lock, LOCK_UN);
+			fclose($lock);
+			self::logRefusal('set', $name, 'cache digest unreadable');
+			return(false);
+		}
+		if($changed)
 		{
 			$className = get_class($rss);
 			$newInstance = new $className();
@@ -216,6 +242,8 @@ class rCache
 					if(@rename( $tmpName, $name ))
 					{
 						@chmod($name,$profileMask & 0666);
+						if(is_object($rss))
+							self::rememberLoadedState($rss, $name, self::stampOf($name), $str);
 						flock( $lock, LOCK_UN );
 						fclose( $lock );
 						return(true);
@@ -283,8 +311,7 @@ class rCache
 					(isset($tmp->version) && ($tmp->version==$rss->version))))
 				{
 					$rss = $tmp;
-					$cacheKey = self::getCacheKey($rss);
-					self::$loadStamps[$cacheKey] = $stamp;
+					self::rememberLoadedState($rss, $fname, $stamp, $ret);
 					$ret = true;
 				}
 				else
@@ -300,22 +327,26 @@ class rCache
 		if(is_null($name))
 			return(false);
 		$lockName = $name.'.lock';
-		// Delete cache data and its sidecar lock while holding the same key lock used by writers.
-		$lock = fopen( $lockName, "c" );
-		if($lock!==false)
+		// An already-open sidecar must remain the same lock inode for later writers.
+		$lock = @fopen( $lockName, "c" );
+		if($lock===false)
 		{
-			@chmod($lockName,$profileMask & 0666);
-			if(self::flock( $lock ))
-			{
-				$ret = @unlink($name);
-				flock( $lock, LOCK_UN );
-				fclose( $lock );
-				@unlink($lockName);
-				return($ret);
-			}
-			fclose($lock);
+			self::logRefusal('remove', $name, 'key lock open failed');
+			return(false);
 		}
-		return(@unlink($name));
+		@chmod($lockName,$profileMask & 0666);
+		if(!self::flock( $lock ))
+		{
+			fclose($lock);
+			self::logRefusal('remove', $name, 'key lock unavailable');
+			return(false);
+		}
+		$ret = @unlink($name);
+		flock( $lock, LOCK_UN );
+		fclose( $lock );
+		if(!$ret)
+			self::logRefusal('remove', $name, 'cache unlink failed');
+		return($ret);
 	}
 	// Null when the key names anything other than a file in this directory.
 	// Every caller treats that as a miss rather than reaching for the path.

@@ -246,16 +246,8 @@ class rXMLRPCRequest
 		return($ret);
 	}
 
-	// rtorrent explains a refusal in faultString -- an allocation that will not
-	// fit, a path outside the permitted tree. Keep it so the caller can pass the
-	// reason on instead of reporting that something unspecified went wrong. Also
-	// matches a fault nested in a system.multicall array.
-	static protected function parseFaultString($answer)
-	{
-		return(trim(self::parseRawFaultString($answer)));
-	}
-
-	// Keep the decoded pre-trim text for consumers that require exact boundaries.
+	// Preserve the daemon refusal, including faults nested in system.multicall,
+	// before callers choose whether to trim it for display.
 	static protected function parseRawFaultString($answer)
 	{
 		if(preg_match("/<name>faultString<\/name>\s*<value>\s*(?:<string>)?(.*?)(?:<\/string>)?\s*<\/value>/s",

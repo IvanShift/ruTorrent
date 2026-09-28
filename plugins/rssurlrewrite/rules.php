@@ -105,27 +105,25 @@ class rURLRewriteRulesList
 		$rule = null;
 		if(isset($HTTP_RAW_POST_DATA))
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
+			foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
 			{
-				$parts = explode("=",$var);
 				if($parts[0]=="name")
 				{
 					if($rule)
 						$this->lst[] = $rule;
-					$rule = new rURLRewriteRule(rawurldecode($parts[1]));
+					$rule = new rURLRewriteRule($parts[1]);
 				}
 				else
 				if($parts[0]=="pattern")
 				{
 					if($rule)
-						$rule->pattern = trim(rawurldecode($parts[1]));
+						$rule->pattern = trim($parts[1]);
 				}
 				else
 				if($parts[0]=="replacement")
 				{
 					if($rule)
-						$rule->replacement = trim(rawurldecode($parts[1]));
+						$rule->replacement = trim($parts[1]);
 				}
 				else
 				if($parts[0]=="enabled")

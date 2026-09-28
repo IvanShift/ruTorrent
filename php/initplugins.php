@@ -18,13 +18,8 @@ if( !chdir( dirname( __FILE__ ) ) )
 
 function pluginsSort($a, $b)
 {
-	$lvl1 = (float) $a["level"];
-	$lvl2 = (float) $b["level"];
-	if($lvl1>$lvl2)
-		return(1);
-	if($lvl1<$lvl2)
-		return(-1);
-	return( strcmp($a["name"],$b["name"]) );
+	return(PluginInfo::compare($a["level"], $a["name"],
+		$b["level"], $b["name"]));
 }
 
 
@@ -46,54 +41,8 @@ function getPluginInfo( $name, $permissions )
 	if(is_readable($fname))
 	{
 		$lines = file($fname);
-		foreach($lines as $line)
-		{
-			$fields = explode(":",$line,2);
-			if(count($fields)==2)
-			{
-				$value = addcslashes(trim($fields[1]),"\\\'\"\n\r\t");
-				$field = trim($fields[0]);
-				switch($field)
-				{
-					case "plugin.may_be_shutdowned":
-                                        case "plugin.may_be_launched":
-                                        {
-                                        	$info[$field] = intval($value);
-						break;
-                                        }
-					case "plugin.version":
-					case "plugin.runlevel":
-					{
-						$info[$field] = floatval($value);
-						break;
-					}
-					case "rtorrent.version":
-					case "php.version":
-					{
-						$version = explode('.', $value);
-						$info[$field] = (intval($version[0])<<16) + (intval($version[1])<<8) + intval($version[2]);
-						$info[$field.'.readable'] = $value;
-						break;
-					}
-					case "rtorrent.script.error":
-					case "rtorrent.external.error":
-					case "rtorrent.php.error":
-					case "php.extensions.error":
-					case "plugin.dependencies":
-					{
-						$info[$field] = explode(',', $value);
-						break;
-					}
-// for compatibility
-					case "version":
-					case "runlevel":
-					{
-						$info['plugin.'.$field] = floatval($value);
-						break;
-					}
-				}
-			}
-		}
+		if($lines!==false)
+			$info = PluginInfo::parse($lines, $info);
 		if($permissions!==false)
 		{
 			if(!getFlag($permissions,$name,"enabled"))
@@ -111,6 +60,7 @@ if( count( $argv ) > 1 )
 
 require_once( "which.php" );
 require_once( "pluginflags.php" );
+require_once( __DIR__.'/plugininfo.php' );
 require_once( "settings.php" );
 
 // Check/init: $tempDirectory.

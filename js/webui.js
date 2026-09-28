@@ -1234,6 +1234,34 @@ var theWebUI = {
 			this.getTrackers(hash, true);
 	},
 
+	// Keep tracker display names independent of which plugin loads first.
+	getTrackerName: function(announce)
+	{
+		var domain = '';
+		if(announce)
+		{
+			var parts = announce.match(/^(?:([^:/?#]+):)?(?:\/\/((?:(([^:@]*):?([^:@]*))?@)?([^:/?#]*)(?::(\d*))?))((((?:[^?#/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/);
+			if(parts && (parts.length>6))
+			{
+				domain = parts[6];
+				if(!domain.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/))
+				{
+					parts = domain.split(".");
+					if(parts.length>2)
+					{
+						if($.inArray(parts[parts.length-2]+"", ["co", "com", "net", "org"])>=0 ||
+							$.inArray(parts[parts.length-1]+"", ["uk"])>=0)
+							parts = parts.slice(parts.length-3);
+						else
+							parts = parts.slice(parts.length-2);
+						domain = parts.join(".");
+					}
+				}
+			}
+		}
+		return(domain);
+	},
+
 	getTrackers: function(hash, isUpdate)
 	{
 		if (!isUpdate) {

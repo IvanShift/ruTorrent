@@ -2,6 +2,7 @@
 
 require_once( '../../php/settings.php' );
 require_once( '../../php/rtorrent.php' );
+require_once( '../../php/torrenttrackers.php' );
 
 ignore_user_abort(true);
 set_time_limit(0);
@@ -13,10 +14,8 @@ if(!isset($HTTP_RAW_POST_DATA))
 if(isset($HTTP_RAW_POST_DATA))
 {
 	$vars = explode('&', $HTTP_RAW_POST_DATA);
-	$announce_list = array();
-	$trackers = array();
+	$trackerValues = array();
 	$comment = '';
-	$trackersCount = 0;
 	$private = 0;
 	$setComment = false;
 	$setTrackers = false;
@@ -43,25 +42,11 @@ if(isset($HTTP_RAW_POST_DATA))
 			$setPrivate = intval($parts[1]);
 		else
 		if($parts[0]=="tracker")
-		{
-			$value = trim(rawurldecode($parts[1]));
-			if(strlen($value))
-			{
-				$trackers[] = $value;
-				$trackersCount = $trackersCount+1;
-			}
-			else
-			{
-				if(count($trackers)>0)
-				{
-					$announce_list[] = $trackers;
-					$trackers = array();
-				}
-			}
-		}
+			$trackerValues[] = $parts[1];
 	}
-	if(count($trackers)>0)
-		$announce_list[] = $trackers;
+	$parsedTrackers = TorrentTrackerTiers::fromEditFormValues($trackerValues);
+	$announce_list = $parsedTrackers['tiers'];
+	$trackersCount = $parsedTrackers['count'];
 	if($setComment || $setTrackers || $setPrivate)
 	{
 		foreach($hashes as $hash)

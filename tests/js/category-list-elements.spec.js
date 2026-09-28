@@ -1,4 +1,3 @@
-import { log } from "console";
 import { readFileSync } from "fs";
 const indexDocument = new DOMParser().parseFromString(
   readFileSync("../index.html", { encoding: "utf-8" }),
@@ -25,13 +24,18 @@ describe("category-list", () => {
     catList = document.getElementById("CatList");
   });
 
-  it("should create", () => {
+  it("preserves existing panel and label nodes on an unchanged sync", () => {
     const panelLabelAttribs = catList.panelLabelAttribs;
     const panelAttribs = catList.panelAttribs;
+    const nodes = [...catList.querySelectorAll("category-panel, panel-label")];
+    expect(nodes.length).toBeGreaterThan(0);
     catList.sync(panelLabelAttribs, panelAttribs);
     expect(panelAttribs).toEqual(catList.panelAttribs);
     expect(panelLabelAttribs).toEqual(catList.panelLabelAttribs);
-    log("CategoryList: ", catList.panelAttribs, catList.panelLabelAttribs);
+    expect(catList.querySelectorAll("category-panel, panel-label")).toHaveLength(nodes.length);
+    for (const node of nodes) {
+      expect(document.getElementById(node.id)).toBe(node);
+    }
   });
 
   it("should emit label-click", () => {
@@ -91,11 +95,12 @@ describe("category-list", () => {
 });
 
 describe("category-panel", () => {
-  it("should create", () => {
+  it("renders its title", async () => {
     const p = document.createElement("category-panel");
     p.id = "ptest";
     p.text = "Test Panel";
-    log("Panel: ", p.shadowRoot.innerHTML);
+    await new Promise(process.nextTick);
+    expect(p.shadowRoot.querySelector(".text").textContent).toBe("Test Panel");
   });
 
   it("should open and close", async () => {
@@ -113,7 +118,7 @@ describe("category-panel", () => {
 });
 
 describe("panel-label", () => {
-  it("should create", async () => {
+  it("renders text, count, and size from its attributes", async () => {
     const label = document.createElement("panel-label");
     label.id = "label1";
     const attr = {
@@ -129,7 +134,10 @@ describe("panel-label", () => {
     }
 
     document.body.appendChild(label);
-    log("Label: ", label.shadowRoot.innerHTML);
+    await new Promise(process.nextTick);
+    expect(label.parts.text.textContent).toBe("Test Label");
+    expect(label.parts.count.textContent).toBe("1");
+    expect(label.parts.size.textContent).toBe("2mb");
   });
 
   it("should display prefix attribute", async () => {

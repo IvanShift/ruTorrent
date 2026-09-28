@@ -12,6 +12,15 @@ class Utility
 		return( ($a["time"] > $b["time"]) ? 1 : (($a["time"] < $b["time"]) ? -1 : 0) );
 	}
 
+	// Keep submitted order and duplicate names. Split at the first '=' so a
+	// literal '=' within a value survives; decode each component once.
+	// parse_str() collapses duplicates.
+	public static function legacyOrderedFormPairs($raw)
+	{
+		foreach(explode('&', (string)$raw) as $segment)
+			yield array_map('urldecode', explode('=', $segment, 2));
+	}
+
 	public static function getExternal($exe)
 	{
 		global $pathToExternals;

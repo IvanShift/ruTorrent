@@ -23,17 +23,10 @@ rTorrentStub.prototype.getCommon = function(cmd)
 {
         if(plugin.enabled)
         {
-		this.dataType = "json";
-		this.contentType = "application/x-www-form-urlencoded";
-		this.content = "mode="+cmd;
-		for(var i=0; i<this.hashes.length; i++)
-			this.content+=("&hash="+this.hashes[i]);
-		for(i=0; i<this.vs.length; i++)
-		        this.content+=("&v="+encodeURIComponent(this.vs[i]));
-		for(i=0; i<this.ss.length; i++)
-		        this.content+=("&s="+encodeURIComponent(this.ss[i]));
+		// Keep the plugin's existing literal-hash wire while sharing the body shape.
+		setHttprpcModeBody(this, cmd, false);
 		if($type(theRequestManager[cmd]))
-			for(i=theRequestManager[cmd].count; i<theRequestManager[cmd].commands.length; i++)
+			for(var i=theRequestManager[cmd].count; i<theRequestManager[cmd].commands.length; i++)
 				this.content+=("&cmd="+encodeURIComponent(theRequestManager.map(cmd,i)));
 	}
 	else

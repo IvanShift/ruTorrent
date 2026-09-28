@@ -261,6 +261,61 @@ class CacheTest extends TestCase
 			'the row that appeared while this writer held nothing is merged, not clobbered');
 	}
 
+	public function testTwoObjectsOfSameKeyKeepTheirDistinctLoadedVersions()
+	{
+		$cache = new rCache();
+		$seed = new CacheMergePayload();
+		$this->assertTrue($seed->addRow('seed'), 'the initial row is stored');
+
+		$old = new CacheMergePayload();
+		$latest = new CacheMergePayload();
+		$this->assertTrue($cache->get($old), 'the first object loads the initial version');
+		$this->assertTrue($cache->get($latest), 'the second object loads the initial version');
+		$this->assertTrue($latest->addRow('other'), 'the second object stores its own row');
+		$this->assertTrue($cache->get($latest), 'the second object refreshes its version');
+		$this->assertTrue($old->addRow('mine'), 'the first object stores after its peer');
+
+		$check = new CacheMergePayload();
+		$this->assertTrue($cache->get($check), 'the resulting cache file loads');
+		$this->assertTrue(isset($check->rows['seed'], $check->rows['other'], $check->rows['mine']),
+			'an unrelated load of the same key cannot replace the first object stamp');
+	}
+
+	// A delete/recreate ABA may reuse the same inode, second-resolution mtime
+	// and size. Rewrite in place here to force that identical stat tuple without
+	// depending on the CI filesystem's inode allocation.
+	public function testSameStatTupleWithDifferentBytesStillMerges()
+	{
+		$cache = new rCache();
+		$seed = new CacheMergePayload();
+		$seed->rows['slot'] = 'aaaa';
+		$this->assertTrue($cache->set($seed), 'the initial cache file is stored');
+		$old = new CacheMergePayload();
+		$this->assertTrue($cache->get($old), 'the first object loads old contents');
+		$path = FileUtil::getSettingsPath() . '/' . $seed->hash;
+		$before = stat($path);
+		$current = new CacheMergePayload();
+		$current->rows['slot'] = 'bbbb';
+		$bytes = serialize($current);
+		$this->assertSame(strlen(file_get_contents($path)), strlen($bytes),
+			'the replacement has the same serialized size');
+		$this->assertSame(strlen($bytes), file_put_contents($path, $bytes),
+			'the different contents are written at the same inode');
+		$this->assertTrue(touch($path, $before['mtime']), 'the previous second-level mtime is restored');
+		clearstatcache(true, $path);
+		$after = stat($path);
+		$this->assertSame(array($before['ino'], $before['mtime'], $before['size']),
+			array($after['ino'], $after['mtime'], $after['size']),
+			'the fast cache stamp cannot distinguish the two contents');
+
+		$this->assertTrue($old->addRow('mine'), 'the stale object stores its own change');
+		$check = new CacheMergePayload();
+		$this->assertTrue($cache->get($check), 'the merged result loads');
+		$this->assertSame('bbbb', $check->rows['slot'],
+			'different bytes trigger a merge even when inode, mtime and size match');
+		$this->assertSame('mine', $check->rows['mine'], 'the stale object keeps its own new row');
+	}
+
 	public function testSetAppliesProfileMaskToLockFile()
 	{
 		global $profileMask;
@@ -285,7 +340,7 @@ class CacheTest extends TestCase
 		$this->assertEquals(0666, fileperms($lockFile) & 0666, 'Cache lock file follows the configured profile mask');
 	}
 
-	public function testRemoveAlsoRemovesLockFile()
+	public function testRemoveLeavesStableLockFile()
 	{
 		$payload = new CacheMergePayload();
 		$payload->hash = 'remove-cache-test.dat';
@@ -301,7 +356,90 @@ class CacheTest extends TestCase
 		clearstatcache(true, $cacheFile);
 		clearstatcache(true, $lockFile);
 		$this->assertEquals(false, file_exists($cacheFile), 'Cache remove deletes the cache file');
-		$this->assertEquals(false, file_exists($lockFile), 'Cache remove deletes the lock file');
+		$this->assertEquals(true, file_exists($lockFile), 'Cache remove keeps the lock inode for waiting writers');
+	}
+
+	public function testRemoveRefusesWhileKeyLockIsHeld()
+	{
+		global $log_file;
+		$payload = new CacheMergePayload();
+		$payload->hash = 'held-remove-cache-test.dat';
+		$cache = new rCache();
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$this->assertTrue($cache->set($payload), 'the cache entry exists');
+		$previousLog = $log_file;
+		$log_file = FileUtil::getSettingsPath() . '/cache-remove-refusal.log';
+		$lock = fopen($cacheFile . '.lock', 'c');
+		$this->assertTrue(flock($lock, LOCK_EX), 'the competing writer holds the key lock');
+		try {
+			$removed = $cache->remove($payload);
+			clearstatcache(true, $cacheFile);
+			$this->assertSame(false, $removed, 'remove refuses when the key lock cannot be acquired');
+			$this->assertTrue(is_file($cacheFile), 'refused remove leaves the cache entry intact');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertTrue(strpos($lines, 'rCache: remove refused: key lock unavailable') !== false,
+				'the refused deletion names its reason in the log');
+		} finally {
+			flock($lock, LOCK_UN);
+			fclose($lock);
+			$log_file = $previousLog;
+		}
+	}
+
+	public function testSetLockRefusalIsLoggedWithoutCacheData()
+	{
+		global $log_file;
+		$payload = new CacheMergePayload();
+		$payload->hash = 'held-set-cache-test.dat';
+		$payload->rows['secret'] = 'never-log-payload-value';
+		$cache = new rCache();
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$this->assertTrue($cache->set($payload), 'the initial cache entry exists');
+		$previousLog = $log_file;
+		$log_file = FileUtil::getSettingsPath() . '/cache-refusal.log';
+		$lock = fopen($cacheFile . '.lock', 'c');
+		$this->assertTrue(flock($lock, LOCK_EX), 'the competing writer holds the key lock');
+		try {
+			$this->assertSame(false, $cache->set($payload), 'set refuses without the key lock');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertTrue(strpos($lines, 'rCache: set refused: key lock unavailable') !== false,
+				'the refused write names its reason in the log');
+			$this->assertSame(false, strpos($lines, 'never-log-payload-value'),
+				'the log never includes serialized cache data');
+		} finally {
+			flock($lock, LOCK_UN);
+			fclose($lock);
+			$log_file = $previousLog;
+		}
+	}
+
+	public function testRemoveDoesNotSplitTheKeyLockInode()
+	{
+		$payload = new CacheMergePayload();
+		$payload->hash = 'stable-remove-cache-test.dat';
+		$cache = new rCache();
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$this->assertTrue($cache->set($payload), 'the cache entry exists');
+		$lockName = $cacheFile . '.lock';
+		$oldHandle = fopen($lockName, 'c');
+		try {
+			$oldInode = fstat($oldHandle)['ino'];
+			$this->assertTrue($cache->remove($payload), 'remove succeeds with a free key lock');
+			$newHandle = fopen($lockName, 'c');
+			try {
+				$this->assertSame($oldInode, fstat($newHandle)['ino'],
+					'a writer that already opened the lock and a new writer use the same inode');
+				$this->assertTrue(flock($oldHandle, LOCK_EX | LOCK_NB), 'the old handle acquires the key lock');
+				$this->assertSame(false, flock($newHandle, LOCK_EX | LOCK_NB),
+					'a new writer cannot acquire its lock while the old handle holds it');
+			} finally {
+				flock($newHandle, LOCK_UN);
+				fclose($newHandle);
+			}
+		} finally {
+			flock($oldHandle, LOCK_UN);
+			fclose($oldHandle);
+		}
 	}
 
 	public function testGetDoesNotInstantiateAnUnexpectedCacheClass()

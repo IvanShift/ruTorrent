@@ -121,6 +121,141 @@ PHP
             'GET cannot store URL rewrite rules');
     }
 
+    public function testExtraRatioOrderedRuleBoundaryPreservesRawAndEncodedEquals()
+    {
+        $body = 'pattern=ignored&name=Z=raw&pattern=first=part&name=&pattern=&name=Z%3Draw&pattern=second%3Dpart';
+        $result = $this->request('plugins/extratio/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'extratio POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('Z=raw', '', 'Z=raw'), array_column($rules, 'name'),
+            'extratio keeps the submitted rule order, empty name and duplicate name');
+        $this->assertSame(array('first=part', '', 'second=part'), array_column($rules, 'pattern'),
+            'extratio preserves raw and encoded equals in the rule value');
+    }
+
+    public function testRssRewriteOrderedRuleBoundaryPreservesRawAndEncodedEquals()
+    {
+        $body = 'replacement=ignored&name=Z=raw&pattern=first=part&replacement=to=one'
+            . '&name=&pattern=&replacement=&name=Z%3Draw&pattern=second%3Dpart&replacement=to%3Dtwo';
+        $result = $this->request('plugins/rssurlrewrite/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'rssurlrewrite POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('', 'Z=raw', 'Z=raw'), array_column($rules, 'name'),
+            'rewrite sorts by name while keeping the empty and duplicate names');
+        $pairs = array();
+        foreach($rules as $rule)
+            $pairs[] = array($rule['name'], $rule['pattern'], $rule['replacement']);
+        sort($pairs);
+        $this->assertSame(array(
+            array('', '', ''),
+            array('Z=raw', 'first=part', 'to=one'),
+            array('Z=raw', 'second=part', 'to=two'),
+        ), $pairs, 'rewrite preserves raw and encoded equals in each rule value');
+    }
+
+    public function testExtraRatioFormDecodesSpaceAndLiteralPlus()
+    {
+        $body = 'name=A+B&pattern=seed+peer&name=A%2BB&pattern=seed%2Bpeer';
+        $result = $this->request('plugins/extratio/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'extratio plus POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A B', 'A+B'), array_column($rules, 'name'),
+            'extratio decodes raw plus as space and encoded plus as literal');
+        $this->assertSame(array('seed peer', 'seed+peer'), array_column($rules, 'pattern'),
+            'extratio keeps literal regex plus from the UI producer');
+    }
+
+    public function testRssRewriteFormDecodesSpaceAndLiteralPlus()
+    {
+        $body = 'name=A+B&pattern=src+link&replacement=dest+file'
+            . '&name=A%2BB&pattern=src%2Blink&replacement=dest%2Bfile';
+        $result = $this->request('plugins/rssurlrewrite/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'rssurlrewrite plus POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A B', 'A+B'), array_column($rules, 'name'),
+            'rewrite decodes raw plus as space and encoded plus as literal');
+        $this->assertSame(array('src link', 'src+link'), array_column($rules, 'pattern'),
+            'rewrite keeps literal regex plus from the UI producer');
+        $this->assertSame(array('dest file', 'dest+file'), array_column($rules, 'replacement'),
+            'rewrite decodes raw and encoded plus in replacement');
+    }
+
+    public function testExtraRatioDecodesEncodedFieldNamesWithoutCollapsingRules()
+    {
+        $body = 'na%6De=A&pattern=x&name=A&pa%74tern=y';
+        $result = $this->request('plugins/extratio/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'extratio encoded-name POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A', 'A'), array_column($rules, 'name'),
+            'encoded name starts the first rule and repeated names stay ordered');
+        $this->assertSame(array('x', 'y'), array_column($rules, 'pattern'),
+            'encoded pattern field belongs to the second rule');
+    }
+
+    public function testRssRewriteDecodesEncodedFieldNamesWithoutCollapsingRules()
+    {
+        $body = 'na%6De=A&pattern=x&repla%63ement=one'
+            . '&name=A&pa%74tern=y&replacement=two';
+        $result = $this->request('plugins/rssurlrewrite/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'rssurlrewrite encoded-name POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A', 'A'), array_column($rules, 'name'),
+            'encoded name starts the first rewrite rule without collapsing duplicates');
+        $triples = array();
+        foreach($rules as $rule)
+            $triples[] = array($rule['name'], $rule['pattern'], $rule['replacement']);
+        sort($triples);
+        $this->assertSame(array(array('A', 'x', 'one'), array('A', 'y', 'two')), $triples,
+            'encoded pattern and replacement fields keep their own rule');
+    }
+
+    public function testExtraRatioDecodesNumericValuesOnceAndKeepsDuplicateRules()
+    {
+        $body = 'name=A%252B&pattern=x%252By&enabled=%31&reason=%31'
+            . '&name=A%252B&pattern=z%252Bw&enabled=1&reason=0';
+        $result = $this->request('plugins/extratio/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'extratio encoded-value POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A%2B', 'A%2B'), array_column($rules, 'name'),
+            'one decode retains literal percent sequence and duplicate rule names');
+        $this->assertSame(array('x%2By', 'z%2Bw'), array_column($rules, 'pattern'),
+            'text values are decoded exactly once in submitted order');
+        $this->assertSame(array(1, 1), array_column($rules, 'enabled'),
+            'encoded and plain enabled values have the same numeric meaning');
+        $this->assertSame(array(1, 0), array_column($rules, 'reason'),
+            'encoded and plain reason values have the same numeric meaning');
+    }
+
+    public function testRssRewriteDecodesNumericValuesOnceAndKeepsDuplicateRules()
+    {
+        $body = 'name=A%252B&pattern=x%252By&replacement=to%252Bvalue'
+            . '&enabled=%31&hrefAsSrc=%31&hrefAsDest=%30'
+            . '&name=A%252B&pattern=z%252Bw&replacement=more%252Bvalue'
+            . '&enabled=1&hrefAsSrc=0&hrefAsDest=1';
+        $result = $this->request('plugins/rssurlrewrite/action.php', 'POST', array(),
+            array('mode' => 'setrules'), $body);
+        $this->assertSame(0, $result['exit'], 'rssurlrewrite encoded-value POST finishes: ' . $result['err']);
+        $rules = json_decode($result['out'], true);
+        $this->assertSame(array('A%2B', 'A%2B'), array_column($rules, 'name'),
+            'one decode retains literal percent sequence and duplicate rewrite names');
+        $tuples = array();
+        foreach($rules as $rule)
+            $tuples[] = array($rule['pattern'], $rule['replacement'],
+                $rule['enabled'], $rule['hrefAsSrc'], $rule['hrefAsDest']);
+        sort($tuples);
+        $this->assertSame(array(
+            array('x%2By', 'to%2Bvalue', 1, 1, 0),
+            array('z%2Bw', 'more%2Bvalue', 1, 0, 1),
+        ), $tuples, 'encoded flags match plain flags and each rule decodes once');
+    }
+
     public function testGeoipCommentRequiresPostBody()
     {
         $this->assertRefused('plugins/geoip/action.php',

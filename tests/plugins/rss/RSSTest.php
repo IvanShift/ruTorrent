@@ -74,6 +74,110 @@ final class RSSTest extends TestCase
 			'a cache file cannot choose the function that receives feed URLs and cookies');
 	}
 
+	public function testIncorrectTimeExceptionUsesTrackerLabelAndPublicSuffix(): void
+	{
+		$href = 'https://downloads.example/item.torrent';
+		$xml = '<rss><channel><title>Updates</title><item><title>New edition</title>'
+			. '<link>' . $href . '</link><guid>new-guid</guid>'
+			. '<pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item></channel></rss>';
+		$cases = array(
+			'https://iptorrents.com/feed' => true,
+			'https://iptorrents.me/feed' => true,
+			'https://tracker.iptorrents.co.uk/feed' => true,
+			'https://iptorrents.a.ck/feed' => true,
+			'https://www.torrentday.me/feed' => true,
+			'https://IPTORRENTS.ME./feed' => true,
+			'https://notiptorrents.example/feed' => false,
+			'https://iptorrents.com.evil.test/feed' => false,
+			'https://iptorrents.me.evil.test/feed' => false,
+			'https://iptorrents.ck/feed' => false,
+			'https://xn--bad.iptorrents.com/feed' => false,
+			'https://evil.test/path/iptorrents.me/feed' => false,
+		);
+		foreach($cases as $url => $isTracker)
+		{
+			$history = new rRSSHistory();
+			$history->add($href, 'previous-hash', 100, 'old-guid');
+			$feed = new rRSS($url, function() use($xml) {
+				$client = new SnoopyMock();
+				$client->results = $xml;
+				return $client;
+			});
+			$this->assertTrue($feed->fetch($history), $url . ' parses the feed');
+			$this->assertSame($isTracker ? 'previous-hash' : '', $history->getHash($href),
+				$url . ' applies the GUID correction only outside the configured tracker');
+		}
+	}
+
+	public function testCustomIncorrectTimePatternsKeepAlternateTldsAndExactHosts(): void
+	{
+		global $feedsWithIncorrectTimes;
+		$previous = $feedsWithIncorrectTimes;
+		$href = 'https://downloads.example/custom.torrent';
+		$xml = '<rss><channel><title>Updates</title><item><title>New edition</title>'
+			. '<link>' . $href . '</link><guid>new-guid</guid>'
+			. '<pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item></channel></rss>';
+		try {
+			$cases = array(
+				array('customtracker.', 'https://customtracker.com/feed', true),
+				array('customtracker.', 'https://customtracker.me/feed', true),
+				array('customtracker.', 'https://customtracker.com.evil.test/feed', false),
+				array('customtracker.com', 'https://customtracker.com/feed', true),
+				array('customtracker.com', 'https://sub.customtracker.com/feed', true),
+				array('customtracker.com', 'https://customtracker.me/feed', false),
+				array('customtracker.com', 'https://customtracker.com.evil.test/feed', false),
+				array('iptorrents.ck', 'https://iptorrents.ck/feed', false),
+			);
+			foreach($cases as $case)
+			{
+				list($pattern, $url, $isTracker) = $case;
+				$feedsWithIncorrectTimes = array($pattern);
+				$history = new rRSSHistory();
+				$history->add($href, 'previous-hash', 100, 'old-guid');
+				$feed = new rRSS($url, function() use($xml) {
+					$client = new SnoopyMock();
+					$client->results = $xml;
+					return $client;
+				});
+				$this->assertTrue($feed->fetch($history), $url . ' parses the feed');
+				$this->assertSame($isTracker ? 'previous-hash' : '', $history->getHash($href),
+					$url . ' keeps the custom host boundary');
+			}
+		} finally {
+			$feedsWithIncorrectTimes = $previous;
+		}
+	}
+
+	public function testInvalidSuffixHostRefusalIsClassifiedInLog(): void
+	{
+		global $log_file;
+		$previous = $log_file;
+		$log_file = tempnam(sys_get_temp_dir(), 'rss-host-');
+		$href = 'https://downloads.example/invalid-host.torrent';
+		$xml = '<rss><channel><title>Updates</title><item><title>New edition</title>'
+			. '<link>' . $href . '</link><guid>new-guid</guid>'
+			. '<pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item></channel></rss>';
+		try {
+			$history = new rRSSHistory();
+			$history->add($href, 'previous-hash', 100, 'old-guid');
+			$feed = new rRSS('https://iptorrents.xn--tst-qla/feed', function() use($xml) {
+				$client = new SnoopyMock();
+				$client->results = $xml;
+				return $client;
+			});
+			$this->assertTrue($feed->fetch($history), 'a feed with an unsafe hostname still parses');
+			$this->assertSame('', $history->getHash($href), 'unsafe hostname does not inherit an exception');
+			$lines = file_get_contents($log_file);
+			$this->assertTrue(strpos($lines, 'RSS: incorrect-times host classification refused: invalid-host') !== false,
+				'the failed suffix lookup has a classified log reason');
+			$this->assertTrue(strpos($lines, 'iptorrents.xn--tst-qla') === false,
+				'the log does not include the feed URL');
+		} finally {
+			@unlink($log_file);
+			$log_file = $previous;
+		}
+	}
+
 	public function testCookieSuffixUsesSharedParserForValuesContainingEquals(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed:COOKIE:token=abc=def;broken;sid=2');

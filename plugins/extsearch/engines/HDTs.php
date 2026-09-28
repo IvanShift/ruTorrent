@@ -38,7 +38,7 @@ class HDTsEngine extends commonEngine
 		'XXX(all)'=>'&category[]=58&category[]=48&category[]=47',
 		'XXX(3D only)'=>'&category[]=58&category[]=48&category[]=47&3d=1',
 		'XXX/Blu-ray'=>'&category[]=58',
-		'XXX/1080p/i'=>'category[]=48',
+		'XXX/1080p/i'=>'&category[]=48',
 		'XXX/720p'=>'&category[]=47'
 	);
 

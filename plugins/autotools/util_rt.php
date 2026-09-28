@@ -2,20 +2,7 @@
 
 require_once( "../../php/xmlrpc.php" );
 require_once( "../../php/Torrent.php" );
-
-//------------------------------------------------------------------------------
-// Debug stub
-//------------------------------------------------------------------------------
-function rtDbg( $prefix, $str )
-{
-	if( !$str )
-		FileUtil::toLog( "" );
-	elseif( $prefix && strlen( $prefix ) > 0 )
-		FileUtil::toLog( $prefix.": ".$str );
-	else
-		FileUtil::toLog( $str );
-}
-
+require_once( dirname(__FILE__)."/../../php/utility/rtpluginutil.php" );
 
 //------------------------------------------------------------------------------
 // Check if script was launched in background (with --daemon switch)
@@ -67,15 +54,6 @@ function rtSemUnlock( $sem_key )
 
 //------------------------------------------------------------------------------
 // Operations with slashes in paths
-//------------------------------------------------------------------------------
-function rtAddTailSlash( $str )
-{
-	$len = strlen( $str );
-	if( $len > 0 && $str[$len-1] == '/' )
-		return $str;
-	return $str.'/';
-}
-
 //------------------------------------------------------------------------------
 function rtRemoveTailSlash( $str )
 {
@@ -137,21 +115,6 @@ function rtIsFile( $path )
 	//return (int)$ret == 0;
 }
 
-//------------------------------------------------------------------------------
-// Check if $dir exists and try to create it if not
-//------------------------------------------------------------------------------
-function rtMkDir( $dir, $mode = 0777 )
-{
-	if( !is_dir( $dir ) )
-	{
-		// recursive mkdir() only after PHP_5.0
-		mkdir( $dir, $mode, true );
-		//system( 'mkdir -p "'.$dst_dir.'"' );
-		if( !is_dir( $dir ) )
-			return false;
-	}
-	return true;
-}
 
 //------------------------------------------------------------------------------
 // Preserve the file operation entry point for non-Move modes. Move uses the
@@ -230,40 +193,6 @@ function rtRemoveDirectory( $path, $with_files = false )
 	}
 	closedir( $handle );
 	return ( $empty && rmdir( $path ) );
-}
-
-
-//------------------------------------------------------------------------------
-// Exec $cmds set of commands for the $hash torrent
-//------------------------------------------------------------------------------
-function rtExec( $cmds, $hash, $dbg )
-{
-	$req = new rXMLRPCRequest();
-	if( !is_array( $cmds ) )
-	{
-		$req->addCommand( new rXMLRPCCommand( $cmds, $hash ) );
-		if( $dbg ) rtDbg( __FUNCTION__, $cmds );
-	}
-	else {
-		$s = '';
-		foreach( $cmds as $cmd )
-		{
-			$s.= $cmd.", ";
-			$req->addCommand( new rXMLRPCCommand( $cmd, $hash ) );
-		}
-		if( $dbg ) rtDbg( __FUNCTION__, substr( $s, 0, -2 ) );
-	}
-	if( !$req->run() )
-	{
-		if( $dbg ) rtDbg( __FUNCTION__, "rXMLRPCRequest() run fail" );
-		return null;
-	}
-	elseif( $req->fault )
-	{
-		if( $dbg ) rtDbg( __FUNCTION__, "rXMLRPCRequest() fault" );
-		return null;
-	}
-	else return $req;
 }
 
 // A finished hook can repeat. Keep its prepared files and old destinations until

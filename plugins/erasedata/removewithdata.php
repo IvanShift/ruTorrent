@@ -2064,15 +2064,14 @@ if(!function_exists('erasedataWriteDrainState'))
 	}
 }
 
-if(!function_exists('erasedataAcquireDrainStateLock'))
+if(!function_exists('erasedataAcquireDrainNamedLock'))
 {
-	// The state/journal lock. Invariant 7: this is taken AFTER the per-hash
-	// locks and is never held while waiting for one of them.
-	function erasedataAcquireDrainStateLock($listPath, $nonBlocking = false)
+	function erasedataAcquireDrainNamedLock($listPath, $name, $nonBlocking)
 	{
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
+			|| !is_string($name) || $name === '')
 			return(false);
-		$path = $listPath.'/'.ERASEDATA_DRAIN_STATE_LOCK_NAME;
+		$path = $listPath.'/'.$name;
 		$handle = @fopen($path, 'c');
 		if($handle === false)
 			return(false);
@@ -2087,14 +2086,33 @@ if(!function_exists('erasedataAcquireDrainStateLock'))
 	}
 }
 
-if(!function_exists('erasedataReleaseDrainStateLock'))
+if(!function_exists('erasedataReleaseDrainNamedLock'))
 {
-	function erasedataReleaseDrainStateLock($handle)
+	function erasedataReleaseDrainNamedLock($handle)
 	{
 		if(!is_resource($handle))
 			return(false);
 		$released = @flock($handle, LOCK_UN);
 		return(@fclose($handle) === true && $released);
+	}
+}
+
+if(!function_exists('erasedataAcquireDrainStateLock'))
+{
+	// The state/journal lock. Invariant 7: this is taken AFTER the per-hash
+	// locks and is never held while waiting for one of them.
+	function erasedataAcquireDrainStateLock($listPath, $nonBlocking = false)
+	{
+		return(erasedataAcquireDrainNamedLock($listPath,
+			ERASEDATA_DRAIN_STATE_LOCK_NAME, $nonBlocking));
+	}
+}
+
+if(!function_exists('erasedataReleaseDrainStateLock'))
+{
+	function erasedataReleaseDrainStateLock($handle)
+	{
+		return(erasedataReleaseDrainNamedLock($handle));
 	}
 }
 
@@ -2326,8 +2344,6 @@ if(!function_exists('erasedataDrainScheduleCommand'))
 		if($key === false || $command === false || $interval < 1)
 			return(false);
 		$start = rTorrentSettings::getAlignedStart($key, $interval);
-		if(!is_int($start) || $start < 1)
-			$start = $interval;
 		return(new rXMLRPCCommand('schedule', array($key, (string)$start,
 			(string)$interval,
 			getCmd('execute').'={sh,-c,'.$command.' </dev/null >/dev/null 2>&1 &}')));
@@ -3611,21 +3627,7 @@ if(!function_exists('erasedataAcquireDrainPassLock'))
 	// worker admission is nonblocking, the scheduler lock is blocking.
 	function erasedataAcquireDrainPassLock($listPath, $name, $nonBlocking)
 	{
-		if(!is_string($listPath) || $listPath === ''
-			|| strpos($listPath, "\0") !== false || !is_string($name) || $name === '')
-			return(false);
-		$path = $listPath.'/'.$name;
-		$handle = @fopen($path, 'c');
-		if($handle === false)
-			return(false);
-		// Shared between the web user and whoever rTorrent runs the child as.
-		@chmod($path, erasedataSharedFileMode());
-		if(!@flock($handle, LOCK_EX | ($nonBlocking ? LOCK_NB : 0)))
-		{
-			@fclose($handle);
-			return(false);
-		}
-		return($handle);
+		return(erasedataAcquireDrainNamedLock($listPath, $name, $nonBlocking));
 	}
 }
 
@@ -3633,10 +3635,7 @@ if(!function_exists('erasedataReleaseDrainPassLock'))
 {
 	function erasedataReleaseDrainPassLock($handle)
 	{
-		if(!is_resource($handle))
-			return(false);
-		$released = @flock($handle, LOCK_UN);
-		return(@fclose($handle) === true && $released);
+		return(erasedataReleaseDrainNamedLock($handle));
 	}
 }
 

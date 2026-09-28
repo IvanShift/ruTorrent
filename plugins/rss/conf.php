@@ -8,7 +8,7 @@ $minInterval = 2;	// in minutes
 
 $feedsWithIncorrectTimes = array
 (
-	"iptorrents.",	// substring of hostname
+	"iptorrents.",	// tracker label before any public suffix
 	"torrentday.",
 );
 

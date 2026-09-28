@@ -365,18 +365,23 @@ rTorrentStub.prototype.doneplugins = function()
 		this.content += ("&plg="+encodeURIComponent(this.hashes[i]));
 }
 
-function postHttprpcMode(stub, mode)
+function setHttprpcModeBody(stub, mode, encodeHashes)
 {
-	stub.mountPoint = "plugins/httprpc/action.php";
 	stub.dataType = "json";
 	stub.contentType = "application/x-www-form-urlencoded";
 	stub.content = "mode="+mode;
 	for(var i=0; i<stub.hashes.length; i++)
-		stub.content += "&hash="+encodeURIComponent(stub.hashes[i]);
+		stub.content += "&hash="+(encodeHashes ? encodeURIComponent(stub.hashes[i]) : stub.hashes[i]);
 	for(i=0; i<stub.vs.length; i++)
 		stub.content += "&v="+encodeURIComponent(stub.vs[i]);
 	for(i=0; i<stub.ss.length; i++)
 		stub.content += "&s="+encodeURIComponent(stub.ss[i]);
+}
+
+function postHttprpcMode(stub, mode)
+{
+	stub.mountPoint = "plugins/httprpc/action.php";
+	setHttprpcModeBody(stub, mode, true);
 }
 
 rTorrentStub.prototype.recheck = function()

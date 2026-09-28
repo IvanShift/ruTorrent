@@ -76,6 +76,9 @@ tasks/
 backup/
 /.worktrees/
 /.scratch/
+# Historical root-level integration exports; new labs belong in .scratch/.worktrees.
+/.rrng*/
+/.rrv18*/
 /.tmp/
 /.mypy_cache/
 

@@ -266,7 +266,7 @@ class rRSS
 				}
 				$item = [
 					'title'=> $xText('title', $i),
-					'timestamp'=>strtotime($xText('updated', $i)) ?? false,
+					'timestamp'=>strtotime($xText('updated', $i)),
 					'link'=> $urlPrefix.$xText('link/@href', $i),
 					'description'=> join("\n\n", $description),
 				];
@@ -300,18 +300,42 @@ class rRSS
 	protected function hasIncorrectTimes()
 	{
 		global $feedsWithIncorrectTimes;
-		$ret = false;
-		$uparts = @parse_url($this->url);
-		$host = $uparts['host'];
-		foreach( $feedsWithIncorrectTimes as $url )
+		$host = UrlHost::of($this->url);
+		if($host === null)
+			return false;
+		$labels = explode('.', $host);
+		$stem = '';
+		// A config entry ending in '.' names a label before any public suffix.
+		for($i = 0; $i < count($labels); $i++)
 		{
-			if( stripos($host,$url)!==false )
-			{
-				$ret = true;
+			try {
+				if(PublicSuffix::isPublicSuffix(implode('.', array_slice($labels, $i))))
+				{
+					// A public suffix cannot identify a tracker.
+					if($i === 0)
+						return false;
+					$stem = implode('.', array_slice($labels, 0, $i));
+					break;
+				}
+			} catch(Exception $e) {
+				$reason = $e instanceof InvalidArgumentException ? 'invalid-host' : 'public-suffix-unavailable';
+				FileUtil::toLog('RSS: incorrect-times host classification refused: ' . $reason);
 				break;
 			}
 		}
-		return($ret);
+		foreach($feedsWithIncorrectTimes as $pattern)
+		{
+			if(!is_string($pattern) || $pattern === '')
+				continue;
+			if(substr($pattern, -1) === '.')
+			{
+				if($stem !== '' && UrlHost::isOneOf($stem, array(substr($pattern, 0, -1))))
+					return true;
+			}
+			elseif(UrlHost::isOneOf($host, array($pattern)))
+				return true;
+		}
+		return false;
 	}
 
 	static protected function quoteInvalidURI($str)

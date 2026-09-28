@@ -192,6 +192,53 @@ class RemoveWithDataTest extends TestCase
 		return(array($marker, $absent));
 	}
 
+	public function testDrainStateAndPassLocksKeepModeContentionAndReleaseContract()
+	{
+		global $profileMask;
+		$this->reset();
+		$profileMask = 0671;
+		$queue = $this->queuePath();
+		$locks = array(
+			'state' => array(
+				$queue.'/'.ERASEDATA_DRAIN_STATE_LOCK_NAME,
+				function($nonBlocking) use ($queue) {
+					return(erasedataAcquireDrainStateLock($queue, $nonBlocking));
+				},
+				'erasedataReleaseDrainStateLock'),
+			'pass' => array(
+				$queue.'/scheduler.lock',
+				function($nonBlocking) use ($queue) {
+					return(erasedataAcquireDrainPassLock($queue, 'scheduler.lock', $nonBlocking));
+				},
+				'erasedataReleaseDrainPassLock'));
+		foreach($locks as $kind => $api)
+		{
+			$held = $api[1](false);
+			$this->assertTrue(is_resource($held), $kind.' lock opens');
+			if(!is_resource($held))
+				continue;
+			try
+			{
+				$this->assertEquals(0660, $this->modeOf($api[0]),
+					$kind.' lock has the shared profile mode');
+				$this->assertEquals(false, $api[1](true),
+					$kind.' nonblocking contender cannot enter');
+			}
+			finally
+			{
+				$this->assertTrue($api[2]($held), $kind.' lock releases');
+			}
+			$again = $api[1](true);
+			$this->assertTrue(is_resource($again), $kind.' lock can be reacquired');
+			if(is_resource($again))
+				$this->assertTrue($api[2]($again), $kind.' reacquired lock releases');
+			$this->assertEquals(false, $api[2](false),
+				$kind.' release rejects a non-handle');
+		}
+		$this->assertEquals(false, erasedataAcquireDrainPassLock($queue, '', true),
+			'a pass lock requires a nonempty name');
+	}
+
 	public function testDrainCollectsPayloadAndRetiresBeforeReleasingPassLocks()
 	{
 		$this->reset();

@@ -1311,25 +1311,9 @@ final class RetrackersCommandFragmentReducer
 	}
 }
 
-/**
- * One daemon callback owns both old-generation CAS layers and every mutation.
- * The builder consumes only the already stable, bounded source snapshot.
- */
-final class RetrackersOldGenerationCommitCallback
+/** Shared bounded command fragments for the two one-shot CAS callbacks. */
+trait RetrackersCasCommandBuilder
 {
-	private $method;
-	private $params;
-	private $wire;
-	private $estimatedWireBytes;
-
-	private function __construct($method, array $params, $wire, $estimatedWireBytes)
-	{
-		$this->method = $method;
-		$this->params = $params;
-		$this->wire = $wire;
-		$this->estimatedWireBytes = $estimatedWireBytes;
-	}
-
 	private static function literal($value, $materialize, $limit)
 	{
 		return(RetrackersCommandFragment::literal($value, $materialize, $limit));
@@ -1368,12 +1352,38 @@ final class RetrackersOldGenerationCommitCallback
 
 	private static function integerEquals($getter, $value, $materialize, $limit)
 	{
+		$value = self::concat(array(
+			self::literal('value=', $materialize, $limit),
+			self::literal($value, $materialize, $limit),
+		), $materialize, $limit);
 		return(self::concat(array(
 			self::literal('equal=', $materialize, $limit),
 			self::q($getter, $materialize, $limit),
 			self::literal(',', $materialize, $limit),
-			self::q('value=' . $value, $materialize, $limit),
+			self::q($value, $materialize, $limit),
 		), $materialize, $limit));
+	}
+}
+
+/**
+ * One daemon callback owns both old-generation CAS layers and every mutation.
+ * The builder consumes only the already stable, bounded source snapshot.
+ */
+final class RetrackersOldGenerationCommitCallback
+{
+	use RetrackersCasCommandBuilder;
+
+	private $method;
+	private $params;
+	private $wire;
+	private $estimatedWireBytes;
+
+	private function __construct($method, array $params, $wire, $estimatedWireBytes)
+	{
+		$this->method = $method;
+		$this->params = $params;
+		$this->wire = $wire;
+		$this->estimatedWireBytes = $estimatedWireBytes;
 	}
 
 	private static function representable($value, $allowLf = false)
@@ -3349,6 +3359,8 @@ final class RetrackersCandidateCleanupPlan
 /** One-shot, exact-size CAS cleanup of one transaction-owned partial candidate. */
 final class RetrackersCandidateCleanupCallback
 {
+	use RetrackersCasCommandBuilder;
+
 	private $method;
 	private $wire;
 	private $estimatedWireBytes;
@@ -3362,56 +3374,6 @@ final class RetrackersCandidateCleanupCallback
 		$this->estimatedWireBytes = $estimatedWireBytes;
 		$this->localId = $localId;
 		$this->localIdOffsets = $localIdOffsets;
-	}
-
-	private static function literal($value, $materialize, $limit)
-	{
-		return(RetrackersCommandFragment::literal($value, $materialize, $limit));
-	}
-
-	private static function concat(array $parts, $materialize, $limit)
-	{
-		foreach ($parts as $part) {
-			if ($part === false) {
-				return(false);
-			}
-		}
-		return(RetrackersCommandFragment::concat($parts, $materialize, $limit));
-	}
-
-	private static function q($value, $materialize, $limit)
-	{
-		$fragment = $value instanceof RetrackersCommandFragment ?
-			$value : self::literal($value, $materialize, $limit);
-		return($fragment === false ? false : $fragment->quoted($materialize));
-	}
-
-	private static function stringEquals($getter, $value, $materialize, $limit)
-	{
-		$value = self::concat(array(
-			self::literal('cat=', $materialize, $limit),
-			self::q($value, $materialize, $limit),
-		), $materialize, $limit);
-		return(self::concat(array(
-			self::literal('equal=', $materialize, $limit),
-			self::q($getter, $materialize, $limit),
-			self::literal(',', $materialize, $limit),
-			self::q($value, $materialize, $limit),
-		), $materialize, $limit));
-	}
-
-	private static function integerEquals($getter, $value, $materialize, $limit)
-	{
-		$value = self::concat(array(
-			self::literal('value=', $materialize, $limit),
-			self::literal($value, $materialize, $limit),
-		), $materialize, $limit);
-		return(self::concat(array(
-			self::literal('equal=', $materialize, $limit),
-			self::q($getter, $materialize, $limit),
-			self::literal(',', $materialize, $limit),
-			self::q($value, $materialize, $limit),
-		), $materialize, $limit));
 	}
 
 	private static function trackerMatch(array $row, $state, $materialize, $limit)
@@ -8451,11 +8413,9 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 		return(true);
 	}
 
-	private function executeWorkerStringCallback($callback, &$failure = null)
+	private function executeStringWire($wire, $plan, &$failure = null)
 	{
-		$decoded = $this->send(
-			retrackersBuildDirectRequest($callback->method(), $callback->params()),
-			$callback->responsePlan($this->getFamily()), $failure);
+		$decoded = $this->send($wire, $plan, $failure);
 		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
 			!isset($decoded['value']) || !is_string($decoded['value'])) {
 			if (is_array($decoded) && isset($decoded['ok']) && $decoded['ok'] === false) {
@@ -8465,6 +8425,13 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 		}
 		$failure = null;
 		return($decoded['value']);
+	}
+
+	private function executeWorkerStringCallback($callback, &$failure = null)
+	{
+		return($this->executeStringWire(
+			retrackersBuildDirectRequest($callback->method(), $callback->params()),
+			$callback->responsePlan($this->getFamily()), $failure));
 	}
 
 	public function armPhase($phase, $tx, &$failure = null)
@@ -8492,49 +8459,22 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 	public function executeOldGenerationCommit(RetrackersOldGenerationCommitCallback $callback,
 		&$failure = null)
 	{
-		$decoded = $this->send($callback->wire(),
-			$callback->responsePlan($this->getFamily()), $failure);
-		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
-			!isset($decoded['value']) || !is_string($decoded['value'])) {
-			if (is_array($decoded) && isset($decoded['ok']) && $decoded['ok'] === false) {
-				$failure = 'rpc-fault';
-			}
-			return(false);
-		}
-		$failure = null;
-		return($decoded['value']);
+		return($this->executeStringWire($callback->wire(),
+			$callback->responsePlan($this->getFamily()), $failure));
 	}
 
 	public function executeLoadDispatch(RetrackersLoadDispatchCallback $callback,
 		&$failure = null)
 	{
-		$decoded = $this->send($callback->wire(),
-			$callback->responsePlan($this->getFamily()), $failure);
-		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
-			!isset($decoded['value']) || !is_string($decoded['value'])) {
-			if (is_array($decoded) && isset($decoded['ok']) && $decoded['ok'] === false) {
-				$failure = 'rpc-fault';
-			}
-			return(false);
-		}
-		$failure = null;
-		return($decoded['value']);
+		return($this->executeStringWire($callback->wire(),
+			$callback->responsePlan($this->getFamily()), $failure));
 	}
 
 	public function executeCandidateCleanup(RetrackersCandidateCleanupCallback $callback,
 		&$failure = null)
 	{
-		$decoded = $this->send($callback->wire(),
-			$callback->responsePlan($this->getFamily()), $failure);
-		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
-			!isset($decoded['value']) || !is_string($decoded['value'])) {
-			if (is_array($decoded) && isset($decoded['ok']) && $decoded['ok'] === false) {
-				$failure = 'rpc-fault';
-			}
-			return(false);
-		}
-		$failure = null;
-		return($decoded['value']);
+		return($this->executeStringWire($callback->wire(),
+			$callback->responsePlan($this->getFamily()), $failure));
 	}
 
 	public function loadPhaseReceipts($phase, $tx, &$failure = null)
@@ -8573,13 +8513,14 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 		return($receipts);
 	}
 
-	public function cleanupPhaseReceipts($tx, &$failure = null)
+	private function readThreePhaseReceipts($tx, array $prefixes, &$failure = null)
 	{
 		if (!is_string($tx) || preg_match('/^[0-9a-f]{32}$/D', $tx) !== 1) {
 			$failure = 'invalid-request';
 			return(false);
 		}
-		$keys = array('cb:' . $tx, 'cd:' . $tx, 'cx:' . $tx);
+		$keys = array($prefixes[0] . ':' . $tx, $prefixes[1] . ':' . $tx,
+			$prefixes[2] . ':' . $tx);
 		$calls = array(
 			array('method.list_keys', array('', 'rr.receipts.v1')),
 			array('method.get', array('', 'rr.receipts.v1')),
@@ -8608,39 +8549,14 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 		return($values);
 	}
 
+	public function cleanupPhaseReceipts($tx, &$failure = null)
+	{
+		return($this->readThreePhaseReceipts($tx, array('cb', 'cd', 'cx'), $failure));
+	}
+
 	public function oldGenerationCommitReceipts($tx, &$failure = null)
 	{
-		if (!is_string($tx) || preg_match('/^[0-9a-f]{32}$/D', $tx) !== 1) {
-			$failure = 'invalid-request';
-			return(false);
-		}
-		$keys = array('eb:' . $tx, 'ed:' . $tx, 'ex:' . $tx);
-		$calls = array(
-			array('method.list_keys', array('', 'rr.receipts.v1')),
-			array('method.get', array('', 'rr.receipts.v1')),
-		);
-		foreach ($keys as $key) {
-			$calls[] = array('method.has_key', array('', 'rr.receipts.v1', $key));
-		}
-		$decoded = $this->send(retrackersBuildSystemMulticallRequest($calls),
-			retrackersRestrictedPlanLedger($keys), $failure);
-		if ($decoded === false || !isset($decoded['ok'], $decoded['value']) ||
-			$decoded['ok'] !== true || !is_array($decoded['value']) ||
-			count($decoded['value']) !== 5) {
-			return(false);
-		}
-		$values = array();
-		foreach (array('begin' => 2, 'done' => 3, 'exit' => 4) as $name => $index) {
-			$slot = $decoded['value'][$index];
-			if (!is_array($slot) || !isset($slot['ok'], $slot['value']) ||
-				$slot['ok'] !== true || !in_array($slot['value'], array('0', '1'), true)) {
-				$failure = 'receipt-ledger-corrupt';
-				return(false);
-			}
-			$values[$name] = $slot['value'];
-		}
-		$failure = null;
-		return($values);
+		return($this->readThreePhaseReceipts($tx, array('eb', 'ed', 'ex'), $failure));
 	}
 
 	/** Pure pre-erase gate: validating a sealed obligation performs no RPC. */
@@ -8659,18 +8575,7 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 	public function executeWorkerAdoptCallback(RetrackersWorkerAdoptCallback $callback,
 		&$failure = null)
 	{
-		$decoded = $this->send(
-			retrackersBuildDirectRequest($callback->method(), $callback->params()),
-			$callback->responsePlan($this->getFamily()), $failure);
-		if ($decoded === false || !isset($decoded['ok']) || $decoded['ok'] !== true ||
-			!isset($decoded['value']) || !is_string($decoded['value'])) {
-			if (is_array($decoded) && isset($decoded['ok']) && $decoded['ok'] === false) {
-				$failure = 'rpc-fault';
-			}
-			return(false);
-		}
-		$failure = null;
-		return($decoded['value']);
+		return($this->executeWorkerStringCallback($callback, $failure));
 	}
 }
 

@@ -8,6 +8,8 @@ if( count( $argv ) > 1 )
 	require_once( dirname(__FILE__).'/../../php/Torrent.php' );
 	require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 	require_once( dirname(__FILE__).'/../_task/task.php' );
+	require_once( dirname(__FILE__).'/../../php/torrenttrackers.php' );
+	require_once( dirname(__FILE__).'/seeding.php' );
 	eval(FileUtil::getPluginConf('create'));
 
 	if(function_exists('ini_set'))
@@ -36,32 +38,10 @@ if( count( $argv ) > 1 )
 	{
 		$request = unserialize(file_get_contents( $fname ), array( 'allowed_classes'=>false ));
 		$comment = '';
-		$announce_list = array();
-		$trackers = array();
-		$trackersCount = 0;
-		if(isset($request['trackers']))
-		{
-			$arr = explode("\r",$request['trackers']);
-			foreach( $arr as $key => $value )
-			{
-				$value = trim($value);
-				if(strlen($value))
-				{
-					$trackers[] = $value;
-					$trackersCount = $trackersCount+1;
-				}
-				else
-				{
-					if(count($trackers)>0)
-					{
-						$announce_list[] = $trackers;
-						$trackers = array();
-					}
-				}
-			}
-		}
-		if(count($trackers)>0)
-			$announce_list[] = $trackers;
+		$parsedTrackers = TorrentTrackerTiers::fromLines(isset($request['trackers']) ?
+			explode("\r", $request['trackers']) : array());
+		$announce_list = $parsedTrackers['tiers'];
+		$trackersCount = $parsedTrackers['count'];
 		$path_edit = trim($request['path_edit']);
 		$piece_size = $request['piece_size'];
 		$callback_log = "log_stdout";
@@ -94,25 +74,7 @@ if( count( $argv ) > 1 )
 		$torrent->save($fname);
 
 		if($request['start_seeding'])
-		{
-			$fname = FileUtil::getUniqueUploadedFilename($torrent->info['name'].'.torrent');
-			$path_edit = trim($request['path_edit']);
-			if(is_dir($path_edit))
-				$path_edit = FileUtil::addslash($path_edit);
-	        	if(rTorrentSettings::get()->correctDirectory($path_edit))
-			{
-        			$path_edit = dirname($path_edit);
-				if($resumed = rTorrent::fastResume($torrent,$path_edit))
-					$torrent = $resumed;
-				$torrent->save($fname);
-				$load = rTorrent::sendTorrent($torrent, true, true, $path_edit, null, true, User::isLocalMode() );
-				if($load === null)
-					FileUtil::toLog('create: seeding load pending confirmation');
-				elseif($load === false)
-					FileUtil::toLog('create: seeding load dispatch failed');
-				@chmod($fname,$profileMask & 0666);
-			}
-		}
+			CreateSeeding::publish($torrent, $request, $profileMask, 'create');
 		exit(0);
 	}
 	exit(1);

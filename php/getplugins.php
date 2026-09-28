@@ -5,17 +5,13 @@ Requests::requirePluginBootstrapRequest();
 
 require_once( 'which.php' );
 require_once( 'pluginflags.php' );
+require_once( __DIR__.'/plugininfo.php' );
 require_once( "settings.php" );
 
 function pluginsSort($a, $b)
 {
-	$lvl1 = (float) $a["info"]["plugin.runlevel"];
-	$lvl2 = (float) $b["info"]["plugin.runlevel"];
-	if($lvl1>$lvl2)
-		return(1);
-	if($lvl1<$lvl2)
-		return(-1);
-	return( strcmp($a["name"],$b["name"]) );
+	return(PluginInfo::compare($a["info"]["plugin.runlevel"], $a["name"],
+		$b["info"]["plugin.runlevel"], $b["name"]));
 }
 
 
@@ -48,83 +44,8 @@ function getPluginInfo( $name, $permissions )
 	if(is_readable($fname))
 	{
 		$lines = file($fname);
-		foreach($lines as $line)
-		{
-			$fields = explode(":",$line,2);
-			if(count($fields)==2)
-			{
-				$value = addcslashes(trim($fields[1]),"\\\'\"\n\r\t");
-				$field = trim($fields[0]);
-				switch($field)
-				{
-					case "plugin.help":
-					case "plugin.author":
-					case "plugin.description":
-					case "rtorrent.remote":
-					{
-						$info[$field] = $value;
-						break;
-					}
-                                        case "plugin.may_be_shutdowned":
-                                        case "plugin.may_be_launched":
-                                        case "rtorrent.need":
-					{
-						$info[$field] = intval($value);
-						break;
-					}
-					case "plugin.version":
-					case "plugin.runlevel":
-					{
-						$info[$field] = floatval($value);
-						break;
-					}
-					case "rtorrent.version":
-					case "php.version":
-					{
-						$version = explode('.', $value);
-						$info[$field] = (intval($version[0])<<16) + (intval($version[1])<<8) + intval($version[2]);
-						$info[$field.'.readable'] = $value;
-						break;
-					}
-					case "plugin.dependencies":
-					case "rtorrent.external.warning":
-					case "rtorrent.external.error":
-					case "rtorrent.script.error":
-					case "rtorrent.php.error":
-					case "web.external.warning":
-					case "web.external.error":
-					case "php.extensions.warning":
-					case "php.extensions.error":
-					{
-						$info[$field] = explode(',', $value);
-						break;
-					}
-// for compatibility
-					case "author":
-					case "description":
-					{
-						$info['plugin.'.$field] = $value;
-						break;
-					}
-					case "remote":
-					{
-						$info['rtorrent.remote'] = $value;
-						break;
-					}
-					case "need_rtorrent":
-					{
-						$info['rtorrent.need'] = intval($value);
-						break;
-					}
-					case "version":
-					case "runlevel":
-					{
-						$info['plugin.'.$field] = floatval($value);
-						break;
-					}
-				}
-			}
-		}
+		if($lines!==false)
+			$info = PluginInfo::parse($lines, $info);
 		$perms = 0;
 		if($permissions!==false)
 		{

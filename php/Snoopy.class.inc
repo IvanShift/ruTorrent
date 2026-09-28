@@ -900,8 +900,8 @@ class Snoopy
 		if($host === null)
 			return 'unknown';
 		// A Location header is remote input: never log its path, query or userinfo.
-		$host = preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $host);
-		$port = isset($parts['port']) ? (int)$parts['port'] : ($scheme === 'https' ? 443 : 80);
+		$host = self::safeLogHost($host);
+		$port = self::effectivePort($url);
 		return $scheme . '://' . $host . ':' . $port;
 	}
 

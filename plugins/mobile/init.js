@@ -93,38 +93,6 @@ var peersIdToLangId = {
   'peer_downloaded' : 'PeerDownloaded',
 };
 
-/*** Small helpers ***/
-// Fallback copy of the tracklabels plugin's theWebUI.getTrackerName
-// (announce URL to display name), for when tracklabels isn't installed
-if(!$type(theWebUI.getTrackerName))
-{
-  theWebUI.getTrackerName = function(announce)
-  {
-    var domain = '';
-    if(announce)
-    {
-      var parts = announce.match(/^(?:([^:/?#]+):)?(?:\/\/((?:(([^:@]*):?([^:@]*))?@)?([^:/?#]*)(?::(\d*))?))?((((?:[^?#/]*\/)*)([^?#]*))(?:\?([^#]*))?(?:#(.*))?)/);
-      if(parts && (parts.length>6))
-      {
-        domain = parts[6];
-        if(!domain.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/))
-        {
-          parts = domain.split(".");
-          if(parts.length>2)
-          {
-            if($.inArray(parts[parts.length-2]+"", ["co", "com", "net", "org"])>=0 ||
-            $.inArray(parts[parts.length-1]+"", ["uk"])>=0)
-            parts = parts.slice(parts.length-3);
-            else
-            parts = parts.slice(parts.length-2);
-            domain = parts.join(".");
-          }
-        }
-      }
-    }
-    return(domain);
-  }
-}
 
 // Nudge the scroll position when a form field loses focus, so iOS Safari
 // re-lays-out the fixed bars after the on-screen keyboard closes

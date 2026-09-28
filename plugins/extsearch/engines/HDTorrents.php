@@ -7,8 +7,8 @@ class HDTorrentsEngine extends commonEngine
 	public $categories = array
 	(
 		'all'=>'',
-		'Movie'=>'&category[]=1&category[]=2&category[]=5category[]=3category[]=63',
-		'TV Show'=>'&category[]=59&category[]=60&category[]=30category[]=38',
+		'Movie'=>'&category[]=1&category[]=2&category[]=5&category[]=3&category[]=63',
+		'TV Show'=>'&category[]=59&category[]=60&category[]=30&category[]=38',
 		'Music'=>'&category[]=44&category[]=61&category[]=62&category[]=57&category[]=45',
 		'XXX'=>'&category[]=58&category[]=48&category[]=47'
 	);
@@ -20,9 +20,9 @@ class HDTorrentsEngine extends commonEngine
 		if($useGlobalCats)
 			$categories = array
 			(
-				'all'=>'0',
-				'movies'=>'&category[]=1&category[]=2&category[]=5category[]=3category[]=63',
-				'tv'=>'&category[]=59&category[]=60&category[]=30category[]=38',
+				'all'=>'',
+				'movies'=>'&category[]=1&category[]=2&category[]=5&category[]=3&category[]=63',
+				'tv'=>'&category[]=59&category[]=60&category[]=30&category[]=38',
 				'music'=>'&category[]=44&category[]=61&category[]=62&category[]=57&category[]=45'
 			);
 		else
