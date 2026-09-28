@@ -350,11 +350,12 @@ class RuTrackerMetaFetch
             new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, "chk-meta-topic")),
             new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, "chk-meta-until")),
             new rXMLRPCCommand(getCmd("d.is_meta"), $newHash),
+            new rXMLRPCCommand(getCmd("d.get_local_id"), $newHash),
         ));
         $meta->important = false;
-        if (!$meta->success() || $meta->fault || !is_array($meta->val) || count($meta->val) < 4) {
+        if (!$meta->success() || $meta->fault || !is_array($meta->val) || count($meta->val) < 5) {
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
-                . ' unreadable-stub-ownership (chk-meta-old, chk-meta-topic, chk-meta-until, d.is_meta) at '
+                . ' unreadable-stub-ownership (chk-meta-old, chk-meta-topic, chk-meta-until, d.is_meta, d.get_local_id) at '
                 . $newHash . '; leaving both torrents untouched');
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
@@ -387,6 +388,13 @@ class RuTrackerMetaFetch
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         }
         $isMeta = (int) $isMetaVal;
+        $localId = (string) $meta->val[4];
+        if (!preg_match('/^[0-9A-F]{40}$/D', $localId)) {
+            ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
+                . ' unreadable-stub-ownership (d.get_local_id) at ' . $newHash
+                . '; leaving both torrents untouched');
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         $expectedCustoms = array(
             'chk-meta-old' => $oldHash,
             'chk-meta-topic' => $stubTopic,
@@ -398,7 +406,7 @@ class RuTrackerMetaFetch
                 $newHash,
                 $expectedCustoms,
                 true,
-                array('is_meta' => 1),
+                array('is_meta' => 1, 'local_id' => $localId),
                 array('chk-meta-until' => (string) $deadline)
             );
             if ($status !== RuTrackerAtomicOwnership::ACTED) {
@@ -412,7 +420,7 @@ class RuTrackerMetaFetch
                 $newHash,
                 $expectedCustoms,
                 array('chk-meta-until' => (string) $deadline),
-                array('is_meta' => 0)
+                array('is_meta' => 0, 'local_id' => $localId)
             );
             if ($status !== RuTrackerAtomicOwnership::ACTED) {
                 ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' could not update stub deadline on '

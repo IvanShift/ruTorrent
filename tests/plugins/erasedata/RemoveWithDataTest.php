@@ -804,6 +804,16 @@ class RemoveWithDataTest extends TestCase
 		));
 	}
 
+	private function writeLegacyCapturedDirectoryIntent($path)
+	{
+		$record = json_decode(@file_get_contents($path), true);
+		if(!is_array($record)) return(false);
+		$record['version'] = 1;
+		$record['phase'] = 'captured';
+		return(file_put_contents($path,
+			json_encode($record, JSON_UNESCAPED_SLASHES)) !== false);
+	}
+
 	private function collectorInode($path)
 	{
 		clearstatcache(true, $path);
@@ -8027,6 +8037,10 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(1, count($shells), 'the private shell stands after capture');
 		if(count($shells) !== 1)
 			return;
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertTrue(count($intents) === 1
+			&& $this->writeLegacyCapturedDirectoryIntent($intents[0]),
+			'the old captured intent is restored before the private shell moves');
 		$payload = $shells[0].'/directory/secret.bin';
 		$this->assertTrue(file_put_contents($payload, 'held data') !== false,
 			'the reserved directory still contains data');
@@ -8197,8 +8211,12 @@ class RemoveWithDataTest extends TestCase
 			if(count($intents) !== 1)
 				continue;
 			$record = json_decode(file_get_contents($intents[0]), true);
-			$this->assertEquals('captured', isset($record['phase']) ? $record['phase'] : null,
-				'the successful rmdir has no durable completion proof, force='.$force);
+			$this->assertEquals('deleting', isset($record['phase']) ? $record['phase'] : null,
+				'the new worker records its pre-rmdir phase, force='.$force);
+			// Emulate a v1 process that exited after rmdir, before its first
+			// completion write. Its captured phase cannot prove the removal.
+			$this->assertTrue($this->writeLegacyCapturedDirectoryIntent($intents[0]),
+				'the legacy captured intent is restored, force='.$force);
 			list($status, $output) = $this->runCollector(array('captureLogs' => true));
 			$this->assertEquals(0, $status, 'replay exits, force='.$force.': '.$output);
 			$this->assertEquals($manifest, @file_get_contents($manifestPath),
@@ -8208,6 +8226,154 @@ class RemoveWithDataTest extends TestCase
 			$this->assertEquals(1, count(glob(
 				$this->queuePath().'/.erasedata-rmdir-intent-*')),
 				'replay keeps its recovery evidence, force='.$force);
+		}
+	}
+
+	public function testPreparedPrivateRmdirReplaysAfterProcessExit()
+	{
+		foreach(array(1, 2) as $force)
+		{
+			$this->reset();
+			$hash = $this->hash((string)$force);
+			$base = $this->dir.'/prepared-rmdir-'.$force;
+			mkdir($base);
+			$file = $base.'/payload.bin';
+			if($force === 2) file_put_contents($file, 'payload');
+			$this->writeManifestLines($hash.'.list', array($file), $base, 1, $force);
+			$manifestPath = $this->queuePath().'/'.$hash.'.list';
+			$manifest = file_get_contents($manifestPath);
+			list($status, $output) = $this->runCollector(array('filesystem' => array(
+				'removeDirectory:*' => array('basename' => 'directory',
+					'action' => 'exit', 'at' => 'after'))));
+			$this->assertEquals(0, $status, 'worker exits after private rmdir, force='.$force.': '.$output);
+			$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+			$this->assertEquals(1, count($intents), 'the durable intent survives, force='.$force);
+			if(count($intents) !== 1) continue;
+			$record = json_decode(file_get_contents($intents[0]), true);
+			$this->assertEquals('deleting', isset($record['phase']) ? $record['phase'] : null,
+				'the pre-rmdir phase survives the crash, force='.$force);
+			$this->assertEquals($manifest, @file_get_contents($manifestPath),
+				'the exact manifest survives the crash, force='.$force);
+			list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			$this->assertEquals(0, $status, 'replay exits, force='.$force.': '.$output);
+			$this->assertTrue(!file_exists($manifestPath),
+				'replay retires the exact obligation, force='.$force);
+			$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+				'replay clears its intent, force='.$force);
+			$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
+				'replay removes private recovery shells, force='.$force);
+			$this->assertTrue(!erasedataPathExists($base),
+				'replay removes the public recovery link, force='.$force);
+		}
+	}
+
+	public function testPreparedPrivateRmdirRetriesBeforeSyscallAndAfterRefusal()
+	{
+		foreach(array(1, 2) as $force)
+			foreach(array('before', 'failure') as $cut)
+			{
+				$this->reset();
+				$hash = $this->hash((string)$force);
+				$base = $this->dir.'/prepared-rmdir-'.$force.'-'.$cut;
+				mkdir($base);
+				$file = $base.'/payload.bin';
+				if($force === 2) file_put_contents($file, 'payload');
+				$this->writeManifestLines($hash.'.list', array($file), $base, 1, $force);
+				$manifestPath = $this->queuePath().'/'.$hash.'.list';
+				$manifest = file_get_contents($manifestPath);
+				$script = array('basename' => 'directory');
+				if($cut === 'before')
+					$script += array('action' => 'exit', 'at' => 'before');
+				else $script['result'] = false;
+				list($status, $output) = $this->runCollector(array('filesystem' => array(
+					'removeDirectory:*' => $script)));
+				$this->assertEquals(0, $status, 'interrupted worker exits, force='.$force.' cut='.$cut.': '.$output);
+				$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+				$this->assertEquals(1, count($intents), 'the intent survives the uncommitted rmdir');
+				if(count($intents) !== 1) continue;
+				$record = json_decode(file_get_contents($intents[0]), true);
+				$this->assertEquals('deleting', isset($record['phase']) ? $record['phase'] : null,
+					'the write-ahead phase precedes the rmdir');
+				$this->assertEquals($manifest, @file_get_contents($manifestPath),
+					'the exact obligation survives the uncommitted rmdir');
+				list($status, $output) = $this->runCollector(array());
+				$this->assertEquals(0, $status, 'retry exits, force='.$force.' cut='.$cut.': '.$output);
+				$this->assertTrue(!erasedataPathExists($base) && !is_file($manifestPath),
+					'retry performs and retires the deletion only after rmdir succeeds');
+				$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+					'retry clears the durable intent');
+			}
+	}
+
+	public function testRecoveredBackingRmdirReplaysAfterProcessExit()
+	{
+		$this->reset();
+		$firstHash = $this->hash('A');
+		$secondHash = $this->hash('B');
+		$base = $this->dir.'/recovered-backing-rmdir-exit';
+		mkdir($base);
+		$this->writeManifestLines($firstHash.'.list', array($base.'/absent.bin'),
+			$base, 1, 1);
+		$this->runCollector(array('rmdirCrash' => $base));
+		$this->runCollector(array());
+		$this->assertTrue(is_link($base), 'the first generation leaves a live recovery link');
+		file_put_contents($base.'/payload.bin', 'payload');
+		$this->writeManifestLines($secondHash.'.list', array($base.'/payload.bin'),
+			$base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$secondHash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'removeDirectory:*' => array('basename' => 'directory',
+				'action' => 'exit', 'at' => 'after'))));
+		$this->assertEquals(0, $status, 'the force worker exits after recovered backing rmdir: '.$output);
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents), 'the second generation retains its intent');
+		if(count($intents) !== 1) return;
+		$record = json_decode(file_get_contents($intents[0]), true);
+		$this->assertEquals('deleting', isset($record['phase']) ? $record['phase'] : null,
+			'the recovered backing has a write-ahead deletion phase');
+		$this->assertEquals($manifest, @file_get_contents($manifestPath),
+			'the exact second-generation obligation remains');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'the recovered backing replay exits: '.$output);
+		$this->assertTrue(!erasedataPathExists($base) && !is_file($manifestPath),
+			'the recovered backing replay retires the force obligation');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+			'the recovered backing replay clears its intent');
+	}
+
+	public function testFreshForceDirectoryCleanupCrashReplays()
+	{
+		foreach(array('tombstone', 'bridge', 'container') as $cut)
+		{
+			$this->reset();
+			$hash = $this->hash($cut === 'tombstone' ? 'A'
+				: ($cut === 'bridge' ? 'B' : 'C'));
+			$base = $this->dir.'/fresh-force-cleanup-'.$cut;
+			mkdir($base);
+			$file = $base.'/payload.bin';
+			file_put_contents($file, 'payload');
+			$this->writeManifestLines($hash.'.list', array($file), $base, 1, 2);
+			$manifestPath = $this->queuePath().'/'.$hash.'.list';
+			$manifest = file_get_contents($manifestPath);
+			list($status, $output) = $this->runCollector(array('cleanupCrash' => $cut));
+			$this->assertEquals(0, $status, 'worker exits at '.$cut.' cleanup: '.$output);
+			$this->assertEquals($manifest, @file_get_contents($manifestPath),
+				'the exact obligation survives '.$cut.' cleanup');
+			$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+			$this->assertEquals(1, count($intents), 'the intent survives '.$cut.' cleanup');
+			if(count($intents) !== 1) continue;
+			$record = json_decode(file_get_contents($intents[0]), true);
+			$this->assertEquals('deleting', isset($record['phase']) ? $record['phase'] : null,
+				'the pre-rmdir phase remains during '.$cut.' cleanup');
+			list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			$this->assertEquals(0, $status, $cut.' replay exits: '.$output);
+			$this->assertTrue(!erasedataPathExists($base) && !is_file($manifestPath),
+				$cut.' replay retires the exact force obligation');
+			$this->assertEquals(array(), glob($this->dir.'/.erasedata-rmdir-*'),
+				$cut.' replay clears the private reservation');
+			$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'),
+				$cut.' replay clears the intent');
 		}
 	}
 
@@ -8242,7 +8408,13 @@ class RemoveWithDataTest extends TestCase
 			if(count($intents) !== 1) continue;
 			$intentPath = $intents[0];
 			$record = json_decode(file_get_contents($intentPath), true);
-			$this->assertEquals('captured', $record['phase'], 'both histories start from the same captured phase');
+			$this->assertEquals('deleting', $record['phase'],
+				'the current worker has reached its new pre-rmdir phase');
+			$this->assertTrue($this->writeLegacyCapturedDirectoryIntent($intentPath),
+				'the legacy captured intent is restored before the paired histories');
+			$record = json_decode(file_get_contents($intentPath), true);
+			$this->assertEquals('captured', $record['phase'],
+				'both legacy histories start from the same captured phase');
 			$this->assertEquals(basename($outer[0]), $record['reservation'],
 				'the durable reservation names the observed shell');
 			$this->assertTrue(is_string($record['targetDev']) && is_string($record['targetIno']),

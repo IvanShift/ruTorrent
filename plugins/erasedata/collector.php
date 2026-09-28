@@ -534,7 +534,7 @@ function erasedataRemoveRecoveryContainers($recovery,
 }
 
 function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $markPhase = null, $reservation = null)
 {
 	if(empty($recovery['safe']))
 		return(false);
@@ -575,7 +575,11 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 		$reference, $reservationKey, $filesystem);
 	erasedataCloseDirectoryReference($reference, $filesystem);
 	$current = $filesystem->pathIdentity($capture);
+	// This private entry has no other writer under the trusted-UID contract.
+	// Record deletion before rmdir so process-exit replay can finish its cleanup.
 	if(!$deleted || !erasedataSameFilesystemEntry($captured['identity'], $current)
+		|| (is_callable($markPhase)
+			&& !call_user_func($markPhase, $reservation, 'deleting'))
 		|| !$filesystem->removeDirectory($capture) || erasedataPathExists($capture))
 		return(false);
 	// Occupy the just-deleted name before unlinking the visible chain. A
@@ -626,6 +630,8 @@ function erasedataRecoverNonForceDirectory($path, $reservationKey, $reservations
 		// data entry. Cleanup is limited to the empty private protocol shell.
 		if($entries === false || count(array_diff(
 			$entries, array('.', '..', basename($marker)))) > 0
+			|| (is_callable($markPhase)
+				&& !call_user_func($markPhase, $reservation, 'finish-missing'))
 			|| !erasedataRemoveReservationContainer(
 				$reservation, $path, $reservationKey, $filesystem, $logicalPath))
 			return(false);
@@ -663,6 +669,9 @@ function erasedataRecoverNonForceDirectory($path, $reservationKey, $reservations
 	if($restoredLink
 		&& !erasedataDropReservationLink(
 			$path, $reserved, $reservationKey, $filesystem, $linkTarget))
+		return(false);
+	if(is_callable($markPhase)
+		&& !call_user_func($markPhase, $reservation, 'deleting'))
 		return(false);
 	$removed = $filesystem->removeDirectory($reserved);
 	if($removed && is_callable($markPhase)
@@ -751,6 +760,9 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 			$reserved, $path, $filesystem, $linkTarget, $parentGuard);
 		return(false);
 	}
+	if(is_callable($markPhase)
+		&& !call_user_func($markPhase, $reservation, 'deleting'))
+		return(false);
 	$removed = $filesystem->removeDirectory($reserved);
 	if($removed && is_callable($markPhase)
 		&& !call_user_func($markPhase, $reservation, 'completed'))
@@ -795,8 +807,20 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 			$path, $reserved, $filesystem, $linkTarget);
 		if(!erasedataPathExists($reserved))
 		{
+			if($restoredLink && is_callable($markPhase)
+				&& call_user_func($markPhase, $reservation, 'verify-deleting'))
+			{
+				$recovery = erasedataRecoveryLinkTarget(
+					$path, $filesystem, $logicalPath);
+				return($recovery !== false && erasedataDeleteRecoveryDirectory(
+					$path, $recovery, $reservationKey, $filesystem,
+					$markPhase, $reservation));
+			}
 			if(is_callable($markPhase)
 				&& !call_user_func($markPhase, $reservation, 'verify-missing'))
+				return(false);
+			if(is_callable($markPhase)
+				&& !call_user_func($markPhase, $reservation, 'finish-missing'))
 				return(false);
 			if(!erasedataRemoveReservationContainer(
 				$reservation, $path, $reservationKey, $filesystem, $logicalPath))
@@ -810,10 +834,12 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 					$path, $reservationKey, $filesystem, $logicalPath, $parentGuard, $markPhase)
 				: true);
 		}
-		if(!erasedataReservationHasEncodedIdentity(
+		$deleting = is_callable($markPhase)
+			&& call_user_func($markPhase, $reservation, 'verify-deleting');
+		if(!$deleting && (!erasedataReservationHasEncodedIdentity(
 			$reservation, $path, $reservationKey, $logicalPath)
 			|| (is_callable($markPhase)
-				&& !call_user_func($markPhase, $reservation, 'captured')))
+				&& !call_user_func($markPhase, $reservation, 'captured'))))
 			return(false);
 		if(erasedataPathExists($path) && !$restoredLink)
 			return(false);
@@ -822,7 +848,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 			return(false);
 		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
 		return($recovery !== false && erasedataDeleteRecoveryDirectory(
-			$path, $recovery, $reservationKey, $filesystem));
+			$path, $recovery, $reservationKey, $filesystem, $markPhase, $reservation));
 	}
 	if(!erasedataPathExists($path))
 		return(true);
@@ -831,7 +857,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
 		if($recovery !== false)
 			return(erasedataDeleteRecoveryDirectory(
-				$path, $recovery, $reservationKey, $filesystem));
+				$path, $recovery, $reservationKey, $filesystem, $markPhase));
 		$expected = $filesystem->entryIdentity($path);
 		return($filesystem->unlinkCapturedEntry(
 			$path, $expected, $reservationKey));
@@ -843,7 +869,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
 	if($recovery !== false)
 		return(erasedataDeleteRecoveryDirectory(
-			$path, $recovery, $reservationKey, $filesystem));
+			$path, $recovery, $reservationKey, $filesystem, $markPhase));
 
 	$reservation = erasedataDirectoryReservationPath(
 		$path, $reservationKey, $expected, $logicalPath);
@@ -883,7 +909,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 	if($recovery === false)
 		return(false);
 	return(erasedataDeleteRecoveryDirectory(
-		$path, $recovery, $reservationKey, $filesystem));
+		$path, $recovery, $reservationKey, $filesystem, $markPhase, $reservation));
 }
 
 function erasedataReadCleanupManifest($path, $expectedStat, $hash, &$artifact = null,
@@ -1788,19 +1814,24 @@ final class ErasedataCollector
 		if(!is_array($record) || array_keys($record) !== array(
 			'version', 'manifest', 'logical', 'parent', 'parentDev', 'parentIno',
 			'targetDev', 'targetIno', 'phase', 'reservation')
-			|| $record['version'] !== 1
+			|| !in_array($record['version'], array(1, 2), true)
 			|| !is_string($record['manifest']) || strlen($record['manifest']) !== 64
 			|| !is_string($record['logical']) || $record['logical'] === ''
 			|| !is_string($record['parent']) || $record['parent'] === ''
 			|| !is_string($record['parentDev']) || !is_string($record['parentIno'])
 			|| !(is_null($record['targetDev']) || is_string($record['targetDev']))
 			|| !(is_null($record['targetIno']) || is_string($record['targetIno']))
-			|| !in_array($record['phase'], array('prepared', 'captured', 'completed'), true)
+			|| !in_array($record['phase'], $record['version'] === 1
+				? array('prepared', 'captured', 'completed')
+				: array('prepared', 'captured', 'deleting', 'completed'), true)
 			|| !(is_null($record['reservation'])
 				|| (is_string($record['reservation'])
 					&& preg_match('/^\.erasedata-rmdir-[a-f0-9]{64}-[0-9]+-[0-9]+-[a-f0-9]{32}$/D',
 						$record['reservation']) === 1))
-			|| ($record['phase'] === 'prepared') !== ($record['reservation'] === null))
+			|| ($record['phase'] === 'prepared' && $record['reservation'] !== null)
+			|| ($record['phase'] === 'captured' && $record['reservation'] === null)
+			|| ($record['version'] === 1 && $record['phase'] === 'completed'
+				&& $record['reservation'] === null))
 			return(false);
 		return($record);
 	}
@@ -1822,8 +1853,8 @@ final class ErasedataCollector
 				|| ($current['reservation'] !== null && count($reservations) === 1
 					&& basename($reservations[0]) !== $current['reservation']))
 				return(false);
-			// Only a completed phase proves removal when the private shell is
-			// gone. A captured shell whose directory vanished may have moved.
+			// V1 captured cannot prove removal when the private shell is gone.
+			// V2 deleting was written before rmdir under the trusted-UID contract.
 			if($current['phase'] === 'captured'
 				&& (count($reservations) === 0
 					|| !erasedataPathExists(
@@ -1855,10 +1886,23 @@ final class ErasedataCollector
 			{
 				if(!empty($entry['is_link']))
 				{
+					$forcedLinkMatches = $current['targetDev'] === (string)$entry['dev']
+						&& $current['targetIno'] === (string)$entry['ino'];
+					if($forced && !$forcedLinkMatches
+						&& $current['version'] === 2
+						&& $current['phase'] === 'deleting'
+						&& $current['reservation'] !== null)
+					{
+						$layout = erasedataRecoveryLinkLayout(
+							$parent['path'], $this->filesystem, $logical);
+						$forcedLinkMatches = is_array($layout)
+							&& $layout['reservationRoot'] === dirname($parent['path'])
+								.'/'.$current['reservation']
+							&& $layout['dev'] === $current['targetDev']
+							&& $layout['ino'] === $current['targetIno'];
+					}
 					if($current['targetDev'] === null
-						|| ($forced
-							? ($current['targetDev'] !== (string)$entry['dev']
-								|| $current['targetIno'] !== (string)$entry['ino'])
+						|| ($forced ? !$forcedLinkMatches
 							: !$this->trustedNonForceRecoveryLink($logical, $item)))
 						return(false);
 				}
@@ -1869,7 +1913,7 @@ final class ErasedataCollector
 			}
 			return(true);
 		}
-		$record = array('version' => 1, 'manifest' => $manifestDigest,
+		$record = array('version' => 2, 'manifest' => $manifestDigest,
 			'logical' => $logical, 'parent' => $boundParent['path'],
 			'parentDev' => (string)$boundParent['stat']['dev'],
 			'parentIno' => (string)$boundParent['stat']['ino'],
@@ -1889,7 +1933,7 @@ final class ErasedataCollector
 		if(!is_array($record) || $record['manifest'] !== $manifestDigest
 			|| $record['logical'] !== $logical)
 			return(false);
-		$name = basename($reservation);
+		$name = is_null($reservation) ? null : basename($reservation);
 		if($phase === 'verify-missing')
 		{
 			if($record['reservation'] !== null
@@ -1903,6 +1947,17 @@ final class ErasedataCollector
 				return(false);
 			if($record['phase'] === 'completed')
 				return($entry === false);
+			if($record['phase'] === 'deleting')
+			{
+				$private = is_null($reservation) ? null
+					: erasedataReservationDataPath($reservation);
+				$linkTarget = is_null($reservation) ? null
+					: erasedataReservationDataPath(
+							erasedataLogicalReservationPath($reservation, $logical));
+				return($entry === false || ($private !== null
+					&& erasedataReservationLinkMatches(
+						$path, $private, $this->filesystem, $linkTarget)));
+			}
 			if($record['phase'] !== 'prepared')
 				return(false);
 			return($record['targetDev'] === null ? $entry === false
@@ -1910,13 +1965,29 @@ final class ErasedataCollector
 					&& $record['targetDev'] === (string)$entry['dev']
 					&& $record['targetIno'] === (string)$entry['ino']);
 		}
-		if($record['phase'] === $phase)
+		// An old captured record never passes verify-missing; only a v2
+		// deleting record may advance after its private name has disappeared.
+		if($phase === 'finish-missing')
+			return($record['phase'] !== 'deleting'
+				|| $this->markDirectoryIntentPhase(
+					$item, $manifestDigest, $logical, $reservation, 'completed'));
+		if($record['phase'] === $phase
+			|| ($phase === 'captured' && $record['phase'] === 'deleting'))
 			return($record['reservation'] === $name);
+		if($phase === 'verify-deleting')
+			return($record['version'] === 2
+				&& $record['phase'] === 'deleting'
+				&& $record['reservation'] === $name);
 		if($record['reservation'] !== null && $record['reservation'] !== $name)
 			return(false);
 		if(($phase === 'captured' && $record['phase'] !== 'prepared')
-			|| ($phase === 'completed' && $record['phase'] !== 'captured'))
+			|| ($phase === 'deleting'
+				&& !($record['phase'] === 'captured'
+					|| ($record['phase'] === 'prepared' && $name === null)))
+			|| ($phase === 'completed'
+				&& !in_array($record['phase'], array('captured', 'deleting'), true)))
 			return(false);
+		if($phase === 'deleting') $record['version'] = 2;
 		$record['phase'] = $phase;
 		$record['reservation'] = $name;
 		$bytes = json_encode($record, JSON_UNESCAPED_SLASHES);
@@ -2031,7 +2102,7 @@ final class ErasedataCollector
 		if($finished)
 		{
 			$intent = $this->readDirectoryIntent($item);
-			if(!is_array($intent) || ($intent['phase'] === 'captured'
+			if(!is_array($intent) || (in_array($intent['phase'], array('captured', 'deleting'), true)
 				&& !$markPhase($intent['reservation'], 'completed')))
 				$finished = false;
 		}

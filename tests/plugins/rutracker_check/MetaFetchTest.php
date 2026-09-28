@@ -939,10 +939,10 @@ $suite->test('begin adopts its own stub left by an earlier cycle', function () u
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash); // carries OUR stub marker
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 1)
+        array($oldHash, '6879823', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // runState
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // markOldTorrent
@@ -956,16 +956,72 @@ $suite->test('begin adopts its own stub left by an earlier cycle', function () u
     strictAssertEnglish($line, 'the adoption line');
 });
 
+$suite->test('a daemon restart between stub read and adoption cannot claim the old local identity',
+    function () use ($oldHash, $newHash) {
+    foreach (array(1, 0) as $isMeta) {
+        ruTrackerChecker::reset();
+        $seenId = str_repeat('1', 40);
+        $restartedId = str_repeat('2', 40);
+        $activeId = $seenId;
+        $read = function () use ($oldHash, $isMeta, $restartedId, &$activeId) {
+            $snapshot = array($oldHash, '6879823', '900', $isMeta, $activeId);
+            // A normal daemon restart reloads persisted customs under a new local_id.
+            $activeId = $restartedId;
+            return $snapshot;
+        };
+        ruTrackerChecker::queueResult('torrentExists', true);
+        mfQueueCollisionOwner($oldHash);
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
+            true, false, $read);
+        rXMLRPCRequest::queue('branch', true, false, function ($commands) use ($seenId, &$activeId) {
+            $condition = (string) $commands[0]->params[1];
+            $hasIdentityGuard = strpos($condition, getCmd('d.get_local_id=')) !== false
+                && strpos($condition, $seenId) !== false;
+            return array($hasIdentityGuard && $activeId !== $seenId
+                ? RuTrackerAtomicOwnership::SENTINEL_SKIPPED
+                : RuTrackerAtomicOwnership::SENTINEL_ACTED);
+        });
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                'http://bt.t-ru.org/ann?pk=s3cr3t', 1000),
+            'the ' . $isMeta . ' branch cannot adopt the restarted generation from an old reading');
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+            'the predecessor is not claimed after the conditional action skips');
+        $branches = rXMLRPCRequest::requestsFor('branch');
+        strictAssertSame(1, count($branches), 'one guarded adoption action was attempted');
+        strictAssertTrue(strpos($branches[0]['commands'][0]->params[1], $seenId) !== false,
+            'the branch compares the identity seen with the customs');
+
+        // The next cycle reads the restarted identity and may adopt it normally.
+        rXMLRPCRequest::reset();
+        ruTrackerChecker::queueResult('torrentExists', true);
+        mfQueueCollisionOwner($oldHash);
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
+            true, false, array($oldHash, '6879823', '900', $isMeta, $restartedId));
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+        strictAssertSame(ruTrackerChecker::STE_META_PENDING,
+            RuTrackerMetaFetch::begin($oldHash, $newHash, 6879823,
+                'http://bt.t-ru.org/ann?pk=s3cr3t', 1001),
+            'the ' . $isMeta . ' branch adopts after it reads the new generation');
+        $branches = rXMLRPCRequest::requestsFor('branch');
+        strictAssertTrue(strpos($branches[0]['commands'][0]->params[1], $restartedId) !== false,
+            'the retry compares the fresh identity');
+    }
+});
+
 $suite->test('begin refuses a same-predecessor service stub from another topic', function () use ($oldHash, $newHash) {
     ruTrackerChecker::reset();
     rTorrent::$magnets = array();
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879824', '900', 1)
+        array($oldHash, '6879824', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false,
         array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
@@ -1001,10 +1057,10 @@ $suite->test('malformed same-predecessor stub adoption stays untouched and logs 
             ruTrackerChecker::queueResult('torrentExists', true);
             mfQueueCollisionOwner($oldHash);
             rXMLRPCRequest::queue(
-                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
                 true,
                 false,
-                array_slice($case, 0, 4)
+                array_merge(array_slice($case, 0, 4), array(str_repeat('1', 40)))
             );
         }
         $log = testCapturedAppLog(function () use ($oldHash, $newHash, $label) {
@@ -1032,13 +1088,14 @@ $suite->test('unreadable stub owner projection stays untouched and logs each ret
     foreach (array(
         'RPC refusal' => array(false, false, array()),
         'truncated is_meta' => array(true, false, array($oldHash, '6879823', '900')),
+        'malformed local id' => array(true, false, array($oldHash, '6879823', '900', 1, 'bad')),
     ) as $label => $response) {
         ruTrackerChecker::reset();
         for ($cycle = 0; $cycle < 2; $cycle++) {
             ruTrackerChecker::queueResult('torrentExists', true);
             mfQueueCollisionOwner($oldHash);
             rXMLRPCRequest::queue(
-                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+                array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
                 $response[0], $response[1], $response[2]
             );
         }
@@ -1052,7 +1109,7 @@ $suite->test('unreadable stub owner projection stays untouched and logs each ret
         });
         strictAssertSame(2, substr_count($log, 'unreadable-stub-ownership'),
             $label . ': every repeated refusal is visible with debug disabled');
-        strictAssertTrue(strpos($log, 'd.is_meta') !== false,
+        strictAssertTrue(strpos($log, $label === 'malformed local id' ? 'd.get_local_id' : 'd.is_meta') !== false,
             $label . ': the diagnostic names the unreadable projection');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
             $label . ': an unreadable owner grants no action');
@@ -1080,10 +1137,10 @@ $suite->test('an adopted stub whose metadata already arrived says only that, and
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash); // carries OUR stub marker
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 0)   // is_meta=0: the metadata is already in
+        array($oldHash, '6879823', '900', 0, str_repeat('1', 40))   // is_meta=0: the metadata is already in
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // setCustoms
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array()); // markOldTorrent
@@ -1204,10 +1261,10 @@ $suite->test('a stub whose metadata already arrived is claimed, never started', 
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 0) // is_meta=0 (arrived)
+        array($oldHash, '6879823', '900', 0, str_repeat('1', 40)) // is_meta=0 (arrived)
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // setCustoms deadline
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
@@ -1227,7 +1284,7 @@ $suite->test('a stub whose d.is_meta cannot be read is left alone, not started',
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         true,
         array()
@@ -1254,10 +1311,10 @@ $suite->test('a stub that will not start is left unclaimed for the next cycle', 
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 1)
+        array($oldHash, '6879823', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED));
 
@@ -1747,8 +1804,8 @@ $suite->test('ambiguous partial begin publication keeps the predecessor pending 
         ruTrackerChecker::queueResult('torrentExists', true);
         mfQueueCollisionOwner($oldHash);
         rXMLRPCRequest::queue(
-            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
-            true, false, array($oldHash, '6879823', '900', 1));
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
+            true, false, array($oldHash, '6879823', '900', 1, str_repeat('1', 40)));
         rXMLRPCRequest::queue('branch', true, false,
             array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // stub start
         rXMLRPCRequest::queue('branch', true, false, array('unreadable-result')); // old publication
@@ -1773,8 +1830,8 @@ $suite->test('an empty same-generation read after unknown publication still pres
         ruTrackerChecker::queueResult('torrentExists', true);
         mfQueueCollisionOwner($oldHash);
         rXMLRPCRequest::queue(
-            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
-            true, false, array($oldHash, '6879823', '900', 1));
+            array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
+            true, false, array($oldHash, '6879823', '900', 1, str_repeat('1', 40)));
         rXMLRPCRequest::queue('branch', true, false,
             array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
         rXMLRPCRequest::queue('branch', true, false, array('unreadable-result'));
@@ -1837,10 +1894,10 @@ $suite->test('adopting a stub refreshes the deadline on the stub itself, not onl
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 1)
+        array($oldHash, '6879823', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
@@ -1859,10 +1916,10 @@ $suite->test('adopted stub keeps its durable predecessor marker and converges on
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 1)
+        array($oldHash, '6879823', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED));
 
@@ -1874,10 +1931,10 @@ $suite->test('adopted stub keeps its durable predecessor marker and converges on
     ruTrackerChecker::queueResult('torrentExists', true);
     mfQueueCollisionOwner($oldHash);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta', 'd.get_local_id'),
         true,
         false,
-        array($oldHash, '6879823', '900', 1)
+        array($oldHash, '6879823', '900', 1, str_repeat('1', 40))
     );
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());

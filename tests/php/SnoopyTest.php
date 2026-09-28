@@ -929,6 +929,28 @@ $tests = array(
             @unlink(getenv('SNOOPY_TEST_SEEN'));
         }
     },
+    'a source URL cookie does not block an anonymous CDN redirect' => function () {
+        putenv('SNOOPY_TEST_REDIRECT=https://cdn.test/file');
+        putenv('SNOOPY_TEST_REDIRECT_COOKIE=fresh=origin; Path=/; Secure');
+        @unlink(getenv('SNOOPY_TEST_SEEN'));
+        try {
+            $client = new Snoopy();
+            testAssertSame(true, $client->fetchComplex('https://tracker.test/start:COOKIE:sid=source'),
+                'source response completes');
+            $args = snoopyCurlArgs();
+            testAssertSame(true, in_array('https://cdn.test/file', $args, true),
+                'anonymous CDN target is requested');
+            $wire = implode("\r\n", $args);
+            testAssertSame(false, snoopyRequestHasCookie($wire, 'sid=source'),
+                'source URL cookie stays off CDN wire');
+            testAssertSame(false, snoopyRequestHasCookie($wire, 'fresh=origin'),
+                'source response cookie stays off CDN wire');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            putenv('SNOOPY_TEST_REDIRECT_COOKIE');
+            @unlink(getenv('SNOOPY_TEST_SEEN'));
+        }
+    },
     'a real HTTPS cross-origin redirect never imports the source cookie' => function () {
         putenv('SNOOPY_TEST_REDIRECT=https://cdn.test/file');
         putenv('SNOOPY_TEST_REDIRECT_COOKIE=secret=one; Path=/');

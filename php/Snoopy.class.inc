@@ -534,7 +534,7 @@ class Snoopy
 						$this->_redirectaddr = false;
 						// Account operations must not import cookies from a foreign
 						// landing page into Snoopy's flat jar, even before login.
-						if($this->redirectTrust !== null || $this->hasRedirectCredentials())
+						if($this->redirectTrust !== null || $this->carriesOwnCredentials() || $this->cookiesForRequest($redirect))
 						{
 							$this->error = self::CREDENTIAL_REDIRECT_REFUSED;
 							$this->logRedirectRefusal($URI, $redirect);
@@ -620,11 +620,6 @@ class Snoopy
 			if(in_array(strtolower($name), array('cookie', 'authorization', 'proxy-authorization'), true))
 				return(true);
 		return(false);
-	}
-
-	protected function hasRedirectCredentials()
-	{
-		return(!empty($this->cookies) || $this->carriesOwnCredentials());
 	}
 
 	protected function checkTarget($host)
