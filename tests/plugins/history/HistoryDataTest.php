@@ -161,24 +161,27 @@ $tests = array(
     // on a live instance such a fetcher stub was logged
     // as added, then deleted a cycle later under the same name as the real
     // torrent, so a single replacement read as two deletions.
-    'only the metadata fetcher label suppresses a user event' => function () {
+    'service marker distinguishes the stub from a user label' => function () {
         $service = array(
-            'a dot-labelled service download' => array('Some Release 1080p', '.chk-meta'),
+            'a marked service download' => array('Some Release 1080p', '.chk-meta', str_repeat('A', 40)),
             'a placeholder that is also labelled' => array(str_repeat('C', 40) . '.meta', '.chk-meta'),
             'a placeholder with no label' => array(str_repeat('A', 40) . '.meta', ''),
         );
         foreach ($service as $label => $row)
-            testAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be recognised');
+            testAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be recognised');
 
         $real = array(
             'a normal download' => array('Some Release 1080p', 'Video/Movies'),
             'an unlabelled download' => array('Some Release 1080p', ''),
             'a label that merely contains a dot' => array('Some Release', 'Video/4K.HDR'),
             'a private user label' => array('Some Release', '.private'),
+            'an unmarked user torrent with the exact service label' => array('Some Release', '.chk-meta'),
+            'a malformed service marker' => array('Some Release', '.chk-meta', str_repeat('A', 39)),
+            'a marker on a user label' => array('Some Release', '.private', str_repeat('A', 40)),
             'a similar prefix' => array('Some Release', '.chk-meta-extra'),
         );
         foreach ($real as $label => $row)
-            testAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1]), $label . ' must be kept');
+            testAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be kept');
     },
 
     'update.php records a private-label addition and deletion but skips the service stub' => function () {
@@ -186,14 +189,18 @@ $tests = array(
         if (!mkdir($scratch, 0700))
             throw new RuntimeException('Cannot create isolated history profile');
         $update = realpath(__DIR__ . '/../../../plugins/history/update.php');
-        $runner = '$_ENV["RU_PROFILE_PATH"]=$argv[1]; $script=$argv[2]; $argv=array_slice($argv,2); include $script; echo json_encode(array_values(rHistoryData::load()->data));';
-        $invoke = function ($action, $label) use ($scratch, $update, $runner) {
+        $runner = '$_ENV["RU_PROFILE_PATH"]=$argv[1]; $script=$argv[2]; $argv=array_slice($argv,2); include $script; echo json_encode(array("rows"=>array_values(rHistoryData::load()->data),"user"=>isset($_SERVER["REMOTE_USER"])?$_SERVER["REMOTE_USER"]:null));';
+        $invoke = function ($action, $label, $marker = '', $name = 'A real release', $legacy = false) use ($scratch, $update, $runner) {
             $args = array(
                 PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r', $runner, '--',
-                $scratch, $update, (string) $action, 'A real release', '100', '0', '0',
+                $scratch, $update, (string) $action, $name, '100', '0', '0',
                 '0', '1', '2', '3', 'https://tracker.test/announce',
-                rawurlencode($label), '1', 'historytest',
+                rawurlencode($label), '1', $marker, 'u:historytest',
             );
+            if ($legacy) {
+                array_splice($args, -2, 1);
+                $args[count($args) - 1] = 'historytest';
+            }
             $process = proc_open($args, array(
                 0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'),
             ), $pipes);
@@ -207,10 +214,11 @@ $tests = array(
             $exit = proc_close($process);
             if ($exit !== 0 || $errors !== '')
                 throw new RuntimeException('history update.php failed: ' . $errors);
-            $rows = json_decode($output, true);
-            if (!is_array($rows))
+            $payload = json_decode($output, true);
+            if (!is_array($payload) || !isset($payload['rows']) || !is_array($payload['rows']))
                 throw new RuntimeException('history update.php returned invalid rows: ' . $output);
-            return $rows;
+            testAssertSame('historytest', $payload['user'], 'tagged hook user is decoded');
+            return $payload['rows'];
         };
         try {
             $rows = $invoke(1, '.private');
@@ -222,7 +230,15 @@ $tests = array(
             testAssertSame(array(1, 3), $actions,
                 'both distinct user events reach the history cache');
             $rows = $invoke(1, '.chk-meta');
-            testAssertSame(2, count($rows), 'the metadata stub is not recorded');
+            testAssertSame(3, count($rows), 'an unmarked user torrent may use the exact service label');
+            $rows = $invoke(1, '.chk-meta', str_repeat('A', 40), 'Service stub release');
+            testAssertSame(3, count($rows), 'the marked metadata stub is not recorded');
+            $rows = $invoke(1, '.chk-meta', '', 'Legacy service stub', true);
+            testAssertSame(3, count($rows), 'an old hook still suppresses the service addition');
+            $rows = $invoke(3, '.chk-meta', '', 'Legacy service stub', true);
+            testAssertSame(3, count($rows), 'an old hook still suppresses the service deletion');
+            $rows = $invoke(1, '.private', '', 'Legacy user release', true);
+            testAssertSame(4, count($rows), 'an old hook still records the user event');
         } finally {
             FileUtil::deleteDirectory($scratch);
         }

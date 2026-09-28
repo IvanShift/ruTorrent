@@ -2,7 +2,20 @@
 	$path = dirname(realpath($argv[0]));
 	if(chdir($path))
 	{
-		if( count( $argv ) > 13 )
+		// Older registered hooks pass the user at 13 and no marker. New
+		// hooks tag the final user argument so an empty profile stays present.
+		$hasMarker = count( $argv ) > 14;
+		if( $hasMarker )
+		{
+			if( strncmp((string) $argv[14], 'u:', 2) !== 0 )
+			{
+				require_once( './history.php' );
+				FileUtil::toLog('history: malformed event hook user argument');
+				return;
+			}
+			$_SERVER['REMOTE_USER'] = substr($argv[14], 2);
+		}
+		elseif( count( $argv ) > 13 )
 			$_SERVER['REMOTE_USER'] = $argv[13];
 		require_once( './history.php' );
 		$hst = rHistoryData::load();
@@ -36,7 +49,8 @@
 		// user's own event: neither record it nor notify about it. The
 		// notification is skipped for the same reason the row is -- the
 		// push would report an event the user never performed.
-		if(!rHistoryData::isServiceEntry($data["name"], $data["label"]))
+		if(!rHistoryData::isServiceEntry($data["name"], $data["label"],
+			$hasMarker ? $argv[13] : '', $hasMarker))
 		{
 			if($mgr->log[$actions[$action]])
 			{

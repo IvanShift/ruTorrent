@@ -412,6 +412,7 @@ class RemoveWithDataTest extends TestCase
 	{
 		global $profileMask;
 		$profileMask = 0777;
+		@chmod($this->dir, 0700);
 		ErasedataCollectorTestState::$source = false;
 		ErasedataCollectorTestState::$indexCountFile = null;
 		ErasedataCollectorTestState::$indexBuilds = 0;
@@ -420,7 +421,9 @@ class RemoveWithDataTest extends TestCase
 		@mkdir($this->dir.'/erasedata', 0777, true);
 		foreach(array_diff(scandir($this->dir.'/erasedata'), array('.', '..')) as $entry)
 			$this->removePath($this->dir.'/erasedata/'.$entry);
+		@chmod($this->dir.'/erasedata', 0700);
 		FileUtil::$log = array();
+		FileUtil::$denyDirectoryRepair = false;
 		rXMLRPCRequest::$responses = array('system.client_version' =>
 			array('ok' => true, 'val' => array('0.16.24')));
 		rXMLRPCRequest::$requested = array();
@@ -1178,6 +1181,176 @@ class RemoveWithDataTest extends TestCase
 
 	// -- force-delete flag --------------------------------------------------
 
+	public function testEmptyShareCreatesDefaultSettingsSafely()
+	{
+		$this->reset();
+		chmod($this->dir, 0700);
+		$share = $this->dir.'/empty-share';
+		mkdir($share, 0755);
+		$settings = $share.'/settings';
+		$queue = $settings.'/erasedata';
+		$this->assertTrue(!file_exists($settings), 'the default settings directory is initially absent');
+		$this->assertTrue(erasedataEnsureQueueDirectory($queue),
+			'the default profile creates settings below a protected share');
+		$this->assertEquals(01777, fileperms($settings) & 01777,
+			'the new settings directory protects the queue name');
+		$this->assertEquals(0700, $this->modeOf($queue),
+			'the default queue is private');
+	}
+
+	public function testQueueAdmissionAcceptsOnlyAProvablyVanishedListedEntry()
+	{
+		$this->reset();
+		$queue = $this->queuePath();
+		$entry = $queue.'/finished.tmp';
+		file_put_contents($entry, 'staging');
+		$listed = scandir($queue);
+		$this->assertTrue(in_array('finished.tmp', $listed, true)
+			&& unlink($entry), 'the worker finished a name in the prior listing');
+		$this->assertTrue(erasedataQueueEntriesOwned($queue, $listed,
+			erasedataEffectiveUid(), $queue),
+			'a proven vanished staging name does not refuse the next admission');
+		$this->assertTrue(erasedataEnsureQueueDirectory($queue),
+			'the real queue boundary remains available after that completion');
+		file_put_contents($entry, 'still present');
+		$listed = scandir($queue);
+		chmod($queue, 0600);
+		FileUtil::$log = array();
+		$refused = !erasedataQueueEntriesOwned($queue, $listed,
+			erasedataEffectiveUid(), $queue);
+		chmod($queue, 0700);
+		$this->assertTrue($refused,
+			'a name still in the queue refuses when its inode is unreadable');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log),
+			'foreign or unreadable entry') !== false,
+			'the still-present unreadable entry keeps the classified refusal');
+	}
+
+	public function testChangedQueueParentRefusalIsLogged()
+	{
+		$this->reset();
+		$queue = $this->dir.'/erasedata';
+		$this->assertTrue(!erasedataQueueParentUnchanged($queue, $this->dir.'/old-parent'),
+			'a changed resolved parent is refused');
+		$this->assertTrue((bool)array_filter(FileUtil::$log, function($line) {
+			return strpos($line, 'queue parent changed during admission') !== false;
+		}), 'a changed resolved parent gives a visible classified reason');
+	}
+
+	public function testBrokenSettingsSymlinkRefusalIsLogged()
+	{
+		$this->reset();
+		chmod($this->dir, 0700);
+		$share = $this->dir.'/symlink-share';
+		mkdir($share, 0755);
+		symlink($share.'/absent', $share.'/settings');
+		$this->assertTrue(!erasedataEnsureQueueDirectory($share.'/settings/erasedata'),
+			'a broken settings link is refused');
+		$this->assertTrue((bool)array_filter(FileUtil::$log, function($line) {
+			return strpos($line, 'settings path is not a directory') !== false;
+		}), 'a broken settings link gives a visible classified reason');
+	}
+
+	public function testMissingSettingsParentRefusalIsLogged()
+	{
+		$this->reset();
+		chmod($this->dir, 0700);
+		$queue = $this->dir.'/absent-parent/settings/erasedata';
+		$this->assertTrue(!erasedataEnsureQueueDirectory($queue),
+			'a missing settings parent is refused');
+		$this->assertTrue((bool)array_filter(FileUtil::$log, function($line) {
+			return strpos($line, 'settings parent is unresolved') !== false;
+		}), 'an unresolved settings parent gives a visible classified reason');
+	}
+
+	public function testLegacyNamedProfileRequiresAttestationEvenWhenQueueIsEmpty()
+	{
+		$this->reset();
+		chmod($this->dir, 0700);
+		$share = $this->dir.'/named-share';
+		$users = $share.'/users';
+		$profile = $users.'/alice';
+		$settings = $profile.'/settings';
+		$queue = $settings.'/erasedata';
+		mkdir($queue, 0777, true);
+		chmod($share, 0755);
+		foreach(array($users, $profile, $settings, $queue) as $dir)
+			chmod($dir, 0777);
+		$this->assertTrue(!erasedataEnsureQueueDirectory($queue),
+			'a previously writable named chain cannot prove an empty queue was always empty');
+		$this->assertEquals(0777, fileperms($settings) & 07777,
+			'the hold leaves the provenance gap visible');
+		$this->assertEquals(0777, $this->modeOf($queue),
+			'the untrusted queue is not silently adopted');
+	}
+
+	public function testWritableParentTaintsExistingPrivateQueueBeforeRepair()
+	{
+		$this->reset();
+		$queue = $this->dir.'/erasedata';
+		file_put_contents($queue.'/old.list', 'unattested');
+		chmod($this->dir, 0777);
+		chmod($queue, 0700);
+		$hash = $this->hash();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		for($pass = 1; $pass <= 2; $pass++)
+		{
+			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+				'an old private queue under a writable parent is held on pass '.$pass);
+			$this->assertEquals(array(), rXMLRPCRequest::$erased,
+				'no erase follows a parent-name provenance gap');
+		}
+		$this->assertEquals(0777, fileperms($this->dir) & 0777,
+			'the refused migration leaves parent taint observable on retry');
+	}
+
+	public function testLegacyWritableNonemptyQueueIsHeldBeforeErase()
+	{
+		$this->reset();
+		$queue = $this->dir.'/erasedata';
+		$legacy = $queue.'/legacy.list';
+		file_put_contents($legacy, 'legacy bytes');
+		chmod($queue, 0777);
+		$hash = $this->hash();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+			'a previously writable queue with old contents must be held');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'no torrent is erased while old queue contents lack provenance');
+		$this->assertEquals('legacy bytes', file_get_contents($legacy),
+			'the old entry is preserved for attestation');
+		$this->assertTrue((bool)array_filter(FileUtil::$log, function($line) {
+			return strpos($line, 'legacy writable path needs operator attestation') !== false;
+		}), 'the hold is visible in the log');
+	}
+
+	public function testLegacyProducerHoldsWritableQueueUntilOperatorAttests()
+	{
+		$this->reset();
+		$queue = $this->dir.'/erasedata';
+		chmod($this->dir, 0777);
+		file_put_contents($queue.'/.drain-state.lock', '');
+		file_put_contents($queue.'/scheduler.lock', '');
+		chmod($queue, 0777);
+		$hash = $this->hash();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->eraseOk();
+		$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+			'a writable legacy chain holds even when it contains only inert locks');
+		$this->assertEquals(0777, fileperms($this->dir) & 07777,
+			'the parent stays visibly unsealed for operator review');
+		$this->assertEquals(0777, $this->modeOf($queue),
+			'the old queue is not adopted by changing its mode');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased,
+			'no destructive RPC follows an unattested legacy queue');
+		chmod($this->dir, 01777);
+		chmod($queue, 0700);
+		$this->assertTrue(erasedataEnsureQueueDirectory($queue),
+			'operator-sealed legacy paths can be admitted on a later attempt');
+	}
+
 	public function testForceDeleteFlagRecorded()
 	{
 		$this->reset();
@@ -1232,12 +1405,14 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
 		@chmod($this->dir.'/erasedata', 0555);
+		FileUtil::$denyDirectoryRepair = true;
 		try {
 			$result = erasedataRemoveWithData(array($hash), 1);
 			$this->assertTrue($result === false, 'removal must return false when manifest cannot be written');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased, 'torrent must not be erased when manifest write fails');
 			$this->assertTrue(count(FileUtil::$log) > 0, 'the manifest write failure is logged');
 		} finally {
+			FileUtil::$denyDirectoryRepair = false;
 			@chmod($this->dir.'/erasedata', 0777);
 		}
 	}
@@ -6884,6 +7059,7 @@ class RemoveWithDataTest extends TestCase
 			return;
 		file_put_contents($this->dir.'/erasedata/'.$oldHash.'.lock', '');
 		@chmod($this->dir.'/erasedata', 0555);
+		FileUtil::$denyDirectoryRepair = true;
 		try {
 			$this->assertEquals(false, $this->prepareCleanupJob($oldHash), 'a failed staged write must fail preparation');
 			$this->assertEquals(array(), glob($this->dir.'/erasedata/'.$oldHash.'.cleanup.*.tmp'), 'failed preparation must not retain a partial cleanup artifact');
@@ -6893,6 +7069,7 @@ class RemoveWithDataTest extends TestCase
 			if(is_resource($contender))
 				erasedataReleaseHashLock($contender);
 		} finally {
+			FileUtil::$denyDirectoryRepair = false;
 			@chmod($this->dir.'/erasedata', 0777);
 		}
 	}
@@ -12783,6 +12960,7 @@ class RemoveWithDataTest extends TestCase
 				file_put_contents($queue.'/scheduler.lock', '');
 				file_put_contents($queue.'/'.$hash.'.lock', '');
 				chmod($queue, 0500);
+				FileUtil::$denyDirectoryRepair = true;
 			}
 			try
 			{
@@ -12794,8 +12972,9 @@ class RemoveWithDataTest extends TestCase
 					$this->assertEquals(1, count(FileUtil::$log),
 						$obstacle.': the ordinary collector reports its refusal on tick '.$tick);
 					$this->assertTrue(count(FileUtil::$log) === 1
-						&& strpos(FileUtil::$log[0], 'failed to publish manifest for '.$hash) !== false,
-						'the report identifies the failed publication and its hash');
+						&& strpos(FileUtil::$log[0], $obstacle === 'readonly-queue'
+							? 'cannot seal queue' : 'failed to publish manifest for '.$hash) !== false,
+						'the report identifies the refusal and its queue or hash');
 					$this->assertEquals($bytes, file_get_contents($staged['path']),
 						'the refused publication retains the exact staging bytes');
 					$this->assertEquals('retained legacy payload', file_get_contents($payload),
@@ -12807,7 +12986,10 @@ class RemoveWithDataTest extends TestCase
 			finally
 			{
 				if($obstacle === 'readonly-queue')
+				{
+					FileUtil::$denyDirectoryRepair = false;
 					chmod($queue, 0700);
+				}
 				else
 					rmdir($final);
 			}
@@ -13367,8 +13549,10 @@ class RemoveWithDataTest extends TestCase
 			.' retaining the obligation'))
 			return;
 		@chmod($queue, 0555);
+		FileUtil::$denyDirectoryRepair = true;
 		FileUtil::$log = array();
 		$refused = erasedataDrainWorkerRun($this->dependencies());
+		FileUtil::$denyDirectoryRepair = false;
 		@chmod($queue, 0777);
 		$this->assertTrue($refused === false,
 			'an acknowledgement that cannot be made durable refuses the tick');
@@ -14180,7 +14364,21 @@ class RemoveWithDataTest extends TestCase
 			'forward' => $this->actionDoor($mirror, $hashes, 1, 'door-forward'),
 			'inverse' => $this->actionDoor($mirror, array_reverse($hashes), 1, 'door-inverse'),
 		);
-		$this->runChildren($children, 30, $invariant);
+		$codes = $this->runChildren($children, 30, $invariant);
+		$outcomes = array();
+		foreach($children as $name => $child)
+		{
+			$this->assertTrue(isset($codes[$name]) && $codes[$name] === 0
+				&& trim((string)$child->err) === '',
+				$name.' door exits normally without stderr');
+			$outcomes[] = trim((string)$child->out);
+		}
+		sort($outcomes, SORT_STRING);
+		$expectedOutcomes = array('Deletion queue did not acknowledge the request.',
+			'Deletion refused (rearm-refused). Check the server log.');
+		sort($expectedOutcomes, SORT_STRING);
+		$this->assertEquals($expectedOutcomes, $outcomes,
+			'both doors report their admitted no-ack or rearm-refused outcome, never queue-unavailable');
 		$state = $this->mirrorState($mirror);
 		$this->assertTrue(is_array($state) && isset($state['journal'])
 			&& is_array($state['journal']) && count($state['journal']) === 2,
@@ -17922,4 +18120,138 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(in_array('d.hash', rXMLRPCRequest::$requested, true),
 			'the very next tick resumes the live presence probe');
 	}
+	public function testLegacyUnsignedPrivateRootWithDataRemainsAnExactObligation()
+	{
+		$this->reset();
+		$hash = $this->hash('A');
+		$public = $this->dir.'/payload';
+		mkdir($public, 0700);
+		$base = $public.'/unsigned-old-base';
+		mkdir($base);
+		$this->writeManifestLines($hash.'.list', array($base.'/gone.bin'), $base, 1, 1);
+		$item = $this->dir.'/erasedata/'.$hash.'.list';
+		$exact = file_get_contents($item);
+		$identity = erasedataPathIdentity($base);
+		$root = erasedataDirectoryReservationPath($base, $item, $identity);
+		$this->assertTrue(is_string($root) && mkdir($root, 0700),
+			'old reservation shell is present');
+		file_put_contents($root.'/.initialized', '');
+		$this->assertTrue(rename($base, $root.'/directory'),
+			'old private data is present without an authority signature');
+		chmod($public, 0777);
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
+		$this->assertEquals(0, $status, 'legacy replay exits without a fatal');
+		$this->assertEquals($exact, file_get_contents($item),
+			'unsigned old root cannot retire its exact manifest after parent seal');
+		$this->assertTrue(is_dir($root.'/directory'),
+			'unsigned old private data remains available for inspection');
+		$this->assertTrue(strpos($output, 'private root retained: unsigned or changed') !== false,
+			'legacy hold names the failed authority check');
+	}
+
+
+	public function testMissingPrivateKeyDoesNotRegenerateAcrossPendingRoots()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$public = $this->dir.'/payload';
+		mkdir($public, 0700);
+		$base = $public.'/old-base';
+		mkdir($base);
+		file_put_contents($base.'/old.bin', 'old');
+		$this->writeManifestLines($oldHash.'.list', array($base.'/old.bin'), $base, 1, 1);
+		$oldManifest = $this->dir.'/erasedata/'.$oldHash.'.list';
+		$exact = file_get_contents($oldManifest);
+		$root = erasedataDirectoryReservationPath($base, $oldManifest,
+			erasedataPathIdentity($base));
+		$this->assertTrue(is_string($root) && erasedataProtectPrivateParent($root)
+			&& mkdir($root, 0700) && erasedataCreatePrivateMarker($root, $oldManifest)
+			&& rename($base, $root.'/directory'),
+			'an existing signed private root contains the first pending payload');
+		$key = $this->queuePath().'/.private-root-key';
+		$originalKey = file_get_contents($key);
+		$this->assertTrue(is_file($key) && unlink($key),
+			'the durable key is missing before a second capture begins');
+		$this->writeManifestLines($newHash.'.list', array($public.'/new.bin'),
+			$public.'/new.bin', 0, 1);
+		$newManifest = $this->dir.'/erasedata/'.$newHash.'.list';
+		FileUtil::$log = array();
+		$this->assertTrue(erasedataPrivateRootKey($newManifest, true) === false
+			&& !file_exists($key),
+			'new capture cannot mint a replacement key over a pending signed root');
+		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'private root key') !== false,
+			'key loss is a visible refusal');
+		$this->assertEquals($exact, file_get_contents($oldManifest),
+			'the old manifest is retained byte for byte');
+		$this->assertTrue(is_file($root.'/directory/old.bin'),
+			'the old private payload remains available for key restoration');
+		file_put_contents($key, $originalKey);
+		chmod($key, 0600);
+		$this->assertTrue(erasedataPrivateMarkerIsValid($root, $oldManifest)
+			&& erasedataPrivateRootKey($newManifest, true) === $originalKey,
+			'restoring the original key reopens both obligations without re-signing');
+	}
+
+
+	public function testPrivateRootKeyRejectsLinkAndCorruptControlFiles()
+	{
+		$this->reset();
+		$manifest = $this->queuePath().'/'. $this->hash('A').'.list';
+		$root = $this->dir.'/.erasedata-rmdir-key-validation';
+		$this->assertTrue(mkdir($root, 0700)
+			&& erasedataCreatePrivateMarker($root, $manifest),
+			'a first signed root creates a durable key and first-use state');
+		$key = $this->queuePath().'/.private-root-key';
+		$state = $this->queuePath().'/.private-root-key-state';
+		$this->assertEquals(0600, fileperms($key) & 0777,
+			'new key is private to the service UID');
+		$this->assertEquals(0600, fileperms($state) & 0777,
+			'first-use state is private to the service UID');
+		$original = file_get_contents($key);
+		$saved = $this->dir.'/saved-private-key';
+		$this->assertTrue(rename($key, $saved) && symlink($saved, $key),
+			'a symlink can occupy the key name during a restore');
+		$this->assertTrue(erasedataPrivateRootKey($manifest, false) === false,
+			'a symlinked key is never accepted');
+		unlink($key);
+		$this->assertTrue(link($saved, $key)
+			&& erasedataPrivateRootKey($manifest, false) === false,
+			'a multiply linked key is never accepted');
+		unlink($key);
+		$this->assertTrue(rename($saved, $key)
+			&& erasedataPrivateMarkerIsValid($root, $manifest),
+			'restoring the original inode restores signature verification');
+		file_put_contents($key, 'bad');
+		$this->assertTrue(erasedataPrivateRootKey($manifest, false) === false,
+			'a truncated key is held');
+		file_put_contents($key, $original);
+		$this->assertTrue(erasedataPrivateMarkerIsValid($root, $manifest),
+			'full key bytes restore the existing signature');
+		file_put_contents($state, 'x');
+		$this->assertTrue(erasedataPrivateRootKey($manifest, false) === false,
+			'a truncated first-use record is held');
+		file_put_contents($state, 'v1');
+		$this->assertTrue(erasedataPrivateMarkerIsValid($root, $manifest),
+			'restoring first-use state reopens the signed root');
+	}
+
+	public function testPrivateRootSignatureDoesNotTransferToAnotherInode()
+	{
+		$this->reset();
+		$key = $this->dir.'/erasedata/'.$this->hash('B').'.list';
+		$a = $this->dir.'/.erasedata-rmdir-authority-a';
+		$b = $this->dir.'/.erasedata-rmdir-authority-b';
+		$this->assertTrue(erasedataProtectPrivateParent($a)
+			&& mkdir($a, 0700) && mkdir($b, 0700),
+			'both root names are under the protected parent');
+		$this->assertTrue(erasedataCreatePrivateMarker($a, $key)
+			&& erasedataPrivateMarkerIsValid($a, $key),
+			'the new root has a valid durable authority marker');
+		copy($a.'/.initialized', $b.'/.initialized');
+		$this->assertTrue(!erasedataPrivateMarkerIsValid($b, $key),
+			'a copied marker cannot authenticate a different root inode');
+	}
+
+
 }

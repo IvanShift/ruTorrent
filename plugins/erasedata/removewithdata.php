@@ -962,8 +962,7 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 		if(!count($entries))
 			return(null);
 		$listPath = FileUtil::getSettingsPath().'/erasedata';
-		@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 			return(false);
 		$lock = erasedataAcquireHashLock($listPath, $canonicalOldHash);
 		if($lock === false)
@@ -1447,8 +1446,7 @@ if(!function_exists('erasedataRecoverObsoleteCleanup'))
 		$listPath = FileUtil::getSettingsPath().'/erasedata';
 		if($oldHash === false || $newHash === false)
 			return(ERASEDATA_CLEANUP_RETRY);
-		@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 			return(ERASEDATA_CLEANUP_RETRY);
 		$lock = erasedataAcquireHashLock($listPath, $oldHash);
 		if($lock === false)
@@ -1472,8 +1470,7 @@ if(!function_exists('erasedataCancelObsoleteCleanupGeneration'))
 		$listPath = FileUtil::getSettingsPath().'/erasedata';
 		if($oldHash === false || $newHash === false)
 			return(ERASEDATA_CLEANUP_RETRY);
-		@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 			return(ERASEDATA_CLEANUP_RETRY);
 		$lock = erasedataAcquireHashLock($listPath, $oldHash);
 		if($lock === false)
@@ -3062,9 +3059,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			erasedataDrainDiagnostic($log, 'invalid-hash', null, 0, 'admission-refused');
 			return(false);
 		}
-		if(!is_dir($listPath))
-			@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 		{
 			erasedataDrainDiagnostic($log, 'queue-unavailable', null, $members,
 				'admission-refused');
@@ -4709,7 +4704,8 @@ if(!function_exists('erasedataClassifyRetirementCandidate'))
 		// The plugin's own control files. Every one of them is either
 		// dot-prefixed or ends in .lock, so none can collide with a manifest,
 		// a marker or a staging object.
-		if($name === ERASEDATA_DRAIN_STATE_NAME
+		if($name === '.private-root-key' || $name === '.private-root-key-state'
+			|| $name === ERASEDATA_DRAIN_STATE_NAME
 			|| $name === ERASEDATA_DRAIN_STATE_LOCK_NAME
 			|| $name === ERASEDATA_DRAIN_WORKER_LOCK_NAME
 			|| $name === ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME)
@@ -5125,9 +5121,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 				$context . '-refused');
 			return(false);
 		}
-		if(!is_dir($listPath))
-			@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 		{
 			erasedataDrainDiagnostic($log, 'queue-unavailable', null, 0,
 				$context . '-refused');
@@ -5382,7 +5376,6 @@ if(!function_exists('erasedataRearmDrainSchedule'))
 	function erasedataRearmDrainSchedule()
 	{
 		$listPath = FileUtil::getSettingsPath()."/erasedata";
-		@FileUtil::makeDirectory($listPath);
 		// listPath, user and log, and nothing else: erasedataRearmDrainScheduleRun()
 		// and the retirement scan below it read exactly those three. A
 		// 'filesystem' key here would be built on every full web-interface load
@@ -5423,9 +5416,7 @@ if(!function_exists('erasedataDrainWorkerRun'))
 				'worker-refused-nothing-consumed');
 			return(false);
 		}
-		if(!is_dir($listPath))
-			@FileUtil::makeDirectory($listPath);
-		if(!is_dir($listPath))
+		if(!erasedataEnsureQueueDirectory($listPath))
 		{
 			erasedataDrainDiagnostic($log, 'queue-unavailable', null, 0,
 				'worker-refused-nothing-consumed');
@@ -5584,7 +5575,6 @@ if(!function_exists('erasedataDrainWorkerMain'))
 	function erasedataDrainWorkerMain($user)
 	{
 		$listPath = FileUtil::getSettingsPath()."/erasedata";
-		@FileUtil::makeDirectory($listPath);
 		return(erasedataDrainWorkerRun(array(
 			'listPath' => $listPath,
 			'user' => $user,
@@ -5650,7 +5640,6 @@ if(!function_exists('erasedataAdmitRemoval'))
 			return(false);
 		}
 		$listPath = FileUtil::getSettingsPath()."/erasedata";
-		@FileUtil::makeDirectory($listPath);
 		return(erasedataRemovalAdmissionRun(array(
 			'listPath' => $listPath,
 			'user' => User::getUser(),
@@ -5699,7 +5688,8 @@ if(!function_exists('erasedataRemoveWithData'))
 		if(!count($pending))
 			return(false);
 		$listPath = FileUtil::getSettingsPath()."/erasedata";
-		@FileUtil::makeDirectory($listPath);
+		if(!erasedataEnsureQueueDirectory($listPath))
+			return(false);
 		$erasable = array();
 		$tmpMap = array();
 		$locks = array();

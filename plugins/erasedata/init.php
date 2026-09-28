@@ -5,13 +5,13 @@ require_once(dirname(__FILE__).'/removewithdata.php');
 eval(FileUtil::getPluginConf($plugin["name"]));
 
 $listPath = FileUtil::getSettingsPath()."/erasedata";
-@FileUtil::makeDirectory($listPath);
+$queueReady = erasedataEnsureQueueDirectory($listPath);
 // The ordinary collector handles published manifests, including those left by
 // older releases. The generation drain has its own schedule and startup rearm.
 $req = new rXMLRPCRequest( array(
 	erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval)
 	) );
-if($req->success())
+if($queueReady && $req->success())
 {
 	// Startup recovery for the SEPARATE per-user drain schedule.
 	//

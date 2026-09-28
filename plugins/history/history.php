@@ -114,11 +114,13 @@ class rHistoryData
 		return(preg_match('/^[0-9A-Fa-f]{40}\.meta$/', (string) $name) === 1);
 	}
 
-	// The metadata fetcher uses this exact label for its temporary download.
-	// Other dot-prefixed labels do not establish that a download is internal.
-	static public function isServiceEntry( $name, $label )
+	// The fetcher's temporary download carries both this label and its
+	// predecessor hash. Old registered hooks lack the marker argument, so
+	// they retain the exact-label rule until rTorrent registers the new hook.
+	static public function isServiceEntry( $name, $label, $marker = '', $hasMarker = true )
 	{
-		return(self::isMagnetPlaceholder($name) || (string) $label === '.chk-meta');
+		return(self::isMagnetPlaceholder($name) || ((string) $label === '.chk-meta'
+			&& (!$hasMarker || preg_match('/^[0-9A-Fa-f]{40}$/D', (string) $marker) === 1)));
 	}
 
 	public function add( $e, $limit )
@@ -213,6 +215,9 @@ class rHistory
 	public function setHandlers()
 	{
 		global $rootPath;
+		$serviceMarker = ',$'.getCmd('d.get_custom').'=chk-meta-old';
+		// Keep the final argument nonempty even for an anonymous profile.
+		$hookUser = 'u:'.User::getUser();
 		if($this->log["addition"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_addition"]))
 		{
 			$addCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.Utility::getPHP().','.$rootPath.'/plugins/history/update.php'.',1,$'.
@@ -220,8 +225,8 @@ class rHistory
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
-				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet,".
-				User::getUser().'}';
+				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
+				$hookUser.'}';
 		}
 		else
 			$addCmd = getCmd('cat=');
@@ -231,8 +236,8 @@ class rHistory
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
-				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet,".
-				User::getUser().'}';
+				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
+				$hookUser.'}';
 		else
 			$finCmd = getCmd('cat=');
 		if($this->log["deletion"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_deletion"]))
@@ -241,8 +246,8 @@ class rHistory
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
-				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet,".
-				User::getUser().'}';
+				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
+				$hookUser.'}';
 		else
 			$delCmd = getCmd('cat=');
 		$req = new rXMLRPCRequest( array(

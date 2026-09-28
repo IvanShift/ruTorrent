@@ -40,6 +40,8 @@ function erasedataCollectorService(ErasedataFilesystemOps $filesystem)
 // way erasedataCollectorMain() below does.
 function erasedataRunCollector($listPath, $onlyHash = null)
 {
+	if(!erasedataEnsureQueueDirectory($listPath))
+		return(false);
 	$service = erasedataCollectorService(new ErasedataFilesystemOps());
 	$service->run($listPath, $onlyHash);
 }
@@ -48,7 +50,8 @@ function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 {
 	global $argv;
 	$listPath = FileUtil::getSettingsPath()."/erasedata";
-	@FileUtil::makeDirectory($listPath);
+	if(!erasedataEnsureQueueDirectory($listPath))
+		return(false);
 	$onlyHash = null;
 	if(is_array($argv) && count($argv) > 2)
 	{

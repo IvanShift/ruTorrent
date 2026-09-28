@@ -34,11 +34,23 @@ if(!class_exists('FileUtil'))
 	{
 		public static $settingsPath = null;
 		public static $log = array();
+		// Models a mount/owner that rejects chmod even when a test-owned 0555
+		// directory could be repaired by its real owner.
+		public static $denyDirectoryRepair = false;
 		public static $pluginConf = '$enableForceDeletion = true; $erasedebug_enabled = false;';
 		public static function getSettingsPath() { return self::$settingsPath; }
 		public static function getProfilePath() { return dirname(self::$settingsPath); }
 		public static function getConfFile($name) { return false; }
-		public static function makeDirectory($dir) { return @mkdir($dir, 0777, true); }
+		public static function makeDirectory($dir, $perms = null, $preserveExisting = false)
+		{
+			global $profileMask;
+			if($perms === null) $perms = isset($profileMask) ? $profileMask : 0777;
+			if($preserveExisting && is_dir($dir)) return true;
+			if(self::$denyDirectoryRepair && is_dir($dir)) return false;
+			$old = umask(0);
+			try { return is_dir($dir) ? @chmod($dir, $perms) : @mkdir($dir, $perms, true); }
+			finally { umask($old); }
+		}
 		public static function toLog($msg) { self::$log[] = $msg; }
 		public static function getPluginConf($plugin) { return self::$pluginConf; }
 	}
@@ -915,6 +927,11 @@ class ErasedataProductionMirror
 		@mkdir($self->pluginDir, 0777, true);
 		@mkdir($root.'/php', 0777, true);
 		@mkdir($self->listPath, 0777, true);
+		// The mirror begins after an ordinary successful queue migration. Tests
+		// about legacy 0777 admission build that state explicitly.
+		@chmod($root, 0700);
+		@chmod($self->settings, 01777);
+		@chmod($self->listPath, 0700);
 		@mkdir($self->daemonDir.'/req', 0777, true);
 		@mkdir($self->daemonDir.'/rep', 0777, true);
 		$copies = array();
@@ -1349,7 +1366,9 @@ class ErasedataProductionMirror
 			."\tpublic static function getSettingsPath() { return(".$settings."); }\n"
 			."\tpublic static function getProfilePath() { return(dirname(".$settings.")); }\n"
 			."\tpublic static function getConfFile(\$name) { return(false); }\n"
-			."\tpublic static function makeDirectory(\$dir) { return(@mkdir(\$dir, 0777, true)); }\n"
+			."\tpublic static function makeDirectory(\$dir, \$perms = null, \$preserveExisting = false) { "
+			."if(\$perms === null) \$perms = 0777; if(\$preserveExisting && is_dir(\$dir)) return(true); "
+			."return(is_dir(\$dir) ? @chmod(\$dir, \$perms) : @mkdir(\$dir, \$perms, true)); }\n"
 			."\tpublic static function toLog(\$message)\n"
 			."\t{\n"
 			."\t\t@file_put_contents(".$settings.".'/plugin.log', \$message.\"\\n\",\n"

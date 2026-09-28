@@ -62,6 +62,12 @@ class ErasedataFilesystemOps
 
 	public function rename($from, $to)
 	{
+		// In a sticky public parent, another UID may still rename its own
+		// source. Do not capture such an entry into a private root.
+		if((strpos($to, '/.erasedata-rmdir-') !== false
+			|| strpos($to, '/.erasedata-entry-') !== false)
+			&& !erasedataCaptureSourceOwned($from))
+			return(false);
 		return(@rename($from, $to));
 	}
 
@@ -483,6 +489,227 @@ function erasedataIdentityDeviceAndInode($identity)
 	return(array('dev' => (string)$source['dev'], 'ino' => (string)$source['ino']));
 }
 
+// Queue admission observes old writable ancestors and holds their contents.
+// New private payload roots may seal service-owned writable ancestors before
+// capture. Lexical links and their resolved targets are checked separately.
+function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealData = false)
+{
+	$parents = array();
+	for($dir = dirname($path); $dir !== dirname($dir); $dir = dirname($dir))
+		$parents[] = $dir;
+	$parents[] = '/';
+	foreach(array_reverse($parents) as $dir)
+	{
+		clearstatcache(true, $dir);
+		$stat = @lstat($dir);
+		$type = is_array($stat) ? $stat['mode'] & 0170000 : null;
+		if(!is_array($stat) || ($stat['uid'] !== $uid && $stat['uid'] !== 0)
+			|| ($type !== 0040000 && !($allowLinks && $type === 0120000)))
+		{
+			FileUtil::toLog('erasedata: '.($sealData ? 'private-root' : 'queue').' refused: unsafe ancestor '.$dir);
+			return(false);
+		}
+		if($type === 0120000)
+			continue;
+		if(($stat['mode'] & 0022) && !($stat['mode'] & 01000))
+		{
+			$settings = dirname($path);
+			$userProfile = dirname($settings);
+			$users = dirname($userProfile);
+			$ownedProfileDirectory = $sealData || $dir === $settings
+				|| (basename($users) === 'users'
+					&& ($dir === $userProfile || $dir === $users));
+			if(!$ownedProfileDirectory || $stat['uid'] !== $uid)
+			{
+				FileUtil::toLog('erasedata: '.($sealData ? 'private-root' : 'queue').' refused: unsupported writable ancestor '.$dir);
+				return(false);
+			}
+			$unsealed = true;
+			if($sealData)
+			{
+				if(!@chmod($dir, ($stat['mode'] & 07777) | 01000))
+				{
+					FileUtil::toLog('erasedata: private-root refused: cannot seal ancestor '.$dir);
+					return(false);
+				}
+				clearstatcache(true, $dir);
+				$sealed = @lstat($dir);
+				if(!is_array($sealed) || $sealed['dev'] !== $stat['dev']
+					|| $sealed['ino'] !== $stat['ino'] || !($sealed['mode'] & 01000))
+				{
+					FileUtil::toLog('erasedata: private-root refused: ancestor changed '.$dir);
+					return(false);
+				}
+			}
+		}
+	}
+	return(true);
+}
+
+// A path that resolves elsewhere after the first parent check cannot name the
+// queue we inspected, even when both targets have otherwise safe modes.
+function erasedataQueueParentUnchanged($listPath, $parent)
+{
+	if(@realpath(dirname($listPath)) === $parent)
+		return(true);
+	FileUtil::toLog('erasedata: queue refused: queue parent changed during admission '.$listPath);
+	return(false);
+}
+
+// PHP builds without ext-posix still expose the effective UID on Linux.
+function erasedataEffectiveUid()
+{
+	if(function_exists('posix_geteuid'))
+		return(posix_geteuid());
+	$status = @file_get_contents('/proc/self/status');
+	if(is_string($status) && preg_match('/^Uid:[ \t]*[0-9]+[ \t]+([0-9]+)/m', $status, $match))
+		return((int)$match[1]);
+	return(false);
+}
+
+// A listing is only a snapshot. Another trusted worker may finish and unlink
+// its staging entry before we can inspect that name.
+function erasedataQueueEntriesOwned($physicalPath, array $entries, $uid, $listPath)
+{
+	foreach($entries as $entry)
+	{
+		if($entry === '.' || $entry === '..')
+			continue;
+		$entryPath = $physicalPath.'/'.$entry;
+		clearstatcache(true, $entryPath);
+		$stat = @lstat($entryPath);
+		if(!is_array($stat))
+		{
+			$current = @scandir($physicalPath);
+			if(is_array($current) && !in_array($entry, $current, true))
+				continue;
+		}
+		if(!is_array($stat) || $stat['uid'] !== $uid)
+		{
+			FileUtil::toLog('erasedata: queue refused: foreign or unreadable entry in '.$listPath);
+			return(false);
+		}
+	}
+	return(true);
+}
+
+// A queue whose path was writable before this call may already have lost an
+// intent. Only an operator can attest that legacy state while services are stopped.
+function erasedataEnsureQueueDirectory($listPath)
+{
+	if(!is_string($listPath) || $listPath === '' || $listPath[0] !== '/'
+		|| strpos($listPath, "\0") !== false)
+	{
+		FileUtil::toLog('erasedata: queue refused: invalid queue path');
+		return(false);
+	}
+	$uid = erasedataEffectiveUid();
+	if($uid === false)
+	{
+		FileUtil::toLog('erasedata: queue refused: effective UID unavailable');
+		return(false);
+	}
+	$settings = dirname($listPath);
+	if(!is_dir($settings))
+	{
+		clearstatcache(true, $settings);
+		$existing = @lstat($settings);
+		$profile = @realpath(dirname($settings));
+		$unsafe = false;
+		if(is_array($existing))
+		{
+			FileUtil::toLog('erasedata: queue refused: settings path is not a directory '.$settings);
+			return(false);
+		}
+		if($profile === false)
+		{
+			FileUtil::toLog('erasedata: queue refused: settings parent is unresolved '.$settings);
+			return(false);
+		}
+		if(!erasedataGuardParentChain($settings, $uid, true, $unsafe))
+			return(false);
+		$physicalSettings = rtrim($profile, '/').'/'.basename($settings);
+		if(!erasedataGuardParentChain($physicalSettings, $uid, false, $unsafe)
+			|| $unsafe)
+		{
+			FileUtil::toLog('erasedata: queue refused: missing settings under unsafe parent '.$settings);
+			return(false);
+		}
+		global $profileMask;
+		@FileUtil::makeDirectory($physicalSettings,
+			(isset($profileMask) ? $profileMask : 0777) | 01000, true);
+		if(!is_dir($physicalSettings))
+		{
+			FileUtil::toLog('erasedata: queue refused: cannot create settings '.$settings);
+			return(false);
+		}
+	}
+	$unsealed = false;
+	if(!erasedataGuardParentChain($listPath, $uid, true, $unsealed))
+		return(false);
+	$parent = @realpath(dirname($listPath));
+	if($parent === false)
+	{
+		FileUtil::toLog('erasedata: queue refused: unresolved parent '.$listPath);
+		return(false);
+	}
+	$physicalPath = rtrim($parent, '/').'/'.basename($listPath);
+	if(!erasedataGuardParentChain($physicalPath, $uid, false, $unsealed))
+		return(false);
+	clearstatcache(true, $physicalPath);
+	$before = @lstat($physicalPath);
+	if(is_array($before) && (($before['mode'] & 0170000) !== 0040000
+		|| $before['uid'] !== $uid))
+	{
+		FileUtil::toLog('erasedata: queue refused: foreign or non-directory queue '.$listPath);
+		return(false);
+	}
+	if($unsealed || (is_array($before) && ($before['mode'] & 0022)))
+	{
+		FileUtil::toLog('erasedata: queue refused: legacy writable path needs operator attestation; cleanup held '.$listPath);
+		return(false);
+	}
+	$reopened = false;
+	if(!erasedataGuardParentChain($listPath, $uid, true, $reopened)
+		|| !erasedataQueueParentUnchanged($listPath, $parent)
+		|| !erasedataGuardParentChain($physicalPath, $uid, false, $reopened))
+		return(false);
+	if($reopened)
+	{
+		FileUtil::toLog('erasedata: queue refused: path reopened during admission; cleanup held '.$listPath);
+		return(false);
+	}
+	@FileUtil::makeDirectory($physicalPath, 0700, true);
+	clearstatcache(true, $physicalPath);
+	$after = @lstat($physicalPath);
+	if(!is_array($after) || ($after['mode'] & 0170000) !== 0040000
+		|| $after['uid'] !== $uid || ($after['mode'] & 07777) !== 0700
+		|| (is_array($before) && ($before['dev'] !== $after['dev']
+			|| $before['ino'] !== $after['ino'])))
+	{
+		FileUtil::toLog('erasedata: queue refused: cannot seal queue '.$listPath);
+		return(false);
+	}
+	$entries = @scandir($physicalPath);
+	if(!is_array($entries))
+	{
+		FileUtil::toLog('erasedata: queue refused: cannot inspect existing entries '.$listPath);
+		return(false);
+	}
+	if(!erasedataQueueEntriesOwned($physicalPath, $entries, $uid, $listPath)
+		|| !erasedataQueueParentUnchanged($listPath, $parent))
+		return(false);
+	clearstatcache(true, $physicalPath);
+	$current = @lstat($physicalPath);
+	if(!is_array($current) || $current['dev'] !== $after['dev']
+		|| $current['ino'] !== $after['ino'])
+	{
+		FileUtil::toLog('erasedata: queue refused: queue changed during entry scan '.$listPath);
+		return(false);
+	}
+	return(true);
+}
+
 if(!function_exists('erasedataSharedFileMode'))
 {
 	// The mode every file this plugin shares between the web user and the user
@@ -690,20 +917,192 @@ function erasedataPrivateMarkerPath($root)
 	return($root.'/.initialized');
 }
 
-function erasedataCreatePrivateMarker($root)
+function erasedataCaptureSourceOwned($path)
 {
-	$handle = @fopen(erasedataPrivateMarkerPath($root), 'x');
-	if($handle === false)
-		return(false);
-	$closed = @fclose($handle);
-	@chmod(erasedataPrivateMarkerPath($root), 0600);
-	return($closed);
+	clearstatcache(true, $path);
+	$source = @lstat($path);
+	$parent = @lstat(dirname($path));
+	$uid = erasedataEffectiveUid();
+	return($uid !== false && is_array($source) && is_array($parent)
+		&& (!(($parent['mode'] & 0022) && ($parent['mode'] & 01000))
+			|| $source['uid'] === $uid || $source['uid'] === 0));
 }
 
-function erasedataPrivateMarkerIsValid($root)
+// A different UID may rename a private 0700 root through any writable,
+// non-sticky ancestor. Seal only service-owned directories, including both the
+// lexical path and the resolved target of each lexical symlink.
+function erasedataProtectPrivateParent($root)
+{
+	$uid = erasedataEffectiveUid();
+	if($uid === false || !is_string($root) || $root === '' || $root[0] !== '/')
+		return(false);
+	$unsealed = false;
+	$parent = @realpath(dirname($root));
+	if($parent === false
+		|| !erasedataGuardParentChain($root, $uid, true, $unsealed, true)
+		|| @realpath(dirname($root)) !== $parent
+		|| !erasedataGuardParentChain($parent.'/'.basename($root),
+			$uid, false, $unsealed, true))
+		return(false);
+	return(true);
+}
+
+// The only key is stored in the protected obligation queue. An incomplete key
+// after a crash is a visible hold, never a reason to invent replacement trust.
+// Only an empty, service-owned unsigned shell can be discarded after a
+// crash-before-marker. A body or marker of unknown provenance remains held.
+function erasedataDiscardEmptyUnsignedRoot($root)
+{
+	if(!erasedataProtectPrivateParent($root))
+		return(false);
+	$uid = erasedataEffectiveUid();
+	clearstatcache(true, $root);
+	$stat = @lstat($root);
+	$entries = @scandir($root);
+	return($uid !== false && is_array($stat) && $stat['uid'] === $uid
+		&& ($stat['mode'] & 0170000) === 0040000
+		&& is_array($entries) && count(array_diff($entries, array('.', '..'))) === 0
+		&& @rmdir($root));
+}
+
+function erasedataPrivateRootKey($reservationKey, $create)
+{
+	if(!is_string($reservationKey) || $reservationKey === ''
+		|| $reservationKey[0] !== '/' || strpos($reservationKey, "\0") !== false)
+		return(false);
+	$queue = dirname($reservationKey);
+	if(!erasedataEnsureQueueDirectory($queue))
+		return(false);
+	$path = $queue.'/.private-root-key';
+	$statePath = $queue.'/.private-root-key-state';
+	clearstatcache(true, $path);
+	clearstatcache(true, $statePath);
+	$stat = @lstat($path);
+	$state = @lstat($statePath);
+	// The state is published before the first marker can be signed. Once it
+	// exists, a missing key is loss, never permission to mint another key.
+	if(!is_array($stat) && $create)
+	{
+		if(is_array($state))
+		{
+			FileUtil::toLog('erasedata: private root key refused: missing after first use; cleanup held');
+			return(false);
+		}
+		try { $bytes = bin2hex(random_bytes(32)); }
+		catch(Exception $e)
+		{
+			FileUtil::toLog('erasedata: private root key refused: random source unavailable; cleanup held');
+			return(false);
+		}
+		$handle = @fopen($path, 'xb');
+		if($handle !== false)
+		{
+			@chmod($path, 0600);
+			$written = @fwrite($handle, $bytes);
+			$flushed = @fflush($handle);
+			$closed = @fclose($handle);
+			if($written !== 64 || !$flushed || !$closed)
+			{
+				FileUtil::toLog('erasedata: private root key refused: incomplete key write; cleanup held');
+				return(false);
+			}
+		}
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+	}
+	$uid = erasedataEffectiveUid();
+	if(!is_array($stat) || $uid === false || $stat['uid'] !== $uid
+		|| ($stat['mode'] & 0170000) !== 0100000
+		|| ($stat['mode'] & 077) !== 0 || $stat['nlink'] !== 1
+		|| $stat['size'] !== 64)
+	{
+		FileUtil::toLog('erasedata: private root key refused: missing or invalid; cleanup held');
+		return(false);
+	}
+	$key = ErasedataManifestCodec::readBoundedFile($path, 64);
+	if(!is_string($key) || preg_match('/^[0-9a-f]{64}$/D', $key) !== 1)
+	{
+		FileUtil::toLog('erasedata: private root key refused: invalid bytes; cleanup held');
+		return(false);
+	}
+	if(!is_array($state) && $create)
+	{
+		if(!erasedataWriteDurableFile($statePath, 'v1', 0600))
+		{
+			FileUtil::toLog('erasedata: private root key refused: cannot record first use; cleanup held');
+			return(false);
+		}
+		clearstatcache(true, $statePath);
+		$state = @lstat($statePath);
+	}
+	if(!is_array($state) || $state['uid'] !== $uid
+		|| ($state['mode'] & 0170000) !== 0100000
+		|| ($state['mode'] & 077) !== 0 || $state['nlink'] !== 1
+		|| $state['size'] !== 2
+		|| ErasedataManifestCodec::readBoundedFile($statePath, 2) !== 'v1')
+	{
+		FileUtil::toLog('erasedata: private root key refused: missing or invalid first-use state; cleanup held');
+		return(false);
+	}
+	return($key);
+}
+
+function erasedataPrivateRootSignature($root, $reservationKey, $createKey)
+{
+	if(!erasedataProtectPrivateParent($root))
+		return(false);
+	clearstatcache(true, $root);
+	$stat = @lstat($root);
+	$uid = erasedataEffectiveUid();
+	if(!is_array($stat) || $uid === false || $stat['uid'] !== $uid
+		|| ($stat['mode'] & 0170000) !== 0040000
+		|| ($stat['mode'] & 0022))
+		return(false);
+	$key = erasedataPrivateRootKey($reservationKey, $createKey);
+	if($key === false)
+		return(false);
+	$physicalParent = @realpath(dirname($root));
+	if($physicalParent === false)
+		return(false);
+	$physicalRoot = rtrim($physicalParent, '/').'/'.basename($root);
+	$parentStat = @lstat($physicalParent);
+	if(!is_array($parentStat))
+		return(false);
+	return(hash_hmac('sha256', "v1\0".$physicalRoot."\0"
+		.$parentStat['dev']."\0".$parentStat['ino']."\0"
+		.$stat['dev']."\0".$stat['ino'], $key));
+}
+
+function erasedataCreatePrivateMarker($root, $reservationKey = null)
+{
+	$signature = $reservationKey === null ? ''
+		: erasedataPrivateRootSignature($root, $reservationKey, true);
+	if($signature === false)
+		return(false);
+	$path = erasedataPrivateMarkerPath($root);
+	$handle = @fopen($path, 'xb');
+	if($handle === false)
+		return(false);
+	@chmod($path, 0600);
+	$written = $signature === '' ? 0 : @fwrite($handle, $signature);
+	$flushed = @fflush($handle);
+	$closed = @fclose($handle);
+	if($written !== strlen($signature) || !$flushed || !$closed)
+		return(false);
+	return(true);
+}
+
+function erasedataPrivateMarkerIsValid($root, $reservationKey = null)
 {
 	$marker = erasedataPrivateMarkerPath($root);
-	return(is_file($marker) && !is_link($marker));
+	if(!is_file($marker) || is_link($marker))
+		return(false);
+	if($reservationKey === null)
+		return(true);
+	$signature = erasedataPrivateRootSignature($root, $reservationKey, false);
+	$stored = ErasedataManifestCodec::readBoundedFile($marker, 64);
+	return(is_string($signature) && is_string($stored)
+		&& hash_equals($signature, $stored));
 }
 
 function erasedataEntryIdentityParts($identity)
@@ -761,7 +1160,17 @@ function erasedataCapturedEntryRoots($path, $reservationKey,
 		if(strpos($entry, $prefix) === 0
 			&& preg_match('/^[0-9]+-[0-9]+-[ldfo]-[a-f0-9]{32}$/D',
 				substr($entry, strlen($prefix))))
-			$roots[] = $parent.'/'.$entry;
+		{
+			$root = $parent.'/'.$entry;
+			if(!erasedataPrivateMarkerIsValid($root,
+				$reservationKey === 'manifest-consumption' ? null : $reservationKey))
+			{
+				if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+				FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
+				return(false);
+			}
+			$roots[] = $root;
+		}
 	return($roots);
 }
 
@@ -816,13 +1225,15 @@ function erasedataCreateCapturedEntryRoot($path, $reservationKey, $expected,
 		return(false);
 	$root = erasedataCapturedEntryPrefix($path, $reservationKey)
 		.$parts['dev'].'-'.$parts['ino'].'-'.$parts['type'].'-'.$token;
-	if(!$filesystem->makeDirectory($root, 0700))
+	if(!erasedataProtectPrivateParent($root)
+		|| !$filesystem->makeDirectory($root, 0700))
 		return(false);
 	$namePath = erasedataCapturedEntryNamePath($root);
 	$name = base64_encode(basename($path));
 	$written = @file_put_contents($namePath, $name, LOCK_EX);
 	@chmod($namePath, 0600);
-	if($written !== strlen($name) || !erasedataCreatePrivateMarker($root))
+	if($written !== strlen($name) || !erasedataCreatePrivateMarker($root,
+			$reservationKey === 'manifest-consumption' ? null : $reservationKey))
 	{
 		$filesystem->unlink($namePath);
 		$filesystem->unlink(erasedataPrivateMarkerPath($root));
@@ -1027,6 +1438,14 @@ function erasedataResumeCapturedEntries($parent, $reservationKey,
 		if(strpos($entry, '.erasedata-entry-') !== 0)
 			continue;
 		$root = $parent.'/'.$entry;
+		if($reservationKey !== 'manifest-consumption'
+			&& !erasedataPrivateMarkerIsValid($root, $reservationKey))
+		{
+			if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+			FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
+			$blocker = $root;
+			return(false);
+		}
 		$name = erasedataCapturedEntryName($root);
 		if($name === false)
 		{

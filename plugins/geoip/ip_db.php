@@ -11,7 +11,7 @@ class ipDB
 	public function __construct()
 	{
 		$pathToDatabase = FileUtil::getSettingsPath().'/'.sqlite_db_name();
-		@FileUtil::makeDirectory( dirname($pathToDatabase) );
+		@FileUtil::makeDirectory(dirname($pathToDatabase), null, true);
 		$needCreate = (!is_readable($pathToDatabase));
 		if( $this->handle = sqlite_open1($pathToDatabase, 0666, $this->error) )
 		{

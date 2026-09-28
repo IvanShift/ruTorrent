@@ -257,7 +257,7 @@ if($handle = opendir('../plugins'))
 	        	        $up = FileUtil::getUploadsPath();
 	        	        $st = FileUtil::getSettingsPath();
 				@chmod($up,$profileMask);
-				@chmod($st,$profileMask);
+				// Existing settings may protect a plugin queue; diagnostics must not remode them.
 				@chmod('./test.sh',$profileMask & 0755);
 	        	        if($phpUseGzip && (findEXE('gzip')===false))
 	        	        {

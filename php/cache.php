@@ -9,9 +9,13 @@ class rCache
 
 	public function __construct( $name = '' )
 	{
-		$this->dir = FileUtil::getSettingsPath().$name;
-		if(!is_dir($this->dir))
-			FileUtil::makeDirectory($this->dir);
+		global $profileMask;
+		$settings = FileUtil::getSettingsPath();
+		FileUtil::makeDirectory($settings,
+			(isset($profileMask) ? $profileMask : 0777) | 01000, true);
+		$this->dir = $settings.$name;
+		if($name !== '')
+			FileUtil::makeDirectory($this->dir, null, true);
 	}
 	public static function flock( $fp )
 	{

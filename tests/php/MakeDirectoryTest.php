@@ -115,6 +115,49 @@ class MakeDirectoryTest extends TestCase
 		$this->assertTrue(is_dir($missing), 'the one that did not exist is created');
 	}
 
+	/** A first-profile caller may resume after another request sealed settings. */
+	public function testCreateOnlyPreservesSettingsFromConcurrentFirstProfileLoad()
+	{
+		global $profileMask;
+		$profileMask = 0777;
+		$profile = $this->root.'/users/alice';
+		$settings = $profile.'/settings';
+		mkdir($settings, 0777, true);
+		chmod($settings, 01777);
+		FileUtil::makeDirectory(array($profile, $settings, $profile.'/torrents',
+			$profile.'/tmp'), null, true);
+		clearstatcache(true, $settings);
+		$this->assertEquals(01777, fileperms($settings) & 07777,
+			'a late first-profile creator must not reopen sealed settings');
+		$this->assertTrue(is_dir($profile.'/torrents') && is_dir($profile.'/tmp'),
+			'create-only still fills the missing profile directories');
+	}
+
+	/** First named-profile creation must protect every new writable ancestor. */
+	public function testNewNamedProfileDirectoriesAreBornProtected()
+	{
+		global $profilePath, $profileMask;
+		$oldPath = isset($profilePath) ? $profilePath : null;
+		$oldMask = isset($profileMask) ? $profileMask : null;
+		$share = $this->root.'/fresh-share';
+		mkdir($share, 0755);
+		$profilePath = $share;
+		$profileMask = 0777;
+		try {
+			$this->assertEquals($share.'/users/alice', FileUtil::getProfilePathEx('alice'));
+			foreach(array($share.'/users', $share.'/users/alice',
+				$share.'/users/alice/settings') as $directory)
+			{
+				clearstatcache(true, $directory);
+				$this->assertEquals(01777, fileperms($directory) & 07777,
+					'a new named-profile ancestor is protected at creation: '.$directory);
+			}
+		} finally {
+			$profilePath = $oldPath;
+			$profileMask = $oldMask;
+		}
+	}
+
 	/** An empty list asks for nothing and must do nothing. */
 	public function testAnEmptyListCreatesNothing()
 	{

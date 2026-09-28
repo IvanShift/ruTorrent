@@ -70,7 +70,16 @@ function erasedataDirectoryReservations($path, $reservationKey,
 		if(strpos($entry, $prefix) === 0
 			&& preg_match('/^[0-9]+-[0-9]+-[a-f0-9]{32}$/D',
 				substr($entry, strlen($prefix))))
-			$ret[] = $directory.'/'.$entry;
+		{
+			$root = $directory.'/'.$entry;
+			if(!erasedataPrivateMarkerIsValid($root, $reservationKey))
+			{
+				if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+				FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
+				return(false);
+			}
+			$ret[] = $root;
+		}
 	return($ret);
 }
 
@@ -93,7 +102,7 @@ function erasedataReservationHasEncodedIdentity($reserved, $path, $reservationKe
 {
 	$encoded = erasedataReservationEncodedIdentity(
 		$reserved, $path, $reservationKey, $logicalPath);
-	if($encoded === false || !erasedataPrivateMarkerIsValid($reserved))
+	if($encoded === false || !erasedataPrivateMarkerIsValid($reserved, $reservationKey))
 		return(false);
 	$data = erasedataReservationDataPath($reserved);
 	$identity = erasedataPathIdentity($data);
@@ -112,7 +121,8 @@ function erasedataRemoveReservationContainer($reserved, $path, $reservationKey,
 	ErasedataFilesystemOps $filesystem, $logicalPath = null)
 {
 	if(erasedataReservationEncodedIdentity(
-		$reserved, $path, $reservationKey, $logicalPath) === false)
+		$reserved, $path, $reservationKey, $logicalPath) === false
+		|| !erasedataPrivateMarkerIsValid($reserved, $reservationKey))
 		return(false);
 	return(!erasedataPathExists($reserved)
 		|| $filesystem->removePrivateContainer($reserved, array('.', '..',
@@ -219,7 +229,7 @@ function erasedataRecoveryCapturePrefix($target)
 	return($target.'.force-');
 }
 
-function erasedataRecoveryCaptureRoots($target, ErasedataFilesystemOps $filesystem)
+function erasedataRecoveryCaptureRoots($target, ErasedataFilesystemOps $filesystem, $reservationKey)
 {
 	$directory = dirname($target);
 	if(!is_dir($directory))
@@ -232,7 +242,16 @@ function erasedataRecoveryCaptureRoots($target, ErasedataFilesystemOps $filesyst
 	foreach($entries as $entry)
 		if(strpos($entry, $prefix) === 0
 			&& preg_match('/^[a-f0-9]{32}$/D', substr($entry, strlen($prefix))))
-			$ret[] = $directory.'/'.$entry;
+		{
+			$root = $directory.'/'.$entry;
+			if(!erasedataPrivateMarkerIsValid($root, $reservationKey))
+			{
+				if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+				FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
+				return(false);
+			}
+			$ret[] = $root;
+		}
 	return($ret);
 }
 
@@ -276,7 +295,7 @@ function erasedataRecoveryLinkLayout($path, ErasedataFilesystemOps $filesystem,
 }
 
 function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem,
-	$logicalPath = null)
+	$logicalPath = null, $reservationKey = null)
 {
 	$linkLayout = erasedataRecoveryLinkLayout($path, $filesystem, $logicalPath);
 	if($linkLayout === false)
@@ -288,42 +307,20 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem,
 	{
 		if(is_link($reservationRoot) || !is_dir($reservationRoot))
 			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
-		$reservationEntries = $filesystem->scanDirectory($reservationRoot);
-		if(!erasedataPrivateMarkerIsValid($reservationRoot))
-		{
-			if($reservationEntries === false || count(array_diff(
-				$reservationEntries, array('.', '..'))) > 0)
-				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
-			if(!$filesystem->removePrivateContainer(
-				$reservationRoot, array('.', '..')))
-				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
-		}
+		if(!erasedataPrivateMarkerIsValid($reservationRoot, $reservationKey))
+			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target));
 	}
 	$layout = array('reservationRoot'=>$reservationRoot);
-	$captureRoots = erasedataRecoveryCaptureRoots($target, $filesystem);
+	$captureRoots = erasedataRecoveryCaptureRoots($target, $filesystem, $reservationKey);
 	if($captureRoots === false || count($captureRoots) > 1)
 		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	$captureRoot = count($captureRoots) === 1
 		? $captureRoots[0] : erasedataNewRecoveryCaptureRoot($target);
 	if($captureRoot === false)
 		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
-	if(count($captureRoots) === 1)
-	{
-		$captureEntries = $filesystem->scanDirectory($captureRoot);
-		if(!erasedataPrivateMarkerIsValid($captureRoot))
-		{
-			if($captureEntries === false || count(array_diff(
-				$captureEntries, array('.', '..'))) > 0)
-				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
-			if(!$filesystem->removePrivateContainer(
-				$captureRoot, array('.', '..')))
-				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
-			$captureRoots = array();
-			$captureRoot = erasedataNewRecoveryCaptureRoot($target);
-			if($captureRoot === false)
-				return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
-		}
-	}
+	if(count($captureRoots) === 1
+		&& !erasedataPrivateMarkerIsValid($captureRoot, $reservationKey))
+		return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 	if(!is_null($reservationRoot) && erasedataPathExists($reservationRoot))
 	{
 		$reservationEntries = $filesystem->scanDirectory($reservationRoot);
@@ -348,7 +345,7 @@ function erasedataRecoveryLinkTarget($path, ErasedataFilesystemOps $filesystem,
 	if($rootExists)
 	{
 		if(is_link($captureRoot) || !is_dir($captureRoot)
-			|| !erasedataPrivateMarkerIsValid($captureRoot))
+			|| !erasedataPrivateMarkerIsValid($captureRoot, $reservationKey))
 			return(array('safe'=>false, 'linkTarget'=>$linkTarget, 'boundTarget'=>$target) + $layout);
 		$entries = $filesystem->scanDirectory($captureRoot);
 		if($entries === false || count(array_diff(
@@ -434,7 +431,7 @@ function erasedataCompleteRecoveryLink($path, $reservationKey,
 			$linkLayout['boundTarget'], null, $reservationKey, true))
 			return(false);
 	}
-	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
+	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath, $reservationKey);
 	if($recovery === false)
 		return(null);
 	if(empty($recovery['safe']) || !empty($recovery['captured']))
@@ -471,7 +468,7 @@ function erasedataCompleteRecoveryLink($path, $reservationKey,
 		$path, $linkTarget, $reservationKey, $filesystem));
 }
 
-function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $filesystem)
+function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $filesystem, $reservationKey)
 {
 	if(!empty($recovery['captured']))
 		return($recovery);
@@ -480,9 +477,10 @@ function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $fi
 	$capture = $captureRoot.'/directory';
 	if(!erasedataPathExists($captureRoot))
 	{
-		if(!$filesystem->makeDirectory($captureRoot, 0700))
+		if(!erasedataProtectPrivateParent($captureRoot)
+			|| !$filesystem->makeDirectory($captureRoot, 0700))
 			return(false);
-		if(!erasedataCreatePrivateMarker($captureRoot))
+		if(!erasedataCreatePrivateMarker($captureRoot, $reservationKey))
 		{
 			$filesystem->removeDirectory($captureRoot);
 			return(false);
@@ -557,7 +555,7 @@ function erasedataDeleteRecoveryDirectory($path, $recovery, $reservationKey,
 			$path, $linkTarget, $reservationKey, $filesystem));
 	}
 
-	$captured = erasedataCaptureRecoveryDirectory($recovery, $filesystem);
+	$captured = erasedataCaptureRecoveryDirectory($recovery, $filesystem, $reservationKey);
 	if($captured === false)
 		return(false);
 	$capture = $captured['path'];
@@ -728,9 +726,10 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 	// before passing the private name to rmdir().
 	$reservation = erasedataDirectoryReservationPath(
 		$path, $reservationKey, $expected, $logicalPath);
-	if($reservation === false || !$filesystem->makeDirectory($reservation, 0700))
+	if($reservation === false || !erasedataProtectPrivateParent($reservation)
+		|| !$filesystem->makeDirectory($reservation, 0700))
 		return(false);
-	if(!erasedataCreatePrivateMarker($reservation))
+	if(!erasedataCreatePrivateMarker($reservation, $reservationKey))
 	{
 		$filesystem->removeDirectory($reservation);
 		return(false);
@@ -811,7 +810,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 				&& call_user_func($markPhase, $reservation, 'verify-deleting'))
 			{
 				$recovery = erasedataRecoveryLinkTarget(
-					$path, $filesystem, $logicalPath);
+					$path, $filesystem, $logicalPath, $reservationKey);
 				return($recovery !== false && erasedataDeleteRecoveryDirectory(
 					$path, $recovery, $reservationKey, $filesystem,
 					$markPhase, $reservation));
@@ -846,7 +845,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		if(!$restoredLink && !erasedataPublishReservationLink(
 			$reserved, $path, $filesystem, $linkTarget, $parentGuard))
 			return(false);
-		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
+		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath, $reservationKey);
 		return($recovery !== false && erasedataDeleteRecoveryDirectory(
 			$path, $recovery, $reservationKey, $filesystem, $markPhase, $reservation));
 	}
@@ -854,7 +853,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		return(true);
 	if(is_link($path))
 	{
-		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
+		$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath, $reservationKey);
 		if($recovery !== false)
 			return(erasedataDeleteRecoveryDirectory(
 				$path, $recovery, $reservationKey, $filesystem, $markPhase));
@@ -866,16 +865,17 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 	if($expected === false || empty($expected['exists']) || !is_dir($path))
 		return(false);
 
-	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
+	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath, $reservationKey);
 	if($recovery !== false)
 		return(erasedataDeleteRecoveryDirectory(
 			$path, $recovery, $reservationKey, $filesystem, $markPhase));
 
 	$reservation = erasedataDirectoryReservationPath(
 		$path, $reservationKey, $expected, $logicalPath);
-	if($reservation === false || !$filesystem->makeDirectory($reservation, 0700))
+	if($reservation === false || !erasedataProtectPrivateParent($reservation)
+		|| !$filesystem->makeDirectory($reservation, 0700))
 		return(false);
-	if(!erasedataCreatePrivateMarker($reservation))
+	if(!erasedataCreatePrivateMarker($reservation, $reservationKey))
 	{
 		$filesystem->removeDirectory($reservation);
 		return(false);
@@ -905,7 +905,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		$reserved, $path, $filesystem, $linkTarget, $parentGuard))
 		return(false);
 
-	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath);
+	$recovery = erasedataRecoveryLinkTarget($path, $filesystem, $logicalPath, $reservationKey);
 	if($recovery === false)
 		return(false);
 	return(erasedataDeleteRecoveryDirectory(
@@ -1284,7 +1284,7 @@ function erasedataCleanupRestoreReservation($path, $reservation, $reservationKey
 	{
 		if(erasedataReservationEncodedIdentity(
 				$reservation, $path, $reservationKey) === false
-			|| !erasedataPrivateMarkerIsValid($reservation))
+			|| !erasedataPrivateMarkerIsValid($reservation, $reservationKey))
 		{
 			$reason = 'capture-identity';
 			return(false);
@@ -1314,7 +1314,7 @@ function erasedataCleanupRestoreReservation($path, $reservation, $reservationKey
 	}
 	$encoded = erasedataReservationEncodedIdentity(
 		$reservation, $path, $reservationKey);
-	if($encoded === false || !erasedataPrivateMarkerIsValid($reservation))
+	if($encoded === false || !erasedataPrivateMarkerIsValid($reservation, $reservationKey))
 	{
 		$reason = 'capture-identity';
 		return(false);
@@ -1718,7 +1718,7 @@ final class ErasedataCollector
 			|| strpos(basename($layout['reservationRoot']),
 				basename(erasedataDirectoryReservationPrefix($path, $item))) !== 0)
 			return(false);
-		$recovery = erasedataRecoveryLinkTarget($path, $this->filesystem);
+		$recovery = erasedataRecoveryLinkTarget($path, $this->filesystem, null, $item);
 		return(is_array($recovery) && !empty($recovery['safe']));
 	}
 
@@ -2215,7 +2215,7 @@ final class ErasedataCollector
 			else if(is_array($baseEntry) && !empty($baseEntry['is_link'])
 				&& !is_array($baseIdentity))
 			{
-				$recovery = erasedataRecoveryLinkTarget($base_path, $this->filesystem);
+				$recovery = erasedataRecoveryLinkTarget($base_path, $this->filesystem, null, $item);
 				if(is_array($recovery) && !empty($recovery['safe'])
 					&& empty($recovery['exists']))
 					$baseState = 'recovery';
@@ -2659,13 +2659,13 @@ final class ErasedataCollector
 			return(false);
 		}
 		$reservation = erasedataDirectoryReservationPath($dir, $reservationKey, $expected);
-		if($reservation === false
+		if($reservation === false || !erasedataProtectPrivateParent($reservation)
 			|| !$this->filesystem->makeDirectory($reservation, 0700))
 		{
 			$reason = 'capture-failed';
 			return(false);
 		}
-		if(!erasedataCreatePrivateMarker($reservation))
+		if(!erasedataCreatePrivateMarker($reservation, $reservationKey))
 		{
 			$this->filesystem->removeDirectory($reservation);
 			$reason = 'capture-failed';

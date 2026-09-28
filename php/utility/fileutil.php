@@ -96,7 +96,12 @@ class FileUtil
 		{
 			$ret.=('/users/'.$user);
 			if(!is_dir($ret))
-				self::makeDirectory( array($ret,$ret.'/settings',$ret.'/torrents',$ret.'/tmp') );
+			{
+				global $profileMask;
+				$protectedMode = (isset($profileMask) ? $profileMask : 0777) | 01000;
+				self::makeDirectory(array($ret,$ret.'/settings'), $protectedMode, true);
+				self::makeDirectory(array($ret.'/torrents',$ret.'/tmp'), null, true);
+			}
 		}
 		return $ret;
 	}
@@ -212,13 +217,13 @@ class FileUtil
 				if(empty($tempDirectory))
 				{
 					$tempDirectory = self::getProfilePath().'/tmp';
-					FileUtil::makeDirectory($tempDirectory);
+					self::makeDirectory($tempDirectory, null, true);
 				}
 			}
 			else
 			{
-				// User provided, create if not exist.
-				FileUtil::makeDirectory($tempDirectory);
+				// User provided: an existing directory may have a protected mode.
+				self::makeDirectory($tempDirectory, null, true);
 			}
 			// Make sure that temp dir always have trail slash.
 			$tempDirectory = self::addslash( $tempDirectory );
@@ -242,22 +247,22 @@ class FileUtil
 		return($fname);
 	}
 
-	public static function makeDirectory( $dirs, $perms = null )
+	public static function makeDirectory($dirs, $perms = null, $preserveExisting = false)
 	{
 		global $profileMask;
 		if(is_null($perms))
 			$perms = isset($profileMask) ? $profileMask : 0777;
 		$oldMask = umask(0);
-		if(is_array($dirs))
+		foreach(is_array($dirs) ? $dirs : array($dirs) as $dir)
 		{
-			foreach($dirs as $dir)
+			// mkdir's EEXIST path cannot remode a directory another request just sealed.
+			if($preserveExisting)
 			{
-				(file_exists(self::addslash($dir).'.') && @chmod($dir,$perms)) || @mkdir($dir,$perms,true);
+				if(!is_dir($dir))
+					@mkdir($dir, $perms, true);
 			}
-		}
-		else
-		{
-			(file_exists(self::addslash($dirs).'.') && @chmod($dirs,$perms)) || @mkdir($dirs,$perms,true);
+			else
+				(file_exists(self::addslash($dir).'.') && @chmod($dir,$perms)) || @mkdir($dir,$perms,true);
 		}
 		@umask($oldMask);
 	}
