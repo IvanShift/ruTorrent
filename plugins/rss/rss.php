@@ -168,10 +168,13 @@ class rRSS
 			return true;
 		}
 
-		// remember etag and lastModified
+		// Validators belong to the configured feed origin, not a redirect target.
 		$this->etag = null;
 		$this->lastModified = null;
-		foreach($cli->headers as $header)
+		$responseURL = isset($cli->lastResponseURL) ? $cli->lastResponseURL : $this->url;
+		$validatorHeaders = UrlHost::sameOrigin($this->url, $responseURL)
+			? $cli->headers : array();
+		foreach($validatorHeaders as $header)
 		{
 			$colon = strpos($header, ':');
 			if($colon === false)

@@ -77,6 +77,7 @@ backup/
 /.worktrees/
 /.scratch/
 /.tmp/
+/.mypy_cache/
 
 # Operator captures kept in the checkout: CI log bundles downloaded for triage and
 # the running instance's error log. They are evidence, not sources, and a plain

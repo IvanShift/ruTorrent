@@ -481,6 +481,8 @@ function fetchErrorParityCases()
         array('dns lookup failure (-4)', 'dns-lookup'),
         array('connection refused or timed out (-5)', 'connect-refused'),
         array('connection failed (111)', 'connect-errno'),
+        array('too-many-interim-responses', 'too-many-interim-responses'),
+        array('missing-final-response', 'missing-final-response'),
         array('unsupported-transfer-encoding', 'unsupported-transfer-encoding'),
         array('invalid-or-oversized-chunked', 'invalid-or-oversized-chunked'),
         array('oversized-response', 'oversized-response'),
@@ -510,6 +512,7 @@ function fetchErrorTokenVocabulary()
 {
     return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
         'redirect-refused', 'curl-transfer', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
+        'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response', 'unclassified');

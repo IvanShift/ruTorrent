@@ -47,6 +47,16 @@ class SourceAltAccount extends RedirectProbeAccount
     }
 }
 
+class SourcePortAccount extends commonAccount
+{
+    public $url = 'https://tracker.example:8443';
+    protected function isOK($client) { return true; }
+    protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
+    {
+        return false;
+    }
+}
+
 function sourceSame($expected, $actual, $message)
 {
     if ($expected !== $actual) {
@@ -69,6 +79,25 @@ function sourceRemoveTree($path)
         else unlink($item->getPathname());
     }
     rmdir($path);
+}
+
+function sourceWireRows($path)
+{
+    $rows = array();
+    foreach(is_file($path) ? file($path, FILE_IGNORE_NEW_LINES) : array() as $line)
+    {
+        $row = explode("\t", $line, 2);
+        $rows[] = array('url' => $row[0], 'cookie' => isset($row[1]) ? $row[1] : '');
+    }
+    return $rows;
+}
+
+function sourceWireHasCookie($row, $pair)
+{
+    foreach(explode(';', substr($row['cookie'], 7)) as $entry)
+        if(trim($entry) === $pair)
+            return true;
+    return false;
 }
 
 $failed = 0;
@@ -374,6 +403,150 @@ try {
     sourceSame(array('token' => 'abc==', 'other' => 'ok'),
         rCookies::load()->getCookiesForHost('equal.test'),
         'plugin form input keeps equals inside cookie values');
+    // Public account selection and the serialized curl Cookie header must
+    // agree: two accounts on one host do not share response-cookie state.
+    $wirePath = $sourceTestRoot . '/account-wire.log';
+    $curlPath = $sourceTestRoot . '/account-fake-curl';
+    $fakeCurl = <<<'SH'
+#!/bin/sh
+header_file=
+body_file=
+request_url=
+cookie_header=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -D) shift; header_file=$1 ;;
+        -o) shift; body_file=$1 ;;
+        -H)
+            shift
+            case "$1" in Cookie:*) cookie_header=$1 ;; esac
+            ;;
+        https://*) request_url=$1 ;;
+    esac
+    shift
+done
+printf '%s\t%s\n' "$request_url" "$cookie_header" >> "$SOURCE_WIRE_LOG"
+printf 'HTTP/1.1 200 OK\r\n' > "$header_file"
+case "$request_url" in
+    https://rutracker.org/forum/*)
+        printf 'Set-Cookie: a_marker=from-a; Domain=rutracker.org; Path=/; Secure\r\n' >> "$header_file"
+        ;;
+    https://rutracker.org/second/*)
+        printf 'Set-Cookie: b_marker=from-b; Domain=rutracker.org; Path=/; Secure\r\n' >> "$header_file"
+        ;;
+esac
+printf '\r\n' >> "$header_file"
+printf 'readable tracker page' > "$body_file"
+SH;
+    sourceSame(true, file_put_contents($curlPath, $fakeCurl) !== false, 'wire fixture written');
+    sourceSame(true, chmod($curlPath, 0700), 'wire fixture executable');
+    putenv('SOURCE_WIRE_LOG=' . $wirePath);
+    $previousCurl = isset($pathToExternals['curl']) ? $pathToExternals['curl'] : null;
+    $pathToExternals['curl'] = $curlPath;
+    try
+    {
+        $gateFailures = array();
+        try
+        {
+            $partitioned = new Snoopy();
+            sourceSame(true, $partitioned->fetchComplex('https://rutracker.org/forum/index.php'),
+                'account A initial public fetch completed');
+            sourceSame(true, $partitioned->fetchComplex('https://rutracker.org/forum/index.php'),
+                'account A later explicit fetch completed');
+            $rows = sourceWireRows($wirePath);
+            sourceSame(2, count($rows), 'two A requests reached the wire');
+            sourceSame(true, sourceWireHasCookie($rows[1], 'a_marker=from-a'),
+                'A receives its own response cookie on a later explicit request');
+
+            sourceSame(true, $partitioned->fetchComplex('https://rutracker.org/second/file'),
+                'account B initial public fetch completed');
+            $rows = sourceWireRows($wirePath);
+            sourceSame(false, sourceWireHasCookie($rows[2], 'a_marker=from-a'),
+                'B cannot receive A response cookie on the same host');
+            sourceSame(true, $partitioned->fetchComplex('https://rutracker.org/second/file'),
+                'account B later explicit fetch completed');
+            $rows = sourceWireRows($wirePath);
+            sourceSame(true, sourceWireHasCookie($rows[3], 'b_marker=from-b'),
+                'B receives its own response cookie');
+            sourceSame(false, sourceWireHasCookie($rows[3], 'a_marker=from-a'),
+                'B still cannot receive A response cookie');
+
+            sourceSame(true, $partitioned->fetchComplex('https://rutracker.org/forum/index.php'),
+                'account A remains usable after B');
+            $rows = sourceWireRows($wirePath);
+            sourceSame(true, sourceWireHasCookie($rows[4], 'a_marker=from-a'),
+                'A retains its own response cookie');
+            sourceSame(false, sourceWireHasCookie($rows[4], 'b_marker=from-b'),
+                'A cannot receive B response cookie');
+
+            $storedA = new privateData('ruTracker');
+            $storedB = new privateData('SourceAlt');
+            $cache = new rCache('/accounts');
+            sourceSame(true, $cache->get($storedA), 'A flat session cache remains readable');
+            sourceSame(true, $cache->get($storedB), 'B flat session cache remains readable');
+            sourceSame('session-value', $storedA->cookies['loginmgr_marker'] ?? null,
+                'A legacy flat session stays intact');
+            sourceSame(false, isset($storedA->cookies['a_marker']) || isset($storedA->cookies['b_marker'])
+                || isset($storedB->cookies['a_marker']) || isset($storedB->cookies['b_marker']),
+                'response jar cookies are not flattened into either account cache');
+            $freshA = new Snoopy();
+            sourceSame(true, $freshA->fetchComplex('https://rutracker.org/forum/index.php'),
+                'fresh client reloads A legacy flat cache');
+            $rows = sourceWireRows($wirePath);
+            sourceSame(true, sourceWireHasCookie($rows[5], 'loginmgr_marker=session-value'),
+                'flat cache cookie reaches its original account');
+            sourceSame(false, sourceWireHasCookie($rows[5], 'a_marker=from-a'),
+                'object-local response jar is not silently persisted');
+
+        }
+        catch (RuntimeException $error)
+        {
+            $gateFailures[] = $error->getMessage();
+        }
+        try
+        {
+            $cache = new rCache('/accounts');
+            $manager->accounts['SourcePort'] = array(
+                'name' => 'SourcePort', 'path' => __FILE__, 'object' => 'SourcePortAccount',
+                'login' => 'fixture-user', 'password' => 'fixture-password',
+                'enabled' => 1, 'auto' => 0,
+            );
+            sourceSame(true, $manager->store(), 'port-scoped account fixture saved');
+            $portSession = new privateData('SourcePort');
+            $portSession->cookies = array('port_marker' => 'port-session');
+            sourceSame(true, $cache->set($portSession), 'port-scoped flat session saved');
+            $portClient = new Snoopy();
+            sourceSame(true, $portClient->fetchComplex('https://tracker.example:8443/port'),
+                'configured port request completed');
+            $rows = sourceWireRows($wirePath);
+            sourceSame('https://tracker.example:8443/port', $rows[count($rows) - 1]['url'] ?? null,
+                'configured account port reached the wire');
+            sourceSame(true, sourceWireHasCookie($rows[count($rows) - 1], 'port_marker=port-session'),
+                'configured account port receives its cached session');
+            $before = count($rows);
+            sourceSame(false, $portClient->fetchComplex('https://tracker.example:443/port'),
+                'wrong initial port is refused before account fetch');
+            sourceSame(Snoopy::CREDENTIAL_REDIRECT_REFUSED, $portClient->error,
+                'wrong initial port has a classified refusal');
+            sourceSame($before, count(sourceWireRows($wirePath)),
+                'wrong initial port sends no request or session');
+            sourceSame(true, strpos(sourceLog(), 'Snoopy: account-port-refused host=tracker.example') !== false,
+                'wrong initial port writes a safe operator diagnostic');
+        }
+        catch (RuntimeException $error)
+        {
+            $gateFailures[] = $error->getMessage();
+        }
+        if($gateFailures)
+            throw new RuntimeException(implode('; ', $gateFailures));
+    }
+    finally
+    {
+        if($previousCurl === null) unset($pathToExternals['curl']);
+        else $pathToExternals['curl'] = $previousCurl;
+        putenv('SOURCE_WIRE_LOG');
+    }
+
     $log = sourceLog();
     foreach(array('plugin-value', 'url-value', 'session-value', 'mteam-session') as $secret)
         sourceSame(false, strpos($log, $secret) !== false,

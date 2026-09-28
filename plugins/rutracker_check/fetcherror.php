@@ -88,6 +88,8 @@ class RuTrackerFetchError
 			'dns-lookup' => '/^dns lookup failure\b/i',
 			'connect-refused' => '/^connection refused or timed out\b/i',
 			'connect-errno' => '/^connection failed\b/i',
+			'too-many-interim-responses' => '/^too-many-interim-responses$/i',
+			'missing-final-response' => '/^missing-final-response$/i',
 			'unsupported-transfer-encoding' => '/^unsupported-transfer-encoding$/i',
 			'invalid-or-oversized-chunked' => '/^invalid-or-oversized-chunked$/i',
 			'oversized-response' => '/^oversized-response$/i',

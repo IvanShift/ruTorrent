@@ -40,6 +40,8 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'dns lookup failure (-4)' => 'dns-lookup',
         'connection refused or timed out (-5)' => 'connect-refused',
         'connection failed (0)' => 'connect-errno',
+        'too-many-interim-responses' => 'too-many-interim-responses',
+        'missing-final-response' => 'missing-final-response',
         'unsupported-transfer-encoding' => 'unsupported-transfer-encoding',
         'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
         'oversized-response' => 'oversized-response',
@@ -50,11 +52,11 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
-    // The original nine assignments remain, plus the initializer and the
-    // shared refusal helper; the six helper calls cover five new reasons.
-    strictAssertSame(11, count($assignments[0]),
+    // The original assignments, initializer, shared refusal helper and
+    // second account-port refusal all use classified reasons.
+    strictAssertSame(12, count($assignments[0]),
         'new direct Snoopy error assignments require classification');
-    strictAssertSame(7, substr_count($source, 'refuseResponseBody('),
+    strictAssertSame(11, substr_count($source, 'refuseResponseBody('),
         'new body refusals require an explicit classified case');
     // Count alone misses a reworded assignment. For direct assignments,
     // include the opening quote and literal prefix: a changed first word
@@ -70,6 +72,8 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'dns-lookup' => '"dns lookup failure (-4)"',
         'connect-refused' => '"connection refused or timed out (-5)"',
         'connect-errno' => '"connection failed ("',
+        'too-many-interim-responses' => 'too-many-interim-responses',
+        'missing-final-response' => 'missing-final-response',
         'unsupported-transfer-encoding' => 'unsupported-transfer-encoding',
         'invalid-or-oversized-chunked' => 'invalid-or-oversized-chunked',
         'oversized-response' => 'oversized-response',
@@ -81,6 +85,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'the redirect refusal constant retains the classified token');
     foreach ($sourceNeedles as $token => $needle) {
         $isBodyRefusal = in_array($token, array(
+            'too-many-interim-responses', 'missing-final-response',
             'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
             'oversized-response', 'invalid-or-oversized-gzip',
             'gzip-decoder-unavailable',
