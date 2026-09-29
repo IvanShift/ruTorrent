@@ -27,6 +27,8 @@ class ExtsearchRealActionFixture
 			.'$_REQUEST = $config["request"]; '
 			.'$HTTP_RAW_POST_DATA = $config["body"] ?? ""; '
 			.'require_once('.var_export(__DIR__.'/../../../plugins/extsearch/engines.php', true).'); '
+			.'$GLOBALS["scgi_host"] = $_ENV["RU_SCGI_HOST"]; '
+			.'$GLOBALS["scgi_port"] = $_ENV["RU_SCGI_PORT"]; '
 			.'$settings = (new ReflectionClass("rTorrentSettings"))->newInstanceWithoutConstructor(); '
 			.'$settings->aliases = array("d.get_custom"=>array("name"=>"d.custom", "prm"=>0)); '
 			.'$settings->plugins = array(); '

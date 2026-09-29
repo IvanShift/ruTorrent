@@ -47,6 +47,7 @@ class ExtsearchPendingEngine extends commonEngine
 	public function getTorrent($url)
 	{
 		$path = FileUtil::getProfilePath().'/tmp/extsearch-pending.torrent';
+		FileUtil::makeDirectory(dirname($path), 0700, true);
 		file_put_contents($path, 'the fake sender does not parse this source');
 		return $path;
 	}
