@@ -10,7 +10,7 @@ class RedactedEngine extends commonEngine
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
 		$added = 0;
-		$url = 'https://redacted.ch';
+		$url = 'https://redacted.sh';
 		if($useGlobalCats)
 			$categories = array( 'all'=>'', 'music'=>'&filter_cat[1]=1', 'software'=>'&filter_cat[2]=1', 'books'=>'&filter_cat[3]=1&filter_cat[4]=1&filter_cat[6]=1&filter_cat[7]=1' );
 		else

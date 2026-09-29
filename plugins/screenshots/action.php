@@ -1,6 +1,7 @@
 <?php
 
 require_once( dirname(__FILE__).'/../_task/task.php' );
+require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 require_once( 'ffmpeg.php' );
 eval( FileUtil::getPluginConf( 'screenshots' ) );
 
@@ -17,52 +18,39 @@ if(isset($input['cmd']))
 			if(isset($input['hash']) &&
 				isset($input['no']))
 			{
-				$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no']))) );
-				if($req->success())
+				$filename = rTorrent::getFilePath($input['hash'], $input['no']);
+				if($filename !== false)
 				{
-					$filename = $req->val[0];
-					if($filename=='')
+					$commands = array();
+					$offs = $st->data['exfrmoffs'];
+					$useWidth = $st->data['exusewidth'];
+					for($i=0; $i<$st->data['exfrmcount']; $i++)
 					{
-						$req = new rXMLRPCRequest( array(
-							new rXMLRPCCommand( "d.open", $input['hash'] ),
-							new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no'])) ),
-							new rXMLRPCCommand( "d.close", $input['hash'] ) ) );
-						if($req->success())
-							$filename = $req->val[1];
+						$name = '"${dir}"/frame'.$i.($st->data['exformat'] ? '.png' : '.jpg');
+						$commands[] = Utility::getExternal("ffmpeg").
+							' -ss '.$offs.
+							' -i '.escapeshellarg($filename).
+							' -y'.
+							' -vframes 1'.
+							' -an'.
+							' -sn'.
+							' -vf "scale=\'max(sar,1)*iw\':\'max(1/sar,1)*ih\''.($useWidth ? ',scale='.$st->data['exfrmwidth'].':-1' : '').'" '.
+							$name;
+						$commands[] = '{';
+						$commands[] = '>'.$i;
+						$commands[] = '}';
+						$offs += $st->data['exfrminterval'];
 					}
-					if($filename!=='')
-					{
-						$commands = array();
-						$offs = $st->data['exfrmoffs'];
-						$useWidth = $st->data['exusewidth'];
-						for($i=0; $i<$st->data['exfrmcount']; $i++)
-						{
-							$name = '"${dir}"/frame'.$i.($st->data['exformat'] ? '.png' : '.jpg');
-							$commands[] = Utility::getExternal("ffmpeg").
-								' -ss '.$offs.
-								' -i '.escapeshellarg($filename).
-								' -y'.
-								' -vframes 1'.
-								' -an'.
-								' -sn'.
-								' -vf "scale=\'max(sar,1)*iw\':\'max(1/sar,1)*ih\''.($useWidth ? ',scale='.$st->data['exfrmwidth'].':-1' : '').'" '.
-								$name;
-							$commands[] = '{';
-							$commands[] = '>'.$i;
-							$commands[] = '}';
-							$offs += $st->data['exfrminterval'];
-						}
-						$commands[] = 'chmod a+r "${dir}"/frame*.*';
-						$task = new rTask( array
-						(
-							'arg' => FileUtil::getFileName($filename),
-							'requester'=>'screenshots',
-							'name'=>'ffmpeg',
-							'hash'=>$input['hash'],
-							'no'=>$input['no']
-						));
-						$ret = $task->start($commands, rTask::FLG_NO_ERR);
-					}
+					$commands[] = 'chmod a+r "${dir}"/frame*.*';
+					$task = new rTask( array
+					(
+						'arg' => FileUtil::getFileName($filename),
+						'requester'=>'screenshots',
+						'name'=>'ffmpeg',
+						'hash'=>$input['hash'],
+						'no'=>$input['no']
+					));
+					$ret = $task->start($commands, rTask::FLG_NO_ERR);
 				}
 			}
 			break;

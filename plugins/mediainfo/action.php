@@ -1,6 +1,7 @@
 <?php
 
 require_once( dirname(__FILE__).'/../_task/task.php' );
+require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 eval( FileUtil::getPluginConf( 'mediainfo' ) );
 
 class mediainfoSettings
@@ -28,41 +29,28 @@ if(isset($input['hash']) &&
 		case "mediainfo":
 		{
 			Requests::requirePost();
-			$req = new rXMLRPCRequest( new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no']))) );
-			if($req->success())
+			$filename = rTorrent::getFilePath($input['hash'], $input['no']);
+			if($filename !== false)
 			{
-				$filename = $req->val[0];
-				if($filename=='')
+				$commands = array();
+				$flags = '';
+				$st = mediainfoSettings::load();
+				$task = new rTask( array
+				(
+					'arg' => FileUtil::getFileName($filename),
+					'requester'=>'mediainfo',
+					'name'=>'mediainfo',
+					'hash'=>$input['hash'],
+					'no'=>$input['no']
+				) );
+				if($st && !empty($st->data["mediainfousetemplate"]))
 				{
-					$req = new rXMLRPCRequest( array(
-						new rXMLRPCCommand( "d.open", $input['hash'] ),
-						new rXMLRPCCommand( "f.get_frozen_path", array($input['hash'],intval($input['no'])) ),
-						new rXMLRPCCommand( "d.close", $input['hash'] ) ) );
-					if($req->success())
-						$filename = $req->val[1];
+					$randName = $task->makeDirectory()."/opts";
+					file_put_contents( $randName, $st->data["mediainfotemplate"] );
+					$flags = "--Inform=file://".escapeshellarg($randName);
 				}
-				if($filename!=='')
-				{
-					$commands = array();
-					$flags = '';
-					$st = mediainfoSettings::load();
-					$task = new rTask( array
-					(
-						'arg' => FileUtil::getFileName($filename),
-						'requester'=>'mediainfo',
-						'name'=>'mediainfo',
-						'hash'=>$input['hash'],
-						'no'=>$input['no']
-					) );
-					if($st && !empty($st->data["mediainfousetemplate"]))
-					{
-						$randName = $task->makeDirectory()."/opts";
-						file_put_contents( $randName, $st->data["mediainfotemplate"] );
-						$flags = "--Inform=file://".escapeshellarg($randName);
-					}
-					$commands[] = Utility::getExternal("mediainfo")." ".$flags." ".escapeshellarg($filename);
-					$ret = $task->start($commands, 0);
-				}
+				$commands[] = Utility::getExternal("mediainfo")." ".$flags." ".escapeshellarg($filename);
+				$ret = $task->start($commands, 0);
 			}
 			break;
 		}

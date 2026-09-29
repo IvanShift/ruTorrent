@@ -40,15 +40,10 @@ switch($cmd)
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 		$rssList = array();
-		if(isset($HTTP_RAW_POST_DATA))
+		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
-			{
-				$parts = explode("=",$var);
-				if($parts[0]=="rss")
-					$rssList[] = $parts[1];
-			}
+			if($parts[0]=="rss")
+				$rssList[] = $parts[1] ?? null;
 		}
 		if(isset($_REQUEST['hash']) && ($_REQUEST['hash']!=""))
 			$mngr->changeGroup($_REQUEST['hash'],$lbl,$rssList);
@@ -162,112 +157,108 @@ switch($cmd)
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 		$flts = new rRSSFilterList();
 		$flt = null;
-		if(isset($HTTP_RAW_POST_DATA))
+		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
+			$value = $parts[1] ?? null;
+			if($parts[0]=="name")
 			{
-				$parts = explode("=",$var);
-				if($parts[0]=="name")
-				{
-					if($flt)
-						$flts->add($flt);
-					$flt = new rRSSFilter(rawurldecode($parts[1]));
-				}
-				else
-				if($parts[0]=="pattern")
-				{
-					if($flt)
-						$flt->pattern = trim(rawurldecode($parts[1]));
-				}
-				else
-				if($parts[0]=="exclude")
-				{
-					if($flt)
-						$flt->exclude = trim(rawurldecode($parts[1]));
-				}
-				else
-				if($parts[0]=="enabled")
-				{
-					if($flt)
-						$flt->enabled = $parts[1];
-				}
-				else
-				if($parts[0]=="no")
-				{
-					if($flt)
-						$flt->no = $parts[1];
-				}
-				else
-				if($parts[0]=="interval")
-				{
-					if($flt)
-						$flt->interval = $parts[1];
-				}
-				else
-				if($parts[0]=="hash")
-				{
-					if($flt)
-						$flt->rssHash = $parts[1];
-				}
-				else
-				if($parts[0]=="throttle")
-				{
-					if($flt)
-						$flt->throttle = $parts[1];
-				}
-				else
-				if($parts[0]=="ratio")
-				{
-					if($flt)
-						$flt->ratio = $parts[1];
-				}
-				else
-				if($parts[0]=="start")
-				{
-					if($flt)
-						$flt->start = $parts[1];
-				}
-				if($parts[0]=="addPath")
-				{
-					if($flt)
-						$flt->addPath = $parts[1];
-				}
-				else
-				if($parts[0]=="dir")
-				{
-					if($flt)
-						$flt->directory = rawurldecode($parts[1]);
-				}
-				else
-				if($parts[0]=="label")
-				{
-					if($flt)
-						$flt->label = rawurldecode($parts[1]);
-				}
-				else
-				if($parts[0]=="chktitle")
-				{
-					if($flt)
-						$flt->titleCheck = $parts[1];
-				}
-				else
-				if($parts[0]=="chkdesc")
-				{
-					if($flt)
-						$flt->descCheck = $parts[1];
-				}
-				else
-				if($parts[0]=="chklink")
-				{
-					if($flt)
-						$flt->linkCheck = $parts[1];
-				}
-  	                }
-			if($flt)
-				$flts->add($flt);
-			$mngr->setFilters($flts);
+				if($flt)
+					$flts->add($flt);
+				$flt = new rRSSFilter(rawurldecode($value ?? ''));
+			}
+			else
+			if($parts[0]=="pattern")
+			{
+				if($flt)
+					$flt->pattern = trim(rawurldecode($value ?? ''));
+			}
+			else
+			if($parts[0]=="exclude")
+			{
+				if($flt)
+					$flt->exclude = trim(rawurldecode($value ?? ''));
+			}
+			else
+			if($parts[0]=="enabled")
+			{
+				if($flt)
+					$flt->enabled = $value;
+			}
+			else
+			if($parts[0]=="no")
+			{
+				if($flt)
+					$flt->no = $value;
+			}
+			else
+			if($parts[0]=="interval")
+			{
+				if($flt)
+					$flt->interval = $value;
+			}
+			else
+			if($parts[0]=="hash")
+			{
+				if($flt)
+					$flt->rssHash = $value;
+			}
+			else
+			if($parts[0]=="throttle")
+			{
+				if($flt)
+					$flt->throttle = $value;
+			}
+			else
+			if($parts[0]=="ratio")
+			{
+				if($flt)
+					$flt->ratio = $value;
+			}
+			else
+			if($parts[0]=="start")
+			{
+				if($flt)
+					$flt->start = $value;
+			}
+			if($parts[0]=="addPath")
+			{
+				if($flt)
+					$flt->addPath = $value;
+			}
+			else
+			if($parts[0]=="dir")
+			{
+				if($flt)
+					$flt->directory = rawurldecode($value ?? '');
+			}
+			else
+			if($parts[0]=="label")
+			{
+				if($flt)
+					$flt->label = rawurldecode($value ?? '');
+			}
+			else
+			if($parts[0]=="chktitle")
+			{
+				if($flt)
+					$flt->titleCheck = $value;
+			}
+			else
+			if($parts[0]=="chkdesc")
+			{
+				if($flt)
+					$flt->descCheck = $value;
+			}
+			else
+			if($parts[0]=="chklink")
+			{
+				if($flt)
+					$flt->linkCheck = $value;
+			}
 		}
+		if($flt)
+			$flts->add($flt);
+		$mngr->setFilters($flts);
 		break;
 	}
 	case "clearfiltertime":
@@ -288,19 +279,17 @@ switch($cmd)
 	{
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA) && isset($_REQUEST['state']))
+		if(isset($_REQUEST['state']))
 		{
 			$urls = array();
 			$times = array();
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
+			foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 			{
-				$parts = explode("=",$var);
 				if($parts[0]=="url")
-					$urls[] = rawurldecode($parts[1]);
+					$urls[] = rawurldecode($parts[1] ?? '');
 				else
 				if($parts[0]=="time")
-					$times[] = $parts[1];
+					$times[] = $parts[1] ?? null;
 			}
 			$mngr->setHistoryState( $urls, $times, $_REQUEST['state'] );
 		}
@@ -310,59 +299,54 @@ switch($cmd)
 	{
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA))
+		set_time_limit(0);
+		$lbl = null;
+		$dir = null;
+		$isStart = true;
+		$isAddPath = true;
+		$curRSS = null;
+		$rssArray = array();
+		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 		{
-			set_time_limit(0);
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			$lbl = null;
-			$dir = null;
-			$isStart = true;
-			$isAddPath = true;
-			$curRSS = null;
-			$rssArray = array();
-			foreach($vars as $var)
+			if($parts[0]=="torrents_start_stopped")
+				$isStart = false;
+			else
+			if($parts[0]=="not_add_path")
+				$isAddPath = false;
+			else
+			if($parts[0]=="dir_edit")
+				$dir = rawurldecode($parts[1] ?? '');
+			else
+			if($parts[0]=="label")
+				$lbl = rawurldecode($parts[1] ?? '');
+			else
+			if($parts[0]=="rss")
+				// A request may only select an existing feed, not an arbitrary cache key.
+				$curRSS = (isset($parts[1]) && $mngr->rssList->isExist($parts[1]))
+					? $parts[1] : null;
+			else
+			if(($parts[0]=="url") && $curRSS)
 			{
-				$parts = explode("=",$var);
-				if($parts[0]=="torrents_start_stopped")
-					$isStart = false;
-				else
-				if($parts[0]=="not_add_path")
-					$isAddPath = false;
-				else
-				if($parts[0]=="dir_edit")
-					$dir = rawurldecode($parts[1]);
-				else
-				if($parts[0]=="label")
-					$lbl = rawurldecode($parts[1]);
-				else
-				if($parts[0]=="rss")
-					// A request may only select an existing feed, not an arbitrary cache key.
-					$curRSS = (isset($parts[1]) && $mngr->rssList->isExist($parts[1]))
-						? $parts[1] : null;
-				else
-				if(($parts[0]=="url") && $curRSS)
-				{
-					if(!array_key_exists($curRSS,$rssArray) || !is_array($rssArray[$curRSS]))
-						$rssArray[$curRSS] = array();
-					$rssArray[$curRSS][] = rawurldecode($parts[1]);
-				}
+				if(!array_key_exists($curRSS,$rssArray) || !is_array($rssArray[$curRSS]))
+					$rssArray[$curRSS] = array();
+				$rssArray[$curRSS][] = rawurldecode($parts[1] ?? '');
 			}
-			foreach($rssArray as $hash=>$urls)
-			{
-				$rss = new rRSS();
-				$rss->hash = $hash;
-				if($mngr->cache->get($rss))
-				{
-					foreach($urls as $url)
-					{
-						$mngr->getTorrents( $rss, $url, $isStart, $isAddPath, $dir, $lbl, null, null, false );
-						if(WAIT_AFTER_LOADING)
-							sleep(WAIT_AFTER_LOADING);
-					}
-				}
-			}
-			$mngr->saveHistory();
 		}
+		foreach($rssArray as $hash=>$urls)
+		{
+			$rss = new rRSS();
+			$rss->hash = $hash;
+			if($mngr->cache->get($rss))
+			{
+				foreach($urls as $url)
+				{
+					$mngr->getTorrents( $rss, $url, $isStart, $isAddPath, $dir, $lbl, null, null, false );
+					if(WAIT_AFTER_LOADING)
+						sleep(WAIT_AFTER_LOADING);
+				}
+			}
+		}
+		$mngr->saveHistory();
 		break;
 	}
 }

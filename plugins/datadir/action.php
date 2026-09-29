@@ -20,109 +20,106 @@ $errors = array();
 
 if( !isset( $HTTP_RAW_POST_DATA ) )
 	$HTTP_RAW_POST_DATA = file_get_contents( "php://input" );
-if( isset( $HTTP_RAW_POST_DATA ) )
+$vars = explode( '&', $HTTP_RAW_POST_DATA );
+$hash = null;
+$datadir = "";
+$move_addpath = "1";
+$move_datafiles = "0";
+$move_fastresume = "0";
+foreach( $vars as $var )
 {
-	$vars = explode( '&', $HTTP_RAW_POST_DATA );
-	$hash = null;
-	$datadir = "";
-	$move_addpath = "1";
-	$move_datafiles = "0";
-	$move_fastresume = "0";
-	foreach( $vars as $var )
+	$parts = explode( "=", $var, 2 );
+	if( count($parts) != 2 ) continue;
+	if( $parts[0] == "hash" )
 	{
-		$parts = explode( "=", $var, 2 );
-		if( count($parts) != 2 ) continue;
-		if( $parts[0] == "hash" )
+		$hash = trim( $parts[1] );
+		if( strlen($hash) != 40 || !ctype_xdigit($hash) )
 		{
-			$hash = trim( $parts[1] );
-			if( strlen($hash) != 40 || !ctype_xdigit($hash) )
-			{
-				$hash = null;
-			}
-		}
-		else if( $parts[0] == "datadir" )
-		{
-			$datadir = trim( rawurldecode( $parts[1] ) );
-		}
-		else if($parts[0]=="move_addpath")
-		{
-			$move_addpath = intval( $parts[1] );
-		}
-		else if( $parts[0] == "move_datafiles" )
-		{
-			$move_datafiles = intval( $parts[1] );
-		}
-		else if( $parts[0] == "move_fastresume" )
-		{
-			$move_fastresume = intval( $parts[1] );
+			$hash = null;
 		}
 	}
-
-	if(!rTorrentSettings::get()->correctDirectory($datadir, true))
+	else if( $parts[0] == "datadir" )
 	{
-		$datadir = '';
+		$datadir = trim( rawurldecode( $parts[1] ) );
 	}
-
-	Debug( "" );
-	Debug( "--- begin ---" );
-	Debug( $datadir );
-	Debug(
-		"\"".($move_addpath    == '0' ? "don't " : "")."add path\"".
-		", \"".($move_datafiles  == '0' ? "don't " : "")."move files\"".
-		", \"".($move_fastresume == '0' ? "don't " : "")."fast resume\"" );
-
-	$res = false;
-
-	if( $hash && strlen( $datadir ) > 0 )
+	else if($parts[0]=="move_addpath")
 	{
-		$claimCapability = rtDataDirClaimCapability();
-		if( $claimCapability !== 'available' )
+		$move_addpath = intval( $parts[1] );
+	}
+	else if( $parts[0] == "move_datafiles" )
+	{
+		$move_datafiles = intval( $parts[1] );
+	}
+	else if( $parts[0] == "move_fastresume" )
+	{
+		$move_fastresume = intval( $parts[1] );
+	}
+}
+
+if(!rTorrentSettings::get()->correctDirectory($datadir, true))
+{
+	$datadir = '';
+}
+
+Debug( "" );
+Debug( "--- begin ---" );
+Debug( $datadir );
+Debug(
+	"\"".($move_addpath    == '0' ? "don't " : "")."add path\"".
+	", \"".($move_datafiles  == '0' ? "don't " : "")."move files\"".
+	", \"".($move_fastresume == '0' ? "don't " : "")."fast resume\"" );
+
+$res = false;
+
+if( $hash && strlen( $datadir ) > 0 )
+{
+	$claimCapability = rtDataDirClaimCapability();
+	if( $claimCapability !== 'available' )
+	{
+		$reason = $claimCapability === 'unsupported'
+			? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed';
+		FileUtil::toLog( 'datadir: setdatadir refused hash='.$hash.' reason='.$reason );
+		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason);
+	}
+	else
+	{
+		$taken = $move_datafiles
+			? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
+			: '';
+		if($taken !== '')
 		{
-			$reason = $claimCapability === 'unsupported'
-				? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed';
-			FileUtil::toLog( 'datadir: setdatadir refused hash='.$hash.' reason='.$reason );
-			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason);
+			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
+			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);
 		}
 		else
 		{
-			$taken = $move_datafiles
-				? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
-				: '';
-			if($taken !== '')
-			{
-				FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
-				$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);
-			}
-			else
-			{
-			$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
-			$php = Utility::getPHP();
-			Debug( "script dir  : ".$script_dir );
-			Debug( "path to php : ".$php );
-			Debug( "hash        : ".$hash );
-			Debug( "data dir    : ".$datadir );
-			Debug( "add path    : ".$move_addpath );
-			Debug( "move files  : ".$move_datafiles );
-			Debug( "fast resume : ".$move_fastresume );
-			$res = rtExec( "execute",
-				array( "sh",
-					"-c",
-					rtSetDirCommand($php, $script_dir."setdir.php", $hash, $datadir,
-						$move_addpath, $move_datafiles, $move_fastresume, User::getUser()),
-				),
-				$datadir_debug_enabled );
-			if( !$res )
-				FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
-			}
+		$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
+		$php = Utility::getPHP();
+		Debug( "script dir  : ".$script_dir );
+		Debug( "path to php : ".$php );
+		Debug( "hash        : ".$hash );
+		Debug( "data dir    : ".$datadir );
+		Debug( "add path    : ".$move_addpath );
+		Debug( "move files  : ".$move_datafiles );
+		Debug( "fast resume : ".$move_fastresume );
+		$res = rtExec( "execute",
+			array( "sh",
+				"-c",
+				rtSetDirCommand($php, $script_dir."setdir.php", $hash, $datadir,
+					$move_addpath, $move_datafiles, $move_fastresume, User::getUser()),
+			),
+			$datadir_debug_enabled );
+		if( !$res )
+			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
 		}
 	}
-	else
-		FileUtil::toLog( 'datadir: setdatadir refused: '.($hash ? 'invalid destination' : 'invalid hash') );
+}
+else
+	FileUtil::toLog( 'datadir: setdatadir refused: '.($hash ? 'invalid destination' : 'invalid hash') );
 
-	if( !$res && !$errors )
-	{
-		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$datadir);
-	}
+if( !$res && !$errors )
+{
+	$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$datadir);
 }
 
 Debug( "--- end ---" );

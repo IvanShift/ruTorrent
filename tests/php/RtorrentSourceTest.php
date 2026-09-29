@@ -44,6 +44,35 @@ class RtorrentSourceTest
 		}
 	}
 
+	public function testSharedSourcePathUsesTheReadableTiedFileFallback()
+	{
+		$this->withSourceDirectory(function($dir) {
+			$path = $dir . 'tied.torrent';
+			file_put_contents($path, 'fixture');
+			rXMLRPCRequest::queue(array('get_session', 'd.get_tied_to_file'), true, false,
+				array($dir, $path));
+			strictAssertSame($path, rTorrent::getSourcePath(self::INFO_HASH),
+				'the common source lookup uses tied metainfo when the session copy is absent');
+		});
+	}
+
+	public function testSharedSourcePathRefusesMissingAndFaultedSources()
+	{
+		$this->withSourceDirectory(function($dir) {
+			rXMLRPCRequest::queue(array('get_session', 'd.get_tied_to_file'), true, false,
+				array($dir, $dir . 'missing.torrent'));
+			strictAssertSame(false, rTorrent::getSourcePath(self::INFO_HASH),
+				'a missing session and tied file do not name a source');
+			rXMLRPCRequest::queue(array('get_session', 'd.get_tied_to_file'), true, true);
+			strictAssertSame(false, rTorrent::getSourcePath(self::INFO_HASH),
+				'an RPC fault is not interpreted as an empty source path');
+			rXMLRPCRequest::queue(array('get_session', 'd.get_tied_to_file'), true, false,
+				array($dir, 1));
+			strictAssertSame(false, rTorrent::getSourcePath(self::INFO_HASH),
+				'a malformed RPC path is refused without a PHP type error');
+		});
+	}
+
 	public function testRawMagnetMetadataIsReadAsTheInfoDictionaryItContains()
 	{
 		$this->withSourceDirectory(function($dir) {

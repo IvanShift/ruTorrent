@@ -28,43 +28,40 @@ class rRetrackers
 	{
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA))
+		$vars = explode('&', $HTTP_RAW_POST_DATA);
+		$this->list = array();
+		$this->todelete = array();
+		$this->dontAddPrivate = 0;
+		$trackers = array();
+		foreach($vars as $var)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			$this->list = array();
-			$this->todelete = array();
-			$this->dontAddPrivate = 0;
-			$trackers = array();
-			foreach($vars as $var)
+			$parts = explode("=",$var);
+			if($parts[0]=="dont_private")
+				$this->dontAddPrivate = $parts[1];
+			else
+			if($parts[0]=="add_begin")
+				$this->addToBegin = $parts[1];
+			else
+			if($parts[0]=="todelete")
+				$this->todelete[] = trim(rawurldecode($parts[1]));
+			else
+			if($parts[0]=="tracker")
 			{
-				$parts = explode("=",$var);
-				if($parts[0]=="dont_private")
-					$this->dontAddPrivate = $parts[1];
+				$value = trim(rawurldecode($parts[1]));
+				if(strlen($value))
+					$trackers[] = $value;
 				else
-				if($parts[0]=="add_begin")
-					$this->addToBegin = $parts[1];
-				else
-				if($parts[0]=="todelete")
-					$this->todelete[] = trim(rawurldecode($parts[1]));
-				else
-				if($parts[0]=="tracker")
 				{
-					$value = trim(rawurldecode($parts[1]));
-					if(strlen($value))
-						$trackers[] = $value;
-					else
+					if(count($trackers)>0)
 					{
-						if(count($trackers)>0)
-						{
-							$this->list[] = $trackers;
-							$trackers = array();
-						}
+						$this->list[] = $trackers;
+						$trackers = array();
 					}
 				}
 			}
-			if(count($trackers)>0)
-				$this->list[] = $trackers;
 		}
+		if(count($trackers)>0)
+			$this->list[] = $trackers;
 		$this->store();
 	}
 	public function get()

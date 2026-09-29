@@ -13,12 +13,15 @@ class Utility
 	}
 
 	// Keep submitted order and duplicate names. Split at the first '=' so a
-	// literal '=' within a value survives; decode each component once.
-	// parse_str() collapses duplicates.
-	public static function legacyOrderedFormPairs($raw)
+	// literal '=' within a value survives. Callers preserving raw '+' values
+	// decode selected fields themselves; parse_str() collapses duplicates.
+	public static function legacyOrderedFormPairs($raw, $decode = true)
 	{
 		foreach(explode('&', (string)$raw) as $segment)
-			yield array_map('urldecode', explode('=', $segment, 2));
+		{
+			$pair = explode('=', $segment, 2);
+			yield $decode ? array_map('urldecode', $pair) : $pair;
+		}
 	}
 
 	public static function getExternal($exe)

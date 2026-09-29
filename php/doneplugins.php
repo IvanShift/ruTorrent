@@ -17,67 +17,64 @@ $cache->get($userPermissions);
 
 if(!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-if(isset($HTTP_RAW_POST_DATA))
+$processedPlugins = array();
+$vars = explode('&', $HTTP_RAW_POST_DATA);
+foreach($vars as $var)
 {
-	$processedPlugins = array();
-	$vars = explode('&', $HTTP_RAW_POST_DATA);
-	foreach($vars as $var)
+	$parts = explode("=", $var, 2);
+	if($parts[0] == "plg" && isset($parts[1]) &&
+		!isset($processedPlugins[$parts[1]]))
 	{
-		$parts = explode("=", $var, 2);
-		if($parts[0] == "plg" && isset($parts[1]) &&
-			!isset($processedPlugins[$parts[1]]))
+		$pluginName = $parts[1];
+		$processedPlugins[$pluginName] = true;
+		$perms = $theSettings->getPluginData($pluginName);
+		switch($cmd)
 		{
-			$pluginName = $parts[1];
-			$processedPlugins[$pluginName] = true;
-			$perms = $theSettings->getPluginData($pluginName);
-			switch($cmd)
+			case "unlaunch":
+			case "done":
 			{
-				case "unlaunch":
-				case "done":
+				$unlaunch = $cmd == "unlaunch" &&
+					(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH));
+				$canShutdown = !is_null($perms) && !($perms & FLAG_CANT_SHUTDOWN);
+				// A done.php can veto removal by setting $pluginDone to false.
+				$pluginDone = true;
+				if($canShutdown)
 				{
-					$unlaunch = $cmd == "unlaunch" &&
-						(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH));
-					$canShutdown = !is_null($perms) && !($perms & FLAG_CANT_SHUTDOWN);
-					// A done.php can veto removal by setting $pluginDone to false.
-					$pluginDone = true;
+					$php = "../plugins/".$pluginName."/done.php";
+					if(is_file($php) && is_readable($php))
+						require_once($php);
+				}
+				if($pluginDone !== false)
+				{
+					if($unlaunch)
+					{
+						$userPermissions[$pluginName] = false;
+						$jResult.="thePlugins.get('".$pluginName."').unlaunch();";
+					}
 					if($canShutdown)
 					{
-						$php = "../plugins/".$pluginName."/done.php";
-						if(is_file($php) && is_readable($php))
-							require_once($php);
+						$theSettings->unregisterPlugin($pluginName);
+						$jResult.="thePlugins.get('".$pluginName."').remove();";
 					}
-					if($pluginDone !== false)
-					{
-						if($unlaunch)
-						{
-							$userPermissions[$pluginName] = false;
-							$jResult.="thePlugins.get('".$pluginName."').unlaunch();";
-						}
-						if($canShutdown)
-						{
-							$theSettings->unregisterPlugin($pluginName);
-							$jResult.="thePlugins.get('".$pluginName."').remove();";
-						}
-					}
-					break;
 				}
-				case "launch":
+				break;
+			}
+			case "launch":
+			{
+				if(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH))
 				{
-					if(is_null($perms) || ($perms & FLAG_CAN_CHANGE_LAUNCH))
-					{
-						$userPermissions[$pluginName] = true;
-						$jResult.="thePlugins.get('".$pluginName."').launch();";
-					}
-					break;
+					$userPermissions[$pluginName] = true;
+					$jResult.="thePlugins.get('".$pluginName."').launch();";
 				}
+				break;
 			}
 		}
 	}
-
-	if($cmd=="done")
-		$theSettings->store();
-	else
-		$cache->set($userPermissions);
 }
+
+if($cmd=="done")
+	$theSettings->store();
+else
+	$cache->set($userPermissions);
 
 CachedEcho::send($jResult,"application/javascript");

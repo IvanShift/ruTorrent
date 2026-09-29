@@ -5,3 +5,4 @@
 
 $pathToExternals['dumptorrent'] = '';	// Path to the program that dumps .torrent file information
 $arguments = "-v";			// Program arguments (if needed)
+// Set $rawMetadataArguments in conf.local.php for an alternate inspector's raw metadata mode.

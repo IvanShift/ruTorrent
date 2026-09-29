@@ -38,13 +38,16 @@ class CookieRedactionTest extends TestCase
         $this->assertTrue($jar->store(), 'synthetic cookie fixture stored');
     }
 
-    private function action($mode, $post = array(), $host = null)
+    private function action($mode, $post = array(), $host = null, $gzip = false)
     {
         $code = '$_ENV["RU_PROFILE_PATH"] = $argv[1];'
             . '$_SERVER["REQUEST_METHOD"] = ' . var_export($mode === 'add' ? 'POST' : 'GET', true) . ';'
             . '$_REQUEST = array("mode" => ' . var_export($mode, true) . ');'
             . ($host === null ? '' : '$_REQUEST["host"] = ' . var_export($host, true) . ';')
             . '$_POST = json_decode($argv[2], true);'
+            . ($gzip ? 'ob_start(); $_SERVER["HTTP_ACCEPT_ENCODING"] = "gzip";'
+                . 'require ' . var_export(__DIR__ . '/../../../php/util.php', true) . ';'
+                . '$phpUseGzip = true; $phpGzipLevel = 2;' : '')
             . 'require ' . var_export(__DIR__ . '/../../../plugins/cookies/action.php', true) . ';';
         $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=0', '-r', $code,
             $this->profile, json_encode($post)), array(1 => array('pipe', 'w'),
@@ -85,6 +88,30 @@ class CookieRedactionTest extends TestCase
             'add response reports host presence without its new cookie');
         $this->assertTrue(strpos($added, 'fourth-secret') === false,
             'add response omits new cookie value');
+    }
+
+    public function testLargeGzipAddResponseDoesNotClearStoredCookies()
+    {
+        $jar = rCookies::load();
+        for ($i = 0; $i < 90; $i++)
+            $jar->list[sprintf('host-%03d.example.test', $i)] = array('sid' => 'saved');
+        $this->assertTrue($jar->store(), 'large cookie-host list stored');
+        $this->assertTrue(strlen(JSON::safeEncode($jar->getInfo())) >= 2048,
+            'add response reaches the gzip branch');
+        $body = $this->action('add', array('host' => 'new.test',
+            'cookies' => rawurlencode('sid=new-secret')), null, true);
+        $this->assertTrue(substr($body, 0, 2) === "\x1f\x8b",
+            'add response is gzip encoded');
+        $saved = rCookies::load();
+        $this->assertSame(array('sid' => 'first-secret'),
+            $saved->getCookiesForHost('one.test'),
+            'gzip add response preserves an existing stored credential');
+        $this->assertSame(array('sid' => 'new-secret'),
+            $saved->getCookiesForHost('new.test'),
+            'gzip add response retains the newly added credential');
+        $this->assertSame(array('sid' => 'saved'),
+            $saved->getCookiesForHost('host-089.example.test'),
+            'gzip add response preserves the last host in the large list');
     }
 
     public function testRenamedMaskedHostRefusesTheWholeSaveAndKeepsExistingCookies()

@@ -287,7 +287,7 @@ class TorrentAddPathSequenceTest extends TestCase
 	// ---- rTorrent::sendTorrent() and rTorrent::getSource() ---------------
 
 	/**
-	 * sendTorrent() lines 26-35: a torrent being loaded as a new one has the
+	 * sendTorrent(): a torrent being loaded as a new one has the
 	 * two keys rtorrent left on it dropped, so that rtorrent does not take the
 	 * old session state with it.
 	 */
@@ -340,7 +340,7 @@ class TorrentAddPathSequenceTest extends TestCase
 	}
 
 	/**
-	 * rTorrent::getSource() lines 164-171, which is what plugins/source hands
+	 * rTorrent::getSource(), which is what plugins/source hands
 	 * the user: the torrent as it was, with everything rtorrent added taken
 	 * back off it.
 	 */
@@ -367,7 +367,7 @@ class TorrentAddPathSequenceTest extends TestCase
 		));
 		$this->assertTrue((string)$torrent === $expected, 'what is offered for download is the original torrent');
 
-		// plugins/source/action.php line 54 names the file in the zip after it.
+		// plugins/source/action.php names the ZIP entry after this metadata name.
 		$this->assertTrue($torrent->info['name'] === 'test.data', 'and its name is readable for the zip entry');
 	}
 }

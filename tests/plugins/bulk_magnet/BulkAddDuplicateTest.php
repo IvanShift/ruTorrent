@@ -47,7 +47,7 @@ class BulkAddDuplicateTest extends TestCase
 	 * Runs action.php against a daemon that has LOADED and answers every
 	 * load with 0, and returns what the script printed.
 	 */
-	private function bulkAdd($items, $snapshotFails = false)
+	private function bulkAdd($items, $snapshotFails = false, $rawPost = null)
 	{
 		$root = realpath(__DIR__ . '/../../..');
 		$replies = array($snapshotFails ? false : array(self::LOADED));
@@ -60,6 +60,7 @@ class BulkAddDuplicateTest extends TestCase
 		foreach ($items as $item) {
 			$post .= '&torrent=' . rawurlencode($item);
 		}
+		if($rawPost !== null) $post = $rawPost;
 		$driver = $this->base . '/drive-bulk.php';
 		file_put_contents($driver, "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
@@ -90,6 +91,32 @@ class BulkAddDuplicateTest extends TestCase
 			$result, 'a failed download_list cannot be treated as an empty session');
 		$this->assertEquals(array('download_list'), $this->daemon->calls(),
 			'no load follows the failed snapshot');
+	}
+
+	public function testRawEqualsAndLiteralPlusReachMagnetInDuplicateOrder()
+	{
+		$loaded = 'magnet:?xt=urn:btih:' . self::LOADED;
+		$fresh = 'magnet:?xt=urn:btih:' . self::FRESH . '&dn=x+y';
+		$post = 'torrent=' . $loaded . '&torrent=' . str_replace('%2B', '+', rawurlencode($fresh))
+			. '&torrent=&torrent';
+		$result = $this->bulkAdd(array($loaded, $fresh), false, $post);
+		$this->assertEquals(array('error' => 0, 'success' => 1, 'pending' => 0, 'duplicate' => 1),
+			$result, 'raw equals, empty and missing fields keep the two valid entries');
+		$bodies = $this->daemon->bodies();
+		$this->assertEquals(3, count($bodies), 'the snapshot precedes exactly two ordered loads');
+		$this->assertTrue(isset($bodies[1]) && strpos($bodies[1], $loaded) !== false,
+			'first raw-equals magnet reaches the daemon whole');
+		$this->assertTrue(isset($bodies[2]) && strpos($bodies[2], 'dn=x+y') !== false,
+			'encoded equals and literal plus retain the browser-compatible value');
+	}
+
+	public function testFailedBodyReadStillTakesTheSnapshot()
+	{
+		$result = $this->bulkAdd(array(), false, false);
+		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 0, 'duplicate' => 0),
+			$result, 'a failed body read leaves the empty result');
+		$this->assertEquals(array('download_list'), $this->daemon->calls(),
+			'a failed body read still follows the old snapshot path');
 	}
 
 	public function testATorrentAlreadyLoadedIsADuplicateNotAnAddition()

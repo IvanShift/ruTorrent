@@ -21,19 +21,16 @@ switch($cmd)
 		$hash = array();
 		if (!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA))
+		$vars = explode('&', $HTTP_RAW_POST_DATA);
+		foreach($vars as $var)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
+			$parts = explode("=",$var);
+			switch($parts[0])
 			{
-				$parts = explode("=",$var);
-				switch($parts[0])
+				case "hash":
 				{
-					case "hash":
-					{
-						$hash[] = $parts[1];
-						break;
-					}
+					$hash[] = $parts[1];
+					break;
 				}
 			}
 		}

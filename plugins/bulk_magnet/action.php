@@ -80,41 +80,36 @@ $result = array
 
 if(!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-if(isset($HTTP_RAW_POST_DATA))
+$torrents = array();
+$loaded = rTorrent::loadedHashes();
+if($loaded===false)
+	$result['error']++;
+else
 {
-	$vars = explode('&', $HTTP_RAW_POST_DATA);
-	$torrents = array();
-	$loaded = rTorrent::loadedHashes();
-	if($loaded===false)
-		$result['error']++;
-	else
+	foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 	{
-		foreach($vars as $var)
+		if( count($parts)>1 )
 		{
-			$parts = explode("=",$var);
-			if( count($parts)>1 )
+			$value = trim(rawurldecode($parts[1]));
+			if(strlen($value))
 			{
-				$value = trim(rawurldecode($parts[1]));
-				if(strlen($value))
+				$receipt = null;
+				$hash = parseValue($value, $receipt);
+				if($hash === false)
+					$result['error']++;
+				elseif($hash === null)
 				{
-					$receipt = null;
-					$hash = parseValue($value, $receipt);
-					if($hash === false)
-						$result['error']++;
-					elseif($hash === null)
-					{
-						if(isset($receipt['hash']) && isset($loaded[strtoupper($receipt['hash'])]))
-							$result['duplicate']++;
-						else
-							$result['pending']++;
-					}
-					elseif(isset($loaded[strtoupper($hash)]))
+					if(isset($receipt['hash']) && isset($loaded[strtoupper($receipt['hash'])]))
 						$result['duplicate']++;
 					else
-					{
-						$loaded[strtoupper($hash)] = true;
-						$result['success']++;
-					}
+						$result['pending']++;
+				}
+				elseif(isset($loaded[strtoupper($hash)]))
+					$result['duplicate']++;
+				else
+				{
+					$loaded[strtoupper($hash)] = true;
+					$result['success']++;
 				}
 			}
 		}

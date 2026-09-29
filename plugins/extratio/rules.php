@@ -113,58 +113,55 @@ class rRatioRulesList
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 		$this->lst = array();
 		$rule = null;
-		if(isset($HTTP_RAW_POST_DATA))
+		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
 		{
-			foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
+			if($parts[0]=="name")
 			{
-				if($parts[0]=="name")
-				{
-					if($rule)
-						$this->add($rule);
-					$rule = new rRatioRule($parts[1]);
-				}
-				else
-				if($parts[0]=="pattern")
-				{
-					if($rule)
-						$rule->pattern = trim($parts[1]);
-				}
-				else
-				if($parts[0]=="reason")
-				{
-					if($rule)
-						$rule->reason = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="enabled")
-				{
-					if($rule)
-						$rule->enabled = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="no")
-				{
-					if($rule)
-						$rule->no = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="ratio")
-				{
-					if($rule)
-						$rule->ratio = $parts[1];
-				}
-				else
-				if($parts[0]=="channel")
-				{
-					if($rule)
-						$rule->channel = $parts[1];
-				}
+				if($rule)
+					$this->add($rule);
+				$rule = new rRatioRule($parts[1]);
+			}
+			else
+			if($parts[0]=="pattern")
+			{
+				if($rule)
+					$rule->pattern = trim($parts[1]);
+			}
+			else
+			if($parts[0]=="reason")
+			{
+				if($rule)
+					$rule->reason = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="enabled")
+			{
+				if($rule)
+					$rule->enabled = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="no")
+			{
+				if($rule)
+					$rule->no = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="ratio")
+			{
+				if($rule)
+					$rule->ratio = $parts[1];
+			}
+			else
+			if($parts[0]=="channel")
+			{
+				if($rule)
+					$rule->channel = $parts[1];
+			}
   	                }
-			if($rule)
-				$this->add($rule);
-			$this->store();
-			$this->setHandlers();
-		}
+		if($rule)
+			$this->add($rule);
+		$this->store();
+		$this->setHandlers();
 	}
 	public function getContents()
 	{

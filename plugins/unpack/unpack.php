@@ -32,36 +32,33 @@ class rUnpack
 	{
 		if( !isset( $HTTP_RAW_POST_DATA ) )
 			$HTTP_RAW_POST_DATA = file_get_contents( "php://input" );
-		if( isset( $HTTP_RAW_POST_DATA ) )
+		$vars = explode( '&', $HTTP_RAW_POST_DATA );
+		$this->enabled = 0;
+		$this->path = "";
+		foreach( $vars as $var )
 		{
-			$vars = explode( '&', $HTTP_RAW_POST_DATA );
-			$this->enabled = 0;
-			$this->path = "";
-			foreach( $vars as $var )
+			$parts = explode( "=", $var );
+			if( $parts[0] == "unpack_enabled" )
+				$this->enabled = $parts[1];
+			else
+			if( $parts[0] == "unpack_label" )
+				$this->addLabel = $parts[1];
+			else
+			if( $parts[0] == "unpack_name" )
+				$this->addName = $parts[1];
+			else
+			if( $parts[0] == "unpack_filter" )
 			{
-				$parts = explode( "=", $var );
-				if( $parts[0] == "unpack_enabled" )
-					$this->enabled = $parts[1];
-				else
-				if( $parts[0] == "unpack_label" )
-					$this->addLabel = $parts[1];
-				else
-				if( $parts[0] == "unpack_name" )
-					$this->addName = $parts[1];
-				else
-				if( $parts[0] == "unpack_filter" )
-				{
-					$this->filter = trim(rawurldecode($parts[1]));
-					if(@preg_match($this->filter, null) === false)
-						$this->filter = "/.*/";
-				}
-				else
-				if( $parts[0] == "unpack_path" )
-				{
-					$this->path = trim(rawurldecode($parts[1]));
-					if(($this->path != '') && !rTorrentSettings::get()->correctDirectory($this->path))
-						$this->path = '';
-				}
+				$this->filter = trim(rawurldecode($parts[1]));
+				if(@preg_match($this->filter, null) === false)
+					$this->filter = "/.*/";
+			}
+			else
+			if( $parts[0] == "unpack_path" )
+			{
+				$this->path = trim(rawurldecode($parts[1]));
+				if(($this->path != '') && !rTorrentSettings::get()->correctDirectory($this->path))
+					$this->path = '';
 			}
 		}
 		$this->store();

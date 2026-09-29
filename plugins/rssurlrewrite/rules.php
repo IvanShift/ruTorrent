@@ -103,64 +103,61 @@ class rURLRewriteRulesList
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
 		$this->lst = array();
 		$rule = null;
-		if(isset($HTTP_RAW_POST_DATA))
+		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
 		{
-			foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
+			if($parts[0]=="name")
 			{
-				if($parts[0]=="name")
-				{
-					if($rule)
-						$this->lst[] = $rule;
-					$rule = new rURLRewriteRule($parts[1]);
-				}
-				else
-				if($parts[0]=="pattern")
-				{
-					if($rule)
-						$rule->pattern = trim($parts[1]);
-				}
-				else
-				if($parts[0]=="replacement")
-				{
-					if($rule)
-						$rule->replacement = trim($parts[1]);
-				}
-				else
-				if($parts[0]=="enabled")
-				{
-					if($rule)
-						$rule->enabled = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="no")
-				{
-					if($rule)
-						$rule->no = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="hash")
-				{
-					if($rule)
-						$rule->rssHash = $parts[1];
-				}
-				else
-				if($parts[0]=="hrefAsSrc")
-				{
-					if($rule)
-						$rule->hrefAsSrc = intval($parts[1]);
-				}
-				else
-				if($parts[0]=="hrefAsDest")
-				{
-					if($rule)
-						$rule->hrefAsDest = intval($parts[1]);
-				}
+				if($rule)
+					$this->lst[] = $rule;
+				$rule = new rURLRewriteRule($parts[1]);
+			}
+			else
+			if($parts[0]=="pattern")
+			{
+				if($rule)
+					$rule->pattern = trim($parts[1]);
+			}
+			else
+			if($parts[0]=="replacement")
+			{
+				if($rule)
+					$rule->replacement = trim($parts[1]);
+			}
+			else
+			if($parts[0]=="enabled")
+			{
+				if($rule)
+					$rule->enabled = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="no")
+			{
+				if($rule)
+					$rule->no = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="hash")
+			{
+				if($rule)
+					$rule->rssHash = $parts[1];
+			}
+			else
+			if($parts[0]=="hrefAsSrc")
+			{
+				if($rule)
+					$rule->hrefAsSrc = intval($parts[1]);
+			}
+			else
+			if($parts[0]=="hrefAsDest")
+			{
+				if($rule)
+					$rule->hrefAsDest = intval($parts[1]);
+			}
   	                }
-			if($rule)
-				$this->lst[] = $rule;
-			usort($this->lst, array(__CLASS__,"sortByName"));
-			$this->store();
-		}
+		if($rule)
+			$this->lst[] = $rule;
+		usort($this->lst, array(__CLASS__,"sortByName"));
+		$this->store();
 	}
 	public function getContents()
 	{

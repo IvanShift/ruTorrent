@@ -4,6 +4,7 @@ require_once( dirname(__FILE__)."/../../php/util.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/settings.php" );
 require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc");
+require_once( __DIR__."/probe_cursor.php" );
 eval( FileUtil::getPluginConf( 'extsearch' ) );
 if(!defined('EXTSEARCH_SUBMISSION_LOCK_TRIES')) define('EXTSEARCH_SUBMISSION_LOCK_TRIES', 4);
 
@@ -254,7 +255,7 @@ class rSearchHistory
 		}
 		$limit = max(1, (int)$limit);
 		if($count < $limit) return true;
-		$this->reconcile($oldest);
+		ExtsearchHistoryProbeCursor::reconcile($this, array($oldest));
 		return(!$this->isPending($oldest) && $count - 1 < $limit);
 	}
 	public function del( $href )
@@ -412,8 +413,7 @@ class engineManager
 		if($withRSS)
 		{
 			// Persist extsearch confirmations before the temporary RSS overlay.
-			foreach(array_keys($history->lst) as $url)
-				$history->reconcile($url);
+			ExtsearchHistoryProbeCursor::reconcile($history, array_keys($history->lst));
 			self::saveHistory($history);
 			if(rTorrentSettings::get()->isPluginRegistered("rss"))
 			{
@@ -563,7 +563,7 @@ class engineManager
 				$history = self::loadHistory();
 				if(!$magnet && $history->isPending($url))
 				{
-					$history->reconcile($url);
+					ExtsearchHistoryProbeCursor::reconcile($history, array($url));
 					if($history->isPending($url))
 					{
 						$ret[] = null;

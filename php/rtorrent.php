@@ -531,54 +531,80 @@ class rTorrent
 		return($hashes);
 	}
 
-	static public function getSource($hash)
+	// The same session/tied-file fallback serves source download and dump.
+	// Return a path only; getSource() owns parsing and .meta validation.
+	static public function getSourcePath($hash)
 	{
 		$req = new rXMLRPCRequest( array(
 			new rXMLRPCCommand("get_session"),
 			new rXMLRPCCommand("d.get_tied_to_file",$hash)) );
-		if($req->run() && !$req->fault)
+		if(!$req->run() || $req->fault || !isset($req->val[0], $req->val[1])
+			|| !is_string($req->val[0]) || !is_string($req->val[1]))
+			return(false);
+		$fname = $req->val[0].$hash.".torrent";
+		if(empty($req->val[0]) || !is_readable($fname))
+			$fname = strlen($req->val[1]) && is_readable($req->val[1])
+				? $req->val[1] : false;
+		return($fname);
+	}
+
+	// Closed downloads may not have a frozen file path until a temporary open.
+	// Keep the open/read/close commands together so media plugins share one result.
+	static public function getFilePath($hash, $index)
+	{
+		$index = intval($index);
+		$req = new rXMLRPCRequest(new rXMLRPCCommand("f.get_frozen_path", array($hash, $index)));
+		if(!$req->success() || !isset($req->val[0]) || !is_string($req->val[0]))
+			return(false);
+		$path = $req->val[0];
+		if($path === '')
 		{
-			$fname = $req->val[0].$hash.".torrent";
-			if(empty($req->val[0]) || !is_readable($fname))
-			{
-				if(strlen($req->val[1]) && is_readable($req->val[1]))
-					$fname = $req->val[1];
-				else
-					$fname = null;
-			}
-			if($fname)
-			{
-				// rTorrent 0.16 stores BEP-9 magnet metadata as the raw
-				// bencoded info dictionary in <hash>.meta. Passing that path to
-				// Torrent builds a new torrent *of the .meta file*, producing a
-				// stable but unrelated hash. Accept only the daemon's canonical
-				// metadata filename, prove the raw bytes against the requested
-				// info hash, then restore the missing metainfo envelope.
-				if(strcasecmp(basename($fname), $hash . '.meta') === 0)
-				{
-					$raw = @file_get_contents($fname);
-					if($raw === false || $raw === ''
-						|| !preg_match('/^[0-9a-f]{40}$/i', $hash)
-						|| !hash_equals(strtoupper($hash), strtoupper(sha1($raw))))
-						return(false);
-					$torrent = new Torrent('d4:info' . $raw . 'e');
-					// Torrent re-encodes info when calculating hash_info(). This
-					// second equality therefore also rejects non-canonical input
-					// that could not be sent back without changing its hash.
-					if($torrent->errors() || $torrent->hash_info() !== strtoupper($hash))
-						return(false);
-				}
-				else
-					$torrent = new Torrent( $fname );
-				if( !$torrent->errors() )
-				{
-					if(isset($torrent->{'libtorrent_resume'}))
-						unset($torrent->{'libtorrent_resume'});
-					if(isset($torrent->{'rtorrent'}))
-						unset($torrent->{'rtorrent'});
-					return($torrent);
-				}
-			}
+			$req = new rXMLRPCRequest(array(
+				new rXMLRPCCommand("d.open", $hash),
+				new rXMLRPCCommand("f.get_frozen_path", array($hash, $index)),
+				new rXMLRPCCommand("d.close", $hash)));
+			if(!$req->success() || !isset($req->val[1]) || !is_string($req->val[1]))
+				return(false);
+			$path = $req->val[1];
+		}
+		return($path !== '' ? $path : false);
+	}
+
+	static public function getSource($hash, &$sourcePath = null)
+	{
+		$sourcePath = self::getSourcePath($hash);
+		if($sourcePath === false)
+			return(false);
+		$fname = $sourcePath;
+		// rTorrent 0.16 stores BEP-9 magnet metadata as the raw
+		// bencoded info dictionary in <hash>.meta. Passing that path to
+		// Torrent builds a new torrent *of the .meta file*, producing a
+		// stable but unrelated hash. Accept only the daemon's canonical
+		// metadata filename, prove the raw bytes against the requested
+		// info hash, then restore the missing metainfo envelope.
+		if(strcasecmp(basename($fname), $hash . '.meta') === 0)
+		{
+			$raw = @file_get_contents($fname);
+			if($raw === false || $raw === ''
+				|| !preg_match('/^[0-9a-f]{40}$/i', $hash)
+				|| !hash_equals(strtoupper($hash), strtoupper(sha1($raw))))
+				return(false);
+			$torrent = new Torrent('d4:info' . $raw . 'e');
+			// Torrent re-encodes info when calculating hash_info(). This
+			// second equality therefore also rejects non-canonical input
+			// that could not be sent back without changing its hash.
+			if($torrent->errors() || $torrent->hash_info() !== strtoupper($hash))
+				return(false);
+		}
+		else
+			$torrent = new Torrent( $fname );
+		if( !$torrent->errors() )
+		{
+			if(isset($torrent->{'libtorrent_resume'}))
+				unset($torrent->{'libtorrent_resume'});
+			if(isset($torrent->{'rtorrent'}))
+				unset($torrent->{'rtorrent'});
+			return($torrent);
 		}
 		return(false);
 	}

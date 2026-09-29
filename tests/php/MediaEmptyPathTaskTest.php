@@ -10,11 +10,14 @@ class MediaEmptyPathTaskTest extends TestCase
     {
         $this->root = dirname(__DIR__, 2);
         $this->scratch = sys_get_temp_dir() . '/rt-media-empty-' . getmypid() . '-' . bin2hex(random_bytes(4));
-        foreach (array('php', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram') as $dir)
+        foreach (array('php', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo') as $dir)
             mkdir($this->scratch . '/' . $dir, 0777, true);
         foreach (array('plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
-            'plugins/spectrogram/action.php') as $file)
+            'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php') as $file)
             copy($this->root . '/' . $file, $this->scratch . '/' . $file);
+        copy($this->root . '/php/rtorrent.php', $this->scratch . '/php/rtorrent.php');
+        foreach (array('util.php', 'xmlrpc.php', 'Torrent.php') as $stub)
+            file_put_contents($this->scratch . '/php/' . $stub, "<?php\n");
         file_put_contents($this->scratch . '/php/settings.php', "<?php\n");
         file_put_contents($this->scratch . '/plugins/_task/task.php', <<<'PHPSTUB'
 <?php
@@ -100,14 +103,18 @@ PHPREQUEST
 
     public function testEmptyPathSkipsTaskAcrossFallbacks()
     {
-        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox')) as $route) {
+        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox'),
+            array('mediainfo', 'mediainfo')) as $route) {
             foreach (array('fallback-empty', 'fallback-failure') as $rpcCase) {
                 @unlink($this->scratch . '/task-started');
                 list($exit, $out, $err) = $this->request($route[0], $route[1], $rpcCase);
                 $label = $route[1] . ' ' . $rpcCase;
                 $this->assertSame(0, $exit, $label . ' exits cleanly: ' . $err);
                 $this->assertSame('', $err, $label . ' emits no PHP warning');
-                $this->assertSame(array(), json_decode($out, true), $label . ' returns no task');
+                $expected = $route[0] === 'mediainfo' ? 255 : array();
+                $actual = json_decode($out, true);
+                $this->assertSame($expected, $route[0] === 'mediainfo' ? $actual['status'] : $actual,
+                    $label . ' returns no task');
                 $this->assertTrue(!is_file($this->scratch . '/task-started'), $label . ' never starts a task');
             }
         }
@@ -115,7 +122,8 @@ PHPREQUEST
 
     public function testNonemptyPathStillStartsTask()
     {
-        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox')) as $route) {
+        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox'),
+            array('mediainfo', 'mediainfo')) as $route) {
             @unlink($this->scratch . '/task-started');
             list($exit, $out, $err) = $this->request($route[0], $route[1], 'present');
             $this->assertSame(0, $exit, $route[1] . ' positive path exits cleanly: ' . $err);

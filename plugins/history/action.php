@@ -27,16 +27,13 @@ if($cmd !== null)
 			$hashes = array();
 			if(!isset($HTTP_RAW_POST_DATA))
 				$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-			if(isset($HTTP_RAW_POST_DATA))
+			$vars = explode('&', $HTTP_RAW_POST_DATA);
+			foreach($vars as $var)
 			{
-				$vars = explode('&', $HTTP_RAW_POST_DATA);
-				foreach($vars as $var)
-				{
-					$parts = explode("=",$var);
-					$hashes[] = $parts[1];
+				$parts = explode("=",$var);
+				$hashes[] = $parts[1];
   	                	}
-				$up->delete( $hashes );
-			}
+			$up->delete( $hashes );
 			CachedEcho::send(JSON::safeEncode($up->get(0)),"application/json");
   	                break;
 		}

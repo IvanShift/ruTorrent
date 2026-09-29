@@ -196,17 +196,14 @@ class rHistory
 	{
 		if(!isset($HTTP_RAW_POST_DATA))
 			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		if(isset($HTTP_RAW_POST_DATA))
+		$vars = explode('&', $HTTP_RAW_POST_DATA);
+		foreach($vars as $var)
 		{
-			$vars = explode('&', $HTTP_RAW_POST_DATA);
-			foreach($vars as $var)
-			{
-				$parts = explode("=",$var);
-				$this->log[$parts[0]] = ($parts[0]=='pushbullet_key') ? $parts[1] : intval($parts[1]);
+			$parts = explode("=",$var);
+			$this->log[$parts[0]] = ($parts[0]=='pushbullet_key') ? $parts[1] : intval($parts[1]);
   	                }
-			$this->store();
-			$this->setHandlers();
-		}
+		$this->store();
+		$this->setHandlers();
 	}
 	public function get()
 	{

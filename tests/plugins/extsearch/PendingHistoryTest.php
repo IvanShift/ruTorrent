@@ -10,6 +10,7 @@ require_once(__DIR__.'/../../php/TestCase.php');
 class rTorrent
 {
 	public static $calls = 0;
+	public static $probes = 0;
 	public static $status = 'missing';
 	public static $hash = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 	public static $result = null;
@@ -32,6 +33,7 @@ class rTorrent
 
 	public static function pendingLoadStatus($receipt)
 	{
+		self::$probes++;
 		return self::$status;
 	}
 }
@@ -71,6 +73,11 @@ class ExtsearchPendingHistoryTest extends TestCase
 		$this->settingsProperty->setValue(null, $settings);
 	}
 
+	private function nextRequest()
+	{
+		ExtsearchHistoryProbeCursor::resetRequestBudget();
+	}
+
 	private function manager($url)
 	{
 		ExtsearchPendingEngine::$url = $url;
@@ -84,6 +91,9 @@ class ExtsearchPendingHistoryTest extends TestCase
 	{
 		$GLOBALS['saveUploadedTorrents'] = false;
 		rTorrent::$calls = 0;
+		rTorrent::$probes = 0;
+		if(class_exists('ExtsearchHistoryProbeCursor', false))
+			ExtsearchHistoryProbeCursor::resetRequestBudget();
 		rTorrent::$status = 'missing';
 		rTorrent::$result = null;
 		rTorrent::$raw = true;
@@ -101,6 +111,8 @@ class ExtsearchPendingHistoryTest extends TestCase
 		@unlink($settings.'/extsearch_history.dat');
 		@rmdir($settings.'/extsearch_history.dat.lock');
 		@unlink($settings.'/extsearch_history.dat.lock');
+		@unlink($settings.'/extsearch_history_probe_cursor.dat');
+		@unlink($settings.'/extsearch_history_probe_cursor.dat.lock');
 		foreach(glob($settings.'/extsearch-submit-*.lock') ?: array() as $lock)
 			@unlink($lock);
 		@unlink(FileUtil::getProfilePath().'/tmp/extsearch-pending.torrent');
@@ -117,6 +129,67 @@ class ExtsearchPendingHistoryTest extends TestCase
 		@rmdir($_ENV['RU_PROFILE_PATH'].'/users');
 		@rmdir($_ENV['RU_PROFILE_PATH']);
 		$this->settingsProperty->setValue(null, $this->settingsBefore);
+	}
+
+	public function testSearchPresentationBoundsPendingReceiptProbes()
+	{
+		$history = engineManager::loadHistory();
+		for($i=0; $i<6; $i++)
+			$history->addPending('https://example.invalid/search/'.$i,
+				array('hash'=>str_repeat((string)$i, 40),
+					'key'=>'ru-load-proof-'.str_repeat('a', 32)));
+		$this->assertTrue(engineManager::saveHistory($history),
+			'six durable receipts are available before search');
+		rTorrent::$status = 'unknown';
+		$manager = $this->manager('https://example.invalid/search/0');
+		$manager->action('Pending', 'needle');
+		$this->assertSame(array(null), $manager->getTorrents(array('Pending'),
+			array('https://example.invalid/search/0'), true, false, '', '', false),
+			'a same-request add still sees the accepted receipt');
+		$this->assertSame(4, rTorrent::$probes,
+			'search and add share four daemon probes in one request');
+		$this->assertSame(6, count(engineManager::loadHistory()->lst),
+			'unresolved receipts remain durable after the bounded search');
+		ExtsearchHistoryProbeCursor::resetRequestBudget();
+		rTorrent::$status = 'ours';
+		$manager->action('Pending', 'needle');
+		$next = engineManager::loadHistory();
+		$this->assertTrue(!$next->isPending('https://example.invalid/search/4')
+			&& !$next->isPending('https://example.invalid/search/5'),
+			'the next search request eventually selects both previously unprobed receipts');
+	}
+
+	public function testSameUrlAndFullCapacityShareOneProbeBudget()
+	{
+		global $searchHistoryMaxCount;
+		$previous = $searchHistoryMaxCount;
+		$searchHistoryMaxCount = 6;
+		try {
+			$history = engineManager::loadHistory();
+			for($i=0; $i<6; $i++)
+				$history->addPending('https://example.invalid/capacity/'.$i,
+					array('hash'=>str_repeat((string)$i, 40),
+						'key'=>'ru-load-proof-'.str_repeat('b', 32)));
+			$this->assertTrue(engineManager::saveHistory($history),
+				'capacity fixture is persisted before submissions');
+			rTorrent::$status = 'unknown';
+			$urls = array_fill(0, 5, 'https://example.invalid/capacity/0');
+			$urls[] = 'https://example.invalid/capacity/new';
+			$urls[] = 'https://example.invalid/capacity/newer';
+			$manager = $this->manager($urls[0]);
+			$answer = $manager->getTorrents(array_fill(0, count($urls), 'Pending'),
+				$urls, true, false, '', '', false);
+			$this->assertSame(array(null, null, null, null, null, false, false),
+				$answer, 'same URL stays pending and full capacity refuses new loads');
+			$this->assertSame(1, rTorrent::$probes,
+				'repeated URL and capacity checks probe one receipt once per request');
+			$this->assertSame(0, rTorrent::$calls,
+				'RPC uncertainty never dispatches another load');
+			$this->assertSame(6, count(engineManager::loadHistory()->lst),
+				'all six original receipts survive the full-capacity request');
+		} finally {
+			$searchHistoryMaxCount = $previous;
+		}
 	}
 
 	public function testDelayedOwnedLoadPersistsAndReconcilesWithoutResubmission()
@@ -136,6 +209,7 @@ class ExtsearchPendingHistoryTest extends TestCase
 		$this->assertSame(1, rTorrent::$calls, 'pending request is not submitted twice');
 
 		rTorrent::$status = 'ours';
+		$this->nextRequest();
 		$result = $manager->action('Pending', 'pending-owned');
 		$this->assertSame(rTorrent::$hash, $result['data'][0]['hash'] ?? null,
 			'later owned confirmation appears in search results');
@@ -161,6 +235,7 @@ class ExtsearchPendingHistoryTest extends TestCase
 		$history->changed = true;
 		engineManager::saveHistory($history);
 		rTorrent::$status = 'missing';
+		$this->nextRequest();
 		$again = $manager->getTorrents(array('Pending'), array($url),
 			true, false, '', '', false);
 		$this->assertSame(array(null), $again, 'retry can enter a new pending state');
@@ -189,6 +264,7 @@ class ExtsearchPendingHistoryTest extends TestCase
 		$this->assertTrue(engineManager::loadHistory()->isPending($url),
 			'the original proof remains durable after the retry interval');
 		rTorrent::$status = 'ours';
+		$this->nextRequest();
 		$this->assertSame(rTorrent::$hash, $manager->action('Pending', 'pending-unknown')['data'][0]['hash'] ?? null,
 			'known ownership later resolves the original proof');
 	}
@@ -316,6 +392,7 @@ class ExtsearchPendingHistoryTest extends TestCase
 			$history->lst['https://example.invalid/one']['time'] = time() - 301;
 			$history->changed = true;
 			engineManager::saveHistory($history);
+			$this->nextRequest();
 			$this->assertSame(array(null), $manager->getTorrents(
 				array('Pending'), array($url), true, false, '', '', false),
 				'an expired missing receipt opens a slot for retry');

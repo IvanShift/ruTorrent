@@ -15,6 +15,7 @@ final class BulkMagnetTorrentResponseTest extends TestCase
 			$root . '/plugins/bulk_magnet/action.php');
 		$helper = __DIR__ . '/../../../php/torrentfetch.php';
 		if(is_file($helper)) copy($helper, $root . '/php/torrentfetch.php');
+		copy(__DIR__ . '/../../../php/utility/utility.php', $root . '/php/utility.php');
 		file_put_contents($root . '/php/Snoopy.class.inc', <<<'PHPSTUB'
 <?php
 class Snoopy {
@@ -40,6 +41,7 @@ PHPSTUB
 		);
 		file_put_contents($root . '/php/rtorrent.php', <<<'PHPSTUB'
 <?php
+require_once __DIR__.'/utility.php';
 class FileUtil {
 	public static function getUniqueUploadedFilename($name) { return getenv('BULK_TEST_FILE'); }
 	public static function toLog($message) { file_put_contents(getenv('BULK_TEST_LOG'), $message . "\n", FILE_APPEND); }

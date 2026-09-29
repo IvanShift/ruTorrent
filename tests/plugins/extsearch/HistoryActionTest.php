@@ -15,6 +15,8 @@ class ExtsearchHistoryActionTest extends TestCase
 		$source = getenv('RUTORRENT_EXTSEARCH_ACTION_SOURCE')
 			?: __DIR__.'/../../../plugins/extsearch/action.php';
 		copy($source, $this->root.'/plugins/extsearch/action.php');
+		copy(__DIR__.'/../../../plugins/extsearch/probe_cursor.php',
+			$this->root.'/plugins/extsearch/probe_cursor.php');
 		$gate = var_export($this->root.'/post-gate', true);
 		$log = var_export($this->root.'/action.log', true);
 		$settings = var_export($this->root.'/settings', true);
@@ -43,6 +45,7 @@ class ExtsearchHistoryActionTest extends TestCase
 		$probes = var_export($this->root.'/probe-log.jsonl', true);
 		$scan = var_export($this->root.'/engine-scan', true);
 		file_put_contents($this->root.'/plugins/extsearch/engines.php', '<?php '
+			.'require_once(__DIR__."/probe_cursor.php"); '
 			.'class ReviewHistory { public $reconciled = array(); public $lst = array(); '
 			.'public function __construct() { $urls = $GLOBALS["activePendingUrls"] ?? null; '
 			.'if ($urls === null) { $urls = array(); '
@@ -83,7 +86,7 @@ class ExtsearchHistoryActionTest extends TestCase
 			'cache-merge.php',
 			'engine-scan', 'bootstrap.php') as $file)
 			@unlink($this->root.'/'.$file);
-		foreach(array('action.php', 'engines.php') as $file)
+		foreach(array('action.php', 'engines.php', 'probe_cursor.php') as $file)
 			@unlink($this->root.'/plugins/extsearch/'.$file);
 		@unlink($this->root.'/php/util.php');
 		@unlink($this->root.'/php/rtorrent.php');
@@ -236,6 +239,7 @@ class ExtsearchHistoryActionTest extends TestCase
 		$cachePath = var_export(__DIR__.'/../../../php/cache.php', true);
 		file_put_contents($this->root.'/plugins/extsearch/engines.php',
 			'<?php require_once('.$cachePath.'); '
+			.'require_once(__DIR__."/probe_cursor.php"); '
 			.'class engineManager { public static function load() { return new self(); }}');
 		$phpDir = var_export($this->root.'/php', true);
 		$action = var_export($this->root.'/plugins/extsearch/action.php', true);

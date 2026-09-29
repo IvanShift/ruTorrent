@@ -55,83 +55,80 @@ class rAutoTools
 	{
 		if( !isset( $HTTP_RAW_POST_DATA ) )
 			$HTTP_RAW_POST_DATA = file_get_contents( "php://input" );
-		if( isset( $HTTP_RAW_POST_DATA ) )
+		$vars = explode( '&', $HTTP_RAW_POST_DATA );
+		$this->enable_label = 0;
+		$this->label_template = "{DIR}";
+		$this->enable_move = 0;
+		$this->fileop_type = "Move";
+		$this->path_to_finished = "";
+		$this->skip_move_for_files= "/(?:\.rar|\.zip)$/";
+		$this->enable_watch = 0;
+		$this->path_to_watch = "";
+		$this->watch_start = 0;
+		$this->automove_filter = "/.*/";
+		$this->addName = 0;
+		$this->addLabel = 0;
+		foreach( $vars as $var )
 		{
-			$vars = explode( '&', $HTTP_RAW_POST_DATA );
-			$this->enable_label = 0;
-			$this->label_template = "{DIR}";
-			$this->enable_move = 0;
-			$this->fileop_type = "Move";
-			$this->path_to_finished = "";
-			$this->skip_move_for_files= "/(?:\.rar|\.zip)$/";
-			$this->enable_watch = 0;
-			$this->path_to_watch = "";
-			$this->watch_start = 0;
-			$this->automove_filter = "/.*/";
-			$this->addName = 0;
-			$this->addLabel = 0;
-			foreach( $vars as $var )
+			$parts = explode( "=", $var );
+			if( $parts[0] == "enable_label" )
 			{
-				$parts = explode( "=", $var );
-				if( $parts[0] == "enable_label" )
-				{
-					$this->enable_label = $parts[1];
-				}
-				else if( $parts[0] == "label_template" )
-				{
-					$this->label_template = $parts[1];
-				}
-				else if( $parts[0] == "automove_filter" )
-				{
-					$this->automove_filter = $parts[1];
-					if(@preg_match($this->automove_filter, null) === false)
-						$this->automove_filter = "/.*/";
-				}
-				else if( $parts[0] == "enable_move" )
-				{
-					$this->enable_move = $parts[1];
-				}
-				else if( $parts[0] == "fileop_type" )
-				{
-					$this->fileop_type = $parts[1];
-				}
-				else if( $parts[0] == "path_to_finished" )
-				{
-					$this->path_to_finished = $parts[1];
-					if(!rTorrentSettings::get()->correctDirectory($this->path_to_finished))
-						$this->path_to_finished = '';
-				}
-				else if( $parts[0] == "skip_move_for_files" )
-				{
-					$this->skip_move_for_files = $parts[1];
-					if(strlen($this->skip_move_for_files) && (@preg_match($this->skip_move_for_files."u", null) === false))
-						$this->skip_move_for_files = "/(?:\.rar|\.zip)$/";
-				}
-				else if( $parts[0] == "enable_watch" )
-				{
-					$this->enable_watch = $parts[1];
-				}
-				else if( $parts[0] == "path_to_watch" )
-				{
-					$this->path_to_watch = $parts[1];
-					if(!rTorrentSettings::get()->correctDirectory($this->path_to_watch))
-						$this->path_to_watch = '';
-				}
-				else if( $parts[0] == "watch_start" )
-				{
-					$this->watch_start = $parts[1];
-				}
-				else if( $parts[0] == "add_label" )
-				{
-					$this->addLabel = $parts[1];
-				}
-				else if( $parts[0] == "add_name" )
-				{
-					$this->addName = $parts[1];
-				}
+				$this->enable_label = $parts[1];
 			}
-			$this->setHandlers();
+			else if( $parts[0] == "label_template" )
+			{
+				$this->label_template = $parts[1];
+			}
+			else if( $parts[0] == "automove_filter" )
+			{
+				$this->automove_filter = $parts[1];
+				if(@preg_match($this->automove_filter, null) === false)
+					$this->automove_filter = "/.*/";
+			}
+			else if( $parts[0] == "enable_move" )
+			{
+				$this->enable_move = $parts[1];
+			}
+			else if( $parts[0] == "fileop_type" )
+			{
+				$this->fileop_type = $parts[1];
+			}
+			else if( $parts[0] == "path_to_finished" )
+			{
+				$this->path_to_finished = $parts[1];
+				if(!rTorrentSettings::get()->correctDirectory($this->path_to_finished))
+					$this->path_to_finished = '';
+			}
+			else if( $parts[0] == "skip_move_for_files" )
+			{
+				$this->skip_move_for_files = $parts[1];
+				if(strlen($this->skip_move_for_files) && (@preg_match($this->skip_move_for_files."u", null) === false))
+					$this->skip_move_for_files = "/(?:\.rar|\.zip)$/";
+			}
+			else if( $parts[0] == "enable_watch" )
+			{
+				$this->enable_watch = $parts[1];
+			}
+			else if( $parts[0] == "path_to_watch" )
+			{
+				$this->path_to_watch = $parts[1];
+				if(!rTorrentSettings::get()->correctDirectory($this->path_to_watch))
+					$this->path_to_watch = '';
+			}
+			else if( $parts[0] == "watch_start" )
+			{
+				$this->watch_start = $parts[1];
+			}
+			else if( $parts[0] == "add_label" )
+			{
+				$this->addLabel = $parts[1];
+			}
+			else if( $parts[0] == "add_name" )
+			{
+				$this->addName = $parts[1];
+			}
 		}
+		$this->setHandlers();
 		$this->store();
 	}
 	public function get()

@@ -14,49 +14,46 @@ $hash = array();
 $malformedForm = false;
 if (!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-if(isset($HTTP_RAW_POST_DATA))
+$vars = explode('&', $HTTP_RAW_POST_DATA);
+foreach($vars as $var)
 {
-	$vars = explode('&', $HTTP_RAW_POST_DATA);
-	foreach($vars as $var)
+	$parts = explode("=", $var, 2);
+	if(count($parts) !== 2 || $parts[0] === "")
 	{
-		$parts = explode("=", $var, 2);
-		if(count($parts) !== 2 || $parts[0] === "")
+		$malformedForm = true;
+		continue;
+	}
+	switch($parts[0])
+	{
+		case "cmd":
 		{
-			$malformedForm = true;
-			continue;
+			$add[] = rawurldecode($parts[1]);
+			break;
 		}
-		switch($parts[0])
+		case "s":
 		{
-			case "cmd":
-			{
-				$add[] = rawurldecode($parts[1]);
-				break;
-			}
-			case "s":
-			{
-				$ss[] = rawurldecode($parts[1]);
-				break;
-			}
-			case "v":
-			{
-				$vs[] = rawurldecode($parts[1]);
-				break;
-			}
-			case "hash":
-			{
-				$hash[] = $parts[1];
-				break;
-			}
-			case "mode":
-			{
-				$mode  = $parts[1];
-				break;
-			}
-			case "cid":
-			{
-				$cid  = $parts[1];
-				break;
-			}
+			$ss[] = rawurldecode($parts[1]);
+			break;
+		}
+		case "v":
+		{
+			$vs[] = rawurldecode($parts[1]);
+			break;
+		}
+		case "hash":
+		{
+			$hash[] = $parts[1];
+			break;
+		}
+		case "mode":
+		{
+			$mode  = $parts[1];
+			break;
+		}
+		case "cid":
+		{
+			$cid  = $parts[1];
+			break;
 		}
 	}
 }
@@ -799,114 +796,106 @@ switch($mode)
 	}
 	default:
 	{
-		if(isset($HTTP_RAW_POST_DATA))
+		// The policy is shared with rpc2.php: one statement of what a
+		// caller may name, for every door that reaches rtorrent through
+		// this filter. The plugin conf is evaluated after it, so a
+		// deployment that means this door to differ still says so there.
+		if(!require(dirname(__FILE__).'/../../php/xmlrpc_proxy_policy.php'))
 		{
-			// The policy is shared with rpc2.php: one statement of what a
-			// caller may name, for every door that reaches rtorrent through
-			// this filter. The plugin conf is evaluated after it, so a
-			// deployment that means this door to differ still says so there.
-			if(!require(dirname(__FILE__).'/../../php/xmlrpc_proxy_policy.php'))
-			{
-				FileUtil::toLog('xmlrpc-proxy: conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
-				header('HTTP/1.0 503 Service Unavailable');
-				CachedEcho::send(XMLRPCProxy::faultXml('XMLRPC proxy policy is not readable.'), 'text/xml');
-				exit;
-			}
-			eval(FileUtil::getPluginConf('httprpc'));
-			$policy = XMLRPCProxy::policySettings(get_defined_vars());
-			$proxyMode = $policy['mode'];
-			$proxyLog = $policy['log'];
-			if($policy['policyError'] !== null)
-			{
-				FileUtil::toLog('xmlrpc-proxy: '.$policy['policyError']);
-				header('HTTP/1.0 503 Service Unavailable');
-				CachedEcho::send(XMLRPCProxy::faultXml($policy['policyError']), 'text/xml');
-				exit;
-			}
-			if($HTTP_RAW_POST_DATA === false)
-			{
-				if($proxyLog)
-					FileUtil::toLog("xmlrpc-proxy: could not read request body");
-				header("HTTP/1.0 400 Bad Request");
-				CachedEcho::send("Could not read XMLRPC request.", "text/html");
-				exit;
-			}
-			if($HTTP_RAW_POST_DATA === '')
-			{
-				if($proxyLog)
-					FileUtil::toLog("xmlrpc-proxy: empty request body");
-				header("HTTP/1.0 400 Bad Request");
-				CachedEcho::send("Empty XMLRPC request.", "text/html");
-				exit;
-			}
-			// An explicit empty list remains an override, not a request to
-			// use the built-in fallback. Invalid lists were refused above.
-			$proxySafeParams = $policy['safeParams'];
-			$proxyLocalPaths = $policy['allowLocalPaths'];
-			$allowRootDirectory = $policy['allowRootDirectory'];
-			// d.directory.set names the directory rtorrent writes a download
-			// into, and the caller supplies the torrent, so it names the file
-			// too. Confine it to the same boundary the panel already holds
-			// itself to: correctDirectory() is applied to the directory in
-			// sendTorrent(), in addtorrent.php, and to sdirectory in the
-			// setsettings branch above. Raw XMLRPC reached rtorrent without it.
-			//
-			// $topDirectory is a global by now -- php/util.php requires
-			// conf/config.php, and php/xmlrpc.php requires util.php. Where it
-			// is "/" it is not a boundary at all, so the empty root is passed
-			// instead and loads carrying directory setters are rejected, unless the
-			// operator opted in with $XMLRPCProxyAllowRootDirectory.
-			$topDir = (isset($topDirectory) && ($topDirectory !== '')) ? trim($topDirectory) : '';
-			$rootBoundary = (($topDir === '') || ($topDir === '/'))
-				? ($allowRootDirectory ? '/' : '')
-				: $topDir;
-
-			$proxyOptions = array('directory' => array(
-				'root' => $rootBoundary,
-				'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
-			));
-			if($proxyMode === 'sanitize')
-				$proxyOptions['rtorrentVersion'] = httprpcVerifiedDaemonVersion();
-			// decide() here, not process(): this endpoint owns its own
-			// connection to rtorrent and needs the refused method for its
-			// named XMLRPC fault. The process() adapter returns no decision
-			// metadata; rpc2.php uses the same decide() contract.
-			$decision = XMLRPCProxy::decide($HTTP_RAW_POST_DATA, $proxyMode, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
+			FileUtil::toLog('xmlrpc-proxy: conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
+			header('HTTP/1.0 503 Service Unavailable');
+			CachedEcho::send(XMLRPCProxy::faultXml('XMLRPC proxy policy is not readable.'), 'text/xml');
+			exit;
+		}
+		eval(FileUtil::getPluginConf('httprpc'));
+		$policy = XMLRPCProxy::policySettings(get_defined_vars());
+		$proxyMode = $policy['mode'];
+		$proxyLog = $policy['log'];
+		if($policy['policyError'] !== null)
+		{
+			FileUtil::toLog('xmlrpc-proxy: '.$policy['policyError']);
+			header('HTTP/1.0 503 Service Unavailable');
+			CachedEcho::send(XMLRPCProxy::faultXml($policy['policyError']), 'text/xml');
+			exit;
+		}
+		if($HTTP_RAW_POST_DATA === false)
+		{
 			if($proxyLog)
-				foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
-					FileUtil::toLog("xmlrpc-proxy: ".$line);
-			if($decision['action'] !== 'send')
-			{
-				// This filter refused the call; rtorrent never saw it. Name the
-				// command and say this server refused it, the 403/-501 rpc2.php
-				// answers for the same refusals -- not "is rtorrent running",
-				// which sends the client to restart a client that is up.
-				header("HTTP/1.0 403 Forbidden");
-				// CachedEcho::send() ends the request itself, except on the one
-				// branch where it hands a gzipped body to passthru() and
-				// returns. Stop here whatever it does: a refused call must never
-				// reach rtorrent by falling through to the forward below.
-				CachedEcho::send(XMLRPCProxy::rejectionFault($decision['method']), "text/xml");
-				exit;
-			}
-			$transportFailure = null;
-			$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted'], $transportFailure);
-			if($result === false)
-			{
-				header("HTTP/1.0 500 Server Error");
-				$message = ($transportFailure === 'closed-before-headers')
-					? httprpcClosedBeforeHeadersMessage()
-					: "Could not complete the rTorrent XMLRPC request.";
-				CachedEcho::send($message, "text/html");
-				exit;
-			}
-			if(!empty($result))
-			{
-				$pos = strpos($result, "\r\n\r\n");
-				if($pos !== false)
-					$result = substr($result,$pos+4);
-				CachedEcho::send($result, "text/xml");
-			}
+				FileUtil::toLog("xmlrpc-proxy: could not read request body");
+			header("HTTP/1.0 400 Bad Request");
+			CachedEcho::send("Could not read XMLRPC request.", "text/html");
+			exit;
+		}
+		if($HTTP_RAW_POST_DATA === '')
+		{
+			if($proxyLog)
+				FileUtil::toLog("xmlrpc-proxy: empty request body");
+			header("HTTP/1.0 400 Bad Request");
+			CachedEcho::send("Empty XMLRPC request.", "text/html");
+			exit;
+		}
+		// An explicit empty list remains an override, not a request to
+		// use the built-in fallback. Invalid lists were refused above.
+		$proxySafeParams = $policy['safeParams'];
+		$proxyLocalPaths = $policy['allowLocalPaths'];
+		$allowRootDirectory = $policy['allowRootDirectory'];
+		// d.directory.set names the directory rtorrent writes a download
+		// into, and the caller supplies the torrent, so it names the file
+		// too. Confine it to the same boundary the panel already holds
+		// itself to: correctDirectory() is applied to the directory in
+		// sendTorrent(), in addtorrent.php, and to sdirectory in the
+		// setsettings branch above. Raw XMLRPC reached rtorrent without it.
+		//
+		// $topDirectory is a global by now -- php/util.php requires
+		// conf/config.php, and php/xmlrpc.php requires util.php. Where it
+		// is "/" it is not a boundary at all, so the empty root is passed
+		// instead and loads carrying directory setters are rejected, unless the
+		// operator opted in with $XMLRPCProxyAllowRootDirectory.
+		$topDir = (isset($topDirectory) && ($topDirectory !== '')) ? trim($topDirectory) : '';
+		$rootBoundary = (($topDir === '') || ($topDir === '/'))
+			? ($allowRootDirectory ? '/' : '')
+			: $topDir;
+
+		$proxyOptions = array('directory' => array(
+			'root' => $rootBoundary,
+			'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
+		));
+		if($proxyMode === 'sanitize')
+			$proxyOptions['rtorrentVersion'] = httprpcVerifiedDaemonVersion();
+		// decide() here, not process(): this endpoint owns its own
+		// connection to rtorrent and needs the refused method for its
+		// named XMLRPC fault. The process() adapter returns no decision
+		// metadata; rpc2.php uses the same decide() contract.
+		$decision = XMLRPCProxy::decide($HTTP_RAW_POST_DATA, $proxyMode, $proxySafeParams, $proxyLocalPaths, $proxyOptions);
+		if($proxyLog)
+			foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
+				FileUtil::toLog("xmlrpc-proxy: ".$line);
+		if($decision['action'] !== 'send')
+		{
+			// This filter refused the call; rtorrent never saw it. Name the
+			// command and say this server refused it, the 403/-501 rpc2.php
+			// answers for the same refusals -- not "is rtorrent running",
+			// which sends the client to restart a client that is up.
+			header("HTTP/1.0 403 Forbidden");
+			CachedEcho::send(XMLRPCProxy::rejectionFault($decision['method']), "text/xml");
+		}
+		$transportFailure = null;
+		$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted'], $transportFailure);
+		if($result === false)
+		{
+			header("HTTP/1.0 500 Server Error");
+			$message = ($transportFailure === 'closed-before-headers')
+				? httprpcClosedBeforeHeadersMessage()
+				: "Could not complete the rTorrent XMLRPC request.";
+			CachedEcho::send($message, "text/html");
+			exit;
+		}
+		if(!empty($result))
+		{
+			$pos = strpos($result, "\r\n\r\n");
+			if($pos !== false)
+				$result = substr($result,$pos+4);
+			CachedEcho::send($result, "text/xml");
 		}
 		break;
 	}

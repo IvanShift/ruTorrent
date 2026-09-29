@@ -1,5 +1,3 @@
-// this function is obsolete
-
 function cacheBust(url) {
 	var sep = (url.indexOf('?') === -1) ? '?' : '&';
 	return url + sep + 'v=' + (typeof theWebUI !== 'undefined' ? theWebUI.version.replace(/\./g, '') : Date.now());

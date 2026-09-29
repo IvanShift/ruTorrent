@@ -69,6 +69,7 @@ register_shutdown_function(function () {
     echo 'ROUTE_RESULT:' . ($status === false ? 200 : $status) . ':' . json_encode($GLOBALS['calls']);
 });
 require getenv('ROUTE_SOURCE') . '/php/utility/requests.php';
+require getenv('ROUTE_SOURCE') . '/php/utility/utility.php';
 class JSON { public static function safeEncode($value) { return '{}'; } }
 class CachedEcho { public static function send($value, $type = null, $compress = null, $cache = null) {} }
 require 'action.php';
