@@ -11381,16 +11381,8 @@ function retrackersParseCliArgv($argv)
 	));
 }
 
-function retrackersCliMain($argv)
+function retrackersCliMain($cli)
 {
-	$cli = retrackersParseCliArgv($argv);
-	if ($cli === false)
-		return(1);
-
-	$_SERVER['REMOTE_USER'] = $cli['user'];
-	require_once( dirname(__FILE__)."/retrackers.php" );
-	require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
-	require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
 	$trks = rRetrackers::load();
 	$adapter = new RetrackersWorkerRpcAdapter($cli['hash']);
 	$res = retrackersRunRecoveryWorker($cli['hash'], $cli['user'], $cli['handoff'], $cli['state'],
@@ -11398,5 +11390,15 @@ function retrackersCliMain($argv)
 	return($res ? 0 : 1);
 }
 
-if (!defined('RETRACKERS_IMPORT_ONLY'))
-	exit(retrackersCliMain(isset($argv) ? $argv : null));
+if (!defined('RETRACKERS_IMPORT_ONLY')) {
+	$cli = retrackersParseCliArgv(isset($argv) ? $argv : null);
+	if ($cli === false)
+		exit(1);
+	$_SERVER['REMOTE_USER'] = $cli['user'];
+	// util.php loads profile configuration into the scope of its require.
+	// Keep these imports at file scope so RPC adapters see those globals.
+	require_once( dirname(__FILE__)."/retrackers.php" );
+	require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
+	require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
+	exit(retrackersCliMain($cli));
+}

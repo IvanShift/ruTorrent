@@ -3570,104 +3570,84 @@ PHP;
 		$this->removeTree($root);
 	}
 
-	public function testValidCliLoadsRuntimeDependenciesBeforeTheFirstRpc()
+	public function testRealCliUsesConfiguredScgiSocketWithoutPreseededGlobals()
 	{
-		if (!function_exists('exec') || PHP_BINARY === '') {
-			$this->assertTrue(false, 'a PHP subprocess is required to test the valid CLI boundary');
-			return;
-		}
-
-		$root = sys_get_temp_dir() . '/rutorrent-retrackers-valid-cli-' . getmypid();
+		$root = sys_get_temp_dir() . '/rr-cli-' . getmypid();
+		@unlink($root . '/rpc.sock');
 		$this->removeTree($root);
 		mkdir($root, 0700);
 		$profile = $root . '/profile';
 		$temp = $root . '/tmp';
 		mkdir($profile, 0700);
 		mkdir($temp, 0700);
-		$report = $root . '/report.json';
-		$errorLog = $root . '/error.log';
-		$socket = 'unix://' . $root . '/unreachable.sock';
-		$script = $root . '/entry.php';
-		$update = realpath(__DIR__ . '/../../../plugins/retrackers/update.php');
+		$socket = $root . '/rpc.sock';
+		$server = @stream_socket_server('unix://' . $socket, $errno, $error);
+		if (!is_resource($server)) {
+			@unlink($socket);
+			$this->removeTree($root);
+			$this->assertTrue(false, 'the private SCGI fixture binds: ' . $error);
+			return;
+		}
 		$hash = str_repeat('A', 40);
 		$user = 'alice';
-		$localId = str_repeat('B', 40);
-		$handoff = 'v1:original:0:' . $localId . ':' . hash('sha256', $user);
+		$handoff = 'v1:original:0:' . str_repeat('B', 40) . ':' . hash('sha256', $user);
 		$environment = array(
+			'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
 			'RU_PROFILE_PATH' => $profile,
 			'RU_TEMP_DIRECTORY' => $temp,
-			'RU_LOG_FILE' => $errorLog,
-			'RU_SCGI_HOST' => $socket,
+			'RU_LOG_FILE' => $root . '/error.log',
+			'RU_SCGI_HOST' => 'unix://' . $socket,
 			'RU_SCGI_PORT' => '0',
 		);
-		file_put_contents($script, '<?php' . "\n"
-			. 'define(' . var_export('RETRACKERS_IMPORT_ONLY', true) . ', true);' . "\n"
-			. '$environment = ' . var_export($environment, true) . ';' . "\n"
-			. 'foreach ($environment as $name => $value) {' . "\n"
-			. '    putenv($name . "=" . $value);' . "\n"
-			. '    $_ENV[$name] = $value;' . "\n"
-			. '}' . "\n"
-			. '$profilePath = $environment["RU_PROFILE_PATH"];' . "\n"
-			. '$tempDirectory = $environment["RU_TEMP_DIRECTORY"];' . "\n"
-			. '$log_file = $environment["RU_LOG_FILE"];' . "\n"
-			. '$scgi_host = $environment["RU_SCGI_HOST"];' . "\n"
-			. '$scgi_port = $environment["RU_SCGI_PORT"];' . "\n"
-			. 'require ' . var_export($update, true) . ';' . "\n"
-			. '$status = retrackersCliMain($argv);' . "\n"
-			. 'file_put_contents(' . var_export($report, true) . ', json_encode(array(' . "\n"
-			. '    "status" => $status,' . "\n"
-			. '    "profile_path" => $profilePath,' . "\n"
-			. '    "temp_directory" => $tempDirectory,' . "\n"
-			. '    "log_file" => $log_file,' . "\n"
-			. '    "scgi_host" => $scgi_host,' . "\n"
-			. '    "scgi_port" => (string) $scgi_port,' . "\n"
-			. '    "transport_loaded" => class_exists("rSCGITransport", false),' . "\n"
-			. ')));' . "\n"
-			. 'exit($status);' . "\n");
-		$output = array();
-		$status = 0;
-		exec(escapeshellarg(PHP_BINARY) . ' -d display_errors=1 ' . escapeshellarg($script) .
-			' ' . escapeshellarg($hash) . ' ' . escapeshellarg($user) .
-			' ' . escapeshellarg($handoff) . ' 2>&1', $output, $status);
-		$transcript = implode("\n", $output);
-		$observed = is_file($report) ? json_decode(file_get_contents($report), true) : array();
-
-		$this->assertTrue($status === 1 && isset($observed['status']) && $observed['status'] === 1,
-			'a valid standalone worker reaches a classified runtime refusal instead of a PHP fatal');
-		$this->assertTrue(isset($observed['transport_loaded']) && $observed['transport_loaded'] === true &&
-			strpos($transcript, 'Class "rSCGITransport" not found') === false,
-			'the standalone worker loads its SCGI dependency before the first RPC');
-		$runtime = array();
-		foreach (array('profile_path', 'temp_directory', 'log_file', 'scgi_host', 'scgi_port') as $key) {
-			$runtime[$key] = isset($observed[$key]) ? $observed[$key] : null;
+		$process = @proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini',
+			'-d', 'variables_order=EGPCS', '-d', 'display_errors=stderr',
+			realpath(__DIR__ . '/../../../plugins/retrackers/update.php'),
+			$hash, $user, $handoff),
+			array(0 => array('pipe', 'r'), 1 => array('file', $root . '/stdout', 'w'),
+				2 => array('file', $root . '/stderr', 'w')), $pipes, null, $environment);
+		if (!is_resource($process)) {
+			fclose($server);
+			@unlink($socket);
+			$this->removeTree($root);
+			$this->assertTrue(false, 'the standalone CLI child starts');
+			return;
 		}
-		$this->assertEquals(array(
-			'profile_path' => $profile,
-			'temp_directory' => $temp,
-			'log_file' => $errorLog,
-			'scgi_host' => $socket,
-			'scgi_port' => '0',
-		), $runtime, 'the child records only private-root write targets and an unreachable Unix SCGI endpoint');
-		$this->assertTrue(is_string($runtime['profile_path']) &&
-			strpos($runtime['profile_path'], $root . '/') === 0 &&
-			is_string($runtime['temp_directory']) &&
-			strpos($runtime['temp_directory'], $root . '/') === 0 &&
-			is_string($runtime['log_file']) && strpos($runtime['log_file'], $root . '/') === 0 &&
-			is_string($runtime['scgi_host']) && strpos($runtime['scgi_host'], 'unix://') === 0 &&
-			!file_exists(substr($runtime['scgi_host'], strlen('unix://'))),
-			'the valid CLI probe cannot inherit a configured daemon or an external side-effect path');
-		$log = is_file($errorLog) ? file_get_contents($errorLog) : '';
-		$matches = array();
-		preg_match_all('/^\[[^\r\n]+\] retrackers-recovery: ([0-9A-F]{40}) ([a-z0-9-]+)$/m',
-			$log, $matches);
-		$this->assertTrue(isset($matches[1], $matches[2]) && count($matches[1]) === 1 &&
-			$matches[1][0] === $hash && $matches[2][0] === 'rpc-family-unconfirmed',
-			'a valid CLI worker persistently records its hash and one bounded failure class');
-		$this->assertTrue(strpos($matches[0][0] ?? '', $socket) === false &&
-			strpos($matches[0][0] ?? '', $root) === false &&
-			strpos($matches[0][0] ?? '', $handoff) === false,
-			'the CLI worker diagnostic contains no transport path, handoff, or remote payload');
+		fclose($pipes[0]);
+		$connection = @stream_socket_accept($server, 2);
+		$accepted = is_resource($connection);
+		$request = '';
+		if (is_resource($connection)) {
+			stream_set_blocking($connection, false);
+			$deadline = microtime(true) + 1;
+			do {
+				$request .= (string) @fread($connection, 8192);
+				if (strpos($request, 'system.listMethods') !== false || feof($connection)) break;
+				usleep(10000);
+			} while (microtime(true) < $deadline);
+			fclose($connection);
+		}
+		fclose($server);
+		$deadline = microtime(true) + 1.5;
+		do {
+			$status = proc_get_status($process);
+			if (!$status['running']) break;
+			usleep(10000);
+		} while (microtime(true) < $deadline);
+		$timedOut = $status['running'];
+		if ($timedOut) proc_terminate($process, 9);
+		$exit = $status['exitcode'];
+		$closed = proc_close($process);
+		if ($exit < 0) $exit = $closed;
+		$stderr = file_get_contents($root . '/stderr');
+		$log = is_file($root . '/error.log') ? file_get_contents($root . '/error.log') : '';
+		@unlink($socket);
 		$this->removeTree($root);
+		$this->assertTrue(!$timedOut && strpos($stderr, 'Fatal error') === false,
+			'the real CLI child finishes within the deadline without a PHP fatal');
+		$this->assertTrue($accepted && strpos($request, 'system.listMethods') !== false,
+			'the real CLI sends its first RPC to the configured private Unix SCGI socket');
+		$this->assertTrue($exit === 1 && strpos($log, 'rpc-family-unconfirmed') !== false,
+			'the closed fixture produces one bounded, classified SCGI refusal');
 	}
 
 	public function testWorkerFailureRecorderPersistsOnlyCanonicalHashAndClosedReason()
@@ -12176,7 +12156,7 @@ PHP;
 			'testTorrentProjectionNormalizesSparseLegacyTrackerMutations',
 			'testTorrentProjectionRejectsAnEmptyDeletionPatternDeterministically',
 			'testTorrentProjectionStopsAfterFirstMatchingDeletionPattern',
-			'testValidCliLoadsRuntimeDependenciesBeforeTheFirstRpc',
+			'testRealCliUsesConfiguredScgiSocketWithoutPreseededGlobals',
 			'testWorkerTransactionCollisionReadNeverTreatsUnknownAsEmpty',
 		);
 		$runtime = array();
