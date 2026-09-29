@@ -1203,30 +1203,66 @@ class RuTrackerUpdatePass
     static private function diagnoseLegacyRow($values, $i, $now)
     {
         $hash = $values[$i];
-        $successor = $values[$i + 8];
+        $observedMetaNew = $values[$i + 8];
         $state = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 4]);
         $open = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 5]);
         $checked = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 6]);
         $checkedAt = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 7]);
-        if (!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)
-            || !is_string($successor)
-            || !preg_match('/^[0-9a-fA-F]{40}$/D', $successor)
-            || $state !== 0 || $open !== 0
-            || $checked !== ruTrackerChecker::STE_INPROGRESS
-            || $checkedAt === null || $checkedAt <= 0
-            || $checkedAt > $now - 3600
-            || (string) $values[$i + 1] !== ''
-            || (string) $values[$i + 2] !== ''
-            || (string) $values[$i + 3] !== '')
-            return;
-        $allowed = isset($GLOBALS['rutrackerLegacyRecoveryPairs'])
+        $noRecoveryKeys = $values[$i + 1] === ''
+            && $values[$i + 2] === ''
+            && $values[$i + 3] === '';
+        $validHash = is_string($hash) && preg_match('/^[0-9a-fA-F]{40}$/D', $hash) === 1;
+        $allowed = $validHash
+            && isset($GLOBALS['rutrackerLegacyRecoveryPairs'])
             && is_array($GLOBALS['rutrackerLegacyRecoveryPairs'])
             && isset($GLOBALS['rutrackerLegacyRecoveryPairs'][$hash])
             ? $GLOBALS['rutrackerLegacyRecoveryPairs'][$hash] : null;
+        // A malformed generation of a named predecessor must not disappear
+        // at the early guard: no other pass can reach its stopped row.
+        if (is_array($allowed) && $noRecoveryKeys) {
+            $reason = null;
+            if (!in_array($state, array(0, 1), true)
+                || !in_array($open, array(0, 1), true))
+                $reason = 'invalid state/is_open';
+            elseif ($state === 0 && $open === 0) {
+                if ($checked === null)
+                    $reason = 'invalid chk-state';
+                elseif ($checked === ruTrackerChecker::STE_INPROGRESS) {
+                    if (!is_string($observedMetaNew)
+                        || ($observedMetaNew !== ''
+                            && !preg_match('/^[0-9a-fA-F]{40}$/D', $observedMetaNew)))
+                        $reason = 'invalid chk-meta-new';
+                    elseif ($checkedAt === null || $checkedAt <= 0)
+                        $reason = 'missing or invalid chk-time';
+                    elseif ($checkedAt > $now + 3600)
+                        $reason = 'future chk-time';
+                }
+            }
+            if ($reason !== null)
+                ruTrackerChecker::logUnrepairable('update: legacy-strand manual hold for '
+                    . $hash . ': ' . $reason . '; no automatic restart');
+        }
+        if (!$validHash || !is_string($observedMetaNew)
+            || $state !== 0 || $open !== 0
+            || $checked !== ruTrackerChecker::STE_INPROGRESS
+            || $checkedAt === null || $checkedAt <= 0
+            || $checkedAt > $now - 3600 || !$noRecoveryKeys)
+            return;
+        // One logged predecessor lost chk-meta-new too; its configured pair
+        // supplies the successor only when the observed empty key is exact.
+        $successor = $observedMetaNew;
+        if ($observedMetaNew === '' && is_array($allowed)
+            && array_key_exists('meta_new', $allowed) && $allowed['meta_new'] === '')
+            $successor = $allowed['successor'] ?? '';
+        if (!is_string($successor)
+            || !preg_match('/^[0-9a-fA-F]{40}$/D', $successor))
+            return;
         if (!is_array($allowed)
             || !isset($allowed['successor'], $allowed['checked_at'],
                 $allowed['state_changed'], $allowed['state_counter'])
             || $allowed['successor'] !== $successor
+            || (array_key_exists('meta_new', $allowed)
+                ? $allowed['meta_new'] : $successor) !== $observedMetaNew
             || (string) $allowed['checked_at'] !== (string) $checkedAt) {
             ruTrackerChecker::logUnrepairable('update: legacy-strand candidate '
                 . $hash . ' -> ' . $successor
@@ -1292,7 +1328,7 @@ class RuTrackerUpdatePass
                     'state_changed' => $allowed['state_changed'],
                     'state_counter' => $allowed['state_counter'],
                     'local_id' => $identity->val[0]),
-                array('chk-meta-new' => $successor, 'chk-state' => '1',
+                array('chk-meta-new' => $observedMetaNew, 'chk-state' => '1',
                     'chk-time' => (string) $checkedAt, 'chk-replacement' => '',
                     'chk-replaces' => ''));
             ruTrackerChecker::logUnrepairable('update: legacy-strand recovery '

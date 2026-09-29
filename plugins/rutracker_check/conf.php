@@ -10,18 +10,23 @@ $ignoreLabels 	= ['tv-sonarr', 'radarr'];	// list of labels to ignore
 // there. The default applies only when nothing else has set the variable.
 $rutrackerCheckDebug ??= false; // opt in to diagnostics in ruTorrent's shared application log
 
-// One exact old generation for which the owner requested a single restart.
-// Older releases lost the run-state key during a failed replacement, and the
-// remaining fingerprint also occurs after a manual check of a stopped torrent.
-// Bind recovery to this predecessor, successor and original check timestamp;
-// any later check or a different torrent remains diagnostic only. The atomic
-// chk-revived stamp prevents a second restart after the user stops it again.
+// Only these observed old generations may receive a single restart. A manual
+// check of a deliberately stopped torrent can leave the same loose fingerprint.
+// Bind each recovery to the predecessor, successor, check and daemon generation;
+// chk-revived then prevents a second restart after a later user stop.
 $rutrackerLegacyRecoveryPairs ??= array(
     'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09' => array(
         'successor' => '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A',
         'checked_at' => '1790391624',
         'state_changed' => '1790391635',
         'state_counter' => '9',
+    ),
+    '70E211914B5B65D057FD2C491B9501C60ECCB0B3' => array(
+        'successor' => '6486E11AEBB78DD1BFF732558C0683667497F292',
+        'meta_new' => '',
+        'checked_at' => '1790665210',
+        'state_changed' => '1790665211',
+        'state_counter' => '2',
     ),
 );
 

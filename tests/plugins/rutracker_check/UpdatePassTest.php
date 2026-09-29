@@ -3237,6 +3237,111 @@ upTest($suite, 'the exact Yomi legacy generation is revived once', function () {
     sweepAssertNoStandaloneOwnershipMutation('legacy recovery');
 });
 
+// The 2026-09-29 log records this predecessor running immediately before its
+// replacement stopped it. The failed transaction left no chk-meta-new key,
+// so only its separately approved generation may use the empty-key branch.
+upTest($suite, 'the exact second legacy generation with empty meta-new is revived once', function () {
+    rXMLRPCRequest::reset();
+    $old = '70E211914B5B65D057FD2C491B9501C60ECCB0B3';
+    $successor = '6486E11AEBB78DD1BFF732558C0683667497F292';
+    $checkedAt = '1790665210';
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, '')));
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('B', 40)));
+    rXMLRPCRequest::queue('branch', true, false, function () use ($old, $successor) {
+        $state = RuTrackerState::load('legacy_revival');
+        strictAssertSame($successor, $state['attempts'][$old]['successor'] ?? null,
+            'the successor and one-shot intent are durable before the daemon branch');
+        return array(RuTrackerAtomicOwnership::SENTINEL_REVIVED);
+    });
+
+    $log = testCapturedAppLog(function () use ($checkedAt) {
+        RuTrackerUpdatePass::sweepReplacements((int) $checkedAt + 3601);
+    });
+
+    $branches = sweepBranchRequestsForHash($old);
+    strictAssertSame(1, count($branches), 'the approved empty-key generation gets one branch');
+    $condition = (string) $branches[0]['commands'][0]->params[1];
+    strictAssertTrue(strpos($condition, 'chk-meta-new,cat=",') !== false,
+        'the atomic branch compares the empty observed key, not the intended successor');
+    strictAssertTrue(strpos($condition, 'd.get_state_changed=,value=1790665211') !== false
+        && strpos($condition, 'd.get_state_counter=,value=2') !== false
+        && strpos($condition, 'd.get_local_id=') !== false,
+        'the branch binds the observed daemon generation and object identity');
+    strictAssertTrue(strpos((string) $branches[0]['commands'][0]->params[2], 'd.start') !== false,
+        'the approved predecessor is restarted');
+    strictAssertTrue(strpos($log, 'legacy-strand recovery acted') !== false,
+        'the recovery outcome is visible');
+
+    rXMLRPCRequest::reset();
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, '')));
+    $hold = testCapturedAppLog(function () use ($checkedAt) {
+        RuTrackerUpdatePass::sweepReplacements((int) $checkedAt + 3602);
+    });
+    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
+        'the durable intent prevents a second start after a lost reply or manual stop');
+    strictAssertTrue(strpos($hold, 'already-published') !== false,
+        'the one-shot hold is visible');
+});
+
+upTest($suite, 'second empty-meta recovery refuses changed or unlisted rows', function () {
+    $old = '70E211914B5B65D057FD2C491B9501C60ECCB0B3';
+    foreach (array(
+        'different predecessor' => array(str_repeat('A', 40), '1790665210', ''),
+        'later manual check' => array($old, '1790665212', ''),
+        'different meta-new' => array($old, '1790665210', str_repeat('C', 40)),
+    ) as $label => $row) {
+        rXMLRPCRequest::reset();
+        sweepScan(array(array($row[0], '', '', '', 0, 0, '1', $row[1], $row[2])));
+        RuTrackerUpdatePass::sweepReplacements(1790665210 + 3601);
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': an unapproved stopped row cannot be restarted');
+        strictAssertSame(array(), RuTrackerState::load('legacy_revival')['attempts'] ?? array(),
+            $label . ': an unapproved row does not spend a recovery intent');
+    }
+});
+
+upTest($suite, 'second empty-meta missing chk-time holds visibly', function () {
+    rXMLRPCRequest::reset();
+    $old = '70E211914B5B65D057FD2C491B9501C60ECCB0B3';
+    sweepScan(array(array($old, '', '', '', 0, 0, '1', '', '')));
+    $log = testCapturedAppLog(function () {
+        RuTrackerUpdatePass::sweepReplacements(1790665210 + 3601);
+    });
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+        'missing generation cannot authorize a restart');
+    strictAssertSame(array(), RuTrackerState::load('legacy_revival')['attempts'] ?? array(),
+        'missing generation cannot spend a recovery intent');
+    strictAssertTrue(strpos($log, $old) !== false && strpos($log, 'chk-time') !== false
+        && strpos($log, 'no automatic restart') !== false,
+        'the exact allowlisted predecessor gets an operator-visible refusal');
+});
+
+upTest($suite, 'second allowlisted malformed guards hold visibly', function () {
+    $old = '70E211914B5B65D057FD2C491B9501C60ECCB0B3';
+    $now = 1790665210 + 3601;
+    foreach (array(
+        'invalid state' => array(2, 0, '1', '1790665210', '', 'state/is_open'),
+        'invalid open' => array(0, 2, '1', '1790665210', '', 'state/is_open'),
+        'invalid chk-state' => array(0, 0, 'bad', '1790665210', '', 'chk-state'),
+        'invalid meta-new' => array(0, 0, '1', '1790665210', 'bad', 'chk-meta-new'),
+        'future chk-time' => array(0, 0, '1', (string) ($now + 3601), '', 'chk-time'),
+    ) as $label => $row) {
+        rXMLRPCRequest::reset();
+        sweepScan(array(array($old, '', '', '', $row[0], $row[1], $row[2], $row[3], $row[4])));
+        $log = testCapturedAppLog(function () use ($now) {
+            RuTrackerUpdatePass::sweepReplacements($now);
+        });
+        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': malformed guards cannot authorize a restart');
+        strictAssertSame(array(), RuTrackerState::load('legacy_revival')['attempts'] ?? array(),
+            $label . ': malformed guards cannot spend a recovery intent');
+        strictAssertTrue(strpos($log, $old) !== false && strpos($log, $row[5]) !== false
+            && strpos($log, 'no automatic restart') !== false,
+            $label . ': the named predecessor has a classified operator-visible hold');
+    }
+});
+
 upTest($suite, 'a malformed published legacy intent holds without reattempt', function () {
     rXMLRPCRequest::reset();
     $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
