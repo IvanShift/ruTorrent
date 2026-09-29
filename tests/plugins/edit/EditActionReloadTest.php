@@ -3,6 +3,7 @@
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/../../../php/Torrent.php');
 
 /**
  * plugins/edit/action.php erases the torrent before it reloads it.
@@ -114,6 +115,31 @@ class EditActionReloadTest extends TestCase
 		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
 			escapeshellarg($driver) . ' 2>&1', $output);
 		return implode("\n", $output);
+	}
+
+	private function loadedTorrent()
+	{
+		foreach ($this->daemon->bodies() as $body) {
+			$xml = @simplexml_load_string($body);
+			if ($xml === false) continue;
+			foreach ($xml->xpath('//base64') as $value)
+				return Torrent::fromRawBytes(base64_decode((string)$value, true));
+		}
+		return null;
+	}
+
+	public function testRawEqualsAndMalformedTrailingFieldKeepTrackerAndComment()
+	{
+		$url = 'https://tracker.test/announce?pass=a=b%2Bc';
+		$post = 'hash=' . self::HASH . '&set_trackers=1&tracker='
+			. str_replace('%3D', '=', rawurlencode($url))
+			. '&set_comment=1&comment=left=right&comment';
+		$printed = $this->saveAnEdit($post);
+		$torrent = $this->loadedTorrent();
+		$this->assertTrue($torrent instanceof Torrent, 'the edit reloads: ' . $printed);
+		if (!($torrent instanceof Torrent)) return;
+		$this->assertSame($url, $torrent->announce(), 'the full tracker URL reaches the reload');
+		$this->assertSame('left=right', $torrent->comment(), 'the malformed field does not erase the valid comment');
 	}
 
 	/** The index of the first call to $method, or -1. */

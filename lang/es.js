@@ -199,7 +199,7 @@ var theUILang =
  PCRENotFound			: "Módulo PHP PCRE no está instalado. ruTorrent no funcionará.",
  addTorrentSuccess		: "Se agregó el torrent con éxito.",
  addTorrentFailed		: "Fallo al agregar el torrent.",
- addTorrentPending		: "Sent to rTorrent; confirmation pending.",
+ addTorrentPending		: "Enviado a rTorrent; pendiente de confirmación.",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},
@@ -288,7 +288,7 @@ var theUILang =
  addTorrentFailedURL		: "Fallo al agregar torrent. No se encuentra la URL.",
  addTorrentFailedFile		: "Fallo al agregar torrent. El contenido no es un torrent válido.",
  addTorrentFailedDirectory	: "Fallo al agregar torrent. Directorio de descarga incorrecto.",
- addTorrentDuplicate		: "The torrent is already loaded and was not added again.",
+ addTorrentDuplicate		: "El torrent ya está cargado y no se ha añadido de nuevo.",
  plgLaunch			: "Lanzar",
  plgLocked			: "Obligatorio",
  phpExtensionNotFoundWarning	: "Algunas funcionalidades no estarán disponibles. Debe tener PHP instalado",
@@ -333,5 +333,5 @@ var theUILang =
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
  normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
- Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
+ Settings_save_indeterminate	: "No se sabe si se guardaron los ajustes. El guardado sigue bloqueado; recargue la página manualmente solo cuando rTorrent vuelva a responder."
 };

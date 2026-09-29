@@ -246,15 +246,10 @@ class RuTrackerUpdatePass
             self::clearForumCorrection($row['hash'], $correction);
     }
 
-    // Splits update.php's flat d.multicall values into one associative row
-    // per torrent, 8 values in (see update.php). Originally 11: chk-topic,
-    // chk-forum, chk-meta-new and chk-meta-until were fetched but never read
-    // by run() (pollFeed()/reapOrphans() resolve those for themselves via
-    // their own d.multicall scans), so those four slots were replaced by the
-    // two run()'s alive path actually needs -- chk-del and chk-msg -- to
-    // reset a stale deletion counter without a per-torrent XMLRPC round
-    // trip. Drops a trailing partial group the same way parseTrackerBlob
-    // drops a malformed tracker row -- unknowable rather than guessed at.
+    // Splits update.php's flat d.multicall into nine-value rows: hash,
+    // chk-state/time, label, message, chk-del/msg, tracker blob and local_id.
+    // Drops a trailing partial group the same way parseTrackerBlob drops a
+    // malformed tracker row -- unknowable rather than guessed at.
     // A chk-* counter as the daemon hands it back. An UNSET custom reads back
     // as '' -- the only spelling of the absent 0; the rest is canonical or
     // corruption.

@@ -190,6 +190,16 @@ rTorrentStub.prototype.extsearch = function()
 	this.dataType = "json";
 }
 
+rTorrentStub.prototype.extsearchhistory = function()
+{
+	this.content = "mode=history";
+	for(var i=0; i<this.vs.length; i++)
+		this.content += "&url="+this.vs[i];
+	this.contentType = "application/x-www-form-urlencoded";
+	this.mountPoint = "plugins/extsearch/action.php";
+	this.dataType = "json";
+}
+
 rTorrentStub.prototype.loadtegtorrents = function()
 {
 	this.content = "mode=loadtorrents";
@@ -315,6 +325,7 @@ theWebUI.setTagsHash = function(d)
 {
 	if($type(plugin.tegs[d.teg]))
 	{
+		plugin.pendingHistoryVersion++;
 		for( var i=0; i<d.data.length; i++ )
 		{
 			var item = plugin.tegs[d.teg].data[ d.data[i].ndx ];
@@ -506,6 +517,9 @@ plugin.getTegByRowId = function( rowId )
 }
 
 plugin.loadTorrents = theWebUI.loadTorrents;
+plugin.pendingHistoryLastCheck = -Infinity;
+plugin.pendingHistoryChecking = false;
+plugin.pendingHistoryVersion = 0;
 theWebUI.loadTorrents = function(needSort)
 {
 	plugin.loadTorrents.call(this,needSort);
@@ -541,6 +555,39 @@ theWebUI.loadTorrents = function(needSort)
 		}
 		if(updated && table.sortId)
 			table.Sort();
+		// Resolve saved load receipts without repeating the tracker search or load.
+		const pending = tegItems.filter(item => item.hash === null && !item.deleted);
+		const now = Date.now();
+		if(pending.length && !plugin.pendingHistoryChecking &&
+			(now < plugin.pendingHistoryLastCheck || now - plugin.pendingHistoryLastCheck >= 5000))
+		{
+			plugin.pendingHistoryLastCheck = now;
+			plugin.pendingHistoryChecking = true;
+			const version = plugin.pendingHistoryVersion;
+			const finish = () => { plugin.pendingHistoryChecking = false; };
+			const query = pending.map(item => "&v="+encodeURIComponent(item.link)).join("");
+			this.requestWithTimeout("?action=extsearchhistory"+query, [function(hashes)
+			{
+				finish();
+				if(!plugin.enabled || plugin.tegs[tegId]?.data !== tegItems ||
+					version !== plugin.pendingHistoryVersion) return;
+				let loaded = false;
+				for(const item of pending)
+				{
+					if(item.hash === null && !item.deleted && hashes &&
+						Object.prototype.hasOwnProperty.call(hashes, item.link) &&
+						typeof hashes[item.link] === "string")
+					{
+						item.hash = hashes[item.link];
+						loaded = loaded || !!item.hash;
+						noty((item.hash ? theUILang.addTorrentSuccess : theUILang.addTorrentFailed) +
+							" (" + item.name + ')', item.hash ? "success" : "error");
+					}
+				}
+				if(loaded) theWebUI.getTorrents("list=1");
+			}, this], () => { finish(); this.timeout(); },
+				(status, response) => { finish(); this.error(status, response); });
+		}
 	}
 }
 

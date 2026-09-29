@@ -22,7 +22,8 @@ if(isset($HTTP_RAW_POST_DATA))
 	$setPrivate = false;
 	foreach($vars as $var)
 	{
-		$parts = explode("=",$var);
+		$parts = explode("=",$var,2);
+		if(count($parts)!=2) continue;
 		if($parts[0]=="hash")
 			$hashes[] = $parts[1];
 		else

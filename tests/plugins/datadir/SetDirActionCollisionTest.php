@@ -70,7 +70,8 @@ class SetDirActionCollisionTest extends TestCase
 	 * run state rTorrent reports, and $datadir defaults to a directory that is
 	 * not where the data already is.
 	 */
-	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1)
+	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1,
+		$rawEquals = false, $malformed = false)
 	{
 		$this->removeTree($this->base);
 		if ($this->daemon !== null)
@@ -89,6 +90,9 @@ class SetDirActionCollisionTest extends TestCase
 		}
 		if ($datadir === null)
 			$datadir = $this->base . '/dst';
+		$encodedDir = rawurlencode($datadir);
+		if ($rawEquals)
+			$encodedDir = str_replace('%3D', '=', $encodedDir);
 
 		// Native claim support is required before the UI may dispatch a worker.
 		$methods = array('system.listMethods', 'd.stop_close_claim_state',
@@ -122,7 +126,8 @@ class SetDirActionCollisionTest extends TestCase
 				. ' $rpcTimeOut = 10; $rpcLogCalls = false;' . "\n"
 			. '$topDirectory = "/";' . "\n"
 			. '$HTTP_RAW_POST_DATA = "hash=' . self::HASH . '&datadir='
-				. rawurlencode($datadir) . '&move_addpath=1&move_datafiles=' . $moveFiles
+				. $encodedDir . ($malformed ? '&datadir' : '')
+				. '&move_addpath=1&move_datafiles=' . $moveFiles
 				. '&move_fastresume=0";' . "\n"
 			. 'chdir(' . var_export($this->repoRoot() . '/plugins/datadir', true) . ");\n"
 			. 'require(' . var_export($this->repoRoot() . '/plugins/datadir/action.php', true) . ");\n");
@@ -139,8 +144,29 @@ class SetDirActionCollisionTest extends TestCase
 			'printed' => $printed,
 			'errors' => $answer['errors'],
 			'calls' => $this->daemon->calls(),
+			'bodies' => $this->daemon->bodies(),
 			'started' => in_array('execute', $this->daemon->calls(), true),
 		);
+	}
+
+	public function testRawEqualsInDirectoryReachesWorkerCommand()
+	{
+		$dir = $this->base . '/dst=chosen';
+		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, true);
+		$this->assertSame(array(), $r['errors'], $r['printed']);
+		$this->assertTrue($r['started'], 'the valid destination is dispatched');
+		$this->assertTrue(strpos(implode("\n", $r['bodies']), escapeshellarg($dir)) !== false,
+			'the complete directory reaches the worker command');
+	}
+
+	public function testMalformedTrailingFieldDoesNotOverwriteDestination()
+	{
+		$dir = $this->base . '/dst=chosen';
+		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, false, true);
+		$this->assertSame(array(), $r['errors'], $r['printed']);
+		$this->assertTrue($r['started'], 'the valid destination is dispatched');
+		$this->assertTrue(strpos(implode("\n", $r['bodies']), escapeshellarg($dir)) !== false,
+			'the malformed field does not replace the valid directory');
 	}
 
 	/**

@@ -199,7 +199,7 @@ var theUILang =
  PCRENotFound			: "PHP PCRE মডিউল ইনস্টল করা নেই। ruTorrent কাজ করবে না।",
  addTorrentSuccess		: "টরেন্ট সফলভাবে যুক্ত করা হয়েছে।",
  addTorrentFailed		: "টরেন্ট যুক্ত করতে ব্যর্থ হয়েছে।",
- addTorrentPending		: "Sent to rTorrent; confirmation pending.",
+ addTorrentPending		: "rTorrent-এ পাঠানো হয়েছে; নিশ্চিতকরণের অপেক্ষায়।",
  pnlViews			: "Views",
  NewView			: "New View",
  MoveView			: {base: "Move view", top: "To top", up: "Up", down: "Down", bottom: "To bottom"},
@@ -288,7 +288,7 @@ var theUILang =
  addTorrentFailedURL		: "টরেন্ট যুক্ত করতে ব্যর্থ হয়েছে। URL পুনরুদ্ধার করা যাচ্ছে না।",
  addTorrentFailedFile		: "টরেন্ট যুক্ত করতে ব্যর্থ হয়েছে। পুনরুদ্ধার করা বিষয়বস্তু একটি বৈধ টরেন্ট ফাইল নয়।",
  addTorrentFailedDirectory	: "টরেন্ট যুক্ত করতে ব্যর্থ হয়েছে। ভুল ডাউনলোড ডিরেক্টরি উল্লেখ করা হয়েছে।",
- addTorrentDuplicate		: "The torrent is already loaded and was not added again.",
+ addTorrentDuplicate		: "টরেন্টটি ইতিমধ্যে লোড করা আছে, তাই আবার যোগ করা হয়নি।",
  plgLaunch			: "চালু করুন",
  plgLocked			: "বাধ্যতামূলক",
  phpExtensionNotFoundWarning	: "কিছু কার্যকারিতা অপ্রাপ্য হবে। পিএইচপি এক্সটেনশন অবশ্যই ইনস্টলড থাকতে হবে।",
@@ -333,5 +333,5 @@ var theUILang =
  copyToClipboardFailed		: "কপি ফাংশন আপনার ব্রাউজারে কাজ করছে না।\nদয়া করে এই কন্টেন্টটি ম্যানুয়ালি কপি করুন:\n\n",
  copyToClipboardSuccess		: "সফলভাবে ক্লিপবোর্ডে কপি করা হয়েছে!",
  normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
- Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
+ Settings_save_indeterminate	: "সেটিংস সংরক্ষিত হয়েছে কি না জানা যায়নি। সংরক্ষণ এখনও বন্ধ আছে; rTorrent আবার সাড়া দেওয়ার পরেই পৃষ্ঠাটি নিজে পুনরায় লোড করুন।"
 };

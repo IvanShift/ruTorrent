@@ -10,6 +10,6 @@
  theUILang.Magnet		= "Magnet link";
  theUILang.bulkAdd		= "Bulk loading";
  theUILang.bulkAddDescription	= "One link per line (HTTP, magnet-link or hash)";
- theUILang.bulkAddDuplicate	= "Already loaded, not added again.";
+ theUILang.bulkAddDuplicate	= "Jau ielādēts; atkārtoti nav pievienots.";
 
 thePlugins.get("bulk_magnet").langLoaded();

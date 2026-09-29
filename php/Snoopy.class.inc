@@ -114,6 +114,7 @@ class Snoopy
 	private $secureResponseCookies = array();
 	private $loadedAccountCookies = array();
 	private $responseCookieJar = array();
+	private $flattenedResponseCookies = array();
 	private $responseCookieSequence = 0;
 	private $selectedCookieAccount = null;
 	private $requestChainSourceURL = '';
@@ -283,6 +284,7 @@ class Snoopy
 		$this->host = is_array($parts) && isset($parts["host"]) ? $parts["host"] : '';
 		$originalCookies = $this->cookies;
 		$originalSecureCookies = $this->secureResponseCookies;
+		$originalFlattenedCookies = $this->flattenedResponseCookies;
 		$previousCookieAccount = $this->selectedCookieAccount;
 		$this->selectedCookieAccount = null;
 		$previousScope = array($this->requestCookieHost, $this->requestCookieScheme,
@@ -347,6 +349,7 @@ class Snoopy
 			// Source cookies and account sessions belong to this call.
 			$this->cookies = $originalCookies;
 			$this->secureResponseCookies = $originalSecureCookies;
+			$this->flattenedResponseCookies = $originalFlattenedCookies;
 			$this->selectedCookieAccount = $previousCookieAccount;
 			list($this->requestCookieHost, $this->requestCookieScheme,
 				$this->requestScopedCookies, $this->requestOriginalCookies,
@@ -423,6 +426,9 @@ class Snoopy
 				if($this->redirectTrust === null || !isset($this->loadedAccountCookies[$name])
 					|| $this->loadedAccountCookies[$name] !== $value)
 					unset($flat[$name]);
+		foreach($flat as $name => $value)
+			if($this->isFlattenedResponseCookie($name, $value))
+				unset($flat[$name]);
 		$pairs = array();
 		foreach($flat as $name => $value)
 			$pairs[] = array('name' => $name, 'value' => $value);
@@ -482,6 +488,30 @@ class Snoopy
 	{
 		return $this->selectedCookieAccount === null ? 'anonymous'
 			: 'account:' . $this->selectedCookieAccount;
+	}
+
+	/** Direct loginmgr refreshes also need an account cookie partition. */
+	public function withAccountCookieScope($account, callable $body)
+	{
+		if($this->selectedCookieAccount !== null)
+			return $body();
+		$this->selectedCookieAccount = $account;
+		try
+		{
+			return $body();
+		}
+		finally
+		{
+			$this->selectedCookieAccount = null;
+		}
+	}
+
+	private function isFlattenedResponseCookie($name, $value)
+	{
+		return isset($this->flattenedResponseCookies[$name])
+			&& $this->flattenedResponseCookies[$name] === $value
+			&& (!array_key_exists($name, $this->requestOriginalCookies)
+				|| $this->requestOriginalCookies[$name] !== $value);
 	}
 
 	/** Capture against the URL that answered, before another redirect changes headers. */
@@ -604,16 +634,24 @@ class Snoopy
 				unset($this->responseCookieJar[$key]);
 				continue;
 			}
-			$created = isset($this->responseCookieJar[$key])
-				? $this->responseCookieJar[$key]['created'] : ++$this->responseCookieSequence;
-			$this->responseCookieJar[$key] = array(
-				'account' => $this->cookiePartition(), 'name' => $name, 'value' => $value,
-				'domain' => $domain, 'hostOnly' => $hostOnly, 'path' => $cookiePath,
-				'secure' => isset($attributes['secure']), 'expires' => $expires,
-				'created' => $created, 'lastUsed' => ++$this->responseCookieSequence,
-			);
-			$this->enforceCookieLimits($domain);
+			$this->rememberResponseCookie($name, $value, $domain, $hostOnly,
+				$cookiePath, isset($attributes['secure']), $expires);
 		}
+	}
+
+	private function rememberResponseCookie($name, $value, $domain, $hostOnly, $path, $secure, $expires)
+	{
+		$key = $this->cookiePartition() . "\0" . $domain . "\0" . (int) $hostOnly
+			. "\0" . $path . "\0" . $name;
+		$created = isset($this->responseCookieJar[$key])
+			? $this->responseCookieJar[$key]['created'] : ++$this->responseCookieSequence;
+		$this->responseCookieJar[$key] = array(
+			'account' => $this->cookiePartition(), 'name' => $name, 'value' => $value,
+			'domain' => $domain, 'hostOnly' => $hostOnly, 'path' => $path,
+			'secure' => $secure, 'expires' => $expires,
+			'created' => $created, 'lastUsed' => ++$this->responseCookieSequence,
+		);
+		$this->enforceCookieLimits($domain);
 	}
 
 	private function overwritesSecureCookie($name, $domain, $path)
@@ -710,10 +748,65 @@ class Snoopy
 		return preg_replace('/[^a-z0-9.\[\]:-]/i', '?', (string) $host);
 	}
 
-	/** Source-specific cookies must not turn into a saved loginmgr session. */
+	/** Keep caller cookies flat; response cookies retain their wire scope. */
 	public function cookiesForAccountStorage()
 	{
-		return $this->withoutSourceCookies($this->cookies);
+		$cookies = $this->withoutSourceCookies($this->cookies);
+		foreach($cookies as $name => $value)
+			if($this->isFlattenedResponseCookie($name, $value))
+				unset($cookies[$name]);
+		return $cookies;
+	}
+
+	public function responseCookiesForAccountStorage()
+	{
+		$this->purgeResponseCookies();
+		$entries = array();
+		if($this->selectedCookieAccount === null)
+			return $entries;
+		foreach($this->responseCookieJar as $entry)
+			if($entry['account'] === $this->cookiePartition())
+				$entries[] = array_intersect_key($entry, array_flip(array(
+					'name', 'value', 'domain', 'hostOnly', 'path', 'secure', 'expires')));
+		return $entries;
+	}
+
+	public function loadAccountResponseCookies($entries)
+	{
+		if($this->selectedCookieAccount === null || !is_array($entries))
+			return;
+		$now = time();
+		foreach(array_slice($entries, 0, self::MAX_RESPONSE_COOKIES) as $entry)
+		{
+			if(!is_array($entry) || !isset($entry['name'], $entry['value'],
+				$entry['domain'], $entry['path'], $entry['hostOnly'], $entry['secure'])
+				|| !is_string($entry['name']) || !is_string($entry['value'])
+				|| !is_string($entry['domain']) || !is_string($entry['path'])
+				|| !is_bool($entry['hostOnly']) || !is_bool($entry['secure'])
+				|| !preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/D', $entry['name'])
+				|| preg_match('/[\x00-\x1f\x7f]/', $entry['value'] . $entry['path'])
+				|| strlen($entry['name']) + strlen($entry['value']) > self::MAX_COOKIE_BYTES
+				|| strlen($entry['path']) > 2048 || substr($entry['path'], 0, 1) !== '/'
+				|| !preg_match('/^[a-z0-9.\[\]:-]+$/iD', $entry['domain']))
+				continue;
+			$expires = isset($entry['expires']) ? $entry['expires'] : null;
+			if($expires !== null && (!is_int($expires) || $expires <= $now))
+				continue;
+			$domain = UrlHost::normalize($entry['domain']);
+			try
+			{
+				$validDomain = $domain !== ''
+					&& ($entry['hostOnly'] || !PublicSuffix::isPublicSuffix($domain));
+			}
+			catch(Exception $e)
+			{
+				$validDomain = false;
+			}
+			if(!$validDomain)
+				continue;
+			$this->rememberResponseCookie($entry['name'], $entry['value'], $domain,
+				$entry['hostOnly'], $entry['path'], $entry['secure'], $expires);
+		}
 	}
 
 	/** A cached account session may legitimately reuse a source cookie name. */
@@ -1568,11 +1661,27 @@ class Snoopy
 				if($match[2]=="deleted")
 				{
 					unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]],
-						$this->secureResponseCookies[$match[1]], $this->loadedAccountCookies[$match[1]]);
+						$this->secureResponseCookies[$match[1]], $this->loadedAccountCookies[$match[1]],
+						$this->flattenedResponseCookies[$match[1]]);
 				}
 				else
 				{
+					$captured = false;
+					foreach($this->responseCookieJar as $entry)
+						if($entry['account'] === $this->cookiePartition()
+							&& $entry['name'] === $match[1] && $entry['value'] === $match[2])
+						{
+							$captured = true;
+							break;
+						}
+					// Login responses already passed Domain, Path and expiry validation
+					// in captureResponseCookies(). Never reintroduce rejected values
+					// through this legacy flat-cookie facade.
+					if($this->selectedCookieAccount !== null && !$captured)
+						continue;
 					$this->cookies[$match[1]] = $match[2];
+					if($captured)
+						$this->flattenedResponseCookies[$match[1]] = $match[2];
 					$this->requestAccountCookies[$match[1]] = true;
 					if(isset($this->loadedAccountCookies[$match[1]]))
 						$this->loadedAccountCookies[$match[1]] = $match[2];

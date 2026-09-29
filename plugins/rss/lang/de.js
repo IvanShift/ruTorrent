@@ -18,8 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Fehler beim Laden vom Torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Bereits geladen";
- theUILang.rssStatusPending		= "Confirmation pending";
- theUILang.rssStatusConflict	= "Torrent already exists";
+ theUILang.rssStatusPending		= "Bestätigung ausstehend";
+ theUILang.rssStatusConflict	= "Torrent bereits vorhanden";
  theUILang.rssMenuLoad			= "Downloaden";
  theUILang.rssMenuOpen			= "Im Browser öffenen";
  theUILang.rssMenuClearHistory		= "History leeren";

@@ -276,15 +276,17 @@ class rTorrent
 	}
 
 	/**
-	 * @return string|false|null Confirmed hash, dispatch failure, or pending load.
-	 *                          A pending receipt contains the hash and unique
-	 *                          proof key for a later daemon check; raw records whether
-	 *                          the source file can be discarded after dispatch.
+	 * @return string|false|null Confirmed hash, failed request, or pending load.
+	 *                          An accepted pre-dispatch callback leaves its receipt
+	 *                          available even if the RPC fails; false then does not
+	 *                          prove the deferred load was rejected. The receipt's
+	 *                          raw flag allows source cleanup after dispatch.
 	 */
-	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null)
+	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null, $beforeDispatch = null)
 	{
 		$pendingReceipt = null;
-		if(!self::areValidAdditions($addition))
+		if(($beforeDispatch !== null && !is_callable($beforeDispatch)) ||
+			!self::areValidAdditions($addition))
 			return false;
 		$hash = false;
 		$mustSave = is_object($fname);
@@ -376,9 +378,17 @@ class rTorrent
 				foreach($addition as $key=>$prm)
 					$cmd->addParameter($prm,'string');
 			$req->addCommand( $cmd );
+			$hash = $torrent->hash_info();
+			$loadReceipt = array('hash' => $hash, 'key' => $proofKey, 'raw' => $rawLoad);
+			// Let a caller persist the proof before a deferred load can run.
+			if($beforeDispatch !== null)
+			{
+				if(!$beforeDispatch($loadReceipt)) return false;
+				// The transport reply can be lost after the daemon accepts the load.
+				$pendingReceipt = $loadReceipt;
+			}
 			if($req->run() && !$req->fault)
 			{
-				$hash = $torrent->hash_info();
 				$status = self::waitForLoad($hash, $proofKey);
 				if($status === 'ours')
 				{
@@ -386,7 +396,7 @@ class rTorrent
 						@unlink($filename);
 					return $hash;
 				}
-				$pendingReceipt = array('hash' => $hash, 'key' => $proofKey, 'raw' => $rawLoad);
+				$pendingReceipt = $loadReceipt;
 				FileUtil::toLog('rtorrent: load unconfirmed: '.$hash.' status='.$status);
 				return null;
 			}

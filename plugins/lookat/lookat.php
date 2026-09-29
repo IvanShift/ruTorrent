@@ -37,7 +37,8 @@ class rLook
 		$this->list = array();
 		foreach($vars as $var)
 		{
-			$parts = explode("=",$var);
+			$parts = explode("=",$var,2);
+			if(count($parts)!=2) continue;
 			if($parts[0]=="look")
 			{
 				$value = trim(rawurldecode($parts[1]));

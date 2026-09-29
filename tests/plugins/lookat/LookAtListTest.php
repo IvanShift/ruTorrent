@@ -36,6 +36,31 @@ class LookAtListTest extends TestCase
 		return array_key_exists($name, $look->list) ? $look->list[$name] : null;
 	}
 
+	public function testRawEqualsInLookTargetPersistsCompleteURL()
+	{
+		$look = new rLook();
+		$look->set('look=Search%7Chttps%3A%2F%2Fexample.com%2F%3Fq%3Da=b');
+		$this->assertSame(array('Search' => 'https://example.com/?q=a=b{title}'),
+			rLook::load()->list, 'the complete URL survives the action store');
+	}
+
+	public function testBareLookDoesNotWarnOrEraseValidEntry()
+	{
+		$look = new rLook();
+		set_error_handler(function($severity, $message) {
+			if(strpos($message, 'Undefined') !== false)
+				throw new ErrorException($message, 0, $severity);
+			return false;
+		});
+		try {
+			$look->set('look=Keep%7Chttps%3A%2F%2Fexample.com%2F%3Fq%3Dx&look');
+		} finally {
+			restore_error_handler();
+		}
+		$this->assertSame(array('Keep' => 'https://example.com/?q=x{title}'),
+			rLook::load()->list, 'the valid entry is persisted');
+	}
+
 	public function testAcceptsAnHttpTarget()
 	{
 		$this->assertEquals('https://example.com/search?q={title}',

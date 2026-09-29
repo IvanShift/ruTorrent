@@ -149,6 +149,13 @@ try {
         'enabled' => 1,
         'auto' => 0,
     );
+    $manager->accounts['KinozalTV'] = array(
+        'name' => 'KinozalTV',
+        'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/KinozalTV.php'),
+        'object' => 'KinozalTVAccount',
+        'login' => 'fixture-user', 'password' => 'fixture-password',
+        'enabled' => 1, 'auto' => 0,
+    );
     sourceSame(true, $manager->store(), 'loginmgr account fixture saved');
     sourceSame('SourceAlt', $manager->getAccount('https://rutracker.org/second/file'),
         'the second path selects a different account on the same host');
@@ -434,6 +441,16 @@ case "$request_url" in
     https://rutracker.org/second/*)
         printf 'Set-Cookie: b_marker=from-b; Domain=rutracker.org; Path=/; Secure\r\n' >> "$header_file"
         ;;
+    https://kinozal.guru)
+        printf 'Set-Cookie: path_marker=from-login; Path=/takelogin.php; Secure; Max-Age=3600\r\n' >> "$header_file"
+        printf 'Set-Cookie: wrong_domain=from-login; Domain=evil.test; Path=/; Secure\r\n' >> "$header_file"
+        printf 'Set-Cookie: expired_marker=from-login; Path=/; Secure; Max-Age=0\r\n' >> "$header_file"
+        ;;
+    https://kinozal.guru/other)
+        if [ "${SOURCE_ROTATE_COOKIE:-}" = 1 ]; then
+            printf 'Set-Cookie: path_marker=rotated; Path=/takelogin.php; Secure; Max-Age=3600\r\n' >> "$header_file"
+        fi
+        ;;
 esac
 printf '\r\n' >> "$header_file"
 printf 'readable tracker page' > "$body_file"
@@ -495,8 +512,128 @@ SH;
             $rows = sourceWireRows($wirePath);
             sourceSame(true, sourceWireHasCookie($rows[5], 'loginmgr_marker=session-value'),
                 'flat cache cookie reaches its original account');
-            sourceSame(false, sourceWireHasCookie($rows[5], 'a_marker=from-a'),
-                'object-local response jar is not silently persisted');
+            sourceSame(true, sourceWireHasCookie($rows[5], 'a_marker=from-a'),
+                'cached account persists its accepted response cookie with scope');
+
+            $kinozal = new Snoopy();
+            $before = count(sourceWireRows($wirePath));
+            sourceSame(true, $kinozal->fetchComplex('https://kinozal.guru/other'),
+                'real Kinozal login and caller fetch completed');
+            $pathRows = array_slice(sourceWireRows($wirePath), $before);
+            sourceSame(3, count($pathRows), 'home, login POST and caller URL reached the wire');
+            sourceSame(false, sourceWireHasCookie($pathRows[0], 'path_marker=from-login'),
+                'caller did not inject the response cookie');
+            sourceSame(true, sourceWireHasCookie($pathRows[1], 'path_marker=from-login'),
+                'response cookie reaches its allowed login Path');
+            sourceSame(false, sourceWireHasCookie($pathRows[2], 'path_marker=from-login'),
+                'response cookie stays off a different Path after setcookies');
+            foreach(array('wrong_domain=from-login', 'expired_marker=from-login') as $rejected)
+            {
+                sourceSame(false, sourceWireHasCookie($pathRows[1], $rejected),
+                    'rejected response cookie stays off the login Path');
+                sourceSame(false, sourceWireHasCookie($pathRows[2], $rejected),
+                    'rejected response cookie stays off the caller Path');
+            }
+            sourceSame(true, $kinozal->fetchComplex('https://kinozal.guru/other'),
+                'same client reuses the saved account without another login');
+            $pathRows = array_slice(sourceWireRows($wirePath), $before);
+            sourceSame(4, count($pathRows), 'second fetch did not restart login');
+            sourceSame(false, sourceWireHasCookie($pathRows[3], 'path_marker=from-login'),
+                'saved response cookie stays scoped on the same client');
+            putenv('SOURCE_ROTATE_COOKIE=1');
+            sourceSame(true, $kinozal->fetchComplex('https://kinozal.guru/other'),
+                'cached account accepts a refreshed response cookie');
+            putenv('SOURCE_ROTATE_COOKIE');
+            $freshRotated = new Snoopy();
+            sourceSame(true, $freshRotated->fetchComplex('https://kinozal.guru/takelogin.php'),
+                'fresh client loads the refreshed cookie');
+            $rotatedRows = sourceWireRows($wirePath);
+            sourceSame(true, sourceWireHasCookie($rotatedRows[count($rotatedRows) - 1],
+                'path_marker=rotated'), 'cached Set-Cookie rotation survives cache restore');
+            $freshKinozal = new Snoopy();
+            sourceSame(true, $freshKinozal->fetchComplex('https://kinozal.guru/other'),
+                'fresh client reuses the saved account');
+            $pathRows = array_slice(sourceWireRows($wirePath), $before);
+            sourceSame(7, count($pathRows), 'fresh client reused the account without login');
+            sourceSame(false, sourceWireHasCookie($pathRows[6], 'path_marker=from-login'),
+                'persisted response cookie keeps its Path on a fresh client');
+            $storedKinozal = new privateData('KinozalTV');
+            sourceSame(true, (new rCache('/accounts'))->get($storedKinozal),
+                'Kinozal account cache remains readable');
+            sourceSame(false, isset($storedKinozal->cookies['path_marker']),
+                'response cookie is not persisted as an unscoped flat cookie');
+            sourceSame('kinozal.guru', $storedKinozal->scopedCookies[0]['domain'] ?? null,
+                'saved response cookie retains its Domain');
+            sourceSame('/takelogin.php', $storedKinozal->scopedCookies[0]['path'] ?? null,
+                'saved response cookie retains its Path');
+            sourceSame(true, $storedKinozal->scopedCookies[0]['secure'] ?? null,
+                'saved response cookie retains Secure');
+            sourceSame(true, is_int($storedKinozal->scopedCookies[0]['expires'] ?? null),
+                'saved response cookie retains Max-Age expiry');
+            sourceSame(true, $freshKinozal->fetchComplex('https://kinozal.guru/takelogin.php'),
+                'fresh client uses its cached cookie on the matching Path');
+            $pathRows = array_slice(sourceWireRows($wirePath), $before);
+            sourceSame(true, sourceWireHasCookie($pathRows[7], 'path_marker=rotated'),
+                'persisted response cookie reaches only its matching Path');
+            $storedKinozal->scopedCookies[0]['expires'] = time() - 1;
+            sourceSame(true, (new rCache('/accounts'))->set($storedKinozal),
+                'expired scoped-cookie fixture saved');
+            $expiredKinozal = new Snoopy();
+            sourceSame(true, $expiredKinozal->fetchComplex('https://kinozal.guru/takelogin.php'),
+                'fresh client reads expired account cache');
+            $pathRows = array_slice(sourceWireRows($wirePath), $before);
+            sourceSame(false, sourceWireHasCookie($pathRows[8], 'path_marker=rotated'),
+                'expired cached response cookie never reaches the wire');
+
+            $manager->accounts['KinozalTV']['auto'] = 1;
+            sourceSame(true, $manager->store(), 'auto account fixture saved');
+            (new privateData('KinozalTV'))->remove();
+            $autoBefore = count(sourceWireRows($wirePath));
+            $manager->checkAuto();
+            $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
+            sourceSame(2, count($autoRows), 'auto refresh sent home and login POST');
+            $autoSession = new privateData('KinozalTV');
+            sourceSame(true, (new rCache('/accounts'))->get($autoSession),
+                'auto refresh saved its session');
+            sourceSame('/takelogin.php', $autoSession->scopedCookies[0]['path'] ?? null,
+                'auto refresh keeps response cookie Path in scoped cache');
+            sourceSame(false, isset($autoSession->cookies['path_marker']),
+                'auto refresh never flattens response cookie');
+            $autoFresh = new Snoopy();
+            sourceSame(true, $autoFresh->fetchComplex('https://kinozal.guru/takelogin.php'),
+                'fresh client uses the auto-refreshed session');
+            $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
+            sourceSame(true, sourceWireHasCookie($autoRows[2], 'path_marker=from-login'),
+                'auto-refreshed cookie reaches only its matching Path');
+
+            $legacySession = new privateData('KinozalTV');
+            $legacySession->cookies = array('path_marker' => 'legacy-flat');
+            $legacyBytes = serialize($legacySession);
+            $legacyBytes = str_replace('s:13:"scopedCookies";a:0:{}', '', $legacyBytes);
+            $legacyBytes = preg_replace('/^O:11:"privateData":6:/',
+                'O:11:"privateData":5:', $legacyBytes);
+            sourceSame(false, strpos($legacyBytes, '"scopedCookies"') !== false,
+                'legacy fixture omits the new scope field');
+            $legacyPath = rtrim(FileUtil::getSettingsPath(), '/')
+                . '/accounts/KinozalTV.dat';
+            sourceSame(true, file_put_contents($legacyPath, $legacyBytes) !== false,
+                'legacy account session bytes saved');
+            $legacyBefore = count(sourceWireRows($wirePath));
+            $migrated = new Snoopy();
+            sourceSame(true, $migrated->fetchComplex('https://kinozal.guru/other'),
+                'legacy account session is renewed');
+            $legacyRows = array_slice(sourceWireRows($wirePath), $legacyBefore);
+            sourceSame(3, count($legacyRows), 'legacy session causes a fresh login');
+            foreach($legacyRows as $row)
+                sourceSame(false, sourceWireHasCookie($row, 'path_marker=legacy-flat'),
+                    'legacy unscoped cookie never reaches the wire');
+            $migratedSession = new privateData('KinozalTV');
+            sourceSame(true, (new rCache('/accounts'))->get($migratedSession),
+                'renewed account session saved');
+            sourceSame('/takelogin.php', $migratedSession->scopedCookies[0]['path'] ?? null,
+                'renewed cache records the response cookie Path');
+            sourceSame(true, strpos(sourceLog(), 'loginmgr: legacy-cookie-cache-needs-refresh: KinozalTV') !== false,
+                'operator can see why the legacy cache was renewed');
 
         }
         catch (RuntimeException $error)
@@ -545,6 +682,7 @@ SH;
         if($previousCurl === null) unset($pathToExternals['curl']);
         else $pathToExternals['curl'] = $previousCurl;
         putenv('SOURCE_WIRE_LOG');
+        putenv('SOURCE_ROTATE_COOKIE');
     }
 
     $log = sourceLog();

@@ -10,6 +10,6 @@
  theUILang.Magnet		= "Магнет-ссылку";
  theUILang.bulkAdd		= "Загрузить торренты";
  theUILang.bulkAddDescription	= "Одна ссылка на строку (HTTP, магнет-ссылки или хеш-суммы)";
- theUILang.bulkAddDuplicate	= "Already loaded, not added again.";
+ theUILang.bulkAddDuplicate	= "Уже есть в списке; повторно не добавлено.";
 
 thePlugins.get("bulk_magnet").langLoaded();

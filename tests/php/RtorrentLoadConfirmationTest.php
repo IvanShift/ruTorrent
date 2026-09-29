@@ -86,6 +86,49 @@ class RtorrentLoadConfirmationTest extends TestCase
 			'the 0.9.4+ alias map supplies the exact receipt getter');
 	}
 
+	public function testBeforeDispatchReceiptVetoSendsNoLoad()
+	{
+		$this->withPeer('absent', function ($fixture) {
+			$receipt = null;
+			$called = 0;
+			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
+				'', null, true, false, true, null, $receipt,
+				function ($candidate) use (&$called) {
+					$called++;
+					$this->assertSame($this->hash, $candidate['hash'] ?? null,
+						'pre-dispatch callback receives the exact torrent hash');
+					$this->assertTrue(isset($candidate['key']) &&
+						strpos($candidate['key'], 'ru-load-proof-') === 0,
+						'callback receives the generated proof key');
+					return false;
+				});
+			$this->assertSame(1, $called, 'callback runs once before dispatch');
+			$this->assertSame(false, $result, 'failed durable reservation vetoes load');
+			$this->assertSame(null, $receipt, 'veto does not report a dispatched receipt');
+			$this->assertSame(0, count($fixture->requests()),
+				'no XMLRPC reaches the daemon after a reservation veto');
+		});
+	}
+
+	public function testAcceptedReservationExposesReceiptWhenRpcFaults()
+	{
+		$this->withPeer('load-fault', function ($fixture) {
+			$receipt = null;
+			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
+				'', null, true, false, true, null, $receipt,
+				function ($candidate) { return true; });
+			$this->assertSame(false, $result, 'a load RPC fault retains its false result');
+			$this->assertSame($this->hash, $receipt['hash'] ?? null,
+				'accepted pre-dispatch proof remains available after an RPC fault');
+			$this->assertSame(true, $receipt['raw'] ?? null,
+				'the caller can safely clean a raw source after dispatch');
+			$this->assertTrue(!isset($receipt['rejected']),
+				'a post-dispatch fault cannot discard the accepted proof');
+			$this->assertTrue(count($fixture->requests()) >= 1,
+				'the RPC was attempted after the callback accepted its proof');
+		});
+	}
+
 	public function testAcceptedLoadWithNoDaemonDownloadIsPending()
 	{
 		$this->withPeer('absent', function ($fixture) {
@@ -213,15 +256,15 @@ class RtorrentLoadConfirmationTest extends TestCase
 		});
 	}
 
-	public function testLoadRpcFaultIsAProvenDispatchFailure()
+	public function testLoadRpcFaultReturnsFalseWithoutCallback()
 	{
 		$this->withPeer('load-fault', function ($fixture) {
 			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
 				'', null, true, false);
 			$this->assertTrue($result === false,
-				'an RPC fault remains a definitive dispatch failure');
+				'an RPC fault retains the legacy false return without a callback');
 			$this->assertTrue(count($fixture->requests()) === 1,
-				'a rejected RPC is not polled as a deferred load');
+				'a faulted RPC is not polled without a callback');
 		});
 	}
 }

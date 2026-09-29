@@ -5,6 +5,7 @@ require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/settings.php" );
 require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc");
 eval( FileUtil::getPluginConf( 'extsearch' ) );
+if(!defined('EXTSEARCH_SUBMISSION_LOCK_TRIES')) define('EXTSEARCH_SUBMISSION_LOCK_TRIES', 4);
 
 class commonEngine
 {
@@ -153,20 +154,114 @@ class commonEngine
 
 class rSearchHistory
 {
+	const PENDING_RETRY_AFTER = 300;
+	const PENDING_FOREIGN_GRACE = 10;
 	public $hash = "extsearch_history.dat";
 	public $modified = false;
 	public $lst = array();
 	public $changed = false;
+	private $dirty = array();
+
+	private function rememberChange( $url )
+	{
+		if(!array_key_exists($url, $this->dirty))
+			$this->dirty[$url] = array('had'=>array_key_exists($url, $this->lst),
+				'prior'=>$this->lst[$url] ?? null);
+	}
+	// Apply only changes to the row version this request actually read.
+	public function merge( $newer, $unused = null )
+	{
+		foreach($this->dirty as $url=>$change)
+		{
+			$exists = array_key_exists($url, $newer->lst);
+			if($exists !== $change['had'] ||
+				($exists && $newer->lst[$url] !== $change['prior'])) continue;
+			if(array_key_exists($url, $this->lst))
+				$newer->lst[$url] = $this->lst[$url];
+			else
+				unset($newer->lst[$url]);
+		}
+		$this->lst = $newer->lst;
+		if($this->isOverflow()) $this->pack();
+		return true;
+	}
+	public function __sleep()
+	{
+		return array('hash', 'modified', 'lst', 'changed');
+	}
+	public function markLoaded()
+	{
+		$this->dirty = array();
+		$this->changed = false;
+	}
 
 	public function add( $url, $hash )
 	{
+		$this->rememberChange($url);
 		$this->lst[$url] = array( "hash"=>$hash, "time"=>time() );
 		$this->changed = true;
+	}
+	public function addPending( $url, $receipt )
+	{
+		$this->rememberChange($url);
+		$this->lst[$url] = array( "hash"=>"", "time"=>time(), "receipt"=>$receipt );
+		$this->changed = true;
+		if(!is_array($receipt) || !isset($receipt['hash'], $receipt['key']))
+			FileUtil::toLog('extsearch: pending load has no usable receipt; retry after timeout');
+	}
+	public function isPending( $url )
+	{
+		return(isset($this->lst[$url]) && array_key_exists('receipt', $this->lst[$url]));
+	}
+	public function reconcile( $url )
+	{
+		if(!$this->isPending($url)) return;
+		$entry = &$this->lst[$url];
+		$status = rTorrent::pendingLoadStatus($entry['receipt']);
+		if($status === 'ours')
+		{
+			$this->rememberChange($url);
+			$entry['hash'] = $entry['receipt']['hash'];
+			unset($entry['receipt']);
+			$this->changed = true;
+			return;
+		}
+		$age = time() - $entry['time'];
+		if($age < 0) $age = self::PENDING_RETRY_AFTER + 1;
+		if(($status === 'foreign' && $age > self::PENDING_FOREIGN_GRACE) ||
+			($status === 'missing' && $age > self::PENDING_RETRY_AFTER))
+		{
+			$this->rememberChange($url);
+			unset($this->lst[$url]);
+			$this->changed = true;
+			FileUtil::toLog('extsearch: pending load unresolved: '.$status.'; retry allowed');
+		}
+	}
+	public function hasPendingRoom( $limit )
+	{
+		$count = 0;
+		$oldest = null;
+		$oldestTime = PHP_INT_MAX;
+		foreach($this->lst as $url=>$entry)
+		{
+			if(!array_key_exists('receipt', $entry)) continue;
+			$count++;
+			if($entry['time'] < $oldestTime)
+			{
+				$oldest = $url;
+				$oldestTime = $entry['time'];
+			}
+		}
+		$limit = max(1, (int)$limit);
+		if($count < $limit) return true;
+		$this->reconcile($oldest);
+		return(!$this->isPending($oldest) && $count - 1 < $limit);
 	}
 	public function del( $href )
 	{
 		if(array_key_exists($href,$this->lst))
 		{
+			$this->rememberChange($href);
 			unset($this->lst[$href]);
 			$this->changed = true;
 		}
@@ -193,10 +288,15 @@ class rSearchHistory
 		$i=0;
 		foreach( $this->lst as $key=>$value )
 		{
+			if(array_key_exists('receipt', $value)) continue;
+			$this->rememberChange($key);
 			unset($this->lst[$key]);
 			if(++$i>=$cnt)
 				break;
 		}
+		global $searchHistoryMaxCount;
+		if(count($this->lst) > $searchHistoryMaxCount)
+			FileUtil::toLog('extsearch: history overflow: pending receipts retained');
 	}
 }
 
@@ -308,8 +408,13 @@ class engineManager
 		$cache = new rCache();
 		$history = new rSearchHistory();
 		$cache->get($history);
+		$history->markLoaded();
 		if($withRSS)
 		{
+			// Persist extsearch confirmations before the temporary RSS overlay.
+			foreach(array_keys($history->lst) as $url)
+				$history->reconcile($url);
+			self::saveHistory($history);
 			if(rTorrentSettings::get()->isPluginRegistered("rss"))
 			{
 				// Go back to ruTorrent root folder and include rss.php
@@ -336,7 +441,8 @@ class engineManager
 			if($history->isOverflow())
 				$history->pack();
 			$cache = new rCache();
-			return($cache->set($history));
+			if(!$cache->set($history)) return false;
+			$history->markLoaded();
 		}
 		return(true);
 	}
@@ -419,39 +525,127 @@ class engineManager
 		return($ret);
 	}
 
+	private static function submissionLock( $url )
+	{
+		new rCache(); // Create settings on a fresh profile before opening the lock.
+		$path = FileUtil::getSettingsPath().'/extsearch-submit-'
+			.substr(hash('sha256', $url), 0, 4).'.lock';
+		$lock = @fopen($path, 'c');
+		if($lock !== false)
+		{
+			@chmod($path, 0600);
+			for($try=0; $try<EXTSEARCH_SUBMISSION_LOCK_TRIES; $try++)
+				if(rCache::flock($lock)) return $lock;
+			fclose($lock);
+		}
+		FileUtil::toLog('extsearch: add refused: submission lock unavailable');
+		return false;
+	}
+
 	public function getTorrents( $engs, $urls, $isStart, $isAddPath, $directory, $label, $fast )
 	{
 		$ret = array();
-		$history = self::loadHistory();
 		for( $i=0; $i<count($urls); $i++ )
 		{
 			$url = $urls[$i];
-			$success = false;
-			if(strpos($url,"magnet:")===0)
+			$magnet = strpos($url, "magnet:")===0;
+			$lock = $magnet ? null : self::submissionLock($url);
+			if($lock === false)
 			{
-				if($success = rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label))
-					$history->add($url,$success);
+				$ret[] = false;
+				continue;
 			}
-			else
+			$history = null;
+			try
 			{
-				$object = $this->getObject($engs[$i]);
-        			$torrent = $object->getTorrent( $url, $object );
-				if($torrent!==false)
+				// The lock starts before this read, so a competing same-URL request
+				// sees the first request's durable receipt before it dispatches.
+				$history = self::loadHistory();
+				if(!$magnet && $history->isPending($url))
 				{
-					global $saveUploadedTorrents;
-					$receipt = null;
-					$success = rTorrent::sendTorrent($torrent, $isStart, $isAddPath,
-						$directory, $label, $saveUploadedTorrents, $fast, true, null, $receipt);
-					if($success===false || ($success===null && !$saveUploadedTorrents
-						&& !empty($receipt['raw'])))
-						@unlink($torrent);
-					if($success!==false && $success!==null)
+					$history->reconcile($url);
+					if($history->isPending($url))
+					{
+						$ret[] = null;
+						continue;
+					}
+					$confirmed = $history->getHash($url);
+					if($confirmed !== '')
+					{
+						$ret[] = $confirmed;
+						continue;
+					}
+				}
+				$success = false;
+				if($magnet)
+				{
+					if($success = rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label))
 						$history->add($url,$success);
 				}
+				else if(!$history->hasPendingRoom($GLOBALS['searchHistoryMaxCount']))
+					FileUtil::toLog('extsearch: add refused: pending receipt capacity reached');
+				else
+				{
+					$object = $this->getObject($engs[$i]);
+					$torrent = $object->getTorrent( $url, $object );
+					if($torrent!==false)
+					{
+						global $saveUploadedTorrents;
+						$receipt = null;
+						$attemptedKey = null;
+						$reserved = false;
+						$beforeDispatch = function($candidate) use ($history, $url,
+							&$attemptedKey, &$reserved) {
+							$attemptedKey = $candidate['key'];
+							$history->addPending($url, $candidate);
+							if(!self::saveHistory($history))
+								FileUtil::toLog('extsearch: add refused: pending receipt not durable');
+							else if(($history->lst[$url]['receipt']['key'] ?? null) !== $attemptedKey)
+								FileUtil::toLog('extsearch: add refused: newer reservation won');
+							else
+							{
+								$reserved = true;
+								return true;
+							}
+							return false;
+					};
+						$success = rTorrent::sendTorrent($torrent, $isStart, $isAddPath,
+							$directory, $label, $saveUploadedTorrents, $fast, true, null,
+							$receipt, $beforeDispatch);
+						if($success===false && $reserved)
+						{
+							// A failed reply does not prove whether the deferred load was accepted.
+							FileUtil::toLog('extsearch: load RPC failed; pending receipt retained');
+							$success = null;
+						}
+						else if($success===false && $attemptedKey !== null &&
+							($history->lst[$url]['receipt']['key'] ?? null) === $attemptedKey)
+							$history->del($url);
+						if($success===false || ($success===null && !$saveUploadedTorrents
+							&& !empty($receipt['raw'])))
+							@unlink($torrent);
+						if($success!==false && $success!==null)
+							$history->add($url,$success);
+					}
+				}
+				$ret[] = $success;
 			}
-			$ret[] = $success;
+			finally
+			{
+				try
+				{
+					if($history!==null) self::saveHistory($history);
+				}
+				finally
+				{
+					if($lock!==null)
+					{
+						flock($lock, LOCK_UN);
+						fclose($lock);
+					}
+				}
+			}
 		}
-		self::saveHistory($history);
 		return($ret);
 	}
 }

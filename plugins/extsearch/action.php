@@ -3,9 +3,32 @@ require_once( dirname(__FILE__)."/../../php/util.php" );
 require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
 require_once( "engines.php" );
 
-if(isset($_REQUEST['mode']) && in_array($_REQUEST['mode'], array('set', 'loadtorrents'), true))
+if(isset($_REQUEST['mode']) && in_array($_REQUEST['mode'], array('set', 'loadtorrents', 'history'), true))
 	Requests::requirePost();
 set_time_limit(0);
+if(isset($_REQUEST['mode']) && $_REQUEST['mode']==='history')
+{
+	if(!isset($HTTP_RAW_POST_DATA))
+		$HTTP_RAW_POST_DATA = file_get_contents('php://input');
+	$history = engineManager::loadHistory();
+	$answers = array();
+	$maxUrls = max(1, (int)$searchHistoryMaxCount);
+	foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
+	{
+		if(count($parts)!==2 || $parts[0]!=='url') continue;
+		$url = $parts[1];
+		if(array_key_exists($url, $answers)) continue;
+		if(count($answers) >= $maxUrls)
+		{
+			FileUtil::toLog('extsearch: history query truncated: too many URLs');
+			break;
+		}
+		if($history->isPending($url)) $history->reconcile($url);
+		$answers[$url] = $history->isPending($url) ? null : $history->getHash($url);
+	}
+	engineManager::saveHistory($history);
+	CachedEcho::send(JSON::safeEncode($answers), 'application/json');
+}
 $em = engineManager::load();
 if($em===false)
 {

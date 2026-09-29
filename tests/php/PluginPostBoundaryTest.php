@@ -545,6 +545,19 @@ PHP
             'Search|https://example.test/?q={title}'), 'look.dat');
     }
 
+    public function testLookatPostKeepsRawEqualsAndIgnoresBareField()
+    {
+        $result = $this->request('plugins/lookat/action.php', 'POST', array(), array(),
+            'look=Search%7Chttps%3A%2F%2Fexample.com%2F%3Fq%3Da=b&look');
+        $this->assertSame(0, $result['exit'], 'lookat action exits: ' . $result['err']);
+        $this->assertTrue(strpos($result['err'], 'Undefined') === false,
+            'lookat action reads no absent value: ' . $result['err']);
+        $this->assertSame(array('Search' => 'https://example.com/?q=a=b{title}'),
+            json_decode($result['out'], true), 'the action response contains the complete URL');
+        $this->assertTrue(is_file($this->scratch . '/profile/settings/look.dat'),
+            'the action stores the accepted URL');
+    }
+
     public function testRetrackersGetCannotClearTrackerList()
     {
         $this->assertSettingsGetRefused('retrackers', array('tracker' =>

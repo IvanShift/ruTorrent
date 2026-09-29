@@ -24,6 +24,24 @@
         "why": "an ftps resource"
     },
     {
+        "url": "ftps://a%2Fb/dl/x.torrent",
+        "client": true,
+        "server": true,
+        "why": "an opaque ftps host keeps an encoded slash"
+    },
+    {
+        "url": "ftps://a%zzb/dl/x.torrent",
+        "client": true,
+        "server": true,
+        "why": "an opaque ftps host keeps a malformed escape"
+    },
+    {
+        "url": "ftps://a\u007fb/dl/x.torrent",
+        "client": true,
+        "server": true,
+        "why": "an opaque ftps host percent-encodes a raw DEL"
+    },
+    {
         "url": "ftps:",
         "client": true,
         "server": true,
@@ -64,6 +82,90 @@
         "client": true,
         "server": true,
         "why": "a host starting with a hyphen"
+    },
+    {
+        "url": "http://a%2Fb/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the decoded host contains a slash"
+    },
+    {
+        "url": "http://a%3Fb/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the decoded host contains a question mark"
+    },
+    {
+        "url": "http://a%25b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the decoded host contains a literal percent sign"
+    },
+    {
+        "url": "http://a%7Fb/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the decoded host contains DEL"
+    },
+    {
+        "url": "http://a%80b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the decoded host is not valid UTF-8"
+    },
+    {
+        "url": "http://a\u0080b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a raw C1 control in a special-scheme host is not a browser domain"
+    },
+    {
+        "url": "https://a%C2%80b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a decoded C1 control is not a browser domain"
+    },
+    {
+        "url": "ftp://a\u009fb/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the upper end of the C1 control range is not a browser domain"
+    },
+    {
+        "url": "http://a\u00a0b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a no-break space is disallowed by browser domain mapping"
+    },
+    {
+        "url": "https://a\u00a8b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a standalone diaeresis is disallowed by browser domain mapping"
+    },
+    {
+        "url": "ftp://a\u00afb/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a standalone macron is disallowed by browser domain mapping"
+    },
+    {
+        "url": "http://a\u00b4b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a standalone acute accent is disallowed by browser domain mapping"
+    },
+    {
+        "url": "https://a\u00b8b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "a standalone cedilla is disallowed by browser domain mapping"
+    },
+    {
+        "url": "//a\u00a0b/dl/x.torrent",
+        "client": false,
+        "server": false,
+        "why": "the same domain refusal applies to a scheme-relative host"
     },
     {
         "url": "//%41.example.org/dl/x.torrent",

@@ -14,6 +14,7 @@ class privateData
 	public $hash = '';
 	public $modified = false;
 	public $cookies = null;
+	public $scopedCookies = null;
 	public $referer = null;
 	public $loaded = false;
 
@@ -25,11 +26,23 @@ class privateData
 			$cache = new rCache('/accounts');
 			if($cache->get($rt))
 			{
+				// Old caches have only flat cookies; their Path and Domain cannot
+				// be reconstructed. Renew before allowing them onto the wire.
+				if(!is_array($rt->scopedCookies))
+				{
+					FileUtil::toLog('loginmgr: legacy-cookie-cache-needs-refresh: '
+						. preg_replace('/[^a-z0-9_.-]/i', '?', $owner)
+						. '; cookie scope unavailable');
+					return($rt);
+				}
 				// Keep cookies already supplied for this request; the saved session
 				// keeps its previous priority when names overlap.
 				$client->cookies = array_merge((array) $client->cookies, (array) $rt->cookies);
 				if($client instanceof Snoopy)
+				{
 					$client->markAccountCookies($rt->cookies);
+					$client->loadAccountResponseCookies($rt->scopedCookies);
+				}
 //				$client->referer = $rt->referer;
 				$rt->loaded = true;
 			}
@@ -40,6 +53,7 @@ class privateData
 	public function __construct( $owner )
 	{
 		$this->hash = $owner.".dat";
+		$this->scopedCookies = array();
 		$this->loaded = false;
 	}
 
@@ -51,8 +65,10 @@ class privateData
 
 	public function store( $client )
 	{
-	        $this->cookies = ($client instanceof Snoopy)
+		$this->cookies = ($client instanceof Snoopy)
 			? $client->cookiesForAccountStorage() : $client->cookies;
+		$this->scopedCookies = ($client instanceof Snoopy)
+			? $client->responseCookiesForAccountStorage() : array();
 		$this->referer = $client->referer;
 		$cache = new rCache('/accounts');
 		return($cache->set($this));
@@ -219,7 +235,7 @@ abstract class commonAccount
 			$client->redirectTrust = array($this, 'test');
 		try
 		{
-			return($body());
+			return($scopedTrust ? $client->withAccountCookieScope($this->getName(), $body) : $body());
 		}
 		finally
 		{
@@ -244,7 +260,13 @@ abstract class commonAccount
 				// the answer to the caller's own URL.
 				$answer = $this->classifyAnswer($client);
 				if($this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body))
+				{
+					if($client instanceof Snoopy && $data instanceof privateData
+						&& $data->scopedCookies !== $client->responseCookiesForAccountStorage()
+						&& !$data->store($client))
+						FileUtil::toLog('loginmgr: scoped-cookie-cache-write-failed: ' . $this->getName());
 					return(true);
+				}
 				// Only a guest answer is evidence that the session died. Anything
 				// else leaves that unproven, so report the failure and keep the
 				// cookies rather than log in again against a tracker that is not

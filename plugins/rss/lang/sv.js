@@ -18,8 +18,8 @@
  theUILang.rssCantLoadTorrent		= "Fel vid laddning av torrent.";
  theUILang.rssStatus			= "RSS";
  theUILang.rssStatusLoaded		= "Redan laddad";
- theUILang.rssStatusPending		= "Confirmation pending";
- theUILang.rssStatusConflict	= "Torrent already exists";
+ theUILang.rssStatusPending		= "Väntar på bekräftelse";
+ theUILang.rssStatusConflict	= "Torrenten finns redan";
  theUILang.rssMenuLoad			= "Ladda";
  theUILang.rssMenuOpen			= "Öppna i webbläsare";
  theUILang.rssMenuClearHistory		= "Töm historik";
