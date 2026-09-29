@@ -168,6 +168,31 @@ class ExtsearchPendingHistoryTest extends TestCase
 			'an expired missing receipt does not stall retries forever');
 	}
 
+	public function testUnknownDaemonStatusKeepsAgedProofUntilOwnershipReturns()
+	{
+		$url = 'https://example.invalid/pending-unknown';
+		$manager = $this->manager($url);
+		$this->assertSame(array(null), $manager->getTorrents(array('Pending'),
+			array($url), true, false, '', '', false),
+			'first load leaves a durable pending receipt');
+		$history = engineManager::loadHistory();
+		$history->lst[$url]['time'] = time() - 301;
+		$history->changed = true;
+		$this->assertTrue(engineManager::saveHistory($history),
+			'fixture ages the durable receipt past the retry interval');
+		rTorrent::$status = 'unknown';
+		$this->assertSame(array(null), $manager->getTorrents(array('Pending'),
+			array($url), true, false, '', '', false),
+			'RPC uncertainty does not grant a second submission');
+		$this->assertSame(1, rTorrent::$calls,
+			'unknown status never resubmits the same torrent');
+		$this->assertTrue(engineManager::loadHistory()->isPending($url),
+			'the original proof remains durable after the retry interval');
+		rTorrent::$status = 'ours';
+		$this->assertSame(rTorrent::$hash, $manager->action('Pending', 'pending-unknown')['data'][0]['hash'] ?? null,
+			'known ownership later resolves the original proof');
+	}
+
 	public function testConcurrentPendingWritesKeepBothReceipts()
 	{
 		$first = engineManager::loadHistory();

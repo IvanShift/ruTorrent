@@ -101,11 +101,20 @@ class RtorrentLoadConfirmationFixture
 
 	private static function response($value, $fault = false)
 	{
-		if ($fault)
+		if ($fault === 'unparsed-response')
+			$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
+				. '<boolean>0</boolean></value></param></params></methodResponse>';
+		else if ($fault)
+		{
+			$code = $fault === 'missing-legacy' ? -501 : -500;
+			$message = $fault === 'missing-current'
+				? 'invalid parameters: info-hash not found'
+				: ($fault === 'missing-legacy' ? 'Could not find info-hash.' : 'info-hash not found');
 			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
-				. '<member><name>faultCode</name><value><i8>-500</i8></value></member>'
-				. '<member><name>faultString</name><value><string>info-hash not found</string></value></member>'
+				. '<member><name>faultCode</name><value><i8>' . $code . '</i8></value></member>'
+				. '<member><name>faultString</name><value><string>' . $message . '</string></value></member>'
 				. '</struct></value></fault></methodResponse>';
+		}
 		else
 			$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
 				. (is_int($value) ? '<i4>' . $value . '</i4>' : '<string>' . htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8') . '</string>')
@@ -145,7 +154,8 @@ class RtorrentLoadConfirmationFixture
 				elseif ($mode === 'foreign' || $mode === 'transient-foreign')
 					$answer = self::response('other');
 				else
-					$answer = self::response('', true);
+					$answer = self::response('', in_array($mode,
+						array('missing-current', 'missing-legacy', 'unparsed-response'), true) ? $mode : true);
 			} else {
 				$answer = self::response('', true);
 			}

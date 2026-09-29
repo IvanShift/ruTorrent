@@ -415,9 +415,39 @@ class rTorrent
 		$req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'),
 			array($receipt['hash'], $receipt['key'])));
 		$req->important = false;
-		if(!$req->run() || $req->fault)
-			return 'missing';
-		return isset($req->val[0]) && (string)$req->val[0] === '1' ? 'ours' : 'foreign';
+		if(!$req->run())
+		{
+			if($req->transportFailure === null)
+				self::logUnknownLoadStatus('unusable-response');
+			return 'unknown';
+		}
+		if($req->fault)
+		{
+			// These are captured absent-hash answers from current and legacy rTorrent.
+			// A transport error or another fault cannot justify discarding a receipt.
+			if((($req->val[0] ?? null) === '-500'
+				&& $req->rawFaultString === 'invalid parameters: info-hash not found')
+				|| (($req->val[0] ?? null) === '-501'
+					&& $req->rawFaultString === 'Could not find info-hash.'))
+				return 'missing';
+			self::logUnknownLoadStatus('rpc-fault');
+			return 'unknown';
+		}
+		if(!isset($req->val[0]))
+		{
+			self::logUnknownLoadStatus('unusable-response');
+			return 'unknown';
+		}
+		return (string)$req->val[0] === '1' ? 'ours' : 'foreign';
+	}
+
+	static private function logUnknownLoadStatus($reason)
+	{
+		// Polling can repeat the same failure many times in one PHP request.
+		static $logged = array();
+		if(isset($logged[$reason])) return;
+		$logged[$reason] = true;
+		FileUtil::toLog('rtorrent: pending load status unknown: '.$reason);
 	}
 
 	static private function waitForLoad($hash, $key)

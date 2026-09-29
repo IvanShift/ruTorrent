@@ -86,6 +86,108 @@ class RtorrentLoadConfirmationTest extends TestCase
 			'the 0.9.4+ alias map supplies the exact receipt getter');
 	}
 
+	public function testUnknownRpcAnswersWriteClassifiedReasonsOnly()
+	{
+		$receipt = array('hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$oldLog = $GLOBALS['log_file'] ?? null;
+		$oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
+		$GLOBALS['rpcLogCalls'] = false;
+		try {
+			foreach (array('absent' => 'rpc-fault',
+				'parse-failed' => 'unusable-response') as $mode => $reason) {
+				$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
+				$GLOBALS['log_file'] = $path;
+				try {
+					$this->withPeer($mode === 'parse-failed' ? 'foreign' : $mode,
+						function () use ($receipt, $mode) {
+							$oldLimit = ini_get('pcre.backtrack_limit');
+							if($mode === 'parse-failed') ini_set('pcre.backtrack_limit', '1');
+							try {
+								$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+									'unclassified daemon answer cannot clear a receipt');
+								$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+									'repeated unclassified answer remains unknown');
+							} finally {
+								ini_set('pcre.backtrack_limit', $oldLimit);
+							}
+						});
+					$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+					$this->assertSame(1, count($lines),
+						$mode . ' produces one classified diagnostic');
+					$this->assertTrue(strpos($lines[0] ?? '',
+						'rtorrent: pending load status unknown: ' . $reason) !== false,
+						$mode . ' names its classified reason');
+					$this->assertTrue(strpos($lines[0] ?? '', 'info-hash not found') === false,
+						$mode . ' never logs raw remote fault text');
+				} finally {
+					@unlink($path);
+				}
+			}
+		} finally {
+			if ($oldLog === null) unset($GLOBALS['log_file']);
+			else $GLOBALS['log_file'] = $oldLog;
+			if ($oldRpcLog === null) unset($GLOBALS['rpcLogCalls']);
+			else $GLOBALS['rpcLogCalls'] = $oldRpcLog;
+		}
+	}
+
+	public function testUnsupportedResultValueCannotProveForeignOwnership()
+	{
+		$receipt = array('hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$this->withPeer('unparsed-response', function () use ($receipt) {
+			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+				'a result without a parsed value cannot prove a foreign load');
+		});
+	}
+
+	public function testOnlyCapturedAbsentHashFaultsProveMissing()
+	{
+		$receipt = array('hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		// Exact fault strings captured from current 0.16.24 and legacy 0.9.8.
+		foreach (array('missing-current', 'missing-legacy') as $mode)
+			$this->withPeer($mode, function () use ($receipt, $mode) {
+				$this->assertSame('missing', rTorrent::pendingLoadStatus($receipt),
+					$mode . ' positively proves the hash is absent');
+			});
+		$this->withPeer('absent', function () use ($receipt) {
+			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+				'other daemon faults cannot prove that the hash is absent');
+		});
+	}
+
+	public function testScgiConnectFailureCannotProveMissing()
+	{
+		$oldHost = $GLOBALS['scgi_host'] ?? null;
+		$oldPort = $GLOBALS['scgi_port'] ?? null;
+		$oldLog = $GLOBALS['log_file'] ?? null;
+		$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
+		$GLOBALS['log_file'] = $path;
+		$GLOBALS['scgi_host'] = sys_get_temp_dir()
+			. '/rutorrent-load-absent-' . bin2hex(random_bytes(8)) . '.sock';
+		$GLOBALS['scgi_port'] = 0;
+		try {
+			$receipt = array('hash' => $this->hash,
+				'key' => 'ru-load-proof-' . str_repeat('a', 32));
+			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+				'connect-failed means the receipt remains unresolved');
+			$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+			$this->assertSame(1, count($lines), 'transport failure is logged once');
+			$this->assertTrue(strpos($lines[0] ?? '', 'rXMLRPCRequest: connect-failed') !== false,
+				'transport retains its existing classified diagnostic');
+		} finally {
+			if ($oldLog === null) unset($GLOBALS['log_file']);
+			else $GLOBALS['log_file'] = $oldLog;
+			@unlink($path);
+			if ($oldHost === null) unset($GLOBALS['scgi_host']);
+			else $GLOBALS['scgi_host'] = $oldHost;
+			if ($oldPort === null) unset($GLOBALS['scgi_port']);
+			else $GLOBALS['scgi_port'] = $oldPort;
+		}
+	}
+
 	public function testBeforeDispatchReceiptVetoSendsNoLoad()
 	{
 		$this->withPeer('absent', function ($fixture) {
