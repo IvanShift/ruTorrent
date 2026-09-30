@@ -20,6 +20,27 @@ class SourceExportActionTest extends TestCase
         rmdir($this->directory);
     }
 
+    // The child runs with -n so the real zip extension cannot declare ZipArchive
+    // before the fixture's double does. PHP 7.4 builds that ship json as a shared
+    // module (the GitHub runner's does) lose it with the ini files, so it is
+    // loaded back by name; builds with json compiled in need nothing.
+    private static function isolatedPhp()
+    {
+        static $command = null;
+        if ($command === null) {
+            $command = array(PHP_BINARY, '-n');
+            $probe = proc_open(array(PHP_BINARY, '-n', '-r',
+                'exit(function_exists("json_encode") ? 0 : 1);'),
+                array(1 => array('file', '/dev/null', 'w'), 2 => array('file', '/dev/null', 'w')), $pipes);
+            if (!is_resource($probe)) throw new RuntimeException('PHP probe did not start');
+            if (proc_close($probe) !== 0) {
+                $command[] = '-d';
+                $command[] = 'extension=json';
+            }
+        }
+        return $command;
+    }
+
     private function request($path, $route = 'source', $dumpArguments = null, $rawMetadataArguments = null, $secondPath = null, $revalidatedPath = null, $zipCase = null)
     {
         $env = array('SOURCE_EXPORT_SCRATCH' => $this->directory,
@@ -32,8 +53,8 @@ class SourceExportActionTest extends TestCase
         if ($secondPath !== null) $env['SOURCE_EXPORT_SECOND_PATH'] = $secondPath;
         if ($revalidatedPath !== null) $env['SOURCE_EXPORT_REVALIDATED_PATH'] = $revalidatedPath;
         if ($zipCase !== null) $env['SOURCE_EXPORT_CASE'] = $zipCase;
-        $process = proc_open(array(PHP_BINARY, '-n', '-d', 'display_errors=stderr',
-            __DIR__ . '/SourceExportFixture.php'),
+        $process = proc_open(array_merge(self::isolatedPhp(), array('-d', 'display_errors=stderr',
+            __DIR__ . '/SourceExportFixture.php')),
             array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
             $pipes, null, $env);
         if (!is_resource($process)) throw new RuntimeException('source export fixture did not start');
