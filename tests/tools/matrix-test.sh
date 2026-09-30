@@ -2,7 +2,7 @@
 # Isolated behavior checks for the local matrix runner; no Docker needed.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-runner="${MATRIX_RUNNER:-$root/tasks/matrix.sh}"
+runner="${MATRIX_RUNNER:-$root/tools/matrix.sh}"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/rtmatrix.XXXXXX")"
 short_home_real=''
 short_home_root=''
@@ -27,8 +27,8 @@ short_home_root="$(mktemp -d /tmp/m.XXXXXX)"
 short_home="$short_home_root/h"
 ln -s -- "$short_home_real" "$short_home"
 
-mkdir -p "$scratch/tasks" "$scratch/tests/php" "$scratch/tests/plugins" "$scratch/bin"
-cp "$runner" "$scratch/tasks/matrix.sh"
+mkdir -p "$scratch/tools" "$scratch/tests/php" "$scratch/tests/plugins" "$scratch/bin"
+cp "$runner" "$scratch/tools/matrix.sh"
 cp "$root/tests/php-failure-pattern.sh" "$scratch/tests/php-failure-pattern.sh"
 printf 'fixture\n' > "$scratch/tests/php/aTest.php"
 printf 'fixture\n' > "$scratch/tests/plugins/aux"
@@ -42,15 +42,15 @@ TEST
 git -C "$scratch" init -q
 git -C "$scratch" add .
 
-before="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+before="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 printf 'two\n' > "$scratch/env_check.php"
-after="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+after="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 [ "$before" != "$after" ] || { echo 'digest missed env_check.php' >&2; exit 1; }
 printf 'new docs\n' > "$scratch/README.md"
-docs="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+docs="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 [ "$after" = "$docs" ] || { echo 'Markdown changed the digest' >&2; exit 1; }
 chmod 0755 "$scratch/tests/php/aTest.php"
-mode_digest="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+mode_digest="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 [ "$mode_digest" != "$docs" ] || { echo 'chmod missed the digest' >&2; exit 1; }
 chmod 0644 "$scratch/tests/php/aTest.php"
 # Equal-content targets isolate the link target itself in the digest.
@@ -58,22 +58,22 @@ printf 'same\n' > "$scratch/same-a.txt"
 printf 'same\n' > "$scratch/same-b.txt"
 ln -s same-a.txt "$scratch/suite-link"
 git -C "$scratch" add same-a.txt same-b.txt suite-link
-link_before="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+link_before="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 ln -sfn same-b.txt "$scratch/suite-link"
-link_after="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+link_after="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 [ "$link_before" != "$link_after" ] || { echo 'symlink target change missed the digest' >&2; exit 1; }
 # Ignored files are outside the export and must not inflate the file count.
 printf 'tests/php/ignoredTest.php\n' > "$scratch/.gitignore"
 git -C "$scratch" add .gitignore
 printf 'ignored\n' > "$scratch/tests/php/ignoredTest.php"
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/green.log" || {
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/green.log" || {
     cat "$short_home/green.log" >&2
     echo 'ignored PHP file made the exported suite red' >&2; exit 1
 }
 # A partial harness run must still fail against the exported manifest.
 printf 'second\n' > "$scratch/tests/php/secondTest.php"
 git -C "$scratch" add tests/php/secondTest.php
-if HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/missing-file.log" 2>&1; then
+if HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/missing-file.log" 2>&1; then
     echo 'harness skipped a tracked exported PHP file' >&2; exit 1
 fi
 missing_file_log="$(awk '$1 == "local" { print $5 }' "$short_home/missing-file.log")"
@@ -83,12 +83,12 @@ grep -q 'ran 1 of 2 PHP files' "$missing_file_log" || {
 }
 git -C "$scratch" rm -fq tests/php/secondTest.php
 chmod 0664 "$scratch/tests/php/aTest.php"
-( umask 022; HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/umask.log" ) || {
+( umask 022; HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/umask.log" ) || {
     cat "$short_home/umask.log" >&2
     echo 'archive export lost source mode under umask 022' >&2; exit 1
 }
 chmod 0644 "$scratch/tests/php/aTest.php"
-if HOME="$short_home" "$scratch/tasks/matrix.sh" local local > "$short_home/duplicate.log" 2>&1; then
+if HOME="$short_home" "$scratch/tools/matrix.sh" local local > "$short_home/duplicate.log" 2>&1; then
     echo 'duplicate leg was accepted' >&2; exit 1
 fi
 grep -q 'duplicate leg: local' "$short_home/duplicate.log" || {
@@ -101,7 +101,7 @@ printf 'leg edit\n' >> ../env_check.php
 echo '> php php/aTest.php'
 echo '1 tests, 0 failures'
 TEST
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/isolation.log"
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/isolation.log"
 isolation_log="$(awk '$1 == "local" { print $5 }' "$short_home/isolation.log")"
 isolation_run="$(dirname "$(dirname "$isolation_log")")"
 cmp -s "$scratch/env_check.php" "$isolation_run/export/env_check.php" || {
@@ -114,7 +114,7 @@ echo '> php php/aTest.php'
 echo '1 tests, 0 failures'
 TEST
 HOME="$short_home" MATRIX_TEST_SOURCE="$scratch/env_check.php" \
-    "$scratch/tasks/matrix.sh" local > "$short_home/source-drift.log"
+    "$scratch/tools/matrix.sh" local > "$short_home/source-drift.log"
 grep -q 'source changed while it ran' "$short_home/source-drift.log" || {
     cat "$short_home/source-drift.log" >&2
     echo 'source drift was not identified' >&2; exit 1
@@ -125,7 +125,7 @@ echo '> php php/aTest.php'
 echo '1 tests, 0 failures'
 TEST
 rm "$scratch/tests/php/aTest.php"
-HOME="$short_home" "$scratch/tasks/matrix.sh" digest >/dev/null
+HOME="$short_home" "$scratch/tools/matrix.sh" digest >/dev/null
 printf 'fixture\n' > "$scratch/tests/php/aTest.php"
 
 cat > "$scratch/bin/tar" <<'TAR'
@@ -139,7 +139,7 @@ fi
 exec /usr/bin/tar "$@"
 TAR
 chmod +x "$scratch/bin/tar"
-if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tasks/matrix.sh" local > "$short_home/export.log" 2>&1; then
+if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tools/matrix.sh" local > "$short_home/export.log" 2>&1; then
     echo 'partial archive was accepted' >&2; exit 1
 fi
 grep -q 'archive export failed' "$short_home/export.log"
@@ -155,7 +155,7 @@ fi
 exec /usr/bin/tar "$@"
 TAR
 chmod +x "$scratch/bin/tar"
-if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tasks/matrix.sh" local > "$short_home/export-drift.log" 2>&1; then
+if HOME="$short_home" PATH="$scratch/bin:$PATH" "$scratch/tools/matrix.sh" local > "$short_home/export-drift.log" 2>&1; then
     echo 'changed archive was accepted' >&2; exit 1
 fi
 grep -Eq 'archive export.*source digest.*export: ' "$short_home/export-drift.log" || {
@@ -169,9 +169,9 @@ cat > "$scratch/tests/php-test.sh" <<'TEST'
 echo '> php php/aTest.php'
 echo 'Failed: synthetic'
 TEST
-red_digest="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+red_digest="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 printf '%s\n' "$red_digest" > "$short_home/.cache/rtm/last-green"
-if HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/red.log" 2>&1; then
+if HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/red.log" 2>&1; then
     echo 'red run was accepted' >&2; exit 1
 fi
 [ ! -e "$short_home/.cache/rtm/last-green" ] || { cat "$short_home/red.log" >&2; echo 'red marker survived' >&2; exit 1; }
@@ -182,7 +182,7 @@ echo '> php php/aTest.php'
 echo 'Warning: synthetic warning that TestCase did not count'
 echo '1 tests, 0 failures'
 TEST
-if HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/warning.log" 2>&1; then
+if HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/warning.log" 2>&1; then
     echo 'warning-only run was accepted' >&2; exit 1
 fi
 
@@ -191,7 +191,7 @@ fi
 cp "$root/tests/php-test.sh" "$scratch/tests/php-test.sh"
 cp "$root/tests/php-test.ini" "$scratch/tests/php-test.ini"
 : > "$scratch/tests/php/aTest.php"
-if HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/empty-php.log" 2>&1; then
+if HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/empty-php.log" 2>&1; then
     echo 'empty PHP test file was accepted' >&2; exit 1
 fi
 empty_php_log="$(awk '$1 == "local" { print $5 }' "$short_home/empty-php.log")"
@@ -209,13 +209,13 @@ class MatrixSmokeTest extends TestCase {
     }
 }
 TESTCASE
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/testcase-php.log"
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/testcase-php.log"
 cat > "$scratch/tests/php/aTest.php" <<'SELF_RUNNING'
 <?php
 if (2 + 2 !== 4) throw new Exception('self-running assertion failed');
 echo "ok - one self-running case\n1 test, 0 failures\n";
 SELF_RUNNING
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/self-running-php.log"
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/self-running-php.log"
 printf 'fixture\n' > "$scratch/tests/php/aTest.php"
 
 cat > "$scratch/tests/php-test.sh" <<'TEST'
@@ -224,10 +224,10 @@ echo '> php php/aTest.php'
 printf 'changed during red run\n' > "$MATRIX_TEST_SOURCE"
 echo 'Failed: synthetic failure with source drift'
 TEST
-drift_digest="$(HOME="$short_home" "$scratch/tasks/matrix.sh" digest)"
+drift_digest="$(HOME="$short_home" "$scratch/tools/matrix.sh" digest)"
 printf '%s\n' "$drift_digest" > "$short_home/.cache/rtm/last-green"
 if HOME="$short_home" MATRIX_TEST_SOURCE="$scratch/env_check.php" \
-    "$scratch/tasks/matrix.sh" local > "$short_home/drift.log" 2>&1; then
+    "$scratch/tools/matrix.sh" local > "$short_home/drift.log" 2>&1; then
     echo 'red run with source drift was accepted' >&2; exit 1
 fi
 [ ! -e "$short_home/.cache/rtm/last-green" ] || {
@@ -242,7 +242,7 @@ child=$!
 printf '%s\n' "$child" > "$TMPDIR/child"
 wait "$child"
 TEST
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/term.log" 2>&1 &
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/term.log" 2>&1 &
 matrix_pid=$!
 child_file=''
 for ((i=0; i<100; i++)); do
@@ -269,7 +269,7 @@ grep -q 'interrupted' "$short_home/term.log"
 term_run="$(sed -n 's/^matrix.sh: interrupted; logs under //p' "$short_home/term.log" | tail -1)"
 [ -d "$term_run" ] || { echo 'TERM log path is missing' >&2; exit 1; }
 rm -f "$child_file"
-python3 - "$scratch/tasks/matrix.sh" "$short_home" <<'PYINT'
+python3 - "$scratch/tools/matrix.sh" "$short_home" <<'PYINT'
 import glob
 import os
 import signal
@@ -311,7 +311,7 @@ with open(log_path, "w") as log:
 assert "interrupted" in open(log_path).read(), "matrix did not log SIGINT"
 PYINT
 find "$short_home/.cache/rtm" -name child -delete
-python3 - "$scratch/tasks/matrix.sh" "$short_home" <<'PYHUP'
+python3 - "$scratch/tools/matrix.sh" "$short_home" <<'PYHUP'
 import glob
 import os
 import signal
@@ -361,7 +361,7 @@ if [ -n "${MATRIX_TEST_RELEASE:-}" ]; then
 fi
 echo '1 tests, 0 failures'
 TEST
-HOME="$short_home" MATRIX_TEST_RELEASE="$short_home/release-slow" "$scratch/tasks/matrix.sh" local > "$short_home/slow.log" 2>&1 &
+HOME="$short_home" MATRIX_TEST_RELEASE="$short_home/release-slow" "$scratch/tools/matrix.sh" local > "$short_home/slow.log" 2>&1 &
 matrix_pid=$!
 started_file=''
 for ((i=0; i<100; i++)); do
@@ -375,7 +375,7 @@ active_run="$(dirname "$(dirname "$(dirname "$started_file")")")"
 # its inherited flock, not just the ordinary one-day grace period.
 touch -d '3 days ago' "$active_run"
 for ((i=0; i<3; i++)); do
-    HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/quick-$i.log"
+    HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/quick-$i.log"
 done
 [ -d "$term_run" ] || { echo 'interrupted logs disappeared before the operator could read them' >&2; exit 1; }
 [ -d "$active_run" ] || { echo 'cleanup deleted an active run' >&2; exit 1; }
@@ -397,7 +397,7 @@ PYRETENTION
 old_unfinished="$short_home/.cache/rtm/000101000000.stale0"
 mkdir -p "$old_unfinished"
 touch -d '3 days ago' "$old_unfinished"
-HOME="$short_home" "$scratch/tasks/matrix.sh" local > "$short_home/stale-cleanup.log"
+HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/stale-cleanup.log"
 [ ! -e "$old_unfinished" ] || { echo 'stale unfinished run was never removed' >&2; exit 1; }
 
 cat > "$scratch/bin/docker" <<'DOCKER'
@@ -412,7 +412,7 @@ DOCKER
 chmod +x "$scratch/bin/docker"
 HOME="$long_home" PATH="$scratch/bin:$PATH" \
     MATRIX_TEST_DOCKER_SUITE_LOG="$short_home/prod-suites.log" \
-    "$scratch/tasks/matrix.sh" prod-kinozal > "$short_home/prod.log"
+    "$scratch/tools/matrix.sh" prod-kinozal > "$short_home/prod.log"
 grep -q 'green on prod-kinozal' "$short_home/prod.log"
 printf '%s\n' tests/plugins/rutracker_check/KinozalHandlerTest.php \
     tests/plugins/rutracker_check/SiblingTrackersTest.php > "$short_home/expected-prod-suites.log"
@@ -435,7 +435,7 @@ exit 1
 DOCKER
 chmod +x "$scratch/bin/docker"
 if HOME="$long_home" PATH="$scratch/bin:$PATH" \
-    "$scratch/tasks/matrix.sh" prod-kinozal > "$short_home/prod-false-green.log" 2>&1; then
+    "$scratch/tools/matrix.sh" prod-kinozal > "$short_home/prod-false-green.log" 2>&1; then
     echo 'no-iconv leg accepted summaries from the wrong suite' >&2; exit 1
 fi
 cat > "$scratch/bin/docker" <<'DOCKER'
@@ -461,7 +461,7 @@ DOCKER
 chmod +x "$scratch/bin/docker"
 HOME="$long_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_DOCKER_LOG="$long_home/docker.log" \
     MATRIX_TEST_DOCKER_CONTAINER="$long_home/container" \
-    "$scratch/tasks/matrix.sh" prod-kinozal > "$long_home/docker-run.log" 2>&1 &
+    "$scratch/tools/matrix.sh" prod-kinozal > "$long_home/docker-run.log" 2>&1 &
 matrix_pid=$!
 for ((i=0; i<100; i++)); do
     [ -f "$long_home/docker.log" ] && grep -q '^run$' "$long_home/docker.log" && break
@@ -485,9 +485,9 @@ exit 1
 DOCKER_ID
 chmod +x "$scratch/bin/docker"
 printf 'sha256:before\n' > "$short_home/image-id"
-image_before="$(HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" "$scratch/tasks/matrix.sh" digest)"
+image_before="$(HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" "$scratch/tools/matrix.sh" digest)"
 printf 'sha256:after\n' > "$short_home/image-id"
-image_after="$(HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" "$scratch/tasks/matrix.sh" digest)"
+image_after="$(HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" "$scratch/tools/matrix.sh" digest)"
 [ "$image_before" != "$image_after" ] || {
     echo 'runtime image replacement did not invalidate digest' >&2; exit 1
 }
@@ -510,7 +510,7 @@ printf 'module:before\n' > "$short_home/php-modules"
 fingerprint_digest() {
     HOME="$short_home" PATH="$short_home/php-bin:$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
         MATRIX_TEST_PHP_INI="$short_home/php-ini" MATRIX_TEST_PHP_EXTENSION="$short_home/php-extension" \
-        MATRIX_TEST_PHP_MODULES="$short_home/php-modules" "$scratch/tasks/matrix.sh" digest
+        MATRIX_TEST_PHP_MODULES="$short_home/php-modules" "$scratch/tools/matrix.sh" digest
 }
 fingerprint_before="$(fingerprint_digest)"
 printf 'ini:after\n' > "$short_home/php-ini"
@@ -547,7 +547,7 @@ printf '%s\n2026-09-25T00:00:00Z\nlocal 8.1 7.4 prod-kinozal\n' "$full_marker" \
 if HOME="$short_home" PATH="$short_home/php-bin:$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
     MATRIX_TEST_PHP_INI="$short_home/php-ini" MATRIX_TEST_PHP_EXTENSION="$short_home/php-extension" \
     MATRIX_TEST_PHP_MODULES="$short_home/php-modules" \
-    "$scratch/tasks/matrix.sh" 7.4 > "$short_home/docker-red.log" 2>&1; then
+    "$scratch/tools/matrix.sh" 7.4 > "$short_home/docker-red.log" 2>&1; then
     echo 'red Docker leg was accepted' >&2; exit 1
 fi
 [ ! -e "$short_home/.cache/rtm/last-green" ] || {
@@ -573,12 +573,12 @@ fi
 exit 0
 DOCKER_ONLY
 chmod +x "$scratch/bin/php" "$scratch/bin/docker"
-if ! HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_PHP_LOG="$short_home/host-php.log" "$scratch/tasks/matrix.sh" 7.4 > "$short_home/no-host-php.log" 2>&1; then
+if ! HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_PHP_LOG="$short_home/host-php.log" "$scratch/tools/matrix.sh" 7.4 > "$short_home/no-host-php.log" 2>&1; then
     cat "$short_home/no-host-php.log" >&2
     echo 'Docker-only leg incorrectly requires host PHP' >&2; exit 1
 fi
 [ ! -s "$short_home/host-php.log" ] || { echo 'Docker-only fingerprint invoked host PHP' >&2; exit 1; }
-if HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_PHP_LOG="$short_home/host-php.log" "$scratch/tasks/matrix.sh" digest > "$short_home/no-host-digest.log" 2>&1; then
+if HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_PHP_LOG="$short_home/host-php.log" "$scratch/tools/matrix.sh" digest > "$short_home/no-host-digest.log" 2>&1; then
     echo 'full digest silently omitted unavailable host PHP' >&2; exit 1
 fi
 cat > "$scratch/bin/docker" <<'DOCKER_DRIFT'
@@ -598,7 +598,7 @@ DOCKER_DRIFT
 chmod +x "$scratch/bin/docker"
 printf 'sha256:before\n' > "$short_home/image-id"
 HOME="$short_home" PATH="$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
-    MATRIX_TEST_DOCKER_ARGS="$short_home/docker-args" "$scratch/tasks/matrix.sh" 7.4 > "$short_home/runtime-drift.log" 2>&1
+    MATRIX_TEST_DOCKER_ARGS="$short_home/docker-args" "$scratch/tools/matrix.sh" 7.4 > "$short_home/runtime-drift.log" 2>&1
 grep -q -- '--pull=never' "$short_home/docker-args" || { echo 'PHP container can pull an image during the run' >&2; exit 1; }
 grep -q 'runtime changed while it ran' "$short_home/runtime-drift.log" || {
     cat "$short_home/runtime-drift.log" >&2

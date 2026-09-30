@@ -44,7 +44,7 @@ class RepairToolRefusalTest extends TestCase
 	private function stagedTool()
 	{
 		$source = dirname(dirname(dirname(__DIR__)))
-			. '/tasks/retrackers-clear-markers.php';
+			. '/tools/retrackers-clear-markers.php';
 		$this->assertTrue(is_file($source), 'the shipped tool is where it is documented');
 		file_put_contents($this->dir . '/rutorrent/app/conf/config.php',
 			"<?php\n\$scgi_host = 'unix://" . $this->socketPath . "';\n\$scgi_port = 0;\n");

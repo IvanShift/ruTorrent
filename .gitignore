@@ -72,6 +72,7 @@ docs/
 .agents/
 .codex/
 .superpowers/
+/AGENTS.md
 tasks/
 backup/
 /.worktrees/

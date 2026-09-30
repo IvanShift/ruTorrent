@@ -2,7 +2,7 @@
 # Exercise the shipped overlay against a disposable Git tree and mock container.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-runner="${RT_LAB_RUNNER:-$root/tasks/rt-lab.sh}"
+runner="${RT_LAB_RUNNER:-$root/tools/rt-lab.sh}"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/rt-lab-test.XXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 repo="$scratch/repo"

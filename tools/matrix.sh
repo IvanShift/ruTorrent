@@ -3,13 +3,13 @@
 # its own copy of the tree, and remember the tree that came out green so the
 # pre-commit hook can skip a run it has already seen.
 #
-#   tasks/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
+#   tools/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
 #                                   plus Kinozal and sibling trackers in the shipped no-iconv image
-#   tasks/matrix.sh local 7.4       only these legs
-#   tasks/matrix.sh prod-kinozal    only the no-iconv tracker handler suites
+#   tools/matrix.sh local 7.4       only these legs
+#   tools/matrix.sh prod-kinozal    only the no-iconv tracker handler suites
 # Only the default run with no leg arguments records the pre-commit marker.
-#   tasks/matrix.sh digest          print the digest of what the suite tests
-#   tasks/matrix.sh last            show the last green run
+#   tools/matrix.sh digest          print the digest of what the suite tests
+#   tools/matrix.sh last            show the last green run
 #
 # Why legs run in parallel on separate exports: the local PHP leg was about
 # 90 s on 2026-09-15, mostly in two files (AGENTS.md, "PHP Suite Timing and the
@@ -35,6 +35,8 @@
 # The marker also includes the runtime fingerprint below. Markdown-only edits
 # do not change the source inputs; editing this runner does.
 set -u -o pipefail
+# Test fixtures may treat a writable ancestor as unsafe; keep every run private.
+umask 077
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 base="${HOME}/.cache/rtm"
@@ -90,7 +92,9 @@ PYHASH
 )
 
 source_digest() (
-    files=$(mktemp "${TMPDIR:-/tmp}/rutorrent-matrix-files.XXXXXX") || exit 1
+    # Keep this manifest outside the checkout: an in-tree TMPDIR would hash itself.
+    mkdir -p "$base" || exit 1
+    files=$(mktemp "${base}/source-files.XXXXXX") || exit 1
     trap 'rm -f "$files"' EXIT
     suite_files | grep -zvE '\.md$' > "$files" || exit 1
     if [ ! -s "$files" ]; then
@@ -184,6 +188,8 @@ source_before="$(source_digest)" || exit 1
 runtime_before="$(runtime_fingerprint "${legs[@]}")" || exit 1
 before="$(combine_digest "$source_before" "$runtime_before")" || exit 1
 mkdir -p "$base" || exit 1
+# Old runs may have left this shared parent group-writable; every leg traverses it.
+chmod 0700 "$base" || exit 1
 run="$(mktemp -d "${base}/${stamp}.XXXXXX")" || exit 1
 # Descendant legs inherit this lock. A SIGKILL of the runner cannot make an
 # active export eligible for retention cleanup while a leg still uses it.
