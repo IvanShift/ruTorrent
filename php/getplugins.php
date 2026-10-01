@@ -1,5 +1,9 @@
 <?php
 
+// Read only server configuration before the guard; profile, plugin and daemon
+// bootstrap still starts after the request has been admitted.
+require_once __DIR__.'/environment.php';
+require_once __DIR__.'/../conf/config.php';
 require_once(__DIR__.'/utility/requests.php');
 Requests::requirePluginBootstrapRequest();
 

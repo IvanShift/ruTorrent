@@ -284,6 +284,13 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 		$this->scenario = $scenario;
 	}
 
+	// Race scenarios script mutations independently of an optional installed
+	// native helper. Production capability refusal has its own real-ops tests.
+	protected function renameCapability($directory)
+	{
+		return(true);
+	}
+
 	// -- scenario plumbing --------------------------------------------------
 
 	private function selects($entry, $path, $destination)
@@ -940,6 +947,7 @@ class ErasedataProductionMirror
 		// A core file the plugin requires by name. It is out of this package's
 		// scope, so the mirror carries its real bytes rather than an adapter.
 		$copies['php/xmlrpc_path.php'] = 'php/xmlrpc_path.php';
+		$copies['php/cli-only.php'] = 'php/cli-only.php';
 		foreach($copies as $relative => $target)
 		{
 			$bytes = @file_get_contents($sourceRoot.'/'.$relative);

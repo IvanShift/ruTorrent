@@ -275,6 +275,53 @@ class rTorrent
 		return(getCmd($command.'=').implode(',',$quoted));
 	}
 
+	/** Validate and prepare a load before callers erase an existing download. */
+	static public function preflightTorrentLoad($fname, $isAddPath, $directory, $isFast,
+		$isNew = true, $addition = null, &$failure = null, $beforeDispatch = null)
+	{
+		$failure = 'invalid-load';
+		if(($beforeDispatch !== null && !is_callable($beforeDispatch)) ||
+			!self::areValidAdditions($addition))
+			return false;
+		$mustSave = is_object($fname);
+		$torrent = $mustSave ? clone $fname : new Torrent($fname);
+		if($torrent->errors())
+			return false;
+		$directory = self::parseDirectory($directory, $isAddPath);
+		if($directory && strlen($directory)>0 &&
+			!rTorrentSettings::get()->correctDirectory($directory))
+		{
+			$failure = 'invalid-directory';
+			return false;
+		}
+		if($isFast && ($resume = self::fastResume($torrent, $directory, $isAddPath)))
+		{
+			$torrent = $resume;
+			$mustSave = true;
+		}
+		elseif($isNew && isset($torrent->{'libtorrent_resume'}))
+		{
+			unset($torrent->{'libtorrent_resume'});
+			$mustSave = true;
+		}
+		if($isNew && isset($torrent->{'rtorrent'}))
+		{
+			unset($torrent->{'rtorrent'});
+			$mustSave = true;
+		}
+		$rawValue = base64_encode($torrent->__toString());
+		$rawLoad = strlen($rawValue)<self::RTORRENT_PACKET_LIMIT;
+		if(!$rawLoad && !User::isLocalMode())
+		{
+			$failure = 'remote-filesystem';
+			return false;
+		}
+		$failure = null;
+		return array('torrent'=>$torrent, 'directory'=>$directory,
+			'filename'=>is_object($fname) ? $torrent->getFileName() : $fname,
+			'must_save'=>$mustSave, 'raw_value'=>$rawValue, 'raw_load'=>$rawLoad);
+	}
+
 	/**
 	 * @return string|false|null Confirmed hash, failed request, or pending load.
 	 *                          An accepted pre-dispatch callback leaves its receipt
@@ -285,121 +332,94 @@ class rTorrent
 	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null, $beforeDispatch = null)
 	{
 		$pendingReceipt = null;
-		if(($beforeDispatch !== null && !is_callable($beforeDispatch)) ||
-			!self::areValidAdditions($addition))
+		$prepared = self::preflightTorrentLoad($fname, $isAddPath, $directory, $isFast,
+			$isNew, $addition, $failure, $beforeDispatch);
+		if($prepared === false)
 			return false;
 		$hash = false;
-		$mustSave = is_object($fname);
-		$torrent = $mustSave ? $fname : new Torrent($fname);
-
-		if(!$torrent->errors())
+		$torrent = $prepared['torrent'];
+		$directory = $prepared['directory'];
+		$filename = $prepared['filename'];
+		$mustSave = $prepared['must_save'];
+		$raw_value = $prepared['raw_value'];
+		$rawLoad = $prepared['raw_load'];
+		if($rawLoad)
 		{
-			if($isFast && ($resume = self::fastResume($torrent, $directory, $isAddPath)))
+			$cmd = new rXMLRPCCommand( $isStart ? 'load_raw_start' : 'load_raw' );
+			$cmd->addParameter($raw_value,"base64");
+		}
+		else
+		{
+			if(is_null($filename))
 			{
-				$torrent = $resume;
+				$filename = FileUtil::getTempFilename($torrent->name(), 'torrent');
 				$mustSave = true;
 			}
-			else
+			if($mustSave)
 			{
-				if($isNew && isset($torrent->{'libtorrent_resume'}))
-				{
-					unset($torrent->{'libtorrent_resume'});
-					$mustSave = true;
-				}
+				// because torrent may be changed in memory
+				if($torrent->save($filename) !== strlen($torrent->__toString()))
+					return false;
 			}
-			if($isNew && isset($torrent->{'rtorrent'}))
+			$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
+			$cmd->addParameter($filename);
+		}
+		// A fresh key cannot match an older download with the same infohash
+		// or overwrite a user's custom key. It must be the first deferred
+		// command: later caller additions can abort while the load survives.
+		$proofKey = self::LOAD_PROOF_KEY_PREFIX . bin2hex(random_bytes(16));
+		$cmd->addParameter(getCmd("d.set_custom")."=".$proofKey.",1");
+		if(!is_null($filename) && (rTorrentSettings::get()->iVersion>=0x805))
+			$cmd->addParameter(getCmd("d.set_custom")."=x-filename,".rawurlencode(FileUtil::getFileName($filename)));
+		$req = new rXMLRPCRequest();
+		if($directory && (strlen($directory)>0))
+		{
+			$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
+			$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
+		}
+		$comment = $torrent->comment();
+		if($comment)
+		{
+			if(UTF::isInvalidUTF8($comment))
+				$comment = UTF::win2utf($comment);
+			if(strlen($comment)>0)
 			{
-				unset($torrent->{'rtorrent'});
-				$mustSave = true;
+				$comment = "VRS24mrker".rawurlencode($comment);
+				if(strlen($comment)<=4096)
+					$cmd->addParameter(getCmd("d.set_custom2=").$comment);
 			}
-			$raw_value = base64_encode($torrent->__toString());
-			$filename = is_object($fname) ? $torrent->getFileName() : $fname;
-			$rawLoad = strlen($raw_value)<self::RTORRENT_PACKET_LIMIT;
-			if($rawLoad)
+		}
+		if($label && (strlen($label)>0))
+		{
+			$label = rawurlencode($label);
+			if(strlen($label)<=4096)
+				$cmd->addParameter(getCmd("d.set_custom1=").$label);
+		}
+		if(is_array($addition))
+			foreach($addition as $key=>$prm)
+				$cmd->addParameter($prm,'string');
+		$req->addCommand( $cmd );
+		$hash = $torrent->hash_info();
+		$loadReceipt = array('hash' => $hash, 'key' => $proofKey, 'raw' => $rawLoad);
+		// Let a caller persist the proof before a deferred load can run.
+		if($beforeDispatch !== null)
+		{
+			if(!$beforeDispatch($loadReceipt)) return false;
+			// The transport reply can be lost after the daemon accepts the load.
+			$pendingReceipt = $loadReceipt;
+		}
+		if($req->run() && !$req->fault)
+		{
+			$status = self::waitForLoad($hash, $proofKey);
+			if($status === 'ours')
 			{
-				$cmd = new rXMLRPCCommand( $isStart ? 'load_raw_start' : 'load_raw' );
-				$cmd->addParameter($raw_value,"base64");
+				if($rawLoad && !is_null($filename) && !$saveTorrent)
+					@unlink($filename);
+				return $hash;
 			}
-			else
-			{
-				if(!User::isLocalMode())
-				{
-					// we can't send torrent to the other host without FS sharing
-					return(false);
-				}
-				if(is_null($filename))
-				{
-					$filename = FileUtil::getTempFilename($torrent->name(), 'torrent');
-					$mustSave = true;
-				}
-				if($mustSave)
-				{
-					// because torrent may be changed in memory
-					$torrent->save($filename);
-				}
-				$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
-				$cmd->addParameter($filename);
-			}
-			// A fresh key cannot match an older download with the same infohash
-			// or overwrite a user's custom key. It must be the first deferred
-			// command: later caller additions can abort while the load survives.
-			$proofKey = self::LOAD_PROOF_KEY_PREFIX . bin2hex(random_bytes(16));
-			$cmd->addParameter(getCmd("d.set_custom")."=".$proofKey.",1");
-			if(!is_null($filename) && (rTorrentSettings::get()->iVersion>=0x805))
-				$cmd->addParameter(getCmd("d.set_custom")."=x-filename,".rawurlencode(FileUtil::getFileName($filename)));
-			$req = new rXMLRPCRequest();
-			$directory = self::parseDirectory($directory, $isAddPath);
-			if($directory && (strlen($directory)>0))
-			{
-				if(!rTorrentSettings::get()->correctDirectory($directory))
-					return(false);
-				$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
-				$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
-			}
-			$comment = $torrent->comment();
-			if($comment)
-			{
-				if(UTF::isInvalidUTF8($comment))
-					$comment = UTF::win2utf($comment);
-				if(strlen($comment)>0)
-				{
-					$comment = "VRS24mrker".rawurlencode($comment);
-					if(strlen($comment)<=4096)
-						$cmd->addParameter(getCmd("d.set_custom2=").$comment);
-				}
-			}
-			if($label && (strlen($label)>0))
-			{
-				$label = rawurlencode($label);
-				if(strlen($label)<=4096)
-					$cmd->addParameter(getCmd("d.set_custom1=").$label);
-			}
-			if(is_array($addition))
-				foreach($addition as $key=>$prm)
-					$cmd->addParameter($prm,'string');
-			$req->addCommand( $cmd );
-			$hash = $torrent->hash_info();
-			$loadReceipt = array('hash' => $hash, 'key' => $proofKey, 'raw' => $rawLoad);
-			// Let a caller persist the proof before a deferred load can run.
-			if($beforeDispatch !== null)
-			{
-				if(!$beforeDispatch($loadReceipt)) return false;
-				// The transport reply can be lost after the daemon accepts the load.
-				$pendingReceipt = $loadReceipt;
-			}
-			if($req->run() && !$req->fault)
-			{
-				$status = self::waitForLoad($hash, $proofKey);
-				if($status === 'ours')
-				{
-					if($rawLoad && !is_null($filename) && !$saveTorrent)
-						@unlink($filename);
-					return $hash;
-				}
-				$pendingReceipt = $loadReceipt;
-				FileUtil::toLog('rtorrent: load unconfirmed: '.$hash.' status='.$status);
-				return null;
-			}
+			$pendingReceipt = $loadReceipt;
+			FileUtil::toLog('rtorrent: load unconfirmed: '.$hash.' status='.$status);
+			return null;
 		}
 		return false;
 	}

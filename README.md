@@ -25,7 +25,35 @@ This project is released under the GPLv3 license, for more details, take a look 
 
   * There's no installation routine or compilation necessary. The sources are cloned/unpacked into a directory which is setup as document root of a web server of your choice (for detailed instructions see the [webserver wiki article](https://github.com/Novik/ruTorrent/wiki/WebSERVER)).
   * After setting up the webserver `ruTorrent` itself needs to be configured. Instructions can be found in various articles in the [wiki](https://github.com/Novik/ruTorrent/wiki).
-  * Keep `share/`, `conf/` and `tests/` out of what the web server will serve. `share/` holds the profile data — settings, stored torrents, and the tracker credentials the `loginmgr` plugin keeps — and it sits under the document root by default. Point `$profilePath` in `conf/config.php` at a directory outside the document root, such as `/var/lib/rutorrent`: that is the one measure nothing else has to be right for. Apache denies the three directories from the `.htaccess` file already in each of them; nginx and lighttpd do not read `.htaccess` and need the rules in [`nginx-example.conf`](nginx-example.conf) — written for the prefix the install is served under, and placed before the `.php` handler.
+  * Keep `share/`, `conf/`, `tests/` and `tools/` out of what the web server will serve. `share/` holds the profile data — settings, stored torrents, and the tracker credentials the `loginmgr` plugin keeps — and it sits under the document root by default. Point `$profilePath` in `conf/config.php` at a directory outside the document root, such as `/var/lib/rutorrent`: that is the one measure nothing else has to be right for. Apache denies the four directories from the `.htaccess` file already in each of them; nginx and lighttpd do not read `.htaccess` and need the rules in [`nginx-example.conf`](nginx-example.conf) — written for the prefix the install is served under, and placed before the `.php` handler.
+
+### Static asset deployment
+
+After copying a release and any plugin/theme assets into their final location,
+run `php tools/update-asset-version.php` in that directory before serving it.
+Run it again after changing static assets. The tool gives core, language and
+injected plugin assets one content-derived cache key, independent of the
+application's display version. Unchanged files keep the same key. It runs once
+at deployment; web requests do not scan files or invoke Git.
+
+A plain checkout is suitable for development when the server revalidates static
+files (`Cache-Control: no-cache`). Its language/plugin fallback uses one fresh
+key per page load. Production deployments should run the tool and revalidate
+`index.html` so clients learn each new deployment's key; long-lived caching of
+the index can keep an old asset key in use. Keep `tools/` inaccessible over HTTP,
+including when ruTorrent is served below a URL prefix.
+
+### Trusted browser origins
+
+The default browser origin must match the request's scheme, host and port.
+For explicitly trusted additional origins, set `$trustedOrigins` in
+`conf/config.local.php` to an array of complete origins, or provide the
+comma-separated `RU_TRUSTED_ORIGINS` environment value. Entries use HTTP(S)
+origins with their scheme and port, or exact `moz-extension://ID` /
+`chrome-extension://ID` origins. Wildcards are not supported. The older
+`$enabledOrigins` array remains a compatibility setting with hostname-based
+semantics. Forward the external `Host` and a trusted `X-Forwarded-Proto` through
+a reverse proxy; `X-Forwarded-Host` is ignored.
 
 ### Application logging
 

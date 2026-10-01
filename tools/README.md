@@ -10,6 +10,8 @@ Local campaign notes and lab evidence live in the ignored `tasks/` directory and
 
 Both shell tools resolve the repository root as their parent directory, so they must stay one level below it.
 
+See [erasedata queue attestation](../plugins/erasedata/QUEUE-ATTESTATION.md) for standalone sealing and the Docker image's explicit offline operator helper.
+
 ## Manual retrackers recovery for `candidate-claim`
 
 A `v1:candidate-claim:<tx>` marker with an empty `retrackers-recovery-ack` means the original torrent may already be erased while its replacement has not finished. The plugin keeps refusing with `receipt-ledger-corrupt`, and deleting the marker by itself restores neither the torrent nor its data. Do not apply the rule for an old `v1:original:*` marker to this case.

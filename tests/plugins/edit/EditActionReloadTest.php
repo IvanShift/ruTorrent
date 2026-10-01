@@ -57,7 +57,7 @@ class EditActionReloadTest extends TestCase
 			return;
 		}
 		foreach (glob($path . '/*') as $entry) {
-			is_dir($entry) ? $this->removeTree($entry) : @unlink($entry);
+			is_dir($entry) && !is_link($entry) ? $this->removeTree($entry) : @unlink($entry);
 		}
 		@rmdir($path);
 	}
@@ -76,7 +76,7 @@ class EditActionReloadTest extends TestCase
 	 * fast resume branch, and the directory is empty so the add does not need
 	 * a directory to be approved.
 	 */
-	private function saveAnEdit($post)
+	private function saveAnEdit($post, $options = array())
 	{
 		$root = $this->repoRoot();
 		if ($this->daemon !== null) {
@@ -86,12 +86,24 @@ class EditActionReloadTest extends TestCase
 		// session copy it loaded from; each run gets a fresh one.
 		file_put_contents($this->base . '/session/' . self::HASH . '.torrent',
 			$this->announceOnlyTorrent());
-		$this->daemon = new FakeRtorrentDaemon(array(
-			array($this->base . '/session/', 1, 1, 1, '', '', '', 'seed', 0),
+		if (!empty($options['uploadsFile'])) file_put_contents($this->base.'/profile/torrents', 'operator-file');
+		if (!empty($options['uploadsSymlink'])) {
+			mkdir($this->base.'/saved-uploads',0700);
+			symlink($this->base.'/saved-uploads',$this->base.'/profile/torrents');
+		}
+		$directory = $options['directory'] ?? '';
+		$values = array($this->base . '/session/', 1, 1, 1, '', '', $directory, 'seed', 0);
+		$replies = array(
+			$values,
 			array(0), // d.erase
 			array(0), // load
 			array('1'), // load proof key
-		), $this->base . '/calls.log');
+		);
+		if (!empty($options['removeSession'])) {
+			$source = $this->base.'/session/'.self::HASH.'.torrent';
+			$replies = new FakeRtorrentEditReloadReplies($source, $values);
+		}
+		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
 		$driver = $this->base . '/drive-edit.php';
 		file_put_contents($driver, "<?php\n"
@@ -101,12 +113,14 @@ class EditActionReloadTest extends TestCase
 			. '$r = new ReflectionClass("rTorrentSettings"); $s = $r->newInstanceWithoutConstructor();'
 			. ' $s->iVersion = 0x1018; $s->aliases = array(); $s->directory = "/";'
 			. ' $s->linkExist = true; $p = $r->getProperty("theSettings");'
-			. ' $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
+			. ' if(PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
 			. '$scgi_host = "127.0.0.1";' . "\n"
 			. '$scgi_port = ' . $this->daemon->port() . ";\n"
 			. '$rpcTimeOut = 10;' . "\n"
 			. '$rpcLogCalls = false;' . "\n"
 			. '$saveUploadedTorrents = false;' . "\n"
+			. '$topDirectory = '.var_export($options['topDirectory'] ?? '/', true).';' . "\n"
+			. '$localhosts = '.var_export(!empty($options['remote']) ? array('remote.test') : array('127.0.0.1'), true).';' . "\n"
 			. '$HTTP_RAW_POST_DATA = ' . var_export($post, true) . ";\n"
 			. 'chdir(' . var_export($root . '/plugins/edit', true) . ");\n"
 			. 'require(' . var_export($root . '/plugins/edit/action.php', true) . ");\n");
@@ -217,4 +231,59 @@ class EditActionReloadTest extends TestCase
 		$this->assertTrue($this->loadCallIndex() >= 0,
 			'and the reload still happens; calls: ' . implode(', ', $calls));
 	}
+	public function testOutsideTopDirectoryRefusesBeforeErase()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=changed',
+			array('directory'=>'/outside/download', 'topDirectory'=>'/allowed'));
+		$this->assertSame(-1, $this->indexOf('d.erase'), 'an invalid directory preserves the live download');
+		$this->assertSame(-1, $this->loadCallIndex(), 'the refused edit dispatches no reload');
+		$this->assertTrue(is_file($this->base.'/session/'.self::HASH.'.torrent'), 'the source torrent remains');
+		$this->assertTrue(strpos($printed, 'addTorrentFailedDirectory') !== false,
+			'the response identifies the download directory refusal');
+	}
+
+	public function testRemoteLargeTorrentRefusesBeforeErase()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment='.str_repeat('x', 1300000),
+			array('remote'=>true));
+		$this->assertSame(-1, $this->indexOf('d.erase'), 'a remote load above the raw packet limit preserves the live download');
+		$this->assertSame(-1, $this->loadCallIndex(), 'the remote filesystem refusal dispatches no load');
+		$this->assertTrue(strpos($printed, 'errorAddTorrent') !== false, 'the remote refusal is reported');
+	}
+
+	public function testFailedDispatchReturnsAnExistingEditedRecoveryFileAfterSessionRemoval()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=edited-recovery',
+			array('removeSession'=>true));
+		$this->assertTrue($this->indexOf('d.erase') >= 0 && $this->loadCallIndex() >= 0,
+			'the fixture erases and then refuses the actual load RPC');
+		$this->assertTrue(!is_file($this->base.'/session/'.self::HASH.'.torrent'), 'the daemon removes the old session file');
+		$result = json_decode($printed, true);
+		$path = $result['errors'][0]['prm'] ?? '';
+		$this->assertTrue(strpos($path, $this->base.'/profile/torrents/') === 0 && is_file($path),
+			'the error names a surviving recovery file in the profile uploads directory');
+		if (!is_file($path)) return;
+		$torrent = new Torrent($path);
+		$this->assertSame('edited-recovery', $torrent->comment(), 'the retained torrent contains the requested edit');
+		$this->assertSame(0600, fileperms($path) & 0777, 'recovery bytes remain private');
+	}
+
+	public function testFailedRecoveryWriteRefusesBeforeErase()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=changed',
+			array('uploadsFile'=>true));
+		$this->assertSame(-1,$this->indexOf('d.erase'),'a recovery path that cannot be written preserves the live download');
+		$this->assertSame('operator-file',file_get_contents($this->base.'/profile/torrents'),'the operator file is unchanged');
+		$this->assertTrue(strpos($printed,'errorWriteTorrent') !== false,'the response identifies the recovery write refusal');
+	}
+
+	public function testSymlinkedProfileUploadsStillReloads()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=changed',
+			array('uploadsSymlink'=>true));
+		$this->assertTrue($this->indexOf('d.erase') >= 0 && $this->loadCallIndex() >= 0,
+			'a valid symlinked profile upload directory accepts edit reload');
+		$this->assertTrue(strpos($printed,'errorWriteTorrent') === false,'canonicalizing the profile path permits its recovery file');
+	}
+
 }

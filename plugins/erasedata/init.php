@@ -4,8 +4,7 @@ require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once(dirname(__FILE__).'/removewithdata.php');
 eval(FileUtil::getPluginConf($plugin["name"]));
 
-$listPath = erasedataQueuePath();
-$queueReady = erasedataEnsureQueueDirectory($listPath);
+$queueReady = erasedataInitializationQueueReady($listPath);
 // The ordinary collector handles published manifests, including those left by
 // older releases. The generation drain has its own schedule and startup rearm.
 $req = new rXMLRPCRequest( array(
@@ -33,4 +32,5 @@ if($queueReady && $req->success())
 	$jResult.="plugin.replaceRemoveTorrent = ".($replaceRemoveTorrent ? 1 : 0).";";
 }
 else
-	$jResult.="plugin.disable(); noty('erasedata: '+theUILang.pluginCantStart,'error');";
+	$jResult.= $queueReady ? "plugin.disable(); noty('erasedata: '+theUILang.pluginCantStart,'error');"
+		: "plugin.disable(); noty('erasedata: deletion queue refused; removal with data is disabled. Check the application log for the path and recovery action.','error');";

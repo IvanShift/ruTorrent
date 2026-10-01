@@ -90,7 +90,10 @@ class EraseWithDataCommandTest extends TestCase
 			.'public function obtain() { return $GLOBALS["test_mode"] !== "ratio-disabled"; } '
 			.'public function get() { return ""; }}');
 		$helper = $fixture.'/plugins/erasedata/removewithdata.php';
-		file_put_contents($helper, '<?php function erasedataRearmDrainSchedule() {'
+		// This unit isolates Ratio wiring after successful queue admission;
+		// physical refused/accepted queue behavior is tested against real state.
+		file_put_contents($helper, '<?php function erasedataInitializationQueueReady() { return true; } '
+			.'function erasedataRearmDrainSchedule() {'
 			.'$GLOBALS["rearms"]++; if($GLOBALS["test_mode"] === "rearm-refused") {'
 			.'FileUtil::toLog("erasedata: rearm-refused generation=1 members=1 consequence=obligations-retained"); return false; } return true; }');
 		$probe = <<<'PHP'
@@ -196,6 +199,7 @@ PHP;
 		mkdir($fixture.'/plugins/erasedata', 0777, true);
 		mkdir($fixture.'/php', 0777, true);
 		copy(__DIR__.'/../../../plugins/erasedata/erase.php', $entrypoint);
+		copy(__DIR__.'/../../../php/cli-only.php', $fixture.'/php/cli-only.php');
 		copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $fixture.'/plugins/erasedata/manifest.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', "<?php\n");
 		file_put_contents($fixture.'/plugins/erasedata/removewithdata.php', '<?php function erasedataAdmitRemoval($hashes,$force){'
@@ -274,6 +278,7 @@ PHP;
 		mkdir($fixture.'/php', 0777, true);
 		mkdir($settings.'/erasedata', 0777, true);
 		copy(__DIR__.'/../../../plugins/erasedata/erase.php', $entrypoint);
+		copy(__DIR__.'/../../../php/cli-only.php', $fixture.'/php/cli-only.php');
 		copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $fixture.'/plugins/erasedata/manifest.php');
 		file_put_contents($fixture.'/php/xmlrpc.php', '<?php class FileUtil {'
 			.'public static function getSettingsPath(){return getenv("ERASEDATA_ENTRY_SETTINGS");}}');

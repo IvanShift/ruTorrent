@@ -51,6 +51,30 @@ class FakeRtorrentAddTorrentReplies
 	}
 }
 
+/** Serializable edit failure replies that remove the session copy only after erase. */
+class FakeRtorrentEditReloadReplies
+{
+	private $source;
+	private $snapshot;
+
+	public function __construct($source, $snapshot)
+	{
+		$this->source = $source;
+		$this->snapshot = $snapshot;
+	}
+
+	public function __invoke($request, $methods)
+	{
+		if(in_array('get_session', $methods, true)) return $this->snapshot;
+		if(in_array('d.erase', $methods, true))
+		{
+			unlink($this->source);
+			return array(0);
+		}
+		return false;
+	}
+}
+
 /**
  * An SCGI listener that answers like rtorrent, for tests that need to drive a
  * top level script rather than a function.

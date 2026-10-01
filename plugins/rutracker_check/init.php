@@ -16,7 +16,10 @@ if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
 }
 else
 {
-	$commands = array(erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval));
+	$commands = array();
+	$queueReady = erasedataInitializationQueueReady();
+	if($queueReady)
+		$commands[] = erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval);
 	if($updateInterval)
 	{
 		// getScheduleCommand, not getAbsScheduleCommand: this file runs on every
@@ -35,11 +38,12 @@ else
 	{
 		require( 'done.php' );
 	}
-	$req = new rXMLRPCRequest($commands);
+	$req = count($commands) ? new rXMLRPCRequest($commands) : null;
 	// The cleanup drain is independent of the ordinary collector and survives
 	// a daemon restart through its durable state, even with erasedata disabled.
-	erasedataRearmDrainSchedule();
-	if($req->success())
+	if($queueReady)
+		erasedataRearmDrainSchedule();
+	if($req === null || $req->success())
 		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	else
 		$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');";

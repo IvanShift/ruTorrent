@@ -19,7 +19,7 @@ if(!$theSettings->isPluginRegistered('erasedata'))
 		require_once($helper);
 		if(!function_exists('erasedataRearmDrainSchedule'))
 			FileUtil::toLog('ratio: erasedata-rearm-helper-unavailable');
-		else
+		else if(erasedataInitializationQueueReady())
 			erasedataRearmDrainSchedule();
 	}
 }

@@ -42,7 +42,9 @@ class AutoToolsMoveTransaction
 
     static private function lock($root)
     {
-        $handle = @fopen($root . '/.lock', 'c');
+        $previousUmask = umask(0077);
+        try { $handle = @fopen($root . '/.lock', 'c'); }
+        finally { umask($previousUmask); }
         if ($handle === false || !flock($handle, LOCK_EX))
             throw new RuntimeException('journal-lock-unavailable');
         return $handle;
@@ -156,17 +158,42 @@ class AutoToolsMoveTransaction
 
     static private function renameHelper()
     {
-        $binary = '/usr/local/bin/rutorrent-erasedata-rename-noreplace';
+        if (!class_exists('NativeHelpers', false))
+            require_once(dirname(__DIR__, 2).'/php/nativehelpers.php');
+        $binary = NativeHelpers::path('rutorrent-erasedata-rename-noreplace');
         if (!is_executable($binary)) throw new RuntimeException('rename-helper-unavailable');
         return $binary;
+    }
+
+    static private function requireRenameCapability($directory)
+    {
+        $binary = self::renameHelper();
+        $process = proc_open(array($binary, '--probe', $directory), array(
+            0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
+            2=>array('pipe','w')), $pipes);
+        if (!is_resource($process)) throw new RuntimeException('rename-noreplace-probe-unavailable: '.$directory);
+        $error = stream_get_contents($pipes[2], 4096); fclose($pipes[2]);
+        $status = proc_close($process);
+        if ($status !== 0) {
+            $reason = $status === 3 ? 'rename-noreplace-unsupported' : 'rename-noreplace-probe-failed';
+            FileUtil::toLog('autotools: '.$reason.' path='.$directory.' '.trim($error));
+            throw new RuntimeException($reason.': '.$directory);
+        }
     }
 
     static private function renameNoReplace($src, $dst)
     {
         $binary = self::renameHelper();
-        $output = array(); $status = 1;
-        exec(escapeshellarg($binary) . ' ' . escapeshellarg($src) . ' '
-            . escapeshellarg($dst), $output, $status);
+        $process = proc_open(array($binary, $src, $dst), array(
+            0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
+            2=>array('pipe','w')), $pipes);
+        if (!is_resource($process)) throw new RuntimeException('rename-helper-unavailable');
+        $error = stream_get_contents($pipes[2], 4096); fclose($pipes[2]);
+        $status = proc_close($process);
+        if ($status !== 0)
+            FileUtil::toLog('autotools: rename-no-replace refused status='.$status.' source='.$src
+                .' destination='.$dst.' '.trim($error));
+        if ($status === 3) throw new RuntimeException('rename-noreplace-unsupported: '.dirname($dst));
         return $status === 0;
     }
 
@@ -783,6 +810,10 @@ class AutoToolsMoveTransaction
         $cross = $sourceStat['dev'] !== $destStat['dev'];
         if (!$multi && $baseName !== $info['name']) throw new RuntimeException('source-name-mismatch');
         self::validateSourceManifest($src, $files, $multi);
+        // Probe both actual publication/quarantine mounts before a daemon claim
+        // or any payload copy; an unsupported primitive cannot be retried safely.
+        self::requireRenameCapability(dirname($src));
+        self::requireRenameCapability($destDir);
         $nonce = $jobId;
         return array('version'=>1, 'kind'=>'Move', 'hash'=>$hash, 'phase'=>'intent',
             'src'=>$src, 'dst'=>$dst, 'identity'=>self::identity($src),

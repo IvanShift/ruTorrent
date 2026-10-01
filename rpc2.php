@@ -41,6 +41,7 @@ if(!isset($_SERVER['RUTORRENT_XMLRPC_ENDPOINT']) ||
 	exit;
 }
 
+require_once __DIR__.'/php/environment.php';
 require_once(dirname(__FILE__).'/conf/config.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_path.php');
 require_once(dirname(__FILE__).'/php/xmlrpc_proxy.php');

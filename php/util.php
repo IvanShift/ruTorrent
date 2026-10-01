@@ -1,13 +1,6 @@
 <?php
 
-// Older persisted conf/config.php checks getenv() but reads $_ENV. Make the
-// setting available from the same source before that configuration runs.
-if(!isset($_ENV['RU_LOCALHOSTS']))
-{
-    $localhostsEnv = getenv('RU_LOCALHOSTS');
-    if(($localhostsEnv !== false) && ($localhostsEnv !== ''))
-        $_ENV['RU_LOCALHOSTS'] = $localhostsEnv;
-}
+require_once __DIR__.'/environment.php';
 
 // Include our base configuration file
 $rootPath = realpath(dirname(__FILE__)."/..");
@@ -49,10 +42,22 @@ spl_autoload_register(function ($class)
 // Exit script and send 405 if anther method is tried
 Requests::disableUnsupportedMethods();
 
-// The Docker PHP-FPM pool passes this server-owned value after persisted
-// config.local.php has run, so an old local override cannot disable Basic-auth CSRF checks.
-if(getenv('RU_HTTP_AUTH') === 'true')
-    $enableCSRFCheck = true;
+// Apply server policy after local/profile configuration. The same values must
+// reach FPM and rTorrent's PHP CLI hooks, so both use one profile and policy.
+function rutorrent_apply_server_policy()
+{
+    global $enableCSRFCheck, $forbidUserSettings, $trustedOrigins;
+    $httpAuth = getenv('RU_HTTP_AUTH');
+    if($httpAuth !== false)
+        $enableCSRFCheck = true;
+    if(($httpAuth !== false && $httpAuth !== 'true') ||
+        getenv('RU_FORBID_USER_SETTINGS') === 'true')
+        $forbidUserSettings = true;
+    $origins = getenv('RU_TRUSTED_ORIGINS');
+    if($origins !== false)
+        $trustedOrigins = preg_split('/\s*,\s*/', $origins, -1, PREG_SPLIT_NO_EMPTY);
+}
+rutorrent_apply_server_policy();
 
 // For "Cross-Site Request Forgery" checks if enabled
 Requests::makeCSRFCheck();
@@ -85,6 +90,7 @@ FileUtil::getProfilePath();	// for creation profile, if it is absent
 $conf = FileUtil::getConfFile('config.php');
 if($conf)
 	require_once($conf);
+rutorrent_apply_server_policy();
 
 $profileMask = rutorrent_normalize_profile_mask($profileMask ?? null);
 if(!isset($locale))

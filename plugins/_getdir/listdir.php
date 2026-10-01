@@ -14,15 +14,13 @@ function compareEntries( $a, $b )
 
 $theSettings = rTorrentSettings::get();
 
-$requestedDir = $_REQUEST['dir'];
+$requestedDir = $_REQUEST['dir'] ?? null;
 
-if(isset($requestedDir) && strlen($requestedDir))
+if(is_string($requestedDir) && strlen($requestedDir))
 {
 	$dir = rawurldecode($requestedDir);
-	rTorrentSettings::get()->correctDirectory($dir);
-
 	if(
-			(strpos($dir,$topDirectory)!==0) ||
+			!$theSettings->correctDirectory($dir) ||
 			(($theSettings->uid>=0) && $checkUserPermissions && !Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))
 		)
 	{
@@ -32,20 +30,20 @@ if(isset($requestedDir) && strlen($requestedDir))
 else
 {
 	$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-	if (strpos($dir, $topDirectory) !== 0)
+	if (!$theSettings->correctDirectory($dir))
 		$dir = $topDirectory;
 }
 
 $dir = FileUtil::addslash($dir);
-$items = array_diff(scandir($dir, SCANDIR_SORT_NONE), (($dir == $topDirectory) ? ["..", "."] : ["."]));
+$items = array_diff(scandir($dir, SCANDIR_SORT_NONE), ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
 $directories = array_filter($items, function ($item) {
 	global $dir;
 	return is_dir($dir.$item);
 });
-$files = array_filter($items, function ($item) {
+$files = (isset($_REQUEST['withfiles']) && $_REQUEST['withfiles'] === '1') ? array_filter($items, function ($item) {
 	global $dir;
 	return is_file($dir.$item);
-});
+}) : array();
 
 usort($directories, "compareEntries");
 usort($files, "compareEntries");

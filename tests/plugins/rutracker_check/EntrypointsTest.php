@@ -418,7 +418,7 @@ $suite->test('cleanup schedule is independent of rutracker update interval', fun
     strictAssertSame(false, epCallIsInsideIfVariable($init, 'erasedataCollectorScheduleCommand', '$updateInterval'),
         'the cleanup schedule is registered even when the hourly checker interval is zero');
     $removeAt = strpos($source, "require( 'done.php' )");
-    $cleanupRequestAt = strpos($source, '$req = new rXMLRPCRequest($commands)');
+    $cleanupRequestAt = strpos($source, 'new rXMLRPCRequest($commands)');
     strictAssertTrue($removeAt !== false,
         'zero checker interval still removes a stale hourly checker schedule');
     strictAssertTrue($cleanupRequestAt !== false && $removeAt < $cleanupRequestAt,
@@ -1070,6 +1070,8 @@ $suite->test('CLI profile bootstrap fatal never writes the raw engine message', 
     try {
         strictAssertTrue(copy(testFindRepoRoot() . '/php/util.php', $util),
             'the child loads the shipped util.php bytes');
+        strictAssertTrue(copy(testFindRepoRoot() . '/php/environment.php', $temp . '/php/environment.php'),
+            'the child loads the shipped environment bridge');
         file_put_contents($config, '<?php class Requests { '
             . 'public static function disableUnsupportedMethods() {} '
             . 'public static function makeCSRFCheck() {} } '
@@ -1100,6 +1102,7 @@ $suite->test('CLI profile bootstrap fatal never writes the raw engine message', 
         @unlink($log);
         @unlink($profile);
         @unlink($config);
+        @unlink($temp . '/php/environment.php');
         @unlink($util);
         @rmdir($temp . '/conf');
         @rmdir($temp . '/php');

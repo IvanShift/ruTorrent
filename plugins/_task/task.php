@@ -1,10 +1,11 @@
 <?php
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
+require_once( dirname(__FILE__)."/../../php/nativehelpers.php" );
 
 if(!defined('RTASK_KILL_HELPER'))
-	define('RTASK_KILL_HELPER', '/usr/local/bin/rutorrent-task-kill-pidfd');
+	define('RTASK_KILL_HELPER', NativeHelpers::path('rutorrent-task-kill-pidfd'));
 if(!defined('RTASK_SUPERVISOR_HELPER'))
-	define('RTASK_SUPERVISOR_HELPER', '/usr/local/bin/rutorrent-task-supervise');
+	define('RTASK_SUPERVISOR_HELPER', NativeHelpers::path('rutorrent-task-supervise'));
 
 class rTask
 {

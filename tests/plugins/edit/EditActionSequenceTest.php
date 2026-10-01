@@ -26,8 +26,8 @@ require_once(__DIR__ . '/../../php/UpstreamStampingTorrentFixture.php');
  * so, and a suite that pins a copy attests to the copy and to nothing else.
  *
  * What is guarded is exactly what the extraction covers: the statements
- * between the two anchors, plus the requirement that nothing between the end
- * anchor and the handover to rTorrent::sendTorrent() touches $torrent. The RPC
+ * between the two anchors, plus a strict guard for the prepared handover and
+ * recovery save before rTorrent::sendTorrent(). Other Torrent uses are refused. The RPC
  * either side of the block, the request parsing and the error paths are not
  * exercised here. The bencoded bytes are asserted whole, because those bytes
  * are what is handed to rtorrent.
@@ -53,10 +53,10 @@ class EditActionSequenceTest extends TestCase
 	 * on into `$eReq`/`sendTorrent()`, or one that stopped before the setters,
 	 * fails as a broken extraction rather than as a mysterious assertion.
 	 *
-	 * One guard looks past the end anchor instead of inside the cut: the
-	 * source from there to `rTorrent::sendTorrent(` must not name $torrent at
-	 * all. That is what makes the cut the WHOLE edit rather than a prefix of
-	 * it, and without it a setter added after the anchor passed unnoticed.
+	 * One guard looks past the end anchor instead of inside the cut. It admits
+	 * only the shared preflight, its prepared object, and the complete recovery
+	 * save before erase. A setter or another object handover after the anchor
+	 * must still fail instead of silently testing only a prefix of the edit.
 	 */
 	private static function editSequenceSource()
 	{
@@ -86,13 +86,8 @@ class EditActionSequenceTest extends TestCase
 		// after $block was already filled would abort only the FIRST test and
 		// let the other ten run on an extraction it had just rejected.
 		$cut = substr($source, $brace + 1, ($end + strlen($endAnchor)) - ($brace + 1));
-		// Nothing between the end anchor and the handover to rtorrent may
-		// touch $torrent: only then is the extracted block the WHOLE edit.
-		// A setter added there would run after the restore loop and undo it,
-		// with every assertion in this file still green -- which is the data
-		// loss these tests exist for. Demonstrated before this guard was
-		// written: inserting $torrent->comment(...) on the line after the end
-		// anchor left all eleven tests in this file passing.
+		// A setter after the restore loop must remain visible as a broken
+		// extraction; recovery preparation and persistence are checked below.
 		$tailStart = $end + strlen($endAnchor);
 		$handover = strpos($source, 'rTorrent::sendTorrent(', $tailStart);
 		if ($handover === false) {
@@ -101,10 +96,40 @@ class EditActionSequenceTest extends TestCase
 				. " the extent of the edit sequence cannot be established");
 		}
 		$tail = substr($source, $tailStart, $handover - $tailStart);
-		if (strpos($tail, '$torrent') !== false) {
+		// Ignore formatting and comments, then admit only the exact prepared
+		// handover and recovery-save operations. Other torrent references would
+		// let an edit after the extraction escape the byte assertions below.
+		$tailCode = '';
+		foreach (token_get_all('<?php '.$tail) as $token) {
+			if (is_array($token)) {
+				if (in_array($token[0], array(T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) continue;
+				$tailCode .= $token[1];
+			} else $tailCode .= $token;
+		}
+		$handoverOperations = array(
+			'$prepared=rTorrent::preflightTorrentLoad($torrent,false,$directory,($req->val[8]==1),false,$addition,$failure);',
+			"\$torrent=\$prepared['torrent'];",
+			'$torrent->save($recovery)!==strlen($torrent->__toString())',
+			'if($prepared===false)',
+		);
+		$positions = array();
+		foreach ($handoverOperations as $operation) {
+			if (substr_count($tailCode, $operation) !== 1) {
+				throw new RuntimeException('the prepared edit handover or complete recovery save changed; review the extraction guard');
+			}
+			$positions[] = strpos($tailCode, $operation);
+		}
+		$exclusive = strpos($tailCode, "\$handle=\$recovery===false?false:@fopen(\$recovery,'xb');");
+		$erase = strpos($tailCode, '$eReq=newrXMLRPCRequest(newrXMLRPCCommand("d.erase",$hash));');
+		if ($exclusive === false || $erase === false || !($positions[0] < $positions[3] &&
+			$positions[3] < $exclusive && $exclusive < $positions[1] &&
+			$positions[1] < $positions[2] && $positions[2] < $erase)) {
+			throw new RuntimeException('edit preflight and exclusive complete recovery save must precede erase');
+		}
+		$tailCode = str_replace($handoverOperations, '', $tailCode);
+		if (strpos($tailCode, '$torrent') !== false || strpos($tailCode, '$prepared') !== false) {
 			throw new RuntimeException(
-				"plugins/edit/action.php uses \$torrent after {$endAnchor} and before"
-				. " rTorrent::sendTorrent(); the extracted sequence is no longer the whole edit");
+				"plugins/edit/action.php changes the edited torrent outside its extracted sequence or reviewed recovery handover");
 		}
 		foreach (array('$req', 'rXMLRPC', 'sendTorrent', '$errors') as $beyond) {
 			if (strpos($cut, $beyond) !== false) {

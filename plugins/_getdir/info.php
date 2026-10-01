@@ -46,12 +46,12 @@ if(isset($_REQUEST['mode']))
 		if(isset($_REQUEST['basedir']))
 		{
 			$dir = rawurldecode($_REQUEST['basedir']);
-			$theSettings->correctDirectory($dir);
-			$dh = @opendir($dir);
+			$allowedDirectory = $theSettings->correctDirectory($dir);
+			$dh = $allowedDirectory ? @opendir($dir) : false;
 			$dir = FileUtil::addslash($dir);
 
 			if( $dh &&
-				((strpos($dir,$topDirectory)!==0) ||
+				(!$allowedDirectory ||
 				(($theSettings->uid>=0) &&
 				$checkUserPermissions &&
 				!Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))))
@@ -63,7 +63,7 @@ if(isset($_REQUEST['mode']))
 		if(!$dh)
 		{
 			$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-			if(strpos(FileUtil::addslash($dir),$topDirectory)!==0)
+			if(!$theSettings->correctDirectory($dir))
 				$dir = $topDirectory;
 			$dh = @opendir($dir);
 		}
@@ -74,10 +74,10 @@ if(isset($_REQUEST['mode']))
 			while(false !== ($file = readdir($dh)))
 		        {
 				$path = FileUtil::fullpath($dir . $file);
-				if(($file=="..") && ($dir==$topDirectory))
+				if(($file=="..") && (rtrim($dir, '/') === rtrim($topDirectory, '/')))
 					continue;
 				if(is_dir($path) && is_readable($path) &&
-					(strpos(FileUtil::addslash($path),$topDirectory)===0) &&
+					$theSettings->correctDirectory($path) &&
 					( $theSettings->uid<0 || !$checkUserPermissions || Permission::doesUserHave($theSettings->uid,$theSettings->gid,$path,0x0007) )
 					)
 				{

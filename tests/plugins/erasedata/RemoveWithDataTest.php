@@ -10043,6 +10043,22 @@ class RemoveWithDataTest extends TestCase
 	{
 		$mirror = ErasedataProductionMirror::build($this->dir.'/'.$name,
 			$this->repositoryRoot(), $user);
+		// Atomic filesystem operations read the shipped helper ABI as well as
+		// the plugin bytes. Keep this child graph complete and byte-verified.
+		foreach(array('php/nativehelpers.php', 'tools/native-helpers.list') as $relative)
+		{
+			$bytes = @file_get_contents($this->repositoryRoot().'/'.$relative);
+			if(!is_string($bytes))
+			{
+				$mirror->unreadable[] = $relative;
+				continue;
+			}
+			$target = $mirror->root.'/'.$relative;
+			@mkdir(dirname($target), 0777, true);
+			@file_put_contents($target, $bytes);
+			if(@file_get_contents($target) !== $bytes)
+				$mirror->copyFailures[] = $relative;
+		}
 		$this->assertTrue($mirror->isExact(),
 			'the child runs the shipped production bytes ('.$mirror->describe().')');
 		return($mirror);

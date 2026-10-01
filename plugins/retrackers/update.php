@@ -70,7 +70,15 @@ function retrackersBuildRecoveryInsertGrammar()
 	));
 }
 
-function retrackersBuildSafetyOnlyInsertAction()
+// A magnet metadata download will be erased internally once metadata arrives.
+// It must not acquire a plugin claim or publish any lifecycle receipt.
+function retrackersGuardMetadataInsert($action)
+{
+    return('branch=' . rTorrent::quoteCommandArg('d.is_meta=') . ',' .
+        rTorrent::quoteCommandArg('cat=') . ',' . rTorrent::quoteCommandArg($action));
+}
+
+function retrackersBuildSafetyOnlyInsertAction($guardMetadata = true)
 {
 	$q = function ($value) {
 		return(rTorrent::quoteCommandArg($value));
@@ -78,11 +86,12 @@ function retrackersBuildSafetyOnlyInsertAction()
 	$grammar = retrackersBuildRecoveryInsertGrammar();
 	$legacyOrNoop = 'branch=' . $q('$equal=d.custom3=,cat=1') . ',' .
 		$q('d.custom3.set=') . ',' . $q('cat=');
-	return('branch=' . $q('d.custom=retrackers-recovery') . ',' .
-		$q($grammar['idempotent']) . ',' . $q($legacyOrNoop));
+	$action = 'branch=' . $q('d.custom=retrackers-recovery') . ',' .
+		$q($grammar['idempotent']) . ',' . $q($legacyOrNoop);
+	return($guardMetadata ? retrackersGuardMetadataInsert($action) : $action);
 }
 
-function retrackersBuildDeferOnlyInsertAction()
+function retrackersBuildDeferOnlyInsertAction($guardMetadata = true)
 {
 	$q = function ($value) {
 		return(rTorrent::quoteCommandArg($value));
@@ -90,8 +99,9 @@ function retrackersBuildDeferOnlyInsertAction()
 	$grammar = retrackersBuildRecoveryInsertGrammar();
 	$legacyOrDefer = 'branch=' . $q('$equal=d.custom3=,cat=1') . ',' .
 		$q('d.custom3.set=') . ',' . $q($grammar['defer']);
-	return('branch=' . $q('d.custom=retrackers-recovery') . ',' .
-		$q($grammar['idempotent']) . ',' . $q($legacyOrDefer));
+	$action = 'branch=' . $q('d.custom=retrackers-recovery') . ',' .
+		$q($grammar['idempotent']) . ',' . $q($legacyOrDefer);
+	return($guardMetadata ? retrackersGuardMetadataInsert($action) : $action);
 }
 
 /**
@@ -121,7 +131,7 @@ function retrackersNativeBeginExpression($userHash)
 	return('$d.retrackers.begin_original={$d.local_id=,' . $q($userHash) . ',$cat=$d.state=}');
 }
 
-function retrackersBuildInsertAction($script, $php, $user, $nativeOriginal = false)
+function retrackersBuildInsertAction($script, $php, $user, $nativeOriginal = false, $guardMetadata = true)
 {
 	$q = function ($value) {
 		return(rTorrent::quoteCommandArg($value));
@@ -157,8 +167,9 @@ function retrackersBuildInsertAction($script, $php, $user, $nativeOriginal = fal
 		$q('cat=') . ',' . $q($ownerOrNoop);
 	$legacyOrOrdinary = 'branch=' . $q('$equal=d.custom3=,cat=1') . ',' .
 		$q('d.custom3.set=') . ',' . $q($serviceGuard);
-	return('branch=' . $q('d.custom=retrackers-recovery') . ',' .
-		$q($nativeOriginal ? 'cat=' : $grammar['idempotent']) . ',' . $q($legacyOrOrdinary));
+	$action = 'branch=' . $q('d.custom=retrackers-recovery') . ',' .
+		$q($nativeOriginal ? 'cat=' : $grammar['idempotent']) . ',' . $q($legacyOrOrdinary);
+	return($guardMetadata ? retrackersGuardMetadataInsert($action) : $action);
 }
 
 abstract class RetrackersLifecycleCallback
@@ -497,6 +508,20 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 			array(), array('di:' . $localId))));
 	}
 
+	public static function skipDeferredMetadata($epoch, $token, $mode, $userHash,
+		$hash, $localId)
+	{
+		$conditions = self::ownerConditions($epoch, $token, $mode, $userHash);
+		$conditions[] = self::keyAbsent('dq:1');
+		$conditions[] = self::keyPresent('di:' . $localId);
+		$conditions[] = self::downloadEquals('d.local_id=', $localId);
+		$conditions[] = self::downloadIntegerEquals('d.is_meta=', '1');
+		return(self::callback('deferred-metadata-skip', $hash, $conditions, array(
+			'$method.set_key=rr.receipts.v1,di:' . $localId,
+		), self::state(null, $epoch, $token, $mode, $userHash,
+			array(), array('di:' . $localId))));
+	}
+
 	public static function replayDeferred($epoch, $token, $mode, $userHash, $hash,
 		$localId, $state, $handoff, $script, $php, $user, $nativeOriginal = false)
 	{
@@ -504,6 +529,7 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 		$conditions[] = self::keyAbsent('dq:1');
 		$conditions[] = self::keyPresent('di:' . $localId);
 		$conditions[] = self::downloadEquals('d.local_id=', $localId);
+		$conditions[] = self::downloadIntegerEquals('d.is_meta=', '0');
 		$conditions[] = self::downloadIntegerEquals('d.state=', $state);
 		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery', '');
 		$conditions[] = self::downloadEquals('d.custom=retrackers-recovery-ack', '');
@@ -4084,8 +4110,10 @@ class RetrackersHistoricalBindingClassifier
 		ksort($profiles, SORT_STRING);
 		$hashUsers = array();
 		$projected = array();
-		$safety = retrackersBuildSafetyOnlyInsertAction();
-		$defer = retrackersBuildDeferOnlyInsertAction();
+		$safety = array(retrackersBuildSafetyOnlyInsertAction(),
+			retrackersBuildSafetyOnlyInsertAction(false));
+		$defer = array(retrackersBuildDeferOnlyInsertAction(),
+			retrackersBuildDeferOnlyInsertAction(false));
 		foreach ($profiles as $profile) {
 			$hashKey = "\0" . $profile['user_hash'];
 			if (isset($hashUsers[$hashKey])) {
@@ -4101,11 +4129,11 @@ class RetrackersHistoricalBindingClassifier
 				$firstHash = hash('sha256', $profile['parts'][1]);
 				$secondHash = hash('sha256', $profile['parts'][2]);
 				$claimKey = "\0" . $profile['user_hash'];
-				if ($profile['parts'][1] === $defer && $profile['parts'][2] === $defer) {
+				if (in_array($profile['parts'][1], $defer, true) && $profile['parts'][2] === $profile['parts'][1]) {
 					$pair = 'D/D';
-				} elseif ($profile['parts'][1] === $safety && $profile['parts'][2] === $safety) {
+				} elseif (in_array($profile['parts'][1], $safety, true) && $profile['parts'][2] === $profile['parts'][1]) {
 					$pair = 'S/S';
-				} elseif ($profile['parts'][2] === $safety && isset($claims[$claimKey]) &&
+				} elseif (in_array($profile['parts'][2], $safety, true) && isset($claims[$claimKey]) &&
 					hash_equals($claims[$claimKey], $firstHash)) {
 					$pair = 'F/S';
 				} else {
@@ -7789,6 +7817,25 @@ class RetrackersDirectRpcAdapter
 
 class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 {
+	public function metadataDownload($hash, &$failure = null)
+	{
+		if (!is_string($hash) || preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1) {
+			$failure = 'invalid-request';
+			return(null);
+		}
+		$payload = retrackersBuildDirectRequest('d.is_meta', array($hash));
+		$decoded = $this->send($payload, retrackersRestrictedPlanDirectScalar('i8'), $failure);
+		if ($decoded === false || array_keys($decoded) !== array('ok', 'family', 'value') ||
+			$decoded['ok'] !== true || $decoded['family'] !== $this->getFamily() ||
+			!in_array($decoded['family'], array(1, 2), true) ||
+			!in_array($decoded['value'], array('0', '1'), true)) {
+			$failure = 'hook-deferred-replay-pending';
+			return(null);
+		}
+		$failure = null;
+		return($decoded['value'] === '1');
+	}
+
 	public function checkerServiceMarker($hash, &$failure = null)
 	{
 		if (!is_string($hash) || preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1) {
@@ -9129,6 +9176,16 @@ class RetrackersLifecycleCoordinator
 				continue;
 			}
 			$hash = $matches[0];
+			$metadata = $adapter->metadataDownload($hash, $failure);
+			if ($metadata === null) return(false);
+			if ($metadata) {
+				$skip = RetrackersLifecycleCallbacks::skipDeferredMetadata(
+					$epoch, $owner['token'], 'i', $owner['user_hash'], $hash, $localId);
+				$decision = self::executeAndReadback($adapter, $skip, $canonicalUser,
+					$functionalAction, 'hook-deferred-replay-pending', $failure);
+				if ($decision === false) return(false);
+				continue;
+			}
 			$scalar = $adapter->sourceScalarSnapshot($hash, $failure);
 			if (!is_array($scalar) || !isset($scalar['family'], $scalar['values']) ||
 				$scalar['family'] !== $adapter->getFamily() || !is_array($scalar['values'])) {
@@ -9754,18 +9811,26 @@ function retrackersBoundedFailureReason($failure)
 		$failure : 'lifecycle-unsupported');
 }
 
-function retrackersLifecycleDiagnosticJavascript($context, $failure)
+function retrackersLifecycleDiagnosticMessage($context, $failure)
 {
 	$reason = retrackersBoundedFailureReason($failure);
 	$message = $reason;
-	if ($context === 'done' && $reason === 'hook-teardown-pending') {
+	if (strncmp($reason, 'shared-daemon-', 14) === 0) {
+		$message .= '; multiple ruTorrent profiles share one rTorrent daemon; set $forbidUserSettings = true in server configuration, then restart rTorrent';
+	} elseif ($context === 'done' && $reason === 'hook-teardown-pending') {
 		$message .= '; daemon restart required after active recovery finishes';
 	} elseif ($reason === 'hook-ledger-mismatch-restart-required') {
 		$message .= '; restart rTorrent and recheck';
 	} elseif ($reason === 'marked-recovery-pending') {
 		$message .= '; inspect the retained marker and native receipt';
 	}
-	return('noty(' . json_encode('retrackers: ' . $message) . ",'error');");
+	return($message);
+}
+
+function retrackersLifecycleDiagnosticJavascript($context, $failure)
+{
+	return('noty(' . json_encode('retrackers: ' .
+		retrackersLifecycleDiagnosticMessage($context, $failure)) . ",'error');");
 }
 
 function retrackersRunLifecycleInit($canonicalUser, $script, $php, &$jResult,
@@ -9776,7 +9841,7 @@ function retrackersRunLifecycleInit($canonicalUser, $script, $php, &$jResult,
 	if (!$ok) {
 		$reason = retrackersBoundedFailureReason($failure);
 		if (class_exists('FileUtil') && method_exists('FileUtil', 'toLog')) {
-			FileUtil::toLog('retrackers-init: ' . $reason);
+			FileUtil::toLog('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $reason));
 		}
 		$jResult .= retrackersLifecycleDiagnosticJavascript('init', $reason);
 	}
@@ -11391,6 +11456,8 @@ function retrackersCliMain($cli)
 }
 
 if (!defined('RETRACKERS_IMPORT_ONLY')) {
+	require_once(dirname(__FILE__).'/../../php/cli-only.php');
+	rutorrent_require_cli(__FILE__);
 	$cli = retrackersParseCliArgv(isset($argv) ? $argv : null);
 	if ($cli === false)
 		exit(1);

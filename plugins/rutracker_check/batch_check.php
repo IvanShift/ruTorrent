@@ -1,4 +1,7 @@
 <?php
+require_once dirname(__DIR__, 2).'/php/cli-only.php';
+rutorrent_require_cli(__FILE__);
+
 
 require_once( dirname(__FILE__).'/launcher.php' );
 

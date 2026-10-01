@@ -1,6 +1,8 @@
 function cacheBust(url) {
 	var sep = (url.indexOf('?') === -1) ? '?' : '&';
-	return url + sep + 'v=' + (typeof theWebUI !== 'undefined' ? theWebUI.version.replace(/\./g, '') : Date.now());
+	var version = typeof ruTorrentAssetVersion === 'string' ? ruTorrentAssetVersion
+		: (typeof theWebUI !== 'undefined' && theWebUI.assetVersion ? theWebUI.assetVersion : String(Date.now()));
+	return url + sep + 'v=' + encodeURIComponent(version);
 }
 
 function injectScript(fname,initFunc)

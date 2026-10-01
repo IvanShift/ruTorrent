@@ -17,6 +17,10 @@
  * vi:'Vietnamese'
  */
 
+// An unstamped checkout gets one fallback key per page load.
+var ruTorrentAssetVersion = (typeof ruTorrentAssetVersion === 'string' && /^[a-f0-9]{16}$/.test(ruTorrentAssetVersion))
+	? ruTorrentAssetVersion : String(Date.now());
+
 function readLangCookie() {
 	var nameEQ = "Language=";
 	var ca = document.cookie.split(';');
@@ -110,7 +114,7 @@ function loadUILang(onLoadFunc)
 			translateDOM();
 		}
 	};
-	langScript.src = `./lang/${lang}.js?v=5315`;
+	langScript.src = `./lang/${lang}.js?v=${encodeURIComponent(ruTorrentAssetVersion)}`;
 	document.head.appendChild(langScript);
 }
 

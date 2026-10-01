@@ -1,16 +1,16 @@
 <?php
+require_once(__DIR__.'/../../../php/nativehelpers.php');
 
 function taskNativeHelperFixture($testHook = false)
 {
-    $source = __DIR__.'/../../../plugins/_task/kill-verified.c';
+    $source = NativeHelpers::source('rutorrent-task-kill-pidfd');
     $directory = sys_get_temp_dir().'/rutorrent-task-pidfd-'.getmypid().'-'.bin2hex(random_bytes(4));
     if (!mkdir($directory, 0700) || !is_file($source)) {
         throw new RuntimeException('Could not prepare the native task killer fixture');
     }
     $binary = $directory.'/kill-verified';
-    $command = array('cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror');
-    if ($testHook) $command[] = '-DRTASK_KILL_TEST_HOOK=1';
-    array_push($command, '-o', $binary, $source);
+    $command = NativeHelpers::compilerCommand('rutorrent-task-kill-pidfd', $binary,
+        $testHook ? array('-DRTASK_KILL_TEST_HOOK=1') : array());
     $process = proc_open($command, array(
         0 => array('file', '/dev/null', 'r'),
         1 => array('pipe', 'w'),

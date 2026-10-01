@@ -14,6 +14,8 @@ class DataDirFailureVisibilityTest extends TestCase
                 throw new RuntimeException('Could not create DataDir fixture directory');
         symlink($this->tree . '/outside', $this->tree . '/allowed/link');
         $root = dirname(__DIR__, 3);
+        if (!copy($root . '/php/cli-only.php', $this->tree . '/php/cli-only.php'))
+            throw new RuntimeException('Could not copy production CLI guard');
         foreach (array('action.php', 'setdir.php', 'setdircommand.php') as $name)
             if (!copy($root . '/plugins/datadir/' . $name, $this->tree . '/plugins/datadir/' . $name))
                 throw new RuntimeException('Could not copy production ' . $name);
@@ -100,7 +102,7 @@ STUB
 
     public function tearDown()
     {
-        foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'plugins/datadir/action.php',
+        foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'php/cli-only.php', 'plugins/datadir/action.php',
             'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php',
             'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)

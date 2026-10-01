@@ -343,6 +343,37 @@ function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
     return '';
 }
 
+function rtDataDirProbeRename($source, $destination, $files)
+{
+    $sourceRoot = realpath($source);
+    $targetRoot = $destination;
+    while (!is_dir($targetRoot) && dirname($targetRoot) !== $targetRoot)
+        $targetRoot = dirname($targetRoot);
+    $targetRoot = realpath($targetRoot);
+    if ($sourceRoot === false || $targetRoot === false)
+        throw new RuntimeException('rename-noreplace-parent-unavailable');
+    $directories = array($sourceRoot=>true, $targetRoot=>true);
+    foreach ($files as $relative) {
+        if (!is_string($relative) || $relative === '' || $relative[0] === '/'
+            || strpos($relative, "\0") !== false || in_array('..', explode('/', $relative), true))
+            throw new RuntimeException('invalid-file-list');
+        $parent = realpath(dirname($sourceRoot.'/'.$relative));
+        if ($parent === false || ($parent !== $sourceRoot && strpos($parent, $sourceRoot.'/') !== 0))
+            throw new RuntimeException('rename-noreplace-source-parent-unavailable');
+        $directories[$parent] = true;
+        $target = dirname($destination.'/'.$relative);
+        while (!is_dir($target) && dirname($target) !== $target) $target = dirname($target);
+        $target = realpath($target);
+        if ($target === false || ($target !== $targetRoot && strpos($target, $targetRoot.'/') !== 0))
+            throw new RuntimeException('rename-noreplace-destination-parent-unavailable');
+        $directories[$target] = true;
+    }
+    foreach ($directories as $directory=>$unused) {
+        if (!ErasedataFilesystemOps::canRenameNoReplace($directory))
+            throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusal().': '.$directory);
+    }
+}
+
 function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false)
 {
     if (!is_string($destPath) || $destPath === '' || !is_string($hash)
@@ -372,6 +403,8 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         if (file_exists($path) || is_link($path))
             throw new RuntimeException('prior-job-pending');
         $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg);
+        if ($snapshot['move'])
+            rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']);
         if ($fastResume)
             FileUtil::toLog('datadir: ' . $hash
                 . ' fast resume disabled: changing directory in place');

@@ -11,6 +11,14 @@ $useExternal = false;		// Valid choices:
 				// "torrenttools" - use program torrenttools (see http://github.com/fbdtemme/torrenttools)
 $pathToCreatetorrent = '';	// Something like /bin/createtorrent, or /bin/transmissioncli. If empty, program will be found in PATH.
 
+// The Docker image supplies this binary; use its absolute path even when FPM
+// has no PATH. Per-plugin/profile overrides can still choose another creator.
+if (is_executable('/usr/local/bin/mktorrent'))
+{
+	$useExternal = 'mktorrent';
+	$pathToCreatetorrent = '/usr/local/bin/mktorrent';
+}
+
 $recentTrackersMaxCount = 15;
 
 // Sets wether to use internal realization, when the external program doesn't support hybrid torrents.

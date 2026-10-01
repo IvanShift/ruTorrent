@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__.'/cli-only.php';
+rutorrent_require_cli(__FILE__);
+
 /*
  * initplugins.php, contributed by dmrom
  *

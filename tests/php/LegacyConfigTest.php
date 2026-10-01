@@ -12,6 +12,7 @@ class LegacyConfigTest extends TestCase
         mkdir($this->root.'/php', 0700, true);
         mkdir($this->root.'/conf', 0700);
         copy(__DIR__.'/../../php/util.php', $this->root.'/php/util.php');
+        copy(__DIR__.'/../../php/environment.php', $this->root.'/php/environment.php');
         symlink(__DIR__.'/../../php/utility', $this->root.'/php/utility');
         copy(__DIR__.'/fixtures/config-2026-08.php', $this->root.'/conf/config.php');
     }
@@ -30,18 +31,21 @@ class LegacyConfigTest extends TestCase
         rmdir($path);
     }
 
-    private function probe($mask = '0770')
+    private function probe($mask = '0770', $environment = array(), $server = array())
     {
-        $script = 'putenv("RU_LOCALHOSTS=10.9.9.9"); '
+        $script = 'foreach (json_decode('.var_export(json_encode($environment), true).', true) as $key => $value) putenv($key."=".$value); '
+            .'putenv("RU_LOCALHOSTS=10.9.9.9"); '
             .'unset($_ENV["RU_LOCALHOSTS"]); '
             .'$_ENV["RU_PROFILE_MASK"] = '.var_export($mask, true).'; '
             .'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->root.'/share', true).'; '
-            .'$_SERVER["REMOTE_USER"] = "test"; '
+            .'$_SERVER = array_merge($_SERVER, '.var_export($server, true).'); $_SERVER["REMOTE_USER"] = "test"; '
             .'require '.var_export($this->root.'/php/util.php', true).'; '
             .'echo json_encode(array("mask" => $profileMask, '
             .'"mode" => @fileperms('.var_export($this->root.'/share/users/test', true).') & 0777, '
             .'"hosts" => $localhosts, '
-            .'"local" => User::isLocalMode("10.9.9.9", 5000)));';
+            .'"local" => User::isLocalMode("10.9.9.9", 5000), '
+            .'"forbid" => $forbidUserSettings, "csrf" => $enableCSRFCheck ?? false, '
+            .'"spoofProfile" => is_dir('.var_export($this->root.'/share/users/test', true).')));';
         $process = proc_open(array(PHP_BINARY, '-c', __DIR__.'/../php-test.ini',
             '-d', 'variables_order=GPCS', '-d', 'display_errors=stderr', '-r', $script),
             array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
@@ -106,4 +110,55 @@ class LegacyConfigTest extends TestCase
             'explicit host list is preserved');
         $this->assertEquals(false, $result['local'], 'environment host cannot override the explicit list');
     }
+    public function testUnauthenticatedServerPolicyWinsAfterLocalConfig()
+    {
+        file_put_contents($this->root.'/conf/config.local.php',
+            '<?php $forbidUserSettings = false; $enableCSRFCheck = false;');
+        list($status, $result, $errors) = $this->probe('0770', array('RU_HTTP_AUTH' => 'false'));
+        $this->assertEquals(0, $status, 'server policy bootstrap succeeds: '.$errors);
+        $this->assertTrue($result['forbid'], 'no-auth server refuses caller-selected profiles');
+        $this->assertTrue($result['csrf'], 'no-auth server still enables browser origin protection');
+        $this->assertTrue(!$result['spoofProfile'], 'unverified user name does not create a profile');
+    }
+
+    public function testAuthenticatedSingleProfileServerFlagWinsAfterLocalConfig()
+    {
+        file_put_contents($this->root.'/conf/config.local.php',
+            '<?php $forbidUserSettings = false; $enableCSRFCheck = false;');
+        list($status, $result, $errors) = $this->probe('0770', array(
+            'RU_HTTP_AUTH' => 'true', 'RU_FORBID_USER_SETTINGS' => 'true'));
+        $this->assertEquals(0, $status, 'single-profile policy bootstrap succeeds: '.$errors);
+        $this->assertTrue($result['forbid'], 'server flag fixes the one-profile contract');
+        $this->assertTrue($result['csrf'], 'server auth policy retains origin protection');
+        $this->assertTrue(!$result['spoofProfile'], 'verified login stays in shared server profile');
+    }
+
+    public function testProxyPostUsesProcessPolicyAfterOldLocalConfig()
+    {
+        file_put_contents($this->root.'/conf/config.local.php',
+            '<?php $trustedOrigins = array("https://local.example"); $enableCSRFCheck = false;');
+        $environment = array('RU_HTTP_AUTH'=>'false', 'RU_TRUSTED_ORIGINS'=>'https://panel.example:8443');
+        $server = array('REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
+            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443');
+        list($status, $result, $errors) = $this->probe('0770', $environment, $server);
+        $this->assertEquals(0, $status, 'old-config POST entrypoint succeeds: '.$errors);
+        $this->assertTrue(is_array($result) && $result['csrf'] && $result['forbid'],
+            'process policy enables CSRF and shared profile before POST dispatch');
+        $server['HTTP_ORIGIN'] = 'https://local.example';
+        list($status, $result, $errors, $out) = $this->probe('0770', $environment, $server);
+        $this->assertEquals('Forbidden', $out, 'old local-config grant cannot widen server POST policy');
+    }
+
+    public function testProxyPostUsesLocalConfigOriginGrant()
+    {
+        file_put_contents($this->root.'/conf/config.local.php',
+            '<?php $trustedOrigins = array("https://panel.example:8443"); $enableCSRFCheck = true;');
+        $server = array('REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
+            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443');
+        list($status, $result, $errors) = $this->probe('0770', array(), $server);
+        $this->assertEquals(0, $status, 'operator-config POST entrypoint succeeds: '.$errors);
+        $this->assertTrue(is_array($result) && $result['csrf'],
+            'local origin configuration loads before the actual POST gate');
+    }
+
 }

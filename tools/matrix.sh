@@ -7,6 +7,8 @@
 #                                   plus Kinozal and sibling trackers in the shipped no-iconv image
 #   tools/matrix.sh local 7.4       only these legs
 #   tools/matrix.sh prod-kinozal    only the no-iconv tracker handler suites
+# Set RUTORRENT_MATRIX_BASE to a private disk-backed directory to isolate
+# exports, retention and the marker from existing runs.
 # Only the default run with no leg arguments records the pre-commit marker.
 #   tools/matrix.sh digest          print the digest of what the suite tests
 #   tools/matrix.sh last            show the last green run
@@ -17,8 +19,11 @@
 # over ONE tree corrupt each other (AGENTS.md, "This Machine Will Lie To You"),
 # and a default container could write as root. So every leg gets `git ls-files` of the
 # working tree (staged and unstaged edits, untracked new files) exported to a
-# disk-backed directory of its own, plus its own TMPDIR, and containers run as
-# this user. Never under /tmp: it is a small tmpfs here.
+# disk-backed directory of its own, plus its own TMPDIR. PHP runs as this user.
+# Every suite leg compiles the CI manifest helpers for its own runtime. The
+# local leg uses a disposable Docker mount namespace around the exact host PHP
+# and read-only host root, with a private /usr/local/bin overlay. No host helpers
+# are installed. Docker and host cc are required for this leg. Never under /tmp: it is a small tmpfs here.
 #
 # Why the run directory is ~/.cache/rtm and not something readable: a leg's
 # TMPDIR must stay short. The unique run suffix still fits the budget.
@@ -39,7 +44,7 @@ set -u -o pipefail
 umask 077
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-base="${HOME}/.cache/rtm"
+base="${RUTORRENT_MATRIX_BASE:-${HOME}/.cache/rtm}"
 marker="${base}/last-green"
 tmpdir_budget=58  # 58 + the 49-byte socket suffix fits the 107-byte sun_path limit.
 
@@ -124,6 +129,13 @@ runtime_fingerprint() (
                 echo "matrix.sh: local PHP unavailable for runtime fingerprint" >&2
                 return 1
             }
+            compiler="$(command -v cc)" || {
+                echo "matrix.sh: local cc unavailable for native helper fingerprint" >&2
+                return 1
+            }
+            sha256sum "$compiler" || return 1
+            cc --version || return 1
+            id || return 1
             sha256sum "$php_binary" || return 1
             php -v || return 1
             php -m || return 1
@@ -196,6 +208,7 @@ run="$(mktemp -d "${base}/${stamp}.XXXXXX")" || exit 1
 exec {run_fd}>"$run/.lock" || exit 1
 flock -x "$run_fd" || exit 1
 started=$(date +%s)
+container_owner="$(basename "$run")"
 declare -A pid=()
 declare -A container_name=()
 
@@ -227,7 +240,7 @@ revoke_marker() {
     marker_unlock
 }
 stop_legs() {
-    local leg round
+    local leg round identity container_id owner_label
     for leg in "${!pid[@]}"; do
         kill -TERM -- "-${pid[$leg]}" 2>/dev/null || :
     done
@@ -244,7 +257,9 @@ stop_legs() {
     # so an interrupt does not leave that late-created container behind.
     for round in 1 2 3; do
         for leg in "${!container_name[@]}"; do
-            docker rm -f "${container_name[$leg]}" >/dev/null 2>&1 || :
+            identity="$(docker container inspect --format '{{.Id}} {{index .Config.Labels "io.rutorrent.matrix.owner"}}' "${container_name[$leg]}" 2>/dev/null)" || continue
+            read -r container_id owner_label <<< "$identity"
+            [ "$owner_label" != "$container_owner" ] || docker rm -f -v "$container_id" >/dev/null 2>&1 || :
         done
         [ "$round" -eq 3 ] || sleep 0.15
     done
@@ -317,24 +332,16 @@ for leg in "${legs[@]}"; do
     mkdir -p "$dir/tmp" || fail_setup "cannot create $leg directory"
     cp -a --reflink=auto "$export_dir" "$dir/tree" || fail_setup "cannot copy export for $leg"
     case "$leg" in
-        local)
-            setsid bash -c '
-                dir="$1"
-                cd "$dir/tree/tests" &&
-                    TMPDIR="$dir/tmp" bash php-test.sh > "$dir/php-test.log" 2>&1
-                printf "%s\n" "$?" > "$dir/exit"
-            ' _ "$dir" &
-            ;;
         prod-kinozal)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
-                dir="$1"; uid="$2"; gid="$3"; name="$4"; status=0
+                dir="$1"; uid="$2"; gid="$3"; name="$4"; owner="$5"; status=0
                 : > "$dir/php-test.log"
                 for suite in KinozalHandlerTest SiblingTrackersTest; do
                     test_file="tests/plugins/rutracker_check/${suite}.php"
                     suite_log="$dir/${suite}.log"
                     printf "> php %s\n" "$test_file" >> "$dir/php-test.log"
-                    docker run --rm --pull=never --network none --name "$name" --user "${uid}:${gid}" \
+                    docker run --rm --pull=never --network none --name "$name" --label "io.rutorrent.matrix.owner=$owner" --user "${uid}:${gid}" \
                         -e HOME=/mtmp -e TMPDIR=/mtmp -e RT_SUITE="$test_file" --entrypoint php85 \
                         -v "$dir/tree:/w:ro" -v "$dir/tmp:/mtmp" -w /w \
                         ivanshift/rutorrent:latest -c tests/php-test.ini \
@@ -351,18 +358,17 @@ for leg in "${legs[@]}"; do
                     fi
                 done
                 printf "%s\n" "$status" > "$dir/exit"
-            ' _ "$dir" "$uid" "$gid" "${container_name[$leg]}" &
+            ' _ "$dir" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" &
             ;;
         *)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
-                dir="$1"; leg="$2"; uid="$3"; gid="$4"; name="$5"
-                docker run --rm --pull=never --name "$name" --user "${uid}:${gid}" \
-                    -e HOME=/mtmp -e TMPDIR=/mtmp \
-                    -v "$dir/tree:/w" -v "$dir/tmp:/mtmp" -w /w/tests "php:${leg}-cli" \
-                    bash php-test.sh > "$dir/php-test.log" 2>&1
+                dir="$1"; leg="$2"; uid="$3"; gid="$4"; name="$5"; owner="$6"
+                python3 "$dir/tree/tests/tools/matrix-native-leg.py" \
+                    --directory "$dir" --leg "$leg" --uid "$uid" --gid "$gid" --name "$name" --owner "$owner" \
+                    > "$dir/php-test.log" 2>&1
                 printf "%s\n" "$?" > "$dir/exit"
-            ' _ "$dir" "$leg" "$uid" "$gid" "${container_name[$leg]}" &
+            ' _ "$dir" "$leg" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" &
             ;;
     esac
     pid[$leg]=$!

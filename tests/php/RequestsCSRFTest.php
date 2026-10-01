@@ -4,7 +4,7 @@ require_once(__DIR__ . '/TestCase.php');
 
 class RequestsCSRFTest extends TestCase
 {
-    private function probe($changes, $origins = array(), $enabled = true, $requirePost = false)
+    private function probe($changes, $origins = array(), $enabled = true, $requirePost = false, $trusted = array(), $ajax = false)
     {
         $server = array_merge(array(
             'REQUEST_METHOD' => 'POST',
@@ -15,12 +15,15 @@ class RequestsCSRFTest extends TestCase
         $code = '$_SERVER = json_decode(getenv("CSRF_TEST_SERVER"), true);'
             . '$enableCSRFCheck = getenv("CSRF_TEST_ENABLED") === "1";'
             . '$enabledOrigins = json_decode(getenv("CSRF_TEST_ORIGINS"), true);'
+            . '$trustedOrigins = json_decode(getenv("CSRF_TEST_TRUSTED"), true);'
             . 'require ' . var_export(__DIR__ . '/../../php/urlhost.php', true) . ';'
             . 'require ' . var_export(__DIR__ . '/../../php/utility/requests.php', true) . ';'
-            . 'Requests::makeCSRFCheck(); if (getenv("CSRF_TEST_REQUIRE_POST") === "1") Requests::requirePost(); echo "ALLOW";';
+            . 'if (getenv("CSRF_TEST_AJAX") === "1") { echo Requests::isSameOriginAjaxRequest() ? "ALLOW" : "Forbidden"; } else { Requests::makeCSRFCheck(); if (getenv("CSRF_TEST_REQUIRE_POST") === "1") Requests::requirePost(); echo "ALLOW"; }';
         $environment = array(
             'CSRF_TEST_SERVER' => json_encode($server),
             'CSRF_TEST_ORIGINS' => json_encode($origins),
+            'CSRF_TEST_TRUSTED' => json_encode($trusted),
+            'CSRF_TEST_AJAX' => $ajax ? '1' : '0',
             'CSRF_TEST_ENABLED' => $enabled ? '1' : '0',
             'CSRF_TEST_REQUIRE_POST' => $requirePost ? '1' : '0',
         );
@@ -94,6 +97,7 @@ class RequestsCSRFTest extends TestCase
     {
         $this->assertEquals('ALLOW', $this->probe(array(
             'SCRIPT_NAME' => '/plugins/httprpc/action.php',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../plugins/httprpc/action.php',
         )), 'legacy raw httprpc clients can omit browser origin headers');
         $this->assertEquals('Forbidden', $this->probe(array()),
             'other browser action routes still require an origin');
@@ -137,6 +141,7 @@ class RequestsCSRFTest extends TestCase
     {
         $this->assertEquals('Forbidden', $this->probe(array(
             'SCRIPT_NAME' => '/plugins/httprpc/action.php',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../plugins/httprpc/action.php',
             'HTTP_SEC_FETCH_SITE' => 'cross-site',
         )), 'a browser form without Origin cannot use the raw client exception');
     }
@@ -157,4 +162,66 @@ class RequestsCSRFTest extends TestCase
             'HTTP_ORIGIN' => 'http://foreign.test',
         ), array(), false), 'operators may retain old default outside the Basic-auth image');
     }
+    public function testHttprpcSuffixCannotAuthorizeAnotherScript()
+    {
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'SCRIPT_NAME' => '/plugins/throttle/action.php/plugins/httprpc/action.php',
+            'SCRIPT_FILENAME' => __DIR__ . '/../../plugins/throttle/action.php',
+        )), 'raw-client exception belongs to the actual httprpc script');
+    }
+
+    public function testConfiguredFullOriginAllowsProxyPostAndBootstrap()
+    {
+        $headers = array('HTTP_HOST' => 'backend:8080',
+            'HTTP_ORIGIN' => 'https://panel.example:8443',
+            'HTTP_REFERER' => 'https://panel.example:8443/rutorrent/',
+            'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest');
+        $trusted = array('https://panel.example:8443');
+        $this->assertEquals('ALLOW', $this->probe($headers, array(), true, false, $trusted),
+            'configured frontend origin authorizes proxy POST');
+        $headers['REQUEST_METHOD'] = 'GET';
+        $this->assertEquals('ALLOW', $this->probe($headers, array(), true, false, $trusted, true),
+            'the same frontend origin authorizes AJAX bootstrap');
+    }
+
+    public function testConfiguredFullOriginKeepsSchemeAndPortBoundaries()
+    {
+        foreach (array('http://panel.example:8443', 'https://panel.example:8444',
+            'https://other.example:8443', 'null') as $source)
+        {
+            $headers = array('HTTP_ORIGIN' => $source, 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest');
+            $trusted = array('https://panel.example:8443');
+            $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, $trusted),
+                'configured origin does not grant another scheme/host/port: '.$source);
+            $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, $trusted, true),
+                'bootstrap applies the same boundary: '.$source);
+        }
+    }
+
+    public function testOnlyExplicitExtensionOriginCanAuthorizePost()
+    {
+        $trusted = array('moz-extension://configured-extension');
+        $this->assertEquals('ALLOW', $this->probe(array(
+            'HTTP_ORIGIN' => 'moz-extension://configured-extension'), array(), true, false, $trusted),
+            'operator can authorize one browser extension origin');
+        $this->assertEquals('Forbidden', $this->probe(array(
+            'HTTP_ORIGIN' => 'moz-extension://another-extension'), array(), true, false, $trusted),
+            'another extension has no grant');
+    }
+
+    public function testConfiguredOriginsRejectAmbiguousUrlValues()
+    {
+        foreach (array('https://user@panel.example:8443',
+            'https://panel.example:8443/path', 'https://panel.example:8443?query',
+            'https://panel.example:8443#fragment', 'https://*.example:8443') as $grant)
+        {
+            $headers = array('HTTP_ORIGIN' => 'https://panel.example:8443',
+                'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest');
+            $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, array($grant)),
+                'a full origin setting cannot contain credentials/path/query/fragment/wildcard: '.$grant);
+            $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, array($grant), true),
+                'bootstrap rejects the same ambiguous configured value: '.$grant);
+        }
+    }
+
 }

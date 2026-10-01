@@ -1,4 +1,11 @@
 <?php
+	// Persisted config directories may live outside the application tree.
+	$readEnvironment = static function($name, $fallback = null) {
+		if(array_key_exists($name, $_ENV))
+			return $_ENV[$name];
+		$value = getenv($name);
+		return $value === false ? $fallback : $value;
+	};
 	// configuration parameters
 
 	// for snoopy client
@@ -59,16 +66,16 @@
 
 	// Shared application log for errors, operational notices and explicitly
 	// enabled plugin diagnostics. The historical filename remains the default.
-	$log_file = $_ENV['RU_LOG_FILE'] ?? '/tmp/errors.log'; // absolute path or stream URI; leave blank to disable logging
+	$log_file = $readEnvironment('RU_LOG_FILE', '/tmp/errors.log'); // absolute path or stream URI; leave blank to disable logging
 
 	$saveUploadedTorrents = true;		// Save uploaded torrents to profile/torrents directory or not
 	$overwriteUploadedTorrents = false;	// Overwrite existing uploaded torrents in profile/torrents directory or make unique name
 
-	$topDirectory = $_ENV['RU_TOP_DIR'] ?? '/';			// Upper available directory. Absolute path with trail slash.
+	$topDirectory = $readEnvironment('RU_TOP_DIR', '/');			// Upper available directory. Absolute path with trail slash.
 	$forbidUserSettings = false;
 
-	$scgi_port = $_ENV['RU_SCGI_PORT'] ?? 5000;
-	$scgi_host = $_ENV['RU_SCGI_HOST'] ?? "127.0.0.1";
+	$scgi_port = $readEnvironment('RU_SCGI_PORT', 5000);
+	$scgi_host = $readEnvironment('RU_SCGI_HOST', '127.0.0.1');
 
 	// For web->rtorrent link through unix domain socket
 	// (scgi_local in rtorrent conf file), change variables
@@ -104,24 +111,22 @@
 		"localhost",
 	);
 
-	// Read from $_ENV, like every other RU_ setting here. Asking getenv()
-	// whether it is set and then reading $_ENV disagrees whenever
-	// variables_order has no E, which appends null instead of the address.
-	if(isset($_ENV['RU_LOCALHOSTS']) && ($_ENV['RU_LOCALHOSTS'] !== ''))
-		$localhosts[] = $_ENV['RU_LOCALHOSTS'];
+	$environmentLocalhost = $readEnvironment('RU_LOCALHOSTS', '');
+	if($environmentLocalhost !== '')
+		$localhosts[] = $environmentLocalhost;
 
-	$profilePath = $_ENV['RU_PROFILE_PATH'] ?? '../../share';		// Path to user profiles
+	$profilePath = $readEnvironment('RU_PROFILE_PATH', '../../share');		// Path to user profiles
 	// Environment values are strings; parse the documented octal notation before using it as a file mode.
 	// An unset, empty, or malformed RU_PROFILE_MASK uses the documented 0777 default -- and a mask that
 	// was set but could not be read says so, because the default is wider than any mask worth setting.
-	$profileMask = $_ENV['RU_PROFILE_MASK'] ?? '';
+	$profileMask = $readEnvironment('RU_PROFILE_MASK', '');
 	if(($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask))
 		error_log('RU_PROFILE_MASK is not three or four octal digits; using the 0777 default.');
 	$profileMask = preg_match('/^0?[0-7]{3}$/D', $profileMask) ? intval($profileMask, 8) : 0777;
 						// Both Webserver and rtorrent users must have read-write access to it.
 						// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.
 
-	$tempDirectory = $_ENV['RU_TEMP_DIRECTORY'] ?? null; // Temp directory. Absolute path. If null, then autodetect will be used.
+	$tempDirectory = $readEnvironment('RU_TEMP_DIRECTORY'); // Temp directory. Absolute path. If null, then autodetect will be used.
 
 	$canUseXSendFile = false;		// If true then use X-Sendfile feature if it exist
 
@@ -129,7 +134,10 @@
 
 	$enableCSRFCheck = false;		// If true then Origin and Referer will be checked
 	$enabledOrigins = array();		// List of enabled domains for CSRF check (only hostnames, without protocols, port etc.).
-						// If empty, then will retrieve domain from HTTP_HOST / HTTP_X_FORWARDED_HOST
+						// Legacy host-only POST exceptions; untrusted forwarded hosts are ignored.
+	// Exact public origins for a proxy that changes Host/scheme, and optional browser extensions.
+	$trustedOrigins = preg_split('/\s*,\s*/', (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
+		-1, PREG_SPLIT_NO_EMPTY);
 
 	// Load local deployment overrides if present
 	$configLocalPath = dirname(__FILE__)."/config.local.php";

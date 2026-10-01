@@ -271,4 +271,26 @@ $suite->test('journal refusal sanitizes an unsafe hash in the log and document n
         } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
     });
 
+$suite->test('new AutoTools lock is private while a verified legacy lock keeps its identity',
+    function () {
+        $root = moveAdmissionFixture();
+        $oldUmask = umask(0022);
+        try {
+            $lock = new ReflectionMethod('AutoToolsMoveTransaction', 'lock');
+            if (PHP_VERSION_ID < 80100) $lock->setAccessible(true);
+            $handle = $lock->invoke(null, $root . '/session');
+            clearstatcache(true, $root . '/session/.lock');
+            strictAssertSame(0600, fileperms($root . '/session/.lock') & 0777,
+                'normal new lock is compatible with startup journal admission');
+            strictAssertSame(0022, umask(), 'temporary private creation restores the caller umask');
+            flock($handle, LOCK_UN); fclose($handle);
+            chmod($root . '/session/.lock', 0644);
+            $identity = fileinode($root . '/session/.lock');
+            $handle = $lock->invoke(null, $root . '/session');
+            strictAssertSame($identity, fileinode($root . '/session/.lock'),
+                'an existing lock is opened in place to preserve exclusion');
+            flock($handle, LOCK_UN); fclose($handle);
+        } finally { umask($oldUmask); removeMoveAdmissionFixture($root); }
+    });
+
 exit($suite->run());

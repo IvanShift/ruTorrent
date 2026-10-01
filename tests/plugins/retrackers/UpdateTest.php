@@ -759,6 +759,7 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 	public $downloadRowsQueue = array();
 	public $downloadRowReads = 0;
 	public $sourceScalarQueue = array();
+	public $metadataRows = array();
 	public $nativeFinalized = null;
 	public $nativeIncarnation = null;
 	public $nativeMethodsPresent = true;
@@ -932,6 +933,7 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		$getters = array(
 			'd.local_id=' => 'local_id',
 			'd.state=' => 'state',
+			'd.is_meta=' => 'is_meta',
 			'd.custom=retrackers-recovery' => 'recovery_marker',
 			'd.custom=retrackers-recovery-ack' => 'recovery_ack',
 			'd.custom=chk-meta-old' => 'chk_meta_old',
@@ -941,13 +943,16 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 			$key = $getters[$expression];
 			$value = isset($this->modelDownloads[$target][$key]) ?
 				$this->modelDownloads[$target][$key] : '';
-			return($expression === 'd.state=' ? (int)$value : $value);
+			return(in_array($expression, array('d.state=', 'd.is_meta='), true) ? (int)$value : $value);
 		}
 		return(null);
 	}
 
 	private function evaluatePredicate($expression, $target)
 	{
+		if ($expression === 'd.is_meta=') {
+			return((bool)$this->expressionValue($expression, $target));
+		}
 		if ($expression === 'not=(method.list_keys,rr.receipts.v1)') {
 			return(count($this->modelLedger) === 0);
 		}
@@ -1220,6 +1225,17 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		$failure = $this->nativeIncarnation === null ?
 			'native-original-incarnation-unconfirmed' : null;
 		return($this->nativeIncarnation === null ? false : $this->nativeIncarnation);
+	}
+
+	public function metadataDownload($hash, &$failure = null)
+	{
+		$failure = null;
+		if (isset($this->metadataRows[$hash])) {
+			$this->modelDownloads[$hash] = array('local_id'=>$this->metadataRows[$hash],
+				'is_meta'=>'1', 'state'=>'0', 'recovery_marker'=>'', 'recovery_ack'=>'');
+			return(true);
+		}
+		return(!empty($this->modelDownloads[$hash]['is_meta']));
 	}
 
 	public function sourceScalarSnapshot($hash, &$failure = null)
@@ -3562,7 +3578,7 @@ PHP;
 
 		$this->assertTrue($status !== 0, 'invalid CLI argv exits with a failure status');
 		$this->assertEquals(array(), $output, 'invalid CLI argv writes no diagnostic output');
-		$this->assertEquals(array(realpath($script), $update), $observed['included'],
+		$this->assertEquals(array(realpath($script), $update, realpath(dirname($update).'/../../php/cli-only.php')), $observed['included'],
 			'invalid CLI argv includes no configuration, filesystem, or RPC dependency');
 		$this->assertEquals(array(), $observed['profile'], 'invalid CLI argv creates no profile files');
 		$this->assertTrue($observed['remote_user'] === false, 'invalid CLI argv does not set a runtime user');
@@ -4686,9 +4702,9 @@ PHP;
 		}
 		$safety = base64_decode('YnJhbmNoPSJkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5IiwiYnJhbmNoPVwiZXF1YWw9ZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeS1hY2ssZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVwiLFwiY2F0PVwiLFwiYnJhbmNoPVxcXCJlcXVhbD1kLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsJGQuY3VzdG9tPXJldHJhY2tlcnMtcmVjb3ZlcnlcXFxcXFxcIixcXFxcXFxcImQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjaywkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiXFxcIixcXFwiY2F0PVxcXCJcIiIsImJyYW5jaD1cIiRlcXVhbD1kLmN1c3RvbTM9LGNhdD0xXCIsXCJkLmN1c3RvbTMuc2V0PVwiLFwiY2F0PVwiIg==', true);
 		$defer = base64_decode('YnJhbmNoPSJkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5IiwiYnJhbmNoPVwiZXF1YWw9ZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeS1hY2ssZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVwiLFwiY2F0PVwiLFwiYnJhbmNoPVxcXCJlcXVhbD1kLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsJGQuY3VzdG9tPXJldHJhY2tlcnMtcmVjb3ZlcnlcXFxcXFxcIixcXFxcXFxcImQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjaywkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiXFxcIixcXFwiY2F0PVxcXCJcIiIsImJyYW5jaD1cIiRlcXVhbD1kLmN1c3RvbTM9LGNhdD0xXCIsXCJkLmN1c3RvbTMuc2V0PVwiLFwiY2F0PVxcXCIkbWV0aG9kLnNldF9rZXk9cnIucmVjZWlwdHMudjEsZHE6MSwxXFxcIixcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLFxcXFxcXFwiJGNhdD1kaTosJGQubG9jYWxfaWQ9XFxcXFxcXCIsMVxcXCJcIiI=', true);
-		$this->assertTrue(retrackersBuildSafetyOnlyInsertAction() === $safety,
+		$this->assertTrue(retrackersBuildSafetyOnlyInsertAction(false) === $safety,
 			'the safety-only builder returns the independently frozen exact action bytes');
-		$this->assertTrue(retrackersBuildDeferOnlyInsertAction() === $defer,
+		$this->assertTrue(retrackersBuildDeferOnlyInsertAction(false) === $defer,
 			'the defer-only builder returns the independently frozen exact action bytes');
 		$this->assertTrue(hash('sha256', $safety) ===
 			'c1ec79a6767399434309847606d9dda5f5d5eaf5d3d849e42c72b32a9dae83bb' &&
@@ -4720,7 +4736,7 @@ PHP;
 			return;
 		}
 		$action = retrackersBuildInsertAction(
-			'/opt/rutorrent/plugins/retrackers/run.sh', '/usr/bin/php', 'tester');
+			'/opt/rutorrent/plugins/retrackers/run.sh', '/usr/bin/php', 'tester', false, false);
 		$expected = base64_decode('YnJhbmNoPSJkLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5IiwiYnJhbmNoPVwiZXF1YWw9ZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeS1hY2ssZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVwiLFwiY2F0PVwiLFwiYnJhbmNoPVxcXCJlcXVhbD1kLmN1c3RvbT1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsJGQuY3VzdG9tPXJldHJhY2tlcnMtcmVjb3ZlcnlcXFxcXFxcIixcXFxcXFxcImQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjaywkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiXFxcIixcXFwiY2F0PVxcXCJcIiIsImJyYW5jaD1cIiRlcXVhbD1kLmN1c3RvbTM9LGNhdD0xXCIsXCJkLmN1c3RvbTMuc2V0PVwiLFwiYnJhbmNoPVxcXCJkLmN1c3RvbT1jaGstbWV0YS1vbGRcXFwiLFxcXCJjYXQ9XFxcIixcXFwiYnJhbmNoPVxcXFxcXFwibWV0aG9kLmhhc19rZXk9cnIucmVjZWlwdHMudjEsbWE6MVxcXFxcXFwiLFxcXFxcXFwiY2F0PVxcXFxcXFwiLFxcXFxcXFwiYnJhbmNoPVxcXFxcXFxcXFxcXFxcXCJtZXRob2QuaGFzX2tleT1yci5yZWNlaXB0cy52MSx0YToxXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFwiY2F0PVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLGRxOjEsMVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJG1ldGhvZC5zZXRfa2V5PXJyLnJlY2VpcHRzLnYxLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkY2F0PWRpOiwkZC5sb2NhbF9pZD1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLDFcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcImNhdD1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD13aDosJGQubG9jYWxfaWQ9XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwxXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkbWV0aG9kLnNldF9rZXk9cnIucmVjZWlwdHMudjEsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9d3A6LCRkLmxvY2FsX2lkPVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsMVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGQuY3VzdG9tLnNldD1yZXRyYWNrZXJzLXJlY292ZXJ5LWFjayxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD12MTpvcmlnaW5hbDosJGQuc3RhdGU9LDosJGQubG9jYWxfaWQ9LDosXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCI5YmJhNWM1M2EwNTQ1ZTBjODAxODRiOTQ2MTUzYzlmNTgzODdlM2JkMWQ0ZWUzNTc0MGYyOWFjMmU3MThiMDE5XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCJcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIsXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIkZC5jdXN0b20uc2V0PXJldHJhY2tlcnMtcmVjb3ZlcnksXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRjYXQ9djE6b3JpZ2luYWw6LCRkLnN0YXRlPSw6LCRkLmxvY2FsX2lkPSw6LFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiOWJiYTVjNTNhMDU0NWUwYzgwMTg0Yjk0NjE1M2M5ZjU4Mzg3ZTNiZDFkNGVlMzU3NDBmMjlhYzJlNzE4YjAxOVxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGV4ZWN1dGUudGhyb3cuYmc9e3NoLFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXCIvb3B0L3J1dG9ycmVudC9wbHVnaW5zL3JldHJhY2tlcnMvcnVuLnNoXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiL3Vzci9iaW4vcGhwXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwkZC5oYXNoPSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwidGVzdGVyXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiwkZC5jdXN0b209cmV0cmFja2Vycy1yZWNvdmVyeX1cXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIixcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIiRtZXRob2Quc2V0X2tleT1yci5yZWNlaXB0cy52MSxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiJGNhdD13aDosJGQubG9jYWxfaWQ9XFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFwiXFxcXFxcXFxcXFxcXFxcIlxcXFxcXFwiXFxcIlwiIg==', true);
 		$this->assertTrue($action === $expected,
 			'the functional builder returns the independently frozen exact action bytes');
@@ -4816,13 +4832,13 @@ PHP;
 			}
 			return($value);
 		};
-		$this->assertTrue(strpos($action, $escape($script, 7)) !== false,
+		$this->assertTrue(strpos($action, $escape($script, 8)) !== false,
 			'the script path is carried escaped through every nesting layer');
-		$this->assertTrue(strpos($action, $escape($script, 6)) === false,
+		$this->assertTrue(strpos($action, $escape($script, 7)) === false,
 			'the script path is not one layer short, which is what losing its own quote looks like');
-		$this->assertTrue(strpos($action, $escape($user, 7)) !== false,
+		$this->assertTrue(strpos($action, $escape($user, 8)) !== false,
 			'the canonical user is carried escaped through every nesting layer');
-		$this->assertTrue(strpos($action, $escape($user, 6)) === false,
+		$this->assertTrue(strpos($action, $escape($user, 7)) === false,
 			'the canonical user is not one layer short');
 		// The launch is bracketed by two literals the builder never quotes. If an
 		// awkward value had escaped its argument and added structure of its own,
@@ -7002,7 +7018,7 @@ PHP;
 	public function testDeferredReplayDistinguishesCheckerMarkerFromUserLabel()
 	{
 		$this->installRtorrentQuoteDouble();
-		foreach (array('marker', 'label') as $kind) {
+		foreach (array('marker', 'label', 'metadata') as $kind) {
 			$fixture = $this->historicalStateFixture('BOOTSTRAP');
 			$adapter = $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
 			$localId = str_repeat('A', 40);
@@ -7015,6 +7031,7 @@ PHP;
 				'custom1' => $kind === 'label' ? '.chk-meta' : '',
 				'chk_meta_old' => $kind === 'marker' ? str_repeat('C', 40) : '',
 			)));
+			if ($kind === 'metadata') $adapter->metadataRows[$hash] = $localId;
 			$failure = null;
 			$result = RetrackersLifecycleCoordinator::init(
 				'alice', '/plugin/run.sh', '/usr/bin/php', $failure, $adapter);
@@ -7022,11 +7039,14 @@ PHP;
 				'the ' . $kind . ' row completes initialization');
 			$this->assertEquals(array(
 				'bootstrap-acquire', 'deferred-dirty-clear',
-				$kind === 'marker' ? 'deferred-service-skip' : 'deferred-replay',
+				$kind === 'marker' ? 'deferred-service-skip' :
+					($kind === 'metadata' ? 'deferred-metadata-skip' : 'deferred-replay'),
 				'init-finalization',
 			), array_map(function ($callback) { return($callback->name()); },
 				$adapter->callbackHistory),
 				'the checker marker is skipped while a user label reaches deferred replay');
+			if ($kind === 'metadata') $this->assertTrue(count($adapter->sourceScalarQueue) === 1,
+				'metadata retirement reads no source snapshot and never reaches worker or claim work');
 			$this->assertTrue(!in_array('di:' . $localId, $adapter->ledgerKeys, true),
 				'the ' . $kind . ' obligation is removed from the ledger');
 		}

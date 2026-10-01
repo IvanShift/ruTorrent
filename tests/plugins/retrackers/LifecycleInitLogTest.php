@@ -63,4 +63,28 @@ class LifecycleInitLogTest extends TestCase
                 $door.' does not claim a restart repairs structural ledger corruption');
         }
     }
+    public function testSharedDaemonRefusalNamesTheCauseAndRecoveryInUiAndLog()
+    {
+        foreach (array('shared-daemon-contained','shared-daemon-no-owner',
+            'shared-daemon-owner-ambiguous','shared-daemon-owner-ambiguous-uncontained',
+            'shared-daemon-unowned-mutating') as $reason) {
+            $adapter = new class($reason) extends RetrackersLifecycleRpcAdapter {
+                private $reason;
+                public function __construct($reason) { $this->reason=$reason; }
+                public function ensureLedgerExists(&$failure=null) {
+                    $failure=$this->reason; return false;
+                }
+            };
+            FileUtil::$logs=array(); $js=''; $failure=null;
+            retrackersRunLifecycleInit('alice','/plugin/run.sh','/usr/bin/php',$js,$failure,$adapter);
+            foreach (array($js,implode('\n',FileUtil::$logs)) as $message) {
+                $this->assertTrue(strpos($message,$reason)!==false &&
+                    strpos($message,'multiple ruTorrent profiles')!==false &&
+                    strpos($message,'$forbidUserSettings = true')!==false &&
+                    strpos($message,'restart rTorrent')!==false,
+                    'shared-daemon diagnostics retain the code and state profile unification plus restart');
+            }
+        }
+    }
+
 }

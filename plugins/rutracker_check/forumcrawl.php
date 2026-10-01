@@ -1,4 +1,7 @@
 <?php
+require_once dirname(__DIR__, 2).'/php/cli-only.php';
+rutorrent_require_cli(__FILE__);
+
 
 if( count( $argv ) > 1 )
 	$_SERVER['REMOTE_USER'] = $argv[1];

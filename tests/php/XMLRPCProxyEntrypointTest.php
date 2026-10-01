@@ -1214,6 +1214,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'php/xmlrpc_proxy.php',
 			'php/xmlrpc_proxy_native.php',
 			'php/xmlrpc_proxy_policy.php',
+			'php/environment.php',
 			'rpc2.php',
 		);
 		// Copy and byte-verify the shipped policy files before applying the

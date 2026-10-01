@@ -28,6 +28,8 @@ class DataDirTestState
         self::$basePath = '/data/downloads/file';
         self::$claimCapability = 'available';
         ErasedataFilesystemOps::$available = true;
+        ErasedataFilesystemOps::$unsupported = null;
+        ErasedataFilesystemOps::$probes = array();
         rXMLRPCRequest::reset();
         $keys = RuTrackerAtomicOwnership::ownershipKeys();
         $commands = array('d.get_custom1');
@@ -47,7 +49,13 @@ class FileUtil
 class ErasedataFilesystemOps
 {
     public static $available = true;
-    public static function canRenameNoReplace() { return self::$available; }
+    public static $unsupported = null;
+    public static $probes = array();
+    public static function canRenameNoReplace($directory = null) {
+        if ($directory !== null) self::$probes[] = $directory;
+        return self::$available && (self::$unsupported === null || $directory !== self::$unsupported);
+    }
+    public static function lastRenameRefusal() { return 'rename-noreplace-unsupported'; }
 }
 class DataDirMoveIntent { const MAX_FILES = 100000; public static function trustedDirectory($path) { return true; } }
 class DataDirMoveJob
@@ -92,7 +100,7 @@ function rtExec($commands, $hash, $debug = false)
 
 $source = getenv('DATADIR_TEST_SOURCE');
 if (!$source) $source = testFindRepoRoot() . '/plugins/datadir/util_setdir.php';
-foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtSetDataDir') as $name)
+foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirProbeRename', 'rtSetDataDir') as $name)
     eval(loadFunctionDefinition($source, $name));
 
 $suite = new StrictTestSuite();
@@ -236,6 +244,26 @@ $suite->test('physical move binds the daemon directory to the canonical destinat
         @rmdir($root . '/a');
         @rmdir($root . '/b');
         @rmdir($root);
+    }
+});
+
+$suite->test('unsupported move mount refuses before a job or daemon stop', function () use ($hash) {
+    $root = sys_get_temp_dir().'/datadir-rename-probe-'.bin2hex(random_bytes(4));
+    mkdir($root, 0700); mkdir($root.'/source', 0700); mkdir($root.'/destination', 0700);
+    file_put_contents($root.'/source/file', 'source');
+    try {
+        DataDirTestState::reset();
+        DataDirTestState::$basePath = $root.'/source/file';
+        ErasedataFilesystemOps::$unsupported = $root.'/destination';
+        strictAssertSame(false, rtSetDataDir($hash, $root.'/destination', false, true, false), 'Unsupported filesystem refuses');
+        strictAssertSame(array(), DataDirTestState::$created, 'No move journal is published');
+        strictAssertSame(true, DataDirTestState::$active, 'Preflight does not stop the daemon');
+        strictAssertSame('source', file_get_contents($root.'/source/file'), 'Payload is unchanged');
+        strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs), 'rename-noreplace-unsupported') !== false, 'Filesystem reason is visible');
+        strictAssertTrue(in_array($root.'/source', ErasedataFilesystemOps::$probes, true), 'Source mount is probed');
+        strictAssertTrue(in_array($root.'/destination', ErasedataFilesystemOps::$probes, true), 'Destination mount is probed');
+    } finally {
+        unlink($root.'/source/file'); rmdir($root.'/source'); rmdir($root.'/destination'); rmdir($root);
     }
 });
 

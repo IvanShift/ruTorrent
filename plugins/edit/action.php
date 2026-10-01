@@ -151,25 +151,50 @@ if($setComment || $setTrackers || $setPrivate)
 					if(count($req->val)>9)
 						$addition[] = rTorrent::additionCommand("d.set_throttle_name",
 							rXMLRPCRequest::unescapeValue($req->val[9]));
-					// Validate all reload commands before erasing the old torrent.
-					if(!rTorrent::areValidAdditions($addition))
-						$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
+					$directory = rXMLRPCRequest::unescapeValue($req->val[6]);
+					$label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[5]));
+					$prepared = rTorrent::preflightTorrentLoad($torrent, false, $directory,
+						($req->val[8]==1), false, $addition, $failure);
+					if($prepared === false)
+						$errors[] = array('desc'=>$failure === 'invalid-directory' ?
+							"theUILang.addTorrentFailedDirectory" : "theUILang.errorAddTorrent", 'prm'=>$fname);
 					else
 					{
-						$eReq = new rXMLRPCRequest( new rXMLRPCCommand("d.erase", $hash ) );
-						if($eReq->run() && !$eReq->fault)
+						// The daemon may remove its session file during erase. Save the
+						// exact prepared edit independently before that destructive call.
+						$uploads = FileUtil::getUploadsPath();
+						if(!is_dir($uploads)) @mkdir($uploads, 0700, true);
+						$uploads = realpath($uploads);
+						$recovery = $uploads === false ? false :
+							$uploads.'/edited-'.bin2hex(random_bytes(16)).'.torrent';
+						$handle = $recovery === false ? false : @fopen($recovery, 'xb');
+						if($handle === false) $recovery = false;
+						else fclose($handle);
+						$torrent = $prepared['torrent'];
+						if($recovery === false || !@chmod($recovery, 0600) ||
+							$torrent->save($recovery) !== strlen($torrent->__toString()))
 						{
-							$label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[5]));
-							$reloaded = rTorrent::sendTorrent($torrent, $isStart, false,
-								rXMLRPCRequest::unescapeValue($req->val[6]), $label, false,
-								($req->val[8]==1), false, $addition);
-							if($reloaded === false)
-								$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$fname);
-							elseif($reloaded === null)
-								$pending = true;
+							if($recovery !== false) @unlink($recovery);
+							$errors[] = array('desc'=>"theUILang.errorWriteTorrent", 'prm'=>$fname);
 						}
 						else
-							$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
+						{
+							$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase", $hash));
+							if($eReq->run() && !$eReq->fault)
+							{
+								$reloaded = rTorrent::sendTorrent($torrent, $isStart, false,
+									$prepared['directory'], $label, false, false, false, $addition);
+								if($reloaded === false)
+									$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$recovery);
+								elseif($reloaded === null)
+									$pending = true;
+							}
+							else
+							{
+								@unlink($recovery);
+								$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
+							}
+						}
 					}
 				}
 				else

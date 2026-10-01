@@ -1,4 +1,7 @@
 <?php
+require_once dirname(__DIR__, 2).'/php/cli-only.php';
+rutorrent_require_cli(__FILE__);
+
 
 if (PHP_SAPI !== 'cli' || !isset($_SERVER['SCRIPT_FILENAME'])
     || realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__)

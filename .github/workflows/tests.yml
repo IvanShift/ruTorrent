@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Native helper setup contract tests
+        run: |
+          python3 tests/tools/native-helper-setup-test.py
+          python3 tests/tools/matrix-native-leg-test.py
       - name: Shell fixture tests
         run: |
           mkdir -p "$RUNNER_TEMP/rutorrent-tool-tests"
@@ -20,11 +24,11 @@ jobs:
   php:
     runs-on: ubuntu-latest
     strategy:
-      # Complete both supported runtimes after one fails, preserving the
+      # Complete all selected runtimes after one fails, preserving the
       # independent result needed to reproduce and diagnose a PHP-only failure.
       fail-fast: false
       matrix:
-        php: ['7.4', '8.1']
+        php: ['7.4', '8.1', '8.5']
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -33,6 +37,18 @@ jobs:
           # Keep timing gates independent of runner-installed coverage drivers.
           coverage: none
           extensions: posix, dom, xml, mbstring, iconv, json, curl
+      - name: Prepare native helpers for the PHP suite
+        run: |
+          php_tmp=$(mktemp -d /var/tmp/rutorrent-php.XXXXXX)
+          printf 'TMPDIR=%s\n' "$php_tmp" >> "$GITHUB_ENV"
+          helper_dir=$(mktemp -d "$RUNNER_TEMP/rutorrent-native.XXXXXX")
+          trap 'rm -rf -- "$helper_dir"' EXIT
+          python3 tests/tools/native-helper-setup.py --output-dir "$helper_dir"
+          while IFS= read -r helper; do
+            sudo install -m 755 -- "$helper_dir/$helper" "/usr/local/bin/$helper"
+          done < "$helper_dir/helpers.list"
+          rename_path=$(php -r 'require "php/nativehelpers.php"; echo NativeHelpers::path("rutorrent-erasedata-rename-noreplace");')
+          TMPDIR="$php_tmp" bash tests/plugins/erasedata/rename-noreplace-test.sh "$rename_path"
       - name: PHP harness fixture tests
         run: bash tests/tools/php-harness-test.sh
       - name: PHP test suite
@@ -50,6 +66,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Remove private PHP scratch
+        if: ${{ always() }}
+        run: |
+          case "${TMPDIR:-}" in
+            /var/tmp/rutorrent-php.*) rm -rf -- "$TMPDIR" ;;
+          esac
+
   jest:
     runs-on: ubuntu-latest
     steps:
@@ -63,3 +86,21 @@ jobs:
         working-directory: tests
       - run: npm test
         working-directory: tests
+
+  image-tests:
+    # Stable producer contract consumed by docker-rutorrent's exact-SHA check gate.
+    # Keep this name; changing it requires a paired Docker gate contract version.
+    name: rutorrent-image-tests-v1
+    needs: [tooling, php, jest]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      TOOLING_RESULT: ${{ needs.tooling.result }}
+      PHP_RESULT: ${{ needs.php.result }}
+      JEST_RESULT: ${{ needs.jest.result }}
+    steps:
+      - name: Require all blocking test jobs including the PHP 8.5 image runtime
+        run: |
+          test "$TOOLING_RESULT" = success
+          test "$PHP_RESULT" = success
+          test "$JEST_RESULT" = success

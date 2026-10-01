@@ -21,6 +21,8 @@ class RepairToolRefusalTest extends TestCase
 		$this->dir = sys_get_temp_dir() . '/erasedata-repair-tool-'
 			. getmypid() . '-' . uniqid('', true);
 		@mkdir($this->dir . '/rutorrent/app/conf', 0700, true);
+		@mkdir($this->dir . '/tools', 0700);
+		@mkdir($this->dir . '/php', 0700);
 		// A UNIX socket path is bounded at about 108 bytes, so it lives beside
 		// the temporary directory rather than inside its longer path.
 		$this->socketPath = sys_get_temp_dir() . '/erp-' . getmypid() . '-'
@@ -33,26 +35,28 @@ class RepairToolRefusalTest extends TestCase
 		if (is_resource($this->server)) @fclose($this->server);
 		@unlink($this->socketPath);
 		foreach (array('/rutorrent/app/conf/config.php', '/rutorrent/app/conf',
-			'/rutorrent/app', '/rutorrent') as $entry)
+			'/rutorrent/app', '/rutorrent', '/tools/retrackers-clear-markers.php',
+			'/tools', '/php/cli-only.php', '/php') as $entry)
 			@is_dir($this->dir . $entry) ? @rmdir($this->dir . $entry)
 				: @unlink($this->dir . $entry);
-		@unlink($this->dir . '/tool.php');
 		@rmdir($this->dir);
 	}
 
 	// The shipped tool, pointed at this test's socket and its own fake app root.
 	private function stagedTool()
 	{
-		$source = dirname(dirname(dirname(__DIR__)))
-			. '/tools/retrackers-clear-markers.php';
+		$sourceRoot = dirname(__DIR__, 3);
+		$source = $sourceRoot . '/tools/retrackers-clear-markers.php';
 		$this->assertTrue(is_file($source), 'the shipped tool is where it is documented');
+		$this->assertTrue(copy($sourceRoot . '/php/cli-only.php', $this->dir . '/php/cli-only.php'),
+			'the staged tool carries the actual shared CLI guard dependency');
 		file_put_contents($this->dir . '/rutorrent/app/conf/config.php',
 			"<?php\n\$scgi_host = 'unix://" . $this->socketPath . "';\n\$scgi_port = 0;\n");
 		$staged = str_replace('/rutorrent/app/conf/config.php',
 			$this->dir . '/rutorrent/app/conf/config.php',
 			file_get_contents($source));
-		file_put_contents($this->dir . '/tool.php', $staged);
-		return($this->dir . '/tool.php');
+		file_put_contents($this->dir . '/tools/retrackers-clear-markers.php', $staged);
+		return($this->dir . '/tools/retrackers-clear-markers.php');
 	}
 
 	// Run the tool while this process plays a peer that answers $replies

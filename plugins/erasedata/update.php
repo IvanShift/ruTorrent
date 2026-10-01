@@ -1,5 +1,14 @@
 <?php
 
+// Imports expose collector services; only the actual worker entry may run them.
+$erasedataScript = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : null;
+$erasedataIsEntryPoint = is_string($erasedataScript) && realpath($erasedataScript) === __FILE__;
+if($erasedataIsEntryPoint)
+{
+	require_once(dirname(__DIR__, 2).'/php/cli-only.php');
+	rutorrent_require_cli(__FILE__);
+}
+
 // Guarded, not a bare count(): under a web SAPI $argv does not exist, and
 // count(null) warns on PHP 7.4 but is a TypeError on PHP 8. An HTTP request
 // therefore used to die here, three lines in, leaving the SAPI guard below
@@ -90,8 +99,6 @@ function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 // path comparison alone would happily run the collector -- deleting payload --
 // as the web server user. PHP_SAPI is what separates the two, and it cannot be
 // forged from a request.
-$erasedataScript = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : null;
-$erasedataIsEntryPoint = is_string($erasedataScript) && realpath($erasedataScript) === __FILE__;
 // The mode word the per-user drain schedule passes as the third argument.
 // `update.php <user> drain` is the ONE scheduled production entry point into
 // the guarded drain worker, and this is the only place in the shipped plugin

@@ -1,5 +1,8 @@
 <?php
 
+require_once(dirname(__DIR__, 2).'/php/cli-only.php');
+rutorrent_require_cli(__FILE__);
+
 // CLI entry point for "erase this download and delete its data", for callers
 // that run inside rtorrent and have no PHP context of their own -- the ratio
 // group commands built in plugins/ratio/ratio.php.

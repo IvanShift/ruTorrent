@@ -60,6 +60,9 @@ class ManualEntrypointsTest
 				throw new RuntimeException('could not copy ' . $name);
 		}
 
+		if(!copy($this->root . '/php/cli-only.php', $tree . '/php/cli-only.php'))
+			throw new RuntimeException('could not copy worker SAPI guard');
+
 		$this->writeUtilStub($tree);
 		$this->writeRecorder($tree);
 		return $tree;

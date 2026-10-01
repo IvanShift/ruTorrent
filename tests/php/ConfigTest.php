@@ -196,7 +196,44 @@ class ConfigTest extends TestCase
 			'building the list raises no diagnostic: ' . var_export($raised, true));
 		$this->assertTrue(!in_array(null, $hosts, true),
 			'and the list carries no null entry');
-		$this->assertEquals(array('::1', '127.0.0.1', 'localhost'), $hosts,
-			'and nothing was added from a source config.php does not read');
+		$this->assertEquals(array('::1', '127.0.0.1', 'localhost', '10.9.9.9'), $hosts,
+			'the process setting is honored even when variables_order omits E');
 	}
+    public function testProcessEnvironmentWorksWithoutEnvSuperglobal()
+    {
+        $code = '$_ENV = array(); require '.var_export(__DIR__.'/../../conf/config.php', true).'; '
+            .'echo json_encode(array($log_file, $profilePath, $profileMask, $tempDirectory));';
+        $environment = array('RU_LOG_FILE' => '/var/log/custom-app.log',
+            'RU_PROFILE_PATH' => '/srv/profile', 'RU_PROFILE_MASK' => '0750',
+            'RU_TEMP_DIRECTORY' => '/srv/tmp');
+        $process = proc_open(array(PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code),
+            array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null, $environment);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $this->assertEquals(0, proc_close($process), 'environment config child: '.$err);
+        $this->assertEquals(array('/var/log/custom-app.log', '/srv/profile', 0750, '/srv/tmp'),
+            json_decode($out, true), 'all documented process values reach direct config consumers');
+    }
+
+    public function testRelocatedPersistedConfigRemainsSelfContained()
+    {
+        $root = sys_get_temp_dir().'/rut-config-relocated-'.getmypid().'-'.uniqid();
+        mkdir($root, 0700);
+        $config = $root.'/config.php';
+        copy(__DIR__.'/../../conf/config.php', $config);
+        try {
+            $code = 'putenv("RU_LOG_FILE="); require '.var_export($config, true).'; echo json_encode(array($log_file, $profileMask));';
+            $environment = array('RU_LOG_FILE' => '', 'RU_PROFILE_MASK' => '0750');
+            $process = proc_open(array(PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code),
+                array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null, $environment);
+            $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+            $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+            $this->assertEquals(0, proc_close($process), 'operator config outside the app loads: '.$err);
+            $this->assertEquals(array('', 0750), json_decode($out, true),
+                'relocated config keeps empty log override and octal mask');
+        } finally {
+            unlink($config); rmdir($root);
+        }
+    }
+
 }

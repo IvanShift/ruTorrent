@@ -263,6 +263,8 @@ if (fn_available('exec', $disabled)) {
 	check('rec', false, 'external programs', 'exec() is disabled -- cannot check for php/curl/gzip; some plugins may not work');
 }
 
+require_once __DIR__.'/php/environment.php';
+
 // ---- Load ruTorrent config (best effort) ---------------------------------
 function load_ru_config() {
 	$cfg = dirname(__FILE__) . '/conf/config.php';
@@ -316,7 +318,7 @@ if ($cfg === null) {
 			check('config', $ok, '$log_file writable', $detail);
 		}
 	}
-	// Read the way conf/config.php reads it, so the checker sees what the
+	// The shared bridge also supplies old persisted configs, so the checker sees what the
 	// configuration sees rather than what the shell happens to export.
 	$rawMask = isset($_ENV['RU_PROFILE_MASK']) ? $_ENV['RU_PROFILE_MASK'] : '';
 	if ($rawMask !== '') {

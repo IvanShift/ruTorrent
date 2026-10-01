@@ -1,4 +1,6 @@
 <?php
+require_once(dirname(__DIR__, 2).'/php/cli-only.php');
+rutorrent_require_cli(__FILE__);
 
 $dir = $argv[2] ?? null;
 if(!is_string($dir) || !is_dir($dir))

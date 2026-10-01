@@ -5,6 +5,7 @@
 
 var theWebUI = {
 	version: "5.3.15",
+	assetVersion: typeof ruTorrentAssetVersion === 'string' ? ruTorrentAssetVersion : String(Date.now()),
 	tables: {
 		trt: {
 			obj: new dxSTable(),

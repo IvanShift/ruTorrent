@@ -1,4 +1,7 @@
 <?php
+require_once dirname(__DIR__, 2).'/php/cli-only.php';
+rutorrent_require_cli(__FILE__);
+
 
 if (!chdir(dirname(__FILE__))) exit(1);
 $scope = isset($argv[1]) ? $argv[1] : 'All';

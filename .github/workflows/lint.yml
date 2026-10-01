@@ -7,11 +7,12 @@ on:
 
 jobs:
   php-syntax:
-    # Blocking: every PHP file must parse, on every PHP the README supports.
+    # Blocking: application PHP must parse on the support floor and image runtime.
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        php: ['7.4', '8.1']
+        php: ['7.4', '8.1', '8.5']
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -76,3 +77,19 @@ jobs:
           tools: phpstan:2.2.9
       - name: phpstan
         run: phpstan analyse --no-progress --memory-limit=512M --error-format=github
+
+  image-lint:
+    # Stable producer contract consumed by docker-rutorrent's exact-SHA check gate.
+    # Advisory editorconfig/eslint remain outside this blocking release contract.
+    name: rutorrent-image-lint-v1
+    needs: [php-syntax, phpstan]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      SYNTAX_RESULT: ${{ needs.php-syntax.result }}
+      PHPSTAN_RESULT: ${{ needs.phpstan.result }}
+    steps:
+      - name: Require all blocking syntax and static-analysis jobs
+        run: |
+          test "$SYNTAX_RESULT" = success
+          test "$PHPSTAN_RESULT" = success

@@ -27,9 +27,29 @@ short_home_root="$(mktemp -d /tmp/m.XXXXXX)"
 short_home="$short_home_root/h"
 ln -s -- "$short_home_real" "$short_home"
 
-mkdir -p "$scratch/tools" "$scratch/tests/php" "$scratch/tests/plugins" "$scratch/bin"
+mkdir -p "$scratch/tools" "$scratch/tests/tools" "$scratch/tests/php" "$scratch/tests/plugins" "$scratch/bin"
 cp "$runner" "$scratch/tools/matrix.sh"
 cp "$root/tests/php-failure-pattern.sh" "$scratch/tests/php-failure-pattern.sh"
+# Matrix accounting tests use a synthetic suite. Native-leg tests separately
+# verify the actual manifest helper build and fixed-path runtime exposure.
+cat > "$scratch/tests/tools/matrix-native-leg.py" <<'NATIVE_LEG_FIXTURE'
+import argparse, os
+from pathlib import Path
+p = argparse.ArgumentParser()
+for argument in ('directory', 'leg', 'uid', 'gid', 'name', 'owner'):
+    p.add_argument('--' + argument, required=True)
+a = p.parse_args()
+d = Path(a.directory)
+if a.leg == 'local':
+    os.chdir(d / 'tree/tests')
+    os.environ['TMPDIR'] = str(d / 'tmp')
+    os.execvp('bash', ['bash', 'php-test.sh'])
+os.execvp('docker', ['docker', 'run', '--rm', '--pull=never', '--name', a.name,
+                    '--label', 'io.rutorrent.matrix.owner=' + a.owner,
+                    '--user', a.uid + ':' + a.gid, '-v', str(d / 'tree') + ':/w',
+                    '-v', str(d / 'tmp') + ':/mtmp', '-w', '/w/tests',
+                    'php:' + a.leg + '-cli', 'bash', 'php-test.sh'])
+NATIVE_LEG_FIXTURE
 printf 'fixture\n' > "$scratch/tests/php/aTest.php"
 printf 'fixture\n' > "$scratch/tests/plugins/aux"
 printf 'one\n' > "$scratch/env_check.php"
@@ -443,10 +463,19 @@ cat > "$scratch/bin/docker" <<'DOCKER'
 case "$1" in
     run)
         echo run >> "$MATRIX_TEST_DOCKER_LOG"
+        for argument in "$@"; do
+            case "$argument" in
+                io.rutorrent.matrix.owner=*) owner="${argument#*=}" ;;
+            esac
+        done
+        export MATRIX_TEST_DOCKER_OWNER="$owner"
         # Model a daemon completing create after the client sees TERM.
-        setsid sh -c 'sleep 0.15; : > "$MATRIX_TEST_DOCKER_CONTAINER"' \
+        setsid sh -c 'sleep 0.15; printf "%s\n" "$MATRIX_TEST_DOCKER_OWNER" > "$MATRIX_TEST_DOCKER_CONTAINER"' \
             </dev/null >/dev/null 2>&1 &
         sleep 20
+        ;;
+    container)
+        [ ! -e "$MATRIX_TEST_DOCKER_CONTAINER" ] || printf 'owned-delayed-id %s\n' "$(cat "$MATRIX_TEST_DOCKER_CONTAINER")"
         ;;
     rm)
         if [ -e "$MATRIX_TEST_DOCKER_CONTAINER" ]; then

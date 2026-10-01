@@ -15,6 +15,53 @@ class Requests
 			? $scheme.'://'.$host : null;
 	}
 
+	private static function matchesTrustedOrigin($source, $allowed)
+	{
+		if(!is_string($source) || !is_string($allowed))
+			return false;
+		$parts = @parse_url($allowed);
+		if(!is_array($parts) || empty($parts['scheme']) || empty($parts['host']) ||
+			isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) ||
+			isset($parts['fragment']) || (!empty($parts['path']) && $parts['path'] !== '/'))
+			return false;
+		$scheme = strtolower($parts['scheme']);
+		if(in_array($scheme, array('http', 'https'), true))
+			return UrlHost::sameOrigin($source, $allowed);
+		// Browser extensions are opt-in exact origins, never wildcard schemes.
+		if(!in_array($scheme, array('moz-extension', 'chrome-extension'), true) || isset($parts['port']))
+			return false;
+		$actual = @parse_url($source);
+		return is_array($actual) && isset($actual['scheme']) && !isset($actual['port']) &&
+			strtolower($actual['scheme']) === $scheme && UrlHost::of($source) === UrlHost::of($allowed);
+	}
+
+	private static function isAllowedOrigin($source, $legacyHostException = false)
+	{
+		$origin = self::currentOrigin();
+		if($origin !== null && UrlHost::sameOrigin($source, $origin))
+			return true;
+		global $trustedOrigins;
+		// The bootstrap guard precedes util.php, including for old persisted configs.
+		$environmentOrigins = getenv('RU_TRUSTED_ORIGINS');
+		$allowedOrigins = $environmentOrigins === false ? (array) ($trustedOrigins ?? array()) :
+			preg_split('/\s*,\s*/', $environmentOrigins, -1, PREG_SPLIT_NO_EMPTY);
+		foreach($allowedOrigins as $allowed)
+			if(self::matchesTrustedOrigin($source, $allowed))
+				return true;
+		if($legacyHostException)
+		{
+			// Retain the older documented host-only POST exception separately.
+			global $enabledOrigins;
+			$scheme = strtolower((string) @parse_url($source, PHP_URL_SCHEME));
+			$host = UrlHost::of($source);
+			if(in_array($scheme, array('http', 'https'), true) && $host !== null)
+				foreach((array) ($enabledOrigins ?? array()) as $allowedHost)
+					if($host === UrlHost::normalize($allowedHost))
+						return true;
+		}
+		return false;
+	}
+
 	public static function isSameOriginAjaxRequest()
 	{
 		if(!isset($_SERVER['HTTP_X_REQUESTED_WITH']) ||
@@ -26,7 +73,7 @@ class Requests
 		if($origin === null)
 			return false;
 		foreach(array('HTTP_ORIGIN', 'HTTP_REFERER') as $source)
-			if(isset($_SERVER[$source]) && !UrlHost::sameOrigin($_SERVER[$source], $origin))
+			if(isset($_SERVER[$source]) && !self::isAllowedOrigin($_SERVER[$source]))
 				return false;
 		return true;
 	}
@@ -85,23 +132,16 @@ class Requests
 				(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : null);
 			if(is_string($source) && $source !== '' && $source !== 'null')
 			{
-				$origin = self::currentOrigin();
-				if($origin !== null && UrlHost::sameOrigin($source, $origin))
+				if(self::isAllowedOrigin($source, true))
 					return;
-				// Explicit configured hosts retain their documented host-only meaning.
-				$sourceScheme = strtolower((string) @parse_url($source, PHP_URL_SCHEME));
-				$sourceHost = UrlHost::of($source);
-				if(in_array($sourceScheme, array('http', 'https'), true) && $sourceHost !== null)
-					foreach((array) $enabledOrigins as $allowedHost)
-						if($sourceHost === UrlHost::normalize($allowedHost))
-							return;
 			}
 			// Raw XMLRPC clients at either server-owned door may omit browser headers.
 			// Browser actions, including opaque origins, never use this exception.
 			$rpc2Script = realpath(dirname(__DIR__, 2).'/rpc2.php');
+			$httprpcScript = realpath(dirname(__DIR__, 2).'/plugins/httprpc/action.php');
 			if($source === null && !isset($_SERVER['HTTP_SEC_FETCH_SITE']) &&
-				((isset($_SERVER['SCRIPT_NAME']) &&
-					substr($_SERVER['SCRIPT_NAME'], -strlen('/plugins/httprpc/action.php')) === '/plugins/httprpc/action.php') ||
+				(($httprpcScript !== false && isset($_SERVER['SCRIPT_FILENAME']) &&
+					realpath($_SERVER['SCRIPT_FILENAME']) === $httprpcScript) ||
 					($rpc2Script !== false &&
 						(($_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] ?? null) === 'on') &&
 						isset($_SERVER['SCRIPT_FILENAME']) &&
