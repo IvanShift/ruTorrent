@@ -83,6 +83,16 @@ if( $is_ok )
 
 if( $is_ok )
 {
+    $reason = DataDirMoveIntent::destinationReason($datadir);
+    if( $reason !== '' )
+    {
+        FileUtil::toLog('datadir: worker refused hash='.$hash.' reason='.$reason);
+        $is_ok = false;
+    }
+}
+
+if( $is_ok )
+{
 	Debug( "hash        : ".$hash );
 	Debug( "data dir    : ".$datadir );
 	Debug( "add path    : ".$move_addpath );

@@ -5,6 +5,11 @@ if (!is_file('/.dockerenv')) {
 }
 require_once(__DIR__ . '/../../../php/rtorrent.php');
 define('RETRACKERS_IMPORT_ONLY', true);
+if (getenv('RR_PREFLIGHT_FAST') === '1') {
+	define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.03);
+	define('RETRACKERS_HASH_WAIT_TIMEOUT', 0.03);
+	define('RETRACKERS_PREFLIGHT_POLL', 0.001);
+}
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 $scgi_host = 'unix:///tmp/rr-mig.sock';
 $scgi_port = 0;
@@ -83,6 +88,16 @@ class V18LabAdapter extends RetrackersWorkerRpcAdapter
 {
 	public $lastFailure = null;
 	public $nativeFinishCalls = 0;
+	public $capabilityCalls = 0;
+	public function nativeOriginalCapability(&$failure = null)
+	{
+		$this->capabilityCalls++;
+		if (getenv('RR_PREFLIGHT_TRANSIENT') === '1' && $this->capabilityCalls <= 2) {
+			$failure = 'closed-before-headers';
+			return(false);
+		}
+		return(parent::nativeOriginalCapability($failure));
+	}
 	public function nativeFinishOriginal($hash, $tx, $incarnation, &$failure = null)
 	{
 		$this->nativeFinishCalls++;
@@ -308,8 +323,15 @@ if ($phase === 'done' || $phase === 'done-active') {
 	}
 	exit(0);
 }
-if ($phase === 'worker' || $phase === 'nochange' || $phase === 'cold-retry' ||
+if ($phase === 'worker' || $phase === 'nochange' || $phase === 'state-race-nochange' ||
+	$phase === 'persistent-preflight' || $phase === 'cold-retry' ||
 	$phase === 'foreign-terminal') {
+	if ($phase === 'state-race-nochange') {
+		// This is a real user Stop/Start after the native claim, before capture.
+		v18LabRpc('d.start', array($hash));
+		v18LabRpc('d.stop', array($hash));
+		v18LabRpc('d.start', array($hash));
+	}
 	if ($phase === 'foreign-terminal') {
 		if (!is_array(v18LabRpc('d.hash', array($hash), true))) {
 			v18LabRpc('d.erase', array($hash));
@@ -326,13 +348,29 @@ if ($phase === 'worker' || $phase === 'nochange' || $phase === 'cold-retry' ||
 			throw new RuntimeException('foreign same-hash I was not created');
 	}
 	$adapter = new V18LabAdapter($hash);
+	$snapshot = $phase === 'persistent-preflight' ? new class {
+		public function capture($hash, $handoff) {
+			return(array('ok' => false, 'failure' => 'initial-hashing-pending'));
+		}
+	} : null;
 	try {
 		$result = RetrackersRecoveryCoordinator::run($hash, 'alice', $meta['marker'],
 			'0', $meta['local'], $adapter, $phase === 'worker' ? new V18LabAuthority() :
-			new V18LabNoChangeAuthority(), null,
+			new V18LabNoChangeAuthority(), $snapshot,
 			(object)array('list' => array(), 'todelete' => array(),
 				'addToBegin' => false, 'dontAddPrivate' => false), '/usr/bin/php85');
 	} catch (RuntimeException $error) {
+		if ($phase === 'persistent-preflight' && $error->getMessage() ===
+			'worker HOLD: initial-hashing-pending') {
+			$marker = v18LabRpc('d.custom', array($hash, 'retrackers-recovery'));
+			$ack = v18LabRpc('d.custom', array($hash, 'retrackers-recovery-ack'));
+			$keys = v18LabRpc('method.list_keys', array('', 'rr.receipts.v1'));
+			if ($marker !== '' || $ack !== '' || $adapter->nativeFinishCalls !== 1 ||
+				in_array('wp:' . $meta['local'], $keys, true))
+				throw new RuntimeException('persistent preflight did not finalize uncaptured original');
+			echo "persistent-preflight-cancelled finish-calls=1\n";
+			exit(0);
+		}
 		if ($phase === 'cold-retry' && $error->getMessage() ===
 			'worker HOLD: native-original-finalized-before-worker') {
 			echo "cold-original-retry-needed\n";
@@ -347,12 +385,18 @@ if ($phase === 'worker' || $phase === 'nochange' || $phase === 'cold-retry' ||
 		throw $error;
 	}
 	if ($result !== true) throw new RuntimeException('worker did not complete ' . $phase);
-	if ($phase === 'nochange') {
+	if ($phase === 'nochange' || $phase === 'state-race-nochange') {
 		$keys = v18LabRpc('method.list_keys', array('', 'rr.receipts.v1'));
 		if (in_array('wp:' . $meta['local'], $keys, true) ||
 			$adapter->nativeFinishCalls !== 1)
 			throw new RuntimeException('native no-change wp/finish invariant failed');
-		echo "nochange-wp-clean finish-calls=1\n";
+			echo "nochange-wp-clean finish-calls=1\n";
+		if ($phase === 'state-race-nochange' && v18LabRpc('d.state', array($hash)) !== '1')
+			throw new RuntimeException('native cancellation overwrote current user state');
+		if (getenv('RR_PREFLIGHT_TRANSIENT') === '1' && $adapter->capabilityCalls !== 3)
+			throw new RuntimeException('transient capability did not retry twice before one finish');
+		if ($phase === 'state-race-nochange') echo "user-state-preserved=1\n";
+		if (getenv('RR_PREFLIGHT_TRANSIENT') === '1') echo "transient-capability-recovered reads=3\n";
 	} else echo "worker-hk-complete\n";
 	exit(0);
 }

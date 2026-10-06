@@ -1,6 +1,8 @@
 <?php
 
 eval(FileUtil::getPluginConf($plugin["name"]));
+require_once(__DIR__.'/external.php');
+$pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
 
 if($useExternal!==false)
 {

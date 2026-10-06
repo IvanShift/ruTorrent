@@ -1511,6 +1511,32 @@ if(!function_exists('erasedataCollectorScheduleCommand'))
 	}
 }
 
+if(!function_exists('erasedataRetireRefusedCollector'))
+{
+	function erasedataRetireRefusedCollector()
+	{
+		$user = User::getUser();
+		if(!is_string($user))
+		{
+			FileUtil::toLog('erasedata: collector-retirement-failed reason=user-invalid; schedule retained; obligations retained');
+			return(false);
+		}
+		// Match getAlignedScheduleCommand's ordinary per-user key. The drain
+		// is independent and its durable obligations remain untouched.
+		$key = 'erasedata'.$user;
+		// The logical alias supplies the required empty XMLRPC target on 0.9.8.
+		$request = new rXMLRPCRequest(new rXMLRPCCommand('schedule_remove', $key));
+		$request->important = false;
+		if(!$request->success() || $request->fault)
+		{
+			FileUtil::toLog('erasedata: collector-retirement-failed schedule='.erasedataLogPath($key)
+				.' reason=rpc-refused; recurring collector retained; obligations retained; restore RPC access and retry initialization');
+			return(false);
+		}
+		return(true);
+	}
+}
+
 if(!function_exists('erasedataKickCollector'))
 {
 	function erasedataKickCollector($oldHash)
@@ -3029,6 +3055,46 @@ if(!function_exists('erasedataAcquireRemovalCapability'))
 
 if(!function_exists('erasedataRemovalAdmissionRun'))
 {
+	// Probe all actual parents a captured payload/manifest may restore into.
+	// Missing parents need no mutation; their deepest existing ancestor still
+	// has to be resolvable. Bind aliases may have different mount permissions,
+	// so cache only this resolved path and physical identity within admission.
+	function erasedataRemovalRenameReady($listPath, array $paths,
+		ErasedataFilesystemOps $filesystem, array &$probed)
+	{
+		ErasedataFilesystemOps::clearRenameRefusal();
+		$names = array($listPath.'/manifest');
+		if(!isset($paths['base'], $paths['files']) || !is_array($paths['files']))
+			return(false);
+		$names[] = $paths['base'];
+		if(!empty($paths['multi'])) $names[] = rtrim($paths['base'], '/').'/entry';
+		$names = array_merge($names, $paths['files']);
+		foreach($names as $path)
+		{
+			if(!ErasedataManifestCodec::isValidAbsolutePath($path)) return(false);
+			$directory = dirname($path);
+			// No entry or existing parent can be captured here. This also keeps
+			// empty downloads from requiring write access to unrelated ancestors.
+			if(!erasedataPathExists($path) && !is_dir($directory)) continue;
+			while(!is_dir($directory))
+			{
+				if(erasedataPathExists($directory) || dirname($directory) === $directory)
+					return(false);
+				$directory = dirname($directory);
+			}
+			$directory = @realpath($directory);
+			$identity = $directory === false ? false : $filesystem->targetIdentity($directory);
+			$key = erasedataIdentityDeviceAndInode($identity);
+			if($key === false) return(false);
+			$key = $directory.'|'.$key['dev'].':'.$key['ino'];
+			if(isset($probed[$key])) continue;
+			if(!$filesystem->probeRenameParent($directory))
+				return(false);
+			$probed[$key] = true;
+		}
+		return(true);
+	}
+
 	// The one admission transaction, with every dependency handed in.
 	//
 	// $dependencies is exactly listPath, user, filesystem, log, ackTimeout and
@@ -3093,6 +3159,23 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		$capabilities = array();
 		try
 		{
+			// Capability failure is an admission refusal, never a deferred
+			// discovery after d.erase. Probe queue and payload mounts before
+			// arming, staging or making any destructive request.
+			$probed = array();
+			foreach($accepted as $hash)
+			{
+				$paths = erasedataCollectPaths($hash);
+				if(!is_array($paths) || !erasedataRemovalRenameReady($listPath,
+					$paths, $filesystem, $probed))
+				{
+					erasedataUnlockObligations($locks);
+					ErasedataFilesystemOps::reportRenameRefusal();
+					erasedataDrainDiagnostic($log, 'rename-capability', null, $members,
+						'admission-refused-torrents-retained', $hash);
+					return(false);
+				}
+			}
 			// Force-2 preflight belongs to the A/F partition, before any marker or
 			// staging. Keep each accepted descriptor through acknowledgement and
 			// erase; finally closes it on every refusal and exception as well.
@@ -3354,6 +3437,12 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					$failure = array('paths', $hash);
 					break;
 				}
+				// Path answers can change while the schedule is being armed.
+				if(!erasedataRemovalRenameReady($listPath, $paths, $filesystem, $probed))
+				{
+					$failure = array('rename-capability', $hash);
+					break;
+				}
 				$content = ErasedataManifestCodec::encode($hash, $paths, $force);
 				if($content === false)
 				{
@@ -3375,6 +3464,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			}
 			if($failure !== false)
 			{
+				if($failure[0] === 'rename-capability') ErasedataFilesystemOps::reportRenameRefusal();
 				erasedataRollbackAdmittedStaging($rollback, $filesystem);
 				erasedataReleaseAdmissionLocks($stateLock, $locks);
 				erasedataDrainDiagnostic($log, $failure[0], $generation, $members,
@@ -4664,7 +4754,7 @@ if(!function_exists('erasedataDrainGenerationPass'))
 // ---------------------------------------------------------------------------
 // Conservative restart, rearm and retirement (invariant 10).
 //
-// Retirement is the only thing in this plugin that takes a schedule AWAY, so it
+// Drain retirement is the decision that takes its recovery schedule AWAY, so it
 // is the one decision that can strand a destructive request nobody will ever
 // serve again. Three facts, all measured on real 0.9.8 and 0.16.21 daemons and
 // stated here in full rather than by reference, shape every line below:
@@ -4709,6 +4799,9 @@ if(!function_exists('erasedataClassifyRetirementCandidate'))
 			|| $name === ERASEDATA_DRAIN_WORKER_LOCK_NAME
 			|| $name === ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME)
 			return(false);
+		// Queue admission attests this finite native infrastructure before any
+		// retirement scan; a dead probe is not a deletion obligation.
+		if(erasedataRenameProbeName($name)) return(false);
 		if(preg_match('/^[0-9A-Fa-f]{40}\.lock$/D', $name) === 1)
 			return(false);
 		// Residue of an interrupted durable write: erasedataWriteDurableFile()
@@ -4772,6 +4865,9 @@ if(!function_exists('erasedataRetirementScan'))
 		foreach($entries as $entry)
 		{
 			$class = erasedataClassifyRetirementCandidate($entry);
+			if(erasedataRenameProbeName($entry)
+				&& !erasedataRenameProbeWorkspaceValid($listPath.'/'.$entry, erasedataEffectiveUid()))
+				$class = 'residue';
 			if($class === false)
 				continue;
 			$scan['classes'][$class]++;
@@ -5692,6 +5788,8 @@ if(!function_exists('erasedataRemoveWithData'))
 		$erasable = array();
 		$tmpMap = array();
 		$locks = array();
+		$filesystem = new ErasedataFilesystemOps();
+		$probed = array();
 		ksort($pending, SORT_STRING);
 		foreach($pending as $h)
 		{
@@ -5702,11 +5800,13 @@ if(!function_exists('erasedataRemoveWithData'))
 				continue;
 			}
 			$paths = erasedataCollectPaths($h);
-			if($paths === false)
+			if($paths === false || !erasedataRemovalRenameReady($listPath, $paths, $filesystem, $probed))
 			{
 				// Erasing now would drop the torrent and leave its data behind
 				// with nothing left to identify it, so keep the torrent.
-				FileUtil::toLog("erasedata: could not determine the files of ".$h.", torrent not erased");
+				if($paths === false)
+					FileUtil::toLog("erasedata: could not determine the files of ".$h.", torrent not erased");
+				else ErasedataFilesystemOps::reportRenameRefusal();
 				erasedataReleaseHashLock($lock);
 				continue;
 			}

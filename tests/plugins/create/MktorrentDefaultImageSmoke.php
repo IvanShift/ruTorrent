@@ -7,6 +7,8 @@ $_ENV['RU_PROFILE_PATH'] = $profile;
 require_once(__DIR__.'/../../../plugins/_task/task.php');
 require_once(__DIR__.'/../../../php/Torrent.php');
 require(__DIR__.'/../../../plugins/create/conf.php');
+require_once(__DIR__.'/../../../plugins/create/external.php');
+$pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
 if ($useExternal !== 'mktorrent' || $pathToCreatetorrent !== '/usr/local/bin/mktorrent')
     throw new RuntimeException('The packaged creator is not selected by the default plugin configuration');
 $task = new rTask(array('name'=>'packaged mktorrent create smoke'));
@@ -32,4 +34,5 @@ try {
         || $result->info['pieces'] !== sha1(file_get_contents($payload), true))
         throw new RuntimeException('The real Create wrapper assertions failed: '.json_encode(array('errors'=>$result->errors(), 'same_info_hash'=>$result->hash_info() === $external->hash_info(), 'announce'=>$result->announce(), 'comment'=>$result->comment(), 'length'=>$result->info['length'] ?? null, 'expected_length'=>filesize($payload), 'same_pieces'=>$result->info['pieces'] === sha1(file_get_contents($payload), true))));
     echo "ok - packaged mktorrent default creates and corrects a torrent\n";
+    echo "1 test, 0 failures\n";
 } finally { FileUtil::deleteDirectory($profile); }

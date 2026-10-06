@@ -34,6 +34,7 @@ class LifecycleInitLogTest extends TestCase
                     $failure = $this->reported;
                     return(false);
                 }
+                public function recoveryMarkerDiagnostic() { return array(); }
             };
             FileUtil::$logs = array();
             $jResult = '';
@@ -41,12 +42,25 @@ class LifecycleInitLogTest extends TestCase
             $ok = retrackersRunLifecycleInit('alice', '/plugin/run.sh', '/usr/bin/php',
                 $jResult, $failure, $adapter);
             $this->assertTrue($ok === false, 'the supplied startup refusal reaches the lifecycle seam');
-            $this->assertEquals(array('retrackers-init: ' . $expected), FileUtil::$logs,
+            $this->assertEquals(array('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $expected)), FileUtil::$logs,
                 'startup writes exactly one bounded reason without RPC payload or private path');
             $this->assertTrue(strpos($jResult, $expected) !== false &&
                 strpos($jResult, 'tracker.invalid') === false,
                 'the UI diagnostic retains the same bounded reason');
         }
+    }
+
+    public function testCorruptLedgerDiagnosticNamesMarkerToolAndAffectedTorrent()
+    {
+        $hash = str_repeat('A', 40);
+        $message = retrackersLifecycleDiagnosticMessage('init', 'receipt-ledger-corrupt',
+            array('count' => 1, 'hashes' => array($hash, '<?xml secret="passkey">')));
+        foreach (array('retrackers is disabled', 'd.custom=retrackers-recovery',
+            'torrent session sidecars', 'tools/retrackers-clear-markers.php',
+            'report first', 'marked torrents=1', $hash) as $part)
+            $this->assertTrue(strpos($message, $part) !== false, 'corrupt ledger diagnostic names ' . $part);
+        $this->assertTrue(strpos($message, 'passkey') === false && strpos($message, 'restart rTorrent') === false,
+            'classified repair guidance contains no remote payload or false restart remedy');
     }
 
     public function testHookLedgerMismatchHintIsSpecificAndDoesNotMaskCorruption()

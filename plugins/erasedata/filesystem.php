@@ -11,10 +11,22 @@ require_once(dirname(__FILE__)."/manifest.php");
 class ErasedataFilesystemOps
 {
 	private static $renameRefusal = '';
+	private static $renameContext = '';
 
 	public static function lastRenameRefusal()
 	{
 		return(self::$renameRefusal);
+	}
+
+	public static function lastRenameRefusalContext()
+	{
+		return(self::$renameContext);
+	}
+
+	public static function clearRenameRefusal()
+	{
+		self::$renameRefusal = '';
+		self::$renameContext = '';
 	}
 
 	public static function renameHelperPath()
@@ -37,18 +49,34 @@ class ErasedataFilesystemOps
 		}
 	}
 
-	private static function renameDiagnostic($reason, $from, $to = null)
+	private static function renameDiagnostic($reason, $from, $to = null, $errno = null)
 	{
 		self::$renameRefusal = $reason;
-		if(method_exists('FileUtil', 'toLog'))
-			FileUtil::toLog('erasedata: '.$reason.' path='.json_encode($from, JSON_UNESCAPED_SLASHES)
-				.($to === null ? '' : ' destination='.json_encode($to, JSON_UNESCAPED_SLASHES))
-				.'; mutation refused; check helper installation and atomic rename support on the named filesystem');
+		self::$renameContext = $reason.' path='.erasedataLogPath($from)
+			.($to === null ? '' : ' destination='.erasedataLogPath($to))
+			.($errno === null ? '' : ' errno='.$errno);
+		// Callers own the durable report memory. A retrying filesystem seam must
+		// not emit an unconditional line on every five-second drain tick.
 		return(false);
+	}
+
+	public static function reportRenameRefusal()
+	{
+		if(self::$renameContext !== '' && method_exists('FileUtil', 'toLog'))
+		{
+			$action = self::$renameRefusal === 'rename-noreplace-collision'
+				? 'preserve both entries; inspect the occupied destination before retrying'
+				: (self::$renameRefusal === 'rename-noreplace-unsupported'
+					? 'use a filesystem that supports atomic no-replace; torrent and payload retained'
+					: 'check the native helper and the named parent permissions; torrent and payload retained');
+			FileUtil::toLog('erasedata: '.self::$renameContext.'; mutation refused; '.$action);
+		}
 	}
 
 	private static function runRenameHelper(array $arguments, $from, $to = null)
 	{
+		if(!function_exists('proc_open'))
+			return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to));
 		$descriptors = array(0 => array('file', '/dev/null', 'r'),
 			1 => array('file', '/dev/null', 'w'), 2 => array('pipe', 'w'));
 		$held = array();
@@ -83,7 +111,7 @@ class ErasedataFilesystemOps
 			if(!is_resource($process))
 				return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to));
 			// Status distinguishes the trusted helper's fixed refusal classes.
-			stream_get_contents($pipes[2]);
+			$error = stream_get_contents($pipes[2], 1024);
 			fclose($pipes[2]);
 			$code = proc_close($process);
 		}
@@ -94,15 +122,24 @@ class ErasedataFilesystemOps
 		if($code === 0)
 		{
 			self::$renameRefusal = '';
+			self::$renameContext = '';
 			return(true);
 		}
 		$reasons = array(1 => 'rename-noreplace-collision', 2 => 'rename-noreplace-invalid-arguments',
 			3 => 'rename-noreplace-unsupported', 4 => 'rename-noreplace-error');
+		$errno = preg_match('/\berrno=([0-9]{1,5})\b/', $error, $match) ? (int)$match[1] : null;
 		return(self::renameDiagnostic(isset($reasons[$code]) ? $reasons[$code]
-			: 'rename-noreplace-process-exit-'.$code, $from, $to));
+			: 'rename-noreplace-process-exit-'.$code, $from, $to, $errno));
 	}
 
-	public static function canRenameNoReplace($directory = null)
+	public static function canRenameNoReplace($directory = null, $reportRefusal = true)
+	{
+		$result = self::renameCapabilityQuery($directory);
+		if(!$result && $reportRefusal) self::reportRenameRefusal();
+		return($result);
+	}
+
+	private static function renameCapabilityQuery($directory)
 	{
 		$helper = self::renameHelperPath();
 		if($helper === false || !is_executable($helper))
@@ -113,6 +150,7 @@ class ErasedataFilesystemOps
 		if($directory === null)
 		{
 			self::$renameRefusal = '';
+			self::$renameContext = '';
 			return(true);
 		}
 		if(!ErasedataManifestCodec::isValidAbsolutePath($directory))
@@ -179,16 +217,44 @@ class ErasedataFilesystemOps
 
 	protected function renameCapability($directory)
 	{
-		return(self::canRenameNoReplace($directory));
+		return(self::canRenameNoReplace($directory, false));
+	}
+
+	public function probeRenameParent($directory)
+	{
+		return($this->renameCapability($directory));
+	}
+
+	private function privateCaptureParent($directory)
+	{
+		$uid = erasedataEffectiveUid();
+		for($path = $directory; is_string($path) && $path !== dirname($path); $path = dirname($path))
+		{
+			if(!preg_match('/^\.erasedata-(?:entry|rmdir|recovery)-/', basename($path))) continue;
+			$root = @lstat($path);
+			$marker = @lstat(erasedataPrivateMarkerPath($path));
+			if(is_array($root) && ($root['mode'] & 0170000) === 0040000
+				&& ($root['mode'] & 07777) === 0700 && $root['uid'] === $uid
+				&& is_array($marker) && ($marker['mode'] & 0170000) === 0100000
+				&& ($marker['mode'] & 07777) === 0600 && $marker['uid'] === $uid && $marker['nlink'] === 1)
+				return(true);
+		}
+		return(false);
 	}
 
 	public function rename($from, $to)
 	{
-		// A capture may need an atomic no-replace restore. Prove support on
-		// each actual parent before moving its original directory entry.
-		foreach(array_unique(array(dirname($from), dirname($to))) as $directory)
-			if(!$this->renameCapability($directory))
-				return(false);
+		self::clearRenameRefusal();
+		// Publication is inside an admitted private queue under the hash lock;
+		// it has no public-name rollback and needs only ordinary rename.
+		$publication = dirname($from) === dirname($to)
+			&& substr($from, -4) === '.tmp' && $to === substr($from, 0, -4).'.list';
+		$parent = @realpath(dirname($from));
+		$privateCapture = $this->privateCaptureParent($parent);
+		// A capture may need no-replace restore of its PUBLIC source name. Never
+		// probe the private destination root: crash debris there blocks recovery.
+		if(!$publication && !$privateCapture && !$this->renameCapability(dirname($from)))
+			return(false);
 		// In a sticky public parent, another UID may still rename its own
 		// source. Do not capture such an entry into a private root.
 		if((strpos($to, '/.erasedata-rmdir-') !== false
@@ -202,10 +268,11 @@ class ErasedataFilesystemOps
 	// from this plugin's source; an absent or unsupported helper refuses restore.
 	public function renameNoReplace($from, $to)
 	{
-		foreach(array_unique(array(dirname($from), dirname($to))) as $directory)
-			if(!self::canRenameNoReplace($directory))
-				return(false);
+		self::clearRenameRefusal();
 		$helper = self::renameHelperPath();
+		if($helper === false || !is_executable($helper))
+			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
+				: 'rename-noreplace-helper-unavailable', $from, $to));
 		return($helper !== false && self::runRenameHelper(array($helper, $from, $to), $from, $to));
 	}
 
@@ -613,15 +680,76 @@ function erasedataIdentityDeviceAndInode($identity)
 
 // Report the path that was actually inspected, with enough metadata to repair
 // an offline queue without implicitly attesting or changing its old obligations.
+function erasedataLogPath($path)
+{
+	$encoded = json_encode($path, JSON_UNESCAPED_SLASHES);
+	return($encoded === false ? 'base64:'.base64_encode($path) : $encoded);
+}
+
 function erasedataQueueRefusal($reason, $path, $stat, $expected, $action = '')
 {
 	$metadata = is_array($stat)
 		? ' uid='.$stat['uid'].' gid='.$stat['gid'].' mode='.sprintf('%04o', $stat['mode'] & 07777)
 			.' nlink='.$stat['nlink'] : ' metadata=missing';
 	FileUtil::toLog('erasedata: queue refused: '.$reason.' path='
-		.json_encode($path, JSON_UNESCAPED_SLASHES).$metadata.' expected='.$expected
+		.erasedataLogPath($path).$metadata.' expected='.$expected
 		.'; cleanup held'.($action === '' ? '' : '; '.$action));
 	return(false);
+}
+
+function erasedataRenameProbeName($name)
+{
+	return(is_string($name) && preg_match('/^\.rutorrent-rename-probe-[0-9]+-[a-f0-9]{16}$/D', $name));
+}
+
+// A probe workspace can hold only finite infrastructure. It never licenses a
+// deletion, and the native helper alone recovers it under its private flock.
+function erasedataRenameProbeWorkspaceValid($path, $uid)
+{
+	$root = @lstat($path);
+	if(!is_array($root) || ($root['mode'] & 0170000) !== 0040000
+		|| ($root['mode'] & 07777) !== 0700 || $root['uid'] !== $uid)
+		return(false);
+	$entries = @scandir($path);
+	if(!is_array($entries)) return(false);
+	foreach(array_diff($entries, array('.', '..')) as $name)
+	{
+		$isFile = in_array($name, array('.lock', 'from-file', 'to-file'), true);
+		$isDirectory = in_array($name, array('from-dir', 'to-dir'), true);
+		if(!$isFile && !$isDirectory) return(false);
+		$child = @lstat($path.'/'.$name);
+		// An active native probe can remove its own inspected entry.
+		if($child === false && !erasedataPathExists($path.'/'.$name)) continue;
+		if(!is_array($child) || $child['uid'] !== $uid
+			|| ($child['mode'] & 0170000) !== ($isFile ? 0100000 : 0040000)
+			|| ($child['mode'] & 07777) !== ($isFile ? 0600 : 0700)
+			|| $child['nlink'] !== ($isFile ? 1 : 2)
+			|| ($name === '.lock' && $child['size'] !== 0)) return(false);
+		if($isDirectory)
+		{
+			$children = @scandir($path.'/'.$name);
+			if(!is_array($children) || count(array_diff($children, array('.', '..')))) return(false);
+		}
+	}
+	return(true);
+}
+
+// Validate exactly the lstat metadata supplied by the caller. Separating the
+// predicate lets every UID exercise the root-witness mode/link refusal paths.
+function erasedataValidateFirstUseWitness($path, $marker, $recovery)
+{
+	$expected = 'regular-file uid=0 mode=0400 nlink=1';
+	if(!is_array($marker))
+		return(erasedataQueueRefusal('witness-missing', $path, $marker, $expected, $recovery));
+	if(($marker['mode'] & 0170000) !== 0100000)
+		return(erasedataQueueRefusal('witness-type', $path, $marker, $expected, $recovery));
+	if($marker['uid'] !== 0)
+		return(erasedataQueueRefusal('witness-owner', $path, $marker, $expected, $recovery));
+	if(($marker['mode'] & 07777) !== 0400)
+		return(erasedataQueueRefusal('witness-mode', $path, $marker, $expected, $recovery));
+	if($marker['nlink'] !== 1)
+		return(erasedataQueueRefusal('witness-links', $path, $marker, $expected, $recovery));
+	return(true);
 }
 
 // A full plugin initialization checks admission once. Destructive entrypoints
@@ -635,6 +763,10 @@ function erasedataInitializationQueueReady(&$path = null)
 		$queue = erasedataQueuePath();
 		$admissions[$key] = array('path' => $queue,
 			'ready' => $queue !== false && erasedataEnsureQueueDirectory($queue));
+		// Full init routes load the RPC helper before admission. Retire a stale
+		// ordinary collector once, while keeping every durable drain obligation.
+		if(!$admissions[$key]['ready'] && function_exists('erasedataRetireRefusedCollector'))
+			erasedataRetireRefusedCollector();
 	}
 	$path = $admissions[$key]['path'];
 	return($admissions[$key]['ready']);
@@ -676,19 +808,11 @@ function erasedataQueuePath()
 	$marker = @lstat($witness);
 	$recovery = 'stop services; inspect legacy *.list and *.pending obligations before operator attestation; '
 		.'restore the witness only through the documented root-owned bootstrap/attestation procedure';
-	$witnessExpected = 'regular-file uid=0 mode=0400 nlink=1';
 	if($uid === false)
 		return(erasedataQueueRefusal('effective-uid-unavailable', $protected, $stat, 'service UID', $recovery));
-	if(!is_array($marker))
-		return(erasedataQueueRefusal('witness-missing', $witness, $marker, $witnessExpected, $recovery));
-	if(($marker['mode'] & 0170000) !== 0100000)
-		return(erasedataQueueRefusal('witness-type', $witness, $marker, $witnessExpected, $recovery));
-	if($marker['uid'] !== 0)
-		return(erasedataQueueRefusal('witness-owner', $witness, $marker, $witnessExpected, $recovery));
-	if(($marker['mode'] & 07777) !== 0400)
-		return(erasedataQueueRefusal('witness-mode', $witness, $marker, $witnessExpected, $recovery));
-	if($marker['nlink'] !== 1)
-		return(erasedataQueueRefusal('witness-links', $witness, $marker, $witnessExpected, $recovery));
+	if(!erasedataValidateFirstUseWitness($witness, $marker, $recovery))
+		return(false);
+	$recovery = 'stop services; preserve and inspect the named queue obligations before operator attestation';
 	if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000)
 		return(erasedataQueueRefusal('protected-root-type', $protected, $stat, 'directory uid='.$uid.' mode=0700', $recovery));
 	if($stat['uid'] !== $uid || ($stat['mode'] & 0077) !== 0)
@@ -819,6 +943,11 @@ function erasedataQueueEntriesOwned($physicalPath, array $entries, $uid, $listPa
 			FileUtil::toLog('erasedata: queue refused: foreign or unreadable entry in '.$listPath);
 			return(false);
 		}
+		if(erasedataRenameProbeName($entry)
+			&& !erasedataRenameProbeWorkspaceValid($entryPath, $uid))
+			return(erasedataQueueRefusal('unsafe-rename-probe', $entryPath, $stat,
+				'private owned probe directory with fixed plain entries',
+				'stop services; preserve unexpected probe contents and inspect the named workspace'));
 	}
 	return(true);
 }

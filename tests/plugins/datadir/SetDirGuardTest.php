@@ -100,11 +100,35 @@ function rtExec($commands, $hash, $debug = false)
 
 $source = getenv('DATADIR_TEST_SOURCE');
 if (!$source) $source = testFindRepoRoot() . '/plugins/datadir/util_setdir.php';
-foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirProbeRename', 'rtSetDataDir') as $name)
+foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirCollision', 'rtDataDirProbeRename', 'rtSetDataDir') as $name)
     eval(loadFunctionDefinition($source, $name));
 
 $suite = new StrictTestSuite();
 $hash = str_repeat('A', 40);
+
+$suite->test('a closed torrent preflight refuses an unsupported new destination ancestor without opening it', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    $ancestor = realpath(sys_get_temp_dir());
+    $destination = $ancestor . '/datadir-new-closed-' . bin2hex(random_bytes(8));
+    ErasedataFilesystemOps::$unsupported = $ancestor;
+    try { rtDataDirCollision($hash, $destination, false); throw new RuntimeException('unsupported destination was admitted'); }
+    catch (RuntimeException $e) {
+        strictAssertSame('rename-noreplace-unsupported: ' . $ancestor, $e->getMessage(), 'filesystem refusal is classified');
+    }
+    strictAssertSame(array($ancestor), ErasedataFilesystemOps::$probes, 'existing destination ancestor is probed');
+    strictAssertSame(array(array('d.is_open', 'd.local_id', 'd.directory')), DataDirTestState::$calls,
+        'closed torrent is never opened or claimed');
+    strictAssertSame(false, file_exists($destination), 'preflight never creates the destination');
+});
+
+$suite->test('a closed torrent on a supported destination remains eligible for worker dispatch', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    $ancestor = realpath(sys_get_temp_dir());
+    strictAssertSame('', rtDataDirCollision($hash, $ancestor, false), 'closed metadata does not invent a collision');
+    strictAssertSame(array($ancestor), ErasedataFilesystemOps::$probes, 'destination support is checked despite closed metadata');
+    strictAssertSame(array(array('d.is_open', 'd.local_id', 'd.directory')), DataDirTestState::$calls,
+        'read-only admission leaves torrent state untouched');
+});
 
 $suite->test('service label refuses before claim and records the reason', function () use ($hash) {
     DataDirTestState::reset(true, true, '.chk-meta');

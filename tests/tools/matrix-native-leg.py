@@ -68,8 +68,13 @@ def compile_helpers(tree, native, image, name, uid, gid, owner):
 
 def test_command(tree, temporary, test_files, source_tree=None):
     source_tree = tree if source_tree is None else source_tree
+    _, helpers = setup.read_manifest(source_tree)
+    rename_source = (source_tree / "plugins/erasedata/rename-noreplace.c").resolve(strict=True)
+    rename_names = [name for name, source in helpers.items() if source == rename_source]
+    if len(rename_names) != 1:
+        raise ValueError("manifest must declare exactly one erasedata rename helper")
     probe = ["bash", "tests/plugins/erasedata/rename-noreplace-test.sh",
-             "/usr/local/bin/rutorrent-erasedata-rename-noreplace"]
+             "/usr/local/bin/" + rename_names[0]]
     commands = [shlex.join(probe)]
     if test_files:
         for test_file in test_files:
@@ -106,6 +111,14 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None):
     owner = uuid.uuid4().hex if owner is None else owner
     directory = Path(directory).resolve(strict=True)
     tree, temporary = directory / "tree", directory / "tmp"
+    if leg == "local" and len(os.fsencode(temporary)) > 58:
+        raise RuntimeError("resolved local TMPDIR must be at most 58 bytes: " + str(temporary))
+    if temporary.is_symlink():
+        raise RuntimeError("matrix TMPDIR must be a physical private directory")
+    temporary.mkdir(mode=0o700, exist_ok=True)
+    if temporary.stat().st_uid != uid:
+        raise RuntimeError("matrix TMPDIR must be owned by the caller")
+    temporary.chmod(0o700)
     native = directory / "native"
     native.mkdir(mode=0o700)
     try:

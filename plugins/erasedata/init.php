@@ -5,12 +5,13 @@ require_once(dirname(__FILE__).'/removewithdata.php');
 eval(FileUtil::getPluginConf($plugin["name"]));
 
 $queueReady = erasedataInitializationQueueReady($listPath);
+$helperReady = ErasedataFilesystemOps::canRenameNoReplace();
 // The ordinary collector handles published manifests, including those left by
 // older releases. The generation drain has its own schedule and startup rearm.
 $req = new rXMLRPCRequest( array(
 	erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval)
 	) );
-if($queueReady && $req->success())
+if($queueReady && $helperReady && $req->success())
 {
 	// Startup recovery for the SEPARATE per-user drain schedule.
 	//
@@ -32,5 +33,6 @@ if($queueReady && $req->success())
 	$jResult.="plugin.replaceRemoveTorrent = ".($replaceRemoveTorrent ? 1 : 0).";";
 }
 else
-	$jResult.= $queueReady ? "plugin.disable(); noty('erasedata: '+theUILang.pluginCantStart,'error');"
-		: "plugin.disable(); noty('erasedata: deletion queue refused; removal with data is disabled. Check the application log for the path and recovery action.','error');";
+	$jResult.= !$helperReady ? "plugin.disable(); noty('erasedata: atomic rename helper unavailable; removal with data is disabled. Check the application log.','error');"
+		: ($queueReady ? "plugin.disable(); noty('erasedata: '+theUILang.pluginCantStart,'error');"
+		: "plugin.disable(); noty('erasedata: deletion queue refused; removal with data is disabled. Check the application log for the path and recovery action.','error');");

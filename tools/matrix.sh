@@ -4,11 +4,13 @@
 # pre-commit hook can skip a run it has already seen.
 #
 #   tools/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
-#                                   plus Kinozal and sibling trackers in the shipped no-iconv image
+#                                   plus no-iconv tracker suites and packaged creator smoke in the shipped image
 #   tools/matrix.sh local 7.4       only these legs
-#   tools/matrix.sh prod-kinozal    only the no-iconv tracker handler suites
+#   tools/matrix.sh prod-kinozal    shipped-image no-iconv tracker suites and creator smoke
 # Set RUTORRENT_MATRIX_BASE to a private disk-backed directory to isolate
 # exports, retention and the marker from existing runs.
+# RUTORRENT_MATRIX_PROD_IMAGE selects a local candidate for the packaged leg;
+# the selected image reference and identity are included in the runtime digest.
 # Only the default run with no leg arguments records the pre-commit marker.
 #   tools/matrix.sh digest          print the digest of what the suite tests
 #   tools/matrix.sh last            show the last green run
@@ -45,7 +47,10 @@ umask 077
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 base="${RUTORRENT_MATRIX_BASE:-${HOME}/.cache/rtm}"
+mkdir -p "$base" || exit 1
+base="$(cd "$base" && pwd -P)" || exit 1
 marker="${base}/last-green"
+prod_image="${RUTORRENT_MATRIX_PROD_IMAGE:-ivanshift/rutorrent:latest}"
 tmpdir_budget=58  # 58 + the 49-byte socket suffix fits the 107-byte sun_path limit.
 
 # A tracked path removed in the working tree is deliberately absent. A file
@@ -143,7 +148,7 @@ runtime_fingerprint() (
         else
             printf 'local PHP: not selected\n'
         fi
-        for image in php:8.1-cli php:7.4-cli ivanshift/rutorrent:latest; do
+        for image in php:8.1-cli php:7.4-cli "$prod_image"; do
             printf '%s ' "$image"
             timeout 5s docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || printf 'unavailable\n'
         done
@@ -257,9 +262,9 @@ stop_legs() {
     # so an interrupt does not leave that late-created container behind.
     for round in 1 2 3; do
         for leg in "${!container_name[@]}"; do
-            identity="$(docker container inspect --format '{{.Id}} {{index .Config.Labels "io.rutorrent.matrix.owner"}}' "${container_name[$leg]}" 2>/dev/null)" || continue
+            identity="$(timeout --kill-after=1s 5s docker container inspect --format '{{.Id}} {{index .Config.Labels "io.rutorrent.matrix.owner"}}' "${container_name[$leg]}" 2>/dev/null)" || continue
             read -r container_id owner_label <<< "$identity"
-            [ "$owner_label" != "$container_owner" ] || docker rm -f -v "$container_id" >/dev/null 2>&1 || :
+            [ "$owner_label" != "$container_owner" ] || timeout --kill-after=1s 5s docker rm -f -v "$container_id" >/dev/null 2>&1 || :
         done
         [ "$round" -eq 3 ] || sleep 0.15
     done
@@ -335,30 +340,33 @@ for leg in "${legs[@]}"; do
         prod-kinozal)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
-                dir="$1"; uid="$2"; gid="$3"; name="$4"; owner="$5"; status=0
+                dir="$1"; uid="$2"; gid="$3"; name="$4"; owner="$5"; image="$6"; status=0
                 : > "$dir/php-test.log"
-                for suite in KinozalHandlerTest SiblingTrackersTest; do
-                    test_file="tests/plugins/rutracker_check/${suite}.php"
-                    suite_log="$dir/${suite}.log"
+                for test_file in tests/plugins/rutracker_check/KinozalHandlerTest.php tests/plugins/rutracker_check/SiblingTrackersTest.php tests/plugins/create/MktorrentDefaultImageSmoke.php; do
+                    suite_log="$dir/$(basename "$test_file" .php).log"
+                    iconv_args=()
+                    case "$test_file" in
+                        */rutracker_check/*) iconv_args=(-d disable_functions=iconv) ;;
+                    esac
                     printf "> php %s\n" "$test_file" >> "$dir/php-test.log"
-                    docker run --rm --pull=never --network none --name "$name" --label "io.rutorrent.matrix.owner=$owner" --user "${uid}:${gid}" \
+                    timeout --kill-after=5s 60s docker run --rm --pull=never --network none --name "$name" --label "io.rutorrent.matrix.owner=$owner" --user "${uid}:${gid}" \
                         -e HOME=/mtmp -e TMPDIR=/mtmp -e RT_SUITE="$test_file" --entrypoint php85 \
                         -v "$dir/tree:/w:ro" -v "$dir/tmp:/mtmp" -w /w \
-                        ivanshift/rutorrent:latest -c tests/php-test.ini \
-                        -d disable_functions=iconv -r \
-                        '"'"'if (function_exists("iconv")) { fwrite(STDERR, "prod-kinozal: iconv available\n"); exit(1); } require getenv("RT_SUITE");'"'"' \
+                        "$image" -c tests/php-test.ini \
+                        "${iconv_args[@]}" -r \
+                        '"'"'if (strpos(getenv("RT_SUITE"), "/rutracker_check/") !== false && function_exists("iconv")) { fwrite(STDERR, "prod-kinozal: iconv available\n"); exit(1); } require getenv("RT_SUITE");'"'"' \
                         > "$suite_log" 2>&1
                     status=$?
                     cat "$suite_log" >> "$dir/php-test.log"
                     if [ "$status" -ne 0 ] \
-                        || ! grep -Eq '"'"'^[1-9][0-9]* tests, 0 failures$'"'"' "$suite_log" \
+                        || ! grep -Eq '"'"'^[1-9][0-9]* tests?, 0 failures$'"'"' "$suite_log" \
                         || grep -q '"'"'NOT CHECKED'"'"' "$suite_log"; then
                         [ "$status" -ne 0 ] || status=1
                         break
                     fi
                 done
                 printf "%s\n" "$status" > "$dir/exit"
-            ' _ "$dir" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" &
+            ' _ "$dir" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" "$prod_image" &
             ;;
         *)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
@@ -386,10 +394,10 @@ for leg in "${legs[@]}"; do
     fails="${fails:-0}"
     files="${files:-0}"
     if [ "$leg" = prod-kinozal ]; then
-        if [ "$files" -ne 2 ] \
-            || [ "$(grep -cE '^[1-9][0-9]* tests, 0 failures$' "$dir/php-test.log")" -ne 2 ] \
+        if [ "$files" -ne 3 ] \
+            || [ "$(grep -cE '^[1-9][0-9]* tests?, 0 failures$' "$dir/php-test.log")" -ne 3 ] \
             || grep -q 'NOT CHECKED' "$dir/php-test.log"; then
-            echo 'matrix.sh: prod-kinozal did not execute both no-iconv suites' >> "$dir/php-test.log"
+            echo 'matrix.sh: prod-kinozal did not execute both no-iconv suites and packaged creator smoke' >> "$dir/php-test.log"
             fails=$((fails + 1))
         fi
     elif [ "$files" -ne "$expected_files" ]; then
@@ -399,6 +407,10 @@ for leg in "${legs[@]}"; do
     printf '%-13s %-6s %-9s %-6s %s\n' "$leg" "$code" "$fails" "$files" "$dir/php-test.log"
     [ "$code" = 0 ] && [ "$fails" = 0 ] || status=1
 done
+# A timed-out Docker client may leave a PID1 that ignored TERM. All leg groups
+# have been waited and removed from pid; retire only their labelled containers
+# before the exports become eligible for retention cleanup.
+stop_legs
 elapsed=$(( $(date +%s) - started ))
 source_after="$(source_digest)" || status=1
 runtime_after="$(runtime_fingerprint "${legs[@]}")" || status=1

@@ -763,11 +763,14 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 	public $nativeFinalized = null;
 	public $nativeIncarnation = null;
 	public $nativeMethodsPresent = true;
+	public $queueScheduleCalls = 0;
+	public $queueScheduleFailOnce = false;
 	public $beforeCallbackActionChanges = array();
 	public $beforeCallbackLedgerAdds = array();
 	public $beforeCallbackLedgerRemoves = array();
 	public $afterCallbackLedgerAdds = array();
 	public $modelWriteCount = 0;
+	public $deferWorkerCompletion = false;
 	private $initialSample;
 	private $modelActions = null;
 	private $modelLedger = null;
@@ -796,6 +799,24 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		$failure = $this->nativeMethodsPresent ? null :
 			'native-original-capability-unconfirmed';
 		return($this->nativeMethodsPresent);
+	}
+
+	public function nativeQueueCapability(&$failure = null)
+	{
+		$failure = $this->nativeMethodsPresent ? null : 'native-queue-capability-unconfirmed';
+		return($this->nativeMethodsPresent);
+	}
+
+	public function armNativeQueueDispatcher($user, &$failure = null)
+	{
+		$this->queueScheduleCalls++;
+		if ($this->queueScheduleFailOnce) {
+			$this->queueScheduleFailOnce = false;
+			$failure = 'native-queue-schedule-unconfirmed';
+			return(false);
+		}
+		$failure = null;
+		return(true);
 	}
 
 	public function ensureLedgerExists(&$failure = null)
@@ -934,6 +955,7 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 			'd.local_id=' => 'local_id',
 			'd.state=' => 'state',
 			'd.is_meta=' => 'is_meta',
+			'd.is_private=' => 'is_private',
 			'd.custom=retrackers-recovery' => 'recovery_marker',
 			'd.custom=retrackers-recovery-ack' => 'recovery_ack',
 			'd.custom=chk-meta-old' => 'chk_meta_old',
@@ -943,7 +965,7 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 			$key = $getters[$expression];
 			$value = isset($this->modelDownloads[$target][$key]) ?
 				$this->modelDownloads[$target][$key] : '';
-			return(in_array($expression, array('d.state=', 'd.is_meta='), true) ? (int)$value : $value);
+			return(in_array($expression, array('d.state=', 'd.is_meta=', 'd.is_private='), true) ? (int)$value : $value);
 		}
 		return(null);
 	}
@@ -1045,6 +1067,7 @@ class RetrackersLifecycleQueueAdapter extends RetrackersLifecycleRpcAdapter
 		}
 		if (strncmp($command, '$execute.throw.bg=', 18) === 0 &&
 			isset($this->modelDownloads[$target]['local_id'])) {
+			if ($this->deferWorkerCompletion) return;
 			$localId = $this->modelDownloads[$target]['local_id'];
 			unset($this->modelLedger['wp:' . $localId]);
 			$this->modelDownloads[$target]['recovery_marker'] = '';
@@ -1387,6 +1410,12 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 		}
 		$failure = null;
 		return(true);
+	}
+
+	public function nativePreflightStage($hash, $tx, $incarnation,
+		RetrackersAnonymousStage $stage, &$failure = null)
+	{
+		return($this->preflightStage($stage, null, $failure));
 	}
 
 	public function sourceScalarSnapshot($hash, &$failure = null)
@@ -3662,7 +3691,7 @@ PHP;
 			'the real CLI child finishes within the deadline without a PHP fatal');
 		$this->assertTrue($accepted && strpos($request, 'system.listMethods') !== false,
 			'the real CLI sends its first RPC to the configured private Unix SCGI socket');
-		$this->assertTrue($exit === 1 && strpos($log, 'rpc-family-unconfirmed') !== false,
+		$this->assertTrue($exit === 1 && strpos($log, 'closed-before-headers') !== false,
 			'the closed fixture produces one bounded, classified SCGI refusal');
 	}
 
@@ -6025,6 +6054,14 @@ PHP;
 			$this->sourceTrackerFixture(), $stateOneHandoff);
 		$this->assertTrue($started['ok'] === true,
 			'the characterized active lifecycle 1,1,1 is eligible');
+		$nativeMarker = 'v2:original:0:' . $localId . ':' . hash('sha256', 'alice') . ':' . str_repeat('c', 32);
+		$scalar = $this->sourceScalarFixture(array('state' => '1', 'is_active' => '1',
+			'is_open' => '1', 'recovery_marker' => $nativeMarker, 'recovery_ack' => $nativeMarker));
+		$map = $this->sourceMapFixture(array('retrackers-recovery' => $nativeMarker,
+			'retrackers-recovery-ack' => $nativeMarker));
+		list($changedState) = $capture($scalar, $map, $this->sourceTrackerFixture(), $nativeMarker);
+		$this->assertTrue($changedState['ok'] === true,
+			'a native original claim accepts current user state after Start while retaining exact marker ownership');
 
 		$scalar = $this->sourceScalarFixture(array('session_path' => '', 'tied_source' => '',
 			'loaded_file' => '/not-a-source'));
@@ -6056,8 +6093,8 @@ PHP;
 			list($busyHashing) = $capture($scalar, $this->sourceMapFixture(),
 				$this->sourceTrackerFixture(), $scalar['values']['recovery_marker']);
 			$this->assertTrue($busyHashing ===
-				array('ok' => false, 'failure' => 'lifecycle-unsupported'),
-				'd.hashing enum ' . $hashing . ' is valid wire data but not an eligible lifecycle');
+				array('ok' => false, 'failure' => 'initial-hashing-pending'),
+				'd.hashing enum ' . $hashing . ' is valid wire data and waits before mutation');
 		}
 
 		foreach (array('-9223372036854775808', '-1', '1', '2', '3', '17') as $hashingFailed) {
@@ -11931,6 +11968,119 @@ PHP;
 			'a marked row cannot pass as an idle current profile');
 	}
 
+    private function deferredRecoveryFixtureAdapter() {
+        $this->installRtorrentQuoteDouble();
+        $fixture = $this->historicalStateFixture('BOOTSTRAP');
+        return $this->lifecycleQueueAdapter(array($fixture['sample'], $fixture['sample']));
+    }
+    public function testIdenticalInstalledInitRearmsDispatcherAfterScheduleRefusal() {
+        $adapter=$this->deferredRecoveryFixtureAdapter();$adapter->queueScheduleFailOnce=true;$failure=null;
+        $settings=(object)array('list'=>array(array('http://retracker.invalid/announce')),'todelete'=>array(),'dontAddPrivate'=>0);
+        $this->assertTrue(!RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$settings)&&$failure==='native-queue-schedule-unconfirmed',
+            'a refused dispatcher schedule is visible after functional hooks are installed');
+        $adapter->queueCurrentSample();
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$settings)&&$adapter->queueScheduleCalls===2,
+            'an identical installed profile retry rearms dispatcher instead of silently stranding durable Q');
+    }
+    public function testAsyncReplayDoesNotWaitForItsNewWorkerToFinish() {
+        $adapter=$this->deferredRecoveryFixtureAdapter(); $id=str_repeat('A',40); $hash=str_repeat('B',40);
+        $adapter->deferWorkerCompletion=true;
+        $adapter->ledgerKeys=array('dq:1','di:'.$id);
+        $adapter->downloadRowsQueue=array(array(array($hash,$id)));
+        $adapter->sourceScalarQueue=array(array('family'=>2,'values'=>array(
+            'local_id'=>$id,'state'=>'0','recovery_marker'=>'','recovery_ack'=>'','custom3'=>'')));
+        $failure=null;
+        $ok=RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter);
+        $this->assertTrue($ok === true && $failure === null && in_array('wp:'.$id,$adapter->ledgerKeys,true),
+            'init finalizes while its asynchronous worker remains pending');
+        $this->assertTrue(count(array_filter($adapter->ledgerKeys,function($key){return strncmp($key,'to:',3)===0;}))===0,
+            'async worker does not leave an INIT_OWNER lifecycle lease');
+    }
+    public function testSameUserResumesAcquireWhoseReadbackWasLost() {
+        $adapter=$this->deferredRecoveryFixtureAdapter(); $adapter->readbackFailAt=1; $failure=null;
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter)===false,
+            'the first lost readback is refused without guessing the acquire outcome');
+        $adapter->readbackFailAt=null; $adapter->queueCurrentSample();
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter)===true,
+            'the same owner continues its exact INIT_OWNER on a later confirmed read');
+        $names=array_map(function($callback){return $callback->name();},$adapter->callbackHistory);
+        $this->assertEquals(array('bootstrap-acquire','init-finalization'),$names,
+            'continuation neither reacquires nor invents a new lifecycle token');
+    }
+    public function testEmptySettingsRetireDeferredInsertionWithoutClaimOrWorker() {
+        $adapter=$this->deferredRecoveryFixtureAdapter(); $id=str_repeat('A',40); $hash=str_repeat('B',40);
+        $adapter->ledgerKeys=array('dq:1','di:'.$id);
+        $adapter->downloadRowsQueue=array(array(array($hash,$id)));
+        $settings=(object)array('list'=>array(),'todelete'=>array(),'dontAddPrivate'=>1);
+        $adapter->sourceScalarQueue=array(array('family'=>2,'values'=>array(
+            'local_id'=>$id,'recovery_marker'=>'','recovery_ack'=>'')));
+        $adapter->sourceScalarSnapshot($hash); // Populate the live daemon row in the existing model.
+        $failure=null;
+        $ok=RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$settings);
+        $names=array_map(function($callback){return $callback->name();},$adapter->callbackHistory);
+        $this->assertTrue($ok===true && in_array('deferred-unneeded-skip',$names,true) &&
+            !in_array('deferred-replay',$names,true) && !in_array('wp:'.$id,$adapter->ledgerKeys,true),
+            'empty additions and deletion rules retire only di without claiming or launching a worker');
+        $adapter=$this->deferredRecoveryFixtureAdapter();
+        $adapter->ledgerKeys=array('dq:1','di:'.$id);
+        $adapter->downloadRowsQueue=array(array(array($hash,$id)));
+        $adapter->sourceScalarQueue=array(array('family'=>2,'values'=>array(
+            'local_id'=>$id,'state'=>'0','is_private'=>'1','recovery_marker'=>'','recovery_ack'=>'','custom3'=>'')));
+        $settings->list=array(array('http://retracker.invalid/announce'));
+        $failure=null;
+        $ok=RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$settings);
+        $names=array_map(function($callback){return $callback->name();},$adapter->callbackHistory);
+        $this->assertTrue($ok===true && in_array('deferred-unneeded-skip',$names,true) &&
+            !in_array('deferred-replay',$names,true) && !in_array('wp:'.$id,$adapter->ledgerKeys,true),
+            'an excluded private deferred insertion retires only di without native claim or worker');
+    }
+
+    public function testPendingInitRetargetsSettingsAfterLostAcquireReadback() {
+        foreach(array(array(array('http://retracker.invalid/announce'),1),array(array(),0)) as $case) {
+            $adapter=$this->deferredRecoveryFixtureAdapter(); $adapter->readbackFailAt=1;
+            $before=(object)array('list'=>array(array('http://retracker.invalid/announce')),'todelete'=>array(),'dontAddPrivate'=>0);
+            $after=(object)array('list'=>$case[0] ? array($case[0]) : array(),'todelete'=>array(),'dontAddPrivate'=>$case[1]);
+            $failure=null;
+            $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$before)===false,
+                'lost acquire readback leaves its exact owner available for retarget');
+            $adapter->readbackFailAt=null; $adapter->queueCurrentSample();
+            $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$after)===true && $failure===null,
+                'the pending owner atomically retargets its pinned functional settings and completes without restart');
+            $names=array_map(function($callback){return $callback->name();},$adapter->callbackHistory);
+            $this->assertTrue(in_array('init-retarget',$names,true),'changed pending settings pass through their dedicated exact-owner CAS');
+        }
+    }
+
+    public function testPendingRetargetLostReplyResumesNewClaimWithoutReacquire() {
+        $adapter=$this->deferredRecoveryFixtureAdapter(); $adapter->readbackFailAt=1;
+        $before=(object)array('list'=>array(array('http://retracker.invalid/announce')),'todelete'=>array(),'dontAddPrivate'=>0);
+        $after=(object)array('list'=>array(),'todelete'=>array(),'dontAddPrivate'=>0);
+        $failure=null;
+        RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$before);
+        $adapter->readbackFailAt=null; $adapter->callbackResults=array(false); $adapter->queueCurrentSample();
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$after)===false && $failure==='lifecycle-retarget-unconfirmed',
+            'a lost retarget reply does not authorize another lifecycle mutation');
+        $adapter->queueCurrentSample();
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$after)===true,
+            'the next stable read resumes the exact new claim installed before the lost reply');
+        $names=array_map(function($callback){return $callback->name();},$adapter->callbackHistory);
+        $this->assertEquals(array('bootstrap-acquire','init-retarget','init-finalization'),$names,
+            'lost retarget reply neither replays the retarget nor reacquires owner');
+    }
+
+    public function testPendingRetargetRefusesChangedOldClaimWithoutWrites() {
+        $adapter=$this->deferredRecoveryFixtureAdapter(); $adapter->readbackFailAt=1; $failure=null;
+        $before=(object)array('list'=>array(array('http://retracker.invalid/announce')),'todelete'=>array(),'dontAddPrivate'=>0);
+        $after=(object)array('list'=>array(),'todelete'=>array(),'dontAddPrivate'=>0);
+        RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$before);
+        $old=array_values(array_filter($adapter->ledgerKeys,function($key){return strncmp($key,'pf:',3)===0;}))[0];
+        $adapter->beforeCallbackLedgerRemoves=array($old); $adapter->readbackFailAt=null;
+        $adapter->queueCurrentSample(); $writes=$adapter->modelWriteCount;
+        $this->assertTrue(RetrackersLifecycleCoordinator::init('alice','/plugin/run.sh','/usr/bin/php',$failure,$adapter,$after)===false &&
+            $failure==='lifecycle-retarget-changed' && $writes===$adapter->modelWriteCount,
+            'an old claim changed after sampling makes retarget refuse before its first write');
+    }
+
 	public function testTask5All165PreTaskPublicMethodsRemainOnePassRunnerReachable()
 	{
 		// Everything declared after the 165 were frozen, whatever added it -- the
@@ -11938,6 +12088,13 @@ PHP;
 		// Keep the frozen methods explicit so a new or missing one is named by
 		// the failure instead of hidden behind a fingerprint.
 		$added = array(
+			'testPendingInitRetargetsSettingsAfterLostAcquireReadback',
+			'testIdenticalInstalledInitRearmsDispatcherAfterScheduleRefusal',
+			'testPendingRetargetLostReplyResumesNewClaimWithoutReacquire',
+			'testPendingRetargetRefusesChangedOldClaimWithoutWrites',
+			'testAsyncReplayDoesNotWaitForItsNewWorkerToFinish',
+			'testSameUserResumesAcquireWhoseReadbackWasLost',
+			'testEmptySettingsRetireDeferredInsertionWithoutClaimOrWorker',
 			'testFreshLegacyWorkerProbesFamilyBeforeRejectingV1Handoff',
 			'testNativeFamilyRefusesLegacyWorkerBeforeAdoption',
 			'testNativeLegacyDisposalKeepsMarkerAndWa',

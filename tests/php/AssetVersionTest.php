@@ -13,7 +13,8 @@ class AssetVersionTest extends TestCase
             mkdir($this->tree . '/' . $path, 0700, true);
         }
         file_put_contents($this->tree . '/index.html', '<script>var ruTorrentAssetVersion = "development";</script>'
-            . '<script src="./js/core.js?v=5315"></script><link href="./css/style.css?v=5315-trackername">');
+            . '<script src="./js/core.js?v=5315"></script><link href="./css/style.css?v=5315-trackername">'
+            . '<script type="importmap">{"imports":{"./js/panel.js":"./js/panel.js?v=development"}}</script>');
         file_put_contents($this->tree . '/js/core.js', 'var version="5.3.15";');
         file_put_contents($this->tree . '/css/style.css', 'body {color:black}');
         file_put_contents($this->tree . '/lang/en.js', 'var text="one";');
@@ -46,7 +47,7 @@ class AssetVersionTest extends TestCase
         $this->assertTrue(isset($match[1]), 'index receives a content-derived asset key');
         if (!isset($match[1])) return null;
         preg_match_all('/[?&]v=([^"<> ]+)/', $index, $keys);
-        $this->assertEquals([$match[1], $match[1]], $keys[1], 'every core URL receives the same build key');
+        $this->assertEquals([$match[1], $match[1], $match[1]], $keys[1], 'core and transitive module URLs receive the same build key');
         return $match[1];
     }
 
@@ -95,6 +96,18 @@ class AssetVersionTest extends TestCase
         $this->assertEquals(1, $status, 'invalid deployment index fails explicitly');
         $this->assertEquals($invalid, file_get_contents($this->tree . '/index.html'), 'failed deployment preserves original HTML');
         $this->assertEquals([], glob($this->tree . '/.asset-version-*'), 'failed deployment leaves no temporary files');
+    }
+
+    public function testFetchedMobileHtmlChangesTheDeploymentKey()
+    {
+        mkdir($this->tree . '/plugins/mobile');
+        $path = $this->tree . '/plugins/mobile/mobile.html';
+        file_put_contents($path, '<div>mobile template one</div>');
+        $first = $this->stamp();
+        file_put_contents($path, '<div>mobile template two</div>');
+        $changed = $this->stamp();
+        $this->assertTrue($first !== $changed, 'fetched mobile HTML invalidates its keyed URL');
+        $this->assertEquals($changed, $this->stamp(), 'HTML assets retain an idempotent deployment key');
     }
 
 }

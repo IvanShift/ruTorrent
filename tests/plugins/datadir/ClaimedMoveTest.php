@@ -109,7 +109,7 @@ function dataDirClaimClean($path)
     @rmdir($path);
 }
 
-function dataDirClaimJob($root, $daemon, $files, $move)
+function dataDirClaimJob($root, $daemon, $files, $move, $rename = null)
 {
     $hash = str_repeat('A', 40);
     return DataDirMoveJob::create($root . '/jobs',
@@ -117,17 +117,17 @@ function dataDirClaimJob($root, $daemon, $files, $move)
             'add' => false, 'move' => $move, 'source' => $root . '/src',
             'destination' => $root . '/dst', 'files' => $files,
             'previous_directory' => $daemon->path),
-        array($daemon, 'rpc'), function ($source, $destination) {
+        array($daemon, 'rpc'), $rename !== null ? $rename : function ($source, $destination) {
             if (file_exists($destination) || is_link($destination)) return false;
             return rename($source, $destination);
         });
 }
 
-function dataDirClaimReload($root, $daemon)
+function dataDirClaimReload($root, $daemon, $rename = null)
 {
     $path = $root . '/jobs/' . str_repeat('A', 40) . '.json';
     return DataDirMoveJob::load($path, array($daemon, 'rpc'),
-        function ($source, $destination) {
+        $rename !== null ? $rename : function ($source, $destination) {
             if (file_exists($destination) || is_link($destination)) return false;
             return rename($source, $destination);
         });
@@ -340,6 +340,216 @@ $suite->test('lost directory setter reply resumes metadata-only job on its own t
     } finally {
         dataDirClaimClean($root);
     }
+});
+
+$suite->test('a refused rename with unchanged payload cancels the claim and retires the job', function () {
+    foreach (array(array(1, 1), array(0, 1), array(0, 0)) as $prestate) {
+        $root = dataDirClaimFixture();
+        try {
+            file_put_contents($root . '/src/a', 'A');
+            $daemon = new DataDirClaimFake();
+            $daemon->state = $daemon->active = $prestate[0];
+            $daemon->open = $prestate[1];
+            $job = dataDirClaimJob($root, $daemon, array('a'), true, function () { return false; });
+            try { $job->run(); throw new RuntimeException('refused move was accepted'); }
+            catch (DataDirMoveRefused $e) {
+                strictAssertSame('move-move-refused', $e->getMessage(), 'original move refusal is classified');
+            }
+            strictAssertSame('absent', $daemon->phase, 'claim is released and acknowledged');
+            strictAssertSame($prestate[0], $daemon->state, 'original start state is restored');
+            strictAssertSame($prestate[1], $daemon->open, 'original open state is restored');
+            strictAssertSame('/old', $daemon->path, 'refused move never applies a directory setter');
+            strictAssertSame('A', file_get_contents($root . '/src/a'), 'payload remains at source');
+            strictAssertSame(array(), array_values(array_diff(scandir($root . '/jobs'), array('.', '..'))),
+                'job, receipt and witness are retired after proven cancellation');
+        } finally { dataDirClaimClean($root); }
+    }
+});
+
+$suite->test('an old claimed ready job self-heals after the same refused rename', function () {
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A');
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array('a'), true);
+        $hash = str_repeat('A', 40);
+        $path = $root . '/jobs/' . $hash . '.json';
+        $daemon->rpc('d.stop_close_claim', $hash, array($job->id()));
+        $saved = json_decode(file_get_contents($path), true);
+        $saved['phase'] = 'claimed';
+        file_put_contents($path, json_encode($saved));
+        DataDirMoveIntent::prepare($path . '.move', $job->id(), $hash, $root . '/src',
+            $root . '/dst', array('a'), function () { return false; });
+        try { dataDirClaimReload($root, $daemon, function () { return false; })->run();
+            throw new RuntimeException('old refused move was accepted'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('move-move-refused', $e->getMessage(), 'recovery classifies the proven cancellation');
+        }
+        strictAssertSame('absent', $daemon->phase, 'persisted old claim is released');
+        strictAssertSame(1, $daemon->state, 'old active state is restored');
+        strictAssertSame(false, file_exists($path), 'old job is no longer an indefinite recovery hold');
+        strictAssertSame('A', file_get_contents($root . '/src/a'), 'old payload remains unchanged');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('a partial move retains its recovery receipt and later finishes the remaining payload', function () {
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A'); file_put_contents($root . '/src/b', 'B');
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array('a', 'b'), true,
+            function ($source, $destination) { return basename($source) === 'a' ? rename($source, $destination) : false; });
+        try { $job->run(); throw new RuntimeException('partial move was accepted'); }
+        catch (RuntimeException $e) {
+            strictAssertSame(false, $e instanceof DataDirMoveRefused, 'partial publication retains a recovery obligation');
+            strictAssertSame('move-move-refused', $e->getMessage(), 'partial refusal keeps the original classification');
+        }
+        strictAssertSame('active', $daemon->phase, 'partial publication keeps the claim');
+        strictAssertSame(0, $daemon->state, 'partial publication does not restart the torrent');
+        strictAssertSame('A', file_get_contents($root . '/dst/a'), 'first file remains published');
+        strictAssertSame('B', file_get_contents($root . '/src/b'), 'second file remains at source');
+        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'later recovery finishes safely');
+        strictAssertSame('B', file_get_contents($root . '/dst/b'), 'remaining file is published once');
+        strictAssertSame('absent', $daemon->phase, 'completed recovery acknowledges the claim');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('a later user Stop remains stopped when a refused unmoved job is cancelled', function () {
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A');
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array('a'), true, function () use ($daemon) {
+            $daemon->cancelRestore = true; return false;
+        });
+        try { $job->run(); throw new RuntimeException('refused move was accepted'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('move-move-refused', $e->getMessage(), 'refused move is safely cancelled');
+        }
+        strictAssertSame(0, $daemon->state, 'later user Stop is never undone');
+        strictAssertSame('absent', $daemon->phase, 'cancelled claim is acknowledged');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('lost cancellation reply after rename refusal preserves its reason and replays cancellation', function () {
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A');
+        $daemon = new DataDirClaimFake();
+        $daemon->loseFinishOnce = true;
+        $job = dataDirClaimJob($root, $daemon, array('a'), true, function () { return false; });
+        try { $job->run(); throw new RuntimeException('lost cancellation reply was accepted'); }
+        catch (RuntimeException $e) {
+            strictAssertSame(false, $e instanceof DataDirMoveRefused, 'unconfirmed cancellation remains a recovery obligation');
+            strictAssertSame('move-move-refused', $e->getMessage(), 'original refused move reason is retained');
+        }
+        strictAssertSame('cancel-pending', dataDirClaimReload($root, $daemon)->phase(), 'cancel phase survives the lost reply');
+        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'next recovery confirms and acknowledges cancellation');
+        strictAssertSame('absent', $daemon->phase, 'claim is safely retired after confirmation');
+        strictAssertSame('A', file_get_contents($root . '/src/a'), 'payload never moved');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('a claimed ready job with a changed generation stays held without restoring an unrelated torrent', function () {
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A');
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array('a'), true);
+        $hash = str_repeat('A', 40);
+        $path = $root . '/jobs/' . $hash . '.json';
+        $daemon->rpc('d.stop_close_claim', $hash, array($job->id()));
+        $saved = json_decode(file_get_contents($path), true); $saved['phase'] = 'claimed';
+        file_put_contents($path, json_encode($saved));
+        DataDirMoveIntent::prepare($path . '.move', $job->id(), $hash, $root . '/src',
+            $root . '/dst', array('a'), function () { return false; });
+        $daemon->localId = 'ffffffffffffffffffffffffffffffff';
+        try { dataDirClaimReload($root, $daemon, function () { return false; })->run();
+            throw new RuntimeException('unrelated generation was restored'); }
+        catch (RuntimeException $e) {
+            strictAssertSame('torrent-generation-changed', $e->getMessage(), 'stale generation remains classified');
+            strictAssertSame(false, $e instanceof DataDirMoveRefused, 'existing receipt keeps a recovery obligation');
+        }
+        strictAssertSame('active', $daemon->phase, 'stale receipt is never applied to a new generation');
+        strictAssertSame(true, is_file($path . '.move'), 'stale receipt evidence remains available');
+        strictAssertSame('A', file_get_contents($root . '/src/a'), 'stale payload remains untouched');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('unmoved cancellation resumes across its durable phase and witness cleanup cuts', function () {
+    strictAssertTrue(method_exists('DataDirMoveIntent', 'beginAbortUnmoved'),
+        'unmoved proof has a durable phase before witness cleanup');
+    foreach (array('intent-phase', 'first-witness', 'all-witnesses', 'receipt-removed') as $cut) {
+        $root = dataDirClaimFixture();
+        try {
+            file_put_contents($root . '/src/a', 'A'); file_put_contents($root . '/src/b', 'B');
+            $daemon = new DataDirClaimFake();
+            $job = dataDirClaimJob($root, $daemon, array('a', 'b'), true);
+            $hash = str_repeat('A', 40);
+            $path = $root . '/jobs/' . $hash . '.json';
+            $daemon->rpc('d.stop_close_claim', $hash, array($job->id()));
+            $saved = json_decode(file_get_contents($path), true); $saved['phase'] = 'claimed';
+            file_put_contents($path, json_encode($saved));
+            $intent = DataDirMoveIntent::prepare($path . '.move', $job->id(), $hash,
+                $root . '/src', $root . '/dst', array('a', 'b'), function () { return false; });
+            strictAssertSame(true, $intent->beginAbortUnmoved(), 'unmoved proof is persisted before cleanup');
+            strictAssertSame('aborting', DataDirMoveIntent::load($path . '.move')->phase(), 'abort marker survives reload');
+            if ($cut !== 'intent-phase') {
+                $saved['phase'] = 'cancel-pending';
+                file_put_contents($path, json_encode($saved));
+                $move = json_decode(file_get_contents($path . '.move'), true);
+                unlink($move['witness'] . '/0');
+                if ($cut === 'all-witnesses' || $cut === 'receipt-removed') {
+                    unlink($move['witness'] . '/1'); rmdir($move['witness']);
+                }
+                if ($cut === 'receipt-removed') unlink($path . '.move');
+            }
+            $moves = 0;
+            strictAssertSame(true, dataDirClaimReload($root, $daemon, function () use (&$moves) {
+                ++$moves; return false;
+            })->run(), 'cancellation resumes at cut ' . $cut);
+            strictAssertSame(0, $moves, 'cancellation never retries a payload move');
+            strictAssertSame('absent', $daemon->phase, 'cancelled claim is acknowledged');
+            strictAssertSame(1, $daemon->state, 'original active state is restored');
+            strictAssertSame('A', file_get_contents($root . '/src/a'), 'first source remains intact');
+            strictAssertSame('B', file_get_contents($root . '/src/b'), 'second source remains intact');
+            strictAssertSame(array(), array_values(array_diff(scandir($root . '/jobs'), array('.', '..'))),
+                'every cancellation receipt is retired');
+        } finally { dataDirClaimClean($root); }
+    }
+});
+
+$suite->test('durable cancellation refuses an unexpected witness entry and can recover after repair', function () {
+    strictAssertTrue(method_exists('DataDirMoveIntent', 'beginAbortUnmoved'), 'durable abort phase exists');
+    $root = dataDirClaimFixture();
+    try {
+        file_put_contents($root . '/src/a', 'A');
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array('a'), true);
+        $hash = str_repeat('A', 40); $path = $root . '/jobs/' . $hash . '.json';
+        $daemon->rpc('d.stop_close_claim', $hash, array($job->id()));
+        $saved = json_decode(file_get_contents($path), true); $saved['phase'] = 'claimed';
+        file_put_contents($path, json_encode($saved));
+        $intent = DataDirMoveIntent::prepare($path . '.move', $job->id(), $hash,
+            $root . '/src', $root . '/dst', array('a'), function () { return false; });
+        strictAssertSame(true, $intent->beginAbortUnmoved(), 'cancellation proof is durable');
+        $move = json_decode(file_get_contents($path . '.move'), true);
+        file_put_contents($move['witness'] . '/unexpected', 'foreign');
+        try { dataDirClaimReload($root, $daemon)->run(); throw new RuntimeException('unexpected entry was erased'); }
+        catch (RuntimeException $e) {
+            strictAssertSame('unmoved-abort-unconfirmed', $e->getMessage(), 'uncertain cleanup remains held');
+        }
+        strictAssertSame('active', $daemon->phase, 'unconfirmed cleanup never restores the torrent');
+        strictAssertSame('cancel-pending', dataDirClaimReload($root, $daemon)->phase(),
+            'cancellation is durable before attempted witness cleanup');
+        strictAssertSame('aborting', DataDirMoveIntent::load($path . '.move')->phase(),
+            'partial cleanup retains its durable proof');
+        strictAssertSame(false, file_exists($move['witness'] . '/0'), 'cleanup reached a partial witness cut');
+        strictAssertSame('foreign', file_get_contents($move['witness'] . '/unexpected'), 'foreign entry is preserved');
+        unlink($move['witness'] . '/unexpected');
+        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'recovery finishes after the foreign entry is removed');
+        strictAssertSame('absent', $daemon->phase, 'repaired cancellation is acknowledged');
+    } finally { dataDirClaimClean($root); }
 });
 
 exit($suite->run());

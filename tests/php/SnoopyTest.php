@@ -82,7 +82,10 @@ if [ -n "$SNOOPY_TEST_REDIRECT" ] && [ ! -f "$SNOOPY_TEST_SEEN" ]; then
 else
 	printf '%b\r\n' "${SNOOPY_TEST_RESPONSE:-HTTP/1.1 200 OK\r\n}" > "$header_file"
 fi
-if [ -n "$SNOOPY_TEST_BODY_FILE" ]; then
+if [ -n "$SNOOPY_TEST_OMIT_BODY" ]; then
+	# Real curl does not create -o for a bodyless 304 (captured in V-13).
+	:
+elif [ -n "$SNOOPY_TEST_BODY_FILE" ]; then
 	cp "$SNOOPY_TEST_BODY_FILE" "$body_file"
 else
 	: > "$body_file"
@@ -243,6 +246,64 @@ function snoopyAssertPrefixRefused($cookie, $redirect = 'https://prefix.test/nex
 }
 
 $tests = array(
+    'the captured live RuTracker HTTPS 304 is accepted without a curl output file' => function () {
+        $capture = file_get_contents(__DIR__.'/fixtures/rutracker-https-304/conditional.headers');
+        snoopyRespondWith($capture);
+        putenv('SNOOPY_TEST_OMIT_BODY=1');
+        try {
+            $client = new Snoopy();
+            testAssertSame(true, $client->fetch('https://api.rutracker.cc/v1/static/pvc/f/7'),
+                'the real public API 304 with representation gzip metadata is accepted verbatim');
+            testAssertSame(304, (int)$client->status, 'captured final status is retained');
+            testAssertSame('"6ac4c7cd-155"', trim($client->get_header('ETag')),
+                'the captured conditional ETag is retained');
+            testAssertSame('', $client->results, 'curl did not emit a representation body');
+        } finally {
+            putenv('SNOOPY_TEST_OMIT_BODY');
+            snoopyRespondWith('');
+        }
+    },
+    'curl 304 without an output file retains the final status and ETag' => function () {
+        snoopyRespondWith('HTTP/1.1 200 Connection established\r\n\r\n'
+            . 'HTTP/2 304\r\nETag: "forum-capture"\r\nContent-Encoding: gzip\r\n');
+        putenv('SNOOPY_TEST_OMIT_BODY=1');
+        try {
+            $client = new Snoopy();
+            $client->results = 'previous response must not survive';
+            testAssertSame(true, $client->fetch('https://tracker.test/forum'),
+                'the captured curl bodyless-file behavior is accepted');
+            testAssertSame(304, (int)$client->status, 'the final 304 is retained');
+            testAssertSame('"forum-capture"', trim($client->get_header('ETag')),
+                'conditional cache validation can read the actual ETag');
+            testAssertSame('', $client->results, '304 never reuses an earlier body');
+            testAssertSame('', $client->error, 'no invented gzip body is decoded');
+        } finally {
+            putenv('SNOOPY_TEST_OMIT_BODY');
+            snoopyRespondWith('');
+        }
+    },
+    'curl accepts missing body output only for a bodyless response' => function () {
+        putenv('SNOOPY_TEST_OMIT_BODY=1');
+        try {
+            foreach (array(array(204, 'GET'), array(205, 'GET'), array(200, 'HEAD')) as $case) {
+                snoopyRespondWith('HTTP/1.1 '.$case[0].' Test\r\nContent-Encoding: gzip\r\n');
+                $client = new Snoopy();
+                testAssertSame(true, $client->fetch('https://tracker.test/empty', $case[1]),
+                    $case[1].' '.$case[0].' has no representation body');
+                testAssertSame($case[0], (int)$client->status, 'status survives without a file');
+                testAssertSame('', $client->results, 'bodyless response stays empty');
+            }
+            snoopyRespondWith('HTTP/1.1 200 OK\r\n');
+            $client = new Snoopy();
+            testAssertSame(false, $client->fetch('https://tracker.test/missing'),
+                'a missing ordinary GET body remains a transport refusal');
+            testAssertSame('unreadable-or-oversized-response', $client->error,
+                'the ordinary missing file remains classified');
+        } finally {
+            putenv('SNOOPY_TEST_OMIT_BODY');
+            snoopyRespondWith('');
+        }
+    },
     'a valid parent Domain cookie follows its sibling without port isolation' => function () {
         putenv('SNOOPY_TEST_REDIRECT=https://dl.katcr.co/private/file');
         putenv('SNOOPY_TEST_REDIRECT_COOKIE=id=parent; Domain=.katcr.co; Path=/; Secure');

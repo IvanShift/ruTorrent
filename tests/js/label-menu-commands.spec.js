@@ -2,6 +2,14 @@ import { readFileSync } from "fs";
 
 window.$ = require("jquery");
 
+// The browser loads the shared plugin loader before plugin initialization.
+// Keep its real URL helper while the fixture supplies the remaining globals.
+const pluginLoaderScript = document.createElement("script");
+pluginLoaderScript.textContent =
+  "(function(){\n" + readFileSync("../js/plugins.js", { encoding: "utf-8" }) +
+  "\nwindow.cacheBust = cacheBust;})();";
+document.head.appendChild(pluginLoaderScript);
+
 // A panel label's context menu is built by the category list and handed to
 // theContextMenu, which runs an entry's command when the entry is picked. The
 // plugins that own a panel wrap categoryList.contextMenuEntries to contribute

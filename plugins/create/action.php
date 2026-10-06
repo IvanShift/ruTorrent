@@ -4,6 +4,8 @@ require_once( dirname(__FILE__).'/../_task/task.php' );
 require_once( dirname(__FILE__).'/../../php/Torrent.php' );
 require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 eval( FileUtil::getPluginConf( 'create' ) );
+require_once(__DIR__.'/external.php');
+$pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
 
 class recentTrackers
 {

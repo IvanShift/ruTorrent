@@ -16,7 +16,7 @@ class DataDirFailureVisibilityTest extends TestCase
         $root = dirname(__DIR__, 3);
         if (!copy($root . '/php/cli-only.php', $this->tree . '/php/cli-only.php'))
             throw new RuntimeException('Could not copy production CLI guard');
-        foreach (array('action.php', 'setdir.php', 'setdircommand.php') as $name)
+        foreach (array('action.php', 'setdir.php', 'setdircommand.php', 'moveintent.php') as $name)
             if (!copy($root . '/plugins/datadir/' . $name, $this->tree . '/plugins/datadir/' . $name))
                 throw new RuntimeException('Could not copy production ' . $name);
         file_put_contents($this->tree . '/php/xmlrpc.php', '<?php require_once __DIR__ . "/util.php";');
@@ -73,6 +73,7 @@ STUB
         );
         file_put_contents($this->tree . '/plugins/datadir/util_setdir.php', <<<'STUB'
 <?php
+require_once __DIR__ . '/moveintent.php';
 function rtDataDirLock($blocking) { return true; }
 function rtDataDirRecover() {}
 function rtDataDirUnlock($lock) {}
@@ -80,6 +81,12 @@ function rtDataDirClaimCapability()
 {
     $mode = getenv('DATADIR_TEST_CLAIM_CAPABILITY');
     return $mode ? $mode : 'available';
+}
+function rtDataDirCollision($hash, $path, $add, $debug)
+{
+    $reason = getenv('DATADIR_TEST_PREFLIGHT_REFUSAL');
+    if ($reason) throw new RuntimeException($reason);
+    return '';
 }
 function rtSetDataDir($hash, $path, $add, $move, $resume, $debug)
 {
@@ -103,7 +110,7 @@ STUB
     public function tearDown()
     {
         foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'php/cli-only.php', 'plugins/datadir/action.php',
-            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php',
+            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php', 'plugins/datadir/moveintent.php',
             'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
             @unlink($this->tree . '/' . $file);
@@ -347,5 +354,49 @@ STUB
         $this->assertTrue(strpos($log, 'daemon-claim-unavailable') === false,
             'Unknown transport is not diagnosed as a missing method');
         $this->assertTrue(!is_file($dispatch), 'Unknown capability has no worker dispatch');
+    }
+
+    public function testActionReturnsAnUntrustedDestinationReasonBeforeWorkerDispatch()
+    {
+        $path = $this->tree . '/allowed';
+        chmod($path, 0777);
+        $dispatch = $this->tree . '/dispatch.json';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=' . rawurlencode($path);
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_TOP'=>$path, 'DATADIR_TEST_COMMAND_LOG'=>$dispatch));
+        $decoded = json_decode($output, true);
+        $this->assertSame(0, $code, 'An unsafe destination produces a normal application response');
+        $this->assertSame('destination-root-untrusted', $decoded['errors'][0]['prm'] ?? null,
+            'The dialog receives the classified destination refusal');
+        $this->assertTrue(!is_file($dispatch), 'An unsafe destination is not dispatched');
+        $this->assertTrue(strpos($log, 'destination-root-untrusted') !== false, 'Application refusal is logged');
+    }
+
+    public function testWorkerLogsTheUntrustedDestinationBeforeCreatingOrClaiming()
+    {
+        $path = $this->tree . '/allowed';
+        chmod($path, 0777);
+        $mkdir = $this->tree . '/mkdir.log';
+        list($code, $output, $stderr, $log) = $this->worker(array(str_repeat('A', 40), $path, '1', '1', '0', 'test'),
+            array('DATADIR_TEST_TOP'=>$path, 'DATADIR_TEST_MKDIR_LOG'=>$mkdir));
+        $this->assertSame(0, $code, 'Worker safely refuses an untrusted destination');
+        $this->assertTrue(!is_file($mkdir), 'Worker never creates the refused destination');
+        $this->assertTrue(strpos($log, 'destination-root-untrusted') !== false, 'Worker refusal has its actual cause');
+    }
+
+    public function testActionReturnsTheClassifiedMovePreflightRefusal()
+    {
+        $path = $this->tree . '/allowed';
+        $dispatch = $this->tree . '/dispatch.json';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=' . rawurlencode($path) . '&move_datafiles=1';
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_TOP'=>$path, 'DATADIR_TEST_COMMAND_LOG'=>$dispatch,
+                'DATADIR_TEST_PREFLIGHT_REFUSAL'=>'rename-noreplace-unsupported'));
+        $decoded = json_decode($output, true);
+        $this->assertSame(0, $code, 'A preflight refusal produces a normal application response');
+        $this->assertSame('rename-noreplace-unsupported', $decoded['errors'][0]['prm'] ?? null,
+            'The dialog receives the filesystem refusal');
+        $this->assertTrue(!is_file($dispatch), 'Refused Move is not dispatched');
+        $this->assertTrue(strpos($log, 'rename-noreplace-unsupported') !== false, 'Application preserves the actual reason');
     }
 }

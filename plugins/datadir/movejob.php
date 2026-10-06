@@ -155,12 +155,20 @@ class DataDirMoveJob
     {
         if ($this->data['phase'] !== 'cancel-pending')
         {
-            if ($intent !== null && !$intent->abortUnmoved())
+            if ($intent !== null && $intent->phase() !== 'preparing'
+                && !$intent->beginAbortUnmoved())
                 throw new RuntimeException('unmoved-abort-unconfirmed');
+            // This phase must survive receipt deletion: a restarted worker
+            // must finish cancellation instead of preparing another move.
             $this->phaseSet('cancel-pending');
         }
-        elseif ($intent !== null)
-            throw new RuntimeException('cancel-with-move-receipt');
+        if ($intent !== null)
+        {
+            if (!in_array($intent->phase(), array('preparing', 'aborting'), true))
+                throw new RuntimeException('cancel-with-move-receipt');
+            if (!$intent->abortUnmoved())
+                throw new RuntimeException('unmoved-abort-unconfirmed');
+        }
         if ($state['kind'] === 'active')
         {
             $finish = $state['state'] === 1 ? 'd.start_if_stop_close_claim'
@@ -212,7 +220,8 @@ class DataDirMoveJob
             }
             throw new RuntimeException('torrent-generation-changed');
         }
-        if ($this->data['phase'] === 'cancel-pending')
+        if ($this->data['phase'] === 'cancel-pending'
+            || ($intent !== null && $intent->phase() === 'aborting'))
             return $this->cancelUnmoved($state, $intent);
         if ($state['kind'] === 'active' && $intent === null
             && ($this->data['phase'] === 'new' || $this->data['phase'] === 'claimed')
@@ -259,7 +268,15 @@ class DataDirMoveJob
             {
                 $result = $intent->advance();
                 if ($result !== 'complete')
-                    throw new RuntimeException('move-' . $result);
+                {
+                    // Retire a refused job only after abortUnmoved proves that
+                    // no payload was published. Partial moves retain recovery.
+                    try { $this->cancelUnmoved($state, $intent); }
+                    catch (RuntimeException $e) {
+                        throw new RuntimeException('move-' . $result, 0, $e);
+                    }
+                    throw new DataDirMoveRefused('move-' . $result);
+                }
                 if (!$intent->markFinishing())
                     throw new RuntimeException('move-finishing-unconfirmed');
             }

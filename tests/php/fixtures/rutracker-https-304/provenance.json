@@ -1,0 +1,12 @@
+{
+  "source_url": "https://api.rutracker.cc/v1/static/pvc/f/7",
+  "captured_utc": "2026-10-06T10:18:06Z",
+  "transport": "Snoopy with host curl 8.18.0, ordinary certificate validation; no authentication",
+  "conditional_output_file_created": false,
+  "response_headers": "conditional.headers",
+  "body_200": "forum-7.json",
+  "sha256": {
+    "conditional.headers": "12cda3704e9abb91ed85fa6e4d13f1b04c03e732642a05f22eb2169a4e6a0f5f",
+    "forum-7.json": "54609c5ad9b207747ac9fc9f9e5d33abbeed0f18b2a2fdf9d7841e97a99e3e8c"
+  }
+}

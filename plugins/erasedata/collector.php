@@ -1518,8 +1518,8 @@ final class ErasedataCollector
 
 	// One unconditional, bounded, classified line per physical job that ends
 	// RETAINED: the canonical hash, the generation its manifest is bound under
-	// and the reason. Never a raw path, never a settings root, never a manifest
-	// byte and never anything rTorrent sent.
+	// and the reason. Native rename refusals also carry a safely encoded path
+	// and numeric errno. Never manifest bytes or raw rTorrent response text.
 	//
 	// Retention on the payload side used to go out through $this->log(), which
 	// is eLog(), which the shipped $erasedebug_enabled = false silences: a
@@ -1534,6 +1534,8 @@ final class ErasedataCollector
 	// lines.
 	private function manifestLog($hash, $path, $reason)
 	{
+		if($reason === 'incomplete' && ErasedataFilesystemOps::lastRenameRefusalContext() !== '')
+			$reason = ErasedataFilesystemOps::lastRenameRefusalContext();
 		if(!is_array($this->manifestLogState))
 			$this->manifestLogState = array();
 		// The generation comes out of the NAME, which carries the hash and the
@@ -2551,6 +2553,8 @@ final class ErasedataCollector
 
 	private function cleanupLog($hash, $state, $reason = null, $jobPath = '', $jobKey = null)
 	{
+		if($reason === 'capture-failed' && ErasedataFilesystemOps::lastRenameRefusalContext() !== '')
+			$reason = ErasedataFilesystemOps::lastRenameRefusalContext();
 		if(!is_array($this->cleanupLogState))
 			$this->cleanupLogState = array('completed' => array(), 'retained' => array());
 		$key = $hash.'|'.($jobKey === null ? $jobPath : $jobKey);
@@ -3072,6 +3076,7 @@ final class ErasedataCollector
 
 	private function collectHashIndexed($listPath, $hash, $hashIndex, $index)
 	{
+		ErasedataFilesystemOps::clearRenameRefusal();
 		$lock = erasedataAcquireHashLock($listPath, $hash, !$this->blockingHashLocks);
 		if($lock === false)
 			return;

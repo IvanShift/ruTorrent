@@ -83,10 +83,22 @@ if( $hash && strlen( $datadir ) > 0 )
 	}
 	else
 	{
-		$taken = $move_datafiles
-			? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
-			: '';
-		if($taken !== '')
+		$taken = '';
+		$preflightReason = DataDirMoveIntent::destinationReason($datadir);
+		if($preflightReason === '')
+		{
+			try {
+				$taken = $move_datafiles
+					? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
+					: '';
+			} catch(Exception $e) { $preflightReason = $e->getMessage(); }
+		}
+		if($preflightReason !== '')
+		{
+			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.$preflightReason);
+			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$preflightReason);
+		}
+		elseif($taken !== '')
 		{
 			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
 			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);

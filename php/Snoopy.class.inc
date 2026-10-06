@@ -1586,14 +1586,6 @@ class Snoopy
 		}
 		else
 		{
-			$limit = max(0, (int)$this->maxlength);
-			$results = @file_get_contents($contfile, false, null, 0, $limit + 1);
-			if($results === false || strlen($results) > $limit)
-			{
-				@unlink($headerfile);
-				@unlink($contfile);
-				return($this->refuseResponseBody('unreadable-or-oversized-response'));
-			}
 			$result_headers = @file($headerfile);
 			if(!is_array($result_headers))
 			{
@@ -1635,7 +1627,24 @@ class Snoopy
 				@unlink($contfile);
 				return $this->refuseResponseBody('missing-final-response');
 			}
-			if($is_gzipped)
+			// Captured HTTPS 304 replies do not make curl create the -o file.
+			// Parse the final origin status first; gzip on HEAD/304 describes
+			// the representation, not a compressed body in this response.
+			$bodyless = strtoupper($http_method) === 'HEAD'
+				|| in_array((int)$this->status, array(204, 205, 304), true);
+			$limit = max(0, (int)$this->maxlength);
+			$results = @file_get_contents($contfile, false, null, 0, $limit + 1);
+			if($results === false && $bodyless && !file_exists($contfile))
+				$results = '';
+			if($results === false || strlen($results) > $limit)
+			{
+				@unlink($headerfile);
+				@unlink($contfile);
+				return($this->refuseResponseBody('unreadable-or-oversized-response'));
+			}
+			if($bodyless)
+				$results = '';
+			else if($is_gzipped)
 			{
 				$results = $this->decodeGzipBody($results);
 				if($results === false)

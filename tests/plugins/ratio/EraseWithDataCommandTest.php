@@ -2,9 +2,36 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../../plugins/ratio/ratio.php');
+require_once(__DIR__ . '/../erasedata/QueueRefusalFixture.php');
 
 class EraseWithDataCommandTest extends TestCase
 {
+    public function testActualRatioInitChecksAcceptedAndRefusedPhysicalQueues()
+    {
+        $fixture=sys_get_temp_dir().'/ratio-physical-'.bin2hex(random_bytes(5));
+        mkdir($fixture,0700);
+        try
+        {
+            foreach(array(false,true) as $ready)
+            {
+                $data=ErasedataQueueRefusalFixture::run($fixture,'ratio',$ready);
+                $this->assertEquals(array('ratio'),$data['registered'], 'Ratio itself initializes against either queue verdict');
+                $this->assertTrue($data['queue_exists'], 'actual admission inspects or creates the physical queue');
+                if($ready)
+                {
+                    $this->assertEquals(array(),$data['log'], 'accepted physical queue passes actual admission without a stubbed gate');
+                    $this->assertEquals('stale-own',$data['schedules']['erasedataalice'], 'successful admission keeps ordinary cleanup scheduled');
+                }
+                else
+                {
+                    $this->assertTrue(!isset($data['schedules']['erasedataalice']), 'actual refused admission retires ordinary cleanup');
+                    $this->assertEquals('durable deletion obligation',$data['intent'], 'Ratio keeps the refused physical obligation');
+                    $this->assertTrue(strpos(implode("\n",$data['log']),'queue refused:')!==false, 'Ratio reports the real physical refusal');
+                }
+            }
+        }
+        finally{$this->removeTree($fixture);}
+    }
 	private function removeTree($path)
 	{
 		if(is_link($path) || is_file($path))

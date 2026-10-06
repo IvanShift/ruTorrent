@@ -2809,8 +2809,8 @@ $(document).ready(function()
 	theContextMenu.init();
 	theTabs.init();
 	Promise.all([
-		import('./backgroundtask.js'),
-		import('./category-list.js'),
+		import(cacheBust('./backgroundtask.js')),
+		import(cacheBust('./category-list.js')),
 	]).then(([bgModule, catModule]) => {
 		theWebUI.taskAddTorrents = new bgModule.BackgroundTask();
 		theWebUI.categoryList = createCategoryList(catModule);

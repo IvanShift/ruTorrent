@@ -18,9 +18,9 @@ function compareEntries( $a, $b )
 		strcmp(strtolower($a), strtolower($b)) );
 }
 
-if(isset($_REQUEST['mode']))
+$output = array();
+if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 {
-	$output = array();
 	$modes = explode(';',$_REQUEST['mode']);
 	$theSettings = rTorrentSettings::get();
 	if(in_array("labels",$modes))
@@ -42,11 +42,15 @@ if(isset($_REQUEST['mode']))
 	}
 	if(in_array("dirlist",$modes))
 	{
+		// Compare physical paths on both sides when the configured root is an alias.
+		$resolvedTop = @realpath($topDirectory);
+		if($resolvedTop !== false)
+			$topDirectory = $resolvedTop;
 		$dh = false;
-		if(isset($_REQUEST['basedir']))
+		if(isset($_REQUEST['basedir']) && is_string($_REQUEST['basedir']))
 		{
 			$dir = rawurldecode($_REQUEST['basedir']);
-			$allowedDirectory = $theSettings->correctDirectory($dir);
+			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctDirectory($dir, true);
 			$dh = $allowedDirectory ? @opendir($dir) : false;
 			$dir = FileUtil::addslash($dir);
 
@@ -63,7 +67,7 @@ if(isset($_REQUEST['mode']))
 		if(!$dh)
 		{
 			$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-			if(!$theSettings->correctDirectory($dir))
+			if(!$theSettings->correctDirectory($dir, true))
 				$dir = $topDirectory;
 			$dh = @opendir($dir);
 		}
@@ -77,7 +81,7 @@ if(isset($_REQUEST['mode']))
 				if(($file=="..") && (rtrim($dir, '/') === rtrim($topDirectory, '/')))
 					continue;
 				if(is_dir($path) && is_readable($path) &&
-					$theSettings->correctDirectory($path) &&
+					$theSettings->correctDirectory($path, true) &&
 					( $theSettings->uid<0 || !$checkUserPermissions || Permission::doesUserHave($theSettings->uid,$theSettings->gid,$path,0x0007) )
 					)
 				{

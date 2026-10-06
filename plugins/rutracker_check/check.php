@@ -1605,7 +1605,7 @@ class ruTrackerChecker
 
 	// One daemon-side command selects the live state and, in that same command
 	// execution, writes the matching recovery marker before stop/close. Its
-	// exact returned marker is the only state source PHP accepts afterwards.
+	// exact returned marker is the only run-state source accepted for staging.
 	static private function replacementStopCommand($oldHash, $newHash, $stagedAt,
 		$stoppedFallback = null, $localId = null)
 	{
@@ -1951,9 +1951,24 @@ class ruTrackerChecker
 			|| !in_array($stop->val[0],
 				array($startedMarker, $openMarker, $stoppedMarker), true))
 		{
-			self::logDebug("createTorrent: " . $hash
-				. " did not return a trustworthy daemon-selected marker while being stopped;"
-				. " the outcome is left to the replacement sweep");
+			// The reply can be lost or malformed after stop/close already ran.
+			// Read the persisted marker, then compare it again inside rollback;
+			// never infer run policy by stripping bytes from an untrusted reply.
+			$restored = false;
+			$recoveryRead = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'),
+				array($hash, self::REPLACING_KEY)));
+			$recoveryRead->important = false;
+			if($recoveryRead->success() && !$recoveryRead->fault && is_array($recoveryRead->val)
+				&& count($recoveryRead->val) === 1 && is_string($recoveryRead->val[0])
+				&& in_array($recoveryRead->val[0], array($startedMarker, $openMarker, $stoppedMarker), true))
+			{
+				$recoveryMarker = $recoveryRead->val[0];
+				$restoreStarted = $recoveryMarker === $startedMarker;
+				$restored = self::restoreExistingTorrent($hash,
+					$restoreStarted || $recoveryMarker === $openMarker, $restoreStarted, $recoveryMarker);
+			}
+			self::logUnrepairable('createTorrent: '.$hash.' stop-marker-refused restore='
+				.($restored ? 'confirmed' : 'unconfirmed'));
 			return self::STE_ERROR;
 		}
 		$selectedMarker = (string) $stop->val[0];

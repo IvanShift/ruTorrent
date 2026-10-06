@@ -191,4 +191,12 @@ class SetpropsTest extends TestCase
 			$this->peer = null;
 		}
 	}
+    public function testNegativeZeroIsRefusedBeforeRpc()
+    {
+        $out = $this->post('mode=setprops&hash='.self::HASH.'&s=peers_max&v=-0');
+        $this->assertTrue(strpos($out, 'Refused: invalid property value') !== false,
+            'negative zero is not a canonical daemon integer');
+        $this->assertTrue(!$this->peer->accepted(), 'invalid property never reaches the daemon');
+    }
+
 }

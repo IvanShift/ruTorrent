@@ -2923,6 +2923,63 @@ class CheckerTest
 		}
 	}
 
+	public function testRefusedStopMarkerRestoresItsExactPersistedGenerationWithoutDebugLogging()
+	{
+		foreach(array('started', 'open', 'stopped') as $run)
+		{
+			$this->resetFakes();
+			$this->stageTorrents();
+			rXMLRPCRequest::queue('d.hash', true, true, array());
+			$this->queueViews();
+			rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+				array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
+			$persisted = null;
+			rXMLRPCRequest::queue('branch', true, false, function($commands) use ($run, &$persisted) {
+				preg_match('/'.self::NEW_HASH.'-'.$run.'-\d+/', implode('|', $commands[0]->params), $match);
+				if(!isset($match[0])) throw new RuntimeException('No recovery marker in stop branch');
+				$persisted = $match[0];
+				// Captured native d.stop adds a zero inside cat (REVIEW RT-E-01/V-13).
+				return array('0'.$persisted);
+			});
+			rXMLRPCRequest::queue('d.get_custom', true, false, function() use (&$persisted) { return array($persisted); });
+			$this->queueAtomic($run === 'stopped' ? RuTrackerAtomicOwnership::SENTINEL_CLEARED : RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			$this->withoutDebugLog(function() use ($run) {
+				strictAssertSame(ruTrackerChecker::STE_ERROR,
+					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+					$run.': malformed stop reply remains a replacement refusal');
+			});
+			strictAssertSame(null, rTorrent::$lastSend, $run.': marker validation is not relaxed');
+			$branches = rXMLRPCRequest::requestsFor('branch');
+			strictAssertSame(2, count($branches), $run.': the refusal immediately attempts one rollback');
+			if(count($branches) !== 2) continue;
+			$params = $branches[1]['commands'][0]->params;
+			strictAssertTrue(strpos($params[1], 'equal=d.get_custom=chk-replacing,cat='.$persisted) !== false,
+				$run.': rollback atomically checks the exact persisted generation');
+			strictAssertSame($run === 'started', strpos(implode('|', $params), '$d.start=') !== false,
+				$run.': rollback follows the daemon-selected run policy');
+			strictAssertOneLogMatching(FileUtil::$log, 'stop-marker-refused restore=confirmed',
+				$run.': refusal and immediate restore are visible at the shipped debug setting');
+		}
+	}
+
+	public function testRefusedStopMarkerNeverRestoresAForeignPersistedGeneration()
+	{
+		$this->resetFakes();
+		$this->stageTorrents();
+		rXMLRPCRequest::queue('d.hash', true, true, array());
+		$this->queueViews();
+		rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+			array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
+		rXMLRPCRequest::queue('branch', true, false, array('untrusted-stop-reply'));
+		rXMLRPCRequest::queue('d.get_custom', true, false, array('foreign-generation'));
+		$this->withoutDebugLog(function() {
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'the foreign marker keeps the refusal retryable');
+		});
+		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')), 'a foreign marker cannot authorize a rollback');
+		strictAssertOneLogMatching(FileUtil::$log, 'stop-marker-refused restore=unconfirmed', 'the retained recovery state is visible without debug logging');
+	}
+
 	// Metainfo that does not parse is a bad payload and nothing more. It is not
 	// the tracker saying the topic is gone: a login wall, a challenge page and a
 	// truncated download all look exactly like this, and reading any of them as

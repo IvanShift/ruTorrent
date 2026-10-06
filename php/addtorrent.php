@@ -184,10 +184,8 @@ else
 			}
 		}
 	}
-	if (!empty($_SERVER['PHP_SELF']) && !empty($_SERVER['HTTP_HOST']))
-		$location = "Location: //".$_SERVER['HTTP_HOST'].dirname($_SERVER['PHP_SELF'])."/addtorrent.php?";
-	else
-		$location = "Location: ./addtorrent.php?";
+	// The browser knows the public origin and prefix even when a proxy rewrites them.
+	$location = "Location: ./addtorrent.php?";
 	if(empty($uploaded_files))
 		$uploaded_files = array( array( 'status' => "Failed" ) );
 	foreach($uploaded_files as &$file)

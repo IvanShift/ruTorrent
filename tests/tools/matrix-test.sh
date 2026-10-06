@@ -19,7 +19,7 @@ cleanup() {
     done
 }
 trap cleanup EXIT
-short_home_real="$(mktemp -d "${TMPDIR:-/tmp}/mx.XXXXXX")"
+short_home_real="$(mktemp -d /tmp/mx.XXXXXX)"
 long_home="$(mktemp -d "${TMPDIR:-/tmp}/rtmlonghome.XXXXXX")"
 # The fixture needs a short HOME for the UNIX-socket path budget; only this
 # directory and symlink live in /tmp. Run data stays under TMPDIR.
@@ -422,6 +422,9 @@ HOME="$short_home" "$scratch/tools/matrix.sh" local > "$short_home/stale-cleanup
 
 cat > "$scratch/bin/docker" <<'DOCKER'
 #!/bin/bash
+if [ "${1:-}" = run ] && [ -n "${MATRIX_TEST_PROD_ARG_LOG:-}" ]; then
+    printf '%s\n' "$@" >> "$MATRIX_TEST_PROD_ARG_LOG"
+fi
 for arg in "$@"; do
     case "$arg" in
         RT_SUITE=*) printf '%s\n' "${arg#RT_SUITE=}" >> "$MATRIX_TEST_DOCKER_SUITE_LOG" ;;
@@ -435,10 +438,60 @@ HOME="$long_home" PATH="$scratch/bin:$PATH" \
     "$scratch/tools/matrix.sh" prod-kinozal > "$short_home/prod.log"
 grep -q 'green on prod-kinozal' "$short_home/prod.log"
 printf '%s\n' tests/plugins/rutracker_check/KinozalHandlerTest.php \
-    tests/plugins/rutracker_check/SiblingTrackersTest.php > "$short_home/expected-prod-suites.log"
+    tests/plugins/rutracker_check/SiblingTrackersTest.php \
+    tests/plugins/create/MktorrentDefaultImageSmoke.php > "$short_home/expected-prod-suites.log"
 cmp -s "$short_home/expected-prod-suites.log" "$short_home/prod-suites.log" || {
-    echo 'no-iconv leg did not run both tracker suites in order' >&2; exit 1;
+    echo 'image leg did not run both tracker suites and creator smoke in order' >&2; exit 1;
 }
+# A local candidate image must be selectable without retagging the shipped image,
+# and its selection must invalidate the runtime digest used by the green marker.
+default_image_digest="$(HOME="$long_home" PATH="$scratch/bin:$PATH" "$scratch/tools/matrix.sh" digest)"
+candidate_image_digest="$(HOME="$long_home" PATH="$scratch/bin:$PATH" RUTORRENT_MATRIX_PROD_IMAGE=rutorrent-candidate:review "$scratch/tools/matrix.sh" digest)"
+[ "$default_image_digest" != "$candidate_image_digest" ] || {
+    echo 'selected production image did not invalidate runtime digest' >&2; exit 1;
+}
+HOME="$long_home" PATH="$scratch/bin:$PATH" \
+    RUTORRENT_MATRIX_PROD_IMAGE=rutorrent-candidate:review \
+    MATRIX_TEST_DOCKER_SUITE_LOG="$short_home/candidate-suites.log" \
+    MATRIX_TEST_PROD_ARG_LOG="$short_home/candidate-args.log" \
+    "$scratch/tools/matrix.sh" prod-kinozal > "$short_home/candidate-prod.log"
+[ "$(grep -cx 'rutorrent-candidate:review' "$short_home/candidate-args.log")" = 3 ] || {
+    echo 'image leg did not run all three suites on the selected candidate' >&2; exit 1;
+}
+! grep -qx 'ivanshift/rutorrent:latest' "$short_home/candidate-args.log" || {
+    echo 'candidate image selection silently used the shipped image' >&2; exit 1;
+}
+cmp -s "$short_home/expected-prod-suites.log" "$short_home/candidate-suites.log" || {
+    echo 'candidate image leg changed its suite selection' >&2; exit 1;
+}
+# A stalled packaged binary must fail this leg rather than hold the whole matrix.
+# Shorten only the runner's image-suite bound; fingerprint timeouts are unchanged.
+cat > "$scratch/bin/timeout" <<'TIMEOUT'
+#!/bin/bash
+if [ "${1:-}" = --kill-after=5s ] && [ "${2:-}" = 60s ]; then
+    shift 2
+    exec /usr/bin/timeout --kill-after=1s 1s "$@"
+fi
+exec /usr/bin/timeout "$@"
+TIMEOUT
+cat > "$scratch/bin/docker" <<'DOCKER'
+#!/bin/bash
+case "${1:-}" in
+    run) exec sleep 30 ;;
+    image) echo 'sha256:timeout-fixture'; exit 0 ;;
+    *) exit 1 ;;
+esac
+DOCKER
+chmod +x "$scratch/bin/timeout" "$scratch/bin/docker"
+timeout_code=0
+HOME="$long_home" PATH="$scratch/bin:$PATH" \
+    /usr/bin/timeout --kill-after=1s 5s "$scratch/tools/matrix.sh" prod-kinozal \
+    > "$short_home/prod-timeout.log" 2>&1 || timeout_code=$?
+[ "$timeout_code" = 1 ] && grep -Eq '^prod-kinozal +124 ' "$short_home/prod-timeout.log" || {
+    cat "$short_home/prod-timeout.log" >&2
+    echo 'stalled packaged suite did not produce a bounded failing leg' >&2; exit 1;
+}
+rm "$scratch/bin/timeout"
 # Two summaries from one suite cannot stand in for an unrun second suite.
 cat > "$scratch/bin/docker" <<'DOCKER'
 #!/bin/bash

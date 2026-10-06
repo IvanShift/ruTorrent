@@ -56,21 +56,40 @@ class FakeRtorrentEditReloadReplies
 {
 	private $source;
 	private $snapshot;
+	private $options;
 
-	public function __construct($source, $snapshot)
+	public function __construct($source, $snapshot, $options = array())
 	{
 		$this->source = $source;
 		$this->snapshot = $snapshot;
+		$this->options = $options;
 	}
 
 	public function __invoke($request, $methods)
 	{
+		if(in_array('system.listMethods', $methods, true))
+			return array_merge(array('system.listMethods'), !empty($this->options['unsupported'])
+				? array() : array('d.erase_preserving_tied', 'd.stop_generation'));
 		if(in_array('get_session', $methods, true)) return $this->snapshot;
-		if(in_array('d.erase', $methods, true))
+		$guarded = in_array('d.erase_preserving_tied', $methods, true);
+		if($guarded || in_array('d.erase', $methods, true))
 		{
+			if(($this->options['erase'] ?? '') === 'fault') return false;
 			unlink($this->source);
+			if(!$guarded && !empty($this->options['tied'])) @unlink($this->options['tied']);
+			if(!empty($this->options['readOnlyRecovery']))
+				foreach(glob($this->options['uploads'].'/edited-*.torrent') as $path)
+					chmod($path, 0440);
+			if(($this->options['erase'] ?? '') === 'lost') return null;
 			return array(0);
 		}
+		if(!empty($this->options['guarded']))
+		{
+			if(!empty($this->options['pending'])) return array('foreign');
+			return array((in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true)) ? '1' : 0);
+		}
+		if(!empty($this->options['pending'])) return array('foreign');
+		if(!empty($this->options['readOnlyRecovery'])) return array('1');
 		return false;
 	}
 }
@@ -102,7 +121,7 @@ class FakeRtorrentDaemon
 	/**
 	 * $replies is a list of values per request, or a callback accepting the
 	 * request body and method names for flows with dynamic readback keys.
-	 * A false reply emits an XMLRPC fault for failure-path tests.
+	 * A false reply emits an XMLRPC fault; null closes without a reply.
 	 */
 	public function __construct($replies, $logFile, $worker = false)
 	{
@@ -251,7 +270,8 @@ class FakeRtorrentDaemon
 				file_put_contents($this->logFile, $method . "\n", FILE_APPEND);
 			}
 			$values = $dynamic ? $replies($body, $methods) : $replies[$index];
-			@fwrite($client, $this->reply($values));
+			// A null plan deliberately drops the reply after recording the call.
+			if($values !== null) @fwrite($client, $this->reply($values));
 			@fclose($client);
 		}
 		@fclose($this->socket);

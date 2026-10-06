@@ -84,4 +84,49 @@ class CliOnlyEntrypointsTest extends TestCase
         }
     }
 
+    public function testClearMarkersCopyKeepsStandaloneCliGuard()
+    {
+        $path = tempnam(sys_get_temp_dir(),'clear-markers-copy-');
+        $source = file_get_contents(dirname(__DIR__,2).'/tools/retrackers-clear-markers.php');
+        // Keep the copied tool offline; its only connection targets an absent socket.
+        $source = str_replace("\$scgi_host = '127.0.0.1';", "\$scgi_host = '/missing-clear-marker-test.sock';", $source);
+        file_put_contents($path,$source);
+        $process = proc_open(array(PHP_BINARY,$path),array(1=>array('pipe','w'),2=>array('pipe','w')),$pipes);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $status = proc_close($process); unlink($path);
+        $this->assertEquals(2,$status,'standalone tool reaches its classified connection refusal: '.$err);
+        $this->assertTrue(strpos($err,'cannot reach rtorrent')!==false,
+            'standalone copy runs without application cli-only dependency');
+        $this->assertTrue(strpos($err,'Failed opening required')===false,'standalone guard is self-contained');
+    }
+
+    public function testCgiWorkerWithoutHttpRequestFailsVisibly()
+    {
+        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__,2).'/php/cli-only.php'),1);
+        $source = str_replace('PHP_SAPI', var_export('cgi-fcgi',true), $source);
+        $code = '$_SERVER=array(); '.$source.' rutorrent_require_cli("worker.php"); echo "continued";';
+        $process = proc_open(array(PHP_BINARY,'-r',$code),array(1=>array('pipe','w'),2=>array('pipe','w')),$pipes);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $this->assertEquals(1,proc_close($process),'CGI scheduler misconfiguration has a nonzero exit');
+        $this->assertEquals('',$out,'refused worker emits no misleading success body');
+        $this->assertTrue(strpos($err,'CLI binary')!==false,'failure names the required runtime correction');
+    }
+
+    public function testStandaloneCopyRejectsCgiWorkerWithNonzeroExit()
+    {
+        $path = tempnam(sys_get_temp_dir(),'standalone-cgi-');
+        $source = file_get_contents(dirname(__DIR__,2).'/tools/retrackers-clear-markers.php');
+        $source = str_replace('PHP_SAPI', var_export('cgi-fcgi',true), $source);
+        file_put_contents($path, $source);
+        $process = proc_open(array(PHP_BINARY,$path),array(1=>array('pipe','w'),2=>array('pipe','w')),$pipes);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $status = proc_close($process); unlink($path);
+        $this->assertEquals(1,$status,'standalone CGI worker never reports success');
+        $this->assertEquals('',$out,'standalone guard emits no success-looking body');
+        $this->assertTrue(strpos($err,'CLI binary')!==false,'standalone guard names the runtime correction');
+    }
+
 }

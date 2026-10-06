@@ -12,7 +12,7 @@ plugin.itemStatus = function(item)
 
 // Dynamically import module for transforming bbcode to html
 var bbcode = null;
-import(`./${plugin.path}bbcode.js`)
+import(cacheBust(`./${plugin.path}bbcode.js`))
 	.then(bbcodeModule => {
 		bbcode = bbcodeModule;
 	})
@@ -26,7 +26,7 @@ theWebUI.rssShowErrorsDelayed = true;
 theWebUI.delayedRSSErrors = {};
 const catlist = theWebUI.categoryList;
 
-injectCustomElementCSS('panel-label', plugin.path + 'panel-label.css');
+injectCustomElementCSS('panel-label', cacheBust(plugin.path + 'panel-label.css'));
 injectCustomElementAttribute('panel-label', 'alert', function(oldValue, newValue) {
 	if (oldValue) {
 		const element = this.shadowRoot.querySelector('.alert');

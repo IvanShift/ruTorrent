@@ -57,7 +57,7 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 					'd.retrackers.capture_erase', 'd.retrackers.apply',
 					'd.retrackers.commit', 'd.retrackers.release_committed',
 					'system.retrackers.receipt', 'system.retrackers.prepared',
-					'load.normal'));
+					'load.normal', 'd.retrackers.preflight_stage', 'd.retrackers.cancel_original'));
 			}
 			return(array('ok' => true, 'family' => 2, 'value' => $methods));
 		}
@@ -173,6 +173,20 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 		return(true);
 	}
 
+	public function nativePreflightStage($hash, $tx, $incarnation,
+		RetrackersAnonymousStage $stage, &$failure = null)
+	{
+		return($this->preflightStage($stage, null, $failure));
+	}
+
+	public function nativeCancelUncaptured($hash, $tx, $localId, $handoff,
+		$incarnation = null, &$failure = null)
+	{
+		$failure = null;
+		$this->events[] = 'native-cancel-pending';
+		return(true);
+	}
+
 	public function maxContentSize(&$failure = null)
 	{
 		$failure = null;
@@ -242,7 +256,7 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		return(array($adapter, $outcome, $tx));
 	}
 
-	public function testNativeBeginPrecedesBothOrdinaryAndDeferredLaunches()
+	public function testNativeEnqueuePrecedesBothOrdinaryAndDeferredMarks()
 	{
 		$ordinary = retrackersBuildInsertAction('/plugin/run.sh', '/usr/bin/php', 'alice', true);
 		$start = strpos($ordinary, 'cat=wh:');
@@ -254,15 +268,15 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 			str_repeat('A', 40), $localId, '0', $handoff,
 			'/plugin/run.sh', '/usr/bin/php', 'alice', true)->params()[2];
 		foreach (array('ordinary' => $ordinary, 'deferred' => $deferred) as $kind => $body) {
-			$begin = strpos($body, 'd.retrackers.begin_original');
+			$begin = strpos($body, 'd.retrackers.enqueue_original');
 			$wp = strpos($body, 'wp:');
 			$launch = strpos($body, 'execute.throw.bg');
-			$this->assertTrue($begin !== false && $wp !== false && $launch !== false &&
-				$begin < $wp && $wp < $launch,
-				$kind . ' must finish native begin before wp and worker launch');
+			$this->assertTrue($begin !== false && $wp !== false && $launch === false &&
+				$begin < $wp,
+				$kind . ' must persist native queue ownership before wp without per-insert PHP');
 			$this->assertTrue(strpos($body, 'v1:original') === false &&
 				strpos($body, 'd.custom.set=retrackers-recovery,') === false,
-				$kind . ' must let native begin publish the v2 marker');
+				$kind . ' must let native enqueue publish the v2 marker');
 		}
 		$legacyOrdinary = retrackersBuildInsertAction('/plugin/run.sh', '/usr/bin/php',
 			'alice', false);
@@ -376,7 +390,7 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 			$this->assertTrue($result === false &&
 				$adapter->lastFailure === ($foreign ? 'ownership-mismatch' :
 					'native-original-finalized-before-worker') &&
-				$snapshot->reads === ($foreign ? 1 : 0),
+				$snapshot->reads === 0 && $adapter->nativeFinishCalls === 0,
 				$foreign ? 'foreign same-hash I cannot claim old terminal T' :
 					'cold terminal T/I is classified before stale L snapshot');
 		}

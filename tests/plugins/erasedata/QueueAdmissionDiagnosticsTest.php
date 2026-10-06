@@ -2,6 +2,7 @@
 
 require_once(__DIR__.'/../../php/TestCase.php');
 require_once(__DIR__.'/CollectorFixture.php');
+require_once(__DIR__.'/QueueRefusalFixture.php');
 
 // Only the capability answer is injected; the real rename implementation must
 // refuse before its filesystem mutation when a parent lacks atomic support.
@@ -19,6 +20,36 @@ class ErasedataUnavailableRenameCapability extends ErasedataFilesystemOps
 class QueueAdmissionDiagnosticsTest extends TestCase
 {
     private $dir;
+
+    public function testLateQueueRefusalRetiresOnlyTheCurrentUsersCollector()
+    {
+        foreach(array('worker','erasedata','rutracker_check','ratio') as $route)
+        {
+            $data=ErasedataQueueRefusalFixture::run($this->dir,$route,false);
+            $this->assertTrue(!isset($data['schedules']['erasedataalice']), $route.' removes the refused ordinary collector');
+            $this->assertEquals('other-user',$data['schedules']['erasedataother'], $route.' preserves another users collector');
+            $this->assertEquals('durable-drain',$data['schedules']['erasedata-drainalice'], $route.' preserves the separate drain obligation');
+            $this->assertEquals('durable deletion obligation',$data['intent'], $route.' cannot touch refused queue bytes');
+            if($route==='rutracker_check')
+                $this->assertTrue(isset($data['schedules']['rutracker_checkalice']), 'queue refusal leaves tracker dispatch scheduled');
+        }
+    }
+
+    public function testFailedCollectorRetirementIsVisibleAndPreservesObligations()
+    {
+        $data=ErasedataQueueRefusalFixture::run($this->dir,'worker',false,true);
+        $this->assertEquals('stale-own',$data['schedules']['erasedataalice'], 'failed RPC cannot be reported as retired');
+        $this->assertEquals('durable deletion obligation',$data['intent'], 'failed retirement retains durable bytes');
+        $this->assertTrue(strpos(implode("\n",$data['log']),'collector-retirement-failed')!==false
+            && strpos(implode("\n",$data['log']),'erasedataalice')!==false, 'failed removal names the exact per-user schedule');
+    }
+
+    public function testEmptyUserQueueRefusalCannotRemoveAnotherUsersSchedule()
+    {
+        $data=ErasedataQueueRefusalFixture::run($this->dir,'worker',false,false,'');
+        $this->assertTrue(!isset($data['schedules']['erasedata']), 'empty authenticated user owns the unsuffixed key');
+        $this->assertEquals('other-user',$data['schedules']['erasedataother'], 'unsuffixed retirement leaves named users alone');
+    }
 
     public function setUp()
     {
@@ -56,7 +87,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
         $this->assertTrue(!erasedataEnsureQueueDirectory($this->dir.'/alias/settings/erasedata'),
             'unattested writable ancestry refuses the old queue');
         $log = implode("\n", FileUtil::$log);
-        $this->assertTrue(strpos($log, $this->dir.'/share/settings') !== false,
+        $this->assertTrue(strpos($log, 'path='.json_encode($this->dir.'/share/settings', JSON_UNESCAPED_SLASHES).' uid=') !== false,
             'refusal names the physical writable ancestor');
         $this->assertTrue(strpos($log, '0777') !== false && strpos($log, '0700') !== false,
             'refusal reports actual ancestor and required queue modes');
@@ -93,23 +124,57 @@ class QueueAdmissionDiagnosticsTest extends TestCase
 
     public function testWitnessModeAndHardlinkRefusalsAreDistinct()
     {
-        if(erasedataEffectiveUid() !== 0)
-        {
-            $this->assertTrue(true, 'root-only witness mode and link cases are exercised in the disposable image');
-            return;
-        }
         $this->protectedProfile();
+        $witness = $this->dir.'/.erasedata-first-use';
         chmod($this->dir.'/.erasedata-first-use', 0644);
-        $this->assertTrue(erasedataQueuePath() === false, 'writable witness refuses admission');
+        $metadata = lstat($witness);
+        // Only the root identity is synthesized; the real file supplies mode,
+        // type and hard-link metadata on every ordinary-UID CI leg.
+        $metadata['uid'] = 0;
+        $this->assertTrue(!erasedataValidateFirstUseWitness($witness, $metadata, 'offline witness repair'),
+            'writable witness refuses admission');
         $this->assertTrue(strpos(implode("\n", FileUtil::$log), 'witness-mode') !== false,
             'mode refusal has its own classified reason');
         FileUtil::$log = array();
         chmod($this->dir.'/.erasedata-first-use', 0400);
         link($this->dir.'/.erasedata-first-use', $this->dir.'/second-witness');
-        $this->assertTrue(erasedataQueuePath() === false, 'multiply linked witness refuses admission');
+        clearstatcache(true, $witness);
+        $metadata = lstat($witness);
+        $metadata['uid'] = 0;
+        $this->assertTrue(!erasedataValidateFirstUseWitness($witness, $metadata, 'offline witness repair'),
+            'multiply linked witness refuses admission');
         $this->assertTrue(strpos(implode("\n", FileUtil::$log), 'witness-links') !== false
             && strpos(implode("\n", FileUtil::$log), 'nlink=2') !== false,
             'link refusal reports actual link count');
+    }
+
+    public function testNonUtf8RefusalKeepsTheExactPathBytes()
+    {
+        $path = $this->dir.'/non-utf8-'.chr(255);
+        erasedataQueueRefusal('test-refusal', $path, false, 'private directory');
+        $this->assertTrue(strpos(implode("\n", FileUtil::$log), 'path=base64:'.base64_encode($path)) !== false,
+            'a non-UTF8 path retains its exact reversible byte representation');
+    }
+
+    public function testNativeCollisionDiagnosticKeepsErrnoAndRecoveryAction()
+    {
+        if(!ErasedataFilesystemOps::canRenameNoReplace())
+        {
+            $this->assertTrue(ErasedataFilesystemOps::lastRenameRefusal() !== '', 'source-only helper refusal remains explicit');
+            return;
+        }
+        $source = $this->dir.'/source'; $target = $this->dir.'/occupied';
+        file_put_contents($source, 'source'); file_put_contents($target, 'occupied');
+        FileUtil::$log = array();
+        $filesystem = new ErasedataFilesystemOps();
+        $this->assertTrue(!$filesystem->renameNoReplace($source, $target), 'collision is refused');
+        $this->assertEquals(array(), FileUtil::$log, 'filesystem seam leaves reporting to its caller');
+        ErasedataFilesystemOps::reportRenameRefusal();
+        $log = implode("\n", FileUtil::$log);
+        $this->assertTrue(strpos($log, 'errno=17') !== false || strpos($log, 'errno=39') !== false,
+            'trusted native errno survives the wrapper');
+        $this->assertTrue(strpos($log, 'occupied destination') !== false && strpos($log, 'check the native helper') === false,
+            'collision recovery directs the operator to the preserved destination');
     }
 
     public function testRenameCapabilityRefusalNamesTheActualParent()
@@ -196,7 +261,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
         finally{$filesystem->releaseDirectoryCapability($capability);}
     }
 
-    private function runInit($ready, $interval)
+    private function runInit($ready, $interval, $missingHelper = false)
     {
         $root = dirname(__DIR__, 3);
         $tree = $this->dir.'/mirror';
@@ -212,6 +277,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
             file_put_contents($tree.'/settings/erasedata/old.list', 'unattested intent');
         }
         foreach(array('plugins/rutracker_check/init.php', 'plugins/rutracker_check/done.php',
+            'plugins/erasedata/init.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
             'plugins/erasedata/pending.php', 'plugins/erasedata/removewithdata.php') as $relative)
         {
@@ -219,6 +285,9 @@ class QueueAdmissionDiagnosticsTest extends TestCase
             $this->assertEquals(hash_file('sha256', $root.'/'.$relative), hash_file('sha256', $tree.'/'.$relative),
                 'init admission mirror executes the shipped '.$relative.' bytes');
         }
+        if($missingHelper)
+            file_put_contents($tree.'/php/nativehelpers.php', '<?php class NativeHelpers {'
+                .'public static function path($name){return __DIR__."/not-installed";}}');
         file_put_contents($tree.'/php/xmlrpc.php', <<<'PHP'
 <?php
 class FileUtil {
@@ -236,7 +305,7 @@ class rXMLRPCCommand {
  public function __construct($command,$params=null){$this->command=$command;$this->params=$params;}
 }
 class rXMLRPCRequest {
- public static $requests=array(); private $commands;
+ public static $requests=array(); private $commands; public $fault=false; public $important=true;
  public function __construct($commands){$this->commands=is_array($commands)?$commands:array($commands);}
  public function run(){self::$requests[]=$this->commands; return count($this->commands)>0;}
  public function success(){return $this->run();}
@@ -256,9 +325,9 @@ PHP
         file_put_contents($tree.'/driver.php', <<<'PHP'
 <?php
 require __DIR__.'/php/xmlrpc.php';
-$theSettings=new rTorrentSettings(); $plugin=array('name'=>'rutracker_check');
+$theSettings=new rTorrentSettings(); $plugin=array('name'=>getenv('QUEUE_PLUGIN'));
 $pInfo=array('perms'=>array());$jResult='';
-chdir(__DIR__.'/plugins/rutracker_check');
+chdir(__DIR__.'/plugins/'.$plugin['name']);
 require 'init.php';
 echo json_encode(array('requests'=>rXMLRPCRequest::$requests,'registered'=>$theSettings->registered,
  'javascript'=>$jResult,'log'=>FileUtil::$log));
@@ -266,7 +335,8 @@ PHP
         );
         $process=proc_open(array(PHP_BINARY,'-c',$root.'/tests/php-test.ini',$tree.'/driver.php'),
             array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('pipe','w')),$pipes,null,
-            array_merge($_ENV,array('QUEUE_SETTINGS'=>$tree.'/settings','QUEUE_SESSION'=>$tree.'/session','CHECK_INTERVAL'=>(string)$interval)));
+            array_merge($_ENV,array('QUEUE_SETTINGS'=>$tree.'/settings','QUEUE_SESSION'=>$tree.'/session',
+                'QUEUE_PLUGIN'=>$missingHelper ? 'erasedata' : 'rutracker_check','CHECK_INTERVAL'=>(string)$interval)));
         $this->assertTrue(is_resource($process), 'isolated real init child starts');
         $out=stream_get_contents($pipes[1]);$err=stream_get_contents($pipes[2]);
         fclose($pipes[1]);fclose($pipes[2]);$code=proc_close($process);
@@ -283,8 +353,10 @@ PHP
         if(!is_array($data))return;
         $this->assertEquals(array('rutracker_check'),$data['registered'], 'refused cleanup does not disable an otherwise idle checker');
         $this->assertEquals('', $data['javascript'], 'idle checker emits no misleading failure');
-        $this->assertEquals(1,count($data['requests']), 'only stale checker schedule removal is sent');
-        $this->assertEquals('schedule.remove',$data['requests'][0][0]['command'], 'refused collector schedule is never sent');
+        $this->assertEquals(2,count($data['requests']), 'stale collector and idle checker removals are sent independently');
+        $this->assertEquals('schedule_remove',$data['requests'][0][0]['command'], 'the refused ordinary collector is removed with the logical alias');
+        $this->assertEquals('erasedata',$data['requests'][0][0]['params'], 'only the default users collector is removed');
+        $this->assertEquals('schedule.remove',$data['requests'][1][0]['command'], 'idle checker keeps its own removal route');
         $this->assertEquals(1,count($data['log']), 'one admission refusal is logged per init');
     }
 
@@ -297,5 +369,18 @@ PHP
         foreach($data['requests'] as $request)foreach($request as $command)
             if($command['command']==='schedule')$names[]=$command['params'][0];
         $this->assertEquals(array('erasedata'),$names, 'accepted collector stays independent of the hourly checker interval');
+    }
+
+    public function testMissingHelperDisablesRemovalVisiblyAtInitialization()
+    {
+        $data = $this->runInit(true, 0, true);
+        if(!is_array($data)) return;
+        $this->assertEquals(array(), $data['registered'], 'missing native helper prevents erasedata registration');
+        $this->assertEquals(array(), $data['requests'], 'missing helper sends no cleanup schedule');
+        $this->assertTrue(strpos($data['javascript'], 'plugin.disable()') !== false
+            && strpos($data['javascript'], 'atomic rename helper unavailable') !== false,
+            'the user sees removal with data disabled and the missing helper reason');
+        $this->assertTrue(strpos(implode("\n", $data['log']), 'rename-noreplace-helper-unavailable') !== false,
+            'the application log classifies the initialization refusal');
     }
 }

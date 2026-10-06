@@ -58,6 +58,10 @@
 			});
 		</script>
 
+		<!-- Static module dependencies must share the deployment key too. -->
+		<script type="importmap">
+			{"imports":{"./js/panel.js":"./js/panel.js?v=development"}}
+		</script>
 		<script type="module" src="./js/backgroundtask.js?v=development"></script>
 		<script type="module" src="./js/category-list.js?v=development"></script>
 		<script type="module" src="./js/panel.js?v=development"></script>

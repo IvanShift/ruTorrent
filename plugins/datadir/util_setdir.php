@@ -254,9 +254,18 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
     $files = array();
     // Both metadata-only and payload moves must bind the setter to a physical root.
     $physicalDestination = @realpath($destPath);
-    if ($physicalDestination === false || !is_dir($physicalDestination))
+    if ($physicalDestination === false && $readOnly)
+    {
+        // The worker creates a new destination. Preflight probes its existing
+        // ancestor and must not reject the canonical requested suffix.
+        $reason = DataDirMoveIntent::destinationReason($destPath);
+        if ($reason !== '')
+            throw new RuntimeException($reason);
+        $physicalDestination = $destPath;
+    }
+    elseif ($physicalDestination === false || !is_dir($physicalDestination))
         throw new RuntimeException('destination-root-unavailable');
-    if (!DataDirMoveIntent::trustedDirectory($physicalDestination))
+    elseif (!DataDirMoveIntent::trustedDirectory($physicalDestination))
         throw new RuntimeException('destination-root-untrusted');
     $destPath = rtAddTailSlash($physicalDestination);
     if ($moveFiles) {
@@ -312,33 +321,41 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
         'source' => $source, 'destination' => $destination, 'files' => $files);
 }
 
-// A read-only hint for the dialog. The claimed worker remains authoritative.
+// Read torrent metadata without opening it; temporary filesystem entries probe
+// rename support before launch. The claimed worker remains authoritative.
 function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
 {
-    try {
-        $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, true, $dbg, true);
-        if ($snapshot === null || !$snapshot['move'])
-            return '';
-        $root = @realpath($snapshot['destination']);
-        if ($root === false)
-            return '';
-        foreach ($snapshot['files'] as $file) {
-            if (!is_string($file) || $file === '' || $file[0] === '/'
-                || strpos($file, "\0") !== false
-                || in_array('', explode('/', $file), true)
-                || in_array('.', explode('/', $file), true)
-                || in_array('..', explode('/', $file), true))
-                continue;
-            $path = $root . '/' . $file;
-            $parent = @realpath(dirname($path));
-            if ($parent === false || ($parent !== $root
-                && strpos($parent, $root . '/') !== 0))
-                continue;
-            if (@lstat($path) !== false)
-                return $path;
-        }
-    } catch (Exception $e) {
-        // The worker logs and handles uncertain metadata under its claim.
+    $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, true, $dbg, true);
+    if ($snapshot === null)
+    {
+        // A closed torrent has no readable file list. Its destination mount
+        // can still be checked without opening it or creating directories.
+        $ancestor = $destPath;
+        while (!is_dir($ancestor) && dirname($ancestor) !== $ancestor)
+            $ancestor = dirname($ancestor);
+        rtDataDirProbeRename($ancestor, $ancestor, array());
+        return '';
+    }
+    if (!$snapshot['move'])
+        return '';
+    rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']);
+    $root = @realpath($snapshot['destination']);
+    if ($root === false)
+        return '';
+    foreach ($snapshot['files'] as $file) {
+        if (!is_string($file) || $file === '' || $file[0] === '/'
+            || strpos($file, "\0") !== false
+            || in_array('', explode('/', $file), true)
+            || in_array('.', explode('/', $file), true)
+            || in_array('..', explode('/', $file), true))
+            continue;
+        $path = $root . '/' . $file;
+        $parent = @realpath(dirname($path));
+        if ($parent === false || ($parent !== $root
+            && strpos($parent, $root . '/') !== 0))
+            continue;
+        if (@lstat($path) !== false)
+            return $path;
     }
     return '';
 }

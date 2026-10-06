@@ -13,6 +13,10 @@ function compareEntries( $a, $b )
 }
 
 $theSettings = rTorrentSettings::get();
+// Compare physical paths on both sides when the configured root is an alias.
+$resolvedTop = @realpath($topDirectory);
+if($resolvedTop !== false)
+	$topDirectory = $resolvedTop;
 
 $requestedDir = $_REQUEST['dir'] ?? null;
 
@@ -20,7 +24,7 @@ if(is_string($requestedDir) && strlen($requestedDir))
 {
 	$dir = rawurldecode($requestedDir);
 	if(
-			!$theSettings->correctDirectory($dir) ||
+			strpos($dir, "\0") !== false || !$theSettings->correctDirectory($dir, true) ||
 			(($theSettings->uid>=0) && $checkUserPermissions && !Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))
 		)
 	{
@@ -30,19 +34,22 @@ if(is_string($requestedDir) && strlen($requestedDir))
 else
 {
 	$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-	if (!$theSettings->correctDirectory($dir))
+	if (!$theSettings->correctDirectory($dir, true))
 		$dir = $topDirectory;
 }
 
 $dir = FileUtil::addslash($dir);
 $items = array_diff(scandir($dir, SCANDIR_SORT_NONE), ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
 $directories = array_filter($items, function ($item) {
-	global $dir;
-	return is_dir($dir.$item);
+	global $dir, $theSettings, $checkUserPermissions;
+	$path = $dir.$item;
+	return is_dir($path) && is_readable($path) && $theSettings->correctDirectory($path, true) &&
+		($theSettings->uid<0 || !$checkUserPermissions || Permission::doesUserHave($theSettings->uid,$theSettings->gid,$path,0x0007));
 });
 $files = (isset($_REQUEST['withfiles']) && $_REQUEST['withfiles'] === '1') ? array_filter($items, function ($item) {
-	global $dir;
-	return is_file($dir.$item);
+	global $dir, $theSettings;
+	$path = $dir.$item;
+	return is_file($path) && is_readable($path) && $theSettings->correctDirectory($path, true);
 }) : array();
 
 usort($directories, "compareEntries");

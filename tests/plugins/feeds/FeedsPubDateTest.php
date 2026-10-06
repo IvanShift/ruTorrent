@@ -90,7 +90,7 @@ class FeedsPubDateTest extends TestCase
 	 * Runs action.php and returns [title => pubDate or null] for every item
 	 * in the feed it prints.
 	 */
-	private function feed($descriptions)
+	private function feed($descriptions, $server = array(), $public = null, $version = '0.16.25')
 	{
 		$root = realpath(__DIR__ . '/../../..');
 		$tree = $this->base . '/tree-' . ($descriptions ? 'on' : 'off');
@@ -129,6 +129,9 @@ class FeedsPubDateTest extends TestCase
 			. '$rpcTimeOut = 10;' . "\n"
 			. '$_SERVER[\'HTTP_HOST\'] = \'example.test\';' . "\n"
 			. '$_SERVER[\'PHP_SELF\'] = \'/plugins/feeds/action.php\';' . "\n"
+			. '$_SERVER[\'SCRIPT_NAME\'] = \'/plugins/feeds/action.php\';' . "\n"
+			. '$_SERVER = array_merge($_SERVER, '.var_export($server, true).');' . "\n"
+			. 'putenv("RU_PUBLIC_URL"); $publicURL = '.var_export($public, true).';' . "\n"
 			. '$_REQUEST[\'mode\'] = \'all\';' . "\n"
 			. 'chdir(' . var_export($tree . '/plugins/feeds', true) . ");\n"
 			. 'require_once(' . var_export($tree . '/php/util.php', true) . ");\n"
@@ -138,8 +141,8 @@ class FeedsPubDateTest extends TestCase
 			. '$p = $r->getProperty("theSettings"); $p->setAccessible(true);' . "\n"
 			. '$p->setValue(null, $settings);' . "\n"
 			. '$settings->linkExist = true;' . "\n"
-			. '$settings->iVersion = 0x1018;' . "\n"
-			. '$settings->version = $settings->libVersion = \'0.16.24\';' . "\n"
+			. '$settings->iVersion = '.($version === '0.9.8' ? '0x908' : '0x1019').';' . "\n"
+			. '$settings->version = $settings->libVersion = '.var_export($version, true).';' . "\n"
 			. '$settings->server = \'fake\';' . "\n"
 			. 'require(' . var_export($tree . '/plugins/feeds/action.php', true) . ");\n");
 
@@ -152,6 +155,35 @@ class FeedsPubDateTest extends TestCase
 		}
 		ksort($items);
 		return array($items, (string)$output);
+	}
+
+	public function testPublicBasePreservesProxyHostRewriteAndPrefixOnBothVersions()
+	{
+		foreach (array('0.9.8', '0.16.25') as $version) {
+			list($items, $rss) = $this->feed(false, array(
+				'HTTP_HOST' => 'internal:8080', 'HTTPS' => 'off',
+				'HTTP_X_FORWARDED_HOST' => 'untrusted.invalid',
+				'PHP_SELF' => '/internal/plugins/feeds/action.php',
+			), 'https://public.example:9443/torrents/', $version);
+			$this->assertTrue(strpos($rss, '<link>https://public.example:9443/torrents/</link>') !== false,
+				$version.' feed uses the configured public origin and app prefix');
+			$this->assertTrue(strpos($rss, '<url>https://public.example:9443/torrents/images/logo.png</url>') !== false,
+				'the image URL uses the same public base');
+			$this->assertTrue(strpos($rss, 'internal:8080') === false && strpos($rss, 'untrusted.invalid') === false,
+				'neither the internal Host nor forwarded host enters the public feed');
+		}
+	}
+
+	public function testDirectOriginUsesForwardedSchemeAndExactScriptPrefix()
+	{
+		list($items, $rss) = $this->feed(false, array(
+			'HTTP_HOST' => 'public.example:9443', 'HTTPS' => 'off',
+			'HTTP_X_FORWARDED_PROTO' => 'https',
+			'SCRIPT_NAME' => '/torrents/plugins/feeds/action.php',
+			'PHP_SELF' => '/internal/plugins/feeds/action.php/extra',
+		));
+		$this->assertTrue(strpos($rss, '<link>https://public.example:9443/torrents/</link>') !== false,
+			'a direct public Host uses the single forwarded scheme and server script name');
 	}
 
 	private function expected()

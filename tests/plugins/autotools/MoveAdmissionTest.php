@@ -275,6 +275,7 @@ $suite->test('new AutoTools lock is private while a verified legacy lock keeps i
     function () {
         $root = moveAdmissionFixture();
         $oldUmask = umask(0022);
+        $handle = $legacy = null;
         try {
             $lock = new ReflectionMethod('AutoToolsMoveTransaction', 'lock');
             if (PHP_VERSION_ID < 80100) $lock->setAccessible(true);
@@ -285,12 +286,20 @@ $suite->test('new AutoTools lock is private while a verified legacy lock keeps i
             strictAssertSame(0022, umask(), 'temporary private creation restores the caller umask');
             flock($handle, LOCK_UN); fclose($handle);
             chmod($root . '/session/.lock', 0644);
-            $identity = fileinode($root . '/session/.lock');
+            // Keep the legacy inode alive so unlink/recreate cannot reuse it.
+            $legacy = fopen($root . '/session/.lock', 'c');
+            $identity = fstat($legacy);
             $handle = $lock->invoke(null, $root . '/session');
-            strictAssertSame($identity, fileinode($root . '/session/.lock'),
+            clearstatcache(true, $root . '/session/.lock');
+            strictAssertSame($identity['ino'], fileinode($root . '/session/.lock'),
                 'an existing lock is opened in place to preserve exclusion');
-            flock($handle, LOCK_UN); fclose($handle);
-        } finally { umask($oldUmask); removeMoveAdmissionFixture($root); }
+            strictAssertSame(false, flock($legacy, LOCK_EX | LOCK_NB),
+                'a contender holding the legacy inode cannot bypass the active lock');
+        } finally {
+            foreach (array($handle, $legacy) as $resource)
+                if (is_resource($resource)) { flock($resource, LOCK_UN); fclose($resource); }
+            umask($oldUmask); removeMoveAdmissionFixture($root);
+        }
     });
 
 exit($suite->run());

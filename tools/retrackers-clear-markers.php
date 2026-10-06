@@ -1,6 +1,17 @@
 <?php
-require_once dirname(__DIR__).'/php/cli-only.php';
-rutorrent_require_cli(__FILE__);
+$cliGuard = dirname(__DIR__).'/php/cli-only.php';
+if(is_file($cliGuard)) {
+    require_once $cliGuard;
+    rutorrent_require_cli(__FILE__);
+} elseif(PHP_SAPI !== 'cli') {
+    // The documented /tmp copy must be self-contained without exposing a web door.
+    if(!isset($_SERVER['REQUEST_METHOD']) && PHP_SAPI !== 'cli-server') {
+        error_log('cli-only: refused standalone non-CLI worker; use a CLI binary');
+        exit(1);
+    }
+    http_response_code(403);
+    exit('Forbidden');
+}
 
 
 // Clear retrackers recovery markers from a live rTorrent.

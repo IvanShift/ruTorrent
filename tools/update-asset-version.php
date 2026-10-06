@@ -26,7 +26,7 @@ try {
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
         foreach ($iterator as $file) {
             if ($file->isLink() || !$file->isFile()) continue;
-            if (!preg_match('/\.(js|mjs|css|map|png|gif|jpe?g|svg|webp|ico|woff2?|ttf|eot|wasm)$/i', $file->getFilename())) continue;
+            if (!preg_match('/\.(js|mjs|css|html?|map|png|gif|jpe?g|svg|webp|ico|woff2?|ttf|eot|wasm)$/i', $file->getFilename())) continue;
             $relative = substr($file->getPathname(), strlen($root) + 1);
             $files[$relative] = $file->getPathname();
         }

@@ -10,6 +10,28 @@ define('RETRACKERS_IMPORT_ONLY', true);
 require_once(__DIR__.'/../../../plugins/retrackers/update.php');
 class MetadataInsertGuardTest extends TestCase
 {
+    public function testEmptyAndExcludedPrivateSettingsGateClaimBeforeMutation()
+    {
+        $select = function ($action, $private) use (&$select) {
+            if (strncmp($action, 'branch=', 7) !== 0) return $action;
+            $parts = json_decode('[' . substr($action, 7) . ']', true);
+            if (!is_array($parts) || count($parts) !== 3) throw new RuntimeException('Invalid insert branch');
+            $condition = $parts[0] === 'd.is_private=' && $private;
+            return $select($parts[$condition ? 1 : 2], $private);
+        };
+        foreach (array(array(false,false,true), array(true,true,true),
+            array(true,true,false), array(true,false,true)) as $case) {
+            list($hasWork,$private,$exclude)=$case;
+            $settings=(object)array('list'=>$hasWork ? array(array('http://retracker.invalid/announce')) : array(),
+                'todelete'=>array(),'dontAddPrivate'=>$exclude ? 1 : 0);
+            $action=retrackersBuildInsertAction('/plugin/run.sh','/usr/bin/php','alice',true,true,$settings);
+            $selected=$select($action,$private);
+            $wanted=$hasWork && (!$private || !$exclude);
+            $this->assertTrue((strpos($selected,'d.retrackers.enqueue_original')!==false)===$wanted &&
+                strpos($selected,'execute.throw.bg')===false,
+                'only eligible metainfo reaches durable enqueue without launching a PHP process');
+        }
+    }
     public function testMetadataIsTheFirstConditionBeforeAnyInsertMutation()
     {
         $actions = array(

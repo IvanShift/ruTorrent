@@ -46,6 +46,18 @@ class NativeHelpers
         return '/usr/local/bin/'.$name;
     }
 
+    public static function optionalPath($name)
+    {
+        try { return self::path($name); }
+        catch (RuntimeException $error) {
+            // Availability can disable a dependent operation, never the entire
+            // plugin bootstrap or the identity checks that operation requires.
+            error_log('native-helper: '.$error->getMessage().' name='.$name
+                .'; helper operations disabled; install tools/native-helpers.list');
+            return '';
+        }
+    }
+
     public static function source($name)
     {
         $manifest = self::manifest();
@@ -63,4 +75,4 @@ class NativeHelpers
 }
 
 if (!defined('RUTORRENT_NATIVE_RENAME_HELPER'))
-    define('RUTORRENT_NATIVE_RENAME_HELPER', NativeHelpers::path('rutorrent-erasedata-rename-noreplace'));
+    define('RUTORRENT_NATIVE_RENAME_HELPER', NativeHelpers::optionalPath('rutorrent-erasedata-rename-noreplace'));

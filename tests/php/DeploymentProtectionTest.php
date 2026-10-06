@@ -3,6 +3,27 @@ require_once __DIR__ . '/TestCase.php';
 
 class DeploymentProtectionTest extends TestCase
 {
+    private function nginxDenies($bytes, $directory)
+    {
+        $active = preg_replace('/^\s*#.*$/m', '', $bytes);
+        preg_match_all('/location\s+~\s+(\S+)\s*\{([^}]*)\}/s', $active, $rules, PREG_SET_ORDER);
+        foreach($rules as $rule) {
+            if(@preg_match('~'.$rule[1].'~', '/'.$directory.'/proof.php') === 1
+                && preg_match('/\bdeny\s+all\s*;/', $rule[2])
+                && preg_match('/\breturn\s+403\s*;/', $rule[2])) return true;
+        }
+        return false;
+    }
+
+    public function testCommentedRuleDoesNotProtectTools()
+    {
+        $bytes = file_get_contents(dirname(__DIR__,2).'/nginx-example.conf');
+        $mutant = str_replace('location ~ ^/(share|conf|tests|tools)', 'location ~ ^/(share|conf|tests)', $bytes);
+        $this->assertTrue(!$this->nginxDenies($mutant, 'tools'),
+            'commented prefix examples cannot mask a missing active tools denial');
+        $this->assertTrue($this->nginxDenies($bytes, 'tools'), 'actual root rule denies tools');
+    }
+
     public function testPrivateDirectoryExamplesDenyEveryTrackedTopLevelDirectory()
     {
         $root = dirname(__DIR__, 2);
@@ -30,7 +51,7 @@ class DeploymentProtectionTest extends TestCase
             $deny = $root . '/' . $path . '/.htaccess';
             $this->assertTrue(is_file($deny), "$path has an Apache deny file");
             if (is_file($deny)) $this->assertTrue(stripos(file_get_contents($deny), 'require all denied') !== false, "$path Apache denial is explicit");
-            $this->assertTrue(strpos($nginx, '|' . $path . ')') !== false || strpos($nginx, '(' . $path . '|') !== false || strpos($nginx, '|' . $path . '|') !== false, "$path is denied by nginx/lighttpd examples");
+            $this->assertTrue($this->nginxDenies($nginx, $path), "$path is denied by the active nginx rule");
             $this->assertTrue(strpos($readme, '`' . $path . '/`') !== false, "$path deployment protection is documented");
         }
     }

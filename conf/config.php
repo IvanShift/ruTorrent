@@ -138,6 +138,8 @@
 	// Exact public origins for a proxy that changes Host/scheme, and optional browser extensions.
 	$trustedOrigins = preg_split('/\s*,\s*/', (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
 		-1, PREG_SPLIT_NO_EMPTY);
+	// Absolute public application base, including its proxy prefix, for RSS links.
+	$publicURL = $readEnvironment('RU_PUBLIC_URL', '');
 
 	// Load local deployment overrides if present
 	$configLocalPath = dirname(__FILE__)."/config.local.php";

@@ -2,6 +2,14 @@ import { readFileSync } from "fs";
 
 window.$ = require("jquery");
 
+// The browser loads the shared plugin loader before plugin initialization.
+// Keep its real URL helper while the fixture supplies the remaining globals.
+const pluginLoaderScript = document.createElement("script");
+pluginLoaderScript.textContent =
+  "(function(){\n" + readFileSync("../js/plugins.js", { encoding: "utf-8" }) +
+  "\nwindow.cacheBust = cacheBust;})();";
+document.head.appendChild(pluginLoaderScript);
+
 // theWebUI.showErrors renders the rss plugin's error list. Each entry is built
 // by plugins/rss/rss.php and travels to the browser as json, so its contents
 // are whatever the server put there -- and one of the error texts is assembled

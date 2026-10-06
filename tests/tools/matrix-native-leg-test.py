@@ -95,12 +95,27 @@ os.execvp('cc', ['cc', *args[index+1:]])
         tree = self.root / "tree"
         (tree / "tests/php").mkdir(parents=True)
         (tree / "tests/php/FixtureTest.php").write_text("<?php\n")
+        self.declare_rename_helper(tree, "rutorrent-fixture-rename")
         args = runner.test_command(Path("/w"), Path("/mtmp"),
                                    ["tests/php/FixtureTest.php"], tree)
         self.assertIn("RU_LOG_FILE=/mtmp/application-errors.log", args)
         self.assertIn("auto_append_file=/w/tests/php/TestCaseRunner.php", args[-1])
         with self.assertRaises(ValueError):
             runner.test_command(Path("/w"), Path("/mtmp"), ["tests/php/MissingTest.php"], tree)
+
+    def declare_rename_helper(self, tree, name):
+        (tree / "tools").mkdir(parents=True)
+        (tree / "plugins/erasedata").mkdir(parents=True)
+        (tree / "plugins/erasedata/rename-noreplace.c").write_text("int main(void) { return 0; }\n")
+        (tree / "tools/native-helpers.list").write_text(
+            "version\t1\nflags\t-O2\n" + name + "\tplugins/erasedata/rename-noreplace.c\n")
+
+    def test_probe_follows_manifest_when_rename_helper_basename_changes(self):
+        tree = self.root / "renamed-helper"
+        self.declare_rename_helper(tree, "rutorrent-renamed-rename-probe")
+        command = runner.test_command(Path("/w"), Path("/mtmp"), (), tree)[-1]
+        self.assertIn("/usr/local/bin/rutorrent-renamed-rename-probe", command)
+        self.assertNotIn("/usr/local/bin/rutorrent-erasedata-rename-noreplace", command)
 
     def test_compile_failure_stops_before_php_and_cleans_owned_scratch(self):
         directory = self.root / "leg"
@@ -114,6 +129,29 @@ os.execvp('cc', ['cc', *args[index+1:]])
         launch.assert_not_called()
         cleanup.assert_called_once_with("own-leg", "our-token")
         self.assertFalse((directory / "native").exists())
+
+    def test_standalone_creates_private_tmp_before_compilation(self):
+        directory = self.root / "fresh"
+        (directory / "tree").mkdir(parents=True)
+        def inspect_tmp(*args):
+            self.assertTrue((directory / "tmp").is_dir())
+            self.assertEqual(0o700, (directory / "tmp").stat().st_mode & 0o777)
+            self.assertEqual(os.getuid(), (directory / "tmp").stat().st_uid)
+            raise RuntimeError("build-cut")
+        with patch.object(runner, "compile_helpers", side_effect=inspect_tmp), \
+             patch.object(runner, "remove_owned_container"):
+            with self.assertRaisesRegex(RuntimeError, "build-cut"):
+                runner.run_leg(directory, "7.4", "leg", os.getuid(), os.getgid())
+
+    def test_local_resolved_tmp_over_budget_is_refused_before_build(self):
+        directory = self.root / ("long" * 24)
+        (directory / "tree").mkdir(parents=True)
+        alias = self.root / "alias"
+        alias.symlink_to(directory, target_is_directory=True)
+        with patch.object(runner, "compile_helpers", side_effect=RuntimeError("build-reached")), \
+             patch.object(runner, "remove_owned_container"):
+            with self.assertRaisesRegex(RuntimeError, "58"):
+                runner.run_leg(alias, "local", "leg", os.getuid(), os.getgid())
 
 
 if __name__ == "__main__":

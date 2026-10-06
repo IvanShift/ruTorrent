@@ -55,6 +55,18 @@ origins with their scheme and port, or exact `moz-extension://ID` /
 semantics. Forward the external `Host` and a trusted `X-Forwarded-Proto` through
 a reverse proxy; `X-Forwarded-Host` is ignored.
 
+### Public feed URLs behind a proxy
+
+If a reverse proxy rewrites `Host` or the application prefix, set
+`RU_PUBLIC_URL=https://public.example/torrents/`, or set `$publicURL` to that
+absolute application base in `conf/config.local.php`. RSS channel, image and
+download links use this base, including its port and path prefix. Credentials,
+query strings and fragments are refused with a configuration diagnostic.
+Without this setting the feed uses the direct request Host, a single
+`X-Forwarded-Proto` value and the server's script path. A CSRF trusted origin
+does not select the feed URL. Torrent-upload redirects are relative, so the
+browser preserves the public origin and prefix.
+
 ### Application logging
 
 `RU_LOG_FILE` selects ruTorrent's shared application log. Its backward-compatible

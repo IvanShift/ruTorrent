@@ -677,7 +677,7 @@ switch($mode)
 					break;
 				}
 				$value = $vs[$ndx];
-				if(!preg_match('/^-?(?:0|[1-9][0-9]*)$/D', $value)
+				if(!preg_match('/^(?:0|-?[1-9][0-9]*)$/D', $value)
 					|| strlen(ltrim($value, '-')) > 10
 					|| (float)$value < -2147483648 || (float)$value > 2147483647
 					|| (($s === 'pex' || $s === 'superseed')

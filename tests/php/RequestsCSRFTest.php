@@ -4,6 +4,8 @@ require_once(__DIR__ . '/TestCase.php');
 
 class RequestsCSRFTest extends TestCase
 {
+    private $probeErrors = "";
+
     private function probe($changes, $origins = array(), $enabled = true, $requirePost = false, $trusted = array(), $ajax = false)
     {
         $server = array_merge(array(
@@ -27,7 +29,7 @@ class RequestsCSRFTest extends TestCase
             'CSRF_TEST_ENABLED' => $enabled ? '1' : '0',
             'CSRF_TEST_REQUIRE_POST' => $requirePost ? '1' : '0',
         );
-        $process = proc_open(array(PHP_BINARY, '-d', 'log_errors=0', '-r', $code),
+        $process = proc_open(array(PHP_BINARY, '-d', 'log_errors=1', '-r', $code),
             array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
             $pipes, null, $environment);
         $this->assertTrue(is_resource($process), 'child PHP started');
@@ -36,6 +38,7 @@ class RequestsCSRFTest extends TestCase
         fclose($pipes[1]);
         $errors = stream_get_contents($pipes[2]);
         fclose($pipes[2]);
+        $this->probeErrors = $errors;
         $this->assertEquals(0, proc_close($process), 'child PHP exited cleanly: ' . $errors);
         return trim($output);
     }
@@ -221,6 +224,32 @@ class RequestsCSRFTest extends TestCase
                 'a full origin setting cannot contain credentials/path/query/fragment/wildcard: '.$grant);
             $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, array($grant), true),
                 'bootstrap rejects the same ambiguous configured value: '.$grant);
+        }
+    }
+
+    public function testExplicitTrustedOriginWorksForForwardedProtocolList()
+    {
+        $headers = array('HTTP_HOST'=>'backend:8080', 'HTTP_X_FORWARDED_PROTO'=>'https, http',
+            'HTTP_ORIGIN'=>'https://panel.example:8443', 'HTTP_X_REQUESTED_WITH'=>'XMLHttpRequest');
+        $trusted = array('https://panel.example:8443');
+        $this->assertEquals('ALLOW', $this->probe($headers, array(), true, false, $trusted),
+            'explicit origin grants work independently of an ambiguous proxy scheme');
+        $this->assertEquals('ALLOW', $this->probe($headers, array(), true, false, $trusted, true),
+            'bootstrap and POST apply the same explicit origin grant');
+        unset($headers['HTTP_ORIGIN']);
+        $this->assertEquals('Forbidden', $this->probe($headers, array(), true, false, $trusted, true),
+            'ambiguous proxy scheme without a source origin cannot authorize bootstrap');
+    }
+
+    public function testMalformedTrustedOriginNamesConfigurationRefusal()
+    {
+        foreach (array('panel.example', 'https://panel.example/path') as $grant) {
+            $this->assertEquals('Forbidden', $this->probe(array('HTTP_ORIGIN'=>'https://panel.example'),
+                array(), true, false, array($grant)), 'invalid setting cannot authorize a request');
+            $this->assertTrue(strpos($this->probeErrors, 'trusted-origin-invalid') !== false,
+                'invalid origin configuration has a classified diagnostic');
+            $this->assertTrue(strpos($this->probeErrors, 'trustedOrigins') !== false,
+                'diagnostic names the configuration to repair');
         }
     }
 

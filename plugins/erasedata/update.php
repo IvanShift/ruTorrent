@@ -60,7 +60,10 @@ function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 	global $argv;
 	$listPath = erasedataQueuePath();
 	if(!erasedataEnsureQueueDirectory($listPath))
+	{
+		erasedataRetireRefusedCollector();
 		return(false);
+	}
 	$onlyHash = null;
 	if(is_array($argv) && count($argv) > 2)
 	{

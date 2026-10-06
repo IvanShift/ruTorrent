@@ -4,27 +4,11 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
 
 /**
- * "Set data directory" answers the one refusal it can answer before it starts
- * anything.
- *
- * action.php does not do the move. It asks rTorrent to run setdir.php through
- * a shell line that ends "& exit 0", so the job is detached and the shell
- * reports success the moment it is started; what action.php sends back is that
- * the job started, never that it worked. rtOpFiles() refusing an occupied
- * destination therefore happens minutes later in a process nobody is listening
- * to, and the dialog closes as though the move had been made.
- *
- * A destination that is already taken is the one refusal that does not need
- * the move to have started: it reads the destination and the download's file
- * list, and nothing else. So action.php tests it first, and a taken name comes
- * back as an error the user can act on -- init.js leaves the dialog open and
- * shows the path that stopped it -- instead of as silence.
- *
- * The read-only preflight reports only an occupied name; the claimed
- * worker remains authoritative for the move. The cases below pin ways an
- * early check could wrongly refuse a request -- a
- * name that only looks taken, a download the check cannot read, and a
- * destination that is where the data already is.
+ * The dialog reports predictable move refusals before starting a detached
+ * worker. It reads torrent metadata without opening a closed torrent and
+ * probes rename support with temporary entries; the claimed worker rechecks.
+ * These cases pin occupied names, case-sensitive names and same-directory
+ * requests so the early checks do not suppress a valid move.
  */
 class SetDirActionCollisionTest extends TestCase
 {
@@ -167,6 +151,17 @@ class SetDirActionCollisionTest extends TestCase
 		$this->assertTrue($r['started'], 'the valid destination is dispatched');
 		$this->assertTrue(strpos(implode("\n", $r['bodies']), escapeshellarg($dir)) !== false,
 			'the malformed field does not replace the valid directory');
+	}
+
+	public function testANewDestinationIsAdmittedWithoutCreatingOrOpeningAnything()
+	{
+		$dir = $this->base . '/dst/new/nested';
+		$r = $this->setTheDataDirectory(array(), 1, $dir, 1);
+		$this->assertSame(array(), $r['errors'], 'A valid new destination is admitted: ' . $r['printed']);
+		$this->assertTrue($r['started'], 'The worker receives the new destination');
+		$this->assertTrue(!file_exists($dir), 'Preflight does not create the requested destination');
+		$this->assertTrue(!in_array('d.open', $r['calls'], true)
+			&& !in_array('d.stop', $r['calls'], true), 'Preflight reads metadata without changing torrent state');
 	}
 
 	/**

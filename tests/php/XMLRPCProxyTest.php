@@ -110,9 +110,11 @@ class XMLRPCProxyTest extends TestCase
 		};
 		$this->assertEquals(0x0908, XMLRPCProxy::daemonVersionFromReply($reply('0.9.8')),
 			'the supported 0.9.8 baseline is recognized');
+		$this->assertEquals(0x1019, XMLRPCProxy::daemonVersionFromReply($reply('0.16.25')),
+            'reviewed 0.16.25 is supported');
 		$this->assertEquals(0x1016, XMLRPCProxy::daemonVersionFromReply($reply('0.16.22')),
 			'a reviewed 0.16 release is recognized');
-		foreach(array('0.16.25', '0.9.7', '0.16.22evil', '0.16.999') as $value)
+		foreach(array('0.16.26', '0.9.7', '0.16.22evil', '0.16.999') as $value)
 			$this->assertTrue(XMLRPCProxy::daemonVersionFromReply($reply($value)) === null,
 				'unreviewed version '.$value.' fails closed');
 		$this->assertTrue(XMLRPCProxy::daemonVersionFromReply('<methodResponse><fault/></methodResponse>') === null,
@@ -3451,4 +3453,14 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue($processRes === null, 'process returns null');
 		$this->assertEquals(0, rXMLRPCRequest::$sent, 'transport call count = 0');
 	}
+    public function testReviewedDaemon1625AllowsNativeListingAndElevatedStop()
+    {
+        $options = array('rtorrentVersion'=>0x1019);
+        foreach (array($this->methodCallXml('d.multicall2', array('', 'main', 'd.name=')),
+            $this->systemMulticallXml(array(array('d.stop', array(str_repeat('A',40)))))) as $xml) {
+            $result = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, $options);
+            $this->assertEquals('send', $result['action'], 'reviewed 0.16.25 native actions remain usable');
+        }
+    }
+
 }

@@ -2,6 +2,14 @@ import { readFileSync } from "fs";
 
 window.$ = require("jquery");
 
+// The browser loads the shared plugin loader before plugin initialization.
+// Keep its real URL helper while the fixture supplies the remaining globals.
+const pluginLoaderScript = document.createElement("script");
+pluginLoaderScript.textContent =
+  "(function(){\n" + readFileSync("../js/plugins.js", { encoding: "utf-8" }) +
+  "\nwindow.cacheBust = cacheBust;})();";
+document.head.appendChild(pluginLoaderScript);
+
 // The feed picker is a <select> the rss plugin fills with one <option> per feed
 // and per feed group. The label of a feed defaults to the channel title of the
 // remote feed (plugins/rss/rss.php), so these option labels are remote input.

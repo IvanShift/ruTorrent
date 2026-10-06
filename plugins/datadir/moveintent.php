@@ -79,6 +79,25 @@ class DataDirMoveIntent
         return true;
     }
 
+    // The request may name a new directory. Validate its existing ancestor
+    // before detached worker launch; the worker rechecks the created root.
+    public static function destinationReason($path)
+    {
+        if (!is_string($path) || $path === '' || $path[0] !== '/')
+            return 'destination-root-unavailable';
+        $ancestor = rtrim($path, '/') ?: '/';
+        while (!is_dir($ancestor))
+        {
+            if (self::statPath($ancestor) !== false || dirname($ancestor) === $ancestor)
+                return 'destination-root-unavailable';
+            $ancestor = dirname($ancestor);
+        }
+        $physical = @realpath($ancestor);
+        if ($physical === false)
+            return 'destination-root-unavailable';
+        return self::trustedDirectory($physical) ? '' : 'destination-root-untrusted';
+    }
+
     private static function mounts()
     {
         $lines = @file('/proc/self/mountinfo', FILE_IGNORE_NEW_LINES);
@@ -247,7 +266,7 @@ class DataDirMoveIntent
         $data = json_decode($json, true);
         if (!is_array($data) || array_keys($data) !== array('version', 'phase', 'job', 'hash',
             'source', 'destination', 'witness', 'files')
-            || $data['version'] !== 2 || !in_array($data['phase'], array('preparing', 'ready', 'finishing', 'terminal', 'ack-pending'), true)
+            || $data['version'] !== 2 || !in_array($data['phase'], array('preparing', 'ready', 'aborting', 'finishing', 'terminal', 'ack-pending'), true)
             || !is_string($data['job']) || preg_match('/^[0-9a-f]{32}$/D', $data['job']) !== 1
             || !is_string($data['hash']) || preg_match('/^[0-9A-F]{40}$/D', $data['hash']) !== 1
             || !is_string($data['source']) || !is_string($data['destination'])
@@ -402,10 +421,12 @@ class DataDirMoveIntent
         return @unlink($this->receipt);
     }
 
-    public function abortUnmoved()
+    // Publish the proof before deleting any witness. Recovery may then finish
+    // cleanup without mistaking its own missing links for unknown payload.
+    public function beginAbortUnmoved()
     {
-        if ($this->data['phase'] === 'preparing')
-            return $this->abortPreparation();
+        if ($this->data['phase'] === 'aborting')
+            return true;
         if ($this->data['phase'] !== 'ready')
             return false;
         foreach ($this->data['files'] as $index => $entry)
@@ -417,6 +438,15 @@ class DataDirMoveIntent
                 || self::identity($destination) !== false)
                 return false;
         }
+        return $this->updatePhase('aborting');
+    }
+
+    public function abortUnmoved()
+    {
+        if ($this->data['phase'] === 'preparing')
+            return $this->abortPreparation();
+        if (!$this->beginAbortUnmoved())
+            return false;
         return $this->cleanWitness(true) && @unlink($this->receipt);
     }
 

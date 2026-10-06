@@ -12428,7 +12428,8 @@ class RemoveWithDataTest extends TestCase
 			{
 				// Both markers are already recorded by now; the staging of the
 				// first hash is done and the second is being collected.
-				if(++$collected < 2)
+				// Two earlier lookups now belong to pre-arm admission.
+				if(++$collected < 4)
 					return;
 				foreach(glob($queue.'/'.$blocked.'.*.pending') as $marker)
 				{
@@ -13278,6 +13279,10 @@ class RemoveWithDataTest extends TestCase
 				file_put_contents($queue.'/'.$hash.'.lock', '');
 				chmod($queue, 0500);
 				FileUtil::$denyDirectoryRepair = true;
+				// Queue admission retires only the ordinary collector. A missing
+				// reply would add a separate RPC refusal to this filesystem case.
+				rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
+					'val' => array(0));
 			}
 			try
 			{
@@ -13299,6 +13304,12 @@ class RemoveWithDataTest extends TestCase
 				}
 				$this->assertTrue(!file_exists($queue.'/.drain-state'),
 					'no drain exists to report this ordinary collector refusal');
+				$removals = $this->scheduleRecords('schedule_remove');
+				$this->assertEquals($obstacle === 'readonly-queue' ? 3 : 0,
+					count($removals), 'only refused queue admission retires the ordinary collector');
+				foreach($removals as $removal)
+					$this->assertEquals('erasedatarutorrent', $removal['key'],
+						'the refusal retires this user collector and preserves drain or other-user schedules');
 			}
 			finally
 			{
@@ -14988,7 +14999,9 @@ class RemoveWithDataTest extends TestCase
 			.' nothing';
 		$mirror = $this->mirror('crash-after-arm');
 		$script = $this->drainScript();
-		$script['d.get_base_path'] = array('exit' => 9);
+		// The first lookup now belongs to pre-arm filesystem admission. Kill
+		// the second lookup, which still sits after arm and before staging.
+		$script['d.get_base_path']['cut'] = 2;
 		$mirror->scriptRpc($script);
 		$crashing = $this->actionDoor($mirror, array($this->hash('A')), 1);
 		$crashing->wait(20);

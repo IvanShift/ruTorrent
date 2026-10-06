@@ -504,10 +504,10 @@ class XMLRPCProxy
 		// An omitted version gets the intersection of native methods across
 		// supported daemons. It must never admit an rc alias on 0.9.8.
 		if($version === null)
-			$mask = 0x3FFFFFF;
+			$mask = 0x7FFFFFF;
 		if($version === 0x0908)
 			$mask = 1;
-		elseif(is_int($version) && $version >= 0x1000 && $version <= 0x1018)
+		elseif(is_int($version) && $version >= 0x1000 && $version <= 0x1019)
 			$mask = 1 << (($version & 0xff) + 1);
 		elseif($version !== null)
 			return false;
@@ -552,7 +552,7 @@ class XMLRPCProxy
 		if(preg_match('/^0\.9\.8(?:[-+][A-Za-z0-9._-]+)?$/D', $value))
 			return 0x0908;
 		if(preg_match('/^0\.16\.(\d{1,2})(?:[-+][A-Za-z0-9._-]+)?$/D', $value, $m))
-			return ((int)$m[1] <= 24) ? 0x1000 + (int)$m[1] : null;
+			return ((int)$m[1] <= 25) ? 0x1000 + (int)$m[1] : null;
 		return null;
 	}
 
@@ -1226,7 +1226,7 @@ class XMLRPCProxy
 		}
 		// The captured 0.16 batch already covered a live socket getter absent
 		// from the source-pinned native table; preserve that exact grant.
-		elseif(is_int($version) && $version >= 0x1012 && $version <= 0x1018
+		elseif(is_int($version) && $version >= 0x1012 && $version <= 0x1019
 			&& self::matchesExactReadBatch($members, self::$settingsReadMethods016, $version, false))
 			return 'settings read';
 		return false;
@@ -1471,7 +1471,7 @@ class XMLRPCProxy
 		$methodName = $decoded['method'];
 		$params = $decoded['params'];
 		if(array_key_exists('rtorrentVersion', $options) && $version !== 0x0908 &&
-			(!is_int($version) || $version < 0x1000 || $version > 0x1018))
+			(!is_int($version) || $version < 0x1000 || $version > 0x1019))
 			return self::reject('rejected (unsupported or unreadable rTorrent version): '.
 				self::normalizeMethodName($methodName), $methodName);
 

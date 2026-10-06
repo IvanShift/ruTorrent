@@ -10,6 +10,28 @@ require_once(__DIR__.'/../../../plugins/_task/task.php');
 
 class TaskSupervisorTest extends TestCase
 {
+    public function setUpClass()
+    {
+        if (!mkdir($_ENV['RU_PROFILE_PATH'], 0700))
+            throw new RuntimeException('Could not create isolated supervisor profile');
+    }
+
+    private function removeTree($path)
+    {
+        if (is_link($path) || !is_dir($path)) {
+            if (file_exists($path) || is_link($path)) unlink($path);
+            return;
+        }
+        foreach (new DirectoryIterator($path) as $entry)
+            if (!$entry->isDot()) $this->removeTree($entry->getPathname());
+        rmdir($path);
+    }
+
+    public function tearDownClass()
+    {
+        $this->removeTree($_ENV['RU_PROFILE_PATH']);
+    }
+
     private function waitFor($path)
     {
         for ($i=0; $i<200 && !is_file($path); ++$i) usleep(10000);
@@ -31,7 +53,7 @@ class TaskSupervisorTest extends TestCase
     public function testSupervisorReapsAnOrphanedGrandchildBeforePublishingCompletion()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = sys_get_temp_dir().'/task-supervisor-tree-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-tree-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         $grandchild = $dir.'/grandchild';
         $script = $dir.'/start.sh';
@@ -78,7 +100,7 @@ class TaskSupervisorTest extends TestCase
     public function testDoubleForkAcrossSetsidRemainsUnderSupervisor()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = sys_get_temp_dir().'/task-supervisor-setsid-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-setsid-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         $marker = $dir.'/orphan-pid';
         $leaf = 'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($marker);
@@ -136,7 +158,7 @@ class TaskSupervisorTest extends TestCase
     public function testLateChildAfterEnumerationIsReapedBeforeCompletion()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = sys_get_temp_dir().'/task-supervisor-late-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-late-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         $fifo = $dir.'/trigger';
         $ready = $dir.'/enumerated';
@@ -398,7 +420,7 @@ class TaskSupervisorTest extends TestCase
     public function testCancelAtNormalCompletionKeepsNormalOutcomeAndNotification()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = sys_get_temp_dir().'/task-supervisor-terminal-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-terminal-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
         $notify = $dir.'/notify.php';
@@ -445,7 +467,7 @@ class TaskSupervisorTest extends TestCase
     public function testFailedCompletionDirectorySyncDoesNotLeaveValidProof()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = sys_get_temp_dir().'/task-supervisor-sync-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-sync-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
         $env = array_merge($_ENV, array('RTASK_SUPERVISOR_TEST_FAIL_COMPLETE_FSYNC'=>'1'));
@@ -470,7 +492,7 @@ class TaskSupervisorTest extends TestCase
     public function testNotifierExecFailureIsVisibleAndRetainsPendingWork()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = sys_get_temp_dir().'/task-supervisor-notify-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-notify-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
         $process = proc_open(array($binary, $dir, '/no/such/php', '/no/such/notify.php', 'test'),
@@ -500,7 +522,7 @@ class TaskSupervisorTest extends TestCase
     public function testNotifierPhpFatalIsVisibleAndRetainsPendingWork()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = sys_get_temp_dir().'/task-supervisor-fatal-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-fatal-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
         $notify = $dir.'/fatal.php';
@@ -531,7 +553,7 @@ class TaskSupervisorTest extends TestCase
 
     public function testNotifierRejectsMissingTaskParametersAndRetainsPendingWork()
     {
-        $dir = sys_get_temp_dir().'/task-notify-params-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'].'/task-notify-params-'.bin2hex(random_bytes(4));
         mkdir($dir, 0700);
         file_put_contents($dir.'/supervisor.notify-pending', "1\n");
         $process = proc_open(array(PHP_BINARY, __DIR__.'/../../../plugins/_task/notify.php',
