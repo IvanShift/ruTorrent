@@ -24,6 +24,8 @@ class BoundedQueueModel {
     public $startResult = 'spawned';
     public $loseEnqueueReadback = false;
     public $active=true;
+    public $retryStates=array();
+    public function queueRetryState($hash,&$failure=null) { return isset($this->retryStates[$hash])?$this->retryStates[$hash]:''; }
     public function queueAdmissionActive($userHash,&$failure=null) { return $this->active; }
     public function queueRows(&$failure = null) { return $this->rows; }
     public function queueCursor($userHash, &$failure = null) { return $this->cursor; }
@@ -53,6 +55,7 @@ class BoundedQueueTest extends TestCase {
         $adapter=new class {
             public $cancels=0;public $finishes=0;public $lastReason=null;
             public function nativeCancelUncaptured($hash,$tx,$localId,$handoff,$incarnation=null,&$failure=null) {$this->cancels++;return true;}
+            public function nativeDeferUncaptured($hash,$tx,$localId,$handoff,$incarnation,$reason,&$failure=null) {return $this->nativeCancelUncaptured($hash,$tx,$localId,$handoff,$incarnation,$failure);}
             public function nativeOriginalIncarnation($hash,&$failure=null) {return str_repeat('c',32);}
             public function nativeFinishOriginal($hash,$tx,$incarnation,&$failure=null) {$this->finishes++;throw new RuntimeException('wrong completion of failed queued attempt');}
             public function recordRecoveryFailure($reason) {$this->lastReason=$reason;}
@@ -117,7 +120,7 @@ class BoundedQueueTest extends TestCase {
                 $methods=array('d.retrackers.enqueue_original','d.retrackers.dequeue_original',
                     'system.retrackers.original_claim','system.retrackers.worker_start','system.retrackers.dispatcher_start',
                     'system.retrackers.queue_cursor','system.retrackers.queue_cursor.set','schedule.if_absent');
-                if ($this->cancelMethod) $methods[]='d.retrackers.cancel_original';
+                if ($this->cancelMethod) { $methods[]='d.retrackers.cancel_original';$methods[]='d.retrackers.defer_original'; }
                 if ($this->stageMethod) $methods[]='d.retrackers.preflight_stage';
                 return array('ok'=>true,'family'=>2,'value'=>$methods);
             }
@@ -202,6 +205,19 @@ class BoundedQueueTest extends TestCase {
         $result=RetrackersBoundedDispatcher::run($model,'alice');
         $this->assertTrue($result['spawned']===1 && count($model->enqueues)===1 && $model->enqueues[0][3]==='0' && count($model->starts)===1,
             'restart recovery claims the current stopped generation and starts only the read-back exact T/I/Q');
+    }
+    public function testBackoffAndExhaustedQueueStayPendingWithoutReenqueueOrLaunch() {
+        if (!$this->available()) return;
+        foreach(array('deferred','terminal','malformed') as $kind) {
+            $model=new BoundedQueueModel();$row=$this->row(1);$model->rows=array($row);$q=substr($row[2],-32);
+            $model->retryStates[$row[0]]=$kind==='deferred'?'r1:'.$q.':1:'.(time()+300).':capture-refused':($kind==='terminal'?'r1:'.$q.':6:0:source-not-ready':'broken');
+            $result=RetrackersBoundedDispatcher::run($model,'alice');
+            $this->assertTrue(count($model->enqueues)===0&&count($model->starts)===0&&count($model->dequeues)===0, 'a '.$kind.' queue is retained without another claim, worker or completion');
+        }
+        $model=new BoundedQueueModel();$row=$this->row(1);$model->rows=array($row);
+        $model->retryStates[$row[0]]='r1:'.substr($row[2],-32).':2:'.(time()-1).':source-not-ready';
+        $result=RetrackersBoundedDispatcher::run($model,'alice');
+        $this->assertTrue(count($model->enqueues)===1&&count($model->starts)===1, 'an exact due Q becomes eligible again after its persisted delay');
     }
     public function testLostEnqueueReplyDoesNotStartOrReplayInSamePass() {
         if (!$this->available()) return;

@@ -333,6 +333,34 @@ if(!function_exists('erasedataCollectPaths'))
 require_once(dirname(__FILE__)."/manifest.php");
 require_once(dirname(__FILE__)."/filesystem.php");
 
+// Native BEP-9 session stubs carry a synthetic info dictionary, captured
+// through load.start on 0.16.25. Its pieces field is the requested hash, not
+// payload pieces; no file layout is present. Require the exact envelope and
+// current daemon identity so corrupt real torrents remain uncertain owners.
+function erasedataCleanupMetadataOnly($hash)
+{
+	$hash = erasedataCanonicalHash($hash);
+	if($hash === false) return(false);
+	$source = erasedataLoadTorrentSource($hash);
+	if(!is_object($source) || !property_exists($source, 'info'))
+		return(false);
+	$info = $source->info;
+	if($info !== null && (!is_array($info) || count($info) !== 3
+		|| !isset($info['meta_download'], $info['name'], $info['pieces'])
+		// Torrent decodes bencoded integers as floats; strings remain invalid.
+		|| !in_array($info['meta_download'], array(1, 1.0), true) || !is_string($info['name'])
+		|| strcasecmp($info['name'], $hash.'.meta') !== 0
+		|| !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash))
+		return(false);
+	$probe = new rXMLRPCRequest(array(
+		new rXMLRPCCommand(getCmd('d.is_meta'), $hash),
+		new rXMLRPCCommand(getCmd('d.hash'), $hash)));
+	$probe->important = false;
+	return($probe->success() && count($probe->val) === 2
+		&& in_array($probe->val[0], array(1, '1', true), true)
+		&& is_string($probe->val[1]) && strtoupper($probe->val[1]) === $hash);
+}
+
 // A cleanup may discard only names and inodes unclaimed by every other torrent.
 // Keep the scan in erasedata so producer and delayed consumer use one rule.
 function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
@@ -375,7 +403,10 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 			continue;
 		$owned = erasedataCollectPhysicalPaths($hash);
 		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
+		{
+			if(erasedataCleanupMetadataOnly($hash)) continue;
 			return(false);
+		}
 		foreach($owned['files'] as $file)
 		{
 			$identity = erasedataPathIdentity($file);
@@ -951,9 +982,19 @@ if(!function_exists('erasedataReadExactCleanupJob'))
 	}
 }
 
+// Cleanup manifests name a directory base and individual obsolete files.
+// Preparation and post-ack arm share HTTP removal's actual-parent probe rule.
+function erasedataCleanupRenameReady($listPath, array $manifest, ErasedataFilesystemOps $filesystem)
+{
+	$probed = array();
+	return(erasedataRemovalRenameReady($listPath, array('base' => $manifest['base'],
+		'multi' => true, 'files' => $manifest['files']), $filesystem, $probed));
+}
+
 if(!function_exists('erasedataPrepareObsoleteCleanup'))
 {
-	function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord, $base, array $entries)
+	function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $replacementRecord, $base, array $entries,
+		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$canonicalOldHash = erasedataCanonicalHash($oldHash);
 		$canonicalNewHash = erasedataCanonicalHash($newHash);
@@ -978,6 +1019,15 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 		if($transaction === false)
 		{
 			erasedataReleaseHashLock($lock);
+			return(false);
+		}
+		if($filesystem === null) $filesystem = new ErasedataFilesystemOps();
+		if(!erasedataCleanupRenameReady($listPath, $transaction, $filesystem))
+		{
+			erasedataReleaseHashLock($lock);
+			ErasedataFilesystemOps::reportRenameRefusal();
+			FileUtil::toLog('erasedata: cleanup admission refused reason=rename-capability hash='
+				.$canonicalOldHash.'; predecessor and payload retained');
 			return(false);
 		}
 		$staged = erasedataWriteStagedManifest($listPath, $canonicalOldHash, $contents, 'cleanup');
@@ -1080,10 +1130,21 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		$state = erasedataReadDrainState($listPath);
 		$ack = is_array($state) && isset($state['acknowledged'])
 			? erasedataGenerationCompare($state['acknowledged'], $generation) : false;
+		$manifest = erasedataReadExactCleanupJob($job);
 		if(!erasedataDrainStateBelongsTo($state, $user) || ($ack !== 0 && $ack !== 1)
-			|| erasedataReadExactCleanupJob($job) === false)
+			|| $manifest === false)
 		{
 			erasedataDrainDiagnostic($log, 'cleanup-arm-changed', $generation, 1,
+				'old-torrent-retained-replacement-retryable');
+			return(false);
+		}
+		$filesystem = isset($dependencies['filesystem'])
+			&& $dependencies['filesystem'] instanceof ErasedataFilesystemOps
+			? $dependencies['filesystem'] : new ErasedataFilesystemOps();
+		if(!erasedataCleanupRenameReady($listPath, $manifest, $filesystem))
+		{
+			ErasedataFilesystemOps::reportRenameRefusal();
+			erasedataDrainDiagnostic($log, 'cleanup-rename-capability', $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -4371,6 +4432,24 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		$refusedCapability = array();
 		try
 		{
+			// Recovery is a new producer: the admission's probe and descriptors
+			// died with it. Prove the current queue/payload parents before any
+			// staging or erase, including force-1 and already-staged jobs.
+			$probed = array();
+			foreach($hashes as $hash)
+			{
+				if($presence[$hash] !== ERASEDATA_TORRENT_PRESENT || isset($unbound[$hash]))
+					continue;
+				$collected[$hash] = erasedataCollectPaths($hash);
+				if(!is_array($collected[$hash]) || !erasedataRemovalRenameReady($listPath,
+					$collected[$hash], $filesystem, $probed))
+				{
+					$refusedCapability[$hash] = true;
+					$notes[] = array(is_array($collected[$hash]) ? 'rename-capability' : 'paths-unknown',
+						$generation, $members, is_array($collected[$hash]) || $force === 2
+							? 'obligation-retained-nothing-erased' : 'obligation-retained', $hash);
+				}
+			}
 			if($force === 2)
 				foreach($hashes as $hash)
 				{
@@ -4381,9 +4460,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					// for it until the finally, which is work and an fd spent on a
 					// hash this pass has already decided not to touch.
 					if($presence[$hash] !== ERASEDATA_TORRENT_PRESENT
-						|| isset($unbound[$hash]))
+						|| isset($unbound[$hash]) || isset($refusedCapability[$hash]))
 						continue;
-					$collected[$hash] = erasedataCollectPaths($hash);
 					$capability = is_array($collected[$hash])
 						? erasedataAcquireRemovalCapability($collected[$hash], $filesystem)
 						: false;

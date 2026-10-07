@@ -3,11 +3,17 @@
 require_once '../../php/xmlrpc.php';
 require_once './util_rt.php';
 require_once __DIR__ . '/../rutracker_check/runstate.php';
-require_once __DIR__ . '/../erasedata/filesystem.php';
+require_once __DIR__ . '/../erasedata/removewithdata.php';
 require_once __DIR__ . '/movejob.php';
+require_once __DIR__ . '/apply.php';
 
 function rtDataDirClaimRpc($method, $hash, $args)
 {
+    if ($method === 'torrent-presence') {
+        $presence = erasedataTorrentPresence($hash);
+        return $presence === ERASEDATA_TORRENT_ABSENT ? 'absent'
+            : ($presence === ERASEDATA_TORRENT_PRESENT ? 'present' : 'unknown');
+    }
     $request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd($method),
         array_merge(array($hash), $args)));
     $request->important = false;
@@ -391,10 +397,12 @@ function rtDataDirProbeRename($source, $destination, $files)
     }
 }
 
-function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false)
+function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false, &$failure = null)
 {
+    $failure = null;
     if (!is_string($destPath) || $destPath === '' || !is_string($hash)
         || preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1) {
+        $failure = 'invalid-arguments';
         FileUtil::toLog('datadir: change refused: invalid-arguments');
         return false;
     }
@@ -429,9 +437,11 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
             'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace');
         return $job->run();
     } catch (DataDirMoveRefused $e) {
+        $failure = $e->getMessage();
         FileUtil::toLog('datadir: ' . $hash . ' change refused: ' . $e->getMessage());
         return false;
     } catch (Exception $e) {
+        $failure = $e->getMessage();
         $pending = $path !== null && (file_exists($path) || is_link($path));
         FileUtil::toLog('datadir: ' . $hash . ($pending ? ' change held: ' : ' change refused: ')
             . $e->getMessage());

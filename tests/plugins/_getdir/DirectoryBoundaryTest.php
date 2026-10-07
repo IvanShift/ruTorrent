@@ -134,6 +134,9 @@ class DirectoryBoundaryTest extends TestCase
                     : array('mode'=>'dirlist', 'basedir'=>$alias.$suffix);
                 $data = $this->probe($script, $request, $alias, $alias);
                 $names = $data[$script === 'listdir.php' ? 'directories' : 'dirlist'] ?? array();
+                $returned = $data[$script === 'listdir.php' ? 'path' : 'basedir'] ?? null;
+                $this->assertEquals($alias.$suffix.($script === 'listdir.php' ? '/' : ''), $returned,
+                    'a selected directory keeps the configured top spelling for its consumers in '.$script.$suffix);
                 $this->assertTrue(in_array($entry, $names),
                     'a configured top alias keeps its allowed contents in '.$script.$suffix);
                 if ($suffix === '' && $script === 'listdir.php')
@@ -141,6 +144,27 @@ class DirectoryBoundaryTest extends TestCase
                         'a configured top alias keeps its allowed files');
                 if ($suffix === '')
                     $this->assertTrue(!in_array('..', $names), 'a configured top alias hides its parent');
+            }
+        }
+    }
+    public function testTopBelowSymlinkMapsPhysicalDefaultAndRejectsEscapes()
+    {
+        $alias = $this->root.'/ancestor-alias';
+        symlink($this->root, $alias);
+        $top = $alias.'/downloads/';
+        symlink($this->root.'/downloads-private', $this->root.'/downloads/escape');
+        foreach (array('listdir.php', 'info.php') as $script) {
+            foreach (array('', $top.'escape') as $requested) {
+                $request = $script === 'listdir.php' ? array('dir'=>$requested)
+                    : array('mode'=>'dirlist', 'basedir'=>$requested);
+                $data = $this->probe($script, $request, $this->root.'/downloads/inside', $top);
+                $expected = ($requested === '' || $script === 'info.php') ? $top.'inside' : rtrim($top, '/');
+                if ($script === 'listdir.php') $expected .= '/';
+                $this->assertEquals($expected, $data[$script === 'listdir.php' ? 'path' : 'basedir'] ?? null,
+                    'a physical default maps to the logical top and an escape returns to that top in '.$script);
+                $names = $data[$script === 'listdir.php' ? 'directories' : 'dirlist'] ?? array();
+                $this->assertTrue(!in_array('secret', $names) && !in_array('escape', $names),
+                    'an aliased top does not expose an escaped directory in '.$script);
             }
         }
     }

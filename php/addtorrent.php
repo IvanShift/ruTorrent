@@ -40,29 +40,32 @@ function addtorrent_status($hash, &$loaded)
 	return("Success");
 }
 
+/** Send the same result payload for a redirected GET or a large upload POST. */
+function addtorrent_response($results, $names, $json = false)
+{
+	if($json)
+		CachedEcho::send( '{ "result" : '.addtorrent_literal(isset($results[0]) ? $results[0] : '').' }',
+			"application/json");
+	$js = '';
+	foreach( $results as $ndx=>$result )
+	{
+		$status = in_array($result, array('Success', 'Duplicate', 'Pending', 'Failed',
+			'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
+		$kind = $status === 'Success' ? 'success'
+			: ($status === 'Duplicate' ? 'alert' : ($status === 'Pending' ? 'warning' : 'error'));
+		$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? ($names[$ndx].' - ') : '').
+			'+theUILang["addTorrent"+'.addtorrent_literal($status).']'.
+			','.addtorrent_literal($kind).');');
+	}
+	CachedEcho::send($js,"text/html");
+}
+
 if(isset($_REQUEST['result']))
 {
 	$results = is_array($_REQUEST['result']) ? array_values($_REQUEST['result']) : array($_REQUEST['result']);
-	if(isset($_REQUEST['json']))
-		CachedEcho::send( '{ "result" : '.addtorrent_literal(isset($results[0]) ? $results[0] : '').' }',
-			"application/json");
-	else
-	{
-		$names = (isset($_REQUEST['name']) && is_array($_REQUEST['name']))
-			? array_values($_REQUEST['name']) : array();
-		$js = '';
-		foreach( $results as $ndx=>$result )
-		{
-			$status = in_array($result, array('Success', 'Duplicate', 'Pending', 'Failed',
-				'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
-			$kind = $status === 'Success' ? 'success'
-				: ($status === 'Duplicate' ? 'alert' : ($status === 'Pending' ? 'warning' : 'error'));
-			$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? ($names[$ndx].' - ') : '').
-				'+theUILang["addTorrent"+'.addtorrent_literal($status).']'.
-				','.addtorrent_literal($kind).');');
-		}
-		CachedEcho::send($js,"text/html");
-	}
+	$names = (isset($_REQUEST['name']) && is_array($_REQUEST['name']))
+		? array_values($_REQUEST['name']) : array();
+	addtorrent_response($results, $names, isset($_REQUEST['json']));
 }
 else
 {
@@ -188,7 +191,9 @@ else
 	$location = "Location: ./addtorrent.php?";
 	if(empty($uploaded_files))
 		$uploaded_files = array( array( 'status' => "Failed" ) );
-	foreach($uploaded_files as &$file)
+	$results = array();
+	$names = array();
+	foreach($uploaded_files as $ndx=>&$file)
 	{
 		if( ($file['status']=='Success') && isset($file['file']) )
 		{
@@ -223,12 +228,22 @@ else
 				}
 			}
 		}
+		$results[] = $file['status'];
 		$location.=('result[]='.$file['status'].'&');
 		if( isset($file['name']) )
+		{
+			$names[$ndx] = $file['name'];
 			$location.=('name[]='.rawurlencode($file['name']).'&');
+		}
 	}
-	header("HTTP/1.0 302 Moved Temporarily");
+	unset($file);
 	if(isset($_REQUEST['json']))
 		$location.='json=1';
+	// Percent-encoded UTF-8 batch names can overflow the usual 4 KiB FastCGI
+	// header buffer. Bound the complete Location field to 2 KiB and let the
+	// existing iframe/JSON consumer read the same result from this POST body.
+	if(strlen($location)>2048)
+		addtorrent_response($results, $names, isset($_REQUEST['json']));
+	header("HTTP/1.0 302 Moved Temporarily");
 	header($location);
 }

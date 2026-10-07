@@ -16,7 +16,7 @@ class DataDirFailureVisibilityTest extends TestCase
         $root = dirname(__DIR__, 3);
         if (!copy($root . '/php/cli-only.php', $this->tree . '/php/cli-only.php'))
             throw new RuntimeException('Could not copy production CLI guard');
-        foreach (array('action.php', 'setdir.php', 'setdircommand.php', 'moveintent.php') as $name)
+        foreach (array('action.php', 'setdir.php', 'setdircommand.php', 'moveintent.php', 'apply.php') as $name)
             if (!copy($root . '/plugins/datadir/' . $name, $this->tree . '/plugins/datadir/' . $name))
                 throw new RuntimeException('Could not copy production ' . $name);
         file_put_contents($this->tree . '/php/xmlrpc.php', '<?php require_once __DIR__ . "/util.php";');
@@ -88,9 +88,10 @@ function rtDataDirCollision($hash, $path, $add, $debug)
     if ($reason) throw new RuntimeException($reason);
     return '';
 }
-function rtSetDataDir($hash, $path, $add, $move, $resume, $debug)
+function rtSetDataDir($hash, $path, $add, $move, $resume, $debug, &$failure = null)
 {
     $result = getenv('DATADIR_TEST_RESULT');
+    if ($result === 'fail') $failure = 'daemon-claim-refused';
     if ($result === 'pending') {
         FileUtil::toLog('datadir: torrent reload pending confirmation: ' . $hash);
         return null;
@@ -110,7 +111,7 @@ STUB
     public function tearDown()
     {
         foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'php/xmlrpc.php', 'php/util.php', 'php/cli-only.php', 'plugins/datadir/action.php',
-            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php', 'plugins/datadir/moveintent.php',
+            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php', 'plugins/datadir/moveintent.php', 'plugins/datadir/apply.php',
             'plugins/datadir/util_rt.php',
             'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
             @unlink($this->tree . '/' . $file);
@@ -234,7 +235,7 @@ STUB
 
     public function testActionLogsUnconfirmedDispatchAndReturnsError()
     {
-        $body = 'hash=' . str_repeat('A', 40) . '&datadir=%2Fdata%2Fdownloads%2Fnew';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=%2Fdata%2Fdownloads%2Fnew&move_datafiles=1';
         list($code, $output, $stderr, $log) = $this->action($body,
             array('DATADIR_TEST_EXEC' => 'fail'));
         $this->assertSame(0, $code, 'Action responds after unconfirmed dispatch');
@@ -305,9 +306,9 @@ STUB
             'Outside symlink refusal is visible');
     }
 
-    public function testActionSuccessOnlyAcknowledgesWorkerLaunch()
+    public function testMoveActionSuccessOnlyAcknowledgesWorkerLaunch()
     {
-        $body = 'hash=' . str_repeat('A', 40) . '&datadir=%2Fdata%2Fdownloads%2Fnew';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=%2Fdata%2Fdownloads%2Fnew&move_datafiles=1';
         $dispatch = $this->tree . '/dispatch.json';
         list($code, $output, $stderr, $log) = $this->action($body,
             array('DATADIR_TEST_COMMAND_LOG' => $dispatch));
@@ -316,8 +317,22 @@ STUB
             'HTTP success acknowledges launch only');
         $this->assertSame('', $log, 'Successful launch produces no refusal log');
         $args = json_decode(file_get_contents($dispatch), true);
-        $this->assertTrue(is_array($args) && strpos($args[2], " '1' '0' '0' ") !== false,
+        $this->assertTrue(is_array($args) && strpos($args[2], " '1' '1' '0' ") !== false,
             'UI request without the removed option dispatches the in-place worker path');
+    }
+
+    public function testSetDirectoryReturnsTheActualClaimRefusalToTheDialog()
+    {
+        $dispatch = $this->tree . '/dispatch.json';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=%2Fdata%2Fdownloads%2Fnew&move_datafiles=0';
+        list($code, $output, $stderr, $log) = $this->action($body,
+            array('DATADIR_TEST_RESULT'=>'fail', 'DATADIR_TEST_COMMAND_LOG'=>$dispatch));
+        $this->assertSame(0, $code, 'Set directory returns an application response');
+        $this->assertSame('', $stderr, 'Set directory has no PHP fatal');
+        $decoded = json_decode($output, true);
+        $this->assertSame('daemon-claim-refused', $decoded['errors'][0]['prm'] ?? null,
+            'The dialog sees the actual failed change');
+        $this->assertTrue(!is_file($dispatch), 'Set directory completes under the web request lock');
     }
 
     public function testActionReportsMissingDaemonClaimBeforeDispatch()

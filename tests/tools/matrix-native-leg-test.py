@@ -125,7 +125,7 @@ os.execvp('cc', ['cc', *args[index+1:]])
              patch.object(runner, "docker_run") as launch, \
              patch.object(runner, "remove_owned_container") as cleanup:
             with self.assertRaisesRegex(RuntimeError, "compile failed"):
-                runner.run_leg(directory, "7.4", "own-leg", 1000, 1000, owner="our-token")
+                runner.run_leg(directory, "7.4", "own-leg", os.getuid(), os.getgid(), owner="our-token")
         launch.assert_not_called()
         cleanup.assert_called_once_with("own-leg", "our-token")
         self.assertFalse((directory / "native").exists())

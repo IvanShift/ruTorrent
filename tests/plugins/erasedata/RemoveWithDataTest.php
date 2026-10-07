@@ -17829,21 +17829,21 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array($base, 1, $base.'/payload'));
 		$this->probe(true, false, array($hash));
 		$this->eraseOk();
-		// Three base-path identity lookups reach the seam in this scenario: two
-		// while the capability is acquired, and the last one inside the re-check
-		// the erase decision is gated on. Refusing exactly the third leaves the
+		// Five base-path identity lookups reach the seam: two parent observations
+		// (the base entry and payload), two during descriptor admission, and the
+		// final pre-erase re-check. Refusing exactly the fifth leaves the
 		// preflight intact and fails only the second proof. The count is
 		// asserted below, so a change in the sequence cannot make this pass
 		// vacuously by refusing the preflight instead.
 		$calls = $this->dir.'/recheck-base-lookups';
 		$filesystem = new ErasedataCollectorFixture(array(
-			'targetIdentity:3' => array('path' => $base, 'result' => false),
+			'targetIdentity:5' => array('path' => $base, 'result' => false),
 			'targetIdentity:*' => array('path' => $base, 'count_file' => $calls),
 		));
 		$notes = array();
 		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
 			array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
-		$this->assertEquals(3, substr_count(@file_get_contents($calls), "\n"),
+		$this->assertEquals(5, substr_count(@file_get_contents($calls), "\n"),
 			'the refusal really is the pre-erase re-check, not the preflight');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased,
 			'a capability that no longer names its base path never reaches d.erase');
@@ -18053,7 +18053,7 @@ class RemoveWithDataTest extends TestCase
 		// pass is the last one. That write cannot succeed: this generation has
 		// no record yet, so completing it would be record 4096.
 		$filesystem = new ErasedataCollectorFixture(array(
-			'targetIdentity:3' => array('path' => $base, 'result' => false),
+			'targetIdentity:5' => array('path' => $base, 'result' => false),
 		));
 		$notes = array();
 		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
@@ -18118,7 +18118,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(pcntl_signal(SIGXFSZ, function() use (&$sizeFaults) {
 			$sizeFaults++;
 		}), 'a failed write cannot terminate the test process');
-		// The third descriptor recheck runs after staging. Refusing it keeps
+		// The fifth base lookup (after the rename-parent observations and descriptor
+		// admission) is the pre-erase recheck and runs after staging. Refusing it keeps
 		// $durable false, so the final state write is the pass's only journal write.
 		$filesystem = new class($base, $hard) extends ErasedataFilesystemOps {
 			private $base;
@@ -18132,7 +18133,7 @@ class RemoveWithDataTest extends TestCase
 			}
 			public function targetIdentity($path)
 			{
-				if($path === $this->base && ++$this->calls === 3)
+				if($path === $this->base && ++$this->calls === 5)
 				{
 					$this->limitApplied = posix_setrlimit(POSIX_RLIMIT_FSIZE,
 						0, $this->hard);

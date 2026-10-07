@@ -191,9 +191,22 @@ class DataDirMoveJob
     public function run()
     {
         $job = $this->data['job'];
-        $state = self::state($this->call('d.stop_close_claim_state', array($job)));
         $movePath = $this->moveReceipt();
         $intent = is_file($movePath) ? DataDirMoveIntent::load($movePath, $this->move) : null;
+        if ($intent === null && @lstat($movePath) !== false)
+            throw new RuntimeException('move-receipt-untrusted');
+        try {
+            $state = self::state($this->call('d.stop_close_claim_state', array($job)));
+        } catch (RuntimeException $error) {
+            // A missing hash faults the addressed claim read. Only a separate
+            // attested absence may retire an untouched new job on that answer.
+            if ($this->data['phase'] === 'new' && $intent === null
+                && call_user_func($this->rpc, 'torrent-presence', $this->data['hash'], array()) === 'absent') {
+                $this->retire(null);
+                throw new DataDirMoveRefused('torrent-absent');
+            }
+            throw $error;
+        }
         if ($this->data['phase'] === 'ack-pending')
         {
             if ($state['kind'] !== 'absent' && $state['kind'] !== 'done')
@@ -206,7 +219,23 @@ class DataDirMoveJob
         {
             if ($this->data['phase'] !== 'new' || $intent !== null)
                 throw new RuntimeException('claim-lost-before-ack');
-            $state = self::state('active|' . $this->call('d.stop_close_claim', array($job)));
+            try {
+                $state = self::state('active|' . $this->call('d.stop_close_claim', array($job)));
+            } catch (RuntimeException $error) {
+                // A lost reply may already own the original run state. Read
+                // this exact job again before deciding that nothing was taken.
+                $readback = call_user_func($this->rpc, 'd.stop_close_claim_state',
+                    $this->data['hash'], array($job));
+                if ($readback === 'absent') {
+                    $this->retire(null);
+                    throw new DataDirMoveRefused('daemon-claim-refused');
+                }
+                if (call_user_func($this->rpc, 'torrent-presence', $this->data['hash'], array()) === 'absent') {
+                    $this->retire(null);
+                    throw new DataDirMoveRefused('torrent-absent');
+                }
+                throw $error;
+            }
         }
         elseif ($state['kind'] === 'active')
             $state = self::state('active|' . $this->call('d.stop_close_claim', array($job)));

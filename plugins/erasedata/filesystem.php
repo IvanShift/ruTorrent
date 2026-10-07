@@ -119,7 +119,7 @@ class ErasedataFilesystemOps
 		{
 			foreach($held as $resource) fclose($resource['handle']);
 		}
-		if($code === 0)
+		if($code === 0 || ($code === 5 && isset($arguments[1]) && $arguments[1] === '--probe'))
 		{
 			self::$renameRefusal = '';
 			self::$renameContext = '';
@@ -264,8 +264,8 @@ class ErasedataFilesystemOps
 		return(@rename($from, $to));
 	}
 
-	// PHP rename() may replace $to. The image builds this narrow Linux helper
-	// from this plugin's source; an absent or unsupported helper refuses restore.
+	// PHP rename() may replace $to. This helper shares the no-replace syscall
+	// and its caller-locked unsupported-flags fallback across every consumer.
 	public function renameNoReplace($from, $to)
 	{
 		self::clearRenameRefusal();

@@ -21,14 +21,20 @@ else
 fi
 
 # Runtime images have installed helpers and deliberately omit a compiler.
-# Source gates must retain the real crash cuts and EINVAL classifier variant.
+# Source gates must retain the real crash cuts and injected errno variants.
 source_cuts=true
 if [[ $# == 1 ]] && ! command -v cc >/dev/null 2>&1; then
   source_cuts=false
   echo 'scope - packaged helper probes run; compiler crash cuts and EINVAL classifier require the source gate'
 fi
 
-"$binary" --probe "$run"
+probe_usable() {
+  local probe_status=0
+  "$1" --probe "$2" || probe_status=$?
+  [[ "$probe_status" == 0 || "$probe_status" == 5 ]]
+}
+
+probe_usable "$binary" "$run"
 
 # Eight helpers must recover the same 32 dead workspaces without reopening a
 # removed lock name. The compiler gate also stops the first owner in that gap.
@@ -57,10 +63,14 @@ if [[ "$source_cuts" == true ]]; then
   [[ "$stopped" == 1 ]]
 fi
 concurrent_pids=("$probe_pid")
-for index in {1..7}; do "$binary" --probe "$concurrent_parent" & concurrent_pids+=("$!"); done
+for index in {1..7}; do probe_usable "$binary" "$concurrent_parent" & concurrent_pids+=("$!"); done
 if [[ "$source_cuts" == true ]]; then sleep 0.15; kill -CONT "$probe_pid"; fi
 concurrent_failed=0
-for pid in "${concurrent_pids[@]}"; do wait "$pid" || concurrent_failed=1; done
+for pid in "${concurrent_pids[@]}"; do
+  concurrent_status=0
+  wait "$pid" || concurrent_status=$?
+  [[ "$concurrent_status" == 0 || "$concurrent_status" == 5 ]] || concurrent_failed=1
+done
 concurrent_pids=()
 probe_pid=''
 [[ "$concurrent_failed" == 0 ]]
@@ -79,19 +89,19 @@ for cut in from-file to-file from-dir to-dir; do
   else
     mkdir -m 0700 "$probe_root/$cut"
   fi
-  "$binary" --probe "$run"
+  probe_usable "$binary" "$run"
   [[ ! -e "$probe_root" ]]
 done
 mkdir -m 0700 "$probe_root"
 printf 'unrelated bytes' > "$probe_root/unexpected"
-if "$binary" --probe "$run" 2>"$run/unsafe-probe.stderr"; then
+if probe_usable "$binary" "$run" 2>"$run/unsafe-probe.stderr"; then
   echo 'unexpected probe workspace content was accepted' >&2; exit 1
 fi
 [[ "$(cat "$probe_root/unexpected")" == 'unrelated bytes' ]]
 rm -- "$probe_root/unexpected"
 printf 'keep bytes' > "$run/keep-probe"
 ln -s "$run/keep-probe" "$probe_root/from-file"
-if "$binary" --probe "$run" 2>"$run/unsafe-probe.stderr"; then
+if probe_usable "$binary" "$run" 2>"$run/unsafe-probe.stderr"; then
   echo 'linked probe artifact was accepted' >&2; exit 1
 fi
 [[ -L "$probe_root/from-file" && "$(cat "$run/keep-probe")" == 'keep bytes' ]]
@@ -100,13 +110,13 @@ mkdir -m 0700 "$probe_root/from-dir"
 printf 'unknown nested bytes' > "$probe_root/from-dir/unexpected"
 printf 'attested probe bytes' > "$probe_root/from-file"
 chmod 0600 "$probe_root/from-file"
-if "$binary" --probe "$run" 2>"$run/unsafe-probe.stderr"; then
+if probe_usable "$binary" "$run" 2>"$run/unsafe-probe.stderr"; then
   echo 'nonempty probe directory was accepted' >&2; exit 1
 fi
 [[ "$(cat "$probe_root/from-dir/unexpected")" == 'unknown nested bytes' ]]
 [[ "$(cat "$probe_root/from-file")" == 'attested probe bytes' ]]
 rm -- "$probe_root/from-dir/unexpected"
-"$binary" --probe "$run"
+probe_usable "$binary" "$run"
 [[ ! -e "$probe_root" ]]
 
 # Kill an actual helper while its private file/lock are live. The next real
@@ -128,7 +138,7 @@ kill -KILL "$probe_pid"
 wait "$probe_pid" 2>/dev/null || true
 probe_pid=''
 [[ -n "$(find "$run/crash-parent" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
-"$binary" --probe "$run/crash-parent"
+probe_usable "$binary" "$run/crash-parent"
 [[ -z "$(find "$run/crash-parent" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
 
 fi
@@ -178,21 +188,62 @@ ln -s missing-target "$run/source-link"
 [[ ! -L "$run/source-link" ]]
 [[ "$(readlink "$run/restored-link")" == missing-target ]]
 
-# Inject only the syscall refusal, keeping the production error classifier real.
+# Inject only renameat2's errno: unsupported flags must use the shared
+# caller-locked fallback, while real filesystem errors remain refusals.
 if [[ "$source_cuts" == true ]]; then
-compile_helper "$run/unsupported" -DRUTORRENT_RENAME_TEST_ERRNO=22
-set +e
-"$run/unsupported" --probe "$run" 2>"$run/unsupported.stderr"
-unsupported_status=$?
-set -e
-[[ "$unsupported_status" == 3 ]]
-[[ "$(cat "$run/unsupported.stderr")" == *rename-noreplace-unsupported* ]]
-[[ -z "$(find "$run" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
-  echo 'ok - source compiler crash cuts and EINVAL refusal classifier'
+for injected_errno in 22 38 95; do
+  echo "test - errno $injected_errno fallback probe and collision preservation"
+  fallback="$run/fallback-$injected_errno"
+  compile_helper "$fallback" "-DRUTORRENT_RENAME_TEST_ERRNO=$injected_errno"
+  set +e
+  "$fallback" --probe "$run" 2>"$run/fallback.stderr"
+  fallback_status=$?
+  set -e
+  [[ "$fallback_status" == 5 ]]
+  [[ -z "$(find "$run" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
+  printf source > "$run/fallback-source"
+  "$fallback" "$run/fallback-source" "$run/fallback-target"
+  [[ ! -e "$run/fallback-source" && "$(cat "$run/fallback-target")" == source ]]
+  printf keep > "$run/fallback-source"
+  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
+    echo 'fallback overwrote an occupied file' >&2; exit 1
+  fi
+  [[ "$(cat "$run/fallback-source")" == keep && "$(cat "$run/fallback-target")" == source ]]
+  rm -- "$run/fallback-source" "$run/fallback-target"
+  mkdir "$run/fallback-source" "$run/fallback-target"
+  target_identity="$(stat -c '%d:%i' "$run/fallback-target")"
+  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
+    echo 'fallback overwrote an empty directory' >&2; exit 1
+  fi
+  [[ -d "$run/fallback-source" && "$(stat -c '%d:%i' "$run/fallback-target")" == "$target_identity" ]]
+  rmdir -- "$run/fallback-target"
+  "$fallback" "$run/fallback-source" "$run/fallback-target"
+  [[ ! -e "$run/fallback-source" && -d "$run/fallback-target" ]]
+  rmdir -- "$run/fallback-target"
+  printf source > "$run/fallback-source"
+  ln -s absent-target "$run/fallback-target"
+  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
+    echo 'fallback overwrote a dangling symlink' >&2; exit 1
+  fi
+  [[ "$(cat "$run/fallback-source")" == source && "$(readlink "$run/fallback-target")" == absent-target ]]
+  rm -- "$run/fallback-source" "$run/fallback-target"
+  echo "ok - errno $injected_errno fallback probe, rename and nofollow collisions"
+done
+for injected_errno in 13 18 30; do
+  refused="$run/refused-$injected_errno"
+  compile_helper "$refused" "-DRUTORRENT_RENAME_TEST_ERRNO=$injected_errno"
+  printf preserve > "$run/refused-source"
+  if "$refused" --probe "$run" || "$refused" "$run/refused-source" "$run/refused-target"; then
+    echo 'a real filesystem error used the fallback' >&2; exit 1
+  fi
+  [[ "$(cat "$run/refused-source")" == preserve && ! -e "$run/refused-target" ]]
+  rm -- "$run/refused-source"
+  echo "ok - errno $injected_errno refuses without fallback"
+done
 fi
 
 if [[ $# == 0 ]]; then
-  echo 'erasedata rename-noreplace: probes, typed unsupported, files, directories, links and collisions passed'
+  echo 'erasedata rename-noreplace: probes, usable fallback, files, directories, links and collisions passed'
 else
   echo 'erasedata rename-noreplace: packaged probes, files, directories, links and collisions passed'
 fi

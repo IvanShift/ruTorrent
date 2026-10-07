@@ -17,20 +17,31 @@
 #define RENAME_NOREPLACE 1
 #endif
 
+static int fallback_used;
+
 static int rename_no_replace(int from_fd, const char *from, int to_fd, const char *to)
 {
 #ifdef RUTORRENT_RENAME_TEST_ERRNO
-    (void)from_fd; (void)from; (void)to_fd; (void)to;
     errno = RUTORRENT_RENAME_TEST_ERRNO;
-    return -1;
+    int result = -1;
 #else
-    return (int)syscall(SYS_renameat2, from_fd, from, to_fd, to, RENAME_NOREPLACE);
+    int result = (int)syscall(SYS_renameat2, from_fd, from, to_fd, to, RENAME_NOREPLACE);
 #endif
+    if (result == 0 || (errno != EINVAL && errno != ENOSYS && errno != EOPNOTSUPP))
+        return result;
+    /* Callers hold their transaction lock. Same-UID processes are trusted;
+     * unsupported filesystem flags may use check/rename under that lock.
+     * A dangling symlink occupies the destination just like any other entry. */
+    fallback_used = 1;
+    struct stat destination;
+    if (fstatat(to_fd, to, &destination, AT_SYMLINK_NOFOLLOW) == 0) {
+        errno = EEXIST;
+        return -1;
+    }
+    if (errno != ENOENT) return -1;
+    return renameat(from_fd, from, to_fd, to);
 }
 
-/* A link/unlink or check/rename fallback cannot atomically remove the exact
- * source name under a concurrent writer. Preserve both the source and no-replace
- * guarantee by refusing unsupported filesystems before consumers stop a torrent. */
 static int error_status(int error)
 {
     const char *reason = "rename-noreplace-error";
@@ -253,7 +264,9 @@ static int probe(const char *path)
     if (lock >= 0) close(lock);
     if (directory >= 0) close(directory);
     close(parent);
-    return error ? error_status(error) : 0;
+    /* Exit 5 is a usable probe with the caller-locked fallback. Mutations
+     * themselves still report ordinary success as zero. */
+    return error ? error_status(error) : (fallback_used ? 5 : 0);
 }
 
 int main(int argc, char **argv)

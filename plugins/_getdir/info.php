@@ -42,15 +42,11 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 	}
 	if(in_array("dirlist",$modes))
 	{
-		// Compare physical paths on both sides when the configured root is an alias.
-		$resolvedTop = @realpath($topDirectory);
-		if($resolvedTop !== false)
-			$topDirectory = $resolvedTop;
 		$dh = false;
 		if(isset($_REQUEST['basedir']) && is_string($_REQUEST['basedir']))
 		{
 			$dir = rawurldecode($_REQUEST['basedir']);
-			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctDirectory($dir, true);
+			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctDirectory($dir, true, true);
 			$dh = $allowedDirectory ? @opendir($dir) : false;
 			$dir = FileUtil::addslash($dir);
 
@@ -67,7 +63,7 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 		if(!$dh)
 		{
 			$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-			if(!$theSettings->correctDirectory($dir, true))
+			if(!$theSettings->correctDirectory($dir, true, true))
 				$dir = $topDirectory;
 			$dh = @opendir($dir);
 		}

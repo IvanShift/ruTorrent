@@ -11,7 +11,7 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
 /** Answers the two settings questions the add path asks, without a daemon. */
 class AdditionCallerSettings extends rTorrentSettings
 {
-	public function correctDirectory(&$dir, $resolve_links = false)
+	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
 	{
 		return true;
 	}

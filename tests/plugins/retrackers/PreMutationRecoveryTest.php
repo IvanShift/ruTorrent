@@ -9,6 +9,7 @@ class rTorrent {
 }
 define('RETRACKERS_IMPORT_ONLY', true);
 define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.02);
+define('RETRACKERS_CANCEL_READ_TIMEOUT', 0.04);
 define('RETRACKERS_HASH_WAIT_TIMEOUT', 0.02);
 define('RETRACKERS_PREFLIGHT_POLL', 0.001);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
@@ -53,7 +54,8 @@ class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
             return array('ok'=>true,'family'=>2,'value'=>$this->unknownClaim?'held':
                 'original:'.str_repeat('c',32).':'.str_repeat('e',32).':'.str_repeat('B',40).':'.hash('sha256','alice').':0:'.str_repeat('f',32));
         }
-        if (strpos($payload, '<methodName>d.retrackers.cancel_original</methodName>') !== false) {
+        if (strpos($payload, '<methodName>d.custom</methodName>') !== false) return array('ok'=>true,'family'=>2,'value'=>'');
+        if (strpos($payload, '<methodName>d.retrackers.cancel_original</methodName>') !== false || strpos($payload, '<methodName>d.retrackers.defer_original</methodName>') !== false) {
             $this->cancelCalls++;
             if (strpos($payload,'<string>'.str_repeat('f',32).'</string>')===false)
                 throw new RuntimeException('cancel omitted exact attested Q');
@@ -162,7 +164,7 @@ class PreMutationRecoveryTest extends TestCase
         foreach(array('claim','cancel') as $cut) {
             $adapter=new PreMutationRecoveryAdapter();$adapter->unknownClaim=$cut==='claim';$adapter->loseCancelReply=$cut==='cancel';
             $this->assertTrue($this->runWorker($adapter,$this->snapshot(PHP_INT_MAX,'ownership-mismatch'))===false &&
-                $adapter->claimCalls===1 && $adapter->cancelCalls===($cut==='cancel'?1:0) && $adapter->finishCalls===0 && $adapter->queuePending,
+                $adapter->claimCalls===($cut==='cancel'?2:1) && $adapter->cancelCalls===($cut==='cancel'?1:0) && $adapter->finishCalls===0 && $adapter->queuePending,
                 'unknown '.$cut.' outcome retains Q and never sends a finish/completion fallback');
         }
     }

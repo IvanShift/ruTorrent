@@ -153,4 +153,33 @@ class SettingsDirectoryTest extends TestCase
 		}
 	}
 
+	public function testPhysicalCheckAcceptsAliasedTopAndPickerPathPassesLexicalConsumer()
+	{
+		$root = sys_get_temp_dir().'/rutorrent-settings-alias-'.bin2hex(random_bytes(6));
+		mkdir($root.'/physical/inside', 0700, true);
+		symlink($root.'/physical', $root.'/logical');
+		$GLOBALS['topDirectory'] = $root.'/logical/';
+		try
+		{
+			$settings = $this->settings('');
+			$path = $root.'/logical/inside';
+			$this->assertTrue($settings->correctDirectory($path, true),
+				'a physical check resolves an aliased top as well as the requested directory');
+			$this->assertSame($root.'/physical/inside', $path,
+				'existing physical-path callers still receive the resolved directory');
+			$this->assertTrue($settings->correctDirectory($path, true, true),
+				'the picker can map a physical default to the configured top spelling');
+			$this->assertSame($root.'/logical/inside', $path,
+				'the picker returns the configured logical top');
+			$this->assertTrue($settings->correctDirectory($path),
+				'the returned picker path passes the same lexical boundary as addtorrent');
+		}
+		finally
+		{
+			unlink($root.'/logical');
+			rmdir($root.'/physical/inside');
+			rmdir($root.'/physical');
+			rmdir($root);
+		}
+	}
 }

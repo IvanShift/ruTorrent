@@ -12,7 +12,7 @@ class RtorrentLoadConfirmationSettings extends rTorrentSettings
 		include(__DIR__ . '/../../php/methods-0.9.4.php');
 	}
 
-	public function correctDirectory(&$dir, $resolve_links = false)
+	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
 	{
 		return true;
 	}

@@ -18,6 +18,9 @@ class DataDirClaimFake
     public $onClaim = null;
     public $onSetter = null;
     public $loseClaimOnce = false;
+    public $refuseClaim = false;
+    public $missing = false;
+    public $presenceUnknown = false;
     public $loseFinishOnce = false;
     public $loseSetterOnce = false;
     public $cancelRestore = false;
@@ -32,12 +35,15 @@ class DataDirClaimFake
     public function rpc($method, $hash, $args)
     {
         $this->calls[] = $method;
+        if ($method === 'torrent-presence') return $this->presenceUnknown ? 'unknown' : ($this->missing ? 'absent' : 'present');
+        if ($this->missing) return null;
         if ($method === 'd.directory') return $this->path;
         if ($method === 'd.stop_close_claim_state')
             return $this->phase === 'absent' ? 'absent'
                 : $this->phase . '|' . ($this->phase === 'active' ? '' : ($this->cancelRestore ? 'K|' : 'S|'))
                     . $this->receipt();
         if ($method === 'd.stop_close_claim') {
+            if ($this->refuseClaim) return null;
             if ($this->phase === 'absent') {
                 if ($this->onClaim !== null) call_user_func($this->onClaim, $args[0]);
                 $this->job = $args[0];
@@ -153,6 +159,74 @@ $suite->test('job receipt exists before daemon claim and user Stop before claim 
     } finally {
         dataDirClaimClean($root);
     }
+});
+
+$suite->test('a refused uncaptured claim retires the new job with a classified refusal', function () {
+    $root = dataDirClaimFixture();
+    try {
+        $daemon = new DataDirClaimFake();
+        $daemon->refuseClaim = true;
+        $job = dataDirClaimJob($root, $daemon, array(), false);
+        try { $job->run(); throw new RuntimeException('claim refusal was accepted'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('daemon-claim-refused', $e->getMessage(), 'refusal is visible and classified');
+        }
+        strictAssertSame(false, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
+            'a proven absent claim has no durable job left');
+        strictAssertSame(1, $daemon->state, 'refusal preserves the original run state');
+        strictAssertSame('/old', $daemon->path, 'refusal does not repoint the torrent');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('an erased torrent retires only a new job without a payload receipt', function () {
+    $root = dataDirClaimFixture();
+    try {
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array(), false);
+        $daemon->missing = true;
+        try { $job->run(); throw new RuntimeException('missing torrent was accepted'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('torrent-absent', $e->getMessage(), 'missing torrent refusal is visible');
+        }
+        strictAssertSame(false, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
+            'a missing torrent leaves no uncaptured job');
+        strictAssertSame(false, in_array('d.stop_close_claim', $daemon->calls, true),
+            'missing torrent is not claimed');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('an unexpected payload receipt keeps a new job held without taking a claim', function () {
+    $root = dataDirClaimFixture();
+    try {
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array(), false);
+        $path = $root . '/jobs/' . str_repeat('A', 40) . '.json';
+        mkdir($path . '.move', 0700);
+        try { $job->run(); throw new RuntimeException('unknown payload receipt was ignored'); }
+        catch (DataDirMoveRefused $error) { throw new RuntimeException('unknown receipt must remain held'); }
+        catch (RuntimeException $error) {
+            strictAssertSame('move-receipt-untrusted', $error->getMessage(), 'unknown receipt is classified');
+        }
+        strictAssertSame(true, is_file($path), 'unknown receipt cannot retire the owning job');
+        strictAssertSame(array(), $daemon->calls, 'unknown receipt cannot admit a daemon claim');
+    } finally { dataDirClaimClean($root); }
+});
+
+$suite->test('an unknown torrent presence holds the new job for recovery', function () {
+    $root = dataDirClaimFixture();
+    try {
+        $daemon = new DataDirClaimFake();
+        $job = dataDirClaimJob($root, $daemon, array(), false);
+        $daemon->missing = true;
+        $daemon->presenceUnknown = true;
+        try { $job->run(); throw new RuntimeException('unknown state was accepted'); }
+        catch (DataDirMoveRefused $e) { throw new RuntimeException('unknown state must retain recovery'); }
+        catch (RuntimeException $e) {
+            strictAssertTrue(strpos($e->getMessage(), 'unconfirmed') !== false, 'unknown state remains visible');
+        }
+        strictAssertSame(true, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
+            'unknown presence cannot retire a job');
+    } finally { dataDirClaimClean($root); }
 });
 
 $suite->test('lost claim response reuses the original job and does not recapture state', function () {

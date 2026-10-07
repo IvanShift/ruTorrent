@@ -11,3 +11,11 @@ trim_trailing_whitespace = false
 [*.{yml,yaml,json}]
 indent_style = space
 indent_size = 2
+
+# Captured HTTP responses are byte witnesses; preserve their wire format.
+[tests/php/fixtures/rutracker-https-304/conditional.headers]
+end_of_line = crlf
+trim_trailing_whitespace = false
+
+[tests/php/fixtures/rutracker-https-304/forum-7.json]
+insert_final_newline = false

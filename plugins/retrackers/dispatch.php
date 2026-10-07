@@ -20,6 +20,9 @@ class RetrackersQueueRpcAdapter extends RetrackersWorkerRpcAdapter
         return is_array($decoded) && isset($decoded['ok'],$decoded['value']) &&
             $decoded['ok']===true ? $decoded['value'] : false;
     }
+    public function queueRetryState($hash,&$failure=null) {
+        return $this->nativeOriginalScalar('d.custom',array($hash,'retrackers-retry'),$failure);
+    }
     public function queueCursor($userHash,&$failure=null) {
         return $this->nativeOriginalScalar('system.retrackers.queue_cursor',array('',$userHash),$failure);
     }
@@ -62,13 +65,14 @@ final class RetrackersBoundedDispatcher
         $result['errors'][]=array('hash'=>$hash,'reason'=>$reason);
     }
     private static function claim($wire,$row,$userHash,$queueId) {
-        if (!is_string($wire) || preg_match('/^(original|finalized):([0-9a-f]{32}):([0-9a-f]{32}):([0-9A-F]{40}):([0-9a-f]{64}):([01]):([0-9a-f]{32})$/D',$wire,$parts)!==1 ||
-            !hash_equals($userHash,$parts[5]) || !hash_equals($queueId,$parts[7]) ||
-            ($parts[1]==='original' && !hash_equals($row[1],$parts[4]))) return false;
-        return array('kind'=>$parts[1],'tx'=>$parts[2],'incarnation'=>$parts[3]);
+        $claim=RetrackersQueueClaim::parse($wire);
+        if ($claim===false || !hash_equals($userHash,$claim['user_hash']) ||
+            !hash_equals($queueId,$claim['queue_id']) ||
+            ($claim['kind']==='original' && !hash_equals($row[1],$claim['local_id']))) return false;
+        return $claim;
     }
     public static function run($adapter,$user) {
-        $result=array('examined'=>0,'spawned'=>0,'active'=>0,'full'=>0,'held'=>0,'dequeued'=>0,'errors'=>array());
+        $result=array('examined'=>0,'spawned'=>0,'active'=>0,'full'=>0,'held'=>0,'dequeued'=>0,'deferred'=>0,'terminal'=>0,'errors'=>array());
         if (!is_string($user) || preg_match('/^[a-z0-9_-]*$/D',$user)!==1) {
             self::error($result,'','invalid-caller-input'); return $result;
         }
@@ -109,6 +113,16 @@ final class RetrackersBoundedDispatcher
             }
             $wire=$adapter->queueClaim($hash,$failure);
             if ($wire==='held') { $result['held']++; continue; }
+            if ($wire==='none' || (is_string($wire) && strncmp($wire,'original:',9)===0)) {
+                $retry=RetrackersQueueRetry::parse($adapter->queueRetryState($hash,$failure),$queueId);
+                if ($retry===false) {
+                    self::error($result,$hash,'queue-retry-state-invalid'); continue;
+                }
+                if ($retry['attempt']===RetrackersQueueRetry::MAX_ATTEMPTS) {
+                    $result['terminal']++; continue;
+                }
+                if ($retry['due']>time()) { $result['deferred']++; continue; }
+            }
             if ($wire==='none') {
                 if (!$active) { $result['held']++; continue; }
                 // Restart may repair the original and clear recovery markers;
@@ -139,6 +153,42 @@ final class RetrackersBoundedDispatcher
     }
 }
 
+final class RetrackersQueueDiagnostics
+{
+    public $hash='retrackers-queue-diagnostics.dat';
+    public $last=array();
+    public static function emit($errors,$cache,$now) {
+        if ($errors===array()) return;
+        $state=new self(); $cache->get($state);
+        if (!($state instanceof self) || !is_array($state->last) || count($state->last)>16) $state=new self();
+        foreach($state->last as $reason=>$stamp)
+            if (!is_string($reason) || preg_match('/^[a-z-]{1,64}$/D',$reason)!==1 ||
+                !is_int($stamp) || $stamp<0) { $state=new self(); break; }
+        $groups=array();
+        foreach($errors as $error) {
+            $reason=$error['reason'];
+            if (!isset($groups[$reason])) $groups[$reason]=array('count'=>0,'hash'=>$error['hash']);
+            $groups[$reason]['count']++;
+        }
+        $state->hash='retrackers-queue-diagnostics.dat';
+        $messages=array();
+        foreach($groups as $reason=>$group) {
+            if (isset($state->last[$reason]) && $now>=$state->last[$reason] && $now-$state->last[$reason]<60) continue;
+            $state->last[$reason]=$now;
+            $messages[]='retrackers-queue: '.$reason.'; affected-in-pass='.$group['count'].
+                '; example-hash='.$group['hash'].'; inspect torrent session d.custom=retrackers-retry and '.
+                'd.custom=retrackers-queued; queued work remains pending';
+        }
+        if ($messages===array()) return;
+        // One cache entry bounds diagnostics across short-lived dispatchers.
+        // Keep classifications rather than hashes: the cursor rotates every pass.
+        asort($state->last,SORT_NUMERIC);
+        $state->last=array_slice($state->last,-16,null,true);
+        $cache->set($state);
+        foreach($messages as $message) FileUtil::toLog($message);
+    }
+}
+
 if (!defined('RETRACKERS_DISPATCH_IMPORT_ONLY')) {
     // Profile configuration is imported at file scope for the SCGI globals.
     require_once(__DIR__ . '/retrackers.php');
@@ -150,8 +200,6 @@ if (!defined('RETRACKERS_DISPATCH_IMPORT_ONLY')) {
         exit(1);
     }
     $result=RetrackersBoundedDispatcher::run($adapter,$argv[1]);
-    foreach($result['errors'] as $error) FileUtil::toLog('retrackers-queue: '.$error['reason'].'; hash='.$error['hash'].'; retrackers-queued remains pending');
-    if ($result['full']) FileUtil::toLog('retrackers-queue: worker-pool-full; durable jobs retry after the fair cursor');
-    if ($result['held']) FileUtil::toLog('retrackers-queue: queue-claim-held; uncertain original ownership remains pending');
+    RetrackersQueueDiagnostics::emit($result['errors'],new rCache(),time());
     exit($result['errors']===array()?0:1);
 }

@@ -13,18 +13,13 @@ function compareEntries( $a, $b )
 }
 
 $theSettings = rTorrentSettings::get();
-// Compare physical paths on both sides when the configured root is an alias.
-$resolvedTop = @realpath($topDirectory);
-if($resolvedTop !== false)
-	$topDirectory = $resolvedTop;
-
 $requestedDir = $_REQUEST['dir'] ?? null;
 
 if(is_string($requestedDir) && strlen($requestedDir))
 {
 	$dir = rawurldecode($requestedDir);
 	if(
-			strpos($dir, "\0") !== false || !$theSettings->correctDirectory($dir, true) ||
+			strpos($dir, "\0") !== false || !$theSettings->correctDirectory($dir, true, true) ||
 			(($theSettings->uid>=0) && $checkUserPermissions && !Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))
 		)
 	{
@@ -34,7 +29,7 @@ if(is_string($requestedDir) && strlen($requestedDir))
 else
 {
 	$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-	if (!$theSettings->correctDirectory($dir, true))
+	if (!$theSettings->correctDirectory($dir, true, true))
 		$dir = $topDirectory;
 }
 

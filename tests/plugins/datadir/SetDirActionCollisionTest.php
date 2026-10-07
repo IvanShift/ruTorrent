@@ -93,7 +93,14 @@ class SetDirActionCollisionTest extends TestCase
 				$replies[] = $names;
 			}
 		}
-		$replies[] = array(0); // execute when the preflight allows it
+		if ($moveFiles) $replies[] = array(0); // detached payload worker
+		else {
+			$receipt = 'token:1|1|1|1|local-1';
+			$replies = array_merge($replies, array($methods, array_fill(0, 9, ''),
+				$methods, array('absent'), array($isOpen, 'local-1', $this->base . '/src'),
+				array('absent'), array($receipt), array($this->base . '/src'),
+				array(1), array(1), array('done|S|' . $receipt), array(1)));
+		}
 		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
 		$driver = $this->base . '/drive-action.php';
@@ -130,6 +137,7 @@ class SetDirActionCollisionTest extends TestCase
 			'calls' => $this->daemon->calls(),
 			'bodies' => $this->daemon->bodies(),
 			'started' => in_array('execute', $this->daemon->calls(), true),
+			'applied' => in_array('d.directory.set_if_stop_close_claim', $this->daemon->calls(), true),
 		);
 	}
 
@@ -138,9 +146,9 @@ class SetDirActionCollisionTest extends TestCase
 		$dir = $this->base . '/dst=chosen';
 		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, true);
 		$this->assertSame(array(), $r['errors'], $r['printed']);
-		$this->assertTrue($r['started'], 'the valid destination is dispatched');
-		$this->assertTrue(strpos(implode("\n", $r['bodies']), escapeshellarg($dir)) !== false,
-			'the complete directory reaches the worker command');
+		$this->assertTrue($r['applied'], 'the valid destination is applied synchronously');
+		$this->assertTrue(strpos(implode("\n", $r['bodies']), htmlspecialchars($dir, ENT_COMPAT, 'UTF-8')) !== false,
+			'the complete directory reaches the guarded setter');
 	}
 
 	public function testMalformedTrailingFieldDoesNotOverwriteDestination()
@@ -148,8 +156,8 @@ class SetDirActionCollisionTest extends TestCase
 		$dir = $this->base . '/dst=chosen';
 		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, false, true);
 		$this->assertSame(array(), $r['errors'], $r['printed']);
-		$this->assertTrue($r['started'], 'the valid destination is dispatched');
-		$this->assertTrue(strpos(implode("\n", $r['bodies']), escapeshellarg($dir)) !== false,
+		$this->assertTrue($r['applied'], 'the valid destination is applied synchronously');
+		$this->assertTrue(strpos(implode("\n", $r['bodies']), htmlspecialchars($dir, ENT_COMPAT, 'UTF-8')) !== false,
 			'the malformed field does not replace the valid directory');
 	}
 
@@ -259,7 +267,7 @@ class SetDirActionCollisionTest extends TestCase
 			. $r['printed']);
 		$this->assertTrue(!in_array('f.multicall', $r['calls'], true),
 			'so the file list is not read; calls: ' . implode(', ', $r['calls']));
-		$this->assertTrue($r['started'],
-			'and the directory change is started; calls: ' . implode(', ', $r['calls']));
+		$this->assertTrue($r['applied'],
+			'and the directory change is confirmed; calls: ' . implode(', ', $r['calls']));
 	}
 }

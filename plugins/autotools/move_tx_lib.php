@@ -3,6 +3,7 @@
 require_once(dirname(__FILE__) . '/util_rt.php');
 require_once(dirname(__FILE__) . '/autotools.php');
 require_once(dirname(__FILE__) . '/../rutracker_check/runstate.php');
+require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
 
 /** Whole-root Move backed by a durable daemon claim. */
 class AutoToolsMoveTransaction
@@ -156,45 +157,19 @@ class AutoToolsMoveTransaction
         self::log($job['hash'], 'refused: physical move did not publish; original run intent reconciled');
     }
 
-    static private function renameHelper()
-    {
-        if (!class_exists('NativeHelpers', false))
-            require_once(dirname(__DIR__, 2).'/php/nativehelpers.php');
-        $binary = NativeHelpers::path('rutorrent-erasedata-rename-noreplace');
-        if (!is_executable($binary)) throw new RuntimeException('rename-helper-unavailable');
-        return $binary;
-    }
-
     static private function requireRenameCapability($directory)
     {
-        $binary = self::renameHelper();
-        $process = proc_open(array($binary, '--probe', $directory), array(
-            0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
-            2=>array('pipe','w')), $pipes);
-        if (!is_resource($process)) throw new RuntimeException('rename-noreplace-probe-unavailable: '.$directory);
-        $error = stream_get_contents($pipes[2], 4096); fclose($pipes[2]);
-        $status = proc_close($process);
-        if ($status !== 0) {
-            $reason = $status === 3 ? 'rename-noreplace-unsupported' : 'rename-noreplace-probe-failed';
-            FileUtil::toLog('autotools: '.$reason.' path='.$directory.' '.trim($error));
-            throw new RuntimeException($reason.': '.$directory);
+        if (!ErasedataFilesystemOps::canRenameNoReplace($directory, false)) {
+            $reason = ErasedataFilesystemOps::lastRenameRefusal();
+            self::log(null, 'refused: ' . $reason . ($directory === null ? '' : ' path=' . $directory));
+            throw new RuntimeException($reason . ($directory === null ? '' : ': ' . $directory));
         }
     }
 
     static private function renameNoReplace($src, $dst)
     {
-        $binary = self::renameHelper();
-        $process = proc_open(array($binary, $src, $dst), array(
-            0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
-            2=>array('pipe','w')), $pipes);
-        if (!is_resource($process)) throw new RuntimeException('rename-helper-unavailable');
-        $error = stream_get_contents($pipes[2], 4096); fclose($pipes[2]);
-        $status = proc_close($process);
-        if ($status !== 0)
-            FileUtil::toLog('autotools: rename-no-replace refused status='.$status.' source='.$src
-                .' destination='.$dst.' '.trim($error));
-        if ($status === 3) throw new RuntimeException('rename-noreplace-unsupported: '.dirname($dst));
-        return $status === 0;
+        $files = new ErasedataFilesystemOps();
+        return $files->renameNoReplace($src, $dst);
     }
 
     static private function manifestPaths($job)
@@ -747,7 +722,7 @@ class AutoToolsMoveTransaction
     static private function prepare($args)
     {
         if (count($args) < 8) throw new RuntimeException('worker-arguments-missing');
-        self::renameHelper();
+        self::requireRenameCapability(null);
         $hash = (string) $args[0];
         if (!preg_match('/^[0-9A-F]{40}$/D', $hash)) throw new RuntimeException('hash-invalid');
         $basePath = rtrim((string) $args[1], '/');

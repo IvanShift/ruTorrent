@@ -3,6 +3,7 @@
 require_once( '../../php/util.php' );
 require_once( '../../php/xmlrpc.php' );
 require_once( './util_setdir.php' );
+require_once __DIR__ . '/apply.php';
 require_once( './util_rt.php' );
 require_once( './setdircommand.php' );
 eval( FileUtil::getPluginConf( 'datadir' ) );
@@ -102,6 +103,23 @@ if( $hash && strlen( $datadir ) > 0 )
 		{
 			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
 			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);
+		}
+		elseif(!$move_datafiles)
+		{
+			// This operation is short and has no payload loop. Return its real
+			// result so errors cannot hide behind a successful worker launch.
+			$lock = null;
+			try {
+				$lock = rtDataDirLock(false);
+				rtDataDirRecover();
+				$res = rtDataDirApply($hash, $datadir, $move_addpath != 0, false,
+					$move_fastresume != 0, $datadir_debug_enabled, $reason);
+			} catch(Exception $e) {
+				$reason = $e->getMessage();
+				FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.$reason);
+			} finally { rtDataDirUnlock($lock); }
+			if(!$res)
+				$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason ?: 'change-unconfirmed');
 		}
 		else
 		{

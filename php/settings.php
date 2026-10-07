@@ -512,7 +512,7 @@ class rTorrentSettings
 		}
 		return(true);
 	}
-	public function correctDirectory(&$dir,$resolve_links = false)
+	public function correctDirectory(&$dir,$resolve_links = false,$preserve_top = false)
 	{
 		global $topDirectory;
 		if(!$this->expandHomePath($dir))
@@ -521,14 +521,22 @@ class rTorrentSettings
 		if((!strlen($dir) || $dir[0]!='/') && !$this->expandHomePath($base))
 			return(false);
 		$dir = FileUtil::fullpath($dir,$base);
+		$logicalTop = rtrim($topDirectory, '/');
+		$top = $logicalTop;
 		if($resolve_links)
 		{
 			$dir = XMLRPCPathResolver::deepestExistingAncestor($dir);
-			if($dir === '')
+			$top = XMLRPCPathResolver::deepestExistingAncestor($topDirectory);
+			if($dir === '' || $top === '')
 				return(false);
+			$top = rtrim($top, '/');
 		}
-		$top = rtrim($topDirectory, '/');
-		return($dir === $top || strpos($dir, $top.'/') === 0);
+		$allowed = $dir === $top || strpos($dir, $top.'/') === 0;
+		// Pickers must return the configured top spelling for lexical consumers,
+		// after enforcing the same physical boundary as other resolved callers.
+		if($allowed && $resolve_links && $preserve_top)
+			$dir = ($logicalTop.substr($dir, strlen($top))) ?: '/';
+		return($allowed);
 	}
 	// The file and HTTP socket limits belong to libtorrent's socket manager:
 	// network.max_open_files.set is an inert stub, and

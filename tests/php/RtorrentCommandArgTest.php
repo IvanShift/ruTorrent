@@ -22,7 +22,7 @@ class RtorrentCommandArgSettings extends rTorrentSettings
 {
 	public $captured = array();
 
-	public function correctDirectory(&$dir, $resolve_links = false)
+	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
 	{
 		return true;
 	}
