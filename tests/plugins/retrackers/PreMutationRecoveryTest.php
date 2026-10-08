@@ -1,34 +1,34 @@
 <?php
 
-require_once(__DIR__ . '/../../php/TestCase.php');
-function getCmd($command) { return $command; }
-class rTorrent {
-    public static function quoteCommandArg($value) {
-        return('"' . addcslashes((string)$value, "\\\"") . '"');
-    }
-}
+require_once(__DIR__ . '/RetrackersTestStubs.php');
 define('RETRACKERS_IMPORT_ONLY', true);
 define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.02);
-define('RETRACKERS_CANCEL_READ_TIMEOUT', 0.04);
+define('RETRACKERS_DEFER_READ_TIMEOUT', 0.04);
 define('RETRACKERS_HASH_WAIT_TIMEOUT', 0.02);
 define('RETRACKERS_PREFLIGHT_POLL', 0.001);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
+require_once(__DIR__ . '/RetrackersWireFake.php');
 
 class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
 {
     public $listCalls = 0;
     public $transientCalls = 0;
     public $finishCalls = 0;
-    public $claimCalls = 0;
-    public $cancelCalls = 0;
-    public $unknownClaim = false;
-    public $loseCancelReply = false;
-    public $queuePending = true;
     public $receiptFailures = 0;
     public $ownerFailures = 0;
     public $incarnationFails = false;
     public $reason = null;
-    public function __construct() { $this->family = 2; }
+    public $wire;
+    public function __construct() {
+        $this->family = 2;
+        // The queued original these cases run: H=A, L=B, T=c, I=e, Q=f.
+        $this->wire = new RetrackersWireFake();
+        $this->wire->addExact(str_repeat('A', 40), str_repeat('B', 40), str_repeat('c', 32),
+            str_repeat('e', 32), str_repeat('f', 32));
+    }
+    public function claimCalls() { return count(array_keys($this->wire->calls, 'system.retrackers.original_claim')); }
+    public function cancelCalls() { return count(array_keys($this->wire->calls, 'd.retrackers.defer_original')); }
+    public function queuePending() { return $this->wire->torrents[str_repeat('A', 40)]['queued'] !== ''; }
     protected function send($payload, $plan, &$failure = null, $historical = false) {
         $failure = null;
         if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false) {
@@ -49,18 +49,10 @@ class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
             $this->finishCalls++;
             return array('ok' => true, 'family' => 2, 'value' => 'finalized');
         }
-        if (strpos($payload, '<methodName>system.retrackers.original_claim</methodName>') !== false) {
-            $this->claimCalls++;
-            return array('ok'=>true,'family'=>2,'value'=>$this->unknownClaim?'held':
-                'original:'.str_repeat('c',32).':'.str_repeat('e',32).':'.str_repeat('B',40).':'.hash('sha256','alice').':0:'.str_repeat('f',32));
-        }
-        if (strpos($payload, '<methodName>d.custom</methodName>') !== false) return array('ok'=>true,'family'=>2,'value'=>'');
-        if (strpos($payload, '<methodName>d.retrackers.cancel_original</methodName>') !== false || strpos($payload, '<methodName>d.retrackers.defer_original</methodName>') !== false) {
-            $this->cancelCalls++;
-            if (strpos($payload,'<string>'.str_repeat('f',32).'</string>')===false)
-                throw new RuntimeException('cancel omitted exact attested Q');
-            if ($this->loseCancelReply) {$failure='closed-before-headers';return false;}
-            return array('ok'=>true,'family'=>2,'value'=>'cancelled');
+        if (strpos($payload, '<methodName>d.incarnation</methodName>') === false &&
+            strpos($payload, '<methodName>system.retrackers.finalized</methodName>') === false) {
+            $answer = $this->wire->answer($payload, $failure);
+            if ($answer !== null) return $answer;
         }
         if (strpos($payload, '<methodName>system.retrackers.finalized</methodName>') !== false) {
             if ($this->finishCalls && $this->receiptFailures-- > 0) {
@@ -82,6 +74,21 @@ class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
     public function recordRecoveryFailure($reason) {
         $this->reason = $reason;
         throw new RuntimeException('observed refusal');
+    }
+}
+
+// A daemon that records waits (system.retrackers.retry_waits answers 1).
+class PreMutationWaitsAdapter extends PreMutationRecoveryAdapter
+{
+    public function __construct() {
+        parent::__construct();
+        $this->wire->waits = true;
+    }
+    protected function send($payload, $plan, &$failure = null, $historical = false) {
+        $answer = parent::send($payload, $plan, $failure, $historical);
+        if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false && is_array($answer))
+            $answer['value'][] = 'system.retrackers.retry_waits';
+        return $answer;
     }
 }
 
@@ -127,14 +134,15 @@ class PreMutationRecoveryTest extends TestCase
     public function testTransientCapabilityAndHashingRecoverBeforeAnyFinish() {
         $adapter = new PreMutationRecoveryAdapter(); $adapter->transientCalls=2;
         $snapshot = $this->snapshot(2);
+        // The fourth list asks whether this daemon records waits; it does not.
         $this->assertTrue($this->runWorker($adapter,$snapshot) === true &&
-            $adapter->listCalls === 3 && $snapshot->reads === 3 && $adapter->finishCalls === 1,
+            $adapter->listCalls === 4 && $snapshot->reads === 3 && $adapter->finishCalls === 1,
             'bounded pre-mutation retries reach one exact finish after hashing settles');
     }
     public function testPersistentPreMutationRefusalReleasesExactOriginalInsteadOfParking() {
         $adapter = new PreMutationRecoveryAdapter(); $snapshot=$this->snapshot(PHP_INT_MAX,'ownership-mismatch');
         $this->assertTrue($this->runWorker($adapter,$snapshot) === false &&
-            $snapshot->reads > 1 && $adapter->finishCalls === 0 && $adapter->claimCalls===1 && $adapter->cancelCalls===1 && $adapter->queuePending && $adapter->reason === 'ownership-mismatch',
+            $snapshot->reads > 1 && $adapter->finishCalls === 0 && $adapter->claimCalls()===1 && $adapter->cancelCalls()===1 && $adapter->queuePending() && $adapter->reason === 'ownership-mismatch',
             'persistent read-only failure sends one attested pending-only cancel without acknowledging unapplied Q');
     }
     public function testUnavailableIncarnationDoesNotSendAMutationOrPark() {
@@ -157,15 +165,35 @@ class PreMutationRecoveryTest extends TestCase
         } catch(RuntimeException $error) {
             if ($error->getMessage() !== 'observed refusal') throw $error;
         }
-        $this->assertTrue($adapter->finishCalls===0 && $adapter->claimCalls===1 && $adapter->cancelCalls===1 && $adapter->queuePending && $adapter->reason==='worker-slots-unavailable',
+        $this->assertTrue($adapter->finishCalls===0 && $adapter->claimCalls()===1 && $adapter->cancelCalls()===1 && $adapter->queuePending() && $adapter->reason==='worker-slots-unavailable',
             'a worker without an RPC slot retires only its exact uncaptured observation while Q remains pending');
     }
     public function testUnknownPreMutationClaimOrCancelNeverFallsBackToCompletion() {
         foreach(array('claim','cancel') as $cut) {
-            $adapter=new PreMutationRecoveryAdapter();$adapter->unknownClaim=$cut==='claim';$adapter->loseCancelReply=$cut==='cancel';
+            $adapter=new PreMutationRecoveryAdapter();
+            if($cut==='claim')$adapter->wire->torrents[str_repeat('A',40)]['held']=true;
+            if($cut==='cancel')$adapter->wire->fail['d.retrackers.defer_original']=array('closed-before-headers');
             $this->assertTrue($this->runWorker($adapter,$this->snapshot(PHP_INT_MAX,'ownership-mismatch'))===false &&
-                $adapter->claimCalls===($cut==='cancel'?2:1) && $adapter->cancelCalls===($cut==='cancel'?1:0) && $adapter->finishCalls===0 && $adapter->queuePending,
+                $adapter->claimCalls()===($cut==='cancel'?2:1) && $adapter->cancelCalls()===($cut==='cancel'?1:0) && $adapter->finishCalls===0 && $adapter->queuePending(),
                 'unknown '.$cut.' outcome retains Q and never sends a finish/completion fallback');
         }
+    }
+    // R4-RT-06: rTorrent checks one torrent at a time, so a worker that waits
+    // inside its slot for a hash check delays every other queued job. A daemon
+    // that records waits takes the job back at once for the hashing interval.
+    public function testHashingWithNativeWaitsReleasesTheWorkerAtOnce() {
+        $adapter = new PreMutationWaitsAdapter(); $snapshot = $this->snapshot(PHP_INT_MAX);
+        $started = time();
+        $this->assertTrue($this->runWorker($adapter, $snapshot) === false && $snapshot->reads === 1 &&
+            $adapter->reason === 'initial-hashing-pending' && $adapter->cancelCalls() === 1 && $adapter->queuePending(),
+            'one capture read, then one defer: the worker does not wait for the hash check');
+        $retry = $adapter->wire->torrents[str_repeat('A', 40)]['retry'];
+        $this->assertTrue(preg_match('/^r1:f{32}:1:([0-9]+):source-not-ready$/D', $retry, $due) === 1 &&
+            (int)$due[1] >= $started + RETRACKERS_RETRY_WAIT_HASHING && (int)$due[1] <= time() + RETRACKERS_RETRY_WAIT_HASHING,
+            'the job waits the hashing interval with its count unchanged: ' . $retry);
+        $adapter = new PreMutationRecoveryAdapter(); $snapshot = $this->snapshot(PHP_INT_MAX);
+        $this->assertTrue($this->runWorker($adapter, $snapshot) === false && $snapshot->reads > 1 &&
+            $adapter->reason === 'initial-hashing-pending',
+            'without native waits a defer spends an attempt, so the worker keeps its bounded hashing settle first');
     }
 }

@@ -93,7 +93,7 @@ rTorrentStub.prototype.unpause = function()
 	this.getCommon("unpause");
 }
 
-plugin.origupdateTracker = rTorrentStub.prototype.updateTracker;
+plugin.origupdatetracker = rTorrentStub.prototype.updateTracker;
 rTorrentStub.prototype.updateTracker = function()
 {
 	this.getCommon("updatetracker");
@@ -200,7 +200,7 @@ rTorrentStub.prototype.kick = function()
 	this.getCommon("kick");
 }
 
-plugin.origaddpeer = rTorrentStub.prototype.addpeer;
+plugin.origadd_peer = rTorrentStub.prototype.addpeer;
 rTorrentStub.prototype.addpeer = function()
 {
 	this.getCommon("add_peer");

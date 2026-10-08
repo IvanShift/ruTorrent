@@ -231,12 +231,16 @@ function refuseTrustedHashBatch($mode)
 	exit;
 }
 
-function makeSimpleCall($cmds,$hash)
+// $persist: the commands change what rTorrent keeps in the session, such as a
+// start or a stop, so the downloads are saved after them in the same request.
+function makeSimpleCall($cmds,$hash,$persist = false)
 {
 	$req = new rXMLRPCRequest();
 	foreach($hash as $h)
 		foreach($cmds as $cmd)
 			$req->addCommand( new rXMLRPCCommand( $cmd, $h ) );
+	if($persist)
+		$req->addSessionSaves($hash);
        	return($req->success(true) ? $req->val : false);
 }
 
@@ -409,19 +413,29 @@ switch($mode)
 	}
 	case "trkstate":	/**/
 	{
+		// The WebUI sends this mode even with the httprpc JavaScript disabled,
+		// and it sends trusted RPC: check the one download it names first.
+		if(!validTorrentHashBatch($hash, $malformedForm, true))
+			refuseTrustedHashBatch('trkstate');
 		$req = new rXMLRPCRequest();
 		foreach($vs as $ndx=>$value)
 			$req->addCommand( new rXMLRPCCommand( "t.set_enabled", array($hash[0], intval($value), intval($ss[0])) ) );
+		$req->addSessionSaves($hash);
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
 	}
 	case "setprio":	/**/
 	{
+		// The WebUI sends this mode even with the httprpc JavaScript disabled,
+		// and it sends trusted RPC: check the one download it names first.
+		if(!validTorrentHashBatch($hash, $malformedForm, true))
+			refuseTrustedHashBatch('setprio');
 		$req = new rXMLRPCRequest();
 		foreach($vs as $v)
 			$req->addCommand( new rXMLRPCCommand( "f.set_priority", array($hash[0], intval($v), intval($ss[0])) ) );
 		$req->addCommand( new rXMLRPCCommand("d.update_priorities", $hash[0]) );
+		$req->addSessionSaves($hash);
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
@@ -448,12 +462,12 @@ switch($mode)
 	}
 	case "start":	/**/
 	{
-		$result = makeSimpleCall(array("d.open","d.start","d.resume"), $hash);
+		$result = makeSimpleCall(array("d.open","d.start","d.resume"), $hash, true);
 		break;
 	}
 	case "stop":	/**/
 	{
-		$result = makeSimpleCall(array("d.stop","d.close"), $hash);
+		$result = makeSimpleCall(array("d.stop","d.close"), $hash, true);
 		break;
 	}
 	case "updatetracker":	/**/
@@ -463,7 +477,7 @@ switch($mode)
 	}
 	case "pause":	/**/
 	{
-		$result = makeSimpleCall(array("d.stop"), $hash);
+		$result = makeSimpleCall(array("d.stop"), $hash, true);
 		break;
 	}
 	case "unpause":	/**/
@@ -472,7 +486,7 @@ switch($mode)
 		// leaves the torrent flagged paused in the UI forever and marked
 		// user-stopped for the next rtorrent restart (the direct XML-RPC
 		// mount's unpause stub sends d.start as well)
-		$result = makeSimpleCall(array("d.start"), $hash);
+		$result = makeSimpleCall(array("d.start"), $hash, true);
 		break;
 	}
 	case "removewithdata":	/**/
@@ -526,6 +540,7 @@ switch($mode)
 		$req = new rXMLRPCRequest();
 		foreach($hash as $ndx=>$h)
 			$req->addCommand( new rXMLRPCCommand( "d.set_priority", array($h, intval($vs[0])) ) );
+		$req->addSessionSaves($hash);
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
@@ -535,6 +550,7 @@ switch($mode)
 		$req = new rXMLRPCRequest();
 		foreach($hash as $ndx=>$h)
 			$req->addCommand( new rXMLRPCCommand( "d.set_custom1", array($h, $vs[0]) ) );
+		$req->addSessionSaves($hash);
 		if($req->success(true))
 	        	$result = $req->val;
 		break;
@@ -720,6 +736,8 @@ switch($mode)
 			}
 			$req->addCommand($cmd);
 		}
+		// Superseed lives in the session (d.connection_seed); save it too.
+		$req->addSessionSaves($hash);
 		if($req->success(true))
 	        	$result = $req->val;
 		break;

@@ -313,6 +313,22 @@ class SourceExportActionTest extends TestCase
             . ' source-unavailable') !== false, 'unavailable-source refusal reaches the journal');
     }
 
+    // R4-FS-09: rTorrent names a magnet stub <HASH>.meta and no other spelling
+    // (rTorrent::isMetadataStubName()); a file that only resembles it in
+    // another case is an ordinary torrent for dump as for getSource().
+    public function testDumpTreatsOnlyTheDaemonStubSpellingAsRawMetadata()
+    {
+        $path = $this->directory . '/' . self::INFO_HASH . '.META';
+        file_put_contents($path, 'ordinary metainfo bytes');
+        list($status, $out, $err) = $this->request($path, 'dump', '-v -w 4');
+        $this->assertSame(0, $status, 'dump of a stub-like name exits cleanly: ' . $err);
+        $this->assertSame('', $err, 'dump of a stub-like name emits no warning');
+        $result = json_decode($out, true);
+        $this->assertTrue(isset($result['commands'][0]), 'the ordinary dump starts: ' . $out);
+        $this->assertTrue(strpos($result['commands'][0], ' -v -w 4 ' . escapeshellarg($path)) !== false,
+            'a name in another case keeps the ordinary inspector arguments');
+    }
+
     public function testDumpRefusesUnverifiedRawMetadata()
     {
         $path = $this->directory . '/' . self::INFO_HASH . '.meta';

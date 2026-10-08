@@ -19,3 +19,10 @@ trim_trailing_whitespace = false
 
 [tests/php/fixtures/rutracker-https-304/forum-7.json]
 insert_final_newline = false
+
+# The live Tapochek page byte for byte (see .gitattributes): it mixes CRLF
+# and LF line ends, has trailing spaces and no final newline.
+[tests/plugins/rutracker_check/fixtures/tapochek-p7-2026-09-25.html]
+end_of_line = unset
+insert_final_newline = false
+trim_trailing_whitespace = false

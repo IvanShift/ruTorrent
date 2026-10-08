@@ -1724,44 +1724,62 @@ final class ErasedataCollector
 		return(is_array($recovery) && !empty($recovery['safe']));
 	}
 
+	// This marker is outside the obligation queue, whose scan treats any
+	// unfamiliar entry as a reason to keep the drain armed.
+	private function unsafeManifestReportDirectory($item)
+	{
+		return(dirname(dirname($item)));
+	}
+
+	private function unsafeManifestReportName($item)
+	{
+		return('.erasedata-unsafe-'.hash('sha256', $item).'-');
+	}
+
 	private function unsafeManifestReportPrefix($item)
 	{
-		// This marker is outside the obligation queue, whose scan treats any
-		// unfamiliar entry as a reason to keep the drain armed.
-		return(dirname(dirname($item)).'/.erasedata-unsafe-'
-			.hash('sha256', $item).'-');
+		return($this->unsafeManifestReportDirectory($item).'/'.$this->unsafeManifestReportName($item));
 	}
 
 	private function clearUnsafeManifestReports($item, $except = null)
 	{
 		$prefix = $this->unsafeManifestReportPrefix($item);
-		$paths = glob($prefix.'*.notice');
+		// The directory is the profile's own bytes: list it, never glob() it.
+		$paths = erasedataDirectoryMatches($this->unsafeManifestReportDirectory($item),
+			$this->unsafeManifestReportName($item), '.notice');
 		if(!is_array($paths)) return;
 		foreach($paths as $path)
 			if($path !== $except
-				&& preg_match('/^(?:intent-)?[0-9]{8}\.notice$/D', substr($path, strlen($prefix))))
+				&& preg_match('/^(?:intent-|escaped-)?[0-9]{8}\.notice$/D', substr($path, strlen($prefix))))
 				@unlink($path);
 	}
 
 	private function logUnsafeManifestPath($item, $reason = 'unsafe-path')
 	{
 		$intent = $reason === 'directory-intent-unresolved';
+		$escaped = $reason === 'escaped-path-ambiguous';
+		if(!$intent && !$escaped)
+			$reason = 'unsafe-path';
 		$hash = preg_match('/^([0-9A-Fa-f]{40})/D', basename($item), $matches)
 			? strtoupper($matches[1]) : '';
-		$this->manifestLog($hash, $item, $intent ? 'directory-intent-unresolved' : 'unsafe-path');
-		$this->log('Retain '.($intent ? 'directory-intent-unresolved' : 'unsafe-path')
-			.' manifest '.basename($item));
+		$this->manifestLog($hash, $item, $reason);
+		$this->log('Retain '.$reason.' manifest '.basename($item));
 		if($this->retentionSink !== null) return;
 
 		// A legacy manifest can have no drain. The ordinary 15-second pass must
 		// report its refusal without writing the same line on every tick. An
 		// exclusive day marker is durable across processes and retries tomorrow.
 		$prefix = $this->unsafeManifestReportPrefix($item);
-		$marker = $prefix.($intent ? 'intent-' : '').gmdate('Ymd').'.notice';
-		$line = $intent
-			? 'erasedata: directory-intent-unresolved '.basename($item)
-				.' retained; inspect '.basename($this->directoryIntentPath($item))
-			: 'erasedata: unsafe-path '.basename($item)
+		$marker = $prefix.($intent ? 'intent-' : ($escaped ? 'escaped-' : '')).gmdate('Ymd').'.notice';
+		if($intent)
+			$line = 'erasedata: directory-intent-unresolved '.basename($item)
+				.' retained; inspect '.basename($this->directoryIntentPath($item));
+		else if($escaped)
+			$line = 'erasedata: escaped-path-ambiguous '.basename($item).' for '.$hash
+				.' retained; an unmarked manifest path with a backslash may be an older release\'s'
+				.' escaped spelling, so no file is deleted; remove the payload by hand, then this manifest';
+		else
+			$line = 'erasedata: unsafe-path '.basename($item)
 				.' retained; listed parent changed or is not a directory within the base';
 		$handle = @fopen($marker, 'xb');
 		if(is_resource($handle))
@@ -2529,6 +2547,18 @@ final class ErasedataCollector
 			@fclose($handle);
 			return(false);
 		}
+		// Written before manifests said their paths are the daemon's own bytes
+		// and holding a backslash: the path may be the parser's escaped spelling
+		// of a '"' or '\' (AUD-ESC-03), which can name a sibling spelled that
+		// way rather than the payload, and the owned paths of a returning
+		// download no longer share that spelling. No spelling is deleted and
+		// nothing is unescaped; the manifest stays and is reported.
+		if(!empty($manifest['paths_ambiguous']))
+		{
+			$this->logUnsafeManifestPath($path, 'escaped-path-ambiguous');
+			@fclose($handle);
+			return(false);
+		}
 		$complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes));
 		// $stat is the fstat of the handle this function still holds open, so the
 		// deletion below is bound to the exact inode that was decoded.
@@ -3074,12 +3104,48 @@ final class ErasedataCollector
 		return(true);
 	}
 
+	// The queue index is read before this hash's lock. A checker replacement
+	// that held the lock publishes its cleanup token, and another collector
+	// may finish a job, in between. Only the cleanup entries are compared: a
+	// staged cleanup (tmp) or a published token (list) that changed, or a
+	// staged cleanup whose token now exists, makes the view stale. Legacy
+	// candidates and malformed entries are not compared.
+	private function hashIndexStale($hashIndex)
+	{
+		$cleanup = isset($hashIndex['cleanup']) && is_array($hashIndex['cleanup'])
+			? $hashIndex['cleanup'] : array();
+		foreach($cleanup as $items)
+		{
+			$staged = isset($items['tmp']) && is_array($items['tmp']) ? $items['tmp'] : array();
+			$tokens = isset($items['list']) && is_array($items['list']) ? $items['list'] : array();
+			// Plain lstat: this only decides whether to read the hash again,
+			// and keeps the scripted identity seam's call order unchanged.
+			foreach(array_merge($staged, $tokens) as $item)
+			{
+				clearstatcache(true, $item['path']);
+				if(!erasedataSameStatIdentity($item['stat'], @lstat($item['path'])))
+					return(true);
+			}
+			if(count($staged) === 1 && !count($tokens)
+				&& erasedataPathExists(substr($staged[0]['path'], 0, -4).'.list'))
+				return(true);
+		}
+		return(false);
+	}
+
 	private function collectHashIndexed($listPath, $hash, $hashIndex, $index)
 	{
 		ErasedataFilesystemOps::clearRenameRefusal();
 		$lock = erasedataAcquireHashLock($listPath, $hash, !$this->blockingHashLocks);
 		if($lock === false)
 			return;
+		// Read a stale hash again under its lock; an unchanged one keeps the
+		// single queue scan of this pass.
+		if(is_array($hashIndex) && $this->hashIndexStale($hashIndex))
+		{
+			$index = erasedataBuildCollectorIndex($listPath, $hash, $this->filesystem);
+			$hashIndex = is_array($index) && isset($index[$hash]) ? $index[$hash] : false;
+		}
 		if($index === null)
 			$index = erasedataBuildCollectorIndex($listPath, $hash, $this->filesystem);
 		if($hashIndex === null && is_array($index) && isset($index[$hash]))

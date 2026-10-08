@@ -9,6 +9,9 @@ function rtMkDir($path, $mode = 0777)
 }
 function rtIsFile($path) { return is_file($path); }
 class LFS { public static function stat($path) { return @stat($path); } }
+// The payload trust rule the transaction shares with datadir and Move.
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
 $util = dirname(__DIR__, 3) . '/plugins/autotools/util_rt.php';
 if (strpos(file_get_contents($util), 'function rtMoveFile(') !== false)
     eval(loadFunctionDefinition($util, 'rtMoveFile'));

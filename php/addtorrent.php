@@ -1,5 +1,10 @@
 <?php
 
+// PHP drops the file parts of a POST beyond max_file_uploads before this
+// script runs and reports that only as a startup warning. Keep it before an
+// include can replace it; see addtorrent_upload_limit_row().
+$addtorrentStartupError = error_get_last();
+
 require_once( 'Snoopy.class.inc');
 require_once( 'rtorrent.php' );
 set_time_limit(0);
@@ -7,7 +12,8 @@ set_time_limit(0);
 /**
  * Encode a value for use as a literal in the script this page serves.
  *
- * The result of this page is evaluated by the client (js/content.js), so
+ * The result of this page is evaluated by its clients -- js/content.js, and
+ * plugins/mobile/init.js, which runs each line that starts with noty( -- so
  * every reflected value has to be a complete literal that no input can end.
  * The HEX flags also keep <, >, & and both quote characters out of the bytes,
  * so the response cannot be turned into markup by asking for it directly.
@@ -27,7 +33,7 @@ function addtorrent_literal($value)
 	return($literal===false ? '""' : $literal);
 }
 
-// The result of one load: the hash it returned is a duplicate when it was
+// The result of one confirmed load: its hash is a duplicate when it was
 // loaded before this request, or by an earlier item of it.
 function addtorrent_status($hash, &$loaded)
 {
@@ -40,12 +46,65 @@ function addtorrent_status($hash, &$loaded)
 	return("Success");
 }
 
-/** Send the same result payload for a redirected GET or a large upload POST. */
+/**
+ * The result of one magnet. sendMagnet() answers the hash of every magnet it
+ * hands to rTorrent, and rTorrent drops some malformed links without making a
+ * stub (O-1), so rTorrent::magnetShown() waits for d.hash to show the stub. A
+ * stub that never shows is Pending, and its hash does not count as loaded for
+ * the rest of the request.
+ */
+function addtorrent_magnet_status($hash, &$loaded)
+{
+	if($hash===false)
+		return("Failed");
+	if(!rTorrent::magnetShown($hash, 'addtorrent'))
+		return("Pending");
+	return(addtorrent_status(strtoupper($hash), $loaded));
+}
+
+/**
+ * The result row for the selected files this script never received.
+ *
+ * PHP registers at most max_file_uploads file parts of a POST and drops the
+ * rest without counting them; PHP also discards a whole body larger than
+ * post_max_size. The add dialog sends the number of files it selected as
+ * torrent_file_count, so the shortfall can be counted. Without a count, only
+ * PHP's startup warning tells, and error_get_last() still holds it only when
+ * no later startup diagnostic replaced it: PHP-FPM 8.5 with
+ * register_argc_argv on raises a deprecation after it. The image's FPM pool
+ * turns that directive off, so there the warning is the last error.
+ */
+function addtorrent_upload_limit_row($startupError, $kept, $selected)
+{
+	$limit = intval(ini_get('max_file_uploads'));
+	if(is_string($selected) && ctype_digit($selected) && (strlen($selected) <= 9) &&
+		(intval($selected) > $kept))
+		$text = (intval($selected) - $kept).' of the '.intval($selected).' selected files'
+			.((($limit > 0) && ($kept >= $limit)) ? ' (max_file_uploads='.$limit.')' : '');
+	elseif(is_array($startupError) && (($startupError['type'] ?? null) === E_WARNING) &&
+		(strpos((string)($startupError['message'] ?? ''),
+			'Maximum number of allowable file uploads has been exceeded') !== false))
+		$text = 'the files after the first '.$kept.' (max_file_uploads='.$limit.')';
+	else
+		return(null);
+	FileUtil::toLog('addtorrent: upload incomplete: not processed: '.$text);
+	return(array( 'name'=>'Not processed: '.$text, 'status'=>"Failed" ));
+}
+
+/**
+ * Answer with the result payload of a redirected GET or of a large upload
+ * POST: one noty(<literal>+theUILang[...],<kind>); call per result. Nothing
+ * in this file runs after it, and the POST sends its redirect only in the
+ * other branch, so neither depends on CachedEcho::send() ending the request.
+ */
 function addtorrent_response($results, $names, $json = false)
 {
 	if($json)
+	{
 		CachedEcho::send( '{ "result" : '.addtorrent_literal(isset($results[0]) ? $results[0] : '').' }',
 			"application/json");
+		return;
+	}
 	$js = '';
 	foreach( $results as $ndx=>$result )
 	{
@@ -112,6 +171,7 @@ else
 		$uploaded_files = array( array( 'status' => "Failed" ) );
 	if(empty($uploaded_files))
 	{
+		$files = array();
 		if(isset($_FILES['torrent_file']))
 		{
 			if( is_array($_FILES['torrent_file']['name']) )
@@ -150,7 +210,7 @@ else
 					$uploaded_url = array( 'name'=>$url, 'status'=>"Failed" );
 					if(strpos($url,"magnet:")===0)
 					{
-						$uploaded_url['status'] = addtorrent_status(rTorrent::sendMagnet($url,
+						$uploaded_url['status'] = addtorrent_magnet_status(rTorrent::sendMagnet($url,
 							!isset($_REQUEST['torrents_start_stopped']),
 							!isset($_REQUEST['not_add_path']),
 							$dir_edit,$label,$addition), $loaded);
@@ -186,6 +246,10 @@ else
 				}
 			}
 		}
+		$limitRow = addtorrent_upload_limit_row($addtorrentStartupError, count($files),
+			isset($_REQUEST['torrent_file_count']) ? $_REQUEST['torrent_file_count'] : null);
+		if($limitRow!==null)
+			$uploaded_files[] = $limitRow;
 	}
 	// The browser knows the public origin and prefix even when a proxy rewrites them.
 	$location = "Location: ./addtorrent.php?";
@@ -209,22 +273,43 @@ else
 			{
 				if(isset($_REQUEST['randomize_hash']))
 					$torrent->info['unique'] = uniqid("rutorrent-",true);
-				$pendingReceipt = null;
-				$load = rTorrent::sendTorrent($torrent,
-					!isset($_REQUEST['torrents_start_stopped']),
-					!isset($_REQUEST['not_add_path']),
-					$dir_edit,$label,$saveUploadedTorrents,isset($_REQUEST['fast_resume']),true,$addition,$pendingReceipt);
-				if($load===null)
+				// rtorrent drops a load whose hash it already holds before the
+				// load's deferred proof can run, so sending one could only end
+				// Pending after the whole settle window, 2 s per duplicate.
+				// $loaded -- the download_list snapshot and the loads confirmed
+				// since -- only makes a duplicate likely: the snapshot is read
+				// when the request starts, so one d.hash read confirms that the
+				// torrent is still there before its load is skipped.
+				$hash = $torrent->hash_info();
+				$duplicate = isset($loaded[$hash]) && (HashFault::presence($hash) === HashFault::PRESENT);
+				// Otherwise the entry was stale, or the read proved nothing: the
+				// load and its proof decide, and a confirmed load is not a duplicate.
+				if(!$duplicate)
+					unset($loaded[$hash]);
+				if($duplicate)
 				{
-					$file['status'] = "Pending";
-					if(!$saveUploadedTorrents && !empty($pendingReceipt['raw']))
-						@unlink($file['file']);
+					$file['status'] = "Duplicate";
+					@unlink($file['file']);
 				}
 				else
 				{
-					$file['status'] = addtorrent_status($load, $loaded);
-					if($file['status']!='Success')
-						@unlink($file['file']);
+					$pendingReceipt = null;
+					$load = rTorrent::sendTorrent($torrent,
+						!isset($_REQUEST['torrents_start_stopped']),
+						!isset($_REQUEST['not_add_path']),
+						$dir_edit,$label,$saveUploadedTorrents,isset($_REQUEST['fast_resume']),true,$addition,$pendingReceipt);
+					if($load===null)
+					{
+						$file['status'] = "Pending";
+						if(!$saveUploadedTorrents && !empty($pendingReceipt['raw']))
+							@unlink($file['file']);
+					}
+					else
+					{
+						$file['status'] = addtorrent_status($load, $loaded);
+						if($file['status']!='Success')
+							@unlink($file['file']);
+					}
 				}
 			}
 		}
@@ -244,6 +329,9 @@ else
 	// existing iframe/JSON consumer read the same result from this POST body.
 	if(strlen($location)>2048)
 		addtorrent_response($results, $names, isset($_REQUEST['json']));
-	header("HTTP/1.0 302 Moved Temporarily");
-	header($location);
+	else
+	{
+		header("HTTP/1.0 302 Moved Temporarily");
+		header($location);
+	}
 }

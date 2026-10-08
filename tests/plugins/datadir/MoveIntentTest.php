@@ -438,6 +438,75 @@ $tests = array(
             dataDirRemoveFixture($root);
         }
     },
+    // R3-OWN-01: inside the configured top the shared payload rule accepts a
+    // Windows-like 0777 tree with 0666 files; above it the strict rule stays.
+    'below the configured top a Windows-like 0777 tree with 0666 files moves' => function () {
+        $root = dataDirMoveFixture();
+        try {
+            $GLOBALS['topDirectory'] = $root . '/';
+            chmod($root . '/from', 0777);
+            chmod($root . '/to', 0777);
+            mkdir($root . '/from/sub', 0777);
+            chmod($root . '/from/sub', 0777);
+            file_put_contents($root . '/from/sub/a', 'A');
+            chmod($root . '/from/sub/a', 0666);
+            testAssertSame('', DataDirMoveIntent::destinationReason($root . '/to/new'),
+                'the destination preflight accepts the 0777 ancestor');
+            $receipt = $root . '/receipts/' . str_repeat('A', 40) . '.json';
+            $intent = DataDirMoveIntent::prepare($receipt, str_repeat('a', 32), str_repeat('A', 40),
+                $root . '/from', $root . '/to', array('sub/a'), 'dataDirNoReplace');
+            testAssertSame('complete', $intent->advance(), 'the payload moves');
+            testAssertSame('A', file_get_contents($root . '/to/sub/a'), 'the bytes arrive');
+            testAssertSame(false, file_exists($root . '/from/sub/a'), 'the source name is gone');
+        } finally {
+            unset($GLOBALS['topDirectory']);
+            dataDirRemoveFixture($root);
+        }
+    },
+    'above the configured top a writable directory still refuses' => function () {
+        $root = dataDirMoveFixture();
+        try {
+            $GLOBALS['topDirectory'] = $root . '/from/';
+            chmod($root . '/to', 0777);
+            file_put_contents($root . '/from/a', 'A');
+            testAssertSame('destination-root-untrusted', DataDirMoveIntent::destinationReason($root . '/to/new'),
+                'the destination preflight keeps the strict rule outside the top');
+            $receipt = $root . '/receipts/' . str_repeat('B', 40) . '.json';
+            try {
+                DataDirMoveIntent::prepare($receipt, str_repeat('b', 32), str_repeat('B', 40),
+                    $root . '/from', $root . '/to', array('a'), 'dataDirNoReplace');
+                throw new RuntimeException('a writable destination outside the top was accepted');
+            } catch (RuntimeException $e) {
+                testAssertSame('untrusted-directory', $e->getMessage(), 'the move refuses before a receipt');
+            }
+            testAssertSame(false, file_exists($receipt), 'no receipt was published');
+            // '/' is the conf/config.php default outside Docker and no boundary.
+            $GLOBALS['topDirectory'] = '/';
+            testAssertSame('destination-root-untrusted', DataDirMoveIntent::destinationReason($root . '/to/new'),
+                'a top of / keeps the strict rule for the destination preflight');
+        } finally {
+            unset($GLOBALS['topDirectory']);
+            dataDirRemoveFixture($root);
+        }
+    },
+    // R4-FS-02: the worker names a vanished source parent as what it is.
+    'a vanished source parent is refused as unavailable, not as outside the root' => function () {
+        $root = dataDirMoveFixture();
+        try {
+            file_put_contents($root . '/from/a', 'A');
+            $receipt = $root . '/receipts/' . str_repeat('C', 40) . '.json';
+            try {
+                DataDirMoveIntent::prepare($receipt, str_repeat('c', 32), str_repeat('C', 40),
+                    $root . '/from', $root . '/to', array('sub/b', 'a'), 'dataDirNoReplace');
+                throw new RuntimeException('a missing source parent was accepted');
+            } catch (RuntimeException $e) {
+                testAssertSame('source-parent-unavailable', $e->getMessage(), 'the refusal says what is missing');
+            }
+            testAssertSame(false, file_exists($receipt), 'no receipt was published');
+        } finally {
+            dataDirRemoveFixture($root);
+        }
+    },
     'ready receipt aborts only while all original files remain in place' => function () {
         $root = dataDirMoveFixture();
         try {
@@ -460,6 +529,30 @@ $tests = array(
             testAssertSame(false, $intent->abortUnmoved(), 'partial move cannot be cancelled');
             testAssertSame(true, is_file($receipt), 'partial receipt remains for recovery');
         } finally {
+            dataDirRemoveFixture($root);
+        }
+    },
+    // R4-FS-09: the job journal keeps the strict form of the shared rule,
+    // with no relaxed region below the configured top.
+    'the job journal rule refuses a writable component even below the top' => function () {
+        $root = dataDirMoveFixture();
+        $GLOBALS['topDirectory'] = $root . '/';
+        try {
+            $journal = realpath($root) . '/receipts';
+            testAssertSame(true, DataDirMoveIntent::trustedDirectory($journal), 'a private journal is trusted');
+            chmod($journal, 0777);
+            testAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($journal),
+                'the payload rule accepts a writable directory below the top');
+            testAssertSame(false, DataDirMoveIntent::trustedDirectory($journal), 'the journal rule does not');
+            chmod($journal, 01777);
+            testAssertSame(true, DataDirMoveIntent::trustedDirectory($journal), 'a sticky one is trusted');
+            chmod($journal, 0700);
+            symlink($journal, $root . '/alias');
+            testAssertSame(false, DataDirMoveIntent::trustedDirectory(realpath($root) . '/alias'),
+                'a link is not a physical journal path');
+        } finally {
+            unset($GLOBALS['topDirectory']);
+            @chmod($root . '/receipts', 0700);
             dataDirRemoveFixture($root);
         }
     },

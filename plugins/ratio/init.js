@@ -225,6 +225,8 @@ if(plugin.canChangeMenu())
 				}
 			}
 		}
+		// The ratio group lives in the session; save it with the change.
+		this.saveSessions();
 	}
 }
 

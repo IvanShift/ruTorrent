@@ -154,20 +154,25 @@ if($setComment || $setTrackers || $setPrivate)
 					}
 					if(isset($torrent->{'rtorrent'}))
 						unset($torrent->{'rtorrent'});
+					// The snapshot holds the daemon's own bytes, and each goes
+					// back encoded once: additionCommand() quotes the seeding
+					// flag and the throttle name for the daemon's command
+					// parser; sendTorrent() quotes the directory the same way
+					// for d.set_directory_base (and passes it to "mkdir -p" as
+					// a plain XML-RPC string) and percent-encodes the label,
+					// decoded below, with rawurlencode() for d.set_custom1.
 					$addition = array(
 						getCmd("d.set_custom3")."=1",
-						rTorrent::additionCommand("d.set_connection_seed",
-							rXMLRPCRequest::unescapeValue($req->val[7])),
+						rTorrent::additionCommand("d.set_connection_seed", $req->val[7]),
 					);
 					// d.get_throttle_name is only asked for when the throttle
 					// plugin is registered, so without it there is no throttle
 					// to forward and nothing is appended. An entry that is not
 					// a command would refuse the whole reload.
 					if(rTorrentSettings::get()->isPluginRegistered("throttle"))
-						$addition[] = rTorrent::additionCommand("d.set_throttle_name",
-							rXMLRPCRequest::unescapeValue($req->val[9]));
-					$directory = rXMLRPCRequest::unescapeValue($req->val[6]);
-					$label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[5]));
+						$addition[] = rTorrent::additionCommand("d.set_throttle_name", $req->val[9]);
+					$directory = $req->val[6];
+					$label = rawurldecode($req->val[5]);
 					$prepared = rTorrent::preflightTorrentLoad($torrent, false, $directory,
 						($req->val[8]==1), false, $addition, $failure);
 					if($prepared === false)
@@ -197,8 +202,7 @@ if($setComment || $setTrackers || $setPrivate)
 						{
 							if($guardedErase)
 								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase_preserving_tied", array(
-									$hash, rXMLRPCRequest::unescapeValue($req->val[4]),
-									rXMLRPCRequest::unescapeValue($req->val[$stopTokenIndex]),
+									$hash, $req->val[4], $req->val[$stopTokenIndex],
 									(int)$req->val[3], (int)$req->val[1], (int)$req->val[2])));
 							else
 								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase", $hash));

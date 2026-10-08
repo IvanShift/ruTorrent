@@ -579,7 +579,13 @@ class engineManager
 				$success = false;
 				if($magnet)
 				{
-					if($success = rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label))
+					$success = rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label);
+					// rTorrent drops some malformed magnets without a stub. Such a
+					// magnet is pending and stays out of the history, so it can be
+					// added again (R4-NF-1).
+					if(($success !== false) && !rTorrent::magnetShown($success, 'extsearch'))
+						$success = null;
+					if($success)
 						$history->add($url,$success);
 				}
 				else if(!$history->hasPendingRoom($GLOBALS['searchHistoryMaxCount']))

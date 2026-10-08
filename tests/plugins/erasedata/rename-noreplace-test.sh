@@ -28,10 +28,28 @@ if [[ $# == 1 ]] && ! command -v cc >/dev/null 2>&1; then
   echo 'scope - packaged helper probes run; compiler crash cuts and EINVAL classifier require the source gate'
 fi
 
+# Exit statuses of the helper. ErasedataFilesystemOps::RENAME_HELPER_STATUS in
+# plugins/erasedata/filesystem.php is the table; RenameHelperStatusTest.php
+# pins these names and values to it.
+readonly STATUS_OK=0 STATUS_COLLISION=1 STATUS_INVALID_ARGUMENTS=2 STATUS_UNSUPPORTED=3 STATUS_ERROR=4 STATUS_FALLBACK=5
+
+# A probe is usable natively or through the caller-locked fallback.
+usable_status() {
+  [[ "$1" == "$STATUS_OK" || "$1" == "$STATUS_FALLBACK" ]]
+}
+
 probe_usable() {
   local probe_status=0
   "$1" --probe "$2" || probe_status=$?
-  [[ "$probe_status" == 0 || "$probe_status" == 5 ]]
+  usable_status "$probe_status"
+}
+
+# Run a helper invocation and require one exact exit status.
+expect_status() {
+  local expected=$1 actual=0
+  shift
+  "$@" 2>>"$run/expected-status.stderr" || actual=$?
+  [[ "$actual" == "$expected" ]] || { echo "expected status $expected, got $actual: $*" >&2; exit 1; }
 }
 
 probe_usable "$binary" "$run"
@@ -63,13 +81,14 @@ if [[ "$source_cuts" == true ]]; then
   [[ "$stopped" == 1 ]]
 fi
 concurrent_pids=("$probe_pid")
-for index in {1..7}; do probe_usable "$binary" "$concurrent_parent" & concurrent_pids+=("$!"); done
+# Every waited status is the helper's own, so a fallback filesystem's 5 counts.
+for index in {1..7}; do "$binary" --probe "$concurrent_parent" & concurrent_pids+=("$!"); done
 if [[ "$source_cuts" == true ]]; then sleep 0.15; kill -CONT "$probe_pid"; fi
 concurrent_failed=0
 for pid in "${concurrent_pids[@]}"; do
   concurrent_status=0
   wait "$pid" || concurrent_status=$?
-  [[ "$concurrent_status" == 0 || "$concurrent_status" == 5 ]] || concurrent_failed=1
+  usable_status "$concurrent_status" || concurrent_failed=1
 done
 concurrent_pids=()
 probe_pid=''
@@ -154,27 +173,18 @@ original="$(stat -c '%d:%i' "$run/source-dir")"
 mkdir "$run/source-occupied" "$run/occupied"
 : > "$run/source-occupied/from"
 : > "$run/occupied/keep"
-if "$binary" "$run/source-occupied" "$run/occupied"; then
-  echo 'occupied destination was overwritten' >&2
-  exit 1
-fi
+expect_status "$STATUS_COLLISION" "$binary" "$run/source-occupied" "$run/occupied"
 [[ -f "$run/source-occupied/from" && -f "$run/occupied/keep" ]]
 
 # An ordinary rename would replace both of these destinations.
 printf 'source' > "$run/file-collision-source"
 printf 'keep' > "$run/file-collision-target"
-if "$binary" "$run/file-collision-source" "$run/file-collision-target"; then
-  echo 'occupied file was overwritten' >&2
-  exit 1
-fi
+expect_status "$STATUS_COLLISION" "$binary" "$run/file-collision-source" "$run/file-collision-target"
 [[ "$(cat "$run/file-collision-target")" == keep ]]
 [[ "$(cat "$run/file-collision-source")" == source ]]
 mkdir "$run/empty-dir-source" "$run/empty-dir-target"
 empty_identity="$(stat -c '%d:%i' "$run/empty-dir-target")"
-if "$binary" "$run/empty-dir-source" "$run/empty-dir-target"; then
-  echo 'empty destination directory was overwritten' >&2
-  exit 1
-fi
+expect_status "$STATUS_COLLISION" "$binary" "$run/empty-dir-source" "$run/empty-dir-target"
 [[ -d "$run/empty-dir-source" && "$(stat -c '%d:%i' "$run/empty-dir-target")" == "$empty_identity" ]]
 
 : > "$run/source-file"
@@ -188,6 +198,16 @@ ln -s missing-target "$run/source-link"
 [[ ! -L "$run/source-link" ]]
 [[ "$(readlink "$run/restored-link")" == missing-target ]]
 
+# Status 3 survives the fallback only as plain renameat's own refusal: a
+# directory cannot move into its own subtree on any filesystem.
+mkdir "$run/self-parent"
+: > "$run/self-parent/keep"
+expect_status "$STATUS_UNSUPPORTED" "$binary" "$run/self-parent" "$run/self-parent/child"
+[[ -f "$run/self-parent/keep" && ! -e "$run/self-parent/child" ]]
+expect_status "$STATUS_INVALID_ARGUMENTS" "$binary" "$run/self-parent" "$run/self-parent"
+expect_status "$STATUS_INVALID_ARGUMENTS" "$binary" relative "$run/self-parent/other"
+[[ -d "$run/self-parent" && ! -e "$run/self-parent/other" ]]
+
 # Inject only renameat2's errno: unsupported flags must use the shared
 # caller-locked fallback, while real filesystem errors remain refusals.
 if [[ "$source_cuts" == true ]]; then
@@ -195,26 +215,18 @@ for injected_errno in 22 38 95; do
   echo "test - errno $injected_errno fallback probe and collision preservation"
   fallback="$run/fallback-$injected_errno"
   compile_helper "$fallback" "-DRUTORRENT_RENAME_TEST_ERRNO=$injected_errno"
-  set +e
-  "$fallback" --probe "$run" 2>"$run/fallback.stderr"
-  fallback_status=$?
-  set -e
-  [[ "$fallback_status" == 5 ]]
+  expect_status "$STATUS_FALLBACK" "$fallback" --probe "$run"
   [[ -z "$(find "$run" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
   printf source > "$run/fallback-source"
   "$fallback" "$run/fallback-source" "$run/fallback-target"
   [[ ! -e "$run/fallback-source" && "$(cat "$run/fallback-target")" == source ]]
   printf keep > "$run/fallback-source"
-  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
-    echo 'fallback overwrote an occupied file' >&2; exit 1
-  fi
+  expect_status "$STATUS_COLLISION" "$fallback" "$run/fallback-source" "$run/fallback-target"
   [[ "$(cat "$run/fallback-source")" == keep && "$(cat "$run/fallback-target")" == source ]]
   rm -- "$run/fallback-source" "$run/fallback-target"
   mkdir "$run/fallback-source" "$run/fallback-target"
   target_identity="$(stat -c '%d:%i' "$run/fallback-target")"
-  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
-    echo 'fallback overwrote an empty directory' >&2; exit 1
-  fi
+  expect_status "$STATUS_COLLISION" "$fallback" "$run/fallback-source" "$run/fallback-target"
   [[ -d "$run/fallback-source" && "$(stat -c '%d:%i' "$run/fallback-target")" == "$target_identity" ]]
   rmdir -- "$run/fallback-target"
   "$fallback" "$run/fallback-source" "$run/fallback-target"
@@ -222,9 +234,7 @@ for injected_errno in 22 38 95; do
   rmdir -- "$run/fallback-target"
   printf source > "$run/fallback-source"
   ln -s absent-target "$run/fallback-target"
-  if "$fallback" "$run/fallback-source" "$run/fallback-target"; then
-    echo 'fallback overwrote a dangling symlink' >&2; exit 1
-  fi
+  expect_status "$STATUS_COLLISION" "$fallback" "$run/fallback-source" "$run/fallback-target"
   [[ "$(cat "$run/fallback-source")" == source && "$(readlink "$run/fallback-target")" == absent-target ]]
   rm -- "$run/fallback-source" "$run/fallback-target"
   echo "ok - errno $injected_errno fallback probe, rename and nofollow collisions"
@@ -233,9 +243,9 @@ for injected_errno in 13 18 30; do
   refused="$run/refused-$injected_errno"
   compile_helper "$refused" "-DRUTORRENT_RENAME_TEST_ERRNO=$injected_errno"
   printf preserve > "$run/refused-source"
-  if "$refused" --probe "$run" || "$refused" "$run/refused-source" "$run/refused-target"; then
-    echo 'a real filesystem error used the fallback' >&2; exit 1
-  fi
+  # A real filesystem error never uses the fallback: both refuse as errors.
+  expect_status "$STATUS_ERROR" "$refused" --probe "$run"
+  expect_status "$STATUS_ERROR" "$refused" "$run/refused-source" "$run/refused-target"
   [[ "$(cat "$run/refused-source")" == preserve && ! -e "$run/refused-target" ]]
   rm -- "$run/refused-source"
   echo "ok - errno $injected_errno refuses without fallback"

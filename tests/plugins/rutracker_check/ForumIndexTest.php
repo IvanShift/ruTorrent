@@ -4827,4 +4827,55 @@ fiStateTest($suite, 'a forumindex document nobody can read is visible at the shi
         'the caller is told the cause too, rather than the bare word');
 });
 
+// forum_pending.from is the chk-forum an intent was staged over, stored as
+// it was read. Records staged before 2026-10 hold it as php/xmlrpc.php then
+// handed it out, every '"' and '\' backslash-escaped; the plugin writes only
+// digits to chk-forum, so the old spelling differs only for a value another
+// writer left there. No migration: such a record must stay a pending intent
+// -- it neither confirms nor retires on that comparison -- and the fenced
+// setter must still finish it.
+fiStateTest($suite, 'a pending intent staged over aud "q" \b \'a\' &c before the raw-bytes switch stays pending until its setter lands', function () {
+    $hash = str_repeat('A', 40);
+    $foreign = 'aud "q" \\b \'a\' &c';
+    $legacy = str_replace(array('\\', '"'), array('\\\\', '\\"'), $foreign);
+    $record = array('hash' => $hash, 'from' => $legacy, 'to' => '267',
+        'version' => str_repeat('b', 32), 'fence' => '0000000000000007', 'authoritative' => true);
+    RuTrackerState::update('forumindex', function ($state) use ($hash, $record) {
+        $state['forum_serial'] = 7;
+        $state['forum_pending'][777][$hash] = $record;
+        return $state;
+    });
+
+    foreach (array('an unwritten fence' => '', 'a lower fence' => '0000000000000003') as $what => $fence) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', $foreign));
+        rXMLRPCRequest::queue('d.get_custom', true, false, array($fence));
+        $missResult = null;
+        $log = fiCapturedAppLog(function () use (&$missResult) {
+            $missResult = RuTrackerForumIndex::markMiss(777, time());
+        });
+        strictAssertSame(false, $missResult, 'with ' . $what . ' the legacy intent still blocks a miss');
+        strictAssertTrue(strpos($log, 'is unconfirmed; crawl miss and backoff deferred') !== false,
+            'with ' . $what . ' the refusal is visible');
+        strictAssertTrue(strpos($log, 'third chk-forum') === false,
+            'with ' . $what . ' the unchanged foreign value is not reported as a third writer');
+        strictAssertSame($record, RuTrackerState::load('forumindex')['forum_pending'][777][$hash] ?? null,
+            'with ' . $what . ' the record is retained byte for byte');
+    }
+
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', $foreign));
+    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('777', $foreign));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
+        RuTrackerForumIndex::writeForumMapping($hash, 777, 267, '267', true),
+        'the same target is written under the record\'s own fence');
+    $body = rXMLRPCRequest::requestsFor('branch')[0]['commands'][0]->params[2];
+    strictAssertTrue(strpos($body, 'chk-forum-version,0000000000000007') !== false,
+        'the setter carries the legacy record\'s fence');
+    strictAssertSame(array(), RuTrackerState::load('forumindex')['forum_pending'] ?? array(),
+        'the confirmed setter retires the legacy intent');
+});
+
 exit($suite->run());

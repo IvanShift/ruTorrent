@@ -241,8 +241,10 @@ class rTorrent
 	 * several -- d.set_custom takes a key and a value -- names them separately
 	 * and each is quoted on its own.
 	 *
-	 * The value must be in its own bytes: rXMLRPCRequest::unescapeValue() puts
-	 * a value read back from the daemon into that form.
+	 * The value must be in its own bytes, which is how rXMLRPCRequest hands
+	 * out a value read back from the daemon. One escaped beforehand would be
+	 * escaped again here, and rtorrent would be given a name that has grown a
+	 * backslash (AUD-ESC-02).
 	 *
 	 * Answers false for a value it will not build, and false is not a valid
 	 * addition, so the list holding it is refused whole rather than sent short.
@@ -443,12 +445,9 @@ class rTorrent
 		}
 		if($req->fault)
 		{
-			// These are captured absent-hash answers from current and legacy rTorrent.
-			// A transport error or another fault cannot justify discarding a receipt.
-			if((($req->val[0] ?? null) === '-500'
-				&& $req->rawFaultString === 'invalid parameters: info-hash not found')
-				|| (($req->val[0] ?? null) === '-501'
-					&& $req->rawFaultString === 'Could not find info-hash.'))
+			// Only the daemon's own missing-hash answer (HashFault) discards a
+			// receipt; a transport error or another fault cannot.
+			if(HashFault::isMissing($req->val[0] ?? null, $req->rawFaultString))
 				return 'missing';
 			self::logUnknownLoadStatus('rpc-fault');
 			return 'unknown';
@@ -532,6 +531,33 @@ class rTorrent
 		return(false);
 	}
 
+	/**
+	 * Whether a magnet sendMagnet() handed to rTorrent became a download.
+	 *
+	 * sendMagnet() answers the hash of every magnet it sends, and rTorrent
+	 * drops some malformed links without making a stub (O-1). So a caller
+	 * waits here, within the settle window of a .torrent load, for d.hash to
+	 * show the stub before it reports the magnet as added. A stub that never
+	 * shows is logged as "<source>: magnet unconfirmed: <hash>", and the
+	 * caller reports the magnet as pending: addtorrent.php, bulk_magnet,
+	 * extsearch and rss all use this one check.
+	 */
+	static public function magnetShown($hash, $source)
+	{
+		$hash = strtoupper($hash);
+		$deadline = microtime(true) + self::LOAD_WAIT_ATTEMPTS
+			* self::LOAD_WAIT_DELAY_US / 1000000;
+		for($attempt = 0; $attempt < self::LOAD_WAIT_ATTEMPTS; $attempt++)
+		{
+			if($attempt) usleep(self::LOAD_WAIT_DELAY_US);
+			if(microtime(true) >= $deadline) break;
+			if(HashFault::presence($hash) === HashFault::PRESENT)
+				return(true);
+		}
+		FileUtil::toLog($source.': magnet unconfirmed: '.$hash);
+		return(false);
+	}
+
 	// The info hashes rtorrent has loaded, upper case, as keys. rtorrent
 	// answers a load for a hash it already has without a fault and drops
 	// the new copy, so the answer to the load alone cannot tell an
@@ -590,6 +616,19 @@ class rTorrent
 		return($path !== '' ? $path : false);
 	}
 
+	// rTorrent names a BEP-9 magnet download <HASH>.meta, in uppercase hex,
+	// until its metadata arrives. Captured on 0.16.25 and 0.9.8 (L3 lab,
+	// 2026-10-08) for magnets given in lowercase hex, uppercase hex and base32:
+	// the same spelling in d.name, in the session copy's info name and in the
+	// stub file's basename. The hash argument is canonicalized; the name is
+	// compared exactly, because the daemon writes no other spelling and a real
+	// torrent may carry any name. d.is_meta remains the RPC-level check.
+	static public function isMetadataStubName($name, $hash)
+	{
+		return(is_string($name) && is_string($hash) && preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) === 1
+			&& $name === strtoupper($hash).'.meta');
+	}
+
 	static public function getSource($hash, &$sourcePath = null)
 	{
 		$sourcePath = self::getSourcePath($hash);
@@ -602,7 +641,7 @@ class rTorrent
 		// stable but unrelated hash. Accept only the daemon's canonical
 		// metadata filename, prove the raw bytes against the requested
 		// info hash, then restore the missing metainfo envelope.
-		if(strcasecmp(basename($fname), $hash . '.meta') === 0)
+		if(self::isMetadataStubName(basename($fname), $hash))
 		{
 			$raw = @file_get_contents($fname);
 			if($raw === false || $raw === ''

@@ -11,5 +11,6 @@
  theUILang.datadirDlgCaption	= "Настройка каталогу даних";
  theUILang.datadirDirNotFound	= "Плагін DataDir: неприпустимий каталог";
  theUILang.datadirSetDirFail	= "Плагін DataDir: операцію не виконано";
+ theUILang.datadirStoppedAfterCheck	= "Плагін DataDir: каталог змінено, але rTorrent зупинив завантаження: перевірка хешу не знайшла там повних даних";
 
 thePlugins.get("datadir").langLoaded();

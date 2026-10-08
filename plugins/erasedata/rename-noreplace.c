@@ -17,8 +17,26 @@
 #define RENAME_NOREPLACE 1
 #endif
 
+/* Exit status ABI. ErasedataFilesystemOps::RENAME_HELPER_STATUS in
+ * filesystem.php is the table; RenameHelperStatusTest pins these names and
+ * values, the shell test and QUEUE-ATTESTATION.md to it. STATUS_FALLBACK is a
+ * usable --probe through the caller-locked fallback, never a mutation result. */
+enum rename_status {
+    STATUS_OK = 0,
+    STATUS_COLLISION = 1,
+    STATUS_INVALID_ARGUMENTS = 2,
+    STATUS_UNSUPPORTED = 3,
+    STATUS_ERROR = 4,
+    STATUS_FALLBACK = 5,
+};
+
 static int fallback_used;
 
+/* The same fallback rule exists twice more and must change together:
+ * rTorrent's rename_session_entry_noreplace() in src/core/session_path.h
+ * (rutorrent-native) publishes session sidecars with it, and docker-rutorrent's
+ * rootfs/usr/local/bin/startup reports STATUS_FALLBACK from this helper's
+ * --probe as a usable filesystem. Each binary needs its own copy. */
 static int rename_no_replace(int from_fd, const char *from, int to_fd, const char *to)
 {
 #ifdef RUTORRENT_RENAME_TEST_ERRNO
@@ -30,8 +48,9 @@ static int rename_no_replace(int from_fd, const char *from, int to_fd, const cha
     if (result == 0 || (errno != EINVAL && errno != ENOSYS && errno != EOPNOTSUPP))
         return result;
     /* Callers hold their transaction lock. Same-UID processes are trusted;
-     * unsupported filesystem flags may use check/rename under that lock.
-     * A dangling symlink occupies the destination just like any other entry. */
+     * unsupported filesystem flags (WSL2 drvfs over 9p answers EINVAL) may use
+     * check/rename under that lock. A dangling symlink occupies the
+     * destination just like any other entry. */
     fallback_used = 1;
     struct stat destination;
     if (fstatat(to_fd, to, &destination, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -42,16 +61,19 @@ static int rename_no_replace(int from_fd, const char *from, int to_fd, const cha
     return renameat(from_fd, from, to_fd, to);
 }
 
+/* After the fallback, STATUS_UNSUPPORTED means that plain renameat itself
+ * refused (EINVAL for a directory moved into its own subtree, ENOSYS,
+ * EOPNOTSUPP), or that the probe's self-check saw a rename replace an entry. */
 static int error_status(int error)
 {
     const char *reason = "rename-noreplace-error";
-    int status = 4;
+    int status = STATUS_ERROR;
     if (error == EEXIST || error == ENOTEMPTY) {
         reason = "rename-noreplace-collision";
-        status = 1;
+        status = STATUS_COLLISION;
     } else if (error == EINVAL || error == ENOSYS || error == EOPNOTSUPP) {
         reason = "rename-noreplace-unsupported";
-        status = 3;
+        status = STATUS_UNSUPPORTED;
     }
     fprintf(stderr, "%s: errno=%d %s\n", reason, error, strerror(error));
     return status;
@@ -264,9 +286,9 @@ static int probe(const char *path)
     if (lock >= 0) close(lock);
     if (directory >= 0) close(directory);
     close(parent);
-    /* Exit 5 is a usable probe with the caller-locked fallback. Mutations
-     * themselves still report ordinary success as zero. */
-    return error ? error_status(error) : (fallback_used ? 5 : 0);
+    /* A usable probe that needed the caller-locked fallback is distinct.
+     * Mutations themselves still report ordinary success as STATUS_OK. */
+    return error ? error_status(error) : (fallback_used ? STATUS_FALLBACK : STATUS_OK);
 }
 
 int main(int argc, char **argv)
@@ -276,7 +298,7 @@ int main(int argc, char **argv)
     if (argc != 3 || argv[1][0] != '/' || argv[2][0] != '/'
         || strcmp(argv[1], argv[2]) == 0) {
         fprintf(stderr, "rename-noreplace-invalid-arguments\n");
-        return 2;
+        return STATUS_INVALID_ARGUMENTS;
     }
-    return rename_no_replace(AT_FDCWD, argv[1], AT_FDCWD, argv[2]) == 0 ? 0 : error_status(errno);
+    return rename_no_replace(AT_FDCWD, argv[1], AT_FDCWD, argv[2]) == 0 ? STATUS_OK : error_status(errno);
 }

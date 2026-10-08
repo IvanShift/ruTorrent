@@ -8,13 +8,14 @@ class ErasedataQueueRefusalFixture
     {
         $root = dirname(__DIR__, 3);
         $tree = $base.'/queue-refusal-'.bin2hex(random_bytes(5));
-        foreach(array('plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php', 'settings', 'session') as $name)
+        foreach(array('plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php/utility', 'settings', 'session') as $name)
             mkdir($tree.'/'.$name, 0700, true);
         foreach(array('plugins/erasedata/init.php', 'plugins/erasedata/update.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
-            'plugins/erasedata/pending.php', 'plugins/erasedata/removewithdata.php',
+            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php',
+            'plugins/erasedata/removewithdata.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
-            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php') as $name)
+            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/hashfault.php') as $name)
         {
             copy($root.'/'.$name, $tree.'/'.$name);
             if(hash_file('sha256', $root.'/'.$name) !== hash_file('sha256', $tree.'/'.$name))

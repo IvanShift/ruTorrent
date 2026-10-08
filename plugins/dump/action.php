@@ -23,7 +23,7 @@ if(isset($input['hash'], $input['cmd']))
 				FileUtil::toLog('dump: source refused: '.$identity.' source-unavailable');
 				break;
 			}
-			if(strcasecmp(basename($fname), $hash.'.meta') === 0)
+			if(rTorrent::isMetadataStubName(basename($fname), $hash))
 			{
 				$validatedPath = null;
 				if(rTorrent::getSource($hash, $validatedPath) === false)
@@ -36,7 +36,7 @@ if(isset($input['hash'], $input['cmd']))
 				$fname = $validatedPath;
 			}
 			$dumpArguments = $arguments;
-			if(strcasecmp(basename($fname), $hash.'.meta') === 0)
+			if(rTorrent::isMetadataStubName(basename($fname), $hash))
 			{
 				// Raw BEP-9 info has no announce; dumptorrent's raw mode can inspect it.
 				if(isset($rawMetadataArguments))

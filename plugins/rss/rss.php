@@ -1360,6 +1360,11 @@ class rRSSManager
 				$thash = ($ret==='magnet') ?
 					rTorrent::sendMagnet($url, $isStart, $isAddPath, $directory, $label, $addition) :
 					rTorrent::sendTorrent($ret, $isStart, $isAddPath, $directory, $label, $saveUploadedTorrents, false, true, $addition, $pendingReceipt);
+				// rTorrent drops some malformed magnets without a stub. Such a
+				// magnet is Pending with no receipt to check, so the history
+				// lets it be retried after the pending timeout (R4-NF-1).
+				if(($ret==='magnet') && is_string($thash) && !rTorrent::magnetShown($thash, 'rss'))
+					$thash = null;
 				if($thash === null)
 				{
 					$thash = 'Pending';

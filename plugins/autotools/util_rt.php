@@ -167,11 +167,61 @@ function rtScanFiles( $path, $mask, $subdir = '' )
 }
 
 
+// rTorrent 0.16 publishes session files, a new download's .torrent copy and
+// the .torrent.rtorrent sidecar with its custom fields, from its session
+// thread after the RPC that asked for them has answered. Unless $ready()
+// already holds, ask for the save once and wait for $ready() within the
+// bound; an unconfirmed request is not a refusal, the daemon may still
+// publish. The bound is a courtesy to the daemon's save schedule, so tests
+// may declare it shorter. AutoTools Move and the non-Move x-dest recovery
+// both wait through this one helper.
+if (!defined('AUTOTOOLS_SESSION_SAVE_WAIT'))
+    define('AUTOTOOLS_SESSION_SAVE_WAIT', 10.0);
+
+// How long the recovery pass plans again a file operation that met a
+// transient state -- a session copy rTorrent has not published yet, a
+// download retrackers is re-adding -- before that state is a refusal
+// (ACC-OWNB-02). Tests may declare it shorter.
+function rtFileJobRetryWindow()
+{
+    return defined('AUTOTOOLS_RETRY_WINDOW') ? (int) AUTOTOOLS_RETRY_WINDOW : 1800;
+}
+
+function rtAwaitSessionSave($hash, $ready)
+{
+    if (call_user_func($ready)) return true;
+    $save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'), array($hash)));
+    $save->important = false;
+    $save->success();
+    // A monotonic clock: a step of the wall clock cannot stretch or cut the wait.
+    $deadline = hrtime(true) / 1e9 + AUTOTOOLS_SESSION_SAVE_WAIT;
+    do {
+        usleep(100000);
+        if (call_user_func($ready)) return true;
+    } while (hrtime(true) / 1e9 < $deadline);
+    return false;
+}
+
 // A finished hook can repeat. Keep its prepared files and old destinations until
 // a later invocation can prove that every listed name was published.
 class AutoToolsFileTransaction
 {
     private static $failureReason;
+    // The refusal of the last run() that the finished hook names on the
+    // download (hook_lib.php), array('reason' => classification, 'detail' =>
+    // text): an untrusted payload directory (R4 trust refusal, once only the
+    // anonymous 'nonmove new held: source or destination has an unsafe
+    // writable ancestor') or a journal the job cannot use (R4 fresh-journal
+    // gap). Null otherwise; other refusals stay in the log.
+    private static $refusal = null;
+    // Whose job the current run() is: the download's hash when the hook gave
+    // one, else 'new'.
+    private static $subject = 'new';
+
+    public static function lastRefusal()
+    {
+        return self::$refusal;
+    }
 
     protected static function checkpoint($name) {}
 
@@ -187,6 +237,10 @@ class AutoToolsFileTransaction
         return $a !== null && $b !== null && $a === $b;
     }
 
+    // The file-job journal's rule. Every component of the spelled path exists
+    // and is a directory or a link, and no directory is group/other-writable
+    // unless sticky and owned by root or this UID; '.' and '..' and a foreign
+    // link in a sticky shared directory refuse.
     private static function safeDirectory($path)
     {
         if (!is_string($path) || $path === '' || $path[0] !== '/') return false;
@@ -218,6 +272,22 @@ class AutoToolsFileTransaction
         return true;
     }
 
+    // A source, destination or staging directory of the payload follows the
+    // rule datadir and AutoTools Move share (R3-OWN-01), for the path as it
+    // is spelled: ErasedataFilesystemOps::payloadPathTrusted() checks every
+    // directory and link the spelling passes (R4-FS-03). Group/other write is
+    // accepted at and below the configured top, the strict rule applies above
+    // it, and a component of another owner, a link included, refuses
+    // everywhere. With $missingTail the path may end in names that do not
+    // exist yet. The rule is loaded on first use; check.php, watch.php and
+    // label.php include this file for other helpers and never need it.
+    private static function payloadDirectory($path, $missingTail = false)
+    {
+        if (!class_exists('ErasedataFilesystemOps', false))
+            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
+        return ErasedataFilesystemOps::payloadPathTrusted($path, null, $missingTail);
+    }
+
     private static function validFiles($files)
     {
         if (!is_array($files)) return false;
@@ -240,6 +310,23 @@ class AutoToolsFileTransaction
     {
         FileUtil::toLog('autotools: nonmove new refused: ' . $reason);
         return false;
+    }
+
+    // A refusal the finished hook names on the download, logged once with
+    // the download's hash.
+    private static function refuseVisibly($reason, $classified, $detail)
+    {
+        FileUtil::toLog('autotools: nonmove ' . self::$subject . ' refused: ' . $reason);
+        self::$refusal = array('reason' => $classified, 'detail' => $detail);
+        return false;
+    }
+
+    // A payload directory that fails the trust rule, by its spelled path.
+    private static function refusePath($classified, $path)
+    {
+        $logged = function_exists('erasedataLogPath') ? erasedataLogPath($path)
+            : json_encode($path, JSON_UNESCAPED_SLASHES);
+        return self::refuseVisibly($classified . ' path=' . $logged, $classified, $path);
     }
 
     private static function journal($root, $record)
@@ -279,13 +366,13 @@ class AutoToolsFileTransaction
 
     private static function prepare($root, &$record, $predecessors = array())
     {
-        if (!self::safeDirectory($record['src']) || !self::safeDirectory($record['dst']) ||
+        if (!self::payloadDirectory($record['src']) || !self::payloadDirectory($record['dst']) ||
             !self::clearStages($record)) return false;
         $sourceProofs = array();
         foreach ($record['files'] as $index => $file) {
             $source = $record['src'] . '/' . $file;
             $stage = self::entryStage($record, $index);
-            if (!self::safeDirectory(dirname($stage)) || !@mkdir($stage, 0700)) return false;
+            if (!self::payloadDirectory(dirname($stage)) || !@mkdir($stage, 0700)) return false;
             static::checkpoint('after-stage-' . $index);
             if (($record['op'] === 'Copy' && !is_file($source)) ||
                 ($record['op'] === 'HardLink' && !is_file($source) && !is_link($source))) {
@@ -386,7 +473,7 @@ class AutoToolsFileTransaction
                 if (!self::same(self::identity($removed), $old)) return false;
                 static::checkpoint('after-backup-' . $index);
             } elseif ($old !== null && $moved === null) return false;
-            if (!self::safeDirectory(dirname($dest)) ||
+            if (!self::payloadDirectory(dirname($dest)) ||
                 !self::same(self::identity($stage . '/new'), $record['new'][$index]) ||
                 !@link($stage . '/new', $dest)) return false;
             static::checkpoint('after-publish-' . $index);
@@ -549,15 +636,22 @@ class AutoToolsFileTransaction
             self::$failureReason = 'torrent generation, source path or x-dest changed';
             return false;
         }
-        $save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'),
-            array($context['hash'])));
-        $save->important = false;
-        if (!$save->success() || $save->fault ||
-            self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY' ||
-            !self::savedXdest($context)) {
+        // The sidecar is published after the save request answers; wait for
+        // it within the bound rather than holding the receipt for another
+        // 60 s recovery cycle (L4-N5). A sidecar that never shows the values
+        // still holds the receipt.
+        $persisted = rtAwaitSessionSave($context['hash'], function () use ($context) {
+            return self::savedXdest($context);
+        });
+        if (!$persisted ||
+            self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY') {
             self::$failureReason = 'x-dest session sidecar not persisted';
             return false;
         }
+        // A confirmed operation retires the outcome of an earlier refusal.
+        if (!class_exists('FileOperationOutcome', false))
+            require_once(dirname(__FILE__) . '/../erasedata/outcome.php');
+        FileOperationOutcome::clear('autotools', $context['hash']);
         return true;
     }
 
@@ -772,7 +866,7 @@ class AutoToolsFileTransaction
             $record = json_decode(@file_get_contents($path), true);
             if (!self::validRecord($record) ||
                 $path !== $root . '/' . $record['id'] . '.nonmove.json' ||
-                !self::safeDirectory($record['dst'])) {
+                !self::payloadDirectory($record['dst'])) {
                 self::logHold(basename($path), 'invalid recovery record');
                 return false;
             }
@@ -818,9 +912,28 @@ class AutoToolsFileTransaction
         return $usable;
     }
 
+    // The journal directory in the session, strict-safe; false when it is
+    // unsafe, cannot be created, or ($create false) does not exist yet. It is
+    // made only in a session directory the same rule trusts, and quietly: a
+    // warning printed by the finished hook would become x-dest.
+    public static function journalRoot($create = true)
+    {
+        $session = rTorrentSettings::get()->session;
+        if (!is_string($session) || $session === '') return false;
+        $root = rtrim($session, '/') . '/.autotools-file-jobs';
+        if (!is_dir($root) && (!$create || !self::safeDirectory(rtrim($session, '/'))
+            || (!@mkdir($root, 0700) && !is_dir($root))))
+            return false;
+        return self::safeDirectory($root) ? $root : false;
+    }
+
     public static function recoverAll($root)
     {
         if (!file_exists($root) && !is_link($root)) return true;
+        // Without a receipt there is nothing to recover; a hook arriving now
+        // then finds the journal free. An unreadable journal is still refused.
+        $entries = is_dir($root) && !is_link($root) ? @scandir($root) : false;
+        if (is_array($entries) && !preg_grep('/\.nonmove\.json$/D', $entries)) return true;
         if (!self::safeDirectory($root)) {
             self::logHold('journal', 'unsafe or absent journal directory');
             return false;
@@ -835,39 +948,50 @@ class AutoToolsFileTransaction
         finally { flock($handle, LOCK_UN); fclose($handle); }
     }
 
+    // Returns true when the job is published (or already was), false when it
+    // is refused or held (both logged), and null when another owner holds the
+    // journal lock: the synchronous finished hook never waits for it (see the
+    // one-owner invariant in hook_lib.php), so its caller defers the hook.
     public static function run($files, $src, $dst, $op, $dbg = false, $context = null)
     {
+        self::$refusal = null;
+        self::$subject = is_array($context) && isset($context['hash']) && is_string($context['hash']) &&
+            preg_match('/^[0-9A-F]{40}$/D', $context['hash']) ? $context['hash'] : 'new';
         if (!self::validFiles($files) || !in_array($op, array('Copy', 'HardLink', 'SoftLink'), true) ||
             !is_dir($src) || !is_string($dst) || $dst === '')
             return self::refuse('invalid file-operation request');
+        // Both spellings are checked before anything is created through them,
+        // and the destination again once it exists (R4-FS-03). The refusal
+        // names the download and the path that failed: it once said only
+        // 'nonmove new held: source or destination has an unsafe writable
+        // ancestor' and nothing on the torrent.
+        if (!self::payloadDirectory($src)) return self::refusePath('untrusted-directory', $src);
+        if (!self::payloadDirectory($dst, true)) return self::refusePath('untrusted-directory', $dst);
+        if (!rtMkDir($dst, 0755)) return self::refusePath('destination-unavailable', $dst);
+        if (!self::payloadDirectory($dst)) return self::refusePath('untrusted-directory', $dst);
+        if (($resolvedDst = realpath($dst)) === false) return self::refusePath('destination-unavailable', $dst);
         $src = realpath($src);
-        if (!self::safeDirectory($src) || !rtMkDir($dst, 0755) ||
-            !self::safeDirectory(dirname($dst)) ||
-            !self::safeDirectory($resolvedDst = realpath($dst))) {
-            self::logHold('new', 'source or destination has an unsafe writable ancestor');
-            return false;
-        }
         $dst = $resolvedDst;
         if (!self::validContext($context, $dst)) return self::refuse('invalid torrent caller context');
         if ($src === $dst) return self::refuse('source equals destination');
         if (!$files) return true;
-        $session = rTorrentSettings::get()->session;
-        $root = rtrim($session, '/') . '/.autotools-file-jobs';
-        if (!$session || !rtMkDir($root, 0700) || !self::safeDirectory($root)) {
-            self::logHold('new', 'journal directory unavailable or unsafe');
-            return false;
-        }
+        $root = self::journalRoot();
+        if ($root === false)
+            return self::refuseVisibly('journal-unavailable: the file-job journal directory is unavailable or'
+                . ' unsafe', 'journal-unavailable', '');
         $handle = @fopen($root . '/.lock', 'c');
-        if (!$handle || !@flock($handle, LOCK_EX)) {
-            if ($handle) fclose($handle);
-            return self::refuse('cannot lock journal');
+        if (!$handle) return self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', '');
+        if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
+            fclose($handle);
+            return $wouldBlock ? null
+                : self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', '');
         }
         try {
             $old = array();
             foreach ($files as $file) {
                 $dest = $dst . '/' . $file;
                 $dir = dirname($dest);
-                if (!rtMkDir($dir, 0755) || !self::safeDirectory($dir))
+                if (!rtMkDir($dir, 0755) || !self::payloadDirectory($dir))
                     return self::refuse('destination parent unavailable or unsafe');
                 $identity = self::identity($dest);
                 if ($identity !== null && !in_array($identity[2], array(0100000, 0120000), true))
@@ -902,7 +1026,8 @@ class AutoToolsFileTransaction
             if (!self::journal($root, $record)) return self::refuse('cannot persist intent');
             static::checkpoint('after-journal');
             self::$failureReason = null;
-            $ok = static::finish($root, $record, true, true, $planned);
+            // The job's own run never calls the daemon: recovery replays x-dest.
+            $ok = static::finish($root, $record, true, false, $planned);
             if (!$ok) {
                 $reason = self::$failureReason ?: 'publication or rollback incomplete; retry pending';
                 if ($record['phase'] === 'staging' && self::clearStages($record) &&

@@ -17,7 +17,10 @@
 // race and failure injection below is an override of one seam method.
 //
 // Selectors: path, inode (array('dev'=>..,'ino'=>..)), basename, basename_prefix,
-// contains, not_contains, to_contains (rename destination), after_scan.
+// contains, not_contains, to_contains (rename destination), after_scan, and
+// within/outside: production function names that must (or must not) be on the
+// call stack. They name the specific check a directive targets, so a scenario
+// does not depend on how many calls to the same seam come before it.
 // Directives: result (forced return value, real call skipped), action, at
 // ('before' by default, 'after' runs only when the real call succeeded),
 // marker, count_file and the per-action parameters documented inline.
@@ -238,6 +241,17 @@ if(!class_exists('rTorrentSettings'))
 	}
 }
 
+if(!class_exists('rTorrent', false))
+{
+	// erasedataCleanupMetadataOnly() asks the shipped rTorrent::isMetadataStubName().
+	// Only the class definition is evaluated, because its file's requires would
+	// replace this harness's rXMLRPCRequest; the lookup below stands in for
+	// rTorrent::getSource().
+	$erasedataRtorrentSource = file_get_contents(dirname(__FILE__).'/../../../php/rtorrent.php');
+	eval(substr($erasedataRtorrentSource, strpos($erasedataRtorrentSource, "\nclass rTorrent\n")));
+	unset($erasedataRtorrentSource);
+}
+
 // Replaceable metainfo lookup: the collector harness scripts successor and
 // other-torrent sources instead of reaching rTorrent.
 class ErasedataCollectorTestSource
@@ -323,6 +337,22 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 		}
 		if(isset($entry['paths']) && !in_array($path, $entry['paths'], true))
 			return(false);
+		if(isset($entry['within']) || isset($entry['outside']))
+		{
+			$stack = array();
+			foreach(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $frame)
+				if(isset($frame['function']) && !isset($frame['class']))
+					$stack[$frame['function']] = true;
+			foreach(array('within' => true, 'outside' => false) as $selector => $required)
+				foreach(isset($entry[$selector]) ? $entry[$selector] : array() as $function)
+				{
+					// A renamed check must fail the scenario, not stop matching.
+					if(!function_exists($function))
+						throw new LogicException('scenario names an unknown function: '.$function);
+					if(isset($stack[$function]) !== $required)
+						return(false);
+				}
+		}
 		return(true);
 	}
 
@@ -484,6 +514,14 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 				break;
 			case 'transition':
 				$this->transition($entry);
+				break;
+			case 'publish-cleanup-token':
+				// A replacement publishing its exact zero-byte token between
+				// the collector's queue index and its hash lock.
+				$handle = @fopen($entry['token'], 'x');
+				if(is_resource($handle))
+					fclose($handle);
+				$this->mark($entry);
 				break;
 			case 'exit':
 				$this->crash($path, $entry);
@@ -918,8 +956,8 @@ class ErasedataProductionMirror
 	public static function pluginFiles()
 	{
 		return(array('action.php', 'collector.php', 'conf.php', 'done.php',
-			'erase.php', 'filesystem.php', 'init.php', 'manifest.php',
-			'pending.php', 'removewithdata.php', 'status.php', 'update.php'));
+			'erase.php', 'filesystem.php', 'init.php', 'manifest.php', 'outcome.php',
+			'pending.php', 'presence.php', 'removewithdata.php', 'status.php', 'update.php'));
 	}
 
 	public static function build($root, $sourceRoot, $user = 'rutorrent')
@@ -948,6 +986,9 @@ class ErasedataProductionMirror
 		// scope, so the mirror carries its real bytes rather than an adapter.
 		$copies['php/xmlrpc_path.php'] = 'php/xmlrpc_path.php';
 		$copies['php/cli-only.php'] = 'php/cli-only.php';
+		// presence.php decides absence with this core leaf.
+		$copies['php/utility/hashfault.php'] = 'php/utility/hashfault.php';
+		@mkdir($root.'/php/utility', 0777, true);
 		foreach($copies as $relative => $target)
 		{
 			$bytes = @file_get_contents($sourceRoot.'/'.$relative);
@@ -990,7 +1031,11 @@ class ErasedataProductionMirror
 	//     of a batch can own a payload only its own manifest names;
 	//   'delay' => <microseconds>
 	//     holds the caller inside the request after it has been recorded, which
-	//     is how a case makes two real children overlap in time on purpose.
+	//     is how a case makes two real children overlap in time on purpose;
+	//   'awaitLog' => <text>, 'awaitMax' => <seconds, default 15>
+	//     holds the caller until the plugin log contains the text, so the
+	//     overlap is a fact rather than a chance; an expiry is recorded in
+	//     <settings>/await-expired.
 	public function scriptRpc(array $script)
 	{
 		if(!array_key_exists('system.client_version', $script))
@@ -1529,6 +1574,26 @@ class ErasedataProductionMirror
 			."\t\t// first already finished, which proves nothing about the locks.\n"
 			."\t\tif(isset(\$reply['delay']) && (int)\$reply['delay'] > 0)\n"
 			."\t\t\tusleep((int)\$reply['delay']);\n"
+			// 'awaitLog' makes an overlap a fact instead of a chance: the caller
+			// is held inside this request until the plugin log contains that
+			// text, at most 'awaitMax' seconds. A case holds one child at an
+			// exact boundary until another has said what it must, whatever the
+			// scheduler does. An expiry is recorded in await-expired, so a
+			// release that never came is visible rather than silent.
+			."\t\tif(isset(\$reply['awaitLog']) && is_string(\$reply['awaitLog']) && \$reply['awaitLog'] !== '')\n"
+			."\t\t{\n"
+			."\t\t\t\$until = microtime(true) + (isset(\$reply['awaitMax']) ? (float)\$reply['awaitMax'] : 15.0);\n"
+			."\t\t\t\$seen = false;\n"
+			."\t\t\twhile(!\$seen && microtime(true) < \$until)\n"
+			."\t\t\t{\n"
+			."\t\t\t\t\$seen = strpos((string)@file_get_contents(".$settings.".'/plugin.log'),\n"
+			."\t\t\t\t\t\$reply['awaitLog']) !== false;\n"
+			."\t\t\t\tif(!\$seen) usleep(5000);\n"
+			."\t\t\t}\n"
+			."\t\t\tif(!\$seen)\n"
+			."\t\t\t\t@file_put_contents(".$settings.".'/await-expired', \$first.\"\\n\",\n"
+			."\t\t\t\t\tFILE_APPEND | LOCK_EX);\n"
+			."\t\t}\n"
 			."\t\t\$this->val = isset(\$reply['val']) ? \$reply['val'] : array();\n"
 			."\t\t\$this->fault = isset(\$reply['fault']) ? \$reply['fault'] : false;\n"
 			."\t\t\$this->faultString = isset(\$reply['faultString'])\n"

@@ -4,7 +4,7 @@ require_once(__DIR__.'/../../php/TestCase.php');
 require_once(__DIR__.'/CollectorFixture.php');
 require_once(__DIR__.'/../../../plugins/erasedata/removewithdata.php');
 
-class ErasedataRound2ProbeFixture extends ErasedataCollectorFixture
+class ErasedataCleanupProbeFixture extends ErasedataCollectorFixture
 {
 	public $parents = array();
 	public $refused = null;
@@ -24,7 +24,7 @@ class ErasedataRound2ProbeFixture extends ErasedataCollectorFixture
 	}
 }
 
-class Round2FilesystemTest extends TestCase
+class CleanupRenamePreflightTest extends TestCase
 {
 	private $dir;
 	private $queue;
@@ -33,7 +33,7 @@ class Round2FilesystemTest extends TestCase
 
 	public function setUp()
 	{
-		$this->dir = sys_get_temp_dir().'/r2fs-'.getmypid().'-'.uniqid();
+		$this->dir = sys_get_temp_dir().'/cleanup-preflight-'.getmypid().'-'.uniqid();
 		mkdir($this->dir, 0700);
 		mkdir($this->dir.'/data', 0700);
 		$this->queue = $this->dir.'/erasedata';
@@ -104,7 +104,7 @@ class Round2FilesystemTest extends TestCase
 
 	public function testCleanupPrepareProbesQueueAndPayloadBeforeStaging()
 	{
-		$filesystem = new ErasedataRound2ProbeFixture(dirname($this->payload));
+		$filesystem = new ErasedataCleanupProbeFixture(dirname($this->payload));
 		$job = $this->prepareJob($filesystem);
 		$this->assertEquals(false, $job, 'unsupported cleanup parents refuse before predecessor erase');
 		if(is_array($job)) erasedataCancelObsoleteCleanup($job, $filesystem);
@@ -123,7 +123,7 @@ class Round2FilesystemTest extends TestCase
 
 	public function testCleanupArmReprobesBeforeReturningEraseAuthority()
 	{
-		$filesystem = new ErasedataRound2ProbeFixture();
+		$filesystem = new ErasedataCleanupProbeFixture();
 		$job = $this->prepareJob($filesystem);
 		$this->assertTrue(is_array($job), 'usable parents prepare the exact cleanup job');
 		if(!is_array($job)) return;
@@ -161,7 +161,7 @@ class Round2FilesystemTest extends TestCase
 		$next = $this->dir.'/next-data';
 		mkdir($next, 0700);
 		file_put_contents($next.'/payload', 'next payload bytes');
-		$filesystem = new ErasedataRound2ProbeFixture($next);
+		$filesystem = new ErasedataCleanupProbeFixture($next);
 		$ack = rXMLRPCRequest::$responses['schedule']['callback'];
 		rXMLRPCRequest::$responses['schedule']['callback'] = function() use ($ack, $next) {
 			$ack();
@@ -189,6 +189,84 @@ class Round2FilesystemTest extends TestCase
 		$filesystem->refused = null;
 		erasedataDrainWorkerRun($dependencies);
 		$this->assertEquals(array($this->hash), rXMLRPCRequest::$erased, 'a repaired parent lets the next tick erase');
+	}
+
+	// ACC-OWNB-04: a download whose session copy rTorrent could not write
+	// when it was added names its files only through the daemon. It is
+	// claimed through that list instead of blocking every replacement
+	// cleanup, and a save of its copy is requested once, with its hash logged.
+	public function testDownloadWithoutSessionCopyIsClaimedThroughItsDaemonFileList()
+	{
+		$other = str_repeat('C', 40);
+		$dir = $this->dir.'/data/other';
+		mkdir($dir, 0700);
+		file_put_contents($dir.'/kept.bin', 'kept');
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		rXMLRPCRequest::$responses['d.get_directory'] = array('ok' => true,
+			'val' => array($dir, 'kept.bin', $dir.'/kept.bin', 'pad/0', ''));
+		rXMLRPCRequest::$responses['d.save_full_session'] = array('ok' => true, 'val' => array(0));
+		$snapshot = $this->ownerSnapshot();
+		$this->assertTrue(is_array($snapshot), 'an unrelated download without a session copy does not block');
+		$kept = realpath($dir.'/kept.bin');
+		$stat = stat($kept);
+		$this->assertTrue(isset($snapshot['paths']["p\0".$kept])
+			&& isset($snapshot['inodes']['i:'.$stat['dev'].':'.$stat['ino']]), 'its listed file is claimed');
+		$this->assertTrue(isset($snapshot['paths']["p\0".realpath($dir).'/pad/0']),
+			'a listed file that may be padding is claimed as well');
+		$this->assertEquals(array('d.save_full_session'), array_values(array_intersect(
+			rXMLRPCRequest::$requested, array('d.save_full_session'))), 'one save of its copy is requested');
+		$this->assertEquals(array('erasedata: cleanup owner '.$other.' session-copy-unreadable; its daemon file'
+			.' list is claimed instead; session save requested'), FileUtil::$log, 'the download is named');
+		$this->assertTrue(is_array($this->ownerSnapshot()), 'a later snapshot is not blocked either');
+		$this->assertEquals(1, count(array_keys(rXMLRPCRequest::$requested, 'd.save_full_session')),
+			'and asks for no second save in the same process');
+	}
+
+	// A readable copy whose files the daemon does not confirm (a name the
+	// parser escaped once made exactly this) is claimed the same way, with its
+	// own reason and without a save: the copy is there.
+	public function testDownloadWhoseDaemonPathsDoNotConfirmItsCopyIsClaimedWithoutASave()
+	{
+		$other = str_repeat('E', 40);
+		$dir = $this->dir.'/data/third';
+		mkdir($dir, 0700);
+		file_put_contents($dir.'/kept.bin', 'kept');
+		ErasedataCollectorTestState::$fleetSources[$other] = array('hash' => $other,
+			'info' => array('length' => 4, 'name' => 'kept.bin'));
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		// The exact plan's stored read and the claim read start with the same
+		// command; the claim's answer has no multi-file flag, so the plan is
+		// not confirmed while the claim is.
+		rXMLRPCRequest::$responses['d.get_directory'] = array('ok' => true, 'val' => array($dir, 'kept.bin', ''));
+		try
+		{
+			$snapshot = $this->ownerSnapshot();
+			$this->assertTrue(is_array($snapshot), 'an unconfirmed plan does not block the cleanup');
+			$kept = realpath($dir.'/kept.bin');
+			$this->assertTrue(is_array($snapshot) && isset($snapshot['paths']["p\0".$kept]), 'its listed file is claimed');
+			$this->assertEquals(array(), array_values(array_intersect(rXMLRPCRequest::$requested,
+				array('d.save_full_session'))), 'no session save is requested for a copy that is there');
+			$this->assertEquals(array('erasedata: cleanup owner '.$other.' daemon-paths-unconfirmed; its daemon file'
+				.' list is claimed instead'), FileUtil::$log, 'the download and its reason are named');
+		}
+		finally { unset(ErasedataCollectorTestState::$fleetSources[$other]); }
+	}
+
+	public function testDownloadWithoutSessionCopyOrDaemonFileListBlocksWithItsHashNamed()
+	{
+		$other = str_repeat('D', 40);
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		foreach(array('unanswered' => null, 'relative directory' => array('relative', 'f', ''),
+			'absolute file path' => array($this->dir, '/f', ''), 'odd answer' => array($this->dir, 'f')) as $case => $val)
+		{
+			FileUtil::$log = array();
+			if($val === null) unset(rXMLRPCRequest::$responses['d.get_directory']);
+			else rXMLRPCRequest::$responses['d.get_directory'] = array('ok' => true, 'val' => $val);
+			$this->assertEquals(false, $this->ownerSnapshot(), 'an unknown owner still refuses: '.$case);
+			$this->assertEquals(array('erasedata: cleanup owner '.$other.' refused: session-copy-unreadable and'
+				.' daemon file list unconfirmed; replacements with obsolete files wait for this download'),
+				FileUtil::$log, 'the refusal names the download: '.$case);
+		}
 	}
 
 	private function ownerSnapshot()
@@ -276,6 +354,9 @@ class Round2FilesystemTest extends TestCase
 			'meta type' => array('meta_download'=>'1'),
 			'meta absent' => array('meta_download'=>null),
 			'wrong name' => array('name'=>str_repeat('E', 40).'.meta'),
+			// rTorrent writes only the uppercase spelling (rTorrent::isMetadataStubName()).
+			'lowercase name' => array('name'=>str_repeat('f', 40).'.meta'),
+			'uppercase suffix' => array('name'=>str_repeat('F', 40).'.META'),
 			'wrong pieces' => array('pieces'=>str_repeat("\xee", 20)),
 			'incomplete info' => array('pieces'=>null));
 		foreach($changes as $reason=>$change)
@@ -298,12 +379,25 @@ class Round2FilesystemTest extends TestCase
 		$this->assertEquals(false, $result['snapshot'], 'an unavailable daemon attestation refuses');
 	}
 
+	// The info dictionary of the captured native session for F*40, as
+	// php/Torrent.php decodes it (bencoded integers become floats).
+	private function capturedEnvelope($hash)
+	{
+		$raw = base64_decode(trim(file_get_contents(
+			__DIR__.'/fixtures/native-unresolved-magnet-session.b64')), true);
+		$this->assertTrue(is_string($raw) && strpos($raw, 'd4:infod13:meta_downloadi1e4:name45:'
+			.$hash.'.meta6:pieces20:'.hex2bin($hash).'e') === 0,
+			'the in-process envelope is the captured info dictionary byte for byte');
+		return(array('meta_download' => 1.0, 'name' => $hash.'.meta', 'pieces' => hex2bin($hash)));
+	}
+
 	public function testMetadataOnlyMagnetDoesNotOwnPayloadButCorruptRealTorrentRefuses()
 	{
-		$stubHash = str_repeat('C', 40);
+		$stubHash = str_repeat('F', 40);
 		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true,
 			'val' => array($stubHash, '', '', ''));
-		ErasedataCollectorTestState::$fleetSources[$stubHash] = array('hash' => $stubHash, 'info' => null);
+		$envelope = $this->capturedEnvelope($stubHash);
+		ErasedataCollectorTestState::$fleetSources[$stubHash] = array('hash' => $stubHash, 'info' => $envelope);
 		rXMLRPCRequest::$responses['d.is_meta'] = array('ok' => true, 'val' => array(1, $stubHash));
 		$this->assertEquals(array('paths' => array(), 'inodes' => array(), 'bindings' => array()),
 			$this->ownerSnapshot(), 'an attested metadata-only magnet has no torrent payload ownership');
@@ -315,12 +409,17 @@ class Round2FilesystemTest extends TestCase
 		rXMLRPCRequest::$responses['d.is_meta']['val'] = array(1, $stubHash);
 		ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = array('name' => 'corrupt');
 		$this->assertEquals(false, $this->ownerSnapshot(), 'a malformed info dictionary is never skipped');
+		// The real loader never yields a missing info; such a source is not the
+		// captured envelope and cannot bypass its check.
 		ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = null;
+		$this->assertEquals(false, erasedataCleanupMetadataOnly($stubHash),
+			'a source without the captured envelope is not a metadata stub');
+		$this->assertEquals(false, $this->ownerSnapshot(), 'a missing info dictionary is never skipped');
+		ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = $envelope;
 		rXMLRPCRequest::$responses['d.is_meta']['val'] = array(1, str_repeat('D', 40));
 		$this->assertEquals(false, $this->ownerSnapshot(), 'a mismatched daemon identity is never skipped');
 		rXMLRPCRequest::$responses['d.is_meta']['val'] = array(1, $stubHash);
 		unset(ErasedataCollectorTestState::$fleetSources[$stubHash]);
 		$this->assertEquals(false, $this->ownerSnapshot(), 'an unreadable source is never mistaken for a stub');
-
 	}
 }

@@ -80,6 +80,8 @@ if(plugin.canChangeMenu() && (theWebUI.systemInfo.rTorrent.iVersion >= 0x805))
 			cmd.addParameter("string",this.ss[i]);
 			this.commands.push( cmd );
 		}
+		// The channel and the flag live in the session; save them with the change.
+		this.saveSessions();
 	}
 }
 

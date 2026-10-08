@@ -1,11 +1,5 @@
 <?php
-require_once(__DIR__.'/../../php/TestCase.php');
-function getCmd($command) { return $command; }
-class rTorrent {
-    public static function quoteCommandArg($value) {
-        return('"'.str_replace(array('\\','"'), array('\\\\','\\"'), $value).'"');
-    }
-}
+require_once(__DIR__.'/RetrackersTestStubs.php');
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once(__DIR__.'/../../../plugins/retrackers/update.php');
 class MetadataInsertGuardTest extends TestCase

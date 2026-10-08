@@ -40,7 +40,7 @@ class PendingQueueTest extends TestCase
 	{
 		$this->wipe();
 		mkdir($this->tree . '/plugins/erasedata', 0777, true);
-		mkdir($this->tree . '/php', 0777, true);
+		mkdir($this->tree . '/php/utility', 0777, true);
 		mkdir($this->tree . '/list', 0777, true);
 		$this->listPath = $this->tree . '/list';
 
@@ -65,9 +65,12 @@ class PendingQueueTest extends TestCase
 			'plugins/erasedata/pending.php' => 'plugins/erasedata/pending.php',
 			'plugins/erasedata/filesystem.php' => 'plugins/erasedata/filesystem.php',
 			'plugins/erasedata/manifest.php' => 'plugins/erasedata/manifest.php',
+			'plugins/erasedata/presence.php' => 'plugins/erasedata/presence.php',
 			'plugins/erasedata/removewithdata.php' => 'plugins/erasedata/removewithdata.php',
 			'plugins/erasedata/collector.php' => 'plugins/erasedata/collector.php',
 			'php/xmlrpc_path.php' => 'php/xmlrpc_path.php',
+			// presence.php decides absence with this core leaf.
+			'php/utility/hashfault.php' => 'php/utility/hashfault.php',
 		);
 		foreach ($copies as $relative => $name) {
 			$source = dirname(dirname(dirname(__DIR__))) . '/' . $relative;

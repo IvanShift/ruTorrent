@@ -47,21 +47,46 @@ function makeContent() {
 		},
 	});
 
+	// php/addtorrent.php answers in the frame with one noty(text, kind) call
+	// per item, written as literals. Run only lines that start such a call,
+	// against a collector, as plugins/mobile/init.js does. An answer without
+	// one -- the origin check's 403, the web server's 413 or 5xx page, the
+	// browser's cross-origin error page after a lost connection -- would end
+	// the upload with no message, so it is shown as a failure. The input is
+	// cleared once something was added and kept otherwise, to send again.
+	var addTorrentFinished = function(frame, input, button, isEmpty) {
+		var d = null;
+		try { d = frame.contentDocument || frame.contentWindow.document; } catch(e) {}
+		// The frame's own blank page loads when the frame is inserted.
+		if(d && (d.location.href == "about:blank"))
+			return;
+		var results = [];
+		var collect = function(text, kind) {
+			results.push({ text: String(text), kind: String(kind) });
+		};
+		var answer = (d && d.body) ? (d.body.textContent || d.body.innerText || "") : "";
+		String(answer).split("\n").forEach(function(line) {
+			line = line.trim();
+			if(line.indexOf("noty(") === 0)
+				try { (new Function("noty", "theUILang", line))(collect, theUILang); } catch(e) {}
+		});
+		if(!results.length)
+			results.push({ text: theUILang.addTorrentFailed, kind: "error" });
+		var added = false;
+		results.forEach(function(result) {
+			noty(result.text, result.kind);
+			added = added || (result.kind == "success");
+		});
+		if(added)
+			$(input).val("");
+		$(button).prop("disabled", isEmpty());
+	};
 	$(document.body).append($("<iframe name='uploadfrm'/>").css({visibility: "hidden"}).attr( { name: "uploadfrm" } ).width(0).height(0).on('load', function() {
-		$("#torrent_file").val("");
-		$("#add_button").prop("disabled",true);
-		var d = this.contentDocument;
-		if (d && (d.location.href != "about:blank")) {
-			try { var txt = d.body.textContent ? d.body.textContent : d.body.innerText; eval(txt); } catch(e) {}
-		}
+		addTorrentFinished(this, "#torrent_file", "#add_button",
+			() => !$$("torrent_file").files || ($$("torrent_file").files.length === 0));
 	}));
 	$(document.body).append($("<iframe name='uploadfrmurl'/>").css({visibility: "hidden"}).attr( { name: "uploadfrmurl" } ).width(0).height(0).on('load', function() {
-		$("#url").val("");
-		var d = this.contentDocument;
-		if (d && d.location.href != "about:blank")
-			try {
-				eval(d.body.textContent ? d.body.textContent : d.body.innerText);
-			} catch(e) {}
+		addTorrentFinished(this, "#url", "#add_url", () => $("#url").val().trim() === "");
 	}));
 
 	const paddContent = $("<div>").addClass("cont").append(
@@ -219,9 +244,13 @@ function makeContent() {
 		theWebUI.save();
 	});
 
-	var makeAddRequest = function(frm) {
+	var makeAddRequest = function(frm, fileCount) {
 		var s = theURLs.AddTorrentURL;
 		var req = []
+		// PHP drops the files of an upload beyond its max_file_uploads before
+		// addtorrent.php runs; the selected count lets the answer name them.
+		if(fileCount)
+			req.push('torrent_file_count='+fileCount);
 		if($("#torrents_start_stopped").prop("checked"))
 			req.push('torrents_start_stopped=1');
 		if($("#fast_resume").prop("checked"))
@@ -253,7 +282,7 @@ function makeContent() {
 	   		return false;
    		}
 		$("#add_button").prop("disabled", true);
-		return makeAddRequest(this);
+		return makeAddRequest(this, $$("torrent_file").files.length);
 	});
 	$("#addtorrenturl").on('submit', function() {
 	   	$("#add_url").prop("disabled", true);

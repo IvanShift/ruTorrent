@@ -120,7 +120,6 @@ class RetrackersUpdateTest extends TestCase
 		$functions = array(
 			'retrackersDecodeRestrictedRawResponse',
 			'retrackersRestrictedPlanDirectScalar',
-			'retrackersRestrictedPlanLedgerHas',
 			'retrackersRestrictedPlanDownloadRows',
 			'retrackersRestrictedPlanTrackerRows',
 			'retrackersRestrictedPlanGenericMap',
@@ -570,6 +569,7 @@ PHP
 		if (class_exists('rTorrent', false)) {
 			return;
 		}
+		require_once(__DIR__ . '/RetrackersCoreImport.php');
 		eval(<<<'PHP'
 class rTorrent
 {
@@ -580,9 +580,8 @@ class rTorrent
 		self::$quoteCalls++;
 		return('"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"');
 	}
-}
 PHP
-		);
+			. "\n" . retrackersTestCoreMethod('isMetadataStubName') . "\n}\n");
 	}
 
 	private function historicalSafetyActionFixture()
@@ -1387,18 +1386,6 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 		}
 		$failure = null;
 		return($this->daemonCap);
-	}
-
-	public function ledgerHas($key, &$failure = null)
-	{
-		if (substr($key, 0, 3) === 'lf:' && is_string($this->candidateCapability)) {
-			$this->capabilityReads['lf'] = retrackersTestReadCapability($this->candidateCapability);
-		}
-		if (substr($key, 0, 3) === 'rf:' && is_string($this->originalCapability)) {
-			$this->capabilityReads['rf'] = retrackersTestReadCapability($this->originalCapability);
-		}
-		$failure = null;
-		return(in_array($key, $this->ledgerKeys, true) ? '1' : '0');
 	}
 
 	public function preflightStage(RetrackersAnonymousStage $stage, $php, &$failure = null)
@@ -3810,7 +3797,7 @@ PHP;
 			'the measured mutating zero uses exact i4 on 0.9.8 and i8 on 0.16.21');
 		foreach (array('rt098-has-present', 'rt1621-has-present') as $capture) {
 			$decoded = retrackersDecodeRestrictedRawResponse($this->capturedRaw($capture),
-				retrackersRestrictedPlanLedgerHas());
+				retrackersRestrictedPlanDirectScalar('i8'));
 			$this->assertTrue($decoded['value'] === '1', $capture . ' accepts targeted explicit i8 one');
 		}
 		$oldFault = retrackersDecodeRestrictedRawResponse($this->capturedRaw('rt098-direct-fault'),
@@ -4693,11 +4680,6 @@ PHP;
 		$this->assertTrue(retrackersDecodeRestrictedRawResponse($leadingZero,
 			retrackersRestrictedPlanTrackerRows()) === false,
 			'a noncanonical leading-zero i8 tracker cell is rejected');
-		$ledgerTwo = $this->replaceRawBodyOnce($this->capturedRaw('rt1621-has-present'),
-			'<i8>1</i8>', '<i8>2</i8>');
-		$this->assertTrue(retrackersDecodeRestrictedRawResponse($ledgerTwo,
-			retrackersRestrictedPlanLedgerHas()) === false,
-			'a targeted ledger result accepts only exact explicit i8 zero or one');
 		$duplicateMap = $this->replaceRawBodyOnce($this->capturedRaw('rt1621-custom-map'), '<struct>',
 			'<struct><member><name>pkg5-empty</name><value><string></string></value></member>');
 		$this->assertTrue(retrackersDecodeRestrictedRawResponse($duplicateMap,
@@ -6468,6 +6450,38 @@ PHP;
 				. round($took, 3) . 's)');
 	}
 
+	public function testSuccessfulFenceWaitWritesNoRecoveryLine()
+	{
+		$fixture = $this->task5ObligationFixture();
+		if ($fixture === false || !($fixture['obligation'] instanceof RetrackersPostEraseObligation)) {
+			$this->assertTrue(false, 'the fence wait requires a complete immutable obligation');
+			$this->closeTask5Fixture($fixture);
+			return;
+		}
+		$tx = str_repeat('2', 32);
+		$this->recoveryTestAdapter();
+		$adapter = new class(array('wa:' . $tx), array()) extends RetrackersRecoveryTestAdapter {
+			public $loud = array();
+			public function recordRecoveryFailure($failure)
+			{
+				$this->loud[] = $failure;
+				parent::recordRecoveryFailure($failure);
+			}
+		};
+		$adapter->loadCallbackResults = array(false);
+		$adapter->loadPhaseReceiptSequence = array(false,
+			array('begin' => '1', 'fence' => '0'),
+			array('begin' => '1', 'fence' => '0'),
+			array('begin' => '1', 'fence' => '1'));
+		$failure = null;
+		$result = RetrackersRecoveryCoordinator::dispatchLoadObligation(
+			$tx, $fixture['obligation']->candidate(), $adapter, $failure, true);
+		$this->closeTask5Fixture($fixture);
+		$this->assertTrue($result === true && $failure === null && $adapter->loud === array() &&
+			$adapter->recoveryFailure() === 'load-fence-pending',
+			'a fence that lands records its wait quietly and the successful worker writes no recovery line');
+	}
+
 	public function testTask5LifecycleCoordinatorDoneWithActiveWorkersTimesOut()
 	{
 		$this->installRtorrentQuoteDouble();
@@ -7332,8 +7346,8 @@ PHP;
 		$failure = null;
 
 		$this->assertTrue(RetrackersRecoveryCoordinator::generateCleanTx(
-			$adapter, $failure) === false && $failure === 'receipt-ledger-corrupt',
-			'an unknown collision preflight never becomes an empty ledger');
+			$adapter, $failure) === false && $failure === 'receipt-ledger-attestation-unconfirmed',
+			'an unknown collision preflight never becomes an empty ledger, nor a corruption verdict');
 		$this->assertTrue($adapter->adoptCallbacks === array() && $adapter->mutations === array(),
 			'unknown ledger state creates neither a transaction lease nor another mutation');
 	}
@@ -12167,6 +12181,7 @@ PHP;
 			'testTheShippedTeardownIsFiveSecondsAndThePollAQuarterSecond',
 			'testTheTeardownDeadlineIsNotNarrowedToAnInt',
 			'testDelayedReceiptsArePolledAtTheDeclaredInterval',
+			'testSuccessfulFenceWaitWritesNoRecoveryLine',
 		);
 		$expectedPreTask = array(
 			'testAllThreeInsertVariantsShareTheMarkerAndAckHead',

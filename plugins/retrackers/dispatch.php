@@ -3,6 +3,7 @@
 if (!defined('RETRACKERS_DISPATCH_IMPORT_ONLY')) {
     require_once(__DIR__ . '/../../php/cli-only.php');
     rutorrent_require_cli(__FILE__);
+    // RetrackersProfileName::valid(), inline: REMOTE_USER precedes the profile load.
     if (!isset($argv) || count($argv)!==2 || !is_string($argv[1]) ||
         preg_match('/^[a-z0-9_-]*$/D',$argv[1])!==1) exit(1);
     $_SERVER['REMOTE_USER']=$argv[1];
@@ -20,17 +21,11 @@ class RetrackersQueueRpcAdapter extends RetrackersWorkerRpcAdapter
         return is_array($decoded) && isset($decoded['ok'],$decoded['value']) &&
             $decoded['ok']===true ? $decoded['value'] : false;
     }
-    public function queueRetryState($hash,&$failure=null) {
-        return $this->nativeOriginalScalar('d.custom',array($hash,'retrackers-retry'),$failure);
-    }
     public function queueCursor($userHash,&$failure=null) {
         return $this->nativeOriginalScalar('system.retrackers.queue_cursor',array('',$userHash),$failure);
     }
     public function setQueueCursor($userHash,$hash,&$failure=null) {
         return $this->nativeOriginalScalar('system.retrackers.queue_cursor.set',array('',$userHash,$hash),$failure);
-    }
-    public function queueClaim($hash,&$failure=null) {
-        return $this->nativeOriginalScalar('system.retrackers.original_claim',array('',$hash),$failure);
     }
     public function enqueueOriginal($hash,$id,$userHash,$state,&$failure=null) {
         return $this->nativeOriginalScalar('d.retrackers.enqueue_original',array($hash,$id,$userHash,$state),$failure);
@@ -71,11 +66,13 @@ final class RetrackersBoundedDispatcher
             ($claim['kind']==='original' && !hash_equals($row[1],$claim['local_id']))) return false;
         return $claim;
     }
-    public static function run($adapter,$user) {
-        $result=array('examined'=>0,'spawned'=>0,'active'=>0,'full'=>0,'held'=>0,'dequeued'=>0,'deferred'=>0,'terminal'=>0,'errors'=>array());
-        if (!is_string($user) || preg_match('/^[a-z0-9_-]*$/D',$user)!==1) {
+    // A pass reports only classified errors; production reads nothing else.
+    public static function run($adapter,$user,$now=null) {
+        $result=array('errors'=>array());
+        if (!RetrackersProfileName::valid($user)) {
             self::error($result,'','invalid-caller-input'); return $result;
         }
+        if ($now===null) $now=time();
         $userHash=hash('sha256',$user); $failure=null;
         $rows=$adapter->queueRows($failure);
         $cursor=$adapter->queueCursor($userHash,$failure);
@@ -92,10 +89,11 @@ final class RetrackersBoundedDispatcher
                 self::error($result,'','queue-row-malformed'); return $result;
             }
             if ($row[2]==='') continue;
-            if (preg_match('/^q1:([0-9a-f]{64}):([0-9a-f]{32})$/D',$row[2],$parts)!==1) {
+            $marker=RetrackersQueueMarker::parse($row[2]);
+            if ($marker===false) {
                 self::error($result,$row[0],'queue-marker-malformed'); continue;
             }
-            if (hash_equals($userHash,$parts[1])) $queued[$row[0]]=array($row,$parts[2]);
+            if (hash_equals($userHash,$marker['user_hash'])) $queued[$row[0]]=array($row,$marker['queue_id']);
         }
         ksort($queued,SORT_STRING);
         // A bounded pass resumes at the successor even after full admission.
@@ -105,26 +103,25 @@ final class RetrackersBoundedDispatcher
             if (strcmp($hash,$cursor)>0) $after[$hash]=$job; else $before[$hash]=$job;
         }
         $active=$adapter->queueAdmissionActive($userHash,$failure);
+        $visits=0;
         foreach($after+$before as $hash=>$job) {
-            if ($result['examined']>=self::MAX_VISITS) break;
-            $result['examined']++; list($row,$queueId)=$job;
+            if ($visits>=self::MAX_VISITS) break;
+            $visits++; list($row,$queueId)=$job;
             if ($adapter->setQueueCursor($userHash,$hash,$failure)!==$hash) {
                 self::error($result,$hash,'queue-cursor-unconfirmed'); break;
             }
             $wire=$adapter->queueClaim($hash,$failure);
-            if ($wire==='held') { $result['held']++; continue; }
+            if ($wire==='held') continue;
             if ($wire==='none' || (is_string($wire) && strncmp($wire,'original:',9)===0)) {
-                $retry=RetrackersQueueRetry::parse($adapter->queueRetryState($hash,$failure),$queueId);
-                if ($retry===false) {
-                    self::error($result,$hash,'queue-retry-state-invalid'); continue;
-                }
-                if ($retry['attempt']===RetrackersQueueRetry::MAX_ATTEMPTS) {
-                    $result['terminal']++; continue;
-                }
-                if ($retry['due']>time()) { $result['deferred']++; continue; }
+                $state=$adapter->queueRetryState($hash,$failure);
+                // No answer is not corruption: this job is simply revisited.
+                if ($state===false) { self::error($result,$hash,'queue-retry-state-unconfirmed'); continue; }
+                $retry=RetrackersQueueRetry::parse($state,$queueId);
+                if ($retry===false) { self::error($result,$hash,'queue-retry-state-invalid'); continue; }
+                if (RetrackersQueueRetry::isTerminal($retry) || $retry['due']>$now) continue;
             }
             if ($wire==='none') {
-                if (!$active) { $result['held']++; continue; }
+                if (!$active) continue;
                 // Restart may repair the original and clear recovery markers;
                 // durable Q still owes work. A marked unknown is never retried.
                 if ($row[3]!=='' || $row[4]!=='') {
@@ -138,55 +135,33 @@ final class RetrackersBoundedDispatcher
             $claim=self::claim($wire,$row,$userHash,$queueId);
             if ($claim===false) { self::error($result,$hash,'queue-claim-unconfirmed'); continue; }
             if ($claim['kind']==='finalized') {
-                $done=$adapter->dequeueOriginal($hash,$claim['tx'],$claim['incarnation'],$queueId,$failure);
-                if ($done==='dequeued') $result['dequeued']++;
-                else self::error($result,$hash,'queue-dequeue-unconfirmed');
+                if ($adapter->dequeueOriginal($hash,$claim['tx'],$claim['incarnation'],$queueId,$failure)!=='dequeued')
+                    self::error($result,$hash,'queue-dequeue-unconfirmed');
                 continue;
             }
-            if (!$active) { $result['held']++; continue; }
+            if (!$active) continue;
             $admission=$adapter->startQueueWorker($hash,$claim['tx'],$claim['incarnation'],$user,$failure);
-            if ($admission==='spawned' || $admission==='active' || $admission==='held') $result[$admission]++;
-            elseif ($admission==='full') { $result['full']++; break; }
-            else self::error($result,$hash,'queue-worker-unconfirmed');
+            if ($admission==='full') break;
+            if (!in_array($admission,array('spawned','active','held'),true))
+                self::error($result,$hash,'queue-worker-unconfirmed');
         }
         return $result;
     }
 }
 
-final class RetrackersQueueDiagnostics
-{
-    public $hash='retrackers-queue-diagnostics.dat';
-    public $last=array();
-    public static function emit($errors,$cache,$now) {
-        if ($errors===array()) return;
-        $state=new self(); $cache->get($state);
-        if (!($state instanceof self) || !is_array($state->last) || count($state->last)>16) $state=new self();
-        foreach($state->last as $reason=>$stamp)
-            if (!is_string($reason) || preg_match('/^[a-z-]{1,64}$/D',$reason)!==1 ||
-                !is_int($stamp) || $stamp<0) { $state=new self(); break; }
-        $groups=array();
-        foreach($errors as $error) {
-            $reason=$error['reason'];
-            if (!isset($groups[$reason])) $groups[$reason]=array('count'=>0,'hash'=>$error['hash']);
-            $groups[$reason]['count']++;
-        }
-        $state->hash='retrackers-queue-diagnostics.dat';
-        $messages=array();
-        foreach($groups as $reason=>$group) {
-            if (isset($state->last[$reason]) && $now>=$state->last[$reason] && $now-$state->last[$reason]<60) continue;
-            $state->last[$reason]=$now;
-            $messages[]='retrackers-queue: '.$reason.'; affected-in-pass='.$group['count'].
-                '; example-hash='.$group['hash'].'; inspect torrent session d.custom=retrackers-retry and '.
-                'd.custom=retrackers-queued; queued work remains pending';
-        }
-        if ($messages===array()) return;
-        // One cache entry bounds diagnostics across short-lived dispatchers.
-        // Keep classifications rather than hashes: the cursor rotates every pass.
-        asort($state->last,SORT_NUMERIC);
-        $state->last=array_slice($state->last,-16,null,true);
-        $cache->set($state);
-        foreach($messages as $message) FileUtil::toLog($message);
+// One dispatcher pass. A capability refusal and every per-job error share the
+// rate-limited diagnostics, so an SCGI outage cannot write a line per tick.
+function retrackersDispatchMain($adapter,$user,$cache,$now) {
+    $failure=null;
+    if (!$adapter->nativeQueueCapability($failure)) {
+        RetrackersQueueDiagnostics::emit(array(array('hash'=>'','reason'=>
+            RetrackersBoundedRead::noAnswer($failure)?'queue-transport-unavailable':
+            'native-queue-capability-unconfirmed')),$cache,$now);
+        return 1;
     }
+    $result=RetrackersBoundedDispatcher::run($adapter,$user,$now);
+    RetrackersQueueDiagnostics::emit($result['errors'],$cache,$now);
+    return $result['errors']===array()?0:1;
 }
 
 if (!defined('RETRACKERS_DISPATCH_IMPORT_ONLY')) {
@@ -194,12 +169,5 @@ if (!defined('RETRACKERS_DISPATCH_IMPORT_ONLY')) {
     require_once(__DIR__ . '/retrackers.php');
     require_once(__DIR__ . '/../../php/xmlrpc.php');
     require_once(__DIR__ . '/../../php/rtorrent.php');
-    $adapter=new RetrackersQueueRpcAdapter(); $failure=null;
-    if (!$adapter->nativeQueueCapability($failure)) {
-        FileUtil::toLog('retrackers-queue: native-queue-capability-unconfirmed; durable retrackers-queued jobs remain pending');
-        exit(1);
-    }
-    $result=RetrackersBoundedDispatcher::run($adapter,$argv[1]);
-    RetrackersQueueDiagnostics::emit($result['errors'],new rCache(),time());
-    exit($result['errors']===array()?0:1);
+    exit(retrackersDispatchMain(new RetrackersQueueRpcAdapter(),$argv[1],new rCache(),time()));
 }

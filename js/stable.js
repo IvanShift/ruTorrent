@@ -974,8 +974,11 @@ dxSTable.prototype.createRow = function(cols, sId, icon, attr) {
 					.css(this.progressStyle(celldata)),
 			);
 		} else if (isLabel) {
+			// The text is a torrent name: escape it before the trailing
+			// `label` the normalizer appended is marked up as code, or a name
+			// carrying markup would run in the page.
 			td.append(
-				$("<div>").html((celldata || " ").replace(/`(.*?)`$/, '<code>$1</code>')),
+				$("<div>").html(escapeHTML(celldata || " ").replace(/`(.*?)`$/, '<code>$1</code>')),
 			);
 		} else {
 			td.append(

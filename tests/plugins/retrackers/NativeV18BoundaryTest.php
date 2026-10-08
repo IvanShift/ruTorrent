@@ -6,15 +6,8 @@ $retrackersV18TestProfile = sys_get_temp_dir() . '/rutorrent-v18-red-' . getmypi
 @rmdir($retrackersV18TestProfile);
 mkdir($retrackersV18TestProfile, 0700);
 $_ENV['RU_PROFILE_PATH'] = $retrackersV18TestProfile;
-if (!class_exists('rTorrent', false)) {
-	class rTorrent
-	{
-		public static function quoteCommandArg($value)
-		{
-			return('"' . addcslashes((string)$value, "\\\"") . '"');
-		}
-	}
-}
+require_once(__DIR__ . '/RetrackersCoreImport.php');
+retrackersTestRtorrentDouble();
 
 define('RETRACKERS_TEARDOWN_TIMEOUT', 0.2);
 define('RETRACKERS_IMPORT_ONLY', true);
@@ -43,6 +36,9 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 	public $currentIncarnation = null;
 	public $retireCalls = 0;
 	public $clearWhAfterFirstRetire = false;
+	public $captureRefused = false;
+	public $deferReasons = array();
+	public $deferOutcome = 'deferred';
 
 	protected function send($payload, $plan, &$failure = null, $historical = false)
 	{
@@ -57,7 +53,7 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 					'd.retrackers.capture_erase', 'd.retrackers.apply',
 					'd.retrackers.commit', 'd.retrackers.release_committed',
 					'system.retrackers.receipt', 'system.retrackers.prepared',
-					'load.normal', 'd.retrackers.preflight_stage', 'd.retrackers.cancel_original'));
+					'load.normal', 'd.retrackers.preflight_stage', 'd.retrackers.defer_original'));
 			}
 			return(array('ok' => true, 'family' => 2, 'value' => $methods));
 		}
@@ -109,6 +105,11 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 		if (strpos($payload, '<methodName>d.retrackers.capture_erase</methodName>') !== false) {
 			$this->nativeCaptureCalls++;
 			$this->events[] = 'native-capture';
+			if ($this->captureRefused) {
+				// Native refused before any destructive step and said so.
+				$failure = null;
+				return(array('ok' => true, 'family' => 2, 'value' => '0'));
+			}
 			throw new RuntimeException('test cut: native destructive capture reached');
 		}
 		$failure = 'unexpected-native-rpc';
@@ -179,10 +180,12 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 		return($this->preflightStage($stage, null, $failure));
 	}
 
-	public function nativeCancelUncaptured($hash, $tx, $localId, $handoff,
-		$incarnation = null, &$failure = null)
+	public function nativeDeferUncaptured($hash, $tx, $localId, $handoff, $incarnation, $reason,
+		&$failure = null, &$outcome = null)
 	{
 		$failure = null;
+		$outcome = $this->deferOutcome;
+		$this->deferReasons[] = $reason;
 		$this->events[] = 'native-cancel-pending';
 		return(true);
 	}
@@ -206,7 +209,7 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 {
 	private function runWithPreparedCandidate($candidate, $loseFinishReply = false,
 		$wrongFinalizedReceipt = false, $ledgerKeys = array(),
-		$clearWhAfterFirstRetire = false, $sameHashMethodsPresent = true)
+		$clearWhAfterFirstRetire = false, $sameHashMethodsPresent = true, $configure = null)
 	{
 		$hash = str_repeat('A', 40);
 		$localId = str_repeat('B', 40);
@@ -244,6 +247,7 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		$adapter->wrongFinalizedReceipt = $wrongFinalizedReceipt;
 		$adapter->clearWhAfterFirstRetire = $clearWhAfterFirstRetire;
 		$adapter->sameHashMethodsPresent = $sameHashMethodsPresent;
+		if ($configure !== null) $configure($adapter);
 		$outcome = null;
 		try {
 			$outcome = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff,
@@ -346,6 +350,23 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 			$adapter->oldCommitCalls === 0 && $adapter->genericReleaseCalls === 0 &&
 			$adapter->genericCleanupCalls === 0 && $adapter->lastFailure === null,
 			'same-hash worker must reach native capture before legacy erase or cleanup');
+	}
+
+	public function testRefusedCaptureDefersWithItsOwnCategoryAndNamesExhaustion()
+	{
+		$hash = str_repeat('A', 40);
+		$candidate = array('ok' => true, 'changed' => true, 'candidate' => 'candidate',
+			'original' => 'original', 'candidate_scan' => array('info_hash' => $hash),
+			'projection' => array('ok' => true, 'changed' => true));
+		foreach (array('deferred' => 'native-capture-retry-pending', 'terminal' => 'queue-retry-exhausted') as $outcome => $logged) {
+			list($adapter) = $this->runWithPreparedCandidate($candidate, false, false, array(), false, true,
+				function ($adapter) use ($outcome) { $adapter->captureRefused = true; $adapter->deferOutcome = $outcome; });
+			$this->assertTrue($adapter->nativeCaptureCalls === 1 &&
+				$adapter->deferReasons === array('native-capture-retry-pending') &&
+				array_slice($adapter->events, -2) === array('native-capture', 'native-cancel-pending') &&
+				$adapter->lastFailure === $logged && $adapter->oldCommitCalls === 0,
+				'a refused capture records its own retry category in one defer CAS (' . $outcome . ')');
+		}
 	}
 
 	public function testSameHashWorkerRequiresExactNativeMethodsBeforeCapture()

@@ -1,28 +1,16 @@
 <?php
-require_once( '../../php/xmlrpc.php' );
+require_once( '../../php/rtorrent.php' );
 
 if(isset($_REQUEST['result']))
 	CachedEcho::send('noty(theUILang.cantAccessData,"error");',"text/html");
 
 if(isset($_REQUEST['hash']) && isset($_REQUEST['no']))
 {
-	$req = new rXMLRPCRequest(
-		new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no']))) );
-	if($req->success())
-	{
-		$filename = $req->val[0];
-		if($filename=='')
-		{
-			$req = new rXMLRPCRequest( array(
-				new rXMLRPCCommand( "d.open", $_REQUEST['hash'] ),
-				new rXMLRPCCommand( "f.get_frozen_path", array($_REQUEST['hash'],intval($_REQUEST['no'])) ),
-				new rXMLRPCCommand( "d.close", $_REQUEST['hash'] ) ) );
-			if($req->success())
-				$filename = $req->val[1];
-		}
-		if(SendFile::send($filename))
-			exit;
-	}
+	// The shared reader opens a closed download only to read the path and
+	// returns it in the daemon's own bytes (AUD-ESC-06).
+	$filename = rTorrent::getFilePath($_REQUEST['hash'], $_REQUEST['no']);
+	if(($filename !== false) && SendFile::send($filename))
+		exit;
 }
 
 if(isset($_REQUEST['readable']))

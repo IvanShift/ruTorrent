@@ -5,9 +5,11 @@ on:
     branches: [ master ]
   pull_request:
 
+# Runners are pinned: these jobs were verified on Ubuntu 24.04, and
+# ubuntu-latest moves to 26.04 from 2026-10-19. Move the pin deliberately.
 jobs:
   tooling:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Native helper setup contract tests
@@ -22,7 +24,7 @@ jobs:
           bash tests/tools/matrix-test.sh
 
   php:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Complete all selected runtimes after one fails, preserving the
       # independent result needed to reproduce and diagnose a PHP-only failure.
@@ -74,7 +76,7 @@ jobs:
           esac
 
   jest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -93,7 +95,7 @@ jobs:
     name: rutorrent-image-tests-v1
     needs: [tooling, php, jest]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TOOLING_RESULT: ${{ needs.tooling.result }}
       PHP_RESULT: ${{ needs.php.result }}

@@ -18,11 +18,18 @@ class rAutoTools {
         return true;
     }
 }
+// The payload trust rule the transaction shares with datadir and Move.
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
 eval(loadClassDefinition(dirname(__DIR__, 3) . '/php/Torrent.php', 'Torrent'));
 function rtMkDir($path, $mode = 0777) { return is_dir($path) || @mkdir($path, $mode, true) || is_dir($path); }
 $source = dirname(__DIR__, 3) . '/plugins/autotools/util_rt.php';
 eval(loadClassDefinition($source, 'AutoToolsFileTransaction'));
 eval(loadFunctionDefinition($source, 'rtOpFiles'));
+// The wait for a session save is a courtesy to the daemon's save schedule.
+define('AUTOTOOLS_SESSION_SAVE_WAIT', 0.5);
+if (strpos(file_get_contents($source), 'function rtAwaitSessionSave(') !== false)
+    eval(loadFunctionDefinition($source, 'rtAwaitSessionSave'));
 class RaceNonMove extends AutoToolsFileTransaction {
     public static $dest;
     protected static function checkpoint($name) {
@@ -885,8 +892,12 @@ $suite->test('repeated queued hook keeps one receipt for its generation', functi
             'Copy', false, $first), 'first publishes');
         strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/src2', $root . '/dst/item',
             'HardLink', false, $second), 'second queues');
+        // A queued receipt is published by recovery: nothing for the hook to
+        // name on the download as a refusal.
+        strictAssertSame(null, AutoToolsFileTransaction::lastRefusal(), 'a queued hook is no refusal');
         strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/src2', $root . '/dst/item',
             'HardLink', false, $second), 'repeated queued hook still waits');
+        strictAssertSame(null, AutoToolsFileTransaction::lastRefusal(), 'nor is its repetition');
         strictAssertSame(2, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'one receipt per generation, not a duplicate chain node');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'),
@@ -1141,5 +1152,110 @@ $suite->test('NonMove recognises x-dest already captured by the normal hook', fu
         strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'),
             'receipt cleaned');
     } finally { rXMLRPCRequest::reset(); txRemove($root); }
+});
+// rTorrent 0.16 publishes the .torrent.rtorrent sidecar from its session thread
+// after d.save_full_session has answered. A child process stands for that
+// thread: it publishes the sidecar $delay seconds later, by rename.
+function txPublishSidecarLater($context, $xdest, $delay) {
+    $torrent = Torrent::fromRawBytes('de');
+    $torrent->setMeta('custom', array(
+        'x-autotools-nonmove-job' => $context['token'],
+        'x-autotools-nonmove-source' => $context['sourceBase'],
+        'x-autotools-nonmove-target' => $context['destination'],
+        'x-dest' => $xdest,
+    ));
+    $path = rTorrentSettings::get()->session . '/' . $context['hash'] . '.torrent.rtorrent';
+    $environment = array_merge($_ENV, array('SIDECAR_PATH' => $path,
+        'SIDECAR_BYTES' => base64_encode((string) $torrent), 'SIDECAR_DELAY' => (string) $delay));
+    $process = proc_open(array(PHP_BINARY, '-r', 'usleep((int) (getenv("SIDECAR_DELAY") * 1000000));'
+        . ' $path = getenv("SIDECAR_PATH"); file_put_contents($path . ".tmp", base64_decode(getenv("SIDECAR_BYTES")));'
+        . ' rename($path . ".tmp", $path);'),
+        array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
+            2 => array('file', '/dev/null', 'w')), $pipes, null, $environment);
+    if (!is_resource($process)) throw new RuntimeException('Cannot start the sidecar publisher');
+    return $process;
+}
+// L4-N5: the x-dest confirmation waits for that publication within a bound
+// instead of holding the receipt for another 60 s recovery cycle.
+$suite->test('NonMove confirms an x-dest sidecar the daemon publishes after the save answers', function () {
+    $root = txFixture();
+    $publisher = null;
+    try {
+        $context = txCallerContext($root);
+        strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item',
+            'Copy', false, $context), 'physical Copy');
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array('0', '0'));
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_SET'));
+        rXMLRPCRequest::queue('d.save_full_session', true, false, function () use ($context, &$publisher) {
+            $publisher = txPublishSidecarLater($context, $context['destination'], 0.2);
+            return array('0');
+        });
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_ALREADY'));
+        FileUtil::$messages = array();
+        strictAssertSame(true, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'),
+            'the receipt is confirmed in this recovery: ' . json_encode(FileUtil::$messages));
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.save_full_session')), 'one save is asked for');
+        strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'), 'receipt retired');
+        strictAssertSame(array(), FileUtil::$messages, 'nothing is held');
+    } finally {
+        if (is_resource($publisher)) proc_close($publisher);
+        rXMLRPCRequest::reset();
+        txRemove($root);
+    }
+});
+$suite->test('NonMove still holds an x-dest sidecar that never appears, after the bounded wait', function () {
+    $root = txFixture();
+    try {
+        $context = txCallerContext($root);
+        strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item',
+            'Copy', false, $context), 'physical Copy');
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array('0', '0'));
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_SET'));
+        rXMLRPCRequest::queue('d.save_full_session', true, false, array('0'));
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_ALREADY'));
+        FileUtil::$messages = array();
+        $started = microtime(true);
+        strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'),
+            'an unconfirmed x-dest is held');
+        $elapsed = microtime(true) - $started;
+        strictAssertTrue($elapsed >= AUTOTOOLS_SESSION_SAVE_WAIT && $elapsed < 5,
+            'the hold comes after the bounded wait: ' . round($elapsed, 2));
+        strictAssertSame(1, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')), 'receipt retained');
+        strictAssertSame(1, count(array_filter(FileUtil::$messages, function ($line) {
+            return strpos($line, 'held: x-dest session sidecar not persisted') !== false;
+        })), 'the hold is visible once: ' . json_encode(FileUtil::$messages));
+    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+});
+// R4-FS-01: the synchronous finished hook runs inside rTorrent's main thread,
+// and the other owners of the journal lock wait for the daemon while they
+// hold it. A job therefore never waits for the lock: it answers null at once
+// and its caller defers the hook. The holder here gives the lock up after 2 s
+// by itself, so a job that does wait still ends.
+$suite->test('a job whose journal lock another owner holds answers null at once', function () {
+    $root = txFixture();
+    $holder = null;
+    try {
+        mkdir($root . '/session/.autotools-file-jobs', 0700);
+        $holder = proc_open(array(PHP_BINARY, '-r', '$h = fopen($argv[1], "c"); flock($h, LOCK_EX);'
+            . ' echo "held\n"; fflush(STDOUT); usleep(2000000);', $root . '/session/.autotools-file-jobs/.lock'),
+            array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('file', '/dev/null', 'w')),
+            $pipes);
+        strictAssertSame('held', trim(fgets($pipes[1])), 'the other owner holds the journal');
+        FileUtil::$messages = array();
+        $started = microtime(true);
+        $result = rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item', 'Copy', false, txCallerContext($root));
+        $elapsed = microtime(true) - $started;
+        strictAssertTrue($elapsed < 1, 'the job does not wait for the lock: ' . round($elapsed, 2));
+        strictAssertSame(null, $result, 'a busy journal is not a refusal');
+        strictAssertSame(false, @lstat($root . '/dst/item/a/f'), 'nothing is published');
+        strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'), 'nothing is journaled');
+        strictAssertSame(array(), FileUtil::$messages, 'the caller, not the job, reports the deferral');
+    } finally {
+        if (is_resource($holder)) { fclose($pipes[1]); proc_close($holder); }
+        rXMLRPCRequest::reset();
+        txRemove($root);
+    }
 });
 exit($suite->run());

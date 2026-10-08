@@ -73,6 +73,3 @@ class NativeHelpers
             array('-o', $output, dirname(__DIR__).'/'.$manifest['helpers'][$name]));
     }
 }
-
-if (!defined('RUTORRENT_NATIVE_RENAME_HELPER'))
-    define('RUTORRENT_NATIVE_RENAME_HELPER', NativeHelpers::optionalPath('rutorrent-erasedata-rename-noreplace'));

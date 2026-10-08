@@ -12,20 +12,113 @@ class FakeRtorrentDirectStringReply
 	}
 }
 
+/**
+ * One XMLRPC response body sent byte for byte, for parser tests that need an
+ * exact spelling: a nested system.multicall fault, an entity the daemons do
+ * not write themselves, or a <base64> value.
+ */
+class FakeRtorrentRawReply
+{
+	public $body;
+
+	public function __construct($body)
+	{
+		$this->body = $body;
+	}
+}
+
+/** One XMLRPC fault reply with a chosen code and text, such as rTorrent's missing-hash answer. */
+class FakeRtorrentFault
+{
+	public $code;
+	public $message;
+
+	public function __construct($code, $message)
+	{
+		$this->code = $code;
+		$this->message = $message;
+	}
+}
+
 /** Serializable replies for addtorrent's pre-load snapshot and deferred load proof. */
 class FakeRtorrentAddTorrentReplies
 {
+	/**
+	 * rTorrentSettings reads seven values in one multicall at startup
+	 * (php/settings.php): directory, session, library version, name, port
+	 * range, bind and local address. Each is answered under every spelling
+	 * the alias tables give it; one value for all seven left six undefined.
+	 */
+	const STARTUP = array(
+		'get_directory' => '/downloads', 'directory.default' => '/downloads',
+		'get_session' => '', 'session.path' => '',
+		'system.library_version' => '0.16.24',
+		'get_name' => 'fake-rtorrent', 'session.name' => 'fake-rtorrent',
+		'get_port_range' => '6881-6881', 'network.port_range' => '6881-6881',
+		'network.listen.port.range' => '6881-6881',
+		'get_bind' => '0.0.0.0', 'network.bind_address' => '0.0.0.0',
+		'get_ip' => '0.0.0.0', 'network.local_address' => '0.0.0.0',
+	);
+
 	private $loaded;
 	private $proofs;
 	private $snapshotFails;
 	private $loadIndex = -1;
 	private $proofKey = null;
+	/** Hash => d.hash reads still answered "missing" before the torrent shows. */
+	private $present = array();
+	private $unknown;
+	private $dropMagnets;
+	private $stubAfter;
 
-	public function __construct($loaded, $proofs, $snapshotFails)
+	/**
+	 * $daemon describes what d.hash sees, beyond the download_list snapshot:
+	 *  - 'absent':      snapshot hashes that have left the session since;
+	 *  - 'unknown':     hashes whose d.hash answers an unclassified fault;
+	 *  - 'dropMagnets': magnet hashes rTorrent drops without a stub;
+	 *  - 'stubAfter':   d.hash reads that miss a magnet's stub before it shows.
+	 * A .torrent load whose proof is confirmed is present at once.
+	 */
+	public function __construct($loaded, $proofs, $snapshotFails, $daemon = array())
 	{
 		$this->loaded = $loaded;
 		$this->proofs = $proofs;
 		$this->snapshotFails = $snapshotFails;
+		foreach($loaded as $hash)
+			if(!in_array($hash, $daemon['absent'] ?? array(), true))
+				$this->present[strtoupper($hash)] = 0;
+		$this->unknown = $daemon['unknown'] ?? array();
+		$this->dropMagnets = $daemon['dropMagnets'] ?? array();
+		$this->stubAfter = $daemon['stubAfter'] ?? 0;
+	}
+
+	/** Note what a load adds to the session, as rTorrent would. */
+	private function load($request)
+	{
+		if(preg_match('`<base64>([^<]*)</base64>`', $request, $match))
+		{
+			// The test torrents end with their info dictionary.
+			$raw = (string)base64_decode($match[1]);
+			$at = strpos($raw, '4:info');
+			if(($at !== false) && !empty($this->proofs[$this->loadIndex]))
+				$this->present[strtoupper(sha1(substr($raw, $at + 6, -1)))] = 0;
+		}
+		elseif(preg_match('`xt=urn:btih:([0-9A-Fa-f]{40})`', $request, $match))
+		{
+			$hash = strtoupper($match[1]);
+			if(!in_array($hash, $this->dropMagnets, true) && !isset($this->present[$hash]))
+				$this->present[$hash] = $this->stubAfter;
+		}
+	}
+
+	/** d.hash: the hash while the torrent is there, rTorrent's missing-hash fault otherwise. */
+	private function presence($hash)
+	{
+		if(in_array($hash, $this->unknown, true))
+			return false;
+		if(isset($this->present[$hash]) && ($this->present[$hash]-- <= 0))
+			return array($hash);
+		return new FakeRtorrentFault(-500, 'invalid parameters: info-hash not found');
 	}
 
 	public function __invoke($request, $methods)
@@ -34,6 +127,10 @@ class FakeRtorrentAddTorrentReplies
 		if(in_array('system.api_version', $methods, true)) return array(11);
 		if(in_array('system.sockets.available_alloc', $methods, true))
 			return array(4096, 128, 128, 1024, 2048, 128);
+		if(in_array('system.library_version', $methods, true))
+			return array_map(function($method) {
+				return isset(self::STARTUP[$method]) ? self::STARTUP[$method] : 0;
+			}, $methods);
 		if(in_array('download_list', $methods, true))
 			return $this->snapshotFails ? false : $this->loaded;
 		foreach($methods as $method)
@@ -42,12 +139,60 @@ class FakeRtorrentAddTorrentReplies
 				$this->loadIndex++;
 				$this->proofKey = preg_match('/ru-load-proof-[a-f0-9]{32}/', $request, $match)
 					? $match[0] : null;
+				$this->load($request);
 				return array(0);
 			}
+		if(in_array('d.hash', $methods, true)
+			&& preg_match('`<string>([0-9A-Fa-f]{40})</string>`', $request, $match))
+			return $this->presence(strtoupper($match[1]));
 		if(in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true))
 			return array($this->proofKey !== null && strpos($request, $this->proofKey) !== false
 				&& !empty($this->proofs[$this->loadIndex]) ? '1' : 'other');
 		return array(0);
+	}
+}
+
+/**
+ * Serializable replies chosen by method name: each member of a request answers
+ * the values listed for its method, in order, and an unlisted method answers 0.
+ * A FakeRtorrentPerCall list instead answers its next entry each time.
+ */
+class FakeRtorrentMethodReplies
+{
+	private $values;
+
+	public function __construct($values)
+	{
+		$this->values = $values;
+	}
+
+	public function __invoke($request, $methods)
+	{
+		$reply = array();
+		foreach($methods as $method)
+		{
+			$values = array_key_exists($method, $this->values) ? $this->values[$method] : array(0);
+			if($values instanceof FakeRtorrentPerCall)
+				$values = $values->next();
+			$reply = array_merge($reply, $values);
+		}
+		return $reply;
+	}
+}
+
+/** The values one method answers on its first call, its second, and so on. */
+class FakeRtorrentPerCall
+{
+	private $calls;
+
+	public function __construct($calls)
+	{
+		$this->calls = $calls;
+	}
+
+	public function next()
+	{
+		return count($this->calls) > 1 ? array_shift($this->calls) : $this->calls[0];
 	}
 }
 
@@ -344,7 +489,14 @@ class FakeRtorrentDaemon
 
 	private function reply($values)
 	{
-		if($values === false) {
+		if($values instanceof FakeRtorrentRawReply) {
+			$body = $values->body;
+		} elseif($values instanceof FakeRtorrentFault) {
+			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
+				. '<member><name>faultCode</name><value><i4>' . (int)$values->code . '</i4></value></member>'
+				. '<member><name>faultString</name><value><string>' . self::escapeText((string)$values->message)
+				. '</string></value></member></struct></value></fault></methodResponse>';
+		} elseif($values === false) {
 			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
 				. '<member><name>faultCode</name><value><i4>-501</i4></value></member>'
 				. '<member><name>faultString</name><value><string>fixture failure</string></value></member>'

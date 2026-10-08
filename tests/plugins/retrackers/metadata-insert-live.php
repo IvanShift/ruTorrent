@@ -92,7 +92,8 @@ function nativeDrain($hash) {
     $failure=null;
     $adapter=new RetrackersLifecycleRpcAdapter(); $adapter->setFamily(2);
     check($adapter->armNativeQueueDispatcher('alice',$failure),'fixed dispatcher cadence refused: '.$failure);
-    check(in_array(rpc('system.retrackers.dispatcher_start','','alice'),array('spawned','active'),true),
+    // An admitted profile answers idle when the cadence already started this job.
+    check(in_array(rpc('system.retrackers.dispatcher_start','','alice'),array('spawned','active','idle'),true),
         'fixed dispatcher was not admitted');
     waitFor(function() use ($hash) {
         try { return rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0; }

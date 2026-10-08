@@ -12,7 +12,12 @@ $garbageCheckInterval = (function () {
 $session = rTorrentSettings::get()->session;
 if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
 {
-	$jResult .= "plugin.disable(); noty('".$plugin["name"].": '+theUILang.webBadSessionError+' (".$session.").','error');";
+	// session.path in the daemon's own bytes, inside a script: an apostrophe
+	// would end a quoted literal and a backslash start an escape -- an
+	// invalid one stops the whole getplugins script -- so it goes in as a
+	// JSON literal.
+	$jResult .= "plugin.disable(); noty(".JSON::jsValue($plugin["name"].": ")
+		."+theUILang.webBadSessionError+".JSON::jsValue(" (".$session.").").",'error');";
 }
 else
 {

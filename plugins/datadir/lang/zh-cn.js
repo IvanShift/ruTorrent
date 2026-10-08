@@ -11,5 +11,6 @@
  theUILang.datadirDlgCaption	= "Torrent 数据目录";
  theUILang.datadirDirNotFound	= "DataDir 插件: 无效的目录";
  theUILang.datadirSetDirFail	= "DataDir 插件: 操作失败";
+ theUILang.datadirStoppedAfterCheck	= "DataDir plugin: the directory was changed, but rTorrent stopped the download because its hash check did not find the complete data there";
 
 thePlugins.get("datadir").langLoaded();

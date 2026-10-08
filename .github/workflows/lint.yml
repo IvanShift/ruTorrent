@@ -5,10 +5,12 @@ on:
     branches: [ master ]
   pull_request:
 
+# Runners are pinned: these jobs were verified on Ubuntu 24.04, and
+# ubuntu-latest moves to 26.04 from 2026-10-19. Move the pin deliberately.
 jobs:
   php-syntax:
     # Blocking: application PHP must parse on the support floor and image runtime.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +31,7 @@ jobs:
   editorconfig:
     # Advisory for now: the existing tree has a backlog of whitespace issues.
     # The plan is to clear it in small per-file PRs, then make this blocking.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -52,7 +54,7 @@ jobs:
 
   eslint:
     # Advisory for now (same plan as editorconfig).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -68,7 +70,7 @@ jobs:
 
   phpstan:
     # Blocking: the tree is at zero level-0 findings and stays there.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
@@ -84,7 +86,7 @@ jobs:
     name: rutorrent-image-lint-v1
     needs: [php-syntax, phpstan]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SYNTAX_RESULT: ${{ needs.php-syntax.result }}
       PHPSTAN_RESULT: ${{ needs.phpstan.result }}

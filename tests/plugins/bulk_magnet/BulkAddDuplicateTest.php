@@ -14,6 +14,10 @@ require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
  * action.php is a top level script that reads php://input, so it is driven
  * where it lives, in a process of its own, with FakeRtorrentDaemon on the
  * other end of its SCGI socket answering each load as rtorrent does.
+ *
+ * rTorrent also drops some malformed magnets without making a stub, and the
+ * load answers 0 all the same. A magnet counts as an addition only once d.hash
+ * shows its stub (rTorrent::magnetShown(), R4-NF-1); otherwise it is pending.
  */
 class BulkAddDuplicateTest extends TestCase
 {
@@ -27,6 +31,24 @@ class BulkAddDuplicateTest extends TestCase
 	{
 		$this->base = sys_get_temp_dir() . '/rutorrent-bulk-duplicate-' . getmypid();
 		@mkdir($this->base . '/profile/settings', 0700, true);
+	}
+
+	/** The application log of the driven script, private to this test. */
+	private function log()
+	{
+		return $this->base . '/app.log';
+	}
+
+	/** How many d.hash reads asked about this hash. */
+	private function presenceReads($hash)
+	{
+		$reads = 0;
+		foreach ($this->daemon->bodies() as $body) {
+			if (strpos($body, 'd.hash') !== false && strpos($body, $hash) !== false) {
+				$reads++;
+			}
+		}
+		return $reads;
 	}
 
 	public function tearDown()
@@ -44,17 +66,17 @@ class BulkAddDuplicateTest extends TestCase
 	}
 
 	/**
-	 * Runs action.php against a daemon that has LOADED and answers every
-	 * load with 0, and returns what the script printed.
+	 * Runs action.php against a daemon that has LOADED, answers every load
+	 * with 0 and d.hash as rTorrent does, and returns what the script printed.
+	 * $daemon is FakeRtorrentAddTorrentReplies' description of what d.hash
+	 * sees, such as magnets rTorrent drops without a stub.
 	 */
-	private function bulkAdd($items, $snapshotFails = false, $rawPost = null)
+	private function bulkAdd($items, $snapshotFails = false, $rawPost = null, $daemon = array())
 	{
 		$root = realpath(__DIR__ . '/../../..');
-		$replies = array($snapshotFails ? false : array(self::LOADED));
-		foreach ($items as $item) {
-			$replies[] = array(0);
-		}
-		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
+		$this->daemon = new FakeRtorrentDaemon(
+			new FakeRtorrentAddTorrentReplies(array(self::LOADED), array(), $snapshotFails, $daemon),
+			$this->base . '/calls.log');
 
 		$post = '';
 		foreach ($items as $item) {
@@ -74,6 +96,7 @@ class BulkAddDuplicateTest extends TestCase
 			. '$scgi_port = ' . $this->daemon->port() . ";\n"
 			. '$rpcTimeOut = 10;' . "\n"
 			. '$rpcLogCalls = false;' . "\n"
+			. '$log_file = ' . var_export($this->log(), true) . ";\n"
 			. '$HTTP_RAW_POST_DATA = ' . var_export($post, true) . ";\n"
 			. 'chdir(' . var_export($root . '/plugins/bulk_magnet', true) . ");\n"
 			. 'require(' . var_export($root . '/plugins/bulk_magnet/action.php', true) . ");\n");
@@ -103,10 +126,15 @@ class BulkAddDuplicateTest extends TestCase
 		$this->assertEquals(array('error' => 0, 'success' => 1, 'pending' => 0, 'duplicate' => 1),
 			$result, 'raw equals, empty and missing fields keep the two valid entries');
 		$bodies = $this->daemon->bodies();
-		$this->assertEquals(3, count($bodies), 'the snapshot precedes exactly two ordered loads');
-		$this->assertTrue(isset($bodies[1]) && strpos($bodies[1], $loaded) !== false,
+		$this->assertTrue(isset($bodies[0]) && strpos($bodies[0], 'download_list') !== false,
+			'the snapshot comes first');
+		$loads = array_values(array_filter($bodies, function ($body) {
+			return strpos($body, 'magnet:') !== false;
+		}));
+		$this->assertEquals(2, count($loads), 'exactly two ordered loads follow the snapshot');
+		$this->assertTrue(isset($loads[0]) && strpos($loads[0], $loaded) !== false,
 			'first raw-equals magnet reaches the daemon whole');
-		$this->assertTrue(isset($bodies[2]) && strpos($bodies[2], 'dn=x+y') !== false,
+		$this->assertTrue(isset($loads[1]) && strpos($loads[1], 'dn=x+y') !== false,
 			'encoded equals and literal plus retain the browser-compatible value');
 	}
 
@@ -131,5 +159,27 @@ class BulkAddDuplicateTest extends TestCase
 			'one new torrent is added, the loaded one and the second copy of the new one are '
 			. 'duplicates, and the line that is not a link is an error; the script answered '
 			. json_encode($result) . '; calls: ' . implode(', ', $this->daemon->calls()));
+	}
+
+	public function testADroppedMagnetIsPendingNotAnAddition()
+	{
+		$result = $this->bulkAdd(array('magnet:?xt=urn:btih:' . self::FRESH . '&dn'), false, null,
+			array('dropMagnets' => array(self::FRESH)));
+		$this->assertEquals(array('error' => 0, 'success' => 0, 'pending' => 1, 'duplicate' => 0),
+			$result, 'a magnet whose stub never shows is not counted as added: ' . json_encode($result));
+		$this->assertTrue($this->presenceReads(self::FRESH) > 1,
+			'its stub was looked for through the settle window');
+		$this->assertTrue(strpos((string)@file_get_contents($this->log()),
+			'bulk_magnet: magnet unconfirmed: ' . self::FRESH) !== false,
+			'the unconfirmed magnet is named in the log');
+	}
+
+	public function testAMagnetWhoseStubShowsLateIsStillAnAddition()
+	{
+		$result = $this->bulkAdd(array('magnet:?xt=urn:btih:' . self::FRESH), false, null,
+			array('stubAfter' => 3));
+		$this->assertEquals(array('error' => 0, 'success' => 1, 'pending' => 0, 'duplicate' => 0),
+			$result, 'a stub that shows within the window is an addition: ' . json_encode($result));
+		$this->assertEquals(4, $this->presenceReads(self::FRESH), 'three misses, then the stub');
 	}
 }

@@ -1,10 +1,50 @@
 <?php
 
+// ErasedataFilesystemOps::payloadDirectoryTrusted()/payloadFileTrusted() are
+// the payload trust rule this file shares with every AutoTools file operation
+// (Move, Copy, HardLink, SoftLink).
+require_once __DIR__ . '/../erasedata/filesystem.php';
+
+// The one writer of datadir's durable JSON documents: the job journal
+// (movejob.php) and the payload move receipt (DataDirMoveIntent below). A
+// staging file in the target directory, never in a fallback temporary
+// directory, gets mode 0600 and is then linked onto a new name or renamed over
+// the current one. Every step is checked, the mode included; a refusal is
+// classified under the document's kind.
+final class DataDirDocument
+{
+    const MAX_BYTES = 16777216;
+    // The historical staging prefixes; recovery reports a leftover one in the
+    // journal as an unexpected entry.
+    const STAGING_PREFIX = array('job' => '.datadir-job-', 'receipt' => '.datadir-intent-');
+
+    public static function publish($path, $data, $exclusive, $kind)
+    {
+        $prefixes = self::STAGING_PREFIX;
+        if (!isset($prefixes[$kind]))
+            throw new RuntimeException('document-kind-invalid');
+        $json = json_encode($data, JSON_UNESCAPED_SLASHES);
+        if (!is_string($json) || strlen($json) > self::MAX_BYTES)
+            throw new RuntimeException($kind . '-too-large');
+        $parent = @realpath(dirname($path));
+        if ($parent === false || !is_dir($parent))
+            throw new RuntimeException($kind . '-parent-unavailable');
+        // Never tempnam()'s fallback outside $parent: see erasedataStagingFile().
+        $staging = erasedataStagingFile($parent, $prefixes[$kind]);
+        if ($staging === false)
+            throw new RuntimeException($kind . '-staging-failed');
+        $published = @file_put_contents($staging, $json) === strlen($json) && @chmod($staging, 0600)
+            && ($exclusive ? @link($staging, $path) : @rename($staging, $path));
+        @unlink($staging);
+        if (!$published)
+            throw new RuntimeException($kind . '-publish-failed');
+    }
+}
+
 // The witness hard links keep every original inode allocated across a worker
 // crash, so a replacement at the destination cannot reuse its identity.
 class DataDirMoveIntent
 {
-    const MAX_RECEIPT_BYTES = 16777216;
     const MAX_FILES = 100000;
 
     private $receipt;
@@ -52,31 +92,20 @@ class DataDirMoveIntent
 
     private static function trustedFile($path)
     {
-        $stat = self::statPath($path);
-        return is_array($stat) && ($stat['mode'] & 0170000) === 0100000
-            && ($stat['uid'] === 0 || $stat['uid'] === posix_geteuid())
-            && ($stat['mode'] & 0022) === 0;
+        return ErasedataFilesystemOps::payloadFileTrusted($path);
     }
 
-    // A different UID must not be able to replace any component of a path
-    // between the inode witness check and the daemon directory setter.
+    private static function payloadDirectory($path)
+    {
+        return ErasedataFilesystemOps::payloadDirectoryTrusted($path);
+    }
+
+    // The job journal's rule. A different UID must not be able to replace any
+    // component of a journal path: the strict form of the shared rule, while
+    // payload paths use its payload form.
     public static function trustedDirectory($path)
     {
-        if (!is_string($path) || $path === '' || $path[0] !== '/'
-            || @realpath($path) !== $path || !function_exists('posix_geteuid'))
-            return false;
-        $uid = posix_geteuid();
-        $current = '';
-        foreach (array_merge(array(''), array_filter(explode('/', $path), 'strlen')) as $part)
-        {
-            $current = rtrim($current, '/') . '/' . $part;
-            $stat = self::statPath($current);
-            if (!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000
-                || ($stat['uid'] !== 0 && $stat['uid'] !== $uid)
-                || (($stat['mode'] & 0022) !== 0 && ($stat['mode'] & 01000) === 0))
-                return false;
-        }
-        return true;
+        return ErasedataFilesystemOps::stateDirectoryTrusted($path);
     }
 
     // The request may name a new directory. Validate its existing ancestor
@@ -95,7 +124,7 @@ class DataDirMoveIntent
         $physical = @realpath($ancestor);
         if ($physical === false)
             return 'destination-root-unavailable';
-        return self::trustedDirectory($physical) ? '' : 'destination-root-untrusted';
+        return self::payloadDirectory($physical) ? '' : 'destination-root-untrusted';
     }
 
     private static function mounts()
@@ -136,31 +165,11 @@ class DataDirMoveIntent
         return $id;
     }
 
-    private static function writeReceipt($path, $data, $exclusive)
-    {
-        $json = json_encode($data, JSON_UNESCAPED_SLASHES);
-        if (!is_string($json) || strlen($json) > self::MAX_RECEIPT_BYTES)
-            throw new RuntimeException('receipt-too-large');
-        $parent = @realpath(dirname($path));
-        if ($parent === false || !is_dir($parent))
-            throw new RuntimeException('receipt-parent-unavailable');
-        $staging = @tempnam($parent, '.datadir-intent-');
-        if ($staging === false)
-            throw new RuntimeException('receipt-staging-failed');
-        $written = @file_put_contents($staging, $json);
-        @chmod($staging, 0600);
-        $published = $written === strlen($json)
-            && ($exclusive ? @link($staging, $path) : @rename($staging, $path));
-        @unlink($staging);
-        if (!$published)
-            throw new RuntimeException('receipt-publish-failed');
-    }
-
     private function updatePhase($phase)
     {
         $next = $this->data;
         $next['phase'] = $phase;
-        self::writeReceipt($this->receipt, $next, false);
+        DataDirDocument::publish($this->receipt, $next, false, 'receipt');
         $this->data = $next;
         return true;
     }
@@ -185,7 +194,7 @@ class DataDirMoveIntent
             || !is_dir($sourceRoot) || !is_dir($destinationRoot)
             || $sourceRoot === $destinationRoot)
             throw new RuntimeException('invalid-roots');
-        if (!self::trustedDirectory($sourceRoot) || !self::trustedDirectory($destinationRoot))
+        if (!self::payloadDirectory($sourceRoot) || !self::payloadDirectory($destinationRoot))
             throw new RuntimeException('untrusted-directory');
 
         $entries = array();
@@ -200,9 +209,11 @@ class DataDirMoveIntent
                 throw new RuntimeException('duplicate-file-path');
             $seen[$relative] = true;
             $sourceParent = @realpath(dirname($source));
-            if ($sourceParent === false || !self::inside($sourceParent, $sourceRoot))
+            if ($sourceParent === false)
+                throw new RuntimeException('source-parent-unavailable');
+            if (!self::inside($sourceParent, $sourceRoot))
                 throw new RuntimeException('source-outside-root');
-            if (!isset($trusted[$sourceParent]) && !self::trustedDirectory($sourceParent))
+            if (!isset($trusted[$sourceParent]) && !self::payloadDirectory($sourceParent))
                 throw new RuntimeException('untrusted-directory');
             $trusted[$sourceParent] = true;
             $sourceIdentity = self::identity($source);
@@ -210,12 +221,15 @@ class DataDirMoveIntent
                 throw new RuntimeException('missing-or-nonregular-source');
             if (!self::trustedFile($source))
                 throw new RuntimeException('untrusted-file');
-            if (!is_dir(dirname($destination)) && !@mkdir(dirname($destination), 0777, true))
+            // At most 0755, since the umask only removes bits: never
+            // group/other-writable, which the payload rule below refuses
+            // above the configured top.
+            if (!is_dir(dirname($destination)) && !@mkdir(dirname($destination), 0755, true))
                 throw new RuntimeException('destination-parent-unavailable');
             $destinationParent = @realpath(dirname($destination));
             if ($destinationParent === false || !self::inside($destinationParent, $destinationRoot))
                 throw new RuntimeException('destination-outside-root');
-            if (!isset($trusted[$destinationParent]) && !self::trustedDirectory($destinationParent))
+            if (!isset($trusted[$destinationParent]) && !self::payloadDirectory($destinationParent))
                 throw new RuntimeException('untrusted-directory');
             $trusted[$destinationParent] = true;
             if (self::identity($destination) !== false)
@@ -236,7 +250,7 @@ class DataDirMoveIntent
         $data = array('version' => 2, 'phase' => 'preparing', 'job' => $jobId,
             'hash' => strtoupper($hash), 'source' => $sourceRoot,
             'destination' => $destinationRoot, 'witness' => $witness, 'files' => $entries);
-        self::writeReceipt($receipt, $data, true);
+        DataDirDocument::publish($receipt, $data, true, 'receipt');
         $intent = new self($receipt, $data, $move);
         if (!@mkdir($witness, 0700))
             throw new RuntimeException('witness-create-failed');
@@ -260,8 +274,8 @@ class DataDirMoveIntent
     {
         if (!is_string($receipt) || !is_file($receipt) || is_link($receipt))
             throw new RuntimeException('receipt-unavailable');
-        $json = @file_get_contents($receipt, false, null, 0, self::MAX_RECEIPT_BYTES + 1);
-        if (!is_string($json) || strlen($json) > self::MAX_RECEIPT_BYTES)
+        $json = @file_get_contents($receipt, false, null, 0, DataDirDocument::MAX_BYTES + 1);
+        if (!is_string($json) || strlen($json) > DataDirDocument::MAX_BYTES)
             throw new RuntimeException('receipt-unreadable');
         $data = json_decode($json, true);
         if (!is_array($data) || array_keys($data) !== array('version', 'phase', 'job', 'hash',
@@ -306,8 +320,8 @@ class DataDirMoveIntent
             throw new RuntimeException('invalid-step-limit');
         if ($this->data['phase'] !== 'ready' && $this->data['phase'] !== 'finishing')
             return 'wrong-phase';
-        if (!self::trustedDirectory($this->data['source'])
-            || !self::trustedDirectory($this->data['destination']))
+        if (!self::payloadDirectory($this->data['source'])
+            || !self::payloadDirectory($this->data['destination']))
             return 'untrusted-directory';
         $trusted = array();
         $moved = 0;
@@ -319,12 +333,12 @@ class DataDirMoveIntent
             $destinationParent = @realpath(dirname($destination));
             if ($sourceParent === false || !self::inside($sourceParent, $this->data['source']))
                 return 'source-outside-root';
-            if (!isset($trusted[$sourceParent]) && !self::trustedDirectory($sourceParent))
+            if (!isset($trusted[$sourceParent]) && !self::payloadDirectory($sourceParent))
                 return 'untrusted-directory';
             $trusted[$sourceParent] = true;
             if ($destinationParent === false || !self::inside($destinationParent, $this->data['destination']))
                 return 'destination-outside-root';
-            if (!isset($trusted[$destinationParent]) && !self::trustedDirectory($destinationParent))
+            if (!isset($trusted[$destinationParent]) && !self::payloadDirectory($destinationParent))
                 return 'untrusted-directory';
             $trusted[$destinationParent] = true;
             $expected = $entry['identity'];

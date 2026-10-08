@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__ . '/../../php/ScgiToolPeer.php');
 
 /**
  * Exercise the shipped standalone repair tool against a controlled SCGI peer.
@@ -14,15 +15,12 @@ class RepairToolRefusalTest extends TestCase
 {
 	private $dir = null;
 	private $socketPath = null;
-	private $server = null;
 
 	public function setUp()
 	{
 		$this->dir = sys_get_temp_dir() . '/erasedata-repair-tool-'
 			. getmypid() . '-' . uniqid('', true);
-		@mkdir($this->dir . '/rutorrent/app/conf', 0700, true);
-		@mkdir($this->dir . '/tools', 0700);
-		@mkdir($this->dir . '/php', 0700);
+		@mkdir($this->dir, 0700, true);
 		// A UNIX socket path is bounded at about 108 bytes, so it lives beside
 		// the temporary directory rather than inside its longer path.
 		$this->socketPath = sys_get_temp_dir() . '/erp-' . getmypid() . '-'
@@ -32,95 +30,30 @@ class RepairToolRefusalTest extends TestCase
 
 	public function tearDown()
 	{
-		if (is_resource($this->server)) @fclose($this->server);
 		@unlink($this->socketPath);
-		foreach (array('/rutorrent/app/conf/config.php', '/rutorrent/app/conf',
-			'/rutorrent/app', '/rutorrent', '/tools/retrackers-clear-markers.php',
-			'/tools', '/php/cli-only.php', '/php') as $entry)
+		foreach (ScgiToolPeer::stagedEntries() as $entry)
 			@is_dir($this->dir . $entry) ? @rmdir($this->dir . $entry)
 				: @unlink($this->dir . $entry);
 		@rmdir($this->dir);
 	}
 
-	// The shipped tool, pointed at this test's socket and its own fake app root.
-	private function stagedTool()
-	{
-		$sourceRoot = dirname(__DIR__, 3);
-		$source = $sourceRoot . '/tools/retrackers-clear-markers.php';
-		$this->assertTrue(is_file($source), 'the shipped tool is where it is documented');
-		$this->assertTrue(copy($sourceRoot . '/php/cli-only.php', $this->dir . '/php/cli-only.php'),
-			'the staged tool carries the actual shared CLI guard dependency');
-		file_put_contents($this->dir . '/rutorrent/app/conf/config.php',
-			"<?php\n\$scgi_host = 'unix://" . $this->socketPath . "';\n\$scgi_port = 0;\n");
-		$staged = str_replace('/rutorrent/app/conf/config.php',
-			$this->dir . '/rutorrent/app/conf/config.php',
-			file_get_contents($source));
-		file_put_contents($this->dir . '/tools/retrackers-clear-markers.php', $staged);
-		return($this->dir . '/tools/retrackers-clear-markers.php');
-	}
-
-	// Run the tool while this process plays a peer that answers $replies
-	// requests and then accepts-and-closes for ever.
+	// Run the shipped tool, in its repository layout with the shared CLI guard,
+	// while this process plays a peer that answers $replies requests and then
+	// accepts-and-closes for ever.
 	private function runAgainstPeer($argument, $replies, $marker = null)
 	{
-		$tool = $this->stagedTool();
+		$tool = ScgiToolPeer::stageClearMarkersTool($this->dir, $this->socketPath, true);
+		$this->assertTrue(is_file($tool) && is_file($this->dir . '/php/cli-only.php'),
+			'the staged tool carries the actual shared CLI guard dependency');
 		if ($marker === null) $marker = 'v1:original:0:' . str_repeat('B', 40);
-		// A UNIX socket leaves its node behind, and a second bind on the same
-		// path fails with "Address already in use" -- which would read as a
-		// broken test rather than as the leftover it is.
-		@unlink($this->socketPath);
-		$this->server = @stream_socket_server('unix://' . $this->socketPath, $errno, $errstr);
-		$this->assertTrue(is_resource($this->server),
-			'the fake peer listens: ' . $errstr);
-		$descriptors = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
-		// 'exec ' so proc_open's /bin/sh does not fork and leave the real child
-		// behind a shell that proc_terminate would signal instead.
+		$inventory = ScgiToolPeer::rows(array(array(str_repeat('A', 40), 'probe.bin', $marker, '',
+			str_repeat('C', 40))));
 		$args = $argument === '' ? array() : (is_array($argument) ? $argument : array($argument));
-		$process = proc_open('exec ' . PHP_BINARY . ' ' . escapeshellarg($tool)
-			. ($args ? ' ' . implode(' ', array_map('escapeshellarg', $args)) : ''),
-			$descriptors, $pipes);
-		$this->assertTrue(is_resource($process), 'the tool starts');
-		$answered = 0;
-		$replyCount = is_array($replies) ? count($replies) : $replies;
-		$requests = array();
-		$observedExitCode = null;
-		$deadline = time() + 20;
-		while (time() < $deadline) {
-			$client = @stream_socket_accept($this->server, 1);
-			if (!is_resource($client)) {
-				$status = proc_get_status($process);
-				if (!$status['running']) {
-					$observedExitCode = $status['exitcode'];
-					break;
-				}
-				continue;
-			}
-			stream_set_timeout($client, 1);
-			$requests[] = @fread($client, 65536);
-			if ($answered < $replyCount) {
-				$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
-					. '<array><data><value><array><data>'
-					. '<value><string>' . str_repeat('A', 40) . '</string></value>'
-					. '<value><string>probe.bin</string></value>'
-					. '<value><string>' . htmlspecialchars($marker, ENT_XML1) . '</string></value>'
-					. '<value><string></string></value>'
-					. '<value><string>' . str_repeat('C', 40) . '</string></value>'
-					. '</data></array></value></data></array></value></param></params>'
-					. '</methodResponse>';
-				if (is_array($replies)) $body = $replies[$answered];
-				@fwrite($client, strlen($body) . ':' . $body);
-				$answered++;
-			}
-			@fclose($client);
-		}
-		$out = stream_get_contents($pipes[1]);
-		$err = stream_get_contents($pipes[2]);
-		foreach ($pipes as $pipe) @fclose($pipe);
-		$code = proc_close($process);
-		// PHP before 8.3 may return -1 after proc_get_status reaps an exited child.
-		if ($code === -1 && $observedExitCode !== null) $code = $observedExitCode;
-		@fclose($this->server);
-		$this->server = null;
+		list($code, $out, $err, $requests) = ScgiToolPeer::run($this->socketPath, $tool, $args,
+			function ($request, $index) use ($replies, $inventory) {
+				if ($index >= (is_array($replies) ? count($replies) : $replies)) return(null);
+				return(is_array($replies) ? $replies[$index] : $inventory);
+			});
 		return(array($code, $out, $err, $requests));
 	}
 

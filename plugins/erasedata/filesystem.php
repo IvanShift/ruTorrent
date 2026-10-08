@@ -4,14 +4,33 @@
 // this file reuses for the captured-entry name record.
 require_once(dirname(__FILE__)."/manifest.php");
 
-// Small, plugin-local seam for the filesystem mutations and identity reads the
-// erasedata collector performs. Only operations that must be scriptable in the
-// destructive-race tests live here; pure validation and stable read-only PHP
-// calls stay inline in the collector.
+// The seam for the filesystem mutations and identity reads the erasedata
+// collector performs, and the one owner of the no-replace helper, its parent
+// preflight and the payload trust rule that datadir and every AutoTools file
+// operation (Move, Copy, HardLink, SoftLink) share.
+// Only operations that must be scriptable in the destructive-race tests live
+// here; pure validation and stable read-only PHP calls stay inline in the
+// collector.
 class ErasedataFilesystemOps
 {
+	// Exit status ABI of rutorrent-erasedata-rename-noreplace, the helper that
+	// tools/native-helpers.list declares. This is the table's one definition:
+	// rename-noreplace.c names the same statuses, rename-noreplace-test.sh and
+	// QUEUE-ATTESTATION.md use them, and RenameHelperStatusTest pins all three
+	// to these values. 'probe-success' is success for --probe only: the
+	// filesystem is usable through the helper's caller-locked fallback.
+	const RENAME_HELPER_STATUS = array(
+		0 => array('ok', 'success'),
+		1 => array('rename-noreplace-collision', 'refusal'),
+		2 => array('rename-noreplace-invalid-arguments', 'refusal'),
+		3 => array('rename-noreplace-unsupported', 'refusal'),
+		4 => array('rename-noreplace-error', 'refusal'),
+		5 => array('rename-noreplace-fallback', 'probe-success'),
+	);
+
 	private static $renameRefusal = '';
 	private static $renameContext = '';
+	private static $renameProbe = false;
 
 	public static function lastRenameRefusal()
 	{
@@ -27,8 +46,11 @@ class ErasedataFilesystemOps
 	{
 		self::$renameRefusal = '';
 		self::$renameContext = '';
+		self::$renameProbe = false;
 	}
 
+	// Callers resolve the helper through static:: so a test subclass can point
+	// the real process runner at a scripted helper; production has one path.
 	public static function renameHelperPath()
 	{
 		$metadata = dirname(__FILE__).'/../../php/nativehelpers.php';
@@ -52,6 +74,8 @@ class ErasedataFilesystemOps
 	private static function renameDiagnostic($reason, $from, $to = null, $errno = null)
 	{
 		self::$renameRefusal = $reason;
+		// A context without a destination belongs to a directory probe.
+		self::$renameProbe = $to === null;
 		self::$renameContext = $reason.' path='.erasedataLogPath($from)
 			.($to === null ? '' : ' destination='.erasedataLogPath($to))
 			.($errno === null ? '' : ' errno='.$errno);
@@ -60,17 +84,33 @@ class ErasedataFilesystemOps
 		return(false);
 	}
 
-	public static function reportRenameRefusal()
+	// The pending classified refusal with its operator action, for the
+	// caller's own log line under its own component name; '' when none.
+	public static function renameRefusalReport()
 	{
-		if(self::$renameContext !== '' && method_exists('FileUtil', 'toLog'))
-		{
-			$action = self::$renameRefusal === 'rename-noreplace-collision'
-				? 'preserve both entries; inspect the occupied destination before retrying'
-				: (self::$renameRefusal === 'rename-noreplace-unsupported'
-					? 'use a filesystem that supports atomic no-replace; torrent and payload retained'
-					: 'check the native helper and the named parent permissions; torrent and payload retained');
-			FileUtil::toLog('erasedata: '.self::$renameContext.'; mutation refused; '.$action);
-		}
+		if(self::$renameContext === '')
+			return('');
+		if(self::$renameRefusal === 'rename-noreplace-collision')
+			$action = 'preserve both entries; inspect the occupied destination before retrying';
+		// Since the locked fallback, status 3 no longer means a missing
+		// RENAME_NOREPLACE flag. Plain renameat itself refused (EINVAL for a
+		// directory moved into its own subtree, ENOSYS, EOPNOTSUPP), or the
+		// probe's self-check saw a rename replace an existing entry.
+		elseif(self::$renameRefusal === 'rename-noreplace-unsupported')
+			$action = (self::$renameProbe
+				? 'the filesystem refused rename or replaced an entry in the probe self-check; keep this path on a filesystem with working rename'
+				: 'the filesystem refused this rename itself, for example a directory moved into its own subtree; inspect source and destination')
+				.'; torrent and payload retained';
+		else
+			$action = 'check the native helper and the named parent permissions; torrent and payload retained';
+		return(self::$renameContext.'; mutation refused; '.$action);
+	}
+
+	public static function reportRenameRefusal($component = 'erasedata')
+	{
+		$report = self::renameRefusalReport();
+		if($report !== '' && method_exists('FileUtil', 'toLog'))
+			FileUtil::toLog($component.': '.$report);
 	}
 
 	private static function runRenameHelper(array $arguments, $from, $to = null)
@@ -119,16 +159,16 @@ class ErasedataFilesystemOps
 		{
 			foreach($held as $resource) fclose($resource['handle']);
 		}
-		if($code === 0 || ($code === 5 && isset($arguments[1]) && $arguments[1] === '--probe'))
+		$table = self::RENAME_HELPER_STATUS;
+		$status = isset($table[$code]) ? $table[$code] : null;
+		$probe = isset($arguments[1]) && $arguments[1] === '--probe';
+		if($status !== null && ($status[1] === 'success' || ($status[1] === 'probe-success' && $probe)))
 		{
-			self::$renameRefusal = '';
-			self::$renameContext = '';
+			self::clearRenameRefusal();
 			return(true);
 		}
-		$reasons = array(1 => 'rename-noreplace-collision', 2 => 'rename-noreplace-invalid-arguments',
-			3 => 'rename-noreplace-unsupported', 4 => 'rename-noreplace-error');
 		$errno = preg_match('/\berrno=([0-9]{1,5})\b/', $error, $match) ? (int)$match[1] : null;
-		return(self::renameDiagnostic(isset($reasons[$code]) ? $reasons[$code]
+		return(self::renameDiagnostic($status !== null && $status[1] === 'refusal' ? $status[0]
 			: 'rename-noreplace-process-exit-'.$code, $from, $to, $errno));
 	}
 
@@ -141,16 +181,17 @@ class ErasedataFilesystemOps
 
 	private static function renameCapabilityQuery($directory)
 	{
-		$helper = self::renameHelperPath();
+		$helper = static::renameHelperPath();
+		// A presence query without a directory names the helper it checked.
 		if($helper === false || !is_executable($helper))
 			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
-				: 'rename-noreplace-helper-unavailable', $directory));
+				: 'rename-noreplace-helper-unavailable',
+				$directory !== null ? $directory : ($helper === false ? '' : $helper)));
 		// Presence is the compatibility query. Callers about to mutate must
 		// probe each actual parent, not infer support from another mount.
 		if($directory === null)
 		{
-			self::$renameRefusal = '';
-			self::$renameContext = '';
+			self::clearRenameRefusal();
 			return(true);
 		}
 		if(!ErasedataManifestCodec::isValidAbsolutePath($directory))
@@ -225,6 +266,208 @@ class ErasedataFilesystemOps
 		return($this->renameCapability($directory));
 	}
 
+	// The one actual-parent preflight of every no-replace consumer: erasedata
+	// admission, cleanup and drain, datadir and AutoTools. Each directory will
+	// gain or lose an entry through renameNoReplace(). One that does not exist
+	// yet is created later on its deepest existing ancestor, which is the
+	// filesystem to probe; an existing non-directory in that walk refuses.
+	// With $root, every resolved directory must lie within the root resolved
+	// by the same rule, so a link inside a payload tree cannot point the probe
+	// elsewhere. Bind aliases may carry different mount permissions, so a
+	// probe answer is reused only for the same resolved path and physical
+	// identity, through the caller's $probed within one operation. A refusal
+	// leaves its classified reason in lastRenameRefusal() and
+	// lastRenameRefusalContext() and logs nothing: the caller reports it.
+	public function preflightParents(array $directories, array &$probed, $root = null)
+	{
+		self::clearRenameRefusal();
+		$within = $root === null ? null : $this->actualParent($root);
+		if($within === false)
+			return(false);
+		foreach($directories as $directory)
+		{
+			$physical = $this->actualParent($directory);
+			if($physical === false)
+				return(false);
+			if($within !== null && $physical !== $within
+				&& strpos($physical, rtrim($within, '/').'/') !== 0)
+				return(self::renameDiagnostic('rename-noreplace-parent-outside-root', $directory));
+			$key = erasedataIdentityDeviceAndInode($this->targetIdentity($physical));
+			if($key === false)
+				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
+			$key = $physical.'|'.$key['dev'].':'.$key['ino'];
+			if(isset($probed[$key]))
+				continue;
+			if(!$this->probeRenameParent($physical))
+				return(false);
+			$probed[$key] = true;
+		}
+		return(true);
+	}
+
+	// The one trust rule for the payload directories and files that datadir
+	// and AutoTools (Move, Copy, HardLink, SoftLink) capture from or publish
+	// into (R3-OWN-01, 2026-10-08).
+	// Threat model: processes sharing the service UID are trusted (AGENTS.md),
+	// and the daemon already writes every download below the configured top
+	// directory, so that subtree's permissions are already a trust boundary
+	// for all torrents. WSL2 drvfs and Docker Desktop mounts show their entries
+	// with one uniform owner and mode 0777, and prod b79a16d5 moved into such
+	// folders. At and below the top, every component must therefore be owned
+	// by root or the service UID, and group/other write is accepted there.
+	// Above the top the 2026-09-28 rule stays: no group/other write without a
+	// sticky bit. What does not depend on modes holds everywhere: the path must
+	// already be physical (no symlink, '.' or '..'), every component is read
+	// with lstat, and a component of another owner refuses. Without a
+	// resolvable top the strict rule applies to every component; a top that
+	// resolves to / (the conf/config.php default outside Docker) counts as
+	// none, because the daemon does not write every download below it.
+	public static function payloadDirectoryTrusted($path, $top = null)
+	{
+		return(self::directoryChainTrusted($path, self::payloadTop($top)));
+	}
+
+	// The strict form of the same rule, without a relaxed region: every
+	// component is owned by root or the service UID and is not group/other
+	// writable unless sticky. datadir's own state (its profile and job
+	// journal) uses it (R4-FS-09).
+	public static function stateDirectoryTrusted($path)
+	{
+		return(self::directoryChainTrusted($path, false));
+	}
+
+	private static function directoryChainTrusted($path, $boundary)
+	{
+		if(!is_string($path) || $path === '' || $path[0] !== '/'
+			|| @realpath($path) !== $path || !function_exists('posix_geteuid'))
+			return(false);
+		$current = '';
+		foreach(array_merge(array(''), array_filter(explode('/', $path), 'strlen')) as $part)
+		{
+			$current = rtrim($current, '/').'/'.$part;
+			if(!self::payloadEntryTrusted($current, 0040000, $boundary))
+				return(false);
+		}
+		return(true);
+	}
+
+	// A payload file under the same rule; its directories are checked apart.
+	public static function payloadFileTrusted($path, $top = null)
+	{
+		return(is_string($path) && $path !== '' && $path[0] === '/'
+			&& function_exists('posix_geteuid')
+			&& self::payloadEntryTrusted($path, 0100000, self::payloadTop($top)));
+	}
+
+	// The same rule for a directory as a configuration or the daemon spells
+	// it, links included (R4-FS-03, 2026-10-08). The spelling is walked the way
+	// the kernel resolves it: every directory it passes is checked at its
+	// physical place, and every link in it, or in a link's own target, must be
+	// owned by root or the service UID, like every other component. So a
+	// writable directory above the top refuses even when a link in it leads
+	// somewhere trusted, and below the top, where a writable directory is
+	// accepted, a link of another owner cannot send the operation elsewhere.
+	// '.' and '..' refuse in the spelling and are resolved in a link target.
+	// With $missingTail the spelled path may end in names that do not exist
+	// yet: the caller creates them under the checked prefix and then checks
+	// the whole path again. A name a link leads to must exist.
+	public static function payloadPathTrusted($path, $top = null, $missingTail = false)
+	{
+		if(!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, "\0") !== false
+			|| !function_exists('posix_geteuid'))
+			return(false);
+		$pending = array();
+		foreach(explode('/', $path) as $component)
+		{
+			if($component === '.' || $component === '..')
+				return(false);
+			if($component !== '')
+				$pending[] = array($component, false);
+		}
+		$boundary = self::payloadTop($top);
+		if(!self::payloadEntryTrusted('/', 0040000, $boundary))
+			return(false);
+		$current = '/';
+		$links = 0;
+		while($pending)
+		{
+			list($component, $fromLink) = array_shift($pending);
+			if($component === '.')
+				continue;
+			if($component === '..')
+			{
+				$current = dirname($current);
+				continue;
+			}
+			$next = rtrim($current, '/').'/'.$component;
+			clearstatcache(true, $next);
+			$stat = @lstat($next);
+			if(!is_array($stat))
+				return($missingTail && !$fromLink);
+			if(($stat['mode'] & 0170000) === 0120000)
+			{
+				$target = @readlink($next);
+				// 40 is Linux's limit on links followed in one resolution.
+				if(($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid())
+					|| !is_string($target) || $target === '' || ++$links > 40)
+					return(false);
+				if($target[0] === '/')
+					$current = '/';
+				$expansion = array();
+				foreach(explode('/', $target) as $part)
+					if($part !== '')
+						$expansion[] = array($part, true);
+				$pending = array_merge($expansion, $pending);
+				continue;
+			}
+			if(!self::payloadEntryTrusted($next, 0040000, $boundary))
+				return(false);
+			$current = $next;
+		}
+		return(true);
+	}
+
+	private static function payloadTop($top)
+	{
+		if($top === null)
+			$top = isset($GLOBALS['topDirectory']) ? $GLOBALS['topDirectory'] : null;
+		if(!is_string($top) || $top === '' || $top[0] !== '/')
+			return(false);
+		$physical = @realpath(rtrim($top, '/') === '' ? '/' : rtrim($top, '/'));
+		return($physical !== false && $physical !== '/' && is_dir($physical) ? $physical : false);
+	}
+
+	private static function payloadEntryTrusted($path, $type, $boundary)
+	{
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== $type
+			|| ($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid()))
+			return(false);
+		$withinTop = $boundary !== false && ($path === $boundary
+			|| strpos($path, rtrim($boundary, '/').'/') === 0);
+		return($withinTop || ($stat['mode'] & 0022) === 0
+			|| ($type === 0040000 && ($stat['mode'] & 01000) !== 0));
+	}
+
+	// The physical directory a rename in $directory happens on: the directory
+	// itself or, for one created later, its deepest existing ancestor.
+	private function actualParent($directory)
+	{
+		if(!ErasedataManifestCodec::isValidAbsolutePath($directory))
+			return(self::renameDiagnostic('rename-noreplace-invalid-parent',
+				is_string($directory) ? $directory : ''));
+		while(!is_dir($directory))
+		{
+			if(erasedataPathExists($directory) || dirname($directory) === $directory)
+				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
+			$directory = dirname($directory);
+		}
+		$physical = @realpath($directory);
+		return($physical === false
+			? self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory) : $physical);
+	}
+
 	private function privateCaptureParent($directory)
 	{
 		$uid = erasedataEffectiveUid();
@@ -269,7 +512,7 @@ class ErasedataFilesystemOps
 	public function renameNoReplace($from, $to)
 	{
 		self::clearRenameRefusal();
-		$helper = self::renameHelperPath();
+		$helper = static::renameHelperPath();
 		if($helper === false || !is_executable($helper))
 			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
 				: 'rename-noreplace-helper-unavailable', $from, $to));
@@ -637,6 +880,31 @@ function erasedataPathExists($path)
 {
 	clearstatcache(true, $path);
 	return(file_exists($path) || is_link($path));
+}
+
+// "$directory/<name>" for each entry whose name starts with $prefix and ends
+// with $suffix, in byte order: what glob($directory.'/'.$prefix.'*'.$suffix)
+// answered for arguments without pattern bytes, a '*' that does not match a
+// leading dot included. The file operations list directories under the
+// session path, which is the daemon's own bytes, and under the profile path;
+// glob() read a '\', '[...]', '*' or '?' there as pattern syntax and matched
+// nothing, or a sibling directory (R5-REV-05). Here every byte is literal.
+// False when the directory cannot be listed.
+function erasedataDirectoryMatches($directory, $prefix, $suffix)
+{
+	$names = @scandir($directory);
+	if(!is_array($names))
+		return(false);
+	$matches = array();
+	foreach($names as $name)
+		if($name !== '.' && $name !== '..'
+			&& ($prefix !== '' || $name[0] !== '.')
+			&& strlen($name) >= strlen($prefix) + strlen($suffix)
+			&& strncmp($name, $prefix, strlen($prefix)) === 0
+			&& ($suffix === '' || substr($name, -strlen($suffix)) === $suffix))
+			$matches[] = $directory.'/'.$name;
+	sort($matches, SORT_STRING);
+	return($matches);
 }
 
 // The only roots a directory capability may be taken through, in the order they
@@ -1087,6 +1355,28 @@ if(!function_exists('erasedataSharedFileMode'))
 		global $profileMask;
 		return((isset($profileMask) ? $profileMask : 0777) & 0666);
 	}
+}
+
+// A unique staging file inside $directory for a rename onto a name there, or
+// false. tempnam() silently falls back to the system temporary directory when
+// $directory takes no new file; a rename from there can cross filesystems,
+// where PHP copies over the live target instead of replacing it atomically
+// (R4-FS-08). Such a file is removed and refused. tempnam() resolves the
+// directory, so the comparison is with its physical path.
+function erasedataStagingFile($directory, $prefix)
+{
+	$physical = is_string($directory) && $directory !== '' ? @realpath($directory) : false;
+	if($physical === false || !is_dir($physical))
+		return(false);
+	$staging = @tempnam($physical, $prefix);
+	if($staging === false)
+		return(false);
+	if(dirname($staging) !== $physical)
+	{
+		@unlink($staging);
+		return(false);
+	}
+	return($staging);
 }
 
 // Publish $bytes at $path, or publish nothing.

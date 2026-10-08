@@ -336,6 +336,13 @@ class ruTrackerChecker
 		return(null);
 	}
 
+	// One metainfo path, joined under the download's base. Each component is
+	// one name, so '..' and '/' (out of the base or into another name), NUL
+	// (the name ends there for the daemon) and '' or '.' (no name at all)
+	// are refused. A backslash is an ordinary byte of a Linux file name and
+	// is written by the daemon exactly as spelled, so it stays part of the
+	// name (round-4 AUD-ESC S4); refusing it failed the cleanup build and
+	// rolled back every replacement of such a torrent.
 	static private function makeSafeRelativePath($components)
 	{
 		if(!is_array($components) || !count($components))
@@ -347,8 +354,7 @@ class ruTrackerChecker
 				return(null);
 			$component = (string) $component;
 			if($component === '' || $component === '.' || $component === '..'
-				|| strpos($component, "\0") !== false || strpos($component, '/') !== false
-				|| strpos($component, '\\') !== false)
+				|| strpos($component, "\0") !== false || strpos($component, '/') !== false)
 				return(null);
 			$normalized[] = $component;
 		}
@@ -1889,17 +1895,21 @@ class ruTrackerChecker
 		$label = rawurldecode($req->val[1]);
 		$throttle = $req->val[2];
 		$connectionSeed = $req->val[3];
-		// Canonicalised for the load command list, which is a DSL, not XML.
-		// These two are the only values in that list whose bytes come from a
-		// field a third party writes freely: the marker is hex from
-		// random_bytes, the inheritance record is comma-free by construction
-		// (see encodeInheritance()), the rest are ints or enums, and the label
-		// is rawurlencode'd. d.custom.set splits its own arguments on commas,
-		// so a comma here would make it a three-argument call -- an
-		// input_error which, by the abort semantics documented at
-		// buildReplacementAddition(), would drop the tail of the list. That
-		// truncation is a conclusion from those documented semantics, not an
-		// observed failure. A non-canonical id is wrong even without a comma:
+		// These four are read in the daemon's own bytes: php/xmlrpc.php hands
+		// strings out unescaped. The directory, the throttle name and the label
+		// are free text -- a torrent author's name, rtorrent.rc, another client --
+		// and each is quoted exactly once on its way into the successor's load
+		// command list, which is rtorrent's command language, not XML: the
+		// directory by rTorrent::sendTorrent() (quoteCommandArg(), beside a
+		// typed `mkdir -p`), the throttle name and the connection seed by
+		// rTorrent::additionCommand() in buildReplacementAddition(), and the
+		// label is decoded here because sendTorrent() rawurlencode()s it.
+		// Escaping any of them a second time loads the successor into a new,
+		// empty directory beside the payload, under a throttle name nobody
+		// defined, or with a label nobody chose (round-4 AUD-ESC-02, -14, -15).
+		//
+		// The topic and forum ids are canonicalised instead. Quoting already
+		// keeps a stray comma inside its argument; the spelling is the issue:
 		// "007" names no topic to topicsAwaitingForum() or resolveForum(), so
 		// forwarding it writes a value the successor's own readers refuse.
 		// trim() only, and only on the COPY: transport whitespace is not the
@@ -2437,7 +2447,9 @@ class ruTrackerChecker
 	// the raw value straight to this function, so an $ignoreLabels entry
 	// containing anything that needs escaping (a space, Cyrillic) silently
 	// never matched. The shipped defaults ('tv-sonarr', 'radarr') need no
-	// escaping, which is why this went unnoticed.
+	// escaping, which is why this went unnoticed. A label another client
+	// wrote without encoding matches as it is: both readers hand over the
+	// daemon's own bytes (round-4 AUD-ESC-14).
 	static public function isIgnoredLabel( $label )
 	{
 		global $ignoreLabels;

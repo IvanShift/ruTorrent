@@ -220,3 +220,69 @@ describe("mobile ratio and throttle pickers", () => {
     expect(names.slice(1)).toEqual([HTML_PAYLOAD, "normal"]);
   });
 });
+
+describe("mobile ratio group and channel in the General tab", () => {
+  // R5-REV-03: d.ratiogroup is d.views and d.throttle is d.throttle_name,
+  // both in the daemon's own bytes since round 5. Spliced into an
+  // option[value=...] selector, a '"' in either was a jQuery syntax error:
+  // fillDetails() stopped there and the rest of the tab stayed empty on
+  // every refresh.
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<table><tr id="priority"><td></td><td></td></tr></table>
+       <div id="torrentDetails"><table>
+         <tr id="trackerStatus"><td>Tracker status</td><td></td></tr>
+       </table></div>`
+    );
+    window.thePlugins = {
+      isInstalled: () => false,
+      get: () => ({ allStuffLoaded: true }),
+    };
+    window.theWebUI.ratios = { 0: { name: "zero" }, 1: { name: "one" } };
+    window.theWebUI.throttles = { 0: { name: "slow" }, 1: { name: "fast" } };
+    plugin.loadRatio();
+    plugin.loadThrottle();
+    plugin.ratioGroupsLoaded = true;
+    plugin.throttleLoaded = true;
+  });
+
+  afterEach(() => {
+    plugin.ratioGroupsLoaded = false;
+    plugin.throttleLoaded = false;
+    window.thePlugins = { isInstalled: () => false, get: () => null };
+  });
+
+  // The pickers' values, and the last row fillDetails() writes, which shows
+  // that it ran to its end.
+  function fill(d) {
+    plugin.fillDetails({ addtime: -1, created: 0, msg: "Tracker: [ok]", ...d });
+    return {
+      ratio: $("#torrentRatioGrp").val(),
+      channel: $("#torrentChannel").val(),
+      status: $("#torrentDetails #trackerStatus td:last").text(),
+    };
+  }
+
+  it("selects the ratio group and channel the torrent is in", () => {
+    expect(fill({ ratiogroup: "rat_1", throttle: "thr_0" }))
+      .toEqual({ ratio: "1", channel: "0", status: "Tracker: [ok]" });
+    expect(fill({ ratiogroup: "rat_0", throttle: "thr_1" }))
+      .toEqual({ ratio: "0", channel: "1", status: "Tracker: [ok]" });
+  });
+
+  it("selects unlimited when there is no ratio group or channel", () => {
+    expect(fill({ ratiogroup: "", throttle: "" }))
+      .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
+  });
+
+  it("fills the whole tab when a view or throttle name holds a quote or a backslash", () => {
+    // A view after rat_1 leaves "1x\"y\\" behind the greedy rat_ strip; no
+    // option has that value, so the picker falls back to unlimited.
+    expect(fill({ ratiogroup: 'rat_1x"y\\', throttle: 'a"b\\' }))
+      .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
+    expect(fill({ ratiogroup: 'rat_"]\\', throttle: 'thr_"\\1' }))
+      .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
+  });
+});

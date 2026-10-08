@@ -441,6 +441,100 @@ class XMLRPCProxyTest extends TestCase
 		return $xml.'</data></array></value></param></params></methodCall>';
 	}
 
+	/**
+	 * Without httprpc the WebUI sends a label as d.custom1.set for each
+	 * download followed by d.save_resume for each, so the label reaches the
+	 * session at once rather than at the next periodic session.save
+	 * (ACC-OWN-A-02). The save has to be trusted like the label it follows:
+	 * a mixed-trust batch is refused whole, which would have cost the label.
+	 */
+	public function testALabelBatchCarriesTheSessionSaveOfEachDownload()
+	{
+		$a = str_repeat('A', 40);
+		$b = str_repeat('B', 40);
+		$batch = $this->systemMulticallXml(array(
+			array('d.custom1.set', array($a, 'tv shows')),
+			array('d.custom1.set', array($b, 'tv shows')),
+			array('d.save_resume', array($a)),
+			array('d.save_resume', array($b)),
+		));
+		foreach(array(0x0908, 0x1016, 0x1019) as $version)
+		{
+			$decision = XMLRPCProxy::decide($batch, 'sanitize', XMLRPCProxy::defaultSafeParams(),
+				false, array('rtorrentVersion' => $version));
+			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+				sprintf('a label batch with its saves is one trusted request on 0x%04x: %s',
+					$version, implode(' | ', $decision['log'])));
+			$this->assertEquals(2, substr_count($decision['payload'], 'd.save_resume'),
+				'both saves are forwarded');
+		}
+		$direct = $this->methodCallXml('d.save_resume', array($a));
+		foreach(array(0x0908, 0x1019) as $version)
+		{
+			$decision = XMLRPCProxy::decide($direct, 'sanitize', XMLRPCProxy::defaultSafeParams(),
+				false, array('rtorrentVersion' => $version));
+			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+				sprintf('one download\'s save is the same call alone on 0x%04x', $version));
+		}
+		// The save names a download and nothing else; another shape keeps the
+		// route it had before the WebUI needed it in a batch.
+		foreach(array(array(), array('main'), array($a, 'extra')) as $params)
+		{
+			$xml = $this->methodCallXml('d.save_resume', $params);
+			$modern = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+			$this->assertTrue($modern['action'] === 'send' && !$modern['trusted']
+				&& $modern['payload'] === $xml,
+				'd.save_resume('.implode(',', $params).') keeps the untrusted direct route on 0.16');
+			$old = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(),
+				false, array('rtorrentVersion' => 0x0908));
+			$this->assertEquals('reject', $old['action'],
+				'd.save_resume('.implode(',', $params).') is refused where 0.9.8 would ignore the untrusted flag');
+		}
+		$borrowing = XMLRPCProxy::decide($this->systemMulticallXml(array(
+			array('d.custom1.set', array($a, 'tv')),
+			array('d.save_resume', array('main')),
+		)), 'sanitize', XMLRPCProxy::defaultSafeParams(), false, array('rtorrentVersion' => 0x1019));
+		$this->assertEquals('reject', $borrowing['action'],
+			'a save outside its shape does not borrow the label\'s trust');
+	}
+
+	/**
+	 * Without httprpc each WebUI action that changes a setting rTorrent keeps
+	 * in the session ends its batch with d.save_resume for the downloads it
+	 * changed (R4-NF-2). Every such batch must stay one trusted request, or the
+	 * proxy would refuse the change together with its save.
+	 */
+	public function testWebUiSettingBatchesCarryTheirSessionSaves()
+	{
+		$h = str_repeat('A', 40);
+		$save = array('d.save_resume', array($h));
+		$batches = array(
+			'dsetprio' => array(array('d.priority.set', array($h, 3))),
+			'start' => array(array('d.open', array($h)), array('d.start', array($h))),
+			'stop' => array(array('d.stop', array($h)), array('d.close', array($h))),
+			'pause' => array(array('d.stop', array($h))),
+			'unpause' => array(array('d.start', array($h))),
+			'setprioritize' => array(array('f.prioritize_first.enable', array($h.':f0')),
+				array('f.prioritize_last.disable', array($h.':f0')), array('d.update_priorities', array($h))),
+			'setratio' => array(array('view.set_not_visible', array($h, 'rat_0')),
+				array('d.views.remove', array($h, 'rat_0')),
+				array('d.views.push_back_unique', array($h, 'rat_1')),
+				array('view.set_visible', array($h, 'rat_1'))),
+			'schignore' => array(array('d.stop', array($h)), array('d.throttle_name.set', array($h, 'NULL')),
+				array('d.start', array($h)), array('d.custom.set', array($h, 'sch_ignore', '1'))),
+		);
+		foreach(array(0x0908, 0x1016, 0x1019) as $version)
+			foreach($batches as $action => $calls)
+			{
+				$calls[] = $save;
+				$decision = XMLRPCProxy::decide($this->systemMulticallXml($calls), 'sanitize',
+					XMLRPCProxy::defaultSafeParams(), false, array('rtorrentVersion' => $version));
+				$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+					sprintf('%s with its save is one trusted request on 0x%04x: %s',
+						$action, $version, implode(' | ', $decision['log'])));
+			}
+	}
+
 	public function testNewBatchElevationsKeepUnsupportedDirectCallsUntrusted()
 	{
 		$hash = str_repeat('a', 40);

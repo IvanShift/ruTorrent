@@ -283,7 +283,6 @@ var theUILang =
  showLabelTextOverflow	: "Tillat etiketter å flyte over",
  showOpenStatus		: "Vis åpen status i statuslinje",
  requiresAtLeastRtorrent		: "Krever rTorrent >= {version}", // ... v0.9.7
- phpParameterUnavailable	: "PHP-innstillingen register_argc_argv er satt til OFF. Sett denne til ON, ellers vil enkelte tilleggsmoduler ikke fungere som de skal.",
  addTorrentFailedURL		: "Klarte ikke å legge til torrent. Kan ikke hente lenke.",
  addTorrentFailedFile		: "Klarte ikke å legge til torrent. Hentet innhold er ikke en gyldig torrentfil.",
  addTorrentFailedDirectory	: "Klarte ikke å legge til torrent. Feil nedlastingsmappe oppgitt.",

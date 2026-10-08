@@ -170,12 +170,7 @@ if($handle = opendir('../plugins'))
 		{
 		        if($theSettings->idNotFound)
 				$jResult.="noty(theUILang.idNotFound,'error');";
-			$jResult.="theWebUI.systemInfo.rTorrent = { started: true, iVersion : ".$theSettings->iVersion.", version : '".
-				$theSettings->version."', libVersion : '".$theSettings->libVersion."', apiVersion : ".$theSettings->apiVersion.
-				", socketAllocBudget : ".$theSettings->socketAllocBudget.
-				", socketHttpAllocMax : ".$theSettings->socketHttpAllocMax.
-				", socketFilesAllocMax : ".$theSettings->socketFilesAllocMax.
-				", socketFilesAllocMin : ".$theSettings->socketFilesAllocMin." };\n";
+			$jResult.=$theSettings->systemInfoScript();
 	        	if($do_diagnostic)
 	        	{
 	        	        global $phpUseGzip;
@@ -233,7 +228,6 @@ if($handle = opendir('../plugins'))
 			$phpVersion = substr($phpVersion,0,$pos);
 		$phpIVersion = explode('.',$phpVersion);
 		$phpIVersion = (intval($phpIVersion[0])<<16) + (intval($phpIVersion[1])<<8) + intval($phpIVersion[2]);
-		$phpRequired = false;
 
 		$userPermissions = array( "__hash__"=>"plugins.dat" );
 		$cache = new rCache();
@@ -306,9 +300,6 @@ if($handle = opendir('../plugins'))
 							$jResult.="noty('".$file.": '+theUILang.webExternalNotFoundError+' ('+'".$external."'+').','error');";
 							$extError = true;
 						}
-						else
-						if($external=='php')
-							$phpRequired = true;
 					}
 					if($extError)
 					{
@@ -335,9 +326,6 @@ if($handle = opendir('../plugins'))
 							}
 							else
 								findRemoteEXE($external, $remoteStr, $remoteRequests);
-
-							if($external=='php')
-								$phpRequired = true;
 						}
 						foreach( $info['rtorrent.script.error'] as $external )
 						{
@@ -416,12 +404,9 @@ if($handle = opendir('../plugins'))
 				}
 			}
 		}
-		if($phpRequired)
-		{
-			$val = strtoupper(ini_get("register_argc_argv"));
-			if( $val!=='' && $val!='ON' && $val!='1' && $val!='TRUE' )
-				$jResult.="noty(theUILang.phpParameterUnavailable,'error');";
-		}
+		// No register_argc_argv check: plugins run PHP as a CLI process, which
+		// receives $argv whatever this web SAPI's setting is, and PHP 8.5
+		// deprecates enabling the directive for web requests.
 		foreach($disabled as $name=>$pInfo)
 			$init[] = array( "info" => $pInfo, "name" => $name, "disabled" => true );
 		usort($init,"pluginsSort");

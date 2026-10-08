@@ -11,5 +11,6 @@
  theUILang.datadirDlgCaption	= "토렌트 데이터 디렉토리";
  theUILang.datadirDirNotFound	= "DataDir 플러그인: 올바르지 않은 디렉토리";
  theUILang.datadirSetDirFail	= "DataDir 플러그인: 작업 실패";
+ theUILang.datadirStoppedAfterCheck	= "DataDir plugin: the directory was changed, but rTorrent stopped the download because its hash check did not find the complete data there";
 
 thePlugins.get("datadir").langLoaded();

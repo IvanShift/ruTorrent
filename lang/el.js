@@ -282,7 +282,6 @@ var theUILang =
  showLabelTextOverflow	: "Να επιτρέπεται υπερχείλιση του κειμένου ετικέτας",
  showOpenStatus		: "Προβολή της κατάστασης ανοιχτό στη μπάρα κατάστασης",
  requiresAtLeastRtorrent		: "Απαιτείται rTorrent >= {version}", // ... v0.9.7
- phpParameterUnavailable	: "Η οδηγία register_argc_argv της PHP είναι ορισμένη στο OFF. Αλλάξτε τη σε ON, αλλιώς κάποια πρόσθετα δεν θα λειτουργούν σωστά.",
  addTorrentFailedURL		: "Αποτυχία προσθήκης αρχείου torrent. Αδυναμία ανάκτησης URL.",
  addTorrentFailedFile		: "Αποτυχία προσθήκης αρχείου torrent. Το ανακτημένο περιεχόμενο δεν είναι έγκυρο αρχείο torrent.",
  addTorrentFailedDirectory	: "Αποτυχία προσθήκης αρχείου torrent. Έχει οριστεί λάθος φάκελος για τις λήψεις.",

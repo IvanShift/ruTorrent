@@ -11,6 +11,7 @@ require_once( dirname(__FILE__)."/../../php/rtorrent.php");
 
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once( dirname(__FILE__)."/update.php");
+require_once( dirname(__FILE__)."/retryreset.php");
 require_once( dirname(__FILE__)."/retrackers.php");
 
 $script = $rootPath.'/plugins/retrackers/run.sh';
@@ -18,16 +19,22 @@ $php = Utility::getPHP();
 $user = User::getUser();
 
 $failure = null;
-$ok = retrackersRunLifecycleInit($user, $script, $php, $jResult, $failure);
+$retrackersAdapter = new RetrackersLifecycleRpcAdapter();
+$ok = retrackersRunLifecycleInit($user, $script, $php, $jResult, $failure, $retrackersAdapter);
 // A failed init may retain a daemon hook; getplugins can also disable us
 // after successful init if its deferred daemon PHP check fails. Preserve
 // the guarded done path in either case.
 $theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 $jResult .= "plugin.shutdownWhileDisabled = true;";
-if($ok)
+// Jobs in flight only postpone a lifecycle change and leave the installed
+// hooks untouched, so this session keeps the plugin after the visible notice.
+if($ok || $failure === 'recovery-in-flight')
 {
 	$trks = rRetrackers::load();
 	$jResult.=$trks->get();
+	// Exhausted queue jobs are never retried on their own; init.js tells the
+	// user once per session (one rows read, on the native queue only).
+	$jResult.=RetrackersRetryReset::sessionNotice($retrackersAdapter, $user);
 }
 else
 	$jResult .= "plugin.disable(); noty('retrackers: '+theUILang.pluginCantStart,'error');";

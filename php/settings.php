@@ -39,6 +39,16 @@ class rTorrentSettings
 	public $tz = null;
 	public $ip = '0.0.0.0';
 
+	// The form of the daemon strings this object holds: the directory,
+	// session path, home, session name and versions obtain() reads. store()
+	// stamps it. A cache stored before rXMLRPCRequest handed out the daemon's
+	// own bytes carries no format, so it unserializes as 0 and holds every
+	// quote and backslash escaped; get() reads the daemon once more instead
+	// of using it (AUD-ESC-12). Raise VALUE_FORMAT whenever those strings
+	// change form.
+	const VALUE_FORMAT = 1;
+	public $valueFormat = 0;
+
 	static private $theSettings = null;
 
 	private function __construct()
@@ -172,6 +182,9 @@ class rTorrentSettings
 		// readers retry it on a cache miss before resolving command aliases.
 		if(!$this->linkExist)
 			return(false);
+		// get() never hands out an object in an older value format, so what
+		// any process stores holds the strings this code's parser read.
+		$this->valueFormat = self::VALUE_FORMAT;
 		$cache = new rCache();
 		return($cache->set($this));
 	}
@@ -187,6 +200,18 @@ class rTorrentSettings
 				$cache = new rCache();
 				if(!$cache->get(self::$theSettings))
 					self::$theSettings->obtain();
+				else if(self::$theSettings->valueFormat !== self::VALUE_FORMAT)
+				{
+					// As on a cache miss, but the plugin registrations stored
+					// with the old values stay until getplugins renews them.
+					$stale = self::$theSettings;
+					self::$theSettings = new rTorrentSettings();
+					if(is_array($stale->plugins))
+						self::$theSettings->plugins = $stale->plugins;
+					if(is_array($stale->hooks))
+						self::$theSettings->hooks = $stale->hooks;
+					self::$theSettings->obtain();
+				}
 			}
 		}
 		return(self::$theSettings);
@@ -345,6 +370,19 @@ class rTorrentSettings
 				}
 			}
 		}
+	}
+	// The WebUI's view of a reachable daemon, as one script statement. The
+	// versions are daemon strings in the daemon's own bytes, so they travel
+	// as JSON::jsValue() literals: a quote or a backslash in them must not
+	// end the literal it sits in.
+	public function systemInfoScript()
+	{
+		return("theWebUI.systemInfo.rTorrent = { started: true, iVersion : ".$this->iVersion.", version : ".
+			JSON::jsValue($this->version).", libVersion : ".JSON::jsValue($this->libVersion).", apiVersion : ".$this->apiVersion.
+			", socketAllocBudget : ".$this->socketAllocBudget.
+			", socketHttpAllocMax : ".$this->socketHttpAllocMax.
+			", socketFilesAllocMax : ".$this->socketFilesAllocMax.
+			", socketFilesAllocMin : ".$this->socketFilesAllocMin." };\n");
 	}
 	public function getCommand($cmd)
 	{
@@ -534,8 +572,11 @@ class rTorrentSettings
 		$allowed = $dir === $top || strpos($dir, $top.'/') === 0;
 		// Pickers must return the configured top spelling for lexical consumers,
 		// after enforcing the same physical boundary as other resolved callers.
-		if($allowed && $resolve_links && $preserve_top)
-			$dir = ($logicalTop.substr($dir, strlen($top))) ?: '/';
+		// An empty top has no spelling to keep: realpath('') is the working
+		// directory, whose prefix the mapping would cut off. Any other top
+		// spelling leaves the mapped path nonempty.
+		if($allowed && $resolve_links && $preserve_top && $logicalTop !== '')
+			$dir = $logicalTop.substr($dir, strlen($top));
 		return($allowed);
 	}
 	// The file and HTTP socket limits belong to libtorrent's socket manager:

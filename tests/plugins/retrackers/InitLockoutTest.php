@@ -23,11 +23,13 @@ class InitLockoutTest extends TestCase
             '<?php class rRetrackers { public static function load() { return new self(); } public function get() { return ""; } }');
         file_put_contents($this->fixture . '/plugins/retrackers/update.php', <<<'STUB'
 <?php
-function retrackersRunLifecycleInit($user, $script, $php, &$js, &$failure)
+class RetrackersLifecycleRpcAdapter {}
+function retrackersRunLifecycleInit($user, $script, $php, &$js, &$failure, $adapter = null)
 {
+    $GLOBALS['initAdapter'] = $adapter;
     if (getenv('RT_LOCKOUT_INIT_OK') === '1') return true;
-    $failure = 'receipt-ledger-corrupt';
-    $js .= "noty('retrackers: receipt-ledger-corrupt','error');";
+    $failure = getenv('RT_LOCKOUT_INIT_FAILURE') ?: 'receipt-ledger-corrupt';
+    $js .= "noty('retrackers: " . $failure . "','error');";
     return false;
 }
 function retrackersRunLifecycleDone($user, &$js, &$failure)
@@ -36,6 +38,19 @@ function retrackersRunLifecycleDone($user, &$js, &$failure)
     $failure = 'hook-teardown-pending';
     $js .= "noty('retrackers: hook-teardown-pending','error');";
     return false;
+}
+STUB
+        );
+        // The notice must read through the adapter that init just attested.
+        file_put_contents($this->fixture . '/plugins/retrackers/retryreset.php', <<<'STUB'
+<?php
+final class RetrackersRetryReset
+{
+    public static function sessionNotice($adapter, $user)
+    {
+        return 'plugin.terminalJobs = {"user":"' . $user . '","sameAdapter":' .
+            ($adapter instanceof RetrackersLifecycleRpcAdapter && $adapter === $GLOBALS['initAdapter'] ? 'true' : 'false') . '};';
+    }
 }
 STUB
         );
@@ -151,6 +166,9 @@ RUNNER
             strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false &&
             strpos($init['init_output'], 'plugin.disable()') === false,
             'successful init prepares shutdown before a later remote check can disable the plugin');
+        $this->assertTrue(substr_count($init['init_output'], 'plugin.terminalJobs = ') === 1 &&
+            strpos($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') !== false,
+            'a successful session init asks once for the terminal-jobs notice through its own attested adapter');
 
         $info = file_get_contents(__DIR__ . '/../../../plugins/retrackers/plugin.info');
         $this->assertTrue(strpos($info, 'rtorrent.external.error: php') !== false,
@@ -170,6 +188,18 @@ RUNNER
             'late-disabled plugin can retry done and keeps the path on refusal');
     }
 
+    public function testJobsInFlightPostponeInitWithoutDisablingThePlugin()
+    {
+        $init = $this->runFixture('run-init.php', array('RT_LOCKOUT_INIT_FAILURE' => 'recovery-in-flight'));
+        if ($init === false) return;
+        $this->assertTrue($init['registered_before'] === true &&
+            strpos($init['init_output'], 'plugin.disable()') === false &&
+            strpos($init['init_output'], 'retrackers: recovery-in-flight') !== false,
+            'jobs in flight only postpone a lifecycle change; the session keeps the plugin after the notice');
+        $this->assertTrue(substr_count($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') === 1,
+            'a session that keeps the plugin still reports exhausted queue jobs');
+    }
+
     public function testFailedInitKeepsAReachableDoneAttemptAndItsRefusalRetryable()
     {
         $init = $this->runFixture('run-init.php');
@@ -178,6 +208,8 @@ RUNNER
             strpos($init['init_output'], 'plugin.disable()') !== false &&
             strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false,
             'failed init registers a disabled plugin and exposes its shutdown retry');
+        $this->assertTrue(strpos($init['init_output'], 'plugin.terminalJobs') === false,
+            'a disabled plugin pays no terminal-jobs read and shows no notice');
 
         $done = $this->runFixture('run-done.php');
         if ($done === false) return;

@@ -166,8 +166,21 @@ if( $is_ok &&
 if( $is_ok )
 {
 	Debug( "label           : \"".$label."\"" );
-	if( ($label != "") && rtExec( "d.set_custom1", array( $hash, UTF::raw_url_encode( $label ) ), $autodebug_enabled ))
-		rTorrentSettings::get()->pushEvent( "LabelChanged", array( "hash"=>$hash, "label"=>$label ) );
+	if( $label != "" )
+	{
+		// rTorrent writes d.custom1 to the session only when it saves the
+		// download, and this background script sets the label after the
+		// insert's own session save, so a crash or `docker kill` before the
+		// periodic session.save lost it (ACC-SCALE-03). The save follows the
+		// label in the same request, as it does for a label set in the WebUI.
+		$req = new rXMLRPCRequest( array(
+			new rXMLRPCCommand( "d.set_custom1", array( $hash, UTF::raw_url_encode( $label ) ) ),
+			new rXMLRPCCommand( "d.save_resume", $hash ) ) );
+		if( $req->success() )
+			rTorrentSettings::get()->pushEvent( "LabelChanged", array( "hash"=>$hash, "label"=>$label ) );
+		else
+			Debug( "label request failed" );
+	}
 }
 
 Debug( "--- end ---" );

@@ -6,6 +6,17 @@ final class ErasedataManifestCodec
 	const CLEANUP_VERSION = 3;
 	const OPERATION_REMOVE_PAYLOAD = 'remove_payload';
 	const OPERATION_CLEANUP_OBSOLETE = 'cleanup_obsolete';
+	// A remove-payload manifest whose paths hold a backslash says that they are
+	// the daemon's own bytes (erasedataCollectPaths(), as php/xmlrpc.php hands
+	// them out since AUD-ESC). Every release before this mark wrote the paths
+	// as the parser then handed them over, every '"' as '\"' and every '\' as
+	// '\\', so an unmarked path with a backslash may name a file other than
+	// the payload; decode reports it as paths_ambiguous and the collector
+	// retains it, never unescaping it. Without a backslash both spellings are
+	// the same bytes, and the layout every collector reads is left as it was.
+	// The mark stays: it is the only thing that tells such a manifest from a
+	// new one.
+	const PATH_BYTES_DAEMON = 'daemon';
 	const MAX_MANIFEST_BYTES = 67108864; // 64 MiB
 	const MAX_FILES = 1000000;
 	const MAX_PATH_BYTES = 1048576; // 1 MiB
@@ -132,7 +143,16 @@ final class ErasedataManifestCodec
 				return(false);
 		}
 
-		$prefix = '{"version":2,"hash":"'.$canonicalHash.'","path_encoding":"base64","files":[';
+		$marked = is_string($base) && strpos($base, '\\') !== false;
+		if(!$marked)
+			foreach($files as $f)
+				if(is_string($f) && strpos($f, '\\') !== false)
+				{
+					$marked = true;
+					break;
+				}
+		$prefix = '{"version":2,"hash":"'.$canonicalHash.'","path_encoding":"base64",'
+			.($marked ? '"path_bytes":"'.self::PATH_BYTES_DAEMON.'",' : '').'"files":[';
 		$middle = '],"base":"';
 		$suffix = '","multi":'.($multi ? 'true' : 'false').',"force":'.$normalizedForce."}\n";
 		$manifestBytes = self::addWithinLimit(
@@ -169,6 +189,10 @@ final class ErasedataManifestCodec
 			"version" => self::VERSION,
 			"hash" => $canonicalHash,
 			"path_encoding" => "base64",
+		);
+		if($marked)
+			$data["path_bytes"] = self::PATH_BYTES_DAEMON;
+		$data += array(
 			"files" => $encodedFiles,
 			"base" => base64_encode($base),
 			"multi" => $multi,
@@ -513,7 +537,11 @@ final class ErasedataManifestCodec
 	private static function decodeVersionTwoJSON(array $json, $canonicalExpectedHash)
 	{
 		$expectedKeys = array('version', 'hash', 'path_encoding', 'files', 'base', 'multi', 'force');
+		$marked = array_key_exists('path_bytes', $json);
+		if($marked)
+			$expectedKeys[] = 'path_bytes';
 		if(!self::hasExactKeys($json, $expectedKeys) || $json['version'] !== self::VERSION
+			|| ($marked && $json['path_bytes'] !== self::PATH_BYTES_DAEMON)
 			|| !is_string($json['hash']) || !preg_match('/^[0-9A-F]{40}$/D', $json['hash'])
 			|| $json['hash'] !== $canonicalExpectedHash
 			|| $json['path_encoding'] !== 'base64' || !is_bool($json['multi'])
@@ -529,6 +557,7 @@ final class ErasedataManifestCodec
 
 		$seen = array();
 		$decodedFiles = array();
+		$backslash = strpos($baseRaw, '\\') !== false;
 		foreach($json['files'] as $fEnc)
 		{
 			$fRaw = self::decodeCanonicalBase64($fEnc);
@@ -537,8 +566,13 @@ final class ErasedataManifestCodec
 				return(false);
 			$seen[$fRaw] = true;
 			$decodedFiles[] = $fRaw;
+			$backslash = $backslash || strpos($fRaw, '\\') !== false;
 		}
 		if(!$json['multi'] && ($numFiles !== 1 || $decodedFiles[0] !== $baseRaw))
+			return(false);
+		// encode() marks exactly the manifests whose paths hold a backslash; a
+		// mark on any other is not its writing.
+		if($marked && !$backslash)
 			return(false);
 		return(array(
 			'version' => self::VERSION,
@@ -550,6 +584,8 @@ final class ErasedataManifestCodec
 			'force' => $json['force'],
 			'keep_base' => false,
 			'legacy' => false,
+			// Paths are returned as written, never unescaped.
+			'paths_ambiguous' => !$marked && $backslash,
 		));
 	}
 

@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/PermissiveDirectorySettings.php');
 require_once(__DIR__ . '/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/../../php/rtorrent.php');
 
@@ -12,10 +13,7 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
  */
 class AddPathSequenceSettings extends rTorrentSettings
 {
-	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
-	}
+	use PermissiveDirectorySettings;
 }
 
 /**

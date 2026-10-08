@@ -55,7 +55,7 @@ class SetDirActionCollisionTest extends TestCase
 	 * not where the data already is.
 	 */
 	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1,
-		$rawEquals = false, $malformed = false)
+		$rawEquals = false, $malformed = false, $afterStart = array(0, 1))
 	{
 		$this->removeTree($this->base);
 		if ($this->daemon !== null)
@@ -95,11 +95,16 @@ class SetDirActionCollisionTest extends TestCase
 		}
 		if ($moveFiles) $replies[] = array(0); // detached payload worker
 		else {
+			// The request read the claim ABI above; the change does not read it
+			// again. A restored start is followed by its hash check outcome.
 			$receipt = 'token:1|1|1|1|local-1';
-			$replies = array_merge($replies, array($methods, array_fill(0, 9, ''),
-				$methods, array('absent'), array($isOpen, 'local-1', $this->base . '/src'),
+			$replies = array_merge($replies, array(array_fill(0, 9, ''),
+				array('absent'), array($isOpen, 'local-1', $this->base . '/src'),
 				array('absent'), array($receipt), array($this->base . '/src'),
-				array(1), array(1), array('done|S|' . $receipt), array(1)));
+				array(1), array(1), array('done|S|' . $receipt), array(1), $afterStart,
+				// A stop is kept as the download's outcome: its directory, the
+				// custom key with d.message, and a session save.
+				array($this->base . '/dst'), array(0, 0), array(0)));
 		}
 		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
@@ -133,6 +138,7 @@ class SetDirActionCollisionTest extends TestCase
 
 		return array(
 			'printed' => $printed,
+			'answer' => $answer,
 			'errors' => $answer['errors'],
 			'calls' => $this->daemon->calls(),
 			'bodies' => $this->daemon->bodies(),
@@ -262,12 +268,38 @@ class SetDirActionCollisionTest extends TestCase
 	{
 		$r = $this->setTheDataDirectory(array('2.bin'), 1, null, 0);
 
-		$this->assertEquals(array(), $r['errors'],
+		$this->assertEquals(array('errors' => array()), $r['answer'],
 			'leaving the data where it is cannot collide; action.php answered: '
 			. $r['printed']);
 		$this->assertTrue(!in_array('f.multicall', $r['calls'], true),
 			'so the file list is not read; calls: ' . implode(', ', $r['calls']));
 		$this->assertTrue($r['applied'],
 			'and the directory change is confirmed; calls: ' . implode(', ', $r['calls']));
+		$this->assertSame(1, count(array_keys($r['calls'], 'system.listMethods', true)),
+			'one request reads the claim ABI once; calls: ' . implode(', ', $r['calls']));
+		$this->assertTrue(!in_array('d.message.set', $r['calls'], true),
+			'a download that survives its hash check gets no warning');
+	}
+
+	/**
+	 * The new directory does not hold the data: the claim restores the start,
+	 * rTorrent's own hash check stops the download again, and the dialog and
+	 * the torrent's message both say so instead of a silent success.
+	 */
+	public function testADownloadStoppedAfterTheChangeIsAVisibleWarning()
+	{
+		$r = $this->setTheDataDirectory(array(), 1, null, 0, false, false, array(0, 0));
+
+		$this->assertEquals(array('errors' => array(), 'warnings' => array(array(
+			'desc' => 'theUILang.datadirStoppedAfterCheck', 'prm' => 'stopped-after-hash-check'))),
+			$r['answer'], 'the dialog sees the applied change and the stop: ' . $r['printed']);
+		$this->assertTrue(in_array('d.message.set', $r['calls'], true),
+			'the torrent message names the stop; calls: ' . implode(', ', $r['calls']));
+		$written = preg_grep('/x-datadir-outcome/', $r['bodies']);
+		$this->assertSame(1, count($written), 'the stop is kept on the download once (ACC-OWNB-01)');
+		$message = (string)reset($written);
+		$this->assertTrue(strpos($message, 'd.message.set') !== false && strpos($message,
+			'datadir: stopped-after-hash-check directory=' . htmlspecialchars($this->base . '/dst', ENT_COMPAT, 'UTF-8')) !== false,
+			'with the classified message naming the directory: ' . $message);
 	}
 }

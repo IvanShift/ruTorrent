@@ -4,7 +4,10 @@
 #
 #   rt-lab.sh up   <image> <port> [name]   start, overlay, wait for rtorrent
 #   rt-lab.sh sync <name>                  re-overlay after editing files locally
-#   rt-lab.sh down <name>                  remove the container
+#   rt-lab.sh down <name>                  remove the container and its anonymous volumes
+#
+# Containers this script starts carry the label rt-lab.owner=<name>; up and down
+# remove only such a container, never one that merely shares the name.
 #
 # Why copy instead of `-v repo:/rutorrent/app`: a bind mount hides everything the image
 # adds to that directory -- the plugins baked in at build time (geoip2, ratiocolor) and
@@ -16,6 +19,28 @@ set -eu
 # editing the file; REPO= still overrides it for an out-of-tree checkout.
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 APP=/rutorrent/app
+
+# Packaged app files are 0644 and executables and directories 0755. A worktree
+# file that is group writable (umask 002) would make the image's native actor-path
+# admission refuse the next start: "leaf grants group or other write access".
+NORMALIZE_MODES='for path do
+    if [ -L "$path" ]; then continue; fi
+    if [ -d "$path" ] || [ -x "$path" ]; then chmod 0755 -- "$path"; else chmod 0644 -- "$path"; fi
+done'
+
+# Remove a container only when this script created it; -v also removes the
+# image's anonymous /config and /data volumes.
+remove_owned() {
+    if ! docker inspect --type container "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+    owner=$(docker inspect --type container -f '{{index .Config.Labels "rt-lab.owner"}}' "$1") || return 1
+    if [ "$owner" != "$1" ]; then
+        echo "rt-lab: container $1 is not labelled rt-lab.owner=$1; refusing to remove it" >&2
+        return 1
+    fi
+    docker rm -f -v "$1" >/dev/null
+}
 
 overlay() (
     name="$1"
@@ -114,9 +139,12 @@ MANIFEST
     docker cp "$archive" "$name":"$container_archive"
     # A failed manifest upload cannot leave an unrecorded newly overlaid file.
     docker cp "$files" "$name:$container_pending"
+    # Modes are normalized before the inventory is published, so a failed
+    # normalization leaves the pending inventory for the next sync.
     docker exec -u root "$name" sh -c \
-        'tar -C "$1" -xf "$2" && mv -f "$3" "$4" && rm -f "$2"' \
-        _ "$APP" "$container_archive" "$container_pending" "$container_files"
+        'tar -C "$1" -xf "$2" && (cd "$1" && xargs -0 -r sh -ec "$5" _ < "$3") &&
+            mv -f "$3" "$4" && rm -f "$2"' \
+        _ "$APP" "$container_archive" "$container_pending" "$container_files" "$NORMALIZE_MODES"
     # The entrypoint runs everything as `torrent`; files arrive owned by root.
     docker exec -u root "$name" sh -c "chown -R torrent:torrent $APP" 2>/dev/null || true
     n=$(tr -cd '\0' < "$files" | wc -c)
@@ -127,8 +155,8 @@ MANIFEST
 case "${1:-}" in
 up)
     img="${2:?image}"; port="${3:?port}"; name="${4:-rt-lab}"
-    docker rm -f "$name" >/dev/null 2>&1 || true
-    docker run -d --name "$name" -p "$port":8080 "$img" >/dev/null
+    remove_owned "$name"
+    docker run -d --name "$name" --label "rt-lab.owner=$name" -p "$port":8080 "$img" >/dev/null
     # Wait for the daemon's socket, not just for the container: the entrypoint
     # generates config and starts rtorrent well after the container is "up".
     i=0
@@ -147,9 +175,14 @@ sync)
     overlay "${2:-rt-lab}"
     ;;
 down)
-    docker rm -f "${2:-rt-lab}" >/dev/null 2>&1 || true
-    echo "removed ${2:-rt-lab}"
+    name="${2:-rt-lab}"
+    if ! docker inspect --type container "$name" >/dev/null 2>&1; then
+        echo "rt-lab: no container $name"
+        exit 0
+    fi
+    remove_owned "$name"
+    echo "removed $name and its anonymous volumes"
     ;;
 *)
-    sed -n '2,12p' "$0"; exit 1 ;;
+    sed -n '2,15p' "$0"; exit 1 ;;
 esac

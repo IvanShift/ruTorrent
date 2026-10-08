@@ -170,9 +170,12 @@ class RuTrackerCustomProjection
 {
     // Test commands keep raw scalar arguments, while php/xmlrpc.php wraps
     // every production argument in rXMLRPCParam and XML-escapes strings at
-    // construction time. Read the original logical value at this boundary so
-    // the expected projection is compared with the decoder's unescaped
-    // readback rather than with transport markup such as "&amp;".
+    // construction time. Read the original logical value at this boundary:
+    // the readback in write() is php/xmlrpc.php's ->val, the daemon's own
+    // bytes with the XML entities decoded and nothing escaped, so both sides
+    // are compared byte for byte -- never transport markup such as "&amp;".
+    // Until 2026-10 ->val carried every '"' and '\' backslash-escaped, and a
+    // projection holding either could not be proved.
     static private function parameterValue($parameter)
     {
         if (is_object($parameter) && property_exists($parameter, 'value')) {
@@ -223,6 +226,7 @@ class RuTrackerCustomProjection
             $mismatches = array();
             $index = 0;
             foreach ($expected as $field => $value) {
+                // Daemon bytes against the logical value (parameterValue()).
                 if ((string) $verify->val[$index] !== $value) $mismatches[] = $field;
                 $index++;
             }

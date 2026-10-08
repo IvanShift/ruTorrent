@@ -64,10 +64,40 @@ case "$1" in
         if [[ "$target_path" == /tmp/* ]]; then target_path="$RT_LAB_TEST_CONTAINER_TMP/${target_path#/tmp/}"; fi
         cp "$source_path" "$target_path"
         ;;
+    inspect)
+        shift
+        [ "$1" = --type ] && [ "$2" = container ] || { echo "inspect without --type container" >&2; exit 1; }
+        shift 2
+        if [ "$1" = -f ]; then
+            [ -e "$RT_LAB_TEST_STATE/$3" ] || exit 1
+            printf '%s\n' "$(cat "$RT_LAB_TEST_STATE/$3")"
+            exit 0
+        fi
+        [ -e "$RT_LAB_TEST_STATE/$1" ]
+        ;;
+    run)
+        printf '%s\n' "$*" >> "$RT_LAB_TEST_STATE.run.log"
+        name=''; label=''
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --name) name="$2"; shift ;;
+                --label) label="${2#rt-lab.owner=}"; shift ;;
+            esac
+            shift
+        done
+        printf '%s' "$label" > "$RT_LAB_TEST_STATE/$name"
+        echo mock-container-id
+        ;;
+    rm)
+        printf '%s\n' "$*" >> "$RT_LAB_TEST_STATE.rm.log"
+        rm -f "$RT_LAB_TEST_STATE/${*: -1}"
+        ;;
     exec)
         shift
         if [ "$1" = -u ]; then shift 2; fi
         shift # container name
+        # up waits for the daemon socket and prints its version.
+        if [ "$1" = test ] || [ "$1" = rtorrent ]; then echo "mock $1"; exit 0; fi
         [ "$1" = sh ] && [ "$2" = -c ]
         command_text="$(printf '%s' "$3" | sed "s#/tmp/#$RT_LAB_TEST_CONTAINER_TMP/#g")"
         command_text="${command_text//\/rutorrent\/app/$RT_LAB_TEST_APP}"
@@ -86,6 +116,15 @@ case "$1" in
 esac
 MOCK_DOCKER
 chmod +x "$scratch/bin/docker"
+# Overlaid files take the packaged modes; a tracked symlink is never followed.
+printf 'plain\n' > "$repo/mode-plain.php"
+chmod 0664 "$repo/mode-plain.php" "$repo/keep.php"
+printf '#!/bin/sh\n' > "$repo/mode-tool.sh"
+chmod 0775 "$repo/mode-tool.sh"
+printf 'outside\n' > "$scratch/outside"
+chmod 0600 "$scratch/outside"
+ln -s "$scratch/outside" "$repo/mode-link"
+git -C "$repo" add mode-plain.php mode-tool.sh mode-link
 lab_name="lab-$(basename "$scratch")"
 run_lab_at() {
     REPO="$1" RT_LAB_TEST_APP="$app" RT_LAB_TEST_CONTAINER_TMP="$scratch/container-tmp" \
@@ -93,6 +132,13 @@ run_lab_at() {
 }
 run_lab() { run_lab_at "$repo"; }
 run_lab > "$scratch/first.log"
+[ "$(stat -c %a "$app/mode-plain.php")" = 644 ] && [ "$(stat -c %a "$app/keep.php")" = 644 ] || {
+    echo 'a group-writable worktree file kept its mode in the overlay' >&2; exit 1
+}
+[ "$(stat -c %a "$app/mode-tool.sh")" = 755 ] || { echo 'an executable lost its mode in the overlay' >&2; exit 1; }
+[ -L "$app/mode-link" ] && [ "$(stat -c %a "$scratch/outside")" = 600 ] || {
+    echo 'mode normalization followed a tracked symlink' >&2; exit 1
+}
 [ ! -e "$app/old.php" ] || { echo 'staged deletion survived first overlay' >&2; exit 1; }
 [ ! -e "$app/rename-old.php" ] || { echo 'staged rename left the old path in the overlay' >&2; exit 1; }
 [ ! -e "$app/committed-obsolete.php" ] || { echo 'committed deletion survived first overlay' >&2; exit 1; }
@@ -209,4 +255,36 @@ fi
 [ -e "$app/image-extra.php" ] && [ -e "$app/keep.php" ] || {
     echo 'failed history lookup changed the app' >&2; exit 1
 }
+# up and down remove only a container this script created, with its anonymous volumes.
+rm -f "$scratch/bin/git"
+state="$scratch/docker-state"
+mkdir -p "$state"
+printf 'exit 0\n' > "$scratch/bin/curl"
+chmod +x "$scratch/bin/curl"
+run_tool() {
+    REPO="$repo" RT_LAB_TEST_APP="$app" RT_LAB_TEST_CONTAINER_TMP="$scratch/container-tmp" \
+        RT_LAB_TEST_STATE="$state" TMPDIR="$scratch/tmp" PATH="$scratch/bin:$PATH" "$runner" "$@"
+}
+: > "$state/foreign"
+if run_tool up image:test 18080 foreign > "$scratch/up-foreign.log" 2>&1; then
+    echo 'up replaced an unlabelled container that shares its name' >&2; exit 1
+fi
+grep -q 'refusing to remove' "$scratch/up-foreign.log" && [ ! -e "$state.rm.log" ] && [ ! -e "$state.run.log" ] || {
+    echo 'up touched a container it did not create' >&2; exit 1
+}
+run_tool up image:test 18080 lab-owned > "$scratch/up.log"
+grep -q -- '--label rt-lab.owner=lab-owned' "$state.run.log" || { echo 'up did not label its container' >&2; exit 1; }
+run_tool down lab-owned > "$scratch/down.log"
+[ "$(cat "$state.rm.log")" = 'rm -f -v lab-owned' ] && [ ! -e "$state/lab-owned" ] || {
+    echo 'down did not remove its container with the anonymous volumes' >&2; exit 1
+}
+printf 'someone-else' > "$state/other"
+if run_tool down other > "$scratch/down-other.log" 2>&1; then
+    echo 'down removed a container labelled for another owner' >&2; exit 1
+fi
+grep -q 'refusing to remove' "$scratch/down-other.log" && [ "$(wc -l < "$state.rm.log")" -eq 1 ] || {
+    echo 'down touched a container it did not create' >&2; exit 1
+}
+run_tool down absent | grep -q 'no container absent' || { echo 'down of an absent container failed' >&2; exit 1; }
+echo 'rt-lab-test.sh: overlay modes and owned up/down passed'
 echo 'rt-lab-test.sh: staged and committed deletions, staged and committed renames, prior-overlay deletions, failed manifest publish, partial extraction recovery, file-to-directory type change, and image extras, runtime conf, revived files, and deletion/history failures passed'

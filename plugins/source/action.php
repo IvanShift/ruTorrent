@@ -49,7 +49,7 @@ if(isset($_POST['hash']))
 				{
 					list($hash, $filepath, $file) = $entry;
 					$filename = $file->info['name']."-".$fn.".torrent";
-					$isMetadata = strcasecmp(basename($filepath), $hash . '.meta') === 0;
+					$isMetadata = rTorrent::isMetadataStubName(basename($filepath), $hash);
 					$added = $isMetadata
 						? @$zip->addFromString($filename, (string)$file)
 						: @$zip->addFile($filepath, $filename);

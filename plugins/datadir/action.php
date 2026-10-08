@@ -57,10 +57,11 @@ foreach( $vars as $var )
 	}
 }
 
-if(!rTorrentSettings::get()->correctDirectory($datadir, true))
-{
+// One validation of the hash, the configured top (physical path) and the
+// destination's existing ancestor; the CLI worker uses the same function.
+$refusal = rtDataDirRequestRefusal( $hash, $datadir );
+if( $refusal === 'destination-invalid' )
 	$datadir = '';
-}
 
 Debug( "" );
 Debug( "--- begin ---" );
@@ -71,58 +72,48 @@ Debug(
 	", \"".($move_fastresume == '0' ? "don't " : "")."fast resume\"" );
 
 $res = false;
+$warnings = array();
 
-if( $hash && strlen( $datadir ) > 0 )
+if( $refusal === 'invalid-arguments' || $refusal === 'destination-invalid' )
 {
-	$claimCapability = rtDataDirClaimCapability();
-	if( $claimCapability !== 'available' )
+	// Neither a malformed hash nor a refused path is copied into the log or
+	// the answer; the dialog gets the classified reason. A refused path comes
+	// with a validated hash, which names the download like every other refusal.
+	FileUtil::toLog( $refusal === 'invalid-arguments' ? 'datadir: setdatadir refused: invalid hash'
+		: 'datadir: setdatadir refused hash='.strtoupper($hash).' reason=destination-invalid' );
+	$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal);
+}
+else
+{
+	// The claim ABI is read once per request.
+	if( $refusal === '' )
+		$refusal = rtDataDirClaimRefusal();
+	$taken = '';
+	if( $refusal === '' && $move_datafiles )
 	{
-		$reason = $claimCapability === 'unsupported'
-			? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed';
-		FileUtil::toLog( 'datadir: setdatadir refused hash='.$hash.' reason='.$reason );
-		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason);
+		try {
+			$taken = rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled);
+		} catch(Exception $e) { $refusal = $e->getMessage(); }
+	}
+	if( $refusal !== '' || $taken !== '' )
+	{
+		FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.($refusal !== '' ? $refusal : 'occupied-destination'));
+		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal !== '' ? $refusal : $taken);
+	}
+	elseif( !$move_datafiles )
+	{
+		// A directory-only change runs here, so the dialog sees its real
+		// result. It never waits behind a payload move: a busy profile lock
+		// answers datadir-busy, and payload jobs are not replayed in FPM.
+		$res = rtDataDirApplyLocked($hash, $datadir, $move_addpath != 0, false,
+			$move_fastresume != 0, $datadir_debug_enabled, true, $failure, $warning);
+		if( !$res )
+			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$failure);
+		elseif( $warning !== '' )
+			$warnings[] = array('desc'=>"theUILang.datadirStoppedAfterCheck", 'prm'=>$warning);
 	}
 	else
 	{
-		$taken = '';
-		$preflightReason = DataDirMoveIntent::destinationReason($datadir);
-		if($preflightReason === '')
-		{
-			try {
-				$taken = $move_datafiles
-					? rtDataDirCollision($hash, $datadir, $move_addpath, $datadir_debug_enabled)
-					: '';
-			} catch(Exception $e) { $preflightReason = $e->getMessage(); }
-		}
-		if($preflightReason !== '')
-		{
-			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.$preflightReason);
-			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$preflightReason);
-		}
-		elseif($taken !== '')
-		{
-			FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason=occupied-destination');
-			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$taken);
-		}
-		elseif(!$move_datafiles)
-		{
-			// This operation is short and has no payload loop. Return its real
-			// result so errors cannot hide behind a successful worker launch.
-			$lock = null;
-			try {
-				$lock = rtDataDirLock(false);
-				rtDataDirRecover();
-				$res = rtDataDirApply($hash, $datadir, $move_addpath != 0, false,
-					$move_fastresume != 0, $datadir_debug_enabled, $reason);
-			} catch(Exception $e) {
-				$reason = $e->getMessage();
-				FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.$reason);
-			} finally { rtDataDirUnlock($lock); }
-			if(!$res)
-				$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$reason ?: 'change-unconfirmed');
-		}
-		else
-		{
 		$script_dir = rtAddTailSlash( dirname( __FILE__ ) );
 		$php = Utility::getPHP();
 		Debug( "script dir  : ".$script_dir );
@@ -141,11 +132,8 @@ if( $hash && strlen( $datadir ) > 0 )
 			$datadir_debug_enabled );
 		if( !$res )
 			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
-		}
 	}
 }
-else
-	FileUtil::toLog( 'datadir: setdatadir refused: '.($hash ? 'invalid destination' : 'invalid hash') );
 
 if( !$res && !$errors )
 {
@@ -154,4 +142,8 @@ if( !$res && !$errors )
 
 Debug( "--- end ---" );
 
-CachedEcho::send(JSON::safeEncode(array( "errors"=>$errors )),"application/json");
+$answer = array( "errors"=>$errors );
+// A warning reports an applied change that did not end as asked.
+if( $warnings )
+	$answer["warnings"] = $warnings;
+CachedEcho::send(JSON::safeEncode($answer),"application/json");

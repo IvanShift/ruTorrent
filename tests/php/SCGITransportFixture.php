@@ -255,12 +255,20 @@ if(!empty($config['versionProbe']))
 	$record = readRequest($probe);
 	if(base64_decode($record['payload']) !== '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>')
 		exit(19);
+	// A probe-only peer stops listening before it answers. The client reads
+	// the answer by its Content-Length and connects again at once; a listener
+	// that was still open then took that connection into its backlog and reset
+	// it when it closed, which the client reports as closed-before-headers
+	// rather than the refused connection under test. Measured: 1 of 200 runs
+	// under 8-way parallel load, and every run with a 300 ms stall between
+	// the answer and the close.
+	if(!empty($config['probeOnly']))
+		fclose($server);
 	$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>0.16.24</string></value></param></params></methodResponse>';
 	$frame = 'Content-Length: '.strlen($body)."\r\n\r\n".$body;
 	fwrite($probe, $frame);
 	if(!empty($config['probeOnly']))
 	{
-		fclose($server);
 		fclose($probe);
 		exit(0);
 	}

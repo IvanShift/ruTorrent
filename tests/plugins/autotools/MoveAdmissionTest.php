@@ -15,6 +15,8 @@ eval(loadClassDefinition(dirname(__DIR__, 3) . '/plugins/autotools/autotools.php
     'rAutoTools'));
 eval(loadClassDefinition(dirname(__DIR__, 3) . '/plugins/autotools/move_tx_lib.php',
     'AutoToolsMoveTransaction'));
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
+require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
 
 function moveAdmissionFixture()
 {
@@ -115,7 +117,9 @@ $suite->test('pending Move receipt is held rather than erased when claim state i
             rXMLRPCRequest::reset(); FileUtil::$messages = array();
             rXMLRPCRequest::queue('d.stop_close_claim_state', false, false);
             AutoToolsMoveTransaction::run(array($hash));
-            strictAssertSame(array('d.stop_close_claim_state'), array_column(rXMLRPCRequest::$requests, 'key'),
+            // An unclaimed planned job whose claim read failed only asks,
+            // read-only, whether its download is gone; an unknown answer holds.
+            strictAssertSame(array('d.stop_close_claim_state', 'd.hash'), array_column(rXMLRPCRequest::$requests, 'key'),
                 'existing receipt is reconciled before capability admission');
             strictAssertSame(json_encode($job), file_get_contents($path),
                 'ambiguous pending receipt is preserved byte for byte');

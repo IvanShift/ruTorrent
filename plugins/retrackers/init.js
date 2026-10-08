@@ -149,6 +149,26 @@ plugin.onLangLoaded = function() {
 			theUILang.retrackers,
 		);
 	}
+	this.showTerminalJobs();
+}
+
+// init.php sets plugin.terminalJobs when this profile has queue jobs whose
+// retries are exhausted; they never run again on their own. Say so once.
+plugin.showTerminalJobs = function()
+{
+	var jobs = this.terminalJobs;
+	delete this.terminalJobs;
+	if(!jobs || !(jobs.count > 0) || (typeof jobs.command != "string"))
+		return;
+	var sentence = theUILang.retrackersTerminalJobs;
+	// Shipped language files define it (English until translated); keep the
+	// notice for a language file that predates the string.
+	if(typeof sentence != "string")
+		sentence = "Retrackers: queued jobs that used up their retries: %s. They are no longer retried automatically. " +
+			"After fixing the cause, run %s on the server to list them, then rerun it with a listed hash and --apply to reset one.";
+	// Function replacement inserts each value literally, "$&" included.
+	noty(sentence.replace("%s", function() { return("" + jobs.count); })
+		.replace("%s", function() { return(jobs.command); }), "error");
 }
 
 plugin.onRemove = function()

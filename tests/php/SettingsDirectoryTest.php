@@ -182,4 +182,38 @@ class SettingsDirectoryTest extends TestCase
 			rmdir($root);
 		}
 	}
+
+	/**
+	 * An empty $topDirectory has no spelling to preserve. realpath('') is the
+	 * working directory, so the physical check resolved the empty top to it,
+	 * and the picker mapping then cut that prefix off: a directory under it
+	 * came back at the filesystem root, and the top itself as "/".
+	 */
+	public function testPickerWithAnEmptyTopKeepsThePhysicalPath()
+	{
+		$root = realpath(sys_get_temp_dir()).'/rutorrent-settings-empty-top-'.bin2hex(random_bytes(6));
+		mkdir($root.'/inside', 0700, true);
+		$cwd = getcwd();
+		$GLOBALS['topDirectory'] = '';
+		try
+		{
+			chdir($root);
+			$settings = $this->settings('');
+			$path = $root.'/inside';
+			$this->assertTrue($settings->correctDirectory($path, true, true),
+				'the directory passes the physical check');
+			$this->assertSame($root.'/inside', $path,
+				'the picker returns the directory it approved, not one at the root');
+			$path = $root;
+			$this->assertTrue($settings->correctDirectory($path, true, true),
+				'the resolved top itself passes too');
+			$this->assertSame($root, $path, 'and keeps its own path rather than "/"');
+		}
+		finally
+		{
+			chdir($cwd);
+			rmdir($root.'/inside');
+			rmdir($root);
+		}
+	}
 }

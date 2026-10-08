@@ -102,19 +102,27 @@ theWebUI.sendDataDir = function()
 
 }
 
+// Errors and warnings both carry a theUILang key and an optional parameter.
+function dataDirNoticeText( notice )
+{
+	var s = eval( notice.desc );
+	if( notice.prm )
+		s += " (" + notice.prm + ")";
+	return( s );
+}
+
 theWebUI.receiveDataDir = function( d )
 {
 	$('#btn_datadir_ok').prop("disabled",false);
+	// A warning reports a change that was applied but did not end as asked,
+	// such as a download that rTorrent stopped after its hash check.
+	for( var w = 0; d.warnings && w < d.warnings.length; w++ )
+		noty( dataDirNoticeText( d.warnings[w] ), "alert" );
 	if( !d.errors.length )
 		theDialogManager.hide( 'dlg_datadir' );
 	else
 		for( var i = 0; i < d.errors.length; i++ )
-		{
-			var s = eval(d.errors[i].desc);
-			if( d.errors[i].prm )
-				s += " (" + d.errors[i].prm + ")";
-			noty( s, "error" );
-		}
+			noty( dataDirNoticeText( d.errors[i] ), "error" );
 }
 
 rTorrentStub.prototype.setdatadir = function()

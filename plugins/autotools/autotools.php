@@ -292,8 +292,16 @@ class rAutoTools
 		else
 			$cmd = $theSettings->getRemoveScheduleCommand('autowatch');
 		$req->addCommand($cmd);
-		$req->addCommand($theSettings->getAlignedScheduleCommand('autorecover', 60,
-			'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/recover.php,All,'.User::getUser().'}'));
+		$recover = 'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/recover.php,All,'.User::getUser().'}';
+		$req->addCommand($theSettings->getAlignedScheduleCommand('autorecover', 60, $recover));
+		// The daemon's user makes the file-job journal on the first recovery
+		// pass. Until then a finished hook whose session copy is missing in a
+		// session directory that has turned unwritable cannot even record its
+		// deferral, so one pass runs now while the journal is missing.
+		$session = $theSettings->session;
+		if($this->enable_move && trim($this->path_to_finished) !== '' && is_string($session) && $session !== ''
+			&& !is_dir(rtrim($session, '/').'/.autotools-file-jobs'))
+			$req->addCommand(new rXMLRPCCommand('schedule', array('autorecovernow'.User::getUser(), '0', '0', $recover)));
 		return($req->success());
 	}
 }

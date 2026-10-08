@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/AddTorrentHttpHarness.php');
 
 /**
  * php/addtorrent.php reflects the result[] and name[] query parameters into
@@ -11,12 +12,28 @@ require_once(__DIR__ . '/TestCase.php');
 class AddTorrentResultTest extends TestCase
 {
 	private $sourceRoot;
+	private $tree = null;
+	private $server = null;
 
-	public function setUp()
+	/** One copied tree and one server serve every case: the result branch keeps no state. */
+	public function setUpClass()
 	{
 		$this->sourceRoot = realpath(__DIR__ . '/../..');
 		if($this->sourceRoot === false)
 			throw new Exception('could not locate the production source root');
+		$this->tree = $this->copyTree();
+		$this->server = AddTorrentHttpHarness::forDocumentRoot($this->tree,
+			array('zlib.output_compression' => '0'));
+	}
+
+	public function tearDownClass()
+	{
+		if($this->server !== null)
+			$this->server->close();
+		$this->server = null;
+		if($this->tree !== null)
+			$this->deleteTree($this->tree);
+		$this->tree = null;
 	}
 
 	// ---- what the response may not contain -------------------------------
@@ -230,51 +247,32 @@ class AddTorrentResultTest extends TestCase
 	}
 
 	/**
-	 * Serve the production addtorrent.php and CachedEcho from a copied tree.
+	 * The production addtorrent.php and CachedEcho, byte-copied into a tree.
 	 * Only what sits below them is stubbed: addtorrent.php's result branch
 	 * needs no rTorrent and no Snoopy, but the requires at the top of the file
 	 * have to resolve.
 	 */
-	private function get($query)
+	private function copyTree()
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-addtorrent-' . uniqid('', true);
-		$process = null;
-		try
+		if(!mkdir($tree . '/php/utility', 0700, true) && !is_dir($tree . '/php/utility'))
+			throw new Exception('could not create addtorrent fixture tree');
+		foreach(array('php/addtorrent.php', 'php/utility/cachedecho.php') as $relative)
 		{
-			if(!mkdir($tree . '/php/utility', 0700, true) && !is_dir($tree . '/php/utility'))
-				throw new Exception('could not create addtorrent fixture tree');
-			foreach(array('php/addtorrent.php', 'php/utility/cachedecho.php') as $relative)
-			{
-				$source = $this->sourceRoot . '/' . $relative;
-				$target = $tree . '/' . $relative;
-				if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
-					throw new Exception('could not byte-copy production source ' . $relative);
-			}
-			$this->writeStubs($tree);
+			$source = $this->sourceRoot . '/' . $relative;
+			$target = $tree . '/' . $relative;
+			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
+				throw new Exception('could not byte-copy production source ' . $relative);
+		}
+		$this->writeStubs($tree);
+		return $tree;
+	}
 
-			$port = $this->reservePort();
-			$command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -d zlib.output_compression=0'
-				. ' -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($tree);
-			$process = proc_open($command, array(
-				0 => array('pipe', 'r'),
-				1 => array('file', $tree . '/server.out', 'a'),
-				2 => array('file', $tree . '/server.err', 'a'),
-			), $pipes, $tree);
-			if(!is_resource($process))
-				throw new Exception('could not start copied PHP server');
-			fclose($pipes[0]);
-			$this->waitForServer($port, $process, $tree . '/server.err');
-			return $this->rawGet($port, '/php/addtorrent.php' . $query);
-		}
-		finally
-		{
-			if(is_resource($process))
-			{
-				@proc_terminate($process);
-				@proc_close($process);
-			}
-			$this->deleteTree($tree);
-		}
+	private function get($query)
+	{
+		$response = $this->server->request('GET', '/php/addtorrent.php' . $query);
+		return array('status' => $response['status'], 'headers' => $response['headers'],
+			'body' => $response['body']);
 	}
 
 	private function writeStubs($tree)
@@ -285,60 +283,6 @@ class AddTorrentResultTest extends TestCase
 			. "\$phpUseGzip = false;\n");
 		file_put_contents($tree . '/php/utility/fileutil.php', "<?php\nclass FileUtil {}\n");
 		file_put_contents($tree . '/php/utility/utility.php', "<?php\nclass Utility {}\n");
-	}
-
-	private function reservePort()
-	{
-		$socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-		if($socket === false)
-			throw new Exception('could not reserve local test port: ' . $error);
-		$name = stream_socket_get_name($socket, false);
-		fclose($socket);
-		$parts = explode(':', $name);
-		return intval(array_pop($parts));
-	}
-
-	private function waitForServer($port, $process, $errorFile)
-	{
-		for($i = 0; $i < 100; $i++)
-		{
-			$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
-			if($socket !== false)
-			{
-				fclose($socket);
-				return;
-			}
-			$status = proc_get_status($process);
-			if(!$status['running'])
-				throw new Exception('copied PHP server exited: ' . @file_get_contents($errorFile));
-			usleep(25000);
-		}
-		throw new Exception('copied PHP server did not start');
-	}
-
-	private function rawGet($port, $path)
-	{
-		$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 2);
-		if($socket === false)
-			throw new Exception('could not connect raw HTTP client: ' . $error);
-		$request = "GET " . $path . " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-		if(fwrite($socket, $request) === false)
-			throw new Exception('could not write raw HTTP request');
-		$raw = stream_get_contents($socket);
-		fclose($socket);
-		if($raw === false || strpos($raw, "\r\n\r\n") === false)
-			throw new Exception('copied addtorrent.php returned no complete HTTP response');
-		list($headerBlock, $body) = explode("\r\n\r\n", $raw, 2);
-		$headers = explode("\r\n", $headerBlock);
-		$status = array_shift($headers);
-		$values = array();
-		foreach($headers as $header)
-		{
-			$position = strpos($header, ':');
-			if($position !== false)
-				$values[strtolower(trim(substr($header, 0, $position)))] = trim(substr($header, $position + 1));
-		}
-		return array('status' => $status, 'headers' => $values, 'body' => $body);
 	}
 
 	private function deleteTree($path)

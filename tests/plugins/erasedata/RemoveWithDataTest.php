@@ -255,7 +255,7 @@ class RemoveWithDataTest extends TestCase
 			return;
 		erasedataQueueRequest($queue, $hash, 1, $generation);
 		$this->armQueue($queue, $generation, array($hash => $staged['path']));
-		$this->probe(true, true, array(), 'info-hash not found');
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		$heldAtRemoval = array();
 		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true,
 			'val' => array(0), 'callback' => function() use ($queue, &$heldAtRemoval) {
@@ -296,7 +296,7 @@ class RemoveWithDataTest extends TestCase
 			$markerBytes = file_get_contents($marker);
 			$this->armQueue($queue, $generation, array());
 			$this->probe(true, $presence === 'absent',
-				$presence === 'absent' ? array() : array($hash), 'info-hash not found');
+				$presence === 'absent' ? array() : array($hash), 'invalid parameters: info-hash not found');
 			$this->frozen(true, array($payload, 0, $payload));
 			$this->eraseOk();
 			$tick = erasedataDrainWorkerRun($this->dependencies());
@@ -362,7 +362,7 @@ class RemoveWithDataTest extends TestCase
 		foreach($siblings as $hash)
 			$bound[$hash] = $staged[$hash];
 		$this->armQueue($queue, $generation, $bound);
-		$this->probe(true, true, array(), 'info-hash not found');
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
 		$tick = erasedataDrainWorkerRun($this->dependencies());
 		foreach($siblings as $hash)
@@ -417,7 +417,7 @@ class RemoveWithDataTest extends TestCase
 		$final = $queue.'/'.$hash.'.'.$generation.'.1.list';
 		file_put_contents($final, $bytes);
 		$this->armQueue($queue, $generation, array());
-		$this->probe(true, true, array(), 'info-hash not found');
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
 		$holder = ErasedataTestProcess::start(erasedataTestLockHolderCommand($queue.'/'.$hash.'.lock', 2.0));
 		try
@@ -1287,7 +1287,7 @@ class RemoveWithDataTest extends TestCase
 				'the removal has a durable manifest in that queue');
 			$this->assertTrue(!file_exists($settings.'/erasedata'),
 				'no second queue appears under unsafe settings');
-			$this->probe(true, true, array(), 'info-hash not found');
+			$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 			erasedataRunCollector($queue);
 			$this->assertTrue(!file_exists($payload) && count(glob($queue.'/*.list')) === 0,
 				'the same protected queue serves a later collector recovery');
@@ -1469,7 +1469,7 @@ class RemoveWithDataTest extends TestCase
 			$this->assertTrue(erasedataQueueRequest($queue, $hash, 1, $generation),
 				'the old queue has a pending marker');
 			$this->armQueue($queue, $generation, array($hash => $staged['path']));
-			$this->probe(true, true, array(), 'info-hash not found');
+			$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 			rXMLRPCRequest::$responses['schedule_remove'] = array('ok' => true, 'val' => array(0));
 			$this->assertTrue(!erasedataDrainWorkerMain(User::getUser()),
 				'unsafe old parents hold the pending journal before attestation');
@@ -5446,6 +5446,43 @@ class RemoveWithDataTest extends TestCase
 		}
 	}
 
+	// R3-OWN-05: the drain's collector indexes the queue before it takes a hash
+	// lock, and a checker replacement publishes its cleanup token and closes its
+	// markers in between. The job must be read again under the lock, not
+	// retained as a generation mismatch that only a later tick finishes.
+	public function testCleanupTokenPublishedAfterTheIndexIsReadUnderTheLock()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/published-after-index';
+		@mkdir($base, 0777, true);
+		$old = $base.'/old.bin';
+		file_put_contents($old, 'old');
+		$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old), 'tmp');
+		$token = substr($tmp, 0, -4).'.list';
+		$scanned = $this->dir.'/index-scans';
+		// The predecessor is gone and the successor's markers are closed, as
+		// after activation; the successor's own files are not this case's subject.
+		$absent = $this->collectorResponse(true, false, array(''));
+		$generation = $this->cleanupGenerationResponses($oldHash, $newHash, $absent,
+			$this->collectorResponse(true, false, array($newHash, '', '')), $absent);
+		list($status, $output) = $this->runCollector(array(
+			'generation' => $generation, 'debug' => true,
+			'filesystem' => array('scanDirectory:2' => array('action' => 'publish-cleanup-token',
+				'at' => 'after', 'token' => $token, 'marker' => $scanned)),
+		));
+		$this->assertEquals(0, $status, 'the collector exits normally: '.$output);
+		$this->assertTrue(is_file($scanned), 'the token appeared after the collector indexed the queue');
+		$retained = array_filter($this->collectorLogs($output), function($line) use ($oldHash) {
+			return(strpos($line, 'erasedata: cleanup retained '.$oldHash) === 0);
+		});
+		$this->assertEquals(array(), array_values($retained),
+			'a job published before the hash lock is not reported as retained: '.$output);
+		$this->assertTrue(!file_exists($old), 'the committed cleanup deletes its obsolete file in the same pass');
+		$this->assertTrue(!is_file($tmp) && !is_file($token), 'and its exact job retires');
+	}
+
 	public function testCleanupCollectorRecoveryUsesItsFilesystemForTheSelectedGeneration()
 	{
 		$this->reset();
@@ -7729,15 +7766,17 @@ class RemoveWithDataTest extends TestCase
 	{
 		$hash = $this->hash('6');
 		$cases = array(
-			'info-hash not found' => ERASEDATA_TORRENT_ABSENT,
+			// rTorrent's own answers (php/utility/hashfault.php) prove absence;
+			// a wording no daemon sends does not.
 			'Could not find info-hash.' => ERASEDATA_TORRENT_ABSENT,
 			'invalid parameters: info-hash not found' => ERASEDATA_TORRENT_ABSENT,
-			' info-hash not found' => ERASEDATA_TORRENT_UNKNOWN,
-			'info-hash not found ' => ERASEDATA_TORRENT_UNKNOWN,
-			"\tinfo-hash not found" => ERASEDATA_TORRENT_UNKNOWN,
-			"info-hash not found\t" => ERASEDATA_TORRENT_UNKNOWN,
-			"\ninfo-hash not found" => ERASEDATA_TORRENT_UNKNOWN,
-			"info-hash not found\n" => ERASEDATA_TORRENT_UNKNOWN,
+			'info-hash not found' => ERASEDATA_TORRENT_UNKNOWN,
+			' invalid parameters: info-hash not found' => ERASEDATA_TORRENT_UNKNOWN,
+			'invalid parameters: info-hash not found ' => ERASEDATA_TORRENT_UNKNOWN,
+			"\tinvalid parameters: info-hash not found" => ERASEDATA_TORRENT_UNKNOWN,
+			"invalid parameters: info-hash not found\t" => ERASEDATA_TORRENT_UNKNOWN,
+			"\nCould not find info-hash." => ERASEDATA_TORRENT_UNKNOWN,
+			"Could not find info-hash.\n" => ERASEDATA_TORRENT_UNKNOWN,
 		);
 		foreach($cases as $raw => $expected)
 		{
@@ -7773,22 +7812,22 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash),
 			'clean empty string response is UNKNOWN');
 
-		// Complete known missing info-hash faults -> ABSENT
+		// rTorrent's own missing-hash answers -> ABSENT, with or without the
+		// code that php/xmlrpc.php puts first in val (php/utility/hashfault.php)
 		$missingFaults = array(
 			'Could not find info-hash.',
-			'Could not find info-hash',
-			'COULD NOT FIND INFO-HASH.',
-			'info-hash not found',
-			'Info-hash not found.',
-			'INFO-HASH NOT FOUND.',
-			'invalid parameters: info-hash not found',
-			'INVALID PARAMETERS: INFO-HASH NOT FOUND'
+			'invalid parameters: info-hash not found'
 		);
 		foreach($missingFaults as $mf)
 		{
 			$this->probe(true, true, array(), $mf);
 			$this->assertEquals(ERASEDATA_TORRENT_ABSENT, erasedataTorrentPresence($hash), 'missing-hash fault "'.$mf.'" is ABSENT');
 		}
+		$this->probe(true, true, array('-501', 'Could not find info-hash.'), 'Could not find info-hash.');
+		$this->assertEquals(ERASEDATA_TORRENT_ABSENT, erasedataTorrentPresence($hash), 'the 0.9.8 answer with its code is ABSENT');
+		$this->probe(true, true, array('-500', 'Could not find info-hash.'), 'Could not find info-hash.');
+		$this->assertEquals(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash),
+			'a missing-hash text under the other generation\'s code is UNKNOWN');
 
 		// Transport failure -> UNKNOWN
 		$this->probe(false, false, array());
@@ -7796,6 +7835,13 @@ class RemoveWithDataTest extends TestCase
 
 		// Unrelated faults -> UNKNOWN
 		$unrelatedFaults = array(
+			// Spellings no rTorrent release sends (its tags carry only the two above).
+			'Could not find info-hash',
+			'COULD NOT FIND INFO-HASH.',
+			'info-hash not found',
+			'Info-hash not found.',
+			'INFO-HASH NOT FOUND.',
+			'INVALID PARAMETERS: INFO-HASH NOT FOUND',
 			'Permission denied',
 			'Access denied',
 			'Internal server error',
@@ -16027,6 +16073,17 @@ class RemoveWithDataTest extends TestCase
 		$producer = $this->actionDoor($mirror, $hashes, 1);
 		$producer->wait(20);
 		$producer->reap();
+		// The premise, checked rather than assumed: the producer left both
+		// members as durable obligations. Without them (measured: a host with
+		// no native rename helper, where the producer refuses) the workers have
+		// nothing to recover, finish in milliseconds, and the overlap below
+		// becomes a coin toss -- 17 failures in 50 runs. Say so once instead.
+		$pending = glob($mirror->listPath.'/*.pending') ?: array();
+		$this->assertEquals(2, count($pending),
+			'the producer left both members as durable obligations for the workers'
+				.' (a refused producer, e.g. without the native rename helper, leaves none)');
+		if(count($pending) !== 2)
+			return;
 		// The producer stages its own manifests, so it issues its own
 		// d.get_base_path calls; it is fully reaped before either worker starts,
 		// so this index cuts the transcript into a producer-only half and a
@@ -16046,18 +16103,20 @@ class RemoveWithDataTest extends TestCase
 		// needed for that to mean anything: the children must really be inside
 		// the same window, and the loser must be the LOCK's doing.
 		//
-		// The window is widened deliberately, and only for the workers, so the
-		// producer above still runs at full speed: each d.get_base_path of a
-		// recovery holds its caller for 0.6s. The winner therefore stays inside
-		// its pass, holding the nonblocking worker admission, for well over a
-		// second -- three orders of magnitude longer than the skew between two
-		// proc_open() starts. Without it the two children still overlap on this
-		// machine, measured, but only by the ~20ms a whole tick takes, and a
-		// case whose premise depends on a 20ms window on a shared box is one
-		// scheduling hiccup away from passing vacuously.
-		$slow = $this->drainScript();
-		$slow['d.get_base_path']['delay'] = 600000;
-		$mirror->scriptRpc($slow);
+		// The window is a fact, not a duration. The winner's first presence
+		// probe (d.hash, which it sends holding the worker admission, the
+		// scheduler lock and its hash locks but not the state lock the loser
+		// needs to acknowledge) is held until the loser has logged its refusal.
+		// A slowed d.get_base_path did this job before, by timing alone, and
+		// the winner held the state lock through that slow call: a loser
+		// arriving late waited behind it and could find the admission free.
+		// A bounded hold that expires is recorded, and asserted below; with
+		// the flock refusals deleted both children are admitted, both wait
+		// out the bound, and the busy count is what goes missing.
+		$gated = $this->drainScript();
+		$gated['d.hash']['awaitLog'] = 'erasedata: worker-busy ';
+		$gated['d.hash']['awaitMax'] = 10;
+		$mirror->scriptRpc($gated);
 		$children = array(
 			'first' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
 			'second' => ErasedataTestProcess::start($mirror->drainCommand('drain')),
@@ -16077,6 +16136,8 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(1, $busy,
 			'the two workers really were inside the same window, and exactly one'
 				.' of them was refused worker admission and consumed nothing');
+		$this->assertEquals(false, file_exists($mirror->settings.'/await-expired'),
+			'the admitted worker was released by that refusal, not by its bound');
 		$erased = $this->mirrorErased($mirror);
 		$this->assertEquals(count($erased), count(array_unique($erased)),
 			'no hash is erased twice by two overlapping workers');
@@ -16705,7 +16766,7 @@ class RemoveWithDataTest extends TestCase
 			array('base' => $payload, 'multi' => '0', 'files' => array($payload)), 1);
 		$final = $queue.'/'.$hash.'.0000000000000001.12345678.list';
 		file_put_contents($final, $bytes);
-		$this->probe(true, true, array(), 'info-hash not found');
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		$this->assertTrue(erasedataRearmDrainScheduleRun($this->dependencies()),
 			'startup recovery accepts a historical final without inventing a drain obligation');
 		$this->assertEquals(0, count($this->scheduleRecords('schedule')),
@@ -17829,22 +17890,27 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array($base, 1, $base.'/payload'));
 		$this->probe(true, false, array($hash));
 		$this->eraseOk();
-		// Five base-path identity lookups reach the seam: two parent observations
-		// (the base entry and payload), two during descriptor admission, and the
-		// final pre-erase re-check. Refusing exactly the fifth leaves the
-		// preflight intact and fails only the second proof. The count is
-		// asserted below, so a change in the sequence cannot make this pass
-		// vacuously by refusing the preflight instead.
-		$calls = $this->dir.'/recheck-base-lookups';
+		// The refused lookup is named by its check rather than by its ordinal:
+		// the base-path lookup of the capability re-check made outside the
+		// acquisition, which is the pre-erase proof. The acquisition's own
+		// re-check is counted apart and must have passed first, so the refusal
+		// cannot be the preflight's or the admission's.
+		$refused = $this->dir.'/pre-erase-recheck-refusals';
+		$admitted = $this->dir.'/admission-recheck-lookups';
 		$filesystem = new ErasedataCollectorFixture(array(
-			'targetIdentity:5' => array('path' => $base, 'result' => false),
-			'targetIdentity:*' => array('path' => $base, 'count_file' => $calls),
+			'targetIdentity:*' => array('path' => $base, 'result' => false, 'count_file' => $refused,
+				'within' => array('erasedataRemovalCapabilityStillMatches'),
+				'outside' => array('erasedataAcquireRemovalCapability')),
+			'targetIdentity:1' => array('path' => $base, 'count_file' => $admitted,
+				'within' => array('erasedataAcquireRemovalCapability')),
 		));
 		$notes = array();
 		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
 			array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
-		$this->assertEquals(5, substr_count(@file_get_contents($calls), "\n"),
-			'the refusal really is the pre-erase re-check, not the preflight');
+		$this->assertTrue(substr_count((string)@file_get_contents($admitted), "\n") >= 1,
+			'the acquisition proved the capability on the base path first');
+		$this->assertEquals(1, substr_count((string)@file_get_contents($refused), "\n"),
+			'the refusal really is the one pre-erase re-check, not the preflight');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased,
 			'a capability that no longer names its base path never reaches d.erase');
 		$this->assertEquals('preserve', @file_get_contents($base.'/payload'),
@@ -17958,7 +18024,7 @@ class RemoveWithDataTest extends TestCase
 		// Absent, with a bound and identity-matching staging object: without the
 		// refusal this is the pass that publishes the manifest and discharges
 		// the marker on a scan that never answered.
-		$this->probe(true, true, array(), 'info-hash not found');
+		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
 		$this->eraseOk();
 		$notes = array();
 		$outcome = null;
@@ -18052,12 +18118,17 @@ class RemoveWithDataTest extends TestCase
 		// `erase-started` record is written, and the ONLY journal write of the
 		// pass is the last one. That write cannot succeed: this generation has
 		// no record yet, so completing it would be record 4096.
+		$refused = $this->dir.'/pre-erase-recheck-refusals';
 		$filesystem = new ErasedataCollectorFixture(array(
-			'targetIdentity:5' => array('path' => $base, 'result' => false),
+			'targetIdentity:*' => array('path' => $base, 'result' => false, 'count_file' => $refused,
+				'within' => array('erasedataRemovalCapabilityStillMatches'),
+				'outside' => array('erasedataAcquireRemovalCapability')),
 		));
 		$notes = array();
 		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
 			array('hashes' => array($hash), 'force' => 2), $filesystem, $notes);
+		$this->assertEquals(1, substr_count((string)@file_get_contents($refused), "\n"),
+			'the pre-erase re-check, and only it, refused');
 		$this->assertTrue(is_array($this->noteFor($notes, 'journal-write')),
 			'the fixture really reaches a failing final journal write');
 		$this->assertEquals(array(), glob($queue.'/*.tmp'),

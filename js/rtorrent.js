@@ -277,7 +277,6 @@ function rTorrentStub( URI )
 	if(eval('typeof(this.'+this.action+') != "undefined"'))
 		eval("this."+this.action+"()");
 	this.commandOffset = 0;
-	this.allHashes = this.hashes;
 	theRequestManager.patchRequest( this.commands );
 	if(this.commands.length>0)
 		this.makeNextMultiCall();
@@ -328,14 +327,11 @@ rTorrentStub.prototype.getalltrackers = function()
 
 rTorrentStub.prototype.settrackerstate = function()
 {
-	for(var i=0; i<this.vs.length; i++)
-	{
-		var cmd = new rXMLRPCCommand("t.set_enabled");
-		cmd.addParameter("string",this.hashes[0]);
-		cmd.addParameter("i4",this.vs[i]);
-		cmd.addParameter("i4",this.ss[0]);
-		this.commands.push( cmd );
-	}
+	// The raw XMLRPC proxy refuses t.is_enabled.set on 0.9.8 and cannot carry
+	// the trusted session save beside it on 0.16. The validated server-side
+	// mode switches the trackers and saves the download, even with the httprpc
+	// JavaScript disabled.
+	postHttprpcMode(this, "trkstate");
 }
 
 rTorrentStub.prototype.list = function()
@@ -422,7 +418,7 @@ rTorrentStub.prototype.setsettings = function()
 			postHttprpcMode(this, "setsettings");
 			return;
 		}
-	for(var i=0; i<this.vs.length; i++)
+	for(i=0; i<this.vs.length; i++)
 	{
 		var prmType = "string";
 		var prm = this.vs[i];
@@ -513,6 +509,7 @@ rTorrentStub.prototype.start = function()
 		cmd.addParameter("string",this.hashes[i]);
 		this.commands.push( cmd );
 	}
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.stop = function()
@@ -526,6 +523,7 @@ rTorrentStub.prototype.stop = function()
 		cmd.addParameter("string",this.hashes[i]);
 		this.commands.push( cmd );
 	}
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.updateTracker = function()
@@ -546,6 +544,7 @@ rTorrentStub.prototype.pause = function()
 		cmd.addParameter("string",this.hashes[i]);
 		this.commands.push( cmd );
 	}
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.unpause = function()
@@ -556,6 +555,7 @@ rTorrentStub.prototype.unpause = function()
 		cmd.addParameter("string",this.hashes[i]);
 		this.commands.push( cmd );
 	}
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.remove = function()
@@ -573,21 +573,16 @@ rTorrentStub.prototype.dsetprio = function()
 		cmd.addParameter("i4",this.vs[0]);
 		this.commands.push( cmd );
 	}
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.setprio = function()
 {
-	for(var i=0; i<this.vs.length; i++)
-	{
-		var cmd = new rXMLRPCCommand("f.set_priority");
-		cmd.addParameter("string",this.hashes[0]);
-		cmd.addParameter("i4",this.vs[i]);
-		cmd.addParameter("i4",this.ss[0]);
-		this.commands.push( cmd );
-	}
-	cmd = new rXMLRPCCommand("d.update_priorities");
-	cmd.addParameter("string",this.hashes[0]);
-	this.commands.push( cmd );
+	// The raw XMLRPC proxy refuses f.priority.set beside the trusted
+	// d.update_priorities, and cannot carry the session save either. The
+	// validated server-side mode sets the file priorities and saves the
+	// download, even with the httprpc JavaScript disabled.
+	postHttprpcMode(this, "setprio");
 }
 
 rTorrentStub.prototype.setprioritize = function()
@@ -631,6 +626,7 @@ rTorrentStub.prototype.setprioritize = function()
 	cmd = new rXMLRPCCommand("d.update_priorities");
 	cmd.addParameter("string",this.hashes[0]);
 	this.commands.push( cmd );
+	this.saveSessions();
 }
 
 rTorrentStub.prototype.setlabel = function()
@@ -640,6 +636,31 @@ rTorrentStub.prototype.setlabel = function()
 		var cmd = new rXMLRPCCommand("d.set_custom1");
 		cmd.addParameter("string",this.hashes[i]);
 		cmd.addParameter("string",this.vs[0]);
+		this.commands.push( cmd );
+	}
+	this.saveSessions();
+}
+
+// rTorrent keeps a download's label and other custom fields, priority, state,
+// file priorities, tracker switches, views and throttle in its session files
+// and writes them only when something saves the download. After a change from
+// the WebUI only its periodic session.save did, so a crash or `docker kill`
+// before it lost the change (ACC-OWN-A-02, R4-NF-2). An action that changes
+// such a setting calls this after building its commands: each selected
+// download is saved once, the way session.save saves it (d.save_resume). The
+// server half is rXMLRPCRequest::addSessionSaves().
+rTorrentStub.prototype.saveSessions = function()
+{
+	if(!this.commands.length)
+		return;
+	var saved = {};
+	for(var i=0; i<this.hashes.length; i++)
+	{
+		if(saved[this.hashes[i]])
+			continue;
+		saved[this.hashes[i]] = true;
+		var cmd = new rXMLRPCCommand("d.save_resume");
+		cmd.addParameter("string",this.hashes[i]);
 		this.commands.push( cmd );
 	}
 }
@@ -758,12 +779,30 @@ rTorrentStub.prototype.createqueued = function()
 
 }
 
+// The download a command acts on: its first parameter names it, alone or, once
+// patchRequest() has joined a file, tracker or peer index to it, as "<hash>:fN".
+function commandHash(cmd)
+{
+	var value = cmd.params.length ? cmd.params[0].value : null;
+	var match = (typeof(value) == "string") ? value.match(/^([0-9A-Fa-f]{40})(?::|$)/) : null;
+	return(match ? match[1] : null);
+}
+
+// A response handler reads this.hashes as the downloads the part it answers
+// covers, each once, as its commands name them: getalltrackers keys its result
+// by them, and plugins/extratio rechecks them after a label. A part is not the
+// selection indexed by command number: start, stop, ban, setprio and setlabel
+// send more than one command per download.
 rTorrentStub.prototype.makeNextMultiCall = function()
 {
 	this.content = '<?xml version="1.0" encoding="UTF-8"?><methodCall><methodName>';
+	var owner = null;
 	if(this.commandOffset == this.commands.length - 1)
 	{
 		var cmd = this.commands[this.commandOffset++];
+		owner = commandHash(cmd);
+		if(owner !== null)
+			this.hashes = [owner];
 	        this.content+=(cmd.command+'</methodName><params>');
 	        for(var i=0; i<cmd.params.length; i++)
 	        {
@@ -779,6 +818,8 @@ rTorrentStub.prototype.makeNextMultiCall = function()
 		var maxContentSize = 2 << (20 + 3*(theWebUI.systemInfo.rTorrent.apiVersion>=11));
 		this.content+='system.multicall</methodName><params><param><value><array><data>';
 		this.hashes = [];
+		var named = {};
+		var first = this.commandOffset;
 		for(; this.commandOffset < this.commands.length; this.commandOffset++)
 		{
 			cmd = this.commands[this.commandOffset];
@@ -791,10 +832,15 @@ rTorrentStub.prototype.makeNextMultiCall = function()
 					prm.value+'</'+prm.type+'></value>');
 			}
 			cmd_string+="</data></array></value></member></struct></value>";
-			if (this.hashes.length > 0 && this.content.length + cmd_string.length + 31 + 22 > maxContentSize)
+			if (this.commandOffset > first && this.content.length + cmd_string.length + 31 + 22 > maxContentSize)
 				break;
 			this.content+=cmd_string;
-			this.hashes.push(this.allHashes[this.commandOffset])
+			owner = commandHash(cmd);
+			if((owner !== null) && !named[owner])
+			{
+				named[owner] = true;
+				this.hashes.push(owner);
+			}
 			cmd_string = null;
 			cmd = null;
 		}
@@ -1433,7 +1479,7 @@ function Ajax(URI, isASync, onComplete, onTimeout, onError, reqTimeout, partialD
 					// merge responses for this.hashes with previous partialData
 					Object.assign(responseText, partialData);
 				} else if (responseText instanceof String) {
-					// keep responseText = this.allHashes[0]
+					// keep the first part's answer
 					responseText = partialData;
 				}
 			}

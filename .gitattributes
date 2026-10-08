@@ -2,3 +2,8 @@
 /.gitignore	export-ignore
 # Keep the live Tapochek response byte-for-byte, including CRLF and spacing.
 /tests/plugins/rutracker_check/fixtures/tapochek-p7-2026-09-25.html -text -whitespace
+# The live RuTracker HTTPS 304 capture: CRLF header lines, one with a trailing
+# space. forum-7.json is the 200 body its ETag names (hex update_time and
+# gzip size); provenance.json pins both by SHA-256.
+/tests/php/fixtures/rutracker-https-304/conditional.headers -text -whitespace
+/tests/php/fixtures/rutracker-https-304/forum-7.json -text

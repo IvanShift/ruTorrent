@@ -6,7 +6,7 @@ require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 final class AddTorrentURLResponseTest extends TestCase
 {
 	private function probe($status, $body, $method = 'POST', $urlPlace = 'body',
-		$url = 'https://tracker.example/download', $getOptions = array())
+		$url = 'https://tracker.example/download', $getOptions = array(), $curlExit = 0)
 	{
 		$root = tempnam(sys_get_temp_dir(), 'addtorrent-');
 		unlink($root);
@@ -17,9 +17,11 @@ final class AddTorrentURLResponseTest extends TestCase
 		$script = $root . '/probe.php';
 		file_put_contents($curl, <<<'SH'
 #!/bin/sh
+[ "$1" = --exec-probe ] && exit 0
 header_file=
 body_file=
 printf "called\n" >> "$ADDTORRENT_TEST_FETCHES"
+[ "$ADDTORRENT_TEST_CURL_EXIT" = 0 ] || exit "$ADDTORRENT_TEST_CURL_EXIT"
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		-D) shift; header_file=$1 ;;
@@ -32,6 +34,19 @@ printf '%s' "$ADDTORRENT_TEST_BODY" > "$body_file"
 SH
 		);
 		chmod($curl, 0700);
+		// Snoopy runs curl as a program, so the stand-in must be runnable where
+		// it lies: a TMPDIR on a noexec mount (a default docker --tmpfs) would
+		// otherwise surface as several unrelated-looking assertions (O-4).
+		exec(escapeshellarg($curl) . ' --exec-probe 2>&1', $probeOutput, $probeExit);
+		if($probeExit !== 0)
+		{
+			unlink($curl);
+			rmdir($root . '/profile/torrents');
+			rmdir($root . '/profile');
+			rmdir($root);
+			throw new RuntimeException('the stand-in curl cannot be run from TMPDIR ' . sys_get_temp_dir()
+				. ' (exit ' . $probeExit . '): this test needs a TMPDIR that allows exec, not a noexec mount');
+		}
 		$phpDir = realpath(__DIR__ . '/../../php');
 		file_put_contents($script, '<?php '
 			. '$_ENV["RU_PROFILE_PATH"] = getenv("ADDTORRENT_TEST_PROFILE");'
@@ -50,6 +65,7 @@ SH
 			. 'require ' . var_export($phpDir . '/addtorrent.php', true) . ';');
 		$env = array_merge(getenv(), array(
 			'ADDTORRENT_TEST_STATUS' => (string)$status,
+			'ADDTORRENT_TEST_CURL_EXIT' => (string)$curlExit,
 			'ADDTORRENT_TEST_BODY' => $body,
 			'ADDTORRENT_TEST_METHOD' => $method,
 			'ADDTORRENT_TEST_GET' => json_encode(array_merge($urlPlace === 'query' ? array('url' => $url) : array(), $getOptions)),
@@ -122,6 +138,40 @@ SH
 		$this->assertEquals(array(), $result[1], 'failed response was not saved');
 		$this->assertTrue(strpos((string)$result[3], 'addtorrent: torrent fetch refused: http-status-503') !== false,
 			'HTTP rejection has a classified log reason');
+	}
+
+	/**
+	 * Snoopy leaves a failed connect's errno in the field that otherwise holds
+	 * the HTTP status, and ECONNREFUSED is 111, so a refused connection was
+	 * logged as http-status-111 (N7). A real refusal, on the socket path.
+	 */
+	public function testRefusedConnectionIsClassifiedAsAConnectFailure()
+	{
+		$listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+		$name = stream_socket_get_name($listener, false);
+		fclose($listener);
+		$result = $this->probe(200, '', 'POST', 'body', 'http://' . $name . '/file.torrent');
+		$this->assertEquals('FailedURL', $result[0], 'a refused connection is a URL error');
+		$this->assertTrue(strpos((string)$result[3], 'addtorrent: torrent fetch refused: connect-failed errno=111') !== false,
+			'the log names the transport failure and its errno: ' . $result[3]);
+		$this->assertTrue(strpos((string)$result[3], 'http-status-') === false,
+			'and never reads the errno as an HTTP status');
+	}
+
+	/**
+	 * Every failed curl run is a transport failure, whatever its exit code:
+	 * 7 (no connection), 100 (CURLE_TOO_LARGE from curl 8.6 on), and the
+	 * shell's 126 and 127 when curl cannot be run at all. Exit codes from 100
+	 * up used to read as HTTP statuses (R4-CORE-03).
+	 */
+	public function testFailedCurlRunIsClassifiedByItsExitCode()
+	{
+		foreach (array(7, 100, 126, 127) as $exit) {
+			$result = $this->probe(200, '', 'POST', 'body', 'https://tracker.example/download', array(), $exit);
+			$this->assertEquals('FailedURL', $result[0], 'a curl run that ended with ' . $exit . ' is a URL error');
+			$this->assertTrue(strpos((string)$result[3], 'addtorrent: torrent fetch refused: curl-failed exit=' . $exit) !== false,
+				'the log names curl and its exit code ' . $exit . ': ' . $result[3]);
+		}
 	}
 
 	public function testGetTorrentUrlShowsEscapedConfirmationWithoutFetching()

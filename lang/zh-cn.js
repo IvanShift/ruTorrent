@@ -284,7 +284,6 @@ var theUILang =
  showLabelTextOverflow	: "Allow overflow of label text",
  showOpenStatus		: "Show open status in status bar",
  requiresAtLeastRtorrent		: "Requires rTorrent >= {version}", // ... v0.9.7
- phpParameterUnavailable	: "PHP 参数 register_argc_argv 被设为 OFF. 把它切换到 ON, 否则某些插件会无法正常工作.",
  addTorrentFailedURL		: "添加 torrent 失败. 无法取回 URL.",
  addTorrentFailedFile		: "添加 torrent 失败. 取得的文件不是有效的 torrent.",
  addTorrentFailedDirectory	: "添加 torrent 失败. 指定的下载文件夹无效.",

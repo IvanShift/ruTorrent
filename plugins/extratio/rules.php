@@ -195,8 +195,10 @@ class rRatioRulesList
 		if($req->getCommandsCount() && $req->success())
 		{
 			$out = new rXMLRPCRequest();
+			$changed = array();
 			foreach( $hashes as $ndx=>$hash )
 			{
+				$before = $out->getCommandsCount();
 				$label = rawurldecode($req->val[$ndx*4]);
 				$state = !empty($req->val[$ndx*4+1]);
 				$ratio = null;
@@ -232,9 +234,13 @@ class rRatioRulesList
 						$out->addCommand( new rXMLRPCCommand('view.set_visible', array($hash, $rule->ratio) ) );
 					}
 				}
+				if($out->getCommandsCount() > $before)
+					$changed[] = $hash;
 			}
+			// The channel and the ratio group live in the session; save the
+			// downloads the rules moved with the change.
 			if($out->getCommandsCount())
-				$out->run();
+				$out->addSessionSaves($changed)->run();
 		}
 	}
 	public function setHandlers()

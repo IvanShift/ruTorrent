@@ -3,6 +3,7 @@
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-addition-test-' . getmypid();
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/PermissiveDirectorySettings.php');
 require_once(__DIR__ . '/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 require_once(__DIR__ . '/../../php/rtorrent.php');
@@ -14,10 +15,7 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
  */
 class AdditionCommandSettings extends rTorrentSettings
 {
-	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
-	}
+	use PermissiveDirectorySettings;
 
 	public function maxContentSize()
 	{
@@ -110,10 +108,16 @@ class TorrentAdditionCommandTest extends TestCase
 		self::makeAccessible($property);
 		$property->setValue(null, $this->previousSettings);
 
-		foreach (glob($this->base . '/*') as $path) {
-			@unlink($path);
+		// The settings cache writes settings/ under the profile as well.
+		if (is_dir($this->base)) {
+			$entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->base,
+				FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+			foreach ($entries as $entry) {
+				if ($entry->isDir() && !$entry->isLink()) @rmdir($entry->getPathname());
+				else @unlink($entry->getPathname());
+			}
+			@rmdir($this->base);
 		}
-		@rmdir($this->base);
 	}
 
 	/** Everything php/xmlrpc.php logged since the last call to this. */

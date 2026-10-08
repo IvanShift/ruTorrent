@@ -3,6 +3,7 @@
 $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-addition-caller-' . getmypid();
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/PermissiveDirectorySettings.php');
 require_once(__DIR__ . '/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/AdditionCallerFixtures.php');
 require_once(__DIR__ . '/TorrentAdditionSourceScanner.php');
@@ -11,10 +12,7 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
 /** Answers the two settings questions the add path asks, without a daemon. */
 class AdditionCallerSettings extends rTorrentSettings
 {
-	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
-	}
+	use PermissiveDirectorySettings;
 
 	public function maxContentSize()
 	{

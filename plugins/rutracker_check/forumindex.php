@@ -1240,6 +1240,12 @@ class RuTrackerForumIndex
                 }
                 return 'old';
             }
+            // FROM is stored as it was read. A record staged before 2026-10
+            // holds it with '"' and '\' backslash-escaped, as php/xmlrpc.php
+            // handed values out then; this plugin writes only digits here, so
+            // that spelling differs only for a value another writer left. It
+            // then misses this test and the fence below decides: 'old' for an
+            // unchanged row, never a retirement or a confirmation.
             if ($current === $record['from']) return 'old';
             // A superseded setter may land after this newer intent was staged.
             // Its smaller daemon fence still permits the newer branch to run.

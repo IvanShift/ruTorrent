@@ -267,7 +267,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
         $tree = $this->dir.'/mirror';
         mkdir($tree.'/plugins/rutracker_check', 0700, true);
         mkdir($tree.'/plugins/erasedata', 0700, true);
-        mkdir($tree.'/php', 0700);
+        mkdir($tree.'/php/utility', 0700, true);
         mkdir($tree.'/settings', 0700);
         mkdir($tree.'/session', 0700);
         if(!$ready)
@@ -279,7 +279,8 @@ class QueueAdmissionDiagnosticsTest extends TestCase
         foreach(array('plugins/rutracker_check/init.php', 'plugins/rutracker_check/done.php',
             'plugins/erasedata/init.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
-            'plugins/erasedata/pending.php', 'plugins/erasedata/removewithdata.php') as $relative)
+            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php',
+            'plugins/erasedata/removewithdata.php', 'php/utility/hashfault.php') as $relative)
         {
             copy($root.'/'.$relative, $tree.'/'.$relative);
             $this->assertEquals(hash_file('sha256', $root.'/'.$relative), hash_file('sha256', $tree.'/'.$relative),

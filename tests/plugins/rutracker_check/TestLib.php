@@ -658,7 +658,8 @@ class rXMLRPCRequest
         }
         $key = is_array($commands) ? implode('|', $commands) : $commands;
         if ($faultString === null)
-            $faultString = ($ok && $fault && $key === getCmd('d.hash')) ? 'info-hash not found' : '';
+            // rTorrent 0.15+'s own missing-hash answer (php/utility/hashfault.php).
+            $faultString = ($ok && $fault && $key === getCmd('d.hash')) ? 'invalid parameters: info-hash not found' : '';
         self::$responses[$key][] = array($ok, $fault, $values, $faultString);
     }
 
@@ -746,44 +747,12 @@ class rXMLRPCRequest
     }
 }
 
-if (!function_exists('erasedataTorrentPresence')) {
-    // Behaviourally identical to plugins/erasedata/removewithdata.php's
-    // function of the same name -- reformatted to this file's style, not copied
-    // line for line -- and it must stay identical: ruTrackerChecker::
-    // torrentExists() reads it, and that is the gate in front of every
-    // irreversible step of the replacement transaction. A double that answers
-    // ABSENT where production answers UNKNOWN (or the reverse) lets this suite
-    // prove a step production would never take. Change it only together with
-    // the real function: UpdatePassTest's 'the erasedata presence double is
-    // bound to removewithdata.php' reads that file, compares the whitelists and
-    // runs both functions over the same probes, so a one-sided change fails
-    // there rather than passing quietly.
-    function erasedataTorrentPresence($hash)
-    {
-        $probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.hash'), $hash));
-        $probe->important = false;
-        if (!$probe->run()) return ERASEDATA_TORRENT_UNKNOWN;
-        if ($probe->fault) {
-            $msg = isset($probe->rawFaultString) && is_string($probe->rawFaultString)
-                ? $probe->rawFaultString
-                : (isset($probe->faultString) && is_string($probe->faultString) ? $probe->faultString : '');
-            $missingFaults = array(
-                'info-hash not found',
-                'info-hash not found.',
-                'could not find info-hash',
-                'could not find info-hash.',
-                'invalid parameters: info-hash not found',
-            );
-            if (in_array(strtolower($msg), $missingFaults, true))
-                return ERASEDATA_TORRENT_ABSENT;
-            return ERASEDATA_TORRENT_UNKNOWN;
-        }
-        if (count($probe->val) !== 1 || !is_string($probe->val[0]))
-            return ERASEDATA_TORRENT_UNKNOWN;
-        return strcasecmp($probe->val[0], $hash) === 0
-            ? ERASEDATA_TORRENT_PRESENT : ERASEDATA_TORRENT_UNKNOWN;
-    }
-}
+// The production presence probe itself, not a double: plugins/erasedata/
+// presence.php is small, needs only the rXMLRPCRequest above and the core
+// HashFault leaf, and ruTrackerChecker::torrentExists() -- the gate in front
+// of every irreversible step of the replacement transaction -- must answer
+// here exactly as it does in production.
+require_once(testFindRepoRoot() . '/plugins/erasedata/presence.php');
 
 if (!function_exists('erasedataExactFileAlias')) {
     function erasedataExactFileAlias($leftIdentity, $rightIdentity)

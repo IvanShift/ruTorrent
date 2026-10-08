@@ -921,8 +921,12 @@ class SCGITransportTest extends TestCase
 		$oversize = SCGITransportFixture::startWithVersionProbe(array(array(0, "Content-Length: 200\r\n\r\n".str_repeat("x", 200))));
 		try
 		{
+			// The cap refuses the declared length as soon as the header arrives, so
+			// the budgets only bound a peer that is slow to answer. One second was
+			// not enough under parallel load: a stalled fixture made rpc2 log
+			// read-timeout instead of the refusal under test.
 			$result = $this->runCopiedRpc2($oversize->host(), (string)$oversize->port(), $this->allowedXml(), array(
-				'connect' => 1, 'transfer' => 1, 'max' => 160,
+				'connect' => 10, 'transfer' => 10, 'max' => 160,
 			));
 			$this->assertTrue(strpos($result['status'], '502 Bad Gateway') !== false,
 				'rpc2 forwards the configured response cap to the transport');

@@ -1,5 +1,6 @@
 <?php
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
+require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php");
 require_once( dirname(__FILE__)."/../../php/settings.php");
 require_once( dirname(__FILE__)."/../../php/utility/json.php");
@@ -323,21 +324,12 @@ class rUnpack
 
 		if(!empty($mode))
 	        {
-			$req = new rXMLRPCRequest(
-				new rXMLRPCCommand( "f.get_frozen_path", array($hash,intval($fileno)) ));
-			if($req->success())
+			// The shared reader returns the daemon's own bytes, or false when
+			// the download names no file -- which is never unpacked into the
+			// current directory (AUD-ESC-06).
+			$filename = rTorrent::getFilePath($hash, $fileno);
+			if($filename !== false)
 			{
-				$filename = $req->val[0];
-				if($filename=='')
-				{
-					$req = new rXMLRPCRequest( array(
-						new rXMLRPCCommand( "d.open", $hash ),
-						new rXMLRPCCommand( "f.get_frozen_path", array($hash,intval($fileno)) ),
-						new rXMLRPCCommand( "d.close", $hash ) ) );
-					if($req->success())
-						$filename = $req->val[1];
-				}
-
 				if($outPath=='')
 					$outPath = dirname($filename);
 

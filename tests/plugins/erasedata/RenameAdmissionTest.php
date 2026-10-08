@@ -100,6 +100,40 @@ class RenameAdmissionTest extends TestCase
         $this->assertTrue(!in_array('schedule', rXMLRPCRequest::$requested, true), 'refusal precedes schedule registration');
     }
 
+    // A daemon answer that does not describe the download's files (here one
+    // outside its base), or no answer, refuses the removal before anything
+    // is recorded, with its own reason in the 409 and the log. It used to be
+    // reported as 'rename-capability', or admitted until the manifest encoder
+    // refused it with an obligation already recorded.
+    public function testUnresolvablePayloadPathsRefuseAdmissionBeforeAnyObligation()
+    {
+        $answers = array(
+            'a file outside its base' => array('ok'=>true,
+                'val'=>array($this->dir.'/data', 1, $this->dir.'/elsewhere.bin')),
+            'no answer' => null,
+        );
+        foreach($answers as $case => $answer)
+        {
+            FileUtil::$log = array();
+            rXMLRPCRequest::$erased = array();
+            rXMLRPCRequest::$requested = array();
+            if($answer === null) unset(rXMLRPCRequest::$responses['d.get_base_path']);
+            else rXMLRPCRequest::$responses['d.get_base_path'] = $answer;
+            $this->assertTrue($this->admit(new ErasedataAdmissionProbeFixture()) === false,
+                'the removal is refused: '.$case);
+            $this->assertEquals('paths', erasedataAdmissionRefusalReason(), 'with its own reason: '.$case);
+            $this->assertEquals(array('erasedata: paths generation=none members=1 hash='.$this->hash
+                .' consequence=admission-refused-torrents-retained'), FileUtil::$log,
+                'one classified line names the download: '.$case.': '.implode(' | ', FileUtil::$log));
+            $this->assertEquals(array(), rXMLRPCRequest::$erased, 'nothing is erased: '.$case);
+            $this->assertEquals(array(), glob($this->queue.'/*.pending'), 'no obligation is recorded: '.$case);
+            $this->assertEquals(array(), glob($this->queue.'/*.tmp'), 'nothing is staged: '.$case);
+            $this->assertTrue(!in_array('schedule', rXMLRPCRequest::$requested, true),
+                'no drain is scheduled: '.$case);
+            $this->assertEquals('payload bytes', file_get_contents($this->payload), 'the data stays: '.$case);
+        }
+    }
+
     public function testSupportedAdmissionProbesPublicParentsBeforeErase()
     {
         $filesystem = new ErasedataAdmissionProbeFixture();
@@ -138,6 +172,61 @@ class RenameAdmissionTest extends TestCase
             'a refused mount alias cannot inherit support from the same inode at a different path');
         $this->assertEquals(array($this->queue, $this->dir.'/data'), $filesystem->parents,
             'each resolved mount path is probed even when its dev and inode match');
+    }
+
+    // ErasedataFilesystemOps::preflightParents() is the one parent rule that
+    // erasedata, datadir and AutoTools share; these cases pin it directly.
+    public function testSharedPreflightProbesTheDeepestExistingAncestorOfANewDirectory()
+    {
+        $filesystem = new ErasedataAdmissionProbeFixture();
+        $probed = array();
+        $this->assertTrue($filesystem->preflightParents(array($this->dir.'/data/new/nested'), $probed),
+            'a directory created later is admitted through its existing ancestor');
+        $this->assertEquals(array($this->dir.'/data'), $filesystem->parents,
+            'the filesystem that will hold the new directory is the one probed');
+        $this->assertTrue(!file_exists($this->dir.'/data/new'), 'preflight creates nothing');
+    }
+
+    public function testSharedPreflightRefusesWithAClassifiedReasonAndLogsNothing()
+    {
+        file_put_contents($this->dir.'/data/file', 'not a directory');
+        $filesystem = new ErasedataAdmissionProbeFixture($this->dir.'/data');
+        $probed = array();
+        $cases = array(
+            // The entry that blocks the walk is the one the operator must inspect.
+            array(array($this->dir.'/data/file/sub'), 'rename-noreplace-parent-unresolved', $this->dir.'/data/file'),
+            array(array('relative/parent'), 'rename-noreplace-invalid-parent', 'relative/parent'),
+            array(array($this->dir.'/data/../data'), 'rename-noreplace-invalid-parent', $this->dir.'/data/../data'),
+            // The fixture refuses this parent through the real helper query.
+            array(array($this->dir.'/data'), null, $this->dir.'/data/missing-probe-parent'),
+        );
+        foreach($cases as $case)
+        {
+            FileUtil::$log = array();
+            $this->assertTrue(!$filesystem->preflightParents($case[0], $probed), 'refused: '.$case[2]);
+            $reason = ErasedataFilesystemOps::lastRenameRefusal();
+            $this->assertTrue($case[1] === null ? strpos($reason, 'rename-noreplace-') === 0 : $reason === $case[1],
+                'the refusal is classified: '.$reason);
+            $this->assertTrue(strpos(ErasedataFilesystemOps::lastRenameRefusalContext(),
+                'path='.erasedataLogPath($case[2])) !== false, 'the refusal names its path');
+            $this->assertEquals(array(), FileUtil::$log, 'the shared preflight leaves reporting to its caller');
+        }
+        $this->assertEquals(array($this->dir.'/data'), $filesystem->parents,
+            'only a resolvable directory reaches the helper probe');
+    }
+
+    public function testSharedPreflightProbesOneResolvedParentOncePerOperation()
+    {
+        symlink($this->dir.'/data', $this->dir.'/alias');
+        $filesystem = new ErasedataAdmissionProbeFixture();
+        $probed = array();
+        $this->assertTrue($filesystem->preflightParents(array($this->dir.'/data',
+            $this->dir.'/alias', $this->dir.'/data/absent'), $probed), 'one usable parent admits all spellings');
+        $this->assertTrue($filesystem->preflightParents(array($this->queue, $this->dir.'/alias'), $probed),
+            'a later call of the same operation reuses its answers');
+        $this->assertEquals(array($this->dir.'/data', $this->queue), $filesystem->parents,
+            'each resolved physical parent is probed once');
+        unlink($this->dir.'/alias');
     }
 
     public function testChangedPayloadParentRefusalKeepsItsDiagnosticContext()

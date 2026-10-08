@@ -3,12 +3,10 @@
 // Shared admission and durable deletion obligations for the web and CLI
 // removal entrypoints. The legacy producer remains for compatibility; active
 // entrypoints use erasedataAdmitRemoval(). The caller loads php/xmlrpc.php.
-if(!defined('ERASEDATA_TORRENT_PRESENT'))
-	define('ERASEDATA_TORRENT_PRESENT', 1);
-if(!defined('ERASEDATA_TORRENT_ABSENT'))
-	define('ERASEDATA_TORRENT_ABSENT', 0);
-if(!defined('ERASEDATA_TORRENT_UNKNOWN'))
-	define('ERASEDATA_TORRENT_UNKNOWN', -1);
+// The torrent presence probe and its three answers live in presence.php,
+// which datadir loads without the rest of this file.
+require_once(dirname(__FILE__)."/presence.php");
+
 if(!defined('ERASEDATA_CLEANUP_NONE'))
 	define('ERASEDATA_CLEANUP_NONE', 'none');
 if(!defined('ERASEDATA_CLEANUP_READY'))
@@ -31,36 +29,6 @@ if(!function_exists('erasedataRepairFileMode'))
 	function erasedataRepairFileMode($path)
 	{
 		@chmod($path, erasedataSharedFileMode());
-	}
-}
-
-if(!function_exists('erasedataTorrentPresence'))
-{
-	function erasedataTorrentPresence($hash)
-	{
-		$probe = new rXMLRPCRequest( new rXMLRPCCommand( getCmd("d.hash"), $hash ) );
-		$probe->important = false;
-		if(!$probe->run())
-			return(ERASEDATA_TORRENT_UNKNOWN);
-		if($probe->fault)
-		{
-			$msg = isset($probe->rawFaultString) && is_string($probe->rawFaultString)
-				? $probe->rawFaultString
-				: (isset($probe->faultString) && is_string($probe->faultString) ? $probe->faultString : '');
-			$missingFaults = array(
-				'info-hash not found',
-				'info-hash not found.',
-				'could not find info-hash',
-				'could not find info-hash.',
-				'invalid parameters: info-hash not found',
-			);
-			if(in_array(strtolower($msg), $missingFaults, true))
-				return(ERASEDATA_TORRENT_ABSENT);
-			return(ERASEDATA_TORRENT_UNKNOWN);
-		}
-		if(count($probe->val) !== 1 || !is_string($probe->val[0]))
-			return(ERASEDATA_TORRENT_UNKNOWN);
-		return(strcasecmp($probe->val[0], $hash) === 0 ? ERASEDATA_TORRENT_PRESENT : ERASEDATA_TORRENT_UNKNOWN);
 	}
 }
 
@@ -108,6 +76,12 @@ if(!function_exists('erasedataLoadTorrentSource'))
 
 if(!function_exists('erasedataPhysicalRelativePath'))
 {
+	// A metainfo path as one name below the download. The plan is compared
+	// with the daemon's own bytes, which php/xmlrpc.php hands out as they are,
+	// and a backslash is an ordinary byte of a POSIX name, so only what cannot
+	// be one such component is refused: '', '.', '..', NUL and '/'. A name
+	// with a backslash was once refused here, and its present copy was logged
+	// as session-copy-unreadable (N1, AUD-ESC S4).
 	function erasedataPhysicalRelativePath($components)
 	{
 		if(!is_array($components) || !count($components))
@@ -116,8 +90,7 @@ if(!function_exists('erasedataPhysicalRelativePath'))
 		foreach($components as $component)
 		{
 			if(!is_string($component) || $component === '' || $component === '.' || $component === '..'
-				|| strpos($component, "\0") !== false || strpos($component, '/') !== false
-				|| strpos($component, '\\') !== false)
+				|| strpos($component, "\0") !== false || strpos($component, '/') !== false)
 				return(false);
 			$ret[] = $component;
 		}
@@ -127,14 +100,21 @@ if(!function_exists('erasedataPhysicalRelativePath'))
 
 if(!function_exists('erasedataPhysicalMetainfoPlan'))
 {
-	function erasedataPhysicalMetainfoPlan($hash)
+	// $failure tells the two refusals apart: 'plan-unavailable' when no
+	// session copy of this download could be read, 'plan-invalid' when the
+	// copy is this download's own (its info hash matches) but its layout
+	// gives no exact plan. A save cannot change the latter: the daemon would
+	// write the same info dictionary again.
+	function erasedataPhysicalMetainfoPlan($hash, &$failure = null)
 	{
+		$failure = 'plan-unavailable';
 		$canonicalHash = erasedataCanonicalHash($hash);
 		$source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash);
 		if(!is_object($source) || !method_exists($source, 'hash_info')
 			|| !isset($source->info) || !is_array($source->info)
 			|| erasedataCanonicalHash($source->hash_info()) !== $canonicalHash)
 			return(false);
+		$failure = 'plan-invalid';
 		$info = $source->info;
 		$single = array_key_exists('length', $info);
 		$multi = array_key_exists('files', $info);
@@ -170,6 +150,7 @@ if(!function_exists('erasedataPhysicalMetainfoPlan'))
 				$physical[] = !$padding;
 			}
 		}
+		$failure = null;
 		return(array('multi' => $multi ? 1 : 0, 'relative' => $relative, 'physical' => $physical));
 	}
 }
@@ -188,11 +169,18 @@ if(!function_exists('erasedataPhysicalMultiValue'))
 
 if(!function_exists('erasedataCollectPhysicalPaths'))
 {
-	function erasedataCollectPhysicalPaths($hash)
+	// $failure says why there is no answer: the plan's own reason
+	// (erasedataPhysicalMetainfoPlan()), otherwise 'daemon-paths-unconfirmed'
+	// when the daemon's answer did not confirm it. Every path the daemon
+	// answers is compared and returned in its own bytes, as php/xmlrpc.php
+	// hands them out; while it escaped them, a name with a quote or a
+	// backslash never matched the session copy (ACC-OWNB-04, AUD-ESC-09).
+	function erasedataCollectPhysicalPaths($hash, &$failure = null)
 	{
-		$plan = erasedataPhysicalMetainfoPlan($hash);
+		$plan = erasedataPhysicalMetainfoPlan($hash, $failure);
 		if($plan === false)
 			return(false);
+		$failure = 'daemon-paths-unconfirmed';
 		$count = count($plan['relative']);
 		$frozen = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.get_base_path"), $hash ),
@@ -204,6 +192,7 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 			|| erasedataPhysicalMultiValue($frozen->val[1]) !== $plan['multi']
 			|| !is_string($frozen->val[0])))
 			return(false);
+		$frozenBase = $frozenOk ? $frozen->val[0] : '';
 
 		$stored = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.get_directory"), $hash ),
@@ -211,11 +200,13 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_path")."=") )
 		) );
 		if(!$stored->success() || count($stored->val) !== $count + 2
-			|| erasedataPhysicalMultiValue($stored->val[1]) !== $plan['multi']
-			|| !is_string($stored->val[0]) || $stored->val[0] === '' || $stored->val[0][0] !== '/'
-			|| strpos($stored->val[0], "\0") !== false)
+			|| erasedataPhysicalMultiValue($stored->val[1]) !== $plan['multi'])
 			return(false);
-		$directory = $stored->val[0] === '/' ? '/' : rtrim($stored->val[0], '/');
+		$directory = $stored->val[0];
+		if(!is_string($directory) || $directory === '' || $directory[0] !== '/'
+			|| strpos($directory, "\0") !== false)
+			return(false);
+		$directory = $directory === '/' ? '/' : rtrim($directory, '/');
 		if($directory === '')
 			return(false);
 		$storedFiles = array();
@@ -232,7 +223,7 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 		if($frozenOk)
 		{
 			$expectedBase = $plan['multi'] ? $directory : $storedFiles[0];
-			if($frozen->val[0] !== '' && $frozen->val[0] !== $expectedBase)
+			if($frozenBase !== '' && $frozenBase !== $expectedBase)
 				return(false);
 			for($index = 0; $index < $count; $index++)
 			{
@@ -243,7 +234,7 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 				$expectedPath = $plan['multi']
 					? ($expectedBase === '/' ? '/' : $expectedBase.'/').$plan['relative'][$index]
 					: $expectedBase;
-				if($path !== '' && ($frozen->val[0] === '' || $path !== $expectedPath))
+				if($path !== '' && ($frozenBase === '' || $path !== $expectedPath))
 					return(false);
 				$frozenFiles[] = $path;
 				if($plan['physical'][$index] && $path === '')
@@ -271,6 +262,23 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 	}
 }
 
+// The paths a removal names, or false when they do not describe one
+// download: the base and every file absolute, without NUL or a '.' or '..'
+// component (the manifest's own rule), a multi-file download's files strictly
+// below its base and a single-file download's one file its base.
+function erasedataResolvedRemovalPaths($base, $multi, array $files)
+{
+	if(!ErasedataManifestCodec::isValidAbsolutePath($base) || rtrim($base, '/') === '' || !count($files))
+		return(false);
+	$prefix = rtrim($base, '/').'/';
+	foreach($files as $file)
+		if(!ErasedataManifestCodec::isValidAbsolutePath($file) || ($multi === '1'
+			? strpos($file, $prefix) !== 0 || strlen($file) === strlen($prefix)
+			: $files !== array($base)))
+			return(false);
+	return(array('base' => $base, 'multi' => $multi, 'files' => $files));
+}
+
 if(!function_exists('erasedataCollectPaths'))
 {
 	// d.base_path and f.frozen_path are only filled in when rtorrent opens a
@@ -278,6 +286,15 @@ if(!function_exists('erasedataCollectPaths'))
 	// that has not been opened since rtorrent started -- any torrent that was
 	// stopped when the session was loaded -- reports both as empty, so fall
 	// back to d.directory and f.path, which are always available.
+	//
+	// The answer becomes the deletion manifest, so every string is taken in
+	// the daemon's own bytes, as php/xmlrpc.php hands them out, and checked
+	// (erasedataResolvedRemovalPaths()); it is never unescaped. The escaped
+	// spelling of a name with a double quote was once published: the
+	// download was erased and its data stayed on disk, with nothing logged
+	// (L4 lab B, 2026-10-08; AUD-ESC-03). False is refused visibly by
+	// admission and retained by recovery and the collector; none of them
+	// erases a download whose files it cannot name.
 	function erasedataCollectPaths($hash, $physicalOnly = false)
 	{
 		if($physicalOnly)
@@ -294,13 +311,11 @@ if(!function_exists('erasedataCollectPaths'))
 		{
 			$files = array();
 			foreach(array_slice($frozen->val, 2) as $path)
-				if(strlen($path))
+				if($path !== '')
 					$files[] = $path;
 			if(count($files))
-				return( array(
-					"base"  => $frozen->val[0],
-					"multi" => $frozen->val[1] ? "1" : "0",
-					"files" => $files ) );
+				return(erasedataResolvedRemovalPaths($frozen->val[0],
+					$frozen->val[1] ? "1" : "0", $files));
 		}
 
 		$stored = new rXMLRPCRequest( array(
@@ -308,7 +323,7 @@ if(!function_exists('erasedataCollectPaths'))
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
 			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_path")."=") )
 		) );
-		if(!$stored->success() || count($stored->val) < 3)
+		if(!$stored->success() || count($stored->val) < 3 || !is_string($stored->val[0]))
 			return(false);
 		$dir = rtrim($stored->val[0], '/');
 		if(!strlen($dir))
@@ -316,17 +331,14 @@ if(!function_exists('erasedataCollectPaths'))
 		$isMulti = $stored->val[1] ? "1" : "0";
 		$files = array();
 		foreach(array_slice($stored->val, 2) as $path)
-			if(strlen($path))
-				$files[] = $dir.'/'.$path;
+			if($path !== '')
+				$files[] = is_string($path) ? $dir.'/'.$path : false;
 		if(!count($files))
 			return(false);
 		// d.directory is the download's root directory, which for a single-file
 		// torrent is the directory holding the file, not the file itself --
 		// d.base_path returns the file. Mirror that here.
-		return( array(
-			"base"  => $isMulti=="1" ? $dir : $files[0],
-			"multi" => $isMulti,
-			"files" => $files ) );
+		return(erasedataResolvedRemovalPaths($isMulti == "1" ? $dir : $files[0], $isMulti, $files));
 	}
 }
 
@@ -345,12 +357,14 @@ function erasedataCleanupMetadataOnly($hash)
 	if(!is_object($source) || !property_exists($source, 'info'))
 		return(false);
 	$info = $source->info;
-	if($info !== null && (!is_array($info) || count($info) !== 3
+	// Only the exact captured envelope qualifies; the real loader never
+	// yields a source without info, so a missing dictionary is no stub.
+	if(!is_array($info) || count($info) !== 3
 		|| !isset($info['meta_download'], $info['name'], $info['pieces'])
 		// Torrent decodes bencoded integers as floats; strings remain invalid.
 		|| !in_array($info['meta_download'], array(1, 1.0), true) || !is_string($info['name'])
-		|| strcasecmp($info['name'], $hash.'.meta') !== 0
-		|| !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash))
+		|| !rTorrent::isMetadataStubName($info['name'], $hash)
+		|| !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash)
 		return(false);
 	$probe = new rXMLRPCRequest(array(
 		new rXMLRPCCommand(getCmd('d.is_meta'), $hash),
@@ -359,6 +373,76 @@ function erasedataCleanupMetadataOnly($hash)
 	return($probe->success() && count($probe->val) === 2
 		&& in_array($probe->val[0], array(1, '1', true), true)
 		&& is_string($probe->val[1]) && strtoupper($probe->val[1]) === $hash);
+}
+
+// Every path the daemon names for a download's files, stored and frozen, in
+// its own bytes, or false when it does not answer consistently. Without the
+// session copy the payload cannot be told from padding, so every listed file
+// is claimed: a claim can only keep more files (ACC-OWNB-04). A claim must
+// name exactly the owner's file: unescaped once more, the daemon's
+// `a\"b` read as its neighbour `a"b`, which the claim then kept while the
+// owner's file went unclaimed (AUD-ESC-09 F2b, F3).
+function erasedataCleanupDaemonClaims($hash)
+{
+	$request = new rXMLRPCRequest(array(
+		new rXMLRPCCommand(getCmd('d.get_directory'), $hash),
+		new rXMLRPCCommand(getCmd('f.multicall'), array($hash, '',
+			getCmd('f.get_path').'=', getCmd('f.get_frozen_path').'='))));
+	$request->important = false;
+	if(!$request->success() || !is_array($request->val) || count($request->val) % 2 !== 1)
+		return(false);
+	$directory = $request->val[0];
+	if(!is_string($directory) || $directory === '' || $directory[0] !== '/'
+		|| strpos($directory, "\0") !== false)
+		return(false);
+	$directory = $directory === '/' ? '' : rtrim($directory, '/');
+	$files = array();
+	for($index = 1; $index < count($request->val); $index += 2)
+	{
+		$stored = $request->val[$index];
+		$frozen = $request->val[$index + 1];
+		if(!is_string($stored) || $stored === '' || $stored[0] === '/' || strpos($stored, "\0") !== false
+			|| !is_string($frozen) || strpos($frozen, "\0") !== false || ($frozen !== '' && $frozen[0] !== '/'))
+			return(false);
+		$files[$directory.'/'.$stored] = true;
+		if($frozen !== '')
+			$files[$frozen] = true;
+	}
+	return(array('files' => array_keys($files)));
+}
+
+// A download without an exact payload plan -- its session copy is missing or
+// unreadable, the copy's layout gives no plan, or the daemon's paths do not
+// match it -- is claimed through its daemon file list instead of blocking
+// every replacement cleanup. For a missing copy a save is requested once per
+// process so the exact plan returns; a save would not change the other two.
+// Each is logged with the download's hash and its own reason (ACC-OWNB-04).
+function erasedataCleanupClaimWithoutPlan($hash, $failure)
+{
+	static $reported = array();
+	$reasons = array('plan-unavailable' => 'session-copy-unreadable',
+		'plan-invalid' => 'metainfo-paths-unusable');
+	$reason = isset($reasons[$failure]) ? $reasons[$failure] : 'daemon-paths-unconfirmed';
+	$owned = erasedataCleanupDaemonClaims($hash);
+	if($owned === false)
+	{
+		FileUtil::toLog('erasedata: cleanup owner '.$hash.' refused: '.$reason.' and daemon'
+			.' file list unconfirmed; replacements with obsolete files wait for this download');
+		return(false);
+	}
+	if(!isset($reported[$hash]))
+	{
+		$reported[$hash] = true;
+		$line = 'erasedata: cleanup owner '.$hash.' '.$reason.'; its daemon file list is claimed instead';
+		if($reason === 'session-copy-unreadable')
+		{
+			$save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'), $hash));
+			$save->important = false;
+			$line .= '; session save '.($save->success() ? 'requested' : 'unconfirmed');
+		}
+		FileUtil::toLog($line);
+	}
+	return($owned);
 }
 
 // A cleanup may discard only names and inodes unclaimed by every other torrent.
@@ -401,11 +485,14 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 		if($hash === $newHash && $row[1] === $marker && $row[2] === $record
 			&& $row[3] === '')
 			continue;
-		$owned = erasedataCollectPhysicalPaths($hash);
+		$failure = null;
+		$owned = erasedataCollectPhysicalPaths($hash, $failure);
 		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
 		{
 			if(erasedataCleanupMetadataOnly($hash)) continue;
-			return(false);
+			$owned = erasedataCleanupClaimWithoutPlan($hash, $failure);
+			if($owned === false)
+				return(false);
 		}
 		foreach($owned['files'] as $file)
 		{
@@ -3116,10 +3203,8 @@ if(!function_exists('erasedataAcquireRemovalCapability'))
 
 if(!function_exists('erasedataRemovalAdmissionRun'))
 {
-	// Probe all actual parents a captured payload/manifest may restore into.
-	// Missing parents need no mutation; their deepest existing ancestor still
-	// has to be resolvable. Bind aliases may have different mount permissions,
-	// so cache only this resolved path and physical identity within admission.
+	// Probe all actual parents a captured payload/manifest may restore into,
+	// through the shared ErasedataFilesystemOps::preflightParents() rule.
 	function erasedataRemovalRenameReady($listPath, array $paths,
 		ErasedataFilesystemOps $filesystem, array &$probed)
 	{
@@ -3130,30 +3215,18 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		$names[] = $paths['base'];
 		if(!empty($paths['multi'])) $names[] = rtrim($paths['base'], '/').'/entry';
 		$names = array_merge($names, $paths['files']);
+		$parents = array();
 		foreach($names as $path)
 		{
-			if(!ErasedataManifestCodec::isValidAbsolutePath($path)) return(false);
-			$directory = dirname($path);
+			// An invalid entry name is refused with the shared classified reason.
+			if(!ErasedataManifestCodec::isValidAbsolutePath($path))
+				return($filesystem->preflightParents(array($path), $probed));
 			// No entry or existing parent can be captured here. This also keeps
 			// empty downloads from requiring write access to unrelated ancestors.
-			if(!erasedataPathExists($path) && !is_dir($directory)) continue;
-			while(!is_dir($directory))
-			{
-				if(erasedataPathExists($directory) || dirname($directory) === $directory)
-					return(false);
-				$directory = dirname($directory);
-			}
-			$directory = @realpath($directory);
-			$identity = $directory === false ? false : $filesystem->targetIdentity($directory);
-			$key = erasedataIdentityDeviceAndInode($identity);
-			if($key === false) return(false);
-			$key = $directory.'|'.$key['dev'].':'.$key['ino'];
-			if(isset($probed[$key])) continue;
-			if(!$filesystem->probeRenameParent($directory))
-				return(false);
-			$probed[$key] = true;
+			if(!erasedataPathExists($path) && !is_dir(dirname($path))) continue;
+			$parents[] = dirname($path);
 		}
-		return(true);
+		return($filesystem->preflightParents($parents, $probed));
 	}
 
 	// The one admission transaction, with every dependency handed in.
@@ -3226,14 +3299,18 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			$probed = array();
 			foreach($accepted as $hash)
 			{
+				// An answer that resolves to no file list (erasedataCollectPaths())
+				// is refused as 'paths', the reason step (6) gives it, before
+				// anything is recorded.
 				$paths = erasedataCollectPaths($hash);
 				if(!is_array($paths) || !erasedataRemovalRenameReady($listPath,
 					$paths, $filesystem, $probed))
 				{
 					erasedataUnlockObligations($locks);
-					ErasedataFilesystemOps::reportRenameRefusal();
-					erasedataDrainDiagnostic($log, 'rename-capability', null, $members,
-						'admission-refused-torrents-retained', $hash);
+					if(is_array($paths))
+						ErasedataFilesystemOps::reportRenameRefusal();
+					erasedataDrainDiagnostic($log, is_array($paths) ? 'rename-capability' : 'paths',
+						null, $members, 'admission-refused-torrents-retained', $hash);
 					return(false);
 				}
 			}

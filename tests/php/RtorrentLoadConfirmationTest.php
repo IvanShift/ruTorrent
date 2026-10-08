@@ -1,20 +1,18 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/PermissiveDirectorySettings.php');
 require_once(__DIR__ . '/RtorrentLoadConfirmationFixture.php');
 require_once(__DIR__ . '/../../php/rtorrent.php');
 require_once(__DIR__ . '/../../plugins/rss/rss.php');
 
 class RtorrentLoadConfirmationSettings extends rTorrentSettings
 {
+	use PermissiveDirectorySettings;
+
 	public function loadLegacyAliases()
 	{
 		include(__DIR__ . '/../../php/methods-0.9.4.php');
-	}
-
-	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
 	}
 }
 
@@ -23,9 +21,17 @@ class RtorrentLoadConfirmationTest extends TestCase
 	private $settingsBefore;
 	private $torrentFile;
 	private $hash;
+	private $logBefore;
+	private $log;
 
 	public function setUp()
 	{
+		// sendTorrent() logs every unconfirmed load. Without a log of its own
+		// the test appended to the shared /tmp/errors.log of the host (O-3).
+		$this->logBefore = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
+		$this->log = tempnam(sys_get_temp_dir(), 'rtlc-app-');
+		$GLOBALS['log_file'] = $this->log;
+
 		$settings = (new ReflectionClass('RtorrentLoadConfirmationSettings'))
 			->newInstanceWithoutConstructor();
 		$settings->iVersion = 0x1016;
@@ -58,6 +64,9 @@ class RtorrentLoadConfirmationTest extends TestCase
 		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
 		$property->setValue(null, $this->settingsBefore);
 		@unlink($this->torrentFile);
+		if ($this->logBefore === null) unset($GLOBALS['log_file']);
+		else $GLOBALS['log_file'] = $this->logBefore;
+		@unlink($this->log);
 	}
 
 	private function withPeer($mode, $callback)

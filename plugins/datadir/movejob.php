@@ -12,29 +12,19 @@ class DataDirMoveJob
     private $data;
     private $rpc;
     private $move;
+    private $presence;
+    private $restoredStart = false;
 
-    private function __construct($path, $data, $rpc, $move)
+    // $rpc reaches daemon methods; $presence answers 'absent', 'present' or
+    // 'unknown' for the job's hash and is the only proof that may retire an
+    // untouched job of a removed torrent.
+    private function __construct($path, $data, $rpc, $move, $presence)
     {
         $this->path = $path;
         $this->data = $data;
         $this->rpc = $rpc;
         $this->move = $move;
-    }
-
-    private static function write($path, $data, $exclusive)
-    {
-        $json = json_encode($data, JSON_UNESCAPED_SLASHES);
-        if (!is_string($json) || strlen($json) > 16777216)
-            throw new RuntimeException('job-too-large');
-        $parent = dirname($path);
-        $tmp = @tempnam($parent, '.datadir-job-');
-        if ($tmp === false)
-            throw new RuntimeException('job-staging-failed');
-        $ok = @file_put_contents($tmp, $json) === strlen($json) && @chmod($tmp, 0600)
-            && ($exclusive ? @link($tmp, $path) : @rename($tmp, $path));
-        @unlink($tmp);
-        if (!$ok)
-            throw new RuntimeException('job-publish-failed');
+        $this->presence = $presence;
     }
 
     public static function journalDirectory($path)
@@ -50,10 +40,10 @@ class DataDirMoveJob
         return $canonical;
     }
 
-    public static function create($journal, $data, $rpc, $move)
+    public static function create($journal, $data, $rpc, $move, $presence)
     {
         self::journalDirectory($journal);
-        if (!is_callable($rpc) || !is_callable($move) || !is_array($data)
+        if (!is_callable($rpc) || !is_callable($move) || !is_callable($presence) || !is_array($data)
             || !isset($data['hash'], $data['directory'], $data['local_id'],
                 $data['files'], $data['source'], $data['destination'], $data['add'], $data['move'],
                 $data['previous_directory'])
@@ -63,27 +53,36 @@ class DataDirMoveJob
             || $data['previous_directory'] === '' || !is_string($data['directory'])
             || !is_string($data['source']) || !is_string($data['destination']))
             throw new RuntimeException('invalid-job');
-        $data = array('version' => 2, 'phase' => 'new', 'job' => bin2hex(random_bytes(16)),
+        // The daemon strings are the daemon's own bytes. Version 2 was
+        // written while rXMLRPCRequest escaped them (see ambiguous()); without
+        // a backslash in any of them both readings are the same bytes, so the
+        // job stays version 2, and a release that reads only version 2 can
+        // still run it after a rollback. Version 3 marks a job that needs the
+        // new reading.
+        $version = self::holdsBackslash($data) ? 3 : 2;
+        $data = array('version' => $version, 'phase' => 'new', 'job' => bin2hex(random_bytes(16)),
             'hash' => $data['hash'], 'directory' => $data['directory'],
             'add' => (bool) $data['add'], 'move' => (bool) $data['move'],
             'source' => $data['source'], 'destination' => $data['destination'],
             'files' => $data['files'], 'local_id' => $data['local_id'],
             'previous_directory' => $data['previous_directory']);
         $path = $journal . '/' . $data['hash'] . '.json';
-        self::write($path, $data, true);
-        return new self($path, $data, $rpc, $move);
+        DataDirDocument::publish($path, $data, true, 'job');
+        return new self($path, $data, $rpc, $move, $presence);
     }
 
-    public static function load($path, $rpc, $move)
+    public static function load($path, $rpc, $move, $presence)
     {
-        if (!is_callable($rpc) || !is_callable($move) || is_link($path) || !is_file($path))
+        if (!is_callable($rpc) || !is_callable($move) || !is_callable($presence)
+            || is_link($path) || !is_file($path))
             throw new RuntimeException('job-unavailable');
-        $json = @file_get_contents($path, false, null, 0, 16777217);
-        $data = is_string($json) && strlen($json) <= 16777216 ? json_decode($json, true) : null;
+        $json = @file_get_contents($path, false, null, 0, DataDirDocument::MAX_BYTES + 1);
+        $data = is_string($json) && strlen($json) <= DataDirDocument::MAX_BYTES ? json_decode($json, true) : null;
         if (!is_array($data) || array_keys($data) !== array('version', 'phase', 'job',
             'hash', 'directory', 'add', 'move', 'source', 'destination', 'files', 'local_id',
             'previous_directory')
-            || $data['version'] !== 2 || !in_array($data['phase'], array('new', 'claimed',
+            || !in_array($data['version'], array(2, 3), true)
+            || !in_array($data['phase'], array('new', 'claimed',
                 'setter-pending', 'cancel-pending', 'ack-pending'), true)
             || preg_match('/^[0-9a-f]{32}$/D', $data['job']) !== 1
             || preg_match('/^[0-9A-F]{40}$/D', $data['hash']) !== 1
@@ -94,18 +93,21 @@ class DataDirMoveJob
             || !is_string($data['local_id']) || !is_string($data['previous_directory'])
             || $data['previous_directory'] === '')
             throw new RuntimeException('job-corrupt');
-        return new self($path, $data, $rpc, $move);
+        return new self($path, $data, $rpc, $move, $presence);
     }
 
     public function id() { return $this->data['job']; }
     public function hash() { return $this->data['hash']; }
     public function phase() { return $this->data['phase']; }
+    public function movesPayload() { return $this->data['move']; }
+    // True when this run's own finish restored a started download.
+    public function restoredStart() { return $this->restoredStart; }
 
     private function phaseSet($phase)
     {
         $next = $this->data;
         $next['phase'] = $phase;
-        self::write($this->path, $next, false);
+        DataDirDocument::publish($this->path, $next, false, 'job');
         $this->data = $next;
     }
 
@@ -142,6 +144,29 @@ class DataDirMoveJob
 
     private function moveReceipt() { return $this->path . '.move'; }
 
+    // An older release wrote version 2 with previous_directory, source,
+    // destination and files from a parser that put a backslash before every
+    // '"' and '\' it read (AUD-ESC-08). With a backslash in any of them, the
+    // stored bytes and their unescaped reading may both name real paths, and
+    // nothing in the job tells which one the daemon meant. Without one, both
+    // readings are the same bytes: the same rule as an unmarked erasedata
+    // manifest, and the reason create() still writes such a job as version 2.
+    private function ambiguous()
+    {
+        return $this->data['version'] === 2 && self::holdsBackslash($this->data);
+    }
+
+    // The daemon strings of a job; the request's own directory is not one.
+    private static function holdsBackslash($data)
+    {
+        $strings = array_merge(array($data['previous_directory'], $data['source'],
+            $data['destination']), $data['files']);
+        foreach ($strings as $value)
+            if (is_string($value) && strpos($value, '\\') !== false)
+                return true;
+        return false;
+    }
+
     private function retire($intent)
     {
         if ($intent !== null && !$intent->retire())
@@ -149,6 +174,16 @@ class DataDirMoveJob
         if (!@unlink($this->path))
             throw new RuntimeException('job-retire-failed');
         return true;
+    }
+
+    // An untouched new job whose torrent is attestedly gone has nothing to
+    // recover: retire it and refuse. Any other presence answer keeps it.
+    private function retireAbsent()
+    {
+        if (call_user_func($this->presence, $this->data['hash']) !== 'absent')
+            return;
+        $this->retire(null);
+        throw new DataDirMoveRefused('torrent-absent');
     }
 
     private function cancelUnmoved($state, $intent)
@@ -200,11 +235,8 @@ class DataDirMoveJob
         } catch (RuntimeException $error) {
             // A missing hash faults the addressed claim read. Only a separate
             // attested absence may retire an untouched new job on that answer.
-            if ($this->data['phase'] === 'new' && $intent === null
-                && call_user_func($this->rpc, 'torrent-presence', $this->data['hash'], array()) === 'absent') {
-                $this->retire(null);
-                throw new DataDirMoveRefused('torrent-absent');
-            }
+            if ($this->data['phase'] === 'new' && $intent === null)
+                $this->retireAbsent();
             throw $error;
         }
         if ($this->data['phase'] === 'ack-pending')
@@ -230,10 +262,7 @@ class DataDirMoveJob
                     $this->retire(null);
                     throw new DataDirMoveRefused('daemon-claim-refused');
                 }
-                if (call_user_func($this->rpc, 'torrent-presence', $this->data['hash'], array()) === 'absent') {
-                    $this->retire(null);
-                    throw new DataDirMoveRefused('torrent-absent');
-                }
+                $this->retireAbsent();
                 throw $error;
             }
         }
@@ -252,6 +281,30 @@ class DataDirMoveJob
         if ($this->data['phase'] === 'cancel-pending'
             || ($intent !== null && $intent->phase() === 'aborting'))
             return $this->cancelUnmoved($state, $intent);
+        // An ambiguous job may not compare any daemon answer with its strings
+        // or move a payload file by them: they may be the escaped spelling of
+        // the download's paths and name a neighbour. Until a payload file has
+        // moved, that holds for its receipt too: a preparing one would be
+        // prepared again from these strings, and a ready one bound its witness
+        // links and identities to the files these strings named, so advancing
+        // would move exactly those files. Drop the preparation or the unmoved
+        // witness links, cancel the claim, which restores the original run
+        // state, and retire the job. A ready receipt whose files cannot all be
+        // proven still unmoved (one was moved, say) is held: advancing would
+        // move more of them, and nothing here can tell where a moved one
+        // belongs. Past the physical move (a finishing or later receipt,
+        // setter-pending) the job keeps running: the setter sends the
+        // request's own physical directory, never a daemon string, and
+        // cancel-pending and ack-pending send only the job id and token.
+        if ($state['kind'] === 'active' && $this->ambiguous()
+            && ($this->data['phase'] === 'new' || $this->data['phase'] === 'claimed')
+            && ($intent === null || in_array($intent->phase(), array('preparing', 'ready'), true)))
+        {
+            if ($intent !== null && $intent->phase() === 'ready' && !$intent->beginAbortUnmoved())
+                throw new RuntimeException('job-paths-ambiguous-unmoved-unproven');
+            $this->cancelUnmoved($state, $intent);
+            throw new DataDirMoveRefused('job-paths-ambiguous');
+        }
         if ($state['kind'] === 'active' && $intent === null
             && ($this->data['phase'] === 'new' || $this->data['phase'] === 'claimed')
             && $this->call('d.directory') !== $this->data['previous_directory'])
@@ -277,8 +330,11 @@ class DataDirMoveJob
             if ($intent === null)
             {
                 try {
+                    // At most 0755, since the umask only removes bits: never
+                    // group/other-writable, which the payload rule refuses
+                    // above the configured top.
                     if (!is_dir($this->data['destination'])
-                        && !@mkdir($this->data['destination'], 0777, true)
+                        && !@mkdir($this->data['destination'], 0755, true)
                         && !is_dir($this->data['destination']))
                         throw new RuntimeException('destination-root-unavailable');
                     if (@realpath($this->data['destination']) !== $this->data['destination'])
@@ -316,8 +372,8 @@ class DataDirMoveJob
             if ($this->data['move'] && $intent->phase() !== 'finishing')
                 throw new RuntimeException('move-not-finished');
             if ($this->data['move']
-                && (!DataDirMoveIntent::trustedDirectory(rtrim($this->data['directory'], '/'))
-                    || !DataDirMoveIntent::trustedDirectory($this->data['destination'])))
+                && (!ErasedataFilesystemOps::payloadDirectoryTrusted(rtrim($this->data['directory'], '/'))
+                    || !ErasedataFilesystemOps::payloadDirectoryTrusted($this->data['destination'])))
                 throw new RuntimeException('untrusted-directory');
             if ($this->data['phase'] !== 'setter-pending')
                 $this->phaseSet('setter-pending');
@@ -327,7 +383,11 @@ class DataDirMoveJob
                 throw new RuntimeException('directory-set-refused');
             $finish = $state['state'] === 1 ? 'd.start_if_stop_close_claim'
                 : ($state['open'] === 1 ? 'd.open_if_stop_close_claim' : 'd.release_stop_close_claim');
-            $this->call($finish, array($state['token']));
+            // 1 means the claim restored the original run state; 0 keeps a
+            // later user Stop. Callers check what a restored start became.
+            $finished = $this->call($finish, array($state['token']));
+            $this->restoredStart = $finish === 'd.start_if_stop_close_claim'
+                && (string) $finished === '1';
         }
         $state = self::state($this->call('d.stop_close_claim_state', array($job)));
         if ($state['kind'] === 'terminal')

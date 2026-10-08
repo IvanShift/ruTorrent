@@ -62,6 +62,10 @@ function parseValue( $value, &$pendingReceipt = null )
 		if( strpos($value,'magnet:') === 0 )
 		{
 			$ret = rTorrent::sendMagnet($value, true, true, '', '');
+			// rTorrent drops some malformed magnets without a stub; such a
+			// magnet is pending, not added (R4-NF-1).
+			if(($ret !== false) && !rTorrent::magnetShown($ret, 'bulk_magnet'))
+				$ret = null;
 		}
 	}
 	return($ret);

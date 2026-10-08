@@ -166,6 +166,8 @@ class XMLRPCProxy
 		'f.prioritize_last.enable'      => array('file_target'),
 		'f.prioritize_last.disable'     => array('file_target'),
 		'd.update_priorities'           => array('hash'),
+		// The WebUI saves each relabelled download right after its label.
+		'd.save_resume'                 => array('hash'),
 		'd.set_throttle_name'           => array('hash', 'scheduler_throttle'),
 		'd.throttle_name.set'           => array('hash', 'scheduler_throttle'),
 		'd.set_custom'                  => array('hash', 'scheduler_key', 'scheduler_state'),
@@ -184,7 +186,7 @@ class XMLRPCProxy
 	private static $batchElevations = array(
 		'f.prioritize_first.enable', 'f.prioritize_first.disable',
 		'f.prioritize_last.enable', 'f.prioritize_last.disable',
-		'd.update_priorities', 'd.set_throttle_name', 'd.throttle_name.set',
+		'd.update_priorities', 'd.save_resume', 'd.set_throttle_name', 'd.throttle_name.set',
 		'd.set_custom', 'view.set_visible', 'view.set_not_visible',
 		'd.views.push_back_unique', 'd.views.remove',
 	);

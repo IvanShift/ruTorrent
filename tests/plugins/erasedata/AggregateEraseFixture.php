@@ -173,8 +173,9 @@ class ErasedataAggregateEraseDaemon
 	//
 	// Every answer is derived from the presence table above. A command aimed at
 	// a member this daemon does not hold faults with rTorrent's own wording, so
-	// erasedataTorrentPresence() classifies it through the production list of
-	// missing-hash faults rather than through anything this file decides.
+	// erasedataTorrentPresence() classifies it through the production rule for
+	// missing-hash faults (HashFault) rather than through anything this file
+	// decides.
 	private function apply($command, $params)
 	{
 		$hash = is_array($params)
@@ -319,7 +320,7 @@ class ErasedataAggregateEraseDaemon
 				// parser, in that order. The wording is the daemons' own:
 				// 0.16.21 answers 'invalid parameters: info-hash not found'
 				// with faultCode -500 and 0.9.8 'Could not find info-hash.'
-				// with -501, and erasedataTorrentPresence() lists both.
+				// with -501, the two answers HashFault accepts.
 				$fault = $applied['fault'];
 				$values[] = (string)$applied['faultCode'];
 				$values[] = $applied['fault'];

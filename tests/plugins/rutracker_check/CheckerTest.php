@@ -785,11 +785,39 @@ class CheckerTest
 		mkdir($base, 0777, true);
 		try
 		{
-			foreach(array('', '.', '..', "bad\0name", 'bad/name', 'bad\\name') as $component)
+			foreach(array('', '.', '..', "bad\0name", 'bad/name') as $component)
 				strictAssertSame(false, $this->cleanupEntries(
 					array('files' => array(array('path' => array('nested', $component)))),
 					array('files' => array(array('path' => array('nested', 'new.mkv')))), $base),
 					'unsafe metainfo components abort the complete cleanup build');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	// A backslash is an ordinary byte of a Linux file name, and the daemon
+	// writes the component exactly as the metainfo spells it. Refusing it
+	// failed the cleanup build, so every replacement of a torrent holding
+	// such a file rolled back, cycle after cycle (round-4 AUD-ESC S4).
+	public function testObsoleteDiffOwnsAFileWhoseNameHoldsABackslash()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-backslash-' . bin2hex(random_bytes(5));
+		$name = 'aud "q" \\b \'a\' &c.nfo';
+		mkdir($base . '/sub \\dir', 0777, true);
+		file_put_contents($base . '/sub \\dir/' . $name, 'old');
+		file_put_contents($base . '/keep.mkv', 'keep');
+		try
+		{
+			$entries = $this->cleanupEntries(
+				array('files' => array(array('path' => array('sub \\dir', $name)),
+					array('path' => array('keep.mkv')))),
+				array('files' => array(array('path' => array('keep.mkv')),
+					array('path' => array('new \\ part.nfo')))), $base);
+			strictAssertTrue(is_array($entries), 'components holding a backslash are accepted on both sides');
+			strictAssertSame(array(realpath($base) . '/sub \\dir/' . $name),
+				array_map(function($entry) { return $entry['path']; }, $entries),
+				'the backslash is part of the name, never a separator');
+			strictAssertSame('keep', file_get_contents($base . '/keep.mkv'), 'the shared file is not an entry');
 		}
 		finally { strictRemoveTree($base); }
 	}
@@ -5770,7 +5798,7 @@ class CheckerTest
 					rXMLRPCRequest::queue('d.get_custom|d.get_local_id', false, false, array());
 					rXMLRPCRequest::queue('d.hash', true, $missing,
 						$missing ? array() : array(self::OLD_HASH),
-						$missing ? 'info-hash not found' : '');
+						$missing ? 'invalid parameters: info-hash not found' : '');
 					$performed = null;
 					strictAssertSame($missing, ruTrackerChecker::run(self::OLD_HASH,
 						ruTrackerChecker::STE_DELETED, time(), '', $performed),

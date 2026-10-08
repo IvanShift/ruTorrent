@@ -3,23 +3,33 @@
 require_once '../../php/xmlrpc.php';
 require_once './util_rt.php';
 require_once __DIR__ . '/../rutracker_check/runstate.php';
-require_once __DIR__ . '/../erasedata/removewithdata.php';
+// The shared no-replace owner and the torrent presence probe, without the
+// erasedata removal machinery in removewithdata.php.
+require_once __DIR__ . '/../erasedata/filesystem.php';
+require_once __DIR__ . '/../erasedata/presence.php';
+require_once __DIR__ . '/../erasedata/outcome.php';
 require_once __DIR__ . '/movejob.php';
 require_once __DIR__ . '/apply.php';
 
+if (!defined('DATADIR_START_CHECK_SECONDS'))
+    define('DATADIR_START_CHECK_SECONDS', 3.0);
+
 function rtDataDirClaimRpc($method, $hash, $args)
 {
-    if ($method === 'torrent-presence') {
-        $presence = erasedataTorrentPresence($hash);
-        return $presence === ERASEDATA_TORRENT_ABSENT ? 'absent'
-            : ($presence === ERASEDATA_TORRENT_PRESENT ? 'present' : 'unknown');
-    }
     $request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd($method),
         array_merge(array($hash), $args)));
     $request->important = false;
     if (!$request->success() || $request->fault || count($request->val) !== 1)
         return null;
     return $request->val[0];
+}
+
+// Only an attested absence may retire a job; a fault or lost answer is unknown.
+function rtDataDirTorrentPresence($hash)
+{
+    $presence = erasedataTorrentPresence($hash);
+    return $presence === ERASEDATA_TORRENT_ABSENT ? 'absent'
+        : ($presence === ERASEDATA_TORRENT_PRESENT ? 'present' : 'unknown');
 }
 
 function rtDataDirClaimCapability()
@@ -39,12 +49,18 @@ function rtDataDirClaimCapability()
     return $status === 'unconfirmed' ? 'unknown' : $status;
 }
 
-function rtDataDirMoveNoReplace($source, $destination)
+// One shared no-replace owner per process, for the helper and its preflight.
+function rtDataDirFilesystem()
 {
     static $files = null;
     if ($files === null)
         $files = new ErasedataFilesystemOps();
-    return $files->renameNoReplace($source, $destination);
+    return $files;
+}
+
+function rtDataDirMoveNoReplace($source, $destination)
+{
+    return rtDataDirFilesystem()->renameNoReplace($source, $destination);
 }
 
 function rtDataDirLock($nonBlocking)
@@ -177,7 +193,9 @@ function rtDataDirRecoveryProfiles()
     return $profiles;
 }
 
-function rtDataDirRecover()
+// $payloadMoves false is the web request: it replays only directory-only
+// jobs. A payload move stays with its CLI worker or the scheduled recovery.
+function rtDataDirRecover($payloadMoves = true)
 {
     try {
         $journal = rtDataDirJournal();
@@ -211,7 +229,9 @@ function rtDataDirRecover()
         $hash = substr($name, 0, 40);
         try {
             $job = DataDirMoveJob::load($journal . '/' . $name,
-                'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace');
+                'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
+            if (!$payloadMoves && $job->movesPayload())
+                continue;
             $job->run();
         } catch (DataDirMoveRefused $e) {
             FileUtil::toLog('datadir: recovery refused hash=' . $hash . ' reason=' . $e->getMessage());
@@ -271,7 +291,7 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
     }
     elseif ($physicalDestination === false || !is_dir($physicalDestination))
         throw new RuntimeException('destination-root-unavailable');
-    elseif (!DataDirMoveIntent::trustedDirectory($physicalDestination))
+    elseif (!ErasedataFilesystemOps::payloadDirectoryTrusted($physicalDestination))
         throw new RuntimeException('destination-root-untrusted');
     $destPath = rtAddTailSlash($physicalDestination);
     if ($moveFiles) {
@@ -336,10 +356,7 @@ function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
     {
         // A closed torrent has no readable file list. Its destination mount
         // can still be checked without opening it or creating directories.
-        $ancestor = $destPath;
-        while (!is_dir($ancestor) && dirname($ancestor) !== $ancestor)
-            $ancestor = dirname($ancestor);
-        rtDataDirProbeRename($ancestor, $ancestor, array());
+        rtDataDirProbeRename(null, $destPath, array());
         return '';
     }
     if (!$snapshot['move'])
@@ -366,40 +383,48 @@ function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
     return '';
 }
 
+// Both roots and the source and destination parent of every file the worker
+// renames, through the shared actual-parent preflight. Each side must stay
+// within its own root. A refusal throws its classified context (reason,
+// path, errno) for the dialog and the caller's one log line.
 function rtDataDirProbeRename($source, $destination, $files)
 {
-    $sourceRoot = realpath($source);
-    $targetRoot = $destination;
-    while (!is_dir($targetRoot) && dirname($targetRoot) !== $targetRoot)
-        $targetRoot = dirname($targetRoot);
-    $targetRoot = realpath($targetRoot);
-    if ($sourceRoot === false || $targetRoot === false)
-        throw new RuntimeException('rename-noreplace-parent-unavailable');
-    $directories = array($sourceRoot=>true, $targetRoot=>true);
+    // A root spelled with a trailing slash, the filesystem root included.
+    $destination = rtrim($destination, '/') === '' ? '/' : rtrim($destination, '/');
+    $sources = $source === null ? array() : array($source);
+    $destinations = array($destination);
     foreach ($files as $relative) {
         if (!is_string($relative) || $relative === '' || $relative[0] === '/'
             || strpos($relative, "\0") !== false || in_array('..', explode('/', $relative), true))
             throw new RuntimeException('invalid-file-list');
-        $parent = realpath(dirname($sourceRoot.'/'.$relative));
-        if ($parent === false || ($parent !== $sourceRoot && strpos($parent, $sourceRoot.'/') !== 0))
-            throw new RuntimeException('rename-noreplace-source-parent-unavailable');
-        $directories[$parent] = true;
-        $target = dirname($destination.'/'.$relative);
-        while (!is_dir($target) && dirname($target) !== $target) $target = dirname($target);
-        $target = realpath($target);
-        if ($target === false || ($target !== $targetRoot && strpos($target, $targetRoot.'/') !== 0))
-            throw new RuntimeException('rename-noreplace-destination-parent-unavailable');
-        $directories[$target] = true;
+        $sources[] = dirname($source . '/' . $relative);
+        $destinations[] = dirname($destination . '/' . $relative);
     }
-    foreach ($directories as $directory=>$unused) {
-        if (!ErasedataFilesystemOps::canRenameNoReplace($directory))
-            throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusal().': '.$directory);
+    // A source parent must exist: the worker renames each file out of it.
+    // Only a destination parent may be created later, on its deepest
+    // existing ancestor, which is what preflightParents() probes (R4-FS-02).
+    foreach ($sources as $parent)
+        if (!is_dir($parent))
+            throw new RuntimeException('rename-noreplace-source-parent-unavailable path=' . erasedataLogPath($parent));
+    $probed = array();
+    $filesystem = rtDataDirFilesystem();
+    if (($source !== null && !$filesystem->preflightParents($sources, $probed, $source))
+        || !$filesystem->preflightParents($destinations, $probed, $destination))
+    {
+        $context = ErasedataFilesystemOps::lastRenameRefusalContext();
+        throw new RuntimeException($context !== '' ? $context : 'rename-noreplace-preflight-refused');
     }
 }
 
-function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false, &$failure = null)
+// Applies one directory change under the caller's profile lock. The caller
+// has already validated the request and confirmed the claim ABI once; the
+// zero-job state probe below still binds admission to this torrent. One line
+// is logged per refusal. $warning names what a successful change left behind.
+function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false,
+    &$failure = null, &$warning = null)
 {
     $failure = null;
+    $warning = '';
     if (!is_string($destPath) || $destPath === '' || !is_string($hash)
         || preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1) {
         $failure = 'invalid-arguments';
@@ -410,15 +435,9 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
     $destPath = rtAddTailSlash($destPath);
     $path = null;
     try {
-        if ($moveFiles && !ErasedataFilesystemOps::canRenameNoReplace())
-            throw new RuntimeException('no-replace-helper-unavailable');
+        if ($moveFiles && !rtDataDirFilesystem()->probeRenameParent(null))
+            throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusalContext());
         rtDataDirOwnership($hash);
-        // Confirm the whole claim ABI before publishing a new job. The state
-        // probe still binds admission to this torrent and catches a later fault.
-        $capability = rtDataDirClaimCapability();
-        if ($capability !== 'available')
-            throw new RuntimeException($capability === 'unsupported'
-                ? 'daemon-claim-unavailable' : 'daemon-claim-unconfirmed');
         $probe = rtDataDirClaimRpc('d.stop_close_claim_state', $hash,
             array(str_repeat('0', 32)));
         if ($probe !== 'absent')
@@ -434,17 +453,74 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
             FileUtil::toLog('datadir: ' . $hash
                 . ' fast resume disabled: changing directory in place');
         $job = DataDirMoveJob::create($journal, $snapshot,
-            'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace');
-        return $job->run();
+            'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
+        $job->run();
+        if ($job->restoredStart())
+            $warning = rtDataDirStartOutcome($hash, rtrim($snapshot['directory'], '/'));
+        return true;
     } catch (DataDirMoveRefused $e) {
         $failure = $e->getMessage();
-        FileUtil::toLog('datadir: ' . $hash . ' change refused: ' . $e->getMessage());
+        FileUtil::toLog('datadir: change refused hash=' . $hash . ' reason=' . $failure);
         return false;
     } catch (Exception $e) {
         $failure = $e->getMessage();
         $pending = $path !== null && (file_exists($path) || is_link($path));
-        FileUtil::toLog('datadir: ' . $hash . ($pending ? ' change held: ' : ' change refused: ')
-            . $e->getMessage());
+        FileUtil::toLog('datadir: change ' . ($pending ? 'held' : 'refused') . ' hash=' . $hash
+            . ' reason=' . $failure);
         return false;
     }
+}
+
+// The claim restores a started download with d.start. Without the data in
+// the new directory, rTorrent's own hash check stops it again ("registered as
+// completed, but hash check returned unfinished chunks"), and the next
+// successful tracker answer clears d.message. Report that stop: classified
+// to the caller, once in the log, and as the download's kept outcome while
+// it stays stopped (ACC-OWNB-01). A check still running at the bound is not
+// a failure; rTorrent reports its own outcome.
+function rtDataDirStartOutcome($hash, $directory)
+{
+    // A monotonic clock: a step of the wall clock cannot stretch or cut the wait.
+    $deadline = hrtime(true) / 1e9 + DATADIR_START_CHECK_SECONDS;
+    while (true) {
+        $request = new rXMLRPCRequest(array(
+            new rXMLRPCCommand(getCmd('d.hashing'), $hash),
+            new rXMLRPCCommand(getCmd('d.state'), $hash)));
+        $request->important = false;
+        if (!$request->success() || !is_array($request->val) || count($request->val) !== 2)
+            return '';
+        if ((string) $request->val[0] === '0')
+            break;
+        if (hrtime(true) / 1e9 >= $deadline)
+            return '';
+        usleep(100000);
+    }
+    if ((string) $request->val[1] !== '0')
+        return '';
+    $warning = 'stopped-after-hash-check';
+    FileOperationOutcome::record('datadir', $hash, $warning, 'datadir: ' . $warning . ' directory='
+        . $directory . '; rTorrent did not find the complete data there and stopped the download;'
+        . ' move the data there or set the previous directory, then start it', true);
+    FileUtil::toLog('datadir: change applied hash=' . $hash . ' warning=' . $warning
+        . ' directory=' . $directory);
+    return $warning;
+}
+
+// A change refused in the detached worker of a payload move: the dialog saw
+// only the launch, so the refusal is kept on the download where tracker
+// traffic cannot erase it (ACC-OWNB-01). A job that recovery still holds is
+// not final and is not shown.
+function rtDataDirWorkerRefusal($hash, $failure)
+{
+    $hash = strtoupper((string) $hash);
+    try {
+        $journal = rtDataDirJournal();
+        if (file_exists($journal . '/' . $hash . '.json') || is_link($journal . '/' . $hash . '.json'))
+            return;
+    } catch (Exception $e) {
+        // An unknown journal does not hide a refusal.
+    }
+    if (!FileOperationOutcome::record('datadir', $hash, (string) $failure, 'datadir: move refused: '
+        . $failure . '; the data was not moved; resolve the cause, then set the directory again'))
+        FileUtil::toLog('datadir: worker refusal not shown on the torrent hash=' . $hash);
 }

@@ -28,6 +28,7 @@ plugin.lastHref = "";
 plugin.currentPage = 'torrentsList';
 plugin.scrollTop = 0;
 plugin.scrollToAddedUntil = 0; /* deadline for scrolling to a just-added torrent */
+plugin.uploadFrames = 0; /* names each upload's hidden frame */
 plugin.searchText = '';
 plugin.searchPattern = null;
 plugin.searchDebounce = 0;
@@ -188,7 +189,7 @@ plugin.showAlert = function(message,alerttype) {
   // Keep a reference to this alert instead of finding it by id later:
   // with an id lookup, a previous alert's still-pending timers would
   // grab whatever alert is showing now and hide it early
-  var alert = $('<div class="alert alert-dismissible fade show navbar-fixed-top '+ alerttype +'" role="alert">'+ escapeHTML(message) +'<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>');
+  var alert = $('<div class="alert alert-dismissible fade show '+ alerttype +'" role="alert">'+ escapeHTML(message) +'<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>');
   $('#alert_placeholder').append(alert);
   setTimeout(function() {
     alert.removeClass('show');
@@ -198,44 +199,152 @@ plugin.showAlert = function(message,alerttype) {
   }, 5000);
 };
 
-plugin.createiFrame = function() {
-  $('#addTorrent').prepend('<iframe id="uploadFrame" name="uploadFrame" style="visibility: hidden; width: 0; height: 0; line-height: 0; font-size: 0; border: 0;"></iframe>')
-  $('#uploadFrame').on('load', function() {
-    var d = (this.contentDocument || this.contentWindow.document);
+// The alert class for a noty kind, shared by the add-torrent results and
+// the desktop engine's own notifications (see plugin.init)
+plugin.alertClass = function(kind) {
+  return (kind == 'success') ? 'alert-success' :
+    (kind == 'error') ? 'alert-danger' :
+    (kind == 'alert' || kind == 'warning') ? 'alert-warning' : 'alert-info';
+};
 
-    if(d && (d.location.href != "about:blank")) {
-      var matchedRegex = d.body.innerHTML.match(/noty\(".*"\+(.*),"(.*)"/);
-      if (matchedRegex != null) {
-        var message = '';
-        try {message = eval(matchedRegex[1]);} catch(e) { }
-        if (message != '') {
-          if(matchedRegex[2] == "success") {
-            plugin.showAlert(message,"alert-success");
-            // Clear the add forms so the next torrent can be added;
-            // on error the inputs are kept so they can be corrected
-            $('#url').val('');
-            $('#torrent_file').val('');
-            // Scroll the list to the new torrent once it shows up (a
-            // magnet or URL add can take a few polls to materialize)
-            plugin.scrollToAddedUntil = Date.now() + 30000;
-            // Return to the torrent list, unless the user already
-            // navigated elsewhere while the upload was in flight
-            if (plugin.currentPage == 'addTorrent') {
-              plugin.showList();
-            }
-          } else if (matchedRegex[2] == "alert") {
-            plugin.showAlert(message,"alert-warning");
-          } else if (matchedRegex[2] == "error") {
-            plugin.showAlert(message,"alert-danger");
-          }
-        }
+/*** Add-torrent upload ***/
+// Every upload gets a hidden frame of its own, and its form targets that
+// frame by name. With one shared name, a second upload started while the
+// first was in flight (picking another file enables the button again)
+// could load into the first one's frame, and the first upload to finish
+// removed the other one's frame.
+plugin.createiFrame = function(form) {
+  var name = 'uploadFrame' + (++this.uploadFrames);
+  var frame = $('<iframe style="visibility: hidden; width: 0; height: 0; line-height: 0; font-size: 0; border: 0;"></iframe>').attr('name', name);
+  $('#addTorrent').prepend(frame);
+  // Bind after insertion: inserting the frame fires load for its initial
+  // blank page, which is not the answer
+  frame.on('load', function() {
+    plugin.uploadFinished(this);
+  });
+  form.target = name;
+};
+
+plugin.uploadFinished = function(frame) {
+  var d = null;
+  try {
+    d = frame.contentDocument || frame.contentWindow.document;
+  } catch (e) {
+    // A failed request leaves the browser's own error page in the frame,
+    // and that page is cross-origin
+  }
+  if (!d || d.location.href != 'about:blank') {
+    this.showUploadResults(this.uploadResults((d && d.body) ? d.body.textContent : ''));
+  }
+  $('#addUrl').prop('disabled', $.trim($('#url').val()) === '');
+  $('#torrentFileSend').prop('disabled', $('#torrent_file')[0].files.length === 0);
+  $(frame).remove();
+  this.update(true);
+};
+
+// php/addtorrent.php answers an upload with a script of noty(text, kind)
+// calls, one per item, which the desktop evaluates (js/content.js). Run
+// the calls against a local noty that collects the pairs. Matching one
+// call with a pattern broke when upstream #3280 respelled the message
+// lookup from a dotted key to theUILang["addTorrent"+"<status>"], and it
+// reported one item of a batch. The server writes every name and kind as
+// an escaped JSON literal, so they stay data.
+plugin.uploadResults = function(answer) {
+  var results = [];
+  var collect = function(text, kind) {
+    results.push({text: String(text), kind: String(kind)});
+  };
+  $.each(String(answer).split('\n'), function(i, line) {
+    line = $.trim(line);
+    // Only lines that start a call run: the renderer writes its calls on
+    // one line, and text printed around them, such as a PHP notice, is
+    // not part of the answer
+    if (line.indexOf('noty(') === 0) {
+      try {
+        (new Function('noty', 'theUILang', line))(collect, theUILang);
+      } catch (e) {
+        console.error('mobile: unreadable add-torrent result:', e);
       }
     }
-    $('#addUrl').prop('disabled', $.trim($('#url').val()) === '');
-    $('#torrentFileSend').prop('disabled', $('#torrent_file')[0].files.length === 0);
-    $('#uploadFrame').remove();
-    plugin.update(true);
   });
+  return results;
+};
+
+// One alert per item. An upload that added anything clears the add forms,
+// which would otherwise send the added items again, and returns to the
+// list; when nothing was added the inputs are kept so they can be
+// corrected.
+plugin.showUploadResults = function(results) {
+  if (!results.length) {
+    // An answer without results is a refusal or a failure (the origin
+    // check's 403, the web server's 413 or 5xx page, a lost connection),
+    // which would otherwise end the upload with no message at all
+    results = [{text: theUILang.addTorrentFailed, kind: 'error'}];
+  }
+  var added = false;
+  $.each(results, function(i, result) {
+    plugin.showAlert(result.text, plugin.alertClass(result.kind));
+    added = added || (result.kind == 'success');
+  });
+  if (added) {
+    $('#url').val('');
+    $('#torrent_file').val('');
+    // Scroll the list to the new torrent once it shows up (a
+    // magnet or URL add can take a few polls to materialize)
+    this.scrollToAddedUntil = Date.now() + 30000;
+    // Return to the torrent list, unless the user already
+    // navigated elsewhere while the upload was in flight
+    if (this.currentPage == 'addTorrent') {
+      this.showList();
+    }
+  }
+};
+
+plugin.makeAddRequest = function(frm, fileCount) {
+  var s = theURLs.AddTorrentURL+"?";
+  // PHP drops the files of an upload beyond its max_file_uploads before
+  // addtorrent.php runs; the selected count lets the answer name them, as
+  // the desktop dialog sends it (js/content.js)
+  if (fileCount) {
+    s += 'torrent_file_count='+fileCount+'&';
+  }
+  if($("#torrents_start_stopped").prop("checked")) {
+    s += 'torrents_start_stopped=1&';
+  }
+  if($("#fast_resume").prop("checked")) {
+    s += 'fast_resume=1&';
+  }
+  if($("#not_add_path").prop("checked")) {
+    s += 'not_add_path=1&';
+  }
+  if($("#randomize_hash").prop("checked")) {
+    s += 'randomize_hash=1&';
+  }
+  var dir = $.trim($("#dir_edit").val());
+  if(dir.length) {
+    s += ('dir_edit='+encodeURIComponent(dir)+'&');
+  }
+  var lbl = $.trim($("#tadd_label").val());
+  if(lbl.length) {
+    s += ('label='+encodeURIComponent(lbl));
+  }
+  frm.action = s;
+
+  // Persist add-options like the desktop dialog's beforeHide handler.
+  // Re-fetch the stored settings first and merge them in, so this
+  // long-lived mobile session doesn't overwrite newer settings saved
+  // from the desktop UI (its own snapshot may be stale).
+  theWebUI.requestWithoutTimeout('?action=getuisettings', function(stored) {
+    if (stored) {
+      $.extend(theWebUI.settings, stored);
+    }
+    $.each(['not_add_path', 'torrents_start_stopped', 'fast_resume', 'randomize_hash'], function(i, id) {
+      theWebUI.settings['webui.' + id] = $('#' + id).prop('checked');
+    });
+    theWebUI.save();
+  }, true);
+
+  return(true);
 };
 
 plugin.showPage = function(page) {
@@ -939,6 +1048,16 @@ plugin.fillLabel = function(label) {
   $('#torrentDetails #label td:last').text(label + ' ').append('<button class="btn btn-outline-secondary btn-sm" type="button" onclick="mobile.editLabel();"><i class="bi bi-pencil-square .icon-black"></i></button>');
 };
 
+// Selects the option whose value is exactly `value`. The ratio group (from
+// d.views) and the channel (d.throttle_name) are the daemon's own bytes:
+// spliced into an option[value=...] selector, a '"' in them is a jQuery
+// syntax error that stops fillDetails() and leaves the General tab empty.
+plugin.selectOptionByValue = function(select, value) {
+  $(select + ' option').filter(function() {
+    return $(this).val() === value;
+  }).prop('selected', true);
+};
+
 plugin.fillDetails = function(d) {
   $('#torrentName').text(d.name);
 
@@ -956,7 +1075,7 @@ plugin.fillDetails = function(d) {
   if (this.ratioGroupsLoaded) {
     $('#torrentRatioGrp option').prop('selected', false);
     if (d.ratiogroup) {
-      $('#torrentRatioGrp option[value=' + d.ratiogroup.replace(/.*rat_/,'') + ']').prop('selected', true);
+      this.selectOptionByValue('#torrentRatioGrp', d.ratiogroup.replace(/.*rat_/,''));
     } else {
       $('#torrentRatioGrp option[value=-1]').prop('selected', true);
     }
@@ -964,7 +1083,7 @@ plugin.fillDetails = function(d) {
   if (this.throttleLoaded) {
     $('#torrentChannel option').prop('selected', false);
     if (d.throttle) {
-      $('#torrentChannel option[value=' + d.throttle.replace('thr_','') + ']').prop('selected', true);
+      this.selectOptionByValue('#torrentChannel', d.throttle.replace('thr_',''));
     } else {
       $('#torrentChannel option[value=-1]').prop('selected', true);
     }
@@ -1747,24 +1866,43 @@ plugin.sendDataDir = function() {
       '&move_datafiles=' + ($('#datadir_move').prop('checked') ? '1' : '0'),
     success: function(d) {
       $('#dataDirOk').prop('disabled', false);
+      // A warning reports a change that was applied but did not end as
+      // asked, such as a download that rTorrent stopped after its hash
+      // check. Like the desktop dialog, show it whether or not the page
+      // then closes.
+      var warnings = (d && d.warnings) || [];
+      for (var w = 0; w < warnings.length; w++) {
+        plugin.showAlert(plugin.dataDirNoticeText(warnings[w]), 'alert-warning');
+      }
       if (d && d.errors && d.errors.length) {
         for (var i = 0; i < d.errors.length; i++) {
-          var s = '';
-          try {s = eval(d.errors[i].desc);} catch(e) {s = d.errors[i].desc;}
-          if (d.errors[i].prm) {
-            s += ' (' + d.errors[i].prm + ')';
-          }
-          plugin.showAlert(s, 'alert-danger');
+          plugin.showAlert(plugin.dataDirNoticeText(d.errors[i]), 'alert-danger');
         }
       } else {
         plugin.goBack();
         plugin.update(true);
       }
     },
-    error: function() {
+    error: function(xhr, textStatus) {
       $('#dataDirOk').prop('disabled', false);
+      // A failed request (the origin check's 403, a 5xx page, a lost
+      // connection) would otherwise leave the page without a word
+      plugin.showAlert(theUILang.datadirSetDirFail + ' (' +
+        ((xhr && xhr.status) ? 'HTTP ' + xhr.status : textStatus) + ')', 'alert-danger');
     }
   });
+};
+
+// The text of a DataDir error or warning: the answer names a language key
+// as "theUILang.<key>" in desc and may add a parameter. The key is looked
+// up, not evaluated; any other desc is shown as it came.
+plugin.dataDirNoticeText = function(notice) {
+  var key = /^theUILang\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(String(notice.desc));
+  var s = (key && theUILang[key[1]] !== undefined) ? theUILang[key[1]] : String(notice.desc);
+  if (notice.prm) {
+    s += ' (' + notice.prm + ')';
+  }
+  return s;
 };
 
 /*** Optional plugin integrations (ratio, throttle, seedingtime) ***/
@@ -2347,10 +2485,7 @@ plugin.init = function() {
       // otherwise be rendered into the discarded desktop layout; show
       // those messages as mobile toasts instead
       window.noty = function(msg, status) {
-        plugin.showAlert(msg,
-          (status == 'success') ? 'alert-success' :
-          (status == 'error') ? 'alert-danger' :
-          (status == 'alert') ? 'alert-warning' : 'alert-info');
+        plugin.showAlert(msg, plugin.alertClass(status));
       };
 
       // Keep the core's Bootstrap 5 stylesheet (and its JS bundle, already
@@ -2481,47 +2616,6 @@ plugin.init = function() {
       );
       $('#torrentPriority').change(function(){mobile.changePriority()});
 
-      var makeAddRequest = function(frm)
-      {
-        var s = theURLs.AddTorrentURL+"?";
-        if($("#torrents_start_stopped").prop("checked")) {
-          s += 'torrents_start_stopped=1&';
-        }
-        if($("#fast_resume").prop("checked")) {
-          s += 'fast_resume=1&';
-        }
-        if($("#not_add_path").prop("checked")) {
-          s += 'not_add_path=1&';
-        }
-        if($("#randomize_hash").prop("checked")) {
-          s += 'randomize_hash=1&';
-        }
-        var dir = $.trim($("#dir_edit").val());
-        if(dir.length) {
-          s += ('dir_edit='+encodeURIComponent(dir)+'&');
-        }
-        var lbl = $.trim($("#tadd_label").val());
-        if(lbl.length) {
-          s += ('label='+encodeURIComponent(lbl));
-        }
-        frm.action = s;
-
-        // Persist add-options like the desktop dialog's beforeHide handler.
-        // Re-fetch the stored settings first and merge them in, so this
-        // long-lived mobile session doesn't overwrite newer settings saved
-        // from the desktop UI (its own snapshot may be stale).
-        theWebUI.requestWithoutTimeout('?action=getuisettings', function(stored) {
-          if (stored) {
-            $.extend(theWebUI.settings, stored);
-          }
-          $.each(['not_add_path', 'torrents_start_stopped', 'fast_resume', 'randomize_hash'], function(i, id) {
-            theWebUI.settings['webui.' + id] = $('#' + id).prop('checked');
-          });
-          theWebUI.save();
-        }, true);
-
-        return(true);
-      }
       $("#addTorrentFile").submit(function()
       {
         var files = $("#torrent_file")[0].files;
@@ -2532,13 +2626,13 @@ plugin.init = function() {
           }
         }
         $('#torrentFileSend').prop('disabled', true);
-        plugin.createiFrame();
-        return(makeAddRequest(this));
+        plugin.createiFrame(this);
+        return(plugin.makeAddRequest(this, files.length));
       });
       $("#addTorrentUrl").submit(function() {
         $('#addUrl').prop('disabled', true);
-        plugin.createiFrame();
-        return(makeAddRequest(this));
+        plugin.createiFrame(this);
+        return(plugin.makeAddRequest(this));
       });
 
       $('#tadd_label_select').change(function() {

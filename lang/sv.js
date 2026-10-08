@@ -282,7 +282,6 @@ var theUILang =
  showLabelTextOverflow	: "Allow overflow of label text",
  showOpenStatus		: "Show open status in status bar",
  requiresAtLeastRtorrent		: "Requires rTorrent >= {version}", // ... v0.9.7
- phpParameterUnavailable	: "PHP-direktivet register_argc_argv är inställt på OFF. Byt till ON, annars kommer några insticksprogram inte fungera korrekt.",
  addTorrentFailedURL		: "Det gick inte att lägga till torrent. Kan inte hämta webbadress.",
  addTorrentFailedFile		: "Det gick inte att lägga till torrent. Hämtat innehåll är inte en giltig torrentfil.",
  addTorrentFailedDirectory	: "Det gick inte att lägga till torrent. Felaktig nedladdningskatalog har angetts.",

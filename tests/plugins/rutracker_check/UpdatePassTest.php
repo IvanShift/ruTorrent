@@ -3179,7 +3179,7 @@ upTest($suite, 'the exact Yomi legacy generation is revived once', function () {
     $successor = '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A';
     $checkedAt = '1790391624';
     sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, $successor)));
-    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'invalid parameters: info-hash not found');
     rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
     rXMLRPCRequest::queue('branch', true, false, function () use ($old) {
         $readable = false;
@@ -3246,7 +3246,7 @@ upTest($suite, 'the exact second legacy generation with empty meta-new is revive
     $successor = '6486E11AEBB78DD1BFF732558C0683667497F292';
     $checkedAt = '1790665210';
     sweepScan(array(array($old, '', '', '', 0, 0, '1', $checkedAt, '')));
-    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'invalid parameters: info-hash not found');
     rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('B', 40)));
     rXMLRPCRequest::queue('branch', true, false, function () use ($old, $successor) {
         $state = RuTrackerState::load('legacy_revival');
@@ -3351,7 +3351,7 @@ upTest($suite, 'a malformed published legacy intent holds without reattempt', fu
             'token' => str_repeat('A', 24)),
     ))), 'a prior run published the one-shot intent');
     sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624', $new)));
-    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'invalid parameters: info-hash not found');
     rXMLRPCRequest::queue('branch', true, false,
         array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
     $log = testCapturedAppLog(function () {
@@ -3414,7 +3414,7 @@ upTest($suite, 'a spent Yomi recovery never restarts after a user stop', functio
     $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
     sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624',
         '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A')));
-    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'invalid parameters: info-hash not found');
     rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
     rXMLRPCRequest::queue('branch', true, false,
         array(RuTrackerAtomicOwnership::SENTINEL_SPENT));
@@ -3433,7 +3433,7 @@ upTest($suite, 'an ambiguous legacy branch leaves a visible one-shot manual hold
     $old = 'E6B624DE55F3622EB9551E92A93BCC6F8C4DAC09';
     $new = '0B0F0F15CBF33BE9741FCADE8BDC51FA7569080A';
     sweepScan(array(array($old, '', '', '', 0, 0, '1', '1790391624', $new)));
-    rXMLRPCRequest::queue('d.hash', true, true, array(), 'Info-hash not found.');
+    rXMLRPCRequest::queue('d.hash', true, true, array(), 'invalid parameters: info-hash not found');
     rXMLRPCRequest::queue('d.get_local_id', true, false, array(str_repeat('A', 40)));
     rXMLRPCRequest::queue('branch', false, false, array());
     $log = testCapturedAppLog(function () {
@@ -5128,56 +5128,51 @@ upTest($suite, 'testMalformedStagedProgressCountersNeverStartOrRetireAReplacemen
     }
 });
 
-// TestLib's erasedataTorrentPresence() stands in for the real function in
-// plugins/erasedata/removewithdata.php, and ruTrackerChecker::torrentExists()
-// -- the gate in front of every irreversible step of the replacement
-// transaction, including the sweep's -- is the only thing that reads it here.
-// Any divergence lets a transaction take a step in this suite that production
-// would refuse, or the reverse. This test spells out the verdicts a reader can
-// check by eye; the one after it reads removewithdata.php and compares, which
-// is what keeps the two from drifting apart again.
-upTest($suite, 'the erasedata presence double answers ABSENT for the whitelisted faults only', function () {
+// TestLib loads plugins/erasedata/presence.php itself, so ruTrackerChecker::
+// torrentExists() -- the gate in front of every irreversible step of the
+// replacement transaction, including the sweep's -- reads the production probe
+// here, and there is no copy left to drift from it. Its absence rule is the
+// core HashFault leaf: only rTorrent's own missing-hash answers are ABSENT.
+upTest($suite, 'the presence probe in this suite is production presence.php with the core absence rule', function () {
+    $function = new ReflectionFunction('erasedataTorrentPresence');
+    strictAssertSame(realpath(testFindRepoRoot() . '/plugins/erasedata/presence.php'),
+        realpath($function->getFileName()), 'erasedataTorrentPresence() is the production function');
     $hash = str_repeat('A', 40);
 
-    // The whole whitelist, matched case-insensitively, and nothing else.
-    foreach (array('info-hash not found', 'Info-hash not found.',
-        'COULD NOT FIND INFO-HASH', 'Could not find info-hash.',
-        'invalid parameters: info-hash not found') as $fault) {
+    // The two daemon answers: the text exact, the code checked whenever the
+    // transport carries it (php/xmlrpc.php puts faultCode first in val).
+    foreach (array(array(array(), 'invalid parameters: info-hash not found'),
+        array(array('-500', 'invalid parameters: info-hash not found'), 'invalid parameters: info-hash not found'),
+        array(array(), 'Could not find info-hash.'),
+        array(array('-501', 'Could not find info-hash.'), 'Could not find info-hash.')) as $fault) {
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('d.hash', true, true, array(), $fault);
+        rXMLRPCRequest::queue('d.hash', true, true, $fault[0], $fault[1]);
         strictAssertSame(ERASEDATA_TORRENT_ABSENT, erasedataTorrentPresence($hash),
-            'a whitelisted missing-info-hash fault is ABSENT: ' . $fault);
+            'rTorrent\'s missing-hash answer is ABSENT: ' . json_encode($fault));
     }
 
-    // A fault that merely CONTAINS a whitelisted phrase is not one of them:
-    // the real function compares the whole string, so a refusal that explains
-    // itself by naming the info-hash stays UNKNOWN and the transaction waits.
-    foreach (array('Access denied: could not find info-hash.',
-        'info-hash not found in session directory') as $fault) {
+    // Every other fault is UNKNOWN, so the transaction waits: a reworded,
+    // recased or padded text, a phrase inside a longer refusal, and the right
+    // text under the other generation's code.
+    foreach (array(array(array(), 'info-hash not found'), array(array(), 'Info-hash not found.'),
+        array(array(), 'COULD NOT FIND INFO-HASH'), array(array(), 'could not find info-hash.'),
+        array(array(), " invalid parameters: info-hash not found\n"),
+        array(array(), 'Access denied: could not find info-hash.'),
+        array(array(), 'info-hash not found in session directory'),
+        array(array('-501', 'invalid parameters: info-hash not found'), 'invalid parameters: info-hash not found'),
+        array(array(), ''), array(array(), 'Some other fault')) as $fault) {
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('d.hash', true, true, array(), $fault);
+        rXMLRPCRequest::queue('d.hash', true, true, $fault[0], $fault[1]);
         strictAssertSame(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash),
-            'a fault that only contains the phrase is UNKNOWN: ' . $fault);
+            'any other fault is UNKNOWN: ' . json_encode($fault));
     }
 
-    // The real function classifies rawFaultString -- the untrimmed decoded
-    // text (php/xmlrpc.php:226-227) -- and only falls back to the trimmed
-    // faultString when it is absent. Padding therefore falls outside the
-    // whitelist; RemoveWithDataTest pins that against the production parser.
-    rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue('d.hash', true, true, array(), " info-hash not found\n");
-    strictAssertSame(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash),
-        'the raw, untrimmed fault text decides, so a padded phrase is not whitelisted');
-
-    // A clean but empty d.hash answer is UNKNOWN, not ABSENT. erasedata pins
-    // that decision explicitly (testPresenceTriStateDirectMatrix); an empty
-    // string is a malformed answer, not proof the torrent went away.
+    // A clean but empty d.hash answer is UNKNOWN, not ABSENT; erasedata pins
+    // that decision too (testPresenceTriStateDirectMatrix).
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.hash', true, false, array(''));
     strictAssertSame(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash),
         'a clean but empty d.hash answer is UNKNOWN');
-
-    // Controls: the two answers that are not ambiguous at all.
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.hash', true, false, array(strtolower($hash)));
     strictAssertSame(ERASEDATA_TORRENT_PRESENT, erasedataTorrentPresence($hash),
@@ -5188,198 +5183,12 @@ upTest($suite, 'the erasedata presence double answers ABSENT for the whitelisted
         'a transport failure is UNKNOWN');
 });
 
-// The value of one single- or double-quoted PHP string literal, taken from a
-// token stream rather than from a running copy of the code that holds it.
-function updDecodeStringLiteral($literal)
-{
-    $quote = substr($literal, 0, 1);
-    $inner = substr($literal, 1, -1);
-    if (($quote !== "'" && $quote !== '"') || substr($literal, -1) !== $quote)
-        throw new RuntimeException('Not a quoted string literal: ' . $literal);
-    // Both whitelists are plain phrases today. A backslash or an interpolated
-    // variable would need real decoding, and guessing at it is exactly the
-    // kind of plausible-but-unverified that this comparison exists to catch.
-    if (strpos($inner, '\\') !== false || ($quote === '"' && strpos($inner, '$') !== false))
-        throw new RuntimeException('updDecodeStringLiteral() cannot decode ' . $literal
-            . '; teach it the escape before a whitelist phrase needs one');
-    return $inner;
-}
-
-// The $missingFaults whitelist as one erasedataTorrentPresence() source spells
-// it, in order. Read out of the tokens because neither copy of the function
-// hands the list to its caller, and because the point is to compare what the
-// two files say, phrase by phrase.
-function updPresenceWhitelist($functionSource, $where)
-{
-    // Read without the tokenizer extension, over the shared readers in
-    // TestLib.php: the shipped Alpine image does not load it, and a drift guard
-    // that cannot run in one of this project's own runtimes is a guard with a
-    // hole in it. The scan is deliberately narrow -- it refuses anything it
-    // cannot read rather than guessing, the same discipline
-    // updDecodeStringLiteral() applies to each individual literal.
-    $at = strpos($functionSource, '$missingFaults');
-    if ($at === false)
-        throw new RuntimeException('No $missingFaults whitelist was found in ' . $where);
-    $i = $at + strlen('$missingFaults');
-    $length = strlen($functionSource);
-    $phrases = array();
-    $depth = 0;
-    while ($i < $length) {
-        $character = $functionSource[$i];
-        if ($character === "'" || $character === '"') {
-            $end = testEndOfStringLiteral($functionSource, $i, $where);
-            // updDecodeStringLiteral() refuses an escape or an interpolation, so
-            // a phrase this scan cannot read faithfully stops the guard instead
-            // of being compared wrongly.
-            $phrases[] = updDecodeStringLiteral(substr($functionSource, $i, $end - $i));
-            $i = $end;
-            continue;
-        }
-        if (testEndOfComment($functionSource, $i, $where) !== false)
-            throw new RuntimeException('updPresenceWhitelist() will not read a whitelist with a'
-                . ' comment inside it, in ' . $where
-                . '; a commented-out phrase is indistinguishable from a live one here');
-        if ($character === '(' || $character === '[') {
-            $depth++;
-            $i++;
-            continue;
-        }
-        if ($character === ')' || $character === ']') {
-            $depth--;
-            if ($depth <= 0) return $phrases;
-            $i++;
-            continue;
-        }
-        if ($character === ';')
-            throw new RuntimeException('The statement ended before the whitelist closed, in ' . $where);
-        $i++;
-    }
-    throw new RuntimeException('No $missingFaults whitelist was found in ' . $where);
-}
-
-function updPresenceVerdictName($verdict)
-{
-    if ($verdict === ERASEDATA_TORRENT_PRESENT) return 'PRESENT';
-    if ($verdict === ERASEDATA_TORRENT_ABSENT) return 'ABSENT';
-    if ($verdict === ERASEDATA_TORRENT_UNKNOWN) return 'UNKNOWN';
-    return var_export($verdict, true);
-}
-
-// One queued d.hash answer, named the way a maintainer reads it: array(ok,
-// fault, values, faultString), the argument order of rXMLRPCRequest::queue().
-function updDescribePresenceProbe($probe)
-{
-    if (!$probe[0]) return 'a d.hash request that did not run';
-    if ($probe[1]) return 'a d.hash fault reading ' . var_export($probe[3], true);
-    $rendered = array();
-    foreach ($probe[2] as $value) $rendered[] = var_export($value, true);
-    return 'a clean d.hash answer of [' . implode(', ', $rendered) . ']';
-}
-
-// Bind the double to the function it doubles rather than trusting a
-// transcription of it. T02 was a hand-kept copy that had drifted, and fixing
-// the copy by hand leaves the mechanism that produced the drift in place: a
-// sixth phrase added to the real whitelist alone would be the same defect
-// mirrored (the double answering UNKNOWN where production answers ABSENT), and
-// nothing in this suite could see it without reading that file. So read it:
-// compare the whitelists phrase by phrase, then clone the real function out of
-// its own source under another name and make it answer the same probes as the
-// double.
-upTest($suite, 'the erasedata presence double is bound to removewithdata.php, phrase for phrase and answer for answer', function () {
-    // This case reads both function bodies out of their source, so it needs
-    // updPresenceWhitelist() reads both whitelists without the tokenizer
-    // extension, so this comparison runs in every runtime this project uses,
-    // the shipped Alpine image included. It refuses rather than guesses if it
-    // meets a literal it cannot read faithfully.
-    $productionFile = testFindRepoRoot() . '/plugins/erasedata/removewithdata.php';
-    $doubleFile = __DIR__ . '/TestLib.php';
-    $productionSource = loadFunctionDefinition($productionFile, 'erasedataTorrentPresence');
-    $doubleSource = loadFunctionDefinition($doubleFile, 'erasedataTorrentPresence');
-
-    $productionFaults = updPresenceWhitelist($productionSource, $productionFile);
-    $doubleFaults = updPresenceWhitelist($doubleSource, $doubleFile);
-    strictAssertTrue(count($productionFaults) > 0, 'removewithdata.php whitelists at least one fault phrase');
-    strictAssertSame(array(), array_values(array_diff($productionFaults, $doubleFaults)),
-        'removewithdata.php treats fault phrases as proof of absence that TestLib.php does not,'
-        . ' so the double answers UNKNOWN where production answers ABSENT; add them to'
-        . ' erasedataTorrentPresence() in tests/plugins/rutracker_check/TestLib.php');
-    strictAssertSame(array(), array_values(array_diff($doubleFaults, $productionFaults)),
-        'TestLib.php treats fault phrases as proof of absence that removewithdata.php does not,'
-        . ' so the double answers ABSENT where production answers UNKNOWN; drop them from'
-        . ' erasedataTorrentPresence() in tests/plugins/rutracker_check/TestLib.php');
-    // Order is not part of the contract -- both copies test membership with
-    // in_array($msg, $missingFaults, true) -- so a reordering of either list
-    // must not be reported as drift. Compare sorted copies instead: after the
-    // two assertions above the sets are equal, so what a sorted comparison can
-    // still catch is multiplicity, i.e. one file repeating a phrase the other
-    // lists once. That is a botched edit rather than a behaviour change, but it
-    // is the kind of thing worth naming while the lists are being compared.
-    $productionSorted = $productionFaults;
-    $doubleSorted = $doubleFaults;
-    sort($productionSorted);
-    sort($doubleSorted);
-    strictAssertSame($productionSorted, $doubleSorted,
-        'the two whitelists hold the same phrases but not the same number of times:'
-        . ' one file repeats a phrase the other lists once');
-
-    // The real function, renamed, so both can answer the same probe. eval() of
-    // production source is how this suite already loads ruTrackerChecker (see
-    // loadClassDefinition); here it is one function, and renaming it is what
-    // lets the two run side by side in one process.
-    if (!function_exists('erasedataTorrentPresenceProduction')) {
-        $clone = preg_replace('/^function\s+erasedataTorrentPresence\b/',
-            'function erasedataTorrentPresenceProduction', $productionSource, 1);
-        strictAssertTrue(is_string($clone) && $clone !== $productionSource,
-            'the erasedataTorrentPresence() source read from removewithdata.php could be renamed');
-        eval($clone);
-    }
-
-    // Every probe answer the two whitelists can describe, plus the shapes a
-    // d.hash answer takes when it is not a fault at all. Building the fault
-    // texts from the extracted phrases is what makes a whitelist change show
-    // up here as a disagreement instead of as an untested case.
-    $hash = str_repeat('A', 40);
-    $probes = array();
-    foreach (array_unique(array_merge($productionFaults, $doubleFaults)) as $phrase) {
-        $probes[] = array(true, true, array(), $phrase);
-        $probes[] = array(true, true, array(), strtoupper($phrase));
-        $probes[] = array(true, true, array(), ' ' . $phrase . "\n");
-        $probes[] = array(true, true, array(), 'Access denied: ' . $phrase);
-        $probes[] = array(true, true, array(), $phrase . ' in session directory');
-    }
-    foreach (array('', 'Some other fault') as $phrase)
-        $probes[] = array(true, true, array(), $phrase);
-    foreach (array(array($hash), array(strtolower($hash)), array(''), array(0), array(null),
-        array(), array($hash, $hash), array(str_repeat('B', 40))) as $values)
-        $probes[] = array(true, false, $values, '');
-    $probes[] = array(false, false, array(), '');
-    // A fixture describing a fault on an answer that did not run. php/xmlrpc.php
-    // cannot reach that state, so the double normalises it to the line above --
-    // both copies of the function see !run() and stop before ->fault. Kept as a
-    // probe because fixtures across these suites do spell "the call failed"
-    // that way.
-    $probes[] = array(false, true, array(), 'info-hash not found');
-
-    foreach ($probes as $probe) {
-        $answers = array();
-        foreach (array('erasedataTorrentPresenceProduction', 'erasedataTorrentPresence') as $function) {
-            rXMLRPCRequest::reset();
-            rXMLRPCRequest::queue('d.hash', $probe[0], $probe[1], $probe[2], $probe[3]);
-            $answers[] = updPresenceVerdictName(call_user_func($function, $hash));
-        }
-        strictAssertSame($answers[0], $answers[1],
-            'TestLib.php erasedataTorrentPresence() disagrees with removewithdata.php on '
-            . updDescribePresenceProbe($probe) . ' (removewithdata.php is the expectation)');
-    }
-});
-
 // The double's own transport modelling, in the shape a reader can check by
 // eye; the sequence test at the end of this file compares the same fields with
-// the real php/xmlrpc.php running in a subprocess. The whitelist/verdict
-// comparison above cannot see any of this: both erasedataTorrentPresence()
-// copies run against the same double, so a fault field the double publishes
-// where the real transport leaves it alone is invisible there -- production and
-// copy agree on a state production never reaches. php/xmlrpc.php declares
+// the real php/xmlrpc.php running in a subprocess. The presence test above
+// cannot see any of this: it runs against the same double, so a fault field the
+// double publishes where the real transport leaves it alone is invisible there.
+// php/xmlrpc.php declares
 // faultString '' and rawFaultString null (:80-81) and assigns them only inside
 // the strstr($answer, "faultCode") branch (:223-227), so a freshly built
 // request that gets a clean answer keeps both as declared.

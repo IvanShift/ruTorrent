@@ -10,9 +10,15 @@ $schedule = new rXMLRPCCommand('schedule', array('datadir-recover-all',
     getCmd('execute') . '={sh,-c,' . $command . ' &}'));
 $request = new rXMLRPCRequest($schedule);
 $request->important = false;
-if ($request->success())
+if ($request->success()) {
     $theSettings->registerPlugin($plugin['name'], $pInfo['perms']);
-else {
+    // Outcomes a tracker answer erased from d.message, once per session. A
+    // missing file must not break the page every plugin is served from.
+    if (is_file(__DIR__ . '/../erasedata/outcome.php')) {
+        require_once __DIR__ . '/../erasedata/outcome.php';
+        $jResult .= FileOperationOutcome::sessionNotice('datadir');
+    }
+} else {
     FileUtil::toLog('datadir: recovery schedule unavailable');
     $jResult .= "plugin.disable(); noty('datadir: '+theUILang.pluginCantStart,'error');";
 }

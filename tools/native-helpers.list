@@ -3,4 +3,6 @@ version	1
 flags	-std=c11 -O2 -Wall -Wextra -Werror
 rutorrent-task-kill-pidfd	plugins/_task/kill-verified.c
 rutorrent-task-supervise	plugins/_task/supervise.c
+# rutorrent-erasedata-rename-noreplace exit statuses: ErasedataFilesystemOps::RENAME_HELPER_STATUS
+# in plugins/erasedata/filesystem.php is the table; RenameHelperStatusTest pins its spellings.
 rutorrent-erasedata-rename-noreplace	plugins/erasedata/rename-noreplace.c

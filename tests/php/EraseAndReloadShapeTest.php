@@ -299,10 +299,11 @@ class EraseAndReloadShapeTest extends TestCase
 
 	/**
 	 * The directory the download had is the directory it gets back. The value
-	 * arrives from the daemon already carrying the escaping
-	 * rXMLRPCRequest::run() puts on every string it reads, so quoting it a
-	 * second time hands rtorrent a path with a backslash in it that the
-	 * download never had -- and the erase has already happened.
+	 * arrives from the daemon in its own bytes (rXMLRPCRequest no longer
+	 * escapes what it reads), so it is quoted exactly once: escaped a second
+	 * time, or unescaped as though it were still escaped, rtorrent is handed
+	 * a path the download never had -- and the erase has already happened.
+	 * The 'backslash then quote' shape is the one that tells those apart.
 	 */
 	public function testTheReloadRestoresTheDirectoryTheDownloadHad()
 	{

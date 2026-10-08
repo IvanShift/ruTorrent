@@ -82,6 +82,19 @@ function eta($tm)
 	return( substr($ret,0,-1) );
 }
 
+// A daemon value as XML 1.0 text; the description also carries it as HTML
+// text inside a CDATA section. ENT_SUBSTITUTE turns a byte sequence that is
+// not UTF-8 into U+FFFD: without it htmlspecialchars() answers '' and the
+// item is untitled. ENT_XML1|ENT_DISALLOWED turns a code point XML 1.0 does
+// not allow -- a C0 control other than TAB, LF and CR, U+FFFE, U+FFFF --
+// into U+FFFD as well, so one such byte in a tracker message or a name no
+// longer makes the whole feed ill-formed. '>' is escaped, so a value cannot
+// close the CDATA section either.
+function feedText($value)
+{
+	return(htmlspecialchars($value,ENT_COMPAT|ENT_SUBSTITUTE|ENT_XML1|ENT_DISALLOWED,"UTF-8"));
+}
+
 function formatItemDescription($torrent)
 {
 	global $theUILang;
@@ -98,14 +111,14 @@ function formatItemDescription($torrent)
 		$desc.='<strong>'.$theUILang["Ul_speed"].": </strong>".speed($torrent["ul"])."<br>";
 	$desc.='<strong>'.$theUILang["Share_ratio"].": </strong>".$torrent["ratio"]."<br>";
         if($torrent["seeds"]!="0 (0)")
-		$desc.='<strong>'.$theUILang["Seeds"].": </strong>".$torrent["seeds"]."<br>";
+		$desc.='<strong>'.$theUILang["Seeds"].": </strong>".feedText($torrent["seeds"])."<br>";
         if($torrent["peers"]!="0 (0)")
-		$desc.='<strong>'.$theUILang["Peers"].": </strong>".$torrent["peers"]."<br>";
+		$desc.='<strong>'.$theUILang["Peers"].": </strong>".feedText($torrent["peers"])."<br>";
 	$desc.="</fieldset>";
-	if(!empty($torrent["mesage"]))
-		$desc.='<fieldset><legend>'.$theUILang["Track_status"].'</legend>'.htmlspecialchars($torrent["mesage"],ENT_COMPAT,"UTF-8").'</fieldset>';
+	if(!empty($torrent["message"]))
+		$desc.='<fieldset><legend>'.$theUILang["Track_status"].'</legend>'.feedText($torrent["message"]).'</fieldset>';
 	if(!empty($torrent["comment"]))
-		$desc.='<fieldset><legend>'.$theUILang["Comment"].'</legend>'.htmlspecialchars($torrent["comment"],ENT_COMPAT,"UTF-8").'</fieldset>';
+		$desc.='<fieldset><legend>'.$theUILang["Comment"].'</legend>'.feedText($torrent["comment"]).'</fieldset>';
 	return($desc);
 }
 
@@ -122,11 +135,14 @@ if($url === false)
 	die('Unable to determine the public feed URL. Configure RU_PUBLIC_URL or publicURL.');
 }
 $xmlURL = htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+// session.name and the versions are the daemon's own bytes, like every
+// item value below, and are escaped for XML the same way.
 $server = explode(':',rTorrentSettings::get()->server);
+$xmlServer = feedText($server[0]);
 $ret = '<?xml version="1.0" encoding="UTF-8"?>'.
 	'<rss version="2.0"><channel><description>*** rTorrent '.
-	rTorrentSettings::get()->version.'/'.rTorrentSettings::get()->libVersion." - ".$server[0].' ***</description><link>'.
-	$xmlURL.'</link><title>'.$server[0].': '.$theUILang[$mode].'</title>'.
+	feedText(rTorrentSettings::get()->version.'/'.rTorrentSettings::get()->libVersion)." - ".$xmlServer.' ***</description><link>'.
+	$xmlURL.'</link><title>'.$xmlServer.': '.$theUILang[$mode].'</title>'.
 	'<image><url>'.$xmlURL.'images/logo.png</url><link>'.$xmlURL.'</link><title>ruTorrent</title></image>';
 
 $view = '';	// all, inactive
@@ -243,7 +259,7 @@ if($req->success())
 		foreach( $item as $key=>$val )
 		{
 			if($key=="guid")
-				$ret.="\r\n\t<guid isPermaLink=\"false\">".$val.'</guid>';
+				$ret.="\r\n\t<guid isPermaLink=\"false\">".feedText($val).'</guid>';
 			else
 			if($key=="pubDate")
 			{
@@ -255,7 +271,7 @@ if($req->success())
 			if($key=="description")
 				$ret.="\r\n\t<description><![CDATA[".$val.']]></description>';
 			else
-				$ret.="\r\n\t<".$key.'>'.htmlspecialchars($val,ENT_COMPAT,"UTF-8").'</'.$key.'>';
+				$ret.="\r\n\t<".$key.'>'.feedText($val).'</'.$key.'>';
 		}
 		$ret.="\r\n</item>";
 	}

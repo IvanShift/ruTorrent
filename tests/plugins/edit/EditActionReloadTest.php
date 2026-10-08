@@ -30,6 +30,12 @@ class EditActionReloadTest extends TestCase
 	use TorrentSequenceFixtures;
 
 	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	// The AUD-ESC probe name: a quote, a backslash, an apostrophe and an
+	// ampersand, as both daemons write it (only & < > become entities).
+	const AUD = 'aud "q" \b \'a\' &c';
+	// The same name plus the two pairs rXMLRPCRequest::unescapeValue()
+	// collapses, so a second unescape of a raw value changes the bytes.
+	const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
 
 	private $base;
 	private $daemon;
@@ -50,13 +56,21 @@ class EditActionReloadTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	// scandir, not glob: a fixture directory may carry a backslash, a quote
+	// or a bracket in its name, and glob reads those as pattern syntax.
 	private function removeTree($path)
 	{
+		if (is_link($path) || is_file($path)) {
+			@unlink($path);
+			return;
+		}
 		if (!is_dir($path)) {
 			return;
 		}
-		foreach (glob($path . '/*') as $entry) {
-			is_dir($entry) && !is_link($entry) ? $this->removeTree($entry) : @unlink($entry);
+		foreach (scandir($path) as $entry) {
+			if ($entry !== '.' && $entry !== '..') {
+				$this->removeTree($path . '/' . $entry);
+			}
 		}
 		@rmdir($path);
 	}
@@ -83,18 +97,23 @@ class EditActionReloadTest extends TestCase
 		}
 		// The daemon owns the session copy; edit owns a separate recovery file.
 		// Each run starts with a fresh session snapshot.
-		file_put_contents($this->base . '/session/' . self::HASH . '.torrent',
-			$this->announceOnlyTorrent());
+		// 'session' names another session directory, 'noSessionCopy' leaves
+		// it without the daemon's copy, so the tied file is the only source.
+		$session = $options['session'] ?? ($this->base . '/session/');
+		@mkdir($session, 0700, true);
+		if (empty($options['noSessionCopy']))
+			file_put_contents($session . self::HASH . '.torrent', $this->announceOnlyTorrent());
 		if (!empty($options['uploadsFile'])) file_put_contents($this->base.'/profile/torrents', 'operator-file');
 		if (!empty($options['uploadsSymlink'])) {
 			mkdir($this->base.'/saved-uploads',0700);
 			symlink($this->base.'/saved-uploads',$this->base.'/profile/torrents');
 		}
 		$directory = $options['directory'] ?? '';
-		$tied = !empty($options['guarded']) ? $this->base.'/user-source.torrent' : '';
+		$tied = $options['tied'] ?? (!empty($options['guarded']) ? $this->base.'/user-source.torrent' : '');
 		if($tied !== '') file_put_contents($tied, $this->announceOnlyTorrent());
-		$values = array($this->base . '/session/', 1, 1, 1, $tied, '', $directory, 'seed', 0);
-		if(!empty($options['throttle'])) $values[] = 'slowpool';
+		$values = array($session, 1, 1, 1, $tied, $options['label'] ?? '', $directory,
+			$options['seed'] ?? 'seed', 0);
+		if(!empty($options['throttle'])) $values[] = $options['throttleName'] ?? 'slowpool';
 		if(!empty($options['guarded'])) $values[] = str_repeat('a', 32).':0000000000000001';
 		$options['tied'] = $tied;
 		$replies = array(
@@ -105,7 +124,7 @@ class EditActionReloadTest extends TestCase
 		);
 		if (!empty($options['removeSession']) || isset($options['erase']) ||
 			!empty($options['pending']) || !empty($options['readOnlyRecovery']) || !empty($options['guarded'])) {
-			$source = $this->base.'/session/'.self::HASH.'.torrent';
+			$source = $session.self::HASH.'.torrent';
 			$options['uploads'] = $this->base.'/profile/torrents';
 			$replies = new FakeRtorrentEditReloadReplies($source, $values, $options);
 		}
@@ -163,6 +182,93 @@ class EditActionReloadTest extends TestCase
 		if (!($torrent instanceof Torrent)) return;
 		$this->assertSame($url, $torrent->announce(), 'the full tracker URL reaches the reload');
 		$this->assertSame('left=right', $torrent->comment(), 'the malformed field does not erase the valid comment');
+	}
+
+	/** XMLRPC text as rXMLRPCParam writes a string: & < > only. */
+	private static function xmlText($value)
+	{
+		return htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8');
+	}
+
+	/** rtorrent's quoted-argument syntax: backslash first, then the quote. */
+	private static function quotedArg($value)
+	{
+		return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"';
+	}
+
+	private function loadBody()
+	{
+		foreach ($this->daemon->bodies() as $body)
+			if (preg_match('/<(?:methodName|string)>load[._]/', $body) === 1)
+				return $body;
+		return '';
+	}
+
+	/**
+	 * AUD-ESC-05/edit: the snapshot is read in the daemon's own bytes, so the
+	 * reload must forward it unchanged. Unescaping it once more turned the
+	 * pairs \\ and \" into \ and ", and the reload went to another
+	 * directory, label, throttle and tied path than the one it replaced.
+	 */
+	public function testAudSnapshotReachesTheGuardedReloadInTheDaemonsOwnBytes()
+	{
+		@mkdir($this->base . '/watch', 0700, true);
+		$tied = $this->base . '/watch/' . self::AUD_PAIRS . '.torrent';
+		$directory = $this->base . '/dl/' . self::AUD_PAIRS;
+		$throttle = 'thr ' . self::AUD_PAIRS;
+		$printed = $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=aud-edit',
+			array('guarded' => true, 'throttle' => true, 'tied' => $tied,
+				'directory' => $directory, 'label' => self::AUD_PAIRS, 'throttleName' => $throttle));
+		$this->assertSame(array(), json_decode($printed, true)['errors'] ?? null,
+			'the edit reloads: ' . $printed);
+		$erase = '';
+		foreach ($this->daemon->bodies() as $body)
+			if (strpos($body, '<methodName>d.erase_preserving_tied</methodName>') !== false)
+				$erase = $body;
+		$this->assertTrue(strpos($erase, '<string>' . self::xmlText($tied) . '</string>') !== false,
+			'the guarded erase binds the tied path the daemon reported, byte for byte');
+		$load = $this->loadBody();
+		$this->assertTrue(strpos($load, self::xmlText('d.set_directory_base=' . self::quotedArg($directory))) !== false,
+			'the reload keeps the reported directory, quoted once');
+		$this->assertTrue(strpos($load, 'd.set_custom1=' . rawurlencode(self::AUD_PAIRS)) !== false,
+			'the reload keeps the reported label');
+		$this->assertTrue(strpos($load, self::xmlText('d.set_throttle_name=' . self::quotedArg($throttle))) !== false,
+			'the reload keeps the reported throttle name, quoted once');
+		$this->assertSame($this->announceOnlyTorrent(), @file_get_contents($tied),
+			'the user-owned tied file is untouched');
+	}
+
+	/**
+	 * AUD-ESC-12/edit: session.path is read in the daemon's own bytes, so a
+	 * session directory with a quote or a backslash still finds the copy.
+	 */
+	public function testAudSessionDirectoryStillFindsTheDaemonsCopy()
+	{
+		$session = $this->base . '/' . self::AUD_PAIRS . '/';
+		$printed = $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=from-session',
+			array('session' => $session));
+		$this->assertTrue(strpos($printed, 'cantFindTorrent') === false,
+			'the session copy is found: ' . $printed);
+		$torrent = $this->loadedTorrent();
+		$this->assertTrue($torrent instanceof Torrent && $torrent->comment() === 'from-session',
+			'the edited session copy is reloaded: ' . $printed);
+	}
+
+	/**
+	 * AUD-ESC-10: without a session copy the tied file is the source, and its
+	 * path is read in the daemon's own bytes.
+	 */
+	public function testAudTiedFileIsTheSourceWithoutASessionCopy()
+	{
+		@mkdir($this->base . '/watch', 0700, true);
+		$tied = $this->base . '/watch/' . self::AUD . '.torrent';
+		$printed = $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=from-tied',
+			array('noSessionCopy' => true, 'tied' => $tied));
+		$this->assertTrue(strpos($printed, 'cantFindTorrent') === false,
+			'the tied file is found: ' . $printed);
+		$torrent = $this->loadedTorrent();
+		$this->assertTrue($torrent instanceof Torrent && $torrent->comment() === 'from-tied',
+			'the edited tied file is reloaded: ' . $printed);
 	}
 
 	/** The index of the first call to $method, or -1. */

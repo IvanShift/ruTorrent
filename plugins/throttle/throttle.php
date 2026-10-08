@@ -90,13 +90,15 @@ class rThrottle
 		{
 			for($i=0; $i<count($req->val); $i+=4)
 			{
-				if(substr($req->val[$i+1],0,4)=="thr_")
-				{
-					$no = intval(substr($req->val[$i+1],4));
-					if(($req->val[$i+2]==="-1") && ($req->val[$i+3]==="-1") &&
-						$this->isThrottled($no))
-						$toCorrect[$req->val[$i]] = $req->val[$i+1];
-				}
+				// The name goes back into two command strings as bare text,
+				// once inside cat=$..., which rtorrent parses twice. Only a
+				// channel init() creates is put back, rebuilt from its number:
+				// a daemon string there would be parsed, not passed (AUD-ESC).
+				$no = intval(substr($req->val[$i+1],4));
+				if(($req->val[$i+1]==="thr_".$no) &&
+					($req->val[$i+2]==="-1") && ($req->val[$i+3]==="-1") &&
+					$this->isThrottled($no))
+					$toCorrect[$req->val[$i]] = "thr_".$no;
 			}
 			if($this->init())
 			{
@@ -126,6 +128,7 @@ class rThrottle
 		$v = isset($_POST['v']) ? intval($_POST['v']) : -1;
 		$name = ($v>=0) ? ("thr_".$v) : "";
 		$req = new rXMLRPCRequest();
+		$changed = array();
 		foreach($hashes as $hash)
 		{
 			if((strlen($hash)!=40) || !ctype_xdigit($hash))
@@ -135,7 +138,10 @@ class rThrottle
 				getCmd("d.is_active="),
 				getCmd('cat').'=$'.getCmd("d.stop").'=,$'.getCmd("d.set_throttle_name=").$name.',$'.getCmd('d.start='),
 				getCmd('d.set_throttle_name=').$name )));
+			$changed[] = $hash;
 		}
+		// The channel lives in the session; save it with the change.
+		$req->addSessionSaves($changed);
 		if($req->getCommandsCount())
 			return($req->run() && !$req->fault);
 		return(true);

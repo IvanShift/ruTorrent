@@ -1,20 +1,6 @@
 <?php
 
-require_once(__DIR__ . '/../../php/TestCase.php');
-
-function getCmd($command) { return $command; }
-class rTorrent
-{
-    public static function quoteCommandArg($value)
-    {
-        return('"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"');
-    }
-}
-class FileUtil
-{
-    public static $logs = array();
-    public static function toLog($message) { self::$logs[] = $message; }
-}
+require_once(__DIR__ . '/RetrackersTestStubs.php');
 
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
@@ -36,13 +22,13 @@ class LifecycleInitLogTest extends TestCase
                 }
                 public function recoveryMarkerDiagnostic() { return array(); }
             };
-            FileUtil::$logs = array();
+            FileUtil::$messages = array();
             $jResult = '';
             $failure = null;
             $ok = retrackersRunLifecycleInit('alice', '/plugin/run.sh', '/usr/bin/php',
                 $jResult, $failure, $adapter);
             $this->assertTrue($ok === false, 'the supplied startup refusal reaches the lifecycle seam');
-            $this->assertEquals(array('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $expected)), FileUtil::$logs,
+            $this->assertEquals(array('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $expected)), FileUtil::$messages,
                 'startup writes exactly one bounded reason without RPC payload or private path');
             $this->assertTrue(strpos($jResult, $expected) !== false &&
                 strpos($jResult, 'tracker.invalid') === false,
@@ -89,9 +75,9 @@ class LifecycleInitLogTest extends TestCase
                     $failure=$this->reason; return false;
                 }
             };
-            FileUtil::$logs=array(); $js=''; $failure=null;
+            FileUtil::$messages=array(); $js=''; $failure=null;
             retrackersRunLifecycleInit('alice','/plugin/run.sh','/usr/bin/php',$js,$failure,$adapter);
-            foreach (array($js,implode('\n',FileUtil::$logs)) as $message) {
+            foreach (array($js,implode('\n',FileUtil::$messages)) as $message) {
                 $this->assertTrue(strpos($message,$reason)!==false &&
                     strpos($message,'multiple ruTorrent profiles')!==false &&
                     strpos($message,'$forbidUserSettings = true')!==false &&

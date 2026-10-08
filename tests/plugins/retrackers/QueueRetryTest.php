@@ -1,12 +1,23 @@
 <?php
-require_once(__DIR__ . '/../../php/TestCase.php');
-function getCmd($command) { return $command; }
-class rTorrent { public static function quoteCommandArg($value) { return '"' . addcslashes((string)$value, "\\\"") . '"'; } }
+require_once(__DIR__ . '/RetrackersTestStubs.php');
 define('RETRACKERS_IMPORT_ONLY', true);
-define('RETRACKERS_CANCEL_READ_TIMEOUT', 0.04);
+define('RETRACKERS_DEFER_READ_TIMEOUT', 0.04);
+define('RETRACKERS_GENERATION_READ_TIMEOUT', 0.04);
 define('RETRACKERS_PREFLIGHT_POLL', 0.001);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
+require_once(__DIR__ . '/RetrackersWireFake.php');
 class QueueRetryTest extends TestCase {
+    private function finishPreFence($reason,$wire,$hash,$adapter) {
+        $method=new ReflectionMethod('RetrackersRecoveryCoordinator','finishPreFenceFailure');
+        if(PHP_VERSION_ID<80100)$method->setAccessible(true);
+        $claim=$wire->torrents[$hash]['claim'];
+        return $method->invoke(null,$reason,$claim['tx'],$hash,$wire->marker($hash),$claim['local_id'],$adapter);
+    }
+    private function job($waits=false) {
+        $wire=new RetrackersWireFake();$wire->waits=$waits;$hash=str_repeat('A',40);
+        $wire->add($hash,str_repeat('C',40));FileUtil::$messages=array();
+        return array($wire,$hash,new RetrackersWireWorkerAdapter($wire,$hash,'alice'));
+    }
     public function testExactQueueBackoffExhaustsAndRetainsVisibleTerminal() {
         if (!class_exists('RetrackersQueueRetry')) { $this->assertTrue(false, 'queue failures need a durable bounded retry policy'); return; }
         $q=str_repeat('a',32); $wire=''; $now=1000;
@@ -56,9 +67,10 @@ class QueueRetryTest extends TestCase {
         $this->assertTrue(!$state['running']&&$err===''&&json_decode($out,true)===array(false,1), 'a bounded pre-capture refusal exits without completion or ownership retirement; native Q/claim remains retryable');
     }
     public function testCancellationReadOutageRecoversBeforeOneMutation() {
-        $adapter=new QueueRetryCancelAdapter();$adapter->claimFailures=3;$failure=null;
-        $ok=$adapter->nativeCancelUncaptured($adapter->h,$adapter->t,$adapter->l,$adapter->marker,null,$failure);
-        $this->assertTrue($ok && $adapter->claimReads===4 && $adapter->cancelWrites===1, 'a transient cancellation query outage gets bounded read retries before one exact cancel');
+        list($wire,$hash,$adapter)=$this->job();$claim=$wire->torrents[$hash]['claim'];
+        $wire->fail['system.retrackers.original_claim']=array('closed-before-headers','closed-before-headers','closed-before-headers');
+        $failure=null;$ok=$adapter->nativeDeferUncaptured($hash,$claim['tx'],$claim['local_id'],$wire->marker($hash),null,'lifecycle-unsupported',$failure);
+        $this->assertTrue($ok && count(array_keys($wire->calls,'system.retrackers.original_claim'))===4 && count(array_keys($wire->calls,'d.retrackers.defer_original'))===1, 'a transient cancellation query outage gets bounded read retries before one exact defer');
     }
     public function testGenerationReadOutageRetriesWithoutMisclassifyingAChangedIncarnation() {
         $adapter=new class {
@@ -74,12 +86,106 @@ class QueueRetryTest extends TestCase {
         $this->assertTrue(!retrackersQueuedWorkerGenerationMatches($cli,$adapter,$failure)&&$adapter->reads===4&&$failure===null, 'a proven changed generation refuses immediately and stays distinct from transport uncertainty');
     }
     public function testDeferredCancellationCarriesExactRetryCasAndLostReplyReconciles() {
-        if (!method_exists('RetrackersWorkerRpcAdapter','nativeDeferUncaptured')) { $this->assertTrue(false, 'retry metadata must share the uncaptured cancel transaction'); return; }
         foreach(array(false,true) as $lost) {
-            $adapter=new QueueRetryCancelAdapter();$adapter->loseReply=$lost;$failure=null;
-            $ok=$adapter->nativeDeferUncaptured($adapter->h,$adapter->t,$adapter->l,$adapter->marker,null,'native-capture-retry-pending',$failure);
-            $this->assertTrue($ok && $adapter->cancelWrites===1 && strpos($adapter->cancelWire,'capture-refused')!==false && $adapter->retry!=='', 'retry CAS is durable with cancellation and a lost reply never resends the mutation');
+            list($wire,$hash,$adapter)=$this->job();$claim=$wire->torrents[$hash]['claim'];
+            if($lost)$wire->lose['d.retrackers.defer_original']=1;
+            $failure=null;$outcome=null;
+            $ok=$adapter->nativeDeferUncaptured($hash,$claim['tx'],$claim['local_id'],$wire->marker($hash),null,'native-capture-retry-pending',$failure,$outcome);
+            $writes=$wire->payloads['d.retrackers.defer_original'];
+            $this->assertTrue($ok && $outcome==='deferred' && count($writes)===1 && strpos($writes[0],'capture-refused')!==false &&
+                $wire->torrents[$hash]['retry']==='r1:'.$claim['queue_id'].':1:'.($wire->now+2).':capture-refused' && $wire->claimWire($hash)==='none',
+                'retry CAS is durable with cancellation and a lost reply never resends the mutation');
         }
+    }
+    public function testProductionDeferSendsOnlyTheFiveArgumentCasWithAttestedQ() {
+        list($wire,$hash,$adapter)=$this->job();$claim=$wire->torrents[$hash]['claim'];
+        $this->assertTrue($this->finishPreFence('procfd-preflight-failed',$wire,$hash,$adapter)===false &&
+            !isset($wire->payloads['d.retrackers.cancel_original']) && !in_array('d.retrackers.finish_original',$wire->calls,true),
+            'a failed pre-fence attempt never sends the plain cancel or a completion');
+        $wire2=RetrackersWireFake::params($wire->payloads['d.retrackers.defer_original'][0]);
+        $this->assertTrue($wire2===array($hash,$claim['tx'],$claim['incarnation'],$claim['queue_id'],'','r1:'.$claim['queue_id'].':1:'.($wire->now+2).':preflight-refused'),
+            'the defer CAS carries exact H/T/I/Q, the observed prior state and one advanced count');
+        $this->assertTrue($wire->torrents[$hash]['queued']!=='' && FileUtil::$messages===array('retrackers-recovery: '.$hash.' procfd-preflight-failed'),
+            'Q stays owed and one classified line names the failed attempt');
+    }
+    public function testRetryReadOutageHoldsTheClaimInsteadOfReportingCorruption() {
+        list($wire,$hash,$adapter)=$this->job();
+        $wire->fail['d.custom']=array_fill(0,500,'connect-failed');
+        $this->assertTrue($this->finishPreFence('lifecycle-unsupported',$wire,$hash,$adapter)===false &&
+            !isset($wire->payloads['d.retrackers.defer_original']) && $wire->claimWire($hash)!=='none' && $wire->torrents[$hash]['retry']==='',
+            'an unanswered retry read sends no CAS; native claim, retry and Q stay for the next worker');
+        $this->assertTrue(count(FileUtil::$messages)===1 && strpos(FileUtil::$messages[0],' queue-preflight-retry-held; native original claim and Q retained')!==false &&
+            strpos(FileUtil::$messages[0],'retries stopped')===false && strpos(FileUtil::$messages[0],'state-invalid')===false,
+            'a transport failure is unconfirmed, not a corrupt state, and never claims that retries stopped');
+        list($wire,$hash,$adapter)=$this->job();$wire->torrents[$hash]['retry']='r1:broken';
+        $this->finishPreFence('lifecycle-unsupported',$wire,$hash,$adapter);
+        $this->assertTrue(count(FileUtil::$messages)===1 && strpos(FileUtil::$messages[0],' queue-retry-state-invalid; inspect d.custom=retrackers-retry')!==false,
+            'only a value that fails the grammar is reported as invalid');
+    }
+    public function testRemovedTorrentIsReportedAbsentNotRetained() {
+        list($wire,$hash,$adapter)=$this->job();
+        // A user Remove: native cancels the uncaptured claim, then erases the torrent and Q.
+        unset($wire->torrents[$hash]);
+        $claim=array('tx'=>str_repeat('0',31).'3','local_id'=>str_repeat('C',40));
+        $method=new ReflectionMethod('RetrackersRecoveryCoordinator','finishPreFenceFailure');if(PHP_VERSION_ID<80100)$method->setAccessible(true);
+        $method->invoke(null,'initial-absent',$claim['tx'],$hash,'v2:original:0:'.$claim['local_id'].':'.hash('sha256','alice').':'.$claim['tx'],$claim['local_id'],$adapter);
+        $this->assertTrue(count(FileUtil::$messages)===1 && strpos(FileUtil::$messages[0],$hash.' queue-target-absent; the torrent was removed')!==false &&
+            !isset($wire->payloads['d.retrackers.defer_original']),
+            'after a Remove the worker reports the torrent gone instead of a retained claim and Q');
+        list($wire,$hash,$adapter)=$this->job();$wire->torrents[$hash]['claim']=null;
+        $this->finishPreFence2($wire,$hash,$adapter);
+        $this->assertTrue(count(FileUtil::$messages)===1 && strpos(FileUtil::$messages[0],' queue-claim-retired; another actor retired the native claim')!==false &&
+            !isset($wire->payloads['d.retrackers.defer_original']),
+            'a retired claim on a present torrent is neither a removal nor a retained claim');
+    }
+    private function finishPreFence2($wire,$hash,$adapter) {
+        $method=new ReflectionMethod('RetrackersRecoveryCoordinator','finishPreFenceFailure');if(PHP_VERSION_ID<80100)$method->setAccessible(true);
+        $t=$wire->torrents[$hash];$tx=str_repeat('0',31).'3';
+        return $method->invoke(null,'lifecycle-unsupported',$tx,$hash,'v2:original:0:'.$t['local_id'].':'.hash('sha256','alice').':'.$tx,$t['local_id'],$adapter);
+    }
+    public function testTerminalDeferLogsExhaustionWithTheResetCommand() {
+        list($wire,$hash,$adapter)=$this->job();$q=$wire->torrents[$hash]['claim']['queue_id'];
+        $wire->torrents[$hash]['retry']='r1:'.$q.':5:'.($wire->now-1).':capture-refused';
+        $this->finishPreFence('procfd-preflight-failed',$wire,$hash,$adapter);
+        $this->assertTrue($wire->torrents[$hash]['retry']==='r1:'.$q.':6:0:preflight-refused' && $wire->claimWire($hash)==='none',
+            'the sixth counted attempt records the terminal state with the same exact CAS');
+        $this->assertTrue(count(FileUtil::$messages)===1 && strpos(FileUtil::$messages[0],$hash.' queue-retry-exhausted; durable Q retained; automatic retries stopped')!==false &&
+            strpos(FileUtil::$messages[0],RetrackersWorkerRpcAdapter::retryResetCommand('alice',$hash).' (add --apply)')!==false,
+            'the terminal attempt logs exhaustion once and names the exact reset command');
+    }
+    public function testNativeRetryContractMatchesThePhpGrammar() {
+        // RetrackersWireFake::retryValid ports retrackers_retry_parse from rTorrent
+        // src/core/retrackers_queue_receipts.h (rr_retry_valid in d883db88). A PHP-only
+        // change of MAX_ATTEMPTS or REASONS must fail here.
+        $q=str_repeat('a',32);
+        $this->assertTrue(RetrackersQueueRetry::MAX_ATTEMPTS===RetrackersWireFake::MAX_COUNT && RetrackersQueueRetry::REASONS===RetrackersWireFake::REASONS,
+            'the PHP attempt limit and reason list equal the native validator contract');
+        $corpus=array('');
+        foreach(array('0','1','5','6','7','9','10','12') as $count) foreach(array('0','1000','01000','12345678901') as $due)
+            foreach(array_merge(RetrackersQueueRetry::REASONS,array('remote-payload','')) as $reason)
+                $corpus[]='r1:'.$q.':'.$count.':'.$due.':'.$reason;
+        $corpus[]='r1:'.str_repeat('b',32).':1:1000:capture-refused';
+        foreach($corpus as $wire)
+            $this->assertTrue(($wire===''||RetrackersWireFake::retryValid($wire,$q))===(RetrackersQueueRetry::parse($wire,$q)!==false),
+                'PHP parse and the native validator agree on '.$wire);
+    }
+    public function testWaitsKeepTheSpentBudgetOnlyForWaitingCategories() {
+        $q=str_repeat('a',32);$now=1000;
+        $this->assertTrue(RetrackersQueueRetry::next('',$q,'source-not-ready',$now,300)==='r1:'.$q.':1:1300:source-not-ready',
+            'a first wait records count 1 because the grammar has no count 0');
+        $wire='r1:'.$q.':3:900:capture-refused';
+        $this->assertTrue(RetrackersQueueRetry::next($wire,$q,'transport-unavailable',$now,30)==='r1:'.$q.':3:1030:transport-unavailable',
+            'a wait keeps the spent count and only moves due');
+        $this->assertTrue(RetrackersQueueRetry::next('r1:'.$q.':5:900:source-not-ready',$q,'source-not-ready',$now,60)==='r1:'.$q.':5:1060:source-not-ready',
+            'a wait at the last counted attempt never becomes terminal');
+        $this->assertTrue(RetrackersQueueRetry::next($wire,$q,'capture-refused',$now,60)===false && RetrackersQueueRetry::next($wire,$q,'preflight-refused',$now,60)===false,
+            'counted categories can never be recorded as waits');
+        $this->assertTrue(RetrackersQueueRetry::waitSeconds('initial-hashing-pending')===RETRACKERS_RETRY_WAIT_HASHING &&
+            RetrackersQueueRetry::waitSeconds('connect-failed')===RETRACKERS_RETRY_WAIT_TRANSPORT &&
+            RetrackersQueueRetry::waitSeconds('lifecycle-unsupported')===RETRACKERS_RETRY_WAIT_NOT_READY,
+            'the detailed reason chooses the wait interval');
+        foreach(array('write-timeout','truncated-body','initial-transport') as $reason)
+            $this->assertTrue(RetrackersQueueRetry::category($reason)==='transport-unavailable','an unanswered '.$reason.' read is a transport wait');
     }
     public function testFinalizationDriftRetriesOnlyReadbackAndKeepsExactEpoch() {
         $callback=RetrackersLifecycleCallbacks::initFinalization(str_repeat('a',32),str_repeat('b',32),str_repeat('c',32),hash('sha256','alice'),'tadd_trackers1alice','tadd_trackers2alice','cat=','cat=');
@@ -96,7 +202,7 @@ class QueueRetryTest extends TestCase {
         foreach(array('acquire','final') as $kind) {
             $callback=$kind==='acquire'?RetrackersLifecycleCallbacks::currentInitAcquire(str_repeat('a',32),str_repeat('b',32),str_repeat('c',32),hash('sha256','alice'),hash('sha256','cat='),hash('sha256','cat='),'tadd_trackers1alice','tadd_trackers2alice','cat='):RetrackersLifecycleCallbacks::initFinalization(str_repeat('a',32),str_repeat('b',32),str_repeat('c',32),hash('sha256','alice'),'tadd_trackers1alice','tadd_trackers2alice','cat=','cat=');
             $adapter=new QueueRetryInitAdapter($callback);$adapter->reply='changed';$adapter->decision=QueueRetryInitAdapter::installed();$adapter->pending=1;
-            $failure=null;$result=$method->invokeArgs(null,array($adapter,$callback,'alice','cat=','init-unknown',&$failure,'lifecycle-busy',false,true));
+            $failure=null;$result=$method->invokeArgs(null,array($adapter,$callback,'alice','cat=','init-unknown',&$failure,array('changed_failure'=>'lifecycle-busy','reconcile_init_peer'=>true)));
             $this->assertTrue(is_array($result)&&!empty($result['peer_completed'])&&$result['owner']===null&&$adapter->writes===1&&$adapter->reads===2&&$failure===null,'a known changed init CAS may wait through a newer same-user token and epoch until exact F/S and claim completion, without adopting or mutating that token');
         }
     }
@@ -112,7 +218,7 @@ class QueueRetryTest extends TestCase {
             if($kind==='teardown'){$adapter->decision['phase']='DONE_OWNER';$adapter->decision['profiles'][0]['pair']='S/S';$adapter->decision['caller']['is_owner']=true;$adapter->decision['owner']=array('mode'=>'d','user_hash'=>hash('sha256','alice'),'token'=>str_repeat('f',32));}
             if($kind==='unknown')$adapter->reply='opaque';
             if($kind==='lost')$adapter->reply=false;
-            $failure=null;$result=$method->invokeArgs(null,array($adapter,$callback,'alice','cat=','init-unknown',&$failure,'lifecycle-busy',false,true));
+            $failure=null;$result=$method->invokeArgs(null,array($adapter,$callback,'alice','cat=','init-unknown',&$failure,array('changed_failure'=>'lifecycle-busy','reconcile_init_peer'=>true)));
             $this->assertTrue($result===false&&$adapter->writes===1&&$adapter->reads===(in_array($kind,array('unknown','lost'),true)?0:1),'peer reconciliation never adopts a different user, claim or teardown and never reads past an unconfirmed mutation reply');
             if(in_array($kind,array('unknown','lost'),true))$this->assertTrue($failure==='init-unknown','unknown and lost replies remain distinct from a proven CAS loser');
         }
@@ -137,22 +243,5 @@ class QueueRetryInitAdapter {
     public function coherentLifecycleReadback($user,$action,&$failure=null){
         $this->reads++;if($this->drift-->0){$failure='profile-binding-unstable';return false;}$failure=null;
         $d=$this->decision;if($this->pending-->0){$d['phase']='INIT_OWNER';$d['persistent_epoch']=str_repeat('e',32);$d['owner']=array('mode'=>'i','user_hash'=>hash('sha256','alice'),'token'=>str_repeat('e',32));$d['caller']=array('membership'=>'owner','is_owner'=>true);$d['profiles'][0]['pair']='D/D';}return $d;
-    }
-}
-class QueueRetryCancelAdapter extends RetrackersWorkerRpcAdapter {
-    public $h,$t,$l,$q,$marker; public $claimFailures=0,$claimReads=0,$cancelWrites=0;public $retry='',$cancelWire='';public $loseReply=false,$cancelled=false;
-    public function __construct() { $this->family=2;$this->h=str_repeat('A',40);$this->t=str_repeat('b',32);$this->l=str_repeat('C',40);$this->q=str_repeat('d',32);$this->marker='v2:original:0:'.$this->l.':'.hash('sha256','alice').':'.$this->t; }
-    protected function send($payload,$plan,&$failure=null,$historical=false) {
-        $failure=null;$value=null;
-        if(strpos($payload,'<methodName>system.retrackers.original_claim</methodName>')!==false) {
-            $this->claimReads++;if($this->claimFailures-->0) {$failure='closed-before-headers';return false;}
-            $value=$this->cancelled?'none':'original:'.$this->t.':'.str_repeat('e',32).':'.$this->l.':'.hash('sha256','alice').':0:'.$this->q;
-        } elseif(strpos($payload,'<methodName>d.custom</methodName>')!==false) $value=$this->retry;
-        elseif(strpos($payload,'<methodName>d.retrackers.cancel_original</methodName>')!==false||strpos($payload,'<methodName>d.retrackers.defer_original</methodName>')!==false) {
-            $this->cancelWrites++;$this->cancelWire=$payload;$this->cancelled=true;
-            preg_match('~<string>(r1:[^<]+)</string>~',$payload,$m);if(isset($m[1]))$this->retry=$m[1];
-            if($this->loseReply){$failure='closed-before-headers';return false;}$value='cancelled';
-        } else throw new RuntimeException('unexpected retry RPC');
-        return array('ok'=>true,'family'=>2,'value'=>$value);
     }
 }
