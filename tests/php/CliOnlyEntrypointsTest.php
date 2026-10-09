@@ -3,6 +3,54 @@ require_once __DIR__.'/TestCase.php';
 
 class CliOnlyEntrypointsTest extends TestCase
 {
+    /** A local variable named argv does not make a shared library a worker. */
+    private function readsProcessArguments($source)
+    {
+        $depth = 0;
+        $functions = array();
+        $pendingFunction = false;
+        $global = false;
+        $tokens = token_get_all($source);
+        foreach ($tokens as $index => $token) {
+            if (is_array($token)) {
+                if ($token[0] === T_STRING && strtolower($token[1]) === 'getopt') {
+                    $before = $index - 1;
+                    while ($before >= 0 && is_array($tokens[$before]) && $tokens[$before][0] === T_WHITESPACE) --$before;
+                    if ($before < 0 || !is_array($tokens[$before]) ||
+                        !in_array($tokens[$before][0], array(T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION), true)) return true;
+                }
+                if ($token[0] === T_FUNCTION) $pendingFunction = true;
+                elseif ($token[0] === T_GLOBAL) $global = true;
+                elseif ($token[0] === T_VARIABLE && $token[1] === '$argv'
+                    && ($global || (!$pendingFunction && !$functions))) return true;
+                elseif ($token[0] === T_CURLY_OPEN || $token[0] === T_DOLLAR_OPEN_CURLY_BRACES) ++$depth;
+                continue;
+            }
+            if ($token === '{') {
+                ++$depth;
+                if ($pendingFunction) { $functions[] = $depth; $pendingFunction = false; }
+            } elseif ($token === '}') {
+                if ($functions && end($functions) === $depth) array_pop($functions);
+                --$depth;
+            } elseif ($token === ';') {
+                $global = false;
+                $pendingFunction = false;
+            }
+        }
+        return false;
+    }
+
+    public function testWorkerInventoryDistinguishesProcessArgumentsFromLocalVectors()
+    {
+        foreach (array('<?php echo $argv[1];', '<?php if (true) { echo $argv[1]; }',
+            '<?php function run() { global $argv; echo $argv[1]; }',
+            '<?php $options = getopt("", array("report"));') as $source)
+            $this->assertTrue($this->readsProcessArguments($source), 'process argv access is inventoried');
+        foreach (array('<?php function launch($argv) { return $argv; }',
+            '<?php class Launcher { static function launch() { $argv = array("php"); return $argv; } }') as $source)
+            $this->assertTrue(!$this->readsProcessArguments($source), 'local argument vector is not a CLI entry point');
+    }
+
     private function workers()
     {
         $root = dirname(__DIR__, 2);
@@ -12,12 +60,8 @@ class CliOnlyEntrypointsTest extends TestCase
                 FilesystemIterator::SKIP_DOTS));
             foreach ($files as $file) {
                 if (!$file->isFile() || $file->isLink() || $file->getExtension() !== 'php') continue;
-                foreach (token_get_all(file_get_contents($file->getPathname())) as $token) {
-                    if (is_array($token) && $token[0] === T_VARIABLE && $token[1] === '$argv') {
-                        $workers[] = substr($file->getPathname(), strlen($root));
-                        break;
-                    }
-                }
+                if ($this->readsProcessArguments(file_get_contents($file->getPathname())))
+                    $workers[] = substr($file->getPathname(), strlen($root));
             }
         }
         sort($workers);
@@ -54,7 +98,7 @@ class CliOnlyEntrypointsTest extends TestCase
         $address = stream_socket_get_name($listener, false);
         fclose($listener);
         $log = tempnam(sys_get_temp_dir(), 'cli-web-server-');
-        $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=0', '-S', $address,
+        $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=0', '-d', 'output_buffering=0', '-S', $address,
             '-t', dirname(__DIR__, 2)), array(0=>array('pipe','r'),
             1=>array('file',$log,'a'), 2=>array('file',$log,'a')), $pipes);
         if(!is_resource($process)) throw new RuntimeException('worker web server did not start');

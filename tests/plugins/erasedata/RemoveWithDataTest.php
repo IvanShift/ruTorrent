@@ -578,7 +578,12 @@ class RemoveWithDataTest extends TestCase
 	{
 		$fixture = $this->dir.'/xmlrpc-fault-fixture';
 		@mkdir($fixture, 0777, true);
-		copy(__DIR__.'/../../../php/xmlrpc.php', $fixture.'/xmlrpc.php');
+		foreach(array('xmlrpc.php', 'xmlrpc_response.php') as $name)
+		{
+			copy(__DIR__.'/../../../php/'.$name, $fixture.'/'.$name);
+			$this->assertEquals(hash_file('sha256', __DIR__.'/../../../php/'.$name),
+				hash_file('sha256', $fixture.'/'.$name), 'raw fault fixture executes the shipped '.$name.' bytes');
+		}
 		file_put_contents($fixture.'/util.php', '<?php '
 			.'class FileUtil{public static function toLog($message){}}');
 		file_put_contents($fixture.'/settings.php', '<?php '
@@ -4169,7 +4174,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_array($restored) && $restored['dev'] === $original['dev']
 			&& $restored['ino'] === $original['ino'] && !is_link($old)
 			&& count($roots) === 0 && is_file($tmp)
-			&& strpos($output, 'rpc-unknown') !== false,
+			&& strpos($output, 'owner-snapshot-unconfirmed') !== false,
 			'unknown ownership restores the exact inode but retains the job visibly');
 		list($retryStatus, $retryOutput) = $this->runCollector(array('captureLogs' => true));
 		$this->assertEquals(0, $retryStatus, 'the later readable retry runs: '.$retryOutput);
@@ -4844,7 +4849,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_array($restored) && $restored['ino'] === $original['ino']
 			&& !is_link($nested) && is_file($tmp)
 			&& count(glob($base.'/.erasedata-rmdir-*')) === 0
-			&& strpos($output, 'rpc-unknown') !== false,
+			&& strpos($output, 'owner-snapshot-unconfirmed') !== false,
 			'unknown ownership restores the exact parent and retains the job visibly');
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'readable parent retry must run: '.$output);
@@ -5187,7 +5192,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_string($this->onlyManifest($oldHash)),
 			'unknown ownership must retain the exact cleanup obligation');
 		$this->assertTrue(strpos($output, 'cleanup retained') !== false
-			&& strpos($output, 'rpc-unknown') !== false,
+			&& strpos($output, 'owner-snapshot-unconfirmed') !== false,
 			'the refusal must be visible as a classified cleanup retention');
 
 		$this->reset();
@@ -7764,6 +7769,7 @@ class RemoveWithDataTest extends TestCase
 
 	public function testRealXMLRPCFaultParsingPreservesRawBoundariesForPresence()
 	{
+		$this->reset();
 		$hash = $this->hash('6');
 		$cases = array(
 			// rTorrent's own answers (php/utility/hashfault.php) prove absence;
@@ -17597,6 +17603,28 @@ class RemoveWithDataTest extends TestCase
 			'a refused member has no pending marker, staging or published manifest');
 		$this->assertEquals('preserve', file_get_contents($base.'/payload'),
 			'the refused payload is untouched');
+	}
+
+	public function testForceTwoAdmissionNamesAnUnknownPathAnswerInsteadOfADescriptorFailure()
+	{
+		$this->reset();
+		$base = $this->dir.'/force-two-path-answer';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$hash = $this->hash('A');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		rXMLRPCRequest::$responses['d.get_base_path']['callback'] = function() {
+			$this->frozen(false, array());
+		};
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(), array($hash), 2);
+		$this->assertSame(false, $outcome, 'the changed path answer refuses before arming');
+		$log = implode("\n", FileUtil::$log);
+		$this->assertTrue(strpos($log, 'erasedata: paths-unknown ') !== false,
+			'the refusal names the actual missing path answer');
+		$this->assertTrue(strpos($log, 'descriptor-unavailable') === false,
+			'no descriptor was attempted and no descriptor failure is invented');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'nothing is erased');
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'), 'payload remains intact');
 	}
 
 	public function testForceTwoRecoveryAlsoRefusesAnUnavailableDirectoryCapability()

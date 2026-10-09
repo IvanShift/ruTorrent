@@ -242,4 +242,24 @@ $suite->test('a component of another owner refuses even inside the top', functio
     } finally { payloadTrustClean($root); }
 });
 
+$suite->test('payload refusal identifies the failing ancestor and clears on a later admission', function () {
+    $root = payloadTrustRoot();
+    try {
+        mkdir($root . '/outside/sub', 0700);
+        chmod($root . '/outside', 0777);
+        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/sub', $root . '/top'),
+            'an unsafe ancestor blocks the requested descendant');
+        strictAssertSame($root . '/outside', ErasedataFilesystemOps::lastPayloadRefusalPath(),
+            'the shared walk names the first failing component');
+        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/new', $root . '/top', true),
+            'an allowed missing suffix remains admitted');
+        strictAssertSame('', ErasedataFilesystemOps::lastPayloadRefusalPath(), 'success leaves no stale refusal');
+        symlink($root . '/outside/sub', $root . '/top/link');
+        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/link', $root . '/top'),
+            'a symlink target traverses the same unsafe ancestor');
+        strictAssertSame($root . '/outside', ErasedataFilesystemOps::lastPayloadRefusalPath(),
+            'the actual physical component is reported through links');
+    } finally { payloadTrustClean($root); }
+});
+
 exit($suite->run());

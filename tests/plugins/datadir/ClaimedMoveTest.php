@@ -175,7 +175,91 @@ function dataDirClaimTree($path, $prefix = '')
     return $entries;
 }
 
+class DataDirScheduledRecovery
+{
+    public static $root;
+    public static $daemon;
+    public static $moves = 0;
+}
+class FileUtil
+{
+    public static $log = array();
+    public static function toLog($message) { self::$log[] = $message; }
+}
+require_once __DIR__ . '/../../../plugins/erasedata/outcome.php';
+foreach (array('rtDataDirRecover', 'rtDataDirHeld', 'rtDataDirWorkerRefusal') as $function)
+    eval(loadFunctionDefinition(__DIR__ . '/../../../plugins/datadir/util_setdir.php', $function));
+function rtDataDirJournal() { return DataDirScheduledRecovery::$root . '/jobs'; }
+function rtDataDirClaimRpc($method, $hash, $args)
+{
+    return DataDirScheduledRecovery::$daemon->rpc($method, $hash, $args);
+}
+function rtDataDirTorrentPresence($hash) { return DataDirScheduledRecovery::$daemon->presence($hash); }
+function rtDataDirMoveNoReplace($from, $to)
+{
+    DataDirScheduledRecovery::$moves++;
+    throw new RuntimeException('unexpected cancellation payload replay');
+}
+function dataDirClaimQueueOutcome()
+{
+    rXMLRPCRequest::queue('d.get_directory', true, false, array('/old'));
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.message.set'), true, false, array(0, 0));
+    rXMLRPCRequest::queue('d.save_full_session', true, false, array(0));
+}
+
 $suite = new StrictTestSuite();
+
+foreach (array('paused', 'late Stop') as $scene) {
+    $suite->test('scheduled cancellation replaces its held outcome after ' . $scene, function () use ($scene) {
+        $root = dataDirClaimFixture();
+        try {
+            $hash = str_repeat('A', 40);
+            $path = $root . '/jobs/' . $hash . '.json';
+            file_put_contents($root . '/src/a', 'source');
+            file_put_contents($root . '/dst/a', 'foreign');
+            $daemon = new DataDirClaimFake();
+            if ($scene === 'paused') $daemon->state = $daemon->open = $daemon->active = 0;
+            else $daemon->onClaim = function () use ($daemon) { $daemon->cancelRestore = true; };
+            $daemon->loseFinishOnce = true;
+            DataDirScheduledRecovery::$root = $root;
+            DataDirScheduledRecovery::$daemon = $daemon;
+            DataDirScheduledRecovery::$moves = 0;
+            $job = dataDirClaimJob($root, $daemon, array('a'), true, 'rtDataDirMoveNoReplace');
+            try { $job->run(); $held = 'unexpected-success'; }
+            catch (RuntimeException $e) { $held = $e->getMessage(); }
+            strictAssertSame('cancel-pending', dataDirClaimReload($root, $daemon)->phase(),
+                'the lost cancellation reply retains the job');
+            dataDirClaimQueueOutcome();
+            rtDataDirHeld($hash, $held, $path);
+            $before = rXMLRPCRequest::requestsFor('d.set_custom|d.message.set');
+            strictAssertTrue(strpos(rawurldecode($before[0]['commands'][0]->params[2]),
+                'claim-retained-start-and-move-blocked') !== false, 'initial outcome names the held lease');
+            $calls = $daemon->calls;
+            dataDirClaimQueueOutcome();
+            strictAssertSame(true, rtDataDirRecover(), 'the schedule confirms the safe cancellation');
+            strictAssertSame('absent', $daemon->phase, 'the daemon lease retires');
+            strictAssertSame(false, file_exists($path), 'the job document retires');
+            strictAssertSame(array(0, 0, 0), array($daemon->state, $daemon->open, $daemon->active),
+                'a paused torrent or late Stop stays stopped');
+            foreach (array('d.start_if_stop_close_claim', 'd.open_if_stop_close_claim',
+                'd.release_stop_close_claim') as $method)
+                strictAssertSame(count(array_keys($calls, $method, true)),
+                    count(array_keys($daemon->calls, $method, true)), 'recovery does not repeat ' . $method);
+            strictAssertSame(0, DataDirScheduledRecovery::$moves, 'neither cancellation attempt moves payload');
+            strictAssertSame('source', file_get_contents($root . '/src/a'), 'source stays intact');
+            strictAssertSame('foreign', file_get_contents($root . '/dst/a'), 'occupied destination stays intact');
+            $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.message.set');
+            $latest = $writes[count($writes) - 1]['commands'][0]->params[2];
+            rXMLRPCRequest::queue('d.multicall', true, false, array($hash, 'payload', '/old', '0', $latest));
+            $pending = FileOperationOutcome::pending('datadir');
+            strictAssertSame('occupied-destination', $pending[0][2]['reason'],
+                'the original refusal replaces the obsolete held notice');
+            strictAssertTrue(strpos($pending[0][2]['message'], 'claim-retained') === false,
+                'the final notice does not describe a retired lease');
+            strictAssertSame(2, count($writes), 'exactly one final refusal replaces the held outcome');
+        } finally { dataDirClaimClean($root); }
+    });
+}
 
 $suite->test('job receipt exists before daemon claim and user Stop before claim stays stopped', function () {
     $root = dataDirClaimFixture();
@@ -412,8 +496,10 @@ $suite->test('lost cancellation reply resumes cancel-pending without publishing 
         }
         strictAssertSame('cancel-pending', dataDirClaimReload($root, $daemon)->phase(),
             'cancellation obligation persists');
-        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(),
-            'replay acknowledges previous terminal decision');
+        try { dataDirClaimReload($root, $daemon)->run(); throw new RuntimeException('cancellation reason was lost'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('occupied-destination', $e->getMessage(), 'replay reports the original refusal');
+        }
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'source retained');
         strictAssertSame('foreign', file_get_contents($root . '/dst/a'), 'foreign destination retained');
         strictAssertSame(1, $daemon->state, 'original state restored once');
@@ -599,7 +685,10 @@ $suite->test('lost cancellation reply after rename refusal preserves its reason 
             strictAssertSame('move-move-refused', $e->getMessage(), 'original refused move reason is retained');
         }
         strictAssertSame('cancel-pending', dataDirClaimReload($root, $daemon)->phase(), 'cancel phase survives the lost reply');
-        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'next recovery confirms and acknowledges cancellation');
+        try { dataDirClaimReload($root, $daemon)->run(); throw new RuntimeException('cancellation reason was lost'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('move-move-refused', $e->getMessage(), 'recovery reports the original cancellation reason');
+        }
         strictAssertSame('absent', $daemon->phase, 'claim is safely retired after confirmation');
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'payload never moved');
     } finally { dataDirClaimClean($root); }
@@ -660,9 +749,15 @@ $suite->test('unmoved cancellation resumes across its durable phase and witness 
                 if ($cut === 'receipt-removed') unlink($path . '.move');
             }
             $moves = 0;
-            strictAssertSame(true, dataDirClaimReload($root, $daemon, function () use (&$moves) {
-                ++$moves; return false;
-            })->run(), 'cancellation resumes at cut ' . $cut);
+            try {
+                dataDirClaimReload($root, $daemon, function () use (&$moves) {
+                    ++$moves; return false;
+                })->run();
+                throw new RuntimeException('legacy cancellation completed silently');
+            } catch (DataDirMoveRefused $e) {
+                strictAssertSame('interrupted-cancellation', $e->getMessage(),
+                    'the old record cannot invent its lost reason at cut ' . $cut);
+            }
             strictAssertSame(0, $moves, 'cancellation never retries a payload move');
             strictAssertSame('absent', $daemon->phase, 'cancelled claim is acknowledged');
             strictAssertSame(1, $daemon->state, 'original active state is restored');
@@ -702,7 +797,10 @@ $suite->test('durable cancellation refuses an unexpected witness entry and can r
         strictAssertSame(false, file_exists($move['witness'] . '/0'), 'cleanup reached a partial witness cut');
         strictAssertSame('foreign', file_get_contents($move['witness'] . '/unexpected'), 'foreign entry is preserved');
         unlink($move['witness'] . '/unexpected');
-        strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'recovery finishes after the foreign entry is removed');
+        try { dataDirClaimReload($root, $daemon)->run(); throw new RuntimeException('legacy cancellation completed silently'); }
+        catch (DataDirMoveRefused $e) {
+            strictAssertSame('interrupted-cancellation', $e->getMessage(), 'recovery reports the old cancellation after repair');
+        }
         strictAssertSame('absent', $daemon->phase, 'repaired cancellation is acknowledged');
     } finally { dataDirClaimClean($root); }
 });
@@ -1020,11 +1118,11 @@ $suite->test('a new job keeps raw backslash names as version 3 and moves exactly
 // job-corrupt forever, and with it the claim and every later change of that
 // download. Without a backslash in a daemon string both versions mean the
 // same bytes, so such a job stays readable after a rollback.
-$suite->test('a new job is written as version 3 only when a daemon string holds a backslash', function () {
+$suite->test('a new job needs version 3 when a daemon string holds a quote or backslash', function () {
     $cases = array(
         'no special byte' => array(array(), 2),
         'a quote without a backslash' => array(array('previous_directory' => '/old "x"',
-            'source' => '/src "s"', 'destination' => '/dst "d"', 'files' => array('a "b".bin')), 2),
+            'source' => '/src "s"', 'destination' => '/dst "d"', 'files' => array('a "b".bin')), 3),
         'a backslash only in the request\'s own directory' => array(array('directory' => '/dst\\new/'), 2),
         'a backslash in the previous directory' => array(array('previous_directory' => '/old\\x'), 3),
         'a backslash in the source' => array(array('source' => '/src\\s'), 3),

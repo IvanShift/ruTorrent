@@ -233,14 +233,35 @@ function rtDataDirRecover($payloadMoves = true)
             if (!$payloadMoves && $job->movesPayload())
                 continue;
             $job->run();
+            FileOperationOutcome::clear('datadir', $hash);
         } catch (DataDirMoveRefused $e) {
             FileUtil::toLog('datadir: recovery refused hash=' . $hash . ' reason=' . $e->getMessage());
+            rtDataDirWorkerRefusal($hash, $e->getMessage());
         } catch (Exception $e) {
-            FileUtil::toLog('datadir: recovery held hash=' . $hash . ' reason=' . $e->getMessage());
+            rtDataDirHeld($hash, $e->getMessage(), $journal . '/' . $name);
             $ok = false;
         }
     }
     return $ok;
+}
+
+// Admission checks the protected document before asking for another daemon
+// lease. The worker repeats this check under the profile lock.
+function rtDataDirPendingRefusal($hash)
+{
+    $path = rtDataDirJournal() . '/' . strtoupper($hash) . '.json';
+    return file_exists($path) || is_link($path) ? 'prior-job-pending' : '';
+}
+
+function rtDataDirHeld($hash, $reason, $path)
+{
+    $context = 'document=' . rawurlencode($path) . ' key=' . strtoupper($hash)
+        . ' consequence=claim-retained-start-and-move-blocked';
+    FileUtil::toLog('datadir: recovery held hash=' . strtoupper($hash)
+        . ' reason=' . $reason . ' ' . $context);
+    FileOperationOutcome::record('datadir', $hash, (string) $reason,
+        'datadir: ' . $reason . '; ' . $context
+        . '; preserve the document and payload; see plugins/datadir/RECOVERY.md, then run recover.php --retry', true);
 }
 
 function rtDataDirOwnership($hash)
@@ -305,11 +326,12 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
             || (!$wasOpen && (string) end($request->val) !== '0'))
             throw new RuntimeException('unreadable-payload-metadata');
         $offset = $wasOpen ? 0 : 1;
-        $name = trim($request->val[$offset]);
-        $basePath = trim($request->val[$offset + 1]);
-        $baseFile = trim($request->val[$offset + 2]);
+        $name = $request->val[$offset];
+        $basePath = $request->val[$offset + 1];
+        $baseFile = $request->val[$offset + 2];
         $multi = (string) $request->val[$offset + 3] !== '0';
-        if ($basePath === '' || $baseFile === ''
+        if (!is_string($name) || !is_string($basePath) || !is_string($baseFile)
+            || $basePath === '' || $baseFile === ''
             || ($multi && ($name === '' || $name === '.' || $name === '..'
                 || strpos($name, '/') !== false || strpos($name, "\0") !== false))
             || $baseFile === '.' || $baseFile === '..'
@@ -435,6 +457,10 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
     $destPath = rtAddTailSlash($destPath);
     $path = null;
     try {
+        $journal = rtDataDirJournal();
+        $path = $journal . '/' . $hash . '.json';
+        if (file_exists($path) || is_link($path))
+            throw new RuntimeException('prior-job-pending');
         if ($moveFiles && !rtDataDirFilesystem()->probeRenameParent(null))
             throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusalContext());
         rtDataDirOwnership($hash);
@@ -442,10 +468,6 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
             array(str_repeat('0', 32)));
         if ($probe !== 'absent')
             throw new RuntimeException('daemon-claim-unconfirmed');
-        $journal = rtDataDirJournal();
-        $path = $journal . '/' . $hash . '.json';
-        if (file_exists($path) || is_link($path))
-            throw new RuntimeException('prior-job-pending');
         $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg);
         if ($snapshot['move'])
             rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']);
@@ -465,8 +487,10 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
     } catch (Exception $e) {
         $failure = $e->getMessage();
         $pending = $path !== null && (file_exists($path) || is_link($path));
-        FileUtil::toLog('datadir: change ' . ($pending ? 'held' : 'refused') . ' hash=' . $hash
-            . ' reason=' . $failure);
+        if ($pending)
+            rtDataDirHeld($hash, $failure, $path);
+        else
+            FileUtil::toLog('datadir: change refused hash=' . $hash . ' reason=' . $failure);
         return false;
     }
 }
@@ -508,15 +532,17 @@ function rtDataDirStartOutcome($hash, $directory)
 
 // A change refused in the detached worker of a payload move: the dialog saw
 // only the launch, so the refusal is kept on the download where tracker
-// traffic cannot erase it (ACC-OWNB-01). A job that recovery still holds is
-// not final and is not shown.
+// traffic cannot erase it (ACC-OWNB-01). A held job also needs a visible
+// outcome because its daemon lease prevents Start and another move.
 function rtDataDirWorkerRefusal($hash, $failure)
 {
     $hash = strtoupper((string) $hash);
     try {
         $journal = rtDataDirJournal();
-        if (file_exists($journal . '/' . $hash . '.json') || is_link($journal . '/' . $hash . '.json'))
+        if (file_exists($journal . '/' . $hash . '.json') || is_link($journal . '/' . $hash . '.json')) {
+            rtDataDirHeld($hash, $failure, $journal . '/' . $hash . '.json');
             return;
+        }
     } catch (Exception $e) {
         // An unknown journal does not hide a refusal.
     }

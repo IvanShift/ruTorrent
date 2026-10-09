@@ -230,12 +230,37 @@ class EditActionReloadTest extends TestCase
 		$load = $this->loadBody();
 		$this->assertTrue(strpos($load, self::xmlText('d.set_directory_base=' . self::quotedArg($directory))) !== false,
 			'the reload keeps the reported directory, quoted once');
-		$this->assertTrue(strpos($load, 'd.set_custom1=' . rawurlencode(self::AUD_PAIRS)) !== false,
+		$this->assertTrue(strpos($load, self::xmlText('d.set_custom1=' . self::quotedArg(self::AUD_PAIRS))) !== false,
 			'the reload keeps the reported label');
 		$this->assertTrue(strpos($load, self::xmlText('d.set_throttle_name=' . self::quotedArg($throttle))) !== false,
 			'the reload keeps the reported throttle name, quoted once');
 		$this->assertSame($this->announceOnlyTorrent(), @file_get_contents($tied),
 			'the user-owned tied file is untouched');
+	}
+
+	public function testUnrepresentableRawLabelRefusesBeforeErase()
+	{
+		$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=label-edit',
+			array('guarded'=>true, 'label'=>'$execute=id'));
+		$this->assertSame(-1, $this->indexOf('d.erase_preserving_tied'),
+			'a label that would execute as a command preserves the live download');
+		$this->assertSame(-1, $this->loadCallIndex(), 'unsafe metadata causes no speculative reload');
+		$this->assertTrue(strpos($printed, 'editPreflightFailed') !== false,
+			'the user receives the preflight refusal before any destructive action');
+	}
+
+	public function testRawAndPercentEncodedLabelsKeepTheirExactStoredBytes()
+	{
+		foreach(array('external %41 + %2F "label" \\tail', rawurlencode(self::AUD_PAIRS), '') as $label)
+		{
+			$printed = $this->saveAnEdit('hash='.self::HASH.'&set_comment=1&comment=label-edit',
+				array('guarded'=>true, 'label'=>$label));
+			$this->assertSame(array(), json_decode($printed, true)['errors'] ?? null,
+				'the edit with a stored label reloads successfully: '.$printed);
+			$expected = self::xmlText('d.set_custom1='.self::quotedArg($label));
+			$this->assertSame(1, substr_count($this->loadBody(), $expected),
+				'the exact stored label is restored once, without guessing its encoding');
+		}
 	}
 
 	/**

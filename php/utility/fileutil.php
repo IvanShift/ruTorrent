@@ -7,6 +7,12 @@ class FileUtil
 {
 	private static $profilePathInstance = null;
 
+	/** Shared policy for implicit settings/profile creation during CLI reads. */
+	public static function settingsReadOnlyContext()
+	{
+		return defined('RUTORRENT_SETTINGS_READ_ONLY') && RUTORRENT_SETTINGS_READ_ONLY;
+	}
+
 	public static function getFileName($path)
 	{
 		$arr = explode('/',$path);
@@ -86,8 +92,9 @@ class FileUtil
 		return(self::$profilePathInstance);
 	}
 
-	public static function getProfilePathEx($user = null)
+	public static function getProfilePathEx($user = null, $create = true)
 	{
+		$create = $create && !self::settingsReadOnlyContext();
 		global $profilePath;
 		$ret = self::fullpath(isset($profilePath) ? $profilePath : '../../share', dirname(__FILE__));
 		if(is_null($user))
@@ -95,7 +102,7 @@ class FileUtil
 		if($user!='')
 		{
 			$ret.=('/users/'.$user);
-			if(!is_dir($ret))
+			if($create && !is_dir($ret))
 			{
 				global $profileMask;
 				$protectedMode = (isset($profileMask) ? $profileMask : 0777) | 01000;

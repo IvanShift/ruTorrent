@@ -160,7 +160,7 @@ foreach (array('below the top' => '/top/dst/item', 'into a service directory' =>
                 strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/top/src', $root . '/shared/fin/item', 'Copy'),
                     'the writable spelled ancestor above the top refuses');
                 strictAssertSame(false, @lstat($root . $target . '/item'), 'nothing is created through the link');
-                nmtAssertTrustRefusal($root . '/shared/fin/item');
+                nmtAssertTrustRefusal($root . '/shared');
             } finally { chmod($root . '/shared', 0700); nmtClean($root); }
         });
 }
@@ -209,7 +209,7 @@ $suite->test('a link of another owner in a writable directory below the top refu
         strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/top/src', $root . '/top/shared/fin/item', 'Copy'),
             'a link another UID planted below the top refuses');
         strictAssertSame(false, @lstat($root . '/svc/item'), 'nothing is created through the link');
-        nmtAssertTrustRefusal($root . '/top/shared/fin/item');
+        nmtAssertTrustRefusal($root . '/top/shared/fin');
     } finally { nmtClean($root); }
 });
 

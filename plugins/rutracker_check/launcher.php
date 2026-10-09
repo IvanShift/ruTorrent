@@ -68,6 +68,27 @@ class RuTrackerDetachedPhp
 		return implode(' ', $parts) . ' > /dev/null 2>&1 &';
 	}
 
+	/** Build a daemon schedule command without blocking its RPC event loop. */
+	static public function scheduleCommand($php, $script, $arguments, $capability)
+	{
+		if($capability !== 'available' && $capability !== 'unsupported')
+			return false;
+		$argv = array_merge(array($php, '-f', $script, '--'), $arguments);
+		foreach($argv as $value)
+			if(!RtorrentCommandArguments::isLiteral($value))
+				return false;
+		if($php === '' || $script === '')
+			return false;
+		if($capability === 'available')
+			return 'execute.raw.bg=' . implode(',', array_map(array('rTorrent', 'quoteCommandArg'), $argv));
+
+		// Older daemons need the existing detached shell launcher. Quote the
+		// entire script for the daemon after that owner quotes each shell argv.
+		return getCmd('execute') . '=' . rTorrent::quoteCommandArg('sh') . ','
+			. rTorrent::quoteCommandArg('-c') . ','
+			. rTorrent::quoteCommandArg(self::command($php, $script, array_merge(array('--'), $arguments)));
+	}
+
 	static public function execute($command)
 	{
 		if(!function_exists('exec'))

@@ -105,4 +105,19 @@ class MagnetShownTest extends TestCase
 		$this->assertTrue(strpos($this->logged(), 'probe: magnet unconfirmed: ' . self::UNKNOWN) !== false,
 			'and the magnet is unconfirmed');
 	}
+	public function testMultipleXtSelectsTheLastHashAsTheDaemonDoes()
+	{
+		$this->assertSame(self::MISSING, rTorrent::magnetHash('magnet:?xt=urn:btih:'.self::PRESENT
+			.'&dn=ignored+name&xt=urn:btih:'.strtolower(self::MISSING)),
+			'the final xt replaces the prior hash, matching libtorrent DownloadConstructor::parse_magnet_uri');
+		$this->assertSame(str_repeat('0', 40), rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('A', 32)),
+			'a base32 hash is decoded once');
+		$this->assertSame(str_repeat('AB', 20), rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('%AB', 20)),
+			'a percent-encoded binary hash keeps its bytes');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?dn=xt=urn:btih:'.self::PRESENT),
+			'a hash mentioned in another parameter is not an xt');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:'.self::PRESENT.'&xt=urn:btih:bad'),
+			'a malformed later xt is refused instead of waiting for the earlier hash');
+	}
+
 }

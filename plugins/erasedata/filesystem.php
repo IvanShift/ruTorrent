@@ -31,6 +31,27 @@ class ErasedataFilesystemOps
 	private static $renameRefusal = '';
 	private static $renameContext = '';
 	private static $renameProbe = false;
+	private static $renameErrno = null;
+	private static $payloadRefusalPath = '';
+
+	public static function lastPayloadRefusalPath()
+	{
+		return(self::$payloadRefusalPath);
+	}
+
+	private static function payloadPathRefused($path)
+	{
+		self::$payloadRefusalPath = is_string($path) ? $path : '';
+		return(false);
+	}
+
+	// EXDEV may occur between bind mounts with equal st_dev. Only the native
+	// helper's classified result permits a consumer to switch to staged copy.
+	public static function isCrossDeviceRenameRefusal()
+	{
+		return(self::$renameRefusal === 'rename-noreplace-error'
+			&& !self::$renameProbe && self::$renameErrno === 18);
+	}
 
 	public static function lastRenameRefusal()
 	{
@@ -47,6 +68,7 @@ class ErasedataFilesystemOps
 		self::$renameRefusal = '';
 		self::$renameContext = '';
 		self::$renameProbe = false;
+		self::$renameErrno = null;
 	}
 
 	// Callers resolve the helper through static:: so a test subclass can point
@@ -74,6 +96,7 @@ class ErasedataFilesystemOps
 	private static function renameDiagnostic($reason, $from, $to = null, $errno = null)
 	{
 		self::$renameRefusal = $reason;
+		self::$renameErrno = $errno;
 		// A context without a destination belongs to a directory probe.
 		self::$renameProbe = $to === null;
 		self::$renameContext = $reason.' path='.erasedataLogPath($from)
@@ -373,20 +396,21 @@ class ErasedataFilesystemOps
 	// the whole path again. A name a link leads to must exist.
 	public static function payloadPathTrusted($path, $top = null, $missingTail = false)
 	{
+		self::$payloadRefusalPath = '';
 		if(!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, "\0") !== false
 			|| !function_exists('posix_geteuid'))
-			return(false);
+			return(self::payloadPathRefused($path));
 		$pending = array();
 		foreach(explode('/', $path) as $component)
 		{
 			if($component === '.' || $component === '..')
-				return(false);
+				return(self::payloadPathRefused($path));
 			if($component !== '')
 				$pending[] = array($component, false);
 		}
 		$boundary = self::payloadTop($top);
 		if(!self::payloadEntryTrusted('/', 0040000, $boundary))
-			return(false);
+			return(self::payloadPathRefused('/'));
 		$current = '/';
 		$links = 0;
 		while($pending)
@@ -403,14 +427,14 @@ class ErasedataFilesystemOps
 			clearstatcache(true, $next);
 			$stat = @lstat($next);
 			if(!is_array($stat))
-				return($missingTail && !$fromLink);
+				return($missingTail && !$fromLink ? true : self::payloadPathRefused($next));
 			if(($stat['mode'] & 0170000) === 0120000)
 			{
 				$target = @readlink($next);
 				// 40 is Linux's limit on links followed in one resolution.
 				if(($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid())
 					|| !is_string($target) || $target === '' || ++$links > 40)
-					return(false);
+					return(self::payloadPathRefused($next));
 				if($target[0] === '/')
 					$current = '/';
 				$expansion = array();
@@ -421,7 +445,7 @@ class ErasedataFilesystemOps
 				continue;
 			}
 			if(!self::payloadEntryTrusted($next, 0040000, $boundary))
-				return(false);
+				return(self::payloadPathRefused($next));
 			$current = $next;
 		}
 		return(true);

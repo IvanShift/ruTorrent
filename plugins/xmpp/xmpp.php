@@ -1,5 +1,6 @@
 <?php
 
+require_once(__DIR__.'/../../php/rtorrent.php');
 require_once( dirname(__FILE__)."/../../php/settings.php");
 require_once( dirname(__FILE__)."/../../php/utility/json.php");
 
@@ -169,7 +170,7 @@ class rXmpp
 		if ( $this->message !== '' && isset($this->jabberServer) && isset($this->jabberLogin) && isset($this->jabberPasswd) && isset($this->jabberFor))
 		{
 		    $cmd = $theSettings->getOnFinishedCommand(array('xmpp'.User::getUser(),
-			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.Utility::getPHP().','.$pathToXmpp.'/notify.php,"$'.getCmd('d.name').'=","'.User::getUser().'"}'
+			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($pathToXmpp.'/notify.php').',"$'.getCmd('d.name').'=","'.User::getUser().'"}'
 			    ));
 		}
 		else

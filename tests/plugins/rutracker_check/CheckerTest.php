@@ -5953,6 +5953,28 @@ class CheckerTest
 		}
 	}
 
+	public function testIgnoredLabelsUseExactStringIdentityBeforeAndAfterDecoding()
+	{
+		$saved = isset($GLOBALS['ignoreLabels']) ? $GLOBALS['ignoreLabels'] : null;
+		$GLOBALS['ignoreLabels'] = array('10', 'TV Shows', 'literal%20label');
+		try
+		{
+			strictAssertSame(false, ruTrackerChecker::isIgnoredLabel('1e1'), 'numeric-looking labels remain distinct');
+			strictAssertSame(false, ruTrackerChecker::isIgnoredLabel('%31e1'), 'decoding cannot introduce loose numeric equality');
+			strictAssertSame(true, ruTrackerChecker::isIgnoredLabel('10'), 'the exact numeric-looking label matches');
+			strictAssertSame(true, ruTrackerChecker::isIgnoredLabel('%31%30'), 'an exact decoded label matches');
+			strictAssertSame(true, ruTrackerChecker::isIgnoredLabel('literal%20label'), 'raw daemon bytes are compared before decoding');
+			strictAssertSame(true, ruTrackerChecker::isIgnoredLabel('TV%20Shows'), 'encoded historical labels still match');
+			$GLOBALS['ignoreLabels'] = array(10);
+			strictAssertSame(false, ruTrackerChecker::isIgnoredLabel('10'), 'configuration integers cannot impersonate labels');
+		}
+		finally
+		{
+			if($saved === null) unset($GLOBALS['ignoreLabels']);
+			else $GLOBALS['ignoreLabels'] = $saved;
+		}
+	}
+
 	// init.js appends chk-msg under whatever state is current, so the sentence
 	// has to go with the state it explained. The scheduler's fast pass clears
 	// it on its own STE_IGNORED write; the path a "check" click takes did not,

@@ -1043,6 +1043,27 @@ final class RetrackersLifecycleCallbacks extends RetrackersLifecycleCallback
 		), self::state(null, null)));
 	}
 
+	// Operator enqueue is one guarded callback: a pending Move cannot appear
+	// between the admission read and native enqueue under the daemon lock.
+	public static function applyExisting($hash, $localId, $userHash, $run, $checkMove)
+	{
+		if (preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1 ||
+			preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1 ||
+			preg_match('/^[0-9a-f]{64}$/D', $userHash) !== 1 || !in_array($run, array('0', '1'), true)) return(false);
+		$conditions = array(
+			self::downloadEquals('d.local_id=', $localId),
+			self::downloadIntegerEquals('d.state=', $run),
+			self::downloadEquals('d.custom=retrackers-queued', ''),
+			self::downloadEquals('d.custom=retrackers-recovery', ''),
+			self::downloadEquals('d.custom=retrackers-recovery-ack', ''),
+			self::downloadEquals('system.retrackers.original_claim=' . $hash, 'none'),
+		);
+		if ($checkMove) $conditions[] = self::downloadEquals('system.autotools.move_state=' . $hash, 'none');
+		return(new self('apply-existing', 'branch', array($hash, self::all($conditions),
+			'd.retrackers.enqueue_original=' . self::q($localId) . ',' . self::q($userHash) . ',' . self::q($run),
+			'cat=CHANGED'), self::state(null, null)));
+	}
+
 	public static function cancelPending($epoch, $token, $userHash, $hash, $localId, $handoff,
 		$mode = 'd')
 	{
@@ -7012,6 +7033,25 @@ class RetrackersRestrictedXmlCursor
 		return($decoded);
 	}
 
+	// Native XML strings containing non-UTF8 or XML-forbidden bytes use base64.
+	// Decode only canonical, bounded scalars; dictionary names stay XML text.
+	public function binaryString()
+	{
+		$this->take('<base64>');
+		$end = strpos($this->raw, '</base64>', $this->offset);
+		if ($end === false || $end >= $this->end || $end - $this->offset > 4 * (int)ceil(self::MAX_SCALAR_BYTES / 3))
+			throw new RetrackersRestrictedCodecError('invalid-base64');
+		$encoded = substr($this->raw, $this->offset, $end - $this->offset);
+		$decoded = base64_decode($encoded, true);
+		if ($decoded === false || base64_encode($decoded) !== $encoded || strlen($decoded) > self::MAX_SCALAR_BYTES)
+			throw new RetrackersRestrictedCodecError('invalid-base64');
+		$local = 0;
+		$this->chargeText(strlen($decoded), false, $local);
+		$this->offset = $end;
+		$this->take('</base64>');
+		return($decoded);
+	}
+
 	public function integer($tag)
 	{
 		$this->take('<' . $tag . '>');
@@ -7213,7 +7253,7 @@ class RetrackersRestrictedRawCodec
 			throw new RetrackersRestrictedCodecError('unknown-scalar-plan');
 		}
 		if ($type === 'string') {
-			$value = $this->cursor->text('string');
+			$value = $this->cursor->at('<base64>') ? $this->cursor->binaryString() : $this->cursor->text('string');
 			$this->cursor->chargeProjected(strlen($value));
 			return($value);
 		}
@@ -8579,7 +8619,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 		$this->family = $family;
 	}
 
-	private function methodNames(&$failure)
+	protected function methodNames(&$failure)
 	{
 		$decoded = $this->send(retrackersBuildDirectRequest('system.listMethods', array()),
 			retrackersRestrictedPlanMethodNames(), $failure);
@@ -8800,6 +8840,17 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 		return($decoded['value']);
 	}
 
+	// Persisted enqueue refusal has no Q: attribute it to the validated native
+	// enqueue caller rather than claiming that every profile owns the failure.
+	public function enqueueRefusalRows(&$failure = null)
+	{
+		$decoded = $this->send(retrackersBuildDirectRequest('d.multicall2', array('', 'main', 'd.hash=',
+			'd.local_id=', 'd.custom=retrackers-enqueue-refusal', 'd.custom=retrackers-enqueue-user')),
+			retrackersRestrictedPlanQueueRetryRows(), $failure);
+		if (!is_array($decoded) || !isset($decoded['ok'], $decoded['value']) || $decoded['ok'] !== true) return(false);
+		return($decoded['value']);
+	}
+
 	public function downloadLocalIdRows(&$failure = null)
 	{
 		$payload = retrackersBuildDirectRequest('d.multicall2', array('', 'main', 'd.hash=', 'd.local_id='));
@@ -8940,12 +8991,22 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 	 */
 	public static function retryResetCommand($user, $hash = null, $containerMarker = '/.dockerenv')
 	{
+		return(self::operatorToolCommand('retrackers-retry-reset.php', $user, $hash, $containerMarker));
+	}
+
+	public static function applyExistingCommand($user, $containerMarker = '/.dockerenv')
+	{
+		return(self::operatorToolCommand('retrackers-apply-existing.php', $user, null, $containerMarker));
+	}
+
+	private static function operatorToolCommand($filename, $user, $hash, $containerMarker)
+	{
 		$word = function ($value) {
 			return(preg_match('~^[A-Za-z0-9_./:=+-]+$~D', $value) === 1 ? $value : escapeshellarg($value));
 		};
-		$tool = realpath(__DIR__ . '/../../tools/retrackers-retry-reset.php');
+		$tool = realpath(__DIR__ . '/../../tools/' . $filename);
 		$command = $word(class_exists('Utility', false) ? Utility::getPHP() : 'php') . ' ' .
-			$word($tool === false ? 'tools/retrackers-retry-reset.php' : $tool);
+			$word($tool === false ? 'tools/' . $filename : $tool);
 		if (is_string($containerMarker) && @is_file($containerMarker) && function_exists('posix_geteuid')) {
 			$account = function_exists('posix_getpwuid') ? @posix_getpwuid(posix_geteuid()) : false;
 			$command = 'docker exec -u ' . $word(is_array($account) && isset($account['name']) &&

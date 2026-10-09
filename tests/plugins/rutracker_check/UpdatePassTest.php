@@ -5188,10 +5188,8 @@ upTest($suite, 'the presence probe in this suite is production presence.php with
 // the real php/xmlrpc.php running in a subprocess. The presence test above
 // cannot see any of this: it runs against the same double, so a fault field the
 // double publishes where the real transport leaves it alone is invisible there.
-// php/xmlrpc.php declares
-// faultString '' and rawFaultString null (:80-81) and assigns them only inside
-// the strstr($answer, "faultCode") branch (:223-227), so a freshly built
-// request that gets a clean answer keeps both as declared.
+// Production resets fault fields before each run and publishes raw text only
+// for an actual RPC fault, preserving its exact boundaries.
 upTest($suite, 'the XMLRPC double publishes fault text exactly when the real transport does', function () {
     $hash = str_repeat('A', 40);
 
@@ -5202,6 +5200,7 @@ upTest($suite, 'the XMLRPC double publishes fault text exactly when the real tra
     strictAssertSame(false, $clean->fault, 'a clean answer is not a fault');
     strictAssertSame('', $clean->faultString, 'a clean answer leaves faultString empty');
     strictAssertSame(null, $clean->rawFaultString, 'a clean answer leaves rawFaultString unset');
+    strictAssertSame(null, $clean->stringTable(1), 'flat queued fixtures cannot attest XML string-table provenance');
 
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.hash', true, true, array(), " info-hash not found\n");
@@ -5235,8 +5234,9 @@ function upRunThroughProductionXMLRPC($dir, $hash, $answers)
     $fixture = $dir . '/xmlrpc-transport-fixture';
     if (!is_dir($fixture) && !mkdir($fixture, 0777, true))
         throw new RuntimeException('Unable to create ' . $fixture);
-    if (!copy(testFindRepoRoot() . '/php/xmlrpc.php', $fixture . '/xmlrpc.php'))
-        throw new RuntimeException('Unable to copy php/xmlrpc.php into ' . $fixture);
+    foreach (array('xmlrpc.php', 'xmlrpc_response.php') as $name)
+        if (!copy(testFindRepoRoot() . '/php/' . $name, $fixture . '/' . $name))
+            throw new RuntimeException('Unable to copy php/' . $name . ' into ' . $fixture);
     file_put_contents($fixture . '/util.php', '<?php '
         . 'class FileUtil{public static function toLog($message){}}');
     file_put_contents($fixture . '/settings.php', '<?php '
@@ -5327,9 +5327,8 @@ function upDescribeTransportAnswer($answer)
 // field the double publishes where php/xmlrpc.php leaves it alone is invisible
 // there. Compared: run()'s answer and the three fault fields. NOT compared:
 // $val, which is the fixture's own payload in the double while php/xmlrpc.php
-// fills it from the XML with one flat regex -- so a fault leaves it holding the
-// faultCode and the fault text. The two cannot agree there and are not meant
-// to.
+// fills it from decoded XML scalar leaves; a real fault includes its code and
+// text, while fixtures deliberately queue their own payload.
 upTest($suite, 'the XMLRPC double models php/xmlrpc.php fault fields across a sequence of answers', function ($dir) {
     $hash = str_repeat('A', 40);
     // One request object driven through six answers, because the divergences
@@ -5354,15 +5353,9 @@ upTest($suite, 'the XMLRPC double models php/xmlrpc.php fault fields across a se
             . ' of ' . count($answers) . ', ' . upDescribeTransportAnswer($answer)
             . ' (php/xmlrpc.php is the expectation)');
     }
-    // php/xmlrpc.php cannot report a fault on a request that did not run:
-    // makeNextCall() clears fault before every batch (:135) and the faultCode
-    // branch that sets it back sits inside if($ret) (:221), which is what
-    // run() returns (:241). Two fixture shapes describe that impossible state
-    // -- an unqueued command, and a queued answer that is at once 'did not
-    // run' and 'faulted', the shape fixtures across these suites use to spell
-    // "the call failed". Both have to come back looking like the unreachable
-    // transport they stand for, or a test could prove a step production would
-    // never reach.
+    // Both an unqueued command and a queued failed response represent an
+    // unavailable transport. Production marks it faulted with a classified
+    // reason and clears raw remote text; the double must do the same.
     $fresh = upRunThroughProductionXMLRPC($dir, $hash, array(upTransportAnswer('unreachable')));
     foreach (array('nothing queued', 'a queued fault on an answer that did not run') as $index => $what) {
         rXMLRPCRequest::reset();

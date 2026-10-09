@@ -54,6 +54,8 @@ final class RetrackersRetryReset
 }
 STUB
         );
+        file_put_contents($this->fixture . '/plugins/retrackers/applyexisting.php',
+            '<?php class RetrackersApplyExisting { public static function sessionNotice($adapter, $user) { return ""; } }');
         file_put_contents($this->fixture . '/php/settings.php', <<<'STUB'
 <?php
 class rTorrentSettings

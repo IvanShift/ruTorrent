@@ -272,16 +272,21 @@ describe("mobile ratio group and channel in the General tab", () => {
       .toEqual({ ratio: "0", channel: "1", status: "Tracker: [ok]" });
   });
 
+  it("finds the ratio group when unrelated views follow it", () => {
+    for (const views of ["mainrat_1finished", "rat_1rat_extra", "customrat_0other"]) {
+      expect(fill({ ratiogroup: views }).ratio).toBe(views.includes("rat_0") ? "0" : "1");
+    }
+  });
+
   it("selects unlimited when there is no ratio group or channel", () => {
     expect(fill({ ratiogroup: "", throttle: "" }))
       .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
   });
 
   it("fills the whole tab when a view or throttle name holds a quote or a backslash", () => {
-    // A view after rat_1 leaves "1x\"y\\" behind the greedy rat_ strip; no
-    // option has that value, so the picker falls back to unlimited.
+    // A later view must not become part of the ratio group number.
     expect(fill({ ratiogroup: 'rat_1x"y\\', throttle: 'a"b\\' }))
-      .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
+      .toEqual({ ratio: "1", channel: "-1", status: "Tracker: [ok]" });
     expect(fill({ ratiogroup: 'rat_"]\\', throttle: 'thr_"\\1' }))
       .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
   });

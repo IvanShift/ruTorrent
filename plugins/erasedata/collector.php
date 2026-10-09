@@ -2659,11 +2659,11 @@ final class ErasedataCollector
 			return(false);
 		}
 		$owners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
-			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'], $ownerRefusal);
 		$state = erasedataCleanupParentOwnerState($owners, $dir);
 		if($state === 'unknown')
 		{
-			$reason = 'rpc-unknown';
+			$reason = $ownerRefusal === null ? 'rpc-unknown' : $ownerRefusal;
 			return(false);
 		}
 		if($state === 'claimed')
@@ -2725,7 +2725,7 @@ final class ErasedataCollector
 			return(true); // A different directory is not this job's parent.
 		}
 		$postOwners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
-			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'], $ownerRefusal);
 		$postState = erasedataCleanupParentOwnerState($postOwners, $dir);
 		if($postState !== 'unclaimed')
 		{
@@ -2735,7 +2735,7 @@ final class ErasedataCollector
 				return(false);
 			if($postState === 'claimed')
 				return(true);
-			$reason = 'rpc-unknown';
+			$reason = $ownerRefusal === null ? 'rpc-unknown' : $ownerRefusal;
 			return(false);
 		}
 		$after = $this->filesystem->scanDirectory($reserved);
@@ -2828,7 +2828,7 @@ final class ErasedataCollector
 		// Rebuild both authorities while the public name is absent. The old
 		// snapshots were only permission to begin capture, never to unlink.
 		$postOwners = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
-			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'], $ownerRefusal);
 		$postPaths = $this->cleanupSuccessorPaths($manifest['new_hash']);
 		$postSuccessor = is_array($postPaths) && $postPaths === $successorFiles
 			? erasedataCleanupSuccessorSnapshot($postPaths, $this->filesystem) : false;
@@ -2852,7 +2852,7 @@ final class ErasedataCollector
 				return(false);
 			if($owner === 'claimed')
 				return(true);
-			$reason = 'rpc-unknown';
+			$reason = $ownerRefusal === null ? 'rpc-unknown' : $ownerRefusal;
 			return(false);
 		}
 		if(erasedataPathExists($file)
@@ -2906,10 +2906,10 @@ final class ErasedataCollector
 			return(false);
 		}
 		$otherSnapshot = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
-			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'], $ownerRefusal);
 		if($otherSnapshot === false)
 		{
-			$this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
+			$this->cleanupLog($hash, 'retained', $ownerRefusal, $path, $jobKey);
 			return(false);
 		}
 		$successorSnapshot = erasedataCleanupSuccessorSnapshot($successorFiles, $this->filesystem);
@@ -2940,10 +2940,10 @@ final class ErasedataCollector
 		// keeping the original successor observation as the comparison baseline:
 		// accepting a changed successor here would authorize stale deletion.
 		$otherSnapshot = erasedataCleanupOtherOwnerSnapshot($manifest['hash'],
-			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record']);
+			$manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'], $ownerRefusal);
 		if($otherSnapshot === false)
 		{
-			$this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
+			$this->cleanupLog($hash, 'retained', $ownerRefusal, $path, $jobKey);
 			return(false);
 		}
 		$complete = true;
@@ -2985,7 +2985,7 @@ final class ErasedataCollector
 			if($owner === 'unknown')
 			{
 				$complete = false;
-				$reason = 'rpc-unknown';
+				$reason = 'owner-snapshot-unconfirmed';
 				break;
 			}
 			if($owner === 'claimed')

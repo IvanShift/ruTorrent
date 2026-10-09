@@ -131,17 +131,31 @@ describe("localization", () => {
         for (const key of Object.keys(en)) {
           // These call sites provide an English fallback; Russian supplies
           // a translation and must keep it. Their behavior is covered by
-          // loginmgr-warning.spec.js and task-kill-refusal.spec.js.
+          // loginmgr-warning.spec.js, task-kill-refusal.spec.js and
+          // retrackers-terminal-notice.spec.js.
           const langDir = path.relative(ROOT, dir);
           const explicitFallback = name !== "ru.js" && (
             (langDir === "plugins/loginmgr/lang" && (key === "accOriginRequired" || key === "accClearPassword")) ||
-            (langDir === "plugins/_task/lang" && (key === "tskKillRefused" || key === "tskKillUnknown")));
+            (langDir === "plugins/_task/lang" && (key === "tskKillRefused" || key === "tskKillUnknown")) ||
+            (langDir === "plugins/retrackers/lang" && key === "retrackersEnqueueRefusals"));
           if (!(key in theirs) && !explicitFallback)
             missing.push(`${path.relative(ROOT, dir)}/${name}: ${key}`);
         }
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it("defines enqueue-storage recovery text in English and Russian with two value slots", () => {
+    const dir = path.join(ROOT, "plugins", "retrackers", "lang");
+    for (const locale of ["en", "ru"]) {
+      const value = keysOf([path.join(dir, locale + ".js")]).retrackersEnqueueRefusals;
+      expect(typeof value).toBe("string");
+      expect(value.trim()).not.toBe("");
+      expect(value.match(/%s/g)).toHaveLength(2);
+      expect(value).toContain("--apply");
+      expect(value).not.toContain("retry-reset");
+    }
   });
 
   it("keeps Ygg origin guidance localized where it is supplied", () => {

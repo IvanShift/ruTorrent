@@ -18,7 +18,7 @@ for (const src of ["../lang/en.js", "../js/common.js", "../js/stable.js"]) {
   document.body.appendChild(scriptEl);
 }
 
-function nameCell(name) {
+function nameTable(name) {
   const columns = [{ text: "Name", width: 200, id: "name", type: window.TYPE_STRING_LABEL, enabled: true }];
   const dCont = window.$(
     "<div id='trt' class='stable'>" +
@@ -33,10 +33,18 @@ function nameCell(name) {
   table.colsdata = columns;
   table.ids = ["name"];
   table.rowdata = { ROW1: { fmtdata: [window.theNormalizer.normalize(name, false)] } };
-  table.createIcon = () => window.$("<span>");
-  const row = table.createRow([name], "ROW1");
-  dCont.remove();
-  return window.$(row).find("td").first().children("div").first();
+  table.rowdata.ROW1.data = [name];
+  table.rowdata.ROW1.icon = "seeding";
+  const row = table.createRow([name], "ROW1", "seeding");
+  dCont.find("tbody").append(row);
+  return table;
+}
+
+function nameCell(name) {
+  const table = nameTable(name);
+  const div = table.dCont.find("td div").last();
+  table.dCont.remove();
+  return div;
 }
 
 // Elements in the cell other than the row icon createIcon() puts first.
@@ -65,5 +73,28 @@ describe("normalized torrent name cell", () => {
     const div = nameCell('aud "q" \\b \'a\' &c');
     expect(markup(div).length).toBe(0);
     expect(div.text()).toBe('aud "q" \\b \'a\' &c');
+  });
+});
+
+describe("normalized torrent name refreshed in place", () => {
+  afterEach(() => window.$("#trt").remove());
+
+  it.each([
+    '[Gr<b>oup] Some.Show.S01',
+    'Movie.2024 <img src=x onerror=alert(document.domain)>',
+    'aud "q" \\b &c',
+  ])("uses the row creation rendering and keeps the status icon: %s", name => {
+    const table = nameTable("old name");
+    const row = table.dCont.find("tbody tr")[0];
+    table.rowdata.ROW1.fmtdata[0] = window.theNormalizer.normalize(name, false);
+    table.rowdata.ROW1.data[0] = name;
+    table.pendingSync = { dirty: { ROW1: { col: { 0: true } } } };
+    table.syncDOM();
+    const cell = window.$(row.cells[0]);
+    expect(cell.find(".stable-icon.seeding")).toHaveLength(1);
+    expect(cell.find("img, b")).toHaveLength(0);
+    table.rowdata.FRESH = table.rowdata.ROW1;
+    const fresh = window.$(table.createRow([name], "FRESH", "seeding")).find("td");
+    expect(cell.html()).toBe(fresh.html());
   });
 });

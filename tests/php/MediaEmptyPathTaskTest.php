@@ -15,7 +15,8 @@ class MediaEmptyPathTaskTest extends TestCase
         foreach (array('plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
             'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php') as $file)
             copy($this->root . '/' . $file, $this->scratch . '/' . $file);
-        copy($this->root . '/php/rtorrent.php', $this->scratch . '/php/rtorrent.php');
+        foreach (array('rtorrent.php', 'commandargs.php') as $file)
+            copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file);
         foreach (array('util.php', 'xmlrpc.php', 'Torrent.php') as $stub)
             file_put_contents($this->scratch . '/php/' . $stub, "<?php\n");
         file_put_contents($this->scratch . '/php/settings.php', "<?php\n");

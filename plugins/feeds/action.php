@@ -127,7 +127,9 @@ function sortByPubDate( $a, $b )
 	return( (intval($a["pubDate"]) > intval($b["pubDate"])) ? -1 : ((intval($a["pubDate"]) < intval($b["pubDate"])) ? 1 : strcmp($a["title"],$b["title"])) );
 }
 
-$mode = (isset($_REQUEST['mode'])) ? $_REQUEST['mode'] : 'all';
+$mode = $_REQUEST['mode'] ?? 'all';
+if(!is_string($mode) || !in_array($mode, array('all', 'completed', 'downloading', 'active', 'inactive', 'error'), true))
+	$mode = 'all';
 $url = Requests::publicBaseURL('/plugins/feeds/action.php');
 if($url === false)
 {
@@ -205,20 +207,20 @@ if($req->success())
 			"pubDate"=>floatval($req->val[$i+6]) );
 		if(rTorrentSettings::get()->isPluginRegistered('data'))
 			$item["link"] = $url.'plugins/data/action.php?hash='.$req->val[$i].'&no=0&readable=1';
-		if($_REQUEST['mode']=='error')
+		if($mode=='error')
 		{
                         if(empty($req->val[$i+2]))
 				continue;
 		}
 		else
 		{
-			if($_REQUEST['mode']=='active')
+			if($mode=='active')
 			{
 				if( floatval($req->val[$i+3])<1024 && floatval($req->val[$i+4])<1024 )
 					continue;
 			}
 			else
-			if($_REQUEST['mode']=='inactive')
+			if($mode=='inactive')
 			{
 				if( floatval($req->val[$i+3])>=1024 || floatval($req->val[$i+4])>=1024 )
 					continue;

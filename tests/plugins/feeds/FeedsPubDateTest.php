@@ -97,7 +97,7 @@ class FeedsPubDateTest extends TestCase
 	 * Runs action.php and returns [title => pubDate or null] for every item
 	 * in the feed it prints.
 	 */
-	private function feed($descriptions, $server = array(), $public = null, $version = '0.16.25')
+	private function feed($descriptions, $server = array(), $public = null, $version = '0.16.25', $mode = 'all')
 	{
 		$root = realpath(__DIR__ . '/../../..');
 		$tree = $this->base . '/tree-' . ($descriptions ? 'on' : 'off');
@@ -141,21 +141,22 @@ class FeedsPubDateTest extends TestCase
 			. '$_SERVER[\'SCRIPT_NAME\'] = \'/plugins/feeds/action.php\';' . "\n"
 			. '$_SERVER = array_merge($_SERVER, '.var_export($server, true).');' . "\n"
 			. 'putenv("RU_PUBLIC_URL"); $publicURL = '.var_export($public, true).';' . "\n"
-			. '$_REQUEST[\'mode\'] = \'all\';' . "\n"
+			. ($mode === null ? 'unset($_REQUEST[\'mode\']);'
+				: '$_REQUEST[\'mode\'] = '.var_export($mode, true).';') . "\n"
 			. 'chdir(' . var_export($tree . '/plugins/feeds', true) . ");\n"
 			. 'require_once(' . var_export($tree . '/php/util.php', true) . ");\n"
 			. 'require_once(' . var_export($tree . '/php/settings.php', true) . ");\n"
 			. '$r = new ReflectionClass("rTorrentSettings");' . "\n"
 			. '$settings = $r->newInstanceWithoutConstructor();' . "\n"
-			. '$p = $r->getProperty("theSettings"); $p->setAccessible(true);' . "\n"
+			. '$p = $r->getProperty("theSettings"); if(PHP_VERSION_ID < 80100) $p->setAccessible(true);' . "\n"
 			. '$p->setValue(null, $settings);' . "\n"
 			. '$settings->linkExist = true;' . "\n"
 			. '$settings->iVersion = '.($version === '0.9.8' ? '0x908' : '0x1019').';' . "\n"
 			. '$settings->version = $settings->libVersion = '.var_export($version, true).';' . "\n"
 			. '$settings->server = '.var_export($this->sessionName, true).';' . "\n"
-			. 'require(' . var_export($tree . '/plugins/feeds/action.php', true) . ");\n");
+			. 'ob_start(); require(' . var_export($tree . '/plugins/feeds/action.php', true) . ");\n");
 
-		$output = shell_exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' . escapeshellarg($driver));
+		$output = shell_exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=32767 -d display_errors=1 ' . escapeshellarg($driver).' 2>&1');
 		$items = array();
 		preg_match_all('`<item>(.*)</item>`Us', (string)$output, $matches);
 		foreach ($matches[1] as $item) {
@@ -164,6 +165,19 @@ class FeedsPubDateTest extends TestCase
 		}
 		ksort($items);
 		return array($items, (string)$output);
+	}
+
+	public function testUnknownModeFallsBackToTheAllTorrentsFeedWithoutDiagnostics()
+	{
+		foreach(array(null, 'unknown', '<untrusted>', array('all')) as $mode)
+		{
+			list($items, $output) = $this->feed(false, array(), null, '0.16.25', $mode);
+			$this->assertSame($this->expected(), $items, 'unknown modes keep the default all-torrents view');
+			$this->assertTrue(strpos($output, '<title>fake: All torrents</title>') !== false,
+				'unknown modes use the default localized title');
+			$this->assertSame(0, preg_match('/Warning|Notice|Fatal error/', $output),
+				'the RSS contains no PHP diagnostic: '.substr($output, 0, 300));
+		}
 	}
 
 	public function testPublicBasePreservesProxyHostRewriteAndPrefixOnBothVersions()

@@ -3,6 +3,7 @@
 require_once( 'util.php' );
 require_once( 'xmlrpc.php' );
 require_once( 'Torrent.php' );
+require_once( __DIR__.'/commandargs.php' );
 
 class rTorrent
 {
@@ -28,17 +29,17 @@ class rTorrent
 	// d.set_custom and d.set_custom3 are on the list because the shipped
 	// plugins build them: the edit and retrackers plugins mark a reloaded
 	// torrent with d.set_custom3, and rutracker_check writes its
-	// replacement marker and check state with d.set_custom. The other
-	// custom fields are deliberately absent -- d.set_custom1 and
-	// d.set_custom2 hold the label and the comment, which sendTorrent()
-	// already writes from its own parameters, and nothing builds
-	// d.set_custom4 or d.set_custom5 as an addition.
+	// replacement marker and check state with d.set_custom.
+	// d.set_custom1 also preserves edit's exact stored label without a
+	// decode/encode round trip. d.set_custom2 (comment) is written by
+	// sendTorrent(); no shipped caller builds custom4 or custom5 additions.
 	const ADDITION_COMMANDS = array(
 		'd.set_throttle_name',
 		'd.set_connection_seed',
 		'view.set_visible',
 		'd.views.push_back_unique',
 		'd.set_custom',
+		'd.set_custom1',
 		'd.set_custom3',
 	);
 
@@ -258,19 +259,9 @@ class rTorrent
 		{
 			if(is_int($value))
 				$value = (string)$value;
-			if(!is_string($value))
-				return(false);
-			// The one form quoting does not reach. rtorrent takes the quotes
-			// off and then runs an argument whose first byte is '$' as a
-			// command of its own (parse_command_execute,
-			// src/rpc/parse_commands.cc), so it is refused instead -- as
-			// XMLRPCProxy::rebuildSafeLoadParam() refuses it on the way in.
-			if(isset($value[0]) && ($value[0]==='$'))
-				return(false);
-			// Refused here as well as in isValidAddition(), so a caller is
-			// told at the point it builds one rather than at the point the
-			// list is sent.
-			if(strpos($value,"\0")!==false)
+			// Quoting does not prevent evaluation of a leading '$', and a
+			// NUL terminates the daemon parser's input buffer.
+			if(!RtorrentCommandArguments::isLiteral($value))
 				return(false);
 			$quoted[] = self::quoteCommandArg($value);
 		}
@@ -487,46 +478,59 @@ class rTorrent
 		return $status;
 	}
 
+	/** The last xt wins in libtorrent's DownloadConstructor::parse_magnet_uri. */
+	static public function magnetHash($magnet)
+	{
+		if(!is_string($magnet) || strncmp($magnet, 'magnet:?', 8) !== 0) return false;
+		$hash = false;
+		foreach(explode('&', substr($magnet, 8)) as $part)
+		{
+			$pair = explode('=', $part, 2);
+			if(count($pair) !== 2 || $pair[0] !== 'xt') continue;
+			if(strncmp($pair[1], 'urn:btih:', 9) !== 0) return false;
+			$text = substr($pair[1], 9);
+			if(preg_match('/^[A-Z2-7]{32}\z/i', $text)) $hash = Decode::base32decode($text);
+			else
+			{
+				$text = rawurldecode($text);
+				if(strlen($text) === 20) $hash = strtoupper(bin2hex($text));
+				else if(preg_match('/^[0-9a-f]{40}\z/i', $text)) $hash = strtoupper($text);
+				else return false;
+			}
+		}
+		return $hash;
+	}
+
 	static public function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
 	{
 		if(!self::areValidAdditions($addition))
 			return false;
-	        $hpos = stripos($magnet,'xt=urn:btih:');
-	        if($hpos!==false)
-	        {
-	        	$hpos+=12;
-	        	$fpos = stripos($magnet,'&',$hpos);
-			if($fpos===false)
-				$fpos = strlen($magnet);
-			$hash = strtoupper(substr($magnet,$hpos,$fpos-$hpos));
-                        if(strlen($hash)==32)
-		        	$hash = Decode::base32decode($hash);
-	        	if(strlen($hash)==40)
-	        	{
-				$req = new rXMLRPCRequest();
-				$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
-				$cmd->addParameter($magnet);
-				$directory = self::parseDirectory($directory, $isAddPath);
-				if($directory && (strlen($directory)>0))
-				{
-					if(!rTorrentSettings::get()->correctDirectory($directory))
-						return(false);
-					$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
-					$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
-				}
-				if($label && (strlen($label)>0))
-				{
-					$label = rawurlencode($label);
-					if(strlen($label)<=4096)
-						$cmd->addParameter(getCmd("d.set_custom1=").$label);
-				}
-				if(is_array($addition))
-					foreach($addition as $key=>$prm)
-						$cmd->addParameter($prm,'string');
-				$req->addCommand( $cmd );
-				if($req->success())
-					return($hash);
+		$hash = self::magnetHash($magnet);
+		if($hash !== false)
+		{
+			$req = new rXMLRPCRequest();
+			$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
+			$cmd->addParameter($magnet);
+			$directory = self::parseDirectory($directory, $isAddPath);
+			if($directory && (strlen($directory)>0))
+			{
+				if(!rTorrentSettings::get()->correctDirectory($directory))
+					return(false);
+				$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
+				$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
 			}
+			if($label && (strlen($label)>0))
+			{
+				$label = rawurlencode($label);
+				if(strlen($label)<=4096)
+					$cmd->addParameter(getCmd("d.set_custom1=").$label);
+			}
+			if(is_array($addition))
+				foreach($addition as $key=>$prm)
+					$cmd->addParameter($prm,'string');
+			$req->addCommand( $cmd );
+			if($req->success())
+				return($hash);
 		}
 		return(false);
 	}
@@ -729,12 +733,7 @@ class rTorrent
 	 */
 	static public function quoteCommandArg($value)
 	{
-		// The order of the pairs is what makes this correct, and it must not be
-		// changed: str_replace() works through the arrays left to right and can
-		// revisit a value an earlier pair inserted. Escaping the quote first
-		// would double the backslash that escaping just added, leaving a live
-		// quote behind it -- so the backslash pair has to come first.
-		return('"'.str_replace(array('\\', '"'), array('\\\\', '\\"'), $value).'"');
+		return(RtorrentCommandArguments::quote($value));
 	}
 
 	static protected function parseDirectory($directory, $isAddPath)

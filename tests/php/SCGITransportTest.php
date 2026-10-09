@@ -751,8 +751,8 @@ class SCGITransportTest extends TestCase
 				'the bulk request was split before the final command');
 			$this->assertEquals('closed-before-headers', $req->transportFailure,
 				'the second request reached the fake peer and closed before headers');
-			$this->assertEquals(array('first'), $req->val,
-				'the first chunk was parsed before the later failure');
+			$this->assertEquals(array(), $req->val,
+				'a later transport failure discards the earlier chunk values');
 			$this->assertTrue($result === false,
 				'a later transport failure cannot report partial XMLRPC success');
 		}

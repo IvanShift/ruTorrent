@@ -27,8 +27,58 @@ class RetrackersQueueRpcAdapter extends RetrackersWorkerRpcAdapter
     public function setQueueCursor($userHash,$hash,&$failure=null) {
         return $this->nativeOriginalScalar('system.retrackers.queue_cursor.set',array('',$userHash,$hash),$failure);
     }
-    public function enqueueOriginal($hash,$id,$userHash,$state,&$failure=null) {
-        return $this->nativeOriginalScalar('d.retrackers.enqueue_original',array($hash,$id,$userHash,$state),$failure);
+    // Minimal operator snapshot, using the existing restricted scalar and
+    // tracker codecs. Only admission fields are read; user metadata is not rewritten.
+    public function applyExistingSnapshot($hash,&$failure=null) {
+        $methods=$this->methodNames($failure);
+        if (!is_array($methods)) return false;
+        $fields=array('local_id'=>array('d.local_id',array($hash),'string'),
+            'state'=>array('d.state',array($hash),'i8'),
+            'private'=>array('d.is_private',array($hash),'i8'),
+            'name'=>array('d.name',array($hash),'string'),
+            'queued'=>array('d.custom',array($hash,'retrackers-queued'),'string'),
+            'recovery'=>array('d.custom',array($hash,'retrackers-recovery'),'string'),
+            'ack'=>array('d.custom',array($hash,'retrackers-recovery-ack'),'string'));
+        $calls=array(); $types=array();
+        foreach($fields as $field) { $calls[]=array($field[0],$field[1]); $types[]=$field[2]; }
+        $decoded=$this->send(retrackersBuildSystemMulticallRequest($calls),retrackersRestrictedPlanScalarBatch($types),$failure);
+        if (!is_array($decoded) || !isset($decoded['ok'],$decoded['value']) || $decoded['ok']!==true) return false;
+        $job=array(); $index=0;
+        foreach($fields as $name=>$field) {
+            $slot=$decoded['value'][$index++];
+            if (!isset($slot['ok'],$slot['value']) || $slot['ok']!==true || !is_string($slot['value'])) {
+                $probeFailure=null;
+                $failure=$this->nativeTargetAbsent($hash,$probeFailure)===true?'target-absent':'rpc-unconfirmed';
+                return false;
+            }
+            $job[$name]=$slot['value'];
+        }
+        $job['claim']=$this->queueClaim($hash,$failure);
+        if ($job['claim']===false) return false;
+        $job['lease']=in_array('d.stop_close_claim_held',$methods,true)?
+            $this->nativeOriginalScalar('d.stop_close_claim_held',array($hash),$failure):'';
+        if ($job['lease']===false) return false;
+        $job['move']=in_array('system.autotools.move_state',$methods,true)?
+            $this->nativeOriginalScalar('system.autotools.move_state',array('',$hash),$failure):'none';
+        if ($job['move']===false) return false;
+        $trackers=$this->sourceTrackerSnapshot($hash,$failure);
+        if (!is_array($trackers)) return false;
+        $job['trackers']=array();
+        foreach($trackers['rows'] as $row) $job['trackers'][]=$row[0];
+        $failure=null; return $job;
+    }
+    public function enqueueOriginal($hash,$id,$userHash,$state,&$failure=null,$guarded=false) {
+        if (!$guarded) return $this->nativeOriginalScalar('d.retrackers.enqueue_original',array($hash,$id,$userHash,$state),$failure);
+        $methods=$this->methodNames($failure);
+        if (!is_array($methods)) return false;
+        $callback=RetrackersLifecycleCallbacks::applyExisting($hash,$id,$userHash,$state,
+            in_array('system.autotools.move_state',$methods,true));
+        if ($callback===false) { $failure='invalid-request'; return false; }
+        $reply=$this->executeLifecycleCallback($callback,$failure);
+        // CHANGED proves enqueue never ran. A native fault may follow durable
+        // Q or preclaim publication, so it cannot attest a no-effect refusal.
+        if ($reply===$callback->changedSentinel()) return 'refused:changed';
+        return $reply;
     }
     public function startQueueWorker($hash,$tx,$incarnation,$user,&$failure=null) {
         return $this->nativeOriginalScalar('system.retrackers.worker_start',array('',$hash,$tx,$incarnation,$user),$failure);

@@ -282,7 +282,7 @@ class XMLRPCStringBytesTest extends TestCase
 		$this->same(array(), $request->strings, 'the typed refusal leaves no string in ->strings');
 		$this->same(array(), $request->i8s, 'nor a number in ->i8s');
 		$this->assertTrue(strpos((string)@file_get_contents($this->base . '/app.log'),
-			'rXMLRPCRequest: an answer carries an invalid base64 value') !== false,
+			'rXMLRPCRequest: rpc-invalid-base64') !== false,
 			'the refusal is logged with its classified reason');
 	}
 
@@ -307,4 +307,75 @@ class XMLRPCStringBytesTest extends TestCase
 			'the request went out as two calls');
 		$this->same(array(), $request->val, 'the first call\'s value does not stay behind in ->val');
 	}
+	public function testEveryScalarShapeKeepsItsColumn()
+	{
+		$this->serve(array(self::arrayBody(array('<value>implicit &amp; text</value>',
+			'<value><string/></value>', '<value><nil/></value>',
+			'<value><boolean>1</boolean></value>', '<value><double>1.25</double></value>'))));
+		$request = $this->request();
+		$this->assertTrue($request->run(), 'all XMLRPC scalar shapes are read');
+		$this->same(array('implicit & text', '', null, '1', '1.25'), $request->val,
+			'each scalar occupies exactly its own column');
+	}
+
+	public function testMalformedLateRepliesDiscardAllValuesAndClassifyTheFault()
+	{
+		foreach(array('', '<methodResponse>', '<methodResponse><params/></methodResponse>',
+			self::arrayBody(array('<value><base64>@@</base64></value>')),
+			self::arrayBody(array('<value><string>x</string><i8>3</i8></value>'))) as $late) {
+			$this->serve(array(self::arrayBody(array(self::str('first'))), $late));
+			$settings = rTorrentSettings::get();
+			$settings->apiVersion = 10;
+			$big = str_repeat('x', 1100000);
+			$request = new rXMLRPCRequest(array(new rXMLRPCCommand('cat', $big), new rXMLRPCCommand('cat', $big)));
+			$this->assertTrue(!$request->run(), 'a bad late reply refuses the whole request');
+			$this->same(array(), $request->val, 'no early values survive');
+			$this->assertTrue($request->fault && $request->faultString !== '', 'the refusal has a classified fault');
+		}
+	}
+
+	public function testTypedChunksAccumulateNumbersAndStrings()
+	{
+		$this->serve(array(self::arrayBody(array('<value><i8>1</i8></value>', self::str('a'))),
+			self::arrayBody(array('<value><i8>2</i8></value>', self::str('b')))));
+		rTorrentSettings::get()->apiVersion = 10;
+		$big = str_repeat('x', 1100000);
+		$request = new rXMLRPCRequest(array(new rXMLRPCCommand('cat', $big), new rXMLRPCCommand('cat', $big)));
+		$request->setParseByTypes();
+		$this->assertTrue($request->run(), 'both chunks are read');
+		$this->same(array('1', '2'), $request->i8s, 'numbers accumulate across chunks');
+		$this->same(array('a', 'b'), $request->strings, 'strings accumulate across chunks');
+	}
+
+	public function testStructuredReaderPreservesBinaryTextAndRejectsAmbiguousMarkup()
+	{
+		$binary = "raw\r\xFF";
+		$body = self::arrayBody(array(self::str($binary), '<value><string><![CDATA[a<&]]></string></value>'));
+		$this->serve(array($body));
+		$request = $this->request();
+		$this->assertTrue($request->run(), 'legacy daemon byte text remains readable');
+		$this->same(array($binary, 'a<&'), $request->val, 'CR and nonUTF8 remain bytes, CDATA is literal text');
+		foreach(array('<!DOCTYPE methodResponse SYSTEM "file:///etc/passwd">'.self::arrayBody(array(self::str('x'))),
+			self::arrayBody(array('<value><unknown>x</unknown></value>')),
+			'<methodResponse><fault><value><string>not a fault</string></value></fault></methodResponse>') as $bad) {
+			$this->serve(array($bad));
+			$request = $this->request();
+			$this->assertTrue(!$request->run() && $request->fault, 'unsupported or ambiguous markup refuses visibly');
+			$this->same(array(), $request->val, 'malformed markup yields no partial values');
+		}
+	}
+
+	public function testUserStructKeysNamedFaultCodeRemainOrdinaryData()
+	{
+		$map = '<value><struct><member><name>faultCode</name><value><string>user-value</string></value></member></struct></value>';
+		$single = '<?xml version="1.0"?><methodResponse><params><param>'.$map.'</param></params></methodResponse>';
+		$this->serve(array($single, self::arrayBody(array('<value><array><data>'.$map.'</data></array></value>'))));
+		$request = new rXMLRPCRequest(new rXMLRPCCommand('d.custom.items', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'));
+		$this->assertTrue($request->success(), 'a direct user dictionary key cannot invent an RPC fault');
+		$this->same(array('user-value'), $request->val, 'the user dictionary value reaches the caller');
+		$request = $this->request();
+		$this->assertTrue($request->success(), 'a successful multicall wrapper keeps its user dictionary ordinary');
+		$this->same(array('user-value'), $request->val, 'the nested user dictionary retains its value');
+	}
+
 }

@@ -451,13 +451,25 @@ switch($mode)
 	{
 		if(!validTorrentHashBatch($hash, $malformedForm, true))
 			refuseTrustedHashBatch('getsavepath');
-		$req = new rXMLRPCRequest( array(
-			new rXMLRPCCommand( "d.open", $hash[0] ),
-			new rXMLRPCCommand( "d.get_base_path", $hash[0] ),
-			new rXMLRPCCommand( "d.close", $hash[0] )
-		) );
-		if($req->success(true))
-			$result = $req->val;
+		$state = new rXMLRPCRequest(new rXMLRPCCommand('d.is_open', $hash[0]));
+		if(!$state->success(true) || count($state->val) !== 1 ||
+			!in_array($state->val[0], array('0', '1'), true)) break;
+		if($state->val[0] === '1')
+		{
+			// Preserve an already-open torrent: reading its path must not
+			// stop its transfers by closing it afterwards.
+			$req = new rXMLRPCRequest(new rXMLRPCCommand('d.get_base_path', $hash[0]));
+			if($req->success(true) && count($req->val) === 1)
+				$result = array('0', $req->val[0], '0');
+		}
+		else
+		{
+			$req = new rXMLRPCRequest(array(
+				new rXMLRPCCommand('d.open', $hash[0]),
+				new rXMLRPCCommand('d.get_base_path', $hash[0]),
+				new rXMLRPCCommand('d.close', $hash[0])));
+			if($req->success(true)) $result = $req->val;
+		}
 		break;
 	}
 	case "start":	/**/
@@ -555,6 +567,7 @@ switch($mode)
 	        	$result = $req->val;
 		break;
 	}
+	case "trkall2":
 	case "trkall":	/**/
 	{
 		$cmds = array(
@@ -564,6 +577,21 @@ switch($mode)
 		$result = array();
 		if(empty($hash))
 		{
+			if($mode === 'trkall2')
+			{
+				// Preserve the daemon's nested arrays instead of joining URL
+				// fields on '#', which is a legal fragment delimiter.
+				$columns = array_merge($cmds, $add);
+				$prm = getCmd('t.multicall=').'$'.getCmd('d.get_hash=').','
+					.implode(',', array_map('getCmd', $columns));
+				$req = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall',
+					array('main', getCmd('d.get_hash='), $prm)));
+				if($req->success(true) && count($req->responseValues) === 1 && is_array($req->responseValues[0]))
+					foreach($req->responseValues[0] as $row)
+						if(is_array($row) && count($row) === 2 && is_string($row[0]) && is_array($row[1]))
+							$result[$row[0]] = $row[1];
+				break;
+			}
 			$prm = getCmd("cat").'="$'.getCmd("t.multicall=").getCmd("d.get_hash=").",";
 			foreach( $cmds as $tcmd )
 				$prm.=getCmd($tcmd).','.getCmd("cat=#").',';

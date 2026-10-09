@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . "/../../php/commandargs.php");
+
 /**
  * One grammar for replacement ownership shared by the real checker, the
  * scheduler sweep and MetaFetch (including its lightweight checker double).
@@ -288,7 +290,7 @@ class RuTrackerAtomicOwnership
 
     static public function quoteRtorrentArgument($value)
     {
-        return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), (string) $value) . '"';
+        return RtorrentCommandArguments::quote((string) $value);
     }
 
     static private function localIdCondition($localId)
@@ -510,7 +512,8 @@ class RuTrackerAtomicOwnership
             'chk-meta-new', 'chk-meta-until');
         $parts = array();
         foreach ($fields as $key => $value) {
-            if (!in_array($key, $allowed, true) || !is_string($value)) return self::UNKNOWN;
+            if (!in_array($key, $allowed, true) || !RtorrentCommandArguments::isLiteral($value))
+                return self::UNKNOWN;
             $parts[] = self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . $key
                 . ',' . self::quoteRtorrentArgument($value));
         }

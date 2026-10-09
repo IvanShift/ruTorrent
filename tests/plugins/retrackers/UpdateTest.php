@@ -4657,7 +4657,7 @@ PHP;
 			'cdata' => $this->replaceRawBodyOnce($scalar, '0.16.21', '<![CDATA[0.16.21]]>'),
 			'implicit-string' => $this->replaceRawBodyOnce($scalar, '<string>0.16.21</string>', '0.16.21'),
 			'unknown-type' => $this->replaceRawBodyOnce($scalar, '<string>0.16.21</string>',
-				'<base64>MC4xNi4yMQ==</base64>'),
+				'<dateTime.iso8601>20261009T00:00:00</dateTime.iso8601>'),
 			'referenced-cr' => $this->replaceRawBodyOnce($scalar, '0.16.21', '0.16.21&#13;'),
 			'uppercase-numeric-x' => $this->replaceRawBodyOnce($scalar, '0.16.21', '0.16.2&#X31;'),
 			'literal-nul' => $this->replaceRawBodyOnce($scalar, '0.16.21', "0.16\0.21"),

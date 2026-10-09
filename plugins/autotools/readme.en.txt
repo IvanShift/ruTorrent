@@ -66,14 +66,33 @@ This solution works on FreeBSD, but according to Novik "under the 2.4 linux kern
 does not work in these conditions".
 If possible, use FreeBSD or any linux kernel past 2.6.26
 
-This plugin has no problem with multiple torrents stored in the same directory,
-it will move only the files listed from that torrent, and not the base directory.
-However, if new downloads with the same name, in the same directory are moved,
-they will overwrite the older ones. (for example, if you have
-/usr/p2p/downloads/Video/DVD/movie.avi and it is moved, then you download another
-file named /usr/p2p/downloads/Video/DVD/movie.avi  it will overwrite the old one).
-The best solution for this is to create a subdirectory that is different from the first,
-in this very unlikely situation.
+Move refuses an existing destination instead of replacing another payload. With
+native file-job support, rTorrent owns a durable queue and Stop/Close lease;
+the PHP payload journal records publication and recovery. Running, paused-open,
+stopped-closed and a later user Stop keep their intended state. Cross-filesystem
+moves copy to a private stage before publishing and removing the source.
+
+When no native Move capability is present, Move uses the synchronous upstream
+workflow and displays a warning about crash and retrackers reload limitations.
+An incomplete or unconfirmed native ABI pauses new Move admission visibly.
+Copy, HardLink and SoftLink continue to use their existing transaction worker.
+
+The native queue waits without consuming failure attempts when the source or
+transport is temporarily unavailable. Six counted preflight, storage or worker
+failures hold the job visibly. Inspect and explicitly retry it with:
+  php tools/autotools-move-reset.php HASH --user USER
+  php tools/autotools-move-reset.php HASH --user USER --apply
+The second command resets the retry counter; it preserves any captured lease.
+
+Inspect current Move obligations with:
+  php tools/autotools-move-readiness.php [--user USER]
+The read-only report includes loaded and durably saved native Move jobs, payload
+journals, unsupported documents and unknown AutoTools metadata. It returns 0
+when clear, 1 when work remains, and 2 when the inventory cannot be confirmed.
+Unsupported state is held visibly with its path or torrent hash and key; the
+tool does not import, adopt, delete or infer ownership of that state.
+The report is a snapshot. It neither stops new admission nor attests other
+plugins' queues and shared file-operation leases.
 
 For your convenience, it is recommended that you install the plugin "_getdir"
 This will make navigating the filesystem from the webgui much easier.

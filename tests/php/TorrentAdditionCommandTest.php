@@ -363,4 +363,13 @@ class TorrentAdditionCommandTest extends TestCase
 			&& strpos($payload, self::MAGNET) !== false,
 			'the magnet reaches the daemon in a load request');
 	}
+	public function testEditCanPreserveTheExactStoredLabelAsAnAddition()
+	{
+		$label = 'raw%20label "q" \\bytes';
+		$addition = rTorrent::additionCommand('d.set_custom1', $label);
+		$this->assertTrue(rTorrent::isValidAddition($addition), 'the exact stored label is an admitted edit addition');
+		$this->assertSame('d.set_custom1='.rTorrent::quoteCommandArg($label), $addition,
+			'the shared command argument owner quotes the label without URL transcoding');
+	}
+
 }

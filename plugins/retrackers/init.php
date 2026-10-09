@@ -12,6 +12,7 @@ require_once( dirname(__FILE__)."/../../php/rtorrent.php");
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once( dirname(__FILE__)."/update.php");
 require_once( dirname(__FILE__)."/retryreset.php");
+require_once( dirname(__FILE__)."/applyexisting.php");
 require_once( dirname(__FILE__)."/retrackers.php");
 
 $script = $rootPath.'/plugins/retrackers/run.sh';
@@ -35,6 +36,7 @@ if($ok || $failure === 'recovery-in-flight')
 	// Exhausted queue jobs are never retried on their own; init.js tells the
 	// user once per session (one rows read, on the native queue only).
 	$jResult.=RetrackersRetryReset::sessionNotice($retrackersAdapter, $user);
+	$jResult.=RetrackersApplyExisting::sessionNotice($retrackersAdapter, $user);
 }
 else
 	$jResult .= "plugin.disable(); noty('retrackers: '+theUILang.pluginCantStart,'error');";

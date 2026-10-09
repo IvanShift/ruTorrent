@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/AdditionCallerFixtures.php');
 require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 
 /**
@@ -30,6 +31,8 @@ class XMLRPCProxyLegacySpellingHolder
 
 class XMLRPCProxyLegacySpellingTest extends TestCase
 {
+	use AdditionCallerFixtures;
+
 	/**
 	 * Every alias in the tree as name => registered name, with the file it
 	 * came from, so a failure says where to look.
@@ -67,22 +70,10 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	private function inlineAliases()
 	{
-		$source = file_get_contents(__DIR__ . '/../../php/settings.php');
-		$start = strpos($source, '$this->aliases = array');
-		if($start === false)
-			return array();
-		$end = strpos($source, ');', $start);
-		$block = substr($source, $start, ($end === false) ? null : $end - $start);
-
+		$gate = $this->baseAliasGate();
 		$found = array();
-		preg_match_all('/"([^"]+)"\s*=>\s*array\(\s*"name"\s*=>\s*"([^"]+)"/',
-			$block, $matches, PREG_SET_ORDER);
-		foreach($matches as $match)
-			$found[] = array(
-				'file'   => 'settings.php',
-				'name'   => $match[1],
-				'target' => $match[2],
-			);
+		foreach ($gate === null ? array() : $gate['aliases'] as $name => $entry)
+			$found[] = array('file' => 'settings.php', 'name' => $name, 'target' => $entry['name']);
 		return $found;
 	}
 

@@ -2,6 +2,9 @@
 
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once(dirname(__FILE__).'/../erasedata/removewithdata.php');
+require_once(__DIR__.'/../../php/rtorrent.php');
+require_once(__DIR__.'/../../php/commandargs.php');
+require_once(__DIR__.'/launcher.php');
 eval( FileUtil::getPluginConf( $plugin["name"] ) );
 $garbageCheckInterval = (function () {
 	$garbageCheckInterval = 15;
@@ -22,6 +25,7 @@ if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
 else
 {
 	$commands = array();
+	$checkerScheduleReady = true;
 	$queueReady = erasedataInitializationQueueReady();
 	if($queueReady)
 		$commands[] = erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval);
@@ -36,8 +40,15 @@ else
 		// This form uses a stable interval slot derived from the scheduler
 		// key instead of restarting a countdown on each reload. Same choice
 		// as plugins/trafic; the interval is in minutes, not seconds.
-		$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
-			getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' &}' );
+		$capability = rpcMethodCapability(array('execute.raw.bg'));
+		$checkerCommand = RuTrackerDetachedPhp::scheduleCommand(Utility::getPHP(),
+			__DIR__.'/update.php', array(User::getUser()), $capability);
+		$checkerScheduleReady = $checkerCommand !== false;
+		if($checkerScheduleReady)
+			$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,$checkerCommand);
+		else
+			FileUtil::toLog('rutracker_check: checker schedule refused reason='
+				. ($capability === 'unconfirmed' ? 'rpc-unknown' : 'unrepresentable-argv'));
 	}
 	else
 	{
@@ -48,7 +59,8 @@ else
 	// a daemon restart through its durable state, even with erasedata disabled.
 	if($queueReady)
 		erasedataRearmDrainSchedule();
-	if($req === null || $req->success())
+	$requestSucceeded = $req === null || $req->success();
+	if($checkerScheduleReady && $requestSucceeded)
 		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	else
 		$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');";

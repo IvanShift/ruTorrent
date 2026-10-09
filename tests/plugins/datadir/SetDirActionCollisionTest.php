@@ -36,14 +36,23 @@ class SetDirActionCollisionTest extends TestCase
 	{
 		if (is_link($path)) { @unlink($path); return; }
 		if (!is_dir($path)) { @unlink($path); return; }
-		foreach (glob($path . '/*') as $entry)
-			$this->removeTree($entry);
+		foreach (array_diff(scandir($path), array('.', '..')) as $entry)
+			$this->removeTree($path . '/' . $entry);
 		@rmdir($path);
 	}
 
 	private function repoRoot()
 	{
 		return realpath(__DIR__ . '/../../..');
+	}
+
+	public function testFixtureCleanupRemovesTheHiddenJournalLock()
+	{
+		mkdir($this->base, 0700);
+		mkdir($this->base . '/jobs', 0700);
+		file_put_contents($this->base . '/jobs/.lock', '');
+		$this->removeTree($this->base);
+		$this->assertTrue(!is_dir($this->base), 'fixture cleanup removes the hidden lock and its parent');
 	}
 
 	/**

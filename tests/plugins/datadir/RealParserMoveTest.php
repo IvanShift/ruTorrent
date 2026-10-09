@@ -204,13 +204,23 @@ class DataDirRealParserMoveTest extends TestCase
 	private function sentStrings($method)
 	{
 		$sent = array();
-		foreach ($this->daemon->bodies() as $body)
-			if (strpos($body, '<methodName>' . $method . '</methodName>') !== false) {
-				preg_match_all('|<value><string>(.*?)</string></value>|s', $body, $match);
+		foreach ($this->daemon->bodies() as $body) {
+			$arguments = array();
+			if (strpos($body, '<methodName>' . $method . '</methodName>') !== false)
+				$arguments[] = $body;
+			else {
+				preg_match_all('~<name>methodName</name><value><string>' . preg_quote($method, '~')
+					. '</string></value></member><member><name>params</name><value><array><data>'
+					. '(.*?)</data></array></value></member>~s', $body, $calls);
+				$arguments = $calls[1];
+			}
+			foreach ($arguments as $fragment) {
+				preg_match_all('|<value><string>(.*?)</string></value>|s', $fragment, $match);
 				$sent[] = array_map(function ($value) {
 					return html_entity_decode($value, ENT_QUOTES | ENT_XML1, 'UTF-8');
 				}, $match[1]);
 			}
+		}
 		return $sent;
 	}
 
@@ -268,6 +278,24 @@ class DataDirRealParserMoveTest extends TestCase
 			'the job and its receipt are retired');
 	}
 
+	public function testTrailingSpacesPreserveThePayloadRootAndItsNeighbour()
+	{
+		$data = $this->base . '/data';
+		$name = 'foo ';
+		$source = $data . '/src/' . $name;
+		$neighbour = $data . '/src/foo';
+		$destination = $data . '/dst';
+		mkdir($destination, 0700);
+		$this->write($source . '/a ', 'payload');
+		$this->write($neighbour . '/a ', 'neighbour');
+		$result = $this->drive($this->replies($source, $name, $source, true, array('a '),
+			array('absent', 'absent', 'done')), $this->worker($destination));
+		$this->assertSame(true, $result['applied'], 'the exact payload is moved');
+		$this->assertSame('payload', @file_get_contents($destination . '/foo /a '), 'all path bytes survive');
+		$this->assertSame('neighbour', @file_get_contents($neighbour . '/a '), 'the trimmed neighbour is untouched');
+		$this->assertTrue(!file_exists($source . '/a '), 'only the actual source file moved');
+	}
+
 	public function testMoveFilesOfAQuotedBackslashedSingleFileDownloadThroughTheRealParser()
 	{
 		$data = $this->base . '/data';
@@ -305,7 +333,8 @@ class DataDirRealParserMoveTest extends TestCase
 			. ' chmod($job, 0600);' . "\n";
 	}
 
-	// recover.php's path: rtDataDirRecover() names the refusal in its one line.
+	// Recovery retires the safe cancellation before publishing its final
+	// refusal, so a former held outcome no longer names a retained lease.
 	public function testRecoveryRefusesAnAmbiguousVersion2JobAndLogsIt()
 	{
 		mkdir($this->base . '/data/old-target', 0700);
@@ -319,9 +348,20 @@ class DataDirRealParserMoveTest extends TestCase
 		$this->assertSame(array('datadir: recovery refused hash=' . self::HASH . ' reason=job-paths-ambiguous'),
 			$this->logLines(), 'the refusal is logged with its reason: ' . json_encode($this->logLines()));
 		$this->assertSame(array('d.stop_close_claim_state', 'd.stop_close_claim', 'd.start_if_stop_close_claim',
-			'd.stop_close_claim_state', 'd.ack_stop_close_claim'), $this->daemon->calls(),
-			'the claim is taken, the started state restored and acknowledged, and nothing else is asked: '
+			'd.stop_close_claim_state', 'd.ack_stop_close_claim',
+			'd.get_directory', 'd.set_custom', 'd.message.set', 'd.save_full_session'), $this->daemon->calls(),
+			'the claim restores and retires before the final refusal is published and saved: '
 			. json_encode($this->daemon->calls()));
+		$outcomes = $this->sentStrings('d.set_custom');
+		$this->assertSame(1, count($outcomes), 'one final outcome is published');
+		$this->assertSame(array(self::HASH, 'x-datadir-outcome'), array_slice($outcomes[0], 0, 2),
+			'the outcome belongs to the exact torrent and datadir key');
+		$outcome = json_decode(rawurldecode($outcomes[0][2]), true);
+		$this->assertSame('job-paths-ambiguous', $outcome['reason'], 'the persisted outcome keeps the final refusal');
+		$this->assertTrue(strpos($outcome['message'], 'claim-retained') === false,
+			'the final outcome does not claim the retired lease is held');
+		$this->assertSame(array(array(self::HASH, $outcome['message'])), $this->sentStrings('d.message.set'),
+			'the immediate torrent message matches its persisted refusal');
 		$this->assertSame(array(), array_values(array_diff(scandir($this->journal()), array('.', '..'))),
 			'the refused job is retired');
 	}

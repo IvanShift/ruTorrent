@@ -8,6 +8,38 @@ $validHash = str_repeat('A', 40);
 $validMarker = str_repeat('B', 32);
 $validRecord = RuTrackerReplacementRecord::encode(str_repeat('C', 40), true, true, 1234567890);
 
+$suite->test('fast projection refuses substituted and truncated values before any RPC', function () use ($validHash) {
+    foreach (array('$execute=touch,/tmp/forbidden', "\0hidden", "visible\0hidden") as $value) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::setFastProjection($validHash, str_repeat('B', 40), array('chk-msg' => $value)),
+            'unrepresentable custom value is refused');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'refusal sends no mutation');
+    }
+});
+
+$suite->test('fast projection preserves literal grammar bytes and its exact incarnation guard', function () use ($validHash) {
+    require_once(__DIR__ . '/../../php/RtorrentCommandParser.php');
+    foreach (array('', '0', 'fuse|a"b\\c,d;e' . "\n" . '$f{g}', "o'neil", ' leading $ literal') as $value) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+        strictAssertSame(RuTrackerAtomicOwnership::ACTED,
+            RuTrackerAtomicOwnership::setFastProjection($validHash, str_repeat('B', 40), array('chk-msg' => $value)),
+            'representable custom value is accepted');
+        $command = rXMLRPCRequest::$requests[0]['commands'][0];
+        strictAssertSame($validHash, $command->params[0], 'the projection targets the exact hash');
+        strictAssertTrue(strpos($command->params[1], str_repeat('B', 40)) !== false,
+            'the projection checks the exact local incarnation');
+        $body = RtorrentCommandParser::commands($command->params[2]);
+        strictAssertSame(1, count($body), 'one cat command encloses the guarded mutation');
+        $setter = RtorrentCommandParser::commands(substr($body[0]['args'][0], 1));
+        strictAssertSame(array('chk-msg', $value), $setter[0]['args'], 'the daemon parser receives the original bytes');
+        strictAssertSame(array(), RtorrentCommandParser::substitutedArguments($setter[0]['args']),
+            'no custom value becomes a nested command');
+    }
+});
+
 $suite->test('conditional erase builds exactly one top-level branch command with exact arguments', function () use ($validHash, $validMarker, $validRecord) {
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));

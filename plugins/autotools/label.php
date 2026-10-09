@@ -1,4 +1,5 @@
 <?php
+define('RUTORRENT_SYNCHRONOUS_HOOK', true);
 require_once dirname(__DIR__, 2).'/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
@@ -75,8 +76,8 @@ if( $is_ok && strpos( $label, "{DIR}" ) !== false )
 	{
 		$is_multy_file = ( $req->val[2] != 0 );
 		$default_dir = rTorrentSettings::get()->directory;
-		$torrent_dir = trim( $req->val[0] );
-		$custom3     = trim( $req->val[1] );
+		$torrent_dir = $req->val[0];
+		$custom3     = $req->val[1];
 		Debug( "get_directory   : ".$default_dir );
 		Debug( "d.get_directory : ".$torrent_dir );
 		Debug( "d.get_custom3   : ".$custom3 );

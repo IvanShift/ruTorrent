@@ -673,7 +673,7 @@ class XMLRPCProxy
 					return $mapped;
 			return null;
 		}
-		if($mode === 'trkall')
+		if($mode === 'trkall' || $mode === 'trkall2')
 		{
 			// trkall embeds each slot in an already quoted cat expression.
 			// A rebuilt argument would introduce its own quotes into that

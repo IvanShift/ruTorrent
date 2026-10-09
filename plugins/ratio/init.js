@@ -149,12 +149,7 @@ if(plugin.canChangeMenu())
 {
 	theWebUI.getRatioData = function(id)
 	{
-		var curNo = -1;
-		var s = this.torrents[id].ratiogroup;
-		var arr = s.match(/rat_(\d{1,2})/);
-		if(arr && (arr.length>1))
-			curNo = arr[1];
-		return(curNo);
+		return getRatioGroup(this.torrents[id].ratiogroup);
 	}
 
 	plugin.createMenu = theWebUI.createMenu;

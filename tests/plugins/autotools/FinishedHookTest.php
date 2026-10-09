@@ -17,6 +17,7 @@ class FileUtil
 // The plugin configuration the hook reads, and the checks it calls.
 class rAutoTools
 {
+    public static function moveMode() { return 'upstream'; }
     public static $config = array();
     public static function load() { return (object) self::$config; }
     public static function destinationWithinRoot($root, $destination)
@@ -43,7 +44,7 @@ eval(loadClassDefinition(testFindRepoRoot() . '/plugins/autotools/hook_lib.php',
 // recover.php's pass, for its NonMove scope; the Move journal name is all it
 // reads of the Move transaction there.
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/recover.php', 'rtRecoverFileJobs'));
-class AutoToolsMoveTransaction { const JOURNAL_DIR = '.autotools-file-jobs'; }
+class AutoToolsMoveJob { const JOURNAL_DIR = '.autotools-file-jobs'; }
 
 // The wait for a session save is a courtesy to the daemon's save schedule.
 define('AUTOTOOLS_SESSION_SAVE_WAIT', 0.5);
@@ -276,12 +277,12 @@ $suite->test('an untrusted destination is refused with the hash and named on the
     try {
         strictAssertSame('', AutoToolsFinishedHook::hook(hookArgs($root)), 'x-dest stays empty');
         strictAssertSame(array('autotools: nonmove ' . HOOK_HASH . ' refused: untrusted-directory path='
-            . erasedataLogPath($root . '/fin/')), FileUtil::$messages, 'the log names the download and the path');
+            . erasedataLogPath($root . '/fin')), FileUtil::$messages, 'the log names the download and the path');
         strictAssertSame(false, file_exists($root . '/fin/payload.bin'), 'nothing is published');
         strictAssertSame(array(), hookRequests($root), 'and nothing is deferred: the refusal is final');
         strictAssertSame(array(), rXMLRPCRequest::$requests, 'the hook itself never calls the daemon');
         strictAssertSame(1, count($spawned), 'one notifier is started');
-        strictAssertSame(array('notify.php', HOOK_HASH, 'Copy', 'untrusted-directory', '', $root . '/fin/'),
+        strictAssertSame(array('notify.php', HOOK_HASH, 'Copy', 'untrusted-directory', '', $root . '/fin'),
             array_merge(array(basename($spawned[0][0])), array_slice($spawned[0], 1)), 'for this refusal');
         // notify.php, once the daemon is free.
         rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl'));
@@ -291,7 +292,7 @@ $suite->test('an untrusted destination is refused with the hash and named on the
         strictAssertSame(true, call_user_func_array(array('AutoToolsFinishedHook', 'notifyRefusal'),
             array_slice($spawned[0], 1, 3) + array(3 => $spawned[0][5])), 'the refusal is shown');
         list($custom, $message) = rXMLRPCRequest::requestsFor($write)[0]['commands'];
-        strictAssertSame(0, strpos($message->params[1], 'autotools: Copy refused: untrusted-directory ' . $root . '/fin/;'),
+        strictAssertSame(0, strpos($message->params[1], 'autotools: Copy refused: untrusted-directory ' . $root . '/fin;'),
             'with its reason and path: ' . $message->params[1]);
         strictAssertSame('untrusted-directory', json_decode(rawurldecode($custom->params[2]), true)['reason'],
             'and kept on the download');
@@ -320,7 +321,7 @@ $suite->test('a deferred hook refused by recover.php is named on the torrent wit
         rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
         AutoToolsFinishedHook::performDeferred();
         strictAssertSame(array('autotools: nonmove ' . HOOK_HASH . ' refused: untrusted-directory path='
-            . erasedataLogPath($root . '/fin/')), FileUtil::$messages, 'the refusal is logged once with its hash');
+            . erasedataLogPath($root . '/fin')), FileUtil::$messages, 'the refusal is logged once with its hash');
         $set = rXMLRPCRequest::requestsFor($write);
         strictAssertSame(1, count($set), 'and named on the torrent');
         strictAssertSame('untrusted-directory', json_decode(rawurldecode($set[0]['commands'][0]->params[2]), true)['reason'],

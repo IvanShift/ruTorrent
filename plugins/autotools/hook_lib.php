@@ -7,8 +7,7 @@
 // One-owner invariant (R4-FS-01): rTorrent's main thread runs move.php and is
 // the thread that answers every RPC. move.php therefore never waits for the
 // daemon and never waits for .autotools-file-jobs/.lock, because the other
-// owners of that lock (recover.php, the Move worker, which the Move hook
-// starts in the background) call the daemon and wait for its session saves
+// owner of that lock (recover.php) calls the daemon and waits for its session saves
 // while they hold it. Only background processes may wait for that lock, so
 // the daemon never waits on a holder that waits on the daemon. When the lock
 // is busy, or the session copy the hook plans from is not published yet,
@@ -79,8 +78,9 @@ final class AutoToolsFinishedHook
         $at = rAutoTools::load();
         if (!$at->enable_move || @preg_match($at->automove_filter . 'u', $label) != 1)
             return $none;
-        $finished = trim($at->path_to_finished);
+        $finished = $at->path_to_finished;
         $op = $at->fileop_type;
+        if (!in_array($op, self::NON_MOVE, true)) return $none;
         $session = rTorrentSettings::get()->session;
         if ($finished === '' || empty($session))
             return $none;
@@ -95,7 +95,7 @@ final class AutoToolsFinishedHook
         $torrent = new Torrent($copy);
         if ($torrent->errors()) {
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': session-copy-invalid');
-            return $none;
+            return self::refused($op, 'session-copy-invalid');
         }
         $directory = rtAddTailSlash($directory);
         $base = rtAddTailSlash(rtRemoveLastToken(rtRemoveTailSlash($basePath), '/'));
@@ -112,12 +112,12 @@ final class AutoToolsFinishedHook
         if ($at->addName && $name !== '')
             $destination .= FileUtil::addslash($name);
         if (!rtMkDir($finished, 0755)) {
-            FileUtil::toLog('autotools: file operation refused: finished root unavailable');
-            return $none;
+            FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': finished-root-unavailable');
+            return self::refused($op, 'finished-root-unavailable');
         }
         if (!rAutoTools::destinationWithinRoot($finished, $destination)) {
-            FileUtil::toLog('autotools: file operation refused: destination outside finished root');
-            return $none;
+            FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': destination-outside-finished-root');
+            return self::refused($op, 'destination-outside-finished-root');
         }
         $sub = $isMulti ? rtAddTailSlash($baseName) : '';
         $source = $base . $sub;
@@ -133,22 +133,18 @@ final class AutoToolsFinishedHook
             return $none;
         if ($dbg) rtDbg('AutoMove', 'Operation ' . $op . ' from ' . $source . ' to ' . $target);
         $context = array('hash' => $hash, 'token' => $token, 'sourceBase' => $basePath, 'destination' => $target);
-        if ($op !== 'Move')
-            $context['notice'] = array('noticeDestination' => $destination, 'finishedRoot' => $finished,
+        $context['notice'] = array('noticeDestination' => $destination, 'finishedRoot' => $finished,
                 'torrentName' => $torrent->name());
         $result = rtOpFiles($files, $source, $target, $op, $dbg, $context);
         if ($result === null)
             return array('status' => 'busy', 'op' => $op);
         if (!$result) {
             // run() resets its refusal on entry and keeps one only for the
-            // refusals named on the download; the legacy Move entrypoint
-            // never reaches it and is refused in the log only.
+            // refusals named on the download.
             $refusal = in_array($op, self::NON_MOVE, true) ? AutoToolsFileTransaction::lastRefusal() : null;
             return $refusal === null ? array('status' => 'none', 'op' => $op)
                 : self::refused($op, $refusal['reason'], $refusal['detail']);
         }
-        if ($op === 'Move')
-            rAutoTools::notifyCompletedFileTransfer($target, $finished, $torrent->name());
         return array('status' => 'published', 'op' => $op, 'destination' => $target);
     }
 
@@ -169,11 +165,7 @@ final class AutoToolsFinishedHook
     private static function defer(array $args, $reason, $op)
     {
         $hash = (string) $args[0];
-        if (!in_array($op, self::NON_MOVE, true)) {
-            // The legacy Move hook is never deferred: rtOpFiles() refuses it.
-            FileUtil::toLog('autotools: legacy Move entrypoint refused; safe Move requires move_tx.php');
-            return;
-        }
+        if (!in_array($op, self::NON_MOVE, true)) return;
         $root = AutoToolsFileTransaction::journalRoot();
         $id = bin2hex(random_bytes(12));
         $body = json_encode(array('version' => 1, 'id' => $id, 'reason' => $reason, 'at' => time(),
@@ -239,6 +231,10 @@ final class AutoToolsFinishedHook
                 return 'autotools: ' . $op . ' refused: destination-unavailable ' . $detail
                     . '; the directory could not be created' . $nothing;
         }
+        if (in_array($reason, array('session-copy-invalid', 'finished-root-unavailable',
+            'destination-outside-finished-root', 'journal-write-failed', 'file-operation-refused'), true))
+            return 'autotools: ' . $op . ' refused: ' . $reason
+                . '; inspect the file-job journal and errors.log; source data is retained';
         return null;
     }
 

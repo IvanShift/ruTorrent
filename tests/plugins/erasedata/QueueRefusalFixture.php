@@ -1,9 +1,37 @@
 <?php
 
+require_once __DIR__.'/../../php/SourceDefinitionFixture.php';
+
 // Execute copied production init/worker bytes against a physical queue. Only
 // RPC and Ratio's unrelated group configuration are replaced by recording peers.
 class ErasedataQueueRefusalFixture
 {
+    public static function installCheckerDependencies($tree)
+    {
+        $root = dirname(__DIR__, 3);
+        $paths = array('php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php',
+            'plugins/rutracker_check/launcher.php');
+        foreach($paths as $relative)
+        {
+            copy($root.'/'.$relative, $tree.'/'.$relative);
+            if(hash_file('sha256', $root.'/'.$relative) !== hash_file('sha256', $tree.'/'.$relative))
+                throw new RuntimeException('queue checker dependency identity mismatch: '.$relative);
+        }
+        // FileUtil belongs to the RPC adapter; these real core files require
+        // util.php by name before reaching their command helpers.
+        file_put_contents($tree.'/php/util.php', '<?php require_once __DIR__."/xmlrpc.php";');
+        // Keep the actual capability gate and command-name validator while
+        // the recording RPC adapter supplies the daemon's structured reply.
+        $command = loadClassDefinition($root.'/php/xmlrpc.php', 'rXMLRPCCommand');
+        $nextClass = strpos($command, 'class rXMLRPCRequest');
+        if($nextClass === false) throw new RuntimeException('queue command validator boundary moved');
+        $command = substr($command, 0, $nextClass);
+        $command = str_replace('class rXMLRPCCommand', 'class QueueCoreXMLRPCCommand', $command);
+        file_put_contents($tree.'/php/xmlrpc.php', "\n".$command."\n"
+            .loadFunctionDefinition($root.'/php/xmlrpc.php', 'rpcMethodCapability'), FILE_APPEND);
+        return $paths;
+    }
+
     public static function run($base, $route, $ready, $removeFails = false, $user = 'alice', $interval = 60)
     {
         $root = dirname(__DIR__, 3);
@@ -49,16 +77,21 @@ class Utility { public static function getPHP(){return PHP_BINARY;} }
 class User { public static function getUser(){return json_decode(getenv('QUEUE_USER_JSON'),true);} }
 class rXMLRPCCommand {
  public $command;public $params;
+ public static function isValidCommandName($name){return QueueCoreXMLRPCCommand::isValidCommandName($name);}
  public function __construct($command,$params=null){$this->command=$command;$this->params=$params;}
 }
 class rXMLRPCRequest {
  public static $requests=array();public static $schedules=array();public $fault=false;public $important=true;
+ public $responseTypes=array();public $responseValues=array();
  private $commands;
  public function __construct($commands){$this->commands=is_array($commands)?$commands:array($commands);}
  public function run(){
   self::$requests[]=$this->commands;
   foreach($this->commands as $command){
    $params=is_array($command->params)?$command->params:array($command->params);
+   if($command->command==='system.listMethods'){
+    $this->responseTypes=array('array');$this->responseValues=array(array('system.listMethods'));
+   }
    if($command->command==='schedule_remove'){
     if(getenv('REMOVE_FAILS')==='1'){$this->fault=true;return false;}
     unset(self::$schedules[$params[0]]);
@@ -81,6 +114,7 @@ class rTorrentSettings {
 function getCmd($name){return $name;}
 PHP
         );
+        self::installCheckerDependencies($tree);
         file_put_contents($tree.'/driver.php', <<<'PHP'
 <?php
 require __DIR__.'/php/xmlrpc.php';

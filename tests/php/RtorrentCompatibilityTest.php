@@ -1,95 +1,19 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/AdditionCallerFixtures.php');
 require_once(__DIR__ . '/../../php/settings.php');
 
 class RtorrentCompatibilityTest extends TestCase
 {
-	/**
-	 * settings.php loads the per-version method alias files from obtain(),
-	 * which interrogates a live daemon over XMLRPC before it reaches the
-	 * require_once ladder, so the ladder cannot be executed directly here.
-	 * Instead, parse the version => file gate table out of the source and
-	 * replay it, so the constants under test are the real ones and a wrong
-	 * gate in settings.php fails these tests.
-	 */
-	private function methodFileGates()
-	{
-		// This fork carries one downlevel gate (methods-pre-0.9.0.php loads
-		// under iVersion < 0x900), so both comparison directions are parsed.
-		$source = file_get_contents(__DIR__ . '/../../php/settings.php');
-		preg_match_all(
-			'/if\s*\(\s*\$this->iVersion\s*(>=|<)\s*(0x[0-9A-Fa-f]+)\s*\)\s*\{\s*require_once\(\s*\'(methods-[^\']+\.php)\'\s*\);/',
-			$source,
-			$matches,
-			PREG_SET_ORDER
-		);
-		if (count($matches) < 4) {
-			throw new Exception('Could not parse the method alias gates out of php/settings.php');
-		}
-		$gates = array();
-		foreach ($matches as $match) {
-			$gates[] = array('op' => $match[1], 'version' => intval($match[2], 16), 'file' => $match[3]);
-		}
-		return $gates;
-	}
-
-	/**
-	 * The require ladder is not the whole map. obtain() assigns two aliases
-	 * inline, under a gate of its own (iVersion > 0x806), before it reaches
-	 * the ladder -- so a walk that only replays the ladder silently misses
-	 * them and every count taken off it is two short. Parse that block out
-	 * of the source for the same reason methodFileGates() parses the gates:
-	 * the entries under test have to be the real ones.
-	 */
-	private function seedAliases()
-	{
-		$source = file_get_contents(__DIR__ . '/../../php/settings.php');
-		if (!preg_match('/if\s*\(\s*\$this->iVersion\s*>\s*(0x[0-9A-Fa-f]+)\s*\)\s*\{\s*\$this->aliases\s*=\s*array\s*\((.*?)\);/s', $source, $block)) {
-			throw new Exception('Could not parse the inline alias seed out of php/settings.php');
-		}
-		preg_match_all('/"([^"]+)"\s*=>\s*array\s*\(\s*"name"\s*=>\s*"([^"]*)"\s*,\s*"prm"\s*=>\s*(\d+)/', $block[2], $entries, PREG_SET_ORDER);
-		if (!count($entries)) {
-			throw new Exception('The inline alias seed in php/settings.php parsed to nothing');
-		}
-		$aliases = array();
-		foreach ($entries as $entry) {
-			$aliases[$entry[1]] = array('name' => $entry[2], 'prm' => intval($entry[3]));
-		}
-		return array('version' => intval($block[1], 16), 'aliases' => $aliases);
-	}
+	use AdditionCallerFixtures;
 
 	private function makeSettings($version)
 	{
-		$reflection = new ReflectionClass('rTorrentSettings');
-		$settings = $reflection->newInstanceWithoutConstructor();
+		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
 		$settings->iVersion = $version;
-		$settings->aliases = [];
-
-		$seed = $this->seedAliases();
-		if ($version > $seed['version']) {
-			$settings->aliases = $seed['aliases'];
-		}
-
-		foreach ($this->methodFileGates() as $gate) {
-			$applies = ($gate['op'] === '>=')
-				? ($version >= $gate['version'])
-				: ($version < $gate['version']);
-			if ($applies) {
-				$this->loadMethodAliases($settings, $gate['file']);
-			}
-		}
-
+		$settings->aliases = $this->aliasTableFor($version);
 		return $settings;
-	}
-
-	private function loadMethodAliases($settings, $file)
-	{
-		$loader = function () use ($file) {
-			require __DIR__ . '/../../php/' . $file;
-		};
-		$loader = $loader->bindTo($settings, get_class($settings));
-		$loader();
 	}
 
 	private function useSettingsSingleton($settings)

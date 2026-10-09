@@ -949,6 +949,14 @@ dxSTable.prototype.createIcon = function(icon) {
 	}
 }
 
+// Escape raw names before marking the normalized label as code; retain status icons.
+dxSTable.prototype.setLabelText = function(element, value) {
+	const target = $(element);
+	const icon = target.children(".stable-icon").detach();
+	target.html(escapeHTML(value || " ").replace(/`(.*?)`$/, '<code>$1</code>')).prepend(icon);
+	return target;
+}
+
 dxSTable.prototype.createRow = function(cols, sId, icon, attr) {
 	const attrs = { id: sId, title: cols[0] };
 	if (sId == null) {
@@ -974,12 +982,7 @@ dxSTable.prototype.createRow = function(cols, sId, icon, attr) {
 					.css(this.progressStyle(celldata)),
 			);
 		} else if (isLabel) {
-			// The text is a torrent name: escape it before the trailing
-			// `label` the normalizer appended is marked up as code, or a name
-			// carrying markup would run in the page.
-			td.append(
-				$("<div>").html(escapeHTML(celldata || " ").replace(/`(.*?)`$/, '<code>$1</code>')),
-			);
+			td.append(this.setLabelText($("<div>"), celldata));
 		} else {
 			td.append(
 				$("<div>").text(celldata || " "),
@@ -1399,7 +1402,10 @@ dxSTable.prototype.syncDOM = function()
 							.css(this.progressStyle(fmtVal));
 						textEl = td.firstChild;
 					}
-					$(textEl).text(fmtVal);
+					if(this.colsdata[c].type==TYPE_STRING_LABEL)
+						this.setLabelText(textEl, fmtVal);
+					else
+						$(textEl).text(fmtVal);
 					// The rows are built once and updated in place from here
 					// on, so a tooltip set only in createRow would freeze at
 					// whatever the message was when the row first appeared.

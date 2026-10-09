@@ -150,6 +150,7 @@ plugin.onLangLoaded = function() {
 		);
 	}
 	this.showTerminalJobs();
+	this.showEnqueueRefusals();
 }
 
 // init.php sets plugin.terminalJobs when this profile has queue jobs whose
@@ -167,6 +168,23 @@ plugin.showTerminalJobs = function()
 		sentence = "Retrackers: queued jobs that used up their retries: %s. They are no longer retried automatically. " +
 			"After fixing the cause, run %s on the server to list them, then rerun it with a listed hash and --apply to reset one.";
 	// Function replacement inserts each value literally, "$&" included.
+	noty(sentence.replace("%s", function() { return("" + jobs.count); })
+		.replace("%s", function() { return(jobs.command); }), "error");
+}
+
+// Storage refusal is separate from exhausted Q: no queue was admitted, so
+// resetting retries cannot repair it. The native custom survives status updates.
+plugin.showEnqueueRefusals = function()
+{
+	var jobs = this.enqueueRefusals;
+	delete this.enqueueRefusals;
+	if(!jobs || !(jobs.count > 0) || (typeof jobs.command != "string"))
+		return;
+	var sentence = theUILang.retrackersEnqueueRefusals;
+	if(typeof sentence != "string")
+		sentence = "Retrackers: session storage refused queue admission for %s torrent(s). " +
+			"Repair session storage, then run %s on the server to review candidates and rerun with --apply. " +
+			"Existing torrent metadata is preserved.";
 	noty(sentence.replace("%s", function() { return("" + jobs.count); })
 		.replace("%s", function() { return(jobs.command); }), "error");
 }

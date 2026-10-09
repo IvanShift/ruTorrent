@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 
 window.$ = require("jquery");
 
@@ -37,17 +37,19 @@ function loadLanguage(lang, edit = (source) => source) {
   loadScript(edit(readFileSync("../plugins/retrackers/lang/" + lang + ".js", "utf-8")));
 }
 
+function prepareRetrackers() {
+  document.body.innerHTML = "";
+  window.theUILang = {};
+  window.noty = jest.fn();
+  // js/common.js
+  window.$type = (obj) => (obj == undefined) ? false : (obj.constructor == Array) ? "array" : typeof obj;
+  window.theWebUI = { addAndShowSettings() {}, setSettings() {} };
+  window.rTorrentStub = function () {};
+  loadScript(readFileSync("../js/plugins.js", "utf-8"));
+}
+
 describe("retrackers exhausted queue notice", () => {
-  beforeEach(() => {
-    document.body.innerHTML = "";
-    window.theUILang = {};
-    window.noty = jest.fn();
-    // js/common.js
-    window.$type = (obj) => (obj == undefined) ? false : (obj.constructor == Array) ? "array" : typeof obj;
-    window.theWebUI = { addAndShowSettings() {}, setSettings() {} };
-    window.rTorrentStub = function () {};
-    loadScript(readFileSync("../js/plugins.js", "utf-8"));
-  });
+  beforeEach(prepareRetrackers);
 
   it("shows one notice with the count and the list command", () => {
     const plugin = initRetrackers(notice(2));
@@ -110,5 +112,54 @@ describe("retrackers exhausted queue notice", () => {
     expect(plugin.attachPageToOptions).toHaveBeenCalledTimes(1);
     expect(noty).toHaveBeenCalledTimes(1);
     expect(noty).toHaveBeenCalledWith(ENGLISH, "error");
+  });
+  it("shows persistent storage refusal once with admission recovery", () => {
+    const command = "docker exec -u torrent <container> php /rutorrent/app/tools/retrackers-apply-existing.php --user=alice";
+    const plugin = initRetrackers("plugin.enqueueRefusals = " + JSON.stringify({ count: 2, command }) + ";");
+    loadLanguage("en");
+    expect(noty).toHaveBeenCalledTimes(1);
+    const [message, status] = noty.mock.calls[0];
+    expect(status).toBe("error");
+    expect(message).toContain("session storage refused queue admission for 2 torrent(s)");
+    expect(message).toContain(command);
+    expect(message).toContain("--apply");
+    expect(message).not.toContain("retry-reset");
+    plugin.langLoaded();
+    expect(noty).toHaveBeenCalledTimes(1);
+  });
+
+});
+
+describe("retrackers enqueue refusal localization", () => {
+  const command = "docker exec -u torrent <container> php /rutorrent/app/tools/retrackers-apply-existing.php --user=alice";
+  const english = "Retrackers: session storage refused queue admission for 2 torrent(s). " +
+    "Repair session storage, then run " + command + " on the server to review candidates and rerun with --apply. " +
+    "Existing torrent metadata is preserved.";
+
+  beforeEach(prepareRetrackers);
+
+  function enqueueNotice(locale) {
+    const plugin = initRetrackers("plugin.enqueueRefusals = " + JSON.stringify({ count: 2, command }) + ";");
+    loadLanguage(locale);
+    expect(noty).toHaveBeenCalledTimes(1);
+    plugin.langLoaded();
+    expect(noty).toHaveBeenCalledTimes(1);
+    return noty.mock.calls[0];
+  }
+
+  it("shows the Russian storage repair guidance with count and canonical command", () => {
+    expect(enqueueNotice("ru")).toEqual([
+      "Ретрекеры: хранилище сессии отказало в постановке 2 раздач в очередь. " +
+      "Восстановите хранилище сессии, затем выполните на сервере " + command +
+      ", чтобы проверить кандидатов, и повторите команду с --apply. " +
+      "Метаданные существующих раздач сохраняются.", "error",
+    ]);
+  });
+
+  const fallbackLocales = readdirSync("../plugins/retrackers/lang")
+    .filter(name => name.endsWith(".js") && name !== "en.js" && name !== "ru.js")
+    .map(name => name.slice(0, -3));
+  it.each(fallbackLocales)("shows the explicit English recovery fallback in %s", locale => {
+    expect(enqueueNotice(locale)).toEqual([english, "error"]);
   });
 });

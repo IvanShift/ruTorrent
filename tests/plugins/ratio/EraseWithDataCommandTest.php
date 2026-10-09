@@ -85,6 +85,7 @@ class EraseWithDataCommandTest extends TestCase
 			.'public static $logs = array(); public static function getPluginConf($name) { return ""; } '
 			.'public static function toLog($message) { self::$logs[] = $message; }} '
 			.'function getCmd($command) { return $command; }');
+		file_put_contents($fixture.'/php/rtorrent.php', '<?php');
 		file_put_contents($fixture.'/php/cache.php', '<?php');
 		file_put_contents($fixture.'/php/settings.php', '<?php');
 		file_put_contents($fixture.'/probe.php', '<?php require dirname(__FILE__)."/plugins/ratio/ratio.php"; '

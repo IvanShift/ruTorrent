@@ -91,6 +91,22 @@ class ManifestPathBytesTest extends TestCase
 		return is_file($path) ? file_get_contents($path) : null;
 	}
 
+	public function testAnOldAmbiguousStagingManifestCannotAuthorizeDrainErase()
+	{
+		$base = $this->data . '/a\\"b';
+		$path = $this->queue . '/' . self::OLD . '.1.token.tmp';
+		file_put_contents($path, $this->oldManifest(self::OLD, $base, array($base), false));
+		$stat = lstat($path);
+		$record = array('path' => $path, 'dev' => $stat['dev'], 'ino' => $stat['ino']);
+		$this->assertSame(false, erasedataStagingManifestStillMatches($record, self::OLD, 1),
+			'an identity-matched old ambiguous manifest grants no erase authority');
+		file_put_contents($path, ErasedataManifestCodec::encode(self::OLD,
+			array('base' => $base, 'files' => array($base), 'multi' => false), 1));
+		clearstatcache(true, $path);
+		$this->assertSame(true, erasedataStagingManifestStillMatches($record, self::OLD, 1),
+			'the same raw path explicitly marked by the new writer is eligible');
+	}
+
 	public function testAnOldManifestWithAnEscapedPathDeletesNeitherSpellingAndSaysSo()
 	{
 		// The payload the daemon had, and a sibling named like its escaped spelling.

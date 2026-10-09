@@ -12,7 +12,7 @@ theWebUI.EditDataDir = function()
 	const torrent = firstSelectedTorrent();
 	if( torrent )
 	{
-	        var save_path = torrent.save_path.trim();
+	        var save_path = torrent.save_path;
 		if( !save_path.length ) // torrent is not open
 			this.request( "?action=getsavepath&hash=" + torrent.hash, [this.showDataDirDlg, this] );
 		else
@@ -28,7 +28,7 @@ theWebUI.showDataDirDlg = function( d )
 	{
 		is_multy = String(torrent.multi_file).trim() !== "0";
 	}
-	$('#edit_datadir').val( d.savepath.trim() );
+	$('#edit_datadir').val( d.savepath );
 	$('#btn_datadir_ok').prop("disabled",false);
 	// can't ignore torrent's path if not multy
 	$('#move_not_add_path').prop("disabled",!is_multy).prop("checked",false);

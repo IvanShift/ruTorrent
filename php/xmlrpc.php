@@ -3,6 +3,7 @@
 require_once( 'util.php' );
 require_once( 'settings.php' );
 require_once( 'scgitransport.php' );
+require_once( __DIR__.'/xmlrpc_response.php' );
 
 class rXMLRPCParam
 {
@@ -132,6 +133,10 @@ class rXMLRPCRequest
 	public $i8s = array();
 	public $strings = array();
 	public $val = array();
+	// Decoded top-level response parameters, preserving array/struct boundaries.
+	public $responseValues = array();
+	public $responseTypes = array();
+	private $responseStringTableWidths = array();
 	public $fault = false;
 	public $faultString = '';
 	// Keep the transport reason on this request for its HTTP endpoint.
@@ -304,6 +309,9 @@ class rXMLRPCRequest
 		$this->i8s = array();
 		$this->strings = array();
 		$this->val = array();
+		$this->responseValues = array();
+		$this->responseTypes = array();
+		$this->responseStringTableWidths = array();
 	}
 
 	public function run($trusted = true)
@@ -311,6 +319,9 @@ class rXMLRPCRequest
 	        $ret = false;
 		$this->clearValues();
 		$this->transportFailure = null;
+		$this->fault = false;
+		$this->faultString = '';
+		$this->rawFaultString = null;
 		// Every name is checked before the first payload is built, so a batch
 		// holding one unusable name sends no part of itself.
 		foreach($this->commands as $cmd)
@@ -338,130 +349,80 @@ class rXMLRPCRequest
 			// An earlier chunk cannot make a failed later chunk successful.
 			$ret = false;
 			$answer = self::send($this->content,$trusted,$this->transportFailure);
-			$undecodable = false;
-			if(!empty($answer))
+			if($answer === false || $answer === '')
 			{
-				// A <base64> value is a string too: rTorrent 0.16.13+ answers
-				// the *.as_binary commands with one, and *.or_as_binary for a
-				// name that is not UTF-8. Skipping it would move every later
-				// value into the wrong column (AUD-ESC S8).
-				if($this->parseByTypes)
+				$this->fault = true;
+				$this->faultString = 'rpc-response-unavailable';
+				$this->clearValues();
+				break;
+			}
+			try
+			{
+				$response = (new rXMLRPCResponse($answer, strpos($this->content, '<methodName>system.multicall</methodName>') !== false))->read();
+			}
+			catch(UnexpectedValueException $error)
+			{
+				$this->clearValues();
+				$this->fault = true;
+				$this->faultString = 'rpc-'.$error->getMessage();
+				FileUtil::toLog('rXMLRPCRequest: '.$this->faultString);
+				break;
+			}
+			$this->responseValues = array_merge($this->responseValues, $response->values);
+			$this->responseTypes = array_merge($this->responseTypes, $response->valueTypes);
+			$this->responseStringTableWidths = array_merge($this->responseStringTableWidths, $response->stringTableWidths);
+			foreach($response->scalars as $scalar)
+			{
+				list($type, $value) = $scalar;
+				if($this->escapeForScript && is_string($value))
+					$value = str_replace(array("\\", "\""), array("\\\\", "\\\""), $value);
+				if(!$this->parseByTypes) $this->val[] = $value;
+				else if(in_array($type, array('i4', 'i8', 'int', 'boolean', 'double'), true))
+					$this->i8s[] = $value;
+				else $this->strings[] = $value;
+			}
+			$ret = true;
+			if($response->fault)
+			{
+				$this->fault = true;
+				$this->rawFaultString = $response->faultString;
+				$this->faultString = trim($this->rawFaultString);
+				global $rpcLogFaults;
+				if($rpcLogFaults && $this->important)
 				{
-					if((preg_match_all("~<value>(<string>|<base64>)(.*)</(?:string|base64)></value>~Us",$answer,$strings)!==false) &&
-						count($strings)>2 &&
-						(preg_match_all("|<value><i.>(.*)</i.></value>|Us",$answer,$this->i8s)!==false) &&
-						count($this->i8s)>1)
-					{
-						$ret = true;
-						foreach($strings[2] as $ndx=>$str)
-							if(!$this->addDecodedValue($this->strings,$strings[1][$ndx],$str))
-							{
-								$undecodable = true;
-								break;
-							}
-						$this->i8s = $this->i8s[1];
-					}
+					FileUtil::toLog($this->content);
+					FileUtil::toLog($answer);
 				}
-				else
-				{
-					if((preg_match_all("/<value>(<string>|<i.>|<base64>)(.*)(<\/string>|<\/i.>|<\/base64>)<\/value>/Us",$answer,$response)!==false) &&
-						count($response)>2)
-					{
-						$ret = true;
-						foreach($response[2] as $ndx=>$str)
-							if(!$this->addDecodedValue($this->val,$response[1][$ndx],$str))
-							{
-								$undecodable = true;
-								break;
-							}
-					}
-				}
-				if($undecodable)
-				{
-					// The whole request is refused, not one value: the values
-					// after it would sit one column early and those of an
-					// earlier call would pass for the whole answer, so a caller
-					// that ignores the false return finds none (R5-REV-12).
-					$this->clearValues();
-					$ret = false;
-					break;
-				}
-				if($ret)
-				{
-					if(self::isFaultAnswer($answer))
-					{
-						$this->fault = true;
-						$this->rawFaultString = self::parseRawFaultString($answer);
-						$this->faultString = trim($this->rawFaultString);
-						global $rpcLogFaults;
-						if($rpcLogFaults && $this->important)
-						{
-							FileUtil::toLog($this->content);
-							FileUtil::toLog($answer);
-						}
-						break;
-					}
-				} else break;
-			} else break;
+				break;
+			}
 		}
 		$this->content = "";
 		$this->commands = array();
 		return($ret);
 	}
 
-	// Preserve the daemon refusal, including faults nested in system.multicall,
-	// before callers choose whether to trim it for display.
-	static protected function parseRawFaultString($answer)
+	/**
+	 * One exact XML array of equally wide XML array rows, with string/base64
+	 * cells only. Empty inventory is []; unknown, fault or wrong shape is null.
+	 * Provenance comes from the streaming grammar, not PHP array key coercion.
+	 */
+	public function stringTable($columns)
 	{
-		if(preg_match("/<name>faultString<\/name>\s*<value>\s*(?:<string>)?(.*?)(?:<\/string>)?\s*<\/value>/s",
-			$answer,$matches))
-			return(self::decodeXmlText($matches[1]));
-		return('');
+		if(!is_int($columns) || $columns < 1 || $this->fault ||
+			$this->responseTypes !== array('array') || count($this->responseValues) !== 1 ||
+			count($this->responseStringTableWidths) !== 1) return null;
+		$width = $this->responseStringTableWidths[0];
+		return ($width === -1 || $width === $columns) ? $this->responseValues[0] : null;
 	}
 
-	/**
-	 * A fault is the faultCode member's markup, never the word in a value.
-	 *
-	 * Both daemons (0.16 tinyxml2, 0.9.8 xmlrpc-c) write '<name>faultCode</name>'
-	 * literally and turn every '<' inside a value into '&lt;', so a torrent
-	 * name or a tracker message reading "faultCode" can no longer turn a whole
-	 * list into a fault (AUD-ESC-01). Nested system.multicall faults carry the
-	 * same member and still count.
-	 */
+	/** Compatibility probe; only response fault positions are interpreted. */
 	static public function isFaultAnswer($answer)
 	{
-		return(is_string($answer) &&
-			(preg_match('|<name>\s*faultCode\s*</name>|', $answer) === 1));
+		if(!is_string($answer)) return false;
+		try { return (new rXMLRPCResponse($answer, true))->read()->fault; }
+		catch(UnexpectedValueException $error) { return false; }
 	}
 
-	// One XML text decode: the predefined entities, including &apos;, and
-	// character references, in a single pass.
-	static protected function decodeXmlText($str)
-	{
-		return(html_entity_decode($str, ENT_QUOTES | ENT_XML1, "UTF-8"));
-	}
-
-	// Append one answer value to $list in the daemon's own bytes. Base64 text
-	// carries no entity; its line breaks (xmlrpc-c wraps it) are not data. A
-	// value that does not decode answers false, and run() then refuses the
-	// whole request rather than hand out a short answer.
-	protected function addDecodedValue(&$list, $tag, $str)
-	{
-		if($tag==='<base64>')
-		{
-			$str = base64_decode(preg_replace('/\s+/', '', $str), true);
-			if($str===false)
-			{
-				FileUtil::toLog('rXMLRPCRequest: an answer carries an invalid base64 value');
-				return(false);
-			}
-		}
-		else
-			$str = self::decodeXmlText($str);
-		$list[] = $this->escapeForScript ?
-			str_replace( array("\\","\""), array("\\\\","\\\""), $str ) : $str;
-		return(true);
-	}
 	public function success($trusted = true)
 	{
 		return($this->run($trusted) && !$this->fault);
@@ -473,20 +434,28 @@ function getCmd($cmd)
 	return(rTorrentSettings::get()->getCommand($cmd));
 }
 
-function rpcMethodCapability($required)
+/**
+ * Read one current method snapshot. Only a fully validated known reply is
+ * published through $available, including a known partial ABI; an unknown
+ * reply leaves null so callers cannot mistake it for an absent capability.
+ */
+function rpcMethodCapability($required, &$available = null)
 {
+	$available = null;
 	$request = new rXMLRPCRequest(new rXMLRPCCommand('system.listMethods'));
 	$request->important = false;
-	if (!$request->success() || $request->fault || !is_array($request->val))
+	if (!$request->success() || $request->fault || $request->responseTypes !== array('array') || !is_array($request->responseValues) ||
+		count($request->responseValues) !== 1 || !is_array($request->responseValues[0]))
 		return 'unconfirmed';
-	$available = array();
-	foreach ($request->val as $method)
+	$seen = array();
+	foreach ($request->responseValues[0] as $method)
 	{
-		if (!is_string($method) || $method === '') return 'unconfirmed';
-		$available[$method] = true;
+		if (!rXMLRPCCommand::isValidCommandName($method)) return 'unconfirmed';
+		$seen[$method] = true;
 	}
-	if (!isset($available['system.listMethods'])) return 'unconfirmed';
+	if (!isset($seen['system.listMethods'])) return 'unconfirmed';
+	$available = array_map('strval', array_keys($seen));
 	foreach ($required as $method)
-		if (!isset($available[$method])) return 'unsupported';
+		if (!isset($seen[$method])) return 'unsupported';
 	return 'available';
 }

@@ -262,17 +262,17 @@ class CleanupRenamePreflightTest extends TestCase
 			FileUtil::$log = array();
 			if($val === null) unset(rXMLRPCRequest::$responses['d.get_directory']);
 			else rXMLRPCRequest::$responses['d.get_directory'] = array('ok' => true, 'val' => $val);
-			$this->assertEquals(false, $this->ownerSnapshot(), 'an unknown owner still refuses: '.$case);
-			$this->assertEquals(array('erasedata: cleanup owner '.$other.' refused: session-copy-unreadable and'
-				.' daemon file list unconfirmed; replacements with obsolete files wait for this download'),
-				FileUtil::$log, 'the refusal names the download: '.$case);
+			$this->assertEquals(false, $this->ownerSnapshot($reason), 'an unknown owner still refuses: '.$case);
+			$this->assertEquals('owner-session-copy-unreadable-daemon-paths-unconfirmed owner='.$other,
+				$reason, 'the single consumer refusal names the blocking download: '.$case);
+			$this->assertEquals(array(), FileUtil::$log, 'the probe does not duplicate its consumer diagnostic');
 		}
 	}
 
-	private function ownerSnapshot()
+	private function ownerSnapshot(&$reason = null)
 	{
 		return(erasedataCleanupOtherOwnerSnapshot($this->hash, str_repeat('B', 40),
-			str_repeat('a', 32), $this->hash.'-started-1787587200'));
+			str_repeat('a', 32), $this->hash.'-started-1787587200', $reason));
 	}
 
 
@@ -283,7 +283,7 @@ class CleanupRenamePreflightTest extends TestCase
 		$this->assertTrue($mirror->isExact(), 'the metadata test executes the shipped erasedata files');
 		// Keep the real source loader and parser: a fake info=null source hid
 		// the native session envelope observed through load.start on 0.16.25.
-		foreach(array('rtorrent.php', 'Torrent.php') as $name)
+		foreach(array('rtorrent.php', 'Torrent.php', 'commandargs.php') as $name)
 		{
 			$bytes = file_get_contents($root.'/php/'.$name);
 			file_put_contents($mirror->root.'/php/'.$name, $bytes);

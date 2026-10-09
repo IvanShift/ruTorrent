@@ -268,7 +268,7 @@ class FakeRtorrentDaemon
 	 * request body and method names for flows with dynamic readback keys.
 	 * A false reply emits an XMLRPC fault; null closes without a reply.
 	 */
-	public function __construct($replies, $logFile, $worker = false)
+	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = array())
 	{
 		$this->logFile = $logFile;
 		// Keep bodies separate so calls() remains a plain method-name list.
@@ -298,7 +298,7 @@ class FakeRtorrentDaemon
 			}
 			return;
 		}
-		$this->startProcess($replies);
+		$this->startProcess($replies, $replyClassFiles);
 	}
 
 	private function listen()
@@ -310,9 +310,14 @@ class FakeRtorrentDaemon
 		$this->port = (int)substr($name, strrpos($name, ':') + 1);
 	}
 
-	private function startProcess($replies)
+	private function startProcess($replies, $replyClassFiles)
 	{
-		$source = 'require ' . var_export(__FILE__, true) . '; FakeRtorrentDaemon::runWorker();';
+		$source = 'require ' . var_export(__FILE__, true) . ';';
+		// Test-owned serializable responders must be defined before the
+		// worker unserializes its plan, also when pcntl is unavailable.
+		foreach($replyClassFiles as $file)
+			$source .= 'require_once '.var_export($file, true).';';
+		$source .= 'FakeRtorrentDaemon::runWorker();';
 		$command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($source);
 		$this->process = proc_open($command, array(
 			0 => array('pipe', 'r'),

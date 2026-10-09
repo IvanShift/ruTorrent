@@ -24,7 +24,8 @@ class ExtsearchHistoryActionTest extends TestCase
 		$utility = var_export(__DIR__.'/../../../php/utility/utility.php', true);
 		file_put_contents($this->root.'/php/util.php', '<?php '
 			.'require_once('.$utility.'); '
-			.'class FileUtil { public static function getSettingsPath() { '
+			.'class FileUtil { public static function settingsReadOnlyContext() { return false; } '
+			.'public static function getSettingsPath() { '
 			.'return '.$settings.'; } '
 			.'public static function makeDirectory($path, $mode = null, $recursive = false) { '
 			.'return is_dir($path) || mkdir($path, $mode ?? 0700, $recursive); } '

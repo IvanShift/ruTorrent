@@ -180,27 +180,46 @@ class rTorrentSettings
 	{
 		// Only obtain() sets linkExist. Keep a failed probe out of the cache:
 		// readers retry it on a cache miss before resolving command aliases.
-		if(!$this->linkExist)
+		if(!$this->linkExist || self::readOnlyContext() ||
+			(self::synchronousHook() && $this->valueFormat !== self::VALUE_FORMAT))
 			return(false);
-		// get() never hands out an object in an older value format, so what
-		// any process stores holds the strings this code's parser read.
+		// A stale synchronous-hook cache is read-only: storing it must not
+		// stamp old escaped bytes as current-format daemon strings.
 		$this->valueFormat = self::VALUE_FORMAT;
 		$cache = new rCache();
 		return($cache->set($this));
 	}
+	static private function synchronousHook()
+	{
+		return defined('RUTORRENT_SYNCHRONOUS_HOOK') && RUTORRENT_SYNCHRONOUS_HOOK;
+	}
+
+	static private function readOnlyContext()
+	{
+		return FileUtil::settingsReadOnlyContext();
+	}
+
 	static public function get( $create = false )
 	{
 		if(is_null(self::$theSettings))
 		{
 			self::$theSettings = new rTorrentSettings();
-			if($create)
+			if($create && !self::synchronousHook())
 				self::$theSettings->obtain();
 			else
 			{
 				$cache = new rCache();
 				if(!$cache->get(self::$theSettings))
+				{
+					if(self::synchronousHook())
+					{
+						self::$theSettings = null;
+						FileUtil::toLog('settings-cache-unavailable-in-synchronous-hook');
+						throw new RuntimeException('settings-cache-unavailable-in-synchronous-hook');
+					}
 					self::$theSettings->obtain();
-				else if(self::$theSettings->valueFormat !== self::VALUE_FORMAT)
+				}
+				else if(self::$theSettings->valueFormat !== self::VALUE_FORMAT && !self::synchronousHook())
 				{
 					// As on a cache miss, but the plugin registrations stored
 					// with the old values stay until getplugins renews them.
@@ -218,6 +237,9 @@ class rTorrentSettings
 	}
 	public function obtain()
 	{
+		if(self::synchronousHook())
+			throw new RuntimeException('settings-refresh-refused-in-synchronous-hook');
+		$this->aliases = array();
 		$req = new rXMLRPCRequest( new rXMLRPCCommand("system.client_version") );
 		if($req->run() && count($req->val))
 		{
@@ -245,29 +267,29 @@ class rTorrentSettings
 			}
 			if($this->iVersion<0x900)
 			{
-				require_once( 'methods-pre-0.9.0.php' );
+				require( 'methods-pre-0.9.0.php' );
 			}
 			if($this->iVersion>=0x904)
 			{
-				require_once( 'methods-0.9.4.php' );
+				require( 'methods-0.9.4.php' );
 			}
 			// iVersion packs one version component per byte, so 0.10.2 is
 			// 0x0a02 (0x1002 would be 0.16.2). Newer daemons inherit these.
 			if($this->iVersion>=0x0a02)
 			{
-				require_once( 'methods-0.10.2.php' );
+				require( 'methods-0.10.2.php' );
 			}
 			if($this->iVersion>=0x1000)
 			{
-				require_once( 'methods-0.16.0.php' );
+				require( 'methods-0.16.0.php' );
 			}
 			if($this->iVersion>=0x1010)
 			{
-				require_once( 'methods-0.16.16.php' );
+				require( 'methods-0.16.16.php' );
 			}
 			if($this->iVersion>=0x1012)
 			{
-				require_once( 'methods-0.16.18.php' );
+				require( 'methods-0.16.18.php' );
 			}
 			$this->apiVersion = 0;
 			if($this->iVersion>=0x901)
@@ -313,9 +335,12 @@ class rTorrentSettings
 				// Worth asking for at all because the default, 524288, is
 				// smaller than plenty of torrent files, and load.raw_start
 				// carries them through here.
-				$req = new rXMLRPCRequest( new rXMLRPCCommand("set_xmlrpc_size_limit",16777216) );
-				$req->important = false;
-				$req->success();
+				if(!self::readOnlyContext())
+				{
+					$req = new rXMLRPCRequest( new rXMLRPCCommand("set_xmlrpc_size_limit",16777216) );
+					$req->important = false;
+					$req->success();
+				}
 
 				$req = new rXMLRPCRequest( array(
 					new rXMLRPCCommand("get_directory"),
@@ -345,7 +370,7 @@ class rTorrentSettings
 							$this->port = intval($req->val[0]);
 					}
 
-					if(User::isLocalMode())
+					if(User::isLocalMode() && !self::readOnlyContext())
 					{
 	                                        if(!empty($this->session))
 	                                        {
@@ -378,7 +403,7 @@ class rTorrentSettings
 	public function systemInfoScript()
 	{
 		return("theWebUI.systemInfo.rTorrent = { started: true, iVersion : ".$this->iVersion.", version : ".
-			JSON::jsValue($this->version).", libVersion : ".JSON::jsValue($this->libVersion).", apiVersion : ".$this->apiVersion.
+			JSON::jsValue($this->version).", libVersion : ".JSON::jsValue($this->libVersion).", apiVersion : ".intval($this->apiVersion).
 			", socketAllocBudget : ".$this->socketAllocBudget.
 			", socketHttpAllocMax : ".$this->socketHttpAllocMax.
 			", socketFilesAllocMax : ".$this->socketFilesAllocMax.

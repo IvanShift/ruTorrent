@@ -473,10 +473,15 @@ class ruTrackerChecker
 			return(false);
 		$base = rtrim($base, DIRECTORY_SEPARATOR);
 		$basePrefix = $base . DIRECTORY_SEPARATOR;
+		$ownerRefusal = null;
 		$otherOwners = erasedataCleanupOtherOwnerSnapshot(
-			$oldHash, $newHash, $marker, $record);
+			$oldHash, $newHash, $marker, $record, $ownerRefusal);
 		if($otherOwners === false)
+		{
+			self::logCleanupFailure('obsolete cleanup refused old=' . $oldHash . ' new=' . $newHash
+				. ' reason=' . $ownerRefusal);
 			return(false);
+		}
 		$newIdentityIndex = array();
 		foreach($newPaths as $path)
 		{
@@ -2454,7 +2459,7 @@ class ruTrackerChecker
 	{
 		global $ignoreLabels;
 		if(is_null($label) || !isset($ignoreLabels) || !is_array($ignoreLabels)) return(false);
-		return( in_array($label, $ignoreLabels) || in_array(rawurldecode((string) $label), $ignoreLabels) );
+		return( in_array($label, $ignoreLabels, true) || in_array(rawurldecode((string) $label), $ignoreLabels, true) );
 	}
 
 	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null )

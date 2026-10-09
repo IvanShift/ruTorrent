@@ -1,5 +1,6 @@
 <?php
 
+require_once(__DIR__.'/../../php/rtorrent.php');
 require_once( dirname(__FILE__).'/../../php/cache.php');
 require_once( dirname(__FILE__).'/../../php/util.php');
 require_once( dirname(__FILE__).'/../../php/settings.php');
@@ -217,7 +218,7 @@ class rHistory
 		$hookUser = 'u:'.User::getUser();
 		if($this->log["addition"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_addition"]))
 		{
-			$addCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.Utility::getPHP().','.$rootPath.'/plugins/history/update.php'.',1,$'.
+			$addCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($rootPath.'/plugins/history/update.php').',1,$'.
 				getCmd('d.get_name').'=,$'.getCmd('d.get_size_bytes').'=,$'.getCmd('d.get_bytes_done').'=,$'.
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
@@ -228,7 +229,7 @@ class rHistory
 		else
 			$addCmd = getCmd('cat=');
 		if($this->log["finish"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_finish"]))
-			$finCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.Utility::getPHP().','.$rootPath.'/plugins/history/update.php'.',2,$'.
+			$finCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($rootPath.'/plugins/history/update.php').',2,$'.
 				getCmd('d.get_name').'=,$'.getCmd('d.get_size_bytes').'=,$'.getCmd('d.get_bytes_done').'=,$'.
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
@@ -238,7 +239,7 @@ class rHistory
 		else
 			$finCmd = getCmd('cat=');
 		if($this->log["deletion"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_deletion"]))
-			$delCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.Utility::getPHP().','.$rootPath.'/plugins/history/update.php'.',3,$'.
+			$delCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($rootPath.'/plugins/history/update.php').',3,$'.
 				getCmd('d.get_name').'=,$'.getCmd('d.get_size_bytes').'=,$'.getCmd('d.get_bytes_done').'=,$'.
 				getCmd('d.get_up_total').'=,$'.getCmd('d.get_ratio').'=,$'.getCmd('d.get_creation_date').'=,$'.
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.

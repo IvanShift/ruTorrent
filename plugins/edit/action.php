@@ -154,16 +154,13 @@ if($setComment || $setTrackers || $setPrivate)
 					}
 					if(isset($torrent->{'rtorrent'}))
 						unset($torrent->{'rtorrent'});
-					// The snapshot holds the daemon's own bytes, and each goes
-					// back encoded once: additionCommand() quotes the seeding
-					// flag and the throttle name for the daemon's command
-					// parser; sendTorrent() quotes the directory the same way
-					// for d.set_directory_base (and passes it to "mkdir -p" as
-					// a plain XML-RPC string) and percent-encodes the label,
-					// decoded below, with rawurlencode() for d.set_custom1.
+					// Restore custom1 exactly as stored by either ruTorrent or another
+					// client. Its bytes do not attest which encoding convention wrote it.
+					// The shared addition builder quotes raw metadata before preflight.
 					$addition = array(
 						getCmd("d.set_custom3")."=1",
 						rTorrent::additionCommand("d.set_connection_seed", $req->val[7]),
+						rTorrent::additionCommand("d.set_custom1", $req->val[5]),
 					);
 					// d.get_throttle_name is only asked for when the throttle
 					// plugin is registered, so without it there is no throttle
@@ -172,7 +169,6 @@ if($setComment || $setTrackers || $setPrivate)
 					if(rTorrentSettings::get()->isPluginRegistered("throttle"))
 						$addition[] = rTorrent::additionCommand("d.set_throttle_name", $req->val[9]);
 					$directory = $req->val[6];
-					$label = rawurldecode($req->val[5]);
 					$prepared = rTorrent::preflightTorrentLoad($torrent, false, $directory,
 						($req->val[8]==1), false, $addition, $failure);
 					if($prepared === false)
@@ -211,7 +207,7 @@ if($setComment || $setTrackers || $setPrivate)
 								// The prepared bytes are already saved. A path handover avoids
 								// rewriting the only recovery copy after the destructive erase.
 								$reloaded = rTorrent::sendTorrent($recovery, $isStart, false,
-									$prepared['directory'], $label, false, false, false, $addition);
+									$prepared['directory'], null, false, false, false, $addition);
 								if($reloaded === false)
 								{
 									$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$recovery);

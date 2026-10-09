@@ -1,6 +1,7 @@
 <?php
 
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
+require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/settings.php" );
 eval(FileUtil::getPluginConf('ratio'));
@@ -162,8 +163,8 @@ class rRatio
 		}
 		// User::getUser() already normalizes the login for an rTorrent argv
 		// component; filtering it again here would define a second user policy.
-		return($prefix.'execute.nothrow.bg={'.Utility::getPHP().','.$helper.
-			',$'.getCmd("d.get_hash").'=,'.$force.','.(string)User::getUser().'}');
+		return($prefix.'execute.nothrow.bg={'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($helper).
+			',$'.getCmd("d.get_hash").'=,'.$force.','.rTorrent::quoteCommandArg((string)User::getUser()).'}');
 	}
 
 	public function correct()
@@ -204,6 +205,8 @@ class rRatio
 			// not propagate into the settings multicall below and sink the
 			// whole plugin start with a misleading "Plugin failed to start".
 			$insertReq = new rXMLRPCRequest();
+			// Another initializer may insert a missing view after our snapshot.
+			$insertReq->important = false;
 			for($i=0; $i<MAX_RATIO; $i++)
 			{
 				if(!in_array("rat_".$i,$req1->val))
@@ -258,7 +261,7 @@ class rRatio
 						{
 							$thr = "thr_".($rat["action"]-RAT_FIRSTTHROTTLE);
 							$req->addCommand(new rXMLRPCCommand("system.method.set", array("group.rat_".$i.".ratio.command",
-								getCmd('cat').'=$'.getCmd("d.stop").'=,$'.getCmd("d.set_throttle_name=").$thr.',$'.getCmd('d.start='))));
+								getCmd('cat').'=$'.getCmd("d.stop").'=,$'.rTorrent::additionCommand("d.set_throttle_name", $thr).',$'.getCmd('d.start='))));
 							break;
 						}
 					}

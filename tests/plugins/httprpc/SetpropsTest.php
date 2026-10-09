@@ -138,15 +138,17 @@ class SetpropsTest extends TestCase
 			'the refusal is recorded');
 	}
 
-	public function testGetSavePathUsesTheExistingServerTransaction()
+	public function testGetSavePathChecksOpenStateBeforeChangingTheTorrent()
 	{
 		$this->post('mode=getsavepath&hash='.self::HASH);
 		$this->assertTrue($this->peer->accepted(),
 			'the checked hash opens one SCGI request');
 		$request = $this->peer->request();
-		foreach(array('d.open', 'd.base_path', 'd.close') as $method)
-			$this->assertTrue(strpos($request['payload'], $method) !== false,
-				'the existing server path sends '.$method);
+		$this->assertTrue(strpos($request['payload'], 'd.is_open') !== false,
+			'the first request reads the current open state');
+		foreach(array('d.open', 'd.close') as $method)
+			$this->assertTrue(strpos($request['payload'], $method) === false,
+				'the state read itself does not change the torrent: '.$method);
 		$this->assertTrue(strpos($request['payload'], self::HASH) !== false,
 			'the server uses the requested hash');
 	}

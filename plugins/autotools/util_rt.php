@@ -1,4 +1,5 @@
 <?php
+require_once dirname(__DIR__, 2) . '/php/rtorrent.php';
 
 require_once( "../../php/xmlrpc.php" );
 require_once( "../../php/Torrent.php" );
@@ -24,7 +25,7 @@ function rtDaemon( $php, $script, $args )
 	$params = escapeshellarg( $script ).' --daemon';
 	foreach( $args as $arg )
 		$params .= ' '.escapeshellarg( $arg );
-	exec( $php.' '.$params.' > /dev/null 2>/dev/null &', $out, $ret );
+	exec( escapeshellarg($php).' '.$params.' > /dev/null 2>/dev/null &', $out, $ret );
 	exit( (int)$ret );
 }
 
@@ -118,16 +119,14 @@ function rtIsFile( $path )
 
 //------------------------------------------------------------------------------
 // Preserve the file operation entry point for non-Move modes. Move uses the
-// claimed transaction in move_tx.php; an old persisted hook must refuse visibly.
+// native queue worker; unsupported operation names refuse visibly.
 //------------------------------------------------------------------------------
 function rtOpFiles( $files, $src, $dst, $op, $dbg = false, $context = null )
 {
     if( in_array( $op, array( 'Copy', 'HardLink', 'SoftLink' ), true ) )
         return AutoToolsFileTransaction::run( $files, $src, $dst, $op, $dbg, $context );
 
-    FileUtil::toLog( $op === 'Move'
-        ? 'autotools: legacy Move entrypoint refused; safe Move requires move_tx.php'
-        : 'autotools: unsupported file operation refused' );
+    FileUtil::toLog('autotools: unsupported file operation refused');
     return false;
 }
 
@@ -308,8 +307,8 @@ class AutoToolsFileTransaction
 
     private static function refuse($reason)
     {
-        FileUtil::toLog('autotools: nonmove new refused: ' . $reason);
-        return false;
+        $classified = $reason === 'cannot persist intent' ? 'journal-write-failed' : 'file-operation-refused';
+        return self::refuseVisibly($reason, $classified, '');
     }
 
     // A refusal the finished hook names on the download, logged once with
@@ -324,6 +323,8 @@ class AutoToolsFileTransaction
     // A payload directory that fails the trust rule, by its spelled path.
     private static function refusePath($classified, $path)
     {
+        if ($classified === 'untrusted-directory' && ErasedataFilesystemOps::lastPayloadRefusalPath() !== '')
+            $path = ErasedataFilesystemOps::lastPayloadRefusalPath();
         $logged = function_exists('erasedataLogPath') ? erasedataLogPath($path)
             : json_encode($path, JSON_UNESCAPED_SLASHES);
         return self::refuseVisibly($classified . ' path=' . $logged, $classified, $path);
@@ -524,11 +525,6 @@ class AutoToolsFileTransaction
         return $complete;
     }
 
-    private static function quoteArgument($value)
-    {
-        return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), (string) $value) . '"';
-    }
-
     private static function validContext($context, $dst = null)
     {
         if ($context === null) return true;
@@ -582,7 +578,7 @@ class AutoToolsFileTransaction
     // write could overwrite another finished hook's x-dest between requests.
     private static function xdestBranch($context, $expected, $set)
     {
-        $q = array(__CLASS__, 'quoteArgument');
+        $q = array('rTorrent', 'quoteCommandArg');
         $conditions = array(
             'equal=' . getCmd('d.get_custom=') . 'x-autotools-nonmove-job,cat=' . $context['token'],
             'equal=' . getCmd('d.get_base_path=') . ',' . getCmd('d.get_custom=') .
@@ -952,6 +948,15 @@ class AutoToolsFileTransaction
     // is refused or held (both logged), and null when another owner holds the
     // journal lock: the synchronous finished hook never waits for it (see the
     // one-owner invariant in hook_lib.php), so its caller defers the hook.
+    private static function makeDestination($path, &$created)
+    {
+        if (is_dir($path)) return true;
+        $parent = dirname($path);
+        if ($parent === $path || !self::makeDestination($parent, $created)) return false;
+        if (@mkdir($path, 0755)) { $created[$path] = self::identity($path); return true; }
+        return is_dir($path);
+    }
+
     public static function run($files, $src, $dst, $op, $dbg = false, $context = null)
     {
         self::$refusal = null;
@@ -967,7 +972,9 @@ class AutoToolsFileTransaction
         // ancestor' and nothing on the torrent.
         if (!self::payloadDirectory($src)) return self::refusePath('untrusted-directory', $src);
         if (!self::payloadDirectory($dst, true)) return self::refusePath('untrusted-directory', $dst);
-        if (!rtMkDir($dst, 0755)) return self::refusePath('destination-unavailable', $dst);
+        $created = array();
+        try {
+        if (!self::makeDestination($dst, $created)) return self::refusePath('destination-unavailable', $dst);
         if (!self::payloadDirectory($dst)) return self::refusePath('untrusted-directory', $dst);
         if (($resolvedDst = realpath($dst)) === false) return self::refusePath('destination-unavailable', $dst);
         $src = realpath($src);
@@ -991,7 +998,7 @@ class AutoToolsFileTransaction
             foreach ($files as $file) {
                 $dest = $dst . '/' . $file;
                 $dir = dirname($dest);
-                if (!rtMkDir($dir, 0755) || !self::payloadDirectory($dir))
+                if (!self::makeDestination($dir, $created) || !self::payloadDirectory($dir))
                     return self::refuse('destination parent unavailable or unsafe');
                 $identity = self::identity($dest);
                 if ($identity !== null && !in_array($identity[2], array(0100000, 0120000), true))
@@ -1005,8 +1012,10 @@ class AutoToolsFileTransaction
             if (!static::recoverLocked($root, $dst, false, $retry, $matched, $deferOn))
                 return self::refuse('pending file job blocks hash=' .
                     ($context === null ? 'unknown' : $context['hash']));
-            if ($matched === 'queued')
-                return self::refuse('queued file job awaits recovery hash=' . $context['hash']);
+            if ($matched === 'queued') {
+                FileUtil::toLog('autotools: nonmove ' . self::$subject . ' waiting: predecessor pending');
+                return false;
+            }
             if ($matched) return true;
             // Once the sidecar owns this token and x-dest, a repeated hook is
             // the same completed job even after its journal has retired.
@@ -1030,6 +1039,8 @@ class AutoToolsFileTransaction
             $ok = static::finish($root, $record, true, false, $planned);
             if (!$ok) {
                 $reason = self::$failureReason ?: 'publication or rollback incomplete; retry pending';
+                if (self::$failureReason !== 'predecessor x-dest acknowledgement pending')
+                    self::$refusal = array('reason'=>'file-operation-refused', 'detail'=>'');
                 if ($record['phase'] === 'staging' && self::clearStages($record) &&
                     @unlink($root . '/' . $record['id'] . '.nonmove.json'))
                     FileUtil::toLog('autotools: nonmove ' . $record['id'] . ' refused: ' . $reason);
@@ -1041,6 +1052,11 @@ class AutoToolsFileTransaction
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);
+        }
+        } finally {
+            // Remove only directories this invocation made and only while empty.
+            foreach (array_reverse($created, true) as $directory => $identity)
+                if (self::same(self::identity($directory), $identity)) @rmdir($directory);
         }
     }
 }

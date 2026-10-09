@@ -7,14 +7,16 @@ class rCache
 	// A loaded object's exact file version, without retaining the object itself.
 	protected static $loadedStates = [];
 
-	public function __construct( $name = '' )
+	public function __construct( $name = '', $create = true )
 	{
+		$create = $create && !FileUtil::settingsReadOnlyContext();
 		global $profileMask;
-		$settings = FileUtil::getSettingsPath();
-		FileUtil::makeDirectory($settings,
-			(isset($profileMask) ? $profileMask : 0777) | 01000, true);
+		$settings = $create ? FileUtil::getSettingsPath() : FileUtil::getProfilePathEx(null, false).'/settings';
+		if($create)
+			FileUtil::makeDirectory($settings,
+				(isset($profileMask) ? $profileMask : 0777) | 01000, true);
 		$this->dir = $settings.$name;
-		if($name !== '')
+		if($create && $name !== '')
 			FileUtil::makeDirectory($this->dir, null, true);
 	}
 	public static function flock( $fp )

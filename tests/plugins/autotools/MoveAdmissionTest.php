@@ -1,309 +1,53 @@
 <?php
-require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
-
-class FileUtil
-{
-    public static $messages = array();
-    public static function toLog($message) { self::$messages[] = $message; }
-}
-
-eval(loadClassDefinition(dirname(__DIR__, 3) . '/php/Torrent.php', 'Torrent'));
-
-eval(loadFunctionDefinition(dirname(__DIR__, 3) . '/php/xmlrpc.php',
-    'rpcMethodCapability'));
-eval(loadClassDefinition(dirname(__DIR__, 3) . '/plugins/autotools/autotools.php',
-    'rAutoTools'));
-eval(loadClassDefinition(dirname(__DIR__, 3) . '/plugins/autotools/move_tx_lib.php',
-    'AutoToolsMoveTransaction'));
-require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
-require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
-
-function moveAdmissionFixture()
-{
-    $root = (getenv('TMPDIR') ?: sys_get_temp_dir()) . '/move-admission-' . bin2hex(random_bytes(6));
-    mkdir($root, 0700);
-    mkdir($root . '/session', 0700);
-    mkdir($root . '/source', 0700);
-    file_put_contents($root . '/source/payload', 'original');
-    rTorrentSettings::get()->session = $root . '/session';
-    return $root;
-}
-
-function removeMoveAdmissionFixture($path)
-{
-    if (!is_dir($path) || is_link($path)) return @unlink($path);
-    foreach (scandir($path) as $name)
-        if ($name !== '.' && $name !== '..') removeMoveAdmissionFixture($path . '/' . $name);
-    return rmdir($path);
-}
-
+define('MOVE_WORKER_TEST_LIBRARY', true);
+require_once __DIR__ . '/MoveWorkerTest.php';
+$native = array('system.autotools.move_queue', 'system.autotools.move_dispatch', 'system.autotools.move_state', 'system.autotools.move_owner',
+    'system.autotools.move_reset', 'd.autotools.move_enqueue', 'd.autotools.move_begin', 'd.autotools.move_defer',
+    'd.autotools.move_finish', 'd.autotools.move_cancel');
+$lease = array('d.stop_close_claim_state', 'd.stop_close_claim', 'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
+    'd.directory.set_if_stop_close_claim', 'd.directory.base.set_if_stop_close_claim', 'd.start_if_stop_close_claim',
+    'd.open_if_stop_close_claim', 'd.release_stop_close_claim');
 $suite = new StrictTestSuite();
-$hash = str_repeat('A', 40);
-$journalHold = 'journal-nonfile: path=.autotools-file-jobs/' . $hash
-    . '.move.json; Move held pending journal repair';
-$complete = array('system.listMethods', 'd.stop_close_claim_state', 'd.stop_close_claim',
-    'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
-    'd.directory.set_if_stop_close_claim', 'd.start_if_stop_close_claim');
-
-$suite->test('stock daemon missing one claim method refuses before a new Move receipt',
-    function () use ($hash, $complete) {
-        $root = moveAdmissionFixture();
+foreach (array('stock'=>array(array(), 'upstream'), 'full'=>array(array_merge($native, $lease), 'queue'),
+    'partial'=>array(array_slice($native, 1), 'paused'), 'unrecognized-native'=>array(array('system.autotools.future'), 'paused'),
+    'malformed-empty'=>array(array(''), 'paused'), 'malformed-space'=>array(array('bad method'), 'paused'), 'missing-lease'=>array($native, 'paused')) as $name=>$case)
+    $suite->test('capability mode ' . $name, function () use ($case) {
+        $state=moveWorkerFixture();$state['capabilities']=array_merge(array('system.listMethods'),$case[0]);
         try {
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', true, false,
-                array_values(array_diff($complete, array('d.directory.set_if_stop_close_claim'))));
-            AutoToolsMoveTransaction::run(array($hash));
-            strictAssertSame(array('system.listMethods'), array_column(rXMLRPCRequest::$requests, 'key'),
-                'only read-only capability RPC may run');
-            strictAssertSame('original', file_get_contents($root . '/source/payload'),
-                'source remains unchanged');
-            strictAssertSame(false, is_dir($root . '/finished'), 'no destination is created');
-            strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.move.json'),
-                'no new Move receipt is published');
-            strictAssertSame('autotools: move ' . $hash . ' refused: daemon-claim-abi-unsupported',
-                end(FileUtil::$messages), 'missing method is a visible classified refusal');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
+            list($exit,$after,$calls,$output)=moveWorkerRun($state,'capability');
+            strictAssertSame(0,$exit,'capability CLI completes');
+            strictAssertSame($case[1],$output,'mode follows complete capabilities');
+            strictAssertSame(array('system.listMethods'),$calls,'one read-only probe');
+        } finally { strictRemoveTree($state['root']); }
     });
-
-$suite->test('transport failure leaves Move capability unknown and publishes no receipt',
-    function () use ($hash) {
-        $root = moveAdmissionFixture();
+$suite->test('unknown capability pauses instead of using upstream fallback', function () {
+    $state=moveWorkerFixture();$state['drop']='system.listMethods';
+    try {
+        list($exit,$after,$calls,$output)=moveWorkerRun($state,'capability');
+        strictAssertSame('paused',$output,'unknown is not unsupported');
+    } finally { strictRemoveTree($state['root']); }
+});
+foreach(array('queue','upstream','paused','disabled')as$mode)
+    $suite->test('real parser handler setup '.$mode,function()use($mode,$native,$lease){
+        $state=moveWorkerFixture();
+        $state['capabilities']=array_merge(array('system.listMethods'),$mode==='upstream'?array():
+            ($mode==='paused'?array($native[0]):array_merge($native,$lease)));
         try {
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', false, false);
-            AutoToolsMoveTransaction::run(array($hash));
-            strictAssertSame(array('system.listMethods'), array_column(rXMLRPCRequest::$requests, 'key'),
-                'transport failure does not initiate a claim');
-            strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.move.json'),
-                'unknown capability creates no Move receipt');
-            strictAssertSame('autotools: move ' . $hash . ' refused: daemon-claim-abi-unconfirmed',
-                end(FileUtil::$messages), 'transport failure is not classified as unsupported');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
+            list($exit,$after,$calls,$output,$bodies)=moveWorkerRun($state,$mode==='disabled'?'hooks-disabled':'hooks');
+            strictAssertSame(0,$exit,'handler setup completes: '.$output);
+            $wire=html_entity_decode(implode('',array_slice($bodies,1)),ENT_QUOTES|ENT_XML1,'UTF-8');
+            strictAssertSame(in_array($mode,array('queue','disabled'),true),strpos($wire,'system.autotools.move_dispatch=')!==false,'native drain schedule');
+            // Captured packaged native 2c77a784 rejects integer delay/interval:
+            // command_events.cc apply_schedule reads name, delay and interval as strings.
+            if(in_array($mode,array('queue','disabled'),true)) {
+                strictAssertSame(1,preg_match('~<name>methodName</name>\s*<value><string>schedule\.if_absent</string></value>.*?<name>params</name>\s*<value><array><data>(.*?)</data>~s',$wire,$schedule),'native schedule present');
+                preg_match_all('~<value><(string|i4|i8|double|boolean)>(.*?)</\\1></value>~s',$schedule[1],$parameters);
+                strictAssertSame(array_fill(0,5,'string'),$parameters[1],'native schedule argument types');
+                strictAssertSame(array('', 'am.queue.'.hash('sha256','tester'), '1', '1', 'system.autotools.move_dispatch="tester"'),$parameters[2],'native schedule argument values');
+            }
+            strictAssertSame($mode==='queue',strpos($wire,'d.autotools.move_enqueue=')!==false,'pure enqueue admission');
+            strictAssertSame($mode==='upstream',strpos($wire,'upstream_move.php')!==false,'upstream hook only when absent ABI');
+            strictAssertSame(true,strpos($wire,'php \\"quoted\\" \\\\ binary')!==false,'configured PHP bytes quoted by shared helper');
+        } finally { strictRemoveTree($state['root']); }
     });
-
-$suite->test('complete claim command set remains eligible for the current daemon',
-    function () use ($complete) {
-        rXMLRPCRequest::reset();
-        try {
-            rXMLRPCRequest::queue('system.listMethods', true, false,
-                array_merge(array('d.hash'), $complete));
-            strictAssertSame('available', rAutoTools::claimAbiStatus(),
-                'all Move claim commands permit admission');
-            strictAssertSame(array('system.listMethods'), array_column(rXMLRPCRequest::$requests, 'key'),
-                'capability check is read-only');
-        } finally { rXMLRPCRequest::reset(); }
-    });
-
-$suite->test('RPC fault is unknown rather than a missing-method verdict',
-    function () {
-        rXMLRPCRequest::reset();
-        try {
-            rXMLRPCRequest::queue('system.listMethods', true, true, array('-501'), 'Temporary fault');
-            strictAssertSame('unconfirmed', rAutoTools::claimAbiStatus(),
-                'fault does not identify unsupported claim methods');
-        } finally { rXMLRPCRequest::reset(); }
-    });
-
-$suite->test('pending Move receipt is held rather than erased when claim state is unknown',
-    function () use ($hash) {
-        $root = moveAdmissionFixture();
-        try {
-            mkdir($root . '/session/.autotools-file-jobs', 0700);
-            $path = $root . '/session/.autotools-file-jobs/' . $hash . '.move.json';
-            $job = array('hash'=>$hash, 'src'=>$root . '/source/payload',
-                'dst'=>$root . '/finished/payload', 'identity'=>'1:1',
-                'daemon_dir'=>$root . '/finished', 'phase'=>'intent', 'job_id'=>str_repeat('a', 32));
-            file_put_contents($path, json_encode($job));
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('d.stop_close_claim_state', false, false);
-            AutoToolsMoveTransaction::run(array($hash));
-            // An unclaimed planned job whose claim read failed only asks,
-            // read-only, whether its download is gone; an unknown answer holds.
-            strictAssertSame(array('d.stop_close_claim_state', 'd.hash'), array_column(rXMLRPCRequest::$requests, 'key'),
-                'existing receipt is reconciled before capability admission');
-            strictAssertSame(json_encode($job), file_get_contents($path),
-                'ambiguous pending receipt is preserved byte for byte');
-            strictAssertSame('original', file_get_contents($root . '/source/payload'),
-                'source remains unchanged while recovery is held');
-            strictAssertSame(true, strpos(end(FileUtil::$messages), 'hold: rpc-d.stop_close_claim_state-unconfirmed') !== false,
-                'recovery hold is visible');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('unsupported daemon clears only the unjournaled marker from its old hook',
-    function () use ($hash) {
-        $root = moveAdmissionFixture();
-        $marker = str_repeat('a', 32);
-        try {
-            $sidecar = $root . '/session/' . $hash . '.torrent.rtorrent';
-            file_put_contents($sidecar, 'd6:customd20:x-autotools-move-job32:' . $marker . 'ee');
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', true, false, array('system.listMethods'));
-            rXMLRPCRequest::queue('branch', true, false, array('0'));
-            rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false,
-                function ($commands) use ($sidecar) {
-                    file_put_contents($sidecar, 'd6:customd20:x-autotools-move-job0:ee');
-                    return array('0');
-                });
-            rXMLRPCRequest::queue(getCmd('d.get_custom'), true, false, array(''));
-            AutoToolsMoveTransaction::run(array($hash, '', '', '', '', '', '', $marker));
-            strictAssertSame(array('system.listMethods', 'branch', getCmd('d.save_full_session'),
-                getCmd('d.get_custom')),
-                array_column(rXMLRPCRequest::$requests, 'key'),
-                'old hook marker is conditionally cleared before refusal');
-            $branch = rXMLRPCRequest::requestsFor('branch')[0]['commands'][0]->params;
-            strictAssertSame($hash, $branch[0], 'clear targets the same torrent');
-            strictAssertSame(true, strpos($branch[1], $marker) !== false,
-                'clear checks the exact worker token');
-            strictAssertSame(true, strpos($branch[2], 'x-autotools-move-job') !== false,
-                'true arm clears only the Move marker');
-            strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.move.json'),
-                'refused Move does not publish a journal');
-            $saved = Torrent::fromRawBytes(file_get_contents($sidecar));
-            strictAssertSame('', $saved->meta('custom')['x-autotools-move-job'],
-                'old hook marker is absent from persisted session as well');
-            strictAssertSame('autotools: move ' . $hash
-                . ' refused: daemon-claim-abi-unsupported; old-hook-marker-cleared',
-                end(FileUtil::$messages), 'cleanup is visible');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('unsupported daemon preserves a marker changed after the old hook',
-    function () use ($hash) {
-        $root = moveAdmissionFixture();
-        try {
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', true, false, array('system.listMethods'));
-            rXMLRPCRequest::queue('branch', true, false, array('SKIP'));
-            AutoToolsMoveTransaction::run(array($hash, '', '', '', '', '', '', str_repeat('a', 32)));
-            strictAssertSame(array('system.listMethods', 'branch'),
-                array_column(rXMLRPCRequest::$requests, 'key'),
-                'changed marker is not cleared or read as a successful cleanup');
-            strictAssertSame('autotools: move ' . $hash
-                . ' hold: daemon-claim-abi-unsupported; old-hook-marker-changed',
-                end(FileUtil::$messages), 'concurrent marker change is visible');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('unsupported daemon holds when the old marker remains in the saved session',
-    function () use ($hash) {
-        $root = moveAdmissionFixture();
-        $marker = str_repeat('b', 32);
-        try {
-            $sidecar = $root . '/session/' . $hash . '.torrent.rtorrent';
-            file_put_contents($sidecar, 'd6:customd20:x-autotools-move-job32:' . $marker . 'ee');
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            rXMLRPCRequest::queue('system.listMethods', true, false, array('system.listMethods'));
-            rXMLRPCRequest::queue('branch', true, false, array('0'));
-            rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
-            rXMLRPCRequest::queue(getCmd('d.get_custom'), true, false, array(''));
-            AutoToolsMoveTransaction::run(array($hash, '', '', '', '', '', '', $marker));
-            strictAssertSame('autotools: move ' . $hash
-                . ' hold: daemon-claim-abi-unsupported; old-hook-marker-unconfirmed',
-                end(FileUtil::$messages), 'stale session value prevents a false cleanup verdict');
-            strictAssertSame($marker, Torrent::fromRawBytes(file_get_contents($sidecar))
-                ->meta('custom')['x-autotools-move-job'], 'sidecar is not rewritten by PHP');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('nonfile Move journal holds an old hook marker before capability admission',
-    function () use ($hash, $journalHold) {
-        $root = moveAdmissionFixture();
-        try {
-            $journal = $root . '/session/.autotools-file-jobs';
-            mkdir($journal, 0700);
-            mkdir($journal . '/' . $hash . '.move.json', 0700);
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            AutoToolsMoveTransaction::run(array($hash, '', '', '', '', '', '',
-                str_repeat('a', 32)));
-            strictAssertSame(array(), rXMLRPCRequest::$requests,
-                'ambiguous journal path prevents capability and marker RPC');
-            strictAssertSame('autotools: move ' . $hash . ' hold: ' . $journalHold,
-                end(FileUtil::$messages), 'ambiguous journal entry is visible');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('recovery reports a nonfile Move journal path instead of skipping it',
-    function () use ($hash, $journalHold) {
-        $root = moveAdmissionFixture();
-        try {
-            $journal = $root . '/session/.autotools-file-jobs';
-            mkdir($journal, 0700);
-            $path = $journal . '/' . $hash . '.move.json';
-            mkdir($path, 0700);
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            AutoToolsMoveTransaction::recoverAll();
-            strictAssertSame('autotools: move ' . $hash . ' recovery hold: ' . $journalHold,
-                end(FileUtil::$messages), 'nonfile recovery entry is visible');
-            strictAssertSame(true, is_dir($path), 'nonfile journal evidence is preserved');
-            strictAssertSame(array(), rXMLRPCRequest::$requests, 'recovery sends no daemon RPC');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('worker holds a dangling Move journal symlink before native admission',
-    function () use ($hash, $journalHold) {
-        $root = moveAdmissionFixture();
-        try {
-            $journal = $root . '/session/.autotools-file-jobs';
-            mkdir($journal, 0700);
-            $path = $journal . '/' . $hash . '.move.json';
-            symlink($root . '/temporarily-unavailable-record', $path);
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            AutoToolsMoveTransaction::run(array($hash));
-            strictAssertSame('autotools: move ' . $hash . ' hold: ' . $journalHold,
-                end(FileUtil::$messages), 'broken journal alias is held visibly');
-            strictAssertSame(true, is_link($path), 'journal alias is preserved');
-            strictAssertSame(array(), rXMLRPCRequest::$requests, 'no claim admission or mutation runs');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('journal refusal sanitizes an unsafe hash in the log and document name',
-    function () {
-        $root = moveAdmissionFixture();
-        $hash = "BAD\nLOG";
-        try {
-            $journal = $root . '/session/.autotools-file-jobs';
-            mkdir($journal, 0700);
-            mkdir($journal . '/' . $hash . '.move.json', 0700);
-            rXMLRPCRequest::reset(); FileUtil::$messages = array();
-            AutoToolsMoveTransaction::run(array($hash));
-            strictAssertSame('autotools: move <invalid-hash> hold: journal-nonfile: '
-                . 'path=.autotools-file-jobs/<invalid-hash>.move.json; '
-                . 'Move held pending journal repair',
-                end(FileUtil::$messages), 'untrusted hash is not copied to the log');
-            strictAssertSame(array(), rXMLRPCRequest::$requests, 'invalid document sends no daemon RPC');
-        } finally { rXMLRPCRequest::reset(); removeMoveAdmissionFixture($root); }
-    });
-
-$suite->test('new AutoTools lock is private while a verified legacy lock keeps its identity',
-    function () {
-        $root = moveAdmissionFixture();
-        $oldUmask = umask(0022);
-        $handle = $legacy = null;
-        try {
-            $lock = new ReflectionMethod('AutoToolsMoveTransaction', 'lock');
-            if (PHP_VERSION_ID < 80100) $lock->setAccessible(true);
-            $handle = $lock->invoke(null, $root . '/session');
-            clearstatcache(true, $root . '/session/.lock');
-            strictAssertSame(0600, fileperms($root . '/session/.lock') & 0777,
-                'normal new lock is compatible with startup journal admission');
-            strictAssertSame(0022, umask(), 'temporary private creation restores the caller umask');
-            flock($handle, LOCK_UN); fclose($handle);
-            chmod($root . '/session/.lock', 0644);
-            // Keep the legacy inode alive so unlink/recreate cannot reuse it.
-            $legacy = fopen($root . '/session/.lock', 'c');
-            $identity = fstat($legacy);
-            $handle = $lock->invoke(null, $root . '/session');
-            clearstatcache(true, $root . '/session/.lock');
-            strictAssertSame($identity['ino'], fileinode($root . '/session/.lock'),
-                'an existing lock is opened in place to preserve exclusion');
-            strictAssertSame(false, flock($legacy, LOCK_EX | LOCK_NB),
-                'a contender holding the legacy inode cannot bypass the active lock');
-        } finally {
-            foreach (array($handle, $legacy) as $resource)
-                if (is_resource($resource)) { flock($resource, LOCK_UN); fclose($resource); }
-            umask($oldUmask); removeMoveAdmissionFixture($root);
-        }
-    });
-
 exit($suite->run());

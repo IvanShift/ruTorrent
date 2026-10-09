@@ -51,3 +51,12 @@ test("an answer without warnings keeps the error display and the silent success"
   expect(noty.mock.calls).toStrictEqual([["DataDir plugin: Operation failed (datadir-busy)", "error"]]);
   expect(theDialogManager.hide).not.toHaveBeenCalled();
 });
+
+test("the directory dialog preserves trailing whitespace bytes", () => {
+  document.body.innerHTML += '<input id="edit_datadir"><input id="move_not_add_path"><input id="move_datafiles">';
+  theWebUI.getTable = () => ({ selCount: 1, getFirstSelected: () => "A".repeat(40) });
+  theWebUI.torrents["A".repeat(40)] = { save_path: "/data/foo \t", multi_file: "1" };
+  theDialogManager.show = jest.fn();
+  theWebUI.EditDataDir();
+  expect($("#edit_datadir").val()).toBe("/data/foo \t");
+});

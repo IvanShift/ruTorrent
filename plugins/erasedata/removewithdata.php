@@ -417,7 +417,7 @@ function erasedataCleanupDaemonClaims($hash)
 // every replacement cleanup. For a missing copy a save is requested once per
 // process so the exact plan returns; a save would not change the other two.
 // Each is logged with the download's hash and its own reason (ACC-OWNB-04).
-function erasedataCleanupClaimWithoutPlan($hash, $failure)
+function erasedataCleanupClaimWithoutPlan($hash, $failure, &$refusal = null)
 {
 	static $reported = array();
 	$reasons = array('plan-unavailable' => 'session-copy-unreadable',
@@ -426,8 +426,7 @@ function erasedataCleanupClaimWithoutPlan($hash, $failure)
 	$owned = erasedataCleanupDaemonClaims($hash);
 	if($owned === false)
 	{
-		FileUtil::toLog('erasedata: cleanup owner '.$hash.' refused: '.$reason.' and daemon'
-			.' file list unconfirmed; replacements with obsolete files wait for this download');
+		$refusal = 'owner-'.$reason.'-daemon-paths-unconfirmed owner='.$hash;
 		return(false);
 	}
 	if(!isset($reported[$hash]))
@@ -447,8 +446,9 @@ function erasedataCleanupClaimWithoutPlan($hash, $failure)
 
 // A cleanup may discard only names and inodes unclaimed by every other torrent.
 // Keep the scan in erasedata so producer and delayed consumer use one rule.
-function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
+function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, &$refusal = null)
 {
+	$refusal = 'owner-snapshot-unconfirmed';
 	$oldHash = erasedataCanonicalHash($oldHash);
 	$newHash = erasedataCanonicalHash($newHash);
 	if($oldHash === false || $newHash === false || $oldHash === $newHash
@@ -490,7 +490,7 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
 		{
 			if(erasedataCleanupMetadataOnly($hash)) continue;
-			$owned = erasedataCleanupClaimWithoutPlan($hash, $failure);
+			$owned = erasedataCleanupClaimWithoutPlan($hash, $failure, $refusal);
 			if($owned === false)
 				return(false);
 		}
@@ -511,6 +511,7 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 			}
 		}
 	}
+	$refusal = null;
 	return(array('paths' => $paths, 'inodes' => $inodes,
 		'bindings' => $bindings));
 }
@@ -3094,6 +3095,7 @@ if(!function_exists('erasedataStagingManifestStillMatches'))
 			return(false);
 		$manifest = ErasedataManifestCodec::decodeBytes($bytes, $hash);
 		return(is_array($manifest) && isset($manifest['operation'], $manifest['force'])
+			&& empty($manifest['paths_ambiguous'])
 			&& $manifest['operation'] === ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD
 			&& $manifest['force'] === $force);
 	}
@@ -3328,7 +3330,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					if($capability === false)
 					{
 						$partition['refused'][] = $hash;
-						erasedataDrainDiagnostic($log, 'descriptor-unavailable', null, $members,
+						erasedataDrainDiagnostic($log, is_array($paths) ? 'descriptor-unavailable' : 'paths-unknown', null, $members,
 							'admission-refused-nothing-staged', $hash);
 						continue;
 					}

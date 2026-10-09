@@ -256,17 +256,13 @@ class TorrentAdditionCoverageTest extends TestCase
 	// ---- the allowlist stays a boundary ----------------------------------
 
 	/**
-	 * The allowlist is not widened past what the tree uses. d.custom1 and
-	 * d.custom2 are the label and the comment, which sendTorrent() already
-	 * writes from its own checked parameters; an addition permitted to set
-	 * them again could overwrite a value that was checked with one that was
-	 * not. Nothing builds them today, and this pins that they stay out until
-	 * something does.
+	 * Edit preserves d.custom1 as an exact checked addition. The comment and
+	 * unused custom4/custom5 fields have no addition producers.
 	 */
 	public function testTheUnusedCustomFieldsAreNotPermitted()
 	{
 		$this->installSettingsFor(0x1012);
-		foreach (array('d.set_custom1', 'd.set_custom2', 'd.set_custom4', 'd.set_custom5') as $alias) {
+		foreach (array('d.set_custom2', 'd.set_custom4', 'd.set_custom5') as $alias) {
 			$this->assertTrue(rTorrent::isValidAddition(getCmd($alias) . '=x') === false,
 				$alias . ' is not permitted as an addition, because nothing builds one');
 		}

@@ -1,5 +1,6 @@
 <?php
 
+require_once(__DIR__.'/../../php/rtorrent.php');
 require_once( dirname(__FILE__).'/../../php/cache.php');
 require_once( dirname(__FILE__).'/../../php/util.php');
 require_once( dirname(__FILE__).'/../../php/settings.php');
@@ -255,24 +256,25 @@ class rRatioRulesList
 			if($item->channel!='')
 				$throttleRulesExist = true;
 		}
-		if($ratioRulesExist)
+		if($ratioRulesExist || $throttleRulesExist)
 		{
-			$ratCmd =
-                                getCmd('d.set_custom').'=x-extratio1,"$'.getCmd('execute_capture').
-                                '={'.Utility::getPHP().','.$rootPath.'/plugins/extratio/update.php,\"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#\",$'.getCmd('d.get_custom1').'=,ratio,'.User::getUser().'}" ; '.
-                                getCmd('branch').'='.getCmd('d.get_custom').'=x-extratio1,'.
-                                getCmd('view.set_visible').'=$'.getCmd('d.get_custom').'=x-extratio1';
+			// The capture is itself a quoted command argument: quote each argv
+			// first, then quote the complete expression for d.set_custom.
+			$capture = '$'.getCmd('execute_capture').'={'.
+				rTorrent::quoteCommandArg(Utility::getPHP()).','.
+				rTorrent::quoteCommandArg($rootPath.'/plugins/extratio/update.php').','.
+				rTorrent::quoteCommandArg('$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#').
+				',$'.getCmd('d.get_custom1').'=,';
+			$user = ','.rTorrent::quoteCommandArg((string)User::getUser()).'}';
 		}
-		else
-			$ratCmd = getCmd('cat=');
-		if($throttleRulesExist)
-			$thrCmd =
-                                getCmd('d.set_custom').'=x-extratio2,"$'.getCmd('execute_capture').
-                                '={'.Utility::getPHP().','.$rootPath.'/plugins/extratio/update.php,\"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#\",$'.getCmd('d.get_custom1').'=,channel,'.User::getUser().'}" ; '.
-                                getCmd('branch').'='.getCmd('d.get_custom').'=x-extratio2,'.
-                                getCmd('d.set_throttle_name').'=$'.getCmd('d.get_custom').'=x-extratio2';
-		else
-			$thrCmd = getCmd('cat=');
+		$ratCmd = $ratioRulesExist ?
+			getCmd('d.set_custom').'=x-extratio1,'.rTorrent::quoteCommandArg($capture.'ratio'.$user).' ; '.
+			getCmd('branch').'='.getCmd('d.get_custom').'=x-extratio1,'.
+			getCmd('view.set_visible').'=$'.getCmd('d.get_custom').'=x-extratio1' : getCmd('cat=');
+		$thrCmd = $throttleRulesExist ?
+			getCmd('d.set_custom').'=x-extratio2,'.rTorrent::quoteCommandArg($capture.'channel'.$user).' ; '.
+			getCmd('branch').'='.getCmd('d.get_custom').'=x-extratio2,'.
+			getCmd('d.set_throttle_name').'=$'.getCmd('d.get_custom').'=x-extratio2' : getCmd('cat=');
 		$req = new rXMLRPCRequest( array(
 			rTorrentSettings::get()->getOnInsertCommand( array('_exratio1'.User::getUser(), $ratCmd ) ),
 			rTorrentSettings::get()->getOnInsertCommand( array('_exratio2'.User::getUser(), $thrCmd ) ),

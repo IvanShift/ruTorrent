@@ -55,11 +55,11 @@ class DataDirMoveJob
             throw new RuntimeException('invalid-job');
         // The daemon strings are the daemon's own bytes. Version 2 was
         // written while rXMLRPCRequest escaped them (see ambiguous()); without
-        // a backslash in any of them both readings are the same bytes, so the
+        // a quote or backslash, both readings are the same bytes. Such a
         // job stays version 2, and a release that reads only version 2 can
         // still run it after a rollback. Version 3 marks a job that needs the
         // new reading.
-        $version = self::holdsBackslash($data) ? 3 : 2;
+        $version = self::hasSpecialDaemonPathByte($data, '\\"') ? 3 : 2;
         $data = array('version' => $version, 'phase' => 'new', 'job' => bin2hex(random_bytes(16)),
             'hash' => $data['hash'], 'directory' => $data['directory'],
             'add' => (bool) $data['add'], 'move' => (bool) $data['move'],
@@ -78,9 +78,16 @@ class DataDirMoveJob
             throw new RuntimeException('job-unavailable');
         $json = @file_get_contents($path, false, null, 0, DataDirDocument::MAX_BYTES + 1);
         $data = is_string($json) && strlen($json) <= DataDirDocument::MAX_BYTES ? json_decode($json, true) : null;
-        if (!is_array($data) || array_keys($data) !== array('version', 'phase', 'job',
+        $keys = array('version', 'phase', 'job',
             'hash', 'directory', 'add', 'move', 'source', 'destination', 'files', 'local_id',
-            'previous_directory')
+            'previous_directory');
+        if (is_array($data) && array_key_exists('cancel_reason', $data))
+            $keys[] = 'cancel_reason';
+        if (!is_array($data) || array_keys($data) !== $keys
+            || (array_key_exists('cancel_reason', $data) && ($data['version'] !== 3
+                || !is_string($data['cancel_reason'])
+                || preg_match('/^[a-z0-9.-]{1,160}$/D', $data['cancel_reason']) !== 1
+                || !in_array($data['phase'], array('cancel-pending', 'ack-pending'), true)))
             || !in_array($data['version'], array(2, 3), true)
             || !in_array($data['phase'], array('new', 'claimed',
                 'setter-pending', 'cancel-pending', 'ack-pending'), true)
@@ -103,10 +110,14 @@ class DataDirMoveJob
     // True when this run's own finish restored a started download.
     public function restoredStart() { return $this->restoredStart; }
 
-    private function phaseSet($phase)
+    private function phaseSet($phase, $reason = null)
     {
         $next = $this->data;
         $next['phase'] = $phase;
+        if ($reason !== null) {
+            $next['version'] = 3;
+            $next['cancel_reason'] = $reason;
+        }
         DataDirDocument::publish($this->path, $next, false, 'job');
         $this->data = $next;
     }
@@ -153,16 +164,16 @@ class DataDirMoveJob
     // manifest, and the reason create() still writes such a job as version 2.
     private function ambiguous()
     {
-        return $this->data['version'] === 2 && self::holdsBackslash($this->data);
+        return $this->data['version'] === 2 && self::hasSpecialDaemonPathByte($this->data);
     }
 
     // The daemon strings of a job; the request's own directory is not one.
-    private static function holdsBackslash($data)
+    private static function hasSpecialDaemonPathByte($data, $characters = '\\')
     {
         $strings = array_merge(array($data['previous_directory'], $data['source'],
             $data['destination']), $data['files']);
         foreach ($strings as $value)
-            if (is_string($value) && strpos($value, '\\') !== false)
+            if (is_string($value) && strpbrk($value, $characters) !== false)
                 return true;
         return false;
     }
@@ -186,7 +197,8 @@ class DataDirMoveJob
         throw new DataDirMoveRefused('torrent-absent');
     }
 
-    private function cancelUnmoved($state, $intent)
+    // Retirement completes the safe cancellation, then reports its refusal.
+    private function cancelUnmoved($state, $intent, $reason = null)
     {
         if ($this->data['phase'] !== 'cancel-pending')
         {
@@ -195,7 +207,7 @@ class DataDirMoveJob
                 throw new RuntimeException('unmoved-abort-unconfirmed');
             // This phase must survive receipt deletion: a restarted worker
             // must finish cancellation instead of preparing another move.
-            $this->phaseSet('cancel-pending');
+            $this->phaseSet('cancel-pending', $reason);
         }
         if ($intent !== null)
         {
@@ -220,7 +232,11 @@ class DataDirMoveJob
             throw new RuntimeException('unmoved-done-unconfirmed');
         $this->phaseSet('ack-pending');
         $this->call('d.ack_stop_close_claim', array($this->data['job']));
-        return $this->retire(null);
+        $this->retire(null);
+        // Old cancellation records did not preserve the triggering refusal.
+        // Report that uncertainty rather than silently presenting a success.
+        throw new DataDirMoveRefused(isset($this->data['cancel_reason'])
+            ? $this->data['cancel_reason'] : 'interrupted-cancellation');
     }
 
     public function run()
@@ -245,7 +261,10 @@ class DataDirMoveJob
                 throw new RuntimeException('ack-pending-without-done');
             if ($state['kind'] === 'done')
                 $this->call('d.ack_stop_close_claim', array($job));
-            return $this->retire($intent);
+            $this->retire($intent);
+            if (isset($this->data['cancel_reason']))
+                throw new DataDirMoveRefused($this->data['cancel_reason']);
+            return true;
         }
         if ($state['kind'] === 'absent')
         {
@@ -273,8 +292,7 @@ class DataDirMoveJob
         {
             if ($state['kind'] === 'active' && $intent === null)
             {
-                $this->cancelUnmoved($state, null);
-                throw new DataDirMoveRefused('torrent-generation-changed');
+                $this->cancelUnmoved($state, null, 'torrent-generation-changed');
             }
             throw new RuntimeException('torrent-generation-changed');
         }
@@ -302,15 +320,13 @@ class DataDirMoveJob
         {
             if ($intent !== null && $intent->phase() === 'ready' && !$intent->beginAbortUnmoved())
                 throw new RuntimeException('job-paths-ambiguous-unmoved-unproven');
-            $this->cancelUnmoved($state, $intent);
-            throw new DataDirMoveRefused('job-paths-ambiguous');
+            $this->cancelUnmoved($state, $intent, 'job-paths-ambiguous');
         }
         if ($state['kind'] === 'active' && $intent === null
             && ($this->data['phase'] === 'new' || $this->data['phase'] === 'claimed')
             && $this->call('d.directory') !== $this->data['previous_directory'])
         {
-            $this->cancelUnmoved($state, null);
-            throw new DataDirMoveRefused('torrent-directory-changed');
+            $this->cancelUnmoved($state, null, 'torrent-directory-changed');
         }
         if ($this->data['phase'] === 'new')
             $this->phaseSet('claimed');
@@ -345,8 +361,7 @@ class DataDirMoveJob
                 } catch (RuntimeException $e) {
                     $partial = is_file($movePath)
                         ? DataDirMoveIntent::load($movePath, $this->move) : null;
-                    $this->cancelUnmoved($state, $partial);
-                    throw new DataDirMoveRefused($e->getMessage());
+                    $this->cancelUnmoved($state, $partial, $e->getMessage());
                 }
             }
             if ($intent->phase() === 'ready')
@@ -356,11 +371,11 @@ class DataDirMoveJob
                 {
                     // Retire a refused job only after abortUnmoved proves that
                     // no payload was published. Partial moves retain recovery.
-                    try { $this->cancelUnmoved($state, $intent); }
+                    try { $this->cancelUnmoved($state, $intent, 'move-' . $result); }
+                    catch (DataDirMoveRefused $e) { throw $e; }
                     catch (RuntimeException $e) {
                         throw new RuntimeException('move-' . $result, 0, $e);
                     }
-                    throw new DataDirMoveRefused('move-' . $result);
                 }
                 if (!$intent->markFinishing())
                     throw new RuntimeException('move-finishing-unconfirmed');

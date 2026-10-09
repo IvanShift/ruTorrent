@@ -1074,11 +1074,7 @@ plugin.fillDetails = function(d) {
   $('#torrentPriority option[value=' + d.priority + ']').prop('selected', true);
   if (this.ratioGroupsLoaded) {
     $('#torrentRatioGrp option').prop('selected', false);
-    if (d.ratiogroup) {
-      this.selectOptionByValue('#torrentRatioGrp', d.ratiogroup.replace(/.*rat_/,''));
-    } else {
-      $('#torrentRatioGrp option[value=-1]').prop('selected', true);
-    }
+    this.selectOptionByValue('#torrentRatioGrp', String(getRatioGroup(d.ratiogroup)));
   }
   if (this.throttleLoaded) {
     $('#torrentChannel option').prop('selected', false);

@@ -41,7 +41,7 @@ foreach( $vars as $var )
 	}
 	else if( $parts[0] == "datadir" )
 	{
-		$datadir = trim( rawurldecode( $parts[1] ) );
+		$datadir = rawurldecode( $parts[1] );
 	}
 	else if($parts[0]=="move_addpath")
 	{
@@ -85,6 +85,11 @@ if( $refusal === 'invalid-arguments' || $refusal === 'destination-invalid' )
 }
 else
 {
+	if( $refusal === '' )
+		try { $refusal = rtDataDirPendingRefusal($hash); }
+		catch(Exception $e) { $refusal = $e->getMessage(); }
+	if( $refusal === 'prior-job-pending' )
+		rtDataDirWorkerRefusal($hash, $refusal);
 	// The claim ABI is read once per request.
 	if( $refusal === '' )
 		$refusal = rtDataDirClaimRefusal();

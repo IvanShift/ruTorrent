@@ -47,7 +47,11 @@ if($at->setHandlers())
 }
 else
         $jResult .= "plugin.disable(); noty('autotools: '+theUILang.pluginCantStart,'error');";
-if( $at->moveAdmission === 'unsupported' )
-	$jResult .= "noty('AutoTools Move refused: this rTorrent lacks required claim commands.', 'error');";
-else if( $at->moveAdmission === 'unconfirmed' )
-	$jResult .= "noty('AutoTools Move paused: rTorrent claim support could not be verified.', 'error');";
+$jResult .= $at->modeNotice();
+
+if ($at->moveStatus === 'queue') {
+    require_once __DIR__ . '/move_queue.php';
+    $terminalMoves = AutoToolsMoveQueue::terminalCount(User::getUser());
+    if ($terminalMoves > 0)
+        $jResult .= "noty('AutoTools: " . (int)$terminalMoves . " Move jobs need attention; inspect the torrent message and tools/autotools-move-reset.php.', 'error');";
+}

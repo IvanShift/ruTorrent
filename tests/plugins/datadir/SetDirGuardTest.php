@@ -156,12 +156,49 @@ define('DATADIR_START_CHECK_SECONDS', 0.3);
 $source = getenv('DATADIR_TEST_SOURCE');
 if (!$source) $source = testFindRepoRoot() . '/plugins/datadir/util_setdir.php';
 foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirCollision', 'rtDataDirProbeRename',
-    'rtSetDataDir', 'rtDataDirStartOutcome') as $name)
+    'rtSetDataDir', 'rtDataDirStartOutcome', 'rtDataDirHeld', 'rtDataDirPendingRefusal',
+    'rtDataDirWorkerRefusal') as $name)
     eval(loadFunctionDefinition($source, $name));
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/datadir/apply.php', 'rtDataDirClaimRefusal'));
 
 $suite = new StrictTestSuite();
 $hash = str_repeat('A', 40);
+
+$suite->test('a prior document refuses before claiming and stays visibly recoverable', function () use ($hash) {
+    DataDirTestState::reset();
+    $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
+    file_put_contents($path, '{}');
+    rXMLRPCRequest::queue('d.get_directory', true, false, array('/original'));
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.message.set'), true, false, array(0, 0));
+    rXMLRPCRequest::queue('d.save_full_session', true, false, array(0));
+    strictAssertSame('prior-job-pending', rtDataDirPendingRefusal($hash), 'web admission refuses the existing document');
+    strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, true, false, false, $failure),
+        'the worker refuses the existing document under its lock');
+    strictAssertSame('prior-job-pending', $failure, 'the owning document is the actual refusal');
+    strictAssertSame(array(), DataDirTestState::$calls, 'no new claim or payload probe runs');
+    strictAssertSame('{}', file_get_contents($path), 'unknown document bytes remain untouched');
+    $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.message.set');
+    strictAssertSame(1, count($writes), 'held refusal is saved in the durable outcome and immediate message');
+    $message = $writes[0]['commands'][1]->params[1];
+    strictAssertTrue(strpos($message, 'document=' . rawurlencode($path)) !== false
+        && strpos($message, 'key=' . $hash) !== false
+        && strpos($message, 'claim-retained-start-and-move-blocked') !== false, 'the visible reason identifies recovery authority');
+});
+
+$suite->test('a detached worker cannot hide its refusal behind an existing document', function () use ($hash) {
+    DataDirTestState::reset();
+    $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
+    file_put_contents($path, '{}');
+    rXMLRPCRequest::queue('d.get_directory', true, false, array('/original'));
+    rXMLRPCRequest::queue(array('d.set_custom', 'd.message.set'), true, false, array(0, 0));
+    rXMLRPCRequest::queue('d.save_full_session', true, false, array(0));
+    rtDataDirWorkerRefusal($hash, 'job-paths-ambiguous-unmoved-unproven');
+    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.message.set')),
+        'a held worker publishes its outcome');
+    strictAssertSame('{}', file_get_contents($path), 'visibility grants no journal mutation');
+    strictAssertTrue(strpos(DataDirTestState::$logs[0], 'job-paths-ambiguous-unmoved-unproven') !== false,
+        'the original hold reason remains visible');
+});
 
 $suite->test('a closed torrent preflight refuses an unsupported new destination ancestor without opening it', function () use ($hash) {
     DataDirTestState::reset(false, false);
@@ -256,8 +293,10 @@ $suite->test('a held change says held once and keeps its specific reason', funct
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure),
         'an unconfirmed finish is not a success');
     strictAssertSame('daemon-done-unconfirmed', $failure, 'the caller receives the specific reason');
-    strictAssertSame(array('datadir: change held hash=' . $hash . ' reason=daemon-done-unconfirmed'),
-        DataDirTestState::$logs, 'a pending job is held, not refused, in one line');
+    strictAssertSame(1, count(DataDirTestState::$logs), 'a held job has one precise log line');
+    strictAssertTrue(strpos(DataDirTestState::$logs[0], 'reason=daemon-done-unconfirmed document=') !== false
+        && strpos(DataDirTestState::$logs[0], 'key=' . $hash . ' consequence=claim-retained-start-and-move-blocked') !== false,
+        'the refusal names its document, key and consequence');
     strictAssertSame(true, is_file(DataDirTestState::$root . '/jobs/' . $hash . '.json'), 'the job stays for recovery');
 });
 

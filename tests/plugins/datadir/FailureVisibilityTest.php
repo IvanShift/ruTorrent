@@ -59,6 +59,7 @@ STUB
         file_put_contents($this->tree . '/plugins/datadir/util_rt.php', <<<'STUB'
 <?php
 function rtSemGet($key) { return false; }
+function rtDataDirPendingRefusal($hash) { return getenv('DATADIR_TEST_PENDING') ? 'prior-job-pending' : ''; }
 function rtSemLock($key) {}
 function rtSemUnlock($key) {}
 function rtMkDir($path, $mode)
@@ -534,5 +535,21 @@ STUB
             'The dialog receives the filesystem refusal');
         $this->assertTrue(!is_file($dispatch), 'Refused Move is not dispatched');
         $this->assertTrue(strpos($log, 'rename-noreplace-unsupported') !== false, 'Application preserves the actual reason');
+    }
+
+    public function testActionReportsAHeldJobBeforeCapabilityOrDetachedDispatch()
+    {
+        $dispatch = $this->tree . '/dispatch.json';
+        $capability = $this->tree . '/capability.json';
+        $outcome = $this->tree . '/outcome.json';
+        $body = 'hash=' . str_repeat('A', 40) . '&datadir=/data/downloads/new&move_datafiles=1';
+        list($code, $output) = $this->action($body, array('DATADIR_TEST_PENDING'=>'1',
+            'DATADIR_TEST_COMMAND_LOG'=>$dispatch, 'DATADIR_TEST_CAPABILITY_LOG'=>$capability,
+            'DATADIR_TEST_OUTCOME_LOG'=>$outcome));
+        $answer = json_decode($output, true);
+        $this->assertSame(0, $code, 'a prior job is a normal classified refusal');
+        $this->assertSame('prior-job-pending', $answer['errors'][0]['prm'] ?? null, 'the dialog reports the real owner');
+        $this->assertTrue(!is_file($dispatch) && !is_file($capability), 'no detached worker or new claim path runs');
+        $this->assertTrue(is_file($outcome), 'the existing held document gets a durable visible outcome');
     }
 }

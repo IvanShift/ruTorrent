@@ -1,5 +1,6 @@
 <?php
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
+eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
 class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; } }
 class rAutoTools {
     public static $sent = array();
@@ -1257,5 +1258,35 @@ $suite->test('a job whose journal lock another owner holds answers null at once'
         rXMLRPCRequest::reset();
         txRemove($root);
     }
+});
+
+$suite->test('FIN-CP-01 unwritable journal intent remains visible after existing lock opens',function(){
+    if (posix_geteuid() === 0) { echo "scope - permission denial requires non-root worker\n"; return; }
+    $root=txFixture();
+    try {
+        $journal=AutoToolsFileTransaction::journalRoot();touch($journal.'/.lock');chmod($journal,0500);
+        strictAssertSame(false,rtOpFiles(array('a/f'),$root.'/src',$root.'/dst/item','Copy'),'intent denied');
+        strictAssertSame('journal-write-failed',AutoToolsFileTransaction::lastRefusal()['reason'],'hook can notify');
+        strictAssertSame(false,file_exists($root.'/dst/item/a/f'),'no publish');
+        chmod($journal,0700);
+    }finally{txRemove($root);}
+});
+$suite->test('FIN-CP-04 failed staging removes only new empty destination directories',function(){
+    $root=txFixture();
+    try {
+        strictAssertSame(false,rtOpFiles(array('missing'),$root.'/src',$root.'/new/nested','Copy'),'missing source refuses');
+        strictAssertSame(false,is_dir($root.'/new'),'new empty ancestors retired');
+        strictAssertSame('file-operation-refused',AutoToolsFileTransaction::lastRefusal()['reason'],'visible refusal');
+    }finally{txRemove($root);}
+});
+$suite->test('FIN-CP-02 cross-device HardLink failure is visible and leaves source bytes',function(){
+    $root=txFixture();$destination='/dev/shm/autotools-link-'.bin2hex(random_bytes(6));
+    if (!is_dir('/dev/shm') || stat('/dev/shm')['dev']===stat($root)['dev']) { txRemove($root);echo "scope - separate tmpfs unavailable\n";return; }
+    try {
+        strictAssertSame(false,rtOpFiles(array('a/f'),$root.'/src',$destination,'HardLink'),'EXDEV refuses');
+        strictAssertSame('file-operation-refused',AutoToolsFileTransaction::lastRefusal()['reason'],'notifier receives reason');
+        strictAssertSame(true,is_file($root.'/src/a/f'),'source retained');
+        strictAssertSame(false,is_dir($destination),'empty destination retired');
+    }finally{txRemove($root);if(is_dir($destination))txRemove($destination);}
 });
 exit($suite->run());

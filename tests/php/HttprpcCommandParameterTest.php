@@ -125,7 +125,7 @@ class HttprpcCommandParameterTest extends TestCase
 				$reader, $reader, 'list') === $reader,
 				'bundled read expression remains available: '.$reader);
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
-			't.get_url=', 't.url=', 'trkall') === 't.url=',
+			't.get_url=', 't.url=', 'trkall2') === 't.url=',
 			'trkall keeps a plain reader slot without injecting quotes into its nested cat');
 		foreach(array('list', 'fls', 'prs', 'trk') as $mode)
 		{

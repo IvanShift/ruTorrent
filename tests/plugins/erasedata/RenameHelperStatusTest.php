@@ -184,4 +184,23 @@ $suite->test('a consumer reports the refusal under its own name and the runner l
     } finally { strictRemoveTree($root); }
 });
 
+$suite->test('only a native EXDEV rename refusal permits staged cross-mount copy', function () {
+    $root = renameStatusRoot();
+    try {
+        $files = new RenameHelperStatusScript();
+        foreach (array(array(4, 18, true), array(4, 13, false), array(1, 18, false),
+            array(3, 18, false), array(0, 18, false)) as $case) {
+            RenameHelperStatusScript::$helper = renameStatusHelper($root, $case[0], 'errno=' . $case[1]);
+            $files->renameNoReplace($root . '/from errno=18', $root . '/to');
+            strictAssertSame($case[2], ErasedataFilesystemOps::isCrossDeviceRenameRefusal(),
+                'status and structured errno decide EXDEV without reading path text');
+            ErasedataFilesystemOps::clearRenameRefusal();
+            strictAssertSame(false, ErasedataFilesystemOps::isCrossDeviceRenameRefusal(), 'clear resets EXDEV');
+        }
+        RenameHelperStatusScript::$helper = renameStatusHelper($root, 4, 'errno=18');
+        $files->probeRenameParent($root);
+        strictAssertSame(false, ErasedataFilesystemOps::isCrossDeviceRenameRefusal(), 'a failed probe is not a payload rename');
+    } finally { strictRemoveTree($root); }
+});
+
 exit($suite->run());

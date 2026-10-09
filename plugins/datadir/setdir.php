@@ -40,7 +40,7 @@ if( count( $argv ) < 6 )
 else
 {
 	$hash = trim( $argv[1] );
-	$datadir = trim( $argv[2] );
+	$datadir = $argv[2];
 	Debug( "data dir    : ".$datadir );
 	Debug( "add path    : ".trim( $argv[3] ) );
 	Debug( "move files  : ".trim( $argv[4] ) );

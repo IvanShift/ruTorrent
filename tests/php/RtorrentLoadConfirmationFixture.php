@@ -101,9 +101,11 @@ class RtorrentLoadConfirmationFixture
 
 	private static function response($value, $fault = false)
 	{
-		if ($fault === 'unparsed-response')
+		if ($fault === 'malformed-response')
+			$body = '<methodResponse><params><param><value><string>incomplete';
+		else if ($fault === 'nil-response')
 			$body = '<?xml version="1.0"?><methodResponse><params><param><value>'
-				. '<boolean>0</boolean></value></param></params></methodResponse>';
+				. '<nil/></value></param></params></methodResponse>';
 		else if ($fault)
 		{
 			$code = $fault === 'missing-legacy' ? -501 : -500;
@@ -155,7 +157,7 @@ class RtorrentLoadConfirmationFixture
 					$answer = self::response('other');
 				else
 					$answer = self::response('', in_array($mode,
-						array('missing-current', 'missing-legacy', 'unparsed-response'), true) ? $mode : true);
+						array('missing-current', 'missing-legacy', 'nil-response', 'malformed-response'), true) ? $mode : true);
 			} else {
 				$answer = self::response('', true);
 			}

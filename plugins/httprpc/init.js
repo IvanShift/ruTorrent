@@ -117,12 +117,12 @@ rTorrentStub.prototype.setlabel = function()
 	this.getCommon("setlabel");
 }
 
-plugin.origtrkall = rTorrentStub.prototype.getalltrackers;
+plugin.origtrkall2 = plugin.origtrkall = rTorrentStub.prototype.getalltrackers;
 rTorrentStub.prototype.getalltrackers = function()
 {
 	if( this.hashes.length > 50 )
 		this.hashes = [];
-	this.getCommon("trkall");
+	this.getCommon("trkall2");
 	if(plugin.enabled)
 		for(var i=theRequestManager.trk.count; i<theRequestManager.trk.commands.length; i++)
 			this.content+=("&cmd="+encodeURIComponent(theRequestManager.map("trk",i)));

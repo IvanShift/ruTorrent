@@ -84,13 +84,13 @@ class HandoffGrammarTest extends TestCase
 	}
 
 	// R4-RT-11: the queue marker grammar, the profile name rule and the profile
-	// lookup each have one owner; the two CLI entries keep the name rule inline
-	// because they set REMOTE_USER before update.php may load.
+	// lookup each have one owner; the shared operator bootstrap and dispatcher
+	// validate REMOTE_USER before update.php may load.
 	public function testQueueMarkerProfileNameAndLookupHaveOneOwnerEach()
 	{
 		$root = __DIR__ . '/../../../';
 		$sources = array();
-		foreach (array_merge(glob($root . 'plugins/retrackers/*.php'), glob($root . 'tools/*.php')) as $path)
+		foreach (array_merge(glob($root . 'plugins/retrackers/*.php'), glob($root . 'tools/retrackers-*.php')) as $path)
 			$sources[basename($path)] = file_get_contents($path);
 		$this->assertTrue(count($sources) > 6 && isset($sources['update.php'], $sources['dispatch.php'],
 			$sources['retryreset.php'], $sources['retrackers-retry-reset.php']), 'the plugin and tool sources are read');
@@ -102,8 +102,8 @@ class HandoffGrammarTest extends TestCase
 		};
 		$this->assertTrue($count("'/^q1:") === array('update.php' => 1) && $count("'q1:'") === array(),
 			'every reader of d.custom=retrackers-queued goes through RetrackersQueueMarker::parse()');
-		$this->assertTrue($count("'/^[a-z0-9_-]*\$/D'") === array('dispatch.php' => 1, 'retrackers-retry-reset.php' => 1,
-			'update.php' => 1), 'one profile name rule, repeated only by the two CLI entries: ' . json_encode($count("'/^[a-z0-9_-]*\$/D'")));
+		$this->assertTrue($count("'/^[a-z0-9_-]*\$/D'") === array('clitool.php' => 1, 'dispatch.php' => 1,
+			'update.php' => 1), 'one profile name rule, repeated only before the two profile bootstraps: ' . json_encode($count("'/^[a-z0-9_-]*\$/D'")));
 		$this->assertTrue(strpos($sources['update.php'], 'function profileForUser') === false &&
 			substr_count($sources['update.php'], "foreach (\$decision['profiles'] as \$profile)") === 1,
 			'one profile lookup, RetrackersHistoricalBindingClassifier::profileOf()');
@@ -112,5 +112,48 @@ class HandoffGrammarTest extends TestCase
 			RetrackersQueueMarker::parse('q1:' . hash('sha256', 'alice') . ':' . str_repeat('A', 32)) === false &&
 			RetrackersQueueMarker::parse('q2:' . hash('sha256', 'alice') . ':' . str_repeat('a', 32)) === false &&
 			RetrackersQueueMarker::parse(null) === false, 'the marker reads field by field and nothing else');
+	}
+
+	private function assertSourceOrder($source, array $needles, $message)
+	{
+		$previous = -1;
+		foreach ($needles as $needle) {
+			$position = strpos($source, $needle);
+			if ($position === false || $position <= $previous) {
+				$this->assertTrue(false, $message . ': missing or misplaced ' . $needle);
+				return;
+			}
+			$previous = $position;
+		}
+		$this->assertTrue(true, $message);
+	}
+
+	public function testOwnedCliEntrypointsKeepBootstrapAdmissionBeforeLoadingSettings()
+	{
+		$root = __DIR__ . '/../../../';
+		$shared = "require_once(dirname(__DIR__) . '/plugins/retrackers/clitool.php');";
+		foreach (array('apply-existing' => array($shared, 'rRetrackers::load()', 'RetrackersApplyExisting::main('),
+			'retry-reset' => array($shared, 'RetrackersRetryReset::main(')) as $tool => $order) {
+			$this->assertSourceOrder(file_get_contents($root . 'tools/retrackers-' . $tool . '.php'), $order,
+				$tool . ' uses the shared guarded bootstrap before settings or operator RPC');
+		}
+		$this->assertSourceOrder(file_get_contents($root . 'plugins/retrackers/clitool.php'), array(
+			'rutorrent_require_cli(__FILE__);', "preg_match('/^[a-z0-9_-]*\$/D'", "\$_SERVER['REMOTE_USER'] = \$user;",
+			"define('RUTORRENT_SETTINGS_READ_ONLY', true);", "require_once(__DIR__ . '/retrackers.php');",
+			"require_once(__DIR__ . '/../../php/xmlrpc.php');", "require_once(__DIR__ . '/dispatch.php');"),
+			'shared operator bootstrap validates the profile and sets read-only context before profile imports');
+		$this->assertSourceOrder(file_get_contents($root . 'plugins/retrackers/dispatch.php'), array(
+			'rutorrent_require_cli(__FILE__);', "preg_match('/^[a-z0-9_-]*\$/D'", "\$_SERVER['REMOTE_USER']=\$argv[1];",
+			"require_once(__DIR__ . '/update.php');"),
+			'dispatcher validates its profile before loading the application');
+		// The recovery-marker tool is a self-contained raw-SCGI operator and
+		// does not load the application profile/cache bootstrap.
+		$markers = file_get_contents($root . 'tools/retrackers-clear-markers.php');
+		$this->assertSourceOrder($markers, array('require_once $cliGuard;', 'rutorrent_require_cli(__FILE__);',
+			'$apply = isset(', "@include('/rutorrent/app/conf/config.php');"),
+			'clear-markers admits CLI and validates arguments before its standalone configuration');
+		$this->assertTrue(strpos($markers, '/plugins/retrackers/clitool.php') === false &&
+			strpos($markers, 'rCache') === false && strpos($markers, 'rTorrentSettings') === false,
+			'clear-markers has no application settings bootstrap that can create a cold profile');
 	}
 }

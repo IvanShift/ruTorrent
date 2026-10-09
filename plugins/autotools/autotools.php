@@ -1,4 +1,5 @@
 <?php
+require_once dirname(__DIR__, 2) . '/php/rtorrent.php';
 
 require_once( dirname(__FILE__)."/../../php/settings.php");
 require_once( dirname(__FILE__)."/../../php/utility/json.php");
@@ -6,13 +7,33 @@ eval(FileUtil::getPluginConf('autotools'));
 
 class rAutoTools
 {
-	static public function claimAbiStatus()
-	{
-		// Probe only the commands Move actually calls; a version string cannot prove the ABI.
-		return rpcMethodCapability(array('d.stop_close_claim_state', 'd.stop_close_claim',
-			'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
-			'd.directory.set_if_stop_close_claim', 'd.start_if_stop_close_claim'));
-	}
+    static public function moveMode()
+    {
+        $native = array('system.autotools.move_queue', 'system.autotools.move_dispatch',
+            'system.autotools.move_state', 'system.autotools.move_owner', 'system.autotools.move_reset', 'd.autotools.move_enqueue',
+            'd.autotools.move_begin', 'd.autotools.move_defer', 'd.autotools.move_finish', 'd.autotools.move_cancel');
+        $lease = array('d.stop_close_claim_state', 'd.stop_close_claim', 'd.replay_stop_close_claim',
+            'd.ack_stop_close_claim', 'd.directory.set_if_stop_close_claim',
+            'd.directory.base.set_if_stop_close_claim', 'd.start_if_stop_close_claim',
+            'd.open_if_stop_close_claim', 'd.release_stop_close_claim');
+        $capability = rpcMethodCapability(array_merge($native, $lease), $available);
+        if ($capability === 'available') return 'queue';
+        if ($capability !== 'unsupported' || $available === null) return 'paused';
+        foreach ($available as $method)
+            if (strpos($method, 'system.autotools.') === 0 || strpos($method, 'd.autotools.') === 0)
+                return 'paused';
+        return 'upstream';
+    }
+
+    public function modeNotice()
+    {
+        if (!$this->enable_move || $this->fileop_type !== 'Move') return '';
+        if ($this->moveStatus === 'paused')
+            return "noty('AutoTools Move paused: rTorrent file-job support could not be verified.', 'error');";
+        if ($this->moveStatus === 'upstream')
+            return "noty('AutoTools Move runs in upstream mode: this rTorrent has no native file-job queue, so a crash or a retrackers reload during a move can leave a torrent split between folders.', 'warning');";
+        return '';
+    }
 
 	public $hash = "autotools.dat";
 	public $modified = false;
@@ -28,7 +49,8 @@ class rAutoTools
 	public $automove_filter = "/.*/";
 	public $addName = 0;
 	public $addLabel = 0;
-	public $moveAdmission = 'available';
+	public $moveStatus = 'queue';
+    public $finishedPathRefused = false;
 
 	static public function load()
 	{
@@ -96,8 +118,10 @@ class rAutoTools
 			else if( $parts[0] == "path_to_finished" )
 			{
 				$this->path_to_finished = $parts[1];
-				if(!rTorrentSettings::get()->correctDirectory($this->path_to_finished))
-					$this->path_to_finished = '';
+				if(!rTorrentSettings::get()->correctDirectory($this->path_to_finished)) {
+                    $this->path_to_finished = '';
+                    $this->finishedPathRefused = true;
+                }
 			}
 			else if( $parts[0] == "skip_move_for_files" )
 			{
@@ -224,84 +248,65 @@ class rAutoTools
 		if(!$sent) FileUtil::toLog('autotools: completion mail failed');
 		return $sent;
 	}
-	public function setHandlers()
-	{
-		global $autowatch_interval;
-		$theSettings = rTorrentSettings::get();
-		$this->moveAdmission = 'available';
-		$req = new rXMLRPCRequest(
-// old version fix
-			$theSettings->getOnInsertCommand(array('autolabel'.User::getUser(), getCmd('cat=')))
-			);
-		$pathToAutoTools = dirname(__FILE__);
-
-		if($this->enable_label)
-			$cmd = 	$theSettings->getOnInsertCommand(array('_autolabel'.User::getUser(),
-				getCmd('branch').'=$'.getCmd('not').'=$'.getCmd("d.get_custom1").'=,"'.
-				getCmd('execute').'={'.Utility::getPHP().','.$pathToAutoTools.'/label.php,$'.getCmd("d.get_hash").'=,'.User::getUser().'}"'));
-		else
-			$cmd = 	$theSettings->getOnInsertCommand(array('_autolabel'.User::getUser(), getCmd('cat=')));
-		$req->addCommand($cmd);
-		if($this->enable_move && (trim($this->path_to_finished)!=''))
-		{
-			$jobMarker = getCmd('d.set_custom').'=x-autotools-nonmove-job,"$'.getCmd('execute_capture').
-				'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}" ; d.save_full_session= ; ';
-			if($this->fileop_type=="Move")
-			{
-				$admission = self::claimAbiStatus();
-				$this->moveAdmission = $admission;
-				if($admission !== 'available')
-				{
-					FileUtil::toLog('autotools: move refused: daemon-claim-abi-'.$admission);
-					$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(), getCmd('cat=')));
-				}
-				else
-				{
-					$moveMarker = getCmd('d.set_custom').'=x-autotools-move-job,"$'.getCmd('execute_capture').
-						'={'.Utility::getPHP().','.$pathToAutoTools.'/token.php,$'.getCmd('d.get_custom').'=x-autotools-move-job}" ; d.save_full_session= ; ';
-					$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-						$moveMarker.'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/move_tx.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-						getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-move-job}'
-					));
-				}
-			}
-			else if($theSettings->iVersion<0x808)
-			{
-				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-					$jobMarker.getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
-					'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}" ; '.
-					getCmd('branch').'=$'.getCmd('not').'=$'.getCmd('d.get_custom').'=x-dest,,'.getCmd('d.set_directory_base').'=$'.getCmd('d.get_custom').'=x-dest'
-				));
-			}
-			else
-			{
-				$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(),
-					$jobMarker.getCmd('d.set_custom').'=x-dest,"$'.getCmd('execute_capture').
-					'={'.Utility::getPHP().','.$pathToAutoTools.'/move.php,$'.getCmd('d.get_hash').'=,$'.getCmd('d.get_base_path').'=,$'.
-					getCmd('d.get_base_filename').'=,$'.getCmd('d.is_multi_file').'=,$'.getCmd('d.get_custom1').'=,$'.getCmd('d.get_name').'=,'.User::getUser().',$'.getCmd('d.get_custom').'=x-autotools-nonmove-job}"'
-				));
-			}
-		}
-		else
-			$cmd = $theSettings->getOnFinishedCommand(array('automove'.User::getUser(), getCmd('cat=')));
-		$req->addCommand($cmd);
-		if($this->enable_watch && (trim($this->path_to_watch)!=''))
-			$cmd = 	$theSettings->getAlignedScheduleCommand('autowatch',$autowatch_interval,
-				getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg($pathToAutoTools.'/watch.php').' '.escapeshellarg(User::getUser()).' &}' );
-		else
-			$cmd = $theSettings->getRemoveScheduleCommand('autowatch');
-		$req->addCommand($cmd);
-		$recover = 'execute.nothrow.bg={'.Utility::getPHP().','.$pathToAutoTools.'/recover.php,All,'.User::getUser().'}';
-		$req->addCommand($theSettings->getAlignedScheduleCommand('autorecover', 60, $recover));
-		// The daemon's user makes the file-job journal on the first recovery
-		// pass. Until then a finished hook whose session copy is missing in a
-		// session directory that has turned unwritable cannot even record its
-		// deferral, so one pass runs now while the journal is missing.
-		$session = $theSettings->session;
-		if($this->enable_move && trim($this->path_to_finished) !== '' && is_string($session) && $session !== ''
-			&& !is_dir(rtrim($session, '/').'/.autotools-file-jobs'))
-			$req->addCommand(new rXMLRPCCommand('schedule', array('autorecovernow'.User::getUser(), '0', '0', $recover)));
-		return($req->success());
-	}
+    public function setHandlers()
+    {
+        global $autowatch_interval;
+        $settings = rTorrentSettings::get();
+        $q = array('rTorrent', 'quoteCommandArg');
+        $user = User::getUser();
+        $php = $q(Utility::getPHP());
+        $root = __DIR__;
+        $execute = function ($script, $args, $kind = 'execute') use ($q, $php, $root) {
+            return getCmd($kind) . '={' . $php . ',' . $q($root . '/' . $script)
+                . ($args === '' ? '' : ',' . $args) . '}';
+        };
+        $request = new rXMLRPCRequest($settings->getOnInsertCommand(array('autolabel' . $user, getCmd('cat='))));
+        $label = $this->enable_label ? getCmd('branch') . '=$' . getCmd('not') . '=$'
+            . getCmd('d.get_custom1') . '=,' . $q($execute('label.php', '$' . getCmd('d.get_hash') . '=,' . $q($user)))
+            : getCmd('cat=');
+        $request->addCommand($settings->getOnInsertCommand(array('_autolabel' . $user, $label)));
+        $hook = getCmd('cat=');
+        $this->moveStatus = self::moveMode();
+        // Always drain captured obligations, including after the checkbox is disabled.
+        if ($this->moveStatus === 'queue')
+            $request->addCommand(new rXMLRPCCommand('schedule.if_absent', array('',
+                'am.queue.' . hash('sha256', $user), '1', '1', 'system.autotools.move_dispatch=' . $q($user))));
+        if ($this->enable_move && $this->path_to_finished !== '') {
+            if ($this->fileop_type === 'Move') {
+                if ($this->moveStatus === 'queue') {
+                    $hook = 'd.autotools.move_enqueue=' . $q($user);
+                } elseif ($this->moveStatus === 'upstream') {
+                    // Both invocations run synchronously. Their bootstrap forbids RPC.
+                    $script = 'upstream_move.php';
+                    $args = '$' . getCmd('d.get_base_path') . '=,$' . getCmd('d.get_base_filename')
+                        . '=,$' . getCmd('d.is_multi_file') . '=,$' . getCmd('d.get_custom1')
+                        . '=,$' . getCmd('d.get_name') . '=,' . $q($user);
+                    $hook = getCmd('d.set_directory_base') . '='
+                        . $q('$' . $execute($script, 'check,' . $args, 'execute_capture'))
+                        . ' ; ' . $execute($script, 'move,$' . getCmd('d.get_hash') . '=,' . $args);
+                    FileUtil::toLog('autotools: move mode upstream (native file-job queue absent)');
+                } else FileUtil::toLog('autotools: move paused: incomplete or unconfirmed native file-job ABI');
+            } else {
+                $marker = getCmd('d.set_custom') . '=x-autotools-nonmove-job,'
+                    . $q('$' . $execute('token.php', '$' . getCmd('d.get_custom') . '=x-autotools-nonmove-job', 'execute_capture'))
+                    . ' ; d.save_full_session= ; ';
+                $args = '$' . getCmd('d.get_hash') . '=,$' . getCmd('d.get_base_path') . '=,$'
+                    . getCmd('d.get_base_filename') . '=,$' . getCmd('d.is_multi_file') . '=,$'
+                    . getCmd('d.get_custom1') . '=,$' . getCmd('d.get_name') . '=,' . $q($user)
+                    . ',$' . getCmd('d.get_custom') . '=x-autotools-nonmove-job';
+                $hook = $marker . getCmd('d.set_custom') . '=x-dest,' . $q('$' . $execute('move.php', $args, 'execute_capture'));
+                if ($settings->iVersion < 0x808)
+                    $hook .= ' ; ' . getCmd('branch') . '=$' . getCmd('not') . '=$' . getCmd('d.get_custom')
+                        . '=x-dest,,' . getCmd('d.set_directory_base') . '=$' . getCmd('d.get_custom') . '=x-dest';
+            }
+        }
+        $request->addCommand($settings->getOnFinishedCommand(array('automove' . $user, $hook)));
+        $request->addCommand($this->enable_watch && $this->path_to_watch !== ''
+            ? $settings->getAlignedScheduleCommand('autowatch', $autowatch_interval,
+                $execute('watch.php', $q($user), 'execute.nothrow.bg'))
+            : $settings->getRemoveScheduleCommand('autowatch'));
+        $recover = $execute('recover.php', 'All,' . $q($user), 'execute.nothrow.bg');
+        $request->addCommand($settings->getAlignedScheduleCommand('autorecover', 60, $recover));
+        return $request->success();
+    }
 }

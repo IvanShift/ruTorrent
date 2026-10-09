@@ -20,26 +20,5 @@ rutorrent_require_cli(__FILE__);
 // commands, an unreachable daemon or an unconfirmed answer.
 // The rules live in plugins/retrackers/retryreset.php.
 
-$args = array_slice(isset($argv) && is_array($argv) ? $argv : array(), 1);
-$user = '';
-foreach ($args as $arg) {
-	if (strncmp($arg, '--user=', 7) === 0) $user = substr($arg, 7);
-}
-// RetrackersProfileName::valid(), inline: REMOTE_USER precedes the profile load.
-if (preg_match('/^[a-z0-9_-]*$/D', $user) !== 1) {
-	fwrite(STDERR, "usage: retrackers-retry-reset.php [--user=NAME] [HASH [--apply]]\n");
-	exit(2);
-}
-$_SERVER['REMOTE_USER'] = $user;
-// Profile configuration is imported at file scope for the SCGI globals.
-define('RETRACKERS_IMPORT_ONLY', true);
-define('RETRACKERS_DISPATCH_IMPORT_ONLY', true);
-require_once(dirname(__DIR__) . '/plugins/retrackers/retrackers.php');
-require_once(dirname(__DIR__) . '/php/xmlrpc.php');
-require_once(dirname(__DIR__) . '/php/rtorrent.php');
-require_once(dirname(__DIR__) . '/plugins/retrackers/dispatch.php');
-require_once(dirname(__DIR__) . '/plugins/retrackers/retryreset.php');
-exit(RetrackersRetryReset::main($args, new RetrackersQueueRpcAdapter(), STDOUT, STDERR, array(
-	'shared_profile' => !empty($forbidUserSettings),
-	'scgi' => array('host' => $scgi_host, 'port' => $scgi_port),
-)));
+require_once(dirname(__DIR__) . '/plugins/retrackers/clitool.php');
+exit(RetrackersRetryReset::main($args, new RetrackersQueueRpcAdapter(), STDOUT, STDERR, $retrackersToolContext));

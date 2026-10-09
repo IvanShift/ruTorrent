@@ -431,11 +431,16 @@ $suite->test('checker schedule keeps its aligned interval and user argv', functi
     $call = $calls[0];
     strictAssertTrue(strpos($call, "'rutracker_check',".'$updateInterval'.",") === 0,
         'the schedule key and minute interval remain unchanged');
-    strictAssertTrue(strpos($call, "getCmd('execute')") !== false
-        && strpos($call, "escapeshellarg(Utility::getPHP())") !== false
-        && strpos($call, "escapeshellarg(dirname(__FILE__).'/update.php')") !== false
-        && strpos($call, "escapeshellarg(User::getUser())") !== false,
-        'the scheduled command passes the PHP executable, update entrypoint, and quoted user');
+    strictAssertTrue(strpos($call, '$checkerCommand') !== false,
+        'the schedule passes the detached owner command without rebuilding shell quoting');
+    $source = file_get_contents(EP_DIR . '/init.php');
+    strictAssertTrue(strpos($source, "rpcMethodCapability(array('execute.raw.bg'))") !== false,
+        'background execution capability is confirmed before selecting a command');
+    strictAssertTrue(strpos($source, 'RuTrackerDetachedPhp::scheduleCommand(') !== false,
+        'the checker delegates schedule argv construction to its existing launcher');
+    strictAssertTrue(strpos($source, '$checkerScheduleReady &&') !== false,
+        'an unconfirmed launch command cannot register the checker as ready');
+
 });
 
 $suite->test('targeted kick and scheduled retry execute the same collector entrypoint', function () {

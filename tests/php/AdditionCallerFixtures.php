@@ -47,7 +47,7 @@ trait AdditionCallerFixtures
 	public function methodFileGates()
 	{
 		preg_match_all('/if\s*\(\s*\$this->iVersion\s*(>=|>|<=|<|==)\s*(0x[0-9a-fA-F]+)\s*\)\s*\{\s*'
-			. 'require_once\s*\(\s*\'(methods-[^\']+)\'\s*\)\s*;/s',
+			. 'require(?:_once)?\s*\(\s*\'(methods-[^\']+)\'\s*\)\s*;/s',
 			$this->settingsSource(), $matches, PREG_SET_ORDER);
 		$gates = array();
 		foreach ($matches as $m) {

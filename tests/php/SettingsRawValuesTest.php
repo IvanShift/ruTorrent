@@ -84,10 +84,8 @@ class SettingsRawValuesTest extends TestCase
 	}
 
 	/**
-	 * A 0.16.25 daemon whose strings carry quotes and backslashes. Each value
-	 * answers under both spellings: obtain() loads the alias tables with
-	 * require_once, so a second obtain() in one test process sends the old
-	 * names (production runs one per process).
+	 * A 0.16.25 daemon whose strings carry quotes and backslashes. Aliases are reloaded by each obtain(), including repeated calls within
+	 * one process. Historical spellings stay in the fixture for older readers.
 	 */
 	private function startDaemon()
 	{
@@ -243,4 +241,22 @@ class SettingsRawValuesTest extends TestCase
 		$this->assertTrue(stripos($script, '</script') === false && strpos($script, "'") === false,
 			'no byte of it can close the script or a single-quoted literal: ' . $script);
 	}
+	public function testRepeatedObtainRebuildsAliases()
+	{
+		$this->startDaemon();
+		$settings = rTorrentSettings::get(true);
+		$expected = $settings->getCommand('get_directory');
+		$settings->obtain();
+		$this->same($expected, $settings->getCommand('get_directory'), 'a second obtain retains canonical aliases');
+		$this->same('directory.default', $expected, 'the daemon uses the canonical directory reader');
+	}
+
+	public function testApiVersionIsRenderedAsAnInteger()
+	{
+		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+		$settings->apiVersion = '11;throw 1';
+		$this->assertTrue(strpos($settings->systemInfoScript(), 'apiVersion : 11,') !== false,
+			'the daemon API version is numeric JavaScript');
+	}
+
 }

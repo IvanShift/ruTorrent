@@ -2,20 +2,14 @@
 
 require_once(dirname(__FILE__) . '/util_rt.php');
 require_once(dirname(__FILE__) . '/autotools.php');
-require_once(dirname(__FILE__) . '/../rutracker_check/runstate.php');
+require_once(dirname(__FILE__) . '/move_queue.php');
 require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
-require_once(dirname(__FILE__) . '/../erasedata/presence.php');
 require_once(dirname(__FILE__) . '/../erasedata/outcome.php');
 
 /** Whole-root Move backed by a durable daemon claim. */
-class AutoToolsMoveTransaction
+class AutoToolsMoveJob
 {
     const JOURNAL_DIR = '.autotools-file-jobs';
-    // How long after a first sight of a gone download a later pass must
-    // still find it gone before its waiting job is retired: one recovery
-    // schedule.
-    const ABSENT_CONFIRM_SECONDS = 60;
-
     static private function logHash($hash)
     {
         return is_string($hash) && preg_match('/^[0-9A-Fa-f]{40}$/D', $hash)
@@ -36,24 +30,20 @@ class AutoToolsMoveTransaction
         return (string) $req->val[0];
     }
 
-    static private function journalRoot()
+    static public function journalRoot()
     {
-        $session = rTorrentSettings::get()->session;
-        if (!is_string($session) || $session === '' || !is_dir($session))
-            throw new RuntimeException('session-unavailable');
-        $root = rtrim($session, '/') . '/' . self::JOURNAL_DIR;
-        if (!is_dir($root) && !@mkdir($root, 0700) && !is_dir($root))
-            throw new RuntimeException('journal-unavailable');
+        $root = AutoToolsFileTransaction::journalRoot(true);
+        if ($root === false) throw new RuntimeException('journal-unavailable');
         return $root;
     }
 
-    static private function lock($root)
+    static public function lock($root, $hash)
     {
         $previousUmask = umask(0077);
-        try { $handle = @fopen($root . '/.lock', 'c'); }
+        try { $handle = @fopen($root . '/' . $hash . '.move.lock', 'c'); }
         finally { umask($previousUmask); }
-        if ($handle === false || !flock($handle, LOCK_EX))
-            throw new RuntimeException('journal-lock-unavailable');
+        if ($handle === false) throw new RuntimeException('journal-lock-unavailable');
+        if (!flock($handle, LOCK_EX | LOCK_NB)) { fclose($handle); return null; }
         return $handle;
     }
 
@@ -62,10 +52,10 @@ class AutoToolsMoveTransaction
         return $root . '/' . $hash . '.move.json';
     }
 
-    static private function writeJob($root, $job)
+    static public function writeJob($root, $job)
     {
         $encoded = json_encode($job, JSON_UNESCAPED_SLASHES);
-        if (!is_string($encoded)) throw new RuntimeException('journal-encode-failed');
+        if (!is_string($encoded)) throw new RuntimeException('path-not-utf8');
         // Never tempnam()'s fallback outside the journal: see erasedataStagingFile().
         $tmp = erasedataStagingFile($root, '.move-');
         if ($tmp === false) throw new RuntimeException('journal-temp-failed');
@@ -76,7 +66,7 @@ class AutoToolsMoveTransaction
         }
     }
 
-    static private function readJob($root, $hash)
+    static public function readJob($root, $hash)
     {
         $path = self::jobPath($root, $hash);
         clearstatcache(true, $path);
@@ -86,12 +76,18 @@ class AutoToolsMoveTransaction
             . '.move.json; Move held pending journal repair');
         $job = json_decode((string) @file_get_contents($path), true);
         if (!is_array($job) || !isset($job['hash'], $job['src'], $job['dst'], $job['identity'], $job['daemon_dir'])
-            || $job['hash'] !== $hash)
+            || $job['hash'] !== $hash || !isset($job['version'], $job['qid'], $job['kind'], $job['phase'])
+            || $job['version'] !== 2 || $job['kind'] !== 'Move' || !is_string($job['qid'])
+            || !preg_match('/^[0-9a-f]{32}$/D', $job['qid'])
+            || !in_array($job['phase'], array('intent', 'claimed', 'receipted', 'staged', 'moved',
+                'published', 'directory', 'started', 'quarantined', 'aborting',
+                'notice-pending', 'notice-attempted', 'completed'), true)
+            || ($job['phase'] === 'aborting' && !array_key_exists('abort_identity', $job)))
             throw new RuntimeException('journal-malformed');
         return $job;
     }
 
-    static private function retireJob($root, $hash)
+    static public function retireJob($root, $hash)
     {
         $path = self::jobPath($root, $hash);
         if (!@unlink($path)) {
@@ -110,7 +106,7 @@ class AutoToolsMoveTransaction
 
     static private function claimState($job)
     {
-        $raw = self::rpc('d.stop_close_claim_state', array($job['hash'], $job['job_id']));
+        $raw = self::rpc('d.stop_close_claim_state', array($job['hash'], $job['qid']));
         if ($raw === 'absent') return array('phase'=>'absent', 'token'=>null);
         if (preg_match('/^active\|([0-9a-f]{32}:[0-9a-f]{16})\|[01]\|[01]\|[01]\|[0-9a-fA-F]{40}$/D', $raw, $parts)) {
             $phase = 'active'; $mode = null; $token = $parts[1];
@@ -119,105 +115,77 @@ class AutoToolsMoveTransaction
         } else throw new RuntimeException('daemon-claim-malformed');
         if (isset($job['token']) && $job['token'] !== '' && $job['token'] !== $token)
             throw new RuntimeException('daemon-claim-different');
-        return array('phase'=>$phase, 'mode'=>$mode, 'token'=>$token);
+        return array('phase'=>$phase, 'mode'=>$mode, 'token'=>$token, 'receipt'=>explode('|', $raw));
     }
 
     static private function acknowledgeClaim($job)
     {
         $state = self::claimState($job);
+        if ($state['phase'] === 'absent') return;
         if ($state['phase'] === 'terminal') {
-            self::rpc('d.replay_stop_close_claim', array($job['hash'], $job['job_id']));
+            try { self::rpc('d.replay_stop_close_claim', array($job['hash'], $job['qid'])); }
+            catch (RuntimeException $e) { /* Read the durable receipt after an unknown reply. */ }
             $state = self::claimState($job);
         }
-        if ($state['phase'] !== 'done'
-            || self::rpc('d.ack_stop_close_claim', array($job['hash'], $job['job_id'])) !== '1')
+        if ($state['phase'] !== 'done') throw new RuntimeException('daemon-claim-ack-unconfirmed');
+        try { self::rpc('d.ack_stop_close_claim', array($job['hash'], $job['qid'])); }
+        catch (RuntimeException $e) { /* A committed acknowledgement may lose its reply. */ }
+        if (self::claimState($job)['phase'] !== 'absent')
             throw new RuntimeException('daemon-claim-ack-unconfirmed');
     }
 
-    static private function claimIfDue($root, &$job)
+    static private function restoreState($job, $token)
     {
-        $q = function ($value) { return RuTrackerAtomicOwnership::quoteRtorrentArgument($value); };
-        $marker = 'equal=' . getCmd('d.get_custom=') . 'x-autotools-move-job,cat=' . $job['job_id'];
-        $base = 'equal=' . $q(getCmd('d.get_base_path=')) . ','
-            . $q('cat=' . $q($job['src']));
-        $condition = 'and=' . $q('equal=d.is_active=,value=1') . ','
-            . $q('equal=d.is_open=,value=1') . ',' . $q($marker) . ',' . $q($base);
-        $receipt = self::rpc('branch', array($job['hash'], $condition,
-            'cat="$d.stop_close_claim=' . $job['job_id'] . '"', 'cat=SKIP'));
-        if ($receipt === 'SKIP') return false;
-        if (!preg_match('/^([0-9a-f]{32}:[0-9a-f]{16})\|[01]\|[01]\|[01]\|[0-9a-fA-F]{40}$/D', $receipt, $parts))
-            throw new RuntimeException('claim-receipt-unconfirmed');
-        $job['token'] = $parts[1];
-        $job['phase'] = 'claimed';
-        // A wait for the download ends with its claim; a later one starts its own window.
-        unset($job['waiting_since'], $job['absent_since']);
-        self::writeJob($root, $job);
-        return true;
+        $method = !empty($job['run_state']) ? 'd.start_if_stop_close_claim'
+            : (!empty($job['run_open']) ? 'd.open_if_stop_close_claim' : 'd.release_stop_close_claim');
+        try { $result = self::rpc($method, array($job['hash'], $token)); }
+        catch (RuntimeException $e) {
+            // Lost mutation replies are resolved by the durable receipt, never replayed here.
+            $state = self::claimState($job);
+            if ($state['phase'] !== 'terminal' && $state['phase'] !== 'done') throw $e;
+            return '0';
+        }
+        if ($result !== '0' && $result !== '1') throw new RuntimeException('restore-result-unknown');
+        return $result;
     }
 
-    // A download that is not open and active when its claim is due. While
-    // retrackers re-adds it (its claim answers anything but none, or it is
-    // queued) or rTorrent is to run it but has not opened or activated it yet
-    // (d.state 1: loading, checking hashes), the job is kept and recovery
-    // claims it again within rtFileJobRetryWindow(), with one 'deferred' line.
-    // Measured on 0.16.25 (L4 lab B, 2026-10-08): absent for 3-5 ms, then
-    // closed -- d.state 0, empty d.base_path, retrackers-queued set, claim
-    // held -- for 59-197 ms, then d.state 1 hashing with the claim finalized,
-    // then open and active; 7 of 160 public Moves on 9p were refused for good
-    // in that window. A download its user stopped is refused at once, and one
-    // that still does not run past the window then, both visibly.
-    static private function waitForDownload($root, $job)
-    {
-        $hash = $job['hash'];
-        $pending = self::runPending($hash);
-        $detail = '';
-        if ($pending !== null) {
-            if (!isset($job['waiting_since']) || !is_int($job['waiting_since'])) {
-                $job['waiting_since'] = time();
-                self::writeJob($root, $job);
-                self::log($hash, 'deferred: download-not-running (' . $pending
-                    . '); recover.php claims it again every 60 s');
-                return false;
-            }
-            if (time() - $job['waiting_since'] < rtFileJobRetryWindow()) return false;
-            $reason = 'download-not-running';
-            $detail = ' unresolved for ' . (int) ceil(rtFileJobRetryWindow() / 60) . ' min';
-        } else $reason = 'download-stopped';
-        self::retireJob($root, $hash);
-        self::log($hash, 'refused: ' . $reason . $detail);
-        self::showRefusal($hash, $reason, $detail);
-        return false;
-    }
-
-    // Why a download that is not running yet may still run: its retrackers
-    // claim, its retrackers queue entry, or d.state 1; null for one its user
-    // stopped. Only answers decide a stop: an unanswered claim waits like a
-    // held one, and an unanswered queue or state read holds the job (it
-    // throws), so a transient failure in the re-add window is no final
-    // refusal. The claim ABI Move needs comes with the native queue.
-    static private function runPending($hash)
-    {
-        $claim = self::retrackersClaim($hash);
-        if ($claim === null) return 'retrackers-claim-unconfirmed';
-        if ($claim !== 'none') return 'retrackers-claim';
-        if (self::rpc(getCmd('d.get_custom'), array($hash, 'retrackers-queued')) !== '')
-            return 'retrackers-queued';
-        return self::rpc('d.state', $hash) === '1' ? 'starting' : null;
-    }
-
-    // $reason names why the move stopped; the one log line carries it, and
-    // the download keeps it where tracker traffic cannot erase it.
     static private function abortBeforeMove($root, $job, $token, $reason = '')
     {
         $job['phase'] = 'aborting';
+        if (!array_key_exists('abort_identity', $job)) $job['abort_identity'] = self::identity($job['src']);
+        if ($reason !== '') $job['abort_reason'] = $reason;
         self::writeJob($root, $job);
-        $result = self::rpc('d.start_if_stop_close_claim', array($job['hash'], $token));
-        if ($result !== '0' && $result !== '1') throw new RuntimeException('abort-result-unknown');
+        self::restoreState($job, $token);
         self::acknowledgeClaim($job);
+        self::finishAbort($root, $job);
+    }
+
+    static private function finishAbort($root, $job)
+    {
+        // Persist the abort until native has durably accepted its retry outcome.
+        if (!isset($job['abort_retry'])) {
+            $job['abort_retry'] = AutoToolsMoveQueue::retryPlan($job['hash'], $job['qid'], 'preflight-refused');
+            self::writeJob($root, $job);
+        }
+        if ($job['abort_retry'] !== null) AutoToolsMoveQueue::deferPlan($job['hash'], $job['qid'], $job['abort_retry']);
+        if (!empty($job['abort_reason'])) {
+            self::log($job['hash'], 'publication held: ' . $job['abort_reason']);
+            self::showRefusal($job['hash'], 'preflight-refused', '; ' . $job['abort_reason']);
+        }
         self::retireJob($root, $job['hash']);
-        self::log($job['hash'], 'refused: ' . ($reason === '' ? '' : $reason . '; ')
-            . 'physical move did not publish; original run intent reconciled');
-        if ($reason !== '') self::showRefusal($job['hash'], $reason);
+        self::log($job['hash'], 'deferred: preflight-refused; original run intent reconciled');
+    }
+
+    static private function publishDirectory($job, $token)
+    {
+        $method = $job['multi'] ? 'd.directory.base.set_if_stop_close_claim'
+            : 'd.directory.set_if_stop_close_claim';
+        try { self::rpc($method, array($job['hash'], $token, $job['daemon_dir'])); }
+        catch (RuntimeException $e) {
+            if (self::rpc('d.get_directory', $job['hash']) !== $job['daemon_dir']) throw $e;
+        }
+        if (self::rpc('d.get_directory', $job['hash']) !== $job['daemon_dir'])
+            throw new RuntimeException('daemon-directory-mismatch');
     }
 
     // The shared no-replace owner; a test may install a scripted subclass.
@@ -543,18 +511,13 @@ class AutoToolsMoveTransaction
             || self::identity($job['stage']) !== null)
             throw new RuntimeException('published-receipt-ambiguous');
         self::verifyReceipt($job, $job['dst'], false);
-        $published = self::rpc('d.directory.set_if_stop_close_claim',
-            array($hash, $token, $job['dest_dir']));
-        if ($published !== '1' && self::rpc('d.get_directory', $hash) !== $job['daemon_dir'])
-            throw new RuntimeException('daemon-directory-unconfirmed');
-        if (self::rpc('d.get_directory', $hash) !== $job['daemon_dir'])
-            throw new RuntimeException('daemon-directory-mismatch');
+        self::publishDirectory($job, $token);
         $job['phase'] = 'directory';
         self::writeJob($root, $job);
         self::quarantineCrossSource($root, $job);
-        $started = self::rpc('d.start_if_stop_close_claim', array($hash, $token));
+        $started = self::restoreState($job, $token);
         if ($started !== '0' && $started !== '1') throw new RuntimeException('reopen-result-unknown');
-        if ($started === '1' && (self::rpc('d.is_open', $hash) !== '1'
+        if ($started === '1' && !empty($job['run_state']) && (self::rpc('d.is_open', $hash) !== '1'
             || self::rpc('d.is_active', $hash) !== '1'
             || self::rpc('d.get_base_path', $hash) !== $job['dst']))
             throw new RuntimeException('final-open-state-mismatch');
@@ -583,32 +546,27 @@ class AutoToolsMoveTransaction
         }
     }
 
-    static private function deliverNotice($root, $hash)
+    static public function deliverNotice($root, $hash)
     {
         $job = self::readJob($root, $hash);
         if ($job === null) return;
-        if ($job['phase'] === 'notice-attempted') {
-            self::log($hash, 'hold: completion mail outcome uncertain; journal retained for inspection');
-            return;
-        }
-        if ($job['phase'] !== 'notice-pending')
+        if (!in_array($job['phase'], array('notice-pending', 'notice-attempted', 'completed'), true))
             throw new RuntimeException('notification-phase-ambiguous');
         self::verifyCompleted($job);
-        // A completed Move retires the outcome of an earlier refusal.
         FileOperationOutcome::clear('autotools', $hash);
-        if (rAutoTools::completionMailFile($job['dest_dir'], $job['finished_root']) === null) {
-            self::retireJob($root, $hash);
-            self::log($hash, 'completed: payload published; no .mailto');
-            return;
+        if ($job['phase'] === 'notice-pending') {
+            $job['phase'] = 'notice-attempted';
+            self::writeJob($root, $job);
+            if (rAutoTools::completionMailFile($job['dest_dir'], $job['finished_root']) !== null)
+                rAutoTools::notifyCompletedFileTransfer($job['dest_dir'], $job['finished_root'], $job['torrent_name']);
         }
-        // Persist attempt before the non-idempotent mail transport call.
-        $job['phase'] = 'notice-attempted';
+        // Persist completion before native Q retirement, so a lost finish reply
+        // or a crash before journal removal can be swept without repeating mail.
+        $job['phase'] = 'completed';
         self::writeJob($root, $job);
-        $sent = rAutoTools::notifyCompletedFileTransfer($job['dest_dir'],
-            $job['finished_root'], $job['torrent_name']);
+        AutoToolsMoveQueue::finish($hash, $job['qid']);
         self::retireJob($root, $hash);
-        self::log($hash, $sent ? 'completed: payload published; completion mail sent'
-            : 'completed: payload published; completion mail refused');
+        self::log($hash, 'completed: payload published');
     }
 
     static private function finishTerminal($root, $job)
@@ -616,11 +574,10 @@ class AutoToolsMoveTransaction
         $hash = $job['hash'];
         $src = self::identity($job['src']);
         $dst = self::identity($job['dst']);
-        if ($job['phase'] === 'aborting' && $src === $job['identity'] && $dst === null
+        if ($job['phase'] === 'aborting' && $src === $job['abort_identity']
             && self::rpc('d.get_directory', $hash) === $job['source_dir']) {
             self::acknowledgeClaim($job);
-            self::retireJob($root, $hash);
-            self::log($hash, 'refused: original daemon state restored after move abort');
+            self::finishAbort($root, $job);
             return false;
         }
         if ($src === null && self::rpc('d.get_directory', $hash) === $job['daemon_dir']) {
@@ -642,116 +599,58 @@ class AutoToolsMoveTransaction
         throw new RuntimeException('terminal-with-ambiguous-payload');
     }
 
-    static private function reconcile($root, $job)
+    static private function reconcile($root, $job, $incarnation)
     {
         $hash = $job['hash'];
-        if ($job['phase'] === 'notice-attempted') return true;
-        try { $state = self::claimState($job); }
-        catch (RuntimeException $e) {
-            // A planned Move that holds no claim and has not touched the
-            // payload belongs to a download that may be gone: one removed
-            // while its claim waited is retired, not held for ever. While
-            // retrackers re-adds it the download is briefly absent too, and
-            // its claim says so (absence()); an erase and reload without a
-            // retrackers claim (edit) is brief as well, so the job is retired
-            // only when a pass at least one schedule later still finds it gone.
-            if ($job['phase'] !== 'intent' || !preg_match('/^rpc-[A-Za-z0-9_.]+-unconfirmed$/D', $e->getMessage())
-                || self::absence($hash) !== 'gone')
-                throw $e;
-            if (!isset($job['absent_since']) || !is_int($job['absent_since'])) {
-                $job['absent_since'] = time();
-                self::writeJob($root, $job);
-                throw $e;
-            }
-            if (time() - $job['absent_since'] < self::ABSENT_CONFIRM_SECONDS)
-                throw $e;
-            self::retireJob($root, $hash);
-            self::log($hash, 'refused: download-absent');
-            return false;
-        }
-        if (isset($job['absent_since'])) {
-            unset($job['absent_since']);
-            self::writeJob($root, $job);
-        }
-        if ($job['phase'] === 'notice-pending') {
-            self::verifyCompleted($job);
-            if ($state['phase'] !== 'absent') self::acknowledgeClaim($job);
-            return true;
-        }
+        if (in_array($job['phase'], array('notice-pending', 'notice-attempted', 'completed'), true)) return true;
+        $state = self::claimState($job);
         $src = self::identity($job['src']);
         $dst = self::identity($job['dst']);
         $expected = $job['identity'];
         if ($state['phase'] === 'absent') {
-            if (!empty($job['cross']) && isset($job['stage_identity'])
-                && $dst === $job['stage_identity']
-                && self::rpc('d.get_directory', $hash) === $job['daemon_dir']) {
-                self::verifyReceipt($job, $job['dst'], false);
-                self::finishCrossSource($root, $job, false);
-                return true;
+            if ($job['phase'] === 'aborting' && $src === $job['abort_identity']
+                && self::rpc('d.get_directory', $hash) === $job['source_dir']) {
+                self::finishAbort($root, $job);
+                return false;
             }
-            if (empty($job['cross']) && $src === null && $dst === $expected
-                && self::rpc('d.get_directory', $hash) === $job['daemon_dir']) {
-                self::verifyReceipt($job, $job['dst'], true);
+            if ($job['phase'] !== 'intent') {
+                self::verifyCompleted($job);
                 self::markNoticePending($root, $job);
-                self::log($hash, 'recovered: physical destination and daemon directory published');
                 return true;
             }
-            if ($src !== $expected || $dst !== null)
-                throw new RuntimeException('missing-claim-with-ambiguous-state');
-            if ($job['phase'] === 'aborting') {
-                if (self::rpc('d.get_directory', $hash) !== $job['source_dir'])
-                    throw new RuntimeException('aborted-daemon-directory-ambiguous');
+            if ($src !== $expected || $dst !== null) {
+                AutoToolsMoveQueue::defer($hash, $job['qid'], 'preflight-refused');
                 self::retireJob($root, $hash);
-                self::log($hash, 'refused: move abort was already reconciled');
                 return false;
             }
-            if (!self::claimIfDue($root, $job)) {
-                // A failed session save can lose this marker across daemon restart.
-                $marker = self::rpc(getCmd('d.get_custom'), array($hash, 'x-autotools-move-job'));
-                if ($marker === '' && $job['phase'] === 'intent') {
-                    // Retrackers re-added the download without it (jobMarker());
-                    // the next pass claims with the marker back.
-                    if (self::restoreJobMarker($hash, $job['job_id']) !== $job['job_id'])
-                        throw new RuntimeException('job-marker-missing-or-changed');
-                    self::log($hash, 'deferred: job marker restored after the download was re-added;'
-                        . ' recover.php claims it again every 60 s');
-                    return false;
-                }
-                if ($marker !== $job['job_id'])
-                    throw new RuntimeException('job-marker-missing-or-changed');
-                $base = self::rpc('d.get_base_path', $hash);
-                // A download that is not open reports no base path at all, so
-                // only another path proves that the source moved.
-                if ($base !== '' && $base !== $job['src']) {
-                    self::retireJob($root, $hash);
-                    self::log($hash, 'refused: daemon source path changed');
-                    return false;
-                }
-                if (self::rpc('d.is_active', $hash) === '1' && self::rpc('d.is_open', $hash) === '1')
-                    throw new RuntimeException('claim-precondition-unconfirmed');
-                return self::waitForDownload($root, $job);
-            }
-            $state = self::claimState($job);
         }
-        if ($state['phase'] === 'active') {
-            $receipt = self::rpc('d.stop_close_claim', array($hash, $job['job_id']));
-            if (!preg_match('/^[0-9a-f]{32}:[0-9a-f]{16}\|[01]\|[01]\|[01]\|[0-9a-fA-F]{40}$/D', $receipt))
-                throw new RuntimeException('claim-quiescence-unconfirmed');
-            $state = self::claimState($job);
-            if ($state['phase'] !== 'active')
-                throw new RuntimeException('claim-phase-changed-before-move');
-            if ($job['phase'] === 'intent') {
-                $job['token'] = $state['token'];
-                $job['phase'] = 'claimed';
-                self::writeJob($root, $job);
-            }
-            if ($job['phase'] === 'aborting') {
-                self::abortBeforeMove($root, $job, $state['token']);
-                return false;
-            }
-        } elseif ($state['phase'] === 'terminal' || $state['phase'] === 'done')
+        if ($state['phase'] === 'terminal' || $state['phase'] === 'done')
             return self::finishTerminal($root, $job);
-        else throw new RuntimeException('daemon-claim-phase-unknown');
+        if ($state['phase'] !== 'active' && $state['phase'] !== 'absent')
+            throw new RuntimeException('daemon-claim-phase-unknown');
+        // Lease publication precedes Stop+Close. Re-enter the idempotent native begin
+        // after every crash; an active receipt alone does not attest quiescence.
+        $receipt = self::rpc('d.autotools.move_begin', array($hash, $job['qid'], $incarnation));
+        if (strpos($receipt, 'busy:') === 0) {
+            if ($state['phase'] !== 'absent') throw new RuntimeException('leased-begin-unconfirmed');
+            AutoToolsMoveQueue::defer($hash, $job['qid'], 'source-not-ready');
+            return false;
+        }
+        if (!preg_match('/^active\|[0-9a-f]{32}:[0-9a-f]{16}\|[01]\|[01]\|[01]\|[0-9a-fA-F]{40}$/D', $receipt))
+            throw new RuntimeException('begin-receipt-malformed');
+        $state = self::claimState($job);
+        if ($state['phase'] !== 'active') throw new RuntimeException('begin-phase-unconfirmed');
+        $fields = $state['receipt'];
+        $job['token'] = $state['token'];
+        $job['run_state'] = (int)$fields[2];
+        $job['run_open'] = (int)$fields[3];
+        $job['run_active'] = (int)$fields[4];
+        if ($job['phase'] === 'intent') $job['phase'] = 'claimed';
+        self::writeJob($root, $job);
+        if ($job['phase'] === 'aborting') {
+            self::abortBeforeMove($root, $job, $state['token']);
+            return false;
+        }
         $token = $state['token'];
         $src = self::identity($job['src']);
         $dst = self::identity($job['dst']);
@@ -759,6 +658,10 @@ class AutoToolsMoveTransaction
             return self::reconcileCross($root, $job, $token);
         }
 
+        if ($src !== $expected && $dst === null) {
+            self::abortBeforeMove($root, $job, $token, 'source-identity-changed');
+            return false;
+        }
         if ($src === $expected && $dst !== null) {
             self::abortBeforeMove($root, $job, $token, 'destination occupied before publication');
             return false;
@@ -773,6 +676,12 @@ class AutoToolsMoveTransaction
             }
             if (!self::renameNoReplace($job['src'], $job['dst'])) {
                 $refusal = self::renameRefusal();
+                if (ErasedataFilesystemOps::isCrossDeviceRenameRefusal()
+                    && self::identity($job['src']) === $expected && self::identity($job['dst']) === null) {
+                    $job['cross'] = true;
+                    self::writeJob($root, $job);
+                    return self::reconcileCross($root, $job, $token);
+                }
                 if (self::identity($job['src']) === $expected) {
                     self::abortBeforeMove($root, $job, $token, 'publication refused: ' . $refusal);
                     return false;
@@ -788,26 +697,21 @@ class AutoToolsMoveTransaction
         $job['phase'] = 'moved';
         self::writeJob($root, $job);
 
-        $published = self::rpc('d.directory.set_if_stop_close_claim',
-            array($hash, $token, $job['dest_dir']));
-        if ($published !== '1' && self::rpc('d.get_directory', $hash) !== $job['daemon_dir'])
-            throw new RuntimeException('daemon-directory-unconfirmed');
-        if (self::rpc('d.get_directory', $hash) !== $job['daemon_dir'])
-            throw new RuntimeException('daemon-directory-mismatch');
+        self::publishDirectory($job, $token);
         $job['phase'] = 'published';
         self::writeJob($root, $job);
 
-        $started = self::rpc('d.start_if_stop_close_claim', array($hash, $token));
+        $started = self::restoreState($job, $token);
         if ($started !== '0' && $started !== '1') throw new RuntimeException('reopen-result-unknown');
         if (self::rpc('d.get_directory', $hash) !== $job['daemon_dir'])
             throw new RuntimeException('final-directory-mismatch');
-        if ($started === '1' && (self::rpc('d.is_open', $hash) !== '1'
+        if ($started === '1' && !empty($job['run_state']) && (self::rpc('d.is_open', $hash) !== '1'
             || self::rpc('d.is_active', $hash) !== '1'
             || self::rpc('d.get_base_path', $hash) !== $job['dst']))
             throw new RuntimeException('final-open-state-mismatch');
         self::acknowledgeClaim($job);
         self::markNoticePending($root, $job);
-        self::log($hash, $started === '1' ? 'physical commit: payload and active daemon at destination'
+        self::log($hash, $started === '1' && !empty($job['run_state']) ? 'physical commit: payload and active daemon at destination'
             : 'physical commit: payload at destination; later Stop preserved');
         return true;
     }
@@ -843,20 +747,17 @@ class AutoToolsMoveTransaction
         }
     }
 
-    static private function prepare($args)
+    static private function prepare($hash, $jobId)
     {
-        if (count($args) < 8) throw new RuntimeException('worker-arguments-missing');
-        self::requireRenameCapability(array());
-        $hash = (string) $args[0];
-        if (!preg_match('/^[0-9A-F]{40}$/D', $hash)) throw new RuntimeException('hash-invalid');
-        $basePath = rtrim((string) $args[1], '/');
-        $baseName = (string) $args[2];
-        $multi = (string) $args[3] === '1';
-        $label = rawurldecode((string) $args[4]);
-        $name = (string) $args[5];
-        $jobId = (string) $args[7];
-        if (!preg_match('/^[0-9a-f]{32}$/D', $jobId) || self::jobMarker($hash, $jobId) !== $jobId)
-            throw new RuntimeException('job-marker-mismatch');
+        $sourceDirectory = self::rpc('d.get_directory', $hash);
+        $multi = self::rpc('d.is_multi_file', $hash) === '1';
+        $baseName = self::rpc('d.get_base_filename', $hash);
+        $basePath = $multi ? $sourceDirectory : rtrim($sourceDirectory, '/') . '/' . $baseName;
+        $label = rawurldecode(self::rpc('d.get_custom1', $hash));
+        $name = self::rpc('d.get_name', $hash);
+        if (self::rpc('d.complete', $hash) !== '1') throw new RuntimeException('source-not-ready');
+        foreach (array($basePath, $baseName, $label, $name) as $value)
+            if (preg_match('//u', $value) !== 1) throw new RuntimeException('path-not-utf8');
         $at = rAutoTools::load();
         if (!$at->enable_move || $at->fileop_type !== 'Move'
             || @preg_match($at->automove_filter . 'u', $label) !== 1)
@@ -897,7 +798,7 @@ class AutoToolsMoveTransaction
         // created through it, and both before a claim, a probe or a payload
         // copy.
         if (!ErasedataFilesystemOps::payloadPathTrusted($destDir, null, true))
-            throw new RuntimeException('untrusted-directory: ' . $destDir);
+            throw new RuntimeException('untrusted-directory: ' . erasedataLogPath(ErasedataFilesystemOps::lastPayloadRefusalPath() ?: $destDir));
         // Created directories are at most 0755, like the non-move operations:
         // the umask only removes bits, so they are never group/other-writable,
         // which the payload rule refuses above the configured top.
@@ -910,7 +811,7 @@ class AutoToolsMoveTransaction
             throw new RuntimeException('destination-outside-finished-root');
         foreach (array(dirname($src), $destDir) as $directory)
             if (!ErasedataFilesystemOps::payloadPathTrusted($directory))
-                throw new RuntimeException('untrusted-directory: ' . $directory);
+                throw new RuntimeException('untrusted-directory: ' . erasedataLogPath(ErasedataFilesystemOps::lastPayloadRefusalPath() ?: $directory));
         $dst = $destDir . '/' . $baseName;
         if (realpath($src) === realpath($dst) || file_exists($dst) || is_link($dst))
             throw new RuntimeException('destination-occupied');
@@ -925,58 +826,20 @@ class AutoToolsMoveTransaction
         // preflight before a daemon claim or any payload copy: the source
         // parent holds the quarantine, the destination parent the stage.
         self::requireRenameCapability(array(dirname($src), $destDir));
-        $nonce = $jobId;
-        return array('version'=>1, 'kind'=>'Move', 'hash'=>$hash, 'phase'=>'intent',
+        return array('version'=>2, 'qid'=>$jobId, 'kind'=>'Move', 'hash'=>$hash, 'phase'=>'intent',
             'src'=>$src, 'dst'=>$dst, 'identity'=>self::identity($src),
-            'source_dir'=>rtrim($sourceDir, '/'), 'dest_dir'=>$destDir,
+            'source_dir'=>$sourceDirectory, 'dest_dir'=>$destDir,
             'daemon_dir'=>$multi ? $dst : $destDir, 'multi'=>$multi, 'files'=>$files,
-            'cross'=>$cross, 'stage'=>$destDir.'/.autotools-move-'.$nonce.'.stage',
-            'quarantine'=>dirname($src).'/.autotools-move-'.$nonce.'.source',
-            'job_id'=>$nonce, 'token'=>'',
+            'cross'=>$cross, 'stage'=>$destDir.'/.autotools-move-'.$jobId.'.stage',
+            'quarantine'=>dirname($src).'/.autotools-move-'.$jobId.'.source',
+            'token'=>'',
             'finished_root'=>$finished, 'torrent_name'=>$torrent->name());
-    }
-
-    // The Move job marker of a download, for the job $jobId. Retrackers
-    // re-adds a public download from the original it captured when the
-    // download was inserted, so a download that finished in that window comes
-    // back without the marker its finished hook set, and its Move was refused
-    // as 'job-marker-mismatch' (1 of 40 public Moves, L4b lab, 2026-10-08). An
-    // empty marker is not another job's: it is put back for $jobId, only while
-    // it is still empty (restoreJobMarker()). A marker of another job is left
-    // alone; that job owns the download.
-    static private function jobMarker($hash, $jobId)
-    {
-        $marker = self::rpc(getCmd('d.get_custom'), array($hash, 'x-autotools-move-job'));
-        if ($marker !== '') return $marker;
-        $marker = self::restoreJobMarker($hash, $jobId);
-        if ($marker === $jobId)
-            self::log($hash, 'job marker restored after the download was re-added');
-        return $marker;
-    }
-
-    // Sets the marker to $jobId in one daemon branch only while it is empty,
-    // asks for the session save that keeps it across a restart, and answers
-    // the marker the daemon then holds.
-    static private function restoreJobMarker($hash, $jobId)
-    {
-        // A download the user removed and added again while a request
-        // waited is not finished yet: its own hook will move it. Only a
-        // complete download, as a re-add brings back a finished one, gets the
-        // marker of the job its earlier finish planned.
-        if (self::rpc('d.complete', $hash) !== '1') return '';
-        $condition = 'equal=' . getCmd('d.get_custom=') . 'x-autotools-move-job,cat=';
-        self::rpc('branch', array($hash, $condition,
-            getCmd('d.set_custom') . '=x-autotools-move-job,' . $jobId, 'cat=SKIP'));
-        $save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'), array($hash)));
-        $save->important = false;
-        $save->success();
-        return self::rpc(getCmd('d.get_custom'), array($hash, 'x-autotools-move-job'));
     }
 
     // A final refusal is named on the download itself and kept where tracker
     // traffic cannot erase it (ACC-OWNB-01); a download that is gone gets
     // the log line only.
-    static private function showRefusal($hash, $reason, $detail = '')
+    static public function showRefusal($hash, $reason, $detail = '')
     {
         if ($reason === 'session-copy-unreadable')
             $message = 'autotools: move refused: session-copy-unreadable' . $detail . '; rTorrent did not'
@@ -1010,294 +873,58 @@ class AutoToolsMoveTransaction
         });
     }
 
-    static private function clearUnjournaledOldHookMarker($root, $hash, $marker)
+    static public function run($hash, $qid, $user, $incarnation)
     {
-        // A persisted daemon hook has already set the marker before this worker starts.
-        // The journal lock and the daemon branch both matter: never clear a different job.
-        $journal = self::jobPath($root, $hash);
-        clearstatcache(true, $journal);
-        if (@lstat($journal) !== false) return 'journal-present';
-        $condition = 'equal=' . getCmd('d.get_custom=') . 'x-autotools-move-job,cat=' . $marker;
-        $result = self::rpc('branch', array($hash, $condition,
-            getCmd('d.set_custom') . '=x-autotools-move-job,', 'cat=SKIP'));
-        if ($result === 'SKIP') return 'changed';
-        self::rpc(getCmd('d.save_full_session'), array($hash));
-        $current = self::rpc(getCmd('d.get_custom'), array($hash, 'x-autotools-move-job'));
-        $sidecar = rtrim(rTorrentSettings::get()->session, '/') . '/' . $hash . '.torrent.rtorrent';
-        $bytes = @file_get_contents($sidecar);
-        if ($bytes === false) return 'unconfirmed';
-        $torrent = Torrent::fromRawBytes($bytes);
-        $custom = $torrent->meta('custom');
-        return $current === '' && $torrent->errors() === false && is_array($custom)
-            && (!isset($custom['x-autotools-move-job']) || $custom['x-autotools-move-job'] === '')
-            ? 'cleared' : 'unconfirmed';
-    }
-
-    // The planning of a Move meets transient states: rTorrent publishes the
-    // session copy seconds after an add, and retrackers re-adds a public
-    // download (erase, then load) right when a small one finishes, so the
-    // download is briefly absent. The hook's arguments are therefore kept as
-    // a request beside the journal until the Move is planned or finally
-    // refused, and the recovery pass plans it again every 60 s within
-    // rtFileJobRetryWindow() (ACC-OWNB-02). Requests are written and read
-    // only under the journal lock, which only background processes hold: the
-    // finished hook of a Move starts this worker in the background and never
-    // waits for the lock (see the one-owner invariant in hook_lib.php).
-    const REQUEST_SUFFIX = '.move-request.json';
-
-    static private function requestPath($root, $hash)
-    {
-        return $root . '/' . $hash . self::REQUEST_SUFFIX;
-    }
-
-    // A request of a well-formed hook, durable before planning can fail; a
-    // repeated finish of the same job keeps its first time. Null for the
-    // arguments of an old or broken hook, which are planned once as before.
-    static private function recordRequest($root, $hash, $args)
-    {
-        $args = array_values($args);
-        if (count($args) < 8 || !preg_match('/^[0-9A-F]{40}$/D', $hash)
-            || !preg_match('/^[0-9a-f]{32}$/D', (string) $args[7]))
-            return null;
-        $args = array_map('strval', array_slice($args, 0, 8));
-        $previous = self::readRequest($root, $hash);
-        $request = $previous !== null && $previous['args'][7] === $args[7] ? $previous
-            : array('version' => 1, 'hash' => $hash, 'args' => $args, 'first_at' => time(),
-                'attempts' => 0, 'reason' => '');
-        $request['args'] = $args;
-        self::writeRequest($root, $request);
-        return $request;
-    }
-
-    static private function writeRequest($root, $request)
-    {
-        $encoded = json_encode($request, JSON_UNESCAPED_SLASHES);
-        if (!is_string($encoded)) throw new RuntimeException('request-encode-failed');
-        // Never tempnam()'s fallback outside the journal: see erasedataStagingFile().
-        $tmp = erasedataStagingFile($root, '.move-');
-        if ($tmp === false) throw new RuntimeException('journal-temp-failed');
-        if (@file_put_contents($tmp, $encoded) !== strlen($encoded)
-            || !@rename($tmp, self::requestPath($root, $request['hash']))) {
-            @unlink($tmp);
-            throw new RuntimeException('request-write-failed');
-        }
-    }
-
-    static private function readRequest($root, $hash)
-    {
-        $path = self::requestPath($root, $hash);
-        clearstatcache(true, $path);
-        if (@lstat($path) === false) return null;
-        $request = is_file($path) && !is_link($path)
-            ? json_decode((string) @file_get_contents($path, false, null, 0, 65536), true) : null;
-        $valid = is_array($request)
-            && array_keys($request) === array('version', 'hash', 'args', 'first_at', 'attempts', 'reason')
-            && $request['version'] === 1 && $request['hash'] === $hash && is_array($request['args'])
-            && array_values($request['args']) === $request['args'] && count($request['args']) === 8
-            && is_int($request['first_at']) && is_int($request['attempts']) && is_string($request['reason']);
-        if ($valid)
-            foreach ($request['args'] as $arg)
-                if (!is_string($arg)) $valid = false;
-        if ($valid && $request['args'][0] === $hash) return $request;
-        // A request is planned from nothing else, so a broken one is said
-        // once and removed: it cannot be planned.
-        self::log($hash, 'refused: invalid move request; the hook it held is not performed');
-        self::retireRequest($root, $hash);
-        return null;
-    }
-
-    static private function retireRequest($root, $hash)
-    {
-        $path = self::requestPath($root, $hash);
-        if (!@unlink($path)) {
-            clearstatcache(true, $path);
-            if (@lstat($path) !== false)
-                throw new RuntimeException('request-cleanup-failed: path=' . self::JOURNAL_DIR . '/'
-                    . self::logHash($hash) . self::REQUEST_SUFFIX . '; remove it to let the Move be planned');
-        }
-    }
-
-    // The retrackers native claim of a download: 'held' while retrackers
-    // re-adds it, 'none' without a claim, 'other' for another answer, null
-    // when the daemon does not answer (no native queue, or a transport
-    // failure).
-    static private function retrackersClaim($hash)
-    {
-        $request = new rXMLRPCRequest(new rXMLRPCCommand('system.retrackers.original_claim', array('', $hash)));
-        $request->important = false;
-        if (!$request->success() || $request->fault || !is_array($request->val)
-            || count($request->val) !== 1 || !is_string($request->val[0]))
-            return null;
-        return in_array($request->val[0], array('held', 'none'), true) ? $request->val[0] : 'other';
-    }
-
-    // What a planning failure means: 'transient' keeps the request for the
-    // recovery pass, 'quiet' retires it with the log line only, 'visible'
-    // also names the refusal on the download. A download that answers like
-    // a removed one is told apart from one retrackers re-adds by its claim.
-    static private function failureKind($hash, &$reason)
-    {
-        if ($reason === 'session-copy-unreadable' || $reason === 'daemon-claim-abi-unconfirmed')
-            return 'transient';
-        if (in_array($reason, array('configuration-declined', 'job-marker-mismatch', 'hash-invalid',
-            'worker-arguments-missing'), true))
-            return 'quiet';
-        if (!preg_match('/^rpc-[A-Za-z0-9_.]+-unconfirmed$/D', $reason))
-            return 'visible';
-        $absence = self::absence($hash);
-        if ($absence === 'present')
-            return 'transient';
-        if ($absence === 'gone') {
-            $reason = 'download-absent';
-            return 'quiet';
-        }
-        $reason = $absence === 'reloading' ? 'download-reloading' : 'download-absent-unconfirmed';
-        return 'transient';
-    }
-
-    // What an RPC that did not answer for a download says about it: 'present'
-    // (or not provably absent), 'gone' (absent without a retrackers claim, and
-    // absent again after the claim was read: removed), 'reloading' (retrackers
-    // holds its claim while it re-adds it) or 'unconfirmed'.
-    static private function absence($hash)
-    {
-        if (erasedataTorrentPresence($hash) !== ERASEDATA_TORRENT_ABSENT)
-            return 'present';
-        $claim = self::retrackersClaim($hash);
-        // The claim may end between the two reads; only a second absence
-        // after it proves the download is gone.
-        if ($claim === 'none' && erasedataTorrentPresence($hash) === ERASEDATA_TORRENT_ABSENT)
-            return 'gone';
-        return $claim === 'held' ? 'reloading' : 'unconfirmed';
-    }
-
-    static private function planFailed($root, $hash, $request, $reason)
-    {
-        $kind = self::failureKind($hash, $reason);
-        $detail = '';
-        if ($kind === 'transient' && $request !== null) {
-            if (time() - $request['first_at'] < rtFileJobRetryWindow()) {
-                // Said once per reason; the passes in between are silent.
-                $first = $request['attempts'] === 0 || $request['reason'] !== $reason;
-                $request['attempts']++;
-                $request['reason'] = $reason;
-                self::writeRequest($root, $request);
-                if ($first) {
-                    self::log($hash, 'deferred: ' . $reason . '; recover.php plans the Move again every 60 s');
-                    $hint = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.message.set'), array($hash,
-                        'autotools: move waiting: ' . $reason . '; it is retried automatically')));
-                    $hint->important = false;
-                    $hint->success();
-                }
-                return;
-            }
-            $detail = ' unresolved for ' . (int) ceil(rtFileJobRetryWindow() / 60) . ' min';
-            $kind = 'visible';
-        }
-        if ($request !== null) self::retireRequest($root, $hash);
-        self::log($hash, 'refused: ' . $reason . $detail);
-        if ($kind !== 'quiet') self::showRefusal($hash, $reason, $detail);
-    }
-
-    // Admission, planning and the first reconcile of a Move without a job,
-    // for the worker and for the recovery pass alike.
-    static private function plan($root, $hash, $args, $request)
-    {
-        $admission = rAutoTools::claimAbiStatus();
-        if ($admission === 'unconfirmed' && $request !== null) {
-            self::planFailed($root, $hash, $request, 'daemon-claim-abi-unconfirmed');
-            return;
-        }
-        if ($admission !== 'available') {
-            if ($request !== null) self::retireRequest($root, $hash);
-            $marker = isset($args[7]) ? (string) $args[7] : '';
-            if ($admission === 'unsupported' && preg_match('/^[0-9a-f]{32}$/D', $marker)) {
-                try {
-                    $cleanup = self::clearUnjournaledOldHookMarker($root, $hash, $marker);
-                    self::log($hash, ($cleanup === 'cleared' ? 'refused: ' : 'hold: ')
-                        . 'daemon-claim-abi-unsupported; old-hook-marker-' . $cleanup);
-                } catch (Throwable $e) {
-                    self::log($hash, 'hold: daemon-claim-abi-unsupported; old-hook-marker-'
-                        . $e->getMessage());
-                }
-            } else self::log($hash, 'refused: daemon-claim-abi-' . $admission);
-            return;
-        }
-        try { $job = self::prepare($args); }
-        catch (Throwable $e) {
-            self::planFailed($root, $hash, $request, $e->getMessage());
-            return;
-        }
-        self::writeJob($root, $job);
-        if ($request !== null) self::retireRequest($root, $hash);
-        if (self::reconcile($root, $job)) self::deliverNotice($root, $hash);
-    }
-
-    // One download under the journal lock: its job, else its request.
-    static private function service($root, $hash, $args = null)
-    {
-        $old = self::readJob($root, $hash);
-        if ($old !== null) {
-            // The planned job owns the download; a request beside it is spent.
-            if (@lstat(self::requestPath($root, $hash)) !== false) self::retireRequest($root, $hash);
-            if (self::reconcile($root, $old)) self::deliverNotice($root, $hash);
-            return;
-        }
-        if ($args === null) {
-            $request = self::readRequest($root, $hash);
-            if ($request === null) return;
-        } else {
-            try { $request = self::recordRequest($root, $hash, $args); }
-            catch (RuntimeException $e) {
-                self::refuseUnrecorded($hash, $e->getMessage());
-                return;
-            }
-        }
-        self::plan($root, $hash, $request !== null ? $request['args'] : $args, $request);
-    }
-
-    // A finished hook that nothing durable holds -- the session directory
-    // cannot keep the journal, its lock or the request -- is never retried,
-    // so it is refused in the log and on the download (R4: a fresh journal in
-    // an unwritable session directory once logged 'hold: journal-unavailable'
-    // and nothing else).
-    static private function refuseUnrecorded($hash, $reason)
-    {
-        self::log($hash, 'refused: ' . $reason . '; the Move request could not be recorded');
-        if (is_string($hash) && preg_match('/^[0-9A-F]{40}$/D', $hash)) self::showRefusal($hash, $reason);
-    }
-
-    static public function run($args)
-    {
-        $hash = isset($args[0]) ? (string) $args[0] : 'unknown';
+        $lock = null; $job = null;
         try {
+            $state = AutoToolsMoveQueue::state($hash);
+            if (!AutoToolsMoveQueue::owns($state, $qid, $user)) return 0;
             $root = self::journalRoot();
-            $lock = self::lock($root);
+            $lock = self::lock($root, $hash);
+            if ($lock === null) return 0;
+            $job = self::readJob($root, $hash);
+            if ($job !== null && $job['qid'] !== $qid) {
+                self::showRefusal($hash, 'journal-foreign');
+                AutoToolsMoveQueue::defer($hash, $qid, 'preflight-refused');
+                return 0;
+            }
+            if ($job === null) {
+                if ($state['phase'] === 'leased') throw new RuntimeException('journal-missing-for-lease');
+                try { $job = self::prepare($hash, $qid); }
+                catch (Throwable $e) {
+                    AutoToolsMoveQueue::planningFailure($hash, $qid, $e->getMessage());
+                    return 0;
+                }
+                self::writeJob($root, $job);
+            }
+            if (self::reconcile($root, $job, $incarnation)) self::deliverNotice($root, $hash);
+            return 0;
         } catch (Throwable $e) {
-            self::refuseUnrecorded($hash, $e->getMessage());
-            return;
-        }
-        try { self::service($root, $hash, $args); }
-        catch (Throwable $e) { self::log($hash, 'hold: ' . $e->getMessage()); }
-        finally { flock($lock, LOCK_UN); fclose($lock); }
+            self::log($hash, 'held: ' . $e->getMessage() . '; journal='
+                . self::JOURNAL_DIR . '/' . $hash . '.move.json; ownership retained');
+            return 1;
+        } finally { if ($lock !== null) { flock($lock, LOCK_UN); fclose($lock); } }
     }
 
-    static public function recoverAll()
+    static public function recoverCompleted()
     {
-        try { $root = self::journalRoot(); }
-        catch (Throwable $e) { self::log('scanner', 'hold: ' . $e->getMessage()); return; }
-        $entries = @scandir($root);
-        if ($entries === false) { self::log('scanner', 'hold: journal-scan-failed'); return; }
-        $hashes = array();
-        foreach ($entries as $entry)
-            if (preg_match('/^([0-9A-F]{40})(\.move\.json|\.move-request\.json)$/D', $entry, $parts))
-                $hashes[$parts[1]] = true;
-        foreach (array_keys($hashes) as $hash) {
+        $root = self::journalRoot();
+        $paths = erasedataDirectoryMatches($root, '', '.move.json');
+        if ($paths === false) throw new RuntimeException('journal-scan-failed');
+        foreach ($paths as $path) {
+            $hash = basename($path, '.move.json');
+            if (!preg_match('/^[0-9A-F]{40}$/D', $hash)) continue;
+            $lock = null;
             try {
-                $lock = self::lock($root);
-                try { self::service($root, $hash); }
-                finally { flock($lock, LOCK_UN); fclose($lock); }
-            } catch (Throwable $e) { self::log($hash, 'recovery hold: ' . $e->getMessage()); }
+                $lock = self::lock($root, $hash);
+                if ($lock === null) continue;
+                $job = self::readJob($root, $hash);
+                if ($job !== null && $job['phase'] === 'completed'
+                    && AutoToolsMoveQueue::state($hash)['phase'] === 'none') self::retireJob($root, $hash);
+            } catch (Throwable $e) {
+                self::log($hash, 'completed recovery held: ' . $e->getMessage()
+                    . '; journal=' . $path . '; unrelated recovery continues');
+            } finally { if ($lock !== null) { flock($lock, LOCK_UN); fclose($lock); } }
         }
     }
 }

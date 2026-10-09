@@ -31,7 +31,14 @@ class QueueAdmissionDiagnosticsTest extends TestCase
             $this->assertEquals('durable-drain',$data['schedules']['erasedata-drainalice'], $route.' preserves the separate drain obligation');
             $this->assertEquals('durable deletion obligation',$data['intent'], $route.' cannot touch refused queue bytes');
             if($route==='rutracker_check')
+            {
                 $this->assertTrue(isset($data['schedules']['rutracker_checkalice']), 'queue refusal leaves tracker dispatch scheduled');
+                $methods = array();
+                foreach($data['requests'] as $commands)
+                    foreach($commands as $command) $methods[] = $command['command'];
+                $this->assertTrue(in_array('system.listMethods', $methods, true),
+                    'tracker scheduling crosses the real capability gate');
+            }
         }
     }
 
@@ -303,6 +310,7 @@ class Utility { public static function getPHP(){return PHP_BINARY;} }
 class User { public static function getUser(){return '';} }
 class rXMLRPCCommand {
  public $command; public $params;
+ public static function isValidCommandName($name){return QueueCoreXMLRPCCommand::isValidCommandName($name);}
  public function __construct($command,$params=null){$this->command=$command;$this->params=$params;}
 }
 class rXMLRPCRequest {
@@ -323,6 +331,9 @@ class rTorrentSettings {
 function getCmd($name){return $name;}
 PHP
         );
+        foreach(ErasedataQueueRefusalFixture::installCheckerDependencies($tree) as $relative)
+            $this->assertEquals(hash_file('sha256', $root.'/'.$relative), hash_file('sha256', $tree.'/'.$relative),
+                'init admission mirror executes the shipped '.$relative.' dependency');
         file_put_contents($tree.'/driver.php', <<<'PHP'
 <?php
 require __DIR__.'/php/xmlrpc.php';

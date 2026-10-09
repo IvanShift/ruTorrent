@@ -355,6 +355,13 @@ var theURLs =
 	IPQUERYURL		: "https://ipinfo.io/"
 };
 
+// Both desktop and mobile read the ratio group from the joined d.views value.
+function getRatioGroup(views)
+{
+	const match = (views || "").match(/rat_(\d{1,2})/);
+	return match ? match[1] : -1;
+}
+
 var theConverter =
 {
 	round: function(num, p)

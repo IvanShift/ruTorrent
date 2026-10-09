@@ -104,30 +104,26 @@ class RtorrentLoadConfirmationTest extends TestCase
 		$GLOBALS['rpcLogCalls'] = false;
 		try {
 			foreach (array('absent' => 'rpc-fault',
-				'parse-failed' => 'unusable-response') as $mode => $reason) {
+				'malformed-response' => 'unusable-response') as $mode => $reason) {
 				$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
 				$GLOBALS['log_file'] = $path;
 				try {
-					$this->withPeer($mode === 'parse-failed' ? 'foreign' : $mode,
-						function () use ($receipt, $mode) {
-							$oldLimit = ini_get('pcre.backtrack_limit');
-							if($mode === 'parse-failed') ini_set('pcre.backtrack_limit', '1');
-							try {
-								$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-									'unclassified daemon answer cannot clear a receipt');
-								$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-									'repeated unclassified answer remains unknown');
-							} finally {
-								ini_set('pcre.backtrack_limit', $oldLimit);
-							}
-						});
-					$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+					$this->withPeer($mode, function () use ($receipt) {
+						$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+							'unusable daemon answer cannot clear a receipt');
+						$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+							'repeated unusable answer remains unknown');
+					});
+					$allLines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+					$lines = array_values(array_filter($allLines, function ($line) {
+						return strpos($line, 'rtorrent: pending load status unknown: ') !== false;
+					}));
 					$this->assertSame(1, count($lines),
-						$mode . ' produces one classified diagnostic');
+						$mode . ' produces one pending-load classified diagnostic');
 					$this->assertTrue(strpos($lines[0] ?? '',
 						'rtorrent: pending load status unknown: ' . $reason) !== false,
 						$mode . ' names its classified reason');
-					$this->assertTrue(strpos($lines[0] ?? '', 'info-hash not found') === false,
+					$this->assertTrue(strpos(implode("\n", $allLines), 'info-hash not found') === false,
 						$mode . ' never logs raw remote fault text');
 				} finally {
 					@unlink($path);
@@ -141,13 +137,13 @@ class RtorrentLoadConfirmationTest extends TestCase
 		}
 	}
 
-	public function testUnsupportedResultValueCannotProveForeignOwnership()
+	public function testNilResultCannotProveForeignOwnership()
 	{
 		$receipt = array('hash' => $this->hash,
 			'key' => 'ru-load-proof-' . str_repeat('a', 32));
-		$this->withPeer('unparsed-response', function () use ($receipt) {
+		$this->withPeer('nil-response', function () use ($receipt) {
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-				'a result without a parsed value cannot prove a foreign load');
+				'a nil result cannot prove a foreign load');
 		});
 	}
 

@@ -32,7 +32,7 @@ const hash = "A".repeat(40);
 test("every server mode the plugin names has its original to fall back to", () => {
   // getchunks is plugins/chunks' action, which the loader runs before httprpc.
   const names = [...readFileSync("../plugins/httprpc/init.js", "utf8")
-    .matchAll(/getCommon\("([a-zA-Z_]+)"\)/g)].map((match) => match[1])
+    .matchAll(/getCommon\("([a-zA-Z_0-9]+)"\)/g)].map((match) => match[1])
     .filter((name) => name !== "getchunks");
   expect(names.length).toBeGreaterThan(20);
   for (const name of names)
@@ -45,4 +45,14 @@ test.each([
 ])("with httprpc disabled %s sends its own command", (_action, uri, method) => {
   const stub = new rTorrentStub(uri);
   expect(stub.content).toContain(`<methodName>${method}</methodName>`);
+});
+
+
+test("all trackers request the structured array mode and preserve the disabled fallback", () => {
+  const original = window.__httprpc.origtrkall2;
+  expect(typeof original).toBe("function");
+  let mode;
+  const request = { hashes: [hash], content: "", getCommon: (value) => { mode = value; } };
+  rTorrentStub.prototype.getalltrackers.call(request);
+  expect(mode).toBe("trkall2");
 });
