@@ -578,6 +578,17 @@ class rXMLRPCRequest
         return $response[0];
     }
 
+    public function stringArray()
+    {
+        // Flat listMethods fixtures already carry semantic string values.
+        // Wire-type adversaries use FakeRtorrentDaemon and the real parser.
+        if ($this->fault || $this->responseTypes !== array('array') || count($this->responseValues) !== 1
+            || !is_array($this->responseValues[0])) return null;
+        foreach ($this->responseValues[0] as $value)
+            if (!is_string($value)) return null;
+        return $this->responseValues[0];
+    }
+
     public function stringTable($columns)
     {
         // Flat queued fixtures carry no XML row-type provenance. Table consumers

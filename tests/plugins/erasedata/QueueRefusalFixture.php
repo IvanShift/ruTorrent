@@ -40,7 +40,7 @@ class ErasedataQueueRefusalFixture
             mkdir($tree.'/'.$name, 0700, true);
         foreach(array('plugins/erasedata/init.php', 'plugins/erasedata/update.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
-            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php',
+            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
             'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/hashfault.php') as $name)
@@ -85,6 +85,8 @@ class rXMLRPCRequest {
  public $responseTypes=array();public $responseValues=array();
  private $commands;
  public function __construct($commands){$this->commands=is_array($commands)?$commands:array($commands);}
+ public function stringArray(){return $this->responseTypes===array('array')&&count($this->responseValues)===1
+  ? $this->responseValues[0] : null;}
  public function run(){
   self::$requests[]=$this->commands;
   foreach($this->commands as $command){

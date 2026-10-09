@@ -1463,6 +1463,8 @@ final class ErasedataCollector
 	private $logger;
 	private $enableForceDeletion;
 	private $blockingHashLocks;
+	private $nativeCapability = null;
+	private $nativeIntent = null;
 	private $cleanupLogState = array('completed' => array(), 'retained' => array());
 	private $manifestLogState = array();
 	// Set by reportRetentionsTo(); null means log directly, as the ordinary
@@ -1568,6 +1570,8 @@ final class ErasedataCollector
 		// Publication failures retain the codec's direct report on the ordinary
 		// path: legacy staging may have no drain to report for it. With a sink,
 		// the codec stays quiet and this classified note goes through its memory.
+		if($this->retentionSink === null && $reason === 'native-authority-unavailable')
+			erasedataNativeTerminalDiagnostic($path, $reason);
 		if($this->retentionSink !== null)
 		{
 			// The per-run key above still runs, so one tick offers one note per
@@ -2547,6 +2551,20 @@ final class ErasedataCollector
 			@fclose($handle);
 			return(false);
 		}
+		if($this->nativeCapability === 'legacy'
+			&& $manifest['version'] === ErasedataManifestCodec::BOUND_PAYLOAD_VERSION)
+		{
+			$this->manifestLog($hash, $path, 'native-authority-unavailable');
+			@fclose($handle);
+			return(false);
+		}
+		if($this->nativeCapability !== 'legacy'
+			&& (!erasedataNativeManifestStatSafe($stat) || $manifest['version'] !== ErasedataManifestCodec::BOUND_PAYLOAD_VERSION
+				|| $this->nativeIntent === null || $manifest['native_intent'] !== $this->nativeIntent))
+		{
+			@fclose($handle);
+			return(false);
+		}
 		// Written before manifests said their paths are the daemon's own bytes
 		// and holding a backslash: the path may be the parser's escaped spelling
 		// of a '"' or '\' (AUD-ESC-03), which can name a sibling spelled that
@@ -2562,8 +2580,17 @@ final class ErasedataCollector
 		$complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes));
 		// $stat is the fstat of the handle this function still holds open, so the
 		// deletion below is bound to the exact inode that was decoded.
-		$ret = $complete && $this->filesystem->unlinkCapturedEntry(
-			$path, $stat, 'manifest-consumption');
+		if($this->nativeIntent !== null)
+		{
+			// Keep authority bytes through journal retirement and a lost finish
+			// reply. This terminal name is never a payload-consumption candidate.
+			$ret = $complete && erasedataSameStatIdentity($stat, @lstat($path))
+				&& $this->filesystem->renameNoReplace($path, $path.'.completed')
+				&& erasedataSameStatIdentity($stat, @lstat($path.'.completed'))
+				&& erasedataNativeSyncQueue(dirname($path));
+			if(!$ret && $complete) erasedataNativeTerminalDiagnostic($path, 'terminal-publication-unresolved');
+		}
+		else $ret = $complete && $this->filesystem->unlinkCapturedEntry($path, $stat, 'manifest-consumption');
 		@fclose($handle);
 		if($ret)
 			$this->clearUnsafeManifestReports($path);
@@ -3135,6 +3162,7 @@ final class ErasedataCollector
 
 	private function collectHashIndexed($listPath, $hash, $hashIndex, $index)
 	{
+		if($this->nativeCapability === null) $this->nativeCapability = erasedataNativeCapability();
 		ErasedataFilesystemOps::clearRenameRefusal();
 		$lock = erasedataAcquireHashLock($listPath, $hash, !$this->blockingHashLocks);
 		if($lock === false)
@@ -3163,6 +3191,58 @@ final class ErasedataCollector
 			if($this->quarantinePlaintextCandidate($item) === null)
 				$processable[] = $item;
 		$legacyItems = $processable;
+		if($this->nativeCapability === 'legacy')
+		{
+			$compatible = array();
+			foreach($legacyItems as $item)
+			{
+				$bytes = ErasedataManifestCodec::readBoundedFile($item['path']);
+				$manifest = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
+				if(is_array($manifest) && $manifest['version'] === ErasedataManifestCodec::BOUND_PAYLOAD_VERSION)
+					$this->manifestLog($hash, $item['path'], 'native-authority-unavailable');
+				else $compatible[] = $item;
+			}
+			$legacyItems = $compatible;
+		}
+
+		if($this->nativeCapability !== 'legacy')
+		{
+			// A presence probe cannot revoke an old incarnation permanently.
+			// Only the native owner may authorize a bound payload worker.
+			foreach($legacyItems as $item)
+			{
+				$bytes = ErasedataManifestCodec::readBoundedFile($item['path']);
+				$manifest = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
+				if(!is_array($manifest) || $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD)
+					continue;
+				if($manifest['version'] !== ErasedataManifestCodec::BOUND_PAYLOAD_VERSION)
+				{
+					$this->quarantineUnverifiedManifest($item['path'], $item['stat'], $hash);
+					continue;
+				}
+				// A staged V4 may still belong to its live producer. Drain alone
+				// publishes it after exact native commit; never adopt it here.
+				if($item['type'] !== 'list') continue;
+				if($this->nativeCapability !== 'available')
+				{
+					$this->manifestLog($hash, $item['path'], 'native-authority-unavailable');
+					continue;
+				}
+				$intent = $manifest['native_intent'];
+				$state = erasedataNativeCall('state', $hash, $intent);
+				if(is_array($state) && in_array($state['phase'], array('missing', 'mismatch'), true))
+					$this->quarantineUnverifiedManifest($item['path'], $item['stat'], $hash);
+				elseif(is_array($state) && $state['phase'] === 'committed' && $state['live_relation'] === 'absent')
+				{
+					$answer = erasedataNativeCall('collect_start', $hash, $intent);
+					if(!in_array($answer, array('spawned', 'active'), true))
+						$this->manifestLog($hash, $item['path'], $answer === false ? 'rpc-unknown' : 'collector-'.$answer);
+				}
+				else $this->manifestLog($hash, $item['path'], $state === false ? 'rpc-unknown' : 'native-not-committed');
+			}
+			$legacyItems = array();
+		}
+
 		if(count($legacyItems))
 		{
 			$presence = $this->probePresence($hash);
@@ -3311,10 +3391,54 @@ final class ErasedataCollector
 		erasedataReleaseHashLock($lock);
 	}
 
+	public function runNative($listPath, $hash, array $intent)
+	{
+		$this->nativeCapability = 'available';
+		$intent = ErasedataManifestCodec::canonicalNativeIntent($intent);
+		if($intent === false) return(false);
+		$this->nativeIntent = $intent;
+		$lock = erasedataAcquireHashLock($listPath, $hash);
+		if($lock === false) return(false);
+		try
+		{
+			$blocker = $listPath;
+			if(!erasedataResumeCapturedEntries($listPath, 'manifest-consumption', $this->filesystem, $blocker))
+				return(false);
+			$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent);
+			if(count($completed) > 1) return(false);
+			if(!count($completed))
+			{
+				$index = erasedataBuildCollectorIndex($listPath, $hash, $this->filesystem);
+				$items = is_array($index) && isset($index[$hash]['legacy']) ? $index[$hash]['legacy'] : array();
+				$matched = array();
+				foreach($items as $item)
+				{
+					$bytes = ErasedataManifestCodec::readBoundedFile($item['path']);
+					$m = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
+					if(is_array($m) && isset($m['native_intent']) && $m['native_intent'] === $intent) $matched[] = $item;
+				}
+				if(count($matched) !== 1 || $matched[0]['type'] !== 'list') return(false);
+				$item = $matched[0];
+				if(!$this->consumeManifest($item['path'], $item['stat'], null)) return(false);
+				$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent);
+			}
+			if(count($completed) !== 1) return(false);
+			if(!erasedataNativeSyncQueue($listPath))
+			{
+				erasedataNativeTerminalDiagnostic($completed[0]['path'], 'directory-sync-failed');
+				return(false);
+			}
+			// Incapacitate the exact application replay record before E retires.
+			return(erasedataNativeRetireJournal($listPath, $hash, $intent, $completed[0]) ? $completed[0] : false);
+		}
+		finally { erasedataReleaseHashLock($lock); }
+	}
+
 	public function run($listPath, $onlyHash = null)
 	{
 		$this->cleanupLogState = array('completed' => array(), 'retained' => array());
 		$this->manifestLogState = array();
+		$this->nativeCapability = erasedataNativeCapability();
 		// Seeded so the report below always names something real even if a
 		// future refusal in there forgets to.
 		$blocker = $listPath;
@@ -3334,6 +3458,20 @@ final class ErasedataCollector
 				.' queue runs until that directory is removed by hand');
 			return;
 		}
+		if($this->nativeCapability === 'legacy')
+			foreach(erasedataNativeLegacyStagingCandidates($listPath, $onlyHash) as $item)
+				$this->manifestLog($item['hash'], $item['path'], 'native-authority-unavailable');
+		if($this->nativeCapability === 'available')
+			foreach(erasedataNativeCompletedCandidates($listPath, $onlyHash) as $completed)
+			{
+				$intent = $completed['manifest']['native_intent'];
+				$hash = $completed['manifest']['hash'];
+				$state = erasedataNativeCall('state', $hash, $intent);
+				if(is_array($state) && $state['phase'] === 'committed' && $state['live_relation'] === 'absent')
+					erasedataNativeCall('collect_start', $hash, $intent);
+				elseif(is_array($state) && in_array($state['phase'], array('missing', 'mismatch'), true))
+					erasedataNativeRemoveCompleted($completed, $this->filesystem);
+			}
 		$index = erasedataBuildCollectorIndex($listPath, $onlyHash, $this->filesystem);
 		if($index === false)
 			return;

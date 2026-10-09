@@ -7891,6 +7891,128 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(ERASEDATA_TORRENT_UNKNOWN, erasedataTorrentPresence($hash), 'different hash is UNKNOWN');
 	}
 
+	public function testStockCollectorRetainsNativeV4WhilePreservingLegacyV2Behavior()
+	{
+		$this->reset(); $hash=$this->hash('4'); $legacyHash=$this->hash('5');
+		$payload=$this->dir.'/native-kept.bin'; file_put_contents($payload,'native-bound-kept');
+		$paths=array('base'=>$payload,'multi'=>false,'files'=>array($payload));
+		$intent=erasedataNativeBuildIntent($hash,$paths,1,'0000000000000001','',str_repeat('a',32));
+		$bytes=ErasedataManifestCodec::encodeBound($hash,$paths,1,$intent);
+		$list=$this->queuePath().'/'.$hash.'.0000000000000001.actor.list';
+		$tmp=$this->queuePath().'/'.$hash.'.0000000000000001.orphan.tmp';
+		file_put_contents($list,$bytes); file_put_contents($tmp,$bytes);
+		$old=$this->dir.'/legacy-removed.bin'; file_put_contents($old,'legacy'); $this->writeManifest($legacyHash.'.list',$old);
+		$options=$this->collectorDefaults(); $options['captureLogs']=true;
+		$replies=array('fixture.nativeCapability'=>'legacy','d.hash'=>array('ok'=>true,'fault'=>true,'val'=>array(),
+			'faultString'=>'invalid parameters: info-hash not found'));
+		list($status,$output)=$this->runCollectorSubprocess($options,$replies,false);
+		$this->assertEquals(0,$status,'stock collector finishes its legacy pass');
+		$this->assertEquals('native-bound-kept',file_get_contents($payload),'stock never consumes native-bound payload');
+		$this->assertTrue(is_file($list)&&is_file($tmp),'native V4 list and staged authority both remain');
+		$this->assertTrue(strpos($output,'native-authority-unavailable')!==false,'native V4 downgrade refusal is visible');
+		$this->assertTrue(!is_file($old),'the user-approved legacy V2 behavior remains');
+	}
+
+	public function testModernPrepareRevalidatesTheExactManifestDigestBeforeErase()
+	{
+		$this->reset(); $hash=$this->hash('A'); $queue=$this->queuePath();
+		$this->frozen(true,array('/d/name',1,'/d/name/a.bin')); $this->acknowledgeOnRegistration($queue);
+		rXMLRPCRequest::$responses['fixture.nativeCapability']='available';
+		rXMLRPCRequest::$responses['d.incarnation']=array('ok'=>true,'val'=>array(str_repeat('a',32)));
+		rXMLRPCRequest::$responses['system.erasedata.prepare']=array('ok'=>true,'val'=>array('prepared'),
+			'callback'=>function() use($queue,$hash) {
+				$paths=array('base'=>'/d/name','multi'=>true,'files'=>array('/d/name/b.bin'));
+				foreach(glob($queue.'/*.tmp') as $path)
+				{
+					$m=ErasedataManifestCodec::decodeBytes(file_get_contents($path),$hash);
+					$i=$m['native_intent']; $i['digest']=hash('sha256',ErasedataManifestCodec::encode($hash,$paths,1));
+					file_put_contents($path,ErasedataManifestCodec::encodeBound($hash,$paths,1,$i));
+				}
+			});
+		rXMLRPCRequest::$responses['system.erasedata.cancel']=array('ok'=>true,'val'=>array('cancelled'));
+		$outcome=erasedataRemovalAdmissionRun($this->dependencies(),array($hash),1);
+		$this->assertEquals(false,$outcome,'same-inode manifest replacement after native prepare refuses erase');
+		$this->assertTrue(in_array('system.erasedata.cancel',rXMLRPCRequest::$requested,true),'the exact prepared native intent is cancelled');
+		$this->assertTrue(!in_array('system.erasedata.erase',rXMLRPCRequest::$requested,true),'no native destructive callback follows a changed binding');
+		$this->assertEquals(array(),rXMLRPCRequest::$erased,'no unguarded fallback erase follows refusal');
+	}
+
+	public function testModernAdmissionAndDrainRequireExactNativeCommitWithoutPresenceFallback()
+	{
+		$this->reset();
+		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
+		$this->acknowledgeOnRegistration($this->queuePath());
+		$hash = $this->hash('A');
+		rXMLRPCRequest::$responses['fixture.nativeCapability'] = 'available';
+		rXMLRPCRequest::$responses['d.incarnation'] = array('ok'=>true,'val'=>array(str_repeat('a',32)));
+		rXMLRPCRequest::$responses['system.erasedata.prepare'] = array('ok'=>true,'val'=>array('prepared'));
+		rXMLRPCRequest::$responses['system.erasedata.erase'] = array('ok'=>false);
+		rXMLRPCRequest::$responses['system.erasedata.state'] = array('ok'=>true,'responseTypes'=>array('struct'),
+			'responseValues'=>array(array('phase'=>'erase-started','live_relation'=>'absent')));
+		$outcome = erasedataRemovalAdmissionRun($this->dependencies(),array($hash),1);
+		$this->assertTrue(is_array($outcome),'an unknown guarded erase yields an exact retained partition');
+		$this->assertEquals(array(),$outcome['published'],'generic absence during erase-started cannot authorize publication');
+		$this->assertEquals(array($hash),$outcome['retained'],'the same nonce remains owed');
+		$generation=$outcome['generation']; $state=erasedataReadDrainState($this->queuePath());
+		$bound=erasedataNativeReadBoundStaging($state['journal'][$generation]['staging'][$hash],$hash);
+		$this->assertEquals(4,$bound['manifest']['version'],'the producer stages a native-bound payload manifest');
+		$this->assertEquals(str_repeat('a',32),$bound['manifest']['native_intent']['incarnation'],'the pre-path incarnation is bound');
+		$this->assertEquals(array(),rXMLRPCRequest::$erased,'modern admission never calls unguarded d.erase');
+		rXMLRPCRequest::$responses['fixture.nativeCapability']='legacy';
+		rXMLRPCRequest::$requested=array(); $notes=array();
+		$downgraded=erasedataDrainGenerationPass($this->queuePath(),'rutorrent',$generation,
+			array('hashes'=>array($hash),'force'=>1),new ErasedataFilesystemOps(),$notes,$state);
+		$this->assertEquals(1,$downgraded['retained'],'stock downgrade retains native-bound staging');
+		$this->assertEquals(array(),rXMLRPCRequest::$requested,'downgrade never probes or erases the current incarnation');
+		$this->assertEquals('native-authority-unavailable',$notes[0][0],'downgrade refusal is visible');
+		rXMLRPCRequest::$responses['fixture.nativeCapability']='available';
+		rXMLRPCRequest::$requested=array();
+		rXMLRPCRequest::$responses['system.erasedata.state']['responseValues']=array(array('phase'=>'committed','live_relation'=>'absent'));
+		$notes=array();
+		$result=erasedataDrainGenerationPass($this->queuePath(),'rutorrent',$generation,
+			array('hashes'=>array($hash),'force'=>1),new ErasedataFilesystemOps(),$notes,$state);
+		$this->assertEquals(1,$result['published'],'exact committed reconciliation publishes the original staging');
+		$this->assertEquals(array('system.erasedata.state'),rXMLRPCRequest::$requested,'drain neither recollects paths nor prepares or erases another incarnation');
+		$this->assertEquals(array(),rXMLRPCRequest::$erased,'drain recovery performs no unguarded erase');
+	}
+
+	public function testReaddedSameHashThenOrdinaryRemoveNeverRevivesOldPayloadDeletion()
+	{
+		$this->reset();
+		$hash = $this->hash('3');
+		$data = $this->dir.'/readded-kept.bin';
+		file_put_contents($data, 'new-incarnation-kept-by-ordinary-remove');
+		$this->writeManifest($hash.'.0000000000000001.stale.list', $data);
+		$options = $this->collectorDefaults();
+		$owned = array('base' => $data, 'multi' => false, 'files' => array($data));
+		$successor = $this->cleanupSuccessorFixture(array($hash), $owned, null);
+		$present = array('fixture.nativeCapability' => 'available',
+			'd.hash' => array('ok' => true, 'fault' => false, 'val' => array($hash)),
+			'd.get_base_path' => $successor['frozen'],
+			'd.get_directory' => $successor['stored'],
+		);
+		// Each tick is a new PHP process, as both real schedules are.
+		for($tick = 0; $tick < 2; $tick++)
+		{
+			list($status, $output) = $this->runCollectorSubprocess(
+				$options, $present, $successor['source']);
+			$this->assertEquals(0, $status, 're-added loaded tick completes: '.$output);
+			$this->assertEquals('new-incarnation-kept-by-ordinary-remove',
+				is_file($data) ? file_get_contents($data) : null,
+				'the re-added loaded incarnation retains its payload');
+		}
+		$absent = array('fixture.nativeCapability' => 'available', 'd.hash' => array('ok' => true, 'fault' => true,
+			'val' => array(), 'faultString' => 'invalid parameters: info-hash not found'));
+		for($tick = 0; $tick < 2; $tick++)
+		{
+			list($status, $output) = $this->runCollectorSubprocess($options, $absent, false);
+			$this->assertEquals(0, $status, 'later ordinary Remove tick completes: '.$output);
+			$this->assertEquals('new-incarnation-kept-by-ordinary-remove',
+				is_file($data) ? file_get_contents($data) : null,
+				'an old erase-with-data intent cannot revive after ordinary Remove');
+		}
+	}
+
 	public function testRegularFileReplacementBeforeMutationSurvives()
 	{
 		$this->reset();

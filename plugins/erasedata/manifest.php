@@ -4,6 +4,7 @@ final class ErasedataManifestCodec
 {
 	const VERSION = 2;
 	const CLEANUP_VERSION = 3;
+	const BOUND_PAYLOAD_VERSION = 4;
 	const OPERATION_REMOVE_PAYLOAD = 'remove_payload';
 	const OPERATION_CLEANUP_OBSOLETE = 'cleanup_obsolete';
 	// A remove-payload manifest whose paths hold a backslash says that they are
@@ -208,6 +209,47 @@ final class ErasedataManifestCodec
 			return(false);
 
 		return($manifest);
+	}
+
+	// Native authority binds the canonical V2 payload digest, avoiding a digest
+	// of a document that includes its own nonce and digest. V2 remains readable
+	// as historical data; only V4 can carry an admitted native deletion intent.
+	public static function encodeBound($hash, array $paths, $force, array $intent)
+	{
+		$payload = self::encode($hash, $paths, $force);
+		if(!is_string($payload) || !self::validNativeIntent($intent)
+			|| $intent['digest'] !== hash('sha256', $payload))
+			return(false);
+		$json = json_decode($payload, true);
+		$json['version'] = self::BOUND_PAYLOAD_VERSION;
+		$json['operation'] = self::OPERATION_REMOVE_PAYLOAD;
+		$json['native_intent'] = self::canonicalNativeIntent($intent);
+		$bytes = json_encode($json, JSON_UNESCAPED_SLASHES);
+		return(is_string($bytes) && strlen($bytes) < self::MAX_MANIFEST_BYTES
+			? $bytes."\n" : false);
+	}
+
+	public static function canonicalNativeIntent($intent)
+	{
+		if(!self::validNativeIntent($intent)) return(false);
+		$result = array();
+		foreach(array('incarnation', 'nonce', 'generation', 'user', 'digest') as $key)
+			$result[$key] = $intent[$key];
+		return($result);
+	}
+
+	private static function validNativeIntent($intent)
+	{
+		return(is_array($intent) && self::hasExactKeys($intent,
+			array('incarnation', 'nonce', 'generation', 'user', 'digest'))
+			&& is_string($intent['incarnation'])
+			&& preg_match('/^[a-f0-9]{32}$/D', $intent['incarnation'])
+			&& is_string($intent['nonce']) && preg_match('/^[a-f0-9]{32}$/D', $intent['nonce'])
+			&& is_string($intent['generation'])
+			&& preg_match('/^[a-f0-9]{16}$/D', $intent['generation'])
+			&& $intent['generation'] !== '0000000000000000'
+			&& is_string($intent['user']) && preg_match('/^[a-z0-9_-]{0,128}$/D', $intent['user'])
+			&& is_string($intent['digest']) && preg_match('/^[a-f0-9]{64}$/D', $intent['digest']));
 	}
 
 	public static function encodeCleanupObsolete($oldHash, $newHash, $marker, $replacementRecord, $base, array $entries)
@@ -503,7 +545,8 @@ final class ErasedataManifestCodec
 		// Serialized member names are required to be unique for cleanup jobs:
 		// those artifacts are capabilities authorizing deletion under another
 		// torrent's base. The v2 payload writer cannot emit duplicate keys.
-		if(isset($json['version']) && $json['version'] === self::CLEANUP_VERSION
+		if(isset($json['version']) && in_array($json['version'],
+			array(self::CLEANUP_VERSION, self::BOUND_PAYLOAD_VERSION), true)
 			&& !self::hasUniqueJSONObjectMembers($bytes))
 			return(false);
 		return(self::decodeJSON($json, $canonicalExpectedHash));
@@ -531,7 +574,30 @@ final class ErasedataManifestCodec
 			return(self::decodeVersionTwoJSON($json, $canonicalExpectedHash));
 		if($json['version'] === self::CLEANUP_VERSION)
 			return(self::decodeCleanupJSON($json, $canonicalExpectedHash));
+		if($json['version'] === self::BOUND_PAYLOAD_VERSION)
+			return(self::decodeBoundPayloadJSON($json, $canonicalExpectedHash));
 		return(false);
+	}
+
+	private static function decodeBoundPayloadJSON(array $json, $canonicalExpectedHash)
+	{
+		if(!isset($json['operation'], $json['native_intent'])
+			|| $json['operation'] !== self::OPERATION_REMOVE_PAYLOAD
+			|| !self::validNativeIntent($json['native_intent']))
+			return(false);
+		$intent = self::canonicalNativeIntent($json['native_intent']);
+		unset($json['operation'], $json['native_intent']);
+		$json['version'] = self::VERSION;
+		$record = self::decodeVersionTwoJSON($json, $canonicalExpectedHash);
+		if(!is_array($record) || !empty($record['paths_ambiguous']))
+			return(false);
+		$payload = self::encode($canonicalExpectedHash, array('base' => $record['base'],
+			'files' => $record['files'], 'multi' => $record['multi']), $record['force']);
+		if(!is_string($payload) || $intent['digest'] !== hash('sha256', $payload))
+			return(false);
+		$record['version'] = self::BOUND_PAYLOAD_VERSION;
+		$record['native_intent'] = $intent;
+		return($record);
 	}
 
 	private static function decodeVersionTwoJSON(array $json, $canonicalExpectedHash)
@@ -678,10 +744,19 @@ final class ErasedataManifestCodec
 	{
 		if(!is_string($path) || $path === '')
 			return(false);
+		// Refuse static special files before open, which can block on a FIFO.
+		clearstatcache(true, $path);
+		$before = @lstat($path);
+		if(!is_array($before) || ($before['mode'] & 0170000) !== 0100000)
+			return(false);
 		$handle = @fopen($path, 'rb');
 		if($handle === false)
 			return(false);
-		$bytes = self::readBoundedHandle($handle, $limit);
+		// Inspect the opened descriptor: a directory may open successfully, but
+		// reading it emits a diagnostic before the caller can retain the job.
+		$stat = @fstat($handle);
+		$bytes = is_array($stat) && (($stat['mode'] & 0170000) === 0100000)
+			? self::readBoundedHandle($handle, $limit) : false;
 		@fclose($handle);
 		return($bytes);
 	}

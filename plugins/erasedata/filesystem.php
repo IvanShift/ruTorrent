@@ -13,6 +13,24 @@ require_once(dirname(__FILE__)."/manifest.php");
 // collector.
 class ErasedataFilesystemOps
 {
+	private static $deletionLease = null;
+
+	// The worker owns this already-attested open file description. Every native
+	// helper must inherit it so PHP or daemon death cannot admit a new load while
+	// a surviving helper can still rename, unlink or restore the old payload.
+	public static function holdDeletionLease($lease)
+	{
+		if($lease === null)
+		{
+			self::$deletionLease = null;
+			return(true);
+		}
+		$stat = is_resource($lease) ? @fstat($lease) : false;
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000)
+			return(false);
+		self::$deletionLease = $lease;
+		return(true);
+	}
 	// Exit status ABI of rutorrent-erasedata-rename-noreplace, the helper that
 	// tools/native-helpers.list declares. This is the table's one definition:
 	// rename-noreplace.c names the same statuses, rename-noreplace-test.sh and
@@ -142,6 +160,14 @@ class ErasedataFilesystemOps
 			return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to));
 		$descriptors = array(0 => array('file', '/dev/null', 'r'),
 			1 => array('file', '/dev/null', 'w'), 2 => array('pipe', 'w'));
+		if(self::$deletionLease !== null)
+		{
+			if(!is_resource(self::$deletionLease))
+				return(self::renameDiagnostic('rename-noreplace-lease-unavailable', $from, $to));
+			// proc_open duplicates the resource's OFD; reopening /proc/self/fd
+			// would create a different description and lose the flock lifetime.
+			$descriptors[198] = self::$deletionLease;
+		}
 		$held = array();
 		try
 		{

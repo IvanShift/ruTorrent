@@ -3002,12 +3002,12 @@ PHP
 		$info = $this->rawInfoFixture();
 		$projector = new RetrackersTorrentProjector();
 		$additionSource = $this->metainfoWithRawInfo($info,
-			'13:announce-listll3:dupee');
+			'13:announce-listll10:http://dupee');
 		$addition = $projector->project($additionSource,
-			array(array('dup', 'new')), array(), false);
+			array(array('http://dup', 'http://new')), array(), false);
 		$this->assertTrue($addition['ok'] === true && $addition['changed'] === true &&
 			$addition['announce'] === null &&
-			$addition['announce_list'] === array(array('dup'), array('new')),
+			$addition['announce_list'] === array(array('http://dup'), array('http://new')),
 			'a partial duplicate removal keeps a dense nested tracker list');
 
 		$deletionSource = $this->metainfoWithRawInfo($info,
@@ -3095,7 +3095,7 @@ PHP
 			$this->assertTrue(file_put_contents($capture, $fixture) === strlen($fixture),
 				'the relative-path fixture is created inside the isolated profile');
 			$result = (new RetrackersTorrentProjector())->project($capture,
-				array(array('new')), array(), false);
+				array(array('http://new')), array(), false);
 		} finally {
 			@unlink($capture);
 			chdir($current);
@@ -3103,7 +3103,7 @@ PHP
 		$this->assertTrue(!file_exists($retrackersUpdateTestProfile . '/' . $capture),
 			'the relative-path fixture is removed after the projection');
 		$this->assertTrue($result['ok'] === true && $result['announce'] === 'old' &&
-			$result['announce_list'] === array(array('old'), array('new')),
+			$result['announce_list'] === array(array('old'), array('http://new')),
 			'captured bencode remains byte input even when identical bytes name a readable local file');
 	}
 
@@ -10270,6 +10270,93 @@ PHP;
 		$this->removeTree($root);
 	}
 
+	public function testNewConfiguredTrackersMustSurviveDaemonLoaderBeforeCandidatePreparation()
+	{
+		$this->loadTorrentRuntime();
+		$pub = 'http://pub.tracker.invalid/announce';
+		$info = $this->rawInfoFixture();
+		$source = $this->metainfoWithRawInfo($info,
+			'8:announce' . strlen($pub) . ':' . $pub .
+			'13:announce-listll' . strlen($pub) . ':' . $pub . 'ee');
+		$path = $this->metainfoFixturePath('configured-addition-admission.torrent');
+		file_put_contents($path, $source);
+		$snapshot = $this->task4Snapshot();
+		$snapshot['tracker_topology'] = array(array('group' => '0', 'url' => $pub,
+			'type' => '1', 'extra' => '0'));
+		$snapshot['tracker_enabled'] = array(array('url' => $pub, 'multiplicity' => 1, 'state' => '1'));
+		$cases = array(
+			'wss' => array(array('wss://configured-retracker.invalid/announce')),
+			'empty' => array(array('')),
+			'unsupported' => array(array('junk')),
+			'normalization required' => array(array('http://configured-retracker.invalid/announce ')),
+			'mixed supported and ignored' => array(array(
+				'http://configured-retracker.invalid/announce', 'wss://configured-retracker.invalid/announce')),
+		);
+		foreach ($cases as $name => $additions) {
+			$result = (new RetrackersMetainfoAuthority())->prepare($path, strtoupper(sha1($info)),
+				$additions, array(), false, $snapshot);
+			$this->assertTrue($result['ok'] === false &&
+				$result['reason'] === 'candidate-tracker-projection-failed' &&
+				!isset($result['candidate']) && !isset($result['projection']) && file_get_contents($path) === $source,
+				$name . ' configured addition refuses before any candidate or completion obligation');
+		}
+	}
+
+	public function testCapturedDaemonTrackerNormalizationPreservesForeignMetainfo()
+	{
+		$this->loadTorrentRuntime();
+		$pub = 'http://pub.tracker.invalid/announce';
+		$retracker = 'http://retracker.local.invalid/announce';
+		$info = $this->rawInfoFixture();
+		$b = function ($s) { return(strlen($s) . ':' . $s); };
+		// Captured from the 2026-10-09 production-compiled 0.16.25 and stock
+		// 0.9.8 daemons: ignored tiers consume no group, HTTP whitespace trims.
+		$cases = array(
+			'wss' => array('wss://tracker.openwebtorrent.invalid', null),
+			'empty' => array('', null),
+			'junk' => array('junk', null),
+			'space' => array('http://sp.tracker.invalid/announce ', 'http://sp.tracker.invalid/announce'),
+		);
+		foreach ($cases as $name => $case) {
+			$list = array(array($pub), array($case[0]));
+			$source = $this->metainfoWithRawInfo($info,
+				'8:announce' . $b($pub) . '13:announce-listll' . $b($pub) . 'el' . $b($case[0]) . 'ee');
+			$path = $this->metainfoFixturePath('captured-loader-' . $name . '.torrent');
+			file_put_contents($path, $source);
+			$snapshot = $this->task4Snapshot();
+			$snapshot['tracker_topology'] = array(array('group' => '0', 'url' => $pub,
+				'type' => '1', 'extra' => '0'));
+			$snapshot['tracker_enabled'] = array(array('url' => $pub, 'multiplicity' => 1, 'state' => '1'));
+			if ($case[1] !== null) {
+				$snapshot['tracker_topology'][] = array('group' => '1', 'url' => $case[1],
+					'type' => '1', 'extra' => '0');
+				$snapshot['tracker_enabled'][] = array('url' => $case[1], 'multiplicity' => 1, 'state' => '1');
+			}
+			$result = (new RetrackersMetainfoAuthority())->prepare($path, strtoupper(sha1($info)),
+				array(array($retracker)), array(), false, $snapshot);
+			$this->assertTrue($result['ok'] === true && $result['changed'] === true,
+				$name . ' source prepares using the captured daemon topology');
+			if ($result['ok'] !== true) continue;
+			$this->assertTrue($result['original'] === $source && file_get_contents($path) === $source &&
+				$result['projection']['announce_list'] === array_merge($list, array(array($retracker))) &&
+				strpos($result['candidate'], $b($case[0])) !== false &&
+				strpos($result['candidate'], '4:info' . $info) !== false,
+				$name . ' keeps the foreign metainfo string and exact original/info bytes');
+			$fixture = $this->task5ObligationFixture($snapshot, $result['projection']);
+			$this->assertTrue($fixture['obligation'] instanceof RetrackersPostEraseObligation,
+				$name . ' seals a complete candidate and rollback obligation');
+			if ($fixture['obligation'] instanceof RetrackersPostEraseObligation) {
+				$expected = array(array('group' => '0', 'url' => $pub, 'type' => '1', 'extra' => '0'));
+				if ($case[1] !== null) $expected[] = array('group' => '1', 'url' => $case[1], 'type' => '1', 'extra' => '0');
+				$expected[] = array('group' => $case[1] === null ? '1' : '2',
+					'url' => $retracker, 'type' => '1', 'extra' => '0');
+				$this->assertEquals($expected, $fixture['obligation']->candidate()->expectedTrackerState()['topology'],
+					$name . ' seals the loader-normalized candidate groups');
+			}
+			$this->closeTask5Fixture($fixture);
+		}
+	}
+
 	public function testReviewSourceAndResumeTopologyRefuseLossBeforeMutation()
 	{
 		if (!method_exists('RetrackersPostEraseObligation', 'sourceEligible')) {
@@ -12124,6 +12211,8 @@ PHP;
 			'testHookWithEmptyLedgerReportsObservedMismatchWithoutAdoptingIt',
 			'testReviewPostEventRuntimeTrackersRemainAuthoritative',
 			'testReviewProductionRoutePollsAndRealShellPreservesEveryArgument',
+			'testNewConfiguredTrackersMustSurviveDaemonLoaderBeforeCandidatePreparation',
+			'testCapturedDaemonTrackerNormalizationPreservesForeignMetainfo',
 			'testReviewSourceAndResumeTopologyRefuseLossBeforeMutation',
 			'testReviewLateReceiptsNeverRedispatchAndKnownOutcomesRetire',
 			'testPostLoadIdentityUsesCapturedLocalIdAndBindsBothCleanupCasLayers',

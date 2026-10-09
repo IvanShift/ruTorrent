@@ -219,9 +219,11 @@ class TestCaseTest extends TestCase
 		mkdir($phpDir, 0777, true);
 		$testFile = $testDir . '/PendingQueueTest.php';
 		$caseFile = $phpDir . '/TestCase.php';
+		$definitionFile = $phpDir . '/SourceDefinitionFixture.php';
 		$probeFile = $root . '/probe.php';
 		try {
 			if (!copy(__DIR__ . '/TestCase.php', $caseFile)
+				|| !copy(__DIR__ . '/SourceDefinitionFixture.php', $definitionFile)
 				|| !copy(__DIR__ . '/../plugins/erasedata/PendingQueueTest.php', $testFile)) {
 				throw new RuntimeException('Unable to stage the partial setup probe');
 			}
@@ -244,6 +246,7 @@ class TestCaseTest extends TestCase
 			@unlink($probeFile);
 			@unlink($testFile);
 			@unlink($caseFile);
+			@unlink($definitionFile);
 			@rmdir($testDir);
 			@rmdir($root . '/tests/plugins');
 			@rmdir($phpDir);

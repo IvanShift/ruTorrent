@@ -128,4 +128,22 @@ class ThrottleChannelNameTest extends TestCase
 		$this->assertTrue(strpos($sent, 'thr_1 "q"') === false && strpos($sent, 'thr_01') === false,
 			'nor is any other name the plugin did not create');
 	}
+
+	public function testRepairSavesTheCurrentSessionAfterTheStopStartInTheSameRequest()
+	{
+		$out = $this->correct(array(self::A => 'thr_1', self::B => 'thr_2', self::C => 'other'));
+		$this->assertSame('true', $out, 'the repair completes: ' . $out);
+		$bodies = $this->daemon->bodies();
+		$repair = end($bodies);
+		preg_match_all('|<name>methodName</name><value><string>([^<]*)</string></value>|',
+			$repair, $methods);
+		$this->assertSame(array('branch', 'branch', 'd.save_resume', 'd.save_resume'), $methods[1],
+			'the restart and its session saves are one daemon request, even if its reply is lost');
+		preg_match_all('|<name>methodName</name><value><string>d.save_resume</string></value></member>\s*'
+			. '<member><name>params</name><value><array><data>\s*<value><string>([^<]*)</string>|',
+			$repair, $saved);
+		$this->assertSame(array(self::A, self::B), $saved[1],
+			'only repaired downloads save their latest state and stop generation');
+	}
+
 }

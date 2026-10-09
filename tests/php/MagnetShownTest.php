@@ -120,4 +120,57 @@ class MagnetShownTest extends TestCase
 			'a malformed later xt is refused instead of waiting for the earlier hash');
 	}
 
+	public function testHybridExactTopicsKeepTheLastApplicableV1Hash()
+	{
+		// Captured on libtorrent 8f042ad / rTorrent 0.16.25: btmh is ignored.
+		$v1 = 'xt=urn:btih:'.self::PRESENT;
+		$v2 = 'xt=urn:btmh:1220'.str_repeat('ab', 32);
+		$this->assertSame(self::PRESENT, rTorrent::magnetHash('magnet:?'.$v1.'&'.$v2),
+			'a trailing v2 exact topic does not reject the v1 hash');
+		$this->assertSame(self::PRESENT, rTorrent::magnetHash('magnet:?'.$v2.'&'.$v1),
+			'a leading v2 exact topic does not reject the v1 hash');
+		$this->assertSame(self::MISSING, rTorrent::magnetHash('magnet:?'.$v1.'&'.$v2
+			.'&xt=urn:btih:'.self::MISSING.'&xt=urn:sha1:ignored'),
+			'the final applicable btih wins while other exact topics are ignored');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?'.$v2),
+			'an unsupported v2-only topic cannot supply a v1 hash');
+		$this->assertSame(false, rTorrent::sendMagnet('magnet:?'.$v2, false, false, null, null),
+			'an unsupported v2-only topic is refused before RPC');
+		$this->assertSame(array(), $this->daemon->bodies(), 'a v2-only topic sends no load call');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?'.$v1.'&'.$v2.'&xt=urn:btih:bad'),
+			'a hybrid still refuses a malformed applicable hash');
+	}
+
+	public function testHybridSendForwardsTheOriginalUriAndChecksItsV1Stub()
+	{
+		rTorrentSettings::get()->aliases['load'] = array('name' => 'load.normal', 'prm' => 1);
+		rTorrentSettings::get()->directory = '';
+		$magnet = 'magnet:?xt=urn:btih:'.self::MISSING
+			.'&xt=urn:btmh:1220'.str_repeat('ab', 32).'&dn=hybrid+name';
+		$this->assertSame(self::MISSING, rTorrent::sendMagnet($magnet, false, false, null, null),
+			'a hybrid is submitted under its v1 hash');
+		$this->assertTrue(strpos(implode('', $this->daemon->bodies()),
+			htmlspecialchars($magnet, ENT_COMPAT, 'UTF-8')) !== false,
+			'the daemon receives the original hybrid URI without stripping exact topics');
+		$this->assertSame(true, rTorrent::magnetShown(self::MISSING, 'hybrid'),
+			'the submitted hybrid is shown only after its v1 stub is present');
+		$this->assertSame(1, $this->reads(self::MISSING), 'presence is checked once');
+	}
+
+	public function testIgnoredExactTopicsStillRequireValidPercentEncoding()
+	{
+		$prefix = 'magnet:?xt=urn:btih:'.self::PRESENT.'&xt=urn:btmh:';
+		foreach(array('%', '%0', '%GG') as $invalid)
+			$this->assertSame(false, rTorrent::magnetHash($prefix.$invalid),
+				'an ignored exact topic cannot hide a malformed percent escape');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:12345678901234567%GG'),
+			'a malformed escape cannot be mistaken for a twenty-byte binary hash');
+		$this->assertSame(str_repeat('25', 20), rTorrent::magnetHash(
+			'magnet:?xt=urn:btih:'.str_repeat('%25', 20).'&xt=urn:btmh:ignored%26topic'),
+			'valid percent escapes preserve raw hash bytes and ignored topic boundaries');
+		$this->assertSame(false, rTorrent::magnetHash(
+			'magnet:?xt=urn:btmh:ignored%26xt=urn:btih:'.self::PRESENT),
+			'a percent-encoded separator does not introduce an applicable exact topic');
+	}
+
 }

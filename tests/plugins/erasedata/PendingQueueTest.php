@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__ . '/../../php/SourceDefinitionFixture.php');
 
 /**
  * The queue erase.php writes into, and the single drainer that empties it.
@@ -66,6 +67,7 @@ class PendingQueueTest extends TestCase
 			'plugins/erasedata/filesystem.php' => 'plugins/erasedata/filesystem.php',
 			'plugins/erasedata/manifest.php' => 'plugins/erasedata/manifest.php',
 			'plugins/erasedata/presence.php' => 'plugins/erasedata/presence.php',
+			'plugins/erasedata/native.php' => 'plugins/erasedata/native.php',
 			'plugins/erasedata/removewithdata.php' => 'plugins/erasedata/removewithdata.php',
 			'plugins/erasedata/collector.php' => 'plugins/erasedata/collector.php',
 			'php/xmlrpc_path.php' => 'php/xmlrpc_path.php',
@@ -93,6 +95,7 @@ class PendingQueueTest extends TestCase
 				public static $erased = array();    // hashes handed to d.erase
 				public $val = array(); public $important = true;
 				public $fault = false; public $faultString = "";
+				public $responseTypes = array(); public $responseValues = array();
 				public $rawFaultString = null; public $faultCode = 0;
 				private $commands = array();
 				public function __construct($cmds = null) {
@@ -105,17 +108,32 @@ class PendingQueueTest extends TestCase
 				// fatal the case instead of failing it.
 				public function addCommand($command) { $this->commands[] = $command; }
 				public function run() { return $this->success(); }
+				public function stringArray() {
+					return $this->responseTypes === array("array") && count($this->responseValues) === 1
+						? $this->responseValues[0] : null;
+				}
 				public function success() {
 					foreach ($this->commands as $command)
 						if (isset($command->command) && $command->command === "d.erase")
 							self::$erased[] = $command->params;
 					if (!self::$reachable) return false;
+					foreach ($this->commands as $command) {
+						if ($command->command === "system.listMethods") {
+							$this->responseTypes = array("array");
+							$this->responseValues = array(array("system.listMethods"));
+						} elseif ($command->command === "system.client_version") {
+							$this->responseTypes = array("string");
+							$this->responseValues = array("0.9.8");
+						}
+					}
 					$this->val = self::$live;
 					return true;
 				}
 			}
 			function getCmd($c) { return $c; }
 		');
+		file_put_contents($this->tree . '/php/xmlrpc.php', "\n".loadFunctionDefinition(
+			__DIR__.'/../../../php/xmlrpc.php', 'rpcMethodCapability'), FILE_APPEND);
 		// The plugin logs through FileUtil::toLog(); removewithdata.php expects
 		// the entry point to have loaded it, so the tree loads it here.
 		file_put_contents($this->tree . '/php/util.php', '<?php

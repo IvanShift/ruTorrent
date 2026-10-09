@@ -19,7 +19,7 @@ require_once(__DIR__ . '/TestCase.php');
  *    of accesses (not by line). A new file, or a changed count, means code
  *    that reads daemon strings has changed: review what it does with them,
  *    then update REVIEWED_ACCESS_COUNTS from the failure message;
- *  - the typed string-table owner and its shared Move inventory callers;
+ *  - the typed string-array and string-table owners and their inventory callers;
  *  - no file but php/xmlrpc.php names unescapeValue, as a call or as a
  *    callable string;
  *  - no file but php/xmlrpc.php names the deprecated $escapeForScript flag,
@@ -56,7 +56,8 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/erasedata/removewithdata.php'           => 50,
 		'plugins/extratio/rules.php'                     => 5,
 		'plugins/feeds/action.php'                       => 27,
-		'plugins/httprpc/action.php'                     => 41,
+		// trkall shares trkall2's nested values; its three delimiter-parser reads are gone.
+		'plugins/httprpc/action.php'                     => 38,
 		'plugins/ratio/ratio.php'                        => 9,
 		'plugins/retrackers/update.php'                  => 2,
 		'plugins/rutracker_check/check.php'              => 66,
@@ -74,6 +75,9 @@ class RpcStringConsumersTest extends TestCase
 		'tools/escaped-values-scan.php'                  => 4,
 	);
 
+	// Method names retain their opaque wire bytes through the typed array owner.
+	const REVIEWED_ARRAY_COUNTS = array('php/xmlrpc.php' => 1);
+
 	// Move's three inventory consumers delegate to the one typed RPC owner.
 	// Keep these edges visible even though they no longer read flat ->val.
 	const REVIEWED_TABLE_COUNTS = array('plugins/autotools/move_queue.php' => 1);
@@ -85,7 +89,9 @@ class RpcStringConsumersTest extends TestCase
 
 	// Raw semantic values retain XML provenance; these consumers must not flatten it.
 	const REVIEWED_SEMANTIC_COUNTS = array(
-		'php/xmlrpc.php' => 14,
+		'php/xmlrpc.php' => 12,
+		// Exact version/incarnation strings and typed state fields are compared without flattening.
+		'plugins/erasedata/native.php' => 14,
 		'plugins/httprpc/action.php' => 3,
 		'tools/autotools-move-readiness.php' => 4,
 	);
@@ -97,7 +103,7 @@ class RpcStringConsumersTest extends TestCase
 	/**
 	 * Count, in PHP source, the property reads of ->val / ->strings (also
 	 * inside interpolated strings and through ?->, never a method call, a
-	 * comment or a plain string), typed stringTable/shared Move downloadRows
+	 * comment or a plain string), typed stringArray/stringTable/shared Move downloadRows
 	 * calls, and mentions of unescapeValue (excluding its definition) and
 	 * escapeForScript.
 	 */
@@ -117,7 +123,7 @@ class RpcStringConsumersTest extends TestCase
 			}
 			return -1;
 		};
-		$result = array('access' => 0, 'unescape' => 0, 'flag' => 0, 'table' => 0, 'moveRows' => 0, 'semantic' => 0);
+		$result = array('access' => 0, 'unescape' => 0, 'flag' => 0, 'table' => 0, 'array' => 0, 'moveRows' => 0, 'semantic' => 0);
 		foreach ($tokens as $at => $token) {
 			if (!is_array($token)) {
 				continue;
@@ -126,8 +132,9 @@ class RpcStringConsumersTest extends TestCase
 				$name = $next($at, 1);
 				$after = $name >= 0 ? $next($name, 1) : -1;
 				if ($name >= 0 && is_array($tokens[$name]) && $tokens[$name][0] === T_STRING
-					&& $tokens[$name][1] === 'stringTable' && $after >= 0 && $tokens[$after] === '(') {
-					$result['table']++;
+					&& in_array($tokens[$name][1], array('stringTable', 'stringArray'), true)
+					&& $after >= 0 && $tokens[$after] === '(') {
+					$result[$tokens[$name][1] === 'stringTable' ? 'table' : 'array']++;
 				}
 				if ($name >= 0 && is_array($tokens[$name]) && $tokens[$name][0] === T_STRING
 					&& in_array($tokens[$name][1], array('responseTypes', 'responseValues'), true)
@@ -221,22 +228,25 @@ $m = method_exists('rXMLRPCRequest', 'unescapeValue');
 $n = array_map(array('rXMLRPCRequest', 'unescapeValue'), $b);
 $req->escapeForScript = true;
 class X { static public function unescapeValue($v) { return $v; } public $escapeForScript = false;
- public function stringTable($columns) {} public static function downloadRows() {} }
+ public function stringTable($columns) {} public function stringArray() {} public static function downloadRows() {} }
 $req->stringTable(3);
 $req?->stringTable(2);
+$req->stringArray();
+$req?->stringArray();
 AutoToolsMoveQueue::downloadRows();
 self :: downloadRows();
 Other::downloadRows();
 $req->stringTable;
+$req->stringArray;
 $req->responseTypes; $req?->responseValues;
 $req->responseValues(); $plainTypes = '$req->responseTypes';
 // $req->responseValues;
-$plain = '$req->stringTable(1); AutoToolsMoveQueue::downloadRows();';
-// $req->stringTable(1); AutoToolsMoveQueue::downloadRows();
+$plain = '$req->stringTable(1); $req->stringArray(); AutoToolsMoveQueue::downloadRows();';
+// $req->stringTable(1); $req->stringArray(); AutoToolsMoveQueue::downloadRows();
 PHP;
-		$this->assertSame(array('access' => 7, 'unescape' => 3, 'flag' => 2, 'table' => 2, 'moveRows' => 2, 'semantic' => 2), self::scan($fixture),
+		$this->assertSame(array('access' => 7, 'unescape' => 3, 'flag' => 2, 'table' => 2, 'array' => 2, 'moveRows' => 2, 'semantic' => 2), self::scan($fixture),
 			'seven reads (plain, $this, strings, both interpolations, spaced, ?->), three unescapeValue '
-			. 'mentions besides the definition, two flags, two typed calls, two Move edges and two semantic property accesses: ' . json_encode(self::scan($fixture)));
+			. 'mentions besides the definition, two flags, two typed table calls, two typed array calls, two Move edges and two semantic property accesses: ' . json_encode(self::scan($fixture)));
 	}
 
 	public function testEveryFileReadingDaemonStringsHasBeenReviewed()
@@ -267,18 +277,21 @@ PHP;
 			. self::entries($found));
 	}
 
-	public function testTypedMoveInventoryKeepsOneReviewedOwnerAndThreeConsumerEdges()
+	public function testTypedInventoriesKeepReviewedOwnersAndConsumerEdges()
 	{
-		$tables = $consumers = $semantic = array();
+		$tables = $arrays = $consumers = $semantic = array();
 		foreach (self::tree() as $file => $counts) {
 			if ($counts['semantic'] > 0) $semantic[$file] = $counts['semantic'];
 			if ($counts['table'] > 0) $tables[$file] = $counts['table'];
+			if ($counts['array'] > 0) $arrays[$file] = $counts['array'];
 			if ($counts['moveRows'] > 0) $consumers[$file] = $counts['moveRows'];
 		}
 		$this->assertSame(self::REVIEWED_SEMANTIC_COUNTS, $semantic,
 			'raw semantic values and their XML types have reviewed consumers');
 		$this->assertSame(self::REVIEWED_TABLE_COUNTS, $tables,
 			'typed string-table consumers are reviewed at their canonical RPC owner');
+		$this->assertSame(self::REVIEWED_ARRAY_COUNTS, $arrays,
+			'the method inventory retains its reviewed typed string-array edge');
 		$this->assertSame(self::REVIEWED_MOVE_ROW_COUNTS, $consumers,
 			'all three Move inventory callers retain the reviewed shared-owner edge');
 	}

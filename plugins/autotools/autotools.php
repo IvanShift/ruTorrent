@@ -274,7 +274,9 @@ class rAutoTools
         if ($this->enable_move && $this->path_to_finished !== '') {
             if ($this->fileop_type === 'Move') {
                 if ($this->moveStatus === 'queue') {
-                    $hook = 'd.autotools.move_enqueue=' . $q($user);
+                    // Native enqueue keeps its visible refusal and direct RPC fault;
+                    // the finished hook must still run unrelated later handlers.
+                    $hook = 'try=' . $q('d.autotools.move_enqueue=' . $q($user));
                 } elseif ($this->moveStatus === 'upstream') {
                     // Both invocations run synchronously. Their bootstrap forbids RPC.
                     $script = 'upstream_move.php';

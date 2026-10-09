@@ -70,7 +70,8 @@ class RPCMethodCapabilityTest extends TestCase
 	public function testMalformedOrUnknownRepliesNeverPublishAPartialSnapshot()
 	{
 		foreach(array(array('system.listMethods', 'd.autotools.move.enqueue', ''),
-			array('system.listMethods', 'bad name'), array('execute.argv'), array(), null,
+			array('system.listMethods', 123), array('execute.argv'), array(), null,
+			new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><dateTime.iso8601>execute.argv</dateTime.iso8601></value></data></array></value></param></params></methodResponse>'),
 			new FakeRtorrentRawReply('<methodResponse><params><param><value><string>system.listMethods</string></value></param></params></methodResponse>'),
 			new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><array><data><value><string>system.listMethods</string></value></data></array></value></data></array></value></param></params></methodResponse>'),
 			new FakeRtorrentRawReply('<methodResponse><params><param><value><struct><member><name>anything</name><value><string>system.listMethods</string></value></member></struct></value></param></params></methodResponse>'),
@@ -83,6 +84,33 @@ class RPCMethodCapabilityTest extends TestCase
 				'unknown or malformed lists cannot decide a fallback');
 			$this->assertSame(null, $available, 'no stale or partially validated method list survives');
 		}
+	}
+
+	public function testRealCustomMethodNamesDoNotInvalidateUnrelatedCapabilities()
+	{
+		// Captured through method.insert/system.listMethods on 0.16.25 and
+		// 0.9.8 (2026-10-09): custom names are not limited to the proxy grammar.
+		$list = array('system.listMethods', 'execute.raw.bg', 'my-notify',
+			'name with space', 'name:colon', 'name/slash', 'name<markup>', 'name@sign');
+		$this->serve(array_merge($list, array('my-notify')));
+		$available = null;
+		$this->assertSame('available', rpcMethodCapability(array('execute.raw.bg'), $available),
+			'valid custom names cannot disable an unrelated advertised capability');
+		$this->assertSame($list, $available, 'the complete snapshot retains exact custom names and removes duplicates');
+		$this->serve($list);
+		$this->assertSame('unsupported', rpcMethodCapability(array('d.stop_lease.acquire'), $available),
+			'valid custom names still allow a known absent capability to choose its fallback');
+		$this->assertSame($list, $available, 'a known absent capability still publishes the complete snapshot');
+	}
+
+	public function testBase64MethodNamesRetainTheirStringSemantics()
+	{
+		$this->serve(new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><string>execute.raw.bg</string></value><value><base64>bXktbm90aWZ5</base64></value></data></array></value></param></params></methodResponse>'));
+		$available = null;
+		$this->assertSame('available', rpcMethodCapability(array('execute.raw.bg'), $available),
+			'base64 string transport does not invalidate a method inventory');
+		$this->assertSame(array('system.listMethods', 'execute.raw.bg', 'my-notify'), $available,
+			'base64 method names are published as their decoded bytes');
 	}
 
 	public function testEveryCallReadsItsOwnCurrentSnapshotAndOldCallersRemainCompatible()

@@ -16,11 +16,10 @@ require_once(__DIR__ . '/../../php/xmlrpc.php');
  * the setsettings and setprops modes) and hands its cmd= parameter straight to
  * rXMLRPCCommand as a name in its glbl, ttl and prp modes.
  *
- * A method name in rtorrent is [A-Za-z0-9_.]+ and nothing else: of the 1001
- * names system.listMethods reports on 0.9.8, none carries another character.
- * So the boundary these tests fix is that shape -- a name matching it is built
- * and sent unchanged, a name that does not match is refused, and a refused name
- * never reaches a payload.
+ * The outbound command grammar is [A-Za-z0-9_.]+. Daemon inventories may
+ * contain custom names outside it, but that does not authorize sending them.
+ * These tests pin that boundary: a matching name is built and sent unchanged,
+ * a name outside it is refused, and a refused name never reaches a payload.
  */
 /**
  * run() clears the payload on its way out, so a test that reads $content
@@ -189,6 +188,13 @@ class XMLRPCCommandNameTest extends TestCase
 	{
 		$this->assertTrue($this->constructionRefused(''),
 			'an empty command name is refused rather than sent');
+	}
+
+	public function testCustomInventoryNamesDoNotWidenTheOutboundCommandGrammar()
+	{
+		foreach (array('my-notify', 'name with space', 'name<markup>') as $name)
+			$this->assertTrue($this->constructionRefused($name),
+				'a custom daemon inventory name does not become an allowed outbound command');
 	}
 
 	/**

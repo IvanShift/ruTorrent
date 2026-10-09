@@ -675,9 +675,8 @@ class XMLRPCProxy
 		}
 		if($mode === 'trkall' || $mode === 'trkall2')
 		{
-			// trkall embeds each slot in an already quoted cat expression.
-			// A rebuilt argument would introduce its own quotes into that
-			// expression, so only plain zero-argument readers fit this form.
+			// The public tracker cmd= extension admits only plain zero-argument
+			// readers; both modes retain this compatibility boundary.
 			if(!preg_match('/^([A-Za-z0-9_.]+)=$/D', $mapped, $match)
 				|| self::isDirectDenied($match[1])
 				|| !in_array($match[1], self::$safeGetters, true))

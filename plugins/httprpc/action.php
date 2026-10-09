@@ -577,45 +577,17 @@ switch($mode)
 		$result = array();
 		if(empty($hash))
 		{
-			if($mode === 'trkall2')
-			{
-				// Preserve the daemon's nested arrays instead of joining URL
-				// fields on '#', which is a legal fragment delimiter.
-				$columns = array_merge($cmds, $add);
-				$prm = getCmd('t.multicall=').'$'.getCmd('d.get_hash=').','
-					.implode(',', array_map('getCmd', $columns));
-				$req = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall',
-					array('main', getCmd('d.get_hash='), $prm)));
-				if($req->success(true) && count($req->responseValues) === 1 && is_array($req->responseValues[0]))
-					foreach($req->responseValues[0] as $row)
-						if(is_array($row) && count($row) === 2 && is_string($row[0]) && is_array($row[1]))
-							$result[$row[0]] = $row[1];
-				break;
-			}
-			$prm = getCmd("cat").'="$'.getCmd("t.multicall=").getCmd("d.get_hash=").",";
-			foreach( $cmds as $tcmd )
-				$prm.=getCmd($tcmd).','.getCmd("cat=#").',';
-			foreach( $add as $tcmd )
-				$prm.=getCmd($tcmd).','.getCmd("cat=#").',';
-			$prm = substr($prm, 0, -1).'"';
-			$cnt = count($cmds)+count($add);
-			$req = new rXMLRPCRequest();
-			$req->addCommand( new rXMLRPCCommand( "d.multicall", array
-			(
-				"main",
-				getCmd("d.get_hash="),
-				$prm
-			) ) );
-	       		if($req->success(true))
-			{
-				for( $i = 0; $i< count($req->val); $i+=2 )
-				{
-					$tracker = explode( '#', $req->val[$i+1] );
-					if(!empty($tracker))
-						unset( $tracker[ count($tracker)-1 ] );
-					$result[ $req->val[$i] ] = array_chunk( $tracker, $cnt );
-				}
-			}
+			// Both public modes return the same tracker rows. Preserve the
+			// daemon's arrays: '#' is legal data in a tracker URL fragment.
+			$columns = array_merge($cmds, $add);
+			$prm = getCmd('t.multicall=').'$'.getCmd('d.get_hash=').','
+				.implode(',', array_map('getCmd', $columns));
+			$req = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall',
+				array('main', getCmd('d.get_hash='), $prm)));
+			if($req->success(true) && count($req->responseValues) === 1 && is_array($req->responseValues[0]))
+				foreach($req->responseValues[0] as $row)
+					if(is_array($row) && count($row) === 2 && is_string($row[0]) && is_array($row[1]))
+						$result[$row[0]] = $row[1];
 		}
 		else
 		{

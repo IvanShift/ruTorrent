@@ -111,6 +111,8 @@ class rThrottle
 						getCmd('cat').'=$'.getCmd("d.stop").'=,$'.getCmd("d.set_throttle_name=").$name.',$'.getCmd('d.start='),
 						getCmd('d.set_throttle_name=').$name )));
 				}
+				// The restart records Stop intent; persist the resulting state before a crash.
+				$req->addSessionSaves(array_keys($toCorrect));
 				if($req->getCommandsCount())
 				{
 					return($req->run() && !$req->fault);

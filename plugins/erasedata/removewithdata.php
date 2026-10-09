@@ -344,6 +344,7 @@ if(!function_exists('erasedataCollectPaths'))
 
 require_once(dirname(__FILE__)."/manifest.php");
 require_once(dirname(__FILE__)."/filesystem.php");
+require_once(dirname(__FILE__)."/native.php");
 
 // Native BEP-9 session stubs carry a synthetic info dictionary, captured
 // through load.start on 0.16.25. Its pieces field is the requested hash, not
@@ -3260,6 +3261,15 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			return(false);
 		}
 
+		$nativeCapability = erasedataNativeCapability();
+		if(!in_array($nativeCapability, array('available', 'legacy'), true))
+		{
+			erasedataDrainDiagnostic($log, 'native-authority-unavailable', null, 0,
+				'admission-refused-torrents-and-payload-retained');
+			return(false);
+		}
+		$nativeIntents = array();
+
 		// (1) The complete partition, before any side effect at all. Members of
 		// F stop here: no marker, no journal record, no staging, no RPC and no
 		// filesystem mutation of any kind is made on their behalf.
@@ -3568,7 +3578,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			$failure = false;
 			foreach($accepted as $hash)
 			{
-				$paths = erasedataCollectPaths($hash);
+				$incarnation = $nativeCapability === 'available' ? erasedataNativeIncarnation($hash) : null;
+				$paths = $incarnation === false ? false : erasedataCollectPaths($hash);
 				if($paths === false || ($force === 2
 					&& !erasedataRemovalCapabilityStillMatches($paths, $capabilities[$hash], $filesystem)))
 				{
@@ -3583,7 +3594,13 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					$failure = array('rename-capability', $hash);
 					break;
 				}
-				$content = ErasedataManifestCodec::encode($hash, $paths, $force);
+				if($nativeCapability === 'available')
+				{
+					$intent = erasedataNativeBuildIntent($hash, $paths, $force, $generation, $user, $incarnation);
+					$content = is_array($intent) ? ErasedataManifestCodec::encodeBound($hash, $paths, $force, $intent) : false;
+					if(is_array($intent)) $nativeIntents[$hash] = $intent;
+				}
+				else $content = ErasedataManifestCodec::encode($hash, $paths, $force);
 				if($content === false)
 				{
 					$failure = array('manifest-encode', $hash);
@@ -3681,6 +3698,28 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						'user' => $user, 'log' => $log, 'context' => 'headless'));
 				return(false);
 			}
+			if($nativeCapability === 'available')
+			{
+				foreach($accepted as $hash)
+					if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents)
+						|| !erasedataNativePrepareIntent($hash, $nativeIntents[$hash]))
+					{
+						erasedataReleaseAdmissionLocks($stateLock, $locks);
+						erasedataDrainDiagnostic($log, 'native-prepare-unresolved', $generation, $members,
+							'torrents-retained-exact-prepared-journal-retained', $hash);
+						return(false);
+					}
+				// Native preparation is not permission to use a replaced file.
+				$state = erasedataReadDrainState($listPath);
+				if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents))
+				{
+					foreach($nativeIntents as $hash => $intent) erasedataNativeCancelIntent($hash, $intent);
+					erasedataReleaseAdmissionLocks($stateLock, $locks);
+					erasedataDrainDiagnostic($log, 'binding-mismatch', $generation, $members,
+						'torrents-retained-prepared-cancellation-required');
+					return(false);
+				}
+			}
 			$state['journal'][$generation]['phase'] = 'erase-started';
 			if(!erasedataWriteDrainState($listPath, $state))
 			{
@@ -3693,13 +3732,18 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			// Only now, with erase-started durable, does anything destructive run.
 			// The request comes from the one shared builder, so its length is the
 			// length erasedataClassifyEraseOutcomes() partitions by, by construction.
-			$request = erasedataEraseRequest($accepted);
-			// Invariant 2's `E`, derived from the INDIVIDUAL replies the batch
-			// really came back with and never from the aggregate. A request whose
-			// own success() is false carries no per-command position at all, so it
-			// contributes nothing: every member of it is UNKNOWN.
-			$classified = ($request !== false && $request->success())
-				? erasedataClassifyEraseOutcomes($accepted, $request) : array();
+			$classified = array();
+			if($nativeCapability === 'available')
+			{
+				foreach($accepted as $hash)
+					if(erasedataNativeEraseIntent($hash, $nativeIntents[$hash])) $classified[$hash] = 'accepted';
+			}
+			else
+			{
+				$request = erasedataEraseRequest($accepted);
+				$classified = ($request !== false && $request->success())
+					? erasedataClassifyEraseOutcomes($accepted, $request) : array();
+			}
 			$published = array();
 			$retained = array();
 			// Invariant 15: an I/O failure in this producer's OWN bookkeeping --
@@ -3718,7 +3762,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				// Transport, fault or parse uncertainty is UNKNOWN, and UNKNOWN
 				// retains the obligation: it publishes nothing and unlinks nothing.
 				$presence = (isset($classified[$hash]) && $classified[$hash] === 'accepted')
-					? ERASEDATA_TORRENT_ABSENT : erasedataTorrentPresence($hash);
+					? ERASEDATA_TORRENT_ABSENT : ($nativeCapability === 'legacy'
+						? erasedataTorrentPresence($hash) : ERASEDATA_TORRENT_UNKNOWN);
 				// Invariant 12 asks for a canonical hash and a reason per physical
 				// job, and T1 and T0 are not the same job: `erase-unresolved` is a
 				// member rTorrent never individually answered for (T0), while
@@ -4265,6 +4310,10 @@ if(!function_exists('erasedataDrainGenerationPass'))
 	function erasedataDrainGenerationPass($listPath, $user, $generation, array $job,
 		ErasedataFilesystemOps $filesystem, array &$notes, array $stateSnapshot = array())
 	{
+		if(erasedataNativeCapability() !== 'legacy')
+			return(erasedataNativeDrainGenerationPass($listPath, $user, $generation, $job, $filesystem, $notes));
+
+
 		$hashes = $job['hashes'];
 		$members = count($hashes);
 		$result = array('published' => 0, 'retained' => $members,
@@ -4279,6 +4328,12 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		{
 			$notes[] = array('hash-lock', $generation, $members,
 				'obligations-retained', null);
+			return($result);
+		}
+
+		if(erasedataNativeLegacyDrainGuard($listPath, $generation, $job, $notes))
+		{
+			erasedataUnlockObligations($locks);
 			return($result);
 		}
 
@@ -5907,6 +5962,9 @@ if(!function_exists('erasedataRemoveWithData'))
 {
 	function erasedataRemoveWithData($hashes, $forceDelete)
 	{
+		if(erasedataNativeCapability() !== 'legacy')
+			return(erasedataAdmitRemoval($hashes, $forceDelete));
+
 		// Invariant 13 at a PUBLIC boundary: the two exact wire spellings "1"
 		// and "2" ARE accepted here and normalized exactly once, and every
 		// value below this line is the integer 1 or 2.

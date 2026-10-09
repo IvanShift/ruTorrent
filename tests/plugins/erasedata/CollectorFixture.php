@@ -59,6 +59,17 @@ if(!class_exists('FileUtil'))
 	}
 }
 
+// Historical filesystem tests inject the legacy authority boundary explicitly;
+// modern native tests supply their own exact capability in the RPC scenario.
+if(!function_exists('erasedataNativeCapability'))
+{
+	function erasedataNativeCapability()
+	{
+		return(isset(rXMLRPCRequest::$responses['fixture.nativeCapability'])
+			? rXMLRPCRequest::$responses['fixture.nativeCapability'] : 'legacy');
+	}
+}
+
 if(!class_exists('rXMLRPCCommand'))
 {
 	class rXMLRPCCommand
@@ -88,6 +99,8 @@ if(!class_exists('rXMLRPCRequest'))
 		public static $scheduledCommands = array();
 
 		public $val = array();
+		public $responseValues = array();
+		public $responseTypes = array();
 		public $fault = false;
 		public $faultString = '';
 		public $rawFaultString = null;
@@ -155,6 +168,9 @@ if(!class_exists('rXMLRPCRequest'))
 			if($first === 'd.hash' && isset($response['swap']) && $response['swap'] !== null)
 				self::applySwap($response['swap']);
 			$this->val = isset($response["val"]) ? $response["val"] : array();
+			$this->responseValues = isset($response['responseValues']) ? $response['responseValues'] : $this->val;
+			$this->responseTypes = isset($response['responseTypes']) ? $response['responseTypes']
+				: array_map(function($value) { return(is_string($value) ? 'string' : 'array'); }, $this->responseValues);
 			$this->fault = isset($response["fault"]) ? $response["fault"] : false;
 			$this->faultString = isset($response["faultString"]) ? $response["faultString"] : '';
 			$this->rawFaultString = array_key_exists("rawFaultString", $response)
@@ -955,8 +971,8 @@ class ErasedataProductionMirror
 
 	public static function pluginFiles()
 	{
-		return(array('action.php', 'collector.php', 'conf.php', 'done.php',
-			'erase.php', 'filesystem.php', 'init.php', 'manifest.php', 'outcome.php',
+		return(array('action.php', 'collect_worker.php', 'collector.php', 'conf.php', 'done.php',
+			'erase.php', 'filesystem.php', 'init.php', 'manifest.php', 'native.php', 'outcome.php',
 			'pending.php', 'presence.php', 'removewithdata.php', 'status.php', 'update.php'));
 	}
 
@@ -1442,6 +1458,8 @@ class ErasedataProductionMirror
 			."// scripted reply table. It never starts, acknowledges or stands in\n"
 			."// for a child process of any kind.\n"
 			."require_once(dirname(dirname(__FILE__)).'/php/util.php');\n"
+			."// Historical adapter exercises the user-approved legacy engine.\n"
+			."function erasedataNativeCapability() { return('legacy'); }\n"
 			."class rXMLRPCCommand\n"
 			."{\n"
 			."\tpublic \$command; public \$params;\n"

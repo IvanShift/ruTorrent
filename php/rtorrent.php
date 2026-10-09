@@ -478,7 +478,7 @@ class rTorrent
 		return $status;
 	}
 
-	/** The last xt wins in libtorrent's DownloadConstructor::parse_magnet_uri. */
+	/** The last btih wins; libtorrent ignores other exact topics, including hybrid btmh. */
 	static public function magnetHash($magnet)
 	{
 		if(!is_string($magnet) || strncmp($magnet, 'magnet:?', 8) !== 0) return false;
@@ -487,7 +487,9 @@ class rTorrent
 		{
 			$pair = explode('=', $part, 2);
 			if(count($pair) !== 2 || $pair[0] !== 'xt') continue;
-			if(strncmp($pair[1], 'urn:btih:', 9) !== 0) return false;
+			// Even ignored exact topics must survive libtorrent's strict URL decoding.
+			if(preg_match('/%(?![0-9a-f]{2})/i', $pair[1])) return false;
+			if(strncmp($pair[1], 'urn:btih:', 9) !== 0) continue;
 			$text = substr($pair[1], 9);
 			if(preg_match('/^[A-Z2-7]{32}\z/i', $text)) $hash = Decode::base32decode($text);
 			else

@@ -286,7 +286,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
         foreach(array('plugins/rutracker_check/init.php', 'plugins/rutracker_check/done.php',
             'plugins/erasedata/init.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
-            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php',
+            'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php', 'php/utility/hashfault.php') as $relative)
         {
             copy($root.'/'.$relative, $tree.'/'.$relative);
@@ -318,6 +318,7 @@ class rXMLRPCRequest {
  public function __construct($commands){$this->commands=is_array($commands)?$commands:array($commands);}
  public function run(){self::$requests[]=$this->commands; return count($this->commands)>0;}
  public function success(){return $this->run();}
+ public function stringArray(){return null;}
 }
 class rTorrentSettings {
  public $session; public $registered=array();

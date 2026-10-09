@@ -2924,7 +2924,7 @@ final class RetrackersPostEraseObligation
 			substr($capture, $node['payload_offset'], $node['payload_length']) : false);
 	}
 
-	private static function metainfoTopology($announce, array $tiers, $strict)
+	private static function metainfoTopology($announce, array $tiers, $strict = false)
 	{
 		if (array_keys($tiers) !== (count($tiers) ? range(0, count($tiers) - 1) : array())) {
 			return(false);
@@ -2943,18 +2943,23 @@ final class RetrackersPostEraseObligation
 					return(false);
 				}
 				$normalized = trim($url, " \t\r\n\v\f");
-				// Loader insert_url is case-sensitive. Unsupported source schemes
-				// are ignored, but an ordinary DHT row has no reload-safe identity.
+				// Both source and candidate retain user-owned metainfo strings. Model
+				// the captured loader behavior here: trim HTTP/UDP URLs and ignore
+				// unsupported schemes without removing them from the candidate.
 				$type = strpos($normalized, 'http://') === 0 ||
 					strpos($normalized, 'https://') === 0 ? '1' :
 					(strpos($normalized, 'udp://') === 0 ? '2' : false);
-				if (strpos($normalized, 'dht://') === 0 ||
-					($strict && ($type === false || $normalized !== $url)) ||
-					!self::representable($normalized)) {
+				// New requested trackers must survive loading without normalization;
+				// preserved foreign entries follow the captured loader behavior.
+				if (($strict && ($type === false || $normalized !== $url)) ||
+					strpos($normalized, 'dht://') === 0) {
 					return(false);
 				}
 				if ($type === false) {
 					continue;
+				}
+				if (!self::representable($normalized)) {
+					return(false);
 				}
 				$topology[] = array('group' => (string)$group, 'url' => $normalized,
 					'type' => $type, 'extra' => '0');
@@ -2966,6 +2971,11 @@ final class RetrackersPostEraseObligation
 		}
 		self::sortTopology($topology);
 		return($topology);
+	}
+
+	public static function additionsEligible(array $tiers)
+	{
+		return(self::metainfoTopology(null, $tiers, true) !== false);
 	}
 
 	private static function sourceMetainfoTopology($capture, array $top)
@@ -3003,7 +3013,7 @@ final class RetrackersPostEraseObligation
 		if ($announce === false) {
 			return(false);
 		}
-		return(self::metainfoTopology($announce, $tiers, false));
+		return(self::metainfoTopology($announce, $tiers));
 	}
 
 	private static function resumeTrackerEligibility($capture, array $top,
@@ -3072,7 +3082,7 @@ final class RetrackersPostEraseObligation
 		$readFailure = null;
 		$runtime = self::sourceTrackerState($snapshot, $readFailure, true);
 		$source = self::sourceMetainfoTopology($capture, $scan['top']);
-		$candidate = self::metainfoTopology($projection['announce'], $projection['announce_list'], true);
+		$candidate = self::metainfoTopology($projection['announce'], $projection['announce_list']);
 		if ($runtime === false || $source === false || $candidate === false ||
 			$source !== $runtime['topology'] ||
 			!self::resumeTrackerEligibility($capture, $scan['top'], $source, $candidate)) {
@@ -3186,7 +3196,7 @@ final class RetrackersPostEraseObligation
 			return(false);
 		}
 		$topology = self::metainfoTopology($projection['announce'],
-			$projection['announce_list'], true);
+			$projection['announce_list']);
 		if ($topology === false) {
 			$failure = 'candidate-tracker-projection-failed';
 			return(false);
@@ -6317,6 +6327,7 @@ class RetrackersTorrentProjector
 	public function project($capture, $additions, $deletions, $addToBegin)
 	{
 		if (!is_string($capture) || !$this->trackerList($additions, false) ||
+			!RetrackersPostEraseObligation::additionsEligible($additions) ||
 			!$this->deletionList($deletions) || !is_bool($addToBegin)) {
 			return(array('ok' => false, 'reason' => 'candidate-tracker-projection-failed'));
 		}

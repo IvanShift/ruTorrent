@@ -10,7 +10,8 @@ $lease = array('d.stop_close_claim_state', 'd.stop_close_claim', 'd.replay_stop_
 $suite = new StrictTestSuite();
 foreach (array('stock'=>array(array(), 'upstream'), 'full'=>array(array_merge($native, $lease), 'queue'),
     'partial'=>array(array_slice($native, 1), 'paused'), 'unrecognized-native'=>array(array('system.autotools.future'), 'paused'),
-    'malformed-empty'=>array(array(''), 'paused'), 'malformed-space'=>array(array('bad method'), 'paused'), 'missing-lease'=>array($native, 'paused')) as $name=>$case)
+    'malformed-empty'=>array(array(''), 'paused'), 'custom-space'=>array(array('name with space'), 'upstream'),
+    'custom-dash'=>array(array_merge($native, $lease, array('my-notify')), 'queue'), 'missing-lease'=>array($native, 'paused')) as $name=>$case)
     $suite->test('capability mode ' . $name, function () use ($case) {
         $state=moveWorkerFixture();$state['capabilities']=array_merge(array('system.listMethods'),$case[0]);
         try {
@@ -46,6 +47,12 @@ foreach(array('queue','upstream','paused','disabled')as$mode)
                 strictAssertSame(array('', 'am.queue.'.hash('sha256','tester'), '1', '1', 'system.autotools.move_dispatch="tester"'),$parameters[2],'native schedule argument values');
             }
             strictAssertSame($mode==='queue',strpos($wire,'d.autotools.move_enqueue=')!==false,'pure enqueue admission');
+            if ($mode === 'queue') {
+                strictAssertSame(1, preg_match('~<value><string>(try=.*?d\.autotools\.move_enqueue=.*?)</string></value>~s', $wire, $hook),
+                    'native enqueue refusal is isolated from later finished hooks');
+                strictAssertSame('try="d.autotools.move_enqueue=\\"tester\\""', $hook[1],
+                    'registered native hook uses the shared try boundary with the literal user argument');
+            }
             strictAssertSame($mode==='upstream',strpos($wire,'upstream_move.php')!==false,'upstream hook only when absent ABI');
             strictAssertSame(true,strpos($wire,'php \\"quoted\\" \\\\ binary')!==false,'configured PHP bytes quoted by shared helper');
         } finally { strictRemoveTree($state['root']); }

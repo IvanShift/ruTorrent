@@ -65,10 +65,9 @@ class rXMLRPCCommand
 {
 	// A command name is interpolated into <methodName> unescaped, so a name
 	// carrying markup would close that element and add calls of its own to the
-	// same request. An rtorrent method name is letters, digits, '_' and '.':
-	// of the 1001 names system.listMethods answers with on 0.9.8, not one
-	// carries another character. Anything else is refused rather than escaped,
-	// because escaping it would only send a name no daemon answers to.
+	// same request. Outbound commands use this restricted grammar. Daemon
+	// inventories can also contain custom names outside it; observing those
+	// names does not authorize constructing or sending them as commands.
 	const NAME_PATTERN = '/^[a-z0-9_.]+\z/i';
 
 	public $command;
@@ -136,6 +135,7 @@ class rXMLRPCRequest
 	// Decoded top-level response parameters, preserving array/struct boundaries.
 	public $responseValues = array();
 	public $responseTypes = array();
+	private $responseStringArrayWidths = array();
 	private $responseStringTableWidths = array();
 	public $fault = false;
 	public $faultString = '';
@@ -311,6 +311,7 @@ class rXMLRPCRequest
 		$this->val = array();
 		$this->responseValues = array();
 		$this->responseTypes = array();
+		$this->responseStringArrayWidths = array();
 		$this->responseStringTableWidths = array();
 	}
 
@@ -370,6 +371,7 @@ class rXMLRPCRequest
 			}
 			$this->responseValues = array_merge($this->responseValues, $response->values);
 			$this->responseTypes = array_merge($this->responseTypes, $response->valueTypes);
+			$this->responseStringArrayWidths = array_merge($this->responseStringArrayWidths, $response->stringArrayWidths);
 			$this->responseStringTableWidths = array_merge($this->responseStringTableWidths, $response->stringTableWidths);
 			foreach($response->scalars as $scalar)
 			{
@@ -399,6 +401,14 @@ class rXMLRPCRequest
 		$this->content = "";
 		$this->commands = array();
 		return($ret);
+	}
+
+	/** One exact XML array of string/base64 values; unknown or wrong shape is null. */
+	public function stringArray()
+	{
+		if($this->fault || $this->responseTypes !== array('array') || count($this->responseValues) !== 1 ||
+			count($this->responseStringArrayWidths) !== 1 || $this->responseStringArrayWidths[0] === null) return null;
+		return $this->responseValues[0];
 	}
 
 	/**
@@ -444,13 +454,13 @@ function rpcMethodCapability($required, &$available = null)
 	$available = null;
 	$request = new rXMLRPCRequest(new rXMLRPCCommand('system.listMethods'));
 	$request->important = false;
-	if (!$request->success() || $request->fault || $request->responseTypes !== array('array') || !is_array($request->responseValues) ||
-		count($request->responseValues) !== 1 || !is_array($request->responseValues[0]))
-		return 'unconfirmed';
+	$methods = $request->success() ? $request->stringArray() : null;
+	if ($methods === null) return 'unconfirmed';
 	$seen = array();
-	foreach ($request->responseValues[0] as $method)
+	foreach ($methods as $method)
 	{
-		if (!rXMLRPCCommand::isValidCommandName($method)) return 'unconfirmed';
+		// Custom daemon method names are opaque inventory data, not commands.
+		if (!is_string($method) || $method === '') return 'unconfirmed';
 		$seen[$method] = true;
 	}
 	if (!isset($seen['system.listMethods'])) return 'unconfirmed';

@@ -15,6 +15,8 @@ final class rXMLRPCResponse
 	public $scalars = array();
 	public $values = array();
 	public $valueTypes = array();
+	// One compact flat string-array width per top-level result; null invalid.
+	public $stringArrayWidths = array();
 	// One compact table width per top-level result: null invalid, -1 empty.
 	public $stringTableWidths = array();
 	public $fault = false;
@@ -248,6 +250,7 @@ final class rXMLRPCResponse
 			$resultType = null;
 			$this->values[] = $this->value(true, false, 0, $resultType, $rowWidth, $tableWidth);
 			$this->valueTypes[] = $resultType;
+			$this->stringArrayWidths[] = $rowWidth;
 			$this->stringTableWidths[] = $tableWidth;
 			if(!$this->fault) $this->refuse();
 			$this->space();
@@ -262,6 +265,7 @@ final class rXMLRPCResponse
 			$resultType = null;
 			$this->values[] = $this->value(false, $this->multicall, 0, $resultType, $rowWidth, $tableWidth);
 			$this->valueTypes[] = $resultType;
+			$this->stringArrayWidths[] = $rowWidth;
 			$this->stringTableWidths[] = $tableWidth;
 			$this->space();
 			$this->take('</param>');

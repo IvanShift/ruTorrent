@@ -19,9 +19,20 @@ require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 /** Serializable tracker array response used by the common process daemon. */
 class HttprpcNestedTrackerReplies extends FakeRtorrentMethodReplies
 {
+	private $trackerReply;
+
+	public function __construct($values, $trackerReply = null)
+	{
+		parent::__construct($values);
+		$this->trackerReply = $trackerReply;
+	}
+
 	public function __invoke($request, $methods)
 	{
 		if(in_array('d.multicall', $methods, true) || in_array('d.multicall2', $methods, true))
+		{
+			if($this->trackerReply !== null)
+				return $this->trackerReply;
 			return new FakeRtorrentRawReply('<?xml version="1.0"?><methodResponse><params><param><value><array><data>'
 				.'<value><array><data><value><string>'.HttprpcRawStringsTest::HASH.'</string></value>'
 				.'<value><array><data><value><array><data><value><string>https://tracker.test/announce#fragment</string></value>'
@@ -29,6 +40,7 @@ class HttprpcNestedTrackerReplies extends FakeRtorrentMethodReplies
 				.'<value><i8>5</i8></value><value><i8>6</i8></value><value><i8>7</i8></value>'
 				.'</data></array></value></data></array></value></data></array></value>'
 				.'</data></array></value></param></params></methodResponse>');
+		}
 		return parent::__invoke($request, $methods);
 	}
 }
@@ -92,7 +104,7 @@ class HttprpcRawStringsTest extends TestCase
 	}
 
 	/** Runs plugins/httprpc/action.php with this form body; returns its JSON decoded, or its text. */
-	private function post($body, $nestedTrackers = false)
+	private function post($body, $nestedTrackers = false, $trackerReply = null)
 	{
 		$root = realpath(__DIR__ . '/../..');
 		$row = $this->listRow();
@@ -100,7 +112,7 @@ class HttprpcRawStringsTest extends TestCase
 		$tracker = array('http://tracker.test/ann?x="q"\\', 1, 1, 0, 5, 6, 7, 1800, 0);
 		$this->stopDaemon();
 		$class = $nestedTrackers ? 'HttprpcNestedTrackerReplies' : 'FakeRtorrentMethodReplies';
-		$this->daemon = new FakeRtorrentDaemon(new $class(array(
+		$values = array(
 			'system.client_version' => array('0.16.25'),
 			'system.api_version' => array(11),
 			'directory.default' => array('/downloads'),
@@ -108,7 +120,10 @@ class HttprpcRawStringsTest extends TestCase
 			'f.multicall' => $file, 't.multicall' => $tracker,
 			'd.base_path' => array('/downloads/' . self::NAME),
 			'd.is_open' => array(1),
-		)), $this->base . '/calls.log', false, $nestedTrackers ? array(__FILE__) : array());
+		);
+		$replies = $nestedTrackers ? new $class($values, $trackerReply) : new $class($values);
+		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log', false,
+			$nestedTrackers ? array(__FILE__) : array());
 		$driver = $this->base . '/drive-httprpc.php';
 		file_put_contents($driver, "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
@@ -162,11 +177,40 @@ class HttprpcRawStringsTest extends TestCase
 	}
 	public function testAllTrackerArraysPreserveHashFragmentsWithoutDelimiterParsing()
 	{
-		$result = $this->post('mode=trkall2', true);
-		$this->same(array(self::HASH => array(array('https://tracker.test/announce#fragment', '1', '1', '0', '5', '6', '7'))),
-			$result, 'tracker fields retain their array boundaries and fragment bytes');
-		$this->same(1, count(array_filter($this->daemon->calls(), function($method) { return $method === 'd.multicall'; })),
-			'all downloads are read in one structured multicall');
+		foreach(array('trkall', 'trkall2') as $mode)
+		{
+			$result = $this->post('mode='.$mode, true);
+			$this->same(array(self::HASH => array(array('https://tracker.test/announce#fragment', '1', '1', '0', '5', '6', '7'))),
+				$result, $mode.' tracker fields retain their array boundaries and fragment bytes');
+			$this->same(1, count(array_filter($this->daemon->calls(), function($method) { return $method === 'd.multicall'; })),
+				$mode.' reads all downloads in one structured multicall');
+		}
+	}
+
+	public function testAllTrackerModesKeepEmptyInventoriesAndRejectInvalidOuterRows()
+	{
+		$empty = '<array><data/></array>';
+		$hash = '<value><string>'.self::HASH.'</string></value>';
+		$row = '<array><data><value><array><data>'.$hash.'<value>'.$empty
+			.'</value></data></array></value></data></array>';
+		$badRow = '<array><data><value><array><data>'.$hash
+			.'<value><string>not-tracker-rows</string></value></data></array></value></data></array>';
+		foreach(array('trkall', 'trkall2') as $mode)
+		{
+			foreach(array(
+				'empty download view' => array($empty, array()),
+				'empty tracker list' => array($row, array(self::HASH => array())),
+				'scalar inventory' => array('<string>not-an-inventory</string>', array()),
+				'non-array tracker list' => array($badRow, array()),
+			) as $name => $case)
+			{
+				$reply = new FakeRtorrentRawReply('<?xml version="1.0"?><methodResponse><params><param><value>'
+					.$case[0].'</value></param></params></methodResponse>');
+				$this->same($case[1], $this->post('mode='.$mode, true, $reply), $mode.' '.$name);
+			}
+			$this->same(array(), $this->post('mode='.$mode, true, new FakeRtorrentFault(-500, 'tracker read failed')),
+				$mode.' does not publish a fault as tracker rows');
+		}
 	}
 
 }
