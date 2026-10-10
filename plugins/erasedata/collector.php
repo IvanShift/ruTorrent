@@ -1465,6 +1465,11 @@ final class ErasedataCollector
 	private $blockingHashLocks;
 	private $nativeCapability = null;
 	private $nativeIntent = null;
+	private $nativeRetry = array('jobs'=>array(),'cursor'=>'','overflow'=>false);
+	private $nativeAttempts = 0;
+	private $nativeCursor = null;
+	private $nativeFailure = null;
+	private $nativeDocument = null;
 	private $cleanupLogState = array('completed' => array(), 'retained' => array());
 	private $manifestLogState = array();
 	// Set by reportRetentionsTo(); null means log directly, as the ordinary
@@ -1502,11 +1507,9 @@ final class ErasedataCollector
 	// exactly this reason. A sink lets it give the same treatment to retention
 	// without this class learning anything about drain state.
 	//
-	// NOT a claim about the ordinary schedule. That one also fires repeatedly
-	// -- $garbageCheckInterval in conf.php, 15 seconds by default -- with no sink
-	// and no durable memory, so it still repeats an unchanged retention. It is a
-	// separate condition with a separate home for its memory, and nothing here
-	// fixes it.
+	// This sink preserves the legacy ordinary collector's reporting contract.
+	// Native-bound records instead share the advisory native_retry memory across
+	// ordinary collection, drain collection and the native-owned worker.
 	public function reportRetentionsTo($sink)
 	{
 		$this->retentionSink = is_callable($sink) ? $sink : null;
@@ -1538,6 +1541,14 @@ final class ErasedataCollector
 	{
 		if($reason === 'incomplete' && ErasedataFilesystemOps::lastRenameRefusalContext() !== '')
 			$reason = ErasedataFilesystemOps::lastRenameRefusalContext();
+		if($this->nativeIntent !== null)
+		{
+			// The native worker persists this exact classified failure once. Do
+			// not also produce a legacy daily unsafe-path notice for the same job.
+			if($this->nativeFailure===null || $this->nativeFailure==='incomplete')
+				$this->nativeFailure=$reason;
+			return;
+		}
 		if(!is_array($this->manifestLogState))
 			$this->manifestLogState = array();
 		// The generation comes out of the NAME, which carries the hash and the
@@ -1768,7 +1779,7 @@ final class ErasedataCollector
 			? strtoupper($matches[1]) : '';
 		$this->manifestLog($hash, $item, $reason);
 		$this->log('Retain '.$reason.' manifest '.basename($item));
-		if($this->retentionSink !== null) return;
+		if($this->retentionSink !== null || $this->nativeIntent !== null) return;
 
 		// A legacy manifest can have no drain. The ordinary 15-second pass must
 		// report its refusal without writing the same line on every tick. An
@@ -2356,7 +2367,12 @@ final class ErasedataCollector
 					$bound = $parent['path'];
 				}
 				if(!$this->deleteBoundFile($file, $bound, $item, $ownedPaths))
+				{
 					$complete = false;
+					// Later directory probes reset the shared operation context.
+					// Preserve the first actual refusal at this failure boundary.
+					if($this->nativeIntent!==null)$this->manifestLog($manifest['hash'],$item,'incomplete');
+				}
 				if(!empty($parent['owned']))
 					$this->filesystem->closeDirectoryReference($parent['reference']);
 			}
@@ -2562,6 +2578,7 @@ final class ErasedataCollector
 			&& (!erasedataNativeManifestStatSafe($stat) || $manifest['version'] !== ErasedataManifestCodec::BOUND_PAYLOAD_VERSION
 				|| $this->nativeIntent === null || $manifest['native_intent'] !== $this->nativeIntent))
 		{
+			$this->manifestLog($hash,$path,erasedataNativeManifestStatRefusal($stat) ?? 'native-binding-mismatch');
 			@fclose($handle);
 			return(false);
 		}
@@ -2578,6 +2595,8 @@ final class ErasedataCollector
 			return(false);
 		}
 		$complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes));
+		if(!$complete && $this->nativeIntent !== null && $this->nativeFailure === null)
+			$this->manifestLog($hash,$path,'incomplete');
 		// $stat is the fstat of the handle this function still holds open, so the
 		// deletion below is bound to the exact inode that was decoded.
 		if($this->nativeIntent !== null)
@@ -3211,9 +3230,26 @@ final class ErasedataCollector
 			// Only the native owner may authorize a bound payload worker.
 			foreach($legacyItems as $item)
 			{
+				// An outage must not turn a retryable stock intent into permanent
+				// quarantine. Only a positively attested modern owner may do so.
+				if($this->nativeCapability !== 'available')
+				{
+					$reason='native-capability-'.($this->nativeCapability === 'unsupported' ? 'unsupported' : 'unconfirmed');
+					$bytes=ErasedataManifestCodec::readBoundedFile($item['path']);
+					$manifest=is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes,$hash) : false;
+					if(is_array($manifest) && isset($manifest['native_intent']))
+						$this->nativeRetention($listPath,$hash,$item,$bytes,$manifest['native_intent'],$reason);
+					else erasedataNativeTerminalDiagnostic($item['path'],$reason);
+					continue;
+				}
 				$bytes = ErasedataManifestCodec::readBoundedFile($item['path']);
 				$manifest = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
-				if(!is_array($manifest) || $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD)
+				if(!is_array($manifest))
+				{
+					$this->nativeRetention($listPath,$hash,$item,$bytes,null,'unreadable-manifest');
+					continue;
+				}
+				if($manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD)
 					continue;
 				if($manifest['version'] !== ErasedataManifestCodec::BOUND_PAYLOAD_VERSION)
 				{
@@ -3223,22 +3259,28 @@ final class ErasedataCollector
 				// A staged V4 may still belong to its live producer. Drain alone
 				// publishes it after exact native commit; never adopt it here.
 				if($item['type'] !== 'list') continue;
-				if($this->nativeCapability !== 'available')
+				$intent = $manifest['native_intent'];
+				$refusal=erasedataNativeManifestStatRefusal($item['stat']);
+				if($refusal!==null)
 				{
-					$this->manifestLog($hash, $item['path'], 'native-authority-unavailable');
+					$this->nativeRetention($listPath,$hash,$item,$bytes,$intent,$refusal);
 					continue;
 				}
-				$intent = $manifest['native_intent'];
 				$state = erasedataNativeCall('state', $hash, $intent);
-				if(is_array($state) && in_array($state['phase'], array('missing', 'mismatch'), true))
-					$this->quarantineUnverifiedManifest($item['path'], $item['stat'], $hash);
+				if(is_array($state) && (in_array($state['phase'], array('missing', 'mismatch'), true)
+					|| $state['live_relation'] === 'different'))
+				{
+					$bound=array('path'=>$item['path'],'stat'=>$item['stat'],'manifest'=>$manifest);
+					if(!erasedataNativeCancelRevoked($listPath,$hash,$bound,$this->filesystem))
+						$this->nativeRetention($listPath,$hash,$item,$bytes,$intent,
+							'native-authority-revoked recovery-unresolved manual-inspection-required');
+				}
 				elseif(is_array($state) && $state['phase'] === 'committed' && $state['live_relation'] === 'absent')
 				{
-					$answer = erasedataNativeCall('collect_start', $hash, $intent);
-					if(!in_array($answer, array('spawned', 'active'), true))
-						$this->manifestLog($hash, $item['path'], $answer === false ? 'rpc-unknown' : 'collector-'.$answer);
+					$this->nativeStart($listPath,$hash,$item,$bytes,$intent);
 				}
-				else $this->manifestLog($hash, $item['path'], $state === false ? 'rpc-unknown' : 'native-not-committed');
+				else $this->nativeRetention($listPath,$hash,$item,$bytes,$intent,
+					$state === false ? 'rpc-unknown' : 'native-not-committed');
 			}
 			$legacyItems = array();
 		}
@@ -3391,20 +3433,61 @@ final class ErasedataCollector
 		erasedataReleaseHashLock($lock);
 	}
 
+	private function nativeRetention($listPath,$hash,array $item,$bytes,?array $intent,$reason)
+	{
+		$key=erasedataNativeRetryKey($hash,$item['path'],$item['stat'],is_string($bytes)?$bytes:'',$intent);
+		$user=$intent===null ? User::getUser() : $intent['user'];
+		if(is_string($key))erasedataNativeRetryRecordLocked($listPath,$user,$key,$item['path'],$reason);
+	}
+
+	private function nativeStart($listPath,$hash,array $item,$bytes,array $intent)
+	{
+		$key=erasedataNativeRetryKey($hash,$item['path'],$item['stat'],$bytes,$intent);
+		if($this->nativeAttempts>=ERASEDATA_NATIVE_RETRY_ATTEMPTS_PER_PASS
+			|| !erasedataNativeRetryDue($this->nativeRetry,$key,time())) return;
+		$this->nativeAttempts++;$this->nativeCursor=$hash;
+		$answer=erasedataNativeCall('collect_start',$hash,$intent);
+		if(!in_array($answer,array('spawned','active'),true))
+			$this->nativeRetention($listPath,$hash,$item,$bytes,$intent,
+				in_array($answer,array('busy','full'),true) ? 'collector-'.$answer : 'rpc-unknown');
+	}
+
+	private function nativeTerminalRetention($path,$stat,$bytes,$reason,$hashLocked=false)
+	{
+		if(!is_array($stat) || !preg_match('/^([A-F0-9]{40})\./D',basename($path),$match))
+		{erasedataNativeTerminalDiagnostic($path,$reason);return;}
+		$hash=$match[1];$listPath=dirname($path);
+		$m=is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes,$hash) : false;
+		$intent=is_array($m) && isset($m['native_intent']) ? $m['native_intent'] : null;
+		$lock=$hashLocked ? null : erasedataAcquireHashLock($listPath,$hash);
+		if(!$hashLocked && $lock===false) return;
+		try {$this->nativeRetention($listPath,$hash,array('path'=>$path,'stat'=>$stat),$bytes,$intent,$reason);}
+		finally {if(!$hashLocked)erasedataReleaseHashLock($lock);}
+	}
+
 	public function runNative($listPath, $hash, array $intent)
 	{
 		$this->nativeCapability = 'available';
 		$intent = ErasedataManifestCodec::canonicalNativeIntent($intent);
 		if($intent === false) return(false);
 		$this->nativeIntent = $intent;
+		$this->nativeFailure=null;$this->nativeDocument=null;$result=false;
 		$lock = erasedataAcquireHashLock($listPath, $hash);
 		if($lock === false) return(false);
 		try
 		{
 			$blocker = $listPath;
 			if(!erasedataResumeCapturedEntries($listPath, 'manifest-consumption', $this->filesystem, $blocker))
+			{
+				$this->nativeFailure='queue-root-unresolved';
+				erasedataNativeTerminalDiagnostic($blocker,$this->nativeFailure);
 				return(false);
-			$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent);
+			}
+			$terminalReport=function($path,$stat,$bytes,$reason) {
+				if(is_array($stat))$this->nativeDocument=array('path'=>$path,'stat'=>$stat);
+				$this->nativeFailure=$reason;
+			};
+			$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport);
 			if(count($completed) > 1) return(false);
 			if(!count($completed))
 			{
@@ -3417,21 +3500,37 @@ final class ErasedataCollector
 					$m = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $hash) : false;
 					if(is_array($m) && isset($m['native_intent']) && $m['native_intent'] === $intent) $matched[] = $item;
 				}
+				if(count($matched))$this->nativeDocument=$matched[0];
 				if(count($matched) !== 1 || $matched[0]['type'] !== 'list') return(false);
 				$item = $matched[0];
+				$this->nativeDocument=$item;
 				if(!$this->consumeManifest($item['path'], $item['stat'], null)) return(false);
-				$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent);
+				$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport);
 			}
 			if(count($completed) !== 1) return(false);
+			$this->nativeDocument=$completed[0];
 			if(!erasedataNativeSyncQueue($listPath))
 			{
-				erasedataNativeTerminalDiagnostic($completed[0]['path'], 'directory-sync-failed');
+				$this->nativeFailure='directory-sync-failed';
 				return(false);
 			}
 			// Incapacitate the exact application replay record before E retires.
-			return(erasedataNativeRetireJournal($listPath, $hash, $intent, $completed[0]) ? $completed[0] : false);
+			$result=erasedataNativeRetireJournal($listPath, $hash, $intent, $completed[0]) ? $completed[0] : false;
+			return($result);
 		}
-		finally { erasedataReleaseHashLock($lock); }
+		finally
+		{
+			if($result===false && is_array($this->nativeDocument))
+			{
+				$item=$this->nativeDocument;
+				$bytes=ErasedataManifestCodec::readBoundedFile($item['path']);
+				$this->nativeRetention($listPath,$hash,$item,$bytes,$intent,
+					$this->nativeFailure ?? 'payload-or-terminal-metadata-unresolved');
+			}
+			elseif($result===false && $this->nativeFailure===null)
+				erasedataNativeTerminalDiagnostic($listPath.'/'.$hash.'.'.$intent['generation'], 'native-binding-unavailable');
+			erasedataReleaseHashLock($lock);
+		}
 	}
 
 	public function run($listPath, $onlyHash = null)
@@ -3439,6 +3538,9 @@ final class ErasedataCollector
 		$this->cleanupLogState = array('completed' => array(), 'retained' => array());
 		$this->manifestLogState = array();
 		$this->nativeCapability = erasedataNativeCapability();
+		$this->nativeAttempts=0;$this->nativeCursor=null;
+		$this->nativeRetry=$this->nativeCapability==='available'
+			? erasedataNativeRetrySnapshot($listPath,User::getUser()) : array('jobs'=>array(),'cursor'=>'','overflow'=>false);
 		// Seeded so the report below always names something real even if a
 		// future refusal in there forgets to.
 		$blocker = $listPath;
@@ -3461,21 +3563,47 @@ final class ErasedataCollector
 		if($this->nativeCapability === 'legacy')
 			foreach(erasedataNativeLegacyStagingCandidates($listPath, $onlyHash) as $item)
 				$this->manifestLog($item['hash'], $item['path'], 'native-authority-unavailable');
-		if($this->nativeCapability === 'available')
-			foreach(erasedataNativeCompletedCandidates($listPath, $onlyHash) as $completed)
+		$index = erasedataBuildCollectorIndex($listPath, $onlyHash, $this->filesystem);
+		if($index === false) return;
+		$terminal=array();
+		$terminalReport=function($path,$stat,$bytes,$reason){$this->nativeTerminalRetention($path,$stat,$bytes,$reason);};
+		foreach(erasedataNativeCompletedCandidates($listPath,$onlyHash,null,$terminalReport) as $completed)
+			if($this->nativeCapability==='available')$terminal[$completed['manifest']['hash']][]=$completed;
+			else $this->nativeTerminalRetention($completed['path'],$completed['stat'],
+				ErasedataManifestCodec::readBoundedFile($completed['path']),
+				$this->nativeCapability==='unconfirmed' ? 'native-capability-unconfirmed' : 'native-authority-unavailable');
+		$hashes=array_keys($index);
+		if($this->nativeCapability==='available')
+			$hashes=erasedataNativeRetryOrder(array_values(array_unique(array_merge($hashes,array_keys($terminal)))),
+				$this->nativeRetry['cursor'],time());
+		foreach($hashes as $hash)
+		{
+			foreach(isset($terminal[$hash]) ? $terminal[$hash] : array() as $completed)
 			{
 				$intent = $completed['manifest']['native_intent'];
-				$hash = $completed['manifest']['hash'];
-				$state = erasedataNativeCall('state', $hash, $intent);
-				if(is_array($state) && $state['phase'] === 'committed' && $state['live_relation'] === 'absent')
-					erasedataNativeCall('collect_start', $hash, $intent);
-				elseif(is_array($state) && in_array($state['phase'], array('missing', 'mismatch'), true))
-					erasedataNativeRemoveCompleted($completed, $this->filesystem);
+				$lock=erasedataAcquireHashLock($listPath,$hash);
+				if($lock===false) continue;
+				try
+				{
+					$state=erasedataNativeCall('state',$hash,$intent);
+					if(is_array($state) && $state['phase']==='committed' && $state['live_relation']==='absent')
+						$this->nativeStart($listPath,$hash,$completed,ErasedataManifestCodec::readBoundedFile($completed['path']),$intent);
+					elseif(is_array($state) && in_array($state['phase'],array('missing','mismatch'),true))
+					{
+						$bytes=ErasedataManifestCodec::readBoundedFile($completed['path']);
+						if(erasedataNativeRemoveCompleted($completed,$this->filesystem))
+							erasedataNativeRetryForgetCompleted($completed,$intent['user'],true,$bytes);
+						else $this->nativeTerminalRetention($completed['path'],$completed['stat'],$bytes,
+							'terminal-metadata-unlink-refused',true);
+					}
+					else $this->nativeTerminalRetention($completed['path'],$completed['stat'],
+						ErasedataManifestCodec::readBoundedFile($completed['path']),$state===false?'rpc-unknown':'native-not-committed',true);
+				}
+				finally {erasedataReleaseHashLock($lock);}
 			}
-		$index = erasedataBuildCollectorIndex($listPath, $onlyHash, $this->filesystem);
-		if($index === false)
-			return;
-		foreach(array_keys($index) as $hash)
-			$this->collectHashIndexed($listPath, $hash, $index[$hash], $index);
+			if(isset($index[$hash]))$this->collectHashIndexed($listPath, $hash, $index[$hash], $index);
+		}
+		if($this->nativeCursor!==null)
+			erasedataNativeRetryCursorWrite($listPath,User::getUser(),$this->nativeCursor);
 	}
 }

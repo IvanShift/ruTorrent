@@ -7937,6 +7937,63 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(array(),rXMLRPCRequest::$erased,'no unguarded fallback erase follows refusal');
 	}
 
+	public function testLaterKnownPrepareRefusalCancelsEarlierPreparedMembersAndNamesBusy()
+	{
+		$this->reset();$queue=$this->queuePath();$first=$this->hash('A');$busy=$this->hash('B');
+		$this->frozen(true,array('/d/name',1,'/d/name/a.bin'));$this->acknowledgeOnRegistration($queue);
+		rXMLRPCRequest::$responses['fixture.nativeCapability']='available';
+		rXMLRPCRequest::$responses['d.incarnation']=array('ok'=>true,'val'=>array(str_repeat('a',32)));
+		$prepared=null;$cancelled=array();
+		rXMLRPCRequest::$responses['system.erasedata.prepare']=array('ok'=>true,'val'=>array('prepared'),
+			'callback'=>function($commands)use(&$prepared){
+				$prepared=$commands[0]->params;
+				rXMLRPCRequest::$responses['system.erasedata.prepare']=array('ok'=>true,
+					'val'=>array('refused:independent-file-operation-owner'));
+			});
+		rXMLRPCRequest::$responses['system.erasedata.cancel']=array('ok'=>true,'val'=>array('cancelled'),
+			'callback'=>function($commands)use(&$cancelled){$cancelled[]=$commands[0]->params;});
+		$this->assertTrue(!erasedataRemovalAdmissionRun($this->dependencies(),array($first,$busy),1),
+			'a later independent owner refuses the whole destructive batch');
+		$this->assertTrue(in_array($prepared,$cancelled,true),'the exact earlier P tuple is cancelled immediately');
+		$this->assertTrue(!in_array('system.erasedata.erase',rXMLRPCRequest::$requested,true)
+			&& rXMLRPCRequest::$erased===array(),'no native or raw erase follows a prepare refusal');
+		$this->assertTrue(strpos(implode("\n",FileUtil::$log),'native-prepare-independent-file-operation-owner')!==false,
+			'the known native busy reason is visible rather than unresolved');
+	}
+
+	public function testBatchPrepareCancelsEveryExactIntentWhenAFutureMemberChanges()
+	{
+		$this->reset();$queue=$this->queuePath();$first=$this->hash('A');$future=$this->hash('B');
+		$this->frozen(true,array('/d/name',1,'/d/name/a.bin'));$this->acknowledgeOnRegistration($queue);
+		rXMLRPCRequest::$responses['fixture.nativeCapability']='available';
+		rXMLRPCRequest::$responses['d.incarnation']=array('ok'=>true,'val'=>array(str_repeat('a',32)));
+		$changed=false;
+		rXMLRPCRequest::$responses['system.erasedata.prepare']=array('ok'=>true,'val'=>array('prepared'),
+			'callback'=>function()use($queue,$future,&$changed){
+				if($changed)return;$changed=true;
+				$paths=array('base'=>'/d/name','multi'=>true,'files'=>array('/d/name/replaced.bin'));
+				foreach(glob($queue.'/'.$future.'.*.tmp')as$path){
+					$m=ErasedataManifestCodec::decodeBytes(file_get_contents($path),$future);
+					$i=$m['native_intent'];$i['digest']=hash('sha256',ErasedataManifestCodec::encode($future,$paths,1));
+					file_put_contents($path,ErasedataManifestCodec::encodeBound($future,$paths,1,$i));
+				}
+			});
+		rXMLRPCRequest::$responses['system.erasedata.cancel']=array('ok'=>true,'val'=>array('cancelled'));
+		$result=erasedataRemovalAdmissionRun($this->dependencies(),array($first,$future),1);
+		$this->assertEquals(false,$result,'the final whole-batch fence refuses a future member rewrite');
+		$prepared=array();$cancelled=array();
+		foreach(rXMLRPCRequest::$commandCalls as$commands)foreach($commands as$c){
+			if($c->command==='system.erasedata.prepare')$prepared[$c->params[1]]=$c->params;
+			if($c->command==='system.erasedata.cancel')$cancelled[$c->params[1]]=$c->params;
+		}
+		$this->assertEquals(array($first,$future),array_keys($prepared),
+			'the locked batch prepares once per member between its two complete fences');
+		$this->assertEquals($prepared,$cancelled,'every exact prepared tuple is cancelled after final binding failure');
+		$this->assertTrue(!in_array('system.erasedata.erase',rXMLRPCRequest::$requested,true),
+			'no member is erased after any full-batch binding failure');
+		$this->assertEquals(array(),rXMLRPCRequest::$erased,'batch refusal cannot fall back to raw erase');
+	}
+
 	public function testModernAdmissionAndDrainRequireExactNativeCommitWithoutPresenceFallback()
 	{
 		$this->reset();
@@ -12122,7 +12179,8 @@ class RemoveWithDataTest extends TestCase
 	{
 		$this->reset();
 		$wired = array(
-			'erasedataQueueRequest($' => 'removewithdata.php',
+			'erasedataQueueRequests($' => 'removewithdata.php',
+			'erasedataQueueRequest($' => 'pending.php',
 			'erasedataLockObligations($' => 'removewithdata.php',
 			'erasedataUnlockObligations($' => 'removewithdata.php',
 			'erasedataPendingMarkerPath($' => 'removewithdata.php',

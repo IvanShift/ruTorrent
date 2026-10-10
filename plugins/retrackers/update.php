@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__.'/trackerurl.php');
+
 // Lifecycle draining and terminal wp retirement share this timeout. Expiry
 // keeps the lease visible; the shipped default is five seconds. Recovery
 // receipt polling uses the separate interval below. Both constants remain
@@ -357,7 +359,7 @@ function clearTracker($addition,$tracker)
 	{
 		foreach( $group as $kt=>$trk )
 		{
-			if($trk==$tracker)
+			if($trk === RetrackersTrackerURL::normalize($tracker))
 				unset($addition[$kg][$kt]);
 		}
 		if(!count($addition[$kg]))
@@ -2760,8 +2762,7 @@ final class RetrackersPostEraseObligation
 
 	private static function representable($value)
 	{
-		return(is_string($value) && ($value === '' || $value[0] !== '$') &&
-			strpos($value, "\0") === false && strpos($value, "\r") === false);
+		return(RetrackersTrackerURL::representable($value));
 	}
 
 	private static function q($value)
@@ -2942,16 +2943,14 @@ final class RetrackersPostEraseObligation
 				if (!is_string($url)) {
 					return(false);
 				}
-				$normalized = trim($url, " \t\r\n\v\f");
+				$normalized = RetrackersTrackerURL::normalize($url);
 				// Both source and candidate retain user-owned metainfo strings. Model
 				// the captured loader behavior here: trim HTTP/UDP URLs and ignore
 				// unsupported schemes without removing them from the candidate.
-				$type = strpos($normalized, 'http://') === 0 ||
-					strpos($normalized, 'https://') === 0 ? '1' :
-					(strpos($normalized, 'udp://') === 0 ? '2' : false);
+				$type = RetrackersTrackerURL::type($normalized);
 				// New requested trackers must survive loading without normalization;
 				// preserved foreign entries follow the captured loader behavior.
-				if (($strict && ($type === false || $normalized !== $url)) ||
+				if (($strict && RetrackersTrackerURL::additionFailure($url) !== null) ||
 					strpos($normalized, 'dht://') === 0) {
 					return(false);
 				}
@@ -6351,28 +6350,29 @@ class RetrackersTorrentProjector
 
 		$wasAddition = true;
 		$list = $announceList;
+		$addition = $additions;
+		// Compare the loader's URL identity without changing source metainfo.
+		foreach ($list ? $list : ($announce ? array(array($announce)) : array()) as $group) {
+			foreach ($group as $tracker) {
+				$addition = clearTracker($addition, $tracker);
+			}
+		}
+		$addition = $this->normalizeTrackerList($addition);
 		if (!$list) {
-			if (count($additions)) {
+			if (count($addition)) {
 				if ($announce) {
 					$torrent->announce_list($addToBegin ?
-						array_merge($additions, array(array($announce))) :
-						array_merge(array(array($announce)), $additions));
+						array_merge($addition, array(array($announce))) :
+						array_merge(array(array($announce)), $addition));
 				} else {
-					$torrent->announce($additions[0][0]);
-					$torrent->announce_list($additions);
+					$torrent->announce($addition[0][0]);
+					$torrent->announce_list($addition);
 				}
 			} else {
 				$wasAddition = false;
 			}
 		} else {
-			$addition = $additions;
-			foreach ($list as $group) {
-				foreach ($group as $tracker) {
-					$addition = clearTracker($addition, $tracker);
-				}
-			}
 			if (count($addition)) {
-				$addition = $this->normalizeTrackerList($addition);
 				$torrent->announce_list($addToBegin ?
 					array_merge($addition, $list) : array_merge($list, $addition));
 			} else {

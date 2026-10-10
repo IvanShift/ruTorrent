@@ -42,6 +42,36 @@ class ErasedataNativeRpcTest extends TestCase
 				'other native states cannot be adopted as this preparation');
 		}
 	}
+	public function testPrepareRefusalUsesOnlyExactTypedNativeReasonLiterals()
+	{
+		$hash=str_repeat('A',40);$intent=$this->intent();
+		foreach(array('independent-file-operation-owner','partial-erase') as $known)
+		{
+			$this->replies('prepared','exact');
+			rXMLRPCRequest::$responses['system.erasedata.prepare']=array('ok'=>true,'val'=>array('refused:'.$known));
+			$reason=null;
+			$this->assertTrue(!erasedataNativePrepareIntent($hash,$intent,$reason),
+				'a positively refused prepare never adopts even an inconsistent state reply');
+			$this->assertEquals($known,$reason,'the trusted literal names the known refusal');
+			$this->assertEquals(array('system.erasedata.prepare'),rXMLRPCRequest::$requested,
+				'a known refusal does not replay or guess another mutation');
+		}
+		foreach(array(
+			array('ok'=>false),
+			array('ok'=>true,'val'=>array('refused:future-reason')),
+			array('ok'=>true,'val'=>array(' refused:partial-erase')),
+			array('ok'=>true,'val'=>array('refused:partial-erase'),'responseTypes'=>array('array')),
+			array('ok'=>false,'fault'=>true,'rawFaultString'=>'refused:partial-erase'),
+		) as $reply)
+		{
+			$this->replies('missing','exact');rXMLRPCRequest::$responses['system.erasedata.prepare']=$reply;
+			$reason=null;
+			$this->assertTrue(!erasedataNativePrepareIntent($hash,$intent,$reason),'unknown prepare remains unresolved');
+			$this->assertEquals('unresolved',$reason,'transport, malformed and unknown values cannot impersonate known busy');
+			$this->assertEquals(array('system.erasedata.prepare','system.erasedata.state'),rXMLRPCRequest::$requested,
+				'unknown preparation performs only exact read-only reconciliation');
+		}
+	}
 	public function testUnknownEraseRequiresCommittedExactIntentAndPositiveAbsence()
 	{
 		$hash = str_repeat('A', 40); $intent = $this->intent();

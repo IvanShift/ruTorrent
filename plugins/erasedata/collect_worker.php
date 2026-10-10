@@ -29,16 +29,16 @@ try
 	$completed = $service->runNative($listPath, $hash, $intent);
 	if(!is_array($completed))
 	{
-		FileUtil::toLog('erasedata: native worker retained '.$hash.' generation='.$generation
-			.' reason=payload-or-terminal-metadata-unresolved; exact manifest retained for retry');
+		// runNative records the classified exact retention under the hash lock.
 		exit(1);
 	}
 	if(!erasedataNativeFinishIntent($hash, $intent, getmypid()))
 	{
-		erasedataNativeTerminalDiagnostic($completed['path'], 'finish-unresolved');
+		erasedataNativeRetryRecordCompleted($completed,'finish-unresolved');
 		exit(1);
 	}
 	// Only the inert queue metadata remains; no payload action follows finish.
+	erasedataNativeRetryForgetCompleted($completed,$intent['user']);
 	erasedataNativeRemoveCompleted($completed, new ErasedataFilesystemOps());
 }
 finally

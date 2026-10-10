@@ -553,8 +553,8 @@ class ErasedataFilesystemOps
 		if((strpos($to, '/.erasedata-rmdir-') !== false
 			|| strpos($to, '/.erasedata-entry-') !== false)
 			&& !erasedataCaptureSourceOwned($from))
-			return(false);
-		return(@rename($from, $to));
+			return(self::renameDiagnostic('capture-source-owner', $from, $to));
+		return(@rename($from, $to) || self::renameDiagnostic('rename-refused', $from, $to));
 	}
 
 	// PHP rename() may replace $to. This helper shares the no-replace syscall
@@ -1154,7 +1154,7 @@ function erasedataQueuePath()
 // Queue admission observes old writable ancestors and holds their contents.
 // New private payload roots may seal service-owned writable ancestors before
 // capture. Lexical links and their resolved targets are checked separately.
-function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealData = false, &$ancestor = null)
+function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealData = false, &$ancestor = null, $report = true)
 {
 	$parents = array();
 	for($dir = dirname($path); $dir !== dirname($dir); $dir = dirname($dir))
@@ -1168,6 +1168,7 @@ function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealDa
 		if(!is_array($stat) || ($stat['uid'] !== $uid && $stat['uid'] !== 0)
 			|| ($type !== 0040000 && !($allowLinks && $type === 0120000)))
 		{
+			if(!$report) return(false);
 			if(!$sealData)
 				return(erasedataQueueRefusal('unsafe ancestor', $type === 0040000 ? (@realpath($dir) ?: $dir) : $dir,
 					$stat, 'directory owned by root or uid='.$uid,
@@ -1187,6 +1188,7 @@ function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealDa
 					&& ($dir === $userProfile || $dir === $users));
 			if(!$ownedProfileDirectory || $stat['uid'] !== $uid)
 			{
+				if(!$report) return(false);
 				if(!$sealData)
 					return(erasedataQueueRefusal('unsupported writable ancestor', @realpath($dir) ?: $dir,
 						$stat, 'no group/other write; queue mode=0700',
@@ -1241,6 +1243,24 @@ function erasedataEffectiveUid()
 
 // A listing is only a snapshot. Another trusted worker may finish and unlink
 // its staging entry before we can inspect that name.
+// null means positively absent; false means unreadable or continuous churn.
+function erasedataListedEntryStat($directory, $entry)
+{
+	$path = $directory.'/'.$entry;
+	for($attempt = 0; $attempt < 3; $attempt++)
+	{
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+		if(is_array($stat)) return($stat);
+		$current = @scandir($directory);
+		if(!is_array($current)) return(false);
+		if(!in_array($entry, $current, true)) return(null);
+		// The same worker may already have re-created the fixed intent name.
+		// Inspect that inode rather than refusing from the first stale miss.
+	}
+	return(false);
+}
+
 function erasedataQueueEntriesOwned($physicalPath, array $entries, $uid, $listPath)
 {
 	foreach($entries as $entry)
@@ -1248,14 +1268,8 @@ function erasedataQueueEntriesOwned($physicalPath, array $entries, $uid, $listPa
 		if($entry === '.' || $entry === '..')
 			continue;
 		$entryPath = $physicalPath.'/'.$entry;
-		clearstatcache(true, $entryPath);
-		$stat = @lstat($entryPath);
-		if(!is_array($stat))
-		{
-			$current = @scandir($physicalPath);
-			if(is_array($current) && !in_array($entry, $current, true))
-				continue;
-		}
+		$stat = erasedataListedEntryStat($physicalPath, $entry);
+		if($stat === null) continue;
 		if(!is_array($stat) || $stat['uid'] !== $uid)
 		{
 			FileUtil::toLog('erasedata: queue refused: foreign or unreadable entry in '.$listPath);
@@ -1866,6 +1880,8 @@ function erasedataCapturedEntryRoots($path, $reservationKey,
 				substr($entry, strlen($prefix))))
 		{
 			$root = $parent.'/'.$entry;
+			if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) continue;
+			if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) continue;
 			if(!erasedataPrivateMarkerIsValid($root,
 				$reservationKey === 'manifest-consumption' ? null : $reservationKey))
 			{
@@ -2028,6 +2044,75 @@ function erasedataRemoveCapturedEntryRoot($root,
 	return($filesystem->removeDirectory($root) || !erasedataPathExists($root));
 }
 
+// Cleanup removes .name before .initialized. A crash there leaves no public
+// basename, but the signed marker still authenticates the root and parent
+// inodes. Retire only that exact metadata shell; never resume payload work or
+// remove a public bridge from a shell whose name record has gone.
+function erasedataDiscardCompletedCapturedRoot($root, $reservationKey,
+	ErasedataFilesystemOps $filesystem)
+{
+	if(preg_match('/^\.erasedata-entry-[a-f0-9]{64}-[0-9]+-[0-9]+-[ldfo]-[a-f0-9]{32}$/D',
+		basename($root)) !== 1 || !erasedataProtectPrivateParent($root)) return(false);
+	$uid = erasedataEffectiveUid();
+	$parent = dirname($root);$parentStat = @lstat($parent);
+	clearstatcache(true, $root);
+	$rootStat = @lstat($root);
+	$contents = $filesystem->scanDirectory($root);
+	$marker = erasedataPrivateMarkerPath($root);
+	clearstatcache(true, $marker);
+	$markerStat = @lstat($marker);
+	if($uid === false || !is_array($parentStat) || !is_array($rootStat)
+		|| $rootStat['uid'] !== $uid || ($rootStat['mode'] & 0177777) !== 0040700
+		|| $rootStat['nlink'] !== 2 || !is_array($contents)
+		|| array_values(array_diff($contents, array('.', '..'))) !== array(basename($marker))
+		|| !is_array($markerStat) || $markerStat['uid'] !== $uid
+		|| ($markerStat['mode'] & 0177777) !== 0100600 || $markerStat['nlink'] !== 1
+		|| $markerStat['size'] !== ($reservationKey === 'manifest-consumption' ? 0 : 64)) return(false);
+	$handle = @fopen($marker, 'rb');
+	if(!is_resource($handle)) return(false);
+	try
+	{
+		$opened = @fstat($handle);
+		if(!is_array($opened) || !erasedataSameStatIdentity($opened, $markerStat)) return(false);
+		$stored = ErasedataManifestCodec::readBoundedHandle($handle, 64);
+		$signature = $reservationKey === 'manifest-consumption' ? ''
+			: erasedataPrivateRootSignature($root, $reservationKey, false);
+		if(!is_string($signature) || !is_string($stored) || !hash_equals($signature, $stored)) return(false);
+		$entries = $filesystem->scanDirectory($parent);
+		if(!is_array($entries)) return(false);
+		foreach($entries as $entry)
+		{
+			if($entry === '.' || $entry === '..') continue;
+			$path = $parent.'/'.$entry;
+			$stat = erasedataListedEntryStat($parent, $entry);
+			if($stat === null) continue;
+			if(!is_array($stat)) return(false);
+			if(($stat['mode'] & 0170000) === 0120000)
+			{
+				$target = $filesystem->readLink($path);
+				if(!is_string($target) || strpos($target, basename($root)) !== false) return(false);
+			}
+		}
+		clearstatcache();
+		$currentContents = $filesystem->scanDirectory($root);
+		$currentRoot = @lstat($root);$currentMarker = @lstat($marker);
+		if(!erasedataSameStatIdentity($parentStat, @lstat($parent))
+			|| !erasedataSameStatIdentity($rootStat, $currentRoot)
+			|| !erasedataSameStatIdentity($markerStat, $currentMarker)
+			|| !is_array($currentContents)
+			|| array_values(array_diff($currentContents, array('.', '..'))) !== array(basename($marker))) return(false);
+		foreach(array('uid','mode','nlink') as $field)
+			if($currentRoot[$field] !== $rootStat[$field]) return(false);
+		foreach(array('uid','mode','nlink','size') as $field)
+			if($currentMarker[$field] !== $markerStat[$field]) return(false);
+		if(!@rewind($handle) || ErasedataManifestCodec::readBoundedHandle($handle,64) !== $stored
+			|| !erasedataProtectPrivateParent($root)) return(false);
+		if(!$filesystem->unlink($marker)) return(false);
+		return($filesystem->removeDirectory($root) || (!erasedataPathExists($root) && erasedataPathLookupAnswers($root)));
+	}
+	finally { @fclose($handle); }
+}
+
 function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 	ErasedataFilesystemOps $filesystem, $emptyDirectoryOnly = false)
 {
@@ -2142,6 +2227,8 @@ function erasedataResumeCapturedEntries($parent, $reservationKey,
 		if(strpos($entry, '.erasedata-entry-') !== 0)
 			continue;
 		$root = $parent.'/'.$entry;
+		if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) continue;
+		if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) continue;
 		if($reservationKey !== 'manifest-consumption'
 			&& !erasedataPrivateMarkerIsValid($root, $reservationKey))
 		{

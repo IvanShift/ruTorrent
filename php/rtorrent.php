@@ -500,7 +500,8 @@ class rTorrent
 				else return false;
 			}
 		}
-		return $hash;
+		// The daemon refuses the decoded zero sentinel after selecting its final btih.
+		return $hash === str_repeat('0', 40) ? false : $hash;
 	}
 
 	static public function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)

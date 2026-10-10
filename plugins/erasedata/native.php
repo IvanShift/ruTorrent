@@ -3,6 +3,194 @@
 // The native owner grants deletion authority. These helpers only validate exact
 // replies and never turn a missing hash, transport failure or unknown method
 // into an accepted incarnation or a successful erase.
+define('ERASEDATA_NATIVE_RETRY_MAX_HINTS', 1024);
+define('ERASEDATA_NATIVE_RETRY_ATTEMPTS_PER_PASS', 8);
+
+function erasedataNativeRetryValid($retry)
+{
+	if(!is_array($retry) || count($retry)!==3 || !isset($retry['jobs'],$retry['cursor'],$retry['overflow'])
+		|| !is_array($retry['jobs']) || count($retry['jobs'])>ERASEDATA_NATIVE_RETRY_MAX_HINTS
+		|| !is_string($retry['cursor']) || ($retry['cursor']!=='' && !erasedataIsCanonicalPendingHash($retry['cursor']))
+		|| !is_bool($retry['overflow'])) return(false);
+	foreach($retry['jobs'] as $key=>$entry)
+		if(!is_string($key) || preg_match('/^[a-f0-9]{64}$/D',$key)!==1
+			|| !is_array($entry) || array_keys($entry)!==array(0,1,2,3)
+			|| !is_int($entry[0]) || $entry[0]<0 || !is_int($entry[1]) || $entry[1]<1 || $entry[1]>60
+			|| !is_int($entry[2]) || $entry[2]<1 || $entry[2]>16
+			|| !is_string($entry[3]) || preg_match('/^[a-f0-9]{64}$/D',$entry[3])!==1) return(false);
+	return(true);
+}
+
+function erasedataNativeRetryKey($hash, $path, array $stat, $bytes, ?array $intent = null)
+{
+	if(!erasedataIsCanonicalPendingHash($hash) || !is_string($bytes)) return(false);
+	if($intent!==null && ($intent=ErasedataManifestCodec::canonicalNativeIntent($intent))===false) return(false);
+	$identity=array($hash, preg_replace('/\.completed$/D','',$path), $intent, hash('sha256',$bytes));
+	foreach(array('dev','ino','mode','uid','nlink','size') as $field)
+	{
+		if(!isset($stat[$field])) return(false);
+		$identity[]=(string)$stat[$field];
+	}
+	return(hash('sha256',serialize($identity)));
+}
+
+function erasedataNativeRetrySnapshot($listPath, $user)
+{
+	$state=erasedataReadDrainState($listPath);
+	return(is_array($state) && $state['user']===$user && isset($state['native_retry'])
+		? $state['native_retry'] : array('jobs'=>array(),'cursor'=>'','overflow'=>false));
+}
+
+function erasedataNativeRetryDue(array $retry, $key, $now)
+{
+	if(!is_string($key) || !isset($retry['jobs'][$key])) return(true);
+	$entry=$retry['jobs'][$key];
+	// A backward clock or an old hint never creates an indefinite hold.
+	return($now<$entry[0] || $now-$entry[0]>60 || $now-$entry[0]>=$entry[1]);
+}
+
+function erasedataNativeRetryOrder(array $hashes, $cursor, $now)
+{
+	global $garbageCheckInterval;
+	sort($hashes,SORT_STRING);$count=count($hashes);
+	if(!$count) return($hashes);
+	$position=array_search($cursor,$hashes,true);
+	// Both schedules use this collector. With no writable cursor, rotate one
+	// budget window per configured ordinary slot; the faster drain may revisit
+	// a window but cannot skip it because of interval/count common factors.
+	$interval=max(ERASEDATA_DRAIN_INTERVAL,isset($garbageCheckInterval) ? (int)$garbageCheckInterval : 0);
+	$start=$position===false
+		? (int)((floor($now/$interval)*ERASEDATA_NATIVE_RETRY_ATTEMPTS_PER_PASS)%$count) : ($position+1)%$count;
+	return(array_merge(array_slice($hashes,$start),array_slice($hashes,0,$start)));
+}
+
+function erasedataNativeRetryMetadataRefused($listPath)
+{
+	static $reported=array();
+	if(isset($reported[$listPath])) return;
+	$reported[$listPath]=true;
+	FileUtil::toLog('erasedata: retry metadata refused document='.erasedataLogPath(erasedataDrainStatePath($listPath))
+		.' key=native_retry reason=state-unavailable; authority unchanged; bounded fair retries continue without suppression');
+}
+
+// Caller owns the state lock. Trimming removes advisory hints only, never an
+// obligation. The existing authority byte ceiling remains unchanged.
+function erasedataNativeRetryStore($listPath, array $state, array $retry)
+{
+	$overflow=false;
+	while(count($retry['jobs'])>ERASEDATA_NATIVE_RETRY_MAX_HINTS)
+	{
+		unset($retry['jobs'][array_key_first($retry['jobs'])]);$overflow=true;
+	}
+	while(true)
+	{
+		$state['native_retry']=$retry;$bytes=json_encode($state);
+		if(is_string($bytes) && strlen($bytes)<=ERASEDATA_DRAIN_STATE_MAX_BYTES) break;
+		if(!count($retry['jobs'])) return(false);
+		unset($retry['jobs'][array_key_first($retry['jobs'])]);$overflow=true;
+	}
+	if($overflow && !$retry['overflow'])
+	{
+		// Emit before persistence: a crash may repeat this notice, never hide it.
+		FileUtil::toLog('erasedata: retry hints bounded document='.erasedataLogPath(erasedataDrainStatePath($listPath))
+			.' key=native_retry reason=hint-capacity; only hints evicted; bounded fair retries continue; obligations retained');
+		$retry['overflow']=true;$state['native_retry']=$retry;
+	}
+	return(erasedataWriteDrainState($listPath,$state));
+}
+
+function erasedataNativeRetryWritableState($listPath, $user)
+{
+	$path=erasedataDrainStatePath($listPath);clearstatcache(true,$path);
+	if(!erasedataNativeManifestStatSafe(@lstat($path))) return(false);
+	$state=erasedataReadDrainState($listPath);
+	return(is_array($state) && $state['user']===$user ? $state : false);
+}
+
+// Caller holds the hash lock. Native worker lifetime remains separately fenced
+// by FD198; these records can delay a launch but grant no filesystem authority.
+function erasedataNativeRetryRecordLocked($listPath, $user, $key, $path, $reason, $now = null)
+{
+	if($now===null) $now=time();
+	if(!is_string($key) || preg_match('/^[a-f0-9]{64}$/D',$key)!==1
+		|| !is_string($reason) || $reason==='' || !is_int($now) || $now<0) return(false);
+	$lock=erasedataAcquireDrainStateLock($listPath);
+	if(!is_resource($lock)) {erasedataNativeRetryMetadataRefused($listPath);return(false);}
+	try
+	{
+		$state=erasedataNativeRetryWritableState($listPath,$user);
+		if(!is_array($state))
+		{
+			FileUtil::toLog('erasedata: native manifest retained document='.erasedataLogPath($path)
+				.' key=native_intent reason='.substr($reason,0,512).'; exact record retained for retry');
+			erasedataNativeRetryMetadataRefused($listPath);return(false);
+		}
+		$retry=isset($state['native_retry']) ? $state['native_retry'] : array('jobs'=>array(),'cursor'=>'','overflow'=>false);
+		$old=isset($retry['jobs'][$key]) ? $retry['jobs'][$key] : null;
+		$digest=hash('sha256',$reason);
+		$same=is_array($old) && $old[3]===$digest && $now>=$old[0];
+		$attempts=$same ? min(16,$old[2]+1) : 1;
+		if(!$same)
+			FileUtil::toLog('erasedata: native manifest retained document='.erasedataLogPath($path)
+				.' key=native_intent reason='.substr($reason,0,512).'; exact record retained for retry');
+		unset($retry['jobs'][$key]);
+		$retry['jobs'][$key]=array($now,min(60,5*(1<<min(4,$attempts-1))),$attempts,$digest);
+		if(erasedataNativeRetryStore($listPath,$state,$retry)) return(true);
+		erasedataNativeRetryMetadataRefused($listPath);return(false);
+	}
+	finally {erasedataReleaseDrainStateLock($lock);}
+}
+
+function erasedataNativeRetryCursorWrite($listPath, $user, $cursor)
+{
+	if(!erasedataIsCanonicalPendingHash($cursor)) return(false);
+	$lock=erasedataAcquireDrainStateLock($listPath);
+	if(!is_resource($lock)) {erasedataNativeRetryMetadataRefused($listPath);return(false);}
+	try
+	{
+		$state=erasedataNativeRetryWritableState($listPath,$user);
+		if(!is_array($state)) {erasedataNativeRetryMetadataRefused($listPath);return(false);}
+		$retry=isset($state['native_retry']) ? $state['native_retry'] : array('jobs'=>array(),'cursor'=>'','overflow'=>false);
+		$retry['cursor']=$cursor;
+		if(erasedataNativeRetryStore($listPath,$state,$retry)) return(true);
+		erasedataNativeRetryMetadataRefused($listPath);return(false);
+	}
+	finally {erasedataReleaseDrainStateLock($lock);}
+}
+
+function erasedataNativeRetryForgetCompleted(array $completed, $user, $hashLocked = false, $bytes = null)
+{
+	$path=$completed['path'];$listPath=dirname($path);$hash=$completed['manifest']['hash'];
+	$key=erasedataNativeRetryKey($hash,$path,$completed['stat'],
+		is_string($bytes) ? $bytes : ErasedataManifestCodec::readBoundedFile($path),$completed['manifest']['native_intent']);
+	$hashLock=$hashLocked ? null : erasedataAcquireHashLock($listPath,$hash);
+	if(!$hashLocked && $hashLock===false) return(false);
+	$lock=erasedataAcquireDrainStateLock($listPath);
+	try
+	{
+		if(!is_resource($lock)) return(false);
+		$state=erasedataNativeRetryWritableState($listPath,$user);
+		if(!is_array($state)) return(false);
+		if(!is_string($key) || !isset($state['native_retry']['jobs'][$key])) return(true);
+		unset($state['native_retry']['jobs'][$key]);
+		return(erasedataWriteDrainState($listPath,$state));
+	}
+	finally {erasedataReleaseDrainStateLock($lock);if(!$hashLocked)erasedataReleaseHashLock($hashLock);}
+}
+
+function erasedataNativeRetryRecordCompleted(array $completed, $reason)
+{
+	$path=$completed['path'];$hash=$completed['manifest']['hash'];$intent=$completed['manifest']['native_intent'];
+	$key=erasedataNativeRetryKey($hash,$path,$completed['stat'],ErasedataManifestCodec::readBoundedFile($path),$intent);
+	$lock=erasedataAcquireHashLock(dirname($path),$hash);
+	if($lock===false) return(false);
+	try
+	{
+		return(erasedataNativeRetryRecordLocked(dirname($path),$intent['user'],$key,$path,$reason));
+	}
+	finally {erasedataReleaseHashLock($lock);}
+}
+
 if(!function_exists('erasedataNativeCapability'))
 {
 	function erasedataNativeCapability()
@@ -76,14 +264,25 @@ function erasedataNativeBuildIntent($hash, array $paths, $force, $generation, $u
 	return(ErasedataManifestCodec::encodeBound($hash, $paths, $force, $intent) !== false ? $intent : false);
 }
 
-function erasedataNativePrepareIntent($hash, array $intent)
+function erasedataNativePrepareIntent($hash, array $intent, &$reason = null)
 {
+	$reason = 'unresolved';
 	$answer = erasedataNativeCall('prepare', $hash, $intent);
-	if($answer === 'prepared') return(true);
+	if($answer === 'prepared') { $reason = null; return(true); }
+	foreach(array('independent-file-operation-owner', 'partial-erase') as $known)
+		if($answer === 'refused:'.$known)
+		{
+			$reason = $known;
+			return(false);
+		}
 	// Reconcile the nonce minted before the call; never replay preparation.
 	$state = erasedataNativeCall('state', $hash, $intent);
-	return(is_array($state) && $state['phase'] === 'prepared'
-		&& $state['live_relation'] === 'exact');
+	if(is_array($state) && $state['phase'] === 'prepared' && $state['live_relation'] === 'exact')
+	{
+		$reason = null;
+		return(true);
+	}
+	return(false);
 }
 
 function erasedataNativeCancelIntent($hash, array $intent)
@@ -104,6 +303,24 @@ function erasedataNativeEraseIntent($hash, array $intent)
 		&& $state['live_relation'] === 'absent');
 }
 
+// Both completion and revocation retire the same journal binding. This helper
+// only edits the caller's locked snapshot; the caller persists before unlink.
+function erasedataNativeDropJournalMember(array &$state, $hash, array $intent, $path, array $stat, &$changed)
+{
+	$generation=$intent['generation'];$changed=false;
+	if(!isset($state['journal'][$generation])) return(true);
+	$entry=$state['journal'][$generation];
+	if(!in_array($hash,$entry['hashes'],true)) return(true);
+	$expected=substr($path,-4)==='.tmp' ? $path : substr($path,0,-5).'.tmp';
+	if(!isset($entry['staging'][$hash]) || $entry['staging'][$hash]['path']!==$expected
+		|| $entry['staging'][$hash]['dev']!==(string)$stat['dev']
+		|| $entry['staging'][$hash]['ino']!==(string)$stat['ino']) return(false);
+	unset($entry['staging'][$hash]);$entry['hashes']=array_values(array_diff($entry['hashes'],array($hash)));
+	if(count($entry['hashes'])) $state['journal'][$generation]=$entry;
+	else unset($state['journal'][$generation]);
+	$changed=true;return(true);
+}
+
 // Caller holds the hash lock. A missing native E can never recreate this
 // generation; removing its exact application record closes the replay path.
 function erasedataNativeRetireJournal($listPath, $hash, array $intent, array $completed)
@@ -117,27 +334,114 @@ function erasedataNativeRetireJournal($listPath, $hash, array $intent, array $co
 		$statePath = erasedataDrainStatePath($listPath);
 		$absent = !erasedataPathExists($statePath) && erasedataPathLookupAnswers($statePath);
 		if(!$absent && $state['user'] !== $intent['user']) return(false);
-		$generation = $intent['generation'];
-		if(isset($state['journal'][$generation]))
-		{
-			$entry = $state['journal'][$generation];
-			if(isset($entry['staging'][$hash]))
-			{
-				$binding = $entry['staging'][$hash];
-				if($binding['path'] !== substr($completed['path'], 0, -15).'.tmp'
-					|| $binding['dev'] !== (string)$completed['stat']['dev']
-					|| $binding['ino'] !== (string)$completed['stat']['ino']) return(false);
-			}
-
-			unset($entry['staging'][$hash]);
-			$entry['hashes'] = array_values(array_diff($entry['hashes'], array($hash)));
-			if(count($entry['hashes'])) $state['journal'][$generation] = $entry;
-			else unset($state['journal'][$generation]);
-			if(!erasedataWriteDrainState($listPath, $state)) return(false);
-		}
+		$generation = $intent['generation'];$changed=false;
+		if(!erasedataNativeDropJournalMember($state,$hash,$intent,substr($completed['path'],0,-10),$completed['stat'],$changed)
+			|| ($changed && !erasedataWriteDrainState($listPath,$state))) return(false);
 		return(erasedataDischargePendingMarker($listPath, $hash, $generation));
 	}
 	finally { erasedataReleaseDrainStateLock($lock); }
+}
+
+// Revocation permits retiring exact application metadata only. Inspect every
+// existing capture namespace read-only; an uncertain or partial recovery stays
+// visible and cannot be promoted to deletion authority by this cleanup.
+function erasedataNativeRevokedRecoveryAbsent($path, array $manifest, ErasedataFilesystemOps $filesystem)
+{
+	$keys=array($path);
+	if(substr($path,-4)==='.tmp') $keys[]=substr($path,0,-4).'.list';
+	$prefixes=array();
+	foreach($keys as $key)
+	{
+		$intent=dirname($key).'/.erasedata-rmdir-intent-'.hash('sha256',$key);
+		if(erasedataPathExists($intent) || !erasedataPathLookupAnswers($intent)) return(false);
+		$prefixes[dirname($key)][]=basename(erasedataCapturedEntryPrefix($key,'manifest-consumption'));
+		$paths=array($manifest['base']);
+		foreach($manifest['files'] as $file)
+		{
+			$paths[]=$file;
+			if($manifest['multi'])
+				for($dir=dirname($file);$dir!==$manifest['base'] && erasedataPathContains($manifest['base'],$dir);$dir=dirname($dir))
+					$paths[]=$dir;
+		}
+		foreach(array_unique($paths) as $public)
+		{
+			$prefixes[dirname($public)][]=basename(erasedataCapturedEntryPrefix($public,$key));
+			$prefixes[dirname($public)][]=basename(erasedataDirectoryReservationPrefix($public,$key));
+		}
+	}
+	foreach($prefixes as $parent=>$wanted)
+	{
+		$unsealed=false;$ancestor=null;
+		if(!erasedataGuardParentChain($parent.'/entry',erasedataEffectiveUid(),false,$unsealed,false,$ancestor,false)
+			|| $unsealed) return(false);
+		$before=$filesystem->entryIdentity($parent);
+		if(!is_array($before) || !$before['is_dir'] || $before['is_link']) return(false);
+		$entries=$filesystem->scanDirectory($parent);
+		if(!is_array($entries)) return(false);
+		foreach($entries as $name)
+		{
+			if($name==='.' || $name==='..') continue;
+			foreach($wanted as $prefix) if(strpos($name,$prefix)===0) return(false);
+			$stat=erasedataListedEntryStat($parent,$name);
+			if($stat===false) return(false);
+			if($stat===null || ($stat['mode'] & 0170000)!==0120000) continue;
+			$target=@readlink($parent.'/'.$name);
+			if(!is_string($target)) return(false);
+			foreach($wanted as $prefix) if(strpos($target,$prefix)!==false) return(false);
+		}
+		$after=$filesystem->entryIdentity($parent);
+		if(!is_array($after) || !$after['is_dir'] || $after['is_link']
+			|| !erasedataSameEntryIdentity($before,$after)
+			|| !erasedataGuardParentChain($parent.'/entry',erasedataEffectiveUid(),false,$unsealed,false,$ancestor,false)
+			|| $unsealed) return(false);
+	}
+	return(true);
+}
+
+// Hash lock is held. Drain may additionally supply its already locked state.
+// The record remains discoverable until journal/pending retirement is durable;
+// a crash can retry metadata cleanup but can never replay payload consumption.
+function erasedataNativeCancelRevoked($listPath, $hash, array $bound,
+	ErasedataFilesystemOps $filesystem, &$state = null)
+{
+	$path=$bound['path'];$manifest=$bound['manifest'];$stat=$bound['stat'];
+	$intent=$manifest['native_intent'];
+	$bytes=ErasedataManifestCodec::readBoundedFile($path);
+	$matches=function() use($path,$hash,$manifest,$stat,$bytes) {
+		clearstatcache(true,$path);$current=@lstat($path);
+		return(is_string($bytes) && erasedataNativeManifestStatSafe($current)
+			&& erasedataSameStatIdentity($stat,$current)
+			&& ErasedataManifestCodec::readBoundedFile($path)===$bytes
+			&& ErasedataManifestCodec::decodeBytes($bytes,$hash)===$manifest);
+	};
+	$check=function() use($path,$hash,$intent,$manifest,$filesystem,$matches) {
+		if(!$matches()) return(false);
+		$native=erasedataNativeCall('state',$hash,$intent);
+		return(is_array($native) && (in_array($native['phase'],array('missing','mismatch'),true)
+			|| $native['live_relation']==='different')
+			&& erasedataNativeRevokedRecoveryAbsent($path,$manifest,$filesystem) && $matches());
+	};
+	if(!$check()) return(false);
+	$ownsLock=$state===null;$lock=$ownsLock ? erasedataAcquireDrainStateLock($listPath) : null;
+	if($ownsLock && !is_resource($lock)) return(false);
+	try
+	{
+		if($ownsLock) $state=erasedataReadDrainState($listPath);
+		if(!is_array($state)) return(false);
+		$statePath=erasedataDrainStatePath($listPath);
+		$absent=!erasedataPathExists($statePath) && erasedataPathLookupAnswers($statePath);
+		if(!$absent && $state['user']!==$intent['user']) return(false);
+		$generation=$intent['generation'];$changed=false;$next=$state;
+		if(!erasedataNativeDropJournalMember($next,$hash,$intent,$path,$stat,$changed)) return(false);
+		$key=erasedataNativeRetryKey($hash,$path,$stat,$bytes,$intent);
+		if(is_string($key) && isset($next['native_retry']['jobs'][$key]))
+		{unset($next['native_retry']['jobs'][$key]);$changed=true;}
+		if(!$check() || ($changed && !erasedataWriteDrainState($listPath,$next))) return(false);
+		$state=$next;
+		if(!erasedataDischargePendingMarker($listPath,$hash,$generation)) return(false);
+		return(erasedataUnlinkExactStagedFile($path,$stat,$check,$filesystem));
+	}
+	finally {if($ownsLock) erasedataReleaseDrainStateLock($lock);}
 }
 
 function erasedataNativeReadBoundStaging(array $record, $hash)
@@ -220,9 +524,13 @@ function erasedataNativeDrainGenerationPass($listPath, $user, $generation, array
 			if(in_array($native['phase'], array('missing', 'mismatch'), true)
 				|| $native['live_relation'] === 'different')
 			{
-				// No public path recovery is permitted after re-add revocation.
-				$notes[] = array('native-authority-revoked', $generation, $members,
-					'manifest-and-captured-payload-retained-manual-inspection-required', $hash, basename($bound['path']));
+				if(erasedataNativeCancelRevoked($listPath,$hash,$bound,$filesystem,$state))
+				{
+					$entry=isset($state['journal'][$generation]) ? $state['journal'][$generation] : null;
+					$result['cancelled']++;$result['retained']--;
+				}
+				else $notes[] = array('native-authority-revoked', $generation, $members,
+					'exact-manifest-and-recovery-retained-manual-inspection-required', $hash, basename($bound['path']));
 				continue;
 			}
 			$committed = $native['phase'] === 'committed' && $native['live_relation'] === 'absent';
@@ -253,33 +561,39 @@ function erasedataNativeDrainGenerationPass($listPath, $user, $generation, array
 	finally { erasedataReleaseAdmissionLocks($stateLock, $locks); }
 }
 
-function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent = null)
+function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent = null, $retention = null)
 {
 	$entries = @scandir($listPath);
 	$result = array();
 	if(!is_array($entries)) return($result);
+	$report=function($path,$stat,$bytes,$reason) use($retention) {
+		if(is_callable($retention)) call_user_func($retention,$path,$stat,$bytes,$reason);
+		else erasedataNativeTerminalDiagnostic($path,$reason);
+	};
 	foreach($entries as $name)
 	{
 		if(!preg_match('/^([A-F0-9]{40})\.([a-f0-9]{16})\.[A-Za-z0-9._-]+\.list\.completed$/D', $name, $m)
 			|| ($onlyHash !== null && $onlyHash !== $m[1])) continue;
 		$path = $listPath.'/'.$name;
-		clearstatcache(true, $path);
-		if(!erasedataNativeManifestStatSafe(@lstat($path)))
-		{ erasedataNativeTerminalDiagnostic($path, 'unsafe-metadata'); continue; }
+		$stat=erasedataListedEntryStat($listPath,$name);
+		if($stat===null) continue;
+		$refusal=erasedataNativeManifestStatRefusal($stat);
+		if($refusal!==null)
+		{ $report($path,$stat,ErasedataManifestCodec::readBoundedFile($path),$refusal); continue; }
 		$handle = @fopen($path, 'rb');
-		if(!is_resource($handle)) { erasedataNativeTerminalDiagnostic($path, 'unreadable-manifest'); continue; }
+		if(!is_resource($handle)) { $report($path,$stat,false,'unreadable-manifest'); continue; }
 		try
 		{
 			$stat = @fstat($handle); $current = @lstat($path);
 			if(is_link($path) || !erasedataNativeManifestStatSafe($stat) || !is_array($current)
 				|| !erasedataSameStatIdentity($stat, $current))
-			{ erasedataNativeTerminalDiagnostic($path, 'unsafe-metadata'); continue; }
+			{ $report($path,$stat,false,'unsafe-metadata'); continue; }
 			$bytes = ErasedataManifestCodec::readBoundedHandle($handle);
 			$manifest = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $m[1]) : false;
 			if(!is_array($manifest) || $manifest['version'] !== ErasedataManifestCodec::BOUND_PAYLOAD_VERSION
 				|| $manifest['native_intent']['generation'] !== $m[2]
 				|| ($intent !== null && $intent !== $manifest['native_intent']))
-			{ erasedataNativeTerminalDiagnostic($path, 'native-binding-mismatch'); continue; }
+			{ $report($path,$stat,$bytes,'native-binding-mismatch'); continue; }
 			$result[] = array('path' => $path, 'stat' => $stat, 'manifest' => $manifest);
 		}
 		finally { @fclose($handle); }
@@ -290,15 +604,29 @@ function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent
 function erasedataNativeRemoveCompleted(array $completed, ErasedataFilesystemOps $filesystem)
 {
 	// Metadata-only unlink. Never resume a payload or follow a manifest path.
-	return(erasedataSameStatIdentity($completed['stat'], @lstat($completed['path']))
-		&& erasedataUnlinkExactStagedFile($completed['path'], $completed['stat'], null, $filesystem));
+	$check=function() use($completed) {
+		clearstatcache(true,$completed['path']);$stat=@lstat($completed['path']);
+		$bytes=ErasedataManifestCodec::readBoundedFile($completed['path']);
+		return(erasedataNativeManifestStatSafe($stat) && erasedataSameStatIdentity($completed['stat'],$stat)
+			&& is_string($bytes) && ErasedataManifestCodec::decodeBytes($bytes,$completed['manifest']['hash'])===$completed['manifest']);
+	};
+	return($check() && erasedataUnlinkExactStagedFile($completed['path'],$completed['stat'],$check,$filesystem));
 }
 
 function erasedataNativeManifestStatSafe($stat)
 {
-	return(is_array($stat) && ($stat['mode'] & 0170000) === 0100000
-		&& $stat['uid'] === erasedataEffectiveUid() && $stat['nlink'] === 1
-		&& ($stat['mode'] & 07777) === erasedataSharedFileMode());
+	return(erasedataNativeManifestStatRefusal($stat) === null);
+}
+
+function erasedataNativeManifestStatRefusal($stat)
+{
+	if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000) return('manifest-type');
+	if($stat['uid'] !== erasedataEffectiveUid()) return('manifest-owner');
+	if($stat['nlink'] !== 1) return('manifest-links');
+	if(($stat['mode'] & 07777) !== erasedataSharedFileMode())
+		return('manifest-mode actual='.sprintf('%04o',$stat['mode'] & 07777)
+			.' required='.sprintf('%04o',erasedataSharedFileMode()));
+	return(null);
 }
 
 function erasedataNativeSyncQueue($listPath)

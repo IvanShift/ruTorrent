@@ -37,7 +37,7 @@ class MagnetShownTest extends TestCase
 		$settings->iVersion = 0x1018;
 		$settings->aliases = array();
 		$this->settingsProperty->setValue(null, $settings);
-		foreach (array('scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut') as $name)
+		foreach (array('scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut', 'topDirectory') as $name)
 			$this->globalsBefore[$name] = array_key_exists($name, $GLOBALS) ? $GLOBALS[$name] : null;
 		$GLOBALS['log_file'] = $this->base . '/app.log';
 		$GLOBALS['rpcTimeOut'] = 10;
@@ -110,7 +110,7 @@ class MagnetShownTest extends TestCase
 		$this->assertSame(self::MISSING, rTorrent::magnetHash('magnet:?xt=urn:btih:'.self::PRESENT
 			.'&dn=ignored+name&xt=urn:btih:'.strtolower(self::MISSING)),
 			'the final xt replaces the prior hash, matching libtorrent DownloadConstructor::parse_magnet_uri');
-		$this->assertSame(str_repeat('0', 40), rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('A', 32)),
+		$this->assertSame('0842108421084210842108421084210842108421', rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('B', 32)),
 			'a base32 hash is decoded once');
 		$this->assertSame(str_repeat('AB', 20), rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('%AB', 20)),
 			'a percent-encoded binary hash keeps its bytes');
@@ -171,6 +171,54 @@ class MagnetShownTest extends TestCase
 		$this->assertSame(false, rTorrent::magnetHash(
 			'magnet:?xt=urn:btmh:ignored%26xt=urn:btih:'.self::PRESENT),
 			'a percent-encoded separator does not introduce an applicable exact topic');
+	}
+
+	public function testZeroInfoHashesAreRefusedBeforeAnyLoadOrMkdirRpc()
+	{
+		// Captured on native c8b228b: load replies succeed while zero-info-hash is refused.
+		rTorrentSettings::get()->aliases['load'] = array('name' => 'load.normal', 'prm' => 1);
+		rTorrentSettings::get()->directory = '';
+		$GLOBALS['topDirectory'] = $this->base;
+		$zeroForms = array(str_repeat('0', 40), str_repeat('A', 32), str_repeat('a', 32),
+			str_repeat('%00', 20), str_repeat('%30', 40));
+		foreach($zeroForms as $text)
+			foreach(array('', '&xt=urn:btmh:1220'.str_repeat('ab', 32)) as $suffix)
+			{
+				$magnet = 'magnet:?xt=urn:btih:'.$text.$suffix;
+				$this->assertSame(false, rTorrent::magnetHash($magnet),
+					'the final decoded zero info hash is not a loadable identity');
+				$this->assertSame(false, rTorrent::sendMagnet($magnet, false, false,
+					$this->base.'/requested', null), 'zero info hashes refuse before submission');
+			}
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat("\0", 20)),
+			'a raw twenty-byte zero info hash is refused too');
+		$this->assertSame(array(), $this->daemon->bodies(),
+			'zero info hashes send neither load nor directory-creation commands');
+	}
+
+	public function testOnlyTheFinalApplicableInfoHashMustBeNonzero()
+	{
+		$zero = 'xt=urn:btih:'.str_repeat('0', 40);
+		$valid = 'xt=urn:btih:'.self::PRESENT;
+		$v2 = 'xt=urn:btmh:1220'.str_repeat('ab', 32);
+		$this->assertSame(self::PRESENT, rTorrent::magnetHash('magnet:?'.$zero.'&'.$v2.'&'.$valid),
+			'a later valid btih replaces an earlier zero before identity admission');
+		$this->assertSame(false, rTorrent::magnetHash('magnet:?'.$valid.'&'.$v2.'&'.$zero),
+			'a final zero btih cannot fall back to the earlier valid hash');
+	}
+
+	public function testNonzeroDecodedIdentitiesAndMalformedLengthsKeepTheirContracts()
+	{
+		$this->assertSame(str_repeat('30', 20), rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('0', 20)),
+			'twenty ASCII zero characters represent nonzero raw hash bytes');
+		$this->assertSame(str_repeat('0', 39).'1', rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('0', 39).'1'),
+			'a nearly zero hexadecimal hash is still valid');
+		$this->assertSame(str_repeat('0', 39).'1', rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('%00', 19).'%01'),
+			'nonzero percent-encoded binary hashes preserve all zero-valued bytes');
+		foreach(array(str_repeat('B', 31), str_repeat('B', 33), str_repeat('B', 31).'1',
+			str_repeat('Q', 19), str_repeat('Q', 21), str_repeat('0', 39).'g') as $invalid)
+			$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:'.$invalid),
+				'invalid identity lengths and alphabets remain refused');
 	}
 
 }

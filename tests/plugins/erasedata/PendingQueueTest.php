@@ -259,6 +259,59 @@ class PendingQueueTest extends TestCase
 			'the generation-less marker name is never written');
 	}
 
+	public function testBatchAdmissionPreservesExistingAndPublishedObligations()
+	{
+		$this->fresh();
+		if(!$this->requireApi(array('erasedataQueueRequests'), 'batch admission shares the pending owner'))
+			return;
+		$generation = '0000000000000011';
+		$existing = $this->hash('a');
+		$published = $this->hash('b');
+		$fresh = $this->hash('c');
+		erasedataQueueRequest($this->listPath, $existing, 1, $generation);
+		$path = $this->markerFor($existing, $generation);
+		$bytes = file_get_contents($path);
+		$inode = lstat($path)['ino'];
+		file_put_contents($this->listPath.'/'.$published.'.'.$generation.'.actor.list', 'published');
+		foreach(array('.actor.tmp', '.actor.list.completed', '.actor.list.unverified') as $suffix)
+			file_put_contents($this->listPath.'/'.$fresh.'.'.$generation.$suffix, 'not published');
+		file_put_contents($this->listPath.'/'.$fresh.'.0000000000000010.actor.list', 'older generation');
+		$failed = null;
+		$this->assertTrue(erasedataQueueRequests($this->listPath,
+			array($existing, strtoupper($published), $fresh, $fresh), 2, $generation, $failed),
+			'one batch records its missing obligations');
+		$this->assertTrue($failed === null, 'successful batch has no failed member');
+		clearstatcache(true, $path);
+		$this->assertTrue(file_get_contents($path) === $bytes && lstat($path)['ino'] === $inode,
+			'existing force and exact marker identity are preserved');
+		$this->assertTrue(!file_exists($this->markerFor($published, $generation)),
+			'the exact published generation is not queued again');
+		$this->assertTrue(file_get_contents($this->markerFor($fresh, $generation)) ===
+			'version=1'."\n".'generation='.$generation."\n".'hash='.strtoupper($fresh)."\nforce=2\n",
+			'new marker retains the exact canonical generation-bound schema');
+		$this->assertEquals(2, count(glob($this->listPath.'/*.pending')),
+			'duplicate members do not create duplicate obligations');
+	}
+
+	public function testInvalidBatchIsRefusedBeforeAnyMarkerIsWritten()
+	{
+		$this->fresh();
+		if(!$this->requireApi(array('erasedataQueueRequests'), 'invalid batch must not partially admit'))
+			return;
+		$failed = null;
+		$this->assertTrue(!erasedataQueueRequests($this->listPath,
+			array($this->hash('d'), '../invalid'), 1, '0000000000000012', $failed),
+			'a later invalid member refuses the whole input');
+		$this->assertTrue(!erasedataQueueRequests($this->listPath,
+			array($this->hash('d')), '1', '0000000000000012', $failed),
+			'force is not coerced in batch admission');
+		$this->assertTrue(!erasedataQueueRequests($this->listPath,
+			array($this->hash('d')), 1, 'invalid', $failed),
+			'generation validation is shared with a single request');
+		$this->assertEquals(array(), glob($this->listPath.'/*'),
+			'no valid prefix of an invalid input reaches the filesystem');
+	}
+
 	/** Exclusive create, preserved: a repeated firing is never a second request. */
 	public function testFiringAgainBeforeTheDrainIsNotASecondRequest()
 	{

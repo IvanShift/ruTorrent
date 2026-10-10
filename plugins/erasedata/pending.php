@@ -153,7 +153,7 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// the request is refused or could not be made durable. A false return is
 	// terminal for this attempt: nothing was written, so the caller holds no
 	// obligation and must refuse the request rather than go on.
-	function erasedataQueueRequest($listPath, $hash, $force, $generation)
+	function erasedataQueueRequest($listPath, $hash, $force, $generation, ?array $published = null)
 	{
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
 			return(false);
@@ -176,7 +176,9 @@ if(!function_exists('erasedataEncodePendingMarker'))
 		// is discharged and the collector owns what is left of it. A bare
 		// <hash>.list is NOT that manifest: it belongs to an older torrent that
 		// happened to share the infohash.
-		if(erasedataPendingGenerationIsPublished($listPath, $canonical, $generation))
+		if($published === null
+			? erasedataPendingGenerationIsPublished($listPath, $canonical, $generation)
+			: isset($published[$canonical][$generation]))
 			return(true);
 		$bytes = erasedataEncodePendingMarker(array(
 			'version' => ERASEDATA_PENDING_MARKER_VERSION,
@@ -187,6 +189,32 @@ if(!function_exists('erasedataEncodePendingMarker'))
 		if($bytes === false)
 			return(false);
 		return(erasedataWriteDurableFile($marker, $bytes));
+	}
+
+	// The producer holds every member's hash lock and the state lock. Publication
+	// names cannot change within that transaction, so scan them once rather than
+	// once per marker. This snapshot grants no payload or native authority.
+	function erasedataQueueRequests($listPath, array $hashes, $force, $generation, &$failedHash = null)
+	{
+		$failedHash = null;
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
+			|| ($force !== 1 && $force !== 2) || !erasedataGenerationIsValid($generation)
+			|| count($hashes) > ERASEDATA_PENDING_MAX_MARKERS)
+			return(false);
+		foreach($hashes as $hash)
+			if(!erasedataIsPendingHash($hash))
+				return(false);
+		$entries = @scandir($listPath);
+		if(!is_array($entries))
+			return(false);
+		$published = erasedataPublishedGenerations($entries);
+		foreach($hashes as $hash)
+			if(!erasedataQueueRequest($listPath, $hash, $force, $generation, $published))
+			{
+				$failedHash = strtoupper($hash);
+				return(false);
+			}
+		return(true);
 	}
 
 	// <listPath>/<HASH>.<generation>.pending, or false for anything that is not
@@ -284,8 +312,8 @@ if(!function_exists('erasedataEncodePendingMarker'))
 			if(isset($published[$canonical][$generation]))
 				continue;
 			$path = $listPath.'/'.$entry;
-			$bytes = @file_get_contents($path, false, null, 0,
-				ERASEDATA_PENDING_MARKER_MAX_BYTES + 1);
+			$bytes = ErasedataManifestCodec::readBoundedFile($path,
+				ERASEDATA_PENDING_MARKER_MAX_BYTES);
 			$record = is_string($bytes) ? erasedataDecodePendingMarker($bytes) : false;
 			// Exact cross-field equality: a record whose own hash or generation
 			// disagrees with the name it is filed under binds nothing, so it is

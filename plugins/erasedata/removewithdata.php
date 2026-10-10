@@ -2088,6 +2088,11 @@ if(!function_exists('erasedataValidateDrainState'))
 					return(false);
 				$optional++;
 			}
+		if(array_key_exists('native_retry',$state))
+		{
+			if(!erasedataNativeRetryValid($state['native_retry'])) return(false);
+			$optional++;
+		}
 		if(count($state) !== count($keys) + $optional)
 			return(false);
 		foreach($keys as $key)
@@ -2200,8 +2205,7 @@ if(!function_exists('erasedataReadDrainState'))
 		if($path === false)
 			return(false);
 		clearstatcache(true, $path);
-		$bytes = @file_get_contents($path, false, null, 0,
-			ERASEDATA_DRAIN_STATE_MAX_BYTES + 1);
+		$bytes = ErasedataManifestCodec::readBoundedFile($path, ERASEDATA_DRAIN_STATE_MAX_BYTES);
 		if($bytes === false || $bytes === '')
 		{
 			clearstatcache(true, $path);
@@ -3565,14 +3569,14 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			// (6) The arm stands. Record the obligations, stage every member, and
 			// publish one exact prepared journal record once -- and only once --
 			// every file and identity is durable.
-			foreach($accepted as $hash)
-				if(!erasedataQueueRequest($listPath, $hash, $force, $generation))
-				{
-					erasedataReleaseAdmissionLocks($stateLock, $locks);
-					erasedataDrainDiagnostic($log, 'marker-write', $generation, $members,
-						'admission-refused-obligations-retained', $hash);
-					return(false);
-				}
+			$failedHash = null;
+			if(!erasedataQueueRequests($listPath, $accepted, $force, $generation, $failedHash))
+			{
+				erasedataReleaseAdmissionLocks($stateLock, $locks);
+				erasedataDrainDiagnostic($log, 'marker-write', $generation, $members,
+					'admission-refused-obligations-retained', $failedHash);
+				return(false);
+			}
 			$staging = array();
 			$rollback = array();
 			$failure = false;
@@ -3700,15 +3704,32 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			}
 			if($nativeCapability === 'available')
 			{
+				// Hash/state locks cover the complete batch. Validate it once
+				// before prepare and again after every prepare has returned.
+				if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents))
+				{
+					erasedataReleaseAdmissionLocks($stateLock, $locks);
+					erasedataDrainDiagnostic($log, 'binding-mismatch', $generation, $members,
+						'torrents-retained-exact-prepared-journal-retained');
+					return(false);
+				}
+				$attempted = array();
 				foreach($accepted as $hash)
-					if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents)
-						|| !erasedataNativePrepareIntent($hash, $nativeIntents[$hash]))
+				{
+					$attempted[$hash] = $nativeIntents[$hash];
+					$prepareReason = null;
+					if(!erasedataNativePrepareIntent($hash, $nativeIntents[$hash], $prepareReason))
 					{
+						// An unknown reply may have created P. Exact P-only cancellation
+						// is safe for every attempted tuple and never authorizes erase.
+						foreach($attempted as $cancelHash => $cancelIntent)
+							erasedataNativeCancelIntent($cancelHash, $cancelIntent);
 						erasedataReleaseAdmissionLocks($stateLock, $locks);
-						erasedataDrainDiagnostic($log, 'native-prepare-unresolved', $generation, $members,
+						erasedataDrainDiagnostic($log, 'native-prepare-'.$prepareReason, $generation, $members,
 							'torrents-retained-exact-prepared-journal-retained', $hash);
 						return(false);
 					}
+				}
 				// Native preparation is not permission to use a replaced file.
 				$state = erasedataReadDrainState($listPath);
 				if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents))

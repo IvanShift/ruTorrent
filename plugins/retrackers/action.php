@@ -2,8 +2,15 @@
 require_once( 'retrackers.php' );
 Requests::requirePost();
 
-$trks = new rRetrackers();
-$trks->set();
+$trks = rRetrackers::load(false);
+$failure = null;
+if (!$trks->set(null, $failure)) {
+	// Refusal is visible without generating cache files or touching lifecycle.
+	header('Content-Type: application/javascript');
+	header('Cache-Control: no-store');
+	echo $trks->get().'noty('.JSON::safeEncode('Retrackers settings unchanged: '.$failure).', "error");';
+	exit;
+}
 require_once(__DIR__.'/../../php/rtorrent.php');
 define('RETRACKERS_IMPORT_ONLY', true);
 require_once(__DIR__.'/update.php');
