@@ -3,6 +3,13 @@
 require_once(__DIR__.'/../../php/TestCase.php');
 require_once(__DIR__.'/CollectorFixture.php');
 require_once(__DIR__.'/../../../plugins/erasedata/removewithdata.php');
+require_once(__DIR__.'/CleanupArmReasonFixture.php');
+
+// The missing parent is rejected before any helper process is started.
+class ErasedataMissingParentProbe extends ErasedataFilesystemOps
+{
+	public static function renameHelperPath() { return PHP_BINARY; }
+}
 
 class ErasedataCleanupProbeFixture extends ErasedataCollectorFixture
 {
@@ -19,7 +26,7 @@ class ErasedataCleanupProbeFixture extends ErasedataCollectorFixture
 	{
 		$this->parents[] = $directory;
 		if($directory !== $this->refused) return(true);
-		ErasedataFilesystemOps::canRenameNoReplace($directory.'/missing-probe-parent', false);
+		ErasedataMissingParentProbe::canRenameNoReplace($directory.'/missing-probe-parent', false);
 		return(false);
 	}
 }
@@ -139,10 +146,12 @@ class CleanupRenamePreflightTest extends TestCase
 				$filesystem->parents = array();
 				$filesystem->refused = dirname($this->payload);
 			};
+			$reason = 'stale';
 			$this->assertTrue(!erasedataArmObsoleteCleanupRun(array('listPath' => $this->queue,
 				'user' => User::getUser(), 'filesystem' => $filesystem, 'log' => array('FileUtil', 'toLog'),
-				'ackTimeout' => 0.5, 'ackPoll' => 0.01), $job),
+				'ackTimeout' => 0.5, 'ackPoll' => 0.01), $job, $reason),
 				'cleanup arm refuses a changed parent before predecessor erase');
+			$this->assertEquals('cleanup-rename-unconfirmed', $reason, 'an unresolved parent does not establish a lasting capability failure');
 			$this->assertTrue(in_array(dirname($this->payload), $filesystem->parents, true),
 				'acknowledgement does not reuse an earlier successful parent probe');
 			$this->assertTrue(is_file($job['tmp_path']), 'late refusal preserves the exact prepared job for cancellation');
@@ -153,6 +162,58 @@ class CleanupRenamePreflightTest extends TestCase
 			$this->assertTrue($child instanceof ErasedataTestProcess && $child->wait(2)
 				&& $child->reap() === 0, 'the real acknowledgement child finishes cleanly');
 			erasedataCancelObsoleteCleanup($job, $filesystem);
+		}
+	}
+
+	public function testEveryCleanupArmOutcomeSuppliesItsOwnClassifiedReason()
+	{
+		foreach(array('job' => 'cleanup-arm-job', 'lock' => 'cleanup-arm-lock',
+			'state' => 'cleanup-arm-state', 'generation' => 'cleanup-arm-generation',
+			'write' => 'cleanup-arm-write', 'rearm' => 'cleanup-arm-rearm',
+			'no-ack' => 'cleanup-drain-no-ack', 'changed' => 'cleanup-arm-changed',
+			'rename' => 'cleanup-rename-capability', 'success' => null) as $failure => $expected)
+		{
+			\ErasedataCleanupArmFixture\Scenario::reset($failure);
+			$lock = \ErasedataCleanupArmFixture\Scenario::$lock;
+			$reason = 'stale';
+			try
+			{
+				$result = \ErasedataCleanupArmFixture\erasedataArmObsoleteCleanupRun(array(
+					'listPath' => $this->queue, 'user' => User::getUser(), 'ackTimeout' => 0, 'ackPoll' => 0),
+					array('tmp_path' => $this->queue.'/prepared.tmp', 'list_path' => $this->queue.'/prepared.list',
+						'lock' => $lock), $reason);
+				$this->assertEquals($failure === 'success', $result, 'the bool arm API remains exact: '.$failure);
+				$this->assertEquals($expected, $reason, 'the output reason names the actual refusal: '.$failure);
+				$this->assertEquals($expected === null ? array() : array($expected),
+					\ErasedataCleanupArmFixture\Scenario::$diagnostics, 'diagnostic and consumer share one classified reason');
+				$this->assertEquals(in_array($failure, array('job', 'lock'), true) ? 0 : 1,
+					\ErasedataCleanupArmFixture\Scenario::$releases, 'every acquired state lock is released exactly once');
+			}
+			finally { fclose($lock); }
+		}
+	}
+
+	public function testCleanupArmDistinguishesKnownCapabilityRefusalsFromUnconfirmedProbes()
+	{
+		foreach(array('rename-noreplace-unsupported', 'rename-noreplace-manifest-unavailable',
+			'rename-noreplace-manifest-invalid', 'rename-noreplace-helper-unavailable',
+			'rename-noreplace-process-unavailable', 'rename-noreplace-process-exit-127',
+			'rename-noreplace-lease-unavailable', 'rename-noreplace-descriptor-unavailable',
+			'rename-noreplace-parent-unresolved', 'rename-noreplace-error', '') as $index => $rawReason)
+		{
+			\ErasedataCleanupArmFixture\Scenario::reset('rename');
+			\ErasedataCleanupArmFixture\Scenario::$renameReason = $rawReason;
+			$reason = null;
+			try {
+				$job = array('tmp_path' => $this->queue.'/job.tmp', 'list_path' => $this->queue.'/job.list',
+					'lock' => \ErasedataCleanupArmFixture\Scenario::$lock);
+				$this->assertEquals(false, \ErasedataCleanupArmFixture\erasedataArmObsoleteCleanupRun(array(
+					'listPath' => $this->queue, 'user' => 'fixture-user'), $job, $reason),
+					'every failed probe retains its boolean refusal');
+				$this->assertEquals($index < 4 ? 'cleanup-rename-capability' : 'cleanup-rename-unconfirmed',
+					$reason, 'only a known local capability or helper configuration refusal buys a hold: '.$rawReason);
+			}
+			finally { fclose(\ErasedataCleanupArmFixture\Scenario::$lock); }
 		}
 	}
 

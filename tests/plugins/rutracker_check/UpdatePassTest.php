@@ -3,15 +3,9 @@
 /**
  * Tests for plugins/rutracker_check/updatepass.php.
  *
- * RuTrackerUpdatePass::run() writes through ruTrackerChecker::setState()/
- * setMessage() directly (no wrapper, no reflection -- see task-8 brief), so
- * this file needs the REAL ruTrackerChecker (its STE_* constants and its
- * actual d.set_custom writes), not TestLib's handler-stub double, which is
- * missing setState() and the META_PENDING/ABSORBED constants entirely. It
- * loads the real class the same way CheckerTest.php does: eval the class
- * body out of check.php (skipping that file's own top-level requires/eval,
- * which need a live plugin-conf/tracker-registration environment this test
- * has no reason to stand up) behind light doubles for getCmd()/Snoopy.
+ * The scheduler must exercise the real checker claims and atomic projection
+ * paths. Load its class body behind the shared RPC doubles without executing
+ * check.php's live plugin bootstrap.
  */
 
 require_once(__DIR__ . '/TestLib.php');
@@ -90,7 +84,8 @@ class RuTrackerMetaFetch
 
     public static function pump($hash, $now)
     {
-        self::$calls[] = array('hash' => $hash, 'now' => $now);
+        self::$calls[] = array('hash' => $hash, 'now' => $now,
+            'scheduledAt' => strictGetPrivateStatic('ruTrackerChecker', 'activeRunIdentity')['scheduledAt'] ?? null);
         return self::$result;
     }
 }
@@ -214,20 +209,6 @@ function upApplyGuardedProjection(&$model, $commands, $prefix = null)
         $model[$key] = $value;
     }
     return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
-}
-
-function upApplyVerdictCommands(&$model, $commands, $prefix = null)
-{
-    $limit = $prefix === null ? count($commands) : min((int) $prefix, count($commands));
-    for ($index = 0; $index < $limit; $index++) {
-        $params = $commands[$index]->params;
-        $field = array(
-            'chk-state' => 'state', 'chk-time' => 'time', 'chk-stime' => 'stime',
-            'chk-msg' => 'msg', 'chk-del' => 'del',
-        )[$params[1]];
-        $model[$field] = (string) $params[2];
-    }
-    return array();
 }
 
 function upProjectionValues($model, $commands)
@@ -554,13 +535,27 @@ upTest($suite, 'a fast-path verdict is dropped when the row moved since the cycl
     rXMLRPCRequest::reset();
     // The row is no longer what the snapshot said: a click got there first.
     rXMLRPCRequest::queue('d.multicall', true, false,
-        array(str_repeat('A', 40), (string) ruTrackerChecker::STE_META_PENDING, '100', '', ''));
+        array(str_repeat('A', 40), (string) ruTrackerChecker::STE_META_PENDING, '100', '', '', str_repeat('A', 40)));
 
     $result = RuTrackerUpdatePass::run($rows);
 
     strictAssertSame(0, $result['uptodate'], 'a verdict that was not written is not counted');
     strictAssertSame(array(), upGuardedWrites(),
         'the newer state a concurrent worker wrote is left alone');
+});
+
+upTest($suite, 'a fast-path verdict does not overwrite a same-state row checked again since the snapshot', function () {
+    $rows = RuTrackerUpdatePass::parseMulticall(upRow(str_repeat('A', 40), 0));
+    rXMLRPCRequest::reset();
+    $newer = $rows[0];
+    $newer['time']++;
+    upQueueProjection(array($newer));
+    // Make an accidentally admitted mutation observable rather than letting
+    // an unavailable branch reply mask the missing time comparison.
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    $result = RuTrackerUpdatePass::run($rows);
+    strictAssertSame(0, $result['uptodate'], 'the later check keeps its own clock and verdict');
+    strictAssertSame(array(), upGuardedWrites(), 'time alone changing invalidates the stale projection');
 });
 
 upTest($suite, 'a fast-path verdict does not cross a same-hash delete and readd', function () {
@@ -813,6 +808,38 @@ upTest($suite, 'the production default checker calls ruTrackerChecker::run with 
     $probes = rXMLRPCRequest::requestsFor('d.hash');
     strictAssertSame(1, count($probes), 'ruTrackerChecker::run reached its own torrentExists probe');
     strictAssertSame(str_repeat('A', 40), $probes[0]['commands'][0]->params, 'probed the dispatched hash');
+});
+
+upTest($suite, 'the default scheduler dispatch gives its aligned slot to the real checker', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    $savedRandom = $GLOBALS['schedule_rand'] ?? null;
+    try {
+        $GLOBALS['updateInterval'] = 60;
+        $GLOBALS['schedule_rand'] = 0;
+        $hash = str_repeat('A', 40);
+        $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_META_PENDING));
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
+        RuTrackerMetaFetch::$calls = array();
+        RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
+            'd.get_local_id', 'd.get_custom'), true, false,
+            array((string) ruTrackerChecker::STE_META_PENDING, '100', '', str_repeat('A', 40), ''));
+        $before = time();
+        RuTrackerUpdatePass::run($rows);
+        $after = time();
+        strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'the real checker reached its metadata consumer');
+        $slot = RuTrackerMetaFetch::$calls[0]['scheduledAt'];
+        strictAssertTrue(is_int($slot), 'default dispatch supplies a slot instead of a manual-call null');
+        strictAssertTrue($slot >= $before - ($before % 3600) && $slot <= $after - ($after % 3600),
+            'the configured hourly slot survives default dispatch and the real per-hash claim');
+    } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+        if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
+        else $GLOBALS['schedule_rand'] = $savedRandom;
+    }
 });
 
 // Finding 6: chk-feed-upd used to be stamped here even though nothing in the
@@ -1449,7 +1476,8 @@ upTest($suite, 'reapOrphans leaves an orphan alone before its deadline', functio
 
     RuTrackerUpdatePass::reapOrphans(1000);
 
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.erase'), 'deadline not yet passed: nothing erased');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'), 'deadline not yet passed: no guarded erase');
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.erase'), 'no standalone erase either');
 });
 
 // A live claim is pump()'s to manage -- but only while it is live. Only pump()
@@ -1668,13 +1696,13 @@ function upKinozalRow($hash, $failed, $success, $host = 'tr2.torrent4me.com')
         'http://kinozal.tv/details.php?id=12345');
 }
 
-// These fixtures answer the three- and four-write UPTODATE paths used below.
-function upRunPass($rows, &$checked, $writeShapes = array(3, 4))
+// Queue successful guarded verdict replies when this case needs fast writes.
+function upRunPass($rows, &$checked, $writeReplies = 2)
 {
     $checked = array();
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked) { $checked[] = $hash; });
     rXMLRPCRequest::reset();
-    foreach ($writeShapes as $fieldCount)
+    for ($reply = 0; $reply < $writeReplies; $reply++)
         rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
     upQueueUnchanged($rows);
     return RuTrackerUpdatePass::run($rows);
@@ -1682,11 +1710,7 @@ function upRunPass($rows, &$checked, $writeShapes = array(3, 4))
 
 function upAssertNoCustomWrites($message)
 {
-    $writes = array();
-    foreach (rXMLRPCRequest::$requests as $request)
-        if (strpos($request['key'], 'd.set_custom') !== false) $writes[] = $request['key'];
-    foreach (upGuardedWrites() as $request) $writes[] = 'guarded-branch';
-    strictAssertSame(array(), $writes, $message);
+    strictAssertNoRpcCommand('d.set_custom', $message);
 }
 
 // Require production handler registrations before entering this scope: require_once
@@ -2475,7 +2499,7 @@ function sweepScan($rows)
     rXMLRPCRequest::queue('d.multicall', true, false, $flat);
 }
 
-// state, is_open, chunks_hashed, completed_bytes, complete, message, chk-stime, chk-state, directory_base
+// state, is_open, chunks_hashed, completed_bytes, complete, message, chk-stime, chk-state
 // The last two columns are the marker and the record, RE-READ at the moment of
 // acting: everything the sweep does from here is irreversible, and the values
 // it was handed came from a fleet scan several round trips ago. They default
@@ -3069,6 +3093,8 @@ upTest($suite, 'a malformed predecessor recovery record is retained fail closed'
     $sweepNow = 1000 + ruTrackerChecker::MAX_LOCK_TIME + 1;
     RuTrackerUpdatePass::sweepReplacements($sweepNow);
 
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'this refusal authorizes no guarded ownership action');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'malformed bytes cannot authorize clearing the only recovery handle');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
@@ -3103,6 +3129,8 @@ upTest($suite, 'a non-plugin marker never authorizes marked-sweep discard or act
 
         RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+        strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+            'this refusal authorizes no guarded ownership action');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
             $label . ': foreign marker cannot authorize discarding the occupant');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
@@ -3126,6 +3154,8 @@ upTest($suite, 'an unknown marked-row run token is malformed, never record-less 
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'this refusal authorizes no guarded ownership action');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
         'malformed nonempty bytes retain the recovery keys instead of entering legacy policy');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
@@ -3540,7 +3570,8 @@ upTest($suite, 'sweepReplacements never resurrects a replacement whose predecess
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'a stopped predecessor stays stopped');
+    strictAssertSame(false, sweepBranchOpens($hash), 'a stopped predecessor stays stopped through the guarded command');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'no standalone open either');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'and is certainly never started');
     strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
         'the exact transaction is finished atomically: leaving it stopped was the intended outcome');
@@ -3570,8 +3601,10 @@ upTest($suite, 'sweepReplacements does not restart a copy that has been opened s
 
         RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+        strictAssertSame(false, sweepBranchOpens($hash),
+            $signal . ' alone must stop guarded activation');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
-            $signal . ' alone must stop the restart');
+            $signal . ' also prevents standalone activation');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'nor may it be reopened');
         $writes = sweepBranchRequestsForHash($hash);
         strictAssertSame(1, count($writes), 'the transaction is closed all the same');
@@ -3603,8 +3636,10 @@ upTest($suite, 'a byte counter wider than the platform integer still finishes th
 
         RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+        strictAssertSame(false, sweepBranchOpens($hash),
+            $label . ': bytes on disk still prevent guarded activation');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
-            $label . ': bytes on disk still prove somebody opened the copy');
+            $label . ': no standalone activation either');
         strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
             $label . ': and the staged replacement keys are retired rather than left for ever');
     }
@@ -3631,6 +3666,8 @@ upTest($suite, 'the record-less diagnostic still fires for a row whose counters 
 
         strictAssertTrue(strpos($log, 'carries a replacement marker with no record') !== false,
             $label . ': the operator still gets the line, saw: ' . $log);
+        strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+            'this refusal authorizes no guarded ownership action');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
             $label . ': and it is still only a line -- nothing is written');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
@@ -3654,6 +3691,8 @@ upTest($suite, 'a row that already answers its record is retired', function () {
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    strictAssertNoRpcCommand('d.open', 'retiring recovery must preserve the observed run state');
+    strictAssertNoRpcCommand('d.start', 'retiring recovery must preserve the observed run state');
 
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.hash')),
         'a satisfied record still proves commit state before reconciling cleanup');
@@ -3670,6 +3709,8 @@ upTest($suite, 'a row that already answers its record is retired', function () {
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    strictAssertNoRpcCommand('d.open', 'retiring recovery must preserve the observed run state');
+    strictAssertNoRpcCommand('d.start', 'retiring recovery must preserve the observed run state');
     strictAssertSame(1, count(sweepBranchRequestsForHash($hash)),
         'a started record answered by a started row is finished');
 });
@@ -3718,6 +3759,8 @@ upTest($suite, 'sweepReplacements leaves a young or stime-less legacy row unlabe
 
         RuTrackerUpdatePass::sweepReplacements(5000 + 10); // well inside MAX_LOCK_TIME of any stime > 0
 
+        strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+            'this refusal authorizes no guarded ownership action');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
             $label . ': nothing may be labelled');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
@@ -3822,6 +3865,8 @@ upTest($suite, 'a staged copy is discarded even when its record says the predece
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    strictAssertNoRpcCommand('d.open', 'retiring recovery must preserve the observed run state');
+    strictAssertNoRpcCommand('d.start', 'retiring recovery must preserve the observed run state');
 
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
         'a torrent the user had stopped is not resurrected by its replacement');
@@ -3872,6 +3917,8 @@ upTest($suite, 'sweepReplacements defers when the predecessor probe cannot be an
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+    strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+        'this refusal authorizes no guarded ownership action');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'an unknowable fact is never acted on');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'and nothing is cleared');
 });
@@ -3956,6 +4003,8 @@ upTest($suite, 'sweepReplacements clears the keys of a marked row that is alread
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_CLEARED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+    strictAssertNoRpcCommand('d.open', 'retiring recovery must preserve the observed run state');
+    strictAssertNoRpcCommand('d.start', 'retiring recovery must preserve the observed run state');
 
     $writes = sweepBranchRequestsForHash($hash);
     strictAssertSame(1, count($writes),
@@ -3977,6 +4026,8 @@ upTest($suite, 'a live marker-only row retains ownership keys and performs no ru
 
 	RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+	strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+	    'this refusal authorizes no guarded ownership action');
 	strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
 		'marker-only ownership authorizes no write to a possibly re-added occupant');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
@@ -3998,6 +4049,8 @@ upTest($suite, 'sweepReplacements only logs a record-less stranded row', functio
 
 	RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
+	strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+	    'this refusal authorizes no guarded ownership action');
 	strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.hash')), 'there is no predecessor to probe');
 	strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')), 'and no intent to act on');
 	strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')), 'nothing is started');
@@ -4078,13 +4131,8 @@ upTest($suite, 'with the predecessor gone, the sweep neither erases, stops nor c
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
-    foreach (rXMLRPCRequest::$requests as $request)
-        foreach ($request['commands'] as $command)
-        {
-            strictAssertTrue(strpos($command->command, 'erase') === false, 'the sweep must never erase');
-            strictAssertTrue($command->command !== 'd.stop' && $command->command !== 'd.close',
-                'the sweep must never stop or close a download');
-        }
+    foreach (array('d.erase', 'd.stop', 'd.close') as $command)
+        strictAssertNoRpcCommand($command, 'the sweep must never erase, stop or close a download');
 });
 
 // Also scoped to the predecessor-gone branch. The recovery branch writes
@@ -4119,8 +4167,13 @@ upTest($suite, 'sweepReplacements writes nothing when the fleet scan itself fail
     // member injects faultCode/faultString into the flat list, so values
     // ARE present on a failed scan -- and acting on them would start and
     // label downloads picked out of a fault message.
-    rXMLRPCRequest::queue('d.multicall', false, false,
-        array(str_repeat('A', 40), 'nonce', str_repeat('B', 40) . '-started-1000'));
+    $hash = str_repeat('A', 40);
+    $record = str_repeat('B', 40) . '-started-1000';
+    rXMLRPCRequest::queue('d.multicall', true, true,
+        array($hash, sweepFixtureMarker('nonce'), $record, '', '0', '0', '2', '1000', ''));
+    sweepDetail(0, 0, 0, 0, 0, '', '1000', '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, true, array());
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
 
     RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
 
@@ -4438,6 +4491,8 @@ upTest($suite, 'flushVerdicts skips overwriting a row claimed by a concurrent wo
         upQueueUnchanged($rows);
 
         $result = RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+            'this refusal authorizes no guarded ownership action');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
             'the claimed row must not have its state overwritten by the fast-path');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
@@ -4484,12 +4539,14 @@ upTest($suite, 'flushVerdicts skips clearing stale deletion when row moved since
     $rows = RuTrackerUpdatePass::parseMulticall($values);
     strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($h) { throw new RuntimeException('no checker'); });
     rXMLRPCRequest::reset();
-    // Fresh scan reports a newer state and time (e.g. manual check wrote META_PENDING state 8, time 200)
+    // Fresh scan reports a newer state and time (e.g. manual check wrote META_PENDING, time 200)
     rXMLRPCRequest::queue('d.multicall', true, false,
-        array($hash, '8', '200', '2:100', 'deleting|2/3'));
+        array($hash, (string) ruTrackerChecker::STE_META_PENDING, '200', '2:100', 'deleting|2/3', str_repeat('A', 40)));
 
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(0, $result['uptodate'], 'row that moved is not counted');
+    strictAssertSame(array(), upGuardedWrites(),
+        'stale deletion and state must not be overwritten by a guarded branch');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'stale deletion counter and message must not be cleared when row moved');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
@@ -4525,7 +4582,7 @@ upTest($suite, 'flushVerdicts does not count failed state write and skips messag
 
 upTest($suite, 'fast verdict holds the claim and writes one complete daemon bundle', function () {
     $hash = str_repeat('A', 40);
-    $model = array('exists' => true, 'state' => '2', 'time' => '100', 'stime' => '50',
+    $model = array('state' => '2', 'time' => '100', 'stime' => '50',
         'msg' => 'deleting|2/3', 'del' => '2:100');
     $rows = RuTrackerUpdatePass::parseMulticall(
         upRow($hash, 0, 'bt.t-ru.org', $model['state'], '', '', $model['del'], $model['msg'], $model['time']));
@@ -4590,7 +4647,7 @@ upTest($suite, 'fresh projection preserves a completed worker message and deleti
 upTest($suite, 'partial fast-verdict replies are read back, not counted, and converge on retry', function () {
     foreach (range(0, 4) as $prefix) {
         $hash = str_repeat('A', 40);
-        $model = array('exists' => true, 'state' => '2', 'time' => '100', 'stime' => '50',
+        $model = array('state' => '2', 'time' => '100', 'stime' => '50',
             'msg' => 'deleting|2/3', 'del' => '2:100');
         $makeRows = function () use (&$model, $hash) {
             return RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org',
@@ -4599,9 +4656,6 @@ upTest($suite, 'partial fast-verdict replies are read back, not counted, and con
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
             throw new RuntimeException('the alive fast path must not dispatch the checker');
         });
-        $GLOBALS['rutrackerCheckDebug'] = true;
-        $logFile = tempnam(sys_get_temp_dir(), 'rut-fast-log-');
-        $GLOBALS['log_file'] = $logFile;
         rXMLRPCRequest::reset();
         $rows = $makeRows();
         upQueueProjection($rows, function () use (&$model, $hash) {
@@ -4614,9 +4668,11 @@ upTest($suite, 'partial fast-verdict replies are read back, not counted, and con
         rXMLRPCRequest::queue(array_merge(array_fill(0, 5, 'd.get_custom'), array('d.get_local_id')), true, false,
             function ($commands) use (&$model) { return upProjectionValues($model, $commands); });
 
-        $first = RuTrackerUpdatePass::run($rows);
+        $diagnostics = upCapturedLog(function () use ($rows, &$first) {
+            $first = RuTrackerUpdatePass::run($rows);
+        });
         strictAssertSame(0, $first['uptodate'], 'prefix ' . $prefix . ': incomplete projection is not counted');
-        $diagnostics = preg_replace('/^\[[^\]]+\]\s*/m', '', (string) file_get_contents($logFile));
+        $diagnostics = preg_replace('/^\[[^\]]+\]\s*/m', '', $diagnostics);
         $diagnostics = str_replace(array("\r", "\n"), ' ', trim($diagnostics));
         strictAssertEnglish($diagnostics,
             'prefix ' . $prefix . ': mismatches are diagnosed in English');
@@ -4632,9 +4688,6 @@ upTest($suite, 'partial fast-verdict replies are read back, not counted, and con
         strictAssertSame(1, $second['uptodate'], 'prefix ' . $prefix . ': next-cycle re-derivation converges');
         strictAssertSame('', $model['msg'], 'prefix ' . $prefix . ': retry completes message cleanup');
         strictAssertSame('', $model['del'], 'prefix ' . $prefix . ': retry completes deletion cleanup');
-        unset($GLOBALS['rutrackerCheckDebug']);
-        unset($GLOBALS['log_file']);
-        @unlink($logFile);
     }
 });
 
@@ -4703,26 +4756,23 @@ upTest($suite, 'failed fast-verdict readback distinguishes confirmed absence fro
         $hash = str_repeat('A', 40);
         $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org', '2', '', '', '', '', '100'));
         strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () { throw new RuntimeException('no checker'); });
-        $GLOBALS['rutrackerCheckDebug'] = true;
-        $logFile = tempnam(sys_get_temp_dir(), 'rut-fast-log-');
-        $GLOBALS['log_file'] = $logFile;
         rXMLRPCRequest::reset();
         upQueueProjection($rows);
         rXMLRPCRequest::queue('branch', false, true, array());
         rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_local_id'),
             false, true, array());
-        rXMLRPCRequest::queue('d.hash', $case['hashOk'], $case['hashFault'], array());
+        rXMLRPCRequest::queue('d.hash', $case['hashOk'], $case['hashFault'],
+            $label === 'confirmed present' ? array($hash) : array());
 
-        $result = RuTrackerUpdatePass::run($rows);
+        $log = upCapturedLog(function () use ($rows, &$result) {
+            $result = RuTrackerUpdatePass::run($rows);
+        });
         strictAssertSame(0, $result['uptodate'], $label . ': failure is not counted');
-        strictAssertTrue(stripos((string) file_get_contents($logFile), $case['needle']) !== false,
+        strictAssertTrue(stripos($log, $case['needle']) !== false,
             $label . ': the diagnostic distinguishes the outcome');
         $after = ruTrackerChecker::claimCheckForWorker($hash, time());
         strictAssertTrue($after !== false, $label . ': claim is released even after failed verification');
         ruTrackerChecker::releaseCheckForWorker($hash, $after);
-        unset($GLOBALS['rutrackerCheckDebug']);
-        unset($GLOBALS['log_file']);
-        @unlink($logFile);
     }
 });
 
@@ -4993,13 +5043,15 @@ upTest($suite, 'testTheFreshCasScanRefusesToCompareAgainstAnUnreadableRow', func
         });
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('d.multicall', true, false,
-            array($hash, $live[0], $live[1], '2:100', 'deleting|2/3'));
+            array($hash, $live[0], $live[1], '2:100', 'deleting|2/3', str_repeat('A', 40)));
 
         $result = RuTrackerUpdatePass::run($rows);
 
         strictAssertSame(0, $result['uptodate'], $label . ': an uncomparable row is not counted');
+        strictAssertSame(array(), upGuardedWrites(),
+            $label . ': no guarded verdict may overwrite the unreadable row');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
-            $label . ': and nothing is written over it');
+            $label . ': and no standalone write either');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
             $label . ': not even the state pair');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor(
@@ -5432,7 +5484,7 @@ upTest($suite, 'an untimed NOT_NEED successor pointer still reaches its handler'
     $row['state'] = ruTrackerChecker::STE_NOT_NEED;
     $row['time'] = 0;
     $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
-    $result = upRunPass(array($row), $checked, array());
+    $result = upRunPass(array($row), $checked, 0);
     strictAssertSame(array($row['hash']), $checked, 'the untimed successor pointer is not retired by an announce');
     strictAssertSame(0, $result['uptodate'], 'the cached announce does not replace the unresolved verdict');
     upAssertNoCustomWrites('no state or successor pointer write');
@@ -5446,7 +5498,7 @@ upTest($suite, 'an undeclared earlier owner prevents a later declared owner from
             'announceAuthority' => null, 'topicPattern' => null)) + $saved);
         $row = upKinozalRow(str_repeat('A', 40), 0, 5);
         strictAssertSame(null, ruTrackerChecker::ownerOf($row['comment']), 'the first possible owner is unknown');
-        $result = upRunPass(array($row), $checked, array());
+        $result = upRunPass(array($row), $checked, 0);
         strictAssertSame(array($row['hash']), $checked, 'ownership uncertainty dispatches the checker');
         strictAssertSame(0, $result['uptodate'], 'no free pass');
     });
@@ -5476,7 +5528,7 @@ upTest($suite, 'a due foreign UPTODATE with stale superseded pointer reaches its
     $row = upKinozalRow(str_repeat('A', 40), 0, 5);
     $row['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('B', 40);
     $row['time'] = time() - 86401;
-    $result = upRunPass(array($row), $checked, array(4));
+    $result = upRunPass(array($row), $checked, 1);
     strictAssertSame(array($row['hash']), $checked, 'the handler decides whether the pointer is stale');
     strictAssertSame(0, $result['uptodate'], 'an announce does not settle the topic');
     upAssertNoCustomWrites('the scheduler leaves the pointer to the handler');
@@ -5732,7 +5784,7 @@ upTest($suite, 'malformed correction cannot suppress META_PENDING pump', functio
 function upSeedReplacementBackoff($entries)
 {
     RuTrackerState::update('updatepass', function ($state) use ($entries) {
-        $state['replacement_backoff'] = $entries;
+        $state['replacement_backoff'][RuTrackerState::daemonKey()] = $entries;
         return $state;
     });
 }
@@ -5759,6 +5811,200 @@ upTest($suite, 'a locally refused replacement waits out its backoff instead of r
     upSeedReplacementBackoff(array($refused => array('until' => time() - 1, 'length' => 3600)));
     $result = upRunPass($rows, $checked);
     strictAssertSame(array($refused, $other), $checked, 'an expired backoff dispatches the row again');
+});
+
+upTest($suite, 'replacement backoff holds are counted in every selected handler bucket', function () {
+    upLoadKinozalRegistration();
+    $foreign = upKinozalRow(str_repeat('A', 40), 6, 0);
+    $foreign['state'] = ruTrackerChecker::STE_ERROR;
+    $own = upParsedRow(str_repeat('B', 40), 'http://bt.t-ru.org/ann|1|6|0#',
+        'https://rutracker.org/forum/viewtopic.php?t=12', array('state' => ruTrackerChecker::STE_ERROR));
+    upSeedReplacementBackoff(array(
+        $foreign['hash'] => array('until' => time() + 3600, 'length' => 3600),
+        $own['hash'] => array('until' => time() + 3600, 'length' => 3600),
+    ));
+    $log = upCapturedLog(function () use ($foreign, $own, &$checked) {
+        upRunPass(array($foreign, $own), $checked);
+    });
+    strictAssertSame(array(), $checked, 'neither held torrent repeats tracker work');
+    preg_match_all('/update: metrics (\{[^\r\n]+\})/', $log, $matches);
+    $metrics = array();
+    foreach ($matches[1] as $encoded) {
+        $metric = json_decode($encoded, true);
+        $metrics[$metric['bucket']] = $metric;
+    }
+    foreach (array($foreign, $own) as $row) {
+        $bucket = ruTrackerChecker::schedulingBucket($row['comment']);
+        strictAssertSame(1, $metrics[$bucket]['replacement_held'] ?? null,
+            'the aggregate identifies its held row, including outside the foreign branch');
+        strictAssertSame(1, $metrics[$bucket]['rows'], 'the held row remains in the denominator');
+        strictAssertSame(0, $metrics[$bucket]['dispatched'], 'a held row is not a dispatch');
+    }
+    upAssertNoCustomWrites('counting held rows preserves their visible error');
+});
+
+upTest($suite, 'the actual update driver repairs a staged replacement before holding its predecessor', function () {
+    upLoadKinozalRegistration();
+    $old = str_repeat('A', 40);
+    $new = str_repeat('B', 40);
+    $now = time();
+    $staged = $now - 3600;
+    $record = $old . '-started-' . $staged;
+    upSeedReplacementBackoff(array($old => array('until' => $now + 86400, 'length' => 86400)));
+    RuTrackerState::save('forumindex', array('last_sweep' => $now));
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function () {
+        throw new RuntimeException('The held predecessor must not reach tracker work');
+    });
+    rXMLRPCRequest::queue(array('system.client_version', 'system.api_version'), true, false, array('0.16.25', 15));
+    $seedingSawRepairs = null;
+    // Reply by the actual scan's columns, so removing the driver's sweep
+    // reaches semantic assertions rather than misaligning a scripted queue.
+    $scan = function ($commands) use ($old, $new, $record, &$seedingSawRepairs) {
+        $params = $commands[0]->params;
+        if ($params[0] === 'seeding') {
+            $seedingSawRepairs = array(sweepBranchOpens($old), count(sweepBranchRequestsForHash($new)));
+            return upRow($old, 6, 'tr2.torrent4me.com', (string) ruTrackerChecker::STE_ERROR);
+        }
+        if (in_array('d.get_custom=chk-replacement', $params, true))
+            return array_pad(array($new, sweepFixtureMarker('nonce'), $record), RuTrackerUpdatePass::SWEEP_COLUMNS, '');
+        return array();
+    };
+    for ($i = 0; $i < 3; $i++) rXMLRPCRequest::queue('d.multicall', true, false, $scan);
+    sweepDetail(0, 0, 0, 0, 0, '', (string) $staged, '2', 'nonce', $record);
+    rXMLRPCRequest::queue('d.hash', true, false, array($old));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_REVIVED));
+    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
+    Snoopy::queue(304, '');
+    $driver = file_get_contents(testFindRepoRoot() . '/plugins/rutracker_check/update.php');
+    $start = strpos($driver, '$cycleLock = RuTrackerState::acquireCycleLock();');
+    strictAssertTrue($start !== false, 'the actual driver retains its cycle lock boundary');
+    $result = null;
+    $log = upCapturedLog(function () use ($driver, $start, &$result) {
+        $argv = array('update.php', '');
+        eval(substr($driver, $start));
+        strictAssertTrue(is_resource($cycleLock), 'the actual driver holds its cycle lock during recovery and dispatch');
+    });
+    strictAssertSame(array(true, 1), $seedingSawRepairs,
+        'the real driver restores the predecessor and discards the staged copy before its seeding scan');
+    $newBranches = sweepBranchRequestsForHash($new);
+    strictAssertSame(1, count($newBranches), 'confirmed revival permits exactly one staged discard');
+    strictAssertTrue(strpos($newBranches[0]['commands'][0]->params[2], '$d.erase=') !== false,
+        'the successor mutation is the guarded staged erase');
+    strictAssertSame(array(), $result['checked'], 'the active backoff still holds ordinary tracker work');
+    strictAssertTrue(strpos($log, '"replacement_held":1') !== false,
+        'the actual cycle counts the held predecessor after recovery');
+    strictAssertSame(array($old => $now + 86400), RuTrackerReplacementBackoff::activeUntil($now),
+        'recovery does not consume the independent local-failure backoff');
+});
+
+upTest($suite, 'a scheduled refusal retries at its intended slot for hourly and shorter cadences', function () {
+    $hash = str_repeat('A', 40);
+    foreach (array(3600, 300, 60) as $cadence) {
+        RuTrackerState::save('updatepass', array());
+        $slot = 1800000000;
+        foreach (array(3600, 7200, 14400, 28800, 57600, 86400) as $length) {
+            $failure = null;
+            $until = RuTrackerReplacementBackoff::postpone($hash, $slot + 10, $failure, $slot);
+            strictAssertSame($slot + $length, $until,
+                'metadata work after a scheduled start must not buy one extra cycle');
+            strictAssertSame(array($hash => $until), RuTrackerReplacementBackoff::activeUntil($until - $cadence),
+                'the previous configured slot is still held');
+            strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($until),
+                'the intended retry slot is admitted at its exact boundary');
+            $slot = $until;
+        }
+    }
+});
+
+upTest($suite, 'replacement attempt slots use the installed scheduler alignment and configured cadence', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    $savedRandom = $GLOBALS['schedule_rand'] ?? null;
+    try {
+        $GLOBALS['schedule_rand'] = 0;
+        foreach (array(60 => 3600, 5 => 300, 1 => 60) as $minutes => $cadence) {
+            $GLOBALS['updateInterval'] = $minutes;
+            foreach (array(0, 1, $cadence - 1, 2 * $cadence + 11) as $delay) {
+                $expected = 1800000000 + ($delay >= 2 * $cadence ? 2 * $cadence : 0);
+                strictAssertSame($expected,
+                    strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array(1800000000 + $delay)),
+                    'an exact boundary or a late row uses its owning slot, without a fixed hourly adjustment');
+            }
+        }
+        $GLOBALS['updateInterval'] = 0;
+        strictAssertSame(null,
+            strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array(1800000000)),
+            'a disabled schedule creates no artificial slot');
+    } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+        if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
+        else $GLOBALS['schedule_rand'] = $savedRandom;
+    }
+});
+
+upTest($suite, 'an unscoped legacy replacement backoff cannot identify the affected daemon', function () {
+    $hash = str_repeat('A', 40);
+    RuTrackerState::save('updatepass', array('replacement_backoff' => array(
+        $hash => array('until' => time() + 86400, 'length' => 86400),
+    )));
+    strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil(time()),
+        'legacy local refusals cannot grant a hold across unrelated daemons');
+});
+
+upTest($suite, 'local replacement backoff cannot hold the same hash on another daemon', function () {
+    $savedPort = $GLOBALS['scgi_port'] ?? null;
+    $hash = str_repeat('A', 40);
+    try {
+        $GLOBALS['scgi_port'] = 5000;
+        RuTrackerReplacementBackoff::postpone($hash, 1800000000);
+        $GLOBALS['scgi_port'] = 6000;
+        strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil(1800000001),
+            'another daemon has an independent local filesystem and replacement ownership');
+        RuTrackerReplacementBackoff::postpone($hash, 1800000001);
+        strictAssertSame(true, RuTrackerReplacementBackoff::clear($hash, 1800000002),
+            'the second daemon can clear only its own refusal');
+        $GLOBALS['scgi_port'] = 5000;
+        strictAssertSame(array($hash => 1800003600), RuTrackerReplacementBackoff::activeUntil(1800000002),
+            'the first daemon retains its exact refusal after the other commit');
+    } finally {
+        if ($savedPort === null) unset($GLOBALS['scgi_port']);
+        else $GLOBALS['scgi_port'] = $savedPort;
+    }
+});
+
+upTest($suite, 'a backoff write prunes legacy and stale daemon maps while preserving valid foreign refusals', function () {
+    $now = 1800000000;
+    $hash = str_repeat('A', 40);
+    $other = str_repeat('b', 32);
+    $expired = str_repeat('c', 32);
+    $foreignEntries = array(
+        str_repeat('D', 40) => array('until' => $now + 7200, 'length' => 7200),
+        str_repeat('E', 40) => array('until' => $now - 86400, 'length' => 3600),
+    );
+    foreach (array('postpone', 'clear') as $write) {
+        RuTrackerState::save('updatepass', array('keep' => 'another scheduler owner', 'replacement_backoff' => array(
+            $hash => array('until' => $now + 3600, 'length' => 3600),
+            $other => $foreignEntries + array(str_repeat('F', 40) => array('until' => $now - 86401, 'length' => 3600)),
+            $expired => array($hash => array('until' => $now - 86401, 'length' => 3600)),
+            str_repeat('d', 32) => 'malformed',
+            RuTrackerState::daemonKey() => array($hash => array('until' => $now, 'length' => 3600)),
+        )));
+        if ($write === 'postpone') RuTrackerReplacementBackoff::postpone($hash, $now);
+        else strictAssertSame(true, RuTrackerReplacementBackoff::clear($hash, $now), 'the own committed refusal is cleared');
+        $stored = RuTrackerState::load('updatepass');
+        strictAssertSame('another scheduler owner', $stored['keep'], 'pruning retains unrelated document fields');
+        strictAssertSame($foreignEntries, $stored['replacement_backoff'][$other],
+            'every still-valid foreign entry survives, including the exact retention boundary');
+        strictAssertSame(false, isset($stored['replacement_backoff'][$hash]), 'legacy entries have no daemon owner');
+        strictAssertSame(false, isset($stored['replacement_backoff'][$expired]), 'an expired daemon map is removed');
+        strictAssertSame(false, isset($stored['replacement_backoff'][str_repeat('d', 32)]), 'a malformed map is removed');
+    }
+    foreach (array(null, 'malformed', 17) as $malformed) {
+        RuTrackerState::save('updatepass', array('keep' => true, 'replacement_backoff' => $malformed));
+        strictAssertSame($now + 3600, RuTrackerReplacementBackoff::postpone($hash, $now),
+            'a malformed root does not prevent a fresh owned refusal');
+        strictAssertSame(true, RuTrackerState::load('updatepass')['keep'], 'root repair preserves unrelated fields');
+    }
 });
 
 upTest($suite, 'a replacement backoff holds only the ERROR verdict it was recorded with', function () {
@@ -5834,7 +6080,7 @@ upTest($suite, 'the replacement backoff doubles from one hour to a one-day cap a
     $lengths = array();
     for ($i = 0; $i < 7; $i++) {
         $until = RuTrackerReplacementBackoff::postpone($hash, $now);
-        $entry = RuTrackerState::load('updatepass')['replacement_backoff'][strtoupper($hash)];
+        $entry = RuTrackerState::load('updatepass')['replacement_backoff'][RuTrackerState::daemonKey()][strtoupper($hash)];
         strictAssertSame($now + $entry['length'], $until, 'the deadline is the recorded length from now');
         $lengths[] = $entry['length'];
         $now = $until + 60; // the next refusal comes on the first cycle after expiry

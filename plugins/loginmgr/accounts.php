@@ -9,6 +9,67 @@ require_once( dirname(__FILE__)."/../../php/utility/json.php");
 global $yggTorrentOrigin;
 eval( FileUtil::getPluginConf( 'loginmgr' ) );
 
+// rCache merges under its stable key lock, so concurrent PHP requests can
+// claim a notice without rewriting the account's refused legacy session.
+class legacyCookieNotices
+{
+	public $hash = 'legacy-cookie-notices.dat';
+	public $modified = false;
+	public $notices = array();
+	private $claimKey = null;
+	private $claimed = false;
+	const INTERVAL = 86400;
+
+	public function __sleep()
+	{
+		return(array('hash', 'modified', 'notices'));
+	}
+
+	private static function recent($at, $now)
+	{
+		return(is_int($at) && $at <= $now && $at > $now - self::INTERVAL);
+	}
+
+	private static function retained($notices, $now)
+	{
+		return(array_filter(is_array($notices) ? $notices : array(), function($at) use($now) {
+			return(self::recent($at, $now));
+		}));
+	}
+
+	// null means the notice could not be saved, not that another request won.
+	public static function claim($owner, $fingerprint)
+	{
+		$cache = new rCache('/accounts');
+		$data = new self();
+		$cache->get($data);
+		$now = time();
+		$data->notices = self::retained($data->notices, $now);
+		$key = hash('sha256', $owner . "\0" . $fingerprint);
+		if(self::recent($data->notices[$key] ?? null, $now))
+			return(false);
+		$data->notices[$key] = $now;
+		$data->claimKey = $key;
+		$data->claimed = true;
+		return($cache->set($data) ? $data->claimed : null);
+	}
+
+	public function merge($new)
+	{
+		$notice = $this->notices[$this->claimKey];
+		// Sample under rCache's key lock: a newer contender may have won in
+		// the next second after this request prepared its claim.
+		$now = time();
+		$latest = self::retained($new->notices, $now);
+		if(self::recent($latest[$this->claimKey] ?? null, $now))
+			$this->claimed = false;
+		else
+			$latest[$this->claimKey] = $notice;
+		$this->notices = $latest;
+		return(true);
+	}
+}
+
 class privateData
 {
 	public $hash = '';
@@ -17,8 +78,8 @@ class privateData
 	public $scopedCookies = null;
 	public $referer = null;
 	public $loaded = false;
-	// One explanation per account and process: a cycle loads an account once
-	// per request it makes.
+	// Avoid repeated disk claims within one request; legacyCookieNotices owns
+	// the cross-request, per-profile/session throttle.
 	private static $legacyCacheLogged = array();
 
 	static public function load( $owner, $client = null )
@@ -33,14 +94,23 @@ class privateData
 				// be reconstructed. Renew before allowing them onto the wire.
 				if(!is_array($rt->scopedCookies))
 				{
-					$name = preg_replace('/[^a-z0-9_.-]/i', '?', $owner);
-					if(!isset(self::$legacyCacheLogged[$name]))
+					$fingerprint = hash('sha256', serialize($rt));
+					$key = FileUtil::getSettingsPath() . '/' . $owner . ':' . $fingerprint;
+					if(!isset(self::$legacyCacheLogged[$key])
+						|| time() - self::$legacyCacheLogged[$key] >= legacyCookieNotices::INTERVAL)
 					{
-						self::$legacyCacheLogged[$name] = true;
-						FileUtil::toLog('loginmgr: legacy-cookie-cache-needs-refresh: ' . $name
-							. '; the saved session predates scoped cookies and is not sent;'
-							. ' the next successful login replaces it (Settings -> Accounts -> Save)');
+						self::$legacyCacheLogged[$key] = time();
+						$claim = legacyCookieNotices::claim($owner, $fingerprint);
+						if($claim !== false)
+							FileUtil::toLog('loginmgr: ' . ($claim === null
+								? 'legacy-cookie-notice-cache-unavailable: ' : 'legacy-cookie-cache-needs-refresh: ')
+								. preg_replace('/[^a-z0-9_.-]/i', '?', $owner)
+								. '; the saved session predates scoped cookies and is not sent;'
+								. ' the next successful login replaces it (Settings -> Accounts -> Save)');
 					}
+					// Old stores serialized this runtime flag too. Refusing the
+					// cookies must also refuse their warm-session fetch branch.
+					$rt->loaded = false;
 					return($rt);
 				}
 				// Keep cookies already supplied for this request; the saved session
@@ -164,8 +234,9 @@ abstract class commonAccount
 	//
 	// Every isOK() under accounts/ tells the first two apart by looking for a
 	// guest marker -- a login form, a registration link, a "you must log in"
-	// line -- and none of them can answer the third, because a page that never
-	// arrived carries no marker either. That is why all three used to collapse
+	// line. A predicate can return null when its marker parser fails. A page
+	// that never arrived carries no marker either, so transport validation must
+	// precede the predicate. That is why all three used to collapse
 	// into "the session is live", and why a 5xx error page went back to the
 	// caller as the page or the torrent it had asked for.
 	const ANSWER_NONE = 0;
@@ -194,7 +265,10 @@ abstract class commonAccount
 			return(self::ANSWER_NONE);
 		if(!$this->hasReadableBody($client))
 			return(self::ANSWER_NONE);
-		return($this->isOK($client) ? self::ANSWER_LIVE : self::ANSWER_GUEST);
+		// A marker parser may fail independently of the transport. Unknown
+		// content proves neither authentication nor stale cookies.
+		$accepted = $this->isOK($client);
+		return($accepted === null ? self::ANSWER_NONE : ($accepted ? self::ANSWER_LIVE : self::ANSWER_GUEST));
 	}
 
 	// True when $client->results is something a strpos() marker test can read.

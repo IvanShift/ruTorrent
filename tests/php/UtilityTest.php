@@ -36,4 +36,15 @@ class UtilityTest extends TestCase
 			$this->assertEquals(false, Utility::isHostname($name), 'Refused: '.json_encode($name));
 		}
 	}
+
+	public function testHostnameMustMatchTheEntireInput()
+	{
+		foreach (array('example.com', 'Tracker-1.Example.COM') as $name) {
+			$this->assertSame(true, Utility::isHostname($name), 'Whole hostname accepted: '.json_encode($name));
+		}
+		foreach (array("example.com\n", "example.com\r\n", "example.com\r",
+			"\nexample.com", "example\n.com", "example.com\n\n") as $name) {
+			$this->assertSame(false, Utility::isHostname($name), 'Line break refused: '.json_encode($name));
+		}
+	}
 }

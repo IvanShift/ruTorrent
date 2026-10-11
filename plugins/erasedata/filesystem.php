@@ -566,7 +566,7 @@ class ErasedataFilesystemOps
 		if($helper === false || !is_executable($helper))
 			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
 				: 'rename-noreplace-helper-unavailable', $from, $to));
-		return($helper !== false && self::runRenameHelper(array($helper, $from, $to), $from, $to));
+		return(self::runRenameHelper(array($helper, $from, $to), $from, $to));
 	}
 
 	public function unlink($path)

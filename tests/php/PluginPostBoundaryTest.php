@@ -78,12 +78,14 @@ PHP
         rmdir($this->scratch);
     }
 
-    private function request($route, $method, $get = array(), $post = array(), $body = null, $headers = array())
+    private function startRequest($route, $method, $get = array(), $post = array(), $body = null,
+        $headers = array(), $proxyPort = null)
     {
         $env = array(
             'RU_PROFILE_PATH' => $this->scratch . '/profile',
             'RU_LOG_FILE' => $this->scratch . '/errors.log',
             'ROUTE_FILE' => $this->root . '/' . $route,
+            'ROUTE_ROOT' => $this->root,
             'ROUTE_METHOD' => $method,
             'ROUTE_GET' => json_encode($get),
             'ROUTE_POST' => json_encode($post),
@@ -92,12 +94,18 @@ PHP
             'ROUTE_SQL_TRACE' => $this->scratch . '/sql.log',
             'ROUTE_STATUS_FILE' => $this->scratch . '/status',
         );
+        if ($proxyPort !== null) $env['ROUTE_PROXY_PORT'] = (string)$proxyPort;
         $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
             $this->scratch . '/request.php'),
             array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
             $pipes, null, $env);
         if (!is_resource($proc)) throw new RuntimeException('route child did not start');
         fclose($pipes[0]);
+        return array($proc, $pipes);
+    }
+
+    private function finishRequest($proc, $pipes)
+    {
         $out = stream_get_contents($pipes[1]);
         $err = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
@@ -105,6 +113,12 @@ PHP
         $exit = proc_close($proc);
         return array('exit' => $exit, 'out' => $out, 'err' => $err,
             'status' => (int) file_get_contents($this->scratch . '/status'));
+    }
+
+    private function request($route, $method, $get = array(), $post = array(), $body = null, $headers = array())
+    {
+        list($proc, $pipes) = $this->startRequest($route, $method, $get, $post, $body, $headers);
+        return $this->finishRequest($proc, $pipes);
     }
 
     private function assertRefused($route, $get)
@@ -659,29 +673,11 @@ PHP
         $this->assertTrue($server !== false, 'synthetic favicon proxy listens: ' . $error);
         $port = (int)substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
         $route = 'plugins/tracklabels/action.php';
-        $env = array(
-            'RU_PROFILE_PATH' => $this->scratch . '/profile',
-            'RU_LOG_FILE' => $this->scratch . '/errors.log',
-            'ROUTE_ROOT' => $this->root,
-            'ROUTE_FILE' => $this->root . '/' . $route,
-            'ROUTE_METHOD' => 'POST',
-            'ROUTE_GET' => '{}',
-            'ROUTE_POST' => json_encode(array('tracker' => '93.184.216.34', 'fetch' => '1')),
-            'ROUTE_BODY' => 'tracker=93.184.216.34&fetch=1',
-            'ROUTE_HEADERS' => json_encode(array('HTTP_HOST' => 'localhost',
-                'REQUEST_SCHEME' => 'http', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest',
-                'HTTP_ORIGIN' => 'http://localhost')),
-            'ROUTE_SQL_TRACE' => $this->scratch . '/sql.log',
-            'ROUTE_PROXY_PORT' => (string)$port,
-            'ROUTE_STATUS_FILE' => $this->scratch . '/status',
-        );
+        $post = array('tracker' => '93.184.216.34', 'fetch' => '1');
+        $headers = array('HTTP_HOST' => 'localhost', 'REQUEST_SCHEME' => 'http',
+            'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest', 'HTTP_ORIGIN' => 'http://localhost');
         $retryProc = null;
-        $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
-            $this->scratch . '/request.php'),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, null, $env);
-        $this->assertTrue(is_resource($proc), 'favicon request starts');
-        fclose($pipes[0]);
+        list($proc, $pipes) = $this->startRequest($route, 'POST', array(), $post, null, $headers, $port);
         try {
             $peer = @stream_socket_accept($server, 3);
             $this->assertTrue($peer !== false, 'favicon request reaches the configured proxy');
@@ -697,24 +693,17 @@ PHP
             fwrite($peer, "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: "
                 . strlen($icon) . "\r\n\r\n" . $icon);
             fclose($peer);
-            $out = stream_get_contents($pipes[1]);
-            $err = stream_get_contents($pipes[2]);
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-            $this->assertSame(0, proc_close($proc), 'favicon route exits: ' . $err);
+            $response = $this->finishRequest($proc, $pipes);
+            $this->assertSame(0, $response['exit'], 'favicon route exits: ' . $response['err']);
             $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico HTTP/') === 0,
                 'public literal remains the proxy request target');
-            $this->assertSame($icon, $out, 'proxy-only favicon reaches the image response');
+            $this->assertSame($icon, $response['out'], 'proxy-only favicon reaches the image response');
             $cache = $this->scratch . '/profile/settings/trackers/93.184.216.34.ico';
             $this->assertSame($icon, file_get_contents($cache),
                 'proxy-only favicon is cached');
             unlink($cache);
-            $retryProc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
-                $this->scratch . '/request.php'),
-                array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-                $retryPipes, null, $env);
-            $this->assertTrue(is_resource($retryProc), 'unavailable favicon request starts');
-            fclose($retryPipes[0]);
+            list($retryProc, $retryPipes) = $this->startRequest($route, 'POST', array(), $post,
+                null, $headers, $port);
             for ($i = 0; $i < 2; $i++) {
                 $failedPeer = @stream_socket_accept($server, 3);
                 $this->assertTrue($failedPeer !== false, 'unavailable favicon reaches proxy');
@@ -729,14 +718,11 @@ PHP
                 fwrite($failedPeer, "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n");
                 fclose($failedPeer);
             }
-            $failedOut = stream_get_contents($retryPipes[1]);
-            $failedErr = stream_get_contents($retryPipes[2]);
-            fclose($retryPipes[1]);
-            fclose($retryPipes[2]);
-            $this->assertSame(0, proc_close($retryProc), 'unavailable favicon exits: ' . $failedErr);
-            $this->assertSame('404', file_get_contents($this->scratch . '/status'),
+            $failed = $this->finishRequest($retryProc, $retryPipes);
+            $this->assertSame(0, $failed['exit'], 'unavailable favicon exits: ' . $failed['err']);
+            $this->assertSame(404, $failed['status'],
                 'upstream failure is a settled miss, not a browser retry');
-            $this->assertSame('Favicon unavailable', $failedOut,
+            $this->assertSame('Favicon unavailable', $failed['out'],
                 'failed POST does not return the placeholder image');
             $this->assertTrue(!is_file($cache), 'failed fetch does not cache a placeholder');
         } finally {

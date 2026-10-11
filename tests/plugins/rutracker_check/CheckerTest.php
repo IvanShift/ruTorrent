@@ -144,6 +144,7 @@ class ErasedataFake
 	public static $calls = array();
 	public static $prepareResult = true;
 	public static $armResult = true;
+	public static $armReason = null;
 	public static $publishResult = true;
 	public static $cancelResult = true;
 	public static $recoverResult = ERASEDATA_CLEANUP_NONE;
@@ -157,6 +158,7 @@ class ErasedataFake
 		self::$calls = array();
 		self::$prepareResult = true;
 		self::$armResult = true;
+		self::$armReason = null;
 		self::$publishResult = true;
 		self::$cancelResult = true;
 		self::$recoverResult = ERASEDATA_CLEANUP_NONE;
@@ -174,30 +176,6 @@ class ErasedataFake
 			'request_count' => count(rXMLRPCRequest::$requests),
 		);
 	}
-}
-
-function erasedataPathContains($parent, $path)
-{
-	$parent = $parent === '/' ? '/' : rtrim((string) $parent, '/');
-	$path = $path === '/' ? '/' : rtrim((string) $path, '/');
-	return($parent !== '' && $path !== ''
-		&& ($parent === $path || ($parent !== '/' && strpos($path, $parent . '/') === 0)));
-}
-
-function erasedataPathsOverlap($left, $right)
-{
-	if(erasedataPathContains($left, $right) || erasedataPathContains($right, $left))
-		return(true);
-	$leftIdentity = XMLRPCPathResolver::filesystemIdentity($left);
-	$rightIdentity = XMLRPCPathResolver::filesystemIdentity($right);
-	if($leftIdentity === false || $rightIdentity === false)
-		return(true);
-	if(!empty($leftIdentity['exists']) && !empty($rightIdentity['exists'])
-		&& $leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
-		&& $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino'])
-		return(true);
-	return(erasedataPathContains($leftIdentity['path'], $rightIdentity['path'])
-		|| erasedataPathContains($rightIdentity['path'], $leftIdentity['path']));
 }
 
 function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
@@ -227,9 +205,10 @@ function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $
 	));
 }
 
-function erasedataArmObsoleteCleanup($job)
+function erasedataArmObsoleteCleanup($job, &$reason = null)
 {
 	ErasedataFake::record(__FUNCTION__, func_get_args());
+	$reason = ErasedataFake::$armReason;
 	return(ErasedataFake::$armResult);
 }
 
@@ -413,7 +392,6 @@ class CheckerTest
 	const SNAPSHOT_KEY = 'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom';
 	const SNAPSHOT_KEY_COMMANDS = array('d.get_directory_base', 'd.get_custom1', 'd.get_throttle_name', 'd.get_connection_seed', 'd.get_custom', 'd.get_custom');
 	const STOP_KEY = 'branch';
-	const STOP_KEY_COMMANDS = array('branch');
 	const GETSTATE_KEY = 'd.get_custom|d.get_custom|d.get_custom1|d.get_local_id|d.get_custom';
 	const GETSTATE_KEY_COMMANDS = array('d.get_custom', 'd.get_custom', 'd.get_custom1', 'd.get_local_id', 'd.get_custom');
 	const LOCAL_ID = '1111111111111111111111111111111111111111';
@@ -422,9 +400,7 @@ class CheckerTest
 	const PLUGIN_MARKER = '0123456789abcdef0123456789abcdef';
 	const OLD_HASH = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 	const NEW_HASH = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
-	const COMMIT_SNAPSHOT_KEY = 'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom';
-	const COMMIT_SNAPSHOT_KEY_COMMANDS = array('d.get_directory_base', 'd.get_custom1', 'd.get_throttle_name',
-		'd.get_connection_seed', 'd.get_custom', 'd.get_custom');
+
 
 	private static function queueStateRead($ok, $fault, $values = array())
 	{
@@ -449,11 +425,11 @@ class CheckerTest
 
 	private static function branchGuardsEmptyMeta($condition, $state)
 	{
-		return strpos($condition, 'chk-state,cat=' . $state) !== false
-			&& strpos($condition, 'chk-meta-new,cat="') !== false
-			&& strpos($condition, 'chk-meta-until,cat="') !== false
-			&& strpos($condition, 'd.get_local_id=') !== false
-			&& strpos($condition, self::LOCAL_ID) !== false;
+		$expected = <<<'DSL'
+and="equal=@CUSTOM@chk-state,cat=@STATE@","equal=@CUSTOM@chk-meta-new,cat=","equal=@CUSTOM@chk-meta-until,cat=","equal=\"@LOCAL@\",\"cat=\\\"@ID@\\\"\""
+DSL;
+		return $condition === strtr($expected, array('@CUSTOM@' => getCmd('d.get_custom='),
+			'@STATE@' => (string) $state, '@LOCAL@' => getCmd('d.get_local_id='), '@ID@' => self::LOCAL_ID));
 	}
 
 	private function resetFakes()
@@ -585,7 +561,7 @@ class CheckerTest
 	{
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueViews();
-		rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+		rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
 			array($baseDir, 'label', 'slow', 'seed-value', $topic, $forum));
 		rXMLRPCRequest::queue('branch', true, false, function($commands) use ($selectedRun) {
 			strictAssertSame(1, count($commands), 'run-state capture is one daemon command');
@@ -616,12 +592,6 @@ class CheckerTest
 			if($request['key'] === $key && ($params === null || $request['commands'][0]->params === $params))
 				$indexes[] = $index;
 		return $indexes;
-	}
-
-	private function assertNoRequestKeyContains($needle, $message)
-	{
-		foreach(rXMLRPCRequest::$requests as $request)
-			strictAssertTrue(strpos($request['key'], $needle) === false, $message . ' (saw ' . $request['key'] . ')');
 	}
 
 	private function branchRequestsContaining($needle)
@@ -825,21 +795,15 @@ class CheckerTest
 	public function testObsoleteDiffRequiresExactlyOneMetainfoFileDiscriminator()
 	{
 		$this->resetFakes();
-		$base = sys_get_temp_dir() . '/rut-check-discriminator-' . bin2hex(random_bytes(5));
-		mkdir($base, 0777, true);
-		try
-		{
-			$ambiguous = new Torrent(array('info' => array(
-				'name' => 'ambiguous.mkv', 'length' => 1,
-				'files' => array(array('path' => array('ambiguous.mkv'))),
-			)));
-			$missing = new Torrent(array('info' => array('name' => 'missing-discriminator.mkv')));
-			strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($ambiguous)),
-				'metainfo with both length and files is unsafe');
-			strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($missing)),
-				'metainfo with neither length nor files is unsafe');
-		}
-		finally { strictRemoveTree($base); }
+		$ambiguous = new Torrent(array('info' => array(
+			'name' => 'ambiguous.mkv', 'length' => 1,
+			'files' => array(array('path' => array('ambiguous.mkv'))),
+		)));
+		$missing = new Torrent(array('info' => array('name' => 'missing-discriminator.mkv')));
+		strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($ambiguous)),
+			'metainfo with both length and files is unsafe');
+		strictAssertSame(null, strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($missing)),
+			'metainfo with neither length nor files is unsafe');
 	}
 
 	private function assertAmbiguousReplacementAborts($oldInfo, $newInfo, $label)
@@ -1568,7 +1532,7 @@ class CheckerTest
 
 	private function storedBackoff($hash)
 	{
-		$entries = RuTrackerState::load('updatepass')['replacement_backoff'] ?? array();
+		$entries = RuTrackerState::load('updatepass')['replacement_backoff'][RuTrackerState::daemonKey()] ?? array();
 		return(is_array($entries) && isset($entries[$hash]) ? $entries[$hash] : null);
 	}
 
@@ -1641,31 +1605,86 @@ class CheckerTest
 		finally { strictRemoveTree($base); }
 	}
 
-	public function testUnrelatedReplacementErrorsDoNotPostponeTheScheduler()
+	public function testScheduledRunCarriesItsAttemptSlotToTheReplacementRefusal()
+	{
+		$base = sys_get_temp_dir() . '/rut-check-slot-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		try
+		{
+			foreach(array('scheduled' => time() - 60, 'manual' => null) as $mode => $slot)
+			{
+				$before = time();
+				$this->withVerdictSession('refusal-' . $mode, ruTrackerChecker::STE_ERROR, 100,
+					function() use ($base) { return $this->refuseCleanupPreparation($base); },
+					function() use ($slot) {
+						$performed = false;
+						strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH,
+							null, null, null, $performed, null, $slot), 'the refusal remains retryable');
+					});
+				$after = time();
+				$entry = $this->storedBackoff(self::OLD_HASH);
+				if($slot !== null)
+					strictAssertSame($slot + 3600, $entry['until'],
+						'the scheduled attempt slot survives the real checker and replacement path');
+				else
+					strictAssertTrue($entry['until'] >= $before + 3600 && $entry['until'] <= $after + 3600,
+						'a manual refusal waits the full interval from its actual failure');
+				strictAssertSame(null, strictGetPrivateStatic('ruTrackerChecker', 'activeRunIdentity'),
+					'the next run cannot inherit another scheduled attempt slot');
+			}
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testUnparsedMetainfoDoesNotPostponeTheScheduler()
 	{
 		$this->resetFakes();
 		strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('not-a-torrent', self::OLD_HASH),
 			'unparsed metainfo is an ordinary retryable error');
 		strictAssertSame(array(), RuTrackerState::load('updatepass'),
 			'an error that is not a local cleanup refusal records no backoff');
+	}
 
-		$this->resetFakes();
+	public function testCleanupArmPostponesOnlyTheLastingLocalCapabilityRefusal()
+	{
 		$base = sys_get_temp_dir() . '/rut-check-backoff-arm-' . bin2hex(random_bytes(5));
 		mkdir($base, 0777, true);
 		file_put_contents($base . '/old.mkv', 'old');
 		try
 		{
-			$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
-			$this->queueTransactionStart($base);
-			$this->queueLoadConfirmed();
-			ErasedataFake::$armResult = false;
-			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
-			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
-			strictAssertSame(ruTrackerChecker::STE_ERROR,
-				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
-				'an unacknowledged drain stays retryable');
-			strictAssertSame(null, $this->storedBackoff(self::OLD_HASH),
-				'only the preparation refusal is postponed');
+			foreach(array(null, 'cleanup-arm-job', 'cleanup-arm-lock', 'cleanup-arm-state',
+				'cleanup-arm-generation', 'cleanup-arm-write', 'cleanup-arm-rearm',
+				'cleanup-drain-no-ack', 'cleanup-arm-changed', 'cleanup-rename-unconfirmed', 'cleanup-rename-capability') as $reason)
+			{
+				$this->resetFakes();
+				$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+				$this->queueTransactionStart($base);
+				$this->queueLoadConfirmed();
+				ErasedataFake::$armResult = false;
+				ErasedataFake::$armReason = $reason;
+				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+				strictAssertSame(ruTrackerChecker::STE_ERROR,
+					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+					'an unconfirmed arm stays retryable: ' . (string) $reason);
+				if($reason === 'cleanup-rename-capability')
+				{
+					strictAssertSame(3600, $this->storedBackoff(self::OLD_HASH)['length'] ?? null,
+						'the actual local capability refusal postpones the next scheduled retry');
+					strictAssertOneLogMatching(FileUtil::$log, 'postponed: obsolete-file cleanup could not be armed (cleanup-rename-capability)',
+						'the postponement names arm rather than the completed preparation');
+				}
+				else
+					strictAssertSame(null, $this->storedBackoff(self::OLD_HASH),
+						'a transient or unknown arm failure cannot buy an hourly hold: ' . (string) $reason);
+				strictAssertSame(1, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')),
+					'the exact prepared obligation is canceled before restoration');
+				$erases = $this->branchRequestsContaining('$d.erase=');
+				strictAssertSame(1, count($erases), 'only a confirmed rollback permits one staged discard');
+				strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
+					'arm refusal never erases the predecessor');
+			}
 		}
 		finally { strictRemoveTree($base); }
 	}
@@ -1787,7 +1806,7 @@ class CheckerTest
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
 				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 				'the replacement stands down rather than stepping on another transaction');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
+			strictAssertNoRpcCommand('d.erase',
 				'the other transaction keeps its only recovery marker');
 			strictAssertSame(null, rTorrent::$lastSend, 'and nothing is staged on top of it');
 			strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'same-hash-collision') !== false
@@ -2016,8 +2035,8 @@ class CheckerTest
 		try
 		{
 			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a fully stopped replacement should still commit');
-			$this->assertNoRequestKeyContains('d.start', 'a fully stopped torrent must not be started');
-			$this->assertNoRequestKeyContains('d.open', 'a fully stopped torrent must not be opened');
+			strictAssertNoRpcCommand('d.start', 'a fully stopped torrent must not be started');
+			strictAssertNoRpcCommand('d.open', 'a fully stopped torrent must not be opened');
 			$prepare = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
 			strictAssertSame($base . '/old.mkv', $prepare[0]['arguments'][5][0]['path'],
 				'a stopped replacement prepares the exact obsolete path');
@@ -2072,8 +2091,8 @@ class CheckerTest
 		$markerReads = rXMLRPCRequest::requestsFor(self::PREFLIGHT_KEY);
 		strictAssertSame(1, count($markerReads), 'the pre-existing hash must be inspected exactly once');
 		strictAssertSame(array(self::NEW_HASH, 'chk-replacement'), $markerReads[0]['commands'][0]->params, 'the marker read must target the new hash');
-		$this->assertNoRequestKeyContains('d.stop', 'a preflight conflict must not stop anything');
-		$this->assertNoRequestKeyContains('d.erase', 'a foreign target hash must never be erased');
+		strictAssertNoRpcCommand('d.stop', 'a preflight conflict must not stop anything');
+		strictAssertNoRpcCommand('d.erase', 'a foreign target hash must never be erased');
 		strictAssertSame(null, rTorrent::$lastSend, 'a preflight conflict must not enqueue a load');
 	}
 
@@ -2089,8 +2108,8 @@ class CheckerTest
 			"even a running occupant is not proved to be this predecessor's successor");
 		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
 			'no terminal successor token is written');
-		$this->assertNoRequestKeyContains('d.erase', 'the running occupant is retained');
-		$this->assertNoRequestKeyContains('d.stop', 'the predecessor is untouched');
+		strictAssertNoRpcCommand('d.erase', 'the running occupant is retained');
+		strictAssertNoRpcCommand('d.stop', 'the predecessor is untouched');
 		strictAssertSame(null, rTorrent::$lastSend, 'no replacement is loaded');
 	}
 
@@ -2125,7 +2144,7 @@ class CheckerTest
 					&& strpos($log, self::OLD_HASH) !== false
 					&& strpos($log, self::NEW_HASH) !== false,
 					'the classified collision is visible with debug disabled');
-				$this->assertNoRequestKeyContains('d.erase', 'neither torrent is erased');
+				strictAssertNoRpcCommand('d.erase', 'neither torrent is erased');
 			});
 	}
 
@@ -2177,11 +2196,13 @@ class CheckerTest
 			strictAssertSame(ruTrackerChecker::STE_ERROR,
 				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 				$label . ': ownership is refused retryably');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
+			strictAssertNoRpcCommand('d.erase',
 				$label . ': the existing target is never erased');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+			strictAssertNoRpcCommand('d.set_custom',
 				$label . ': foreign or malformed recovery keys are never cleared');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open|d.start')),
+			strictAssertNoRpcCommand('d.open',
+				$label . ': no open command is issued');
+			strictAssertNoRpcCommand('d.start',
 				$label . ': no run-state command is issued');
 			strictAssertSame(null, rTorrent::$lastSend, $label . ': no replacement is staged on top');
 		}
@@ -2205,7 +2226,7 @@ class CheckerTest
 			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 			'a live torrent with a leftover marker must not be adopted'
 		);
-		$this->assertNoRequestKeyContains('d.erase', 'a live marked torrent must never be erased');
+		strictAssertNoRpcCommand('d.erase', 'a live marked torrent must never be erased');
 		$clears = $this->branchRequestsContaining('chk-replacement');
 		strictAssertSame(1, count($clears), 'the stale transaction must be repaired atomically');
 		strictAssertTrue(strpos(implode('|', $clears[0]['commands'][0]->params), 'chk-replaces') !== false,
@@ -2231,7 +2252,7 @@ class CheckerTest
 			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 			'an open marked torrent must not be adopted, started or not'
 		);
-		$this->assertNoRequestKeyContains('d.erase', 'a paused marked torrent must never be erased');
+		strictAssertNoRpcCommand('d.erase', 'a paused marked torrent must never be erased');
 		$clears = $this->branchRequestsContaining('chk-replacement');
 		strictAssertSame(1, count($clears), 'the stale transaction is repaired atomically');
 		strictAssertSame(null, rTorrent::$lastSend, 'no load may be enqueued');
@@ -2335,8 +2356,8 @@ class CheckerTest
 
 		strictAssertSame(ruTrackerChecker::STE_ERROR,
 			ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'a faulted snapshot aborts');
-		$this->assertNoRequestKeyContains('d.start', 'nothing is started from shifted values');
-		$this->assertNoRequestKeyContains('d.open', 'and nothing is opened either');
+		strictAssertNoRpcCommand('d.start', 'nothing is started from shifted values');
+		strictAssertNoRpcCommand('d.open', 'and nothing is opened either');
 		strictAssertSame(null, rTorrent::$lastSend, 'no load is enqueued');
 	}
 
@@ -2371,7 +2392,7 @@ class CheckerTest
 
 				strictAssertSame(ruTrackerChecker::STE_ERROR,
 					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), $label . ': the replacement aborts');
-				strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
+				strictAssertNoRpcCommand('d.erase',
 					$label . ': the staged copy is KEPT -- it carries the only marker the sweep can find');
 				strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'so the sweep can finish') !== false,
 					$label . ': and the reason is logged');
@@ -2424,7 +2445,7 @@ class CheckerTest
 		);
 		strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 			'the predecessor is restored atomically even when staged status is unknown');
-		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'a hash of unknown ownership must not be erased blindly');
+		strictAssertNoRpcCommand('d.erase', 'a hash of unknown ownership must not be erased blindly');
 	}
 
 	public function testFailedStagingLogsClassifiedOwnerLoadAndRestoreAtDefaultDebug()
@@ -2468,8 +2489,8 @@ class CheckerTest
 		// By substring, not by exact pipeline key: the only restore path builds
 		// 'd.open' or 'd.open|d.start', so neither bare key could ever match
 		// and both assertions were true whatever the code did.
-		$this->assertNoRequestKeyContains('d.start', 'nothing may be restarted while both fates are unknown');
-		$this->assertNoRequestKeyContains('d.open', 'nothing may be reopened while both fates are unknown');
+		strictAssertNoRpcCommand('d.start', 'nothing may be restarted while both fates are unknown');
+		strictAssertNoRpcCommand('d.open', 'nothing may be reopened while both fates are unknown');
 	}
 
 	// The production makeClient(), not the suite double. A mutation check
@@ -2781,7 +2802,7 @@ class CheckerTest
 			'a staged hash owned by another worker must abort the replacement'
 		);
 		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom')), 'a foreign marker must be recognised on the first poll');
-		strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'a foreign staged copy must never be erased');
+		strictAssertNoRpcCommand('d.erase', 'a foreign staged copy must never be erased');
 		strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 			'the predecessor is restored atomically after a foreign takeover');
 	}
@@ -2806,7 +2827,7 @@ class CheckerTest
 				'a synchronous load failure must abort the replacement'
 			);
 			strictAssertTrue(is_file($base . '/old.mkv'), 'a failed load must not clean up any files');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')), 'no hash may be erased when enqueueing the new torrent fails');
+			strictAssertNoRpcCommand('d.erase', 'no hash may be erased when enqueueing the new torrent fails');
 			strictAssertSame(1, count($this->branchRequestsContaining('$d.start=')),
 				'the predecessor is restored atomically after a failed load');
 		}
@@ -3129,7 +3150,7 @@ class CheckerTest
 			$this->stageTorrents();
 			rXMLRPCRequest::queue('d.hash', true, true, array());
 			$this->queueViews();
-			rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+			rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
 				array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
 			rXMLRPCRequest::queue('branch', $response[0], $response[1], $response[2]);
 			$this->withDebugLog(function() use ($label) {
@@ -3155,7 +3176,7 @@ class CheckerTest
 			$this->stageTorrents();
 			rXMLRPCRequest::queue('d.hash', true, true, array());
 			$this->queueViews();
-			rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+			rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
 				array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
 			rXMLRPCRequest::queue('branch', true, false, function($commands) use ($mode) {
 				$matches = array();
@@ -3183,7 +3204,7 @@ class CheckerTest
 			$this->stageTorrents();
 			rXMLRPCRequest::queue('d.hash', true, true, array());
 			$this->queueViews();
-			rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+			rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
 				array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
 			$persisted = null;
 			rXMLRPCRequest::queue('branch', true, false, function($commands) use ($run, &$persisted) {
@@ -3220,7 +3241,7 @@ class CheckerTest
 		$this->stageTorrents();
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueViews();
-		rXMLRPCRequest::queue(self::COMMIT_SNAPSHOT_KEY_COMMANDS, true, false,
+		rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
 			array(sys_get_temp_dir(), 'label', 'slow', 'seed-value', '6879823', '1106'));
 		rXMLRPCRequest::queue('branch', true, false, array('untrusted-stop-reply'));
 		rXMLRPCRequest::queue('d.get_custom', true, false, array('foreign-generation'));
@@ -6424,8 +6445,10 @@ class CheckerTest
 				$label . ' remains unconfirmed');
 			strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
 				$label . ' has one atomic attempt');
-			$this->assertNoRequestKeyContains('d.open', $label . ' issues no standalone open');
-			$this->assertNoRequestKeyContains('d.start', $label . ' issues no standalone start');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.open')),
+				$label . ' issues no standalone open');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.start')),
+				$label . ' issues no standalone start');
 		}
 	}
 
@@ -7081,7 +7104,7 @@ class CheckerTest
 				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
 				$label . ': an unreadable run state abandons the replacement with nothing changed'
 			);
-			$this->assertNoRequestKeyContains('d.erase',
+			strictAssertNoRpcCommand('d.erase',
 				$label . ': the occupant of the successor hash is never erased on it');
 			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
 				$label . ': and no atomic clear, revive or activation is attempted either');

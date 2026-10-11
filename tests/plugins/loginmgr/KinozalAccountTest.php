@@ -6,9 +6,9 @@
  *
  * accounts.php is deliberately NOT loaded: it evals the plugin config, pulls
  * in cache.php/Snoopy.class.inc and, through them, the real rXMLRPC* classes,
- * none of which isOK() touches. The account file itself has no requires, so a
- * minimal commonAccount base is all it needs to load -- the code under test is
- * the real one, straight from plugins/loginmgr/accounts/KinozalTV.php.
+ * none of which isOK() touches. The account requires only its shared response
+ * predicate, so a minimal commonAccount base is sufficient. The code under
+ * test comes straight from plugins/loginmgr/accounts/KinozalTV.php.
  */
 
 require_once(__DIR__ . '/../rutracker_check/TestLib.php');
@@ -22,6 +22,7 @@ abstract class commonAccount
 }
 
 require_once(testFindRepoRoot() . '/plugins/loginmgr/accounts/KinozalTV.php');
+require_once(testFindRepoRoot() . '/php/Torrent.php');
 
 // isOK() and login() test double.
 class KinozalFakeClient
@@ -118,7 +119,7 @@ function kinozalUnauthorizedAnswer()
 
 $suite = new StrictTestSuite();
 
-$suite->test('today\'s login form is recognised as a dead session', function () {
+$suite->test('the captured 2026-08-07 login form is recognised as a dead session', function () {
     strictAssertSame(false, kinozalIsOK(kinozalLoginPage()),
         'the unquoted type= / reordered attribute form must not read as logged in');
 });
@@ -134,6 +135,38 @@ $suite->test('the not-authorized answer of get_srv_details is a dead session', f
     // loginmgr must re-login on it rather than pass the text upstream.
     strictAssertSame(false, kinozalIsOK(kinozalUnauthorizedAnswer()),
         'the guest answer of get_srv_details.php must not read as logged in');
+});
+
+$suite->test('a guest-page parser failure leaves authentication unproven', function () {
+    $limit = ini_get('pcre.backtrack_limit');
+    try {
+        ini_set('pcre.backtrack_limit', '1');
+        strictAssertSame(null, kinozalIsOK(kinozalUnauthorizedAnswer()),
+            'a failed marker parser cannot certify a live session or demand a login');
+        strictAssertTrue(preg_last_error() !== PREG_NO_ERROR, 'the fixture really exhausts PCRE');
+    } finally {
+        ini_set('pcre.backtrack_limit', $limit);
+    }
+});
+
+$suite->test('registration links retain query and trusted absolute URL compatibility', function () {
+    // Metamorphic variants of the captured anonymous registration anchor,
+    // not claims that these href spellings were observed on the live site.
+    foreach (array('/signup.php?from=details&amp;id=1', 'signup.php?from=details',
+        'https://kinozal.guru/signup.php', 'https://KINOZAL.ME./signup.php?from=details',
+        '//kinozal.tv/signup.php#form') as $href) {
+        $page = str_replace('/signup.php', $href, kinozalUnauthorizedAnswer());
+        strictAssertSame(false, kinozalIsOK($page), 'the registration anchor is a guest signal: ' . $href);
+    }
+});
+
+$suite->test('foreign and unrelated hrefs do not masquerade as Kinozal registration', function () {
+    foreach (array('https://evil.test/signup.php', 'https://kinozal.guru@evil.test/signup.php',
+        'https://kinozal.guru.evil.test/signup.php', '/download.php?next=/signup.php',
+        '/source/signup.php', 'javascript:/signup.php') as $href) {
+        $page = str_replace('/signup.php', $href, kinozalUnauthorizedAnswer());
+        strictAssertSame(true, kinozalIsOK($page), 'only a Kinozal registration link is a guest signal: ' . $href);
+    }
 });
 
 $suite->test('a logged-in page reads as a live session', function () {
@@ -154,9 +187,17 @@ $suite->test('authorized tracker answers read as a live session', function () {
         'a removed topic is an answer from the tracker, not a dead session');
 });
 
+$suite->test('a signup filename inside an authorized details answer is not a guest link', function () {
+    $page = '<ul><li>Инфо хеш: ' . str_repeat('A', 40) . '</li>'
+        . '<li><div class="b ing">source/signup.php</div></li></ul>';
+    strictAssertSame(true, kinozalIsOK($page),
+        'a filename does not invalidate the session or spend another credential POST');
+});
+
 $suite->test('torrent bytes read as a live session', function () {
-    $raw = 'd8:announce31:http://tr2.torrent4me.com/ann?uk=X4:infod6:lengthi1e'
+    $raw = 'd8:announce34:http://tr2.torrent4me.com/ann?uk=X4:infod6:lengthi1e'
         . '4:name9:movie.mkv12:piece lengthi16384e6:pieces20:' . str_repeat("\0", 20) . 'ee';
+    strictAssertSame(false, Torrent::fromRawBytes($raw)->errors(), 'the fixture is valid bencode');
     strictAssertSame(true, kinozalIsOK($raw),
         'a downloaded torrent must never be mistaken for a login wall');
 });
@@ -165,8 +206,10 @@ $suite->test('a torrent whose comment names the signup page is still a torrent',
     // The registration link is a marker of a guest PAGE. A torrent is payload
     // and may carry any bytes at all, so reading the marker out of one would
     // cost a re-login, and the cached session, on every download of it.
-    $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment28:see /signup.php to register'
-        . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384eee';
+    $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment27:see /signup.php to register'
+        . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384e6:pieces20:'
+        . str_repeat("\0", 20) . 'ee';
+    strictAssertSame(false, Torrent::fromRawBytes($torrent)->errors(), 'the fixture is valid bencode');
     strictAssertSame(true, kinozalIsOK($torrent),
         'a torrent must not be read as a login wall because of its comment');
 });

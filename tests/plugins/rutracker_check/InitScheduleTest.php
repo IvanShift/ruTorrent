@@ -15,7 +15,10 @@ class User { static public function getUser() { return "alice';touch forbidden;'
 class InitScheduleSettings
 {
     public $registered = array();
-    public function getScheduleCommand($name, $interval, $command) { return new rXMLRPCCommand('schedule', array($name, $interval, $command)); }
+    public function getScheduleCommand($name, $interval, $command, &$startAt = null, $now = null, $daemonClock = false) {
+        strictAssertSame(true, $daemonClock, 'the real init protects its aligned slot from stale daemon registration time');
+        return new rXMLRPCCommand('schedule', array($name, $interval, $command));
+    }
     public function registerPlugin($name, $perms) { $this->registered[] = $name; }
 }
 function rpcMethodCapability($required)

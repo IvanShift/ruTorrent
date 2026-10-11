@@ -81,7 +81,7 @@ class SettingsCacheTest extends TestCase
 		if (!mkdir($fixture, 0700, true)) {
 			throw new Exception('Could not create settings cache miss fixture');
 		}
-		foreach (array('settings.php', 'xmlrpc_path.php', 'methods-0.9.4.php') as $name) {
+		foreach (array('settings.php', 'xmlrpc_path.php', 'commandargs.php', 'methods-0.9.4.php') as $name) {
 			if (!copy(__DIR__.'/../../php/'.$name, $fixture.'/'.$name)) {
 				throw new Exception('Could not copy production '.$name);
 			}
@@ -198,6 +198,22 @@ PHP
 			$cached->getCommand('set_download_rate'),
 			'The cached alias map survives a failed probe, so renamed commands keep resolving'
 		);
+	}
+
+	public function testUnregisteringStoredHookSubjectsPreservesOtherPluginsAndSparseEntries()
+	{
+		$settings = $this->makeSettings(false);
+		$settings->registerEventHook('rssurlrewrite', array('RSSFetched', 'URLFetched'), 10);
+		$settings->registerEventHook('_cloudflare', 'URLFetched', 20);
+		$settings->unregisterEventHook('rssurlrewrite', array('RSSFetched', 'URLFetched'), false);
+		$this->assertSame(false, array_key_exists('RSSFetched', $settings->hooks),
+			'the last subject retires its event key');
+		$this->assertSame(array(array('name' => '_cloudflare', 'level' => 20)),
+			array_values($settings->hooks['URLFetched']), 'only the named plugin is removed');
+		$settings->unregisterEventHook('_cloudflare', 'URLFetched', false);
+		$this->assertSame(array(), $settings->hooks, 'a remaining sparse subject can also be removed');
+		$settings->unregisterEventHook('_cloudflare', 'missing', false);
+		$this->assertSame(array(), $settings->hooks, 'an absent hook stays a no-op');
 	}
 
 	// What the tenant meets when the map is lost: the status bar's rate control

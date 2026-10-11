@@ -2,10 +2,11 @@
 
 require_once( __DIR__ . '/../fetcherror.php' );
 require_once( __DIR__ . '/../../../php/urlhost.php' );
+require_once( __DIR__ . '/../../../php/kinozal.php' );
 
 class KinozalCheckImpl
 {
-    const SITE_HOSTS = array('kinozal.tv', 'kinozal.me', 'kinozal.guru');
+    const SITE_HOSTS = KinozalResponse::SITE_HOSTS;
 
     // The one test this handler applies to a comment before it does anything:
     // a topic URL on one of Kinozal's own hosts, and nothing else. Used both
@@ -18,14 +19,6 @@ class KinozalCheckImpl
         $hosts = array_map(function ($host) { return preg_quote($host, '`'); }, self::SITE_HOSTS);
         return '`^https?://(?:' . implode('|', $hosts) . ')/details\.php\?id=(?P<id>\d+)$`';
     }
-
-    // Kinozal serves no torrent data to guests: get_srv_details.php answers
-    // with a plain "not authorized" line and dl.kinozal.guru redirects to
-    // login.php. Both of those answers -- and the login page itself -- offer
-    // registration; no authenticated answer does (measured 2026-08-07 against
-    // the live site, authorized and anonymous, on both endpoints). So this one
-    // link is what tells "we are locked out" apart from "the tracker replied".
-    const GUEST_MARKER = '/signup.php';
 
     // The details endpoint's own verdict for an id it no longer serves: HTTP
     // 200 with this body, in an authenticated session. One of the two
@@ -121,11 +114,11 @@ class KinozalCheckImpl
     static private $downloadTransportFailures = 0;
 
     // Per-cycle, like $cycleAbandoned and for the same reason: what the
-    // details endpoint refused for one topic it refuses for every other, so
-    // asking it again costs a request and tells nobody anything. Unlike
+    // details request chain refused for one topic it may refuse for others,
+    // so retry the chain next cycle. Unlike
     // $cycleAbandoned this one does not end the cycle -- there is another
     // door, which answered one measured download on 2026-09-12 through the
-    // production fetch path: get_srv_details.php answered 403 with the Cloudflare
+    // production fetch path: the details attempt ended at 403 with the Cloudflare
     // interstitial while dl.kinozal.guru/download.php answered 200 with
     // 241474 bytes of torrent, on the loginmgr session already stored.
     static private $detailsWalled = false;
@@ -139,12 +132,6 @@ class KinozalCheckImpl
         $legacy = self::MISSING_MARKER_CP1251;
         if ($plain === $legacy || $plain === $legacy . '.') return true;
         return false;
-    }
-
-    static private function isGuestAnswer($body)
-    {
-        // The marker is ASCII in both endpoint encodings.
-        return is_string($body) && strpos($body, self::GUEST_MARKER) !== false;
     }
 
     // Whether the download endpoint answered "there is no such id". Every
@@ -199,19 +186,19 @@ class KinozalCheckImpl
     }
 
     // The endpoint details stay in the debug log; the operator still needs to
-    // learn, at the shipped default, that the session is gone and whether a
-    // new login can fix it. loginmgr logs in through these same Cloudflare-
-    // walled pages, so under a challenge re-entering the password cannot help.
+    // learn, at the shipped default, that no authenticated session was
+    // available. fetchComplex may leave a response from a re-login attempt,
+    // so this observation does not identify which endpoint was challenged.
     static private function logSessionHint()
     {
         if (self::$sessionHintLogged)
             return;
         self::$sessionHintLogged = true;
         ruTrackerChecker::logUnrepairable(self::$detailsWalled
-            ? 'Kinozal answers as a guest and its pages are behind a Cloudflare challenge;'
-                .' loginmgr cannot log in through the challenge, so re-entering the KinozalTV'
-                .' password will not help; Kinozal update checks are skipped until the challenge is lifted'
-            : 'Kinozal answers as a guest: the saved KinozalTV session is not valid;'
+            ? 'Kinozal answers as a guest; the details attempt encountered a Cloudflare challenge;'
+                .' a fresh authenticated session was not obtained; refresh KinozalTV in Settings -> Accounts'
+                .' if login is available; Kinozal update checks are retried next cycle'
+            : 'Kinozal answers as a guest: no authenticated KinozalTV session was available for these checks;'
                 .' re-enter the KinozalTV login and password in Settings -> Accounts and Save;'
                 .' Kinozal update checks resume after a successful login');
     }
@@ -241,7 +228,8 @@ class KinozalCheckImpl
         return self::abandonEndpoint($log, $endpoint);
     }
 
-    // What the bytes from the download endpoint say about this topic.
+    // What the download attempt's final response says about this topic.
+    // fetchComplex may leave a loginmgr response before fetching the caller URL.
     //
     // One reader for both callers. The handler used to decide this in the one
     // place it could be reached from, and the guest latch above shows what
@@ -266,18 +254,18 @@ class KinozalCheckImpl
         &$independent = null)
     {
         $independent = false;
-        // A guest download is a redirect to login.php. Whether Snoopy follows
+        // A guest download attempt may encounter a redirect to login.php. Whether Snoopy follows
         // it to the 200 login page (the guest marker below catches that) or
         // stops on a 3xx, the answer is retryable. A non-200 status alone
         // cannot establish whether the session failed; it is never deletion.
         if ($client->status != 200) {
-            // The redirect was observed in this fetch, not inherited from the
-            // details request. A challenged login page still proves a guest wall.
+            // This attempt observed the redirect, possibly during loginmgr,
+            // rather than inheriting it from details. It still proves a guest wall.
             $redirect = isset($client->lastredirectaddr) ? $client->lastredirectaddr : '';
             if (UrlHost::urlIsOneOf($redirect, self::SITE_HOSTS, 'https')
                 && @parse_url($redirect, PHP_URL_PATH) === '/login.php') {
                 self::$downloadTransportFailures = 0;
-                return self::guestAnswer("download.php redirected to login.php: id=".$id, 'download');
+                return self::guestAnswer("download attempt encountered a login.php redirect: id=".$id, 'download');
             }
             // A false fetch may leave the status of a loginmgr request here.
             // Name it as the client's last status, not the download response.
@@ -304,8 +292,11 @@ class KinozalCheckImpl
             self::$downloadGuestAnswers = 0;
             return ruTrackerChecker::createTorrent($parsed, $hash, $old_torrent);
         }
-        if (self::isGuestAnswer($payload))
-            return self::guestAnswer("download.php answered a guest page, check the loginmgr account: id=".$id,
+        $guest = KinozalResponse::isGuestPage($payload);
+        if ($guest === null)
+            return self::cantReach("download attempt: guest-page-parse-failed id=".$id);
+        if ($guest)
+            return self::guestAnswer("download attempt ended at a guest page, check the loginmgr account: id=".$id,
                 'download');
         self::$downloadGuestAnswers = 0;
         // Checked after the guest test above, the way the details endpoint's
@@ -317,7 +308,7 @@ class KinozalCheckImpl
         }
         // Malformed bytes can concern this topic alone (including a download
         // contradicting a details hash), so they do not trip an endpoint latch.
-        return self::cantReach("download.php returned no metainfo: id=".$id." bytes=".strlen($payload));
+        return self::cantReach("download attempt ended without metainfo: id=".$id." bytes=".strlen($payload));
     }
 
     static private function downloadClient($id)
@@ -337,8 +328,8 @@ class KinozalCheckImpl
 
         $id = $matches["id"];
 
-        // The details endpoint already refused this run, with a page rather
-        // than a failure. Try the independently fetched download endpoint.
+        // The details attempt already encountered a challenge this run.
+        // Try the independent download route.
         if (self::$detailsWalled && self::$downloadAbandoned)
             return ruTrackerChecker::STE_CANT_REACH_TRACKER;
         if (self::$detailsWalled)
@@ -346,10 +337,13 @@ class KinozalCheckImpl
 
         $client = ruTrackerChecker::makeClient("https://kinozal.guru/get_srv_details.php?action=2&id=".$id);
         if ($client->status != 200) {
+            // fetchComplex can leave a login response on this client. A
+            // challenge therefore identifies a refusal in the details request
+            // chain, not necessarily at get_srv_details.php itself.
             // A challenge is not an outage. It is a door that will not open
             // for this client however often it is asked -- so it is neither
             // counted as unreachable nor retried, and the check continues
-            // through the endpoint that is not behind one, which has a missing
+            // through the independent download route, whose response has a missing
             // marker of its own -- see DOWNLOAD_MISSING_CP1251. Told apart
             // from an outage by the header Cloudflare sets for the purpose and
             // by the interstitial's own markers, never by the word
@@ -358,7 +352,7 @@ class KinozalCheckImpl
             if (RuTrackerFetchError::isChallenge($client->headers, $client->results)) {
                 self::$detailsWalled = true;
                 if (self::$downloadAbandoned) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
-                ruTrackerChecker::logDebug("get_srv_details is behind a Cloudflare challenge (status="
+                ruTrackerChecker::logDebug("Kinozal details attempt encountered a Cloudflare challenge (last-status="
                     .$client->status."); this cycle checks Kinozal through download.php,"
                     ." reading its own missing marker for deletions");
                 return self::decideFromDownload(self::downloadClient($id), $id, $hash, $old_torrent, true);
@@ -378,12 +372,12 @@ class KinozalCheckImpl
                     // download settles this topic only; the next one must
                     // still ask details for its own authoritative verdict.
                     self::$detailsTransportFailures = 0;
-                    ruTrackerChecker::logDebug("get_srv_details returned unclassified status=403;"
+                    ruTrackerChecker::logDebug("details attempt ended at unclassified last-status=403;"
                         . " id=" . $id . " checked through download.php");
                     return $verdict;
                 }
             }
-            return self::unreachable("get_srv_details failed: status=".$client->status." id=".$id,
+            return self::unreachable("details attempt failed: last-status=".$client->status." id=".$id,
                 $client, 'details');
         }
 
@@ -393,8 +387,11 @@ class KinozalCheckImpl
         // guest test for that reason: the two streaks count different things,
         // and a guest page must not finish a count of refusals.
         self::$detailsTransportFailures = 0;
-        if (self::isGuestAnswer($details))
-            return self::guestAnswer("get_srv_details answered a guest page, check the loginmgr account: id=".$id,
+        $guest = KinozalResponse::isGuestPage($details);
+        if ($guest === null)
+            return self::cantReach("details attempt: guest-page-parse-failed id=".$id);
+        if ($guest)
+            return self::guestAnswer("details attempt ended at a guest page, check the loginmgr account: id=".$id,
                 'details');
         // An authenticated answer clears the count: only guest answers that
         // run together mean a lost session, and isolated ones must not add up
@@ -413,7 +410,7 @@ class KinozalCheckImpl
             if (self::isMissingAnswer($details))
                 return ruTrackerChecker::STE_DELETED;
             // An unreadable topic is not evidence of an endpoint-wide outage.
-            return self::cantReach("get_srv_details returned unrecognised content: id=".$id." bytes=".strlen($details));
+            return self::cantReach("details attempt ended with unrecognised content: id=".$id." bytes=".strlen($details));
         }
 
         if (self::$downloadAbandoned) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
@@ -427,7 +424,7 @@ class KinozalCheckImpl
         $client->error = '';
         $client->lastredirectaddr = '';
         if (!$client->fetchComplex(self::DOWNLOAD_URL.$id) && (string) $client->error !== '')
-            return self::unreachable("download.php failed before response: "
+            return self::unreachable("download attempt failed: "
                 . RuTrackerFetchError::classify($client->error) . " id=" . $id,
                 $client, 'download', false);
         // Snoopy can return false after recording an HTTP answer. With no

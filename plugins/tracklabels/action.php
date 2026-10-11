@@ -5,27 +5,31 @@ require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc" );
 
 eval(FileUtil::getPluginConf('tracklabels'));
 
-function try_send_image($image_name, $mime = 'image/png')
-{
-	if (is_readable($image_name)) {
-		SendFile::send($image_name, $mime);
-		exit;
-	}
-}
-
 function bad($message) {
 	http_response_code(400);
+	header('Content-Type: text/plain; charset=UTF-8');
 	echo $message;
 	exit;
 }
 
-// A failed favicon fetch leaves a zero-byte <host>.miss marker beside the icon
-// cache; its mtime is the miss time. Dead, unresolvable and non-public tracker
-// hosts are routine, so the marker spares them a fetch for this long.
+// Definitive misses use a day-long marker; uncertain failures start at five
+// minutes and back off to a day. Both remain quiet for the browser and logs.
 if (!defined('TRACKLABELS_FAVICON_MISS_TTL'))
 	define('TRACKLABELS_FAVICON_MISS_TTL', 24 * 60 * 60);
+if (!defined('TRACKLABELS_FAVICON_RETRY_TTL'))
+	define('TRACKLABELS_FAVICON_RETRY_TTL', 5 * 60);
+if (!defined('TRACKLABELS_FAVICON_STAGE_TTL'))
+	define('TRACKLABELS_FAVICON_STAGE_TTL', 60 * 60);
 
-function favicon_miss_is_fresh($miss_name)
+function favicon_retry_ttl($retry_name)
+{
+	$value = @file_get_contents($retry_name, false, null, 0, 6);
+	return is_string($value) && preg_match('/^[1-9][0-9]{0,4}$/D', $value)
+		&& (int)$value >= TRACKLABELS_FAVICON_RETRY_TTL && (int)$value <= TRACKLABELS_FAVICON_MISS_TTL
+		? (int)$value : TRACKLABELS_FAVICON_RETRY_TTL;
+}
+
+function favicon_miss_is_fresh($miss_name, $ttl = TRACKLABELS_FAVICON_MISS_TTL)
 {
 	clearstatcache(true, $miss_name);
 	$time = is_file($miss_name) ? filemtime($miss_name) : false;
@@ -33,22 +37,135 @@ function favicon_miss_is_fresh($miss_name)
 		return false;
 	$age = time() - $time;
 	// A marker dated in the future (clock step) is stale, so it cannot pin a miss.
-	return $age >= 0 && $age < TRACKLABELS_FAVICON_MISS_TTL;
+	return $age >= 0 && $age < $ttl;
 }
 
-function favicon_record_miss($miss_name)
+function favicon_record_miss($miss_name, $retry = false)
 {
 	$dir = dirname($miss_name);
 	if (!is_dir($dir))
 		FileUtil::makeDirectory($dir);
+	$written = true;
+	if ($retry) {
+		$delay = is_file($miss_name) ? min(favicon_retry_ttl($miss_name) * 2, TRACKLABELS_FAVICON_MISS_TTL)
+			: TRACKLABELS_FAVICON_RETRY_TTL;
+		$written = @file_put_contents($miss_name, (string)$delay, LOCK_EX) === strlen((string)$delay);
+	}
 	// An explicit time keeps the marker on the clock that favicon_miss_is_fresh() reads.
-	if (!is_dir($dir) || !@touch($miss_name, time()))
+	if (!is_dir($dir) || !$written || !@touch($miss_name, time()))
 		FileUtil::toLog('tracklabels: favicon miss cache write failed');
+}
+
+function favicon_private_file($stat, $uid)
+{
+	return is_array($stat) && ($stat['mode'] & 0170000) === 0100000
+		&& ($stat['mode'] & 07777) === 0600 && $stat['uid'] === $uid && $stat['nlink'] === 1;
+}
+
+function favicon_same_file($first, $second)
+{
+	return is_array($first) && is_array($second)
+		&& $first['dev'] === $second['dev'] && $first['ino'] === $second['ino'];
+}
+
+function favicon_reap_stages($dir, $uid)
+{
+	foreach (glob($dir . '/.favicon-stage-*.json') ?: array() as $record) {
+		if (!preg_match('/^\.favicon-stage-[A-Za-z0-9]{6,32}\.json$/D', basename($record)))
+			continue;
+		clearstatcache(true, $record);
+		$before = @lstat($record);
+		if (!favicon_private_file($before, $uid) || $before['size'] > 512)
+			continue;
+		$lock = @fopen($record, 'r+b');
+		if ($lock === false)
+			continue;
+		try {
+			// The creator holds this lock before attestation and until publication.
+			// Age alone never authorizes deletion of a live worker's stage.
+			if (!flock($lock, LOCK_EX | LOCK_NB) || !favicon_same_file($before, fstat($lock)))
+				continue;
+			$data = json_decode(stream_get_contents($lock, 513), true);
+			$name = basename($record, '.json');
+			if (!is_array($data) || array_keys($data) !== array('version', 'name', 'dev', 'ino', 'uid')
+				|| $data['version'] !== 1 || $data['name'] !== $name || $data['uid'] !== $uid)
+				continue;
+			$stage = $dir . '/' . $name;
+			clearstatcache(true, $stage);
+			$stat = @lstat($stage);
+			$now = time();
+			if ($now - $before['mtime'] < TRACKLABELS_FAVICON_STAGE_TTL)
+				continue;
+			if ($stat === false) {
+				// A successful rename can precede worker death. Prove absence
+				// with a readable parent listing, rather than guessing from lstat failure.
+				$entries = @scandir($dir);
+				clearstatcache(true, $record);
+				if (is_array($entries) && !in_array($name, $entries, true)
+					&& favicon_same_file($before, @lstat($record)) && !@unlink($record))
+					FileUtil::toLog('tracklabels: favicon stage cleanup failed');
+				continue;
+			}
+			if (!favicon_private_file($stat, $uid) || $stat['dev'] !== $data['dev'] || $stat['ino'] !== $data['ino']
+				|| $now - $stat['mtime'] < TRACKLABELS_FAVICON_STAGE_TTL)
+				continue;
+			clearstatcache(true, $stage);
+			clearstatcache(true, $record);
+			if (!favicon_same_file($stat, @lstat($stage)) || !favicon_same_file($before, @lstat($record)))
+				continue;
+			if (!@unlink($stage) || !@unlink($record))
+				FileUtil::toLog('tracklabels: favicon stage cleanup failed');
+		} finally {
+			fclose($lock);
+		}
+	}
+}
+
+function favicon_stage($dir, &$lock)
+{
+	$lock = null;
+	$stage = is_dir($dir) ? @tempnam($dir, '.favicon-stage-') : false;
+	// tempnam may fall back to the system temp directory on a write fault.
+	if ($stage !== false && dirname($stage) !== realpath($dir)) {
+		@unlink($stage);
+		$stage = false;
+	}
+	if ($stage === false)
+		return false;
+	$record = $stage . '.json';
+	$lock = @fopen($record, 'x+b');
+	if ($lock !== false) {
+		if (@chmod($record, 0600) && flock($lock, LOCK_EX | LOCK_NB)) {
+			$stat = @lstat($stage);
+			$owner = fstat($lock);
+			if (favicon_private_file($stat, $owner['uid'])) {
+				$data = json_encode(array('version' => 1, 'name' => basename($stage),
+					'dev' => $stat['dev'], 'ino' => $stat['ino'], 'uid' => $stat['uid']));
+				// No remote bytes are written until the exact stage has an ownership record.
+				if (fwrite($lock, $data) === strlen($data) && fflush($lock)) {
+					favicon_reap_stages($dir, $owner['uid']);
+					return $stage;
+				}
+			}
+		}
+		@unlink($record);
+		fclose($lock);
+	}
+	$lock = null;
+	@unlink($stage);
+	return false;
+}
+
+function favicon_finish_stage($stage, $lock)
+{
+	@unlink($stage);
+	@unlink($stage . '.json');
+	fclose($lock);
 }
 
 $basepath = realpath(FileUtil::getSettingsPath());
 $knownAliases = [
-	'app'       => ['apps', 'applications', 'трограммы'],
+	'app'       => ['apps', 'applications', 'программы', 'трограммы'],
 	'book'      => ['books', 'livres', 'книги'],
 	'film'      => ['films', 'фильм', 'фильмы'],
 	'game'      => ['jeux', 'игра'],
@@ -85,7 +202,11 @@ function image_name($prefix, $req_field, $values = null)
 	$res = null;
 	if (isset($values[$req_field])) {
 		$dir = $basepath . '/' . $prefix;
+		if (!is_string($values[$req_field]))
+			bad('Invalid ' . $req_field);
 		$name = rawurldecode($values[$req_field]);
+		if (strpos($name, "\0") !== false)
+			bad('Invalid ' . $req_field);
 		$name = get_alias(function_exists('mb_strtolower')
 			? mb_strtolower($name, 'utf-8')
 			: strtolower($name));
@@ -133,8 +254,14 @@ if ($png_name !== null) {
 		}
 		exit;
 	} else if (isset($_POST['upload'])) {
-		$filename = $_FILES['uploadfile']["name"];
-		$tempname = $_FILES['uploadfile']["tmp_name"];
+		$upload = isset($_FILES['uploadfile']) && is_array($_FILES['uploadfile'])
+			? $_FILES['uploadfile'] : array();
+		if (!isset($upload['tmp_name'], $upload['error'])
+			|| !is_string($upload['tmp_name']) || $upload['tmp_name'] === ''
+			|| strpos($upload['tmp_name'], "\0") !== false
+			|| $upload['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($upload['tmp_name']))
+			bad('Invalid image upload');
+		$tempname = $upload['tmp_name'];
 
 		if (!is_dir($targetdir))
 			FileUtil::makeDirectory($targetdir);
@@ -146,8 +273,8 @@ if ($png_name !== null) {
 			bad('Image upload failed!');
 		exit;
 	} else {
-		try_send_image($png_name);
-		try_send_image(dirname(__FILE__).substr($png_name, strlen($basepath)));
+		SendFile::send($png_name, 'image/png');
+		SendFile::send(dirname(__FILE__).substr($png_name, strlen($basepath)), 'image/png');
 
 
 		$cacheFault = false;
@@ -156,11 +283,13 @@ if ($png_name !== null) {
 		if ($isTracker && Utility::isHostname(basename($png_name, '.png'))) {
 			$tracker = basename($png_name, '.png');
 			$ico_name = $targetdir . '/' . $tracker . '.ico';
-			try_send_image($ico_name, 'image/x-icon');
-			try_send_image(dirname(__FILE__).substr($ico_name, strlen($basepath)), 'image/x-icon');
+			SendFile::send($ico_name, 'image/x-icon');
+			SendFile::send(dirname(__FILE__).substr($ico_name, strlen($basepath)), 'image/x-icon');
 
 			$miss_name = $targetdir . '/' . $tracker . '.miss';
-			if ($fetchRequested && !favicon_miss_is_fresh($miss_name)) {
+			$retry_name = $targetdir . '/' . $tracker . '.retry';
+			if ($fetchRequested && !favicon_miss_is_fresh($miss_name)
+				&& !favicon_miss_is_fresh($retry_name, favicon_retry_ttl($retry_name))) {
 				ignore_user_abort(true);
 				set_time_limit(0);
 
@@ -169,31 +298,56 @@ if ($png_name !== null) {
 				$client->private_allowlist = array();
 				$client->read_timeout = 5;
 				$client->_fp_timeout = 5;
+				$retryNeeded = false;
 				foreach (['favicon.ico', 'favicon.png'] as $favicon) {
 					$url = $client->linkencode("http://{$tracker}/{$favicon}");
-					@$client->fetchComplex($url);
-					if ($client->status == 200) {
+					$fetched = @$client->fetchComplex($url);
+					if ($fetched && $client->status == 200) {
 						if (!is_dir($targetdir))
 							FileUtil::makeDirectory($targetdir);
-						if (!is_dir($targetdir) || file_put_contents($ico_name, $client->results) === false) {
+						// Readers never see a partial write or unvalidated remote content.
+						$stage = favicon_stage($targetdir, $stageLock);
+						if ($stage === false || @file_put_contents($stage, $client->results) !== strlen($client->results)) {
+							if ($stage !== false)
+								favicon_finish_stage($stage, $stageLock);
 							FileUtil::toLog('tracklabels: favicon cache write failed');
 							$cacheFault = true;
 							break;
 						}
-						if (strpos(mime_content_type($ico_name), "image/")===false)
-							@unlink($ico_name);
-						else {
-							@unlink($miss_name);
-							try_send_image($ico_name, 'image/x-icon');
+						$mime = @mime_content_type($stage);
+						if (!is_string($mime) || strpos($mime, 'image/') !== 0)
+							favicon_finish_stage($stage, $stageLock);
+						else if (!@rename($stage, $ico_name)) {
+							favicon_finish_stage($stage, $stageLock);
+							FileUtil::toLog('tracklabels: favicon cache write failed');
+							$cacheFault = true;
+							break;
 						}
-					} else if (strpos($client->error, 'Refusing to fetch:') === 0) {
-						// A non-public or unresolvable host refuses every favicon path.
-						break;
+						else {
+							favicon_finish_stage($stage, $stageLock);
+							@unlink($miss_name);
+							@unlink($retry_name);
+							SendFile::send($ico_name, 'image/x-icon');
+						}
+					} else {
+						$nonPublic = strpos($client->error, 'Refusing to fetch: host ') === 0;
+						// Snoopy cannot distinguish NXDOMAIN from a resolver outage, and
+						// a target refusal can leave the previous request's status intact.
+						$terminalHttp = $client->status >= 400 && $client->status < 500
+							&& !in_array((int)$client->status, array(408, 429), true);
+						if (!$nonPublic && ($client->error !== ''
+							|| !$terminalHttp))
+							$retryNeeded = true;
+						if (strpos($client->error, 'Refusing to fetch:') === 0)
+							break;
 					}
 				}
 				// No favicon there is an expected outcome: remember it, do not log it.
-				if (!$cacheFault)
-					favicon_record_miss($miss_name);
+				if (!$cacheFault) {
+					favicon_record_miss($retryNeeded ? $retry_name : $miss_name, $retryNeeded);
+					if (!$retryNeeded)
+						@unlink($retry_name);
+				}
 			}
 		}
 	}

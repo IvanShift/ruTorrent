@@ -80,6 +80,14 @@ function kinozalUnauthorizedBody()
         . 'зарегистрироваться пройдите <a href=\'/signup.php\' class=\'sba\'>сюда</a>.';
 }
 
+// The captured guest anchor with extra attributes to exhaust the parser's
+// configured match budget. The surrounding missing/hash text must not gain
+// authority when that parser cannot establish whether this is a guest page.
+function kinozalParserFailureBody()
+{
+    return str_replace('<a ', '<a ' . str_repeat('x ', 10000), kinozalUnauthorizedBody());
+}
+
 // What Cloudflare returns for a managed challenge: HTTP 403 carrying the
 // "Just a moment..." interstitial. Trimmed from the live answer measured on
 // 2026-09-12 against kinozal.guru and kinozal.me, which challenged every
@@ -611,6 +619,9 @@ $suite->test('a longer details response beginning with the missing marker is ret
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'only the complete measured short answer is authoritative');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs,
+        'details attempt ended with unrecognised content: id=',
+        'unrecognised content belongs to the attempt, whose final endpoint may be loginmgr');
 });
 
 // ---------------------------------------------------------------------------
@@ -732,6 +743,9 @@ $suite->test('a reused client counts an early failed download as transport, not 
         'the transfer refusals remain counted');
     strictAssertSame(0, count(ruTrackerChecker::callsFor('parseMetainfo')),
         'old details bytes are never parsed as a download');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs,
+        'download attempt failed: refused-unresolvable-host id=1000',
+        'the classified failure belongs to the whole attempt, which can fail inside loginmgr');
 });
 
 $suite->test('parsed download settles an unclassified details 403 for this topic', function () {
@@ -1312,6 +1326,8 @@ $suite->test('a false download without a response does not reuse details bytes',
         'a failed fetch with no new bytes counts as transport failure');
     strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
         'the previous details response is not read as a download answer');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs,
+        'download attempt failed: last-status=', 'an early refusal does not invent a download response');
 });
 
 $suite->test('a loginmgr refusal before fetch cannot reuse a details redirect', function () {
@@ -1352,6 +1368,137 @@ $suite->test('a loginmgr refusal does not attribute its last status to download.
         'the status is named as the last client status, not a download response');
 });
 
+$suite->test('real fetchComplex failures attribute their final response to the download attempt', function () {
+    // Run the real fetchComplex/account adapter in a separate PHP: TestLib's
+    // Snoopy double cannot establish which request produced a redirect.
+    $dir = sys_get_temp_dir() . '/kinozal-login-redirect-' . bin2hex(random_bytes(4));
+    strictAssertTrue(mkdir($dir, 0700), 'private login profile');
+    try {
+        file_put_contents($dir . '/child.php', <<<'PHP'
+<?php
+list(, $repo, $profile, $mode) = $argv;
+$_ENV['RU_PROFILE_PATH'] = $profile;
+$_ENV['RU_LOG_FILE'] = $profile . '/errors.log';
+require $repo . '/php/Snoopy.class.inc';
+require $repo . '/plugins/loginmgr/accounts.php';
+class LoginRedirectSnoopy extends Snoopy {
+    public $requests = array();
+    public $mode;
+    public static $resolveCalls = 0;
+    public static function resolveHost($host) {
+        return ++self::$resolveCalls === 1 ? array('8.8.8.8') : array();
+    }
+    // Transport and DNS answers are scripted. Snoopy owns target admission,
+    // redirects and response metadata; commonAccount owns login refusal.
+    public function _httpsrequest($url, $content_type = '', $body = '', $method = 'GET') {
+        $this->requests[] = array($method, $url);
+        $this->headers = array();
+        $this->_redirectaddr = false;
+        $this->results = '<html>landing page</html>';
+        if ($url === 'https://kinozal.guru' && $method === 'GET') {
+            $this->status = 200;
+        } elseif ($url === 'https://kinozal.guru/takelogin.php' && $method === 'POST') {
+            $this->status = $this->mode === 'redirect' ? 302 : 200;
+            if ($this->mode === 'redirect')
+                $this->_redirectaddr = 'https://kinozal.guru/login.php';
+            elseif ($this->mode === 'guest')
+                $this->results = '<a href="/signup.php">Register</a>';
+        } elseif ($url === 'https://kinozal.guru/login.php' && $method === 'GET') {
+            $this->status = 403;
+            $this->headers = array('cf-mitigated: challenge');
+            $this->results = '<html><title>Just a moment...</title></html>';
+        } else {
+            throw new RuntimeException('unexpected request URL or method');
+        }
+        return true;
+    }
+}
+class ruTrackerChecker {
+    const STE_UPTODATE = 3; const STE_DELETED = 4; const STE_CANT_REACH_TRACKER = 5; const STE_DECLINED = -2;
+    public static $client; public static $fetched; public static $mode; public static $logs = array();
+    public static function registerTracker() {}
+    public static function makeClient($url) {
+        self::$client = new LoginRedirectSnoopy();
+        self::$client->mode = self::$mode;
+        // Exercise the real preflight refusal before a second transport can
+        // clear the first response. No actual DNS or network is consulted.
+        self::$client->block_private = self::$mode === 'no-metainfo';
+        self::$client->private_allowlist = array();
+        self::$fetched = self::$client->fetchComplex($url);
+        return self::$client;
+    }
+    public static function logDebug($message) { self::$logs[] = $message; }
+    public static function parseMetainfo($payload) { return null; }
+}
+ruTrackerChecker::$mode = $mode;
+rTorrentSettings::get()->registerPlugin('loginmgr');
+$manager = new accountManager();
+$manager->accounts['KinozalTV'] = array('name' => 'KinozalTV',
+    'path' => $repo . '/plugins/loginmgr/accounts/KinozalTV.php', 'object' => 'KinozalTVAccount',
+    'login' => 'fixture-user', 'password' => 'fixture-password', 'enabled' => 1, 'auto' => 0);
+if (!$manager->store()) throw new RuntimeException('cannot save isolated account');
+require $repo . '/plugins/rutracker_check/trackers/kinozal.php';
+// A prior details challenge has opened the independent download route.
+$walled = new ReflectionProperty('KinozalCheckImpl', 'detailsWalled');
+if (PHP_VERSION_ID < 80100) $walled->setAccessible(true);
+$walled->setValue(null, true);
+$verdict = KinozalCheckImpl::download_torrent('https://kinozal.guru/details.php?id=1', str_repeat('a', 40), null);
+$guests = new ReflectionProperty('KinozalCheckImpl', 'downloadGuestAnswers');
+if (PHP_VERSION_ID < 80100) $guests->setAccessible(true);
+$abandoned = new ReflectionProperty('KinozalCheckImpl', 'downloadAbandoned');
+if (PHP_VERSION_ID < 80100) $abandoned->setAccessible(true);
+echo json_encode(array('requests' => ruTrackerChecker::$client->requests,
+    'fetched' => ruTrackerChecker::$fetched, 'status' => ruTrackerChecker::$client->status,
+    'redirect' => ruTrackerChecker::$client->lastredirectaddr,
+    'response_url' => ruTrackerChecker::$client->lastResponseURL, 'verdict' => $verdict,
+    'resolve_calls' => LoginRedirectSnoopy::$resolveCalls,
+    'error_class' => RuTrackerFetchError::classify(ruTrackerChecker::$client->error),
+    'guests' => $guests->getValue(), 'abandoned' => $abandoned->getValue(),
+    'logs' => ruTrackerChecker::$logs)), "\n";
+PHP
+        );
+        $cases = array(
+            'redirect' => array(403, 'https://kinozal.guru/login.php', 1,
+                'download attempt encountered a login.php redirect: id=1'),
+            'guest' => array(200, 'https://kinozal.guru/takelogin.php', 1,
+                'download attempt ended at a guest page, check the loginmgr account: id=1'),
+            'no-metainfo' => array(200, '', 0,
+                'download attempt ended without metainfo: id=1 bytes=25'),
+        );
+        foreach ($cases as $mode => $expected) {
+            strictAssertTrue(mkdir($dir . '/' . $mode, 0700), 'each trace has a cold account profile');
+            $command = escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
+                . ' ' . escapeshellarg($dir . '/child.php') . ' ' . escapeshellarg(testFindRepoRoot())
+                . ' ' . escapeshellarg($dir . '/' . $mode) . ' ' . escapeshellarg($mode) . ' 2>&1';
+            $output = array();
+            exec($command, $output, $code);
+            strictAssertSame(0, $code, $mode . ': the real login path completed: ' . implode(' | ', $output));
+            $answer = json_decode(implode("\n", $output), true);
+            strictAssertTrue(is_array($answer), $mode . ': the child returned response metadata');
+            $requests = array(array('GET', 'https://kinozal.guru'));
+            if ($mode !== 'no-metainfo') $requests[] = array('POST', 'https://kinozal.guru/takelogin.php');
+            if ($mode === 'redirect') $requests[] = array('GET', 'https://kinozal.guru/login.php');
+            strictAssertSame($requests, $answer['requests'], $mode . ': the exact request chain explains the refusal');
+            strictAssertSame($mode === 'no-metainfo' ? 2 : 0, $answer['resolve_calls'],
+                $mode . ': the real target guard refused the second login request before transport');
+            strictAssertSame($mode === 'no-metainfo' ? 'refused-unresolvable-host' : '', $answer['error_class'],
+                $mode . ': the final error belongs to the login preflight');
+            strictAssertSame(false, $answer['fetched'], $mode . ': fetchComplex refused the caller URL');
+            strictAssertSame($expected[0], $answer['status'], $mode . ': status belongs to the last login response');
+            strictAssertSame($mode === 'redirect' ? $expected[1] : '', $answer['redirect'],
+                $mode . ': only the login redirect case records a redirect');
+            strictAssertSame($expected[1], $answer['response_url'], $mode . ': the original download has no response');
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $answer['verdict'], $mode . ': the check remains retryable');
+            strictAssertSame($expected[2], $answer['guests'], $mode . ': only an observed login wall counts');
+            strictAssertSame(false, $answer['abandoned'], $mode . ': one refusal does not abandon the endpoint');
+            strictAssertSame(array($expected[3]), $answer['logs'],
+                $mode . ': the diagnostic names the attempt without inventing a download response');
+        }
+    } finally {
+        strictRemoveTree($dir);
+    }
+});
+
 $suite->test('a catch-all answer clears an earlier Snoopy error', function () {
     Snoopy::reset();
     $client = new Snoopy();
@@ -1364,8 +1511,8 @@ $suite->test('a catch-all answer clears an earlier Snoopy error', function () {
 });
 
 // The endpoint lines are debug-gated. At the shipped default the operator must
-// still read, once per cycle, that the session is gone and whether a new login
-// can fix it: under a Cloudflare challenge loginmgr cannot log in at all.
+// still read, once per cycle, that the details request chain met a challenge.
+// fetchComplex can leave a login reply, so its final endpoint is unproven.
 function kinozalSessionHintLines($log)
 {
     return array_values(array_filter(explode("\n", $log), function ($line) {
@@ -1386,9 +1533,16 @@ $suite->test('a guest session behind a Cloudflare challenge is explained once at
     });
     $lines = kinozalSessionHintLines($log);
     strictAssertSame(1, count($lines), 'one explanation for the whole cycle: ' . $log);
-    strictAssertTrue(strpos($lines[0], 'Cloudflare challenge') !== false
-        && strpos($lines[0], 'will not help') !== false,
-        'the challenge is named and a new password is not promised to help: ' . $lines[0]);
+    strictAssertTrue(strpos($lines[0], 'details attempt') !== false
+        && strpos($lines[0], 'Cloudflare challenge') !== false,
+        'the observed attempt and challenge are named without asserting the final endpoint: ' . $lines[0]);
+    strictAssertTrue(strpos($lines[0], 'fresh authenticated session was not obtained') !== false
+        && strpos($lines[0], 'retried next cycle') !== false,
+        'the explanation states the login evidence boundary and retry: ' . $lines[0]);
+    strictAssertSame(false, strpos($lines[0], 'get_srv_details.php') !== false,
+        'fetchComplex may leave a login response, so its source endpoint is not established');
+    strictAssertSame(false, strpos($lines[0], 'will not help') !== false,
+        'a details challenge cannot prove that refreshing login is useless');
 });
 
 $suite->test('a guest session without a challenge asks for a new login once', function () {
@@ -1403,6 +1557,77 @@ $suite->test('a guest session without a challenge asks for a new login once', fu
     strictAssertTrue(strpos($lines[0], 'Settings -> Accounts') !== false
         && strpos($lines[0], 'Cloudflare') === false,
         'the operator is told where to log in again: ' . $lines[0]);
+});
+
+$suite->test('details parser failure cannot certify a hash or deletion or latch a guest session', function () {
+    $cases = kinozalTopics(2);
+    Snoopy::queue($cases[0]['details_url'], 200,
+        kinozalParserFailureBody() . kinozalDetailsBody($cases[0]['hash']));
+    Snoopy::queue($cases[1]['details_url'], 200,
+        kinozalParserFailureBody() . 'Торрент файл не найден.');
+    $limit = ini_get('pcre.backtrack_limit');
+    try {
+        ini_set('pcre.backtrack_limit', '1000');
+        foreach (kinozalRunAll($cases) as $verdict)
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
+                'an unparsed guest marker makes the answer retryable');
+        strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
+            'unknown answers are not a proved guest streak');
+        strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+            'an unreadable page does not skip later topics');
+        strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
+            return strpos($line, 'guest-page-parse-failed') !== false;
+        })), 'both parser refusals are classified');
+    } finally {
+        ini_set('pcre.backtrack_limit', $limit);
+    }
+});
+
+$suite->test('download parser failure cannot certify deletion or latch a guest session', function () {
+    $cases = kinozalTopics(2);
+    strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', true);
+    foreach ($cases as $case) {
+        Snoopy::queue($case['download_url'], 200, kinozalParserFailureBody() . kinozalDownloadMissingBody());
+        ruTrackerChecker::queueResult('parseMetainfo', null);
+    }
+    $limit = ini_get('pcre.backtrack_limit');
+    try {
+        ini_set('pcre.backtrack_limit', '1000');
+        foreach (kinozalRunAll($cases) as $verdict)
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
+                'a missing marker in an unparsed guest page is not deletion');
+        strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+            'unknown answers are not a proved guest streak');
+        strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
+            'an unreadable page does not skip later downloads');
+        strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
+            return strpos($line, 'guest-page-parse-failed') !== false;
+        })), 'both parser refusals are classified');
+    } finally {
+        ini_set('pcre.backtrack_limit', $limit);
+    }
+});
+
+$suite->test('trusted absolute and query registration anchors remain guest answers on both doors', function () {
+    foreach (array('/signup.php?from=details&amp;id=1', 'https://kinozal.guru/signup.php?from=details') as $href) {
+        $page = str_replace('/signup.php', $href, kinozalUnauthorizedBody());
+        $cases = kinozalTopics(2);
+        foreach ($cases as $case) Snoopy::queue($case['details_url'], 200, $page);
+        foreach (kinozalRunAll($cases) as $verdict)
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict, 'details guest is retryable');
+        strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
+            'both details answers establish a guest session');
+        $cases = kinozalTopics(2);
+        strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', true);
+        foreach ($cases as $case) {
+            Snoopy::queue($case['download_url'], 200, $page);
+            ruTrackerChecker::queueResult('parseMetainfo', null);
+        }
+        foreach (kinozalRunAll($cases) as $verdict)
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict, 'download guest is retryable');
+        strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+            'both download answers establish a guest session');
+    }
 });
 
 $suite->test('both endpoints losing the session in one cycle are explained once', function () {
@@ -1434,6 +1659,17 @@ $suite->test('a single guest blink is not explained as a lost session', function
         kinozalRunAll($c);
     });
     strictAssertSame(0, count(kinozalSessionHintLines($log)), 'one forgiven guest answer stays quiet: ' . $log);
+});
+
+$suite->test('signup page names inside details filenames do not latch a guest session', function () {
+    $cases = kinozalTopics(3);
+    foreach ($cases as $case)
+        Snoopy::queue($case['details_url'], 200,
+            str_replace('movie.mkv', 'source/signup.php', kinozalDetailsBody($case['hash'])));
+    foreach (kinozalRunAll($cases) as $verdict)
+        strictAssertSame(ruTrackerChecker::STE_UPTODATE, $verdict,
+            'an authoritative details hash remains readable when a filename mentions signup.php');
+    strictAssertSame(3, count(Snoopy::$requests), 'every topic is checked without a guest latch');
 });
 
 exit($suite->run());

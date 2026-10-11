@@ -93,17 +93,17 @@ class RuTrackerState
     // keyed by how this ruTorrent reaches its rTorrent: a genuine multiuser
     // install with a daemon per user keeps a lock per daemon and never
     // serialises unrelated cycles.
-    static private function cycleLockPath()
+    static public function daemonKey()
     {
         global $scgi_host, $scgi_port, $XMLRPCMountPoint;
-
-        // dir() is that same shared location (and the test override stands in
-        // for it wholesale, so a run stays inside its own temporary tree).
-        $dir = self::dir();
-        $daemon = md5((isset($scgi_host) ? $scgi_host : '')
+        return md5((isset($scgi_host) ? $scgi_host : '')
             . ':' . (isset($scgi_port) ? $scgi_port : '')
             . ':' . (isset($XMLRPCMountPoint) ? $XMLRPCMountPoint : ''));
-        return $dir . '/cycle-' . substr($daemon, 0, 8) . '.lock';
+    }
+
+    static private function cycleLockPath()
+    {
+        return self::dir() . '/cycle-' . substr(self::daemonKey(), 0, 8) . '.lock';
     }
 
     // Open (creating if needed) a lock file that BOTH OS users can take.
@@ -347,7 +347,7 @@ class RuTrackerState
     // disk at write time.
     //
     // $mutator must stay quick: the lock is held for its entire duration,
-    // and every other update()/save() call for the same $name blocks on it.
+    // and every other update() call for the same $name blocks on it.
     // In particular it must never wrap a slow operation like an HTTP fetch
     // -- callers with one (forumindex.php's fetchDump()) do the fetch
     // outside update() entirely and only reach for it to apply the result.
@@ -421,8 +421,10 @@ class RuTrackerState
  * nothing a tracker can answer changes that refusal, yet every hourly cycle
  * re-ran layer 2 and the whole BEP-9 metadata fetch only to be refused again.
  *
- * One entry per predecessor hash in updatepass.json, {until, length}. Each
- * refusal doubles the length from one hour to a one-day cap -- the shape of
+ * One entry per daemon and predecessor hash in updatepass.json, {until, length}.
+ * Local file-operation failures belong to that daemon, unlike shared tracker
+ * budgets. Old unscoped entries cannot establish that owner and hold nothing.
+ * Each refusal doubles the length from one hour to a one-day cap -- the shape of
  * the announce 403 cooldown (announce.php recordOutcome()) -- and a committed
  * replacement clears it. Only RuTrackerUpdatePass::run() reads it, so the
  * manual check (batch_check.php -> ruTrackerChecker::run()) retries at once.
@@ -440,11 +442,10 @@ class RuTrackerReplacementBackoff
 
     // The entries still part of a refusal streak at $now, keyed by upper-case
     // hash, as {until, length}; anything else in the stored map is left out.
-    static private function current($state, $now)
+    static private function currentEntries($stored, $now)
     {
-        $stored = is_array($state) && isset($state[self::KEY]) && is_array($state[self::KEY])
-            ? $state[self::KEY] : array();
         $current = array();
+        if (!is_array($stored)) return $current;
         foreach ($stored as $hash => $entry) {
             $hash = strtoupper((string) $hash);
             if (!is_array($entry) || !preg_match('/^[0-9A-F]{40}$/D', $hash)) continue;
@@ -464,29 +465,51 @@ class RuTrackerReplacementBackoff
         return $current;
     }
 
+    static private function currentDaemons($state, $now)
+    {
+        $current = array();
+        $stored = $state[self::KEY] ?? null;
+        if (!is_array($stored)) return $current;
+        foreach ($stored as $daemon => $entries) {
+            // Legacy hash keys cannot identify the daemon whose local
+            // filesystem refused the operation. Drop them on the next write.
+            if (!is_string($daemon) || preg_match('/^[0-9a-f]{32}$/D', $daemon) !== 1) continue;
+            $entries = self::currentEntries($entries, $now);
+            if (count($entries)) $current[$daemon] = $entries;
+        }
+        return $current;
+    }
+
     // hash => deadline for every entry still in force. A lock-free read: the
     // scheduler takes it once per cycle and a stale answer costs one cycle.
     static public function activeUntil($now)
     {
         $active = array();
-        foreach (self::current(RuTrackerState::load(self::DOCUMENT), $now) as $hash => $entry)
+        $state = RuTrackerState::load(self::DOCUMENT);
+        foreach (self::currentEntries($state[self::KEY][RuTrackerState::daemonKey()] ?? null, $now) as $hash => $entry)
             if ($now < $entry['until']) $active[$hash] = $entry['until'];
         return $active;
     }
 
     // Record one more local refusal for $hash. Returns the new deadline, or
     // null when the store refused the write ($failure says why).
-    static public function postpone($hash, $now, &$failure = null)
+    static public function postpone($hash, $now, &$failure = null, $scheduledAt = null)
     {
         $hash = strtoupper((string) $hash);
+        $daemon = RuTrackerState::daemonKey();
         $until = null;
-        $stored = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, &$until) {
-            $entries = self::current($state, $now);
+        $stored = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, $daemon, $scheduledAt, &$until) {
+            $daemons = self::currentDaemons($state, $now);
+            $entries = $daemons[$daemon] ?? array();
             $length = isset($entries[$hash])
                 ? min(self::CAP_SECONDS, $entries[$hash]['length'] * 2) : self::FIRST_SECONDS;
-            $until = $now + $length;
+            // Scheduled attempts own an aligned slot. Counting slow metadata
+            // work again would miss the intended next slot by a few seconds
+            // and add a whole configured cycle to every backoff interval.
+            $until = $scheduledAt === null ? $now + $length : max($now, $scheduledAt + $length);
             $entries[$hash] = array('until' => $until, 'length' => $length);
-            $state[self::KEY] = $entries;
+            $daemons[$daemon] = $entries;
+            $state[self::KEY] = $daemons;
             return $state;
         }, $failure);
         return $stored ? $until : null;
@@ -497,17 +520,24 @@ class RuTrackerReplacementBackoff
     static public function clear($hash, $now)
     {
         $hash = strtoupper((string) $hash);
+        $daemon = RuTrackerState::daemonKey();
         // Read first: almost every commit has no entry, and must not pay a
         // locked rewrite of the scheduler's document for nothing.
-        $stored = RuTrackerState::load(self::DOCUMENT)[self::KEY] ?? null;
+        $stored = RuTrackerState::load(self::DOCUMENT)[self::KEY][$daemon] ?? null;
         if (!is_array($stored) || !array_key_exists($hash, $stored)) return false;
         $removed = false;
-        $written = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, &$removed) {
-            $removed = isset($state[self::KEY]) && is_array($state[self::KEY])
-                && array_key_exists($hash, $state[self::KEY]);
-            $entries = self::current($state, $now);
+        $written = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, $daemon, &$removed) {
+            // Another hash can prune this entry and its whole daemon map
+            // between the cheap read above and acquisition of the lock.
+            if (!isset($state[self::KEY][$daemon]) || !is_array($state[self::KEY][$daemon]))
+                return $state;
+            $removed = array_key_exists($hash, $state[self::KEY][$daemon]);
+            $daemons = self::currentDaemons($state, $now);
+            $entries = $daemons[$daemon] ?? array();
             unset($entries[$hash]);
-            if (count($entries)) $state[self::KEY] = $entries;
+            if (count($entries)) $daemons[$daemon] = $entries;
+            else unset($daemons[$daemon]);
+            if (count($daemons)) $state[self::KEY] = $daemons;
             else unset($state[self::KEY]);
             return $state;
         });

@@ -1252,8 +1252,8 @@ class ruTrackerChecker
 	// erases the staged copy on this answer, and that copy holds the only
 	// chk-replacement marker the sweep can find the transaction by, so an ack
 	// mistaken for a restore leaves a stopped, closed torrent nothing in the
-		// plugin will ever look at again. The state check and generation clear
-		// therefore stay inside the same daemon-side conditional command.
+	// plugin will ever look at again. The state check and generation clear
+	// therefore stay inside the same daemon-side conditional command.
 	static private function restoreExistingTorrent($hash, $wasOpen, $wasStarted, $expectedReplacing = null)
 	{
 		if($expectedReplacing === null || (string) $expectedReplacing === '')
@@ -2075,9 +2075,16 @@ class ruTrackerChecker
 			return self::STE_ERROR;
 		}
 
-		if($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob))
+		$armReason = null;
+		if($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob, $armReason))
 		{
-			self::logCleanupFailure('obsolete cleanup drain not confirmed before predecessor erase; replacement remains retryable');
+			self::logCleanupFailure('obsolete cleanup could not be armed ('
+				. ($armReason === null ? 'cleanup-arm-unconfirmed' : $armReason)
+				. ') before predecessor erase; replacement remains retryable');
+			// Lock, acknowledgement and RPC failures can recover on the next tick.
+			if($armReason === 'cleanup-rename-capability')
+				self::postponeLocalRefusal($hash, $newHash, $armReason,
+					'obsolete-file cleanup could not be armed');
 			if(!erasedataCancelObsoleteCleanup($cleanupJob))
 			{
 				self::logCleanupFailure('prepared obsolete cleanup cancellation failed after drain refusal; both generations and recovery markers were retained');
@@ -2166,20 +2173,23 @@ class ruTrackerChecker
 	// and the metadata fetch in front of it (RuTrackerReplacementBackoff).
 	// Refusals now come at most once per backoff window, so one ungated line
 	// each is one line per change of the schedule, not one per cycle.
-	static private function postponeLocalRefusal($hash, $newHash, $reason)
+	static private function postponeLocalRefusal($hash, $newHash, $reason,
+		$operation = 'obsolete-file cleanup could not be prepared')
 	{
 		$failure = null;
-		$until = RuTrackerReplacementBackoff::postpone($hash, time(), $failure);
+		$scheduledAt = self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
+			? (self::$activeRunIdentity['scheduledAt'] ?? null) : null;
+		$until = RuTrackerReplacementBackoff::postpone($hash, time(), $failure, $scheduledAt);
 		if($until === null)
 		{
 			self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
-				. ' refused: obsolete-file cleanup could not be prepared (' . $reason
+				. ' refused: ' . $operation . ' (' . $reason
 				. '); the scheduler backoff was not saved (' . (string) $failure
 				. '), so the next cycle retries');
 			return;
 		}
 		self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
-			. ' postponed: obsolete-file cleanup could not be prepared (' . $reason
+			. ' postponed: ' . $operation . ' (' . $reason
 			. '); next scheduled attempt after ' . gmdate('Y-m-d\TH:i:s\Z', $until)
 			. '; the manual Check for Update button retries now');
 	}
@@ -2496,7 +2506,7 @@ class ruTrackerChecker
 		return( in_array($label, $ignoreLabels, true) || in_array(rawurldecode((string) $label), $ignoreLabels, true) );
 	}
 
-	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null )
+	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null, $scheduledAt = null )
 	{
 		// $performed is deliberately narrower than "this invocation changed
 		// something": it acknowledges only a real tracker-handler run. The
@@ -2535,7 +2545,8 @@ class ruTrackerChecker
 				return(false);
 			}
 
-			self::$activeRunIdentity = array('hash' => $hash, 'localId' => $localId);
+			self::$activeRunIdentity = array('hash' => $hash, 'localId' => $localId,
+				'scheduledAt' => $scheduledAt);
 			self::$missingSuccessorMarker = null;
 
 			$recoverableP = $state == self::STE_INPROGRESS

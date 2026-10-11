@@ -220,6 +220,14 @@ class RuTrackerUpdatePass
         return false;
     }
 
+    static private function replacementAttemptSlot($now)
+    {
+        global $updateInterval;
+        $cadence = (int) ($updateInterval * 60);
+        if ($cadence < 1) return null;
+        return $now + rTorrentSettings::getAlignedStart('rutracker_check', $cadence, $now) - $cadence;
+    }
+
     static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null,
         $correctionPresent = null)
     {
@@ -235,7 +243,8 @@ class RuTrackerUpdatePass
         if ($defaultChecker) {
             $performed = false;
             ruTrackerChecker::run(
-                $row['hash'], $row['state'], $row['time'], $row['label'], $performed, $prepare);
+                $row['hash'], $row['state'], $row['time'], $row['label'], $performed, $prepare,
+                self::replacementAttemptSlot(time()));
         } else {
             call_user_func($checker, $row['hash'], $row, $prepare);
             // The test seam must invoke the claimed preparation callback
@@ -456,7 +465,7 @@ class RuTrackerUpdatePass
                 $foreignMetrics[$bucket] = array('rows' => 0, 'foreign_rows' => 0,
                     'eligible' => 0, 'postponed' => 0, 'dispatched' => 0, 'capped' => 0,
                     'cant_reach' => 0, 'error' => 0, 'max_age' => 0,
-                    'time_unset' => 0, 'time_future' => 0);
+                    'time_unset' => 0, 'time_future' => 0, 'replacement_held' => 0);
             $foreignMetrics[$bucket]['rows']++;
             if ($row['state'] === ruTrackerChecker::STE_CANT_REACH_TRACKER)
                 $foreignMetrics[$bucket]['cant_reach']++;
@@ -547,11 +556,13 @@ class RuTrackerUpdatePass
             // be refused again, so the row keeps its ERROR verdict, and any
             // durable correction, until the backoff lapses. A verdict that has
             // since moved on is not held; META_PENDING and INPROGRESS were
-            // dispatched above. Keyed by hash alone, so no other torrent --
-            // RuTracker or foreign -- is affected.
+            // dispatched above. Keyed by this daemon and hash, so no other
+            // torrent or daemon -- RuTracker or foreign -- is affected.
             if ($row['state'] === ruTrackerChecker::STE_ERROR
-                && isset($replacementBackoff[$correctionKey]))
+                && isset($replacementBackoff[$correctionKey])) {
+                $foreignMetrics[$buckets[$index]]['replacement_held']++;
                 continue;
+            }
 
 
             // A durable feed correction must be installed before either the
@@ -992,11 +1003,9 @@ class RuTrackerUpdatePass
     // chk-meta-new AND chk-state off the old torrent it names -- CLAIMED
     // only when chk-meta-new is still this item's own hash *and* chk-state
     // is still META_PENDING (pump() owns it, leave it alone), otherwise an
-    // orphan. A stale chk-meta-new alone is not enough: e.g. the old torrent
-    // gains an ignored label mid-fetch, check.php's run() applies the label
-    // check before the META_PENDING short-circuit and writes STE_IGNORED,
-    // pump() never runs again, yet chk-meta-new still names this stub --
-    // without the state check that stub would be "claimed" forever. An
+    // orphan. A stale chk-meta-new alone is not enough: the predecessor
+    // may leave META_PENDING while retaining that key after an interrupted
+    // cleanup, so the state must still confirm the claim. An
     // orphan is erased only once its own chk-meta-until deadline has
     // passed, the same deadline pump() itself enforces -- the guard against
     // reaping a fetch that only just began.

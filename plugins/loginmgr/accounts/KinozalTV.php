@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/../../../php/kinozal.php');
+
 class KinozalTVAccount extends commonAccount
 {
 	public $url = "https://kinozal.guru";
@@ -14,16 +16,8 @@ class KinozalTVAccount extends commonAccount
 		// came from the web front end.
 		if((strncmp($client->results,'d',1)===0) && (strpos($client->results,'4:info')!==false))
 			return(true);
-		// Two independent markers of a guest answer, because Kinozal has two
-		// kinds of them. The login form is matched on the password field alone
-		// (like RUTracker/TapochekNet do): the previous two-attribute probe
-		// stopped matching once the markup became <input type=password size=35
-		// id="password" name="password">. But get_srv_details.php answers a
-		// guest with a plain "not authorized" line and no form at all, so the
-		// registration link -- which every guest answer carries and no
-		// authenticated one does -- is what catches that second shape.
-		return(strpos($client->results, ' name="password"')===false &&
-			strpos($client->results, '/signup.php')===false);
+		$guest = KinozalResponse::isGuestPage($client->results);
+		return($guest === null ? null : !$guest);
 	}
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
 	{
@@ -47,6 +41,6 @@ class KinozalTVAccount extends commonAccount
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,array("kinozal.tv","kinozal.me","kinozal.guru"),"https"));
+		return(self::urlAddresses($url,KinozalResponse::SITE_HOSTS,"https"));
 	}
 }

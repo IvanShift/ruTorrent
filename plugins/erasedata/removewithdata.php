@@ -1147,8 +1147,9 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 	// The prepared cleanup file is the obligation while OLD still exists. Use
 	// the same durable generation, aligned schedule and guarded-child ack as
 	// removal admission, without authorizing a payload removal for OLD.
-	function erasedataArmObsoleteCleanupRun(array $dependencies, $job)
+	function erasedataArmObsoleteCleanupRun(array $dependencies, $job, &$reason = null)
 	{
+		$reason = null;
 		$listPath = isset($dependencies['listPath']) ? $dependencies['listPath'] : null;
 		$user = isset($dependencies['user']) ? $dependencies['user'] : null;
 		$log = isset($dependencies['log']) ? $dependencies['log'] : null;
@@ -1163,14 +1164,16 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 			|| dirname($job['list_path']) !== $listPath
 			|| erasedataReadExactCleanupJob($job) === false)
 		{
-			erasedataDrainDiagnostic($log, 'cleanup-arm-job', null, 1,
+			$reason = 'cleanup-arm-job';
+			erasedataDrainDiagnostic($log, $reason, null, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
 		$stateLock = erasedataAcquireDrainStateLock($listPath);
 		if(!is_resource($stateLock))
 		{
-			erasedataDrainDiagnostic($log, 'cleanup-arm-lock', null, 1,
+			$reason = 'cleanup-arm-lock';
+			erasedataDrainDiagnostic($log, $reason, null, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1178,7 +1181,8 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		if(!is_array($state) || !erasedataDrainStateBelongsTo($state, $user))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'cleanup-arm-state', null, 1,
+			$reason = 'cleanup-arm-state';
+			erasedataDrainDiagnostic($log, $reason, null, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1186,7 +1190,8 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		if($generation === false)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'cleanup-arm-generation', $state['generation'], 1,
+			$reason = 'cleanup-arm-generation';
+			erasedataDrainDiagnostic($log, $reason, $state['generation'], 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1197,7 +1202,8 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		if(!erasedataWriteDrainState($listPath, $state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'cleanup-arm-write', $generation, 1,
+			$reason = 'cleanup-arm-write';
+			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1206,13 +1212,15 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		// schedule on restart, and that phase alone cannot prove a live tick.
 		if(!erasedataRearmDrainScheduleRun($dependencies))
 		{
-			erasedataDrainDiagnostic($log, 'cleanup-arm-rearm', $generation, 1,
+			$reason = 'cleanup-arm-rearm';
+			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
 		if(!erasedataWaitForDrainAcknowledgement($listPath, $generation, $timeout, $poll))
 		{
-			erasedataDrainDiagnostic($log, 'cleanup-drain-no-ack', $generation, 1,
+			$reason = 'cleanup-drain-no-ack';
+			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1223,7 +1231,8 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		if(!erasedataDrainStateBelongsTo($state, $user) || ($ack !== 0 && $ack !== 1)
 			|| $manifest === false)
 		{
-			erasedataDrainDiagnostic($log, 'cleanup-arm-changed', $generation, 1,
+			$reason = 'cleanup-arm-changed';
+			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1233,7 +1242,13 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 		if(!erasedataCleanupRenameReady($listPath, $manifest, $filesystem))
 		{
 			ErasedataFilesystemOps::reportRenameRefusal();
-			erasedataDrainDiagnostic($log, 'cleanup-rename-capability', $generation, 1,
+			// A failed process/descriptor or generic errno does not prove a
+			// lasting capability refusal; retry those on the next normal tick.
+			$reason = in_array(ErasedataFilesystemOps::lastRenameRefusal(), array(
+				'rename-noreplace-unsupported', 'rename-noreplace-manifest-unavailable',
+				'rename-noreplace-manifest-invalid', 'rename-noreplace-helper-unavailable'), true)
+				? 'cleanup-rename-capability' : 'cleanup-rename-unconfirmed';
+			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
 			return(false);
 		}
@@ -1243,7 +1258,7 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 
 if(!function_exists('erasedataArmObsoleteCleanup'))
 {
-	function erasedataArmObsoleteCleanup($job)
+	function erasedataArmObsoleteCleanup($job, &$reason = null)
 	{
 		return(erasedataArmObsoleteCleanupRun(array(
 			'listPath' => erasedataQueuePath(),
@@ -1251,7 +1266,7 @@ if(!function_exists('erasedataArmObsoleteCleanup'))
 			'log' => array('FileUtil', 'toLog'),
 			'ackTimeout' => ERASEDATA_DRAIN_ACK_TIMEOUT,
 			'ackPoll' => ERASEDATA_DRAIN_ACK_POLL,
-		), $job));
+		), $job, $reason));
 	}
 }
 
@@ -5090,9 +5105,7 @@ if(!function_exists('erasedataRetirementScan'))
 			return($scan);
 		clearstatcache();
 		$entries = @scandir($listPath);
-		// Unreadable, or beyond the cardinality this store is bounded by: in
-		// neither case can this process account for what is in there.
-		if(!is_array($entries) || count($entries) > ERASEDATA_PENDING_MAX_MARKERS)
+		if(!is_array($entries))
 			return($scan);
 		$scan['unreadable'] = false;
 		foreach($entries as $entry)
@@ -5105,11 +5118,17 @@ if(!function_exists('erasedataRetirementScan'))
 				continue;
 			$scan['classes'][$class]++;
 			$scan['candidates']++;
+			// Hash locks persist after collection to preserve flock identity.
+			// Bound obligations, not the queue's accumulated control files.
+			if($scan['candidates'] > ERASEDATA_PENDING_MAX_MARKERS)
+			{
+				$scan['unreadable'] = true;
+				return($scan);
+			}
 		}
-		// The SAME durable state the worker reads, not the markers alone. A
-		// journal record with no file beside it is still an obligation -- a
-		// `retained` one never prunes -- and a state nobody can parse is not
-		// evidence of anything.
+		// Read the worker's durable state as well as the markers. Every journal
+		// record not yet pruned remains an obligation; unreadable state cannot
+		// establish an empty queue.
 		$state = erasedataReadDrainState($listPath);
 		if(!is_array($state) || !isset($state['journal']) || !is_array($state['journal']))
 		{

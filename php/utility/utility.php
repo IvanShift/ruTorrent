@@ -54,6 +54,6 @@ class Utility
 	public static function isHostname($name)
 	{
 		return( is_string($name) && (strlen($name)<254) && (bool)preg_match(
-			'`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`i', $name ) );
+			'`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`iD', $name ) );
 	}
 }

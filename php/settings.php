@@ -3,6 +3,7 @@
 require_once( 'xmlrpc.php' );
 require_once( __DIR__ . '/xmlrpc_path.php' );
 require_once( 'cache.php');
+require_once(__DIR__.'/commandargs.php');
 
 class rTorrentSettings
 {
@@ -122,9 +123,9 @@ class rTorrentSettings
 	{
 	        if( array_key_exists($ename, $this->hooks) )
 	        {
-			for( $i = 0; $i<count($this->hooks[$ename]); $i++ )
+			foreach( $this->hooks[$ename] as $i => $subject )
 			{
-				if($this->hooks[$ename][$i] == $plugin)
+				if($subject["name"] === $plugin)
 				{
 					unset($this->hooks[$ename][$i]);
 					if( empty($this->hooks[$ename]) )
@@ -516,7 +517,7 @@ class rTorrentSettings
 		$startAt = $interval+rand(0,$schedule_rand);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
-	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null,$now = null)	// $interval in minutes
+	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null,$now = null,$daemonClock = false)	// $interval in minutes
 	{
 		// The start has to be deterministic, not jittered with rand().
 		// php/getplugins.php re-runs every enabled plugin's init.php on each
@@ -539,7 +540,30 @@ class rTorrentSettings
 		// same fire time, and a caller that can only read the clock samples a
 		// single instant. Production callers pass nothing and get time().
 		$interval = $interval*60;
+		if($now === null)
+			$now = time();
 		$startAt = self::getAlignedStart($name,$interval,$now);
+		if($daemonClock && $interval >= 1)
+		{
+			// schedule measures relative starts from its cached callback clock,
+			// which may lag PHP while another callback runs. Subtract that same
+			// clock inside this callback to preserve the selected absolute slot.
+			// Only an overdue target advances to the next profile phase; a
+			// cached clock more than one interval behind still targets T.
+			$difference = '$math.sub='.($now+$startAt).',$system.time=';
+			$shifted = '$math.sub='.RtorrentCommandArguments::quote($difference).',1';
+			$remainder = '$math.mod='.RtorrentCommandArguments::quote($shifted).','.$interval;
+			$positive = '$math.add='.$interval.','.RtorrentCommandArguments::quote($remainder);
+			$normalized = '$math.mod='.RtorrentCommandArguments::quote($positive).','.$interval;
+			$delay = '$math.add=1,'.RtorrentCommandArguments::quote($normalized);
+			$delay = '$math.max='.RtorrentCommandArguments::quote($difference)
+				.','.RtorrentCommandArguments::quote($delay);
+			$delay = '$cat='.RtorrentCommandArguments::quote($delay);
+			$command = getCmd('schedule').'='.RtorrentCommandArguments::quote($name.User::getUser())
+				.','.RtorrentCommandArguments::quote($delay).','.$interval
+				.','.RtorrentCommandArguments::quote($cmd);
+			return(new rXMLRPCCommand('branch', array('', 1, $command)));
+		}
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
 	static public function getAlignedStart($name,$interval,$now = null)	// $interval in seconds

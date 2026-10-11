@@ -187,6 +187,17 @@ function strictAssertSame($expected, $actual, $message)
     testAssertSame($expected, $actual, $message);
 }
 
+// Ownership actions are also nested inside daemon-side branch parameters.
+function strictAssertNoRpcCommand($needle, $message)
+{
+    foreach (rXMLRPCRequest::$requests as $request) {
+        $wire = $request['key'];
+        foreach ($request['commands'] as $command)
+            if ($command->command === 'branch') $wire .= '|' . implode('|', array_map('strval', $command->params));
+        strictAssertTrue(strpos($wire, $needle) === false, $message . ' (saw ' . $request['key'] . ')');
+    }
+}
+
 // Every log line this plugin writes must be English. The UI text moved into
 // plugins/rutracker_check/lang/*.js (the plugin writes a chk-msg token and the
 // browser renders it), so what is left in PHP is log lines only, and the log is
@@ -635,6 +646,19 @@ class rTorrentSettings
     // the daemon looks like; metafetch falls back to $topDirectory then.
     public $directory = '';
     private static $instance;
+
+    public static function getAlignedStart($name, $interval, $now = null)
+    {
+        // Exercise the production slot calculation instead of maintaining a
+        // second scheduler formula in this double.
+        static $align = null;
+        if ($align === null) {
+            require_once(testFindRepoRoot() . '/php/utility/user.php');
+            $definition = loadFunctionDefinition(testFindRepoRoot() . '/php/settings.php', 'getAlignedStart');
+            $align = eval('return ' . preg_replace('/^function getAlignedStart/', 'function', $definition) . ';');
+        }
+        return $align($name, $interval, $now);
+    }
 
     public static function get()
     {

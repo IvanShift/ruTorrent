@@ -20,6 +20,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
  */
 
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
+require_once(__DIR__ . '/../../../php/Torrent.php');
 foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $accountFile) {
     require_once($accountFile);
 }
@@ -30,7 +31,8 @@ function caAccountClasses()
 {
     $classes = array();
     foreach (get_declared_classes() as $class) {
-        if (is_subclass_of($class, 'commonAccount') && !is_a($class, 'ProbeAccount', true)) {
+        if (is_subclass_of($class, 'commonAccount') && !is_a($class, 'ProbeAccount', true)
+            && $class !== 'CAKinozalAccount') {
             $classes[] = $class;
         }
     }
@@ -53,6 +55,7 @@ class CAClient
     public $referer = '';
     public $cookies = array();
     public $fetches = 0;
+    public $requests = array();
     public $filename = 'movie.torrent';
     private $queue;
 
@@ -64,6 +67,7 @@ class CAClient
     public function fetch($url, $method = 'GET', $contentType = '', $body = '')
     {
         $this->fetches++;
+        $this->requests[] = array($method, $url);
         if ($this->queue) {
             $answer = array_shift($this->queue);
             $this->apply($answer);
@@ -160,6 +164,29 @@ class CAPermissivePostFetchAccount extends ProbeAccount
     }
 }
 
+class CAKinozalAccount extends KinozalTVAccount
+{
+    public $data;
+    public $logins = 0;
+
+    public function __construct()
+    {
+        $this->data = new CARecordingData('KinozalTV');
+        $this->data->loaded = true;
+    }
+
+    protected function loadData($client = null)
+    {
+        return $this->data;
+    }
+
+    protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
+    {
+        $this->logins++;
+        return parent::login($client, $login, $password, $url, $method, $content_type, $body, $is_result_fetched);
+    }
+}
+
 // A page carrying none of the guest markers any account looks for, so every
 // isOK() under accounts/ reads it as authenticated. It is the control: the
 // refusals below differ from it in the answer's status or body alone.
@@ -206,6 +233,60 @@ function caPostFetch($class, $client, $url = 'https://tracker.example/page.php')
 }
 
 $tests = array(
+
+    'a failed Kinozal guest parser refuses the answer without replacing its cached session' => function () {
+        $account = new CAKinozalAccount();
+        // The registration anchor is from the captured anonymous details answer.
+        $client = new CAClient(array(array(200, '<a href=\'/signup.php\' class=\'sba\'>сюда</a>')));
+        $limit = ini_get('pcre.backtrack_limit');
+        try {
+            ini_set('pcre.backtrack_limit', '1');
+            testAssertSame(false, caFetch($account, $client), 'an unreadable marker result is not authenticated');
+            testAssertSame(0, $account->logins, 'parser failure provides no reason to send credentials');
+            testAssertSame(0, $account->data->removed, 'cookies never proved stale are kept');
+            testAssertSame(0, $account->data->stored, 'an unverified response cannot replace the cache');
+            testAssertSame(1, $client->fetches, 'the next caller may retry without a login cascade');
+        } finally {
+            ini_set('pcre.backtrack_limit', $limit);
+        }
+    },
+
+    'a login reply with a failed Kinozal guest parser is refused' => function () {
+        $method = new ReflectionMethod('commonAccount', 'loginWasNotRefused');
+        if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+        $limit = ini_get('pcre.backtrack_limit');
+        try {
+            ini_set('pcre.backtrack_limit', '1');
+            testAssertSame(false, (bool) $method->invoke(new KinozalTVAccount(),
+                caHolding(200, '<a href="/signup.php">guest</a>')),
+                'an unparsed login reply cannot authorize storing cookies');
+            testAssertTrue(preg_last_error() !== PREG_NO_ERROR, 'the fixture really exhausts PCRE');
+        } finally {
+            ini_set('pcre.backtrack_limit', $limit);
+        }
+    },
+
+    'a failed Kinozal relogin leaves the login reply on the client that requested details' => function () {
+        $account = new CAKinozalAccount();
+        $challenge = '<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/test"></script></html>';
+        $client = new CAClient(array(
+            array(200, '<a href="/signup.php">guest</a>'),
+            array(200, caLivePage()),
+            array(403, $challenge),
+        ));
+        testAssertSame(false, $account->fetch($client,
+            'https://kinozal.guru/get_srv_details.php?action=2&id=1', 'fixture-user', 'fixture-password', 'GET', '', ''),
+            'the failed login cannot return the requested details');
+        testAssertSame(1, $account->logins, 'the real adapter performed its relogin path');
+        testAssertSame(3, $client->fetches, 'details, landing page and takelogin were requested');
+        testAssertSame(array(
+            array('GET', 'https://kinozal.guru/get_srv_details.php?action=2&id=1'),
+            array('GET', 'https://kinozal.guru'),
+            array('POST', 'https://kinozal.guru/takelogin.php'),
+        ), $client->requests, 'the final reply belongs to the actual adapter login POST');
+        testAssertSame(403, $client->status, 'the remaining status comes from takelogin');
+        testAssertSame($challenge, $client->results, 'the remaining body comes from takelogin');
+    },
 
     // ---- what fetch() does with each kind of answer -------------------------
 
@@ -455,8 +536,10 @@ $tests = array(
     'a downloaded torrent is not mistaken for a login wall' => function () {
         // Kinozal reads a guest answer off the registration link, which a
         // torrent may legitimately carry in its comment field.
-        $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment28:see /signup.php to register'
-            . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384eee';
+        $torrent = 'd8:announce31:http://tr.kinozal.guru/ann?uk=X7:comment27:see /signup.php to register'
+            . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\0", 20) . 'ee';
+        testAssertSame(false, Torrent::fromRawBytes($torrent)->errors(), 'the fixture is valid bencode');
         testAssertSame(true, caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
             'a torrent whose comment names /signup.php is still a torrent');
     },

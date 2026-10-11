@@ -639,7 +639,7 @@ SH;
             privateData::load('KinozalTV', new Snoopy());
             privateData::load('KinozalTV', new Snoopy());
             sourceSame(1, substr_count(sourceLog(), 'loginmgr: legacy-cookie-cache-needs-refresh: KinozalTV'),
-                'one explanation per account and process, however often a cycle loads it');
+                'one explanation for the same legacy session, however often a cycle loads it');
             (new privateData('KinozalTV'))->remove();
 
         }

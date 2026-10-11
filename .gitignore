@@ -88,3 +88,7 @@ backup/
 # `git add -A` would otherwise stage them into a fork commit.
 /logs_*.zip
 /rutorrent-app-errors.log
+# Operator-provided cache copies contain personal history and are not build inputs.
+/history.dat
+/history_data.dat
+/log_history.dat

@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/RtorrentCommandParser.php');
 
 // The settings singleton normally restores share/settings/rtorrent.dat. A
 // developer checkout can legitimately contain that ignored runtime cache, but
@@ -34,6 +35,26 @@ register_shutdown_function(function () use ($scheduleProfilePath) {
 // settings.php drags in the real rXMLRPC* classes, which collide with the
 // doubles in tests/plugins/rutracker_check/TestLib.php.
 require_once(__DIR__ . '/../../php/settings.php');
+
+// Evaluate only the native arithmetic used by registration after the shared
+// parser has removed each quoting layer; unsupported commands fail the case.
+function scheduleEvaluate($argument, $cached)
+{
+    if (!is_string($argument) || substr($argument, 0, 1) !== '$') return $argument;
+    $commands = RtorrentCommandParser::commands(substr($argument, 1));
+    if (count($commands) !== 1) throw new RuntimeException('Unexpected registration command count');
+    $call = $commands[0];
+    if ($call['name'] === 'system.time') return $cached;
+    $args = array_map(function ($arg) use ($cached) { return scheduleEvaluate($arg, $cached); }, $call['args']);
+    switch ($call['name']) {
+        case 'cat': return implode('', $args);
+        case 'math.add': return $args[0] + $args[1];
+        case 'math.sub': return $args[0] - $args[1];
+        case 'math.mod': return $args[0] % $args[1];
+        case 'math.max': return max($args);
+    }
+    throw new RuntimeException('Unexpected registration command: ' . $call['name']);
+}
 
 // The instant a registration made at $now would fire.
 function scheduleFiresAt($name, $interval, $now)
@@ -266,6 +287,36 @@ $tests = array(
         }
         testAssertTrue(count(array_unique($offsets)) > 1, 'Every task landed on the same second');
         testAssertTrue(max($offsets) <= $schedule_rand, 'A task landed outside the jitter window');
+    },
+    'daemon-clock registration preserves the aligned target despite a stale callback clock' => function () {
+        $settings = rTorrentSettings::get();
+        $now = 1755198001;
+        $startAt = null;
+        $body = 'print="a,b;\\\"quoted\\\""';
+        $command = $settings->getScheduleCommand('rutracker_check', 60, $body, $startAt, $now, true);
+        testAssertSame('branch', $command->command, 'The schedule must be evaluated inside one daemon callback');
+        testAssertSame('', $command->params[0]->value, 'The callback uses the global target');
+        testAssertSame('1', $command->params[1]->value, 'The callback always installs the selected slot');
+        testAssertSame('i4', $command->params[1]->type, 'The callback condition is an XMLRPC integer');
+        $parsed = RtorrentCommandParser::commands($command->params[2]->value);
+        testAssertSame(1, count($parsed), 'Exactly one schedule is installed');
+        testAssertSame(getCmd('schedule'), $parsed[0]['name'], 'The schedule command uses the shared mapper');
+        testAssertSame('rutracker_check' . User::getUser(), $parsed[0]['args'][0], 'The profile key is preserved');
+        testAssertSame('3600', $parsed[0]['args'][2], 'The installed cadence remains in seconds');
+        testAssertSame($body, $parsed[0]['args'][3], 'The callback body survives nested grammar bytes');
+        foreach (array($now, $now - 2, $now - 20, $now - 7202, $now + $startAt,
+            $now + $startAt + 2, $now + $startAt + 7202) as $cached) {
+            $relative = (int) scheduleEvaluate($parsed[0]['args'][1], $cached);
+            testAssertTrue($relative >= 1, 'Every registration has a positive delay');
+            if ($cached >= $now + $startAt)
+                testAssertTrue($relative <= 3600, 'An overdue registration has a bounded positive delay');
+            $firesAt = $cached + $relative;
+            testAssertTrue($firesAt > $cached, 'An overdue target never becomes an unsigned negative delay');
+            testAssertSame(($now + $startAt) % 3600, $firesAt % 3600,
+                'A stale or delayed callback retains the chosen profile phase');
+            if ($cached < $now + $startAt)
+                testAssertSame($now + $startAt, $firesAt, 'A stale callback clock cannot move the chosen slot earlier');
+        }
     },
     'the clock seam is optional' => function () {
         // Production callers -- plugins/trafic/init.php and

@@ -45,7 +45,11 @@ else
 			__DIR__.'/update.php', array(User::getUser()), $capability);
 		$checkerScheduleReady = $checkerCommand !== false;
 		if($checkerScheduleReady)
-			$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,$checkerCommand);
+		{
+			$checkerStart = null;
+			$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
+				$checkerCommand,$checkerStart,null,true);
+		}
 		else
 			FileUtil::toLog('rutracker_check: checker schedule refused reason='
 				. ($capability === 'unconfirmed' ? 'rpc-unknown' : 'unrepresentable-argv'));
