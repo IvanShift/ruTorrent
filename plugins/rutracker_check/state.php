@@ -1,5 +1,8 @@
 <?php
 
+// RuTrackerRpcValue, the one canonical integer parser, for the backoff below.
+require_once(__DIR__ . '/runstate.php');
+
 // Shared JSON-backed persistence for rutracker_check's per-layer state files
 // (announce.json, forumindex.json, ...). Each name resolves to
 // <settings path>/rutracker_check/<name>.json. save() writes atomically
@@ -407,5 +410,107 @@ class RuTrackerState
         } finally {
             fclose($fp);
         }
+    }
+}
+
+/**
+ * The scheduler's wait after createTorrent() aborted a replacement before the
+ * predecessor erase because a LOCAL file operation was refused: the erasedata
+ * cleanup plan or its admission. Seen 2026-10-11 on Docker Desktop 9p storage,
+ * where the admission's rename probe logged rename-noreplace-error errno=1:
+ * nothing a tracker can answer changes that refusal, yet every hourly cycle
+ * re-ran layer 2 and the whole BEP-9 metadata fetch only to be refused again.
+ *
+ * One entry per predecessor hash in updatepass.json, {until, length}. Each
+ * refusal doubles the length from one hour to a one-day cap -- the shape of
+ * the announce 403 cooldown (announce.php recordOutcome()) -- and a committed
+ * replacement clears it. Only RuTrackerUpdatePass::run() reads it, so the
+ * manual check (batch_check.php -> ruTrackerChecker::run()) retries at once.
+ *
+ * Self-healing: an entry that does not parse, or whose deadline lies further
+ * ahead than the cap, holds nothing and is dropped by the next write, so a
+ * damaged document can at worst restore the old every-cycle retry.
+ */
+class RuTrackerReplacementBackoff
+{
+    const DOCUMENT = 'updatepass';
+    const KEY = 'replacement_backoff';
+    const FIRST_SECONDS = 3600;
+    const CAP_SECONDS = 86400;
+
+    // The entries still part of a refusal streak at $now, keyed by upper-case
+    // hash, as {until, length}; anything else in the stored map is left out.
+    static private function current($state, $now)
+    {
+        $stored = is_array($state) && isset($state[self::KEY]) && is_array($state[self::KEY])
+            ? $state[self::KEY] : array();
+        $current = array();
+        foreach ($stored as $hash => $entry) {
+            $hash = strtoupper((string) $hash);
+            if (!is_array($entry) || !preg_match('/^[0-9A-F]{40}$/D', $hash)) continue;
+            $until = RuTrackerRpcValue::canonicalNonnegativeInteger($entry['until'] ?? null);
+            $length = RuTrackerRpcValue::canonicalNonnegativeInteger($entry['length'] ?? null);
+            if ($until === null || $length === null
+                || $length < self::FIRST_SECONDS || $length > self::CAP_SECONDS
+                // Written as now + length: a later deadline came from a clock
+                // that has since gone back, or from a hand edit.
+                || $until > $now + self::CAP_SECONDS
+                // Lapsed for longer than the cap: the refusals stopped, and
+                // the next one starts a new streak.
+                || $now - $until > self::CAP_SECONDS)
+                continue;
+            $current[$hash] = array('until' => $until, 'length' => $length);
+        }
+        return $current;
+    }
+
+    // hash => deadline for every entry still in force. A lock-free read: the
+    // scheduler takes it once per cycle and a stale answer costs one cycle.
+    static public function activeUntil($now)
+    {
+        $active = array();
+        foreach (self::current(RuTrackerState::load(self::DOCUMENT), $now) as $hash => $entry)
+            if ($now < $entry['until']) $active[$hash] = $entry['until'];
+        return $active;
+    }
+
+    // Record one more local refusal for $hash. Returns the new deadline, or
+    // null when the store refused the write ($failure says why).
+    static public function postpone($hash, $now, &$failure = null)
+    {
+        $hash = strtoupper((string) $hash);
+        $until = null;
+        $stored = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, &$until) {
+            $entries = self::current($state, $now);
+            $length = isset($entries[$hash])
+                ? min(self::CAP_SECONDS, $entries[$hash]['length'] * 2) : self::FIRST_SECONDS;
+            $until = $now + $length;
+            $entries[$hash] = array('until' => $until, 'length' => $length);
+            $state[self::KEY] = $entries;
+            return $state;
+        }, $failure);
+        return $stored ? $until : null;
+    }
+
+    // Forget $hash's backoff once its replacement has committed. Answers
+    // whether an entry was there and its removal landed.
+    static public function clear($hash, $now)
+    {
+        $hash = strtoupper((string) $hash);
+        // Read first: almost every commit has no entry, and must not pay a
+        // locked rewrite of the scheduler's document for nothing.
+        $stored = RuTrackerState::load(self::DOCUMENT)[self::KEY] ?? null;
+        if (!is_array($stored) || !array_key_exists($hash, $stored)) return false;
+        $removed = false;
+        $written = RuTrackerState::update(self::DOCUMENT, function ($state) use ($hash, $now, &$removed) {
+            $removed = isset($state[self::KEY]) && is_array($state[self::KEY])
+                && array_key_exists($hash, $state[self::KEY]);
+            $entries = self::current($state, $now);
+            unset($entries[$hash]);
+            if (count($entries)) $state[self::KEY] = $entries;
+            else unset($state[self::KEY]);
+            return $state;
+        });
+        return $written && $removed;
     }
 }

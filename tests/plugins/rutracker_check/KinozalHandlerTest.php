@@ -24,6 +24,7 @@ function kinozalReset()
     strictSetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures', 0);
     strictSetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures', 0);
     strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', false);
+    strictSetPrivateStatic('KinozalCheckImpl', 'sessionHintLogged', false);
 }
 
 function kinozalTopics($count)
@@ -1360,6 +1361,79 @@ $suite->test('a catch-all answer clears an earlier Snoopy error', function () {
     Snoopy::queueAny(200, 'fresh response');
     strictAssertSame(true, $client->fetch('https://example.test/second'), 'the second request succeeds');
     strictAssertSame('', $client->error, 'a new request starts without the previous error');
+});
+
+// The endpoint lines are debug-gated. At the shipped default the operator must
+// still read, once per cycle, that the session is gone and whether a new login
+// can fix it: under a Cloudflare challenge loginmgr cannot log in at all.
+function kinozalSessionHintLines($log)
+{
+    return array_values(array_filter(explode("\n", $log), function ($line) {
+        return strpos($line, 'rutracker_check: Kinozal answers as a guest') !== false;
+    }));
+}
+
+$suite->test('a guest session behind a Cloudflare challenge is explained once at the shipped log level', function () {
+    $c = kinozalTopics(3);
+    $log = testCapturedAppLog(function () use ($c) {
+        Snoopy::queue($c[0]['details_url'], 403, kinozalChallengeBody());
+        foreach (array_slice($c, 0, 2) as $case) {
+            Snoopy::queue($case['download_url'], 200, kinozalLoginPage());
+            ruTrackerChecker::queueResult('parseMetainfo', null);
+        }
+        foreach (kinozalRunAll($c) as $verdict)
+            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict, 'a guest wall stays retryable');
+    });
+    $lines = kinozalSessionHintLines($log);
+    strictAssertSame(1, count($lines), 'one explanation for the whole cycle: ' . $log);
+    strictAssertTrue(strpos($lines[0], 'Cloudflare challenge') !== false
+        && strpos($lines[0], 'will not help') !== false,
+        'the challenge is named and a new password is not promised to help: ' . $lines[0]);
+});
+
+$suite->test('a guest session without a challenge asks for a new login once', function () {
+    $c = kinozalTopics(3);
+    $log = testCapturedAppLog(function () use ($c) {
+        Snoopy::queue($c[0]['details_url'], 200, kinozalUnauthorizedBody());
+        Snoopy::queue($c[1]['details_url'], 200, kinozalUnauthorizedBody());
+        kinozalRunAll($c);
+    });
+    $lines = kinozalSessionHintLines($log);
+    strictAssertSame(1, count($lines), 'one explanation for the whole cycle: ' . $log);
+    strictAssertTrue(strpos($lines[0], 'Settings -> Accounts') !== false
+        && strpos($lines[0], 'Cloudflare') === false,
+        'the operator is told where to log in again: ' . $lines[0]);
+});
+
+$suite->test('both endpoints losing the session in one cycle are explained once', function () {
+    $c = kinozalTopics(4);
+    $log = testCapturedAppLog(function () use ($c) {
+        // Two updated topics: details answer, download meets the login wall.
+        foreach (array_slice($c, 0, 2) as $case) {
+            Snoopy::queue($case['details_url'], 200, kinozalDetailsBody(str_repeat('B', 40)));
+            Snoopy::queue($case['download_url'], 200, kinozalLoginPage());
+            ruTrackerChecker::queueResult('parseMetainfo', null);
+        }
+        // Then the details endpoint walls the session too.
+        Snoopy::queue($c[2]['details_url'], 200, kinozalUnauthorizedBody());
+        Snoopy::queue($c[3]['details_url'], 200, kinozalUnauthorizedBody());
+        kinozalRunAll($c);
+    });
+    strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+        'the download endpoint reached its guest tolerance');
+    strictAssertSame(2, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
+        'and so did the details endpoint');
+    strictAssertSame(1, count(kinozalSessionHintLines($log)), 'still one explanation for the cycle: ' . $log);
+});
+
+$suite->test('a single guest blink is not explained as a lost session', function () {
+    $c = kinozalTopics(2);
+    $log = testCapturedAppLog(function () use ($c) {
+        Snoopy::queue($c[0]['details_url'], 200, kinozalUnauthorizedBody());
+        Snoopy::queue($c[1]['details_url'], 200, kinozalDetailsBody($c[1]['hash']));
+        kinozalRunAll($c);
+    });
+    strictAssertSame(0, count(kinozalSessionHintLines($log)), 'one forgiven guest answer stays quiet: ' . $log);
 });
 
 exit($suite->run());

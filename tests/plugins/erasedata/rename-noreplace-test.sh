@@ -252,6 +252,46 @@ for injected_errno in 13 18 30; do
 done
 fi
 
+if [[ "$source_cuts" == true ]]; then
+  # btrfs and WSL2 drvfs over 9p report one link for every directory. The probe
+  # must still remove its own fixed entries and recover the residue it left.
+  onelink_check="$run/onelink-check.c"
+  printf '%s\n' '#include <fcntl.h>' '#include <stdio.h>' '#include <sys/stat.h>' \
+    'int main(void) { struct stat entry; if (fstatat(AT_FDCWD, ".", &entry, 0) != 0) return 2;' \
+    'printf("%lu\n", (unsigned long) entry.st_nlink); return 0; }' > "$onelink_check"
+  cc -o "$run/onelink-check" "$onelink_check" "$root/tests/plugins/erasedata/OneLinkDirectoryCut.c" \
+    -Wl,--wrap=fstatat,--wrap=fstat
+  if [[ "$(cd "$run" && "$run/onelink-check")" != 1 ]]; then
+    echo 'scope - this libc inlines fstatat, so the one-link directory cut cannot be linked here'
+  else
+    onelink_helper="$run/onelink"
+    compile_helper "$onelink_helper" "$root/tests/plugins/erasedata/OneLinkDirectoryCut.c" \
+      -Wl,--wrap=fstatat,--wrap=fstat
+    onelink_parent="$run/onelink-parent"
+    mkdir -m 0700 "$onelink_parent"
+    probe_usable "$onelink_helper" "$onelink_parent" \
+      || { echo 'one-link directories made the probe unusable' >&2; exit 1; }
+    [[ -z "$(ls -A "$onelink_parent")" ]] || { echo 'the one-link probe left its workspace' >&2; exit 1; }
+    residue="$onelink_parent/.rutorrent-rename-probe-11682-06ade481acbaf577"
+    make_onelink_residue() {
+      mkdir -m 0700 "$residue" "$residue/from-dir" "$residue/to-dir"
+      (umask 077; : > "$residue/.lock"; : > "$residue/from-file"; : > "$residue/to-file")
+    }
+    # The residue captured on the owner's host after the old nlink=2 check refused.
+    make_onelink_residue
+    probe_usable "$onelink_helper" "$onelink_parent" \
+      || { echo 'one-link probe residue blocked the next probe' >&2; exit 1; }
+    [[ ! -e "$residue" ]] || { echo 'one-link probe residue was not recovered' >&2; exit 1; }
+    # One link no longer proves emptiness: a subdirectory still refuses recovery.
+    make_onelink_residue
+    mkdir -m 0700 "$residue/from-dir/payload"
+    expect_status "$STATUS_ERROR" "$onelink_helper" --probe "$onelink_parent"
+    [[ -d "$residue/from-dir/payload" ]] || { echo 'recovery removed a subdirectory' >&2; exit 1; }
+    rm -rf -- "$onelink_parent"
+    echo 'ok - one-link directories: the probe cleans up, recovers its residue and refuses contents'
+  fi
+fi
+
 if [[ $# == 0 ]]; then
   echo 'erasedata rename-noreplace: probes, usable fallback, files, directories, links and collisions passed'
 else

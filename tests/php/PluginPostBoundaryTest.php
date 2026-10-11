@@ -644,9 +644,9 @@ PHP
         $this->assertSame(0, $same['exit'], 'same-origin fetch exits cleanly: ' . $same['err']);
         $this->assertSame(404, $same['status'], 'blocked favicon fetch is a permanent miss');
         $this->assertSame('Favicon unavailable', $same['out'], 'POST returns no placeholder body');
-        $this->assertTrue(strpos(file_get_contents($this->scratch . '/errors.log'),
-            'tracklabels: favicon unavailable: invalid or refused tracker host') !== false,
-            'permanent refusal has a classified log reason');
+        $log = $this->scratch . '/errors.log';
+        $this->assertTrue(strpos(is_file($log) ? file_get_contents($log) : '', 'tracklabels:') === false,
+            'a refused tracker host is an expected miss and is not logged');
         $this->assertTrue(!is_file($this->scratch . '/profile/settings/trackers/127.0.0.1.ico'),
             'same-origin fetch still refuses a private network address');
     }
@@ -734,8 +734,8 @@ PHP
             fclose($retryPipes[1]);
             fclose($retryPipes[2]);
             $this->assertSame(0, proc_close($retryProc), 'unavailable favicon exits: ' . $failedErr);
-            $this->assertSame('503', file_get_contents($this->scratch . '/status'),
-                'upstream failure is retryable to the browser');
+            $this->assertSame('404', file_get_contents($this->scratch . '/status'),
+                'upstream failure is a settled miss, not a browser retry');
             $this->assertSame('Favicon unavailable', $failedOut,
                 'failed POST does not return the placeholder image');
             $this->assertTrue(!is_file($cache), 'failed fetch does not cache a placeholder');

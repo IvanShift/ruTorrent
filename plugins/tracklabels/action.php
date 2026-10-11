@@ -19,6 +19,33 @@ function bad($message) {
 	exit;
 }
 
+// A failed favicon fetch leaves a zero-byte <host>.miss marker beside the icon
+// cache; its mtime is the miss time. Dead, unresolvable and non-public tracker
+// hosts are routine, so the marker spares them a fetch for this long.
+if (!defined('TRACKLABELS_FAVICON_MISS_TTL'))
+	define('TRACKLABELS_FAVICON_MISS_TTL', 24 * 60 * 60);
+
+function favicon_miss_is_fresh($miss_name)
+{
+	clearstatcache(true, $miss_name);
+	$time = is_file($miss_name) ? filemtime($miss_name) : false;
+	if ($time === false)
+		return false;
+	$age = time() - $time;
+	// A marker dated in the future (clock step) is stale, so it cannot pin a miss.
+	return $age >= 0 && $age < TRACKLABELS_FAVICON_MISS_TTL;
+}
+
+function favicon_record_miss($miss_name)
+{
+	$dir = dirname($miss_name);
+	if (!is_dir($dir))
+		FileUtil::makeDirectory($dir);
+	// An explicit time keeps the marker on the clock that favicon_miss_is_fresh() reads.
+	if (!is_dir($dir) || !@touch($miss_name, time()))
+		FileUtil::toLog('tracklabels: favicon miss cache write failed');
+}
+
 $basepath = realpath(FileUtil::getSettingsPath());
 $knownAliases = [
 	'app'       => ['apps', 'applications', 'трограммы'],
@@ -123,7 +150,7 @@ if ($png_name !== null) {
 		try_send_image(dirname(__FILE__).substr($png_name, strlen($basepath)));
 
 
-		$retryable = false;
+		$cacheFault = false;
 		// The name below is fetched from as a host, so it has to be one: a name
 		// that is not a host name gets the placeholder instead of a request.
 		if ($isTracker && Utility::isHostname(basename($png_name, '.png'))) {
@@ -132,8 +159,8 @@ if ($png_name !== null) {
 			try_send_image($ico_name, 'image/x-icon');
 			try_send_image(dirname(__FILE__).substr($ico_name, strlen($basepath)), 'image/x-icon');
 
-			if ($fetchRequested) {
-				$retryable = true;
+			$miss_name = $targetdir . '/' . $tracker . '.miss';
+			if ($fetchRequested && !favicon_miss_is_fresh($miss_name)) {
 				ignore_user_abort(true);
 				set_time_limit(0);
 
@@ -150,27 +177,31 @@ if ($png_name !== null) {
 							FileUtil::makeDirectory($targetdir);
 						if (!is_dir($targetdir) || file_put_contents($ico_name, $client->results) === false) {
 							FileUtil::toLog('tracklabels: favicon cache write failed');
+							$cacheFault = true;
 							break;
 						}
 						if (strpos(mime_content_type($ico_name), "image/")===false)
 							@unlink($ico_name);
-						else
+						else {
+							@unlink($miss_name);
 							try_send_image($ico_name, 'image/x-icon');
+						}
 					} else if (strpos($client->error, 'Refusing to fetch:') === 0) {
-						$retryable = strpos($client->error, 'non-public') === false;
-						FileUtil::toLog('tracklabels: favicon fetch refused: non-public or unresolved host');
+						// A non-public or unresolvable host refuses every favicon path.
 						break;
 					}
 				}
+				// No favicon there is an expected outcome: remember it, do not log it.
+				if (!$cacheFault)
+					favicon_record_miss($miss_name);
 			}
 		}
 	}
 }
 
 if ($fetchRequested) {
-    FileUtil::toLog('tracklabels: favicon unavailable: ' . ($retryable
-        ? 'source fetch failed' : 'invalid or refused tracker host'));
-    http_response_code($retryable ? 503 : 404);
+    // 404 settles the miss for the browser; only a local cache fault stays retryable.
+    http_response_code($cacheFault ? 503 : 404);
     exit('Favicon unavailable');
 }
 SendFile::send('./trackers/unknown.png', 'image/png');

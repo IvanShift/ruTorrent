@@ -1539,6 +1539,230 @@ class CheckerTest
 		finally { strictRemoveTree($base); }
 	}
 
+	// One replacement attempt that reaches the cleanup preparation and is
+	// refused there. Only the per-attempt fakes are reset: the state store,
+	// where the scheduler backoff lives, carries over between attempts.
+	private function refuseCleanupPreparation($base, $planRefused = false)
+	{
+		rXMLRPCRequest::reset();
+		rXMLRPCRequest::$defaultLocalProjectionResponse = RuTrackerAtomicOwnership::SENTINEL_ACTED;
+		rTorrent::$lastSend = null;
+		rTorrent::$sends = array();
+		FileUtil::$log = array();
+		ErasedataFake::reset();
+		$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+		$this->queueTransactionStart($base);
+		$this->queueLoadConfirmed();
+		if($planRefused)
+			ErasedataFake::$scanUnknown = true;
+		else
+			ErasedataFake::$prepareResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		$result = null;
+		$this->withoutDebugLog(function() use (&$result) {
+			$result = ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
+		});
+		return($result);
+	}
+
+	private function storedBackoff($hash)
+	{
+		$entries = RuTrackerState::load('updatepass')['replacement_backoff'] ?? array();
+		return(is_array($entries) && isset($entries[$hash]) ? $entries[$hash] : null);
+	}
+
+	// Production evidence (2026-10-11, Docker Desktop 9p): every hourly cycle
+	// re-ran layer 2 and the whole metadata fetch for one updated topic, and
+	// every cycle the erasedata cleanup admission refused the replacement for
+	// the same local reason. The refusal must postpone the next scheduled
+	// attempt and say so once, on the ungated channel.
+	public function testCleanupPreparationRefusalPostponesTheNextScheduledAttempt()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-backoff-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		try
+		{
+			$before = time();
+			strictAssertSame(ruTrackerChecker::STE_ERROR, $this->refuseCleanupPreparation($base),
+				'the refused replacement remains a retryable error');
+			$after = time();
+			$entry = $this->storedBackoff(self::OLD_HASH);
+			strictAssertTrue(is_array($entry), 'the refusal records a backoff for the predecessor');
+			strictAssertSame(3600, $entry['length'], 'the first local refusal waits one hour');
+			strictAssertTrue($entry['until'] >= $before + 3600 && $entry['until'] <= $after + 3600,
+				'the deadline is one hour after the refusal');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'postponed: obsolete-file cleanup could not be prepared',
+				'one classified postponement line reaches the shared log with debug disabled');
+			strictAssertTrue(strpos($line, 'replacement of ' . self::OLD_HASH . ' ') !== false,
+				'the line names the predecessor');
+			strictAssertTrue(strpos($line, '(local file operation refused)') !== false,
+				'the line carries the classified reason');
+			strictAssertTrue(strpos($line, gmdate('Y-m-d\TH:i:s\Z', $entry['until'])) !== false,
+				'the line names the next scheduled attempt');
+			strictAssertTrue(strpos($line, 'Check for Update') !== false,
+				'the line names the immediate manual retry');
+			strictAssertEnglish($line, 'the postponement line is English');
+
+			$lengths = array($entry['length']);
+			for($i = 0; $i < 6; $i++)
+			{
+				strictAssertSame(ruTrackerChecker::STE_ERROR, $this->refuseCleanupPreparation($base),
+					'a repeated refusal stays retryable');
+				strictAssertSame(1, count(strictLogsMatching(FileUtil::$log, 'postponed: obsolete-file cleanup could not be prepared')),
+					'each refused attempt logs exactly one postponement line');
+				$lengths[] = $this->storedBackoff(self::OLD_HASH)['length'];
+			}
+			strictAssertSame(array(3600, 7200, 14400, 28800, 57600, 86400, 86400), $lengths,
+				'repeated refusals double the wait up to a one-day cap');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCleanupPlanRefusalPostponesWithItsOwnReason()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-backoff-plan-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR, $this->refuseCleanupPreparation($base, true),
+				'an unbuildable cleanup plan aborts the replacement');
+			strictAssertSame(3600, $this->storedBackoff(self::OLD_HASH)['length'] ?? null,
+				'an unbuildable cleanup plan postpones the scheduled retry too');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'postponed: obsolete-file cleanup could not be prepared',
+				'one postponement line');
+			strictAssertTrue(strpos($line, '(cleanup plan refused)') !== false,
+				'the plan refusal is classified apart from the admission refusal');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testUnrelatedReplacementErrorsDoNotPostponeTheScheduler()
+	{
+		$this->resetFakes();
+		strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent('not-a-torrent', self::OLD_HASH),
+			'unparsed metainfo is an ordinary retryable error');
+		strictAssertSame(array(), RuTrackerState::load('updatepass'),
+			'an error that is not a local cleanup refusal records no backoff');
+
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-backoff-arm-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		try
+		{
+			$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+			$this->queueTransactionStart($base);
+			$this->queueLoadConfirmed();
+			ErasedataFake::$armResult = false;
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'an unacknowledged drain stays retryable');
+			strictAssertSame(null, $this->storedBackoff(self::OLD_HASH),
+				'only the preparation refusal is postponed');
+		}
+		finally { strictRemoveTree($base); }
+	}
+
+	public function testCommittedReplacementClearsItsBackoff()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir() . '/rut-check-backoff-clear-' . bin2hex(random_bytes(5));
+		mkdir($base, 0777, true);
+		file_put_contents($base . '/old.mkv', 'old');
+		try
+		{
+			strictAssertSame(ruTrackerChecker::STE_ERROR, $this->refuseCleanupPreparation($base),
+				'the first attempt is refused locally');
+			strictAssertTrue(is_array($this->storedBackoff(self::OLD_HASH)), 'and postponed');
+
+			// The capability is back: the next attempt commits.
+			rXMLRPCRequest::reset();
+			rXMLRPCRequest::$defaultLocalProjectionResponse = RuTrackerAtomicOwnership::SENTINEL_ACTED;
+			FileUtil::$log = array();
+			ErasedataFake::reset();
+			$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			$result = false;
+			$this->withoutDebugLog(function() use (&$result) {
+				$result = ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
+			});
+			strictAssertSame(null, $result, 'the retried replacement commits');
+			strictAssertSame(null, $this->storedBackoff(self::OLD_HASH), 'the commit clears the backoff');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'backoff cleared',
+				'the recovery is reported once on the shared log');
+			strictAssertTrue(strpos($line, self::OLD_HASH) !== false && strpos($line, self::NEW_HASH) !== false,
+				'the recovery line names both generations');
+		}
+		finally { strictRemoveTree($base); }
+
+		// A replacement that was never postponed neither writes the store nor logs.
+		$this->resetFakes();
+		$this->queueExistingGeneration(0, 0, false);
+		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->withoutDebugLog(function() {
+			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'an adopted committed generation finishes');
+		});
+		strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'backoff'),
+			'no backoff line without a backoff');
+		strictAssertSame(false, file_exists(strictGetPrivateStatic('RuTrackerState', 'dir') . '/updatepass.json'),
+			'the common success path does not rewrite the scheduler document');
+
+		// The adopted-generation commit clears a backoff as well.
+		$this->resetFakes();
+		RuTrackerReplacementBackoff::postpone(self::OLD_HASH, time());
+		$this->queueExistingGeneration(0, 0, false);
+		ErasedataFake::$recoverResult = ERASEDATA_CLEANUP_READY;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			'an adopted committed generation finishes');
+		strictAssertSame(null, $this->storedBackoff(self::OLD_HASH), 'and clears the predecessor backoff');
+	}
+
+	// The manual "Check for Update" route (action.php -> batch_check.php ->
+	// ruTrackerChecker::run($hash)) is how an operator retries at once; only
+	// the scheduler pass reads the backoff.
+	public function testManualRunIgnoresTheSchedulerBackoff()
+	{
+		$this->resetFakes();
+		$calls = 0;
+		ruTrackerChecker::registerTracker('/topic\.backoff-test\.invalid/', '/tracker\.backoff-test\.invalid/',
+			function($url) use (&$calls) { $calls++; return ruTrackerChecker::STE_UPTODATE; });
+		$dir = sys_get_temp_dir() . '/rut-backoff-manual-' . bin2hex(random_bytes(5)) . '/';
+		mkdir($dir, 0777, true);
+		file_put_contents($dir . self::OLD_HASH . '.torrent', 'x');
+		rTorrentSettings::get()->session = $dir;
+		Torrent::$fixtures[$dir . self::OLD_HASH . '.torrent'] = array(
+			'comment' => 'http://topic.backoff-test.invalid/1',
+			'announce' => 'http://tracker.backoff-test.invalid/announce',
+		);
+		try
+		{
+			RuTrackerReplacementBackoff::postpone(self::OLD_HASH, time());
+			strictAssertSame(array(self::OLD_HASH),
+				array_keys(RuTrackerReplacementBackoff::activeUntil(time())), 'the backoff is active');
+			self::queueStateRead(true, false,
+				array((string) ruTrackerChecker::STE_ERROR, (string) time(), ''));
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
+			rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
+			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH),
+				'the manual check runs to completion');
+			strictAssertSame(1, $calls, 'the tracker handler is asked despite the active backoff');
+		}
+		finally
+		{
+			strictRemoveTree($dir);
+		}
+	}
+
 	// A staged copy at the successor hash may belong to somebody else's
 	// stranded transaction. It is the ONLY handle sweepReplacements has on it,
 	// and that predecessor is already stopped and closed by its own dead run,

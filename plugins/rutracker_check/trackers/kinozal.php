@@ -84,6 +84,8 @@ class KinozalCheckImpl
     // and a restored session or a recovered host heals itself.
     static private $cycleAbandoned = false;
     static private $downloadAbandoned = false;
+    // The guest-session explanation is written once per cycle, ungated.
+    static private $sessionHintLogged = false;
 
     // How many guest answers in a row mean the session is really gone rather
     // than blinking. Measured on the live fleet: one cycle got a guest answer
@@ -192,7 +194,26 @@ class KinozalCheckImpl
             : ++self::$detailsGuestAnswers;
         if ($answers < self::GUEST_TOLERANCE)
             return self::cantReach($log);
+        self::logSessionHint();
         return self::abandonEndpoint($log, $endpoint);
+    }
+
+    // The endpoint details stay in the debug log; the operator still needs to
+    // learn, at the shipped default, that the session is gone and whether a
+    // new login can fix it. loginmgr logs in through these same Cloudflare-
+    // walled pages, so under a challenge re-entering the password cannot help.
+    static private function logSessionHint()
+    {
+        if (self::$sessionHintLogged)
+            return;
+        self::$sessionHintLogged = true;
+        ruTrackerChecker::logUnrepairable(self::$detailsWalled
+            ? 'Kinozal answers as a guest and its pages are behind a Cloudflare challenge;'
+                .' loginmgr cannot log in through the challenge, so re-entering the KinozalTV'
+                .' password will not help; Kinozal update checks are skipped until the challenge is lifted'
+            : 'Kinozal answers as a guest: the saved KinozalTV session is not valid;'
+                .' re-enter the KinozalTV login and password in Settings -> Accounts and Save;'
+                .' Kinozal update checks resume after a successful login');
     }
 
     // Same verdict as cantReach(), plus the running count of answers that

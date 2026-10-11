@@ -432,6 +432,7 @@ class RuTrackerUpdatePass
         $defaultChecker = self::$checker === null;
         $checker = self::$checker;
         $corrections = self::forumCorrections();
+        $replacementBackoff = RuTrackerReplacementBackoff::activeUntil($now);
         $forumChangedSet = array();
         foreach ((array) $forumChanged as $hash)
             $forumChangedSet[strtoupper((string) $hash)] = true;
@@ -539,6 +540,18 @@ class RuTrackerUpdatePass
                     (string) $row['msg'] !== '' ? '' : null);
                 continue;
             }
+
+            // createTorrent() last refused this hash's replacement for a LOCAL
+            // file-operation reason (RuTrackerReplacementBackoff). Dispatching
+            // would repeat the tracker request and the metadata fetch only to
+            // be refused again, so the row keeps its ERROR verdict, and any
+            // durable correction, until the backoff lapses. A verdict that has
+            // since moved on is not held; META_PENDING and INPROGRESS were
+            // dispatched above. Keyed by hash alone, so no other torrent --
+            // RuTracker or foreign -- is affected.
+            if ($row['state'] === ruTrackerChecker::STE_ERROR
+                && isset($replacementBackoff[$correctionKey]))
+                continue;
 
 
             // A durable feed correction must be installed before either the

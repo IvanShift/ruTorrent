@@ -90,6 +90,15 @@ static int create_file(int directory, const char *name)
     return result;
 }
 
+/* A directory without subdirectories has two links on most Linux filesystems,
+ * but one on filesystems that do not count subdirectory links: btrfs, and the
+ * WSL2 drvfs over 9p that Docker Desktop uses for Windows drives (measured
+ * 2026-10-11 on the owner's host). directory_empty() proves the contents. */
+static int leaf_directory_links(nlink_t links)
+{
+    return links == 1 || links == 2;
+}
+
 /* A private workspace and flock allow the next probe to recover process-death
  * residue without interpreting any payload entry. Only the
  * fixed, attested probe entries are eligible for recovery; unknown bytes stay. */
@@ -100,7 +109,7 @@ static int attest_entry(int directory, const char *name, mode_t type, mode_t mod
         return errno == ENOENT ? 0 : -1;
     if ((entry.st_mode & S_IFMT) != type || (entry.st_mode & 07777) != mode
         || entry.st_uid != geteuid()
-        || entry.st_nlink != (type == S_IFDIR ? 2 : 1)) {
+        || (type == S_IFDIR ? !leaf_directory_links(entry.st_nlink) : entry.st_nlink != 1)) {
         errno = EPERM;
         return -1;
     }

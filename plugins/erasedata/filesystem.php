@@ -1015,6 +1015,16 @@ function erasedataQueueRefusal($reason, $path, $stat, $expected, $action = '')
 	return(false);
 }
 
+// A directory without subdirectories has two links on most Linux filesystems,
+// but one on filesystems that do not count subdirectory links: btrfs, and the
+// WSL2 drvfs over 9p that Docker Desktop uses for Windows drives (measured
+// 2026-10-11 on the owner's host). Callers prove the contents from the
+// listing; the native helper's leaf_directory_links() applies the same rule.
+function erasedataLeafDirectoryLinks($nlink)
+{
+	return($nlink === 1 || $nlink === 2);
+}
+
 function erasedataRenameProbeName($name)
 {
 	return(is_string($name) && preg_match('/^\.rutorrent-rename-probe-[0-9]+-[a-f0-9]{16}$/D', $name));
@@ -1041,7 +1051,7 @@ function erasedataRenameProbeWorkspaceValid($path, $uid)
 		if(!is_array($child) || $child['uid'] !== $uid
 			|| ($child['mode'] & 0170000) !== ($isFile ? 0100000 : 0040000)
 			|| ($child['mode'] & 07777) !== ($isFile ? 0600 : 0700)
-			|| $child['nlink'] !== ($isFile ? 1 : 2)
+			|| ($isFile ? $child['nlink'] !== 1 : !erasedataLeafDirectoryLinks($child['nlink']))
 			|| ($name === '.lock' && $child['size'] !== 0)) return(false);
 		if($isDirectory)
 		{
@@ -2063,7 +2073,7 @@ function erasedataDiscardCompletedCapturedRoot($root, $reservationKey,
 	$markerStat = @lstat($marker);
 	if($uid === false || !is_array($parentStat) || !is_array($rootStat)
 		|| $rootStat['uid'] !== $uid || ($rootStat['mode'] & 0177777) !== 0040700
-		|| $rootStat['nlink'] !== 2 || !is_array($contents)
+		|| !erasedataLeafDirectoryLinks($rootStat['nlink']) || !is_array($contents)
 		|| array_values(array_diff($contents, array('.', '..'))) !== array(basename($marker))
 		|| !is_array($markerStat) || $markerStat['uid'] !== $uid
 		|| ($markerStat['mode'] & 0177777) !== 0100600 || $markerStat['nlink'] !== 1

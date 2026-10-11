@@ -1810,6 +1810,7 @@ class ruTrackerChecker
 				else
 					self::activateReplacement($newHash, $stagedRecord['run']['open'], $stagedRecord['run']['started'],
 						(string) $markerReq->val[0], $rawStagedRecord);
+				self::clearLocalRefusal($hash, $newHash);
 				return null;
 			}
 			if($stagedState !== 0 || $stagedOpen !== 0)
@@ -2064,6 +2065,8 @@ class ruTrackerChecker
 		{
 			self::logCleanupFailure('durable cleanup preparation failed for ' . $hash . ' -> ' . $newHash
 				. '; replacement was aborted before predecessor erase');
+			self::postponeLocalRefusal($hash, $newHash,
+				$cleanupFiles === false ? 'cleanup plan refused' : 'local file operation refused');
 			if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker))
 				self::eraseStaged($newHash, $marker, $stagedRecordStr);
 			else
@@ -2154,7 +2157,38 @@ class ruTrackerChecker
 		if($published && !erasedataKickCollector($hash))
 			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . $hash
 				. '; the published job remains scheduled for retry');
+		self::clearLocalRefusal($hash, $newHash);
 		return null;
+	}
+
+	// A replacement refused for a LOCAL file-operation reason is not helped by
+	// asking the tracker again, so the scheduler stops repeating the request
+	// and the metadata fetch in front of it (RuTrackerReplacementBackoff).
+	// Refusals now come at most once per backoff window, so one ungated line
+	// each is one line per change of the schedule, not one per cycle.
+	static private function postponeLocalRefusal($hash, $newHash, $reason)
+	{
+		$failure = null;
+		$until = RuTrackerReplacementBackoff::postpone($hash, time(), $failure);
+		if($until === null)
+		{
+			self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+				. ' refused: obsolete-file cleanup could not be prepared (' . $reason
+				. '); the scheduler backoff was not saved (' . (string) $failure
+				. '), so the next cycle retries');
+			return;
+		}
+		self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+			. ' postponed: obsolete-file cleanup could not be prepared (' . $reason
+			. '); next scheduled attempt after ' . gmdate('Y-m-d\TH:i:s\Z', $until)
+			. '; the manual Check for Update button retries now');
+	}
+
+	static private function clearLocalRefusal($hash, $newHash)
+	{
+		if(RuTrackerReplacementBackoff::clear($hash, time()))
+			self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+				. ' committed; replacement backoff cleared');
 	}
 
 	static private function appendAnnounceUrls($value, &$urls)

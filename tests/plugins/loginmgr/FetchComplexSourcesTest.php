@@ -634,6 +634,13 @@ SH;
                 'renewed cache records the response cookie Path');
             sourceSame(true, strpos(sourceLog(), 'loginmgr: legacy-cookie-cache-needs-refresh: KinozalTV') !== false,
                 'operator can see why the legacy cache was renewed');
+            sourceSame(true, file_put_contents($legacyPath, $legacyBytes) !== false,
+                'legacy account session bytes restored');
+            privateData::load('KinozalTV', new Snoopy());
+            privateData::load('KinozalTV', new Snoopy());
+            sourceSame(1, substr_count(sourceLog(), 'loginmgr: legacy-cookie-cache-needs-refresh: KinozalTV'),
+                'one explanation per account and process, however often a cycle loads it');
+            (new privateData('KinozalTV'))->remove();
 
         }
         catch (RuntimeException $error)

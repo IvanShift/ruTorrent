@@ -5726,4 +5726,136 @@ upTest($suite, 'malformed correction cannot suppress META_PENDING pump', functio
         'the malformed correction remains visible while M progresses');
 });
 
+// The backoff createTorrent() records when a replacement is refused for a
+// local file-operation reason, written in its stored shape so these cases do
+// not depend on the writer they are checking against.
+function upSeedReplacementBackoff($entries)
+{
+    RuTrackerState::update('updatepass', function ($state) use ($entries) {
+        $state['replacement_backoff'] = $entries;
+        return $state;
+    });
+}
+
+// Production evidence (2026-10-11, Docker Desktop 9p): an updated topic re-ran
+// layer 2 and the whole BEP-9 metadata fetch every hourly cycle, only for the
+// erasedata cleanup admission to refuse the replacement again for the same
+// local reason.
+upTest($suite, 'a locally refused replacement waits out its backoff instead of redoing the tracker work', function () {
+    $refused = str_repeat('A', 40);
+    $other = str_repeat('B', 40);
+    $error = (string) ruTrackerChecker::STE_ERROR;
+    $rows = RuTrackerUpdatePass::parseMulticall(array_merge(
+        upRow($refused, 6, 'bt.t-ru.org', $error),
+        upRow($other, 6, 'bt.t-ru.org', $error)));
+
+    upSeedReplacementBackoff(array($refused => array('until' => time() + 3600, 'length' => 3600)));
+    $result = upRunPass($rows, $checked);
+    strictAssertSame(array($other), $checked,
+        'the postponed row is not dispatched; an ordinary ERROR row still is');
+    strictAssertSame(array($other), $result['checked'], 'the cycle summary counts only the dispatched row');
+    upAssertNoCustomWrites('a postponed row keeps its visible ERROR verdict untouched');
+
+    upSeedReplacementBackoff(array($refused => array('until' => time() - 1, 'length' => 3600)));
+    $result = upRunPass($rows, $checked);
+    strictAssertSame(array($refused, $other), $checked, 'an expired backoff dispatches the row again');
+});
+
+upTest($suite, 'a replacement backoff holds only the ERROR verdict it was recorded with', function () {
+    $states = array(
+        str_repeat('A', 40) => ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        str_repeat('B', 40) => ruTrackerChecker::STE_UPDATED,
+        str_repeat('C', 40) => ruTrackerChecker::STE_META_PENDING,
+        str_repeat('D', 40) => ruTrackerChecker::STE_INPROGRESS,
+    );
+    $entries = array();
+    $values = array();
+    $host = 0;
+    foreach ($states as $hash => $state) {
+        $entries[$hash] = array('until' => time() + 3600, 'length' => 3600);
+        // One candidate per host keeps every host below the fuse floor.
+        $values = array_merge($values, upRow($hash, 6, 'bt' . (++$host) . '.t-ru.org', (string) $state));
+    }
+    upSeedReplacementBackoff($entries);
+    upRunPass(RuTrackerUpdatePass::parseMulticall($values), $checked);
+    strictAssertSame(array_keys($states), $checked,
+        'a later verdict, an owned metadata fetch and an in-flight claim are never held by the backoff');
+});
+
+upTest($suite, 'a foreign torrent is postponed only by its own local replacement refusal', function () {
+    upLoadKinozalRegistration();
+    $refused = str_repeat('A', 40);
+    $unrelated = str_repeat('B', 40);
+    $rutracker = str_repeat('C', 40);
+    $rows = array(upKinozalRow($refused, 6, 0), upKinozalRow($unrelated, 6, 0));
+    foreach ($rows as &$row) $row['state'] = ruTrackerChecker::STE_ERROR;
+    unset($row);
+    $rows = array_merge($rows, RuTrackerUpdatePass::parseMulticall(
+        upRow($rutracker, 6, 'bt.t-ru.org', (string) ruTrackerChecker::STE_ERROR)));
+    upSeedReplacementBackoff(array(
+        $refused => array('until' => time() + 3600, 'length' => 3600),
+        $rutracker => array('until' => time() + 3600, 'length' => 3600),
+    ));
+    upRunPass($rows, $checked);
+    strictAssertSame(array($unrelated), $checked,
+        'a RuTracker backoff never suppresses another torrent; each hash answers for itself');
+    upAssertNoCustomWrites('postponement writes no foreign state');
+});
+
+upTest($suite, 'an unreadable or out-of-range replacement backoff never holds a torrent', function () {
+    $hashes = array();
+    $values = array();
+    foreach (array('A', 'B', 'C', 'D', 'E', 'F') as $letter) {
+        $hashes[] = str_repeat($letter, 40);
+        // One candidate per host keeps every host below the fuse floor.
+        $values = array_merge($values, upRow(str_repeat($letter, 40), 6, 'bt' . $letter . '.t-ru.org',
+            (string) ruTrackerChecker::STE_ERROR));
+    }
+    upSeedReplacementBackoff(array(
+        $hashes[0] => array('until' => 'soon', 'length' => 3600),
+        $hashes[1] => array('until' => time() + 10 * 86400, 'length' => 86400),
+        $hashes[2] => array('until' => time() + 3600, 'length' => 999999),
+        $hashes[3] => array('until' => time() + 3600, 'length' => '03600'),
+        $hashes[4] => 'postponed',
+        $hashes[5] => array('until' => time() + 3600),
+    ));
+    upRunPass(RuTrackerUpdatePass::parseMulticall($values), $checked);
+    strictAssertSame($hashes, $checked,
+        'corrupt, far-future or partial entries fail open to the ordinary dispatch');
+
+    RuTrackerState::save('updatepass', array('replacement_backoff' => 'none'));
+    upRunPass(RuTrackerUpdatePass::parseMulticall($values), $checked);
+    strictAssertSame($hashes, $checked, 'a non-map backoff key holds nothing');
+});
+
+upTest($suite, 'the replacement backoff doubles from one hour to a one-day cap and clears on success', function () {
+    $hash = str_repeat('a', 40);
+    $now = 1800000000;
+    $lengths = array();
+    for ($i = 0; $i < 7; $i++) {
+        $until = RuTrackerReplacementBackoff::postpone($hash, $now);
+        $entry = RuTrackerState::load('updatepass')['replacement_backoff'][strtoupper($hash)];
+        strictAssertSame($now + $entry['length'], $until, 'the deadline is the recorded length from now');
+        $lengths[] = $entry['length'];
+        $now = $until + 60; // the next refusal comes on the first cycle after expiry
+    }
+    strictAssertSame(array(3600, 7200, 14400, 28800, 57600, 86400, 86400), $lengths,
+        'each refusal doubles the wait and the wait never exceeds one day');
+    strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($now),
+        'nothing is active once the last deadline has passed');
+    strictAssertSame(array(strtoupper($hash) => $now - 60),
+        RuTrackerReplacementBackoff::activeUntil($now - 61), 'an unexpired entry is active');
+
+    // A refusal long after the last one starts over: the earlier streak ended.
+    $restart = RuTrackerReplacementBackoff::postpone($hash, $now + 2 * 86400);
+    strictAssertSame($now + 2 * 86400 + 3600, $restart, 'a stale streak restarts at one hour');
+
+    strictAssertSame(true, RuTrackerReplacementBackoff::clear($hash, $now),
+        'clearing an existing entry reports the removal');
+    strictAssertSame(false, array_key_exists('replacement_backoff', RuTrackerState::load('updatepass')),
+        'the last entry takes its key with it');
+    strictAssertSame(false, RuTrackerReplacementBackoff::clear($hash, $now),
+        'clearing an absent entry is a no-op');
+});
+
 exit($suite->run());

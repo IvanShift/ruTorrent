@@ -17,6 +17,9 @@ class privateData
 	public $scopedCookies = null;
 	public $referer = null;
 	public $loaded = false;
+	// One explanation per account and process: a cycle loads an account once
+	// per request it makes.
+	private static $legacyCacheLogged = array();
 
 	static public function load( $owner, $client = null )
 	{
@@ -30,9 +33,14 @@ class privateData
 				// be reconstructed. Renew before allowing them onto the wire.
 				if(!is_array($rt->scopedCookies))
 				{
-					FileUtil::toLog('loginmgr: legacy-cookie-cache-needs-refresh: '
-						. preg_replace('/[^a-z0-9_.-]/i', '?', $owner)
-						. '; cookie scope unavailable');
+					$name = preg_replace('/[^a-z0-9_.-]/i', '?', $owner);
+					if(!isset(self::$legacyCacheLogged[$name]))
+					{
+						self::$legacyCacheLogged[$name] = true;
+						FileUtil::toLog('loginmgr: legacy-cookie-cache-needs-refresh: ' . $name
+							. '; the saved session predates scoped cookies and is not sent;'
+							. ' the next successful login replaces it (Settings -> Accounts -> Save)');
+					}
 					return($rt);
 				}
 				// Keep cookies already supplied for this request; the saved session
