@@ -142,3 +142,41 @@ test('mobile stops retrying a repeatedly unavailable favicon after three attempt
     jest.useRealTimers();
   }
 });
+
+test('mobile asks again after a busy answer without using up its retries', () => {
+  // action.php answers 429 when both fetch slots are taken and writes no marker.
+  jest.useFakeTimers();
+  const random = jest.spyOn(Math, 'random').mockReturnValue(0);
+  try {
+    document.body.innerHTML = '<div id="filterStatusList"></div><div id="filterLabelsList"></div>' +
+      '<div id="filterTrackersList"></div>';
+    requests.length = 0;
+    mobile.statusFilterOptions = [];
+    mobile.labelList = [];
+    mobile.trackerList = [{ name: 'tracker.test', count: 1 }];
+    mobile.faviconRequests = new Set();
+    mobile.faviconFailures = Object.create(null);
+    mobile.faviconBusy = Object.create(null);
+    mobile.faviconVersion = {};
+    mobile.renderFilterPage();
+    requests[0].status = 429;
+    requests[0].onloadend();
+    jest.advanceTimersByTime(29999);
+    mobile.renderFilterPage();
+    expect(requests).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    const answers = [429, 429, 503, 503, 503];
+    answers.forEach((status, index) => {
+      mobile.renderFilterPage();
+      expect(requests).toHaveLength(index + 2);
+      requests[index + 1].status = status;
+      requests[index + 1].onloadend();
+      jest.advanceTimersByTime(30000);
+    });
+    mobile.renderFilterPage();
+    expect(requests).toHaveLength(answers.length + 1);
+  } finally {
+    random.mockRestore();
+    jest.useRealTimers();
+  }
+});

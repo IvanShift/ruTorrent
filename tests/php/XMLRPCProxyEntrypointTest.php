@@ -422,14 +422,15 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testBothDoorsDecideTheSameTrustForTheSameRequest()
 	{
-		$httprpc = $this->runEntrypoint('action', $this->viewActionXml(), true);
+		// Routine decision lines are call tracing: $rpcLogCalls shows them.
+		$httprpc = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'shipped', true);
 		$this->assertEquals(true, $httprpc['state']['trusted'],
 			'httprpc sends a view-action multicall on a trusted connection');
 		$this->assertTrue(in_array('xmlrpc-proxy: trusted: d.multicall2 (3 params)',
 			$httprpc['state']['logs'], true),
 			'httprpc rebuilt the multicall from the shared policy');
 
-		$rpc2 = $this->runEntrypoint('rpc2', $this->viewActionXml(), true);
+		$rpc2 = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'shipped', true);
 		$this->assertRpc2Log($rpc2, 'trusted: d.multicall2 (3 params)',
 			'rpc2 reaches that same decision on that same request');
 		$this->assertTrue(strpos($rpc2['rpc2logs'], 'untrusted') === false,
@@ -512,15 +513,21 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		));
 		foreach(array('action', 'rpc2') as $door)
 		{
-			$result = $this->runEntrypoint($door, $stop, true, 'success', 'none');
+			$result = $this->runEntrypoint($door, $stop, true, 'success', 'none', true);
 			$this->assertTrue(strpos($result['status'], '200 OK') !== false
 				&& $result['state']['sends'] === 1 && $result['state']['trusted'] === true,
 				$door.' sends the checked raw WebUI stop batch once');
 			$log = ($door === 'rpc2') ? $result['rpc2logs'] : implode("\n", $result['state']['logs']);
 			$this->assertEquals(1, substr_count($log, '[built-in policy]'),
 				$door.' marks only the outer stop batch with the fallback policy');
-			$this->assertEquals(1, count(array_filter(explode("\n", trim($log)), 'strlen')),
-				$door.' writes one normal summary line for the successful stop batch');
+			$this->assertEquals(1, count(preg_grep('/xmlrpc-proxy: |rpc2: (?!rpc-call )/',
+				array_filter(explode("\n", trim($log)), 'strlen'))),
+				$door.' traces one summary line for the successful stop batch');
+			$quiet = $this->runEntrypoint($door, $stop, true, 'success', 'none');
+			$this->assertTrue($quiet['state']['sends'] === 1 && $quiet['state']['trusted'] === true,
+				$door.' sends the same batch without call tracing');
+			$this->assertEquals('', ($door === 'rpc2') ? $quiet['rpc2logs'] : implode("\n", $quiet['state']['logs']),
+				$door.' writes no routine decision line at the shipped default');
 			foreach(array('d.base_path', 'd.get_base_path') as $method)
 			{
 				$path = $this->systemBatchXml(array(
@@ -657,11 +664,15 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	 */
 	public function testHttprpcNamesTheBuiltInPolicyInOneDecisionLine()
 	{
-		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
+		$quiet = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
+		$this->assertHttp($quiet, '200 OK', 'text/xml; charset=UTF-8');
+		$this->assertEquals(array(), $quiet['state']['logs'],
+			'the routine read logs nothing at the shipped default (production 2026-10-11)');
+		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none', true);
 		$this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8');
 		$this->assertTrue($result['policy_exists'] === false, 'the policy file is absent');
 		$this->assertEquals(array('xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]'),
-			$result['state']['logs'], 'one decision line identifies the fallback without a repeated warning');
+			$result['state']['logs'], 'one traced decision line identifies the fallback without a repeated warning');
 		$this->assertFullTranscript('httprpc', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, null,
@@ -673,11 +684,16 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testRpc2FallsBackToTheBuiltInPolicyToo()
 	{
-		$result = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none');
+		$quiet = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none');
+		$this->assertHttp($quiet, '200 OK', 'text/xml;charset=UTF-8');
+		$this->assertEquals('', $quiet['rpc2logs'],
+			'the routine read logs nothing at the shipped default (production 2026-10-11)');
+		$result = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none', true);
 		$this->assertHttp($result, '200 OK', 'text/xml;charset=UTF-8');
 		$this->assertTrue($result['policy_exists'] === false, 'the shared policy file is absent');
 		$this->assertRpc2Log($result, 'trusted: d.multicall2 (3 params) [built-in policy]', 'the decision names its fallback policy');
-		$this->assertTrue(count(explode("\n", trim($result['rpc2logs']))) === 1, 'no separate fallback warning is emitted');
+		$this->assertTrue(count(preg_grep('/rpc2: (?!rpc-call )/', explode("\n", trim($result['rpc2logs'])))) === 1,
+			'no separate fallback warning is emitted beside the traced call');
 		$this->assertFullTranscript('rpc2', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, '127.0.0.1', 1, true,
@@ -1047,7 +1063,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		foreach($dispositions as $name => $disp)
 		{
 			// httprpc: logged vs quiet
-			$httprpcLogged = $this->runEntrypoint('action', $disp['xml'], true, $disp['send']);
+			// "Logged" also traces routine decisions, which $rpcLogCalls owns.
+			$httprpcLogged = $this->runEntrypoint('action', $disp['xml'], true, $disp['send'], 'shipped', true);
 			$httprpcQuiet = $this->runEntrypoint('action', $disp['xml'], false, $disp['send']);
 			$this->assertHttp($httprpcLogged, $disp['httprpc_status'], $disp['httprpc_type']);
 			$this->assertHttp($httprpcQuiet, $disp['httprpc_status'], $disp['httprpc_type']);
@@ -1069,7 +1086,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			}
 
 			// rpc2: logged vs quiet
-			$rpc2Logged = $this->runEntrypoint('rpc2', $disp['xml'], true, $disp['send']);
+			$rpc2Logged = $this->runEntrypoint('rpc2', $disp['xml'], true, $disp['send'], 'shipped', true);
 			$rpc2Quiet = $this->runEntrypoint('rpc2', $disp['xml'], false, $disp['send']);
 			$this->assertHttp($rpc2Logged, $disp['rpc2_status'], $disp['rpc2_type']);
 			$this->assertHttp($rpc2Quiet, $disp['rpc2_status'], $disp['rpc2_type']);

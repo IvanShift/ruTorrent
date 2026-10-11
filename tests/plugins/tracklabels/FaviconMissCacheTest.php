@@ -34,10 +34,12 @@ register_shutdown_function(function () {
 });
 $route = getenv('ROUTE_FILE');
 chdir(dirname($route));
+if ((string) getenv('ROUTE_FETCH_TIMEOUT') !== '')
+    define('TRACKLABELS_FAVICON_FETCH_TIMEOUT', (int) getenv('ROUTE_FETCH_TIMEOUT'));
 require getenv('ROUTE_ROOT') . '/php/util.php';
 $httpProxy = array('use' => true, 'proto' => 'http',
     'host' => '127.0.0.1', 'port' => (int) getenv('ROUTE_PROXY_PORT'));
-$resolve = (string) getenv('ROUTE_RESOLUTION') !== '';
+$resolve = (string) getenv('ROUTE_RESOLUTION') !== '' || (string) getenv('ROUTE_ATTEMPTS') !== '';
 $observe = getenv('ROUTE_OBSERVE_VALIDATION') === '1' || getenv('ROUTE_STAGE_EVENT') === 'pause';
 $published = getenv('ROUTE_STAGE_EVENT') === 'published';
 $fallback = getenv('ROUTE_TEMPNAM_FALLBACK') === '1';
@@ -51,8 +53,8 @@ if ($resolve || $observe || $fallback || $published) {
         }
     }
     require getenv('ROUTE_ROOT') . '/php/Snoopy.class.inc';
-    // Only the external resolver is replaced: Snoopy's target guard and the
-    // action's error classification still execute their production code.
+    // Only the external resolver is replaced, and requests are recorded: Snoopy's
+    // target guard and the action's error classification still run production code.
     class FaviconTestResolver extends Snoopy {
         public static function resolveHost($host) {
             if ($host !== 'retry.test') return parent::resolveHost($host);
@@ -61,6 +63,12 @@ if ($resolve || $observe || $fallback || $published) {
             $mode = getenv('ROUTE_RESOLUTION');
             return ($mode === 'unresolved' || ($mode === 'second-unresolved' && $calls > 1))
                 ? array() : array('93.184.216.34');
+        }
+        // Records each URL the action asks for, including requests that never connect.
+        public function fetchComplex($URI, $method = "GET", $content_type = "", $body = "") {
+            if ((string) getenv('ROUTE_ATTEMPTS') !== '')
+                file_put_contents(getenv('ROUTE_ATTEMPTS'), $URI . "\n", FILE_APPEND);
+            return parent::fetchComplex($URI, $method, $content_type, $body);
         }
     }
     $source = file_get_contents($route);
@@ -155,16 +163,9 @@ PHP
             . "\r\nConnection: close\r\n\r\n" . $icon;
     }
 
-    // Runs one favicon fetch for $tracker. Every request that reaches the
-    // fake proxy gets $answer; their request lines are returned in order.
-    private function fetch($tracker, $answer, $resolution = '', $observe = false, $options = array())
+    private function childEnv($call, $tracker, $resolution, $observe, $options)
     {
-        $call = $this->scratch . '/call-' . bin2hex(random_bytes(4));
-        $statusFile = $call . '-status';
-        $checkpoint = $call . '-checkpoint';
-        $release = $call . '-release';
-        @unlink($statusFile);
-        $env = array(
+        return array(
             'TMPDIR' => sys_get_temp_dir(),
             'RU_PROFILE_PATH' => $this->scratch . '/profile',
             'RU_LOG_FILE' => $this->scratch . '/errors.log',
@@ -174,25 +175,124 @@ PHP
             'ROUTE_ROOT' => $this->root,
             'ROUTE_FILE' => $this->root . '/plugins/tracklabels/action.php',
             'ROUTE_TRACKER' => json_encode($tracker),
-            'ROUTE_PROXY_PORT' => (string) $this->port,
-            'ROUTE_STATUS_FILE' => $statusFile,
+            'ROUTE_PROXY_PORT' => (string) (isset($options['proxyPort']) ? $options['proxyPort'] : $this->port),
+            'ROUTE_STATUS_FILE' => $call . '-status',
             'ROUTE_RESOLUTION' => $resolution,
             'ROUTE_OBSERVE_VALIDATION' => $observe ? '1' : '0',
             'ROUTE_STAGE_EVENT' => isset($options['checkpoint']) ? (!empty($options['published']) ? 'published' : 'pause') : '',
-            'ROUTE_CHECKPOINT' => $checkpoint, 'ROUTE_RELEASE' => $release,
+            'ROUTE_CHECKPOINT' => $call . '-checkpoint', 'ROUTE_RELEASE' => $call . '-release',
             'ROUTE_TEMPNAM_FALLBACK' => !empty($options['fallback']) ? '1' : '0',
             'ROUTE_CACHE_ICON' => $this->trackersDir() . '/' . (is_string($tracker) ? $tracker : '') . '.ico',
             'ROUTE_OBSERVATION_FILE' => $this->scratch . '/validation-view',
+            // A longer timeout lets a test hold the upstream silent; empty keeps the shipped one.
+            'ROUTE_FETCH_TIMEOUT' => isset($options['timeout']) ? (string) $options['timeout'] : '',
+            'ROUTE_ATTEMPTS' => !empty($options['attempts']) ? $call . '-attempts' : '',
         );
+    }
+
+    // Starts one favicon fetch for $tracker in a child PHP process. The argv
+    // array runs PHP without a shell, so a terminated child leaves nothing behind.
+    private function startFetch($tracker, $options = array(), $resolution = '', $observe = false)
+    {
+        $call = $this->scratch . '/call-' . bin2hex(random_bytes(4));
         $proc = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr', $this->scratch . '/request.php'),
             array(0 => array('pipe', 'r'),
                 1 => array('file', $call . '-out', 'w'),
                 2 => array('file', $call . '-err', 'w')),
-            $pipes, null, $env);
+            $pipes, null, $this->childEnv($call, $tracker, $resolution, $observe, $options));
         if (!is_resource($proc)) throw new RuntimeException('route child did not start');
         fclose($pipes[0]);
+        return array('proc' => $proc, 'call' => $call, 'started' => microtime(true), 'result' => null);
+    }
+
+    // The finished child's result, collected once; null while it still runs.
+    private function finished(array &$child)
+    {
+        if ($child['result'] === null) {
+            $state = proc_get_status($child['proc']);
+            if ($state['running']) return null;
+            proc_close($child['proc']);
+            clearstatcache();
+            $call = $child['call'];
+            $child['result'] = array(
+                'exit' => $state['exitcode'],
+                'elapsed' => microtime(true) - $child['started'],
+                'status' => is_file($call . '-status') ? file_get_contents($call . '-status') : '',
+                'out' => (string) @file_get_contents($call . '-out'),
+                'err' => (string) @file_get_contents($call . '-err'),
+                'attempts' => is_file($call . '-attempts') ? file($call . '-attempts', FILE_IGNORE_NEW_LINES) : array(),
+            );
+        }
+        return $child['result'];
+    }
+
+    private function stopChildren(array &$children)
+    {
+        foreach ($children as &$child) {
+            if ($child['result'] !== null) continue;
+            proc_terminate($child['proc'], 9);
+            proc_close($child['proc']);
+            $child['result'] = false;
+        }
+    }
+
+    private function readRequestLine($peer)
+    {
+        stream_set_timeout($peer, 2);
+        $head = '';
+        while (strpos($head, "\r\n\r\n") === false && strlen($head) < 8192) {
+            $piece = fread($peer, 4096);
+            if ($piece === false || $piece === '') break;
+            $head .= $piece;
+        }
+        return strtok($head, "\r\n");
+    }
+
+    // Accepts at most one connection that reaches the fake proxy within
+    // $seconds and keeps it open and unanswered, as a slow upstream would.
+    private function acceptHeld(array &$held, $seconds)
+    {
+        $read = array($this->server);
+        $write = $except = null;
+        if (@stream_select($read, $write, $except, 0, (int) ($seconds * 1000000)) < 1) return;
+        $peer = @stream_socket_accept($this->server, 1);
+        if ($peer !== false) $held[] = array('peer' => $peer, 'request' => $this->readRequestLine($peer));
+    }
+
+    private function answerHeld(array &$held, $answer)
+    {
+        foreach ($held as &$entry) {
+            if (!is_resource($entry['peer'])) continue;
+            @fwrite($entry['peer'], $answer);
+            fclose($entry['peer']);
+        }
+    }
+
+    // Answers every new upstream request at once until the named children exit.
+    private function serveUntilFinished(array &$children, array $names, $answer, $seconds)
+    {
+        $deadline = microtime(true) + $seconds;
+        while (microtime(true) < $deadline) {
+            $running = 0;
+            foreach ($names as $name) if ($this->finished($children[$name]) === null) $running++;
+            if ($running === 0) return;
+            $held = array();
+            $this->acceptHeld($held, 0.05);
+            $this->answerHeld($held, $answer);
+        }
+    }
+
+    // Runs one favicon fetch for $tracker. Every request that reaches the
+    // fake proxy gets $answer; their request lines are returned in order.
+    // A null answer keeps that connection open and silent until the child exits.
+    private function fetch($tracker, $answer, $resolution = '', $observe = false, $options = array())
+    {
+        $child = $this->startFetch($tracker, $options, $resolution, $observe);
+        $proc = $child['proc'];
+        $checkpoint = $child['call'] . '-checkpoint';
+        $release = $child['call'] . '-release';
         $requests = array();
-        $exit = null;
+        $held = array();
         $deadline = microtime(true) + 30;
         $checkpointHandled = false;
         try {
@@ -202,40 +302,28 @@ PHP
                     $options['checkpoint']($proc, file_get_contents($checkpoint));
                     touch($release);
                 }
-                $state = proc_get_status($proc);
-                if (!$state['running']) {
-                    $exit = $state['exitcode'];
-                    break;
-                }
+                if ($this->finished($child) !== null) break;
                 if (microtime(true) > $deadline) throw new RuntimeException('route child did not finish');
                 $read = array($this->server);
                 $write = $except = null;
                 if (@stream_select($read, $write, $except, 0, 50000) < 1) continue;
                 $peer = @stream_socket_accept($this->server, 1);
                 if ($peer === false) continue;
-                stream_set_timeout($peer, 2);
-                $head = '';
-                while (strpos($head, "\r\n\r\n") === false && strlen($head) < 8192) {
-                    $piece = fread($peer, 4096);
-                    if ($piece === false || $piece === '') break;
-                    $head .= $piece;
+                $requests[] = $this->readRequestLine($peer);
+                $reply = is_array($answer) ? $answer[count($requests) - 1] : $answer;
+                if ($reply === null) {
+                    $held[] = $peer;
+                    continue;
                 }
-                $requests[] = strtok($head, "\r\n");
-                fwrite($peer, is_array($answer) ? $answer[count($requests) - 1] : $answer);
+                fwrite($peer, $reply);
                 fclose($peer);
             }
         } finally {
-            if ($exit === null) proc_terminate($proc, 9);
-            proc_close($proc);
+            foreach ($held as $peer) fclose($peer);
+            $children = array($child);
+            $this->stopChildren($children);
         }
-        clearstatcache();
-        return array(
-            'exit' => $exit,
-            'status' => is_file($statusFile) ? file_get_contents($statusFile) : '',
-            'out' => file_get_contents($call . '-out'),
-            'err' => file_get_contents($call . '-err'),
-            'requests' => $requests,
-        );
+        return $child['result'] + array('requests' => $requests);
     }
 
     public function testUnavailableFaviconIsRememberedQuietlyAndNotRefetched()
@@ -365,40 +453,65 @@ PHP
         $this->assertSame(0, $this->pluginLogLines(), 'expected upstream HTTP failures remain quiet');
     }
 
-    public function testPersistentTemporaryFailureBacksOffToADayAndResetsAfterRecovery()
+    public function testUncertainFailuresBackOffByAttemptCountAndResetAfterRecovery()
     {
         $retry = $this->trackersDir() . '/retry.test.retry';
-        foreach (array(300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 76800, 86400, 86400) as $delay) {
+        $delays = array(300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 76800, 86400, 86400);
+        foreach ($delays as $index => $delay) {
+            $attempt = $index + 1;
             $response = $this->fetch('retry.test', self::NOT_FOUND, 'unresolved');
             $this->assertSame('404', $response['status'], 'a repeated DNS failure stays a quiet browser miss');
-            $this->assertSame((string)$delay, is_file($retry) ? file_get_contents($retry) : '',
-                'each failed probe doubles its retry delay, capped at one day');
+            $this->assertSame((string)$attempt, is_file($retry) ? file_get_contents($retry) : '',
+                'the retry marker counts uncertain failures in a row');
+            touch($retry, time() - $delay + 30);
+            $waiting = $this->fetch('retry.test', $this->imageAnswer(), 'public');
+            $this->assertSame(array(), $waiting['requests'],
+                'failure ' . $attempt . ' waits min(5 min * 2^(n-1), 24 h) = ' . $delay . ' s');
             touch($retry, time() - $delay - 2);
         }
-        touch($retry, time() - 360);
-        $suppressed = $this->fetch('retry.test', $this->imageAnswer(), 'public');
-        $this->assertSame(array(), $suppressed['requests'], 'an escalated retry does not recur every five minutes');
-        touch($retry, time() - 86402);
         $recovered = $this->fetch('retry.test', $this->imageAnswer(), 'public');
         $this->assertSame($this->gif(), $recovered['out'], 'a recovered resolver is tried after the capped delay');
         $this->assertTrue(!file_exists($retry), 'successful recovery clears the retry history');
         unlink($this->trackersDir() . '/retry.test.ico');
         $this->fetch('retry.test', self::NOT_FOUND, 'unresolved');
-        $this->assertSame('300', file_get_contents($retry), 'a later outage starts with the short first retry again');
+        $this->assertSame('1', file_get_contents($retry), 'a later outage starts with the short first retry again');
         $this->assertSame(0, $this->pluginLogLines(), 'persistent upstream failure remains quiet');
+    }
+
+    public function testRetryMarkersFromEarlierReleasesKeepTheirDelay()
+    {
+        mkdir($this->trackersDir(), 0777, true);
+        $retry = $this->trackersDir() . '/retry.test.retry';
+        // content => [delay it stands for, count written by the next failure];
+        // '' and 'garbage' stand for a truncated or damaged marker.
+        $markers = array('' => array(300, '2'), '600' => array(600, '3'),
+            '86400' => array(86400, '11'), 'garbage' => array(300, '2'));
+        foreach ($markers as $content => $expected) {
+            file_put_contents($retry, $content);
+            touch($retry, time() - $expected[0] + 30);
+            $waiting = $this->fetch('retry.test', $this->imageAnswer(), 'public');
+            $this->assertSame(array(), $waiting['requests'],
+                json_encode($content) . ' still waits ' . $expected[0] . ' s');
+            touch($retry, time() - $expected[0] - 2);
+            $this->fetch('retry.test', self::NOT_FOUND, 'unresolved');
+            $this->assertSame($expected[1], file_get_contents($retry),
+                json_encode($content) . ' continues the attempt count it stands for');
+        }
     }
 
     public function testCompleteClientRefusalsAreTerminalButTimeoutAndRateLimitRetry()
     {
-        foreach (array(401, 403, 451, 408, 429) as $code) {
-            $host = '93.184.216.' . ($code % 100 + 1);
+        foreach (array(400, 401, 403, 451, 408, 429, 501) as $index => $code) {
+            $host = '93.184.216.' . (100 + $index);
             $answer = 'HTTP/1.1 ' . $code . " Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             $response = $this->fetch($host, $answer);
-            $this->assertSame(2, count($response['requests']), 'both favicon locations receive the complete refusal');
-            $this->assertSame('404', $response['status'], 'upstream client refusal is a quiet local miss');
-            $temporary = in_array($code, array(408, 429), true);
+            $this->assertSame(2, count($response['requests']), $code . ' is an answer, so both favicon locations are asked');
+            $this->assertSame('404', $response['status'], 'an upstream refusal is a quiet local miss');
+            $temporary = in_array($code, array(408, 429, 501), true);
             $this->assertTrue(is_file($this->trackersDir() . '/' . $host . ($temporary ? '.retry' : '.miss')),
                 $code . ' receives the appropriate short or terminal marker');
+            $this->assertTrue(!file_exists($this->trackersDir() . '/' . $host . ($temporary ? '.miss' : '.retry')),
+                $code . ' receives only that marker');
         }
     }
 
@@ -410,6 +523,182 @@ PHP
             'Snoopy retains status 404, but its second-path resolver error requires a short retry');
         $this->assertTrue(!file_exists($this->trackersDir() . '/retry.test.miss'),
             'an incomplete second request cannot be certified absent from the sticky first status');
+    }
+
+    public function testNoHttpAnswerOnTheFirstPathSkipsTheSecond()
+    {
+        $reset = $this->fetch(self::PUBLIC_HOST, '');
+        $this->assertSame(array('GET http://' . self::PUBLIC_HOST . '/favicon.ico HTTP/1.0'), $reset['requests'],
+            'a connection closed without an answer is not repeated for favicon.png');
+        $this->assertSame('404', $reset['status'], 'a host without an HTTP answer is a quiet browser miss');
+        $this->assertSame('1', (string) @file_get_contents($this->trackersDir() . '/' . self::PUBLIC_HOST . '.retry'),
+            'a host without an HTTP answer is uncertain and gets the first retry delay');
+
+        // Bound but not listening: every connection is refused while the test holds the port.
+        $closed = stream_socket_server('tcp://127.0.0.1:0', $errno, $error, STREAM_SERVER_BIND);
+        if ($closed === false) throw new RuntimeException('refusing port fixture failed: ' . $error);
+        try {
+            $port = (int) substr(strrchr(stream_socket_get_name($closed, false), ':'), 1);
+            $refused = $this->fetch('93.184.216.36', self::NOT_FOUND, '', false,
+                array('proxyPort' => $port, 'attempts' => true));
+        } finally {
+            fclose($closed);
+        }
+        $this->assertSame(array('http://93.184.216.36/favicon.ico'), $refused['attempts'],
+            'a refused connection is not repeated for favicon.png');
+        $this->assertSame('1', (string) @file_get_contents($this->trackersDir() . '/93.184.216.36.retry'),
+            'a refused port is uncertain and gets the first retry delay');
+
+        $silent = $this->fetch('93.184.216.37', null);
+        $this->assertSame(array('GET http://93.184.216.37/favicon.ico HTTP/1.0'), $silent['requests'],
+            'a source that never answers is not asked a second time');
+        $this->assertTrue($silent['elapsed'] >= 2.5 && $silent['elapsed'] < 4.5,
+            'one silent request is abandoned after about three seconds: ' . round($silent['elapsed'], 2) . ' s');
+        $this->assertSame('1', (string) @file_get_contents($this->trackersDir() . '/93.184.216.37.retry'),
+            'a silent source gets the first retry delay');
+        $this->assertSame(0, $this->pluginLogLines(), 'unreachable sources remain quiet');
+    }
+
+    public function testBurstFetchesAtMostTwoHostsAtOnceAndBusyRequestsAnswerAtOnce()
+    {
+        $slow = array('93.184.216.50', '93.184.216.51');
+        $busy = array('93.184.216.52', '93.184.216.53', '93.184.216.54');
+        $children = array();
+        $held = array();
+        try {
+            // The upstream accepts the first fetches and does not answer them yet.
+            foreach ($slow as $host) $children[$host] = $this->startFetch($host, array('timeout' => 30));
+            $deadline = microtime(true) + 20;
+            while (count($held) < 2 && microtime(true) < $deadline) $this->acceptHeld($held, 0.05);
+            $this->assertSame(2, count($held), 'two fetches reach the slow upstream');
+            foreach ($busy as $host) $children[$host] = $this->startFetch($host);
+            $deadline = microtime(true) + 15;
+            do {
+                $this->acceptHeld($held, 0.05);
+                $running = 0;
+                foreach ($busy as $host) if ($this->finished($children[$host]) === null) $running++;
+            } while ($running > 0 && microtime(true) < $deadline);
+            $requests = array_column($held, 'request');
+            sort($requests);
+            $this->assertSame(array('GET http://93.184.216.50/favicon.ico HTTP/1.0',
+                'GET http://93.184.216.51/favicon.ico HTTP/1.0'), $requests,
+                'no third request reaches the upstream while two fetches are in flight');
+            foreach ($slow as $host)
+                $this->assertTrue($this->finished($children[$host]) === null,
+                    'the slow fetch for ' . $host . ' still holds its slot');
+            foreach ($busy as $host) {
+                $result = $this->finished($children[$host]);
+                $this->assertTrue(is_array($result), $host . ' is answered while both slots are held');
+                if (!is_array($result)) continue;
+                $this->assertSame(0, $result['exit'], 'a busy answer exits cleanly: ' . $result['err']);
+                $this->assertSame('429', $result['status'], 'a request without a free slot is asked to come back');
+                $this->assertSame('Favicon fetch busy', $result['out'], 'the busy answer has no placeholder body');
+                $this->assertTrue($result['elapsed'] < 3,
+                    'a busy answer does not wait for a slot: ' . round($result['elapsed'], 2) . ' s');
+                $this->assertTrue(!file_exists($this->trackersDir() . '/' . $host . '.miss')
+                    && !file_exists($this->trackersDir() . '/' . $host . '.retry'),
+                    'a busy answer remembers nothing about ' . $host);
+            }
+
+            $this->answerHeld($held, self::NOT_FOUND);
+            $this->serveUntilFinished($children, $slow, self::NOT_FOUND, 20);
+            foreach ($slow as $host) {
+                $result = $this->finished($children[$host]);
+                $this->assertTrue(is_array($result) && $result['status'] === '404',
+                    'the slow fetch for ' . $host . ' finishes once the upstream answers');
+                $this->assertTrue(is_file($this->trackersDir() . '/' . $host . '.miss'),
+                    'the slow fetch records its own outcome');
+            }
+            $later = $this->fetch($busy[0], self::NOT_FOUND);
+            $this->assertSame(2, count($later['requests']), 'finished fetches released their slots');
+            $this->assertSame('404', $later['status'], 'a host turned away while busy is fetched later');
+            $this->assertSame(0, $this->pluginLogLines(), 'busy answers are not logged');
+        } finally {
+            $this->answerHeld($held, self::NOT_FOUND);
+            $this->stopChildren($children);
+        }
+    }
+
+    public function testKilledFetchReleasesItsSlotToTheNextRequest()
+    {
+        $children = array();
+        $held = array();
+        try {
+            foreach (array('93.184.216.60', '93.184.216.61') as $host)
+                $children[$host] = $this->startFetch($host, array('timeout' => 30));
+            $deadline = microtime(true) + 20;
+            while (count($held) < 2 && microtime(true) < $deadline) $this->acceptHeld($held, 0.05);
+            $this->assertSame(2, count($held), 'both slots are held by fetches waiting on the upstream');
+            $children['93.184.216.62'] = $this->startFetch('93.184.216.62');
+            $deadline = microtime(true) + 15;
+            while ($this->finished($children['93.184.216.62']) === null && microtime(true) < $deadline)
+                $this->acceptHeld($held, 0.05);
+            $busy = $this->finished($children['93.184.216.62']);
+            $this->assertTrue(is_array($busy) && $busy['status'] === '429', 'a third request finds no free slot');
+
+            proc_terminate($children['93.184.216.60']['proc'], 9);
+            $deadline = microtime(true) + 10;
+            while ($this->finished($children['93.184.216.60']) === null && microtime(true) < $deadline) usleep(20000);
+            $children['93.184.216.63'] = $this->startFetch('93.184.216.63', array('timeout' => 30));
+            $deadline = microtime(true) + 15;
+            while (count($held) < 3 && $this->finished($children['93.184.216.63']) === null
+                && microtime(true) < $deadline)
+                $this->acceptHeld($held, 0.05);
+            $this->assertSame('GET http://93.184.216.63/favicon.ico HTTP/1.0',
+                count($held) === 3 ? $held[2]['request'] : null,
+                'the slot of a killed worker is free for the next request at once');
+            $this->answerHeld($held, self::NOT_FOUND);
+            $this->serveUntilFinished($children, array('93.184.216.61', '93.184.216.63'), self::NOT_FOUND, 20);
+            foreach (array('93.184.216.61', '93.184.216.63') as $host) {
+                $result = $this->finished($children[$host]);
+                $this->assertTrue(is_array($result) && $result['status'] === '404', $host . ' finishes its fetch');
+            }
+        } finally {
+            $this->answerHeld($held, self::NOT_FOUND);
+            $this->stopChildren($children);
+        }
+    }
+
+    public function testBusyAnswerOverHttpIs429WithRetryAfterAndNoMarker()
+    {
+        mkdir($this->trackersDir(), 0777, true);
+        $locks = array();
+        try {
+            foreach (array(0, 1) as $slot) {
+                $lock = fopen($this->trackersDir() . '/.fetch-slot-' . $slot . '.lock', 'c+b');
+                $this->assertTrue($lock !== false && flock($lock, LOCK_EX | LOCK_NB), 'the test holds fetch slot ' . $slot);
+                $locks[] = $lock;
+            }
+            $response = $this->httpRequest(array(),
+                http_build_query(array('fetch' => '1', 'tracker' => self::PUBLIC_HOST)),
+                array('Origin' => 'http://localhost', 'X-Requested-With' => 'XMLHttpRequest',
+                    'Content-Type' => 'application/x-www-form-urlencoded'));
+        } finally {
+            foreach ($locks as $lock) fclose($lock);
+        }
+        $this->assertTrue(strpos($response['headers'], ' 429 ') !== false, 'a busy fetch answers HTTP 429');
+        $this->assertTrue(stripos($response['headers'], "\r\nRetry-After: 30") !== false,
+            'the busy answer names the cooldown the WebUI waits before it asks again');
+        $this->assertSame('Favicon fetch busy', $response['out'], 'the busy answer has a readable body');
+        $this->assertTrue(!file_exists($this->trackersDir() . '/' . self::PUBLIC_HOST . '.miss')
+            && !file_exists($this->trackersDir() . '/' . self::PUBLIC_HOST . '.retry'),
+            'a busy answer writes no negative cache marker');
+        $this->assertSame(0, $this->pluginLogLines(), 'a busy answer is not logged');
+    }
+
+    public function testAnyLaterFetchSweepsADeadWorkerStage()
+    {
+        $stage = null;
+        $this->fetch(self::PUBLIC_HOST, $this->imageAnswer(), '', false, array('checkpoint' =>
+            function ($proc, $path) use (&$stage) { $stage = $path; proc_terminate($proc, 9); }));
+        $this->assertTrue(is_string($stage) && is_file($stage) && is_file($stage . '.json'),
+            'a worker killed before publication leaves its attested stage');
+        touch($stage, time() - 7200);
+        touch($stage . '.json', time() - 7200);
+        $response = $this->fetch('93.184.216.35', self::NOT_FOUND);
+        $this->assertSame('404', $response['status'], 'the later fetch ends in a miss without staging anything');
+        $this->assertTrue(!file_exists($stage) && !file_exists($stage . '.json'),
+            'a fetch that only writes a miss marker still sweeps the aged dead-worker stage');
     }
 
     public function testTempnamFallbackCannotPublishOutsideTheCacheDirectory()
@@ -605,9 +894,13 @@ PHP
         $router = $this->scratch . '/http.php';
         file_put_contents($router, '<?php $_ENV["RU_PROFILE_PATH"] = '
             . var_export($this->scratch . '/profile', true) . '; $_ENV["RU_LOG_FILE"] = '
-            . var_export($this->scratch . '/errors.log', true) . '; $route = '
+            . var_export($this->scratch . '/errors.log', true) . '; $_ENV["RU_SCGI_HOST"] = '
+            . var_export('unix://' . $this->scratch . '/absent.sock', true) . '; $_ENV["RU_SCGI_PORT"] = "0"; $route = '
             . var_export($this->root . '/plugins/tracklabels/action.php', true)
-            . '; chdir(dirname($route)); require $route;');
+            . '; chdir(dirname($route)); require ' . var_export($this->root . '/php/util.php', true)
+            // A favicon fetch, if one starts, goes to the test proxy and never to the network.
+            . '; $httpProxy = array("use" => true, "proto" => "http", "host" => "127.0.0.1", "port" => '
+            . (int) $this->port . '); require $route;');
         $http = AddTorrentHttpHarness::forDocumentRoot($this->scratch);
         try {
             $reply = $http->request($body === '' ? 'GET' : 'POST', '/http.php?' . http_build_query($query),
@@ -683,8 +976,10 @@ PHP
         $response = $this->fetch(self::PUBLIC_HOST, $this->imageAnswer());
         $this->assertSame(0, $response['exit'], 'cache fault exits cleanly: ' . $response['err']);
         $this->assertSame('503', $response['status'], 'a local cache fault stays retryable');
+        $this->assertSame(array(), $response['requests'],
+            'without a fetch slot in the cache directory no worker waits on the source');
         $log = $this->log();
-        $this->assertSame(1, substr_count($log, 'tracklabels: favicon cache write failed'),
+        $this->assertSame(1, substr_count($log, 'tracklabels: favicon fetch slot unavailable'),
             'the local cache fault is logged once with its classified reason');
         $this->assertSame(1, $this->pluginLogLines(), 'no second, expected-outcome line follows it');
         $this->assertTrue(strpos($log, self::PUBLIC_HOST) === false, 'the log line carries no remote text');
@@ -707,7 +1002,9 @@ PHP
 
     public function testMissMarkerWriteFaultIsLoggedAndStillA404()
     {
-        file_put_contents($this->trackersDir(), 'not a directory');
+        mkdir($this->trackersDir(), 0777, true);
+        // A marker name that leads into a missing directory cannot be created, root included.
+        symlink($this->scratch . '/absent/marker', $this->trackersDir() . '/' . self::PUBLIC_HOST . '.miss');
         $response = $this->fetch(self::PUBLIC_HOST, self::NOT_FOUND);
         $this->assertSame(0, $response['exit'], 'marker fault exits cleanly: ' . $response['err']);
         $this->assertSame(2, count($response['requests']), 'both favicon paths were asked');

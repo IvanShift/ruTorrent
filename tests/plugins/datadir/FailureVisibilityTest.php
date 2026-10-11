@@ -138,17 +138,15 @@ STUB
 
     public function tearDown()
     {
-        foreach (array('plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php', 'plugins/erasedata/pending.php',
-            'allowed/win') as $entry)
-            is_dir($this->tree . '/' . $entry) ? @rmdir($this->tree . '/' . $entry) : @unlink($this->tree . '/' . $entry);
-        foreach (array('app.log', 'dispatch.json', 'mkdir.log', 'lock.log', 'recover.log', 'capability.log', 'php/xmlrpc.php', 'php/util.php', 'php/cli-only.php', 'plugins/datadir/action.php',
-            'plugins/datadir/setdir.php', 'plugins/datadir/setdircommand.php', 'plugins/datadir/moveintent.php', 'plugins/datadir/apply.php',
-            'plugins/datadir/util_rt.php',
-            'plugins/datadir/util_setdir.php', 'plugins/datadir/action_driver.php') as $file)
-            @unlink($this->tree . '/' . $file);
-        @unlink($this->tree . '/allowed/link');
-        foreach (array('plugins/datadir', 'plugins/erasedata', 'plugins', 'php', 'allowed', 'outside', '') as $dir)
-            @rmdir($this->tree . ($dir === '' ? '' : '/' . $dir));
+        // Remove the whole fixture tree, whatever a case wrote into it, without
+        // following the allowed/link symlink out of it.
+        $remove = function ($path) use (&$remove) {
+            if (is_link($path) || is_file($path)) return @unlink($path);
+            if (!is_dir($path)) return;
+            foreach (array_diff(scandir($path), array('.', '..')) as $name) $remove($path . '/' . $name);
+            @rmdir($path);
+        };
+        $remove($this->tree);
     }
 
     private function runEntry($script, $args = array(), $env = array())

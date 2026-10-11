@@ -284,4 +284,233 @@ class ErasedataNativeRetryTest extends TestCase
 		// action; it is fixture-owned and contains no payload at this point.
 		if(is_dir($base))rmdir($base);if(is_dir($this->dir.'/missing'))rmdir($this->dir.'/missing');
 	}
+
+	// One V4 job bound to 'rutorrent' and journaled as its producer leaves it.
+	private function boundJob($label)
+	{
+		$state=$this->state();$hash=str_repeat('A',40);$g=$state['generation'];
+		$payload=$this->dir.'/payload-'.$label;file_put_contents($payload,'consumed exactly once');
+		$paths=array('base'=>$payload,'multi'=>false,'files'=>array($payload));
+		$intent=array('incarnation'=>str_repeat('a',32),'nonce'=>str_repeat('b',32),'generation'=>$g,
+			'user'=>'rutorrent','digest'=>hash('sha256',ErasedataManifestCodec::encode($hash,$paths,1)));
+		$path=$this->dir.'/'.$hash.'.'.$g.'.actor.list';$bytes=ErasedataManifestCodec::encodeBound($hash,$paths,1,$intent);
+		file_put_contents($path,$bytes);chmod($path,0600);$stat=lstat($path);
+		$state['journal'][$g]=array('phase'=>'published','force'=>1,'hashes'=>array($hash),
+			'staging'=>array($hash=>array('path'=>substr($path,0,-5).'.tmp','dev'=>(string)$stat['dev'],'ino'=>(string)$stat['ino'])));
+		erasedataWriteDrainState($this->dir,$state);
+		return(array($hash,$intent,$path,$stat,$bytes,$payload));
+	}
+
+	private function worker(ErasedataFilesystemOps $filesystem)
+	{
+		return(new ErasedataCollector($filesystem,function(){throw new Exception('presence replay');},
+			function(){throw new Exception('paths replay');},null,true));
+	}
+
+	private function lookups(ErasedataSettlingRenameFixture $filesystem, $path)
+	{
+		return(isset($filesystem->lookups[$path]) ? $filesystem->lookups[$path] : 0);
+	}
+
+	// POST-1011-01: on the owner's drvfs/9p volume (cache=0x5) lstat of the
+	// terminal name answered ENOENT once right after its successful rename. The
+	// payload was already consumed, yet the first worker withheld native finish.
+	public function testTerminalNameNegativeLookupSettlesInTheSameWorker()
+	{
+		if(!$this->api())return;
+		list($hash,$intent,$path,$stat,,$payload)=$this->boundJob('transient');
+		$terminal=$path.'.completed';
+		$filesystem=new ErasedataSettlingRenameFixture('/\.list\.completed$/D',2);
+		$result=$this->worker($filesystem)->runNative($this->dir,$hash,$intent);
+		$this->assertTrue(is_array($result),'one negative answer for the just-renamed terminal name does not withhold finish');
+		$this->assertSame(2,$this->lookups($filesystem,$terminal),'the terminal name is asked again after its negative answer');
+		$this->assertTrue(is_array($result) && $result['path']===$terminal && erasedataSameStatIdentity($stat,lstat($terminal)),
+			'the exact consumed inode is the published terminal record');
+		$this->assertTrue(!file_exists($payload) && !file_exists($path),'payload and the consumable name are gone');
+		$this->assertEquals(array(),FileUtil::$log,'nothing is reported as retained or refused');
+		$after=erasedataReadDrainState($this->dir);
+		$this->assertTrue(is_array($after) && !isset($after['native_retry']) && $after['journal']===array(),
+			'no advisory hint is filed and the exact journal member retires');
+	}
+
+	public function testTerminalNameHoldingAnotherInodeIsRefusedAtItsFirstAnswer()
+	{
+		if(!$this->api())return;
+		list($hash,$intent,$path,,,$payload)=$this->boundJob('foreign');
+		$terminal=$path.'.completed';
+		$filesystem=new ErasedataSettlingRenameFixture('/\.list\.completed$/D',1,true);
+		$this->assertTrue($this->worker($filesystem)->runNative($this->dir,$hash,$intent)===false,
+			'a different inode under the terminal name is not the consumed record');
+		$this->assertSame(1,$this->lookups($filesystem,$terminal),'a present answer is compared at once and never settled');
+		$this->assertTrue(strpos(implode("\n",FileUtil::$log),'reason=terminal-publication-unresolved')!==false,
+			'the withheld finish carries its classified reason');
+		$this->assertTrue(!file_exists($payload),'the refusal concerns only the terminal record');
+	}
+
+	public function testUnsettledTerminalNameIsReportedTruthfullyAndItsHintRetiresWithTheJob()
+	{
+		if(!$this->api())return;
+		list($hash,$intent,$path,$stat,$bytes,$payload)=$this->boundJob('unsettled');
+		$terminal=$path.'.completed';
+		$filesystem=new ErasedataSettlingRenameFixture('/\.list\.completed$/D',PHP_INT_MAX);
+		$started=microtime(true);
+		$this->assertTrue($this->worker($filesystem)->runNative($this->dir,$hash,$intent)===false,
+			'a terminal name that never answers withholds finish');
+		$elapsed=microtime(true)-$started;
+		$bound=defined('ERASEDATA_RENAME_SETTLE_ATTEMPTS') ? ERASEDATA_RENAME_SETTLE_ATTEMPTS : 10;
+		$this->assertSame($bound,$this->lookups($filesystem,$terminal),'the settle stops at its attempt bound');
+		$this->assertTrue($elapsed<2.0,'the bounded settle costs well under two seconds: '.round($elapsed,3));
+		$log=implode("\n",FileUtil::$log);
+		$this->assertTrue(strpos($log,'reason=terminal-publication-unresolved; payload consumed; terminal record publication unresolved;'
+			.' native finish withheld; retried automatically')!==false,'the line says the payload was consumed and the record is retried');
+		$this->assertTrue(strpos($log,'payload effects refused')===false,'consumed payload is never reported as refused');
+		$this->assertTrue(strpos($log,'document='.erasedataLogPath($path).' key=')===false,
+			'no line names the .list path the document was renamed away from: '.$log);
+		$this->assertTrue(!file_exists($payload),'the payload was consumed before publication was withheld');
+		$state=erasedataReadDrainState($this->dir);
+		$key=erasedataNativeRetryKey($hash,$terminal,$stat,$bytes,$intent);
+		$this->assertTrue(is_array($state) && isset($state['native_retry']['jobs'][$key]) && count($state['native_retry']['jobs'])===1,
+			'the one hint is filed under the exact terminal record the next pass and the finished worker compute');
+		// The production hint was filed from the vanished list name, without its
+		// bytes; a staging-name hint predates publication. Both belong to this
+		// record. Another job's hint does not.
+		$hint=array(time(),5,1,hash('sha256','payload-or-terminal-metadata-unresolved'));
+		$unrelated=hash('sha256','another job');
+		$state['native_retry']['jobs'][erasedataNativeRetryKey($hash,$path,$stat,'',$intent)]=$hint;
+		$state['native_retry']['jobs'][erasedataNativeRetryKey($hash,substr($path,0,-5).'.tmp',$stat,$bytes,$intent)]=$hint;
+		$state['native_retry']['jobs'][$unrelated]=$hint;
+		$this->assertTrue(erasedataWriteDrainState($this->dir,$state),'the earlier spellings of this record are admitted as hints');
+		// The mount settles; a fresh worker finishes exactly as collect_worker.php does.
+		$this->assertTrue($filesystem->settle($terminal),'the renamed inode appears under its terminal name');
+		$completed=$this->worker(new ErasedataCollectorFixture(array()))->runNative($this->dir,$hash,$intent);
+		$this->assertTrue(is_array($completed),'the retained terminal record completes on the next worker');
+		$this->assertTrue(is_array($completed) && erasedataNativeRetryForgetCompleted($completed,'rutorrent')
+			&& erasedataNativeRemoveCompleted($completed,new ErasedataCollectorFixture(array())),
+			'finish retires only the exact terminal metadata');
+		$after=erasedataReadDrainState($this->dir);
+		$this->assertTrue(is_array($after) && isset($after['native_retry']) && array_keys($after['native_retry']['jobs'])===array($unrelated),
+			'the finished job leaves none of its hints behind and keeps another job\'s');
+		$this->assertTrue(is_array($after) && $after['journal']===array() && !file_exists($terminal),'journal and terminal record retired');
+	}
+
+	// The owner's queue after the retry finished: no record, empty journal,
+	// disarmed, and one hint whose record has gone.
+	public function testFullPassForgetsOnlyHintsWhoseRecordHasLeftTheQueue()
+	{
+		if(!$this->api())return;
+		$state=erasedataDefaultDrainState();$state['user']='rutorrent';
+		$stale=hash('sha256','finished job');
+		$state['native_retry']=array('jobs'=>array($stale=>array(time()-30,5,1,hash('sha256','payload-or-terminal-metadata-unresolved'))),
+			'cursor'=>str_repeat('B',40),'overflow'=>true);
+		$this->assertTrue(erasedataWriteDrainState($this->dir,$state),'the owner-shaped state is admitted');
+		$hash=str_repeat('C',40);$g='0000000000000001';$payload=$this->dir.'/payload';file_put_contents($payload,'kept');
+		$paths=array('base'=>$payload,'multi'=>false,'files'=>array($payload));
+		$intent=array('incarnation'=>str_repeat('a',32),'nonce'=>str_repeat('b',32),'generation'=>$g,
+			'user'=>'rutorrent','digest'=>hash('sha256',ErasedataManifestCodec::encode($hash,$paths,1)));
+		$live=$this->dir.'/'.$hash.'.'.$g.'.actor.list';
+		file_put_contents($live,ErasedataManifestCodec::encodeBound($hash,$paths,1,$intent));chmod($live,0644);
+		$collector=function(){return(new ErasedataCollector(new ErasedataFilesystemOps(),
+			function(){throw new Exception('presence fallback');},function(){throw new Exception('path fallback');},null,true));};
+		rXMLRPCRequest::$responses=array('fixture.nativeCapability'=>'available');
+		try
+		{
+			$collector()->run($this->dir);
+			$after=erasedataReadDrainState($this->dir);
+			$this->assertTrue(is_array($after) && !isset($after['native_retry']['jobs'][$stale]),'a hint no queue record reproduces is forgotten');
+			$this->assertTrue(is_array($after) && count($after['native_retry']['jobs'])===1,'the retained live record keeps its own hint');
+			$expected=$state;$actual=$after;unset($expected['native_retry']['jobs'],$actual['native_retry']['jobs']);
+			$this->assertEquals($expected,$actual,'cursor, overflow, phase, journal and every other key are unchanged');
+			$this->assertTrue(strpos(implode("\n",FileUtil::$log),'manifest-mode')!==false,'the live refusal is visible once');
+			FileUtil::$log=array();
+			$collector()->run($this->dir);
+			$this->assertEquals(array(),FileUtil::$log,'the kept hint keeps the next full pass quiet');
+			$kept=erasedataReadDrainState($this->dir);
+			$this->assertTrue(is_array($kept) && count($kept['native_retry']['jobs'])===1,'an unchanged queue keeps its live hint');
+			unlink($live);
+			foreach($kept['native_retry']['jobs'] as &$hint)$hint[0]=time()-61;unset($hint);
+			erasedataWriteDrainState($this->dir,$kept);
+			$collector()->run($this->dir);
+			$final=erasedataReadDrainState($this->dir);
+			$this->assertTrue(is_array($final) && $final['native_retry']['jobs']===array(),'the hint leaves with its record');
+			$this->assertEquals(str_repeat('B',40),$final['native_retry']['cursor'],'the cursor is never pruned');
+			// The queue is read before the state lock: a hint filed since then
+			// may describe a record that listing could not see yet.
+			if(!function_exists('erasedataNativeRetryPruneOrphans'))
+			{
+				$this->assertTrue(false,'one prune owner bounds what a scan may forget');
+				return;
+			}
+			$now=time()+100;$fresh=hash('sha256','filed during the scan');$old=hash('sha256','filed before the scan');
+			$final['native_retry']['jobs']=array($old=>array($now-1,5,1,hash('sha256','r')),$fresh=>array($now,5,1,hash('sha256','r')));
+			erasedataWriteDrainState($this->dir,$final);
+			$this->assertTrue(erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',$now),'the prune completes');
+			$this->assertEquals(array($fresh),array_keys(erasedataReadDrainState($this->dir)['native_retry']['jobs']),
+				'only a hint older than the scan is forgotten');
+		}
+		finally {rXMLRPCRequest::$responses=array();}
+	}
+
+	// The listing still names a record whose lstat keeps failing, as drvfs over
+	// 9p answered for a just-published name: which hints are live is unknown,
+	// so the prune forgets none until that record answers.
+	public function testPruneForgetsNothingWhileAListedRecordCannotBeInspected()
+	{
+		if(!$this->api())return;
+		require_once(__DIR__.'/../../php/SourceDefinitionFixture.php');
+		$namespace='ErasedataUninspectableListing';
+		if(!function_exists($namespace.'\\erasedataNativeRetryPruneOrphans'))
+		{
+			$source=__DIR__.'/../../../plugins/erasedata/';
+			eval('namespace '.$namespace.'; use \\ErasedataManifestCodec; class LstatCut { public static $hidden=null; }'
+				.'function lstat($path) { return $path===LstatCut::$hidden ? false : \\lstat($path); }'
+				.loadFunctionDefinition($source.'filesystem.php','erasedataListedEntryStat')
+				.loadFunctionDefinition($source.'native.php','erasedataNativeRetryLiveKeys')
+				.loadFunctionDefinition($source.'native.php','erasedataNativeRetryPruneOrphans'));
+		}
+		$cut=$namespace.'\\LstatCut';$prune=$namespace.'\\erasedataNativeRetryPruneOrphans';
+		$now=time()+100;$orphan=hash('sha256','filed before the scan');
+		$state=erasedataDefaultDrainState();$state['user']='rutorrent';
+		$state['native_retry']=array('jobs'=>array($orphan=>array($now-1,5,1,hash('sha256','r'))),'cursor'=>'','overflow'=>false);
+		$this->assertTrue(erasedataWriteDrainState($this->dir,$state),'the owner-shaped state is admitted');
+		$listed=$this->dir.'/'.str_repeat('D',40).'.0000000000000001.actor.list.completed';
+		file_put_contents($listed,'record');
+		try
+		{
+			$cut::$hidden=$listed;
+			$this->assertTrue($prune($this->dir,'rutorrent',$now)===false,'an uninspectable listed record refuses the prune');
+			$this->assertEquals(array($orphan),array_keys(erasedataReadDrainState($this->dir)['native_retry']['jobs']),
+				'no hint is forgotten while the listing cannot be read');
+			$cut::$hidden=null;
+			$this->assertTrue($prune($this->dir,'rutorrent',$now)===true,'the prune proceeds once the record answers');
+			$this->assertEquals(array(),erasedataReadDrainState($this->dir)['native_retry']['jobs'],
+				'the orphan hint is forgotten then');
+		}
+		finally {$cut::$hidden=null;}
+	}
+
+	// ERA-05: garbled advisory bytes once made every Remove-with-data answer
+	// 409. The prune must neither repair, rewrite nor depend on them.
+	public function testGarbledOrAbsentRetryMetadataStaysFailOpen()
+	{
+		if(!$this->api())return;
+		$statePath=erasedataDrainStatePath($this->dir);
+		$state=erasedataDefaultDrainState();$state['user']='rutorrent';
+		$state['native_retry']=array('jobs'=>array(hash('sha256','x')=>array(1,5,99,hash('sha256','r'))),'cursor'=>'','overflow'=>false);
+		file_put_contents($statePath,json_encode($state));chmod($statePath,0600);$garbled=file_get_contents($statePath);
+		rXMLRPCRequest::$responses=array('fixture.nativeCapability'=>'available');
+		try
+		{
+			$service=new ErasedataCollector(new ErasedataFilesystemOps(),null,null,null,true);
+			$service->run($this->dir);
+			$this->assertEquals($garbled,file_get_contents($statePath),'a garbled native_retry is left exactly as found');
+			$this->assertTrue(!function_exists('erasedataNativeRetryPruneOrphans')
+				|| erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',time()+60)===false,'the prune refuses unreadable state without writing');
+			$this->assertEquals($garbled,file_get_contents($statePath),'still byte for byte');
+			unlink($statePath);
+			$this->assertTrue(!function_exists('erasedataNativeRetryPruneOrphans')
+				|| (erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',time()+60)===false && !file_exists($statePath)),
+				'an absent state is neither created nor claimed');
+		}
+		finally {rXMLRPCRequest::$responses=array();}
+	}
 }

@@ -766,6 +766,85 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
 	}
 }
 
+// A rename the kernel reports as done while the next lookup of the new name
+// still answers ENOENT. drvfs over 9p with cache=0x5 (the owner's Docker
+// Desktop volumes) did exactly that once on 2026-10-11: lstat of the new name
+// failed right after a successful rename, and unlink of that name succeeded a
+// moment later. A destination matching $pattern is moved to a hidden sibling;
+// the entryIdentity() lookup number $revealAt of the real name moves that same
+// inode into place first, or, with $foreign, puts a different inode holding the
+// same bytes there. Every lookup of a renamed name is counted, settled or not.
+class ErasedataSettlingRenameFixture extends ErasedataCollectorFixture
+{
+	public $lookups = array();
+	private $pattern;
+	private $revealAt;
+	private $foreign;
+	private $pending = array();
+
+	public function __construct($pattern, $revealAt, $foreign = false)
+	{
+		parent::__construct(array());
+		$this->pattern = $pattern;
+		$this->revealAt = $revealAt;
+		$this->foreign = $foreign;
+	}
+
+	public static function hiddenName($path)
+	{
+		return(dirname($path).'/.settling-'.basename($path));
+	}
+
+	private function unsettled($result, $to)
+	{
+		if($result)
+		{
+			$this->pending[$to] = true;
+			$this->lookups[$to] = 0;
+		}
+		return($result);
+	}
+
+	public function renameNoReplace($from, $to)
+	{
+		if(!preg_match($this->pattern, $to))
+			return(parent::renameNoReplace($from, $to));
+		if(erasedataPathExists($to))
+			return(false);
+		return($this->unsettled(parent::renameNoReplace($from, self::hiddenName($to)), $to));
+	}
+
+	public function rename($from, $to)
+	{
+		if(!preg_match($this->pattern, $to))
+			return(parent::rename($from, $to));
+		return($this->unsettled(parent::rename($from, self::hiddenName($to)), $to));
+	}
+
+	// Settle by hand, as a later lookup on the real mount would.
+	public function settle($path)
+	{
+		if(!isset($this->pending[$path]))
+			return(false);
+		unset($this->pending[$path]);
+		$hidden = self::hiddenName($path);
+		if(!$this->foreign)
+			return(@rename($hidden, $path));
+		$stat = lstat($hidden);
+		return(file_put_contents($path, file_get_contents($hidden)) !== false
+			&& chmod($path, $stat['mode'] & 07777));
+	}
+
+	public function entryIdentity($path)
+	{
+		if(isset($this->lookups[$path]))
+			$this->lookups[$path]++;
+		if(isset($this->pending[$path]) && $this->lookups[$path] >= $this->revealAt)
+			$this->settle($path);
+		return(parent::entryIdentity($path));
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Package 6 harness: real child processes and a byte-verified mirror of the
 // production plugin tree.

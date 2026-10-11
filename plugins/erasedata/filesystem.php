@@ -4,6 +4,13 @@
 // this file reuses for the captured-entry name record.
 require_once(dirname(__FILE__)."/manifest.php");
 
+// Bound of ErasedataFilesystemOps::renamedEntryIdentity(): ten lookups with
+// nine 50 ms pauses, at most 0.45 s of waiting for one renamed name.
+if(!defined('ERASEDATA_RENAME_SETTLE_ATTEMPTS'))
+	define('ERASEDATA_RENAME_SETTLE_ATTEMPTS', 10);
+if(!defined('ERASEDATA_RENAME_SETTLE_PAUSE_US'))
+	define('ERASEDATA_RENAME_SETTLE_PAUSE_US', 50000);
+
 // The seam for the filesystem mutations and identity reads the erasedata
 // collector performs, and the one owner of the no-replace helper, its parent
 // preflight and the payload trust rule that datadir and every AutoTools file
@@ -279,6 +286,25 @@ class ErasedataFilesystemOps
 			'mtime' => $stat['mtime'],
 			'lstat' => $stat,
 		));
+	}
+
+	// The identity of a name this process has just renamed into place. On
+	// drvfs over 9p with cache=0x5 (the owner's Docker Desktop volumes,
+	// 2026-10-11) lstat of the new name once answered ENOENT immediately after
+	// a successful rename, although the entry existed and was unlinked a moment
+	// later. Only a negative answer is asked again, within a fixed bound; the
+	// first present answer is returned as it is, so the caller's exact
+	// identity check still refuses a different inode at once. The rename itself
+	// is never repeated. False after the bound means the name stayed absent.
+	public function renamedEntryIdentity($path)
+	{
+		for($attempt = 1; ; $attempt++)
+		{
+			$identity = $this->entryIdentity($path);
+			if($identity !== false || $attempt >= ERASEDATA_RENAME_SETTLE_ATTEMPTS)
+				return($identity);
+			usleep(ERASEDATA_RENAME_SETTLE_PAUSE_US);
+		}
 	}
 
 	public function targetIdentity($path)
@@ -2003,6 +2029,7 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 	if(count($tombstones) > 1)
 		return(false);
 	$target = basename(dirname($entry)).'/'.basename($entry);
+	$renamed = false;
 	if(!count($tombstones))
 	{
 		if(!erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem))
@@ -2015,6 +2042,7 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 		if(erasedataPathExists($tombstone)
 			|| !$filesystem->rename($path, $tombstone))
 			return(false);
+		$renamed = true;
 	}
 	else
 		$tombstone = $root.'/'.$tombstones[0];
@@ -2022,7 +2050,8 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 	if(!preg_match('/^\.bridge-([0-9]+)-([0-9]+)$/D',
 		basename($tombstone), $matches))
 		return(false);
-	$current = $filesystem->entryIdentity($tombstone);
+	$current = $renamed ? $filesystem->renamedEntryIdentity($tombstone)
+		: $filesystem->entryIdentity($tombstone);
 	if(!is_array($current) || empty($current['is_link'])
 		|| (string)$current['dev'] !== $matches[1]
 		|| (string)$current['ino'] !== $matches[2]
@@ -2129,6 +2158,7 @@ function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 	$roots = erasedataCapturedEntryRoots($path, $reservationKey, $filesystem);
 	if($roots === false || count($roots) > 1)
 		return(false);
+	$captured = false;
 	if(!count($roots))
 	{
 		if(!is_array($expected))
@@ -2144,13 +2174,17 @@ function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 			return(false);
 		}
 		$roots = array($root);
+		$captured = true;
 	}
 
 	$info = erasedataCapturedEntryRootInfo(
 		$roots[0], $path, $reservationKey, $filesystem);
 	if($info === false)
 		return(false);
-	$entryIdentity = $filesystem->entryIdentity($info['entry']);
+	// A negative answer for an entry captured just now is not a consumed
+	// capture: the bridge-and-root branch below would otherwise take it as one.
+	$entryIdentity = $captured ? $filesystem->renamedEntryIdentity($info['entry'])
+		: $filesystem->entryIdentity($info['entry']);
 	if($entryIdentity === false)
 	{
 		if(erasedataCapturedEntryBridgeMatches($path, $info['entry'], $filesystem)

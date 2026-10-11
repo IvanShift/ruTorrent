@@ -75,6 +75,21 @@ final class RetrackersBoundedRead
 	}
 
 	/**
+	 * noAnswer(), or truncated-headers: the peer closed before the "\r\n\r\n"
+	 * that ends its response headers, so, as with truncated-body, no complete
+	 * answer arrived. TRANSPORT_FAILURES does not list it (BoundedReadTest's
+	 * scan misses the ternary that names it), and the read retries and queue
+	 * retry categories built on that list keep their behaviour. The init's
+	 * ledger insert, the ledger reads of the lifecycle and of the v1 worker,
+	 * and the init log and done notice ask this instead: such a reply is
+	 * unknown there, never a corrupt ledger.
+	 */
+	public static function incompleteReply($failure)
+	{
+		return(self::noAnswer($failure) || $failure === 'truncated-headers');
+	}
+
+	/**
 	 * Repeat one read while it reports a retryable failure within its budget.
 	 * $seconds is a number, or a Closure that maps the current failure to its
 	 * budget measured from the first read. The pause backs off exponentially.
@@ -8798,6 +8813,13 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			$failure = null;
 			return(true);
 		}
+		// No answer (a stopping or absent daemon, or one that stopped mid-headers)
+		// proves nothing about the ledger: keep the SCGI class and do not resend
+		// the insert. The next init sends its own; only a wrong answer is a
+		// corruption verdict.
+		if ($decoded === false && RetrackersBoundedRead::incompleteReply($failure)) {
+			return(false);
+		}
 		$failure = 'receipt-ledger-corrupt';
 		return(false);
 	}
@@ -8817,7 +8839,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			return(true);
 		}
 		// No answer cannot prove a public ledger; only a wrong answer can.
-		$failure = $decoded === false && RetrackersBoundedRead::noAnswer($failure) ?
+		$failure = $decoded === false && RetrackersBoundedRead::incompleteReply($failure) ?
 			'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 		return(false);
 	}
@@ -8944,7 +8966,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			return($this->getLedgerKeys($failure));
 		}, $failure, RETRACKERS_PREFLIGHT_TIMEOUT, RetrackersBoundedRead::TRANSPORT_FAILURES);
 		if ($keys === false) {
-			$failure = RetrackersBoundedRead::noAnswer($failure) ?
+			$failure = RetrackersBoundedRead::incompleteReply($failure) ?
 				'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 			return(false);
 		}
@@ -10901,6 +10923,7 @@ function retrackersBoundedFailureReason($failure)
 		'commit-response-inconsistent' => true,
 		'commit-size-invariant' => true,
 		'commit-skipped' => true,
+		'daemon-unavailable' => true,
 		'foreign-generation' => true,
 		'handoff-release-changed' => true,
 		'handoff-release-pending' => true,
@@ -11076,7 +11099,10 @@ function retrackersRunLifecycleInit($canonicalUser, $script, $php, &$jResult,
 	$ok = RetrackersLifecycleCoordinator::init(
 		$canonicalUser, $script, $php, $failure, $adapter, $settings);
 	if (!$ok) {
-		$reason = retrackersBoundedFailureReason($failure);
+		// rTorrent gave no answer (e.g. it is stopping): log one class, not
+		// a corruption verdict. $failure keeps the SCGI class for the caller.
+		$reason = RetrackersBoundedRead::incompleteReply($failure) ?
+			'daemon-unavailable' : retrackersBoundedFailureReason($failure);
 		$markers = $reason === 'receipt-ledger-corrupt' ? $adapter->recoveryMarkerDiagnostic() : array();
 		if (class_exists('FileUtil') && method_exists('FileUtil', 'toLog')) {
 			FileUtil::toLog('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $reason, $markers));
@@ -11090,7 +11116,10 @@ function retrackersRunLifecycleDone($canonicalUser, &$jResult, &$failure = null,
 {
 	$ok = RetrackersLifecycleCoordinator::done($canonicalUser, $failure, $adapter);
 	if (!$ok) {
-		$jResult .= retrackersLifecycleDiagnosticJavascript('done', $failure);
+		// As in init: a binding sample that rTorrent did not answer is one
+		// class in the notice; $failure keeps the SCGI class for the caller.
+		$jResult .= retrackersLifecycleDiagnosticJavascript('done',
+			RetrackersBoundedRead::incompleteReply($failure) ? 'daemon-unavailable' : $failure);
 	}
 	return($ok);
 }
@@ -11209,7 +11238,7 @@ class RetrackersRecoveryCoordinator
 		// v1 worker exits on either; an outage must not read as a corrupt ledger.
 		$keys = $adapter->getLedgerKeys($failure);
 		if (!is_array($keys)) {
-			$failure = RetrackersBoundedRead::noAnswer($failure) ?
+			$failure = RetrackersBoundedRead::incompleteReply($failure) ?
 				'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 			return(false);
 		}

@@ -1180,4 +1180,59 @@ $suite->test('only an exact version 2 or 3 job loads', function () {
     } finally { dataDirClaimClean($root); }
 });
 
+// POST-1011-01: on drvfs over 9p (cache=0x5) lstat of a new name answered
+// ENOENT once right after its successful rename. Read as missing, a moved
+// file made advance() answer move-incomplete and held the whole job.
+require_once __DIR__ . '/../autotools/SettlingRenameFiles.php';
+function dataDirSettleInstall($files)
+{
+    // Absent before the shared settle was wired in; the behaviour is then
+    // what the run shows.
+    if (property_exists('DataDirMoveIntent', 'files'))
+        strictSetPrivateStatic('DataDirMoveIntent', 'files', $files);
+}
+
+foreach (array('confirmed late' => 3, 'never answers' => ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1,
+    'another inode' => 2) as $case => $revealAt)
+    $suite->test('a moved file whose destination answers late: ' . $case, function () use ($case, $revealAt) {
+        $root = dataDirClaimFixture();
+        try {
+            $hash = str_repeat('A', 40);
+            file_put_contents($root . '/src/a', 'alpha');
+            file_put_contents($root . '/src/b', 'beta');
+            $daemon = new DataDirClaimFake();
+            $files = new SettlingRenameFiles('#^' . preg_quote($root . '/dst/b', '#') . '$#D', $revealAt,
+                $case === 'another inode');
+            $moves = 0;
+            $move = function ($from, $to) use ($files, &$moves) { $moves++; return $files->renameNoReplace($from, $to); };
+            dataDirSettleInstall($files);
+            $job = dataDirClaimJob($root, $daemon, array('a', 'b'), true, $move);
+            try { $result = $job->run(); }
+            catch (RuntimeException $e) { $result = $e->getMessage(); }
+            strictAssertSame(2, $moves, 'each file is renamed once');
+            if ($case === 'confirmed late') {
+                strictAssertSame(true, $result, 'the move completes in the same run');
+                strictAssertSame(array($root . '/dst/b' => 3), $files->lookups, 'the destination is confirmed on its third lookup');
+                strictAssertSame(array('a', 'b'), dataDirClaimTree($root . '/dst'), 'both files and nothing else at the destination');
+                strictAssertSame('beta', file_get_contents($root . '/dst/b'), 'moved bytes');
+                strictAssertSame(array(), dataDirClaimTree($root . '/src'), 'the sources are gone');
+                strictAssertSame(array(), dataDirClaimTree($root . '/jobs'), 'the job and its receipt retire');
+                strictAssertSame('absent', $daemon->phase, 'the daemon claim is acknowledged');
+                return;
+            }
+            $bound = $case === 'never answers' ? ERASEDATA_RENAME_SETTLE_ATTEMPTS : 2;
+            strictAssertSame(array($root . '/dst/b' => $bound), $files->lookups, 'the settle stops at its bound or first answer');
+            strictAssertSame($case === 'never answers' ? 'move-move-incomplete' : 'move-occupied-destination', $result,
+                'the classification is the one an absent or foreign destination always had');
+            strictAssertSame(true, is_file($root . '/jobs/' . $hash . '.json'), 'the job is retained for recovery');
+            strictAssertSame('active', $daemon->phase, 'the claim stays held');
+            strictAssertSame('beta', file_get_contents(SettlingRenameFiles::hiddenName($root . '/dst/b')), 'the moved inode is untouched');
+            if ($case === 'another inode') return;
+            rename(SettlingRenameFiles::hiddenName($root . '/dst/b'), $root . '/dst/b');
+            strictAssertSame(true, dataDirClaimReload($root, $daemon, $move)->run(), 'recovery finishes the job');
+            strictAssertSame(2, $moves, 'recovery renames nothing again');
+            strictAssertSame(array('a', 'b'), dataDirClaimTree($root . '/dst'), 'both files at the destination');
+        } finally { dataDirSettleInstall(null); dataDirClaimClean($root); }
+    });
+
 exit($suite->run());

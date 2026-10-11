@@ -34,6 +34,88 @@ function erasedataNativeRetryKey($hash, $path, array $stat, $bytes, ?array $inte
 	return(hash('sha256',serialize($identity)));
 }
 
+// The keys of this exact document's hints: its bytes or the unreadable
+// spelling, its own bound intent or none, and for a list also the staging name
+// it was published from. Forgetting a superset only brings a retry sooner; a
+// hint never grants authority.
+function erasedataNativeRetryDocumentKeys($hash, $path, array $stat, $bytes, ?array $intent)
+{
+	$names=array($path);
+	$list=preg_replace('/\.completed$/D','',$path);
+	if(substr($list,-5)==='.list') $names[]=substr($list,0,-5).'.tmp';
+	$keys=array();
+	foreach($names as $name)
+		foreach(array_unique(array(is_string($bytes) ? $bytes : '','')) as $variant)
+			foreach(array($intent,null) as $bound)
+			{
+				$key=erasedataNativeRetryKey($hash,$name,$stat,$variant,$bound);
+				if(is_string($key)) $keys[$key]=true;
+			}
+	return($keys);
+}
+
+// Edits the caller's locked snapshot only; the caller persists it.
+function erasedataNativeRetryForgetDocument(array &$state, $hash, $path, array $stat, $bytes, ?array $intent)
+{
+	if(!isset($state['native_retry'])) return(false);
+	$jobs=array_diff_key($state['native_retry']['jobs'],
+		erasedataNativeRetryDocumentKeys($hash,$path,$stat,$bytes,$intent));
+	if(count($jobs)===count($state['native_retry']['jobs'])) return(false);
+	$state['native_retry']['jobs']=$jobs;
+	return(true);
+}
+
+// The keys every document now in the queue can reproduce, or false when a
+// listed entry cannot be inspected.
+function erasedataNativeRetryLiveKeys($listPath)
+{
+	$names=@scandir($listPath);
+	if(!is_array($names)) return(false);
+	$live=array();
+	foreach($names as $name)
+	{
+		if(!preg_match('/^([A-F0-9]{40})\./',$name,$m)) continue;
+		$stat=erasedataListedEntryStat($listPath,$name);
+		if($stat===null) continue;
+		if(!is_array($stat)) return(false);
+		$path=$listPath.'/'.$name;
+		$bytes=ErasedataManifestCodec::readBoundedFile($path);
+		$manifest=is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes,$m[1]) : false;
+		$live+=erasedataNativeRetryDocumentKeys($m[1],$path,$stat,$bytes,
+			is_array($manifest) && isset($manifest['native_intent']) ? $manifest['native_intent'] : null);
+	}
+	return($live);
+}
+
+// Every recorder files its hint under a document in this queue. A hint that no
+// current document reproduces is dropped: its job has left the queue by some
+// route, or it was filed under a spelling no pass consults again. Dropping
+// advice only brings a retry and its log line sooner. The queue is read before
+// the state lock; a hint filed or refreshed since then is kept. Cursor,
+// overflow and every authority key stay as they are, and an unreadable
+// listing, absent state or garbled native_retry changes nothing.
+function erasedataNativeRetryPruneOrphans($listPath, $user, $now = null)
+{
+	if($now===null) $now=time();
+	$live=erasedataNativeRetryLiveKeys($listPath);
+	if(!is_array($live)) return(false);
+	$lock=erasedataAcquireDrainStateLock($listPath);
+	if(!is_resource($lock)) return(false);
+	try
+	{
+		$state=erasedataNativeRetryWritableState($listPath,$user);
+		if(!is_array($state)) return(false);
+		if(!isset($state['native_retry'])) return(true);
+		$jobs=array();
+		foreach($state['native_retry']['jobs'] as $key=>$entry)
+			if(isset($live[$key]) || $entry[0]>=$now) $jobs[$key]=$entry;
+		if(count($jobs)===count($state['native_retry']['jobs'])) return(true);
+		$state['native_retry']['jobs']=$jobs;
+		return(erasedataWriteDrainState($listPath,$state));
+	}
+	finally {erasedataReleaseDrainStateLock($lock);}
+}
+
 function erasedataNativeRetrySnapshot($listPath, $user)
 {
 	$state=erasedataReadDrainState($listPath);
@@ -161,8 +243,7 @@ function erasedataNativeRetryCursorWrite($listPath, $user, $cursor)
 function erasedataNativeRetryForgetCompleted(array $completed, $user, $hashLocked = false, $bytes = null)
 {
 	$path=$completed['path'];$listPath=dirname($path);$hash=$completed['manifest']['hash'];
-	$key=erasedataNativeRetryKey($hash,$path,$completed['stat'],
-		is_string($bytes) ? $bytes : ErasedataManifestCodec::readBoundedFile($path),$completed['manifest']['native_intent']);
+	if(!is_string($bytes)) $bytes=ErasedataManifestCodec::readBoundedFile($path);
 	$hashLock=$hashLocked ? null : erasedataAcquireHashLock($listPath,$hash);
 	if(!$hashLocked && $hashLock===false) return(false);
 	$lock=erasedataAcquireDrainStateLock($listPath);
@@ -171,8 +252,10 @@ function erasedataNativeRetryForgetCompleted(array $completed, $user, $hashLocke
 		if(!is_resource($lock)) return(false);
 		$state=erasedataNativeRetryWritableState($listPath,$user);
 		if(!is_array($state)) return(false);
-		if(!is_string($key) || !isset($state['native_retry']['jobs'][$key])) return(true);
-		unset($state['native_retry']['jobs'][$key]);
+		// Retire every hint this job's record was filed under, not only the
+		// spelling this caller computes.
+		if(!erasedataNativeRetryForgetDocument($state,$hash,$path,$completed['stat'],$bytes,
+			$completed['manifest']['native_intent'])) return(true);
 		return(erasedataWriteDrainState($listPath,$state));
 	}
 	finally {erasedataReleaseDrainStateLock($lock);if(!$hashLocked)erasedataReleaseHashLock($hashLock);}
@@ -433,9 +516,7 @@ function erasedataNativeCancelRevoked($listPath, $hash, array $bound,
 		if(!$absent && $state['user']!==$intent['user']) return(false);
 		$generation=$intent['generation'];$changed=false;$next=$state;
 		if(!erasedataNativeDropJournalMember($next,$hash,$intent,$path,$stat,$changed)) return(false);
-		$key=erasedataNativeRetryKey($hash,$path,$stat,$bytes,$intent);
-		if(is_string($key) && isset($next['native_retry']['jobs'][$key]))
-		{unset($next['native_retry']['jobs'][$key]);$changed=true;}
+		if(erasedataNativeRetryForgetDocument($next,$hash,$path,$stat,$bytes,$intent)) $changed=true;
 		if(!$check() || ($changed && !erasedataWriteDrainState($listPath,$next))) return(false);
 		$state=$next;
 		if(!erasedataDischargePendingMarker($listPath,$hash,$generation)) return(false);
@@ -561,8 +642,27 @@ function erasedataNativeDrainGenerationPass($listPath, $user, $generation, array
 	finally { erasedataReleaseAdmissionLocks($stateLock, $locks); }
 }
 
-function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent = null, $retention = null)
+// A completed record is published by a rename, by this collector a moment ago
+// or by another worker. On drvfs over 9p (cache=0x5, the owner's Docker Desktop
+// volumes) lstat of such a new name answered ENOENT once while the listing
+// already held it, and erasedataListedEntryStat() re-reads only three times
+// without a pause. A name the listing still holds is asked again through the
+// shared bounded settle. null: positively absent; false: still listed and
+// unreadable, which the caller reports as unreadable, never as a wrong type.
+function erasedataNativeCompletedEntryStat($listPath, $name, ErasedataFilesystemOps $filesystem)
 {
+	$stat=erasedataListedEntryStat($listPath,$name);
+	if($stat!==false) return($stat);
+	$identity=$filesystem->renamedEntryIdentity($listPath.'/'.$name);
+	if(is_array($identity)) return($identity['lstat']);
+	$names=@scandir($listPath);
+	return(is_array($names) && !in_array($name,$names,true) ? null : false);
+}
+
+function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent = null, $retention = null,
+	?ErasedataFilesystemOps $filesystem = null)
+{
+	if($filesystem===null) $filesystem=new ErasedataFilesystemOps();
 	$entries = @scandir($listPath);
 	$result = array();
 	if(!is_array($entries)) return($result);
@@ -575,9 +675,9 @@ function erasedataNativeCompletedCandidates($listPath, $onlyHash = null, $intent
 		if(!preg_match('/^([A-F0-9]{40})\.([a-f0-9]{16})\.[A-Za-z0-9._-]+\.list\.completed$/D', $name, $m)
 			|| ($onlyHash !== null && $onlyHash !== $m[1])) continue;
 		$path = $listPath.'/'.$name;
-		$stat=erasedataListedEntryStat($listPath,$name);
+		$stat=erasedataNativeCompletedEntryStat($listPath,$name,$filesystem);
 		if($stat===null) continue;
-		$refusal=erasedataNativeManifestStatRefusal($stat);
+		$refusal=$stat===false ? 'unreadable-manifest' : erasedataNativeManifestStatRefusal($stat);
 		if($refusal!==null)
 		{ $report($path,$stat,ErasedataManifestCodec::readBoundedFile($path),$refusal); continue; }
 		$handle = @fopen($path, 'rb');
@@ -668,8 +768,14 @@ function erasedataNativeTerminalDiagnostic($path, $reason)
 	$key = $path.'|'.$reason;
 	if(isset($reported[$key])) return;
 	$reported[$key] = true;
+	// Only this reason is reported by a worker that has just consumed the
+	// payload. Every other reason refuses an action before it changes a
+	// payload, so its line keeps the refusal wording.
+	$consequence = $reason === 'terminal-publication-unresolved'
+		? 'payload consumed; terminal record publication unresolved; native finish withheld; retried automatically'
+		: 'payload effects refused and native finish withheld; inspect exact document';
 	FileUtil::toLog('erasedata: native manifest retained document='.erasedataLogPath($path)
-		.' key=native_intent reason='.$reason.'; payload effects refused and native finish withheld; inspect exact document');
+		.' key=native_intent reason='.$reason.'; '.$consequence);
 }
 
 function erasedataNativeFinishIntent($hash, array $intent, $pid)

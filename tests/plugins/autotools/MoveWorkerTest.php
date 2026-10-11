@@ -45,6 +45,12 @@ function moveWorkerRun($state, $actor = 'worker')
         . '$at->path_to_finished=' . var_export($root.'/fin',true) . '; $at->store();'
         . 'class MoveTestFiles extends ErasedataFilesystemOps { public static function renameHelperPath() { return '
         . var_export($root.'/rename',true) . '; }} $p=new ReflectionProperty("AutoToolsMoveJob","files"); $p->setAccessible(true); $p->setValue(null,new MoveTestFiles());'
+        // array(pattern, revealAt, foreign): a rename whose new name answers
+        // ENOENT for a while; see SettlingRenameFiles.php.
+        . (isset($state['settle']) ? 'require ' . var_export(__DIR__ . '/SettlingRenameFiles.php', true)
+            . '; SettlingRenameFiles::$helper=' . var_export($root.'/rename', true) . '; $p->setValue(null,new SettlingRenameFiles('
+            . var_export($state['settle'][0], true) . ',' . (int) $state['settle'][1] . ','
+            . var_export(!empty($state['settle'][2]), true) . ',' . var_export($root.'/settle-lookups.json', true) . '));' : '')
         . '$argv=array("move_worker.php",' . var_export($state['hash'],true) . ',' . var_export($state['qid'],true)
         . ',"tester",' . var_export(str_repeat('d',32),true) . '); require "./move_worker.php";';
     if(isset($state['aliasVersion'])) {

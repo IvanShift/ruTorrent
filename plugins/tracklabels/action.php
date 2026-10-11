@@ -12,21 +12,68 @@ function bad($message) {
 	exit;
 }
 
-// Definitive misses use a day-long marker; uncertain failures start at five
-// minutes and back off to a day. Both remain quiet for the browser and logs.
+// Definitive misses use a day-long marker. The n-th uncertain failure in a row
+// waits min(5 min * 2^(n-1), 24 h). Both remain quiet for the browser and logs.
 if (!defined('TRACKLABELS_FAVICON_MISS_TTL'))
 	define('TRACKLABELS_FAVICON_MISS_TTL', 24 * 60 * 60);
 if (!defined('TRACKLABELS_FAVICON_RETRY_TTL'))
 	define('TRACKLABELS_FAVICON_RETRY_TTL', 5 * 60);
 if (!defined('TRACKLABELS_FAVICON_STAGE_TTL'))
 	define('TRACKLABELS_FAVICON_STAGE_TTL', 60 * 60);
+// The WebUI asks for every tracker's favicon at once, and each fetch holds a
+// PHP worker; unbounded, one page load exhausted the PHP-FPM pool.
+if (!defined('TRACKLABELS_FAVICON_FETCH_SLOTS'))
+	define('TRACKLABELS_FAVICON_FETCH_SLOTS', 2);
+// Connect and read timeout for each favicon request, in seconds.
+if (!defined('TRACKLABELS_FAVICON_FETCH_TIMEOUT'))
+	define('TRACKLABELS_FAVICON_FETCH_TIMEOUT', 3);
+// Far past the attempt whose delay reaches the day-long cap.
+if (!defined('TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX'))
+	define('TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX', 16);
 
-function favicon_retry_ttl($retry_name)
+function favicon_retry_delay($attempts)
 {
-	$value = @file_get_contents($retry_name, false, null, 0, 6);
-	return is_string($value) && preg_match('/^[1-9][0-9]{0,4}$/D', $value)
-		&& (int)$value >= TRACKLABELS_FAVICON_RETRY_TTL && (int)$value <= TRACKLABELS_FAVICON_MISS_TTL
-		? (int)$value : TRACKLABELS_FAVICON_RETRY_TTL;
+	$delay = TRACKLABELS_FAVICON_RETRY_TTL;
+	for ($attempt = 1; $attempt < $attempts && $delay < TRACKLABELS_FAVICON_MISS_TTL; $attempt++)
+		$delay *= 2;
+	return min($delay, TRACKLABELS_FAVICON_MISS_TTL);
+}
+
+// The marker holds the number of uncertain failures in a row. An empty or
+// damaged marker counts as one; 1cb3a276 stored the delay in seconds
+// instead, which resumes at the attempt that produced that delay.
+function favicon_retry_attempts($retry_name)
+{
+	$value = @file_get_contents($retry_name, false, null, 0, 8);
+	if (!is_string($value) || !preg_match('/^[1-9][0-9]{0,6}$/D', $value))
+		return 1;
+	$value = (int)$value;
+	if ($value <= TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX)
+		return $value;
+	$attempts = 1;
+	while ($attempts < TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX && favicon_retry_delay($attempts) < $value)
+		$attempts++;
+	return $attempts;
+}
+
+// Takes one of the fixed fetch slots without waiting. A slot is an flock, so the
+// kernel releases it when its holder exits, however it exits. Returns the held
+// handle, or false: $fault is false when the slots are busy, and true when no
+// slot file could be opened or locked at all.
+function favicon_fetch_slot($dir, &$fault)
+{
+	$fault = true;
+	for ($slot = 0; $slot < TRACKLABELS_FAVICON_FETCH_SLOTS; $slot++) {
+		$lock = @fopen($dir . '/.fetch-slot-' . $slot . '.lock', 'c+b');
+		if ($lock === false)
+			continue;
+		if (flock($lock, LOCK_EX | LOCK_NB, $wouldBlock))
+			return $lock;
+		fclose($lock);
+		if ($wouldBlock)
+			$fault = false;
+	}
+	return false;
 }
 
 function favicon_miss_is_fresh($miss_name, $ttl = TRACKLABELS_FAVICON_MISS_TTL)
@@ -47,9 +94,9 @@ function favicon_record_miss($miss_name, $retry = false)
 		FileUtil::makeDirectory($dir);
 	$written = true;
 	if ($retry) {
-		$delay = is_file($miss_name) ? min(favicon_retry_ttl($miss_name) * 2, TRACKLABELS_FAVICON_MISS_TTL)
-			: TRACKLABELS_FAVICON_RETRY_TTL;
-		$written = @file_put_contents($miss_name, (string)$delay, LOCK_EX) === strlen((string)$delay);
+		$attempts = is_file($miss_name)
+			? min(favicon_retry_attempts($miss_name) + 1, TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX) : 1;
+		$written = @file_put_contents($miss_name, (string)$attempts, LOCK_EX) === strlen((string)$attempts);
 	}
 	// An explicit time keeps the marker on the clock that favicon_miss_is_fresh() reads.
 	if (!is_dir($dir) || !$written || !@touch($miss_name, time()))
@@ -142,10 +189,8 @@ function favicon_stage($dir, &$lock)
 				$data = json_encode(array('version' => 1, 'name' => basename($stage),
 					'dev' => $stat['dev'], 'ino' => $stat['ino'], 'uid' => $stat['uid']));
 				// No remote bytes are written until the exact stage has an ownership record.
-				if (fwrite($lock, $data) === strlen($data) && fflush($lock)) {
-					favicon_reap_stages($dir, $owner['uid']);
+				if (fwrite($lock, $data) === strlen($data) && fflush($lock))
 					return $stage;
-				}
 			}
 		}
 		@unlink($record);
@@ -278,6 +323,7 @@ if ($png_name !== null) {
 
 
 		$cacheFault = false;
+		$fetchBusy = false;
 		// The name below is fetched from as a host, so it has to be one: a name
 		// that is not a host name gets the placeholder instead of a request.
 		if ($isTracker && Utility::isHostname(basename($png_name, '.png'))) {
@@ -289,64 +335,92 @@ if ($png_name !== null) {
 			$miss_name = $targetdir . '/' . $tracker . '.miss';
 			$retry_name = $targetdir . '/' . $tracker . '.retry';
 			if ($fetchRequested && !favicon_miss_is_fresh($miss_name)
-				&& !favicon_miss_is_fresh($retry_name, favicon_retry_ttl($retry_name))) {
-				ignore_user_abort(true);
-				set_time_limit(0);
+				&& !favicon_miss_is_fresh($retry_name, favicon_retry_delay(favicon_retry_attempts($retry_name)))) {
+				if (!is_dir($targetdir))
+					FileUtil::makeDirectory($targetdir);
+				$slot = favicon_fetch_slot($targetdir, $slotFault);
+				if ($slot === false) {
+					// Neither outcome writes a marker: a busy host keeps its turn,
+					// and a local fault is not remembered as the host's miss.
+					if ($slotFault)
+						FileUtil::toLog('tracklabels: favicon fetch slot unavailable');
+					$cacheFault = $slotFault;
+					$fetchBusy = !$slotFault;
+				} else {
+					$published = false;
+					try {
+						ignore_user_abort(true);
+						set_time_limit(0);
+						// Every fetch ends in a cache write, so it also sweeps stages of
+						// dead workers; the slot file's owner is the cache owner.
+						$owner = fstat($slot);
+						favicon_reap_stages($targetdir, $owner['uid']);
 
-				$client = new Snoopy();
-				$client->block_private = true;
-				$client->private_allowlist = array();
-				$client->read_timeout = 5;
-				$client->_fp_timeout = 5;
-				$retryNeeded = false;
-				foreach (['favicon.ico', 'favicon.png'] as $favicon) {
-					$url = $client->linkencode("http://{$tracker}/{$favicon}");
-					$fetched = @$client->fetchComplex($url);
-					if ($fetched && $client->status == 200) {
-						if (!is_dir($targetdir))
-							FileUtil::makeDirectory($targetdir);
-						// Readers never see a partial write or unvalidated remote content.
-						$stage = favicon_stage($targetdir, $stageLock);
-						if ($stage === false || @file_put_contents($stage, $client->results) !== strlen($client->results)) {
-							if ($stage !== false)
-								favicon_finish_stage($stage, $stageLock);
-							FileUtil::toLog('tracklabels: favicon cache write failed');
-							$cacheFault = true;
-							break;
+						$client = new Snoopy();
+						$client->block_private = true;
+						$client->private_allowlist = array();
+						$client->read_timeout = TRACKLABELS_FAVICON_FETCH_TIMEOUT;
+						$client->_fp_timeout = TRACKLABELS_FAVICON_FETCH_TIMEOUT;
+						$retryNeeded = false;
+						foreach (['favicon.ico', 'favicon.png'] as $favicon) {
+							$url = $client->linkencode("http://{$tracker}/{$favicon}");
+							// Snoopy keeps the last status line when a request fails before
+							// HTTP, so clear it to tell whether this request got an answer.
+							$client->response_code = '';
+							$fetched = @$client->fetchComplex($url);
+							if ($fetched && $client->status == 200) {
+								// Readers never see a partial write or unvalidated remote content.
+								$stage = favicon_stage($targetdir, $stageLock);
+								if ($stage === false || @file_put_contents($stage, $client->results) !== strlen($client->results)) {
+									if ($stage !== false)
+										favicon_finish_stage($stage, $stageLock);
+									FileUtil::toLog('tracklabels: favicon cache write failed');
+									$cacheFault = true;
+									break;
+								}
+								$mime = @mime_content_type($stage);
+								if (!is_string($mime) || strpos($mime, 'image/') !== 0)
+									favicon_finish_stage($stage, $stageLock);
+								else if (!@rename($stage, $ico_name)) {
+									favicon_finish_stage($stage, $stageLock);
+									FileUtil::toLog('tracklabels: favicon cache write failed');
+									$cacheFault = true;
+									break;
+								}
+								else {
+									favicon_finish_stage($stage, $stageLock);
+									@unlink($miss_name);
+									@unlink($retry_name);
+									$published = true;
+									break;
+								}
+							} else {
+								$nonPublic = strpos($client->error, 'Refusing to fetch: host ') === 0;
+								// Snoopy cannot distinguish NXDOMAIN from a resolver outage, and
+								// a target refusal can leave the previous request's status intact.
+								$terminalHttp = $client->status >= 400 && $client->status < 500
+									&& !in_array((int)$client->status, array(408, 429), true);
+								if (!$nonPublic && ($client->error !== ''
+									|| !$terminalHttp))
+									$retryNeeded = true;
+								// No HTTP answer at all (target refused, DNS, connect, timeout or
+								// reset): the other path is on the same host, so do not wait twice.
+								if (!$fetched && $client->response_code === '')
+									break;
+							}
 						}
-						$mime = @mime_content_type($stage);
-						if (!is_string($mime) || strpos($mime, 'image/') !== 0)
-							favicon_finish_stage($stage, $stageLock);
-						else if (!@rename($stage, $ico_name)) {
-							favicon_finish_stage($stage, $stageLock);
-							FileUtil::toLog('tracklabels: favicon cache write failed');
-							$cacheFault = true;
-							break;
+						// No favicon there is an expected outcome: remember it, do not log it.
+						if (!$cacheFault && !$published) {
+							favicon_record_miss($retryNeeded ? $retry_name : $miss_name, $retryNeeded);
+							if (!$retryNeeded)
+								@unlink($retry_name);
 						}
-						else {
-							favicon_finish_stage($stage, $stageLock);
-							@unlink($miss_name);
-							@unlink($retry_name);
-							SendFile::send($ico_name, 'image/x-icon');
-						}
-					} else {
-						$nonPublic = strpos($client->error, 'Refusing to fetch: host ') === 0;
-						// Snoopy cannot distinguish NXDOMAIN from a resolver outage, and
-						// a target refusal can leave the previous request's status intact.
-						$terminalHttp = $client->status >= 400 && $client->status < 500
-							&& !in_array((int)$client->status, array(408, 429), true);
-						if (!$nonPublic && ($client->error !== ''
-							|| !$terminalHttp))
-							$retryNeeded = true;
-						if (strpos($client->error, 'Refusing to fetch:') === 0)
-							break;
+					} finally {
+						flock($slot, LOCK_UN);
+						fclose($slot);
 					}
-				}
-				// No favicon there is an expected outcome: remember it, do not log it.
-				if (!$cacheFault) {
-					favicon_record_miss($retryNeeded ? $retry_name : $miss_name, $retryNeeded);
-					if (!$retryNeeded)
-						@unlink($retry_name);
+					if ($published)
+						SendFile::send($ico_name, 'image/x-icon');
 				}
 			}
 		}
@@ -354,6 +428,15 @@ if ($png_name !== null) {
 }
 
 if ($fetchRequested) {
+    if ($fetchBusy) {
+        // Both WebUIs ask again after a 429, 30-45 s later and up to 20 times
+        // per page, without using up the two retries of a failed fetch
+        // (tracklabels/init.js, mobile/init.js); after a 404 they would not
+        // ask again until the next page load.
+        header('Retry-After: 30');
+        http_response_code(429);
+        exit('Favicon fetch busy');
+    }
     // 404 settles the miss for the browser; only a local cache fault stays retryable.
     http_response_code($cacheFault ? 503 : 404);
     exit('Favicon unavailable');

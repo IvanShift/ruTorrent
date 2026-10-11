@@ -1112,7 +1112,7 @@ function erasedataCleanupRestoreCapturedFile($path, $info,
 		$reason = erasedataPathExists($path) ? 'restore-occupied' : 'restore-failed';
 		return(false);
 	}
-	$restored = $filesystem->entryIdentity($path);
+	$restored = $filesystem->renamedEntryIdentity($path);
 	if(!erasedataSameEntryIdentity($captured, $restored)
 		|| erasedataPathExists($entry))
 	{
@@ -1231,6 +1231,7 @@ function erasedataCleanupDropReservationBridge($path, $reserved, $reservation,
 		$reason = 'legacy-capture-retained';
 		return(false);
 	}
+	$renamed = false;
 	if(!count($tombstones))
 	{
 		if(!erasedataReservationLinkMatches($path, $reserved, $filesystem))
@@ -1254,6 +1255,7 @@ function erasedataCleanupDropReservationBridge($path, $reserved, $reservation,
 			$reason = 'legacy-capture-retained';
 			return(false);
 		}
+		$renamed = true;
 	}
 	else
 		$tombstone = $reservation.'/'.$tombstones[0];
@@ -1263,7 +1265,8 @@ function erasedataCleanupDropReservationBridge($path, $reserved, $reservation,
 		$reason = 'legacy-capture-retained';
 		return(false);
 	}
-	$current = $filesystem->entryIdentity($tombstone);
+	$current = $renamed ? $filesystem->renamedEntryIdentity($tombstone)
+		: $filesystem->entryIdentity($tombstone);
 	if(!is_array($current) || empty($current['is_link'])
 		|| (string)$current['dev'] !== $matches[1]
 		|| (string)$current['ino'] !== $matches[2]
@@ -1337,7 +1340,7 @@ function erasedataCleanupRestoreReservation($path, $reservation, $reservationKey
 		$reason = erasedataPathExists($path) ? 'restore-occupied' : 'restore-failed';
 		return(false);
 	}
-	$restored = $filesystem->entryIdentity($path);
+	$restored = $filesystem->renamedEntryIdentity($path);
 	if(!erasedataSameEntryIdentity($captured, $restored)
 		|| erasedataPathExists($reserved)
 		|| !erasedataCleanupRemoveReservationContainer(
@@ -2480,7 +2483,7 @@ final class ErasedataCollector
 				.' for '.$hash.' could not be quarantined; original manifest and payload retained');
 			return(false);
 		}
-		$quarantined = $this->filesystem->entryIdentity($aside);
+		$quarantined = $this->filesystem->renamedEntryIdentity($aside);
 		$asideStat = is_array($quarantined) ? $quarantined['lstat'] : false;
 		if(!is_array($asideStat) || !erasedataSameStatIdentity($expectedStat, $asideStat)
 			|| erasedataPathExists($path))
@@ -2603,11 +2606,24 @@ final class ErasedataCollector
 		{
 			// Keep authority bytes through journal retirement and a lost finish
 			// reply. This terminal name is never a payload-consumption candidate.
-			$ret = $complete && erasedataSameStatIdentity($stat, @lstat($path))
-				&& $this->filesystem->renameNoReplace($path, $path.'.completed')
-				&& erasedataSameStatIdentity($stat, @lstat($path.'.completed'))
+			$terminal = $path.'.completed';
+			$renamed = $complete && erasedataSameStatIdentity($stat, @lstat($path))
+				&& $this->filesystem->renameNoReplace($path, $terminal);
+			$published = $renamed ? $this->filesystem->renamedEntryIdentity($terminal) : false;
+			$ret = is_array($published) && erasedataSameStatIdentity($stat, $published['lstat'])
 				&& erasedataNativeSyncQueue(dirname($path));
-			if(!$ret && $complete) erasedataNativeTerminalDiagnostic($path, 'terminal-publication-unresolved');
+			// Once renamed, the document lives under its terminal name. The
+			// retention key is computed from the bytes this handle decoded, so it
+			// is the key the next pass and the finished worker use for this record
+			// even if the new name cannot be read back now.
+			if($renamed && is_array($this->nativeDocument) && $this->nativeDocument['path'] === $path)
+				$this->nativeDocument = array('path' => $terminal, 'stat' => $stat, 'bytes' => $bytes);
+			if(!$ret && $complete)
+			{
+				if($this->nativeFailure === null) $this->nativeFailure = 'terminal-publication-unresolved';
+				// Name the document where it now lives.
+				erasedataNativeTerminalDiagnostic($renamed ? $terminal : $path, 'terminal-publication-unresolved');
+			}
 		}
 		else $ret = $complete && $this->filesystem->unlinkCapturedEntry($path, $stat, 'manifest-consumption');
 		@fclose($handle);
@@ -3487,7 +3503,7 @@ final class ErasedataCollector
 				if(is_array($stat))$this->nativeDocument=array('path'=>$path,'stat'=>$stat);
 				$this->nativeFailure=$reason;
 			};
-			$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport);
+			$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport,$this->filesystem);
 			if(count($completed) > 1) return(false);
 			if(!count($completed))
 			{
@@ -3505,7 +3521,7 @@ final class ErasedataCollector
 				$item = $matched[0];
 				$this->nativeDocument=$item;
 				if(!$this->consumeManifest($item['path'], $item['stat'], null)) return(false);
-				$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport);
+				$completed = erasedataNativeCompletedCandidates($listPath, $hash, $intent,$terminalReport,$this->filesystem);
 			}
 			if(count($completed) !== 1) return(false);
 			$this->nativeDocument=$completed[0];
@@ -3523,7 +3539,7 @@ final class ErasedataCollector
 			if($result===false && is_array($this->nativeDocument))
 			{
 				$item=$this->nativeDocument;
-				$bytes=ErasedataManifestCodec::readBoundedFile($item['path']);
+				$bytes=isset($item['bytes']) ? $item['bytes'] : ErasedataManifestCodec::readBoundedFile($item['path']);
 				$this->nativeRetention($listPath,$hash,$item,$bytes,$intent,
 					$this->nativeFailure ?? 'payload-or-terminal-metadata-unresolved');
 			}
@@ -3567,7 +3583,7 @@ final class ErasedataCollector
 		if($index === false) return;
 		$terminal=array();
 		$terminalReport=function($path,$stat,$bytes,$reason){$this->nativeTerminalRetention($path,$stat,$bytes,$reason);};
-		foreach(erasedataNativeCompletedCandidates($listPath,$onlyHash,null,$terminalReport) as $completed)
+		foreach(erasedataNativeCompletedCandidates($listPath,$onlyHash,null,$terminalReport,$this->filesystem) as $completed)
 			if($this->nativeCapability==='available')$terminal[$completed['manifest']['hash']][]=$completed;
 			else $this->nativeTerminalRetention($completed['path'],$completed['stat'],
 				ErasedataManifestCodec::readBoundedFile($completed['path']),
@@ -3605,5 +3621,9 @@ final class ErasedataCollector
 		}
 		if($this->nativeCursor!==null)
 			erasedataNativeRetryCursorWrite($listPath,User::getUser(),$this->nativeCursor);
+		// A full pass has seen the whole queue: forget hints whose exact record
+		// has left it, whichever route removed that record.
+		if($onlyHash===null && count($this->nativeRetry['jobs']))
+			erasedataNativeRetryPruneOrphans($listPath,User::getUser());
 	}
 }

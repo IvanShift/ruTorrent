@@ -1289,4 +1289,39 @@ $suite->test('FIN-CP-02 cross-device HardLink failure is visible and leaves sour
         strictAssertSame(false,is_dir($destination),'empty destination retired');
     }finally{txRemove($root);if(is_dir($destination))txRemove($destination);}
 });
+// POST-1011-01: publish() renames the replaced destination into its stage and
+// confirms the backup at once. On drvfs over 9p such a new name answered ENOENT
+// once; read as missing, the backup failed the publication and the rollback,
+// which cannot see it either, left the public name empty until recovery.
+require_once __DIR__ . '/SettlingRenameFiles.php';
+class SettleNonMove extends AutoToolsFileTransaction {
+    public static $dest;
+    public static $files;
+    protected static function filesystem() { return self::$files; }
+    protected static function checkpoint($name) {
+        if ($name !== 'after-backup-unverified-0') return;
+        $removed = glob(dirname(self::$dest) . '/.autotools-stage-*-0/removed');
+        if (count($removed) !== 1 || !self::$files->hide($removed[0]))
+            throw new RuntimeException('backup fixture unavailable');
+    }
+}
+foreach (array('Copy', 'HardLink', 'SoftLink') as $mode)
+    $suite->test($mode . ' confirms a replaced destination backup that answers late', function () use ($mode) {
+        $root = txFixture();
+        try {
+            $dest = $root . '/dst/item/a/f';
+            file_put_contents($dest, 'old-alpha');
+            SettleNonMove::$dest = $dest;
+            SettleNonMove::$files = new SettlingRenameFiles('/^$/D', 3);
+            FileUtil::$messages = array();
+            strictAssertSame(true, SettleNonMove::run(array('a/f'), $root . '/src', $root . '/dst/item', $mode),
+                'the operation publishes: ' . implode(' | ', FileUtil::$messages));
+            strictAssertSame(array(3), array_values(SettleNonMove::$files->lookups), 'the backup is confirmed on its third lookup');
+            strictAssertSame('new-alpha', file_get_contents($dest), 'the new file is published');
+            if ($mode === 'HardLink') strictAssertSame(fileinode($root . '/src/a/f'), fileinode($dest), 'inode');
+            if ($mode === 'SoftLink') strictAssertSame(true, is_link($dest), 'symlink');
+            strictAssertSame(array(), glob($root . '/dst/item/a/.autotools-stage-*'), 'the stage retires');
+            strictAssertSame(true, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'no receipt is held');
+        } finally { txRemove($root); }
+    });
 exit($suite->run());

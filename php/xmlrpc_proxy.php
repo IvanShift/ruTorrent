@@ -311,12 +311,23 @@ class XMLRPCProxy
 			'allowRootDirectory' => isset($vars['XMLRPCProxyAllowRootDirectory'])
 				? $vars['XMLRPCProxyAllowRootDirectory'] : false,
 			'logSuffix' => ($builtIn && $mode === 'sanitize') ? ' [built-in policy]' : '',
+			// conf/config.php's opt-in that records each call's bytes.
+			'traceCalls' => !empty($vars['rpcLogCalls']),
 		);
 	}
 
-	/** Attach the built-in fallback hint to the outer decision, not each member. */
+	/**
+	 * What a door logs for one decision while $XMLRPCProxyLog is on.
+	 * Refusals, and forwards that carry a warning, are always reported. A
+	 * routine forward is per-call tracing: at the shipped default it put one
+	 * line per ordinary read in the application log (2026-10-11), so it is
+	 * written only with $rpcLogCalls. The built-in fallback hint is attached
+	 * to the outer decision, not each member.
+	 */
 	public static function decisionLogLines($decision, $policy)
 	{
+		if(($decision['action'] === 'send') && empty($decision['notice']) && empty($policy['traceCalls']))
+			return array();
 		$lines = $decision['log'];
 		if(count($lines) && !empty($policy['logSuffix']))
 			$lines[0] .= $policy['logSuffix'];
@@ -1446,6 +1457,8 @@ class XMLRPCProxy
 	 *                'method'  => the command a refusal refused, null when forwarding
 	 *                             or when the refusal names no single command
 	 *                'log'     => what happened, in the order it happened
+	 *                'notice'  => on a forward, whether its log carries a warning
+	 *                             rather than a routine decision
 	 */
 	public static function decide($rawData, $mode = 'sanitize', $safeParams = array(), $allowLocalPaths = false, $options = array())
 	{
@@ -1457,7 +1470,7 @@ class XMLRPCProxy
 			return self::reject("rejected (proxy disabled)");
 
 		if($mode === 'passthrough_unsafe')
-			return self::forward($rawData, true, "passthrough (UNSAFE mode)");
+			return self::forward($rawData, true, "passthrough (UNSAFE mode)", true);
 
 		$decoded = self::decodeCall($rawData);
 		if(!$decoded['ok'])
@@ -1497,6 +1510,7 @@ class XMLRPCProxy
 			$capturedRead = self::capturedReadBatch($params[0]['value'], $version);
 			$membersXml = '';
 			$memberLogs = array();
+			$batchNotice = false;
 			$untrustedMethods = array();
 			$untrustedMethodsTruncated = false;
 			$batchTrusted = null;
@@ -1540,6 +1554,7 @@ class XMLRPCProxy
 					if(strpos($line, 'WARNING:') === 0)
 						$memberLogs = array_merge($memberLogs,
 							self::memberDecisionLogs($index, array($line)));
+				$batchNotice = $batchNotice || !empty($innerDecision['notice']);
 				// Fail closed if a future decision path changes the method or emits
 				// a member value that this scalar-only carrier cannot encode.
 				$checked = self::decodeCall($innerDecision['payload']);
@@ -1561,7 +1576,7 @@ class XMLRPCProxy
 					.($untrustedMethodsTruncated ? ', ...' : '').']');
 			$decision = self::forward($canonicalXml, $batchTrusted,
 				($batchTrusted ? 'trusted: ' : 'untrusted: ').'system.multicall ('
-				.count($params[0]['value']).' members)'.$methods);
+				.count($params[0]['value']).' members)'.$methods, $batchNotice);
 			$decision['log'] = array_merge($decision['log'], $memberLogs);
 			return $decision;
 		}
@@ -1668,7 +1683,7 @@ class XMLRPCProxy
 			{
 				$logMsg = "trusted: ".$normMethod." (".$paramDesc.")";
 			}
-			return self::forward($canonicalXml, true, $logMsg);
+			return self::forward($canonicalXml, true, $logMsg, $localPath !== null);
 		}
 
 		if(in_array($methodName, self::$multicallMethods, true))
@@ -1774,8 +1789,11 @@ class XMLRPCProxy
 			$decision = self::forward($canonicalXml, true,
 				"trusted: " . self::normalizeMethodName($methodName) . " (elevated)");
 			if($adjustedSize !== null)
+			{
 				$decision['log'][] = 'WARNING: network.xmlrpc.size_limit.set requested '
 					.$adjustedSize['requested'].', sent '.$adjustedSize['sent'];
+				$decision['notice'] = true;
+			}
 			return $decision;
 		}
 
@@ -1868,10 +1886,11 @@ class XMLRPCProxy
 		return ($path === $root) || (strpos($path, rtrim($root, '/').'/') === 0);
 	}
 
-	private static function forward($payload, $trusted, $line)
+	/** $notice marks a forward whose log carries a warning, not a routine call. */
+	private static function forward($payload, $trusted, $line, $notice = false)
 	{
-		return array('action' => 'send', 'payload' => $payload,
-			'trusted' => $trusted, 'method' => null, 'log' => array(self::formatLogMessage($line)));
+		return array('action' => 'send', 'payload' => $payload, 'trusted' => $trusted,
+			'method' => null, 'log' => array(self::formatLogMessage($line)), 'notice' => $notice);
 	}
 
 	/**

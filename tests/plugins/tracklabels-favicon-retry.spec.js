@@ -93,3 +93,102 @@ test('desktop stops retrying a repeatedly unavailable favicon after three attemp
     jest.useRealTimers();
   }
 });
+
+test('desktop asks again after the cooldown when every server fetch slot is busy', () => {
+  // action.php answers 429 with Retry-After: 30 when its fetch slots are taken
+  // and writes no marker, so the host must get another turn in this session.
+  jest.useFakeTimers();
+  const originalXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = FaviconXHR;
+  try {
+    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
+    const start = code.indexOf('plugin.imageURI = function');
+    const end = code.indexOf('\nplugin.onLangLoaded', start);
+    const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
+    new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
+      plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+    requests.length = 0;
+    const random = jest.spyOn(Math, 'random');
+    random.mockReturnValue(0);
+    plugin.imageURI('tracker', 'tracker.test');
+    requests[0].status = 429;
+    requests[0].onloadend();
+    jest.advanceTimersByTime(29999);
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(2);
+    // The cooldown is spread over 15 s so a burst of labels drains.
+    random.mockReturnValue(0.99999);
+    requests[1].status = 429;
+    requests[1].onloadend();
+    jest.advanceTimersByTime(44998);
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(2);
+    jest.advanceTimersByTime(1);
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(3);
+    random.mockRestore();
+  } finally {
+    window.XMLHttpRequest = originalXHR;
+    jest.useRealTimers();
+  }
+});
+
+function loadDesktopFavicons() {
+  const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
+  const start = code.indexOf('plugin.imageURI = function');
+  const end = code.indexOf('\nplugin.onLangLoaded', start);
+  const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
+  new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
+    plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+  return plugin;
+}
+
+test('desktop busy answers do not use up the retries of a failed favicon fetch', () => {
+  // A burst of labels gets mostly 429 from the two server slots. Counting those
+  // against the two retries left only about six hosts fetched per page.
+  jest.useFakeTimers();
+  const originalXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = FaviconXHR;
+  try {
+    const plugin = loadDesktopFavicons();
+    requests.length = 0;
+    const answers = [429, 429, 429, 503, 503, 503];
+    answers.forEach((status, attempt) => {
+      plugin.imageURI('tracker', 'tracker.test');
+      expect(requests).toHaveLength(attempt + 1);
+      requests[attempt].status = status;
+      requests[attempt].onloadend();
+      jest.advanceTimersByTime(45000);
+    });
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(answers.length);
+  } finally {
+    window.XMLHttpRequest = originalXHR;
+    jest.useRealTimers();
+  }
+});
+
+test('desktop stops asking a host that stays busy for twenty cooldowns', () => {
+  jest.useFakeTimers();
+  const originalXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = FaviconXHR;
+  try {
+    const plugin = loadDesktopFavicons();
+    requests.length = 0;
+    for (let attempt = 0; attempt < 21; attempt++) {
+      plugin.imageURI('tracker', 'tracker.test');
+      expect(requests).toHaveLength(attempt + 1);
+      requests[attempt].status = 429;
+      requests[attempt].onloadend();
+      jest.advanceTimersByTime(45000);
+    }
+    plugin.imageURI('tracker', 'tracker.test');
+    expect(requests).toHaveLength(21);
+  } finally {
+    window.XMLHttpRequest = originalXHR;
+    jest.useRealTimers();
+  }
+});

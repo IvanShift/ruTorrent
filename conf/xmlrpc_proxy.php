@@ -15,7 +15,9 @@
 	// "off"                — reject all raw XMLRPC pass-through
 	$XMLRPCProxy = "sanitize";
 
-	// Log what the proxy decided and why.
+	// Log what the proxy decided and why: refusals, warnings and unsafe
+	// passthrough. Routine forwarded decisions also need $rpcLogCalls in
+	// config.php; false here silences every proxy decision line.
 	$XMLRPCProxyLog = true;
 
 	// Command names allowed as a command parameter of load.* and of the

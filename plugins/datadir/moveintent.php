@@ -74,6 +74,32 @@ class DataDirMoveIntent
         return (string) $stat['dev'] . ':' . (string) $stat['ino'];
     }
 
+    // The shared bounded settle of a just-renamed name; a test may install a
+    // scripted subclass.
+    private static $files = null;
+
+    private static function files()
+    {
+        if (self::$files === null)
+            self::$files = new ErasedataFilesystemOps();
+        return self::$files;
+    }
+
+    // identity() of a name the move callable has just renamed into place. On
+    // drvfs over 9p (cache=0x5, the owner's Docker Desktop volumes) lstat of a
+    // new name once answered ENOENT right after a successful rename. Only that
+    // negative answer is asked again, within the shared bound; the first
+    // present answer is classified as identity() does and compared exactly.
+    private static function renamedIdentity($path)
+    {
+        $entry = self::files()->renamedEntryIdentity($path);
+        if ($entry === false)
+            return false;
+        if (($entry['mode'] & 0170000) !== 0100000)
+            return 'nonregular';
+        return (string) $entry['dev'] . ':' . (string) $entry['ino'];
+    }
+
     private static function inside($path, $root)
     {
         return $path === $root || strpos($path, $root . '/') === 0;
@@ -361,6 +387,7 @@ class DataDirMoveIntent
                 return 'duplicate-owned-inode';
             if ($moved >= $maxFiles)
                 return 'pending';
+            $renamed = false;
             if ($sourceIdentity === false)
                 $ok = @link($this->witnessPath($index), $destination);
             else
@@ -368,9 +395,12 @@ class DataDirMoveIntent
                 if (!is_callable($this->move))
                     return 'move-unavailable';
                 $ok = call_user_func($this->move, $source, $destination);
+                $renamed = (bool) $ok;
             }
             $sourceAfter = self::identity($source);
-            $destinationAfter = self::identity($destination);
+            // Read as missing, a destination renamed a moment ago would turn
+            // a finished move into move-incomplete and hold the whole job.
+            $destinationAfter = $renamed ? self::renamedIdentity($destination) : self::identity($destination);
             if ($sourceAfter === false && $destinationAfter === $expected)
             {
                 $moved++;

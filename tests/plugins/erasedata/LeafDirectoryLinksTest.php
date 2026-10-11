@@ -233,4 +233,21 @@ class LeafDirectoryLinksTest extends TestCase
 			}
 		}
 	}
+
+	// V4-ERA-1: the queue's manifest-consumption marker is exactly empty. Even
+	// the authentic HMAC of this very root under the queue's private key is the
+	// other format and must not authenticate the unsigned shell.
+	public function testManifestConsumptionRootRefusesAnAuthenticSignedMarker()
+	{
+		list($root, $reservation, $public, $marker) = $this->completedCapturedRoot(false);
+		$this->assertSame('manifest-consumption', $reservation, 'the fixture builds the unsigned queue format');
+		$signature = erasedataPrivateRootSignature($root, $this->temporary.'/queue/reservation', true);
+		$this->assertTrue(is_string($signature) && strlen($signature) === 64, 'an authentic signature of this root exists');
+		file_put_contents($marker, $signature);
+		list($result, $reads) = $this->discardCapturedRootWithLinks($root, $reservation, 1);
+		$this->assertSame(false, $result, 'an unsigned shell carrying a genuine signed marker is refused');
+		$this->assertTrue(is_dir($root) && is_file($marker) && file_get_contents($marker) === $signature,
+			'the private root and its exact marker bytes are retained');
+		$this->assertSame('current public bytes', file_get_contents($public), 'public bytes are preserved');
+	}
 }

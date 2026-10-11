@@ -456,6 +456,7 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
     $hash = strtoupper($hash);
     $destPath = rtAddTailSlash($destPath);
     $path = null;
+    $job = null;
     try {
         $journal = rtDataDirJournal();
         $path = $journal . '/' . $hash . '.json';
@@ -486,7 +487,12 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         return false;
     } catch (Exception $e) {
         $failure = $e->getMessage();
-        $pending = $path !== null && (file_exists($path) || is_link($path));
+        // A job created by this call renames its document in place at each
+        // phase. Read as absent, such a held job would be logged as a plain
+        // refusal with no outcome while its claim blocks the download.
+        $pending = $path !== null && ($job !== null
+            ? rtDataDirFilesystem()->renamedEntryIdentity($path) !== false
+            : (file_exists($path) || is_link($path)));
         if ($pending)
             rtDataDirHeld($hash, $failure, $path);
         else

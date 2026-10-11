@@ -236,6 +236,29 @@ class AutoToolsFileTransaction
         return $a !== null && $b !== null && $a === $b;
     }
 
+    // The shared bounded settle of a just-renamed name; a test may return a
+    // scripted subclass.
+    private static $files = null;
+
+    protected static function filesystem()
+    {
+        if (!class_exists('ErasedataFilesystemOps', false))
+            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
+        if (self::$files === null) self::$files = new ErasedataFilesystemOps();
+        return self::$files;
+    }
+
+    // identity() of a name this call has just renamed into place. On drvfs
+    // over 9p (cache=0x5, the owner's Docker Desktop volumes) lstat of a new
+    // name once answered ENOENT right after a successful rename. Only that
+    // negative answer is asked again, within the shared bound; the first
+    // present identity is compared exactly by the caller.
+    private static function renamedIdentity($path)
+    {
+        $entry = static::filesystem()->renamedEntryIdentity($path);
+        return $entry === false ? null : array($entry['dev'], $entry['ino'], $entry['mode'] & 0170000);
+    }
+
     // The file-job journal's rule. Every component of the spelled path exists
     // and is a directory or a link, and no directory is group/other-writable
     // unless sticky and owned by root or this UID; '.' and '..' and a foreign
@@ -471,7 +494,10 @@ class AutoToolsFileTransaction
                 static::checkpoint('before-backup-' . $index);
                 if (!@rename($dest, $removed)) return false;
                 static::checkpoint('after-backup-unverified-' . $index);
-                if (!self::same(self::identity($removed), $old)) return false;
+                // Read as missing, this backup would fail the publication, and
+                // the rollback, which cannot see it either, would leave the
+                // public name empty until recovery.
+                if (!self::same(self::renamedIdentity($removed), $old)) return false;
                 static::checkpoint('after-backup-' . $index);
             } elseif ($old !== null && $moved === null) return false;
             if (!self::payloadDirectory(dirname($dest)) ||

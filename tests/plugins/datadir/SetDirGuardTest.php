@@ -33,9 +33,15 @@ class DataDirTestState
     public static $runFailure = null;
     public static $restoredStart = false;
     public static $root = null;
+    // A SettlingRenameFiles that rtDataDirFilesystem() answers with, and
+    // whether the failing run hides the job document behind it.
+    public static $filesystem = null;
+    public static $hideJob = false;
 
     public static function reset($active = true, $open = true, $label = '', $customs = array())
     {
+        self::$filesystem = null;
+        self::$hideJob = false;
         self::$active = $active;
         self::$open = $open;
         self::$label = $label;
@@ -102,6 +108,11 @@ class DataDirMoveJob
     }
     public function run()
     {
+        // A phase write renames the document in place; its new name may then
+        // answer ENOENT for a while (drvfs over 9p, 2026-10-11).
+        if (DataDirTestState::$hideJob
+            && !DataDirTestState::$filesystem->hide(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json'))
+            throw new LogicException('job document fixture unavailable');
         if (DataDirTestState::$runFailure !== null)
             throw new RuntimeException(DataDirTestState::$runFailure);
         @unlink(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json');
@@ -125,6 +136,7 @@ function rtDataDirJournal() { return DataDirTestState::$root . '/jobs'; }
 function rtDataDirFilesystem()
 {
     static $files = null;
+    if (DataDirTestState::$filesystem !== null) return DataDirTestState::$filesystem;
     if ($files === null) $files = new DataDirScriptedFilesystem();
     return $files;
 }
@@ -298,6 +310,26 @@ $suite->test('a held change says held once and keeps its specific reason', funct
         && strpos(DataDirTestState::$logs[0], 'key=' . $hash . ' consequence=claim-retained-start-and-move-blocked') !== false,
         'the refusal names its document, key and consequence');
     strictAssertSame(true, is_file(DataDirTestState::$root . '/jobs/' . $hash . '.json'), 'the job stays for recovery');
+});
+
+// POST-1011-01: read as absent, a held job's just-renamed document made the
+// change a plain refusal: no held outcome while its claim blocks the download.
+require_once __DIR__ . '/../autotools/SettlingRenameFiles.php';
+$suite->test('a held change whose job document answers late is still reported held', function () use ($hash) {
+    DataDirTestState::reset();
+    DataDirTestState::$runFailure = 'directory-set-refused';
+    DataDirTestState::$filesystem = new SettlingRenameFiles('/^$/D', 3);
+    DataDirTestState::$hideJob = true;
+    $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
+    strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure),
+        'a refused setter is not a success');
+    strictAssertSame('directory-set-refused', $failure, 'the caller receives the specific reason');
+    strictAssertSame(1, count(DataDirTestState::$logs), 'one log line');
+    strictAssertTrue(strpos(DataDirTestState::$logs[0], 'recovery held hash=' . $hash . ' reason=directory-set-refused') !== false
+        && strpos(DataDirTestState::$logs[0], 'consequence=claim-retained-start-and-move-blocked') !== false,
+        'the held job names its document and consequence: ' . DataDirTestState::$logs[0]);
+    strictAssertSame(array($path => 3), DataDirTestState::$filesystem->lookups, 'the document is confirmed on its third lookup');
+    strictAssertSame(true, is_file($path), 'the job stays for recovery');
 });
 
 $suite->test('missing no-replace helper refuses before a native claim', function () use ($hash) {

@@ -25,6 +25,10 @@ function kinozalReset()
     strictSetPrivateStatic('KinozalCheckImpl', 'downloadTransportFailures', 0);
     strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', false);
     strictSetPrivateStatic('KinozalCheckImpl', 'sessionHintLogged', false);
+    strictSetPrivateStatic('KinozalCheckImpl', 'detailsUnverified', 0);
+    strictSetPrivateStatic('KinozalCheckImpl', 'downloadUnverified', 0);
+    // The shared predicate reports its first parser failure once per process.
+    strictSetPrivateStatic('KinozalResponse', 'failureLogged', false);
 }
 
 function kinozalTopics($count)
@@ -83,9 +87,31 @@ function kinozalUnauthorizedBody()
 // The captured guest anchor with extra attributes to exhaust the parser's
 // configured match budget. The surrounding missing/hash text must not gain
 // authority when that parser cannot establish whether this is a guest page.
+// Quoted values, because the parser consumes an unquoted run in one step:
+// under pcre.backtrack_limit=1000 each value is one iteration of its budget.
 function kinozalParserFailureBody()
 {
-    return str_replace('<a ', '<a ' . str_repeat('x ', 10000), kinozalUnauthorizedBody());
+    return str_replace('<a ', '<a ' . str_repeat('t="1" ', 2000), kinozalUnauthorizedBody());
+}
+
+// Runs $body under the parser budget that kinozalParserFailureBody() exhausts.
+function kinozalWithParserBudget(callable $body)
+{
+    $limit = ini_get('pcre.backtrack_limit');
+    try {
+        ini_set('pcre.backtrack_limit', '1000');
+        return $body();
+    } finally {
+        ini_set('pcre.backtrack_limit', $limit);
+    }
+}
+
+// The shared predicate's shipped-level line for a parser failure.
+function kinozalParserFailureLines($log)
+{
+    return array_values(array_filter(explode("\n", $log), function ($line) {
+        return strpos($line, 'kinozal: guest-page check failed (pcre-') !== false;
+    }));
 }
 
 // What Cloudflare returns for a managed challenge: HTTP 403 carrying the
@@ -1565,22 +1591,23 @@ $suite->test('details parser failure cannot certify a hash or deletion or latch 
         kinozalParserFailureBody() . kinozalDetailsBody($cases[0]['hash']));
     Snoopy::queue($cases[1]['details_url'], 200,
         kinozalParserFailureBody() . 'Торрент файл не найден.');
-    $limit = ini_get('pcre.backtrack_limit');
-    try {
-        ini_set('pcre.backtrack_limit', '1000');
-        foreach (kinozalRunAll($cases) as $verdict)
-            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
-                'an unparsed guest marker makes the answer retryable');
-        strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
-            'unknown answers are not a proved guest streak');
-        strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
-            'an unreadable page does not skip later topics');
-        strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
-            return strpos($line, 'guest-page-parse-failed') !== false;
-        })), 'both parser refusals are classified');
-    } finally {
-        ini_set('pcre.backtrack_limit', $limit);
-    }
+    $log = testCapturedAppLog(function () use ($cases) {
+        kinozalWithParserBudget(function () use ($cases) {
+            foreach (kinozalRunAll($cases) as $verdict)
+                strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
+                    'an unparsed guest marker makes the answer retryable');
+        });
+    });
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
+        'unknown answers are not a proved guest streak');
+    strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+        'two unreadable pages do not skip later topics');
+    strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
+        return strpos($line, 'guest-page-parse-failed') !== false;
+    })), 'both parser refusals are classified');
+    strictAssertSame(1, count(kinozalParserFailureLines($log)),
+        'the shipped log level names the parser failure once per process: ' . $log);
+    strictAssertSame(0, count(kinozalSessionHintLines($log)), 'and does not call it a lost session: ' . $log);
 });
 
 $suite->test('download parser failure cannot certify deletion or latch a guest session', function () {
@@ -1590,21 +1617,175 @@ $suite->test('download parser failure cannot certify deletion or latch a guest s
         Snoopy::queue($case['download_url'], 200, kinozalParserFailureBody() . kinozalDownloadMissingBody());
         ruTrackerChecker::queueResult('parseMetainfo', null);
     }
-    $limit = ini_get('pcre.backtrack_limit');
-    try {
-        ini_set('pcre.backtrack_limit', '1000');
-        foreach (kinozalRunAll($cases) as $verdict)
-            strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
-                'a missing marker in an unparsed guest page is not deletion');
-        strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
-            'unknown answers are not a proved guest streak');
+    $log = testCapturedAppLog(function () use ($cases) {
+        kinozalWithParserBudget(function () use ($cases) {
+            foreach (kinozalRunAll($cases) as $verdict)
+                strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $verdict,
+                    'a missing marker in an unparsed guest page is not deletion');
+        });
+    });
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'downloadGuestAnswers'),
+        'unknown answers are not a proved guest streak');
+    strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
+        'two unreadable pages do not skip later downloads');
+    strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
+        return strpos($line, 'guest-page-parse-failed') !== false;
+    })), 'both parser refusals are classified');
+    strictAssertSame(1, count(kinozalParserFailureLines($log)),
+        'the shipped log level names the parser failure once per process: ' . $log);
+});
+
+$suite->test('three unverified details answers in a row stop the handler for the cycle', function () {
+    $cases = kinozalTopics(4);
+    foreach (array_slice($cases, 0, 3) as $case)
+        Snoopy::queue($case['details_url'], 200, kinozalParserFailureBody() . kinozalDetailsBody($case['hash']));
+    $verdicts = kinozalWithParserBudget(function () use ($cases) { return kinozalRunAll($cases); });
+    strictAssertSame(array_fill(0, 4, ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts,
+        'unverified answers and the skipped topic stay retryable');
+    strictAssertSame(3, count(Snoopy::$requests), 'the fourth topic spends no request on the same failure');
+    strictAssertSame(true, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+        'the details endpoint is skipped for the rest of this cycle');
+    strictAssertSame(0, strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
+        'the bound is not a guest streak');
+    strictAssertOneLogMatching(ruTrackerChecker::$logs, 'skipped for the rest of this cycle',
+        'the latch is named in the classified line');
+});
+
+$suite->test('a readable answer between unverified ones clears their count', function () {
+    $cases = kinozalTopics(5);
+    foreach ($cases as $i => $case)
+        Snoopy::queue($case['details_url'], 200, ($i === 2 ? '' : kinozalParserFailureBody())
+            . kinozalDetailsBody($case['hash']));
+    $verdicts = kinozalWithParserBudget(function () use ($cases) { return kinozalRunAll($cases); });
+    strictAssertSame(ruTrackerChecker::STE_UPTODATE, $verdicts[2], 'the readable answer is checked on its merits');
+    strictAssertSame(5, count(Snoopy::$requests), 'two failures, a readable answer and two failures skip nothing');
+    strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+        'isolated unverified answers do not add up across a readable one');
+});
+
+$suite->test('a readable download answer between unverified ones clears their count', function () {
+    // Both readable shapes: a page whose markers parsed, and metainfo.
+    foreach (array('page', 'metainfo') as $readable) {
+        $cases = kinozalTopics(5);
+        strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', true);
+        foreach ($cases as $i => $case) {
+            if ($i !== 2) {
+                Snoopy::queue($case['download_url'], 200, kinozalParserFailureBody());
+                ruTrackerChecker::queueResult('parseMetainfo', null);
+            } elseif ($readable === 'page') {
+                Snoopy::queue($case['download_url'], 200, '<html>maintenance</html>');
+                ruTrackerChecker::queueResult('parseMetainfo', null);
+            } else {
+                Snoopy::queue($case['download_url'], 200, $case['raw']);
+                ruTrackerChecker::queueResult('parseMetainfo', $case['torrent']);
+                ruTrackerChecker::queueResult('createTorrent', ruTrackerChecker::STE_UPTODATE);
+            }
+        }
+        $verdicts = kinozalWithParserBudget(function () use ($cases) { return kinozalRunAll($cases); });
+        strictAssertSame($readable === 'page' ? ruTrackerChecker::STE_CANT_REACH_TRACKER : ruTrackerChecker::STE_UPTODATE,
+            $verdicts[2], $readable . ': the readable answer is decided on its merits');
+        strictAssertSame(5, count(Snoopy::$requests), $readable . ': isolated unverified downloads skip nothing');
         strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
-            'an unreadable page does not skip later downloads');
-        strictAssertSame(2, count(array_filter(ruTrackerChecker::$logs, function ($line) {
-            return strpos($line, 'guest-page-parse-failed') !== false;
-        })), 'both parser refusals are classified');
+            $readable . ': the count does not add up across a readable answer');
+    }
+});
+
+$suite->test('three unverified download answers stop only the download endpoint', function () {
+    $cases = kinozalTopics(4);
+    strictSetPrivateStatic('KinozalCheckImpl', 'detailsWalled', true);
+    foreach (array_slice($cases, 0, 3) as $case) {
+        Snoopy::queue($case['download_url'], 200, kinozalParserFailureBody() . kinozalDownloadMissingBody());
+        ruTrackerChecker::queueResult('parseMetainfo', null);
+    }
+    $verdicts = kinozalWithParserBudget(function () use ($cases) { return kinozalRunAll($cases); });
+    strictAssertSame(array_fill(0, 4, ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts,
+        'no deletion is read from unverified download pages');
+    strictAssertSame(3, count(Snoopy::$requests), 'the fourth download is not requested');
+    strictAssertSame(true, strictGetPrivateStatic('KinozalCheckImpl', 'downloadAbandoned'),
+        'the download endpoint is skipped for the rest of this cycle');
+    strictAssertSame(false, strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+        'the details latch is a separate decision');
+});
+
+$suite->test('an unverifiable login answer spends a bounded number of credential POSTs per cycle', function () {
+    // The real fetchComplex/loginmgr path with no stored session: each
+    // details request logs in first, and a takelogin answer whose guest
+    // markers cannot be parsed neither confirms nor refuses that login.
+    $dir = sys_get_temp_dir() . '/kinozal-login-bound-' . bin2hex(random_bytes(4));
+    strictAssertTrue(mkdir($dir, 0700) && mkdir($dir . '/profile', 0700), 'private login profile');
+    try {
+        file_put_contents($dir . '/child.php', <<<'PHP'
+<?php
+list(, $repo, $profile, $topics) = $argv;
+$_ENV['RU_PROFILE_PATH'] = $profile;
+$_ENV['RU_LOG_FILE'] = $profile . '/errors.log';
+require $repo . '/php/Snoopy.class.inc';
+require $repo . '/plugins/loginmgr/accounts.php';
+class LoginBoundSnoopy extends Snoopy {
+    public static $requests = array();
+    public static function resolveHost($host) { return array('8.8.8.8'); }
+    // Scripted transport: no DNS or network is consulted.
+    public function _httpsrequest($url, $content_type = '', $body = '', $method = 'GET') {
+        self::$requests[] = array($method, $url);
+        $this->headers = array();
+        $this->_redirectaddr = false;
+        $this->status = 200;
+        $this->results = ($url === 'https://kinozal.guru/takelogin.php' && $method === 'POST')
+            ? str_replace('<a ', '<a ' . str_repeat('t="1" ', 2000), '<a href="/signup.php">Register</a>')
+            : '<html>landing page</html>';
+        return true;
+    }
+}
+class ruTrackerChecker {
+    const STE_UPTODATE = 3; const STE_DELETED = 4; const STE_CANT_REACH_TRACKER = 5; const STE_DECLINED = -2;
+    public static $logs = array();
+    public static function registerTracker() {}
+    public static function makeClient($url) {
+        $client = new LoginBoundSnoopy();
+        $client->fetchComplex($url);
+        return $client;
+    }
+    public static function logDebug($message) { self::$logs[] = $message; }
+    public static function logUnrepairable($message) { self::$logs[] = 'unrepairable: ' . $message; }
+    public static function parseMetainfo($payload) { return null; }
+}
+rTorrentSettings::get()->registerPlugin('loginmgr');
+$manager = new accountManager();
+$manager->accounts['KinozalTV'] = array('name' => 'KinozalTV',
+    'path' => $repo . '/plugins/loginmgr/accounts/KinozalTV.php', 'object' => 'KinozalTVAccount',
+    'login' => 'fixture-user', 'password' => 'fixture-password', 'enabled' => 1, 'auto' => 0);
+if (!$manager->store()) throw new RuntimeException('cannot save isolated account');
+require $repo . '/plugins/rutracker_check/trackers/kinozal.php';
+$verdicts = array();
+for ($id = 1; $id <= (int) $topics; $id++)
+    $verdicts[] = KinozalCheckImpl::download_torrent('https://kinozal.guru/details.php?id=' . $id,
+        str_repeat('a', 40), null);
+$posts = count(array_filter(LoginBoundSnoopy::$requests, function ($request) {
+    return $request[0] === 'POST';
+}));
+echo json_encode(array('verdicts' => $verdicts, 'posts' => $posts,
+    'requests' => count(LoginBoundSnoopy::$requests), 'logs' => ruTrackerChecker::$logs,
+    'app_log' => (string) @file_get_contents($profile . '/errors.log'))), "\n";
+PHP
+        );
+        $output = array();
+        exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
+            . ' -d pcre.backtrack_limit=1000 ' . escapeshellarg($dir . '/child.php')
+            . ' ' . escapeshellarg(testFindRepoRoot()) . ' ' . escapeshellarg($dir . '/profile') . ' 6 2>&1',
+            $output, $code);
+        strictAssertSame(0, $code, 'the real login path completed: ' . implode(' | ', $output));
+        $answer = json_decode(implode("\n", $output), true);
+        strictAssertTrue(is_array($answer), 'the child returned its trace: ' . implode(' | ', $output));
+        strictAssertSame(array_fill(0, 6, ruTrackerChecker::STE_CANT_REACH_TRACKER), $answer['verdicts'],
+            'an unverified login answer never becomes a verdict');
+        strictAssertSame(3, $answer['posts'],
+            'three unverified answers stop the details requests and their logins: ' . json_encode($answer['logs']));
+        strictAssertSame(1, count(kinozalParserFailureLines($answer['app_log'])),
+            'the operator reads the classified parser failure once: ' . $answer['app_log']);
+        strictAssertSame(false, strpos($answer['app_log'], 'fixture-password') !== false,
+            'no credential reaches the log');
     } finally {
-        ini_set('pcre.backtrack_limit', $limit);
+        strictRemoveTree($dir);
     }
 });
 

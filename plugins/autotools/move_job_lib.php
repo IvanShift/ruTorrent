@@ -66,11 +66,13 @@ class AutoToolsMoveJob
         }
     }
 
-    static public function readJob($root, $hash)
+    static public function readJob($root, $hash, $settle = false)
     {
         $path = self::jobPath($root, $hash);
         clearstatcache(true, $path);
-        if (@lstat($path) === false) return null;
+        // $settle: the journal this worker has just renamed into place, read
+        // back through the shared bounded settle (see renamedIdentity()).
+        if (($settle ? self::files()->renamedEntryIdentity($path) : @lstat($path)) === false) return null;
         if (!is_file($path)) throw new RuntimeException('journal-nonfile: path='
             . self::JOURNAL_DIR . '/' . self::logHash($hash)
             . '.move.json; Move held pending journal repair');
@@ -102,6 +104,18 @@ class AutoToolsMoveJob
         clearstatcache(true, $path);
         $st = @lstat($path);
         return $st === false ? null : (string) $st['dev'] . ':' . (string) $st['ino'];
+    }
+
+    // identity() of a name this call has just renamed into place. On drvfs
+    // over 9p (cache=0x5, the owner's Docker Desktop volumes) lstat of a new
+    // name once answered ENOENT right after a successful rename. Only that
+    // negative answer is asked again, within the shared bound; the first
+    // present identity is compared exactly by the caller, and the rename is
+    // never repeated.
+    static private function renamedIdentity($path)
+    {
+        $entry = self::files()->renamedEntryIdentity($path);
+        return $entry === false ? null : (string) $entry['dev'] . ':' . (string) $entry['ino'];
     }
 
     static private function claimState($job)
@@ -414,7 +428,9 @@ class AutoToolsMoveJob
                 throw new RuntimeException('quarantine-rename-failed: ' . self::renameRefusal());
             $job['phase'] = 'quarantined';
             self::writeJob($root, $job);
+            return true;
         }
+        return false;
     }
 
     static private function markNoticePending($root, $job)
@@ -423,16 +439,23 @@ class AutoToolsMoveJob
         self::writeJob($root, $job);
     }
 
-    static private function finishCrossSource($root, $job, $claimPresent)
+    static private function finishCrossSource($root, $job, $claimPresent, $quarantined = false)
     {
         if (self::rpc('d.get_directory', $job['hash']) !== $job['daemon_dir'])
             throw new RuntimeException('post-start-directory-changed');
         self::verifyReceipt($job, $job['dst'], false);
         if (self::identity($job['src']) !== null)
             throw new RuntimeException('source-still-public');
-        $quarantine = self::identity($job['quarantine']);
+        // Read as absent, a quarantine this call renamed would never be
+        // deleted: the job would retire and leave the whole source copy behind.
+        $quarantine = $quarantined ? self::renamedIdentity($job['quarantine'])
+            : self::identity($job['quarantine']);
         if ($quarantine !== null && $quarantine !== $job['identity'])
             throw new RuntimeException('quarantine-replaced');
+        // Still absent after the bounded settle: hold rather than retire. The
+        // next worker resumes at 'started' and reads the quarantine again.
+        if ($quarantined && $quarantine === null)
+            throw new RuntimeException('quarantine-unconfirmed');
         if ($quarantine !== null) self::deleteQuarantine($job);
         if ($claimPresent) self::acknowledgeClaim($job);
         self::markNoticePending($root, $job);
@@ -503,7 +526,7 @@ class AutoToolsMoveJob
                 }
                 throw new RuntimeException('stage-publish-ambiguous: ' . $refusal);
             }
-            $dst = self::identity($job['dst']);
+            $dst = self::renamedIdentity($job['dst']);
             $job['phase'] = 'published';
             self::writeJob($root, $job);
         }
@@ -514,7 +537,7 @@ class AutoToolsMoveJob
         self::publishDirectory($job, $token);
         $job['phase'] = 'directory';
         self::writeJob($root, $job);
-        self::quarantineCrossSource($root, $job);
+        $quarantined = self::quarantineCrossSource($root, $job);
         $started = self::restoreState($job, $token);
         if ($started !== '0' && $started !== '1') throw new RuntimeException('reopen-result-unknown');
         if ($started === '1' && !empty($job['run_state']) && (self::rpc('d.is_open', $hash) !== '1'
@@ -523,7 +546,7 @@ class AutoToolsMoveJob
             throw new RuntimeException('final-open-state-mismatch');
         $job['phase'] = 'started';
         self::writeJob($root, $job);
-        self::finishCrossSource($root, $job, true);
+        self::finishCrossSource($root, $job, true, $quarantined);
         return true;
     }
 
@@ -548,7 +571,10 @@ class AutoToolsMoveJob
 
     static public function deliverNotice($root, $hash)
     {
-        $job = self::readJob($root, $hash);
+        // run() calls this under its lock once reconcile() has kept the job,
+        // usually just after renaming its journal into place, so an absent
+        // answer is asked again.
+        $job = self::readJob($root, $hash, true);
         if ($job === null) return;
         if (!in_array($job['phase'], array('notice-pending', 'notice-attempted', 'completed'), true))
             throw new RuntimeException('notification-phase-ambiguous');
@@ -689,7 +715,7 @@ class AutoToolsMoveJob
                 throw new RuntimeException('rename-failed-ambiguous: ' . $refusal);
             }
             $src = self::identity($job['src']);
-            $dst = self::identity($job['dst']);
+            $dst = self::renamedIdentity($job['dst']);
         }
         if ($src !== null || $dst !== $expected)
             throw new RuntimeException('payload-identity-ambiguous');

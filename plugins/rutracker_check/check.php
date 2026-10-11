@@ -2078,13 +2078,18 @@ class ruTrackerChecker
 		$armReason = null;
 		if($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob, $armReason))
 		{
-			self::logCleanupFailure('obsolete cleanup could not be armed ('
+			// Preparation succeeded; the arm step is what refused.
+			self::logCleanupFailure('obsolete-file cleanup was not armed ('
 				. ($armReason === null ? 'cleanup-arm-unconfirmed' : $armReason)
 				. ') before predecessor erase; replacement remains retryable');
-			// Lock, acknowledgement and RPC failures can recover on the next tick.
+			// Only a proven lasting rename capability refusal escalates the
+			// scheduler backoff. No other arm refusal (job, lock, state,
+			// write, RPC, acknowledgement, unconfirmed rename) is proven
+			// lasting, so it retries on the next cycle without starting or
+			// extending a streak.
 			if($armReason === 'cleanup-rename-capability')
 				self::postponeLocalRefusal($hash, $newHash, $armReason,
-					'obsolete-file cleanup could not be armed');
+					'obsolete-file cleanup was not armed');
 			if(!erasedataCancelObsoleteCleanup($cleanupJob))
 			{
 				self::logCleanupFailure('prepared obsolete cleanup cancellation failed after drain refusal; both generations and recovery markers were retained');
@@ -2190,7 +2195,7 @@ class ruTrackerChecker
 		}
 		self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
 			. ' postponed: ' . $operation . ' (' . $reason
-			. '); next scheduled attempt after ' . gmdate('Y-m-d\TH:i:s\Z', $until)
+			. '); next scheduled attempt at about ' . gmdate('Y-m-d\TH:i:s\Z', $until)
 			. '; the manual Check for Update button retries now');
 	}
 

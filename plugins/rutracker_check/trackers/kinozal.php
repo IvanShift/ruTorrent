@@ -113,6 +113,16 @@ class KinozalCheckImpl
     static private $detailsTransportFailures = 0;
     static private $downloadTransportFailures = 0;
 
+    // Answers whose guest markers could not be parsed (isGuestPage() null).
+    // Such an answer proves neither a session nor a login wall, so it is
+    // never a guest streak or a verdict. It is still bounded: loginmgr keeps
+    // a stored session without logging in again, but with none stored it
+    // cannot confirm a fresh login either, and every later request would
+    // spend another credential POST. Counted per endpoint like refusals and
+    // cleared by a readable answer: metainfo or a page the parser could read.
+    static private $detailsUnverified = 0;
+    static private $downloadUnverified = 0;
+
     // Per-cycle, like $cycleAbandoned and for the same reason: what the
     // details request chain refused for one topic it may refuse for others,
     // so retry the chain next cycle. Unlike
@@ -171,6 +181,17 @@ class KinozalCheckImpl
         }
         self::$cycleAbandoned = true;
         return self::cantReach($log . ', the Kinozal handler is skipped for the rest of this cycle');
+    }
+
+    // Retryable for this topic; TRANSPORT_TOLERANCE in a row skip the endpoint.
+    static private function unverifiedAnswer($log, $endpoint)
+    {
+        $answers = ($endpoint === 'download')
+            ? ++self::$downloadUnverified
+            : ++self::$detailsUnverified;
+        if ($answers < self::TRANSPORT_TOLERANCE)
+            return self::cantReach($log);
+        return self::abandonEndpoint($log, $endpoint);
     }
 
     // Count guest answers per endpoint; one isolated login wall is retryable.
@@ -290,11 +311,13 @@ class KinozalCheckImpl
             // this topic received an independent answer from download.php.
             $independent = true;
             self::$downloadGuestAnswers = 0;
+            self::$downloadUnverified = 0;
             return ruTrackerChecker::createTorrent($parsed, $hash, $old_torrent);
         }
         $guest = KinozalResponse::isGuestPage($payload);
         if ($guest === null)
-            return self::cantReach("download attempt: guest-page-parse-failed id=".$id);
+            return self::unverifiedAnswer("download attempt: guest-page-parse-failed id=".$id, 'download');
+        self::$downloadUnverified = 0;
         if ($guest)
             return self::guestAnswer("download attempt ended at a guest page, check the loginmgr account: id=".$id,
                 'download');
@@ -389,7 +412,8 @@ class KinozalCheckImpl
         self::$detailsTransportFailures = 0;
         $guest = KinozalResponse::isGuestPage($details);
         if ($guest === null)
-            return self::cantReach("details attempt: guest-page-parse-failed id=".$id);
+            return self::unverifiedAnswer("details attempt: guest-page-parse-failed id=".$id, 'details');
+        self::$detailsUnverified = 0;
         if ($guest)
             return self::guestAnswer("details attempt ended at a guest page, check the loginmgr account: id=".$id,
                 'details');

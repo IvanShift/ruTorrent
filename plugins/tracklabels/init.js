@@ -143,8 +143,18 @@ plugin.imageURI = function (target, label, fetchMissing = true) {
 				catlist.refreshPanel.ptrackers();
 				theWebUI.update();
 				catlist.syncFn();
+			} else if (request.status === 429) {
+				// Every server fetch slot was busy: not this host's failure, so
+				// it keeps its two retries. A spread cooldown lets a burst of
+				// labels drain instead of colliding again on the same second.
+				const busy = plugin.faviconBusy || (plugin.faviconBusy = Object.create(null));
+				if ((busy[label] || 0) < 20) {
+					busy[label] = (busy[label] || 0) + 1;
+					setTimeout(() => plugin.faviconRequests.delete(label),
+						30000 + Math.floor(Math.random() * 15000));
+				}
 			} else if ((request.status === 0 || request.status === 408 ||
-				request.status === 429 || request.status >= 500) &&
+				request.status >= 500) &&
 				(plugin.faviconFailures[label] || 0) < 2) {
 				plugin.faviconFailures[label] = (plugin.faviconFailures[label] || 0) + 1;
 				setTimeout(() => plugin.faviconRequests.delete(label), 30000);

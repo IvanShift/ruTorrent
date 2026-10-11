@@ -390,6 +390,69 @@ class XMLRPCProxyTest extends TestCase
 			'the outer summary carries the policy source');
 	}
 
+	/**
+	 * Production 2026-10-11 logged "trusted: d.multicall2 (8 params) [built-in
+	 * policy]" and "untrusted: system.client_version" for ordinary reads at
+	 * the shipped default. A routine forward is per-call tracing, which is
+	 * what $rpcLogCalls opts into; refusals and warnings are not.
+	 */
+	public function testRoutineForwardsAreTracedOnlyWithRpcLogCalls()
+	{
+		$read = $this->methodCallXml('d.multicall2', array('', 'main', 'd.hash=', 'd.name='));
+		$version = $this->methodCallXml('system.client_version');
+		foreach(array(array(), array('XMLRPCProxySafeParams' => XMLRPCProxy::defaultSafeParams())) as $vars)
+		{
+			$default = XMLRPCProxy::policySettings($vars);
+			$traced = XMLRPCProxy::policySettings($vars + array('rpcLogCalls' => true));
+			$suffix = $default['logSuffix'];
+			foreach(array(array($read, 'trusted: d.multicall2 (4 params)'),
+				array($version, 'untrusted: system.client_version')) as $case)
+			{
+				$decision = self::decideOnModernDaemon($case[0], 'sanitize', $default['safeParams']);
+				$this->assertTrue($decision['action'] === 'send', $case[1].': the routine call is forwarded');
+				$this->assertEquals(array(), XMLRPCProxy::decisionLogLines($decision, $default),
+					$case[1].': no routine decision line at the shipped default'.$suffix);
+				$this->assertEquals(array($case[1].$suffix), XMLRPCProxy::decisionLogLines($decision, $traced),
+					$case[1].': $rpcLogCalls traces the routine decision'.$suffix);
+			}
+			$this->assertTrue(XMLRPCProxy::policySettings($vars + array('rpcLogCalls' => false))['traceCalls'] === false,
+				'an explicit false keeps tracing off');
+		}
+	}
+
+	public function testRefusalsAndWarningsStayLoggedWithoutCallTracing()
+	{
+		$policy = XMLRPCProxy::policySettings(array());
+		$hash = str_repeat('A', 40);
+		$cases = array(
+			'refusal' => array(self::decideOnModernDaemon($this->methodCallXml('execute.capture', array('', 'id')),
+				'sanitize', $policy['safeParams']), 'rejected ('),
+			'local path' => array(self::decideOnModernDaemon($this->methodCallXml('load.start',
+				array('', '/tmp/sample.torrent')), 'sanitize', $policy['safeParams'], true),
+				'WARNING: operator-enabled local path forwarded'),
+			'size clamp' => array(self::decideOnModernDaemon($this->methodCallXml('network.xmlrpc.size_limit.set',
+				array('', '1')), 'sanitize', $policy['safeParams']),
+				'WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024'),
+			'member warning' => array(self::decideOnModernDaemon($this->systemMulticallXml(array(
+				array('d.stop', array($hash)), array('load.start', array('', '/tmp/sample.torrent')),
+			)), 'sanitize', $policy['safeParams'], true), '[slot 2] WARNING:'),
+			'unsafe mode' => array(XMLRPCProxy::decide($this->methodCallXml('system.client_version'),
+				'passthrough_unsafe'), 'passthrough (UNSAFE mode)'),
+		);
+		foreach($cases as $name => $case)
+		{
+			$lines = XMLRPCProxy::decisionLogLines($case[0], $policy);
+			$this->assertTrue(strpos(implode("\n", $lines), $case[1]) !== false,
+				$name.' is reported at the shipped default: '.implode(' | ', $lines));
+		}
+		$routine = self::decideOnModernDaemon($this->systemMulticallXml(array(
+			array('d.stop', array($hash)), array('d.close', array($hash)),
+		)), 'sanitize', $policy['safeParams']);
+		$this->assertTrue($routine['action'] === 'send', 'a checked WebUI batch is forwarded');
+		$this->assertEquals(array(), XMLRPCProxy::decisionLogLines($routine, $policy),
+			'a batch without member warnings is routine');
+	}
+
 	public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()
 	{
 		$settings = XMLRPCProxy::policySettings(array('XMLRPCProxySafeParams' => null));

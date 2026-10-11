@@ -81,11 +81,17 @@ class RuTrackerMetaFetch
 {
     public static $calls = array();
     public static $result = 9;
+    // When set, the step ends the way createTorrent() ends a replacement whose
+    // local cleanup was refused: through the checker's own postponement.
+    public static $localRefusal = null;
 
     public static function pump($hash, $now)
     {
         self::$calls[] = array('hash' => $hash, 'now' => $now,
             'scheduledAt' => strictGetPrivateStatic('ruTrackerChecker', 'activeRunIdentity')['scheduledAt'] ?? null);
+        if (self::$localRefusal !== null)
+            strictInvoke('ruTrackerChecker', 'postponeLocalRefusal',
+                array($hash, str_repeat('B', 40), self::$localRefusal));
         return self::$result;
     }
 }
@@ -835,6 +841,46 @@ upTest($suite, 'the default scheduler dispatch gives its aligned slot to the rea
         strictAssertTrue($slot >= $before - ($before % 3600) && $slot <= $after - ($after % 3600),
             'the configured hourly slot survives default dispatch and the real per-hash claim');
     } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+        if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
+        else $GLOBALS['schedule_rand'] = $savedRandom;
+    }
+});
+
+// The deadline a scheduled refusal records is the end of the chain the case
+// above starts: dispatchChecker() -> ruTrackerChecker::run() -> the checker's
+// own postponement. A deadline counted from the refusal instead of the slot
+// would hold the row through its intended retry slot.
+upTest($suite, 'a default scheduled refusal records its deadline on the aligned dispatch slot', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    $savedRandom = $GLOBALS['schedule_rand'] ?? null;
+    try {
+        $GLOBALS['updateInterval'] = 60;
+        $GLOBALS['schedule_rand'] = 0;
+        $hash = str_repeat('A', 40);
+        $rows = RuTrackerUpdatePass::parseMulticall(upRow($hash, 0, 'bt.t-ru.org',
+            (string) ruTrackerChecker::STE_META_PENDING));
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
+        RuTrackerMetaFetch::$calls = array();
+        RuTrackerMetaFetch::$result = ruTrackerChecker::STE_META_PENDING;
+        RuTrackerMetaFetch::$localRefusal = 'local file operation refused';
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
+            'd.get_local_id', 'd.get_custom'), true, false,
+            array((string) ruTrackerChecker::STE_META_PENDING, '100', '', str_repeat('A', 40), ''));
+        $before = time();
+        upCapturedLog(function () use ($rows) { RuTrackerUpdatePass::run($rows); });
+        $after = time();
+        strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'the real checker reached its metadata consumer');
+        $entry = RuTrackerState::load('updatepass')['replacement_backoff'][RuTrackerState::daemonKey()][$hash] ?? null;
+        strictAssertTrue(is_array($entry), 'the refusal inside the scheduled run records a backoff');
+        strictAssertSame(3600, $entry['length'], 'the first local refusal waits one hour');
+        strictAssertTrue(in_array($entry['until'] - 3600,
+            array($before - ($before % 3600), $after - ($after % 3600)), true),
+            'the recorded deadline is the hourly dispatch slot plus the backoff, not the refusal time plus it');
+    } finally {
+        RuTrackerMetaFetch::$localRefusal = null;
         if ($savedInterval === null) unset($GLOBALS['updateInterval']);
         else $GLOBALS['updateInterval'] = $savedInterval;
         if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
@@ -5916,6 +5962,103 @@ upTest($suite, 'a scheduled refusal retries at its intended slot for hourly and 
     }
 });
 
+// V4-REPL-1: the deadline names a slot exactly. Without a grace, a cycle that
+// started one second early would hold the row for a whole further cadence.
+upTest($suite, 'the replacement hold grace admits the last moments before a slot and nothing earlier', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    try {
+        $hash = str_repeat('A', 40);
+        $until = 1800007200;
+        foreach (array(60 => 60, 5 => 60, 2 => 60, 1 => 30, 0 => 0) as $minutes => $grace) {
+            $GLOBALS['updateInterval'] = $minutes;
+            strictAssertSame($grace, strictInvoke('RuTrackerUpdatePass', 'replacementHoldTolerance'),
+                'the grace is at most a minute and at most half a cadence: ' . $minutes . ' min');
+            RuTrackerState::save('updatepass', array());
+            upSeedReplacementBackoff(array($hash => array('until' => $until, 'length' => 7200)));
+            $held = array($hash => $until);
+            if ($grace > 0) {
+                strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($until - 1, $grace),
+                    'a cycle one second before its slot is due');
+                strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($until - $grace, $grace),
+                    'a cycle exactly one grace before its slot is due');
+                strictAssertSame($held, RuTrackerReplacementBackoff::activeUntil($until - $grace - 1, $grace),
+                    'a cycle earlier than the grace is still held');
+                strictAssertSame($held, RuTrackerReplacementBackoff::activeUntil($until - $minutes * 60, $grace),
+                    'the previous configured slot is still held');
+            } else {
+                strictAssertSame($held, RuTrackerReplacementBackoff::activeUntil($until - 1, $grace),
+                    'without an installed schedule nothing is admitted early');
+                strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($until, $grace),
+                    'the deadline itself is admitted');
+            }
+        }
+    } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+    }
+});
+
+// Review of V4-REPL-1: the grace admits a cycle that starts early, and the
+// refusal that cycle records must then name the slot it was admitted for.
+// Counted toward the previous slot, every doubled hold lasted one cadence less.
+upTest($suite, 'refusals in cycles that start early keep every doubled hold whole', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    $savedRandom = $GLOBALS['schedule_rand'] ?? null;
+    try {
+        $GLOBALS['schedule_rand'] = 0;
+        $hash = str_repeat('A', 40);
+        foreach (array(60 => 3600, 5 => 300) as $minutes => $cadence) {
+            $GLOBALS['updateInterval'] = $minutes;
+            $grace = strictInvoke('RuTrackerUpdatePass', 'replacementHoldTolerance');
+            RuTrackerState::save('updatepass', array());
+            $slot = 1800000000;
+            foreach (array(3600, 7200, 14400) as $length) {
+                $now = $slot - 5;
+                strictAssertSame(array(), RuTrackerReplacementBackoff::activeUntil($now, $grace),
+                    'the cycle five seconds before its slot is admitted: ' . $length);
+                $failure = null;
+                $until = RuTrackerReplacementBackoff::postpone($hash, $now, $failure,
+                    strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array($now)));
+                strictAssertSame($slot + $length, $until, 'the deadline counts from the admitted slot: ' . $length);
+                for ($held = $slot + $cadence; $held < $until; $held += $cadence)
+                    strictAssertSame(array($hash => $until), RuTrackerReplacementBackoff::activeUntil($held - 5, $grace),
+                        'every early cycle inside the hold stays held: ' . ($held - $slot) . ' of ' . $length);
+                $slot = $until;
+            }
+        }
+    } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+        if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
+        else $GLOBALS['schedule_rand'] = $savedRandom;
+    }
+});
+
+upTest($suite, 'a retry cycle that starts just before its slot is not held for another cadence', function () {
+    $savedInterval = $GLOBALS['updateInterval'] ?? null;
+    try {
+        $hash = str_repeat('A', 40);
+        $rows = RuTrackerUpdatePass::parseMulticall(
+            upRow($hash, 6, 'bt.t-ru.org', (string) ruTrackerChecker::STE_ERROR));
+        foreach (array(60 => 60, 1 => 30) as $minutes => $grace) {
+            $GLOBALS['updateInterval'] = $minutes;
+            // A few seconds ahead: the retry slot's cycle started early.
+            upSeedReplacementBackoff(array($hash => array('until' => time() + 5, 'length' => 3600)));
+            upRunPass($rows, $checked);
+            strictAssertSame(array($hash), $checked,
+                'the scheduler pass admits a cycle started just before its retry slot: ' . $minutes . ' min');
+            // Ten seconds of margin keep a clock tick during the pass harmless.
+            upSeedReplacementBackoff(array($hash => array('until' => time() + $grace + 10, 'length' => 3600)));
+            upRunPass($rows, $checked);
+            strictAssertSame(array(), $checked,
+                'a deadline beyond the grace still holds the row: ' . $minutes . ' min');
+        }
+    } finally {
+        if ($savedInterval === null) unset($GLOBALS['updateInterval']);
+        else $GLOBALS['updateInterval'] = $savedInterval;
+    }
+});
+
 upTest($suite, 'replacement attempt slots use the installed scheduler alignment and configured cadence', function () {
     $savedInterval = $GLOBALS['updateInterval'] ?? null;
     $savedRandom = $GLOBALS['schedule_rand'] ?? null;
@@ -5923,11 +6066,14 @@ upTest($suite, 'replacement attempt slots use the installed scheduler alignment 
         $GLOBALS['schedule_rand'] = 0;
         foreach (array(60 => 3600, 5 => 300, 1 => 60) as $minutes => $cadence) {
             $GLOBALS['updateInterval'] = $minutes;
-            foreach (array(0, 1, $cadence - 1, 2 * $cadence + 11) as $delay) {
-                $expected = 1800000000 + ($delay >= 2 * $cadence ? 2 * $cadence : 0);
-                strictAssertSame($expected,
+            $grace = min(60, intdiv($cadence, 2));
+            // A cycle within the hold grace before a slot belongs to that slot,
+            // the same rule activeUntil() applies to the deadline.
+            foreach (array(0 => 0, 1 => 0, $cadence - $grace - 1 => 0, $cadence - $grace => $cadence,
+                2 * $cadence + 11 => 2 * $cadence, -$grace => 0, -$grace - 1 => -$cadence) as $delay => $owner) {
+                strictAssertSame(1800000000 + $owner,
                     strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array(1800000000 + $delay)),
-                    'an exact boundary or a late row uses its owning slot, without a fixed hourly adjustment');
+                    'a row ' . $delay . ' s from a ' . $cadence . ' s slot uses its owning slot, without a fixed hourly adjustment');
             }
         }
         $GLOBALS['updateInterval'] = 0;

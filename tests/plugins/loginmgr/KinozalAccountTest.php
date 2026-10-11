@@ -117,6 +117,39 @@ function kinozalUnauthorizedAnswer()
         . 'зарегистрироваться пройдите <a href=\'/signup.php\' class=\'sba\'>сюда</a>.';
 }
 
+// The application log that $body wrote, with the predicate's once-per-process
+// failure notice re-armed, so each test observes its own first failure.
+function kinozalCapturedLog(callable $body)
+{
+    if (property_exists('KinozalResponse', 'failureLogged'))
+        strictSetPrivateStatic('KinozalResponse', 'failureLogged', false);
+    $file = tempnam(sys_get_temp_dir(), 'kinozal-log');
+    $saved = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
+    $GLOBALS['log_file'] = $file;
+    try {
+        $body();
+        return array_values(array_filter(explode("\n", (string) file_get_contents($file)), 'strlen'));
+    } finally {
+        @unlink($file);
+        if ($saved === null) unset($GLOBALS['log_file']);
+        else $GLOBALS['log_file'] = $saved;
+    }
+}
+
+// Exhausts PCRE under pcre.backtrack_limit=1000 in either JIT mode: each
+// quoted value is one iteration of the tag pattern's possessive group.
+function kinozalUnparseableGuestAnswer()
+{
+    return str_replace('<a ', '<a ' . str_repeat('t="1" ', 2000), kinozalUnauthorizedAnswer());
+}
+
+// Openers that an unclosed quote keeps from closing, then the captured
+// anchor. Reaching it means rescanning the tail once per opener.
+function kinozalUnterminatedOpeners($count = 1400000)
+{
+    return str_repeat('<a ', $count) . '"' . kinozalUnauthorizedAnswer();
+}
+
 $suite = new StrictTestSuite();
 
 $suite->test('the captured 2026-08-07 login form is recognised as a dead session', function () {
@@ -139,14 +172,127 @@ $suite->test('the not-authorized answer of get_srv_details is a dead session', f
 
 $suite->test('a guest-page parser failure leaves authentication unproven', function () {
     $limit = ini_get('pcre.backtrack_limit');
+    $lines = kinozalCapturedLog(function () use ($limit) {
+        try {
+            ini_set('pcre.backtrack_limit', '1');
+            strictAssertSame(null, kinozalIsOK(kinozalUnauthorizedAnswer()),
+                'a failed marker parser cannot certify a live session or demand a login');
+        } finally {
+            ini_set('pcre.backtrack_limit', $limit);
+        }
+    });
+    // The log write runs PCRE itself, so its classified line, not
+    // preg_last_error() afterwards, is the evidence of the failure.
+    strictAssertSame(1, count($lines), 'the fixture really exhausts PCRE: ' . implode(' | ', $lines));
+    strictAssertTrue(strpos($lines[0], 'kinozal: guest-page check failed (pcre-') !== false,
+        'the refusal is classified: ' . $lines[0]);
+});
+
+$suite->test('an unverified guest check is logged once with its classified PCRE reason', function () {
+    $limit = ini_get('pcre.backtrack_limit');
+    $lines = kinozalCapturedLog(function () use ($limit) {
+        try {
+            ini_set('pcre.backtrack_limit', '1000');
+            for ($i = 0; $i < 3; $i++)
+                strictAssertSame(null, kinozalIsOK(kinozalUnparseableGuestAnswer()),
+                    'every failed check stays unverified, not only the logged one');
+        } finally {
+            ini_set('pcre.backtrack_limit', $limit);
+        }
+        strictAssertSame(false, kinozalIsOK(kinozalUnparseableGuestAnswer()),
+            'the same page is a guest page at the shipped limit');
+    });
+    strictAssertSame(1, count($lines), 'one line per process, not one per topic: ' . implode(' | ', $lines));
+    strictAssertSame(1, preg_match('~^\[[^\]]+\] kinozal: guest-page check failed \(pcre-backtrack-limit\);'
+        . ' the answer is treated as unverified, not as a live session or a guest page$~', $lines[0]),
+        'the line names the classified PCRE reason and its consequence: ' . $lines[0]);
+    strictAssertSame(false, strpos($lines[0], 'signup') !== false, 'no page text reaches the log');
+});
+
+$suite->test('long attribute runs keep the guest markers readable with and without PCRE JIT', function () {
+    // Synthetic metamorphic variants of the captured anonymous answers. The
+    // backtracking parser answered null for every case here (both controls
+    // included) except quoted values without JIT: the JIT stack gave out at
+    // ~8 KB of unquoted attribute text in one tag, the recursion limit at
+    // ~50 KB. Without JIT its attribute pattern's leading \s+ alone took
+    // ~8.7 s on the 256 KiB space run.
+    $long = str_repeat('x', 65536);
+    $expected = array(
+        'unquoted value' => array(true,
+            str_replace('<a href=', '<a data-x=' . $long . ' href=', kinozalUnauthorizedAnswer())),
+        'bare attributes' => array(true,
+            str_replace('<a ', '<a ' . str_repeat('x ', 32768), kinozalUnauthorizedAnswer())),
+        'whitespace before equals' => array(true,
+            str_replace('<a ', '<a' . str_repeat(' ', 262144) . '=y ', kinozalUnauthorizedAnswer())),
+        'unterminated tag before the anchor' => array(true, '<a ' . $long . kinozalUnauthorizedAnswer()),
+        'password input' => array(true, str_replace('<input type="password"',
+            '<input ' . $long . ' type="password"', kinozalLegacyLoginPage())),
+        'quoted values' => array(true,
+            str_replace('<a ', '<a ' . str_repeat('t="1" ', 4000), kinozalUnauthorizedAnswer())),
+        'long authorized tag' => array(false, '<ul><li>Инфо хеш: ' . str_repeat('A', 40) . '</li></ul>'
+            . '<a data-x=' . $long . ' href="/userdetails.php?id=1">me</a><input ' . $long . ' name=s>'),
+        // One stray unterminated opener is retried from the next opener and
+        // stays well inside RESCAN_LIMIT; a limit near zero made both null.
+        'stray unterminated opener before a guest answer' => array(true, '<a "' . kinozalUnauthorizedAnswer()),
+        'authorized page ending in an unterminated input' => array(false, '<ul><li>Инфо хеш: ' . str_repeat('A', 40)
+            . '</li></ul><a href="/userdetails.php?id=1">me</a><input '),
+        // HTML keeps the first of repeated attributes, and so does the scan.
+        'repeated attribute keeps its first value' => array(false, '<ul><li>Инфо хеш: ' . str_repeat('A', 40)
+            . '</li></ul><a href=/userdetails.php?id=1 href=/signup.php>me</a>'),
+        // An unclosed quote ends every opener's attempt, so each would rescan
+        // the tail before the anchor is reached: bounded, then unverified.
+        'unterminated openers' => array(null, kinozalUnterminatedOpeners()),
+    );
+    $dir = sys_get_temp_dir() . '/kinozal-pcre-' . bin2hex(random_bytes(4));
+    strictAssertTrue(mkdir($dir, 0700), 'private child directory');
     try {
-        ini_set('pcre.backtrack_limit', '1');
-        strictAssertSame(null, kinozalIsOK(kinozalUnauthorizedAnswer()),
-            'a failed marker parser cannot certify a live session or demand a login');
-        strictAssertTrue(preg_last_error() !== PREG_NO_ERROR, 'the fixture really exhausts PCRE');
+        file_put_contents($dir . '/cases.json', json_encode(array_map(function ($case) {
+            return $case[1];
+        }, $expected)));
+        file_put_contents($dir . '/child.php', <<<'PHP'
+<?php
+// A quadratic regression dies here rather than stalling the suite.
+set_time_limit(60);
+require $argv[1] . '/php/kinozal.php';
+$answers = array();
+foreach (json_decode(file_get_contents($argv[2]), true) as $name => $body) {
+    $started = microtime(true);
+    $answer = KinozalResponse::isGuestPage($body);
+    $answers[$name] = array($answer, (microtime(true) - $started) * 1000);
+}
+echo json_encode(array('jit' => ini_get('pcre.jit'), 'answers' => $answers)), "\n";
+PHP
+        );
+        foreach (array('0', '1') as $jit) {
+            $output = array();
+            exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
+                . ' -d pcre.jit=' . $jit . ' -d memory_limit=256M ' . escapeshellarg($dir . '/child.php')
+                . ' ' . escapeshellarg(testFindRepoRoot()) . ' ' . escapeshellarg($dir . '/cases.json') . ' 2>&1',
+                $output, $code);
+            strictAssertSame(0, $code, 'jit=' . $jit . ': the child completed: ' . implode(' | ', $output));
+            $result = json_decode(implode("\n", $output), true);
+            strictAssertSame($jit, (string) $result['jit'], 'the child ran in the requested JIT mode');
+            foreach ($expected as $name => $case) {
+                strictAssertSame($case[0], $result['answers'][$name][0], 'jit=' . $jit . ': ' . $name);
+                // Linear scans finish in milliseconds; the old constructs took seconds.
+                strictAssertTrue($result['answers'][$name][1] < 2000,
+                    'jit=' . $jit . ': ' . $name . ' is linear: ' . round($result['answers'][$name][1]) . ' ms');
+            }
+        }
     } finally {
-        ini_set('pcre.backtrack_limit', $limit);
+        strictRemoveTree($dir);
     }
+});
+
+$suite->test('a page of unterminated openers is refused as unverified with a classified reason', function () {
+    // 30 KB: exact rescans would cost ~150 MB of scanning, past the bound.
+    $lines = kinozalCapturedLog(function () {
+        strictAssertSame(null, kinozalIsOK(kinozalUnterminatedOpeners(10000)),
+            'bounded rescans leave the page unverified rather than reading a verdict');
+    });
+    strictAssertSame(1, count($lines), 'the refusal is visible: ' . implode(' | ', $lines));
+    strictAssertTrue(strpos($lines[0], 'kinozal: guest-page check failed (rescan-limit);') !== false,
+        'the reason is the bound, not a PCRE error: ' . $lines[0]);
 });
 
 $suite->test('registration links retain query and trusted absolute URL compatibility', function () {
@@ -154,7 +300,8 @@ $suite->test('registration links retain query and trusted absolute URL compatibi
     // not claims that these href spellings were observed on the live site.
     foreach (array('/signup.php?from=details&amp;id=1', 'signup.php?from=details',
         'https://kinozal.guru/signup.php', 'https://KINOZAL.ME./signup.php?from=details',
-        '//kinozal.tv/signup.php#form') as $href) {
+        '//kinozal.tv/signup.php#form', 'HTTPS://kinozal.guru:443/signup.php',
+        '&#47;signup.php?from=details') as $href) {
         $page = str_replace('/signup.php', $href, kinozalUnauthorizedAnswer());
         strictAssertSame(false, kinozalIsOK($page), 'the registration anchor is a guest signal: ' . $href);
     }
@@ -163,7 +310,8 @@ $suite->test('registration links retain query and trusted absolute URL compatibi
 $suite->test('foreign and unrelated hrefs do not masquerade as Kinozal registration', function () {
     foreach (array('https://evil.test/signup.php', 'https://kinozal.guru@evil.test/signup.php',
         'https://kinozal.guru.evil.test/signup.php', '/download.php?next=/signup.php',
-        '/source/signup.php', 'javascript:/signup.php') as $href) {
+        '/source/signup.php', 'javascript:/signup.php', 'ftp://kinozal.guru/signup.php',
+        '/signup.php.bak') as $href) {
         $page = str_replace('/signup.php', $href, kinozalUnauthorizedAnswer());
         strictAssertSame(true, kinozalIsOK($page), 'only a Kinozal registration link is a guest signal: ' . $href);
     }

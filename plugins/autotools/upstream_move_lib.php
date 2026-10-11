@@ -8,19 +8,30 @@ final class AutoToolsUpstreamMove
 public static function rtMoveFile( $src, $dst, $dbg = false )
 {
 	$ss = LFS::stat($src);
-	if( !rename( $src, $dst ) )
+	if( rename( $src, $dst ) )
 	{
-		if( $dbg ) rtDbg( __FUNCTION__, "from ".$src );
-		if( $dbg ) rtDbg( __FUNCTION__, "to   ".$dst );
-		if( $dbg ) rtDbg( __FUNCTION__, "move fail, try to copy" );
-		if( !copy( $src, $dst ) )
-		{
-			if( $dbg ) rtDbg( __FUNCTION__, "copy fail" );
-			return false;
-		}
-		if( !unlink( $src ) )
-			if( $dbg ) rtDbg( __FUNCTION__, "delete fail (".$src.")" );
+		// Across filesystems PHP's rename() copies the file itself and
+		// returns true without its times; a real rename keeps the inode and
+		// the times. touch() opens a name that access() reports missing with
+		// O_TRUNC, and drvfs over 9p (Docker Desktop, 2026-10-11) answered
+		// ENOENT for a name it had just renamed, so only a copy that is seen
+		// under another inode is touched: lost times, never an emptied file.
+		clearstatcache( true, $dst );
+		$ds = @stat( $dst );
+		if( $ss!==false && $ds!==false && ($ds['dev']!==$ss['dev'] || $ds['ino']!==$ss['ino']) )
+			touch( $dst, $ss['mtime'], $ss['atime'] );
+		return true;
 	}
+	if( $dbg ) rtDbg( __FUNCTION__, "from ".$src );
+	if( $dbg ) rtDbg( __FUNCTION__, "to   ".$dst );
+	if( $dbg ) rtDbg( __FUNCTION__, "move fail, try to copy" );
+	if( !copy( $src, $dst ) )
+	{
+		if( $dbg ) rtDbg( __FUNCTION__, "copy fail" );
+		return false;
+	}
+	if( !unlink( $src ) )
+		if( $dbg ) rtDbg( __FUNCTION__, "delete fail (".$src.")" );
 	// there are problems here, if run-user is not file owner
 	if($ss!==false)
 		touch( $dst, $ss['mtime'], $ss['atime'] );

@@ -448,4 +448,236 @@ class ErasedataNativeCompletionTest extends TestCase
 		$b['incarnation']=substr($a['incarnation'],0,-1).'2';
 		$this->assertTrue(ErasedataManifestCodec::canonicalNativeIntent($a)!==ErasedataManifestCodec::canonicalNativeIntent($b),'long decimal hex identities remain exact strings');
 	}
+
+	// POST-1011-01: on drvfs over 9p (cache=0x5) lstat of a name answered ENOENT
+	// once right after its successful rename. One owner settles that answer.
+	public function testRenamedEntryIdentitySettlesOnlyANegativeAnswerWithinItsBound()
+	{
+		if(!method_exists('ErasedataFilesystemOps','renamedEntryIdentity'))
+		{
+			$this->assertTrue(false,'a just-renamed name is confirmed through one bounded settle owner');
+			return;
+		}
+		$filesystem=new class extends ErasedataFilesystemOps {
+			public $answers=array();public $calls=0;
+			public function entryIdentity($path){$this->calls++;return count($this->answers) ? array_shift($this->answers) : false;}
+		};
+		$renamed=array('dev'=>7,'ino'=>8,'lstat'=>array('dev'=>7,'ino'=>8));
+		$filesystem->answers=array(false,false,$renamed);
+		$this->assertSame($renamed,$filesystem->renamedEntryIdentity('/queue/name'),'negative answers are asked again until the name appears');
+		$this->assertSame(3,$filesystem->calls,'the first present answer ends the settle');
+		$other=array('dev'=>7,'ino'=>9,'lstat'=>array('dev'=>7,'ino'=>9));
+		$filesystem->calls=0;$filesystem->answers=array($other,$renamed);
+		$this->assertSame($other,$filesystem->renamedEntryIdentity('/queue/name'),'a present answer is returned as it is, even for another inode');
+		$this->assertSame(1,$filesystem->calls,'a present answer is never asked again');
+		$filesystem->calls=0;$filesystem->answers=array();$started=microtime(true);
+		$this->assertSame(false,$filesystem->renamedEntryIdentity('/queue/name'),'a name that stays absent is reported absent');
+		$elapsed=microtime(true)-$started;
+		$this->assertSame(ERASEDATA_RENAME_SETTLE_ATTEMPTS,$filesystem->calls,'the settle stops at its attempt bound');
+		$this->assertTrue(ERASEDATA_RENAME_SETTLE_ATTEMPTS*ERASEDATA_RENAME_SETTLE_PAUSE_US<=500000 && $elapsed<1.0,
+			'the settle waits about half a second at most: '.round($elapsed,3));
+		$real=sys_get_temp_dir().'/ed-renamed-'.bin2hex(random_bytes(6));file_put_contents($real,'present');
+		try
+		{
+			$identity=(new ErasedataFilesystemOps())->renamedEntryIdentity($real);
+			$this->assertTrue(is_array($identity) && erasedataSameStatIdentity(lstat($real),$identity['lstat']),
+				'a present real name answers its own identity');
+		}
+		finally {unlink($real);}
+	}
+
+	// A capture renames a payload or a consumed manifest into its private root,
+	// and its public bridge later moves to a tombstone there. A negative answer
+	// for either new name just after its rename is not a capture or bridge that
+	// was already consumed.
+	public function testCapturedEntriesAndBridgeTombstonesThatAnswerLateAreConsumedInTheSamePass()
+	{
+		global $profileMask;$profileMask=0700;
+		foreach(array('captured entry'=>'#/\.erasedata-entry-[^/]+/entry$#D',
+			'bridge tombstone'=>'#/\.erasedata-entry-[^/]+/\.bridge-[0-9]+-[0-9]+$#D') as $case=>$pattern)
+		{
+			$dir=sys_get_temp_dir().'/ed-settle-capture-'.bin2hex(random_bytes(6));
+			mkdir($dir,0700);mkdir($dir.'/queue',0700);mkdir($dir.'/data',0700);
+			$queue=$dir.'/queue';$hash=str_repeat('A',40);$payload=$dir.'/data/payload';
+			file_put_contents($payload,'legacy payload');
+			$path=$queue.'/'.$hash.'.0000000000000001.actor.list';
+			file_put_contents($path,ErasedataManifestCodec::encode($hash,array('base'=>$payload,'multi'=>false,'files'=>array($payload)),1));
+			chmod($path,0600);
+			rXMLRPCRequest::$responses=array('fixture.nativeCapability'=>'legacy');FileUtil::$log=array();
+			$filesystem=new ErasedataSettlingRenameFixture($pattern,2);
+			$service=new ErasedataCollector($filesystem,function(){return ERASEDATA_TORRENT_ABSENT;},
+				function(){throw new Exception('an absent torrent needs no owned paths');},null,true);
+			try
+			{
+				$service->run($queue,$hash);
+				$this->assertEquals(2,count($filesystem->lookups),$case.': the payload and the manifest renames both answered late');
+				foreach($filesystem->lookups as $entry=>$count)
+					$this->assertSame(2,$count,$case.': the new name is confirmed on its second lookup');
+				$this->assertTrue(!file_exists($payload) && !is_link($payload) && !file_exists($path) && !is_link($path),
+					$case.': payload and manifest are consumed in the same pass');
+				$roots=array_merge(glob($dir.'/data/.erasedata-entry-*') ?: array(),glob($queue.'/.erasedata-entry-*') ?: array());
+				$this->assertEquals(array(),$roots,$case.': no private capture root is left behind');
+			}
+			finally {$this->removeTree($dir);rXMLRPCRequest::$responses=array();}
+		}
+	}
+
+	public function testPlaintextListMovedAsideIsReportedMovedWhenItsNewNameAnswersLate()
+	{
+		global $profileMask;$profileMask=0700;
+		$dir=sys_get_temp_dir().'/ed-settle-quarantine-'.bin2hex(random_bytes(6));
+		mkdir($dir,0700);mkdir($dir.'/queue',0700);
+		$queue=$dir.'/queue';$hash=str_repeat('A',40);
+		$path=$queue.'/'.$hash.'.0000000000000001.actor.list';
+		file_put_contents($path,"/data/legacy plaintext entry\n");chmod($path,0600);$stat=lstat($path);
+		rXMLRPCRequest::$responses=array('fixture.nativeCapability'=>'available');FileUtil::$log=array();
+		$filesystem=new ErasedataSettlingRenameFixture('/\.unverified$/D',2);
+		$service=new ErasedataCollector($filesystem,function(){throw new Exception('presence');},
+			function(){throw new Exception('paths');},null,true);
+		try
+		{
+			$service->run($queue,$hash);
+			$aside=glob($queue.'/'.basename($path).'.*.unverified') ?: array();
+			$this->assertTrue(count($aside)===1 && !file_exists($path) && erasedataSameStatIdentity($stat,lstat($aside[0])),
+				'the exact plaintext inode is moved aside');
+			$this->assertSame(array(2),array_values($filesystem->lookups),'the aside name is confirmed on its second lookup');
+			$log=implode("\n",FileUtil::$log);
+			$this->assertTrue(strpos($log,'moved to')!==false && strpos($log,'uncertain quarantine state')===false,
+				'the move is reported as done, not as uncertain');
+		}
+		finally {$this->removeTree($dir);rXMLRPCRequest::$responses=array();}
+	}
+
+	public function testCleanupRestoreConfirmsAPublicNameThatAnswersLate()
+	{
+		global $profileMask;$profileMask=0700;
+		$dir=sys_get_temp_dir().'/ed-settle-restore-'.bin2hex(random_bytes(6));
+		mkdir($dir,0700);mkdir($dir.'/data',0700);
+		$public=$dir.'/data/public';$reservation=$dir.'/cleanup-job';
+		file_put_contents($public,'restored bytes');$stat=lstat($public);
+		$plain=new ErasedataFilesystemOps();
+		try
+		{
+			$root=erasedataCreateCapturedEntryRoot($public,$reservation,$stat,$plain);
+			if(!is_string($root) || !rename($public,erasedataCapturedEntryDataPath($root)))
+				throw new RuntimeException('captured-file fixture refused');
+			$info=erasedataCapturedEntryRootInfo($root,$public,$reservation,$plain);
+			if(!is_array($info)) throw new RuntimeException('captured-file info refused');
+			$filesystem=new ErasedataSettlingRenameFixture('#^'.preg_quote($public,'#').'$#D',2);$reason=null;
+			$this->assertTrue(erasedataCleanupRestoreCapturedFile($public,$info,$filesystem,$reason),
+				'a restored name that answers late is confirmed, not left restore-unverified: '.var_export($reason,true));
+			$this->assertSame(2,$filesystem->lookups[$public] ?? 0,'the restored name is confirmed on its second lookup');
+			$this->assertTrue(erasedataSameStatIdentity($stat,@lstat($public)) && is_file($public) && file_get_contents($public)==='restored bytes'
+				&& !file_exists($root),'the exact inode is back under its public name and the root is gone');
+		}
+		finally {$this->removeTree($dir);}
+	}
+
+	// The cleanup reservation of a directory: its restore rename, and the move of
+	// a legacy public link into a tombstone inside the reservation.
+	public function testCleanupReservationRestoreConfirmsNamesThatAnswerLate()
+	{
+		global $profileMask;$profileMask=0700;
+		foreach(array('restored directory','legacy link tombstone') as $case)
+		{
+			$dir=sys_get_temp_dir().'/ed-settle-reservation-'.bin2hex(random_bytes(6));
+			mkdir($dir,0700);mkdir($dir.'/queue',0700);mkdir($dir.'/data',0700);
+			$path=$dir.'/data/directory';$key=$dir.'/queue/cleanup-job';mkdir($path,0700);
+			$plain=new ErasedataFilesystemOps();$identity=$plain->entryIdentity($path);
+			try
+			{
+				$reservation=erasedataDirectoryReservationPath($path,$key,$identity);
+				$reserved=erasedataReservationDataPath($reservation);
+				if(!is_string($reservation) || !mkdir($reservation,0700) || !erasedataCreatePrivateMarker($reservation,$key)
+					|| !rename($path,$reserved) || ($case==='legacy link tombstone' && !symlink($reserved,$path)))
+					throw new RuntimeException('directory reservation fixture refused');
+				$pattern=$case==='restored directory' ? '#^'.preg_quote($path,'#').'$#D'
+					: '#^'.preg_quote($reservation,'#').'/\.bridge-[0-9]+-[0-9]+$#D';
+				$filesystem=new ErasedataSettlingRenameFixture($pattern,2);$reason=null;$skip=false;
+				$this->assertTrue(erasedataCleanupRestoreReservation($path,$reservation,$key,$filesystem,$reason,$skip),
+					$case.': a new name that answers late is confirmed: '.var_export($reason,true));
+				$this->assertSame(array(2),array_values($filesystem->lookups),$case.': confirmed on its second lookup');
+				$this->assertTrue(is_dir($path) && !is_link($path) && erasedataSameEntryIdentity($identity,$plain->entryIdentity($path))
+					&& !file_exists($reservation),$case.': the exact directory is back and the reservation is gone');
+			}
+			finally {$this->removeTree($dir);}
+		}
+	}
+
+	// POST-1011-01: a completed record is published by a rename. On drvfs over
+	// 9p (cache=0x5) lstat of such a new name answered ENOENT once while the
+	// listing already held it; three immediate re-reads then named a
+	// manifest-type refusal for a document whose type was never wrong.
+	public function testCompletedRecordListedBeforeItsNameAnswersIsSettledAndNeverMisclassified()
+	{
+		global $profileMask;$profileMask=0700;
+		require_once(__DIR__.'/../../php/SourceDefinitionFixture.php');
+		$namespace='ErasedataCompletedSettleProbe';
+		if(!function_exists($namespace.'\\erasedataNativeCompletedCandidates'))
+		{
+			// The listing is real; only the first lstat answers of the record's
+			// name are missing, as on the mount.
+			$code='namespace '.$namespace.';'
+				.'class Sequence {public static $misses=0;}'
+				.'function lstat($path){if(Sequence::$misses>0){Sequence::$misses--;return false;}return \lstat($path);}';
+			$code.=loadFunctionDefinition(__DIR__.'/../../../plugins/erasedata/filesystem.php','erasedataListedEntryStat');
+			if(function_exists('erasedataNativeCompletedEntryStat'))
+				$code.=loadFunctionDefinition(__DIR__.'/../../../plugins/erasedata/native.php','erasedataNativeCompletedEntryStat');
+			$code.=loadFunctionDefinition(__DIR__.'/../../../plugins/erasedata/native.php','erasedataNativeCompletedCandidates');
+			foreach(array('ErasedataManifestCodec','ErasedataFilesystemOps') as $class)
+				class_alias($class,$namespace.'\\'.$class);
+			eval($code);
+		}
+		$sequence=$namespace.'\\Sequence';$candidates=$namespace.'\\erasedataNativeCompletedCandidates';
+		$dir=sys_get_temp_dir().'/ed-settle-completed-'.bin2hex(random_bytes(6));mkdir($dir,0700);
+		$hash=str_repeat('A',40);$g='0000000000000001';$payload=$dir.'/payload';
+		$paths=array('base'=>$payload,'multi'=>false,'files'=>array($payload));
+		$intent=array('incarnation'=>str_repeat('a',32),'nonce'=>str_repeat('b',32),'generation'=>$g,
+			'user'=>User::getUser(),'digest'=>hash('sha256',ErasedataManifestCodec::encode($hash,$paths,1)));
+		try
+		{
+			foreach(array('settled'=>2,'unreadable'=>PHP_INT_MAX,'consumed'=>-1) as $case=>$misses)
+			{
+				$queue=$dir.'/'.$case;mkdir($queue,0700);
+				$path=$queue.'/'.$hash.'.'.$g.'.actor.list.completed';
+				file_put_contents($path,ErasedataManifestCodec::encodeBound($hash,$paths,1,$intent));chmod($path,0600);
+				$filesystem=new class($misses,$path) extends ErasedataFilesystemOps {
+					public $calls=0;private $misses;private $path;
+					public function __construct($misses,$path){$this->misses=$misses;$this->path=$path;}
+					public function entryIdentity($path){
+						$this->calls++;
+						// Another worker consumes the record while it is settled.
+						if($this->misses<0 && $this->calls===2) unlink($this->path);
+						if($this->misses<0 || $this->calls<=$this->misses) return(false);
+						return(parent::entryIdentity($path));
+					}
+				};
+				$reports=array();
+				$retention=function($report,$stat,$bytes,$reason)use(&$reports){$reports[]=array($report,is_array($stat),$reason);};
+				$sequence::$misses=3;
+				$result=$candidates($queue,$hash,null,$retention,$filesystem);
+				$sequence::$misses=0;
+				if($case==='settled')
+				{
+					$this->assertTrue(count($result)===1 && $result[0]['path']===$path
+						&& erasedataSameStatIdentity(lstat($path),$result[0]['stat']),'the settled record is a completed candidate');
+					$this->assertEquals(array(),$reports,'a settled record is never reported');
+					$this->assertEquals(3,$filesystem->calls,'the record is confirmed on its third settled lookup');
+				}
+				elseif($case==='unreadable')
+				{
+					$this->assertEquals(array(),$result,'a record that never answers is no candidate');
+					$this->assertEquals(array(array($path,false,'unreadable-manifest')),$reports,
+						'it is named unreadable, never manifest-type');
+					$this->assertEquals(ERASEDATA_RENAME_SETTLE_ATTEMPTS,$filesystem->calls,'the settle stops at its bound');
+				}
+				else
+				{
+					$this->assertEquals(array(),$result,'a consumed record is no candidate');
+					$this->assertEquals(array(),$reports,'a record that left the listing is positively absent, not refused');
+				}
+			}
+		}
+		finally {$this->removeTree($dir);}
+	}
 }

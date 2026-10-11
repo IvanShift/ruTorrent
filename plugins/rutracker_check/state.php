@@ -423,15 +423,21 @@ class RuTrackerState
  *
  * One entry per daemon and predecessor hash in updatepass.json, {until, length}.
  * Local file-operation failures belong to that daemon, unlike shared tracker
- * budgets. Old unscoped entries cannot establish that owner and hold nothing.
- * Each refusal doubles the length from one hour to a one-day cap -- the shape of
- * the announce 403 cooldown (announce.php recordOutcome()) -- and a committed
- * replacement clears it. Only RuTrackerUpdatePass::run() reads it, so the
- * manual check (batch_check.php -> ruTrackerChecker::run()) retries at once.
+ * budgets. Each refusal doubles the length from one hour to a one-day cap --
+ * the shape of the announce 403 cooldown (announce.php recordOutcome()) -- and
+ * a committed replacement clears it. Only RuTrackerUpdatePass::run() reads it,
+ * so the manual check (batch_check.php -> ruTrackerChecker::run()) retries at
+ * once.
  *
  * Self-healing: an entry that does not parse, or whose deadline lies further
- * ahead than the cap, holds nothing and is dropped by the next write, so a
- * damaged document can at worst restore the old every-cycle retry.
+ * ahead than the cap, holds nothing, so a damaged document can at worst restore
+ * the old every-cycle retry. Every postpone(), and every clear() whose
+ * lock-free read found this hash's entry, rewrites the whole map and keeps only
+ * well-formed entries under well-formed daemon keys. That drops legacy
+ * unscoped entries, which cannot name the daemon whose filesystem refused, and
+ * every entry that lapsed more than a day ago, so the map of a daemon that no
+ * longer runs empties and goes with it. Another daemon's entries inside that
+ * day are kept: its own scheduler may still be honouring them.
  */
 class RuTrackerReplacementBackoff
 {
@@ -482,12 +488,16 @@ class RuTrackerReplacementBackoff
 
     // hash => deadline for every entry still in force. A lock-free read: the
     // scheduler takes it once per cycle and a stale answer costs one cycle.
-    static public function activeUntil($now)
+    // A deadline at most $tolerance seconds ahead is already due: a cycle
+    // that close before the slot belongs to it
+    // (RuTrackerUpdatePass::replacementHoldTolerance()).
+    static public function activeUntil($now, $tolerance = 0)
     {
         $active = array();
+        $tolerance = max(0, (int) $tolerance);
         $state = RuTrackerState::load(self::DOCUMENT);
         foreach (self::currentEntries($state[self::KEY][RuTrackerState::daemonKey()] ?? null, $now) as $hash => $entry)
-            if ($now < $entry['until']) $active[$hash] = $entry['until'];
+            if ($now + $tolerance < $entry['until']) $active[$hash] = $entry['until'];
         return $active;
     }
 

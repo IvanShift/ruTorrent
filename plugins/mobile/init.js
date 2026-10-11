@@ -643,7 +643,15 @@ plugin.warmTrackerFavicon = function(name) {
   var request = new XMLHttpRequest();
   request.onloadend = () => {
     if (request.status !== 200) {
-      if ((request.status === 0 || request.status === 408 || request.status === 429 || request.status >= 500) &&
+      if (request.status === 429) {
+        // Busy server fetch slots, as in tracklabels/init.js: no retry is
+        // used up, and the cooldown is spread so a burst drains.
+        var busy = plugin.faviconBusy || (plugin.faviconBusy = Object.create(null));
+        if ((busy[name] || 0) < 20) {
+          busy[name] = (busy[name] || 0) + 1;
+          setTimeout(() => plugin.faviconRequests.delete(name), 30000 + Math.floor(Math.random() * 15000));
+        }
+      } else if ((request.status === 0 || request.status === 408 || request.status >= 500) &&
           (plugin.faviconFailures[name] || 0) < 2) {
         plugin.faviconFailures[name] = (plugin.faviconFailures[name] || 0) + 1;
         setTimeout(() => plugin.faviconRequests.delete(name), 30000);

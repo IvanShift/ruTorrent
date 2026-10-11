@@ -220,12 +220,41 @@ class RuTrackerUpdatePass
         return false;
     }
 
-    static private function replacementAttemptSlot($now)
+    // The cycle's cadence in seconds, from the same $updateInterval init.php
+    // registers the schedule with; null while that schedule is disabled.
+    static private function replacementCadence()
     {
         global $updateInterval;
         $cadence = (int) ($updateInterval * 60);
-        if ($cadence < 1) return null;
+        return $cadence < 1 ? null : $cadence;
+    }
+
+    // The slot a cycle at $now belongs to. A cycle within the hold grace
+    // before a slot belongs to that slot, as activeUntil() admits it: an
+    // early cycle that counted toward the previous slot would record a
+    // deadline one cadence short and lose a doubling step.
+    static private function replacementAttemptSlot($now)
+    {
+        $cadence = self::replacementCadence();
+        if ($cadence === null) return null;
+        $now += self::replacementHoldTolerance();
         return $now + rTorrentSettings::getAlignedStart('rutracker_check', $cadence, $now) - $cadence;
+    }
+
+    // How many seconds before a replacement backoff deadline a cycle already
+    // counts as the slot that deadline names. A scheduled refusal's deadline
+    // is its attempt slot plus the backoff, a later slot whenever the cadence
+    // divides the backoff (the hourly default does), and a cycle starting even
+    // one second before it would leave the row held for one more whole
+    // cadence. The daemon times a schedule from its cached callback clock,
+    // which can lag the wall clock while another callback runs; init.php
+    // registers against that clock, and this grace keeps the hold from
+    // depending on that registration being exact. At most a minute, and at
+    // most half a cadence, so the previous slot stays held.
+    static private function replacementHoldTolerance()
+    {
+        $cadence = self::replacementCadence();
+        return $cadence === null ? 0 : min(60, intdiv($cadence, 2));
     }
 
     static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null,
@@ -441,7 +470,8 @@ class RuTrackerUpdatePass
         $defaultChecker = self::$checker === null;
         $checker = self::$checker;
         $corrections = self::forumCorrections();
-        $replacementBackoff = RuTrackerReplacementBackoff::activeUntil($now);
+        $replacementBackoff = RuTrackerReplacementBackoff::activeUntil($now,
+            self::replacementHoldTolerance());
         $forumChangedSet = array();
         foreach ((array) $forumChanged as $hash)
             $forumChangedSet[strtoupper((string) $hash)] = true;
@@ -554,7 +584,8 @@ class RuTrackerUpdatePass
             // file-operation reason (RuTrackerReplacementBackoff). Dispatching
             // would repeat the tracker request and the metadata fetch only to
             // be refused again, so the row keeps its ERROR verdict, and any
-            // durable correction, until the backoff lapses. A verdict that has
+            // durable correction, until the backoff lapses, or comes within
+            // replacementHoldTolerance() of lapsing. A verdict that has
             // since moved on is not held; META_PENDING and INPROGRESS were
             // dispatched above. Keyed by this daemon and hash, so no other
             // torrent or daemon -- RuTracker or foreign -- is affected.

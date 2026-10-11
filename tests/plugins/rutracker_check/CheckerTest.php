@@ -1668,16 +1668,25 @@ DSL;
 				strictAssertSame(ruTrackerChecker::STE_ERROR,
 					ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
 					'an unconfirmed arm stays retryable: ' . (string) $reason);
+				strictAssertOneLogMatching(FileUtil::$log, 'obsolete-file cleanup was not armed ('
+					. ($reason === null ? 'cleanup-arm-unconfirmed' : $reason) . ') before predecessor erase',
+					'the refusal names the arm step and its classified reason: ' . (string) $reason);
+				strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'could not be prepared'),
+					'preparation succeeded, so no line may say it failed: ' . (string) $reason);
 				if($reason === 'cleanup-rename-capability')
 				{
 					strictAssertSame(3600, $this->storedBackoff(self::OLD_HASH)['length'] ?? null,
 						'the actual local capability refusal postpones the next scheduled retry');
-					strictAssertOneLogMatching(FileUtil::$log, 'postponed: obsolete-file cleanup could not be armed (cleanup-rename-capability)',
+					strictAssertOneLogMatching(FileUtil::$log, 'postponed: obsolete-file cleanup was not armed (cleanup-rename-capability)',
 						'the postponement names arm rather than the completed preparation');
 				}
 				else
+				{
 					strictAssertSame(null, $this->storedBackoff(self::OLD_HASH),
 						'a transient or unknown arm failure cannot buy an hourly hold: ' . (string) $reason);
+					strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'postponed:'),
+						'a refusal that retries next cycle announces no postponement: ' . (string) $reason);
+				}
 				strictAssertSame(1, count($this->erasedataCalls('erasedataCancelObsoleteCleanup')),
 					'the exact prepared obligation is canceled before restoration');
 				$erases = $this->branchRequestsContaining('$d.erase=');
@@ -1685,6 +1694,26 @@ DSL;
 				strictAssertSame(self::NEW_HASH, $erases[0]['commands'][0]->params[0],
 					'arm refusal never erases the predecessor');
 			}
+
+			// A transient refusal met inside an existing streak (a manual
+			// retry, or the first cycle after the hold) neither extends nor
+			// doubles it: only the lasting refusal escalates.
+			$this->resetFakes();
+			strictAssertTrue(RuTrackerReplacementBackoff::postpone(self::OLD_HASH, time()) !== null,
+				'an earlier lasting refusal left a streak');
+			$streak = $this->storedBackoff(self::OLD_HASH);
+			$this->stageTorrents(array('name' => 'old.mkv'), array('name' => 'new.mkv'));
+			$this->queueTransactionStart($base);
+			$this->queueLoadConfirmed();
+			ErasedataFake::$armResult = false;
+			ErasedataFake::$armReason = 'cleanup-drain-no-ack';
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'the acknowledgement timeout stays retryable');
+			strictAssertSame($streak, $this->storedBackoff(self::OLD_HASH),
+				'a transient arm refusal leaves the existing streak exactly as it was');
 		}
 		finally { strictRemoveTree($base); }
 	}
