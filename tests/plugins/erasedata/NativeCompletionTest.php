@@ -177,6 +177,15 @@ class ErasedataNativeCompletionTest extends TestCase
 			$state=erasedataDefaultDrainState();$state['user']=User::getUser();$state['phase']='armed';
 			$state['generation']=$state['acknowledged']=$g;
 			$state['journal'][$g]=array('phase'=>'published','force'=>1,'hashes'=>array($hash),'staging'=>array($hash=>$record));
+			// Check revocation itself before any full-queue orphan prune can heal it.
+			$documentHintKeys=array();$hint=array(time(),5,1,hash('sha256','review-seeded-retention'));
+			foreach(array($path,$record['path']) as $hintPath)
+				foreach(array($bytes,'') as $hintBytes)
+					foreach(array($intent,null) as $hintIntent)
+						$documentHintKeys[erasedataNativeRetryKey($hash,$hintPath,$stat,$hintBytes,$hintIntent)]=true;
+			$unrelated=hash('sha256','unrelated revoked test job');
+			$retryJobs=array_fill_keys(array_keys($documentHintKeys),$hint);$retryJobs[$unrelated]=$hint;
+			$state['native_retry']=array('jobs'=>$retryJobs,'cursor'=>str_repeat('B',40),'overflow'=>true);
 			erasedataWriteDrainState($queue,$state);
 			if($case==='captured')mkdir(erasedataCapturedEntryPrefix($payload,$path).'unknown',0700);
 			if($case==='intent')file_put_contents($queue.'/.erasedata-rmdir-intent-'.hash('sha256',$path),'unknown');
@@ -213,6 +222,10 @@ class ErasedataNativeCompletionTest extends TestCase
 						$cut=erasedataReadDrainState($queue);
 						$this->assertTrue(is_file($path)&&!isset($cut['journal'][$g])&&!file_exists(erasedataPendingMarkerPath($queue,$hash,$g)),
 							'a failed manifest unlink retains discoverable bytes after exact journal and pending retirement');
+						$retainedKey=erasedataNativeRetryKey($hash,$path,$stat,$bytes,$intent);
+						$this->assertTrue(count($cut['native_retry']['jobs'])===2
+							&& isset($cut['native_retry']['jobs'][$unrelated],$cut['native_retry']['jobs'][$retainedKey]),
+							'revocation clears old hint spellings before recording the exact failed unlink for retry');
 						$next=new ErasedataCollector(new ErasedataFilesystemOps(),null,null,null,true);$next->run($queue,$hash);
 					}
 
@@ -221,6 +234,15 @@ class ErasedataNativeCompletionTest extends TestCase
 				$this->assertEquals($clean,!file_exists($path),$case.' removes only positively revoked metadata without recovery artifacts');
 				$this->assertEquals(!$clean,isset($after['journal'][$g]),$case.' preserves or retires the exact journal consistently');
 				$this->assertEquals(!$clean,file_exists(erasedataPendingMarkerPath($queue,$hash,$g)),$case.' preserves or retires exact pending obligation');
+				if($clean)
+					$this->assertEquals(array($unrelated),array_keys($after['native_retry']['jobs']),
+						$case.' retires every retry spelling of the revoked document and keeps another job');
+				else
+					$this->assertEquals(count($documentHintKeys),count(array_intersect_key($after['native_retry']['jobs'],$documentHintKeys)),
+						$case.' retains every original retry hint while revocation cleanup is refused');
+				$this->assertEquals(array('cursor'=>str_repeat('B',40),'overflow'=>true),
+					array_diff_key($after['native_retry'],array('jobs'=>true)),
+					$case.' leaves advisory cursor and overflow unchanged');
 				$this->assertEquals('new incarnation bytes',file_get_contents($payload),$case.' never touches current public payload');
 				$this->assertTrue(!count(glob($path.'.*.unverified')),$case.' never hides revoked V4 behind legacy quarantine');
 				$this->assertTrue(!in_array('system.erasedata.erase',rXMLRPCRequest::$requested,true)
@@ -471,7 +493,7 @@ class ErasedataNativeCompletionTest extends TestCase
 		$this->assertSame($other,$filesystem->renamedEntryIdentity('/queue/name'),'a present answer is returned as it is, even for another inode');
 		$this->assertSame(1,$filesystem->calls,'a present answer is never asked again');
 		$filesystem->calls=0;$filesystem->answers=array();$started=microtime(true);
-		$this->assertSame(false,$filesystem->renamedEntryIdentity('/queue/name'),'a name that stays absent is reported absent');
+		$this->assertSame(false,$filesystem->renamedEntryIdentity('/queue/name'),'a name no lookup confirms remains unresolved');
 		$elapsed=microtime(true)-$started;
 		$this->assertSame(ERASEDATA_RENAME_SETTLE_ATTEMPTS,$filesystem->calls,'the settle stops at its attempt bound');
 		$this->assertTrue(ERASEDATA_RENAME_SETTLE_ATTEMPTS*ERASEDATA_RENAME_SETTLE_PAUSE_US<=500000 && $elapsed<1.0,
@@ -602,6 +624,117 @@ class ErasedataNativeCompletionTest extends TestCase
 			}
 			finally {$this->removeTree($dir);}
 		}
+	}
+
+	public function testDirectoryCapturesThatAnswerLateCompleteWithoutPublishingRecoveryBridges()
+	{
+		global $profileMask;$profileMask=0700;
+		foreach(array('non-force','force','cleanup-parent','cleanup-file') as $case)
+		{
+			$dir=sys_get_temp_dir().'/ed-directory-settle-'.bin2hex(random_bytes(6));
+			mkdir($dir,0700);mkdir($dir.'/queue',0700);mkdir($dir.'/data',0700);
+			$public=$dir.'/data/public';$key=$dir.'/queue/job';
+			$case==='cleanup-file' ? file_put_contents($public,'obsolete bytes') : mkdir($public,0700);
+			$pattern=$case==='cleanup-file' ? '#/\.erasedata-entry-[^/]+/entry$#D'
+				: '#/(?:\.erasedata-rmdir-[^/]+/directory|directory\.force-[^/]+/directory)$#D';
+			$filesystem=new ErasedataSettlingRenameFixture($pattern,2);
+			try
+			{
+				if($case==='non-force' || $case==='force')
+					$result=$case==='non-force'
+						? erasedataCompleteNonForceDirectory($public,$key,$filesystem)
+						: erasedataCompleteForcedDirectory($public,$key,$filesystem);
+				else
+				{
+					$hash=str_repeat('A',40);$manifest=array('hash'=>$hash,'new_hash'=>str_repeat('B',40),
+						'marker'=>str_repeat('c',32),'replacement_record'=>$hash.'-stopped-1');
+					rXMLRPCRequest::$responses=array('d.multicall'=>array('val'=>array()));
+					$service=new ErasedataCollector($filesystem,function(){return ERASEDATA_TORRENT_ABSENT;},null,null,true);
+					$reason=null;
+					if($case==='cleanup-parent')
+					{
+						$method=self::makeAccessible(new ReflectionMethod($service,'cleanupEmptyParent'));
+						$arguments=array($public,$key,$manifest,&$reason);
+					}
+					else
+					{
+						$current=erasedataCleanupCurrentIdentity($public);$expected=$current;
+						$expected['canonical']=$current['path'];
+						$method=self::makeAccessible(new ReflectionMethod($service,'cleanupCapturedFile'));
+						$arguments=array($public,$current,$expected,$key,$manifest,array(),
+							array('observations'=>array(),'by_identity'=>array()),&$reason);
+					}
+					$result=$method->invokeArgs($service,$arguments);
+				}
+				$this->assertTrue($result===true,$case.' confirms the just-renamed capture and completes');
+				$this->assertTrue(count($filesystem->lookups)>0,$case.' reaches at least one delayed rename');
+				foreach($filesystem->lookups as $name=>$lookups)
+					$this->assertTrue($lookups>=2,$case.' confirms the captured name after its negative lookup');
+				$this->assertSame(false,erasedataPathExists($public),$case.' consumes the original without a public recovery bridge');
+				$this->assertEquals(array('.','..'),scandir($dir.'/data'),$case.' leaves no private capture shell');
+			}
+			finally {$this->removeTree($dir);rXMLRPCRequest::$responses=array();}
+		}
+	}
+
+	public function testRenamedPathIdentityKeepsResolutionBoundToTheFirstPresentEntry()
+	{
+		$filesystem=new class extends ErasedataFilesystemOps {
+			public $entries=array();public $resolved=false;public $entryReads=0;public $pathReads=0;
+			public function entryIdentity($path){$this->entryReads++;return count($this->entries) ? array_shift($this->entries) : false;}
+			public function pathIdentity($path){$this->pathReads++;return $this->resolved;}
+		};
+		$entry=array('lstat'=>array('dev'=>1,'ino'=>2));
+		$resolved=array('exists'=>true,'path'=>'/capture','lstat'=>array('dev'=>1,'ino'=>2),'stat'=>array('dev'=>1,'ino'=>2));
+		$filesystem->entries=array(false,$entry);$filesystem->resolved=$resolved;
+		$this->assertSame($resolved,$filesystem->renamedPathIdentity('/capture'),'the late entry retains its existing resolved identity');
+		$this->assertSame(2,$filesystem->entryReads,'only the absent entry lookup is retried');
+		$this->assertSame(1,$filesystem->pathReads,'path resolution is not replayed');
+		foreach(array(false,array('exists'=>false),array_replace($resolved,array('lstat'=>array('dev'=>1,'ino'=>3)))) as $uncertain)
+		{
+			$filesystem->entries=array($entry);$filesystem->resolved=$uncertain;$filesystem->entryReads=0;$filesystem->pathReads=0;
+			$this->assertSame(false,$filesystem->renamedPathIdentity('/capture'),'missing, unresolved or replaced resolution cannot inherit the first entry');
+			$this->assertSame(1,$filesystem->entryReads,'a present entry is never asked again');
+			$this->assertSame(1,$filesystem->pathReads,'an uncertain resolution is refused at once');
+		}
+		$filesystem->entries=array();$filesystem->entryReads=0;$filesystem->pathReads=0;
+		$this->assertSame(false,$filesystem->renamedPathIdentity('/capture'),'a capture with no confirmed entry remains unresolved');
+		$this->assertSame(ERASEDATA_RENAME_SETTLE_ATTEMPTS,$filesystem->entryReads,'entry settling stays bounded');
+		$this->assertSame(0,$filesystem->pathReads,'no absent capture is reconstructed as a canonical missing name');
+	}
+
+	public function testDirectoryCaptureStillRetainsAForeignOrUnconfirmedNewName()
+	{
+		global $profileMask;$profileMask=0700;
+		foreach(array(false,true) as $force)
+			foreach(array('foreign','unconfirmed') as $case)
+			{
+				$dir=sys_get_temp_dir().'/ed-directory-refusal-'.bin2hex(random_bytes(6));
+				mkdir($dir,0700);mkdir($dir.'/queue',0700);mkdir($dir.'/data',0700);
+				$public=$dir.'/data/public';mkdir($public,0700);$expected=lstat($public);$key=$dir.'/queue/job';
+				$filesystem=new ErasedataSettlingRenameFixture('#/\.erasedata-rmdir-[^/]+/directory$#D',
+					$case==='foreign' ? 1 : PHP_INT_MAX,$case==='foreign');
+				try
+				{
+					$result=$force ? erasedataCompleteForcedDirectory($public,$key,$filesystem)
+						: erasedataCompleteNonForceDirectory($public,$key,$filesystem);
+					$label=($force ? 'force ' : 'non-force ').$case;
+					$this->assertSame(false,$result,$label.' retains unresolved capture authority');
+					$this->assertSame(1,count($filesystem->lookups),$label.' reaches exactly one capture');
+					foreach($filesystem->lookups as $name=>$lookups)
+					{
+						$this->assertSame($case==='foreign' ? 1 : ERASEDATA_RENAME_SETTLE_ATTEMPTS,$lookups,
+							$label.' compares the first present inode or stops at the absence bound');
+						$hidden=ErasedataSettlingRenameFixture::hiddenName($name);
+						$this->assertTrue(is_dir($hidden) && erasedataSameStatIdentity($expected,lstat($hidden)),
+							$label.' preserves the original captured directory');
+						if($case==='foreign')
+							$this->assertTrue(is_dir($name) && !erasedataSameStatIdentity($expected,lstat($name)),
+								$label.' also preserves the different directory at the new name');
+					}
+				}
+				finally {$this->removeTree($dir);}
+			}
 	}
 
 	// POST-1011-01: a completed record is published by a rename. On drvfs over

@@ -316,21 +316,29 @@ class XMLRPCProxy
 		);
 	}
 
+	private static $builtInPolicyReported = false;
+
 	/**
 	 * What a door logs for one decision while $XMLRPCProxyLog is on.
 	 * Refusals, and forwards that carry a warning, are always reported. A
 	 * routine forward is per-call tracing: at the shipped default it put one
 	 * line per ordinary read in the application log (2026-10-11), so it is
 	 * written only with $rpcLogCalls. The built-in fallback hint is attached
-	 * to the outer decision, not each member.
+	 * to the outer decision, not each member. Without an explicit parameter
+	 * policy, report the fallback once per PHP runtime context; FPM requests
+	 * do not share this flag, even when served by the same worker.
 	 */
 	public static function decisionLogLines($decision, $policy)
 	{
-		if(($decision['action'] === 'send') && empty($decision['notice']) && empty($policy['traceCalls']))
-			return array();
-		$lines = $decision['log'];
+		$lines = (($decision['action'] === 'send') && empty($decision['notice']) && empty($policy['traceCalls']))
+			? array() : $decision['log'];
 		if(count($lines) && !empty($policy['logSuffix']))
 			$lines[0] .= $policy['logSuffix'];
+		if(!empty($policy['logSuffix']) && !self::$builtInPolicyReported)
+		{
+			self::$builtInPolicyReported = true;
+			$lines[] = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
+		}
 		return $lines;
 	}
 
@@ -576,14 +584,6 @@ class XMLRPCProxy
 			in_array($name, array('system.client_version', 'system.api_version',
 				'system.library_version', 'system.hostname', 'system.pid',
 				'system.listMethods', 'view.list', 'directory.default'), true));
-	}
-
-	private static $log = true;
-
-	private static function log($msg)
-	{
-		if(self::$log)
-			FileUtil::toLog("xmlrpc-proxy: ".$msg);
 	}
 
 	private static $validTypes = array(
@@ -1334,18 +1334,18 @@ class XMLRPCProxy
 		switch($shape)
 		{
 			case 'hash':
-				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}$/', $val))
+				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}$/D', $val))
 					return null;
 				return '<param><value><string>' . strtoupper($val) . '</string></value></param>';
 
 			case 'file_target':
-				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}:f(?:0|[1-9][0-9]*)$/', $val))
+				if($param['type'] !== 'string' || !preg_match('/^[0-9a-fA-F]{40}:f(?:0|[1-9][0-9]*)$/D', $val))
 					return null;
 				return '<param><value><string>' . strtoupper(substr($val, 0, 40))
 					. substr($val, 40) . '</string></value></param>';
 
 			case 'ratio_view':
-				if($param['type'] !== 'string' || !preg_match('/^rat_(?:0|[1-9][0-9]{0,5})$/', $val))
+				if($param['type'] !== 'string' || !preg_match('/^rat_(?:0|[1-9][0-9]{0,5})$/D', $val))
 					return null;
 				return '<param><value><string>' . $val . '</string></value></param>';
 
@@ -1372,14 +1372,14 @@ class XMLRPCProxy
 			case 'int':
 				if($param['type'] !== 'int' && $param['type'] !== 'string')
 					return null;
-				if(!preg_match('/^(?:0|-?[1-9][0-9]{0,17})$/', $val))
+				if(!preg_match('/^(?:0|-?[1-9][0-9]{0,17})$/D', $val))
 					return null;
 				return '<param><value><i8>' . $val . '</i8></value></param>';
 
 			case 'size':
 				if($param['type'] !== 'int' && $param['type'] !== 'string')
 					return null;
-				if(!preg_match('/^[1-9][0-9]{0,17}$/', $val))
+				if(!preg_match('/^[1-9][0-9]{0,17}$/D', $val))
 					return null;
 				if(strlen($val) > 8 || (int)$val > self::$sizeLimitMax)
 					$size = self::$sizeLimitMax;
@@ -1418,12 +1418,11 @@ class XMLRPCProxy
 	 */
 	public static function process($rawData, $mode = 'sanitize', $enableLog = true, $safeParams = array(), $allowLocalPaths = false, $options = array())
 	{
-		self::$log = $enableLog;
-
 		$decision = self::decide($rawData, $mode, $safeParams, $allowLocalPaths, $options);
 
-		foreach($decision['log'] as $line)
-			self::log($line);
+		if($enableLog)
+			foreach(self::decisionLogLines($decision, array('traceCalls' => !empty($GLOBALS['rpcLogCalls']))) as $line)
+				FileUtil::toLog('xmlrpc-proxy: '.$line);
 
 		if($decision['action'] !== 'send')
 			return null;
@@ -1510,7 +1509,6 @@ class XMLRPCProxy
 			$capturedRead = self::capturedReadBatch($params[0]['value'], $version);
 			$membersXml = '';
 			$memberLogs = array();
-			$batchNotice = false;
 			$untrustedMethods = array();
 			$untrustedMethodsTruncated = false;
 			$batchTrusted = null;
@@ -1554,7 +1552,6 @@ class XMLRPCProxy
 					if(strpos($line, 'WARNING:') === 0)
 						$memberLogs = array_merge($memberLogs,
 							self::memberDecisionLogs($index, array($line)));
-				$batchNotice = $batchNotice || !empty($innerDecision['notice']);
 				// Fail closed if a future decision path changes the method or emits
 				// a member value that this scalar-only carrier cannot encode.
 				$checked = self::decodeCall($innerDecision['payload']);
@@ -1576,7 +1573,7 @@ class XMLRPCProxy
 					.($untrustedMethodsTruncated ? ', ...' : '').']');
 			$decision = self::forward($canonicalXml, $batchTrusted,
 				($batchTrusted ? 'trusted: ' : 'untrusted: ').'system.multicall ('
-				.count($params[0]['value']).' members)'.$methods, $batchNotice);
+				.count($params[0]['value']).' members)'.$methods, count($memberLogs) > 0);
 			$decision['log'] = array_merge($decision['log'], $memberLogs);
 			return $decision;
 		}

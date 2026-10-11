@@ -29,8 +29,8 @@ function testFindRepoRoot()
 // to be loaded here. It is required rather than restated: a stub copy of the
 // token/pattern pairs is exactly the drift this extraction removed, and
 // a test suite carrying its own copy could not see the production one change.
-// The file is a leaf with no dependencies of its own, so requiring it costs
-// the suites nothing.
+// Its dependencies are pure response and URL helpers; loading it does not
+// bootstrap application state or configuration.
 require_once(testFindRepoRoot() . '/plugins/rutracker_check/fetcherror.php');
 
 // Identity command mapper by default. A focused test may install the real
@@ -334,6 +334,7 @@ function fetchErrorParityCases()
         array('invalid-or-oversized-gzip', 'invalid-or-oversized-gzip'),
         array('gzip-decoder-unavailable', 'gzip-decoder-unavailable'),
         array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
+        array('request-deadline', 'request-deadline'),
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
         array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
@@ -360,7 +361,7 @@ function fetchErrorTokenVocabulary()
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'unclassified');
+        'unreadable-or-oversized-response', 'request-deadline', 'unclassified');
 }
 
 function strictInvoke($className, $method, $arguments = array())

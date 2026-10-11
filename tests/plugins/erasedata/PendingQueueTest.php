@@ -73,6 +73,7 @@ class PendingQueueTest extends TestCase
 			'php/xmlrpc_path.php' => 'php/xmlrpc_path.php',
 			// presence.php decides absence with this core leaf.
 			'php/utility/hashfault.php' => 'php/utility/hashfault.php',
+			'php/utility/permission.php' => 'php/utility/permission.php',
 		);
 		foreach ($copies as $relative => $name) {
 			$source = dirname(dirname(dirname(__DIR__))) . '/' . $relative;

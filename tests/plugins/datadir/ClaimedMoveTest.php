@@ -110,15 +110,10 @@ function dataDirClaimFixture()
     return $root;
 }
 
-function dataDirClaimClean($path)
+function dataDirClaimRename($source, $destination)
 {
-    if (!is_dir($path) || is_link($path)) {
-        @unlink($path);
-        return;
-    }
-    foreach (array_diff(scandir($path), array('.', '..')) as $name)
-        dataDirClaimClean($path . '/' . $name);
-    @rmdir($path);
+    if (file_exists($destination) || is_link($destination)) return false;
+    return rename($source, $destination);
 }
 
 function dataDirClaimJob($root, $daemon, $files, $move, $rename = null)
@@ -129,20 +124,14 @@ function dataDirClaimJob($root, $daemon, $files, $move, $rename = null)
             'add' => false, 'move' => $move, 'source' => $root . '/src',
             'destination' => $root . '/dst', 'files' => $files,
             'previous_directory' => $daemon->path),
-        array($daemon, 'rpc'), $rename !== null ? $rename : function ($source, $destination) {
-            if (file_exists($destination) || is_link($destination)) return false;
-            return rename($source, $destination);
-        }, array($daemon, 'presence'));
+        array($daemon, 'rpc'), $rename !== null ? $rename : 'dataDirClaimRename', array($daemon, 'presence'));
 }
 
 function dataDirClaimReload($root, $daemon, $rename = null)
 {
     $path = $root . '/jobs/' . str_repeat('A', 40) . '.json';
     return DataDirMoveJob::load($path, array($daemon, 'rpc'),
-        $rename !== null ? $rename : function ($source, $destination) {
-            if (file_exists($destination) || is_link($destination)) return false;
-            return rename($source, $destination);
-        }, array($daemon, 'presence'));
+        $rename !== null ? $rename : 'dataDirClaimRename', array($daemon, 'presence'));
 }
 
 // A job exactly as the version-2 writer published it before 2026-10: the
@@ -257,7 +246,7 @@ foreach (array('paused', 'late Stop') as $scene) {
             strictAssertTrue(strpos($pending[0][2]['message'], 'claim-retained') === false,
                 'the final notice does not describe a retired lease');
             strictAssertSame(2, count($writes), 'exactly one final refusal replaces the held outcome');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     });
 }
 
@@ -277,7 +266,7 @@ $suite->test('job receipt exists before daemon claim and user Stop before claim 
         strictAssertSame(false, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
             'acknowledged job retires');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -296,7 +285,7 @@ $suite->test('only a start the claim itself restored is reported for an outcome 
             strictAssertSame(false, $job->restoredStart(), 'nothing is restored before the run');
             strictAssertSame(true, $job->run(), 'the change completes: ' . $case[0]);
             strictAssertSame($case[5], $job->restoredStart(), 'restored start for ' . $case[0]);
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     }
 });
 
@@ -323,7 +312,7 @@ $suite->test('a payload move creates its destination directories at most 0755, n
                 $directory . ' is not group or other writable');
         }
         strictAssertSame('payload', file_get_contents($root . '/dst/new/sub/file'), 'the payload moved');
-    } finally { umask($umask); dataDirClaimClean($root); }
+    } finally { umask($umask); strictRemoveTree($root); }
 });
 
 $suite->test('a refused uncaptured claim retires the new job with a classified refusal', function () {
@@ -340,7 +329,7 @@ $suite->test('a refused uncaptured claim retires the new job with a classified r
             'a proven absent claim has no durable job left');
         strictAssertSame(1, $daemon->state, 'refusal preserves the original run state');
         strictAssertSame('/old', $daemon->path, 'refusal does not repoint the torrent');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('an erased torrent retires only a new job without a payload receipt', function () {
@@ -357,7 +346,7 @@ $suite->test('an erased torrent retires only a new job without a payload receipt
             'a missing torrent leaves no uncaptured job');
         strictAssertSame(false, in_array('d.stop_close_claim', $daemon->calls, true),
             'missing torrent is not claimed');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('an unexpected payload receipt keeps a new job held without taking a claim', function () {
@@ -374,7 +363,7 @@ $suite->test('an unexpected payload receipt keeps a new job held without taking 
         }
         strictAssertSame(true, is_file($path), 'unknown receipt cannot retire the owning job');
         strictAssertSame(array(), $daemon->calls, 'unknown receipt cannot admit a daemon claim');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('an unknown torrent presence holds the new job for recovery', function () {
@@ -391,7 +380,7 @@ $suite->test('an unknown torrent presence holds the new job for recovery', funct
         }
         strictAssertSame(true, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
             'unknown presence cannot retire a job');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('lost claim response reuses the original job and does not recapture state', function () {
@@ -411,7 +400,7 @@ $suite->test('lost claim response reuses the original job and does not recapture
         strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'same job resumes');
         strictAssertSame(1, $daemon->state, 'pre-claim active state is restored');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -438,7 +427,7 @@ $suite->test('two-file destination collision keeps both sources and the foreign 
         strictAssertSame(false, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
             'cancelled job is acknowledged');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -452,7 +441,7 @@ $suite->test('later user Stop cancels only active restore, not the moved path', 
         strictAssertSame($root . '/dst', $daemon->path, 'new directory retained');
         strictAssertSame(0, $daemon->state, 'later user Stop not undone');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -475,7 +464,7 @@ $suite->test('lost terminal reply resolves job-matched DONE then acknowledges', 
         strictAssertSame('absent', $daemon->phase, 'job acknowledged');
         strictAssertSame(false, file_exists($root . '/src/a'), 'source not republished');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -504,7 +493,7 @@ $suite->test('lost cancellation reply resumes cancel-pending without publishing 
         strictAssertSame('foreign', file_get_contents($root . '/dst/a'), 'foreign destination retained');
         strictAssertSame(1, $daemon->state, 'original state restored once');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -532,7 +521,7 @@ $suite->test('generation changed before claim restores the new torrent without m
         strictAssertSame(false, is_file($root . '/jobs/' . str_repeat('A', 40) . '.json'),
             'cancelled job retired');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -557,7 +546,7 @@ $suite->test('directory changed before claim cancels the lease before any payloa
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'old source unchanged');
         strictAssertSame(false, file_exists($root . '/dst/a'), 'destination unchanged');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -579,7 +568,7 @@ $suite->test('lost directory setter reply resumes metadata-only job on its own t
             'job resumes without treating its own setter as a foreign path');
         strictAssertSame(1, $daemon->state, 'daemon prestate restored');
     } finally {
-        dataDirClaimClean($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -603,7 +592,7 @@ $suite->test('a refused rename with unchanged payload cancels the claim and reti
             strictAssertSame('A', file_get_contents($root . '/src/a'), 'payload remains at source');
             strictAssertSame(array(), array_values(array_diff(scandir($root . '/jobs'), array('.', '..'))),
                 'job, receipt and witness are retired after proven cancellation');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     }
 });
 
@@ -630,7 +619,7 @@ $suite->test('an old claimed ready job self-heals after the same refused rename'
         strictAssertSame(1, $daemon->state, 'old active state is restored');
         strictAssertSame(false, file_exists($path), 'old job is no longer an indefinite recovery hold');
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'old payload remains unchanged');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('a partial move retains its recovery receipt and later finishes the remaining payload', function () {
@@ -652,7 +641,7 @@ $suite->test('a partial move retains its recovery receipt and later finishes the
         strictAssertSame(true, dataDirClaimReload($root, $daemon)->run(), 'later recovery finishes safely');
         strictAssertSame('B', file_get_contents($root . '/dst/b'), 'remaining file is published once');
         strictAssertSame('absent', $daemon->phase, 'completed recovery acknowledges the claim');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('a later user Stop remains stopped when a refused unmoved job is cancelled', function () {
@@ -669,7 +658,7 @@ $suite->test('a later user Stop remains stopped when a refused unmoved job is ca
         }
         strictAssertSame(0, $daemon->state, 'later user Stop is never undone');
         strictAssertSame('absent', $daemon->phase, 'cancelled claim is acknowledged');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('lost cancellation reply after rename refusal preserves its reason and replays cancellation', function () {
@@ -691,7 +680,7 @@ $suite->test('lost cancellation reply after rename refusal preserves its reason 
         }
         strictAssertSame('absent', $daemon->phase, 'claim is safely retired after confirmation');
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'payload never moved');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('a claimed ready job with a changed generation stays held without restoring an unrelated torrent', function () {
@@ -717,7 +706,7 @@ $suite->test('a claimed ready job with a changed generation stays held without r
         strictAssertSame('active', $daemon->phase, 'stale receipt is never applied to a new generation');
         strictAssertSame(true, is_file($path . '.move'), 'stale receipt evidence remains available');
         strictAssertSame('A', file_get_contents($root . '/src/a'), 'stale payload remains untouched');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('unmoved cancellation resumes across its durable phase and witness cleanup cuts', function () {
@@ -765,7 +754,7 @@ $suite->test('unmoved cancellation resumes across its durable phase and witness 
             strictAssertSame('B', file_get_contents($root . '/src/b'), 'second source remains intact');
             strictAssertSame(array(), array_values(array_diff(scandir($root . '/jobs'), array('.', '..'))),
                 'every cancellation receipt is retired');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     }
 });
 
@@ -802,7 +791,7 @@ $suite->test('durable cancellation refuses an unexpected witness entry and can r
             strictAssertSame('interrupted-cancellation', $e->getMessage(), 'recovery reports the old cancellation after repair');
         }
         strictAssertSame('absent', $daemon->phase, 'repaired cancellation is acknowledged');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 // AUD-ESC-08: a version-2 job written before the parser handed out the
@@ -833,7 +822,7 @@ $suite->test('a version-2 job with an escaped previous directory is refused as a
             strictAssertSame('/old "x"', $daemon->path, 'the torrent is not repointed');
             strictAssertSame('A', file_get_contents($root . '/src/a'), 'the payload stays at its source');
             strictAssertSame(array(), dataDirClaimTree($root . '/dst'), 'nothing is created at the destination');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     }
 });
 
@@ -883,7 +872,7 @@ function dataDirClaimEscapedNeighbourCase($shape)
         strictAssertSame('/old', $daemon->path, 'the torrent is not repointed: ' . $shape);
         strictAssertSame(false, file_exists($path) || file_exists($path . '.move'),
             'the job retires without a receipt: ' . $shape);
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 }
 
 $suite->test('a new version-2 move job whose source directory names an escaped neighbour leaves the neighbour in place', function () {
@@ -918,7 +907,7 @@ $suite->test('a claimed version-2 job with an escaped file list is cancelled bef
             'the state the old claim captured is restored');
         strictAssertSame('absent', $daemon->phase, 'the old claim is acknowledged');
         strictAssertSame(false, file_exists($path) || file_exists($path . '.move'), 'the job retires');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 // R5-REV-01: an old worker that took the claim of a version-2 job with an
@@ -989,7 +978,7 @@ foreach (array('preparing', 'ready') as $receiptPhase) {
             strictAssertSame('/old', $daemon->path, 'the torrent is not repointed');
             strictAssertSame(false, file_exists($path) || file_exists($path . '.move'),
                 'the job and its receipt retire');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     });
 }
 
@@ -1032,7 +1021,7 @@ $suite->test('a claimed version-2 job with an escaped file list whose move had s
         strictAssertSame($receipt, file_get_contents($path . '.move'), 'and so is its receipt');
         strictAssertSame(array('real x', 'real z'), array(file_get_contents($root . '/src/x"y.bin'),
             file_get_contents($root . '/src/z"y.bin')), 'the download\'s own files stay');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 // Past the physical move the job only publishes the request's own directory
@@ -1055,7 +1044,7 @@ foreach (array('claimed', 'setter-pending') as $jobPhase) {
             strictAssertSame(array('x\"y.bin'), dataDirClaimTree($root . '/dst'), 'the witness is cleaned');
             strictAssertSame(false, file_exists($path) || file_exists($path . '.move'),
                 'the job and its receipt retire');
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     });
 }
 
@@ -1079,7 +1068,7 @@ $suite->test('a version-2 job without a backslash still runs exactly as before',
         strictAssertSame(1, $daemon->state, 'the restored start is kept');
         strictAssertSame('absent', $daemon->phase, 'the claim is acknowledged');
         strictAssertSame(false, file_exists($path), 'the job retires');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 $suite->test('a new job keeps raw backslash names as version 3 and moves exactly those files', function () {
@@ -1111,7 +1100,7 @@ $suite->test('a new job keeps raw backslash names as version 3 and moves exactly
         strictAssertSame('neighbour', file_get_contents($root . '/a"b/c\\d.bin'), 'with its bytes');
         strictAssertSame(3, $saved['version'], 'a new job records that its strings are the daemon\'s own bytes');
         strictAssertSame(array('c\\\\d.bin'), $saved['files'], 'the file list is stored unchanged');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 // R5-REV-06: a release that reads only version 2 holds a version-3 job as
@@ -1147,7 +1136,7 @@ $suite->test('a new job needs version 3 when a daemon string holds a quote or ba
                 strictAssertSame($fields[$key], $saved[$key], $key . ' is stored unchanged for ' . $label);
             strictAssertSame('new', dataDirClaimReload($root, $daemon)->phase(), 'the job loads for ' . $label);
             strictAssertSame(array(), $daemon->calls, 'writing never reaches the daemon for ' . $label);
-        } finally { dataDirClaimClean($root); }
+        } finally { strictRemoveTree($root); }
     }
 });
 
@@ -1177,7 +1166,7 @@ $suite->test('only an exact version 2 or 3 job loads', function () {
             strictAssertSame('job-corrupt', $result, 'version ' . $label . ' is refused');
         }
         strictAssertSame(array(), $daemon->calls, 'loading never reaches the daemon');
-    } finally { dataDirClaimClean($root); }
+    } finally { strictRemoveTree($root); }
 });
 
 // POST-1011-01: on drvfs over 9p (cache=0x5) lstat of a new name answered
@@ -1232,7 +1221,7 @@ foreach (array('confirmed late' => 3, 'never answers' => ERASEDATA_RENAME_SETTLE
             strictAssertSame(true, dataDirClaimReload($root, $daemon, $move)->run(), 'recovery finishes the job');
             strictAssertSame(2, $moves, 'recovery renames nothing again');
             strictAssertSame(array('a', 'b'), dataDirClaimTree($root . '/dst'), 'both files at the destination');
-        } finally { dataDirSettleInstall(null); dataDirClaimClean($root); }
+        } finally { dataDirSettleInstall(null); strictRemoveTree($root); }
     });
 
 exit($suite->run());

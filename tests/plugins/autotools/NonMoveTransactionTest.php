@@ -2,23 +2,11 @@
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
 eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
 class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; } }
-class rAutoTools {
-    public static $sent = array();
-    public static function completionMailFile($destination, $finishedRoot) {
-        $path = rtrim($destination, '/');
-        while ($path !== '' && $path !== rtrim($finishedRoot, '/')) {
-            if (is_file($path . '/.mailto')) return $path . '/.mailto';
-            $parent = dirname($path);
-            if ($parent === $path) break;
-            $path = $parent;
-        }
-        return null;
-    }
-    public static function notifyCompletedFileTransfer($destination, $finishedRoot, $torrentName) {
-        self::$sent[] = array($destination, $finishedRoot, $torrentName);
-        return true;
-    }
-}
+// Use the production mail-file selection policy and spy only on delivery.
+eval('class rAutoTools { public static $sent = array(); public static '
+    . loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/autotools.php', 'completionMailFile')
+    . ' public static function notifyCompletedFileTransfer($destination, $finishedRoot, $torrentName) {'
+    . ' self::$sent[] = array($destination, $finishedRoot, $torrentName); return true; } }');
 // The payload trust rule the transaction shares with datadir and Move.
 require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
 require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
@@ -104,11 +92,6 @@ class CrashNonMove extends AutoToolsFileTransaction {
         if (self::$cut === $name) exec('kill -9 ' . getmypid());
     }
 }
-function txRemove($path) {
-    if (!is_dir($path) || is_link($path)) return @lstat($path) === false || @unlink($path);
-    foreach (scandir($path) as $name) if ($name !== '.' && $name !== '..') txRemove($path . '/' . $name);
-    return @rmdir($path);
-}
 function txFixture() {
     $base = getenv('TMPDIR') ?: sys_get_temp_dir();
     $root = $base . '/nonmove-' . bin2hex(random_bytes(5));
@@ -178,12 +161,12 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
     $suite->test($mode . ' preflights later blocker', function () use ($mode) {
         $root = txFixture();
         try {
-            txRemove($root . '/dst/item/b');
+            strictRemoveTree($root . '/dst/item/b');
             file_put_contents($root . '/dst/item/b', 'foreign');
             strictAssertSame(false, @rtOpFiles(array('a/f','b/f'), $root . '/src', $root . '/dst/item', $mode), 'blocked');
             strictAssertSame(false, @lstat($root . '/dst/item/a/f'), 'earlier file absent');
             strictAssertSame('foreign', file_get_contents($root . '/dst/item/b'), 'blocker preserved');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' merges occupied destination', function () use ($mode) {
         $root = txFixture();
@@ -197,7 +180,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame('foreign', file_get_contents($root . '/dst/item/keep'), 'unrelated');
             if ($mode === 'HardLink') strictAssertSame(fileinode($root . '/src/a/f'), fileinode($root . '/dst/item/a/f'), 'inode');
             if ($mode === 'SoftLink') strictAssertSame(true, is_link($root . '/dst/item/a/f'), 'symlink');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' leaves an actor-deleted old name absent', function () use ($mode) {
         $root = txFixture();
@@ -209,7 +192,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame(false, @lstat($dest), 'does not resurrect old name');
             strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'recovery holds');
             strictAssertSame(false, @lstat($dest), 'still absent');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' retains both foreign occupants when restore name is occupied', function () use ($mode) {
         $root = txFixture();
@@ -223,7 +206,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame(1, count($removed), 'moved foreign inode retained');
             strictAssertSame('foreign-moved', file_get_contents($removed[0]), 'moved foreign content preserved');
             strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'recovery holds');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' restores old symlink on later collision', function () use ($mode) {
         $root = txFixture();
@@ -234,7 +217,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame(false, RaceNonMove::run(array('a/f','b/f'), $root . '/src', $root . '/dst/item', $mode), 'collision refuses');
             strictAssertSame(true, is_link($root . '/dst/item/a/f'), 'old link restored');
             strictAssertSame('missing-old-target', readlink($root . '/dst/item/a/f'), 'link target preserved');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' restores a raced foreign file after a backup identity mismatch', function () use ($mode) {
         $root = txFixture();
@@ -246,7 +229,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame('foreign-new', file_get_contents($root . '/dst/item/a/f'), 'foreign file restored');
             strictAssertSame('old-alpha', file_get_contents($root . '/dst/item/a/f.other-backup'), 'original old file held by actor');
             strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'ambiguous record remains visible');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' crash during raced backup restores foreign file on recovery', function () use ($mode) {
         $root = txFixture();
@@ -256,7 +239,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'collision remains held');
             strictAssertSame('foreign-new', file_get_contents($root . '/dst/item/a/f'), 'foreign file restored');
             strictAssertSame('old-alpha', file_get_contents($root . '/dst/item/a/f.other-backup'), 'old file preserved');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $suite->test($mode . ' preserves a foreign later collision and rolls back earlier publication', function () use ($mode) {
         $root = txFixture();
@@ -269,7 +252,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame('foreign-new', file_get_contents($root . '/dst/item/b/f'), 'foreign file preserved');
             strictAssertSame('old-beta', file_get_contents($root . '/dst/item/b/f.other-backup'), 'old later file retained');
             strictAssertSame(false, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'pending ambiguous collision visible');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
     $unclaimedCuts = array('after-journal', 'after-stage-0', 'after-stage-1',
         'after-stage-file-0', 'after-stage-file-1', 'after-witness-0', 'after-witness-1');
@@ -293,7 +276,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
                     strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'first');
                     strictAssertSame('new-beta', file_get_contents($root . '/dst/item/b/f'), 'second');
                 }
-            } finally { txRemove($root); }
+            } finally { strictRemoveTree($root); }
         });
     }
     $suite->test($mode . ' does not claim a foreign destination after pre-claim crash', function () use ($mode) {
@@ -308,7 +291,7 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode) {
             strictAssertSame('foreign-after-crash', file_get_contents($root . '/dst/item/a/f'), 'foreign occupant preserved');
             strictAssertSame('old-alpha', file_get_contents($root . '/dst/item/a/actor-backup'), 'old occupant preserved');
             strictAssertSame(1, count(FileUtil::$messages), 'visible hold');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
 }
 $suite->test('normal preclaim refusal retires its journal so a changed operation can retry', function () {
@@ -328,7 +311,7 @@ $suite->test('normal preclaim refusal retires its journal so a changed operation
         file_put_contents($source, 'new-alpha');
         strictAssertSame(true, AutoToolsFileTransaction::run(array('a/f'), $root . '/src', $root . '/dst/item', 'Copy'), 'retry with Copy succeeds');
         strictAssertSame('new-alpha', file_get_contents($dest), 'retry published');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy refuses a source rewritten during staging even with unchanged size and mtime', function () {
     $root = txFixture();
@@ -343,7 +326,7 @@ $suite->test('Copy refuses a source rewritten during staging even with unchanged
         strictAssertSame(1, count(FileUtil::$messages), 'one visible refusal');
         strictAssertSame(true, strpos(FileUtil::$messages[0], 'source changed or unreadable during Copy') !== false,
             'classified source reason');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy refuses a replaced source inode even when contents match', function () {
     $root = txFixture();
@@ -356,7 +339,7 @@ $suite->test('Copy refuses a replaced source inode even when contents match', fu
         strictAssertSame('old-alpha', file_get_contents($dest), 'old destination preserved');
         strictAssertSame('new-alpha', file_get_contents($source), 'new source bytes equal');
         strictAssertSame('new-alpha', file_get_contents($source . '.original'), 'original inode retained by actor');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy refuses an earlier source rewritten while later files are staged', function () {
     $root = txFixture();
@@ -368,14 +351,14 @@ $suite->test('Copy refuses an earlier source rewritten while later files are sta
         strictAssertSame('old-alpha', file_get_contents($root . '/dst/item/a/f'), 'old destination preserved');
         strictAssertSame(false, file_exists($root . '/dst/item/b/f'), 'second destination absent');
         strictAssertSame(1, count(FileUtil::$messages), 'one visible refusal');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('SoftLink can preserve a dangling source link', function () {
     $root = txFixture();
     try {
         strictAssertSame(true, rtOpFiles(array('a/missing'), $root . '/src', $root . '/dst/item', 'SoftLink'), 'link');
         strictAssertSame(true, is_link($root . '/dst/item/a/missing'), 'dangling link');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy accepts a configured symlink to a protected destination', function () {
     $root = txFixture();
@@ -383,7 +366,7 @@ $suite->test('Copy accepts a configured symlink to a protected destination', fun
         symlink($root . '/dst/item', $root . '/dst/shortcut');
         strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/shortcut', 'Copy'), 'safe target');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'canonical destination');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy accepts a protected symlink in a configured destination ancestor', function () {
     $root = txFixture();
@@ -391,21 +374,23 @@ $suite->test('Copy accepts a protected symlink in a configured destination ances
         symlink($root . '/dst', $root . '/alias');
         strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src', $root . '/alias/item', 'Copy'), 'safe ancestor');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'canonical destination');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('empty file list stays a no-op', function () {
     $root = txFixture();
     try { strictAssertSame(true, rtOpFiles(array(), $root . '/src', $root . '/dst/item', 'Copy'), 'no-op'); }
-    finally { txRemove($root); }
+    finally { strictRemoveTree($root); }
 });
 $suite->test('unsafe destination refuses before a public file is written', function () {
     $root = txFixture();
     try {
+        FileUtil::$messages = array();
         chmod($root . '/dst/item', 0777);
         strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item', 'Copy'), 'refusal');
         strictAssertSame(false, @lstat($root . '/dst/item/a/f'), 'no public file');
-        strictAssertSame(true, count(FileUtil::$messages) > 0, 'visible refusal');
-    } finally { txRemove($root); }
+        strictAssertSame(array('autotools: nonmove new refused: untrusted-directory path='
+            . erasedataLogPath($root . '/dst/item')), FileUtil::$messages, 'this refusal names its exact unsafe path');
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('corrupt journal yields a visible hold', function () {
     $root = txFixture();
@@ -417,7 +402,7 @@ $suite->test('corrupt journal yields a visible hold', function () {
         strictAssertSame(false, AutoToolsFileTransaction::recoverAll($journal), 'hold');
         strictAssertSame(true, count(FileUtil::$messages) > 0, 'visible hold');
         strictAssertSame(true, file_exists($journal . '/abcdefabcdefabcdefabcdef.nonmove.json'), 'preserved record');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('malformed journal indexes hold without evaluating a partial job', function () {
     $root = txFixture();
@@ -434,7 +419,7 @@ $suite->test('malformed journal indexes hold without evaluating a partial job', 
         strictAssertSame(false, AutoToolsFileTransaction::recoverAll($journal), 'malformed record held');
         strictAssertSame(1, count(FileUtil::$messages), 'one classified log');
         strictAssertSame(false, @lstat($root . '/dst/item/a/f'), 'no public mutation');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('corrupt associative journal key cannot traverse stage into unrelated file', function () {
     $root = txFixture();
@@ -453,7 +438,7 @@ $suite->test('corrupt associative journal key cannot traverse stage into unrelat
         strictAssertSame(false, AutoToolsFileTransaction::recoverAll($journal), 'corrupt key held');
         strictAssertSame('unrelated-original', file_get_contents($root . '/dst/item/keep'), 'unrelated file preserved');
         strictAssertSame(1, count(FileUtil::$messages), 'visible hold');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('invalid relative path refusal is logged', function () {
     $root = txFixture();
@@ -461,7 +446,7 @@ $suite->test('invalid relative path refusal is logged', function () {
         FileUtil::$messages = array();
         strictAssertSame(false, rtOpFiles(array('../escape'), $root . '/src', $root . '/dst/item', 'Copy'), 'invalid');
         strictAssertSame(1, count(FileUtil::$messages), 'classified log');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('unreadable journal directory is a visible recovery refusal', function () {
     $root = txFixture();
@@ -477,7 +462,7 @@ $suite->test('unreadable journal directory is a visible recovery refusal', funct
             'classified unreadable scan reason');
     } finally {
         chmod($journal, 0700);
-        txRemove($root);
+        strictRemoveTree($root);
     }
 });
 $suite->test('held destination does not block an unrelated destination', function () {
@@ -497,7 +482,7 @@ $suite->test('held destination does not block an unrelated destination', functio
         strictAssertSame('new-alpha', file_get_contents($root . '/other/a/f'), 'unrelated payload');
         strictAssertSame(false, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item', 'Copy'), 'same destination held');
         strictAssertSame(false, @lstat($root . '/dst/item/a/f'), 'held destination unchanged');
-    } finally { txRemove($root); }
+    } finally { strictRemoveTree($root); }
 });
 $suite->test('Copy preserves umask', function () {
     $root = txFixture(); $saved = umask(0077);
@@ -506,7 +491,7 @@ $suite->test('Copy preserves umask', function () {
         strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src', $root . '/dst/item', 'Copy'), 'copy');
         clearstatcache(true, $root . '/dst/item/a/f');
         strictAssertSame(0600, fileperms($root . '/dst/item/a/f') & 0777, 'effective umask');
-    } finally { umask($saved); txRemove($root); }
+    } finally { umask($saved); strictRemoveTree($root); }
 });
 function txCallerContext($root) {
     return array('hash' => str_repeat('A', 40),
@@ -551,13 +536,13 @@ foreach (array('HardLink', 'Copy') as $nextMode) {
                     'HardLink keeps source inode');
             strictAssertSame(2, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
                 'both caller receipts remain available for recovery');
-        } finally { rXMLRPCRequest::reset(); txRemove($root); }
+        } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
     });
 }
 $suite->test('pending Copy receipt permits a new nested destination parent', function () {
     $root = txFixture();
     try {
-        txRemove($root . '/dst/item/b');
+        strictRemoveTree($root . '/dst/item/b');
         $first = txCallerContext($root);
         $second = $first;
         $second['hash'] = str_repeat('C', 40);
@@ -569,12 +554,12 @@ $suite->test('pending Copy receipt permits a new nested destination parent', fun
             'Copy', false, $second), 'new disjoint parent is created before physical overlap check');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'first file');
         strictAssertSame('new-beta', file_get_contents($root . '/dst/item/b/f'), 'nested second file');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('pending Copy receipt sees a protected destination symlink alias', function () {
     $root = txFixture();
     try {
-        txRemove($root . '/dst/item/b');
+        strictRemoveTree($root . '/dst/item/b');
         symlink($root . '/dst/item/a', $root . '/dst/item/b');
         $first = txCallerContext($root);
         $second = $first;
@@ -590,7 +575,7 @@ $suite->test('pending Copy receipt sees a protected destination symlink alias', 
             'first published byte remains intact');
         strictAssertSame(2, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'alias creates a durable deferred receipt');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('pending Copy receipt permits replacing a separate hardlink name', function () {
     $root = txFixture();
@@ -609,7 +594,7 @@ $suite->test('pending Copy receipt permits replacing a separate hardlink name', 
         strictAssertSame('new-beta', file_get_contents($root . '/dst/item/b/f'), 'second name updated');
         strictAssertSame(2, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'both jobs retain their independent receipts');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('normal NonMove repeat sends one completion notice after durable ACK', function () {
     $root = txFixture();
@@ -639,7 +624,7 @@ $suite->test('normal NonMove repeat sends one completion notice after durable AC
         strictAssertSame(1, count(rAutoTools::$sent), 'retired repeat does not send again');
         strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'),
             'repeat does not make a new journal');
-    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('same-final one-shot hook persists a deferred second job until predecessor ACK', function () {
     $root = txFixture();
@@ -688,7 +673,7 @@ $suite->test('same-final one-shot hook persists a deferred second job until pred
             'deferred second payload becomes public after predecessor ACK');
         strictAssertSame(fileinode($root . '/src2/a/f'), fileinode($root . '/dst/item/a/f'),
             'deferred HardLink keeps source inode');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('crash after notice attempt never resends an uncertain mail', function () {
     $root = txFixture();
@@ -721,7 +706,7 @@ $suite->test('crash after notice attempt never resends an uncertain mail', funct
         strictAssertSame(array(), rAutoTools::$sent, 'recovery never resends uncertain mail');
         strictAssertSame(true, strpos(implode('\n', FileUtil::$messages), 'outcome uncertain') !== false,
             'hold explains ambiguous mail outcome');
-    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('ambiguous notice keeps a later same-final hook durably queued', function () {
     $root = txFixture();
@@ -762,7 +747,7 @@ $suite->test('ambiguous notice keeps a later same-final hook durably queued', fu
         strictAssertSame(array(), rAutoTools::$sent, 'no uncertain notice is resent');
         strictAssertSame(2, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'repeat did not add a third receipt');
-    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('deferred same-final job sends one notice after its own ACK', function () {
     $root = txFixture();
@@ -805,7 +790,7 @@ $suite->test('deferred same-final job sends one notice after its own ACK', funct
         strictAssertSame(true, rtOpFiles(array('a/f'), $root . '/src2', $root . '/dst/item',
             'HardLink', false, $second), 'repeat after retirement is idempotent');
         strictAssertSame(1, count(rAutoTools::$sent), 'repeat does not resend notice');
-    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rAutoTools::$sent = array(); rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('queued successor with a lost persisted marker holds before publication', function () {
     $root = txFixture();
@@ -840,7 +825,7 @@ $suite->test('queued successor with a lost persisted marker holds before publica
             'B receipt remains for visible recovery');
         strictAssertSame(true, strpos(implode('\n', FileUtil::$messages),
             'queued torrent generation or source changed') !== false, 'marker hold logged');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('three same-final one-shot hooks form a durable ordered chain', function () {
     $root = txFixture();
@@ -877,7 +862,7 @@ $suite->test('three same-final one-shot hooks form a durable ordered chain', fun
             'third waits for second, not the already superseded first');
         strictAssertSame($ids[$second['hash']]['new'][0], $ids[$third['hash']]['old'][0],
             'third holds a witness to the second staged output');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('repeated queued hook keeps one receipt for its generation', function () {
     $root = txFixture();
@@ -903,7 +888,7 @@ $suite->test('repeated queued hook keeps one receipt for its generation', functi
             'one receipt per generation, not a duplicate chain node');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'),
             'repeat hook does not publish before predecessor ACK');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('queued HardLink holds when source path is replaced before predecessor ACK', function () {
     $root = txFixture();
@@ -938,7 +923,7 @@ $suite->test('queued HardLink holds when source path is replaced before predeces
             'queued successor receipt remains inspectable');
         strictAssertSame(true, strpos(implode('\n', FileUtil::$messages),
             'queued HardLink source changed') !== false, 'classified hold is visible');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('pending Copy receipt visibly refuses a different job for the same file', function () {
     $root = txFixture();
@@ -957,7 +942,7 @@ $suite->test('pending Copy receipt visibly refuses a different job for the same 
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'original byte preserved');
         strictAssertSame(true, strpos(implode('\n', FileUtil::$messages), $second['hash']) !== false,
             'refused torrent hash appears in classified log');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('successful daemon save with stale session sidecar keeps the NonMove receipt', function () {
     $root = txFixture();
@@ -978,7 +963,7 @@ $suite->test('successful daemon save with stale session sidecar keeps the NonMov
         strictAssertSame(1, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'journal remains available after daemon restart');
         strictAssertSame(true, count(FileUtil::$messages) > 0, 'refusal is visible');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('matching sidecar x-dest from another generation keeps the NonMove receipt', function () {
     $root = txFixture();
@@ -998,7 +983,7 @@ $suite->test('matching sidecar x-dest from another generation keeps the NonMove 
             'different persisted token cannot acknowledge our journal');
         strictAssertSame(1, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
             'original generation receipt remains');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('NonMove keeps caller receipt until x-dest is durably acknowledged', function () {
     $root = txFixture();
@@ -1023,17 +1008,27 @@ $suite->test('NonMove keeps caller receipt until x-dest is durably acknowledged'
             'journal cleared after durable daemon acknowledgement');
         $branches = rXMLRPCRequest::requestsFor('branch');
         strictAssertSame(2, count($branches), 'atomic set and final ownership readback');
-        $condition = $branches[0]['commands'][0]->params[1];
-        strictAssertSame(true, strpos($condition, $context['token']) !== false, 'token guard');
-        strictAssertSame(true, strpos($condition, 'x-autotools-nonmove-source') !== false,
-            'source path compared inside atomic branch');
-        strictAssertSame(true, strpos($branches[0]['commands'][0]->params[2], 'x-dest') !== false,
-            'x-dest setter is in daemon branch');
+        $q = array('rTorrent', 'quoteCommandArg');
+        $guards = array(
+            'equal=d.get_custom=x-autotools-nonmove-job,cat=' . $context['token'],
+            'equal=d.get_base_path=,d.get_custom=x-autotools-nonmove-source',
+        );
+        foreach (array(0 => 'cat=', 1 => 'd.get_custom=x-autotools-nonmove-target') as $index => $expected) {
+            $condition = 'and=' . implode(',', array_map($q, array_merge($guards,
+                array('equal=d.get_custom=x-dest,' . $expected))));
+            $body = $index === 0 ? 'cat=' . call_user_func($q,
+                '$d.set_custom=x-dest,$d.get_custom=x-autotools-nonmove-target') . ',AUTOTOOLS_XDEST_SET'
+                : 'cat=AUTOTOOLS_XDEST_ALREADY';
+            strictAssertSame(array($context['hash'], $condition, $body, 'cat=AUTOTOOLS_XDEST_SKIP'),
+                $branches[$index]['commands'][0]->params, 'exact atomic set or ownership-readback branch ' . $index);
+        }
         $stages = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
         strictAssertSame(1, count($stages), 'one paired path staging request');
-        strictAssertSame($context['sourceBase'], $stages[0]['commands'][0]->params[2], 'exact source staged');
-        strictAssertSame($context['destination'], $stages[0]['commands'][1]->params[2], 'exact target staged');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+        strictAssertSame(array($context['hash'], 'x-autotools-nonmove-source', $context['sourceBase']),
+            $stages[0]['commands'][0]->params, 'exact source staging target, key and bytes');
+        strictAssertSame(array($context['hash'], 'x-autotools-nonmove-target', $context['destination']),
+            $stages[0]['commands'][1]->params, 'exact destination staging target, key and bytes');
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('Copy creates nested destination without a group-writable transaction ancestor', function () {
     $root = txFixture(); $saved = umask(0002);
@@ -1045,7 +1040,7 @@ $suite->test('Copy creates nested destination without a group-writable transacti
         strictAssertSame(0755, fileperms($destination . '/a') & 0777,
             'new transaction parent is safe from different-UID group rename');
         strictAssertSame('new-alpha', file_get_contents($destination . '/a/f'), 'payload published');
-    } finally { umask($saved); txRemove($root); }
+    } finally { umask($saved); strictRemoveTree($root); }
 });
 $suite->test('x-dest replay stages a configured path with comma and quote as exact XMLRPC data', function () {
     $root = txFixture();
@@ -1071,7 +1066,7 @@ $suite->test('x-dest replay stages a configured path with comma and quote as exa
         foreach (rXMLRPCRequest::requestsFor('branch') as $branch)
             strictAssertSame(false, strpos($branch['commands'][0]->params[1], $context['destination']),
                 'punctuation path is not embedded in rTorrent DSL');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('repeat finished hook for the same receipt does not create a second job', function () {
     $root = txFixture();
@@ -1087,7 +1082,7 @@ $suite->test('repeat finished hook for the same receipt does not create a second
             'one durable receipt');
         strictAssertSame(array(), rXMLRPCRequest::$requests, 'no synchronous daemon RPC inside hook');
         strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/f'), 'same payload');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('NonMove holds a conflicting daemon generation without changing x-dest', function () {
     $root = txFixture();
@@ -1107,7 +1102,7 @@ $suite->test('NonMove holds a conflicting daemon generation without changing x-d
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.save_full_session')),
             'no foreign daemon session save');
         strictAssertSame(true, count(FileUtil::$messages) > 0, 'visible hold');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('NonMove replays physical publication and x-dest after worker crash', function () {
     $root = txFixture();
@@ -1132,7 +1127,7 @@ $suite->test('NonMove replays physical publication and x-dest after worker crash
         strictAssertSame('new-beta', file_get_contents($root . '/dst/item/b/f'), 'second name now published');
         strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'),
             'journal cleaned only after x-dest proof');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 $suite->test('NonMove recognises x-dest already captured by the normal hook', function () {
     $root = txFixture();
@@ -1152,7 +1147,7 @@ $suite->test('NonMove recognises x-dest already captured by the normal hook', fu
             'normal hook value is durable');
         strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'),
             'receipt cleaned');
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 // rTorrent 0.16 publishes the .torrent.rtorrent sidecar from its session thread
 // after d.save_full_session has answered. A child process stands for that
@@ -1202,7 +1197,7 @@ $suite->test('NonMove confirms an x-dest sidecar the daemon publishes after the 
     } finally {
         if (is_resource($publisher)) proc_close($publisher);
         rXMLRPCRequest::reset();
-        txRemove($root);
+        strictRemoveTree($root);
     }
 });
 $suite->test('NonMove still holds an x-dest sidecar that never appears, after the bounded wait', function () {
@@ -1227,7 +1222,7 @@ $suite->test('NonMove still holds an x-dest sidecar that never appears, after th
         strictAssertSame(1, count(array_filter(FileUtil::$messages, function ($line) {
             return strpos($line, 'held: x-dest session sidecar not persisted') !== false;
         })), 'the hold is visible once: ' . json_encode(FileUtil::$messages));
-    } finally { rXMLRPCRequest::reset(); txRemove($root); }
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
 });
 // R4-FS-01: the synchronous finished hook runs inside rTorrent's main thread,
 // and the other owners of the journal lock wait for the daemon while they
@@ -1256,7 +1251,7 @@ $suite->test('a job whose journal lock another owner holds answers null at once'
     } finally {
         if (is_resource($holder)) { fclose($pipes[1]); proc_close($holder); }
         rXMLRPCRequest::reset();
-        txRemove($root);
+        strictRemoveTree($root);
     }
 });
 
@@ -1269,7 +1264,7 @@ $suite->test('FIN-CP-01 unwritable journal intent remains visible after existing
         strictAssertSame('journal-write-failed',AutoToolsFileTransaction::lastRefusal()['reason'],'hook can notify');
         strictAssertSame(false,file_exists($root.'/dst/item/a/f'),'no publish');
         chmod($journal,0700);
-    }finally{txRemove($root);}
+    }finally{strictRemoveTree($root);}
 });
 $suite->test('FIN-CP-04 failed staging removes only new empty destination directories',function(){
     $root=txFixture();
@@ -1277,17 +1272,17 @@ $suite->test('FIN-CP-04 failed staging removes only new empty destination direct
         strictAssertSame(false,rtOpFiles(array('missing'),$root.'/src',$root.'/new/nested','Copy'),'missing source refuses');
         strictAssertSame(false,is_dir($root.'/new'),'new empty ancestors retired');
         strictAssertSame('file-operation-refused',AutoToolsFileTransaction::lastRefusal()['reason'],'visible refusal');
-    }finally{txRemove($root);}
+    }finally{strictRemoveTree($root);}
 });
 $suite->test('FIN-CP-02 cross-device HardLink failure is visible and leaves source bytes',function(){
     $root=txFixture();$destination='/dev/shm/autotools-link-'.bin2hex(random_bytes(6));
-    if (!is_dir('/dev/shm') || stat('/dev/shm')['dev']===stat($root)['dev']) { txRemove($root);echo "scope - separate tmpfs unavailable\n";return; }
+    if (!is_dir('/dev/shm') || stat('/dev/shm')['dev']===stat($root)['dev']) { strictRemoveTree($root);echo "scope - separate tmpfs unavailable\n";return; }
     try {
         strictAssertSame(false,rtOpFiles(array('a/f'),$root.'/src',$destination,'HardLink'),'EXDEV refuses');
         strictAssertSame('file-operation-refused',AutoToolsFileTransaction::lastRefusal()['reason'],'notifier receives reason');
         strictAssertSame(true,is_file($root.'/src/a/f'),'source retained');
         strictAssertSame(false,is_dir($destination),'empty destination retired');
-    }finally{txRemove($root);if(is_dir($destination))txRemove($destination);}
+    }finally{strictRemoveTree($root);if(is_dir($destination))strictRemoveTree($destination);}
 });
 // POST-1011-01: publish() renames the replaced destination into its stage and
 // confirms the backup at once. On drvfs over 9p such a new name answered ENOENT
@@ -1322,6 +1317,6 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode)
             if ($mode === 'SoftLink') strictAssertSame(true, is_link($dest), 'symlink');
             strictAssertSame(array(), glob($root . '/dst/item/a/.autotools-stage-*'), 'the stage retires');
             strictAssertSame(true, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'no receipt is held');
-        } finally { txRemove($root); }
+        } finally { strictRemoveTree($root); }
     });
 exit($suite->run());

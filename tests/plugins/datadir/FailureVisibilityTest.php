@@ -23,6 +23,9 @@ class DataDirFailureVisibilityTest extends TestCase
         foreach (array('filesystem.php', 'manifest.php', 'pending.php') as $name)
             if (!copy($root . '/plugins/erasedata/' . $name, $this->tree . '/plugins/erasedata/' . $name))
                 throw new RuntimeException('Could not copy production erasedata ' . $name);
+        if (!mkdir($this->tree . '/php/utility', 0700)
+            || !copy($root . '/php/utility/permission.php', $this->tree . '/php/utility/permission.php'))
+            throw new RuntimeException('Could not copy shared process identity helper');
         file_put_contents($this->tree . '/php/xmlrpc.php', '<?php require_once __DIR__ . "/util.php";');
         file_put_contents($this->tree . '/php/util.php', <<<'STUB'
 <?php

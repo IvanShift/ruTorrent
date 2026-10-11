@@ -93,7 +93,7 @@ function erasedataNativeRetryLiveKeys($listPath)
 // advice only brings a retry and its log line sooner. The queue is read before
 // the state lock; a hint filed or refreshed since then is kept. Cursor,
 // overflow and every authority key stay as they are, and an unreadable
-// listing, absent state or garbled native_retry changes nothing.
+// listing or absent state changes nothing.
 function erasedataNativeRetryPruneOrphans($listPath, $user, $now = null)
 {
 	if($now===null) $now=time();
@@ -768,12 +768,15 @@ function erasedataNativeTerminalDiagnostic($path, $reason)
 	$key = $path.'|'.$reason;
 	if(isset($reported[$key])) return;
 	$reported[$key] = true;
-	// Only this reason is reported by a worker that has just consumed the
-	// payload. Every other reason refuses an action before it changes a
-	// payload, so its line keeps the refusal wording.
-	$consequence = $reason === 'terminal-publication-unresolved'
-		? 'payload consumed; terminal record publication unresolved; native finish withheld; retried automatically'
-		: 'payload effects refused and native finish withheld; inspect exact document';
+	// These publication reasons follow payload consumption. Other reasons
+	// refuse an action before payload changes and keep the refusal wording.
+	if($reason === 'terminal-publication-destination-occupied')
+		$consequence = 'payload consumed; terminal destination occupied; native finish withheld; '
+			.'inspect the occupied destination='.erasedataLogPath($path.'.completed');
+	else
+		$consequence = $reason === 'terminal-publication-unresolved'
+			? 'payload consumed; terminal record publication unresolved; native finish withheld; retried automatically'
+			: 'payload effects refused and native finish withheld; inspect exact document';
 	FileUtil::toLog('erasedata: native manifest retained document='.erasedataLogPath($path)
 		.' key=native_intent reason='.$reason.'; '.$consequence);
 }

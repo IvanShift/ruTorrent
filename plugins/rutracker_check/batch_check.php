@@ -57,6 +57,8 @@ class ruTrackerBatchCheck
 		{
 			if(is_array($hashes))
 			{
+				// One manual selection is one cycle, even in a reused worker.
+				if(class_exists('KinozalCheckImpl', false)) KinozalCheckImpl::resetCycle();
 				foreach($hashes as $hash)
 				{
 					if(!is_string($hash) || $hash === '')

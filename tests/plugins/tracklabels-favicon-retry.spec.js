@@ -6,6 +6,7 @@ class FaviconXHR {
   open(method, url) { this.method = method; this.url = url; }
   setRequestHeader() {}
   send(body) { this.body = body; }
+  abort() { this.aborted = true; if (this.onloadend) this.onloadend(); }
 }
 
 test('desktop retries a failed favicon request after a cooldown, not on every panel refresh', () => {
@@ -13,16 +14,7 @@ test('desktop retries a failed favicon request after a cooldown, not on every pa
   const originalXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = FaviconXHR;
   try {
-    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
-    const start = code.indexOf('plugin.imageURI = function');
-    const end = code.indexOf('\nplugin.onLangLoaded', start);
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
-    const catlist = { refreshPanel: { ptrackers() {} }, syncFn() {} };
-    const webUI = { update() {} };
-    new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(plugin, catlist, webUI);
-
+    const plugin = loadDesktopFavicons();
     requests.length = 0;
     const uri = plugin.imageURI('tracker', 'tracker.test');
     expect(uri).toBe('plugins/tracklabels/action.php?tracker=tracker.test');
@@ -48,12 +40,7 @@ test('desktop does not retry a permanent favicon miss', () => {
   const originalXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = FaviconXHR;
   try {
-    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
-    const start = code.indexOf('plugin.imageURI = function');
-    const end = code.indexOf('\nplugin.onLangLoaded', start);
-    const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
-    new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
-      plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+    const plugin = loadDesktopFavicons();
     requests.length = 0;
     plugin.imageURI('tracker', 'tracker.test');
     requests[0].status = 404;
@@ -72,12 +59,7 @@ test('desktop stops retrying a repeatedly unavailable favicon after three attemp
   const originalXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = FaviconXHR;
   try {
-    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
-    const start = code.indexOf('plugin.imageURI = function');
-    const end = code.indexOf('\nplugin.onLangLoaded', start);
-    const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
-    new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
-      plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+    const plugin = loadDesktopFavicons();
     requests.length = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       plugin.imageURI('tracker', 'tracker.test');
@@ -100,15 +82,10 @@ test('desktop asks again after the cooldown when every server fetch slot is busy
   jest.useFakeTimers();
   const originalXHR = window.XMLHttpRequest;
   window.XMLHttpRequest = FaviconXHR;
+  const random = jest.spyOn(Math, 'random');
   try {
-    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
-    const start = code.indexOf('plugin.imageURI = function');
-    const end = code.indexOf('\nplugin.onLangLoaded', start);
-    const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
-    new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
-      plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+    const plugin = loadDesktopFavicons();
     requests.length = 0;
-    const random = jest.spyOn(Math, 'random');
     random.mockReturnValue(0);
     plugin.imageURI('tracker', 'tracker.test');
     requests[0].status = 429;
@@ -129,20 +106,24 @@ test('desktop asks again after the cooldown when every server fetch slot is busy
     jest.advanceTimersByTime(1);
     plugin.imageURI('tracker', 'tracker.test');
     expect(requests).toHaveLength(3);
-    random.mockRestore();
   } finally {
+    random.mockRestore();
     window.XMLHttpRequest = originalXHR;
     jest.useRealTimers();
   }
 });
 
-function loadDesktopFavicons() {
+function loadDesktopFavicons(
+  catlist = { refreshPanel: { ptrackers() {} }, syncFn() {} },
+  webUI = { update() {} }
+) {
   const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
   const start = code.indexOf('plugin.imageURI = function');
   const end = code.indexOf('\nplugin.onLangLoaded', start);
-  const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: {} } };
-  new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(
-    plugin, { refreshPanel: { ptrackers() {} }, syncFn() {} }, { update() {} });
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const plugin = { faviconRequests: new Set(), faviconFailures: Object.create(null), imageEditSuffix: { tracker: Object.create(null) } };
+  new Function('plugin', 'catlist', 'theWebUI', code.slice(start, end))(plugin, catlist, webUI);
   return plugin;
 }
 
@@ -187,6 +168,40 @@ test('desktop stops asking a host that stays busy for twenty cooldowns', () => {
     }
     plugin.imageURI('tracker', 'tracker.test');
     expect(requests).toHaveLength(21);
+  } finally {
+    window.XMLHttpRequest = originalXHR;
+    jest.useRealTimers();
+  }
+});
+
+test('desktop removal cancels favicon timers and pending completion effects', () => {
+  jest.useFakeTimers();
+  const originalXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = FaviconXHR;
+  try {
+    const code = readFileSync('../plugins/tracklabels/init.js', 'utf8');
+    const webUI = { categoryList: { resetSelection() {} }, update: jest.fn() };
+    const catlist = { refreshPanel: { ptrackers: jest.fn() }, syncFn: jest.fn() };
+    const plugin = loadDesktopFavicons(catlist, webUI);
+    plugin.canChangeColumns = () => false;
+    plugin.removePaneFromCategory = jest.fn();
+    new Function('plugin', 'theWebUI', code.slice(code.indexOf('plugin.onRemove = function')))(plugin, webUI);
+    requests.length = 0;
+    plugin.imageURI('tracker', 'cooling.test');
+    requests[0].status = 503;
+    requests[0].onloadend();
+    plugin.imageURI('tracker', 'pending.test');
+    const complete = requests[1].onloadend;
+    plugin.onRemove();
+    requests[1].status = 200;
+    complete();
+    expect(webUI.update).not.toHaveBeenCalled();
+    expect(catlist.refreshPanel.ptrackers).not.toHaveBeenCalled();
+    expect(requests[1].aborted).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(120000);
+    plugin.imageURI('tracker', 'cooling.test');
+    expect(requests).toHaveLength(2);
   } finally {
     window.XMLHttpRequest = originalXHR;
     jest.useRealTimers();

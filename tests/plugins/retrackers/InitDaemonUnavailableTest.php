@@ -193,13 +193,12 @@ class InitDaemonUnavailableTest extends TestCase
 
 	private function assertDaemonUnavailable($ok, $failure, $jResult, $label)
 	{
-		// Written out here rather than asked of the code under test.
-		$unanswered = array_merge(RetrackersBoundedRead::TRANSPORT_FAILURES, array('truncated-headers'));
-		$this->assertTrue($ok === false && in_array($failure, $unanswered, true),
+		$this->assertTrue($ok === false && in_array($failure, RetrackersBoundedRead::TRANSPORT_FAILURES, true),
 			$label . ': init refuses and keeps the SCGI classification ' . var_export($failure, true));
-		$this->assertEquals(array('retrackers-init: daemon-unavailable'), FileUtil::$messages,
+		$this->assertEquals(array('retrackers-init: daemon-unavailable; retried at the next init after SCGI recovers'), FileUtil::$messages,
 			$label . ': one concise classified line, no corruption verdict or repair instruction');
 		$this->assertTrue(strpos($jResult, 'retrackers: daemon-unavailable') !== false &&
+			strpos($jResult, '; retried at the next init after SCGI recovers') !== false &&
 			strpos($jResult, 'receipt-ledger-corrupt') === false &&
 			strpos($jResult, 'retrackers-clear-markers') === false,
 			$label . ': the WebUI notice carries the same class');

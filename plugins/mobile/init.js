@@ -10,8 +10,8 @@ plugin.theme = 'light'; /* 'light', 'dark', or 'system' to follow the device set
 
 /*** State ***/
 plugin.filters = {status: [], label: [], tracker: []};
-plugin.labelIds = {'': 0};
-plugin.trackerIds = {};
+plugin.labelIds = Object.assign(Object.create(null), {'': 0});
+plugin.trackerIds = Object.create(null);
 plugin.nextLabelId = 1;
 plugin.nextTrackerId = 1;
 plugin.trackersCache = null;
@@ -22,6 +22,8 @@ plugin.trackerList = [];
 plugin.faviconRequests = new Set();
 plugin.faviconFailures = Object.create(null);
 plugin.faviconVersion = Object.create(null);
+plugin.faviconTimers = new Map();
+plugin.faviconXHRs = new Map();
 plugin.torrents = null;
 plugin.torrent = undefined;
 plugin.lastHref = "";
@@ -638,23 +640,40 @@ plugin.makeFilterItem = function(text, count, isSelected, type, value, icon) {
 };
 
 plugin.warmTrackerFavicon = function(name) {
-  if (this.faviconRequests.has(name)) return;
+  var trackLabels = thePlugins.get('tracklabels');
+  if (!trackLabels || trackLabels.faviconDisposed || this.faviconDisposed || this.faviconRequests.has(name)) return;
   this.faviconRequests.add(name);
   var request = new XMLHttpRequest();
+  this.faviconXHRs.set(name, request);
   request.onloadend = () => {
+    plugin.faviconXHRs.delete(name);
+    if (plugin.faviconDisposed) return;
     if (request.status !== 200) {
+      var retryDelay = null;
       if (request.status === 429) {
         // Busy server fetch slots, as in tracklabels/init.js: no retry is
         // used up, and the cooldown is spread so a burst drains.
         var busy = plugin.faviconBusy || (plugin.faviconBusy = Object.create(null));
         if ((busy[name] || 0) < 20) {
           busy[name] = (busy[name] || 0) + 1;
-          setTimeout(() => plugin.faviconRequests.delete(name), 30000 + Math.floor(Math.random() * 15000));
+          retryDelay = 30000 + Math.floor(Math.random() * 15000);
         }
       } else if ((request.status === 0 || request.status === 408 || request.status >= 500) &&
           (plugin.faviconFailures[name] || 0) < 2) {
         plugin.faviconFailures[name] = (plugin.faviconFailures[name] || 0) + 1;
-        setTimeout(() => plugin.faviconRequests.delete(name), 30000);
+        retryDelay = 30000;
+      }
+      if (retryDelay !== null) {
+        plugin.faviconTimers.set(name, setTimeout(() => {
+          plugin.faviconTimers.delete(name);
+          plugin.faviconRequests.delete(name);
+          // Idle torrent rows do not rerender the filter. Retry here, while
+          // the page and host still need the icon, rather than waiting for a tap.
+          if (!plugin.faviconDisposed && plugin.currentPage === 'torrentFilter' &&
+              plugin.trackerList.some(tracker => tracker.name === name)) {
+            plugin.warmTrackerFavicon(name);
+          }
+        }, retryDelay));
       }
       return;
     }
@@ -671,6 +690,15 @@ plugin.warmTrackerFavicon = function(name) {
   request.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
   request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
   request.send('fetch=1&tracker=' + encodeURIComponent(name));
+};
+
+plugin.onRemove = function() {
+  plugin.faviconDisposed = true;
+  for (const timer of plugin.faviconTimers.values()) clearTimeout(timer);
+  plugin.faviconTimers.clear();
+  for (const request of plugin.faviconXHRs.values()) request.abort();
+  plugin.faviconXHRs.clear();
+  plugin.faviconRequests.clear();
 };
 
 plugin.renderFilterPage = function() {
@@ -1606,15 +1634,16 @@ plugin.loadFiles = function() {
     var hash = this.torrent.hash;
     $('#detailsFilesPage').html('');
     this.request('?action=getfiles&hash=' + hash, function(data) {
+      if (mobile.torrent == undefined || hash !== mobile.torrent.hash) return;
       var rawFiles = data[hash];
-      var files = {root: true, directory: true, priority: -1, container: {}};
+      var files = {root: true, directory: true, priority: -1, container: Object.create(null)};
 
       for (var i = 0; i < rawFiles.length; i++) {
         var path = rawFiles[i].name.replace(/^\/|\/$/g, '').split('/');
         var currDir = files;
         for (var j = 0; j < path.length -1; j++) {
           if (currDir.container[path[j]] == undefined) {
-            currDir.container[path[j]] = {directory: true, root: false, container: {}, priority: -2};
+            currDir.container[path[j]] = {directory: true, root: false, container: Object.create(null), priority: -2};
           }
           currDir = currDir.container[path[j]];
         }
@@ -2022,6 +2051,7 @@ plugin.scrollToTorrent = function(hash) {
 };
 
 plugin.processTorrents = function(torrents, singleUpdate) {
+  var generation = plugin.torrentsGeneration = (plugin.torrentsGeneration || 0) + 1;
   plugin.torrents = torrents;
   var torrentArray = [];
   var tul = 0;
@@ -2063,9 +2093,9 @@ plugin.processTorrents = function(torrents, singleUpdate) {
   torrentArray.sort(plugin.dynamicSort(plugin.sort));
 
   var process = function(trackerData, trackersRefetched) {
-    var trackersCount = {};
+    var trackersCount = Object.create(null);
     var trackersMap = {};
-    var listChanged = !!singleUpdate;
+    var listChanged = !!singleUpdate || trackersRefetched;
     var changedIds = [];
     var rowsNow = {};
     var addedHashes = [];
@@ -2130,6 +2160,7 @@ plugin.processTorrents = function(torrents, singleUpdate) {
       } else if ( ! plugin.rowsPrev[v.hash] || ! isEqual(rowsNow[v.hash], plugin.rowsPrev[v.hash]) ) {
         row.removeClass();
         row.addClass(rowClass);
+        row.find('h5').text(v.name);
         row.find('span').html(statusHtml);
         var progressBar = row.find('.progress-bar');
         progressBar.removeClass('progress-bar-animated');
@@ -2193,11 +2224,13 @@ plugin.processTorrents = function(torrents, singleUpdate) {
       listHtml.html(listHtmlString);
     }
 
-    // Tracker classes only need a full pass when the torrent set changed
-    // (fresh tracker data) or the list was rebuilt; otherwise the unchanged
-    // rows already carry them
+    // Refresh every row's tracker classes after fresh tracker data or a list
+    // rebuild; otherwise unchanged rows already carry the right classes.
     if (trackersRefetched || singleUpdate) {
       $.each(trackersMap, function(id, ns) {
+        $('#'+id).removeClass(function(_, classes) {
+          return classes.split(/\s+/).filter(name => /^tracker\d+$/.test(name)).join(' ');
+        });
         $.each(ns, function(i, n) {
           $('#'+id).addClass("tracker"+plugin.trackerIds[n]);
         });
@@ -2280,11 +2313,12 @@ plugin.processTorrents = function(torrents, singleUpdate) {
     plugin.rowsPrimed = true;
   };
 
-  // The full tracker list only changes when torrents come or go,
-  // so don't refetch it on every cycle
+  // Reuse the desktop engine's polling cycle, with a bounded cache lifetime
+  // so tracker edits from another client appear without a new torrent.
   var hashes = Object.keys(plugin.torrents).sort();
   var trackersKey = hashes.join(' ');
-  if (plugin.trackersCache && plugin.trackersCache.key == trackersKey) {
+  if (plugin.trackersCache && plugin.trackersCache.key == trackersKey &&
+      Date.now() - plugin.trackersCache.at < 60000) {
     process(plugin.trackersCache.data, false);
   } else if (!hashes.length) {
     // Nothing to fetch, but the render must still run (it also removes
@@ -2306,7 +2340,9 @@ plugin.processTorrents = function(torrents, singleUpdate) {
       query += $.map(hashes, function(h) {return '&hash=' + h;}).join('');
     }
     mobile.request(query, function(data) {
-      plugin.trackersCache = {key: trackersKey, data: data};
+      // A newer poll owns the rows and cache, even if it reused cached trackers.
+      if (generation !== plugin.torrentsGeneration) return;
+      plugin.trackersCache = {key: trackersKey, data: data, at: Date.now()};
       process(data, true);
     });
   }

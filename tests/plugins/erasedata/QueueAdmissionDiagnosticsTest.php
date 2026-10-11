@@ -287,7 +287,7 @@ class QueueAdmissionDiagnosticsTest extends TestCase
             'plugins/erasedata/init.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
             'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
-            'plugins/erasedata/removewithdata.php', 'php/utility/hashfault.php') as $relative)
+            'plugins/erasedata/removewithdata.php', 'php/utility/permission.php', 'php/utility/hashfault.php') as $relative)
         {
             copy($root.'/'.$relative, $tree.'/'.$relative);
             $this->assertEquals(hash_file('sha256', $root.'/'.$relative), hash_file('sha256', $tree.'/'.$relative),

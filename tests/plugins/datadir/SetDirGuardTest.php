@@ -32,6 +32,8 @@ class DataDirTestState
     public static $files = array('file');
     public static $runFailure = null;
     public static $restoredStart = false;
+    public static $afterRetireFailure = false;
+    public static $cancelRefusal = false;
     public static $root = null;
     // A SettlingRenameFiles that rtDataDirFilesystem() answers with, and
     // whether the failing run hides the job document behind it.
@@ -54,6 +56,8 @@ class DataDirTestState
         self::$files = array('file');
         self::$runFailure = null;
         self::$restoredStart = false;
+        self::$afterRetireFailure = false;
+        self::$cancelRefusal = false;
         if (self::$root !== null) strictRemoveTree(self::$root);
         self::$root = realpath(getenv('TMPDIR') ?: sys_get_temp_dir()) . '/setdir-guard-' . bin2hex(random_bytes(6));
         mkdir(self::$root, 0700);
@@ -97,6 +101,7 @@ register_shutdown_function(function () {
 });
 
 class DataDirMoveIntent { const MAX_FILES = 100000; public static function trustedDirectory($path) { return true; } }
+class DataDirMoveRefused extends RuntimeException {}
 class DataDirMoveJob
 {
     public static function create($journal, $data, $rpc, $move, $presence)
@@ -113,12 +118,20 @@ class DataDirMoveJob
         if (DataDirTestState::$hideJob
             && !DataDirTestState::$filesystem->hide(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json'))
             throw new LogicException('job document fixture unavailable');
+        if (DataDirTestState::$cancelRefusal) {
+            unlink(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json');
+            throw new DataDirMoveRefused('proven-cancellation');
+        }
         if (DataDirTestState::$runFailure !== null)
             throw new RuntimeException(DataDirTestState::$runFailure);
         @unlink(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json');
         return true;
     }
-    public function restoredStart() { return DataDirTestState::$restoredStart; }
+    public function restoredStart()
+    {
+        if (DataDirTestState::$afterRetireFailure) throw new RuntimeException('after-retire');
+        return DataDirTestState::$restoredStart;
+    }
 }
 
 function rtAddTailSlash($path) { return rtrim($path, '/') . '/'; }
@@ -315,10 +328,10 @@ $suite->test('a held change says held once and keeps its specific reason', funct
 // POST-1011-01: read as absent, a held job's just-renamed document made the
 // change a plain refusal: no held outcome while its claim blocks the download.
 require_once __DIR__ . '/../autotools/SettlingRenameFiles.php';
-$suite->test('a held change whose job document answers late is still reported held', function () use ($hash) {
+$suite->test('a held change stays visible even when its job document never answers within the settle bound', function () use ($hash) {
     DataDirTestState::reset();
     DataDirTestState::$runFailure = 'directory-set-refused';
-    DataDirTestState::$filesystem = new SettlingRenameFiles('/^$/D', 3);
+    DataDirTestState::$filesystem = new SettlingRenameFiles('/^$/D', 11);
     DataDirTestState::$hideJob = true;
     $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure),
@@ -328,7 +341,7 @@ $suite->test('a held change whose job document answers late is still reported he
     strictAssertTrue(strpos(DataDirTestState::$logs[0], 'recovery held hash=' . $hash . ' reason=directory-set-refused') !== false
         && strpos(DataDirTestState::$logs[0], 'consequence=claim-retained-start-and-move-blocked') !== false,
         'the held job names its document and consequence: ' . DataDirTestState::$logs[0]);
-    strictAssertSame(array($path => 3), DataDirTestState::$filesystem->lookups, 'the document is confirmed on its third lookup');
+    strictAssertTrue(DataDirTestState::$filesystem->settle($path), 'the same retained document eventually becomes visible');
     strictAssertSame(true, is_file($path), 'the job stays for recovery');
 });
 
@@ -498,5 +511,20 @@ $suite->test('a start that survives the check, or a check still running, is no w
         'a change without a restored start succeeds');
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.hashing|d.state'), 'it reads no run state');
 });
+
+foreach (array('after-retire', 'proven-cancellation') as $case) {
+    $suite->test('retired job classification: ' . $case, function () use ($hash, $case) {
+        DataDirTestState::reset();
+        DataDirTestState::$afterRetireFailure = $case === 'after-retire';
+        DataDirTestState::$cancelRefusal = $case === 'proven-cancellation';
+        strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure),
+            'the diagnostic exception returns a classified failure');
+        strictAssertSame($case, $failure, 'the original exception is retained');
+        strictAssertSame(false, file_exists(DataDirTestState::$root . '/jobs/' . $hash . '.json'),
+            'the owning job was retired');
+        strictAssertSame(array('datadir: change refused hash=' . $hash . ' reason=' . $case),
+            DataDirTestState::$logs, 'a retired job does not invent a held obligation');
+    });
+}
 
 exit($suite->run());

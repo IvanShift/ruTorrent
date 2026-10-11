@@ -30,6 +30,7 @@
 // types it validates before constructing the fixture.
 
 require_once(dirname(__FILE__).'/../../../plugins/erasedata/filesystem.php');
+require_once(dirname(__FILE__).'/../../php/SourceDefinitionFixture.php');
 
 if(!class_exists('FileUtil'))
 {
@@ -232,29 +233,9 @@ if(!class_exists('User'))
 }
 if(!class_exists('rTorrentSettings'))
 {
-	// The one core method the plugin's schedule builders reach for. In
-	// production php/xmlrpc.php requires php/settings.php, so the real class is
-	// present wherever rXMLRPCCommand is; here the arithmetic is copied from
-	// rTorrentSettings::getAlignedStart() in php/settings.php (reflowed, but
-	// identical arithmetic), so a test measures the alignment production really
-	// gets rather than a convenient approximation of it.
-	class rTorrentSettings
-	{
-		static public function getAlignedStart($name, $interval, $now = null)
-		{
-			global $schedule_rand;
-			if(!isset($schedule_rand))
-				$schedule_rand = 10;
-			if($interval < 1)
-				return(0);
-			if(is_null($now))
-				$now = time();
-			$offset = ($schedule_rand > 0)
-				? (abs(crc32($name.User::getUser())) % ($schedule_rand + 1)) : 0;
-			$startAt = (($offset - $now) % $interval + $interval) % $interval;
-			return($startAt < 1 ? $interval : $startAt);
-		}
-	}
+	// Keep the real core arithmetic without loading its application bootstrap.
+	eval('class rTorrentSettings { public static '
+		.loadFunctionDefinition(__DIR__.'/../../../php/settings.php', 'getAlignedStart').'}');
 }
 
 if(!class_exists('rTorrent', false))
@@ -830,7 +811,14 @@ class ErasedataSettlingRenameFixture extends ErasedataCollectorFixture
 		$hidden = self::hiddenName($path);
 		if(!$this->foreign)
 			return(@rename($hidden, $path));
-		$stat = lstat($hidden);
+		$identity = parent::entryIdentity($hidden);
+		if(!is_array($identity))
+			throw new RuntimeException('the settling fixture lost its renamed entry');
+		$stat = $identity['lstat'];
+		if($identity['is_dir'])
+			return(mkdir($path, $stat['mode'] & 07777));
+		if($identity['is_link'])
+			return(symlink(readlink($hidden), $path));
 		return(file_put_contents($path, file_get_contents($hidden)) !== false
 			&& chmod($path, $stat['mode'] & 07777));
 	}
@@ -1083,6 +1071,7 @@ class ErasedataProductionMirror
 		$copies['php/cli-only.php'] = 'php/cli-only.php';
 		// presence.php decides absence with this core leaf.
 		$copies['php/utility/hashfault.php'] = 'php/utility/hashfault.php';
+		$copies['php/utility/permission.php'] = 'php/utility/permission.php';
 		@mkdir($root.'/php/utility', 0777, true);
 		foreach($copies as $relative => $target)
 		{
@@ -1814,23 +1803,8 @@ class ErasedataProductionMirror
 			."\t{\n"
 			."\t\treturn(new rXMLRPCCommand(getCmd('schedule_remove'), \$name.User::getUser()));\n"
 			."\t}\n"
-			// Copied from rTorrentSettings::getAlignedStart() in
-			// php/settings.php (reflowed onto fewer lines, but identical
-			// arithmetic). The child runs the shipped plugin bytes, so it
-			// needs the core method those bytes call -- and it needs the REAL
-			// arithmetic, or a case about alignment would be measuring the
-			// adapter instead of the plugin.
-			."\tstatic public function getAlignedStart(\$name, \$interval, \$now = null)\n"
-			."\t{\n"
-			."\t\tglobal \$schedule_rand;\n"
-			."\t\tif(!isset(\$schedule_rand)) \$schedule_rand = 10;\n"
-			."\t\tif(\$interval < 1) return(0);\n"
-			."\t\tif(is_null(\$now)) \$now = time();\n"
-			."\t\t\$offset = (\$schedule_rand > 0)\n"
-			."\t\t\t? (abs(crc32(\$name.User::getUser())) % (\$schedule_rand + 1)) : 0;\n"
-			."\t\t\$startAt = ((\$offset - \$now) % \$interval + \$interval) % \$interval;\n"
-			."\t\treturn(\$startAt < 1 ? \$interval : \$startAt);\n"
-			."\t}\n"
+			// The child uses the same current core method as the in-process seam.
+			."\tpublic static ".loadFunctionDefinition(__DIR__.'/../../../php/settings.php', 'getAlignedStart')."\n"
 			."}\n";
 		@file_put_contents($this->root.'/php/xmlrpc.php', $xmlrpc);
 

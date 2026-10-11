@@ -92,6 +92,16 @@ class BoundaryKinozal extends KinozalTVAccount
     }
 }
 
+// Form portion of the anonymous https://kinozal.guru/login.php capture from
+// 2026-08-07, including its bare values and stray quote; no current login claim.
+function boundaryKinozalLoginForm()
+{
+    return '<form method=post action="/takelogin.php" name=upt">'
+        . '<input type=text size=35 id="username" name="username" value="">'
+        . '<input type=password size=35 id="password" name="password" value="">'
+        . '<input class=buttonS type=submit value=" Войти "></form>';
+}
+
 $tests = array(
     'authenticated redirects never send cookies or credentials across origins' => function () {
         foreach (array('https://evil.test/x', 'http://tracker.example/x', 'https://tracker.example:8443/x',
@@ -197,13 +207,13 @@ $tests = array(
         $url = 'https://dl.kinozal.guru/download.php?id=7';
         $client->queue = array(
             array(302, 'https://kinozal.guru/login.php', array(), ''),
-            array(200, false, array(), '<input name="password">'),
-            array(200, false, array(), '<input name="password">'),
+            array(200, false, array(), boundaryKinozalLoginForm()),
+            array(200, false, array(), boundaryKinozalLoginForm()),
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
             array(200, false, array(), 'd4:infodee'),
         );
         testAssertSame(true, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''), 'cached guest session is repaired');
-        testAssertSame(array($url, 'https://kinozal.guru/login.php', 'https://kinozal.guru',
+        testAssertSame(array($url, 'https://kinozal.guru/login.php', 'https://kinozal.guru/login.php',
             'https://kinozal.guru/takelogin.php', $url), array_column($client->requests, 0), 'only trusted login and final download are requested');
         testAssertSame('username=user&password=pass', $client->requests[3][2], 'login uses real account body');
         testAssertSame(array('sid' => 'renewed'), $client->requests[4][3], 'POST cookie is kept without following the downgrade');
@@ -217,11 +227,11 @@ $tests = array(
         $client->cookies = array('sid' => 'existing');
         $client->queue = array(
             array(302, 'https://dl.kinozal.guru/welcome', array(), ''),
-            array(200, false, array(), 'welcome'),
+            array(200, false, array(), boundaryKinozalLoginForm()),
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
         );
         $account->check($client, 'user', 'pass', 0);
-        testAssertSame(array('https://kinozal.guru', 'https://dl.kinozal.guru/welcome',
+        testAssertSame(array('https://kinozal.guru/login.php', 'https://dl.kinozal.guru/welcome',
             'https://kinozal.guru/takelogin.php'), array_column($client->requests, 0), 'refresh may follow account-owned HTTPS URLs');
         testAssertSame(1, $account->data->stored, 'refresh stores the received session');
         testAssertSame(null, $client->redirectTrust, 'refresh restores caller policy');

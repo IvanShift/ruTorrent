@@ -49,6 +49,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
         'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
+        'request-deadline' => 'request-deadline',
     );
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
@@ -57,8 +58,18 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     // second account-port refusal all use classified reasons.
     strictAssertSame(14, count($assignments[0]),
         'new direct Snoopy error assignments require classification');
-    strictAssertSame(11, substr_count($source, 'refuseResponseBody('),
-        'new body refusals require an explicit classified case');
+    // Compare distinct reasons, not call sites: redirects and transports may
+    // reuse a refusal, while a new reason still needs explicit classification.
+    preg_match_all('/refuseResponseBody\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
+    $actualRefusals = array_values(array_unique($refusals[1]));
+    $expectedRefusals = array('too-many-interim-responses', 'missing-final-response',
+        'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
+        'oversized-response', 'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
+        'unreadable-or-oversized-response', 'request-deadline');
+    sort($actualRefusals);
+    sort($expectedRefusals);
+    strictAssertSame($expectedRefusals, $actualRefusals,
+        'every distinct body refusal requires an explicit classified case');
     strictAssertTrue(strpos($source, "\$this->error = 'oversized-response';") !== false,
         'the oversized response assignment stays classified');
     // Count alone misses a reworded assignment. For direct assignments,
@@ -84,6 +95,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'invalid-or-oversized-gzip' => 'invalid-or-oversized-gzip',
         'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
+        'request-deadline' => 'request-deadline',
     );
     strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
         'the redirect refusal constant retains the classified token');
@@ -93,7 +105,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
             'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
             'oversized-response', 'invalid-or-oversized-gzip',
             'gzip-decoder-unavailable',
-            'unreadable-or-oversized-response'), true);
+            'unreadable-or-oversized-response', 'request-deadline'), true);
         $pattern = $isBodyRefusal
             ? '/refuseResponseBody\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
             : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
@@ -242,6 +254,27 @@ $suite->test('a long unrelated script path does not hide a later challenge title
     $body = '/cdn-cgi/challenge-platform/' . str_repeat('segment/', 30)
         . 'not-a-challenge.js<title>Just a moment...</title>';
     strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), $body), 'later title is still inspected');
+});
+
+$suite->test('repeated challenge path prefixes preserve signals with bounded work', function () {
+    $prefixes = '/' . str_repeat('cdn-cgi/challenge-platform/', 20000);
+    $cases = array(
+        array($prefixes . '<title>Just a moment...</title>', true, 'later title'),
+        array($prefixes . 'orchestrate/chl_page/v1', true, 'path marker'),
+        array($prefixes . 'not-a-challenge.js', false, 'unrelated path'),
+    );
+    $failures = array();
+    // Run this file in separate JIT-on/off processes: changing the ini value
+    // cannot remove JIT code from a regex already in PCRE's pattern cache.
+    foreach ($cases as $case) {
+        $start = microtime(true);
+        $actual = RuTrackerFetchError::isChallenge(array(), $case[0]);
+        $elapsed = microtime(true) - $start;
+        if ($actual !== $case[1] || preg_last_error() !== PREG_NO_ERROR || $elapsed > 2.0)
+            $failures[] = $case[2] . ' jit=' . ini_get('pcre.jit') . ' answer=' . (int) $actual
+                . ' pcre=' . preg_last_error() . ' elapsed=' . $elapsed;
+    }
+    strictAssertSame(array(), $failures, 'signals and negative control remain readable within two seconds');
 });
 
 exit($suite->run());

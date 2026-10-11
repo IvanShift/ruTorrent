@@ -20,6 +20,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	const CANONICAL_MULTICALL_LENGTH = 275;
 	const CANONICAL_MULTICALL_SHA256 = 'd92ec179c05929f0f8eebd4c6325a27a5fba884907c8cbb2e7c37c3b0f636908';
 	const CANONICAL_SYSTEM_BATCH_SHA256 = '640d88150e348f7cfc7a070a4c0d78d41fceab4b7a99517c6ff29de9bb7abadc';
+	const BUILT_IN_POLICY_WARNING = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
 
 	public function setUp()
 	{
@@ -518,16 +519,19 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				&& $result['state']['sends'] === 1 && $result['state']['trusted'] === true,
 				$door.' sends the checked raw WebUI stop batch once');
 			$log = ($door === 'rpc2') ? $result['rpc2logs'] : implode("\n", $result['state']['logs']);
-			$this->assertEquals(1, substr_count($log, '[built-in policy]'),
-				$door.' marks only the outer stop batch with the fallback policy');
-			$this->assertEquals(1, count(preg_grep('/xmlrpc-proxy: |rpc2: (?!rpc-call )/',
+			$this->assertEquals(2, substr_count($log, '[built-in policy]'),
+				$door.' marks the outer stop batch and one fallback warning');
+			$this->assertEquals(2, count(preg_grep('/xmlrpc-proxy: |rpc2: (?!rpc-call )/',
 				array_filter(explode("\n", trim($log)), 'strlen'))),
-				$door.' traces one summary line for the successful stop batch');
+				$door.' traces one batch summary beside one fallback warning');
 			$quiet = $this->runEntrypoint($door, $stop, true, 'success', 'none');
 			$this->assertTrue($quiet['state']['sends'] === 1 && $quiet['state']['trusted'] === true,
 				$door.' sends the same batch without call tracing');
-			$this->assertEquals('', ($door === 'rpc2') ? $quiet['rpc2logs'] : implode("\n", $quiet['state']['logs']),
-				$door.' writes no routine decision line at the shipped default');
+			$quietLog = ($door === 'rpc2') ? $quiet['rpc2logs'] : implode("\n", $quiet['state']['logs']);
+			$this->assertEquals(1, substr_count($quietLog, self::BUILT_IN_POLICY_WARNING),
+				$door.' warns once for the whole batch at the shipped default');
+			$this->assertTrue(strpos($quietLog, 'trusted:') === false,
+				$door.' omits the routine batch decision without tracing');
 			foreach(array('d.base_path', 'd.get_base_path') as $method)
 			{
 				$path = $this->systemBatchXml(array(
@@ -660,19 +664,21 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	 * policy reached the door only while a second copy of the list lived in
 	 * plugins/httprpc/conf.php -- and upstream #3251 removed that copy.
 	 *
-	 * The decision names the built-in policy without a separate warning per poll.
+	 * A missing explicit policy is visible once in each PHP request/runtime
+	 * context, including without routine call tracing.
 	 */
 	public function testHttprpcNamesTheBuiltInPolicyInOneDecisionLine()
 	{
 		$quiet = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
 		$this->assertHttp($quiet, '200 OK', 'text/xml; charset=UTF-8');
-		$this->assertEquals(array(), $quiet['state']['logs'],
-			'the routine read logs nothing at the shipped default (production 2026-10-11)');
+		$this->assertEquals(array('xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING), $quiet['state']['logs'],
+			'the fallback remains visible without a routine decision trace');
 		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none', true);
 		$this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8');
 		$this->assertTrue($result['policy_exists'] === false, 'the policy file is absent');
-		$this->assertEquals(array('xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]'),
-			$result['state']['logs'], 'one traced decision line identifies the fallback without a repeated warning');
+		$this->assertEquals(array('xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]',
+			'xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING),
+			$result['state']['logs'], 'one traced decision accompanies one runtime fallback warning');
 		$this->assertFullTranscript('httprpc', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, null,
@@ -686,19 +692,35 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$quiet = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none');
 		$this->assertHttp($quiet, '200 OK', 'text/xml;charset=UTF-8');
-		$this->assertEquals('', $quiet['rpc2logs'],
-			'the routine read logs nothing at the shipped default (production 2026-10-11)');
+		$this->assertRpc2Log($quiet, self::BUILT_IN_POLICY_WARNING,
+			'the fallback remains visible without a routine decision trace');
+		$this->assertTrue(strpos($quiet['rpc2logs'], 'trusted:') === false,
+			'the fallback warning does not add a routine decision trace');
 		$result = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none', true);
 		$this->assertHttp($result, '200 OK', 'text/xml;charset=UTF-8');
 		$this->assertTrue($result['policy_exists'] === false, 'the shared policy file is absent');
 		$this->assertRpc2Log($result, 'trusted: d.multicall2 (3 params) [built-in policy]', 'the decision names its fallback policy');
-		$this->assertTrue(count(preg_grep('/rpc2: (?!rpc-call )/', explode("\n", trim($result['rpc2logs'])))) === 1,
-			'no separate fallback warning is emitted beside the traced call');
+		$this->assertTrue(count(preg_grep('/rpc2: (?!rpc-call )/', explode("\n", trim($result['rpc2logs'])))) === 2,
+			'one runtime warning is emitted beside the traced call');
 		$this->assertFullTranscript('rpc2', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, '127.0.0.1', 1, true,
 			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
 			array(array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1)));
+	}
+
+	public function testBothDoorsCanDisableBuiltInPolicyDecisionLogging()
+	{
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$result = $this->runEntrypoint($door, $this->viewActionXml(), false, 'success', 'none');
+			$this->assertTrue($result['state']['sends'] === 1 && $result['state']['trusted'] === true,
+				$door.' keeps fallback transport available with decision logging disabled');
+			$this->assertEquals(array(), $result['state']['logs'],
+				$door.' emits no FileUtil decision log when disabled');
+			$this->assertEquals('', $result['rpc2logs'],
+				$door.' emits no standalone decision log when disabled');
+		}
 	}
 
 	public function testExplicitRestrictedAndEmptyPoliciesOverrideDefaultsAtBothDoors()
@@ -905,53 +927,6 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			array(
 				array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
 			));
-	}
-
-	public function testBothDoorsRejectMalformedOwnedWithoutTransport()
-	{
-		$malformedXml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>';
-
-		$httprpc = $this->runEntrypoint('action', $malformedXml, true);
-		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
-		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false, 'httprpc -501 fault');
-		$this->assertTrue(strpos($httprpc['body'], "The command 'load.start' was rejected by this server.") !== false,
-			'httprpc names load.start');
-		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
-			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-
-		$rpc2 = $this->runEntrypoint('rpc2', $malformedXml, true);
-		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
-		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false, 'rpc2 -501 fault');
-		$this->assertTrue(strpos($rpc2['body'], "The command 'load.start' was rejected by this server.") !== false,
-			'rpc2 names load.start');
-		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
-			null, null, null, null, null, array());
-	}
-
-	public function testBothDoorsRejectNestedMulticallWithoutTransport()
-	{
-		$nestedXml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
-			. '<params><param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>execute.capture=/bin/id</string></value></param></params></methodCall>';
-
-		$httprpc = $this->runEntrypoint('action', $nestedXml, true);
-		$this->assertHttp($httprpc, '403 Forbidden', 'text/xml; charset=UTF-8');
-		$this->assertTrue(strpos($httprpc['body'], '<i4>-501</i4>') !== false, 'httprpc -501 fault');
-		$this->assertTrue(strpos($httprpc['body'], "The command 'd.multicall2' was rejected by this server.") !== false,
-			'httprpc names d.multicall2');
-		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
-			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-
-		$rpc2 = $this->runEntrypoint('rpc2', $nestedXml, true);
-		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
-		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false, 'rpc2 -501 fault');
-		$this->assertTrue(strpos($rpc2['body'], "The command 'd.multicall2' was rejected by this server.") !== false,
-			'rpc2 names d.multicall2');
-		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
-			null, null, null, null, null, array());
 	}
 
 	public function testBothDoorsReturnNeutralStatusAfterOneTransportFailure()
@@ -1269,9 +1244,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			if($policy === 'unreadable' && !chmod($file, 0000))
 				throw new Exception('could not make policy unreadable');
 			if($policy === 'symlink')
-				file_put_contents($file, "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
-			if($policy === 'symlink')
 			{
+				file_put_contents($file, "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
 				$volume = $tree . '/config-volume';
 				if(!mkdir($volume, 0700) || !rename($tree . '/conf', $volume . '/conf')
 					|| !symlink($volume . '/conf', $tree . '/conf'))

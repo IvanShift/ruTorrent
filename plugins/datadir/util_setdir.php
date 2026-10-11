@@ -457,6 +457,7 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
     $destPath = rtAddTailSlash($destPath);
     $path = null;
     $job = null;
+    $jobCompleted = false;
     try {
         $journal = rtDataDirJournal();
         $path = $journal . '/' . $hash . '.json';
@@ -478,6 +479,7 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         $job = DataDirMoveJob::create($journal, $snapshot,
             'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
         $job->run();
+        $jobCompleted = true;
         if ($job->restoredStart())
             $warning = rtDataDirStartOutcome($hash, rtrim($snapshot['directory'], '/'));
         return true;
@@ -487,12 +489,10 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         return false;
     } catch (Exception $e) {
         $failure = $e->getMessage();
-        // A job created by this call renames its document in place at each
-        // phase. Read as absent, such a held job would be logged as a plain
-        // refusal with no outcome while its claim blocks the download.
-        $pending = $path !== null && ($job !== null
-            ? rtDataDirFilesystem()->renamedEntryIdentity($path) !== false
-            : (file_exists($path) || is_link($path)));
+        // Publication precedes run(). Until it completes, an exception keeps
+        // the job's obligation even if its renamed document is still invisible.
+        $pending = ($job !== null && !$jobCompleted)
+            || ($path !== null && (file_exists($path) || is_link($path)));
         if ($pending)
             rtDataDirHeld($hash, $failure, $path);
         else

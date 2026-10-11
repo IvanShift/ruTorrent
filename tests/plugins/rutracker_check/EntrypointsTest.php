@@ -1,20 +1,9 @@
 <?php
 
-// The three files nothing else executes.
-//
-// update.php, batch_check.php and forumcrawl.php are pure composition: they
-// build one XMLRPC request, then call the pieces every other suite tests
-// individually, in an order that matters. Nothing asserted that order, or even
-// that the calls were still there -- delete RuTrackerUpdatePass::reapOrphans()
-// from update.php, or move sweepReplacements() below run(), and all thirteen
-// suites stayed green.
-//
-// These files cannot simply be included: each one chdir()s, requires the real
-// check.php and issues live XMLRPC on load. So the composition is read from the
-// source with the tokeniser instead -- the sequence of Class::method() calls,
-// in the order they appear, comments and formatting ignored. That pins what
-// these drivers are for (which pieces, in which order) without pretending to
-// execute them; the pieces' own behaviour is covered by the other suites.
+// The detached drivers compose operations in an order that matters. Pin their
+// bootstrap and call order with tokenised source checks, without running the
+// live update or crawl entrypoints. The reusable manual batch worker is also
+// exercised directly below, and action.php is tested through a private server.
 
 require_once(__DIR__ . '/TestLib.php');
 
@@ -907,6 +896,44 @@ $suite->test('runHandover checks all hashes, tolerates thrown exceptions, and re
     strictAssertSame($hashes, $checked, 'all hashes are processed even if an earlier hash threw');
     strictAssertTrue($crawlerRan, 'crawl is spawned in finally even when a check threw');
     strictAssertTrue(!file_exists($tmp), 'handover file is deleted in finally');
+});
+
+$suite->test('each manual batch resets Kinozal once and keeps the latch between selected hashes', function () {
+    eval(loadClassDefinition(EP_DIR . '/check.php', 'ruTrackerChecker'));
+    require_once(EP_DIR . '/trackers/kinozal.php');
+    $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
+    $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
+    $handovers = array();
+    $seen = array();
+    $hashes = array(str_repeat('A', 40), str_repeat('B', 40));
+    try {
+        strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
+        strictSetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures', 3);
+        strictSetPrivateStatic('KinozalResponse', 'failureLogged', true);
+        for ($batch = 0; $batch < 2; $batch++) {
+            $handover = tempnam(sys_get_temp_dir(), 'rt-batch-cycle-');
+            $handovers[] = $handover;
+            file_put_contents($handover, serialize($hashes));
+            ruTrackerBatchCheck::runHandover($handover, function($hash) use (&$seen) {
+                $seen[] = array($hash,
+                    strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+                    strictGetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures'),
+                    strictGetPrivateStatic('KinozalResponse', 'failureLogged'));
+                strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
+                strictSetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures', 3);
+                strictSetPrivateStatic('KinozalResponse', 'failureLogged', true);
+            }, function() {});
+            strictAssertTrue(!file_exists($handover), 'each completed batch removes its handover');
+        }
+        strictAssertSame(array(
+            array($hashes[0], false, 0, false), array($hashes[1], true, 3, true),
+            array($hashes[0], false, 0, false), array($hashes[1], true, 3, true),
+        ), $seen, 'each batch starts fresh while its second hash retains the first hash\'s endpoint refusal');
+    } finally {
+        foreach ($handovers as $handover) @unlink($handover);
+        foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
+        foreach ($responseState as $property => $value) strictSetPrivateStatic('KinozalResponse', $property, $value);
+    }
 });
 
 $suite->test('runHandover handles invalid or missing handover files safely', function () {

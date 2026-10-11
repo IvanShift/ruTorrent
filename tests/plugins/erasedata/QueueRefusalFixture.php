@@ -43,7 +43,7 @@ class ErasedataQueueRefusalFixture
             'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
-            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/hashfault.php') as $name)
+            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php') as $name)
         {
             copy($root.'/'.$name, $tree.'/'.$name);
             if(hash_file('sha256', $root.'/'.$name) !== hash_file('sha256', $tree.'/'.$name))

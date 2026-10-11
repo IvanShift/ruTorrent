@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/SCGITransportFixture.php');
 
 // The mocks stand in for what plugins/httprpc/action.php loads before calling
 // the proxy. The reply is a marker so the fixture can pin what process()
@@ -47,10 +48,24 @@ class XMLRPCProxyContractTest extends TestCase
 	private const DAEMON_OPTIONS = array('rtorrentVersion' => 0x1018);
 
 	private $cases = array();
+	private $hadCallTracingFlag;
+	private $previousCallTracingFlag;
 
 	public function setUp()
 	{
 		$this->cases = require(__DIR__ . '/XMLRPCProxyContractFixture.php');
+		$this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
+		$this->previousCallTracingFlag = $GLOBALS['rpcLogCalls'] ?? null;
+		// The literal tuples include the opt-in routine decision trace.
+		$GLOBALS['rpcLogCalls'] = true;
+	}
+
+	public function tearDown()
+	{
+		if($this->hadCallTracingFlag)
+			$GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag;
+		else
+			unset($GLOBALS['rpcLogCalls']);
 	}
 
 	private function callProcess($case)
@@ -243,14 +258,6 @@ class XMLRPCProxyContractTest extends TestCase
 	 */
 	public function testDecideRunsWithNothingElseLoaded()
 	{
-		if(!function_exists('exec') || (PHP_BINARY === ''))
-		{
-			// A host that forbids starting a process cannot answer this; say so
-			// rather than report a dependency that was never looked for.
-			$this->assertTrue(true, 'no second process available, dependency check not run');
-			return;
-		}
-
 		$proxy = realpath(__DIR__ . '/../../php/xmlrpc_proxy.php');
 		$this->assertTrue($proxy !== false, 'the proxy file is where the test expects it');
 
@@ -258,15 +265,13 @@ class XMLRPCProxyContractTest extends TestCase
 			. '$d = XMLRPCProxy::decide("not xml at all", "sanitize", array());'
 			. 'echo $d["action"], "|", $d["trusted"] ? "trusted" : "untrusted", "|", $d["payload"];';
 
-		$output = array();
-		$status = 1;
-		@exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=E_ALL -d display_errors=1 -r '
-			. escapeshellarg($script) . ' 2>&1', $output, $status);
-
-		$this->assertTrue($status === 0,
+		$result = SCGITransportFixture::runPhpChild(array('-d', 'error_reporting=E_ALL',
+			'-d', 'display_errors=1', '-r', $script));
+		$this->assertTrue($result['exitCode'] === 0,
 			'decide() runs with neither FileUtil nor rXMLRPCRequest defined: '
-			. implode(' / ', $output));
-		$this->assertTrue(implode("\n", $output) === 'reject|untrusted|',
+			. $result['stderr']);
+		$this->assertEquals('', $result['stderr'], 'the dependency check emits no PHP diagnostics');
+		$this->assertTrue($result['stdout'] === 'reject|untrusted|',
 			'and reaches the same decision there');
 	}
 }

@@ -1,16 +1,19 @@
 <?php
 
+require_once(__DIR__ . '/../../php/kinozal.php');
+
 /**
  * Stateless HTTP failure diagnostics shared by the checker, NNMClub and Kinozal.
  * classify() reduces Snoopy's error sentence to a greppable token;
- * isChallenge() identifies a Cloudflare interstitial for endpoint routing.
- * Both methods are leaf helpers: no dependencies, state, or third-party text returned.
+ * isChallenge() identifies a Cloudflare interstitial for caller policy.
+ * Both methods return classifications, never third-party text. Challenge recognition
+ * delegates to the shared core response leaf used by the Kinozal account.
  */
 class RuTrackerFetchError
 {
 	/**
-	 * Whether an answer is Cloudflare's managed challenge -- the interstitial
-	 * no credential and no retry gets past.
+	 * Whether an answer is Cloudflare's managed challenge. Kinozal stops
+	 * further requests in the current cycle when this evidence appears.
 	 *
 	 * One live Kinozal capture (2026-09-12) carried the header and the
 	 * orchestrate/chl_page script. Cloudflare documents `cf-mitigated: challenge`
@@ -24,9 +27,8 @@ class RuTrackerFetchError
 	 * Deliberately NOT the word "cloudflare". Every error page Cloudflare
 	 * serves for an origin that is down -- 52x, "Web server is down" -- names
 	 * Cloudflare in its footer and carries none of the markers above. A
-	 * handler that ROUTES on this answer must not read an outage as a wall, or
-	 * a ten-minute origin restart sends a whole cycle through its expensive
-	 * door. NNMClubCheckImpl::looksLikeChallengePage() keeps a broader test
+	 * handler must not read an origin outage as a challenge, or an ordinary
+	 * outage would stop the cycle after its first response. NNMClubCheckImpl::looksLikeChallengePage() keeps a broader test
 	 * for HTTP-200 topic pages without a download link: pages carrying
 	 * cf-chl, turnstile, captcha, cloudflare, just a moment, or
 	 * challenge-platform are retryable; other unreadable pages are errors.
@@ -34,14 +36,7 @@ class RuTrackerFetchError
 	 */
 	static public function isChallenge( $headers, $body )
 	{
-		foreach( (array) $headers as $line )
-		{
-			if( is_string( $line ) && preg_match( '/^cf-mitigated:\s*challenge\b/i', trim( $line ) ) )
-				return true;
-		}
-		if( !is_string( $body ) || $body === '' )
-			return false;
-		return preg_match( '~<title>\s*Just a moment(?:\.\.\.|…)?\s*</title>|/cdn-cgi/challenge-platform/(?:[^/\s\"\'<>]+/)*orchestrate/chl_page/~i', $body ) === 1;
+		return KinozalResponse::isChallenge($headers, $body);
 	}
 
 	/**
@@ -97,6 +92,7 @@ class RuTrackerFetchError
 			'invalid-or-oversized-gzip' => '/^invalid-or-oversized-gzip$/i',
 			'gzip-decoder-unavailable' => '/^gzip-decoder-unavailable$/i',
 			'unreadable-or-oversized-response' => '/^unreadable-or-oversized-response$/i',
+			'request-deadline' => '/^request-deadline$/i',
 		);
 		foreach($classes as $token => $pattern)
 			if(preg_match($pattern, $error)) return($token);

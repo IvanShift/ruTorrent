@@ -1,13 +1,13 @@
 
 theWebUI.trackerNames = [];
 theWebUI.torrentTrackerIds = new Map();
-plugin.injectedStyles = {};
-plugin.iconEditSuffix = {};
 plugin.faviconRequests = new Set();
 plugin.faviconFailures = Object.create(null);
+plugin.faviconTimers = new Map();
+plugin.faviconXHRs = new Map();
 plugin.imageEditSuffix = {
-	tracker: {},
-	label: {},
+	tracker: Object.create(null),
+	label: Object.create(null),
 }
 plugin.loadLang();
 
@@ -51,10 +51,14 @@ catlist.refreshPanel.ptrackers = () => [
 plugin.config = theWebUI.config;
 theWebUI.config = function()
 {
-	if(plugin.canChangeColumns())
+	const changeColumns = plugin.canChangeColumns();
+	if(changeColumns)
 	{
 		theWebUI.tables.trt.columns.push({ text: theUILang.Tracker, width: '100px', id: 'tracker', type: TYPE_STRING});
-		plugin.config.call(this);
+	}
+	plugin.config.apply(this, arguments);
+	if(changeColumns)
+	{
 		plugin.reqId = theRequestManager.addRequest("trk", null, function(hash,tracker,value)
 		{
 			const domain = theWebUI.getTrackerName( tracker.name );
@@ -134,10 +138,15 @@ theWebUI.rebuildTrackersLabels = function()
 
 plugin.imageURI = function (target, label, fetchMissing = true) {
 	const uri = `plugins/tracklabels/action.php?${target}=${encodeURIComponent(label)}`;
-	if (target === 'tracker' && fetchMissing && !plugin.faviconRequests.has(label)) {
+	if (target === 'tracker' && fetchMissing && !plugin.faviconDisposed && !plugin.faviconRequests.has(label)) {
 		plugin.faviconRequests.add(label);
 		const request = new XMLHttpRequest();
+		const active = plugin.faviconXHRs || (plugin.faviconXHRs = new Map());
+		active.set(label, request);
 		request.onloadend = () => {
+			active.delete(label);
+			if (plugin.faviconDisposed) return;
+			let retryDelay = null;
 			if (request.status === 200) {
 				plugin.imageEditSuffix.tracker[label] = `&t=${Date.now()}`;
 				catlist.refreshPanel.ptrackers();
@@ -150,14 +159,20 @@ plugin.imageURI = function (target, label, fetchMissing = true) {
 				const busy = plugin.faviconBusy || (plugin.faviconBusy = Object.create(null));
 				if ((busy[label] || 0) < 20) {
 					busy[label] = (busy[label] || 0) + 1;
-					setTimeout(() => plugin.faviconRequests.delete(label),
-						30000 + Math.floor(Math.random() * 15000));
+					retryDelay = 30000 + Math.floor(Math.random() * 15000);
 				}
 			} else if ((request.status === 0 || request.status === 408 ||
 				request.status >= 500) &&
 				(plugin.faviconFailures[label] || 0) < 2) {
 				plugin.faviconFailures[label] = (plugin.faviconFailures[label] || 0) + 1;
-				setTimeout(() => plugin.faviconRequests.delete(label), 30000);
+				retryDelay = 30000;
+			}
+			if (retryDelay !== null) {
+				const timers = plugin.faviconTimers || (plugin.faviconTimers = new Map());
+				timers.set(label, setTimeout(() => {
+					timers.delete(label);
+					plugin.faviconRequests.delete(label);
+				}, retryDelay));
 			}
 		};
 		request.open('POST', 'plugins/tracklabels/action.php');
@@ -296,6 +311,12 @@ plugin.onLangLoaded = function() {
 
 plugin.onRemove = function()
 {
+	plugin.faviconDisposed = true;
+	for (const timer of plugin.faviconTimers?.values() ?? []) clearTimeout(timer);
+	plugin.faviconTimers?.clear();
+	for (const request of plugin.faviconXHRs?.values() ?? []) request.abort();
+	plugin.faviconXHRs?.clear();
+	plugin.faviconRequests.clear();
 	if ('dialogId' in plugin) {
 		$(`#${plugin.dialogId}`).remove();
 		plugin.dialogId = undefined;

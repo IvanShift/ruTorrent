@@ -5,6 +5,7 @@ $_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-cache-test-' . getmy
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/../../php/cache.php');
 require_once(__DIR__ . '/CacheMergePayloadFixture.php');
+require_once(__DIR__ . '/PermissionsBiteFixture.php');
 
 // Its own class rather than an instance with a reassigned hash: when set()
 // reconciles a concurrent write it reloads the file through a freshly
@@ -358,6 +359,88 @@ class CacheTest extends TestCase
 		$this->assertEquals(false, file_exists($cacheFile), 'Cache remove deletes the cache file');
 		$this->assertEquals(true, file_exists($lockFile), 'Cache remove keeps the lock inode for waiting writers');
 	}
+
+	public function testRemovingAnAbsentKeySucceedsWithoutARefusal()
+	{
+		global $log_file;
+		$payload = new CacheMergePayload();
+		$payload->hash = 'absent-remove-cache-test.dat';
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/absent-remove.log';
+		try {
+			$cache = new rCache();
+			$this->assertSame(true, $cache->remove($payload), 'an absent cache key is already removed');
+			$this->assertSame(true, $cache->remove($payload), 'a repeated removal remains successful');
+			$this->assertSame('', is_file($log_file) ? file_get_contents($log_file) : '',
+				'an absent key produces no refusal or cache contents in the log');
+		} finally {
+			$log_file = $previousLog;
+		}
+	}
+
+	public function testRemovingAnEntryFromAnUnwritableDirectoryStillRefuses()
+	{
+		if (testSkipUnlessPermissionsBite('cache remove must report a real unlink refusal')) return;
+		global $log_file;
+		$payload = new CacheMergePayload();
+		$payload->hash = 'unwritable-remove-cache-test.dat';
+		$cache = new rCache();
+		$this->assertTrue($cache->set($payload), 'the entry and writable lock sidecar exist');
+		$settings = FileUtil::getSettingsPath();
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/unwritable-remove.log';
+		try {
+			$this->assertTrue(chmod($settings, 0555), 'the cache directory no longer permits unlink');
+			$this->assertSame(false, $cache->remove($payload), 'a present entry cannot be declared absent');
+			$this->assertTrue(is_file($settings . '/' . $payload->hash), 'the refused entry stays intact');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertSame(1, substr_count($lines, 'rCache: remove refused: cache unlink failed'),
+				'a real unlink failure is logged once');
+		} finally {
+			chmod($settings, 0700);
+			$log_file = $previousLog;
+		}
+	}
+
+    public function testUnlinkRefusalDoesNotBecomeAbsenceWhenParentTurnsUnreadable()
+    {
+        if (testSkipUnlessPermissionsBite('cache remove must not infer absence from an unreadable parent')) return;
+        global $log_file;
+        $payload = new CacheMergePayload();
+        $payload->hash = 'unreadable-parent-cache-test.dat';
+        $cache = new rCache();
+        $this->assertTrue($cache->set($payload), 'the real cache entry and stable lock sidecar exist');
+        $settings = FileUtil::getSettingsPath();
+        $previousLog = $log_file;
+        $log_file = $_ENV['RU_PROFILE_PATH'] . '/unreadable-parent.log';
+        $cacheSource = realpath(__DIR__ . '/../../php/cache.php');
+        $intercepted = 0;
+        $statAfter = null;
+        set_error_handler(function ($errno, $message, $file) use ($settings, $cacheSource, &$intercepted, &$statAfter) {
+            if ($file === $cacheSource
+                && strpos($message, 'unlink(') === 0) {
+                ++$intercepted;
+                chmod($settings, 0000);
+                clearstatcache(true, $settings . '/unreadable-parent-cache-test.dat');
+                $statAfter = @lstat($settings . '/unreadable-parent-cache-test.dat');
+            }
+            return true;
+        });
+        try {
+            chmod($settings, 0555);
+            $removed = $cache->remove($payload);
+        } finally {
+            chmod($settings, 0700);
+            restore_error_handler();
+            $lines = is_file($log_file) ? file_get_contents($log_file) : '';
+            $log_file = $previousLog;
+        }
+        $this->assertSame(1, $intercepted, 'the exact unlink refusal triggered the permission transition');
+        $this->assertSame(false, $statAfter, 'the later lstat fails while the parent cannot be searched');
+        $this->assertSame(false, $removed, 'unreadable state cannot prove an absent key');
+        $this->assertTrue(is_file($settings . '/' . $payload->hash), 'the refused entry survives');
+        $this->assertSame(1, substr_count($lines, 'rCache: remove refused: cache unlink failed'), 'the refusal stays visible');
+    }
 
 	public function testRemoveRefusesWhileKeyLockIsHeld()
 	{

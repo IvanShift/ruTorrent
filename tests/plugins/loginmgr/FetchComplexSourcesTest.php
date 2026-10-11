@@ -441,7 +441,7 @@ case "$request_url" in
     https://rutracker.org/second/*)
         printf 'Set-Cookie: b_marker=from-b; Domain=rutracker.org; Path=/; Secure\r\n' >> "$header_file"
         ;;
-    https://kinozal.guru)
+    https://kinozal.guru/login.php)
         printf 'Set-Cookie: path_marker=from-login; Path=/takelogin.php; Secure; Max-Age=3600\r\n' >> "$header_file"
         printf 'Set-Cookie: wrong_domain=from-login; Domain=evil.test; Path=/; Secure\r\n' >> "$header_file"
         printf 'Set-Cookie: expired_marker=from-login; Path=/; Secure; Max-Age=0\r\n' >> "$header_file"
@@ -453,7 +453,12 @@ case "$request_url" in
         ;;
 esac
 printf '\r\n' >> "$header_file"
-printf 'readable tracker page' > "$body_file"
+if [ "$request_url" = https://kinozal.guru/login.php ]; then
+    # Form portion of the anonymous 2026-08-07 capture, including name=upt".
+    printf '%s' '<form method=post action="/takelogin.php" name=upt"><input type=text size=35 id="username" name="username" value=""><input type=password size=35 id="password" name="password" value=""><input class=buttonS type=submit value=" Войти "></form>' > "$body_file"
+else
+    printf 'readable tracker page' > "$body_file"
+fi
 SH;
     sourceSame(true, file_put_contents($curlPath, $fakeCurl) !== false, 'wire fixture written');
     sourceSame(true, chmod($curlPath, 0700), 'wire fixture executable');
@@ -520,7 +525,9 @@ SH;
             sourceSame(true, $kinozal->fetchComplex('https://kinozal.guru/other'),
                 'real Kinozal login and caller fetch completed');
             $pathRows = array_slice(sourceWireRows($wirePath), $before);
-            sourceSame(3, count($pathRows), 'home, login POST and caller URL reached the wire');
+            sourceSame(array('https://kinozal.guru/login.php', 'https://kinozal.guru/takelogin.php',
+                'https://kinozal.guru/other'), array_column($pathRows, 'url'),
+                'captured form GET, login POST and caller URL reached the wire');
             sourceSame(false, sourceWireHasCookie($pathRows[0], 'path_marker=from-login'),
                 'caller did not inject the response cookie');
             sourceSame(true, sourceWireHasCookie($pathRows[1], 'path_marker=from-login'),
@@ -591,7 +598,8 @@ SH;
             $autoBefore = count(sourceWireRows($wirePath));
             $manager->checkAuto();
             $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
-            sourceSame(2, count($autoRows), 'auto refresh sent home and login POST');
+            sourceSame(array('https://kinozal.guru/login.php', 'https://kinozal.guru/takelogin.php'),
+                array_column($autoRows, 'url'), 'auto refresh sent captured form GET and login POST');
             $autoSession = new privateData('KinozalTV');
             sourceSame(true, (new rCache('/accounts'))->get($autoSession),
                 'auto refresh saved its session');

@@ -838,7 +838,8 @@ upTest($suite, 'the default scheduler dispatch gives its aligned slot to the rea
         strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'the real checker reached its metadata consumer');
         $slot = RuTrackerMetaFetch::$calls[0]['scheduledAt'];
         strictAssertTrue(is_int($slot), 'default dispatch supplies a slot instead of a manual-call null');
-        strictAssertTrue($slot >= $before - ($before % 3600) && $slot <= $after - ($after % 3600),
+        strictAssertTrue($slot >= strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array($before))
+            && $slot <= strictInvoke('RuTrackerUpdatePass', 'replacementAttemptSlot', array($after)),
             'the configured hourly slot survives default dispatch and the real per-hash claim');
     } finally {
         if ($savedInterval === null) unset($GLOBALS['updateInterval']);
@@ -869,15 +870,14 @@ upTest($suite, 'a default scheduled refusal records its deadline on the aligned 
         rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
             'd.get_local_id', 'd.get_custom'), true, false,
             array((string) ruTrackerChecker::STE_META_PENDING, '100', '', str_repeat('A', 40), ''));
-        $before = time();
         upCapturedLog(function () use ($rows) { RuTrackerUpdatePass::run($rows); });
-        $after = time();
         strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'the real checker reached its metadata consumer');
+        $slot = RuTrackerMetaFetch::$calls[0]['scheduledAt'];
+        strictAssertTrue(is_int($slot), 'the refusal belongs to the scheduled dispatch slot');
         $entry = RuTrackerState::load('updatepass')['replacement_backoff'][RuTrackerState::daemonKey()][$hash] ?? null;
         strictAssertTrue(is_array($entry), 'the refusal inside the scheduled run records a backoff');
         strictAssertSame(3600, $entry['length'], 'the first local refusal waits one hour');
-        strictAssertTrue(in_array($entry['until'] - 3600,
-            array($before - ($before % 3600), $after - ($after % 3600)), true),
+        strictAssertSame($slot + 3600, $entry['until'],
             'the recorded deadline is the hourly dispatch slot plus the backoff, not the refusal time plus it');
     } finally {
         RuTrackerMetaFetch::$localRefusal = null;
@@ -1586,7 +1586,7 @@ upTest($suite, 'reapOrphans reaps a stub once its old torrent has moved on to ST
 });
 
 upTest($suite, 'reapOrphans never touches an ordinary torrent with no chk-meta-old marker', function () {
-    $ordinary = str_repeat('T', 40);
+    $ordinary = str_repeat('A', 40);
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('d.multicall', true, false, array($ordinary, '', '0'));
 
@@ -1594,7 +1594,7 @@ upTest($suite, 'reapOrphans never touches an ordinary torrent with no chk-meta-o
 
     strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom|d.get_custom'),
         'no claim read for a torrent that is not a stub');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.erase'), 'no erase either');
+    strictAssertNoRpcCommand('d.erase', 'an ordinary torrent cannot be erased by any dispatch form');
 });
 
 upTest($suite, 'malformed service deadline remains untouched and visible on every orphan sweep', function () {
@@ -1741,6 +1741,49 @@ function upKinozalRow($hash, $failed, $success, $host = 'tr2.torrent4me.com')
     return upParsedRow($hash, "http://{$host}/ann?uk=x|1|{$failed}|{$success}#",
         'http://kinozal.tv/details.php?id=12345');
 }
+
+upTest($suite, 'each scheduler pass retries Kinozal while keeping its endpoint latch between hashes', function () {
+    upLoadKinozalRegistration();
+    $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
+    $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
+    try {
+        // A previous cycle abandoned the endpoint. The first pass must reset
+        // it, then three real refusals must still protect the fourth topic.
+        strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
+        $rows = array();
+        foreach (array('A', 'B', 'C', 'D') as $letter)
+            $rows[] = upKinozalRow(str_repeat($letter, 40), 1, 0);
+        $verdicts = array();
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function($hash, $row) use (&$verdicts) {
+            $verdicts[] = KinozalCheckImpl::download_torrent($row['comment'], $hash, null);
+        });
+        rXMLRPCRequest::reset();
+        Snoopy::reset();
+        for ($failure = 0; $failure < 4; $failure++) Snoopy::queue(503, 'unavailable');
+        $first = RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array_column($rows, 'hash'), $first['checked'], 'all four hashes reach the handler');
+        strictAssertSame(array_fill(0, 4, ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts,
+            'the first pass keeps every refusal retryable');
+        strictAssertSame(3, count(Snoopy::$requests), 'one endpoint latch suppresses the fourth fetch');
+        strictAssertSame(1, count(Snoopy::$queue), 'the fourth topic never consumed its endpoint response');
+        strictAssertTrue(strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
+            'the first pass really abandoned details after three failures');
+
+        $verdicts = array();
+        Snoopy::$queue = array();
+        foreach ($rows as $row) Snoopy::queue(200, '<ul><li>' . $row['hash'] . '</li></ul>');
+        $second = RuTrackerUpdatePass::run($rows);
+        strictAssertSame(array_column($rows, 'hash'), $second['checked'], 'the next pass retries every hash');
+        strictAssertSame(array_fill(0, 4, ruTrackerChecker::STE_UPTODATE), $verdicts,
+            'fresh topic answers replace the previous endpoint refusal');
+        strictAssertSame(7, count(Snoopy::$requests), 'the next pass fetches all four healthy details answers');
+        strictAssertSame(array(), Snoopy::$queue, 'every scripted answer was consumed by actual handler work');
+    } finally {
+        foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
+        foreach ($responseState as $property => $value) strictSetPrivateStatic('KinozalResponse', $property, $value);
+        Snoopy::reset();
+    }
+});
 
 // Queue successful guarded verdict replies when this case needs fast writes.
 function upRunPass($rows, &$checked, $writeReplies = 2)
@@ -5128,11 +5171,9 @@ upTest($suite, 'testTheFreshCasScanRefusesToCompareAgainstAnUnreadableRow', func
 // are what tells "nobody ever opened this" from "somebody did". A reading that
 // will not parse authorises neither a blind start nor retiring the ownership
 // keys: the exact generation is kept for a later cycle.
-// The two progress counters with a genuine int32 domain. d.get_completed_bytes
-// is NOT one of them -- see the wider-than-PHP_INT_MAX case above -- so it is
-// read with intval() at its use site the way it always was, and the fail-closed
-// guard rests on the two columns beside it, which report the same fact
-// (somebody opened this copy) and can be parsed exactly.
+// Hashed and complete counts have an int32 domain. Completed bytes are
+// validated separately as a canonical decimal string, so a well-formed
+// value wider than PHP_INT_MAX remains readable without losing precision.
 upTest($suite, 'testMalformedStagedProgressCountersNeverStartOrRetireAReplacement', function () {
     foreach (array('hashed' => 2, 'complete' => 4) as $label => $slot) {
         rXMLRPCRequest::reset();
@@ -6032,6 +6073,34 @@ upTest($suite, 'refusals in cycles that start early keep every doubled hold whol
         if ($savedRandom === null) unset($GLOBALS['schedule_rand']);
         else $GLOBALS['schedule_rand'] = $savedRandom;
     }
+});
+
+upTest($suite, 'an early refusal at the daily cap survives another hash writing before the slot', function () {
+    $hash = str_repeat('A', 40);
+    $other = str_repeat('B', 40);
+    $slot = 1800000000;
+    $now = $slot - 5;
+    upSeedReplacementBackoff(array($hash => array('until' => $slot, 'length' => 86400)));
+
+    $failure = null;
+    $until = RuTrackerReplacementBackoff::postpone($hash, $now, $failure, $slot);
+    strictAssertSame($slot + 86400, $until, 'the capped hold still counts from the admitted future slot');
+    strictAssertSame(array($hash => $until), RuTrackerReplacementBackoff::activeUntil($now, 60),
+        'the reader accepts the capped deadline written by an early cycle');
+
+    RuTrackerReplacementBackoff::postpone($other, $now + 1);
+    strictAssertSame(array('until' => $until, 'length' => 86400),
+        RuTrackerState::load('updatepass')['replacement_backoff'][RuTrackerState::daemonKey()][$hash] ?? null,
+        'another hash cannot prune the valid capped hold before the nominal slot');
+    strictAssertSame(array($hash => $until), RuTrackerReplacementBackoff::activeUntil($slot + 3600 - 5, 60),
+        'the next hourly cycle remains held after that interleaved write');
+
+    upSeedReplacementBackoff(array(
+        $hash => array('until' => $now + 86400 + 60, 'length' => 86400),
+        $other => array('until' => $now + 86400 + 61, 'length' => 86400),
+    ));
+    strictAssertSame(array($hash => $now + 86400 + 60), RuTrackerReplacementBackoff::activeUntil($now),
+        'the maximum early-start horizon is accepted but one second beyond it holds nothing');
 });
 
 upTest($suite, 'a retry cycle that starts just before its slot is not held for another cadence', function () {

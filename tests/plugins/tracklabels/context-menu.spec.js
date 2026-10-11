@@ -49,6 +49,7 @@ function loadTracklabels() {
     " dialogId: 'dlg', canChangeMenu: () => true, canChangeColumns: () => false }," +
     " { has: () => true, get: (t, p) => (p in t ? t[p] : () => {})," +
     "   set: (t, p, v) => { t[p] = v; return true; } });" +
+    "window.__tracklabels = plugin;" +
     "\ntry {\n" + code + "\n} catch(e) { window.__loadError = e; }\n})();";
   document.body.appendChild(el);
 }
@@ -62,13 +63,14 @@ describe("tracklabels context menu entry", () => {
     delete window.__loadError;
     dialogCalls = [];
     stubGlobals();
+    window.__coreConfig = jest.fn();
     window.theWebUI = {
       categoryList: {
-        refreshPanel: { plabel: () => [] },
+        refreshPanel: { plabel: attribs => [...attribs] },
         contextMenuEntries: () => [],
-        updatedStatisticEntry: () => [],
+        updatedStatisticEntry: (_panel, id, attribs = {}) => [id, attribs],
       },
-      config: () => {},
+      config: window.__coreConfig,
       addTrackers: () => {},
       getTable: () => ({}),
       request: () => {},
@@ -113,5 +115,33 @@ describe("tracklabels context menu entry", () => {
   it("adds no entry for the all-labels row", () => {
     expect(theWebUI.categoryList.contextMenuEntries("plabel", "plabel_all")).toEqual([]);
     expect(theWebUI.categoryList.contextMenuEntries("ptrackers", "ptrackers_all")).toEqual([]);
+  });
+
+  it("still configures the core when column changes are forbidden", () => {
+    const receiver = {};
+    const settings = { restricted: true };
+    theWebUI.config.call(receiver, settings);
+    expect(window.__coreConfig).toHaveBeenCalledTimes(1);
+    expect(window.__coreConfig.mock.contexts[0]).toBe(receiver);
+    expect(window.__coreConfig).toHaveBeenCalledWith(settings);
+  });
+
+  it.each(['ordinary label', 'constructor', '__proto__'])("renders a literal label icon and its upload suffix for %s", label => {
+    const attribs = new Map([['clabel__' + label, { text: label }]]);
+    const icon = () => theWebUI.categoryList.refreshPanel.plabel(attribs)[0][1].icon;
+    const uri = 'url:plugins/tracklabels/action.php?label=' + encodeURIComponent(label);
+    expect(icon()).toBe(uri);
+    window.__tracklabels.imageEditSuffix.label[label] = '&t=123';
+    expect(icon()).toBe(uri + '&t=123');
+  });
+
+  it.each(['ordinary tracker', 'constructor', '__proto__'])("renders a literal tracker icon and its upload suffix for %s", tracker => {
+    theWebUI.trackerNames = [tracker];
+    window.__tracklabels.faviconRequests.add(tracker);
+    const icon = () => theWebUI.categoryList.refreshPanel.ptrackers()[1][1].icon;
+    const uri = 'url:plugins/tracklabels/action.php?tracker=' + encodeURIComponent(tracker);
+    expect(icon()).toBe(uri);
+    window.__tracklabels.imageEditSuffix.tracker[tracker] = '&t=123';
+    expect(icon()).toBe(uri + '&t=123');
   });
 });

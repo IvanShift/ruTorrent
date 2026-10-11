@@ -61,7 +61,7 @@ final class RetrackersBoundedRead
 	// spellings of the same outcome used by older layers, test adapters and the
 	// source snapshot. A malformed or faulting answer is a wrong answer and is
 	// deliberately absent. BoundedReadTest pins this partition.
-	const TRANSPORT_FAILURES = array('closed-before-headers', 'connect-failed',
+	const TRANSPORT_FAILURES = array('closed-before-headers', 'truncated-headers', 'connect-failed',
 		'socket-config-failed', 'write-failed', 'write-timeout', 'write-wait-failed',
 		'read-failed', 'read-timeout', 'truncated-body', 'rpc-timeout',
 		'transport-failed', 'initial-transport');
@@ -72,21 +72,6 @@ final class RetrackersBoundedRead
 	public static function noAnswer($failure)
 	{
 		return(in_array($failure, self::TRANSPORT_FAILURES, true));
-	}
-
-	/**
-	 * noAnswer(), or truncated-headers: the peer closed before the "\r\n\r\n"
-	 * that ends its response headers, so, as with truncated-body, no complete
-	 * answer arrived. TRANSPORT_FAILURES does not list it (BoundedReadTest's
-	 * scan misses the ternary that names it), and the read retries and queue
-	 * retry categories built on that list keep their behaviour. The init's
-	 * ledger insert, the ledger reads of the lifecycle and of the v1 worker,
-	 * and the init log and done notice ask this instead: such a reply is
-	 * unknown there, never a corrupt ledger.
-	 */
-	public static function incompleteReply($failure)
-	{
-		return(self::noAnswer($failure) || $failure === 'truncated-headers');
 	}
 
 	/**
@@ -2280,71 +2265,6 @@ final class RetrackersOldGenerationCommitCallback
 		));
 	}
 
-	private static function saturatedAdd($left, $right)
-	{
-		return($left >= PHP_INT_MAX || $right >= PHP_INT_MAX - $left ?
-			PHP_INT_MAX : $left + $right);
-	}
-
-	private static function saturatedMultiply($value, $factor)
-	{
-		if ($value === 0 || $factor === 0) {
-			return(0);
-		}
-		return($value >= PHP_INT_MAX || $factor > intdiv(PHP_INT_MAX, $value) ?
-			PHP_INT_MAX : $value * $factor);
-	}
-
-	private static function completeWireEstimate($method, array $params, $limit)
-	{
-		$length = strlen('<?xml version="1.0" encoding="UTF-8"?><methodCall><methodName>');
-		$method = self::literal($method, false, $limit);
-		$length = self::saturatedAddAtLimit($length, $method->xmlLength(), $limit);
-		$length = self::saturatedAddAtLimit(
-			$length, strlen('</methodName><params>'), $limit);
-		foreach ($params as $param) {
-			$length = self::saturatedAddAtLimit(
-				$length, strlen('<param><value><string>'), $limit);
-			$length = self::saturatedAddAtLimit($length, $param->xmlLength(), $limit);
-			$length = self::saturatedAddAtLimit(
-				$length, strlen('</string></value></param>'), $limit);
-		}
-		return(self::saturatedAddAtLimit(
-			$length, strlen('</params></methodCall>'), $limit));
-	}
-
-	private static function saturatedAddAtLimit($left, $right, $limit)
-	{
-		$ceiling = $limit === PHP_INT_MAX ? PHP_INT_MAX : $limit + 1;
-		return($left >= $ceiling || $right >= $ceiling - $left ?
-			$ceiling : $left + $right);
-	}
-
-	private static function memoryLimitBytes()
-	{
-		$value = ini_get('memory_limit');
-		if ($value === '-1') {
-			return(-1);
-		}
-		if (!is_string($value) || preg_match('/^(0|[1-9][0-9]*)([KMGkmg])?$/D',
-			$value, $parts) !== 1) {
-			return(false);
-		}
-		$bytes = 0;
-		foreach (str_split($parts[1]) as $digit) {
-			$bytes = self::saturatedAdd(self::saturatedMultiply($bytes, 10), (int)$digit);
-		}
-		$suffix = isset($parts[2]) ? strtoupper($parts[2]) : '';
-		$power = array_search($suffix, array('', 'K', 'M', 'G'), true);
-		if ($power === false) {
-			return(false);
-		}
-		for ($index = 0; $index < $power; $index++) {
-			$bytes = self::saturatedMultiply($bytes, 1024);
-		}
-		return($bytes > 0 ? $bytes : false);
-	}
-
 	public static function build($tx, $hash, $handoff, array $snapshot, $daemonCap,
 		&$failure = null)
 	{
@@ -2363,26 +2283,15 @@ final class RetrackersOldGenerationCommitCallback
 			$failure = 'runtime-value-unrepresentable';
 			return(false);
 		}
-		$estimate = self::completeWireEstimate('branch', $dry, $daemonCap);
+		$estimate = RetrackersCommandFragment::directRequestLength('branch', $dry, $daemonCap);
 		unset($dry);
-		if ($estimate > $daemonCap) {
+		if ($estimate === false || $estimate > $daemonCap) {
 			$failure = 'commit-request-too-large';
 			return(false);
 		}
-		$memoryLimit = self::memoryLimitBytes();
-		if ($memoryLimit === false) {
+		if (!RetrackersCommandFragment::hasMaterializationHeadroom($estimate)) {
 			$failure = 'commit-builder-headroom';
 			return(false);
-		}
-		if ($memoryLimit !== -1) {
-			$baseline = memory_get_usage(true);
-			$required = self::saturatedAdd(
-				self::saturatedMultiply($estimate, 12), 16 * 1024 * 1024);
-			$available = $memoryLimit > $baseline ? $memoryLimit - $baseline : 0;
-			if ($required > $available) {
-				$failure = 'commit-builder-headroom';
-				return(false);
-			}
 		}
 
 		$materialized = self::callbackParts(
@@ -2887,17 +2796,6 @@ final class RetrackersPostEraseObligation
 		return(array_merge(array('d.directory.set=' . $directory), $scalar, $generic));
 	}
 
-	private static function trackerType($url)
-	{
-		if (preg_match('#^https?://#', $url) === 1) {
-			return('1');
-		}
-		if (preg_match('#^udp://#', $url) === 1) {
-			return('2');
-		}
-		return(false);
-	}
-
 	private static function sortTopology(array &$topology)
 	{
 		usort($topology, function ($left, $right) {
@@ -3147,7 +3045,7 @@ final class RetrackersPostEraseObligation
 				continue;
 			}
 			$type = !$initial && strpos($row['url'], 'dht://') === 0 ? '3' :
-				self::trackerType($row['url']);
+				RetrackersTrackerURL::type($row['url']);
 			if ($type === false || $type !== $row['type'] || ($initial && $row['extra'] !== '0')) {
 				$failure = 'candidate-tracker-projection-failed';
 				return(false);
@@ -3225,7 +3123,7 @@ final class RetrackersPostEraseObligation
 			$url = substr($key, 1);
 			if (isset($source['state_by_url'][$key])) {
 				$state = $source['state_by_url'][$key]['state'];
-			} elseif (self::trackerType($url) === '1') {
+			} elseif (RetrackersTrackerURL::type($url) === '1') {
 				$state = '1';
 			} else {
 				$state = $snapshot['family'] === 1 ?
@@ -3442,7 +3340,7 @@ final class RetrackersPostEraseObligation
 			return(strcmp($left['url'], $right['url']));
 		});
 		foreach ($enabled as &$entry) {
-			$type = self::trackerType($entry['url']);
+			$type = RetrackersTrackerURL::type($entry['url']);
 			if ($type === false) {
 				unset($entry);
 				$failure = 'candidate-tracker-projection-failed';
@@ -7036,16 +6934,16 @@ class RetrackersRestrictedXmlCursor
 			if ($byte === "\r" || $byte === "\0") {
 				throw new RetrackersRestrictedCodecError('forbidden-scalar-byte');
 			}
-			$code = ord($byte);
-			if ($code < 32 && $byte !== "\t" && $byte !== "\n") {
-				throw new RetrackersRestrictedCodecError('invalid-xml-character');
-			}
 			$length = strcspn($this->raw, "<&\r\0", $this->offset, $this->end - $this->offset);
 			if ($length <= 0) {
 				throw new RetrackersRestrictedCodecError('invalid-text');
 			}
 			$this->chargeText($length, $name, $local);
 			$chunk = substr($this->raw, $this->offset, $length);
+			// Bulk text consumes more than the first byte; validate the whole chunk.
+			if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $chunk) === 1) {
+				throw new RetrackersRestrictedCodecError('invalid-xml-character');
+			}
 			if (strpos($chunk, ']]>') !== false) {
 				throw new RetrackersRestrictedCodecError('invalid-text');
 			}
@@ -8817,7 +8715,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 		// proves nothing about the ledger: keep the SCGI class and do not resend
 		// the insert. The next init sends its own; only a wrong answer is a
 		// corruption verdict.
-		if ($decoded === false && RetrackersBoundedRead::incompleteReply($failure)) {
+		if ($decoded === false && RetrackersBoundedRead::noAnswer($failure)) {
 			return(false);
 		}
 		$failure = 'receipt-ledger-corrupt';
@@ -8839,7 +8737,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			return(true);
 		}
 		// No answer cannot prove a public ledger; only a wrong answer can.
-		$failure = $decoded === false && RetrackersBoundedRead::incompleteReply($failure) ?
+		$failure = $decoded === false && RetrackersBoundedRead::noAnswer($failure) ?
 			'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 		return(false);
 	}
@@ -8966,7 +8864,7 @@ class RetrackersLifecycleRpcAdapter extends RetrackersDirectRpcAdapter
 			return($this->getLedgerKeys($failure));
 		}, $failure, RETRACKERS_PREFLIGHT_TIMEOUT, RetrackersBoundedRead::TRANSPORT_FAILURES);
 		if ($keys === false) {
-			$failure = RetrackersBoundedRead::incompleteReply($failure) ?
+			$failure = RetrackersBoundedRead::noAnswer($failure) ?
 				'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 			return(false);
 		}
@@ -9740,10 +9638,9 @@ class RetrackersStableSourceSnapshot
 		if ($failure === 'rpc-fault') {
 			return('initial-fault');
 		}
-		if ($failure === 'malformed-response' || $failure === 'invalid-request') {
-			return('initial-malformed');
-		}
-		return('initial-transport');
+		// Only a known missing answer gets a transport wait. Protocol refusals
+		// and unclassified failures must not acquire an unbounded wait category.
+		return(RetrackersBoundedRead::noAnswer($failure) ? 'initial-transport' : 'initial-malformed');
 	}
 
 	private function read($kind, $hash, &$failure)
@@ -10056,7 +9953,6 @@ class RetrackersStableSourceSnapshot
 			return(array('ok' => false, 'failure' => 'ownership-mismatch'));
 		}
 		$mapDrift = false;
-		$trackerDrift = false;
 		for ($round = 0; $round < self::MAX_ROUNDS; $round++) {
 			$samples = array();
 			foreach (array('scalar', 'map', 'map', 'tracker', 'tracker', 'scalar') as $kind) {
@@ -10085,7 +9981,6 @@ class RetrackersStableSourceSnapshot
 				$firstScalar['family'] === $firstTrackers['family'];
 			if (!$mapStable || !$trackerStable) {
 				$mapDrift = $mapDrift || !$mapStable;
-				$trackerDrift = $trackerDrift || !$trackerStable;
 				continue;
 			}
 			if ($secondTrackers['ambiguous']) {
@@ -10943,7 +10838,6 @@ function retrackersBoundedFailureReason($failure)
 		'initial-fault' => true,
 		'initial-hashing-failed' => true,
 		'initial-malformed' => true,
-		'initial-transport' => true,
 		'invalid-caller-input' => true,
 		'lifecycle-acquire-unconfirmed' => true,
 		'lifecycle-busy' => true,
@@ -10986,17 +10880,6 @@ function retrackersBoundedFailureReason($failure)
 		'native-original-rpc-unconfirmed' => true,
 		'native-original-unsupported' => true,
 		'initial-hashing-pending' => true,
-		'closed-before-headers' => true,
-		'write-failed' => true,
-		'connect-failed' => true,
-		'read-failed' => true,
-		'read-timeout' => true,
-		'rpc-timeout' => true,
-		'transport-failed' => true,
-		'socket-config-failed' => true,
-		'write-timeout' => true,
-		'write-wait-failed' => true,
-		'truncated-body' => true,
 		'ownership-mismatch' => true,
 		'partial-quiesce-ambiguous' => true,
 		'prefix-builder-headroom' => true,
@@ -11050,7 +10933,7 @@ function retrackersBoundedFailureReason($failure)
 		'worker-slots-unavailable' => true,
 		'worker-slots-timeout' => true,
 	);
-	return(is_string($failure) && isset($allowed[$failure]) ?
+	return(is_string($failure) && (isset($allowed[$failure]) || RetrackersBoundedRead::noAnswer($failure)) ?
 		$failure : 'lifecycle-unsupported');
 }
 
@@ -11060,6 +10943,8 @@ function retrackersLifecycleDiagnosticMessage($context, $failure, $markers = arr
 	$message = $reason;
 	if (strncmp($reason, 'shared-daemon-', 14) === 0) {
 		$message .= '; multiple ruTorrent profiles share one rTorrent daemon; set $forbidUserSettings = true in server configuration, then restart rTorrent';
+	} elseif ($reason === 'daemon-unavailable') {
+		$message .= '; retried at the next init after SCGI recovers';
 	} elseif ($context === 'done' && $reason === 'hook-teardown-pending') {
 		$message .= '; daemon restart required after active recovery finishes';
 	} elseif ($reason === 'hook-ledger-mismatch-restart-required') {
@@ -11101,7 +10986,7 @@ function retrackersRunLifecycleInit($canonicalUser, $script, $php, &$jResult,
 	if (!$ok) {
 		// rTorrent gave no answer (e.g. it is stopping): log one class, not
 		// a corruption verdict. $failure keeps the SCGI class for the caller.
-		$reason = RetrackersBoundedRead::incompleteReply($failure) ?
+		$reason = RetrackersBoundedRead::noAnswer($failure) ?
 			'daemon-unavailable' : retrackersBoundedFailureReason($failure);
 		$markers = $reason === 'receipt-ledger-corrupt' ? $adapter->recoveryMarkerDiagnostic() : array();
 		if (class_exists('FileUtil') && method_exists('FileUtil', 'toLog')) {
@@ -11119,7 +11004,7 @@ function retrackersRunLifecycleDone($canonicalUser, &$jResult, &$failure = null,
 		// As in init: a binding sample that rTorrent did not answer is one
 		// class in the notice; $failure keeps the SCGI class for the caller.
 		$jResult .= retrackersLifecycleDiagnosticJavascript('done',
-			RetrackersBoundedRead::incompleteReply($failure) ? 'daemon-unavailable' : $failure);
+			RetrackersBoundedRead::noAnswer($failure) ? 'daemon-unavailable' : $failure);
 	}
 	return($ok);
 }
@@ -11238,7 +11123,7 @@ class RetrackersRecoveryCoordinator
 		// v1 worker exits on either; an outage must not read as a corrupt ledger.
 		$keys = $adapter->getLedgerKeys($failure);
 		if (!is_array($keys)) {
-			$failure = RetrackersBoundedRead::incompleteReply($failure) ?
+			$failure = RetrackersBoundedRead::noAnswer($failure) ?
 				'receipt-ledger-attestation-unconfirmed' : 'receipt-ledger-corrupt';
 			return(false);
 		}

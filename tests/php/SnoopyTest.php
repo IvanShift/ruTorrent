@@ -1739,10 +1739,12 @@ $tests = array(
         testAssertTrue($client->fetch('http://tracker.test/favicon.ico'),
             'Guarded HTTPS proxy request must complete: ' . $client->error);
         $args = snoopyCurlArgs();
-        $flag = array_search('--request-target', $args, true);
-        testAssertTrue($flag !== false, 'HTTPS proxy needs a checked absolute HTTP target');
-        testAssertSame('http://93.184.216.34/favicon.ico', $args[$flag + 1] ?? null,
+        testAssertSame('http://93.184.216.34/favicon.ico', end($args),
             'HTTPS proxy cannot re-resolve the tracker hostname');
+        testAssertTrue(in_array('Host: tracker.test', $args, true),
+            'The transfer address must not replace the original Host header');
+        testAssertSame('http://tracker.test/favicon.ico', $client->lastResponseURL,
+            'The published response URL must retain the original host');
     },
     'a guarded proxy refuses private targets before connecting' => function () {
         $client = new SnoopyProxyTargetProbe();

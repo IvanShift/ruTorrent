@@ -353,6 +353,17 @@ class rCache
 			return(false);
 		}
 		$ret = @unlink($name);
+		if(!$ret)
+		{
+			clearstatcache(true, $name);
+			// lstat() alone also fails when an ancestor is unreadable. Confirm
+			// absence in the directory while still holding the key's writer lock.
+			if(@lstat($name) === false)
+			{
+				$entries = @scandir($this->dir);
+				$ret = is_array($entries) && !in_array(basename($name), $entries, true);
+			}
+		}
 		flock( $lock, LOCK_UN );
 		fclose( $lock );
 		if(!$ret)

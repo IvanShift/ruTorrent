@@ -1,34 +1,36 @@
 <?php
 
-require_once( 'lfs.php' );
-
 class Permission
 {
+	// PHP builds without ext-posix still expose the effective UID on Linux.
+	public static function effectiveUid()
+	{
+		if(function_exists('posix_geteuid'))
+			return(posix_geteuid());
+		$status = @file_get_contents('/proc/self/status');
+		if(is_string($status) && preg_match('/^Uid:[ \t]*[0-9]+[ \t]+([0-9]+)/m', $status, $match))
+			return((int)$match[1]);
+		return(false);
+	}
+
 	private static function isUserHavePrim($uid,$gids,$file,$flags)
 	{
 		$ss=LFS::stat($file);
 		if($ss)
 		{
-			$p=$ss['mode'];
-			if(($p & $flags) == $flags)
-			{
-				return(true);
-			}
-			$flags<<=3;
-			foreach( $gids as $ndx=>$gid)
-					if(($gid==$ss['gid']) &&
-					(($p & $flags) == $flags))
-					return(true);
-			$flags<<=3;
-			if(($uid==$ss['uid']) &&
-				(($p & $flags) == $flags))
-				return(true);
+			// POSIX selects exactly one class: owner, matching group, or other.
+			if($uid == $ss['uid'])
+				$flags <<= 6;
+			else if(in_array($ss['gid'], $gids))
+				$flags <<= 3;
+			return(($ss['mode'] & $flags) == $flags);
 		}
 		return(false);
 	}
 
 	public static function doesUserHave($uid,$gids,$file,$flags)
 	{
+		require_once(__DIR__.'/lfs.php');
 		if($uid<=0)
 		{
 				if(($flags & 0x0001) && !is_dir($file))
@@ -39,8 +41,10 @@ class Permission
 		if(is_link($file))
 		{
 			$newfile = readlink($file);
-			// check for relative link, e.g. ../path/to/other/dir
-			$file = substr($newfile, 0, 1) === '.' ? realpath(dirname($file) . DIRECTORY_SEPARATOR . $newfile) : $newfile;
+			if($newfile === false)
+				return(false);
+			$file = substr($newfile, 0, 1) === '/' ? $newfile
+				: realpath(dirname($file) . DIRECTORY_SEPARATOR . $newfile);
 		}
 		if(self::isUserHavePrim($uid,$gids,$file,$flags))
 		{

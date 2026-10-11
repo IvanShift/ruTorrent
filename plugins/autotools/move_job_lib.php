@@ -84,6 +84,7 @@ class AutoToolsMoveJob
             || !in_array($job['phase'], array('intent', 'claimed', 'receipted', 'staged', 'moved',
                 'published', 'directory', 'started', 'quarantined', 'aborting',
                 'notice-pending', 'notice-attempted', 'completed'), true)
+            || (array_key_exists('quarantine_confirmed', $job) && !is_bool($job['quarantine_confirmed']))
             || ($job['phase'] === 'aborting' && !array_key_exists('abort_identity', $job)))
             throw new RuntimeException('journal-malformed');
         return $job;
@@ -411,7 +412,7 @@ class AutoToolsMoveJob
         if (!@rmdir($path)) throw new RuntimeException('quarantine-root-not-empty');
     }
 
-    static private function quarantineCrossSource($root, $job)
+    static private function quarantineCrossSource($root, &$job)
     {
         self::verifyReceipt($job, $job['dst'], false);
         $src = self::identity($job['src']);
@@ -426,6 +427,7 @@ class AutoToolsMoveJob
             self::verifyReceipt($job, $job['src'], true);
             if (!self::renameNoReplace($job['src'], $job['quarantine']))
                 throw new RuntimeException('quarantine-rename-failed: ' . self::renameRefusal());
+            $job['quarantine_confirmed'] = false;
             $job['phase'] = 'quarantined';
             self::writeJob($root, $job);
             return true;
@@ -439,24 +441,43 @@ class AutoToolsMoveJob
         self::writeJob($root, $job);
     }
 
-    static private function finishCrossSource($root, $job, $claimPresent, $quarantined = false)
+    static private function cleanupCrossSource($root, &$job, $quarantined = false)
     {
         if (self::rpc('d.get_directory', $job['hash']) !== $job['daemon_dir'])
             throw new RuntimeException('post-start-directory-changed');
+        if (!isset($job['stage_identity']) || self::identity($job['dst']) !== $job['stage_identity']
+            || self::identity($job['stage']) !== null)
+            throw new RuntimeException('terminal-cross-payload-ambiguous');
         self::verifyReceipt($job, $job['dst'], false);
         if (self::identity($job['src']) !== null)
             throw new RuntimeException('source-still-public');
         // Read as absent, a quarantine this call renamed would never be
         // deleted: the job would retire and leave the whole source copy behind.
-        $quarantine = $quarantined ? self::renamedIdentity($job['quarantine'])
+        // Older version-2 receipts have no confirmation field. Treat them as
+        // unconfirmed until the exact quarantine inode has been observed;
+        // an absent answer on a later worker cannot retire that obligation.
+        $confirmed = !empty($job['quarantine_confirmed']);
+        $quarantine = $quarantined || !$confirmed ? self::renamedIdentity($job['quarantine'])
             : self::identity($job['quarantine']);
         if ($quarantine !== null && $quarantine !== $job['identity'])
             throw new RuntimeException('quarantine-replaced');
-        // Still absent after the bounded settle: hold rather than retire. The
-        // next worker resumes at 'started' and reads the quarantine again.
-        if ($quarantined && $quarantine === null)
+        // Still absent after the bounded settle: hold rather than retire.
+        if (!$confirmed && $quarantine === null)
             throw new RuntimeException('quarantine-unconfirmed');
-        if ($quarantine !== null) self::deleteQuarantine($job);
+        if ($quarantine !== null) {
+            if (!$confirmed) {
+                // Persist positive identity before deletion so a death during
+                // cleanup can resume even after the last source name is gone.
+                $job['quarantine_confirmed'] = true;
+                self::writeJob($root, $job);
+            }
+            self::deleteQuarantine($job);
+        }
+    }
+
+    static private function finishCrossSource($root, $job, $claimPresent, $quarantined = false)
+    {
+        self::cleanupCrossSource($root, $job, $quarantined);
         if ($claimPresent) self::acknowledgeClaim($job);
         self::markNoticePending($root, $job);
         self::log($job['hash'], 'physical commit: cross-mount payload at destination; source retired');
@@ -499,6 +520,14 @@ class AutoToolsMoveJob
         $hash = $job['hash'];
         $src = self::identity($job['src']);
         $dst = self::identity($job['dst']);
+        // A published stage is already the destination's payload, even when
+        // this mount still answers ENOENT for its new name. Never discard its
+        // receipt or abort back to the source while publication is unresolved.
+        if ($dst === null && (in_array($job['phase'], array('published', 'directory', 'quarantined', 'started'), true)
+            || (isset($job['stage_identity']) && self::identity($job['stage']) === null))) {
+            $dst = self::renamedIdentity($job['dst']);
+            if ($dst === null) throw new RuntimeException('published-destination-unconfirmed');
+        }
         if ($dst === null) {
             if ($src !== $job['identity'])
                 throw new RuntimeException('source-identity-ambiguous');
@@ -556,7 +585,7 @@ class AutoToolsMoveJob
             || self::identity($job['src']) !== null)
             throw new RuntimeException('completed-state-changed');
         if (!empty($job['cross'])) {
-            if (!isset($job['stage_identity'])
+            if (empty($job['quarantine_confirmed']) || !isset($job['stage_identity'])
                 || self::identity($job['dst']) !== $job['stage_identity']
                 || self::identity($job['stage']) !== null
                 || self::identity($job['quarantine']) !== null)
@@ -578,6 +607,9 @@ class AutoToolsMoveJob
         if ($job === null) return;
         if (!in_array($job['phase'], array('notice-pending', 'notice-attempted', 'completed'), true))
             throw new RuntimeException('notification-phase-ambiguous');
+        // Old receipts can reach a notice phase after an absent quarantine
+        // answer. Finish their exact source obligation without rewinding mail.
+        if (!empty($job['cross'])) self::cleanupCrossSource($root, $job);
         self::verifyCompleted($job);
         FileOperationOutcome::clear('autotools', $hash);
         if ($job['phase'] === 'notice-pending') {
@@ -608,9 +640,6 @@ class AutoToolsMoveJob
         }
         if ($src === null && self::rpc('d.get_directory', $hash) === $job['daemon_dir']) {
             if (!empty($job['cross'])) {
-                if (!isset($job['stage_identity']) || $dst !== $job['stage_identity'])
-                    throw new RuntimeException('terminal-cross-payload-ambiguous');
-                self::verifyReceipt($job, $job['dst'], false);
                 self::finishCrossSource($root, $job, true);
             } else {
                 if ($dst !== $job['identity'])
@@ -640,8 +669,11 @@ class AutoToolsMoveJob
                 return false;
             }
             if ($job['phase'] !== 'intent') {
-                self::verifyCompleted($job);
-                self::markNoticePending($root, $job);
+                if (!empty($job['cross'])) self::finishCrossSource($root, $job, false);
+                else {
+                    self::verifyCompleted($job);
+                    self::markNoticePending($root, $job);
+                }
                 return true;
             }
             if ($src !== $expected || $dst !== null) {

@@ -3189,9 +3189,11 @@ DSL;
 			});
 			strictAssertSame(null, rTorrent::$lastSend,
 				$label . ': no replacement is loaded after an uncertain daemon outcome');
-			foreach(array('d.erase', 'd.open', 'd.open|d.start', 'd.set_custom|d.set_custom') as $key)
-				strictAssertSame(0, count(rXMLRPCRequest::requestsFor($key)),
-					$label . ': no irreversible follow-up after the boundary: ' . $key);
+			foreach(array('d.erase', 'd.open', 'd.start') as $command)
+				strictAssertNoRpcCommand($command,
+					$label . ': no irreversible follow-up after the boundary: ' . $command);
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')),
+				$label . ': no standalone ownership clear after the uncertain boundary');
 			strictAssertTrue(strpos(implode("\n", FileUtil::$log), 'nothing was changed') === false,
 				$label . ': a partial daemon-side command is never reported as changing nothing');
 		}

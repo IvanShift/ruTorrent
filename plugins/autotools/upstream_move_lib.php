@@ -14,11 +14,12 @@ public static function rtMoveFile( $src, $dst, $dbg = false )
 		// returns true without its times; a real rename keeps the inode and
 		// the times. touch() opens a name that access() reports missing with
 		// O_TRUNC, and drvfs over 9p (Docker Desktop, 2026-10-11) answered
-		// ENOENT for a name it had just renamed, so only a copy that is seen
-		// under another inode is touched: lost times, never an emptied file.
-		clearstatcache( true, $dst );
-		$ds = @stat( $dst );
-		if( $ss!==false && $ds!==false && ($ds['dev']!==$ss['dev'] || $ds['ino']!==$ss['ino']) )
+		// ENOENT for a name it had just renamed. Settle that new name through
+		// the shared bound before restoring a copy's times; an unseen name is
+		// never touched. A same-filesystem rename needs no timestamp write.
+		$files = new ErasedataFilesystemOps();
+		$ds = $files->renamedEntryIdentity( $dst );
+		if( $ss!==false && $ds!==false && $ds['is_file'] && ($ds['dev']!==$ss['dev'] || $ds['ino']!==$ss['ino']) )
 			touch( $dst, $ss['mtime'], $ss['atime'] );
 		return true;
 	}

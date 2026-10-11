@@ -118,6 +118,7 @@ class Snoopy
 	private $responseCookieSequence = 0;
 	private $selectedCookieAccount = null;
 	private $requestChainSourceURL = '';
+	private $requestDeadline = null;
 	const MAX_RESPONSE_COOKIES = 300;
 	const MAX_DOMAIN_COOKIES = 50;
 	const MAX_COOKIE_BYTES = 4096;
@@ -160,6 +161,35 @@ class Snoopy
 			$this->verify_certificates = (bool)$httpVerifyCertificates;
 		if(isset($httpIP))
 			$this->IP = $httpIP;
+	}
+
+	/** One monotonic budget across fetches and redirects; HTTP uses curl too.
+	 * Synchronous target resolution is charged after it returns, not interrupted.
+	 */
+	public function setRequestDeadline($seconds)
+	{
+		$this->requestDeadline = self::requestClock() + max(0.0, (float)$seconds);
+	}
+
+	private static function requestClock()
+	{
+		$time = hrtime();
+		return $time[0] + $time[1] / 1000000000.0;
+	}
+
+	private function requestTimeLeft()
+	{
+		return $this->requestDeadline === null ? null : $this->requestDeadline - self::requestClock();
+	}
+
+	private function requestDeadlineExpired()
+	{
+		// curl stores this timeout in milliseconds; a smaller positive value
+		// rounds to its unlimited zero. Refuse the final millisecond instead.
+		if($this->requestDeadline === null || $this->requestTimeLeft() > 0.001)
+			return false;
+		$this->refuseResponseBody('request-deadline');
+		return true;
 	}
 
 	static public function linkencode($p_url)
@@ -848,11 +878,16 @@ class Snoopy
 	private function fetchRequest($URI,$method,$content_type,$body)
 	{
 		$this->error = "";
+		if($this->requestDeadline !== null)
+			// Opt-in callers can distinguish a fresh HTTP answer from preflight refusal.
+			$this->response_code = '';
 		if($this->_redirectdepth === 0)
 		{
 			$this->lastredirectaddr = "";
 			$this->lastResponseURL = "";
 		}
+		if($this->requestDeadlineExpired())
+			return false;
 		$parts = parse_url($URI);
 		if( !is_array($parts) || !isset($parts["scheme"]) || !isset($parts["host"]) )
 		{
@@ -874,6 +909,8 @@ class Snoopy
 		$this->_pinnedaddr = false;
 		if($this->block_private && ($parts["scheme"]=="http" || $parts["scheme"]=="https") && !$this->checkTarget($this->host))
 			return(false);
+		if($this->requestDeadlineExpired())
+			return false;
 		$ret = true;
 		switch($parts["scheme"])
 		{
@@ -883,7 +920,7 @@ class Snoopy
 			}
 			case "http":
 			{
-				if($this->proxy_proto!='https')
+				if($this->proxy_proto!='https' && $this->requestDeadline === null)
 				{
 					if(($fp = $this->connect())!==false)
 					{
@@ -1469,11 +1506,13 @@ class Snoopy
 
 	function _httpsrequest($url,$content_type="",$body="",$http_method="GET")
 	{
+		$scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+		$defaultPort = $scheme === 'http' ? 80 : 443;
 		$headers = array();
 		if(!empty($this->agent))
 			$headers[] = "User-Agent: ".$this->agent;
 		if(!empty($this->host) && !isset($this->rawheaders['Host']))
-			$headers[] = "Host: ".$this->host.($this->port == 443 ? "" : ":".$this->port);
+			$headers[] = "Host: ".$this->host.($this->port == $defaultPort ? "" : ":".$this->port);
 		if(!empty($this->accept))
 			$headers[] = "Accept: ".$this->accept;
 		if($this->use_gzip && $this->hasZlibGzip())
@@ -1498,6 +1537,8 @@ class Snoopy
 			$headers[] = "Authorization: Basic ".base64_encode($this->user.":".$this->pass);
 
 		$cmdline_params = '';
+		if($scheme === 'http' && $this->requestDeadline !== null && $this->_httpversion === 'HTTP/1.0')
+			$cmdline_params .= ' --http1.0';
 		// Legacy 3-arg callers keep curl's own method choice; explicit callers
 		// (fetch with any method) get the method forwarded verbatim.
 		if(func_num_args() >= 4)
@@ -1508,15 +1549,13 @@ class Snoopy
 		if(!empty($body))
 			$cmdline_params .= " -d ".escapeshellarg($body);
 
-		if($this->read_timeout > 0)
-			$cmdline_params .= " -m ".$this->read_timeout;
-
 		if(!is_null($this->IP))
 			$cmdline_params .= " --interface ".$this->IP;
 
 		if($this->useIpv4)
 			$cmdline_params .= " --ipv4";
 
+		$curlURL = $url;
 		if($this->_pinnedaddr!==false)
 		{
 			$pinned = (filter_var($this->_pinnedaddr,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)!==false)
@@ -1529,7 +1568,10 @@ class Snoopy
 				$query = parse_url($url,PHP_URL_QUERY);
 				$target = 'http://'.$pinned.($this->port == 80 ? '' : ':'.$this->port)
 					.$path.($query === null ? '' : '?'.$query);
-				$cmdline_params .= ' --request-target '.escapeshellarg($target);
+				// curl 7.74 ignores --request-target in absolute proxy requests.
+				// The transfer URL itself must name the checked address; headers,
+				// cookies and response/redirect metadata keep the original URL.
+				$curlURL = $target;
 			}
 			else
 			{
@@ -1552,6 +1594,20 @@ class Snoopy
 			$cmdline_params .= " --proxy ".(empty($this->proxy_proto) ? '' : $this->proxy_proto.'://').$this->proxy_host.":".$this->proxy_port;
 		}
 
+		// Recompute immediately before starting curl. Redirects and later fetches
+		// on this client spend the remaining budget instead of restarting it.
+		if($this->requestDeadlineExpired())
+			return false;
+		$timeout = $this->requestTimeLeft();
+		if($this->read_timeout > 0)
+			$timeout = $timeout === null ? $this->read_timeout : min($timeout, $this->read_timeout);
+		if($this->requestDeadline === null && $this->read_timeout > 0)
+			$cmdline_params .= ' -m ' . $this->read_timeout;
+		else if($timeout !== null)
+			// curl 8.14 misreads six fractional digits (0.999999 becomes
+			// 99ms). Its timeout is millisecond-based, so truncate to that unit.
+			$cmdline_params .= ' -m ' . sprintf('%.3F', max(0.001, floor($timeout * 1000) / 1000));
+
 		$headerfile = FileUtil::getTempFilename('https-header');
 		$contfile = FileUtil::getTempFilename('https-body');
 
@@ -1562,7 +1618,7 @@ class Snoopy
 		// transfer, before the temporary body file can grow without bound.
 		$maxDownload = max(1, (int)$this->maxlength);
 		exec(escapeshellarg(Utility::getExternal('curl'))." -g --max-filesize ".$maxDownload
-			." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($url),$results,$return);
+			." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($curlURL),$results,$return);
 		$this->_redirectaddr = false;
 		$this->headers = array();
 		$this->status = $return;
@@ -1597,7 +1653,7 @@ class Snoopy
 			{
 				if(preg_match('/^(Location:|URI:|Refresh:)/i', $header))
 				{
-					$redirect = $this->redirectFromHeader($header, 'https');
+					$redirect = $this->redirectFromHeader($header, $scheme);
 					if($redirect === false)
 						continue;
 					$this->_redirectaddr = $redirect;

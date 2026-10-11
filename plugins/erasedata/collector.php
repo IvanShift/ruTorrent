@@ -491,7 +491,7 @@ function erasedataCaptureRecoveryDirectory($recovery, ErasedataFilesystemOps $fi
 		return(false);
 	// The rename captures one directory name atomically; only the inode that was
 	// validated through the recovery link may cross into recursive deletion.
-	$current = $filesystem->pathIdentity($capture);
+	$current = $filesystem->renamedPathIdentity($capture);
 	if(!erasedataSameFilesystemEntry($recovery['identity'], $current))
 	{
 		if(!erasedataPathExists($target))
@@ -743,7 +743,7 @@ function erasedataCompleteNonForceDirectory($path, $reservationKey,
 		$filesystem->removeDirectory($reservation);
 		return(false);
 	}
-	$reservedIdentity = $filesystem->pathIdentity($reserved);
+	$reservedIdentity = $filesystem->renamedPathIdentity($reserved);
 	if(!erasedataSameFilesystemEntry($expected, $reservedIdentity))
 	{
 		// Publish only through the no-replace link helper. If another directory
@@ -891,7 +891,7 @@ function erasedataCompleteForcedDirectory($path, $reservationKey,
 		$filesystem->removeDirectory($reservation);
 		return(false);
 	}
-	$reservedIdentity = $filesystem->pathIdentity($reserved);
+	$reservedIdentity = $filesystem->renamedPathIdentity($reserved);
 	if(!erasedataSameFilesystemEntry($expected, $reservedIdentity))
 	{
 		erasedataPublishReservationLink(
@@ -1152,9 +1152,10 @@ function erasedataCleanupCaptureReferencedByName($entry, $public,
 }
 
 function erasedataCleanupCapturedFileMatches($entry, $expected, $original,
-	ErasedataFilesystemOps $filesystem)
+	ErasedataFilesystemOps $filesystem, $renamed = false)
 {
-	$current = $filesystem->entryIdentity($entry);
+	$current = $renamed ? $filesystem->renamedEntryIdentity($entry)
+		: $filesystem->entryIdentity($entry);
 	if(!erasedataSameEntryIdentity($original, $current)
 		|| !isset($expected['lstat']['dev'], $expected['lstat']['ino'])
 		|| $current['dev'] !== $expected['lstat']['dev']
@@ -2620,9 +2621,11 @@ final class ErasedataCollector
 				$this->nativeDocument = array('path' => $terminal, 'stat' => $stat, 'bytes' => $bytes);
 			if(!$ret && $complete)
 			{
-				if($this->nativeFailure === null) $this->nativeFailure = 'terminal-publication-unresolved';
+				$reason = !$renamed && erasedataPathExists($terminal)
+					? 'terminal-publication-destination-occupied' : 'terminal-publication-unresolved';
+				$this->nativeFailure = $reason;
 				// Name the document where it now lives.
-				erasedataNativeTerminalDiagnostic($renamed ? $terminal : $path, 'terminal-publication-unresolved');
+				erasedataNativeTerminalDiagnostic($renamed ? $terminal : $path, $reason);
 			}
 		}
 		else $ret = $complete && $this->filesystem->unlinkCapturedEntry($path, $stat, 'manifest-consumption');
@@ -2775,7 +2778,7 @@ final class ErasedataCollector
 			$reason = 'capture-failed';
 			return(false);
 		}
-		$captured = $this->filesystem->entryIdentity($reserved);
+		$captured = $this->filesystem->renamedEntryIdentity($reserved);
 		if(!is_array($captured) || !erasedataSameEntryIdentity($before, $captured)
 			|| !erasedataReservationHasEncodedIdentity(
 				$reservation, $dir, $reservationKey))
@@ -2879,7 +2882,7 @@ final class ErasedataCollector
 			return(false);
 		}
 		if(!erasedataCleanupCapturedFileMatches(
-			$entry, $expected, $original, $this->filesystem))
+			$entry, $expected, $original, $this->filesystem, true))
 		{
 			if(!erasedataCleanupRestoreCapturedFile($file, $info, $this->filesystem, $reason))
 				return(false);

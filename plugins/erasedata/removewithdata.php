@@ -2208,6 +2208,9 @@ if(!function_exists('erasedataReadDrainState'))
 	// outside the schema is NOT known and fails closed, because a caller that
 	// took "unreadable" for "nothing to do here" would arm a second schedule
 	// over an obligation it could not see.
+	// Malformed optional retry advice may be discarded only when the entire
+	// remaining owner/journal schema validates. Reading never repairs the file;
+	// the next guarded state write can persist that advice-free snapshot.
 	//
 	// "Absent" is a claim about a lookup that ANSWERED. file_exists() and
 	// is_link() both answer false for a file inside a directory this process may
@@ -2235,8 +2238,24 @@ if(!function_exists('erasedataReadDrainState'))
 		if(strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES)
 			return(false);
 		$decoded = json_decode($bytes, true);
-		if(!is_array($decoded) || !erasedataValidateDrainState($decoded, $listPath))
+		if(!is_array($decoded))
 			return(false);
+		if(!erasedataValidateDrainState($decoded, $listPath))
+		{
+			if(!array_key_exists('native_retry', $decoded)
+				|| erasedataNativeRetryValid($decoded['native_retry']))
+				return(false);
+			unset($decoded['native_retry']);
+			if(!erasedataValidateDrainState($decoded, $listPath))
+				return(false);
+			static $reported = array();
+			if(!isset($reported[$path]))
+			{
+				$reported[$path] = true;
+				FileUtil::toLog('erasedata: retry metadata reset document='.erasedataLogPath($path)
+					.' key=native_retry reason=malformed-advisory; hints reset; journal preserved');
+			}
+		}
 		return($decoded);
 	}
 }
@@ -5783,15 +5802,16 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		$memory = erasedataDrainReportMemory($acknowledgement['state']);
 		$fresh = array();
 
-		// (2) Worker admission, NONBLOCKING. A hung owner is a bounded
-		// classified consequence: the flock is never broken and not one of the
-		// jobs the owner holds is consumed behind its back.
+		// (2) Worker admission, NONBLOCKING. Contention is a bounded classified
+		// consequence; it says nothing about the current owner's age or health.
+		// The flock is never broken and the owner's jobs are never consumed
+		// behind its back.
 		$workerLock = erasedataAcquireDrainPassLock($listPath,
 			ERASEDATA_DRAIN_WORKER_LOCK_NAME, true);
 		if(!is_resource($workerLock))
 		{
 			erasedataDrainReportGroup($log, 'tick', array(array('worker-busy',
-				$generation, 0, 'stale-worker-owns-the-queue-nothing-consumed',
+				$generation, 0, 'another-worker-owns-the-queue-nothing-consumed',
 				null)), $memory, $fresh);
 			// A tick that got no further re-evaluated nothing but itself, so it
 			// KEEPS what the last complete tick remembered and only adds its

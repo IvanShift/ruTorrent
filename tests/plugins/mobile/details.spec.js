@@ -291,3 +291,49 @@ describe("mobile ratio group and channel in the General tab", () => {
       .toEqual({ ratio: "-1", channel: "-1", status: "Tracker: [ok]" });
   });
 });
+
+describe("mobile file-list ownership", () => {
+  it.each(['__proto__', '__proto__/file', 'constructor/file', 'folder/__proto__/file'])("renders the torrent path %s as ordinary file data", name => {
+    document.body.innerHTML = '<div id="detailsFilesPage"></div>';
+    plugin.torrent = { hash: "A", downloaded: 0 };
+    plugin.request = (url, callback) => callback({ A: [{ name, size: 1, done: 0, priority: 1 }] });
+    expect(() => plugin.loadFiles()).not.toThrow();
+    if (name.includes('/')) plugin.drawFiles(name.substring(0, name.lastIndexOf('/')));
+    expect($('#detailsFilesPage').text()).toContain(name.split('/').pop());
+    const sent = [];
+    plugin.request = url => sent.push(url);
+    $('#detailsFilesPage select').first().val('0').trigger('change');
+    expect(sent).toEqual(['?action=setprio&hash=A&v=0&s=0']);
+  });
+
+  it("ignores a late file list from the previously selected torrent", () => {
+    document.body.innerHTML = '<div id="detailsFilesPage"></div>';
+    const pending = {};
+    plugin.request = (url, callback) => { pending[url] = callback; };
+    plugin.torrent = { hash: "A", downloaded: 0 };
+    plugin.loadFiles();
+    plugin.torrent = { hash: "B", downloaded: 0 };
+    plugin.loadFiles();
+    const file = name => ({ name, size: 100, done: 0, priority: 1 });
+    pending['?action=getfiles&hash=B']({ B: [file('b-file')] });
+    pending['?action=getfiles&hash=A']({ A: [file('a-file')] });
+    expect(Object.keys(plugin.files.container)).toEqual(['b-file']);
+    const sent = [];
+    plugin.request = url => sent.push(url);
+    $('#detailsFilesPage select').first().val('0').trigger('change');
+    expect(sent).toEqual(['?action=setprio&hash=B&v=0&s=0']);
+  });
+
+  it("does not install a file list after the selected torrent disappears", () => {
+    document.body.innerHTML = '<div id="detailsFilesPage"></div>';
+    let reply;
+    plugin.request = (url, callback) => { reply = callback; };
+    plugin.torrent = { hash: "A", downloaded: 0 };
+    plugin.loadFiles();
+    plugin.files = undefined;
+    plugin.torrent = undefined;
+    expect(() => reply({ A: [{ name: 'a-file', size: 1, done: 0, priority: 1 }] })).not.toThrow();
+    expect(plugin.files).toBeUndefined();
+    expect($('#detailsFilesPage').children()).toHaveLength(0);
+  });
+});

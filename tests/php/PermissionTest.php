@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/SCGITransportFixture.php');
 require_once(__DIR__ . '/../../php/utility/permission.php');
 
 class PermissionTest extends TestCase
@@ -86,6 +87,87 @@ class PermissionTest extends TestCase
 		}
 
 		return $this;
+	}
+
+	public function testEffectiveUidDescribesTheRunningProcess()
+	{
+		$uid = Permission::effectiveUid();
+		if (function_exists('posix_geteuid')) {
+			$this->assertSame(posix_geteuid(), $uid, 'the effective process UID owns cleanup work');
+		} else {
+			$status = @file_get_contents('/proc/self/status');
+			$expected = is_string($status) && preg_match('/^Uid:[ \t]*[0-9]+[ \t]+([0-9]+)/m', $status, $match)
+				? (int)$match[1] : false;
+			$this->assertSame($expected, $uid, 'Linux supplies the effective UID without ext-posix');
+		}
+	}
+
+	public function testEffectiveUidWithoutOptionalExtensions()
+	{
+		$script = 'require '.var_export(realpath(__DIR__.'/../../php/utility/permission.php'), true).';'
+			.'echo json_encode(array(Permission::effectiveUid(), function_exists("posix_geteuid")));';
+		$child = SCGITransportFixture::runPhpChild(array('-n', '-r', $script));
+		$this->assertSame(0, $child['exitCode'], 'the UID leaf loads without filesystem dependencies: '.$child['stderr']);
+		$this->assertSame('', $child['stderr'], 'the UID leaf emits no diagnostics');
+		$result = json_decode($child['stdout'], true);
+		$this->assertTrue(is_array($result) && count($result) === 2, 'the child reports its actual transport-free UID');
+		$this->assertSame(Permission::effectiveUid(), $result[0] ?? null,
+			'the no-extensions child retains the effective UID of its parent');
+		if (!empty($result[1])) echo "NOT CHECKED: ext-posix is built into this PHP; no-posix fallback needs a shared-extension build\n";
+	}
+
+	public function testOwnerPermissionsDoNotFallThroughToGroupOrOther()
+	{
+		$uid = Permission::effectiveUid();
+		if ($uid === false || $uid === 0) {
+			echo "NOT CHECKED: owner permission precedence needs a known non-root process UID\n";
+			return;
+		}
+		$file = $this->fixtureDir . '/permission-class';
+		file_put_contents($file, 'owned');
+		foreach (array(0004, 0040, 0044) as $mode) {
+			chmod($file, $mode);
+			clearstatcache(true, $file);
+			$this->assertSame(false, Permission::doesUserHave($uid, array(filegroup($file)), $file, 4),
+				'the owner cannot acquire read permission from another permission class');
+		}
+		chmod($file, 0400);
+		clearstatcache(true, $file);
+		$this->assertSame(true, Permission::doesUserHave($uid, array(filegroup($file)), $file, 4),
+			'the owner read bit still grants access');
+		unlink($file);
+	}
+
+	public function testMatchingGroupPermissionsDoNotFallThroughToOther()
+	{
+		$file = $this->fixtureDir . '/group-permission-class';
+		file_put_contents($file, 'owned');
+		$foreignUid = fileowner($file) === 12345 ? 12346 : 12345;
+		chmod($file, 0004);
+		clearstatcache(true, $file);
+		$this->assertSame(false, Permission::doesUserHave($foreignUid, array(filegroup($file)), $file, 4),
+			'a matching group selects its bits even when others can read');
+		chmod($file, 0040);
+		clearstatcache(true, $file);
+		$this->assertSame(true, Permission::doesUserHave($foreignUid, array(filegroup($file)), $file, 4),
+			'the matching group read bit grants access');
+		unlink($file);
+	}
+
+	public function testBareRelativeSymlinkUsesItsOwnDirectory()
+	{
+		$file = $this->fixtureDir . '/relative-leaf';
+		$link = $this->fixtureDir . '/relative-link';
+		file_put_contents($file, 'owned');
+		symlink('relative-leaf', $link);
+		try {
+			$this->assertSame('owned', file_get_contents($link), 'the real relative symlink resolves');
+			$this->assertSame(true, Permission::doesUserHave(Permission::effectiveUid(), array(filegroup($file)), $link, 4),
+				'a bare relative target resolves beside the link rather than in PHP cwd');
+		} finally {
+			unlink($link);
+			unlink($file);
+		}
 	}
 
 	public function testPermission()

@@ -24,12 +24,17 @@ if (!defined('TRACKLABELS_FAVICON_STAGE_TTL'))
 // PHP worker; unbounded, one page load exhausted the PHP-FPM pool.
 if (!defined('TRACKLABELS_FAVICON_FETCH_SLOTS'))
 	define('TRACKLABELS_FAVICON_FETCH_SLOTS', 2);
-// Connect and read timeout for each favicon request, in seconds.
+// Total HTTP transfer budget, including redirects and the PNG fallback.
+// Synchronous DNS admission can return later; it cannot restart this budget.
 if (!defined('TRACKLABELS_FAVICON_FETCH_TIMEOUT'))
 	define('TRACKLABELS_FAVICON_FETCH_TIMEOUT', 3);
 // Far past the attempt whose delay reaches the day-long cap.
 if (!defined('TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX'))
 	define('TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX', 16);
+// Two tabs can pass admission before either writes a marker. Coalesce their
+// near-simultaneous failures; a later retry still advances the backoff.
+if (!defined('TRACKLABELS_FAVICON_RETRY_DEDUP_TTL'))
+	define('TRACKLABELS_FAVICON_RETRY_DEDUP_TTL', 5);
 
 function favicon_retry_delay($attempts)
 {
@@ -64,7 +69,8 @@ function favicon_fetch_slot($dir, &$fault)
 {
 	$fault = true;
 	for ($slot = 0; $slot < TRACKLABELS_FAVICON_FETCH_SLOTS; $slot++) {
-		$lock = @fopen($dir . '/.fetch-slot-' . $slot . '.lock', 'c+b');
+		// curl must not inherit the flock and keep a dead PHP worker's slot busy.
+		$lock = @fopen($dir . '/.fetch-slot-' . $slot . '.lock', 'c+be');
 		if ($lock === false)
 			continue;
 		if (flock($lock, LOCK_EX | LOCK_NB, $wouldBlock))
@@ -94,12 +100,32 @@ function favicon_record_miss($miss_name, $retry = false)
 		FileUtil::makeDirectory($dir);
 	$written = true;
 	if ($retry) {
-		$attempts = is_file($miss_name)
-			? min(favicon_retry_attempts($miss_name) + 1, TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX) : 1;
-		$written = @file_put_contents($miss_name, (string)$attempts, LOCK_EX) === strlen((string)$attempts);
+		$existed = is_file($miss_name);
+		$lock = @fopen($miss_name, 'c+b');
+		if ($lock === false)
+			$written = false;
+		else {
+			try {
+				$written = flock($lock, LOCK_EX);
+				if ($written) {
+					$stat = fstat($lock);
+					$age = time() - $stat['mtime'];
+					if ($stat['size'] > 0 && $age >= 0 && $age < TRACKLABELS_FAVICON_RETRY_DEDUP_TTL)
+						return;
+					$attempts = $existed || $stat['size'] > 0
+						? min(favicon_retry_attempts($miss_name) + 1, TRACKLABELS_FAVICON_RETRY_ATTEMPTS_MAX) : 1;
+					$value = (string)$attempts;
+					$written = fwrite($lock, $value) === strlen($value)
+						&& ftruncate($lock, strlen($value)) && fflush($lock)
+						&& @touch($miss_name, time());
+				}
+			} finally {
+				fclose($lock);
+			}
+		}
 	}
 	// An explicit time keeps the marker on the clock that favicon_miss_is_fresh() reads.
-	if (!is_dir($dir) || !$written || !@touch($miss_name, time()))
+	if (!is_dir($dir) || !$written || (!$retry && !@touch($miss_name, time())))
 		FileUtil::toLog('tracklabels: favicon miss cache write failed');
 }
 
@@ -252,6 +278,8 @@ function image_name($prefix, $req_field, $values = null)
 		$name = rawurldecode($values[$req_field]);
 		if (strpos($name, "\0") !== false)
 			bad('Invalid ' . $req_field);
+		if ($prefix === 'trackers' && strpos($name, '/') !== false)
+			bad('Invalid ' . $req_field);
 		$name = get_alias(function_exists('mb_strtolower')
 			? mb_strtolower($name, 'utf-8')
 			: strtolower($name));
@@ -351,22 +379,20 @@ if ($png_name !== null) {
 					try {
 						ignore_user_abort(true);
 						set_time_limit(0);
-						// Every fetch ends in a cache write, so it also sweeps stages of
-						// dead workers; the slot file's owner is the cache owner.
-						$owner = fstat($slot);
-						favicon_reap_stages($targetdir, $owner['uid']);
+						// A shared lock file can have another owner. Only this process's
+						// effective UID authorizes cleanup of its private staged bytes.
+						$uid = Permission::effectiveUid();
+						if ($uid !== false)
+							favicon_reap_stages($targetdir, $uid);
 
 						$client = new Snoopy();
 						$client->block_private = true;
 						$client->private_allowlist = array();
 						$client->read_timeout = TRACKLABELS_FAVICON_FETCH_TIMEOUT;
-						$client->_fp_timeout = TRACKLABELS_FAVICON_FETCH_TIMEOUT;
+						$client->setRequestDeadline(TRACKLABELS_FAVICON_FETCH_TIMEOUT);
 						$retryNeeded = false;
 						foreach (['favicon.ico', 'favicon.png'] as $favicon) {
 							$url = $client->linkencode("http://{$tracker}/{$favicon}");
-							// Snoopy keeps the last status line when a request fails before
-							// HTTP, so clear it to tell whether this request got an answer.
-							$client->response_code = '';
 							$fetched = @$client->fetchComplex($url);
 							if ($fetched && $client->status == 200) {
 								// Readers never see a partial write or unvalidated remote content.

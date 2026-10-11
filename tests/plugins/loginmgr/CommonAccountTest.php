@@ -267,25 +267,34 @@ $tests = array(
     },
 
     'a failed Kinozal relogin leaves the login reply on the client that requested details' => function () {
-        $account = new CAKinozalAccount();
-        $challenge = '<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/test"></script></html>';
-        $client = new CAClient(array(
-            array(200, '<a href="/signup.php">guest</a>'),
-            array(200, caLivePage()),
-            array(403, $challenge),
-        ));
-        testAssertSame(false, $account->fetch($client,
-            'https://kinozal.guru/get_srv_details.php?action=2&id=1', 'fixture-user', 'fixture-password', 'GET', '', ''),
-            'the failed login cannot return the requested details');
-        testAssertSame(1, $account->logins, 'the real adapter performed its relogin path');
-        testAssertSame(3, $client->fetches, 'details, landing page and takelogin were requested');
-        testAssertSame(array(
-            array('GET', 'https://kinozal.guru/get_srv_details.php?action=2&id=1'),
-            array('GET', 'https://kinozal.guru'),
-            array('POST', 'https://kinozal.guru/takelogin.php'),
-        ), $client->requests, 'the final reply belongs to the actual adapter login POST');
-        testAssertSame(403, $client->status, 'the remaining status comes from takelogin');
-        testAssertSame($challenge, $client->results, 'the remaining body comes from takelogin');
+        KinozalResponse::resetCycle();
+        try {
+            $account = new CAKinozalAccount();
+            $challenge = '<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/test"></script></html>';
+            $client = new CAClient(array(
+                array(200, '<a href="/signup.php">guest</a>'),
+                // Form portion captured from /login.php on 2026-08-07, including
+                // the stray quote in its bare name value.
+                array(200, '<form method=post action="/takelogin.php" name=upt">'
+                    . '<input type=text size=35 id="username" name="username" value="">'
+                    . '<input type=password size=35 id="password" name="password" value=""></form>'),
+                array(403, $challenge),
+            ));
+            testAssertSame(false, $account->fetch($client,
+                'https://kinozal.guru/get_srv_details.php?action=2&id=1', 'fixture-user', 'fixture-password', 'GET', '', ''),
+                'the failed login cannot return the requested details');
+            testAssertSame(1, $account->logins, 'the real adapter performed its relogin path');
+            testAssertSame(3, $client->fetches, 'details, captured login form and takelogin were requested');
+            testAssertSame(array(
+                array('GET', 'https://kinozal.guru/get_srv_details.php?action=2&id=1'),
+                array('GET', 'https://kinozal.guru/login.php'),
+                array('POST', 'https://kinozal.guru/takelogin.php'),
+            ), $client->requests, 'the final reply belongs to the actual adapter login POST');
+            testAssertSame(403, $client->status, 'the remaining status comes from takelogin');
+            testAssertSame($challenge, $client->results, 'the remaining body comes from takelogin');
+        } finally {
+            KinozalResponse::resetCycle();
+        }
     },
 
     // ---- what fetch() does with each kind of answer -------------------------

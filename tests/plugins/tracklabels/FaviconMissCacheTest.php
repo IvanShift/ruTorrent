@@ -380,6 +380,16 @@ PHP
         $this->assertTrue(!file_exists($this->trackersDir()), 'an invalid tracker name builds no cache path');
     }
 
+    public function testTrackerSubdirectoriesCannotBypassTheGlobalFetchSlots()
+    {
+        foreach (array('extra/' . self::PUBLIC_HOST, 'extra%2F' . self::PUBLIC_HOST) as $tracker) {
+            $response = $this->fetch($tracker, self::NOT_FOUND);
+            $this->assertSame('400', $response['status'], 'tracker input must name one host, not a subdirectory');
+            $this->assertSame(array(), $response['requests'], 'a nested tracker cannot open an independent fetch pool');
+            $this->assertTrue(!file_exists($this->trackersDir()), 'a rejected tracker creates no cache or lock directory');
+        }
+    }
+
     public function testMissExpiresAfterADayAndSuccessClearsTheMarker()
     {
         mkdir($this->trackersDir(), 0777, true);
@@ -476,6 +486,42 @@ PHP
         $this->fetch('retry.test', self::NOT_FOUND, 'unresolved');
         $this->assertSame('1', file_get_contents($retry), 'a later outage starts with the short first retry again');
         $this->assertSame(0, $this->pluginLogLines(), 'persistent upstream failure remains quiet');
+    }
+
+    public function testTwoTabsDoNotCountTheSameRecentHostFailureTwice()
+    {
+        $children = array();
+        $held = array();
+        $answer = "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        try {
+            foreach (array('tab-a', 'tab-b') as $tab) {
+                $children[$tab] = $this->startFetch(self::PUBLIC_HOST);
+                $deadline = microtime(true) + 5;
+                while (count($held) < count($children) && microtime(true) < $deadline) $this->acceptHeld($held, 0.02);
+            }
+            $this->assertSame(2, count($held), 'both tabs began fetching before either negative marker existed');
+            if (count($held) !== 2) return;
+            // Finish A before releasing B's already-admitted first response.
+            // B must observe A's recent marker rather than advance it again.
+            fwrite($held[0]['peer'], $answer);
+            fclose($held[0]['peer']);
+            $this->serveUntilFinished($children, array('tab-a'), $answer, 2);
+            $this->answerHeld($held, $answer);
+            $this->serveUntilFinished($children, array('tab-b'), $answer, 2);
+            foreach ($children as &$child) {
+                $result = $this->finished($child);
+                $this->assertTrue(is_array($result) && $result['status'] === '404', 'both tabs finish with a quiet miss');
+            }
+            $retry = $this->trackersDir() . '/' . self::PUBLIC_HOST . '.retry';
+            $this->assertSame('1', (string) @file_get_contents($retry), 'near-simultaneous failures count as one backoff step');
+            touch($retry, time() - 360);
+            $later = $this->fetch(self::PUBLIC_HOST, $answer);
+            $this->assertSame(2, count($later['requests']), 'the host is tried again after the first delay');
+            $this->assertSame('2', file_get_contents($retry), 'a later failure advances the backoff normally');
+        } finally {
+            $this->answerHeld($held, '');
+            $this->stopChildren($children);
+        }
     }
 
     public function testRetryMarkersFromEarlierReleasesKeepTheirDelay()
@@ -616,6 +662,83 @@ PHP
         } finally {
             $this->answerHeld($held, self::NOT_FOUND);
             $this->stopChildren($children);
+        }
+    }
+
+    public function testTricklingHttpBodyCannotHoldAFetchSlotPastTheDeadline()
+    {
+        $children = array();
+        $held = array();
+        try {
+            $children['drip'] = $this->startFetch('93.184.216.70', array('timeout' => 1));
+            $deadline = microtime(true) + 5;
+            while (count($held) === 0 && microtime(true) < $deadline) $this->acceptHeld($held, 0.05);
+            $this->assertSame(1, count($held), 'the slow body fixture receives the actual favicon request');
+            if (count($held) !== 1) return;
+            fwrite($held[0]['peer'], "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n");
+            // Each byte arrives well inside the read timeout. Only a total
+            // deadline can release the worker while the response keeps arriving.
+            $deadline = microtime(true) + 2;
+            while ($this->finished($children['drip']) === null && microtime(true) < $deadline) {
+                @fwrite($held[0]['peer'], 'x');
+                usleep(100000);
+            }
+            $result = $this->finished($children['drip']);
+            $this->assertTrue(is_array($result), 'a trickling response cannot extend the one-second fetch budget');
+            if (!is_array($result)) return;
+            $this->assertSame('404', $result['status'], 'an incomplete upstream image remains a quiet browser miss');
+            $this->assertTrue($result['elapsed'] < 1.8, 'the total transfer budget is bounded: ' . $result['elapsed']);
+            $this->assertSame('1', (string) @file_get_contents($this->trackersDir() . '/93.184.216.70.retry'),
+                'a deadline failure is uncertain and keeps the short first retry');
+            $this->assertTrue(!is_file($this->trackersDir() . '/93.184.216.70.ico'),
+                'an incomplete trickling response cannot publish an icon');
+        } finally {
+            $this->answerHeld($held, '');
+            $this->stopChildren($children);
+        }
+    }
+
+    public function testRedirectAndPngFallbackShareTheOriginalDeadline()
+    {
+        foreach (array(false, true) as $redirect) {
+            $host = $redirect ? '93.184.216.72' : '93.184.216.71';
+            $children = array();
+            $held = array();
+            try {
+                $children['fetch'] = $this->startFetch($host, array('timeout' => 1));
+                $deadline = microtime(true) + 5;
+                while (count($held) === 0 && microtime(true) < $deadline) $this->acceptHeld($held, 0.05);
+                $this->assertSame(1, count($held), 'the first path reaches the proxy');
+                if (count($held) !== 1) continue;
+                usleep(650000);
+                $answer = $redirect
+                    ? "HTTP/1.1 302 Found\r\nLocation: //{$host}/landing\r\nContent-Length: 0\r\n\r\n"
+                    : self::NOT_FOUND;
+                $this->answerHeld($held, $answer);
+                $deadline = microtime(true) + 0.6;
+                while (count($held) < 2 && microtime(true) < $deadline) $this->acceptHeld($held, 0.02);
+                $this->assertSame(2, count($held), 'the second path gets the remaining budget');
+                if (count($held) !== 2) continue;
+                $path = $redirect ? 'landing' : 'favicon.png';
+                $this->assertSame("GET http://{$host}/{$path} HTTP/1.0", $held[1]['request'],
+                    'an HTTP network-path redirect retains its scheme, and fallback names the PNG');
+                fwrite($held[1]['peer'], "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n");
+                $deadline = microtime(true) + 0.65;
+                while ($this->finished($children['fetch']) === null && microtime(true) < $deadline) {
+                    @fwrite($held[1]['peer'], 'x');
+                    usleep(50000);
+                }
+                $result = $this->finished($children['fetch']);
+                $this->assertTrue(is_array($result), 'redirects and fallback cannot restart the one-second budget');
+                if (!is_array($result)) continue;
+                $this->assertSame('404', $result['status'], 'the expired chain remains a quiet miss');
+                $this->assertTrue($result['elapsed'] < 1.5, 'both paths share one deadline: ' . $result['elapsed']);
+                $this->assertSame('1', (string) @file_get_contents($this->trackersDir() . '/' . $host . '.retry'),
+                    'the expired chain is retryable');
+            } finally {
+                $this->answerHeld($held, '');
+                $this->stopChildren($children);
+            }
         }
     }
 

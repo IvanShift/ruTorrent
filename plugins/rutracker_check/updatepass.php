@@ -254,7 +254,7 @@ class RuTrackerUpdatePass
     static private function replacementHoldTolerance()
     {
         $cadence = self::replacementCadence();
-        return $cadence === null ? 0 : min(60, intdiv($cadence, 2));
+        return $cadence === null ? 0 : min(RuTrackerReplacementBackoff::MAX_EARLY_SECONDS, intdiv($cadence, 2));
     }
 
     static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null,
@@ -442,6 +442,8 @@ class RuTrackerUpdatePass
     static public function run($rows, $forumChanged = array())
     {
         global $rutrackerFuseShare, $rutrackerFuseFloor, $rutrackerForeignMaxRest;
+        // Endpoint refusals protect this pass, then retry on the next one.
+        if (class_exists('KinozalCheckImpl', false)) KinozalCheckImpl::resetCycle();
         $now = time();
         $foreignMaxRest = RuTrackerRpcValue::canonicalNonnegativeInteger($rutrackerForeignMaxRest ?? null);
         if ($foreignMaxRest === null) {
@@ -1742,9 +1744,8 @@ class RuTrackerUpdatePass
         // the one column with no int32 bound, and a canonical PHP-integer
         // roundtrip refuses everything past PHP_INT_MAX -- on a 32-bit build
         // every torrent past 2 GiB, all of it WELL-FORMED input the sweep
-        // would then never finish for. It keeps the predecessor's intval() at
-        // its single use site below, beside the two genuinely int32 counters
-        // that carry the guard.
+        // would then never finish for. Its canonical decimal string is
+        // checked separately below, without narrowing it to a PHP integer.
         foreach (array(0, 1, 2, 4) as $slot) {
             $val[$slot] = RuTrackerRpcValue::canonicalNonnegativeInt32($val[$slot]);
             if ($val[$slot] === null) return;

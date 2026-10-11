@@ -37,6 +37,28 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 
 class XMLRPCProxyTest extends TestCase
 {
+	private $hadCallTracingFlag;
+	private $previousCallTracingFlag;
+	private $previousBuiltInPolicyReported;
+
+	public function setUp()
+	{
+		$this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
+		$this->previousCallTracingFlag = $this->hadCallTracingFlag ? $GLOBALS['rpcLogCalls'] : null;
+		$GLOBALS['rpcLogCalls'] = false;
+		$reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
+		$this->previousBuiltInPolicyReported = $reported->getValue();
+		$reported->setValue(null, false);
+	}
+
+	public function tearDown()
+	{
+		if($this->hadCallTracingFlag) $GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag;
+		else unset($GLOBALS['rpcLogCalls']);
+		$reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
+		$reported->setValue(null, $this->previousBuiltInPolicyReported);
+	}
+
 	// 0.16.22 keeps directory_base.set as a redirect to directory.base.set.
 	const DIRECTORY_SETTERS = array('d.directory.set', 'd.directory_base.set', 'd.directory.base.set');
 
@@ -367,8 +389,8 @@ class XMLRPCProxyTest extends TestCase
 			&& strpos($lines[0], 'system.multicall') !== false
 			&& strpos($lines[1], '[slot 2]') !== false,
 			'denied multicall has an outer refusal and a member reason');
-		$this->assertEquals(1, substr_count(implode("\n", $lines), '[built-in policy]'),
-			'denied multicall names the fallback only once');
+		$this->assertEquals(2, substr_count(implode("\n", $lines), '[built-in policy]'),
+			'the outer refusal and one runtime warning identify the fallback');
 		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
 			'the outer refusal carries the policy source');
 	}
@@ -380,12 +402,12 @@ class XMLRPCProxyTest extends TestCase
 			array('load.start', array('', '/tmp/sample.torrent')),
 		)), 'sanitize', $policy['safeParams'], true);
 		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
-		$this->assertTrue($decision['action'] === 'send' && count($lines) === 2
+		$this->assertTrue($decision['action'] === 'send' && count($lines) === 3
 			&& strpos($lines[0], 'system.multicall') !== false
 			&& strpos($lines[1], '[slot 1] WARNING:') !== false,
 			'allowed local-path multicall logs a separate member warning');
-		$this->assertEquals(1, substr_count(implode("\n", $lines), '[built-in policy]'),
-			'multicall warning names the fallback only once');
+		$this->assertEquals(2, substr_count(implode("\n", $lines), '[built-in policy]'),
+			'the outer summary and one runtime warning identify the fallback');
 		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
 			'the outer summary carries the policy source');
 	}
@@ -400,6 +422,7 @@ class XMLRPCProxyTest extends TestCase
 	{
 		$read = $this->methodCallXml('d.multicall2', array('', 'main', 'd.hash=', 'd.name='));
 		$version = $this->methodCallXml('system.client_version');
+		$fallbackReported = false;
 		foreach(array(array(), array('XMLRPCProxySafeParams' => XMLRPCProxy::defaultSafeParams())) as $vars)
 		{
 			$default = XMLRPCProxy::policySettings($vars);
@@ -410,7 +433,10 @@ class XMLRPCProxyTest extends TestCase
 			{
 				$decision = self::decideOnModernDaemon($case[0], 'sanitize', $default['safeParams']);
 				$this->assertTrue($decision['action'] === 'send', $case[1].': the routine call is forwarded');
-				$this->assertEquals(array(), XMLRPCProxy::decisionLogLines($decision, $default),
+				$expected = (!$fallbackReported && $suffix !== '')
+					? array('WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured') : array();
+				$fallbackReported = $fallbackReported || $suffix !== '';
+				$this->assertEquals($expected, XMLRPCProxy::decisionLogLines($decision, $default),
 					$case[1].': no routine decision line at the shipped default'.$suffix);
 				$this->assertEquals(array($case[1].$suffix), XMLRPCProxy::decisionLogLines($decision, $traced),
 					$case[1].': $rpcLogCalls traces the routine decision'.$suffix);
@@ -451,6 +477,73 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue($routine['action'] === 'send', 'a checked WebUI batch is forwarded');
 		$this->assertEquals(array(), XMLRPCProxy::decisionLogLines($routine, $policy),
 			'a batch without member warnings is routine');
+	}
+
+	public function testBuiltInPolicyWarningAppearsOncePerRuntimeWithoutCallTracing()
+	{
+		$script = 'require '.var_export(realpath(__DIR__.'/../../php/xmlrpc_proxy.php'), true).';'
+			.'$xml = '.var_export($this->methodCallXml('system.client_version'), true).';'
+			.'$decision = XMLRPCProxy::decide($xml, "sanitize", array(), false, array("rtorrentVersion" => 0x1019));'
+			.'$explicit = XMLRPCProxy::policySettings(array("XMLRPCProxySafeParams" => array()));'
+			.'$fallback = XMLRPCProxy::policySettings(array("XMLRPCProxy" => "sanitize"));'
+			.'$lines = array(XMLRPCProxy::decisionLogLines($decision, $explicit));'
+			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+			.'$fallback["traceCalls"] = true;'
+			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+			.'echo json_encode($lines);';
+		$result = SCGITransportFixture::runPhpChild(array('-r', $script));
+		$this->assertEquals(0, $result['exitCode'], 'the isolated runtime completed');
+		$this->assertEquals('', $result['stderr'], 'the isolated runtime emitted no PHP diagnostics');
+		$this->assertEquals(array(
+			array(),
+			array('WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'),
+			array(),
+			array('untrusted: system.client_version [built-in policy]'),
+		), json_decode($result['stdout'], true),
+			'explicit policies stay quiet, fallback warns once, and later tracing retains its source');
+	}
+
+	public function testProcessUsesTheSharedCallTracingFilterWithoutLoggingArguments()
+	{
+		$cases = array(
+			array($this->methodCallXml('system.client_version'), false,
+				'untrusted: system.client_version'),
+			array($this->methodCallXml('d.multicall2', array('', 'main', 'd.name=')), true,
+				'trusted: d.multicall2 (3 params)'),
+		);
+		foreach($cases as $case)
+			foreach(array(false, true) as $trace)
+			{
+				$this->resetMocks();
+				$GLOBALS['rpcLogCalls'] = $trace;
+				$result = self::processOnModernDaemon($case[0]);
+				$this->assertTrue($result === '' && rXMLRPCRequest::$sent === 1
+					&& rXMLRPCRequest::$lastTrusted === $case[1],
+					'the adapter preserves transport and trust with tracing '.($trace ? 'on' : 'off'));
+				$this->assertEquals($trace ? array('xmlrpc-proxy: '.$case[2]) : array(), FileUtil::$log,
+					'the adapter shares the HTTP doors\' routine tracing policy');
+			}
+		$GLOBALS['rpcLogCalls'] = false;
+		foreach(array(
+			array('execute.capture', array('', 'private-argument'), false, 'rejected ('),
+			array('load.start', array('', '/private-argument.torrent'), true, 'WARNING: operator-enabled local path'),
+			array('network.xmlrpc.size_limit.set', array('', '1'), false, 'WARNING: network.xmlrpc.size_limit.set'),
+		) as $case)
+		{
+			$this->resetMocks();
+			self::processOnModernDaemon($this->methodCallXml($case[0], $case[1]),
+				'sanitize', true, XMLRPCProxy::defaultSafeParams(), $case[2]);
+			$this->assertTrue(strpos($this->logText(), $case[3]) !== false,
+				'the adapter keeps operational refusals and warnings without tracing');
+			$this->assertTrue(strpos($this->logText(), 'private-argument') === false,
+				'operational decisions do not include caller argument values');
+		}
+		$this->resetMocks();
+		$GLOBALS['rpcLogCalls'] = true;
+		self::processOnModernDaemon($this->methodCallXml('execute.capture'), 'sanitize', false);
+		$this->assertEquals(array(), FileUtil::$log,
+			'the explicit adapter logging switch silences refusals even with tracing on');
 	}
 
 	public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()
@@ -1310,6 +1403,7 @@ class XMLRPCProxyTest extends TestCase
 	public function testUntrustedRequestIsNeverLoggedAsTrusted()
 	{
 		$this->resetMocks();
+		$GLOBALS['rpcLogCalls'] = true;
 		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
 		self::processOnModernDaemon($xml, 'sanitize', true, array('d.custom1.set'));
 
@@ -1445,12 +1539,14 @@ class XMLRPCProxyTest extends TestCase
 	public function testUnknownMethodNameCannotForgeALogLine()
 	{
 		$this->resetMocks();
+		$GLOBALS['rpcLogCalls'] = true;
 		$name = "system.foo\nxmlrpc-proxy: trusted: forged";
 		$xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($name)
 			. '</methodName><params></params></methodCall>';
 		self::processOnModernDaemon($xml, 'sanitize', true, array());
 
 		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'an unknown method is sent untrusted');
+		$this->assertEquals(1, count(FileUtil::$log), 'call tracing records the normalized method name');
 		$this->assertTrue(strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
 			'a method name cannot start a log line of its own');
 	}
@@ -1591,7 +1687,7 @@ class XMLRPCProxyTest extends TestCase
 	}
 
 	/**
-	 * Untrusted is not a refusal on rtorrent below 0.16.10 — the header is read
+	 * Untrusted is not a refusal on rtorrent below 0.16.9 — the header is read
 	 * and ignored — so this one cannot be left for rtorrent to sort out.
 	 */
 	public function testLocalPathIsRefusedRatherThanForwardedUntrusted()
@@ -1894,6 +1990,27 @@ class XMLRPCProxyTest extends TestCase
 		$this->callMethod('d.start', array('0123456789ABCDEF0123456789ABCDEF01234567', 'extra'));
 		$this->assertTrue(rXMLRPCRequest::$sent === 0,
 			'an extra argument means the call is not the shape that was approved');
+	}
+
+	public function testExactElevatedShapesRejectTrailingNewlinesBeforeTrust()
+	{
+		$hash = str_repeat('A', 40);
+		foreach(array(
+			array('d.stop', array($hash."\n")),
+			array('f.prioritize_first.enable', array($hash.":f0\n")),
+			array('view.set_visible', array($hash, "rat_1\n")),
+			array('d.priority.set', array($hash, "2\n")),
+			array('network.xmlrpc.size_limit.set', array('', "1024\n")),
+		) as $call)
+		{
+			$decision = self::decideOnModernDaemon($this->methodCallXml($call[0], $call[1]));
+			$this->assertTrue(!$decision['trusted'],
+				$call[0].' cannot elevate a value outside its exact canonical shape');
+			$legacy = XMLRPCProxy::decide($this->methodCallXml($call[0], $call[1]),
+				'sanitize', array(), false, array('rtorrentVersion' => 0x0908));
+			$this->assertEquals('reject', $legacy['action'],
+				$call[0].' refuses the malformed shape when the daemon ignores untrusted flags');
+		}
 	}
 
 	public function testAnElevatedValueIsCarriedAsDataNotAsACommand()
@@ -2514,14 +2631,10 @@ class XMLRPCProxyTest extends TestCase
 	public function testResultlessMulticallsAreTerminallyRejected()
 	{
 		$multicalls = array(
-			'd.multicall' => 2,
-			'd.multicall2' => 2,
-			'd.multicall.filtered' => 3,
-			't.multicall' => 2,
-			'f.multicall' => 2,
-			'p.multicall' => 2,
+			'd.multicall', 'd.multicall2', 'd.multicall.filtered',
+			't.multicall', 'f.multicall', 'p.multicall',
 		);
-		foreach($multicalls as $mc => $minParams)
+		foreach($multicalls as $mc)
 		{
 			$paramsXml = '<param><value><string></string></value></param><param><value><string>main</string></value></param>';
 			if($mc === 'd.multicall.filtered')
@@ -3610,14 +3723,16 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue($processRes === null, 'process returns null');
 		$this->assertEquals(0, rXMLRPCRequest::$sent, 'transport call count = 0');
 	}
-    public function testReviewedDaemon1625AllowsNativeListingAndElevatedStop()
-    {
-        $options = array('rtorrentVersion'=>0x1019);
-        foreach (array($this->methodCallXml('d.multicall2', array('', 'main', 'd.name=')),
-            $this->systemMulticallXml(array(array('d.stop', array(str_repeat('A',40)))))) as $xml) {
-            $result = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, $options);
-            $this->assertEquals('send', $result['action'], 'reviewed 0.16.25 native actions remain usable');
-        }
-    }
+	public function testReviewedDaemon1625AllowsNativeListingAndElevatedStop()
+	{
+		$options = array('rtorrentVersion' => 0x1019);
+		foreach(array($this->methodCallXml('d.multicall2', array('', 'main', 'd.name=')),
+			$this->systemMulticallXml(array(array('d.stop', array(str_repeat('A', 40)))))) as $xml)
+		{
+			$result = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, $options);
+			$this->assertTrue($result['action'] === 'send' && $result['trusted'],
+				'reviewed 0.16.25 listing and stop retain their checked trusted route');
+		}
+	}
 
 }

@@ -123,7 +123,6 @@ class RuTrackerState
 
     static public function acquireCycleLock()
     {
-        global $profileMask;
         $path = self::cycleLockPath();
         // Whichever OS user gets here first creates the file; the guard is
         // worth nothing unless the other one can open it too, and this
@@ -336,8 +335,8 @@ class RuTrackerState
             . ' index -- stays frozen until the file is repaired or removed by hand');
     }
 
-    // Atomic read-modify-write: opens <name>.json (creating it if missing),
-    // takes an exclusive lock, reads whatever is CURRENTLY on disk, applies
+    // Atomic read-modify-write: takes an exclusive lock on <name>.lock,
+    // reads whatever is CURRENTLY in <name>.json on disk, applies
     // $mutator to it (a callable taking the current state array and
     // returning the new one), writes the result back, and releases the
     // lock. Because the read happens under the lock and after it is
@@ -365,7 +364,6 @@ class RuTrackerState
     //   rather than at the file that is actually wedging the layer.
     static public function update($name, $mutator, &$failure = null)
     {
-        global $profileMask;
         $failure = null;
         $dir = self::dir();
         // The lock lives BESIDE the document, never on it: the write below
@@ -430,8 +428,9 @@ class RuTrackerState
  * once.
  *
  * Self-healing: an entry that does not parse, or whose deadline lies further
- * ahead than the cap, holds nothing, so a damaged document can at worst restore
- * the old every-cycle retry. Every postpone(), and every clear() whose
+ * ahead than the cap plus the scheduler's early-start grace, holds nothing,
+ * so a damaged document can at worst restore the old every-cycle retry.
+ * Every postpone(), and every clear() whose
  * lock-free read found this hash's entry, rewrites the whole map and keeps only
  * well-formed entries under well-formed daemon keys. That drops legacy
  * unscoped entries, which cannot name the daemon whose filesystem refused, and
@@ -445,6 +444,7 @@ class RuTrackerReplacementBackoff
     const KEY = 'replacement_backoff';
     const FIRST_SECONDS = 3600;
     const CAP_SECONDS = 86400;
+    const MAX_EARLY_SECONDS = 60;
 
     // The entries still part of a refusal streak at $now, keyed by upper-case
     // hash, as {until, length}; anything else in the stored map is left out.
@@ -459,9 +459,10 @@ class RuTrackerReplacementBackoff
             $length = RuTrackerRpcValue::canonicalNonnegativeInteger($entry['length'] ?? null);
             if ($until === null || $length === null
                 || $length < self::FIRST_SECONDS || $length > self::CAP_SECONDS
-                // Written as now + length: a later deadline came from a clock
-                // that has since gone back, or from a hand edit.
-                || $until > $now + self::CAP_SECONDS
+                // An early scheduled attempt counts from its upcoming slot,
+                // including at the cap. A later deadline is clock drift or
+                // a hand edit, rather than a value this writer can produce.
+                || $until > $now + self::CAP_SECONDS + self::MAX_EARLY_SECONDS
                 // Lapsed for longer than the cap: the refusals stopped, and
                 // the next one starts a new streak.
                 || $now - $until > self::CAP_SECONDS)

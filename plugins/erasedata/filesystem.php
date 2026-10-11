@@ -295,7 +295,8 @@ class ErasedataFilesystemOps
 	// later. Only a negative answer is asked again, within a fixed bound; the
 	// first present answer is returned as it is, so the caller's exact
 	// identity check still refuses a different inode at once. The rename itself
-	// is never repeated. False after the bound means the name stayed absent.
+	// is never repeated. False after the bound means no lookup confirmed the
+	// name; absence and an unreadable name remain indistinguishable here.
 	public function renamedEntryIdentity($path)
 	{
 		for($attempt = 1; ; $attempt++)
@@ -305,6 +306,20 @@ class ErasedataFilesystemOps
 				return($identity);
 			usleep(ERASEDATA_RENAME_SETTLE_PAUSE_US);
 		}
+	}
+
+	// Directory captures also need their resolved target identity. Settle only
+	// the new entry's absence first, then retain pathIdentity()'s existing
+	// resolution checks and bind that answer to the first present entry.
+	public function renamedPathIdentity($path)
+	{
+		$entry = $this->renamedEntryIdentity($path);
+		if(!is_array($entry))
+			return(false);
+		$identity = $this->pathIdentity($path);
+		return(is_array($identity) && !empty($identity['exists'])
+			&& erasedataIdentityDeviceAndInode($entry) === erasedataIdentityDeviceAndInode($identity['lstat'])
+			? $identity : false);
 	}
 
 	public function targetIdentity($path)
@@ -1269,12 +1284,8 @@ function erasedataQueueParentUnchanged($listPath, $parent)
 // PHP builds without ext-posix still expose the effective UID on Linux.
 function erasedataEffectiveUid()
 {
-	if(function_exists('posix_geteuid'))
-		return(posix_geteuid());
-	$status = @file_get_contents('/proc/self/status');
-	if(is_string($status) && preg_match('/^Uid:[ \t]*[0-9]+[ \t]+([0-9]+)/m', $status, $match))
-		return((int)$match[1]);
-	return(false);
+	require_once(dirname(__DIR__, 2).'/php/utility/permission.php');
+	return(Permission::effectiveUid());
 }
 
 // A listing is only a snapshot. Another trusted worker may finish and unlink

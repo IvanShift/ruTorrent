@@ -13944,10 +13944,10 @@ class RemoveWithDataTest extends TestCase
 			'and the refusal is classified against the generation it refused');
 	}
 
-	public function testAStaleWorkerOwnerIsClassifiedWithoutBreakingItsLock()
+	public function testAnotherWorkerOwnerIsClassifiedWithoutBreakingItsLock()
 	{
 		$this->reset();
-		$invariant = 'a hung worker owner yields a bounded classified stale-worker'
+		$invariant = 'a competing worker owner yields a bounded classified worker-busy'
 			.' consequence; it never force-breaks the flock and never consumes'
 			.' the jobs the owner holds';
 		if(!$this->requireApi(array('erasedataDrainWorkerRun()',
@@ -13960,7 +13960,7 @@ class RemoveWithDataTest extends TestCase
 		@file_put_contents($staging, "staged\n");
 		$holder = ErasedataTestProcess::start(
 			erasedataTestLockHolderCommand($queue.'/.drain-worker.lock', 4.0));
-		$this->assertTrue($holder->started(), 'the hung owner really starts');
+		$this->assertTrue($holder->started(), 'the competing owner really starts');
 		$acquired = '';
 		for($wait = 0; $wait < 200 && $acquired === ''; $wait++)
 		{
@@ -13979,15 +13979,16 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue($took < 3.0,
 			'worker admission is nonblocking: took '.round($took, 2).'s');
 		$this->assertTrue(is_file($staging),
-			'the hung owner\'s job is not consumed by the competitor');
+			'the other owner\'s job is not consumed by the competitor');
 		$this->assertEquals(0, count(rXMLRPCRequest::$erased),
 			'and nothing is erased behind the owner\'s back');
 		$classified = false;
 		foreach(FileUtil::$log as $line)
-			if(strpos($line, 'worker-busy') !== false || strpos($line, 'stale-worker') !== false)
+			if(strpos($line, 'worker-busy') !== false
+				&& strpos($line, 'another-worker-owns-the-queue-nothing-consumed') !== false)
 				$classified = true;
 		$this->assertTrue($classified,
-			'the refusal is a bounded classified consequence rather than silence');
+			'the refusal identifies another worker without claiming that it is stale');
 	}
 
 	// Invariant 5 at the child's own door, and invariant 3's exactness with it.
@@ -16317,7 +16318,8 @@ class RemoveWithDataTest extends TestCase
 		// loser: whichever reaches the nonblocking admission second reports.
 		$busy = 0;
 		foreach($mirror->log() as $line)
-			if(strpos($line, 'erasedata: worker-busy ') === 0)
+			if(strpos($line, 'erasedata: worker-busy ') === 0
+				&& strpos($line, 'another-worker-owns-the-queue-nothing-consumed') !== false)
 				$busy++;
 		$this->assertEquals(1, $busy,
 			'the two workers really were inside the same window, and exactly one'

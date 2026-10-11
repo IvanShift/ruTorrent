@@ -158,6 +158,7 @@ foreach (array(false,true) as $multi)
         $suite->test('real worker preserves ' . json_encode($run) . ' multi=' . (int)$multi, function () use ($multi,$run) {
             $state=moveWorkerFixture($multi,$run);
             try {
+                touch($multi ? $state['source'].'/item' : $state['source'], 1000000000, 1000000100);
                 list($exit,$after,$calls,$error)=moveWorkerRun($state);
                 strictAssertSame(0,$exit,'worker completes: '.$error.' '.@file_get_contents($state['root'].'/errors.log'));
                 strictAssertSame(false,$after['queued'],'durable queue retired');
@@ -165,6 +166,7 @@ foreach (array(false,true) as $multi)
                 strictAssertSame($run[1],$after['open'],'original open intent');
                 strictAssertSame($run[2],$after['active'],'original active intent');
                 strictAssertSame('payload',file_get_contents($multi?$state['destination'].'/item':$state['destination']),'payload bytes');
+                strictAssertSame(1000000000,filemtime($multi?$state['destination'].'/item':$state['destination']),'native same-mount Move preserves mtime');
                 strictAssertSame(false,file_exists($state['source']),'source retired');
                 strictAssertSame($multi, in_array('d.directory.base.set_if_stop_close_claim',$calls,true),'exact multi root setter');
             } finally { strictRemoveTree($state['root']); }
@@ -242,6 +244,7 @@ foreach (array('active','terminal','done','absent') as $lease)
 $suite->test('same st_dev EXDEV uses staged copy and quarantine',function(){
     $state=moveWorkerFixture();$root=$state['root'];
     try {
+        touch($state['source'],1000000000,1000000100);
         $helper=file_get_contents($root.'/rename');
         $helper=str_replace('[ -e "$2" ]', 'if [ "$1" = '.escapeshellarg($state['source']).' ] && [ "$2" = '.escapeshellarg($state['destination']).' ]; then echo "rename-noreplace-error: errno=18 Invalid cross-device link" >&2; exit 4; fi'."\n".'[ -e "$2" ]',$helper);
         file_put_contents($root.'/rename',$helper);
@@ -249,6 +252,7 @@ $suite->test('same st_dev EXDEV uses staged copy and quarantine',function(){
         strictAssertSame(0,$exit,'EXDEV replay: '.$error.' '.@file_get_contents($root.'/errors.log'));
         strictAssertSame(false,$after['queued'],'completed');
         strictAssertSame('payload',file_get_contents($state['destination']),'copied bytes');
+        strictAssertSame(1000000000,filemtime($state['destination']),'native cross-mount copy preserves mtime');
         strictAssertSame(false,file_exists($state['source']),'source retired');
         strictAssertSame(2,count(file($root.'/renames')),'publish stage then quarantine source');
     } finally { strictRemoveTree($root); }
@@ -346,7 +350,7 @@ $suite->test('R5-LAB-B-2 reoccupied source retains captured obligation and repor
         strictAssertSame(true,strpos(file_get_contents($state['root'].'/errors.log'),'payload-identity-ambiguous')!==false,'classified worker failure names ambiguity');
     } finally { strictRemoveTree($state['root']); }
 });
-foreach (array('version'=>999, 'qid'=>'invalid', 'kind'=>'Other', 'phase'=>'unknown') as $field=>$value)
+foreach (array('version'=>999, 'qid'=>'invalid', 'kind'=>'Other', 'phase'=>'unknown', 'quarantine_confirmed'=>'true') as $field=>$value)
     $suite->test('unsupported current journal '.$field.' stays held without lease mutation',function()use($field,$value){
         $state=moveWorkerFixture();$job=moveWorkerSeed($state,'intent','absent');$job[$field]=$value;
         $path=$state['root'].'/session/.autotools-file-jobs/'.$state['hash'].'.move.json';

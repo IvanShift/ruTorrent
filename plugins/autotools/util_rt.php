@@ -65,15 +65,6 @@ function rtRemoveTailSlash( $str )
 }
 
 //------------------------------------------------------------------------------
-function rtRemoveHeadSlash( $str )
-{
-	$len = strlen( $str );
-	if( $len == 0 || $str[0] != '/' )
-		return $str;
-	return substr( $str, 1 );
-}
-
-//------------------------------------------------------------------------------
 // Remove last token from $str string, using $sep as separator
 //------------------------------------------------------------------------------
 function rtRemoveLastToken( $str, $sep )
@@ -107,13 +98,6 @@ function rtIsFile( $path )
 {
 	// use Novik's implementation
 	return LFS::is_file( $path );
-
-	//if( is_file( $path ) )
-	//	return true;
-	//$out = array();
-	//$ret = "1";
-	//exec( 'test -f '.escapeshellarg( $path ), $out, $ret );
-	//return (int)$ret == 0;
 }
 
 
@@ -970,10 +954,6 @@ class AutoToolsFileTransaction
         finally { flock($handle, LOCK_UN); fclose($handle); }
     }
 
-    // Returns true when the job is published (or already was), false when it
-    // is refused or held (both logged), and null when another owner holds the
-    // journal lock: the synchronous finished hook never waits for it (see the
-    // one-owner invariant in hook_lib.php), so its caller defers the hook.
     private static function makeDestination($path, &$created)
     {
         if (is_dir($path)) return true;
@@ -983,6 +963,10 @@ class AutoToolsFileTransaction
         return is_dir($path);
     }
 
+    // Returns true when the job is published (or already was), false when it
+    // is refused or held (both logged), and null when another owner holds the
+    // journal lock: the synchronous finished hook never waits for it (see the
+    // one-owner invariant in hook_lib.php), so its caller defers the hook.
     public static function run($files, $src, $dst, $op, $dbg = false, $context = null)
     {
         self::$refusal = null;

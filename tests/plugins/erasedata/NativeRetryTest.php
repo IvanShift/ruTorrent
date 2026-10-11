@@ -347,6 +347,27 @@ class ErasedataNativeRetryTest extends TestCase
 		$this->assertTrue(!file_exists($payload),'the refusal concerns only the terminal record');
 	}
 
+	public function testOccupiedTerminalDestinationNamesTheBlockedRetryAndPreservesBothRecords()
+	{
+		list($hash,$intent,$path,,$bytes,$payload)=$this->boundJob('occupied-terminal');
+		$terminal=$path.'.completed';$foreign='unknown terminal document';
+		file_put_contents($terminal,$foreign);chmod($terminal,0600);$terminalStat=lstat($terminal);
+		$this->assertSame(false,$this->worker(new ErasedataCollectorFixture(array()))->runNative($this->dir,$hash,$intent),
+			'an occupied terminal destination withholds native finish');
+		$this->assertTrue(!file_exists($payload) && file_get_contents($path)===$bytes,
+			'the payload is consumed but its original authority document is retained');
+		$this->assertTrue(file_get_contents($terminal)===$foreign && erasedataSameStatIdentity($terminalStat,lstat($terminal)),
+			'the unknown occupied destination is preserved byte for byte and inode for inode');
+		$log=implode("\n",FileUtil::$log);
+		$this->assertTrue(strpos($log,'reason=terminal-publication-destination-occupied')!==false
+			&& strpos($log,'payload consumed; terminal destination occupied')!==false,
+			'the classified refusal describes the consumed payload and occupied destination');
+		$this->assertTrue(strpos($log,'inspect the occupied destination='.erasedataLogPath($terminal))!==false,
+			'the log names the exact destination that needs inspection');
+		$this->assertSame(false,strpos($log,'retried automatically'),
+			'a retry that cannot clear an occupied name is not presented as self-healing');
+	}
+
 	public function testUnsettledTerminalNameIsReportedTruthfullyAndItsHintRetiresWithTheJob()
 	{
 		if(!$this->api())return;
@@ -488,29 +509,81 @@ class ErasedataNativeRetryTest extends TestCase
 		finally {$cut::$hidden=null;}
 	}
 
-	// ERA-05: garbled advisory bytes once made every Remove-with-data answer
-	// 409. The prune must neither repair, rewrite nor depend on them.
-	public function testGarbledOrAbsentRetryMetadataStaysFailOpen()
+	// ERA-05: malformed advice must not make a valid ownership journal unreadable.
+	// The actual worker may persist a reset only after taking the state lock.
+	public function testMalformedOptionalRetryHintsDoNotBlockValidatedDrainAdmission()
 	{
-		if(!$this->api())return;
+		$state=$this->state();$hash=str_repeat('A',40);$generation=$state['generation'];
+		$state['journal'][$generation]=array('phase'=>'published','force'=>1,'hashes'=>array($hash),
+			'staging'=>array($hash=>array('path'=>$this->dir.'/'.$hash.'.'.$generation.'.actor.tmp','dev'=>'1','ino'=>'2')));
+		$state['legacy_marker']=$state['legacy_rescue']=true;
 		$statePath=erasedataDrainStatePath($this->dir);
-		$state=erasedataDefaultDrainState();$state['user']='rutorrent';
-		$state['native_retry']=array('jobs'=>array(hash('sha256','x')=>array(1,5,99,hash('sha256','r'))),'cursor'=>'','overflow'=>false);
-		file_put_contents($statePath,json_encode($state));chmod($statePath,0600);$garbled=file_get_contents($statePath);
-		rXMLRPCRequest::$responses=array('fixture.nativeCapability'=>'available');
-		try
+		$key=hash('sha256','malformed hint');$reason=hash('sha256','retention');
+		$hint=array('jobs'=>array($key=>array(1,5,1,$reason)),'cursor'=>'','overflow'=>false);
+		$malformed=array(null,false,'garbled',array(),array('jobs'=>array()),
+			array_merge($hint,array('extra'=>true)),array_merge($hint,array('jobs'=>false)),
+			array_merge($hint,array('cursor'=>'not-a-hash')),array_merge($hint,array('overflow'=>1)));
+		foreach(array(array(-1,5,1,$reason),array(1,0,1,$reason),array(1,61,1,$reason),
+			array(1,5,0,$reason),array(1,5,17,$reason),array(1,5,1,'not-a-digest')) as $entry)
+			$malformed[]=array_merge($hint,array('jobs'=>array($key=>$entry)));
+		foreach($malformed as $index=>$retry)
 		{
-			$service=new ErasedataCollector(new ErasedataFilesystemOps(),null,null,null,true);
-			$service->run($this->dir);
-			$this->assertEquals($garbled,file_get_contents($statePath),'a garbled native_retry is left exactly as found');
-			$this->assertTrue(!function_exists('erasedataNativeRetryPruneOrphans')
-				|| erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',time()+60)===false,'the prune refuses unreadable state without writing');
-			$this->assertEquals($garbled,file_get_contents($statePath),'still byte for byte');
-			unlink($statePath);
-			$this->assertTrue(!function_exists('erasedataNativeRetryPruneOrphans')
-				|| (erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',time()+60)===false && !file_exists($statePath)),
-				'an absent state is neither created nor claimed');
+			$garbled=$state;$garbled['native_retry']=$retry;$bytes=json_encode($garbled);
+			file_put_contents($statePath,$bytes);chmod($statePath,0600);
+			$this->assertSame(false,erasedataValidateDrainState($garbled,$this->dir),'the writer schema still refuses malformed advice '.$index);
+			$this->assertSame($state,erasedataReadDrainState($this->dir),'read '.$index.' discards only malformed advice after validating the core');
+			$this->assertSame($state,erasedataReadDrainState($this->dir),'a repeated read preserves the same complete core '.$index);
+			$this->assertSame($bytes,file_get_contents($statePath),'read '.$index.' does not repair the file without its state lock');
+			$ack=erasedataAcknowledgeDrainGeneration($this->dir,'rutorrent',null);
+			$this->assertTrue(is_array($ack) && $ack['state']===$state && $ack['generation']===$generation,
+				'actual worker admission '.$index.' acknowledges the exact generation and preserves its journal');
+			$this->assertSame($state,json_decode(file_get_contents($statePath),true),'the guarded acknowledgement naturally persists the clean core '.$index);
 		}
-		finally {rXMLRPCRequest::$responses=array();}
+		$lines=array_values(array_filter(FileUtil::$log,function($line){return strpos($line,'reason=malformed-advisory')!==false;}));
+		$this->assertSame(1,count($lines),'one process reports the advisory reset once for the exact state document');
+		$this->assertTrue(isset($lines[0]) && strpos($lines[0],'document='.erasedataLogPath($statePath))!==false
+			&& strpos($lines[0],'key=native_retry')!==false && strpos($lines[0],'hints reset; journal preserved')!==false,
+			'the classified diagnostic names the document, key and preserved authority');
+		$this->assertTrue(strpos(implode("\n",$lines),$key)===false && strpos(implode("\n",$lines),$reason)===false,
+			'raw advisory values do not enter the diagnostic');
+		$state['native_retry']=$hint;file_put_contents($statePath,json_encode($state));
+		$this->assertSame($state,erasedataReadDrainState($this->dir),'valid advisory state remains exact');
+	}
+
+	public function testMalformedAdviceCannotRepairCoreStateOrClaimAnotherUsersQueue()
+	{
+		$state=$this->state();$hash=str_repeat('A',40);$generation=$state['generation'];
+		$state['journal'][$generation]=array('phase'=>'published','force'=>1,'hashes'=>array($hash),
+			'staging'=>array($hash=>array('path'=>$this->dir.'/'.$hash.'.'.$generation.'.actor.tmp','dev'=>'1','ino'=>'2')));
+		$bad=array();
+		foreach(array('extra'=>true,'user'=>false,'generation'=>'bad','acknowledged'=>'0000000000000002',
+			'phase'=>'unknown','diagnostics'=>array(''),'legacy_marker'=>false) as $key=>$value)
+		{
+			$variant=$state;$variant[$key]=$value;$bad[]=$variant;
+		}
+		foreach(array('phase'=>'unknown','force'=>'1','hashes'=>array(str_repeat('B',40))) as $key=>$value)
+		{
+			$variant=$state;$variant['journal'][$generation][$key]=$value;$bad[]=$variant;
+		}
+		$variant=$state;$variant['journal'][$generation]['staging'][$hash]['path']=$this->dir.'/../unbound.tmp';$bad[]=$variant;
+		$variant=$state;$variant['journal'][$generation]['staging'][$hash]['ino']=1.5;$bad[]=$variant;
+		$statePath=erasedataDrainStatePath($this->dir);
+		foreach($bad as $index=>$invalid)
+		{
+			$invalid['native_retry']='garbled';$bytes=json_encode($invalid);
+			file_put_contents($statePath,$bytes);chmod($statePath,0600);
+			$this->assertSame(false,erasedataReadDrainState($this->dir),'corrupt core field '.$index.' remains unreadable');
+			$this->assertSame(false,erasedataAcknowledgeDrainGeneration($this->dir,'rutorrent',null),'corrupt core '.$index.' refuses actual worker admission');
+			$this->assertSame($bytes,file_get_contents($statePath),'corrupt core '.$index.' is never rewritten');
+		}
+		$this->assertTrue(strpos(implode("\n",FileUtil::$log),'reason=malformed-advisory')===false,
+			'a refused core is never reported as an advisory-only recovery');
+		$state['user']='another-user';$state['native_retry']='garbled';$bytes=json_encode($state);
+		file_put_contents($statePath,$bytes);chmod($statePath,0600);
+		$this->assertSame(false,erasedataAcknowledgeDrainGeneration($this->dir,'rutorrent',null),'advisory recovery never grants another user ownership');
+		$this->assertSame($bytes,file_get_contents($statePath),'another user cannot persist even an advisory reset');
+		unlink($statePath);
+		$this->assertSame(false,erasedataNativeRetryPruneOrphans($this->dir,'rutorrent',time()+60),'an absent state is neither created nor claimed by prune');
+		$this->assertTrue(!file_exists($statePath),'prune leaves the absent state absent');
 	}
 }
