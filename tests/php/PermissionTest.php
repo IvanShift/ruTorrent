@@ -104,12 +104,15 @@ class PermissionTest extends TestCase
 
 	public function testEffectiveUidWithoutOptionalExtensions()
 	{
+		// JSON may be a shared extension on PHP 7.4, so -n disables it too.
+		// Keep the child result independent of every optional extension.
 		$script = 'require '.var_export(realpath(__DIR__.'/../../php/utility/permission.php'), true).';'
-			.'echo json_encode(array(Permission::effectiveUid(), function_exists("posix_geteuid")));';
+			.'echo serialize(array(Permission::effectiveUid(), function_exists("posix_geteuid")));';
 		$child = SCGITransportFixture::runPhpChild(array('-n', '-r', $script));
-		$this->assertSame(0, $child['exitCode'], 'the UID leaf loads without filesystem dependencies: '.$child['stderr']);
+		$this->assertSame(0, $child['exitCode'], 'the UID leaf loads without filesystem dependencies: '
+			.$child['stderr'].$child['stdout']);
 		$this->assertSame('', $child['stderr'], 'the UID leaf emits no diagnostics');
-		$result = json_decode($child['stdout'], true);
+		$result = unserialize($child['stdout'], array('allowed_classes' => false));
 		$this->assertTrue(is_array($result) && count($result) === 2, 'the child reports its actual transport-free UID');
 		$this->assertSame(Permission::effectiveUid(), $result[0] ?? null,
 			'the no-extensions child retains the effective UID of its parent');
