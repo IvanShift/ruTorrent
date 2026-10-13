@@ -246,6 +246,30 @@ function snoopyAssertPrefixRefused($cookie, $redirect = 'https://prefix.test/nex
 }
 
 $tests = array(
+    'real refused TCP connections are transport failures on both socket paths' => function () {
+        // Reserve a port without listening so refusal is local, immediate and race-free.
+        $bound = stream_socket_server('tcp://127.0.0.1:0', $errno, $error, STREAM_SERVER_BIND);
+        testAssertTrue(is_resource($bound), 'The refusal fixture reserved a TCP port');
+        try {
+            $address = stream_socket_get_name($bound, false);
+            $port = (int) substr(strrchr($address, ':'), 1);
+            foreach (array(null, '127.0.0.1') as $bind) {
+                $client = new Snoopy();
+                $client->host = '127.0.0.1';
+                $client->port = $port;
+                $client->IP = $bind;
+                $client->_fp_timeout = 0.5;
+                testAssertSame(false, @$client->connect(), 'The real TCP connection was refused');
+                testAssertTrue($client->status < 0 && $client->status !== -100
+                    && $client->status !== Snoopy::RESPONSE_BODY_FAILED,
+                    'Connect refusal is neither HTTP, read timeout nor body refusal');
+                testAssertSame(1, preg_match('/^connection failed \([1-9][0-9]*\)$/D', $client->error),
+                    'The original positive OS errno remains in the diagnostic message');
+            }
+        } finally {
+            fclose($bound);
+        }
+    },
     'the captured live RuTracker HTTPS 304 is accepted without a curl output file' => function () {
         $capture = file_get_contents(__DIR__.'/fixtures/rutracker-https-304/conditional.headers');
         snoopyRespondWith($capture);

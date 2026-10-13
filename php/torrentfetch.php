@@ -12,9 +12,9 @@ class TorrentFetch
 			? (int)$client->status : 0;
 		$error = (is_object($client) && isset($client->error)) ? (string)$client->error : '';
 		// Snoopy reports a transport failure in the field that otherwise holds
-		// the HTTP status: a socket that did not connect leaves its errno there
-		// (ECONNREFUSED is 111), with Snoopy::connect()'s "connection failed (N)"
-		// as the error, and a failed curl run leaves its exit code -- any code,
+		// the HTTP status: a socket that did not connect sets a nonpositive
+		// status, with its original errno in "connection failed (N)". A failed
+		// curl run leaves its exit code -- any code,
 		// 100 and up included (CURLE_TOO_LARGE, and the shell's 126 and 127 when
 		// curl cannot be run) -- with one of Snoopy's curl messages. Neither
 		// came from the server, so neither is an http-status.

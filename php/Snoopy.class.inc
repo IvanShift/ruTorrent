@@ -43,6 +43,7 @@ require_once( 'publicsuffix.php' );
 class Snoopy
 {
 	const RESPONSE_BODY_FAILED = -101;
+	const SOCKET_CONNECT_FAILED = -102;
 	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
 
 	/**** Public variables ****/
@@ -1800,8 +1801,10 @@ class Snoopy
 			$fp = fsockopen($host,$port,$errno,$errstr,$this->_fp_timeout);
 		if(!$fp)
 		{
-			// socket connection failed
-			$this->status = $errno;
+			// Positive OS errno values overlap HTTP statuses. Negating them
+			// would collide with read timeout (-100) and body refusal (-101).
+			// Keep the original errno in $error for detailed diagnostics.
+			$this->status = $errno > 0 ? self::SOCKET_CONNECT_FAILED : $errno;
 			switch($errno)
 			{
 				case -3:
