@@ -93,6 +93,8 @@ class RuTrackerFetchError
 			'gzip-decoder-unavailable' => '/^gzip-decoder-unavailable$/i',
 			'unreadable-or-oversized-response' => '/^unreadable-or-oversized-response$/i',
 			'request-deadline' => '/^request-deadline$/i',
+			'request-throttled' => '/^request-throttled$/i',
+			'credential-post-failed' => '/^credential-post-failed$/i',
 		);
 		foreach($classes as $token => $pattern)
 			if(preg_match($pattern, $error)) return($token);

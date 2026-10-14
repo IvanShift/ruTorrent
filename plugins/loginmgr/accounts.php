@@ -70,6 +70,10 @@ class legacyCookieNotices
 	}
 }
 
+// One account's stored session. Several requests, possibly in separate
+// processes, work on it at once -- an account with mirrors holds a session per
+// host -- so a store applies only what this request changed to the document
+// as it is now, under rCache's key lock (merge()).
 class privateData
 {
 	public $hash = '';
@@ -78,9 +82,20 @@ class privateData
 	public $scopedCookies = null;
 	public $referer = null;
 	public $loaded = false;
+	// What load() read: the base merge() compares this request's changes to.
+	// Null when nothing was read. Never stored.
+	private $base = null;
+	// Set by a refresh: the host whose stored session its fresh login replaces.
+	private $replacedHost = null;
 	// Avoid repeated disk claims within one request; legacyCookieNotices owns
 	// the cross-request, per-profile/session throttle.
 	private static $legacyCacheLogged = array();
+
+	// The stored document is the public state; the merge bookkeeping is not.
+	public function __sleep()
+	{
+		return(array_keys(array_diff_key(get_object_vars($this), array('base' => 0, 'replacedHost' => 0))));
+	}
 
 	static public function load( $owner, $client = null )
 	{
@@ -111,8 +126,15 @@ class privateData
 					// Old stores serialized this runtime flag too. Refusing the
 					// cookies must also refuse their warm-session fetch branch.
 					$rt->loaded = false;
+					// Only its flat cookies can be named in a merge: a failed
+					// login removes the document, unless another request has
+					// replaced it meanwhile.
+					$rt->base = array('cookies' => (array) $rt->cookies, 'scopedCookies' => array(),
+						'referer' => $rt->referer, 'legacy' => true);
 					return($rt);
 				}
+				$rt->base = array('cookies' => (array) $rt->cookies, 'scopedCookies' => $rt->scopedCookies,
+					'referer' => $rt->referer);
 				// Keep cookies already supplied for this request; the saved session
 				// keeps its previous priority when names overlap.
 				$client->cookies = array_merge((array) $client->cookies, (array) $rt->cookies);
@@ -128,7 +150,8 @@ class privateData
 		return($rt);
 	}
 
-	public function __construct( $owner )
+	// rCache constructs one without an owner to read the newer copy into.
+	public function __construct( $owner = '' )
 	{
 		$this->hash = $owner.".dat";
 		$this->scopedCookies = array();
@@ -141,15 +164,111 @@ class privateData
 		$cache->remove($this);
 	}
 
-	public function store( $client )
+	// $replacedUrl: a refresh logged in on this origin without the stored
+	// session, so what is stored for its host gives way to the fresh login.
+	public function store( $client, $replacedUrl = null )
 	{
 		$this->cookies = ($client instanceof Snoopy)
 			? $client->cookiesForAccountStorage() : $client->cookies;
 		$this->scopedCookies = ($client instanceof Snoopy)
 			? $client->responseCookiesForAccountStorage() : array();
 		$this->referer = $client->referer;
+		$this->replacedHost = $replacedUrl === null ? null : UrlHost::of($replacedUrl);
 		$cache = new rCache('/accounts');
 		return($cache->set($this));
+	}
+
+	// A guest answer and a failed login prove dead only the session that was
+	// sent to $url's host. Drop that, and the flat cookies sent with it, and
+	// keep what other hosts hold. Only what this request read is dropped: a
+	// session another request stored meanwhile was never shown to be stale.
+	public function forget( $url )
+	{
+		if($this->base === null)
+			return(true);
+		$host = UrlHost::of($url);
+		$scoped = array_values(array_filter($this->base['scopedCookies'], function($entry) use($host)
+		{
+			return(!self::isSentTo($entry, $host));
+		}));
+		if($scoped === $this->base['scopedCookies'] && !$this->base['cookies'] && empty($this->base['legacy']))
+			return(true);
+		$this->cookies = array();
+		$this->scopedCookies = $scoped;
+		$this->referer = $scoped ? $this->base['referer'] : null;
+		$this->replacedHost = null;
+		$cache = new rCache('/accounts');
+		return($cache->set($this));
+	}
+
+	// rCache asks this under the key lock when the document changed after
+	// this request read it ($newer is the document now). Apply this request's
+	// changes -- cookies it set, renewed or dropped, keyed as Snoopy's jar keys
+	// them: name, domain, host-only flag and path -- and keep everything else
+	// as $newer has it.
+	public function merge( $newer )
+	{
+		$base = $this->base !== null ? $this->base
+			: array('cookies' => array(), 'scopedCookies' => array(), 'referer' => null);
+		$theirs = is_array($newer->scopedCookies) ? $newer->scopedCookies : array();
+		$theirsFlat = (array) $newer->cookies;
+		if($this->replacedHost !== null)
+		{
+			$host = $this->replacedHost;
+			$theirs = array_filter($theirs, function($entry) use($host)
+			{
+				return(!self::isSentTo($entry, $host));
+			});
+			$theirsFlat = array();
+		}
+		$this->scopedCookies = array_values(self::mergeChanges(self::keyed($base['scopedCookies']),
+			self::keyed($this->scopedCookies), self::keyed($theirs)));
+		$this->cookies = self::mergeChanges((array) $base['cookies'], (array) $this->cookies, $theirsFlat);
+		// The referer merges like a cookie: one this request dropped stays
+		// dropped unless the newer document renewed it.
+		if($this->referer === $base['referer'] || ($this->referer === null && $newer->referer !== $base['referer']))
+			$this->referer = $newer->referer;
+		return(true);
+	}
+
+	// rCache removes a document with nothing left in it instead of storing it.
+	public function isEmpty()
+	{
+		return(!$this->cookies && !$this->scopedCookies && ($this->referer === null || $this->referer === ''));
+	}
+
+	// Whether Snoopy would send this stored cookie to $host.
+	private static function isSentTo($entry, $host)
+	{
+		return(is_array($entry) && $host !== null && Snoopy::cookieDomainMatches($host,
+			UrlHost::normalize($entry['domain'] ?? null), ($entry['hostOnly'] ?? true) !== false));
+	}
+
+	private static function keyed($entries)
+	{
+		$keyed = array();
+		foreach((array) $entries as $entry)
+			if(is_array($entry) && isset($entry['name'], $entry['domain'], $entry['path']))
+				$keyed[$entry['name'] . "\0" . UrlHost::normalize($entry['domain'])
+					. "\0" . (int) (($entry['hostOnly'] ?? true) !== false) . "\0" . $entry['path']] = $entry;
+		return($keyed);
+	}
+
+	// Three-way: what this request changed against $base wins; the rest is
+	// $theirs. A value it dropped stays dropped unless $theirs renewed it.
+	private static function mergeChanges($base, $ours, $theirs)
+	{
+		foreach(array_keys($base + $ours) as $key)
+		{
+			if(array_key_exists($key, $ours))
+			{
+				if(!array_key_exists($key, $base) || $base[$key] !== $ours[$key])
+					$theirs[$key] = $ours[$key];
+			}
+			else if(array_key_exists($key, $theirs) && $theirs[$key] === $base[$key])
+				unset($theirs[$key]);
+		}
+		return($theirs);
 	}
 
 	static public function getModified($owner)
@@ -358,13 +477,14 @@ abstract class commonAccount
 				if($answer!==self::ANSWER_GUEST)
 					return(false);
 			}
+			$requestUrl = $url;
 			$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
 				$this->loginWasNotRefused($client) &&
 				($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
 				$this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body) &&
 				$data->store($client) );
-			if(!$ret)
-				$data->remove();
+			if(!$ret && $data instanceof privateData)
+				$data->forget($requestUrl);
 			return($ret);
 		}));
 	}
@@ -396,10 +516,14 @@ abstract class commonAccount
 				$content_type = "";
 				$body = "";
 				$is_result_fetched = false;
+				// The login runs without the stored session: a tracker may send a
+				// signed-in visitor away from its login page before reading the
+				// credentials. Storing replaces only this origin's session; other
+				// hosts' sessions in the same document are kept (privateData::merge).
 				$data = $this->loadData();
 				if($this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
 					$this->loginWasNotRefused($client))
-					$data->store($client);
+					$data->store($client, $this->url);
 				// A login that did not come back is not evidence that the stored
 				// session is stale, and this job exists to REFRESH a session:
 				// deleting one it merely failed to renew leaves the user worse off

@@ -107,6 +107,16 @@ class UrlHost
 	}
 
 	/**
+	 * True when $host is exactly one of $hosts, subdomains excluded: for a
+	 * list that names every host it admits. Both sides are normalized.
+	 */
+	static public function isExactlyOneOf($host, $hosts)
+	{
+		$host = self::normalize($host);
+		return $host !== '' && in_array($host, array_map(array(__CLASS__, 'normalize'), (array) $hosts), true);
+	}
+
+	/**
 	 * True when $url's host is one of $hosts (or a subdomain of one), its
 	 * scheme is $scheme when one is named, and its path starts with
 	 * $pathPrefix when one is named. Port is not part of this host predicate;

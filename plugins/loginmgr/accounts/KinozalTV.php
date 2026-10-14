@@ -4,13 +4,27 @@ require_once(__DIR__ . '/../../../php/kinozal.php');
 
 class KinozalTVAccount extends commonAccount
 {
-	public $url = "https://kinozal.guru";
+	// The origin for an automatic refresh, which has no request of its own:
+	// the first configured door (KinozalResponse::doors()).
+	public $url = '';
+
+	public function __construct()
+	{
+		$this->url = KinozalResponse::refreshOrigin();
+	}
 
 	public function fetch($client, $url, $login, $password, $method, $content_type, $body)
 	{
-		if(KinozalResponse::requestsBlocked()) return(false);
+		KinozalResponse::throttle();
+		if(KinozalResponse::requestsBlocked($url)) return(false);
 		$ret = parent::fetch($client, $url, $login, $password, $method, $content_type, $body);
-		return(KinozalResponse::observeChallenge($client) ? false : $ret);
+		return(KinozalResponse::observeChallenge($client, $url) ? false : $ret);
+	}
+
+	public function check($client, $login, $password, $auto)
+	{
+		KinozalResponse::throttle();
+		return(parent::check($client, $login, $password, $auto));
 	}
 
 	protected function isOK($client)
@@ -27,41 +41,92 @@ class KinozalTVAccount extends commonAccount
 		$guest = KinozalResponse::isGuestPage($client->results);
 		return($guest === null ? null : !$guest);
 	}
+
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
 	{
 		$is_result_fetched = false;
-		if(KinozalResponse::requestsBlocked()) return(false);
-		// Replay of the captured login form admits the POST. A transport result
-		// alone also accepts 403/5xx and unrelated landing pages.
-		$fetched = $client->fetch($this->url . "/login.php");
-		if(KinozalResponse::observeChallenge($client)) return(false);
-		$form = $fetched && (int) $client->status === 200
-			? KinozalResponse::hasLoginForm($client->results) : false;
-		if($form !== true)
+		// Session cookies belong to the host that set them, so log in on the
+		// site the caller is about to use. test() admits only account hosts,
+		// and a URL outside them is refused here as well, never redirected
+		// to another origin with the password.
+		$origin = KinozalResponse::siteOrigin($url);
+		if($origin === null)
 		{
-			KinozalResponse::logLoginRefusal(!$fetched ? 'login-form-unreachable'
-				: ((int) $client->status !== 200 ? 'login-form-http-refusal'
-					: ($form === null ? 'login-form-unverified' : 'login-form-missing')));
+			KinozalResponse::logLoginRefusal('login-origin-refused', $url);
 			return(false);
 		}
-		$client->setcookies();
-		$client->referer = $this->url;
-		$fetched = $client->fetch($this->url . "/takelogin.php", "POST", "application/x-www-form-urlencoded",
-			"username=" . rawurlencode($login) . "&password=" . rawurlencode($password));
-		if(KinozalResponse::observeChallenge($client)) return(false);
-		if($fetched)
+		if(KinozalResponse::requestsBlocked($origin)) return(false);
+		// Replay of the captured login form admits the POST. A transport result
+		// alone also accepts 403/5xx and unrelated landing pages.
+		if(!self::holdsLoginForm($client, $origin))
 		{
-			$client->setcookies();
-			return(true);
+			$fetched = $client->fetch($origin . "/login.php");
+			if(KinozalResponse::observeChallenge($client, $origin . "/login.php")) return(false);
+			$form = $fetched && (int) $client->status === 200
+				? KinozalResponse::hasLoginForm($client->results) : false;
+			if($form !== true)
+			{
+				KinozalResponse::logLoginRefusal(self::formRefusal($client, $fetched, $form), $origin);
+				return(false);
+			}
 		}
+		$client->setcookies();
+		$client->referer = $origin;
+		$fetched = $client->fetch($origin . "/takelogin.php", "POST", "application/x-www-form-urlencoded",
+			"username=" . rawurlencode($login) . "&password=" . rawurlencode($password));
+		if(KinozalResponse::observeChallenge($client, $origin . "/takelogin.php")) return(false);
+		if(!$fetched || (int) $client->status >= 400)
+			return(self::credentialPostFailed($client, $origin));
+		$client->setcookies();
+		return(true);
+	}
+
+	// The credential POST went out, or may have, and brought no session,
+	// however it ended: a refusal, a redirect to an error page, a lost
+	// answer. The mark tells the caller that asking another door would only
+	// send the password again. The rate limit answers for the whole site and
+	// stays for the caller to read; the throttle never sent such a POST.
+	private static function credentialPostFailed($client, $origin)
+	{
+		if(KinozalResponse::isRateLimited($client))
+			return(false);
+		$status = (int) $client->status;
+		KinozalResponse::logLoginRefusal($status >= 400 ? 'credential-post-http-' . $status
+			: 'credential-post-unanswered', $origin, true);
+		$client->error = KinozalResponse::CREDENTIAL_POST_FAILED;
 		return(false);
 	}
+
+	// The answer that just walled the caller may already be this origin's
+	// login page: a guest download.php redirects to it, and Snoopy followed.
+	// That page is the successful GET with the expected form that a fresh
+	// request would fetch again, one paced request later.
+	private static function holdsLoginForm($client, $origin)
+	{
+		$answered = isset($client->lastResponseURL) ? (string) $client->lastResponseURL : '';
+		return(UrlHost::sameOrigin($answered, $origin) && @parse_url($answered, PHP_URL_PATH) === '/login.php'
+			&& (int) $client->status === 200 && KinozalResponse::hasLoginForm($client->results) === true);
+	}
+
+	// Why the login form could not be used. The shared rate limit is not
+	// this door's refusal.
+	private static function formRefusal($client, $fetched, $form)
+	{
+		if(KinozalResponse::isRateLimited($client))
+			return('rate-limited');
+		if(!$fetched)
+			return('login-form-unreachable');
+		if((int) $client->status !== 200)
+			return('login-form-http-refusal');
+		return($form === null ? 'login-form-unverified' : 'login-form-missing');
+	}
+
 	// Matched against the URL's host, not against the URL string: the pattern
 	// this replaced also accepted https://evil.test/path/kinozal.guru/x, whose
 	// host is the attacker's, and loginmgr would then have sent this account's
 	// cookies there.
 	public function test($url)
 	{
-		return(self::urlAddresses($url,KinozalResponse::SITE_HOSTS,"https"));
+		return(self::urlAddresses($url,KinozalResponse::accountHosts(),"https"));
 	}
 }

@@ -2,6 +2,12 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 
+// Real Snoopy transports below. Kinozal's pace between requests and its pause
+// after HTTP 429 are courtesies to the live site, not what these cases prove;
+// tests/php/KinozalRequestPacingTest.php pins the shipped values.
+define('KINOZAL_REQUEST_PAUSE', 0);
+define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+
 // Keep this suite's diagnostics out of the shared application log.
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/loginmgr-boundary-' . getmypid() . '.log';
 
@@ -84,7 +90,7 @@ class BoundaryLostFilm extends LostFilmAccount
 class BoundaryKinozal extends KinozalTVAccount
 {
     public $data;
-    public function __construct() { $this->data = new BoundaryData(true); }
+    public function __construct() { parent::__construct(); $this->data = new BoundaryData(true); }
     protected function loadData($client = null)
     {
         if ($client) { $client->cookies = array('sid' => 'expired'); }
@@ -208,15 +214,16 @@ $tests = array(
         $client->queue = array(
             array(302, 'https://kinozal.guru/login.php', array(), ''),
             array(200, false, array(), boundaryKinozalLoginForm()),
-            array(200, false, array(), boundaryKinozalLoginForm()),
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
             array(200, false, array(), 'd4:infodee'),
         );
         testAssertSame(true, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''), 'cached guest session is repaired');
-        testAssertSame(array($url, 'https://kinozal.guru/login.php', 'https://kinozal.guru/login.php',
+        // The followed redirect already fetched the login form from the trusted
+        // origin; the login reuses it instead of asking for it again.
+        testAssertSame(array($url, 'https://kinozal.guru/login.php',
             'https://kinozal.guru/takelogin.php', $url), array_column($client->requests, 0), 'only trusted login and final download are requested');
-        testAssertSame('username=user&password=pass', $client->requests[3][2], 'login uses real account body');
-        testAssertSame(array('sid' => 'renewed'), $client->requests[4][3], 'POST cookie is kept without following the downgrade');
+        testAssertSame('username=user&password=pass', $client->requests[2][2], 'login uses real account body');
+        testAssertSame(array('sid' => 'renewed'), $client->requests[3][3], 'POST cookie is kept without following the downgrade');
         testAssertSame(1, $account->data->stored, 'renewed session is stored');
         testAssertSame(0, $account->data->removed, 'renewal does not discard the session');
         testAssertSame(null, $client->redirectTrust, 'account trust is scoped to its own operation');
@@ -231,8 +238,9 @@ $tests = array(
             array(302, 'http://kinozal.guru/', array('Set-Cookie: sid=renewed; Path=/'), ''),
         );
         $account->check($client, 'user', 'pass', 0);
-        testAssertSame(array('https://kinozal.guru/login.php', 'https://dl.kinozal.guru/welcome',
-            'https://kinozal.guru/takelogin.php'), array_column($client->requests, 0), 'refresh may follow account-owned HTTPS URLs');
+        // A refresh has no request URL, so the login door is the account origin.
+        testAssertSame(array($account->url . '/login.php', 'https://dl.kinozal.guru/welcome',
+            $account->url . '/takelogin.php'), array_column($client->requests, 0), 'refresh may follow account-owned HTTPS URLs');
         testAssertSame(1, $account->data->stored, 'refresh stores the received session');
         testAssertSame(null, $client->redirectTrust, 'refresh restores caller policy');
     },

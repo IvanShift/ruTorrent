@@ -45,6 +45,7 @@ class Snoopy
 	const RESPONSE_BODY_FAILED = -101;
 	const SOCKET_CONNECT_FAILED = -102;
 	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
+	const REQUEST_THROTTLED = 'request-throttled';
 
 	/**** Public variables ****/
 
@@ -68,6 +69,21 @@ class Snoopy
 	// Scoped by loginmgr; both HTTPS URLs must belong to the selected account.
 	public $redirectTrust = null;
 	var $passcookies	=	true;			// pass set cookies back through redirects
+
+	// Hosts behind one rate limiter, registered by whoever knows them. Every
+	// wire request to such a host, from any client, login and redirect hops
+	// included, waits the group's interval after the previous turn started
+	// ('next') and after the last request that had ended when it took its turn
+	// ('ended'); a turn handed back unused rolls back 'next' only. An HTTP 429
+	// pauses the group, doubling up to a cap while the limiter keeps refusing.
+	// The state lives in a flock-guarded file in the shared settings path, so
+	// the processes that register the group (the checker cycle, manual batches,
+	// account fetches) share one clock; without that file the group is still
+	// throttled in this process.
+	private static $throttleGroups = array();
+	private static $throttleStates = array();
+	private static $throttleLogged = array();
+	private $throttleReservation = null;
 
 	var $user		=	"";			// user for http authentication
 	var $pass		=	"";			// password for http authentication
@@ -191,6 +207,262 @@ class Snoopy
 			return false;
 		$this->refuseResponseBody('request-deadline');
 		return true;
+	}
+
+	/** Throttle every request to $hosts and their subdomains as one group. */
+	public static function throttleHosts($group, $hosts, $interval, $pause, $maxPause)
+	{
+		$interval = is_numeric($interval) ? (float)$interval : 0.0;
+		$pause = is_numeric($pause) ? (float)$pause : 0.0;
+		if(!is_string($group) || !preg_match('/^[a-z0-9_-]{1,32}$/D', $group))
+			return;
+		if(!is_finite($interval) || !is_finite($pause) || ($interval <= 0 && $pause <= 0))
+		{
+			unset(self::$throttleGroups[$group]);
+			return;
+		}
+		self::$throttleGroups[$group] = array('hosts' => array_values((array)$hosts),
+			'interval' => max(0.0, $interval), 'pause' => max(0.0, $pause),
+			'maxPause' => max(0.0, $pause, is_numeric($maxPause) ? (float)$maxPause : 0.0));
+	}
+
+	private static function throttleGroupFor($scheme, $host)
+	{
+		if($scheme !== 'http' && $scheme !== 'https')
+			return(null);
+		foreach(self::$throttleGroups as $group => $throttle)
+			if(UrlHost::isOneOf($host, $throttle['hosts']))
+				return($group);
+		return(null);
+	}
+
+	// Reserves this request's turn in its group and waits for it. False refuses
+	// the request without sending it: the group is paused after HTTP 429, or
+	// the wait would outlast the request deadline.
+	private function enterThrottle($group)
+	{
+		$throttle = self::$throttleGroups[$group];
+		$budget = $this->requestTimeLeft();
+		$until = $slot = null;
+		self::changeThrottleState($group, function(&$state) use($throttle, $budget, &$until, &$slot)
+		{
+			$now = microtime(true);
+			$start = max($now, $state['next'], $state['ended']);
+			if($state['until'] > $now)
+				$until = $state['until'];
+			// requestDeadlineExpired() refuses the final millisecond.
+			else if($budget === null || $start - $now < $budget - 0.001)
+			{
+				$slot = array($start, $state['next']);
+				$state['next'] = $start + $throttle['interval'];
+			}
+		});
+		if($until !== null)
+			return($this->refuseThrottled($group, $until));
+		if($slot === null)
+			return($this->refuseResponseBody('request-deadline'));
+		// A wait spends the same deadline as DNS, transport and every redirect.
+		while(($left = $slot[0] - microtime(true)) > 0)
+		{
+			if($this->requestDeadlineExpired())
+			{
+				self::returnTurn($group, $slot);
+				return(false);
+			}
+			$budget = $this->requestTimeLeft();
+			usleep((int)ceil(min(1.0, $left, $budget === null ? 1.0 : max(0.0, $budget)) * 1000000));
+		}
+		if($this->requestDeadlineExpired())
+		{
+			self::returnTurn($group, $slot);
+			return(false);
+		}
+		// Another process may have met a 429 while this one waited its turn.
+		$until = self::changeThrottleState($group, function(&$state)
+		{
+			return($state['until'] > microtime(true) ? $state['until'] : null);
+		});
+		if($until !== null)
+		{
+			self::returnTurn($group, $slot);
+			return($this->refuseThrottled($group, $until));
+		}
+		$this->throttleReservation = array($group, $slot[0], $slot[1]);
+		return(true);
+	}
+
+	private function refuseThrottled($group, $until)
+	{
+		self::logThrottle(self::REQUEST_THROTTLED, $group, $until);
+		return($this->refuseResponseBody(self::REQUEST_THROTTLED));
+	}
+
+	// Gives an unused turn back, unless somebody has reserved after it. Only
+	// 'next' rolls back: the interval after the last request ended still holds.
+	private static function returnTurn($group, $slot)
+	{
+		$interval = self::$throttleGroups[$group]['interval'];
+		self::changeThrottleState($group, function(&$state) use($slot, $interval)
+		{
+			if($state['next'] === $slot[0] + $interval)
+				$state['next'] = $slot[1];
+		});
+	}
+
+	// The group's next request waits a whole interval after this one ended,
+	// and an HTTP 429 pauses the group. A transfer that never reached the host
+	// (curl could not resolve or connect to it) hands its turn back.
+	private function leaveThrottle($sent)
+	{
+		list($group, $start, $previousNext) = $this->throttleReservation;
+		$this->throttleReservation = null;
+		$throttle = self::$throttleGroups[$group];
+		// The response line, not $status: an answer whose body was refused
+		// (gzip, size, curl's size limit) still came from the host, and curl's
+		// exit code is no HTTP status.
+		$http = preg_match('~^HTTP/\S+\s+(\d{3})~', (string)$this->response_code, $match) ? (int)$match[1] : 0;
+		if(!$sent && $http === 0 && in_array((int)$this->status, array(6, 7), true))
+		{
+			self::returnTurn($group, array($start, $previousNext));
+			return;
+		}
+		$retryAfter = $http === 429 ? $this->retryAfterSeconds() : null;
+		$paused = self::changeThrottleState($group, function(&$state) use($throttle, $http, $retryAfter)
+		{
+			$now = microtime(true);
+			$state['ended'] = max($state['ended'], $now + $throttle['interval']);
+			if($http === 429 && $throttle['pause'] > 0)
+			{
+				// A 429 while the pause is on answers a request sent before it
+				// began: the same limiter event, so it may lengthen the pause
+				// but adds no strike.
+				if($state['until'] <= $now)
+					$state['strikes'] = min($state['strikes'] + 1, 16);
+				$state['until'] = max($state['until'], $now + min(max($throttle['pause']
+					* pow(2, max($state['strikes'], 1) - 1), (float)$retryAfter), $throttle['maxPause']));
+				return($state['until']);
+			}
+			if($http >= 100)
+				$state['strikes'] = 0;
+			return(null);
+		});
+		if($paused !== null)
+			self::logThrottle('throttle-paused', $group, $paused);
+	}
+
+	// A 429's Retry-After in seconds: delta-seconds or an exact IMF-fixdate.
+	// RFC 9110 section 5.6.7 asks for the obsolete RFC 850 and asctime dates
+	// too; they are ignored on purpose, as that only leaves the doubling backoff.
+	private function retryAfterSeconds()
+	{
+		foreach($this->headers as $line)
+			if(preg_match('/^Retry-After:\s*(.+?)\s*$/i', (string)$line, $match))
+			{
+				if(ctype_digit($match[1]))
+					return((int)$match[1]);
+				$at = DateTime::createFromFormat('D, d M Y H:i:s \G\M\T', $match[1], new DateTimeZone('UTC'));
+				if($at === false || $at->format('D, d M Y H:i:s \G\M\T') !== $match[1])
+					return(null);
+				return(max(0, $at->getTimestamp() - time()));
+			}
+		return(null);
+	}
+
+	// Runs $change on the group's state under the state file's lock and returns
+	// its result. Without a usable file the in-process copy is the state.
+	private static function changeThrottleState($group, callable $change)
+	{
+		$state = isset(self::$throttleStates[$group]) ? self::$throttleStates[$group]
+			: array('next' => 0.0, 'ended' => 0.0, 'until' => 0.0, 'strikes' => 0);
+		$fp = self::openThrottleFile($group);
+		if($fp !== false && !@flock($fp, LOCK_EX))
+		{
+			fclose($fp);
+			$fp = false;
+			self::logThrottle('throttle-state-unavailable', $group, null);
+		}
+		if($fp !== false)
+			$state = self::saneThrottleState(@json_decode((string)stream_get_contents($fp, -1, 0), true),
+				$state, $group);
+		$result = $change($state);
+		if($fp !== false)
+		{
+			$json = json_encode($state);
+			if(!ftruncate($fp, 0) || fseek($fp, 0) !== 0 || fwrite($fp, $json) !== strlen($json) || !fflush($fp))
+				self::logThrottle('throttle-state-unwritable', $group, null);
+			flock($fp, LOCK_UN);
+			fclose($fp);
+		}
+		self::$throttleStates[$group] = $state;
+		return($result);
+	}
+
+	// A value another process stored is trusted only within the bounds a
+	// writer can produce: a clock step or a damaged file must not stall the
+	// group for days. Times already known in-process only add caution.
+	private static function saneThrottleState($stored, $local, $group)
+	{
+		if(!is_array($stored))
+			return($local);
+		$now = microtime(true);
+		$throttle = self::$throttleGroups[$group];
+		$value = function($key, $limit) use($stored)
+		{
+			$number = isset($stored[$key]) && is_numeric($stored[$key]) ? (float)$stored[$key] : 0.0;
+			return(is_finite($number) && $number >= 0 && $number <= $limit ? $number : 0.0);
+		};
+		$turns = $now + max(600.0, 32 * $throttle['interval']);
+		return(array(
+			'next' => max($local['next'], $value('next', $turns)),
+			'ended' => max($local['ended'], $value('ended', $turns)),
+			'until' => max($local['until'], $value('until', $now + $throttle['maxPause'])),
+			'strikes' => (int)$value('strikes', 16),
+		));
+	}
+
+	private static function openThrottleFile($group)
+	{
+		global $profileMask;
+		if(FileUtil::settingsReadOnlyContext())
+		{
+			self::logThrottle('throttle-state-unavailable', $group, null);
+			return(false);
+		}
+		$mask = isset($profileMask) ? $profileMask : 0777;
+		$dir = FileUtil::getSettingsPathEx('');
+		if(!is_dir($dir))
+			FileUtil::makeDirectory($dir, $mask | 01000, true);
+		$path = $dir . '/throttle-' . $group . '.json';
+		// Narrow the umask for the create itself, as RuTrackerState does: the
+		// scheduler's and the web server's OS users must both open this file.
+		$previous = @umask(~($mask & 0666) & 0777);
+		$fp = @fopen($path, 'c+');
+		@umask($previous);
+		if($fp === false)
+		{
+			self::logThrottle('throttle-state-unavailable', $group, null);
+			return(false);
+		}
+		@chmod($path, $mask & 0666);
+		return($fp);
+	}
+
+	private static function logThrottle($event, $group, $until)
+	{
+		// A pause is logged each time it starts; the rest once per process.
+		$key = $event . ' ' . $group;
+		if($event !== 'throttle-paused' && isset(self::$throttleLogged[$key]))
+			return;
+		self::$throttleLogged[$key] = true;
+		FileUtil::toLog('Snoopy: ' . $event . ' group=' . $group
+			. ($until === null ? '; pacing stays within this process'
+				: ' until=' . gmdate('Y-m-d\TH:i:s\Z', (int)ceil($until))));
+	}
+
+	/** Whether a response cookie scoped to $domain is sent to $host. */
+	public static function cookieDomainMatches($host, $domain, $hostOnly)
+	{
+		return $hostOnly ? $host === $domain : UrlHost::isOneOf($host, array($domain));
 	}
 
 	static public function linkencode($p_url)
@@ -474,8 +746,7 @@ class Snoopy
 		{
 			if($entry['account'] !== $this->cookiePartition()
 				|| array_key_exists($entry['name'], $flat)
-				|| ($entry['hostOnly'] ? $host !== $entry['domain']
-					: !UrlHost::isOneOf($host, array($entry['domain'])))
+				|| !self::cookieDomainMatches($host, $entry['domain'], $entry['hostOnly'])
 				|| !self::cookiePathMatches($path, $entry['path']))
 				continue;
 			if($entry['secure'] && $scheme !== 'https')
@@ -912,6 +1183,13 @@ class Snoopy
 			return(false);
 		if($this->requestDeadlineExpired())
 			return false;
+		$throttle = self::throttleGroupFor($parts["scheme"], $this->host);
+		if($throttle !== null && !$this->enterThrottle($throttle))
+			return false;
+		if($throttle !== null)
+			// leaveThrottle() judges this request by its own status line; a
+			// refused connect or deadline must not leave a previous one there.
+			$this->response_code = '';
 		$ret = true;
 		switch($parts["scheme"])
 		{
@@ -960,6 +1238,8 @@ class Snoopy
 				break;
 			}
 		}
+		if($throttle !== null)
+			$this->leaveThrottle($ret);
 		if($ret)
 		{
 			$this->lastResponseURL = $URI;
@@ -1625,11 +1905,20 @@ class Snoopy
 		$this->status = $return;
 		$this->response_code = "";
 		$this->results = "";
-		$is_gzipped = false;
 		if($return)
 		{
 			if($return === 63)
+			{
 				$this->error = 'oversized-response';
+				// curl stopped the body after it wrote the headers. Keep the
+				// answer's status line and headers (a throttled 429 reads its
+				// Retry-After), but follow nothing from a refused answer.
+				$result_headers = @file($headerfile);
+				if(is_array($result_headers))
+					$this->readCurlHeaders($result_headers, $scheme);
+				$this->status = $return;
+				$this->_redirectaddr = false;
+			}
 			else if($this->verify_certificates && in_array($return,array(51,60,77),true))
 			{
 				$whose = $this->_isproxy
@@ -1650,33 +1939,7 @@ class Snoopy
 				@unlink($contfile);
 				return $this->refuseResponseBody('missing-final-response');
 			}
-			foreach($result_headers as $header)
-			{
-				if(preg_match('/^(Location:|URI:|Refresh:)/i', $header))
-				{
-					$redirect = $this->redirectFromHeader($header, $scheme);
-					if($redirect === false)
-						continue;
-					$this->_redirectaddr = $redirect;
-				}
-				if(preg_match("|^HTTP/|",$header))
-				{
-					// curl -D can include CONNECT and 100 blocks before the
-					// origin answer. Only the final block owns its cookies.
-					if($this->response_code !== '')
-					{
-						$this->headers = array();
-						$this->_redirectaddr = false;
-						$is_gzipped = false;
-					}
-					$this->response_code = $header;
-					if(preg_match("|^HTTP/[^\s]*\s(.*?)\s|",$this->response_code, $match))
-						$this->status= $match[1];
-				}
-				if (self::isGzipContentEncoding($header))
-					$is_gzipped = true;
-				$this->headers[] = $header;
-			}
+			$is_gzipped = $this->readCurlHeaders($result_headers, $scheme);
 			if($this->response_code === ''
 				|| ((int) $this->status >= 100 && (int) $this->status < 200))
 			{
@@ -1716,6 +1979,41 @@ class Snoopy
 		@unlink($headerfile);
 		@unlink($contfile);
 		return(!$return);
+	}
+
+	// Reads the header lines curl wrote with -D into the status, response line,
+	// headers and redirect target. Returns whether the answer is gzip-encoded.
+	private function readCurlHeaders($result_headers, $scheme)
+	{
+		$is_gzipped = false;
+		foreach($result_headers as $header)
+		{
+			if(preg_match('/^(Location:|URI:|Refresh:)/i', $header))
+			{
+				$redirect = $this->redirectFromHeader($header, $scheme);
+				if($redirect === false)
+					continue;
+				$this->_redirectaddr = $redirect;
+			}
+			if(preg_match("|^HTTP/|",$header))
+			{
+				// curl -D can include CONNECT and 100 blocks before the
+				// origin answer. Only the final block owns its cookies.
+				if($this->response_code !== '')
+				{
+					$this->headers = array();
+					$this->_redirectaddr = false;
+					$is_gzipped = false;
+				}
+				$this->response_code = $header;
+				if(preg_match("|^HTTP/[^\s]*\s(.*?)\s|",$this->response_code, $match))
+					$this->status= $match[1];
+			}
+			if (self::isGzipContentEncoding($header))
+				$is_gzipped = true;
+			$this->headers[] = $header;
+		}
+		return($is_gzipped);
 	}
 
 	function setcookies()

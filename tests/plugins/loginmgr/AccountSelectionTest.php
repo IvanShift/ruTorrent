@@ -175,6 +175,23 @@ $tests = array(
         testAssertSame(false, $account->test('https://abtorrents.me.evil.test./x'),
             'and the root dot does not rescue a look-alike');
     },
+    'only the configured Kinozal mirrors receive the account session' => function () {
+        // $kinozalHosts withdraws a mirror whose free-DNS name changed hands:
+        // the site's own domains stay account hosts, the mirror does not.
+        $GLOBALS['kinozalHosts'] = array('kinozal.cloudns.nz', 'kinozal.me');
+        try {
+            KinozalResponse::resetCycle();
+            $account = new KinozalTVAccount();
+            testAssertSame(false, $account->test('https://kinozal.jumpingcrab.com/download.php?id=1'),
+                'a mirror left out of the setting is not selected');
+            testAssertSame(true, $account->test('https://kinozal.cloudns.nz/download.php?id=1'), 'a listed one is');
+            testAssertSame(true, $account->test('https://kinozal.guru/download.php?id=1'),
+                'and the site\'s own domains always are');
+        } finally {
+            unset($GLOBALS['kinozalHosts']);
+            KinozalResponse::resetCycle();
+        }
+    },
     'an account is chosen by the url host, not by a substring of the url' => function () {
         // A prefix match accepts https://tracker.example@evil.test/ (the name
         // is userinfo) and https://tracker.example.evil.test/ (the name is one
@@ -190,6 +207,16 @@ $tests = array(
             array('KinozalTVAccount', 'https://kinozal.guru/details.php?id=1', true),
             array('KinozalTVAccount', 'https://dl.kinozal.guru/download.php?id=1', true),
             array('KinozalTVAccount', 'https://evil.test/path/kinozal.guru/feed', false),
+            // The official mirrors are doors to the same account.
+            array('KinozalTVAccount', 'https://kinozal.jumpingcrab.com/get_srv_details.php?action=2&id=1', true),
+            array('KinozalTVAccount', 'https://kinozal.cloudns.nz/download.php?id=1', true),
+            // Both mirrors live under shared free-DNS zones: a sibling label
+            // or the bare zone belongs to somebody else.
+            array('KinozalTVAccount', 'https://evil.jumpingcrab.com/login.php', false),
+            array('KinozalTVAccount', 'https://jumpingcrab.com/login.php', false),
+            array('KinozalTVAccount', 'https://evil.cloudns.nz/login.php', false),
+            array('KinozalTVAccount', 'https://kinozal.jumpingcrab.com.evil.test/login.php', false),
+            array('KinozalTVAccount', 'https://evil.test/kinozal.cloudns.nz/login.php', false),
             array('ruTrackerAccount', 'https://rutracker.org/forum/dl.php?t=1', true),
             array('ruTrackerAccount', 'https://rutracker.org/other/', false),
             array('ruTrackerAccount', 'https://evil.test/x/rutracker.org/forum/', false),

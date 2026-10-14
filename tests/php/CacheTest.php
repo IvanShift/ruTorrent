@@ -16,6 +16,69 @@ class CacheGhostLoadPayload extends CacheMergePayload
 	public $hash = 'ghost-load-test.dat';
 }
 
+// Keyed by its owner only after construction, the way privateData is: the
+// instance set() reads a newer copy into is built without an owner.
+class CacheOwnerKeyedPayload extends CacheMergePayload
+{
+	public $mergedFrom = array();
+
+	public function __construct($owner = 'ownerless')
+	{
+		$this->hash = $owner . '-owner-cache-test.dat';
+	}
+
+	public function merge($instance, $arg)
+	{
+		$this->mergedFrom[] = $instance->hash;
+		return parent::merge($instance, $arg);
+	}
+}
+
+// Emptied by its own change, the way a forgotten session is: what it dropped
+// stays dropped in a merge, and set() removes the document once it is empty.
+class CacheEmptiablePayload
+{
+	public $hash = 'emptiable-cache-test.dat';
+	public $modified = false;
+	public $rows = array();
+	protected $added = array();
+	protected $dropped = array();
+
+	public function __sleep()
+	{
+		return(array('hash', 'modified', 'rows'));
+	}
+
+	public function add($key)
+	{
+		$this->rows[$key] = $key;
+		$this->added[$key] = $key;
+		unset($this->dropped[$key]);
+	}
+
+	public function drop($key)
+	{
+		unset($this->rows[$key], $this->added[$key]);
+		$this->dropped[$key] = $key;
+	}
+
+	public function merge($newer, $arg)
+	{
+		$rows = is_array($newer->rows) ? $newer->rows : array();
+		foreach($this->dropped as $key)
+			unset($rows[$key]);
+		foreach($this->added as $key)
+			$rows[$key] = $key;
+		$this->rows = $rows;
+		return(true);
+	}
+
+	public function isEmpty()
+	{
+		return(!$this->rows);
+	}
+}
+
 // Fork-only: throws out of __wakeup() so the guard's restore path is testable.
 class CacheThrowingPayload
 {
@@ -315,6 +378,237 @@ class CacheTest extends TestCase
 		$this->assertSame('bbbb', $check->rows['slot'],
 			'different bytes trigger a merge even when inode, mtime and size match');
 		$this->assertSame('mine', $check->rows['mine'], 'the stale object keeps its own new row');
+	}
+
+	// A writer keyed per owner after construction must be merged with the
+	// copy under its own key, not with the one an ownerless instance names.
+	public function testMergeReceivesTheNewerCopyUnderTheObjectsOwnKey()
+	{
+		$cache = new rCache();
+		$ownerless = new CacheOwnerKeyedPayload();
+		$ownerless->rows = array('ownerless' => 'ownerless');
+		$this->assertTrue($cache->set($ownerless), 'a document exists under the key of an instance without an owner');
+		$ownerlessFile = FileUtil::getSettingsPath() . '/' . $ownerless->hash;
+		$ownerlessBytes = file_get_contents($ownerlessFile);
+
+		$seed = new CacheOwnerKeyedPayload('alice');
+		$this->assertTrue($seed->addRow('seed'), 'the owner document is stored');
+		$mine = new CacheOwnerKeyedPayload('alice');
+		$other = new CacheOwnerKeyedPayload('alice');
+		$this->assertTrue($cache->get($mine), 'this writer loads the owner document');
+		$this->assertTrue($cache->get($other), 'another writer loads it too');
+		$this->assertTrue($other->addRow('other'), 'the other writer stores its row first');
+		$this->assertTrue($mine->addRow('mine'), 'this writer stores after it');
+
+		$this->assertSame(array('alice-owner-cache-test.dat'), $mine->mergedFrom,
+			'the merge was handed the newer copy stored under the owner key');
+		$check = new CacheOwnerKeyedPayload('alice');
+		$this->assertTrue($cache->get($check), 'the merged owner document loads');
+		ksort($check->rows);
+		$this->assertSame(array('mine' => 'mine', 'other' => 'other', 'seed' => 'seed'), $check->rows,
+			'neither writer loses its row');
+		$this->assertSame($ownerlessBytes, file_get_contents($ownerlessFile),
+			'the document under the ownerless key is neither merged in nor rewritten');
+	}
+
+	public function testAnEmptiedObjectRemovesItsDocumentInsteadOfStoringIt()
+	{
+		global $log_file;
+		$cache = new rCache();
+		$seed = new CacheEmptiablePayload();
+		$seed->add('only');
+		$this->assertTrue($cache->set($seed), 'the document is stored');
+		$file = FileUtil::getSettingsPath() . '/' . $seed->hash;
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/emptied-cache.log';
+		try {
+			$mine = new CacheEmptiablePayload();
+			$this->assertTrue($cache->get($mine), 'this writer loads the document');
+			$mine->drop('only');
+			$this->assertSame(true, $cache->set($mine), 'storing the emptied object succeeds');
+			clearstatcache(true, $file);
+			$this->assertSame(false, file_exists($file), 'the emptied document is removed, not stored empty');
+			$this->assertSame(true, file_exists($file . '.lock'), 'the key lock sidecar stays for waiting writers');
+			$check = new CacheEmptiablePayload();
+			$this->assertSame(false, $cache->get($check), 'nothing is left to load');
+
+			$empty = new CacheEmptiablePayload();
+			$this->assertSame(true, $cache->set($empty), 'an empty object with no document to remove succeeds');
+			clearstatcache(true, $file);
+			$this->assertSame(false, file_exists($file), 'and creates no empty document');
+			$this->assertSame('', is_file($log_file) ? file_get_contents($log_file) : '',
+				'neither removal is a refusal');
+		} finally {
+			$log_file = $previousLog;
+		}
+	}
+
+	// The emptiness of what this writer holds is not the emptiness of the
+	// document: a row another writer stored meanwhile is merged in first.
+	public function testANewerCopyMergedFirstKeepsTheDocumentAnEmptiedObjectWouldRemove()
+	{
+		$cache = new rCache();
+		$seed = new CacheEmptiablePayload();
+		$seed->add('seed');
+		$this->assertTrue($cache->set($seed), 'the document is stored');
+		$mine = new CacheEmptiablePayload();
+		$other = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($mine), 'this writer loads the document');
+		$this->assertTrue($cache->get($other), 'another writer loads it too');
+		$other->add('other');
+		$this->assertTrue($cache->set($other), 'the other writer stores its row first');
+		$mine->drop('seed');
+		$this->assertTrue($mine->isEmpty(), 'by itself this writer would leave nothing');
+		$this->assertSame(true, $cache->set($mine), 'this writer stores after it');
+
+		$check = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($check), 'the document is kept');
+		$this->assertSame(array('other' => 'other'), $check->rows,
+			'the other writer\'s row is kept and the dropped row stays dropped');
+	}
+
+	// For a document whose emptiness means absence, another writer's removal
+	// is a newer copy with nothing in it: what this writer merely read must
+	// not come back with its store.
+	public function testAnAbsentDocumentIsAnEmptyNewerCopyForAnObjectWithIsEmpty()
+	{
+		$cache = new rCache();
+		$file = FileUtil::getSettingsPath() . '/' . (new CacheEmptiablePayload())->hash;
+		$seed = new CacheEmptiablePayload();
+		$seed->add('seed');
+		$this->assertTrue($cache->set($seed), 'the document is stored');
+		$mine = new CacheEmptiablePayload();
+		$other = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($mine), 'this writer loads the document');
+		$this->assertTrue($cache->get($other), 'another writer loads it too');
+		$other->drop('seed');
+		$this->assertSame(true, $cache->set($other), 'the other writer empties it');
+		clearstatcache(true, $file);
+		$this->assertSame(false, file_exists($file), 'and the document is removed');
+		$mine->add('mine');
+		$this->assertSame(true, $cache->set($mine), 'this writer stores after the removal');
+		$check = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($check), 'this writer\'s own row is stored');
+		$this->assertSame(array('mine' => 'mine'), $check->rows, 'the row it only read does not come back');
+
+		$this->assertTrue($cache->remove($check), 'the document is cleared');
+		$again = new CacheEmptiablePayload();
+		$again->add('seed');
+		$this->assertTrue($cache->set($again), 'the document is stored again');
+		$stale = new CacheEmptiablePayload();
+		$other = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($stale), 'a writer with no change of its own loads it');
+		$this->assertTrue($cache->get($other), 'another writer loads it too');
+		$this->assertTrue($cache->remove($other), 'the other writer removes it');
+		$this->assertSame(true, $cache->set($stale), 'the stale writer stores');
+		clearstatcache(true, $file);
+		$this->assertSame(false, file_exists($file), 'a store without changes does not recreate the document');
+	}
+
+	// RSS, history and extsearch-style documents have no isEmpty(): an absent
+	// document stays what it always was for them, a write of the full state.
+	public function testAnAbsentDocumentIsNotMergedForAnObjectWithoutIsEmpty()
+	{
+		$cache = new rCache();
+		$seed = new CacheOwnerKeyedPayload('bob');
+		$this->assertTrue($seed->addRow('seed'), 'the document is stored');
+		$mine = new CacheOwnerKeyedPayload('bob');
+		$this->assertTrue($cache->get($mine), 'this writer loads it');
+		$this->assertTrue($cache->remove(new CacheOwnerKeyedPayload('bob')), 'another writer removes it');
+		$this->assertTrue($mine->addRow('mine'), 'this writer stores after the removal');
+		$this->assertSame(array(), $mine->mergedFrom, 'no merge is asked for an absent document');
+		$check = new CacheOwnerKeyedPayload('bob');
+		$this->assertTrue($cache->get($check), 'the document is stored');
+		ksort($check->rows);
+		$this->assertSame(array('mine' => 'mine', 'seed' => 'seed'), $check->rows, 'the writer\'s full state is stored');
+	}
+
+	// Only absence is an empty newer copy. A newer document that exists but
+	// cannot be loaded keeps the previous outcome: no merge, the full state.
+	public function testAnUnloadableNewerDocumentIsNotTakenForAnAbsentOne()
+	{
+		global $log_file;
+		$cache = new rCache();
+		$file = FileUtil::getSettingsPath() . '/' . (new CacheEmptiablePayload())->hash;
+		$seed = new CacheEmptiablePayload();
+		$seed->add('seed');
+		$this->assertTrue($cache->set($seed), 'the document is stored');
+		$mine = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($mine), 'this writer loads it');
+		$this->assertTrue(file_put_contents($file, serialize(new CacheUnexpectedPayload())) !== false,
+			'the document is replaced by one that names another class');
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/unloadable-newer-cache.log';
+		try {
+			$mine->add('mine');
+			$this->assertSame(true, $cache->set($mine), 'this writer stores');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertSame(1, substr_count($lines, 'names a different root value; not loaded'),
+				'the unloadable newer document was read and refused visibly');
+		} finally {
+			$log_file = $previousLog;
+		}
+		$check = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($check), 'the document is stored');
+		ksort($check->rows);
+		$this->assertSame(array('mine' => 'mine', 'seed' => 'seed'), $check->rows,
+			'the writer\'s full state is stored, not a merge with an empty copy');
+	}
+
+	public function testAnEmptiedDocumentIsRemovedOnlyUnderTheKeyLock()
+	{
+		global $log_file;
+		$cache = new rCache();
+		$seed = new CacheEmptiablePayload();
+		$seed->add('only');
+		$this->assertTrue($cache->set($seed), 'the document is stored');
+		$file = FileUtil::getSettingsPath() . '/' . $seed->hash;
+		$mine = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($mine), 'this writer loads the document');
+		$mine->drop('only');
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/emptied-locked-cache.log';
+		$lock = fopen($file . '.lock', 'c');
+		$this->assertTrue(flock($lock, LOCK_EX), 'another writer holds the key lock');
+		try {
+			$this->assertSame(false, $cache->set($mine), 'the removal waits for the key lock and refuses without it');
+			clearstatcache(true, $file);
+			$this->assertSame(true, is_file($file), 'the document stays while another writer holds the lock');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertSame(1, substr_count($lines, 'rCache: set refused: key lock unavailable'),
+				'the refused removal names its reason');
+		} finally {
+			flock($lock, LOCK_UN);
+			fclose($lock);
+			$log_file = $previousLog;
+		}
+	}
+
+	public function testAnEmptiedDocumentThatCannotBeUnlinkedIsRefusedVisibly()
+	{
+		if (testSkipUnlessPermissionsBite('an emptied cache document that cannot be unlinked is refused visibly')) return;
+		global $log_file;
+		$cache = new rCache();
+		$seed = new CacheEmptiablePayload();
+		$seed->add('only');
+		$this->assertTrue($cache->set($seed), 'the document and its lock sidecar exist');
+		$settings = FileUtil::getSettingsPath();
+		$mine = new CacheEmptiablePayload();
+		$this->assertTrue($cache->get($mine), 'this writer loads the document');
+		$mine->drop('only');
+		$previousLog = $log_file;
+		$log_file = $this->profilePath . '/emptied-unwritable-cache.log';
+		try {
+			$this->assertTrue(chmod($settings, 0555), 'the cache directory no longer permits unlink');
+			$this->assertSame(false, $cache->set($mine), 'a document that cannot be removed is not reported removed');
+			$this->assertTrue(is_file($settings . '/' . $seed->hash), 'the refused document stays intact');
+			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
+			$this->assertSame(1, substr_count($lines, 'rCache: set refused: cache unlink failed'),
+				'the refusal is logged once');
+		} finally {
+			chmod($settings, 0700);
+			$log_file = $previousLog;
+		}
 	}
 
 	public function testSetAppliesProfileMaskToLockFile()

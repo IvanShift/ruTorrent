@@ -4,6 +4,11 @@
 $sourceTestRoot = (getenv('TMPDIR') ?: sys_get_temp_dir()) . '/loginmgr-sources-' . getmypid() . '-' . bin2hex(random_bytes(4));
 $_ENV['RU_PROFILE_PATH'] = $sourceTestRoot;
 $_ENV['RU_LOG_FILE'] = $sourceTestRoot . '/loginmgr.log';
+// Kinozal's pace between requests and its pause after HTTP 429 are
+// courtesies to the live site, not what these cases prove;
+// tests/php/KinozalRequestPacingTest.php pins the shipped values.
+define('KINOZAL_REQUEST_PAUSE', 0);
+define('KINOZAL_RATE_LIMIT_PAUSE', 0);
 
 require_once(__DIR__ . '/../../../php/Snoopy.class.inc');
 require_once(__DIR__ . '/../../../plugins/cookies/cookies.php');
@@ -441,7 +446,7 @@ case "$request_url" in
     https://rutracker.org/second/*)
         printf 'Set-Cookie: b_marker=from-b; Domain=rutracker.org; Path=/; Secure\r\n' >> "$header_file"
         ;;
-    https://kinozal.guru/login.php)
+    https://kinozal.guru/login.php|https://kinozal.jumpingcrab.com/login.php)
         printf 'Set-Cookie: path_marker=from-login; Path=/takelogin.php; Secure; Max-Age=3600\r\n' >> "$header_file"
         printf 'Set-Cookie: wrong_domain=from-login; Domain=evil.test; Path=/; Secure\r\n' >> "$header_file"
         printf 'Set-Cookie: expired_marker=from-login; Path=/; Secure; Max-Age=0\r\n' >> "$header_file"
@@ -453,7 +458,7 @@ case "$request_url" in
         ;;
 esac
 printf '\r\n' >> "$header_file"
-if [ "$request_url" = https://kinozal.guru/login.php ]; then
+if [ "$request_url" = https://kinozal.guru/login.php ] || [ "$request_url" = https://kinozal.jumpingcrab.com/login.php ]; then
     # Form portion of the anonymous 2026-08-07 capture, including name=upt".
     printf '%s' '<form method=post action="/takelogin.php" name=upt"><input type=text size=35 id="username" name="username" value=""><input type=password size=35 id="password" name="password" value=""><input class=buttonS type=submit value=" Войти "></form>' > "$body_file"
 else
@@ -562,7 +567,7 @@ SH;
                 'fresh client reuses the saved account');
             $pathRows = array_slice(sourceWireRows($wirePath), $before);
             sourceSame(7, count($pathRows), 'fresh client reused the account without login');
-            sourceSame(false, sourceWireHasCookie($pathRows[6], 'path_marker=from-login'),
+            sourceSame(0, preg_match('/(?:^Cookie:\s*|;\s*)path_marker=/', $pathRows[6]['cookie']),
                 'persisted response cookie keeps its Path on a fresh client');
             $storedKinozal = new privateData('KinozalTV');
             sourceSame(true, (new rCache('/accounts'))->get($storedKinozal),
@@ -598,7 +603,8 @@ SH;
             $autoBefore = count(sourceWireRows($wirePath));
             $manager->checkAuto();
             $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
-            sourceSame(array('https://kinozal.guru/login.php', 'https://kinozal.guru/takelogin.php'),
+            // A refresh has no request URL, so it logs in at the account origin.
+            sourceSame(array('https://kinozal.jumpingcrab.com/login.php', 'https://kinozal.jumpingcrab.com/takelogin.php'),
                 array_column($autoRows, 'url'), 'auto refresh sent captured form GET and login POST');
             $autoSession = new privateData('KinozalTV');
             sourceSame(true, (new rCache('/accounts'))->get($autoSession),
@@ -608,7 +614,7 @@ SH;
             sourceSame(false, isset($autoSession->cookies['path_marker']),
                 'auto refresh never flattens response cookie');
             $autoFresh = new Snoopy();
-            sourceSame(true, $autoFresh->fetchComplex('https://kinozal.guru/takelogin.php'),
+            sourceSame(true, $autoFresh->fetchComplex('https://kinozal.jumpingcrab.com/takelogin.php'),
                 'fresh client uses the auto-refreshed session');
             $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
             sourceSame(true, sourceWireHasCookie($autoRows[2], 'path_marker=from-login'),

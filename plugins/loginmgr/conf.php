@@ -7,3 +7,7 @@
 // session downloads and automatic login and emits a configuration diagnostic.
 // Copy this line into a local override and set the verified origin there:
 // $yggTorrentOrigin = 'https://tracker.example';
+
+// KinozalTV: $kinozalHosts in conf/config.php orders the Kinozal hosts. Its
+// first entry is where the automatic refresh logs in, and only the mirrors it
+// lists receive the account session; see plugins/rutracker_check/conf.php.

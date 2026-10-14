@@ -166,8 +166,13 @@ up)
     done
     overlay "$name"
     # A full page load is what registers the plugin schedules -- an already-running
-    # daemon does not re-create them by itself.
-    curl -fsS -o /dev/null "http://localhost:$port/php/getplugins.php" 2>/dev/null || true
+    # daemon does not re-create them by itself. getplugins.php answers only a
+    # same-origin AJAX request, and an HTTP_AUTH image needs credentials first;
+    # say so instead of starting a lab whose plugins never initialised.
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-Requested-With: XMLHttpRequest' \
+        -H "Referer: http://localhost:$port/" "http://localhost:$port/php/getplugins.php" 2>/dev/null) || code=000
+    [ "$code" = 200 ] || echo "rt-lab: getplugins.php answered $code; plugin schedules are not registered" \
+        "(an HTTP_AUTH image needs /config/nginx/passwd/rutorrent_passwd and an authenticated load)" >&2
     echo "ready: http://localhost:$port   rpc: http://localhost:$port/plugins/httprpc/action.php"
     docker exec "$name" rtorrent -h 2>&1 | head -1
     ;;

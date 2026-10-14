@@ -260,8 +260,7 @@ class NNMClubCheckImpl
 
     private static function isAllowedTrackerHost($host)
     {
-        return is_string($host)
-            && in_array(UrlHost::normalize($host), self::TRACKER_HOSTS, true);
+        return UrlHost::isExactlyOneOf($host, self::TRACKER_HOSTS);
     }
 
     /**

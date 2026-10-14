@@ -50,6 +50,8 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
         'request-deadline' => 'request-deadline',
+        'request-throttled' => 'request-throttled',
+        'credential-post-failed' => 'credential-post-failed',
     );
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
@@ -99,6 +101,16 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     );
     strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
         'the redirect refusal constant retains the classified token');
+    // The throttle refusal is a constant too, so the literal scan above
+    // cannot see it; its definition and its one refusal are pinned here.
+    strictAssertSame(1, preg_match("/const REQUEST_THROTTLED\s*=\s*'request-throttled';/", $source),
+        'the throttle refusal constant retains the classified token');
+    strictAssertSame(1, preg_match('/refuseResponseBody\(\s*self::REQUEST_THROTTLED\s*\)/', $source),
+        'request-throttled: Snoopy still refuses with the reason this token classifies');
+    // The KinozalTV account marks a failed credential POST with a constant too.
+    $kinozal = (string) file_get_contents(__DIR__ . '/../../../php/kinozal.php');
+    strictAssertSame(1, preg_match("/const CREDENTIAL_POST_FAILED\s*=\s*'credential-post-failed';/", $kinozal),
+        'the credential POST mark retains the classified token');
     foreach ($sourceNeedles as $token => $needle) {
         $isBodyRefusal = in_array($token, array(
             'too-many-interim-responses', 'missing-final-response',

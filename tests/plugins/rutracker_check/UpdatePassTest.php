@@ -102,6 +102,8 @@ class RuTrackerMetaFetch
 // request headers so a test can assert If-None-Match was actually sent.
 class Snoopy
 {
+    // As the real client names its throttle refusal (php/Snoopy.class.inc).
+    const REQUEST_THROTTLED = 'request-throttled';
     public static $queue = array();
     public static $requests = array();
 
@@ -112,6 +114,7 @@ class Snoopy
     public $read_timeout = 0;
     public $_fp_timeout = 0;
     public $agent = '';
+    public $error = '';
 
     public static function reset()
     {
@@ -1746,6 +1749,8 @@ upTest($suite, 'each scheduler pass retries Kinozal while keeping its endpoint l
     upLoadKinozalRegistration();
     $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
     $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
+    // One configured door, so three refusals have nowhere else to go.
+    $GLOBALS['kinozalHosts'] = array('kinozal.jumpingcrab.com');
     try {
         // A previous cycle abandoned the endpoint. The first pass must reset
         // it, then three real refusals must still protect the fourth topic.
@@ -2146,9 +2151,10 @@ upTest($suite, 'a look-alike announce host cannot certify a foreign topic alive'
     upLoadKinozalRegistration();
     $lookalike = str_repeat('P', 40);
     // Substring-matches the registry filter 'torrent4me\.com' and is not it.
-    $rows = array(upKinozalRow($lookalike, 0, 5, 'tr2.torrent4me.com.attacker.test'));
+    $row = upKinozalRow($lookalike, 0, 5, 'tr2.torrent4me.com.attacker.test');
+    $row['time'] = time();
 
-    $result = upRunPass($rows, $checked);
+    $result = upRunPass(array($row), $checked);
 
     strictAssertSame(array($lookalike), $checked,
         'a host anyone can register does not get to stop the check');
@@ -2166,7 +2172,7 @@ upTest($suite, "a foreign handler's live announce does not answer for a torrent 
     $crossSeed = str_repeat('Q', 40);
     $row = upParsedRow($crossSeed,
         "http://bt.nnmclub.to/ann?pk=x|1|0|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
-        'http://nnmclub.to/forum/viewtopic.php?t=12345');
+        'http://nnmclub.to/forum/viewtopic.php?t=12345', array('time' => time()));
 
     $result = upRunPass(array($row), $checked);
 
@@ -2183,7 +2189,7 @@ upTest($suite, 'a RuTracker topic whose own rows are disabled is not answered by
     // the generic path -- the same path a foreign torrent takes.
     $row = upParsedRow($topic,
         "http://bt.t-ru.org/ann?pk=x|0|0|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
-        'http://rutracker.org/forum/viewtopic.php?t=12345');
+        'http://rutracker.org/forum/viewtopic.php?t=12345', array('time' => time()));
 
     $result = upRunPass(array($row), $checked);
 
@@ -2220,7 +2226,8 @@ upTest($suite, "a RuTracker topic URL that mentions Kinozal is still RuTracker's
         $topic = str_repeat('U', 40);
         $row = upParsedRow($topic,
             "http://bt.t-ru.org/ann?pk=x|1|6|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
-            'https://rutracker.org/forum/viewtopic.php?t=12345&source=kinozal.tv');
+            'https://rutracker.org/forum/viewtopic.php?t=12345&source=kinozal.tv',
+            array('time' => time()));
 
         $result = upRunPass(array($row), $checked);
 
@@ -2247,7 +2254,8 @@ upTest($suite, "an NNMClub topic URL that mentions Kinozal is NNMClub's to check
     $topic = str_repeat('Y', 40);
     $row = upParsedRow($topic,
         "http://bt.nnmclub.to/ann?pk=x|1|6|0#http://tr2.torrent4me.com/ann?uk=x|1|0|5#",
-        'https://nnmclub.to/forum/viewtopic.php?t=12345&source=kinozal.tv');
+        'https://nnmclub.to/forum/viewtopic.php?t=12345&source=kinozal.tv',
+        array('time' => time()));
 
     $result = upRunPass(array($row), $checked);
 
@@ -2261,6 +2269,7 @@ upTest($suite, 'a comment that only mentions Kinozal in passing earns no free pa
     $topic = str_repeat('Z', 40);
     $row = upKinozalRow($topic, 0, 5);
     $row['comment'] = 'source: kinozal.tv, see the forum thread';
+    $row['time'] = time();
 
     $result = upRunPass(array($row), $checked);
 
@@ -2273,10 +2282,10 @@ upTest($suite, 'a comment that only mentions Kinozal in passing earns no free pa
 upTest($suite, 'an announce authority declared without a topic test is not honoured', function () {
     upWithRegistry(function ($saved) {
         ruTrackerChecker::registerTracker('/synthetic-tracker\\./', '/synthetic-tracker\\.example/',
-            'SyntheticCheckImpl::download_torrent', array('synthetic-tracker.example'));
+            'SyntheticCheckImpl::download_torrent', array('tr.synthetic-tracker.example'));
         $topic = str_repeat('S', 40);
         $row = upParsedRow($topic, 'http://tr.synthetic-tracker.example/ann?uk=x|1|0|5#',
-            'http://synthetic-tracker.example/topic/1');
+            'http://synthetic-tracker.example/topic/1', array('time' => time()));
 
         $result = upRunPass(array($row), $checked);
 
@@ -2383,6 +2392,7 @@ upTest($suite, 'a row whose session copy cannot be read gets no free pass', func
         $orphan = str_repeat('W', 40);
         rTorrentSettings::get()->session = $tmp . '/';   // exists, holds no copy of this hash
         $row = upKinozalRow($orphan, 0, 5);
+        $row['time'] = time();
         unset($row['comment']);
 
         $result = upRunPass(array($row), $checked);
@@ -2814,7 +2824,7 @@ upTest($suite, 'testOneRetainedCleanupDoesNotStopFollowingRows', function () {
     strictAssertSame(0, count(sweepBranchRequestsForHash($firstHash)), 'the retained row itself keeps its keys');
 });
 
-upTest($suite, 'a marked successor keeps the predecessor key for the marked-row sweep', function () {
+upTest($suite, 'predecessor sweep retains recovery while its marked successor owns the transaction', function () {
     $old = str_repeat('A', 40);
     $successor = str_repeat('B', 40);
     $encoded = $successor . '-started-1000';
@@ -2834,6 +2844,8 @@ upTest($suite, 'a marked successor keeps the predecessor key for the marked-row 
         'cleanup cancellation belongs to the marked-row sweep after it proves ownership');
     strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
         'the predecessor key is still present for marked-row revival');
+    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
+        'the predecessor sweep cannot fall back to an unconditional recovery-key clear');
 });
 
 function sweepAssertNoncanonicalReplacingPairRetained($label, $encoded, $successorRecord)
@@ -3251,24 +3263,6 @@ upTest($suite, 'an unknown marked-row run token is malformed, never record-less 
         'an unknown run policy authorizes no activation');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.erase')),
         'and no staged copy is discarded');
-});
-
-upTest($suite, 'a marked successor never clears the predecessor recovery key from its first row', function () {
-    rXMLRPCRequest::reset();
-    $old = str_repeat('A', 40);
-    $successor = str_repeat('B', 40);
-    $generation = $successor . '-started-1000';
-    sweepScan(array(array($old, '', '', $generation)));
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_state', 'd.is_open'), true, false,
-        array($generation, 0, 0));
-    rXMLRPCRequest::queue(array('d.hash', 'd.get_custom', 'd.get_custom'), true, false,
-        array($successor, str_repeat('d', 32), $old . '-started-1000'));
-
-    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-    strictAssertSame(0, count(sweepBranchRequestsForHash($old)),
-        'first-row sweep has no authority to clear a key its second row needs');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
-        'it does not fall back to an unconditional clear');
 });
 
 upTest($suite, 'legacy stopped checked rows are reported without guessing prior run state', function () {
@@ -3867,7 +3861,7 @@ upTest($suite, 'sweepReplacements leaves a young or stime-less legacy row unlabe
 // The flag is the whole protection, so losing it costs the user's next stop:
 // unmarked, that stop reads as the crash signature and gets revived over. A
 // blip on one d.set_custom is not a reason to give the protection up.
-upTest($suite, 'an unconfirmed atomic revival is not retried or cleaned up blind', function () {
+upTest($suite, 'unconfirmed predecessor revival retains staged recovery without standalone mutations', function () {
     rXMLRPCRequest::reset();
     $hash = str_repeat('A', 40);
     $old = str_repeat('B', 40);
@@ -3917,22 +3911,6 @@ upTest($suite, 'the one revival is spent per transaction, not per torrent', func
             $label . ': settled revival outcomes discard the exact staged generation');
         sweepAssertNoStandaloneOwnershipMutation($label);
     }
-});
-
-upTest($suite, 'sweepReplacements does not flag a revival the daemon did not actually perform', function () {
-    rXMLRPCRequest::reset();
-    $hash = str_repeat('A', 40);
-    $old = str_repeat('B', 40);
-    sweepScan(array(array($hash, 'nonce', $old . '-started-1000')));
-    sweepDetail(0, 0);
-    rXMLRPCRequest::queue('d.hash', true, false, array($old));
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED));
-
-    RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
-
-    strictAssertSame(1, count(sweepBranchRequestsForHash($old)), 'one atomic revival decision is made');
-    strictAssertSame(0, count(sweepBranchRequestsForHash($hash)),
-        'an unconfirmed revival retains the staged generation for a later retry');
 });
 
 // A staged copy is the marker by which a stranded transaction can be found at
@@ -4460,8 +4438,14 @@ upTest($suite, 'the feed ETag is committed only once the feed has been applied',
     // map that never landed.
     Snoopy::queue(200, upFeed(), array('ETag: "v10"'));
     rXMLRPCRequest::queue('d.multicall', true, false, array(str_repeat('A', 40), '100', ''));
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('100', ''));
     rXMLRPCRequest::queue('branch', false, false, array());
+    $writesBefore = count(rXMLRPCRequest::requestsFor('branch'));
     RuTrackerUpdatePass::pollFeed();
+    strictAssertSame($writesBefore + 1, count(rXMLRPCRequest::requestsFor('branch')),
+        'the failed setter is actually sent after its current-mapping read succeeds');
+    strictAssertTrue(isset(RuTrackerState::load('forumindex')['forum_pending'][100][str_repeat('A', 40)]),
+        'the lost setter reply leaves its mapping intent pending');
     strictAssertSame('v9', trim(RuTrackerState::load('updatepass')['feed_etag'], '"'),
         'a lost write withholds the ETag, so the next cycle may redo it');
 

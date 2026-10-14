@@ -35,6 +35,16 @@ $rutrackerLegacyRecoveryPairs ??= array(
 // value clamps to 0. Other numeric bounds are clamped where they are read:
 // a delete-cycle count of 0 would settle a deletion on its first sighting.
 $rutrackerForeignMaxRest ??= 86400; // maximum foreign UPTODATE rest in seconds; hash jitter spreads due checks
+// Kinozal is asked through the hosts listed in $kinozalHosts, in order; unset
+// means its official mirrors, kinozal.jumpingcrab.com then kinozal.cloudns.nz.
+// Set it in conf/config.php, not here: loginmgr's KinozalTV account reads the
+// same list for its automatic refresh and for which mirrors get the session.
+// Only Kinozal's own hosts are accepted (kinozal.tv, kinozal.me, kinozal.guru
+// and those two mirrors); kinozal.me and kinozal.guru answer a Cloudflare
+// challenge. A topic a host does not answer -- refused, unreachable, a
+// challenge, or a page that is not Kinozal's -- is asked at the next host at
+// once; an HTTP 429 pauses every Kinozal request, the mirrors share one IP.
+// $kinozalHosts = array('kinozal.cloudns.nz', 'kinozal.jumpingcrab.com');
 $rutrackerFuseShare	??= 0.2;	// 0.0-1.0: candidate SHARE (a fraction, not a percent) per announce host that trips the fuse
 $rutrackerFuseFloor	??= 3;	// >= 1: minimum absolute candidates before the fuse may trip
 $rutrackerDeleteCycles	??= 3;	// >= 1: dump+tracker confirmations required for STE_DELETED

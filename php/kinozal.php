@@ -2,11 +2,120 @@
 
 require_once(__DIR__ . '/urlhost.php');
 
+if(!defined('KINOZAL_REQUEST_PAUSE'))
+	// Seconds between requests to Kinozal, from any caller and any process: a
+	// courtesy to the mirrors' rate limit. Measured 2026-10-14 on
+	// kinozal.jumpingcrab.com: 30 requests a second apart were all answered,
+	// 30 back to back drew 429 from the sixth on, and the limiter then refused
+	// everything from that IP, on both mirrors, for hours. Declared with
+	// if(!defined()) so a test can shorten it; production uses this value.
+	define('KINOZAL_REQUEST_PAUSE', 2);
+if(!defined('KINOZAL_RATE_LIMIT_PAUSE'))
+	// Seconds for which Kinozal requests are refused unsent (request-throttled)
+	// after an HTTP 429, doubling while the limiter keeps refusing, up to a
+	// day. One hourly cycle, so a ban is not prodded every hour; on 2026-10-14
+	// the limiter refused two probes an hour apart, the ban still in force.
+	define('KINOZAL_RATE_LIMIT_PAUSE', 3600);
+
 // Shared by the optional loginmgr and rutracker_check plugins. Keep this leaf
-// independent of either plugin's configuration and client classes.
+// independent of either plugin's configuration files and client classes: its
+// one setting, $kinozalHosts, is global so that both plugins read it alike.
 class KinozalResponse
 {
+	// The site's own registered domains. kinozal.me and kinozal.guru answer a
+	// Cloudflare challenge on every *.php path since 2026-09-09; kinozal.tv
+	// refuses connections.
 	const SITE_HOSTS = array('kinozal.tv', 'kinozal.me', 'kinozal.guru');
+	// Official mirrors, announced in t.me/kinozaltv_official (posts 226 and
+	// 234, 2026-07-01 and 2026-09-05). Measured 2026-10-14: plain nginx without
+	// that challenge, one IP for both, and the same account, hashes and
+	// metainfo. A mirror is a door, not an identity: torrents it serves still
+	// name kinozal.me in their comment, so topic ownership and announce
+	// authority stay on SITE_HOSTS. Listed whole because both live in shared
+	// free-DNS zones, where a sibling label belongs to somebody else -- and
+	// the label itself may change hands if Kinozal loses it.
+	const MIRROR_HOSTS = array('kinozal.jumpingcrab.com', 'kinozal.cloudns.nz');
+	// Left in a client's $error by the KinozalTV account when its credential
+	// POST went out and brought no session, however it ended.
+	const CREDENTIAL_POST_FAILED = 'credential-post-failed';
+
+	private static $doors = null;
+
+	// The doors to Kinozal, in order: $kinozalHosts when it is set (in
+	// conf/config.php, which loginmgr and rutracker_check both load), else the
+	// mirrors. It orders the update checker, names the automatic refresh's
+	// login origin, and decides which mirrors receive the account session.
+	// Each entry must be one of SITE_HOSTS or MIRROR_HOSTS exactly; a list
+	// naming anything else is refused as a whole, visibly, rather than
+	// silently trimmed into an order the administrator did not write.
+	public static function doors()
+	{
+		global $kinozalHosts;
+		if(self::$doors !== null)
+			return(self::$doors);
+		if(!isset($kinozalHosts))
+			return(self::$doors = self::MIRROR_HOSTS);
+		$known = array_merge(self::SITE_HOSTS, self::MIRROR_HOSTS);
+		$doors = array();
+		foreach(is_array($kinozalHosts) && $kinozalHosts ? $kinozalHosts : array(null) as $host)
+		{
+			$host = UrlHost::normalize($host);
+			if(!UrlHost::isExactlyOneOf($host, $known))
+			{
+				if(class_exists('FileUtil'))
+					FileUtil::toLog('kinozal: config: invalid $kinozalHosts; using ' . implode(', ', self::MIRROR_HOSTS)
+						. '; allowed hosts: ' . implode(', ', $known));
+				return(self::$doors = self::MIRROR_HOSTS);
+			}
+			if(!in_array($host, $doors, true))
+				$doors[] = $host;
+		}
+		return(self::$doors = $doors);
+	}
+
+	// Every host that may receive the account's session: the site's own
+	// domains, and the mirrors among the doors.
+	public static function accountHosts()
+	{
+		return(array_values(array_unique(array_merge(self::SITE_HOSTS, self::doors()))));
+	}
+
+	// The login door for a request URL: the account host that URL addresses
+	// (dl.kinozal.me logs in on kinozal.me), or null.
+	public static function siteOrigin($url)
+	{
+		$site = self::site($url);
+		return($site === null ? null : 'https://' . $site);
+	}
+
+	private static function site($url)
+	{
+		$host = UrlHost::of($url);
+		if($host === null)
+			return(null);
+		foreach(self::accountHosts() as $candidate)
+			if(UrlHost::isOneOf($host, array($candidate)))
+				return($candidate);
+		return(null);
+	}
+
+	// Where a refresh, which has no request of its own, logs in.
+	public static function refreshOrigin()
+	{
+		return('https://' . self::doors()[0]);
+	}
+
+	// From the first call on, every request this process sends to a Kinozal
+	// host keeps one pace and one 429 pause, shared with every other process
+	// that called it: the update checker, a manual batch, and fetches through
+	// the KinozalTV account. A process that never loads the account or the
+	// checker -- an anonymous RSS fetch or add-by-URL -- is not paced.
+	public static function throttle()
+	{
+		if(class_exists('Snoopy', false) && method_exists('Snoopy', 'throttleHosts'))
+			Snoopy::throttleHosts('kinozal', array_merge(self::SITE_HOSTS, self::MIRROR_HOSTS),
+				KINOZAL_REQUEST_PAUSE, KINOZAL_RATE_LIMIT_PAUSE, 86400);
+	}
 
 	// Scan every tag so guest-looking text inside another tag's quoted
 	// attributes is not read as a live element. Attribute text is anchored
@@ -34,18 +143,33 @@ class KinozalResponse
 
 	// One application-log line per cycle: a cycle asks once per topic.
 	private static $failureLogged = false;
-	private static $requestsBlocked = false;
-	private static $cycleSkipLogged = false;
-	private static $loginRefusalLogged = false;
+	private static $loginRefusalLogged = array();
+	// Sites that answered a challenge, until the next checker cycle or for
+	// the rest of any other process.
+	private static $blockedSites = array();
 
 	public static function resetCycle()
 	{
-		self::$requestsBlocked = self::$cycleSkipLogged = self::$failureLogged = self::$loginRefusalLogged = false;
+		self::$failureLogged = false;
+		self::$loginRefusalLogged = self::$blockedSites = array();
+		self::$doors = null;
 	}
 
-	public static function requestsBlocked()
+	// Whether $url's site answered a challenge: logging in again cannot pass
+	// one, so no request goes there for the rest of the cycle or process.
+	public static function requestsBlocked($url)
 	{
-		return(self::$requestsBlocked);
+		$site = self::site($url);
+		return(isset(self::$blockedSites[$site !== null ? $site : (string) UrlHost::of($url)]));
+	}
+
+	// Whether the client's answer is the shared rate limit: an HTTP 429, or
+	// Snoopy's refusal during the pause it keeps after one. Without Snoopy
+	// loaded, nothing was refused by its throttle.
+	public static function isRateLimited($client)
+	{
+		return(is_object($client) && ((int) ($client->status ?? 0) === 429
+			|| (class_exists('Snoopy', false) && ($client->error ?? null) === Snoopy::REQUEST_THROTTLED)));
 	}
 
 	// Pure response recognition also used through RuTrackerFetchError's public
@@ -81,39 +205,42 @@ class KinozalResponse
 		return(false);
 	}
 
-	public static function observeChallenge($client)
+	// Whether the client's answer is a challenge. Blocks the site that gave
+	// it -- the URL that answered, else $url -- and leaves every other site,
+	// a mirror without Cloudflare included, untouched.
+	public static function observeChallenge($client, $url = null)
 	{
 		$body = is_object($client) ? ($client->results ?? null) : null;
 		// Interstitial body markers describe HTML. A bencoded dictionary may
 		// contain the same strings as payload; its parser decides its validity.
 		if(is_string($body) && strncmp($body, 'd', 1) === 0) $body = null;
-		if(is_object($client) && self::isChallenge($client->headers ?? array(), $body))
+		if(!is_object($client) || !self::isChallenge($client->headers ?? array(), $body))
+			return(false);
+		$answered = isset($client->lastResponseURL) && (string) $client->lastResponseURL !== ''
+			? $client->lastResponseURL : $url;
+		$site = self::site($answered);
+		$site = $site !== null ? $site : (string) UrlHost::of($answered);
+		if(!isset(self::$blockedSites[$site]))
 		{
-			self::$requestsBlocked = true;
-			self::logCycleSkip('cloudflare-challenge', 'all');
+			self::$blockedSites[$site] = true;
+			if(class_exists('FileUtil'))
+				FileUtil::toLog('kinozal: ' . ($site !== '' ? $site : 'a Kinozal site')
+					. ' answered a Cloudflare challenge; it is not asked again until the next cycle;'
+					. ' logging in again cannot bypass the challenge');
 		}
-		return(self::$requestsBlocked);
+		return(true);
 	}
 
-	public static function logCycleSkip($reason, $scope)
+	// $post: the credential POST was sent and refused; otherwise the login
+	// form could not be used and no credentials were sent.
+	public static function logLoginRefusal($reason, $origin, $post = false)
 	{
-		if(!self::$cycleSkipLogged && class_exists('FileUtil'))
-		{
-			self::$cycleSkipLogged = true;
-			FileUtil::toLog('kinozal: Kinozal checks skipped for the rest of this cycle: scope='
-				. $scope . ' reason=' . $reason
-				. ($reason === 'cloudflare-challenge' ? '; logging in again cannot bypass the challenge' : '')
-				. '; retried next cycle');
-		}
-	}
-
-	public static function logLoginRefusal($reason)
-	{
-		if(!self::$loginRefusalLogged && class_exists('FileUtil'))
-		{
-			self::$loginRefusalLogged = true;
-			FileUtil::toLog('kinozal: login refused (' . $reason . '); no credential POST was sent');
-		}
+		$host = (string) UrlHost::of($origin);
+		if(isset(self::$loginRefusalLogged[$host]) || !class_exists('FileUtil'))
+			return;
+		self::$loginRefusalLogged[$host] = true;
+		FileUtil::toLog('kinozal: login on ' . ($host !== '' ? $host : 'an unlisted site') . ' refused ('
+			. $reason . ')' . ($post ? '' : '; no credential POST was sent'));
 	}
 
 	/** True for a guest page, false for no marker, null when parsing failed. */
@@ -268,7 +395,7 @@ class KinozalResponse
 		// Kinozal host; finding its name in userinfo or a query proves nothing.
 		if(isset($parts['host']))
 			return((!isset($parts['scheme']) || in_array(strtolower($parts['scheme']), array('http', 'https'), true))
-				&& UrlHost::isOneOf(UrlHost::of($href), self::SITE_HOSTS));
+				&& UrlHost::isOneOf(UrlHost::of($href), self::accountHosts()));
 		return(!isset($parts['scheme']));
 	}
 }

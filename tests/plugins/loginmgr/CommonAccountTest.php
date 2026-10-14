@@ -104,15 +104,17 @@ class CARecordingData extends privateData
     public $stored = 0;
     public $removed = 0;
 
-    public function store($client)
+    public function store($client, $replacedUrl = null)
     {
         $this->stored++;
         return true;
     }
 
-    public function remove()
+    // A failed login drops the session that was sent to the request's host.
+    public function forget($url)
     {
         $this->removed++;
+        return true;
     }
 }
 

@@ -908,7 +908,7 @@ $suite->test('each manual batch resets Kinozal once and keeps the latch between 
     $hashes = array(str_repeat('A', 40), str_repeat('B', 40));
     try {
         strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
-        strictSetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures', 3);
+        strictSetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers', 1);
         strictSetPrivateStatic('KinozalResponse', 'failureLogged', true);
         for ($batch = 0; $batch < 2; $batch++) {
             $handover = tempnam(sys_get_temp_dir(), 'rt-batch-cycle-');
@@ -917,18 +917,18 @@ $suite->test('each manual batch resets Kinozal once and keeps the latch between 
             ruTrackerBatchCheck::runHandover($handover, function($hash) use (&$seen) {
                 $seen[] = array($hash,
                     strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
-                    strictGetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures'),
+                    strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
                     strictGetPrivateStatic('KinozalResponse', 'failureLogged'));
                 strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
-                strictSetPrivateStatic('KinozalCheckImpl', 'detailsTransportFailures', 3);
+                strictSetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers', 1);
                 strictSetPrivateStatic('KinozalResponse', 'failureLogged', true);
             }, function() {});
             strictAssertTrue(!file_exists($handover), 'each completed batch removes its handover');
         }
         strictAssertSame(array(
-            array($hashes[0], false, 0, false), array($hashes[1], true, 3, true),
-            array($hashes[0], false, 0, false), array($hashes[1], true, 3, true),
-        ), $seen, 'each batch starts fresh while its second hash retains the first hash\'s endpoint refusal');
+            array($hashes[0], false, 0, false), array($hashes[1], true, 1, true),
+            array($hashes[0], false, 0, false), array($hashes[1], true, 1, true),
+        ), $seen, 'each batch starts fresh while its second hash retains the first hash\'s latch and session count');
     } finally {
         foreach ($handovers as $handover) @unlink($handover);
         foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
@@ -938,29 +938,33 @@ $suite->test('each manual batch resets Kinozal once and keeps the latch between 
 
 $suite->test('runHandover handles invalid or missing handover files safely', function () {
     $crawlerRan = false;
+    $checked = array();
     ruTrackerBatchCheck::runHandover(
         '/nonexistent/path/for/handover',
-        function ($hash) {
-            throw new RuntimeException('should not be called');
+        function ($hash) use (&$checked) {
+            $checked[] = $hash;
         },
         function () use (&$crawlerRan) {
             $crawlerRan = true;
         }
     );
+    strictAssertSame(array(), $checked, 'a missing handover cannot dispatch a checker call');
     strictAssertTrue($crawlerRan, 'crawler still runs even if handover file is nonexistent');
 
     $tmp = tempnam(sys_get_temp_dir(), 'rt-batch-test-');
     file_put_contents($tmp, 'not-serialized-data');
     $crawlerRan = false;
+    $checked = array();
     ruTrackerBatchCheck::runHandover(
         $tmp,
-        function ($hash) {
-            throw new RuntimeException('should not be called');
+        function ($hash) use (&$checked) {
+            $checked[] = $hash;
         },
         function () use (&$crawlerRan) {
             $crawlerRan = true;
         }
     );
+    strictAssertSame(array(), $checked, 'a corrupt handover cannot dispatch a checker call');
     strictAssertTrue($crawlerRan, 'crawler still runs on corrupt handover');
     strictAssertTrue(!file_exists($tmp), 'corrupt handover file is unlinked');
 });

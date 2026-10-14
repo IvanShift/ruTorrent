@@ -115,10 +115,9 @@ class Requests
 			global $enabledOrigins;
 			$scheme = strtolower((string) @parse_url($source, PHP_URL_SCHEME));
 			$host = UrlHost::of($source);
-			if(in_array($scheme, array('http', 'https'), true) && $host !== null)
-				foreach((array) ($enabledOrigins ?? array()) as $allowedHost)
-					if($host === UrlHost::normalize($allowedHost))
-						return true;
+			if(in_array($scheme, array('http', 'https'), true)
+				&& UrlHost::isExactlyOneOf($host, (array) ($enabledOrigins ?? array())))
+				return true;
 		}
 		return false;
 	}

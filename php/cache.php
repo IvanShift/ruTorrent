@@ -225,7 +225,14 @@ class rCache
 		{
 			$className = get_class($rss);
 			$newInstance = new $className();
-			if($this->get($newInstance) &&
+			// The newer copy is the one under this object's own key, which a
+			// class keyed per owner sets only after construction.
+			$newInstance->hash = $rss->hash;
+			// A document whose emptiness means absence (isEmpty()) reads an
+			// absence as an empty newer copy: another request removed it, and
+			// what this one merely read must not come back with its store.
+			$absent = method_exists($rss, 'isEmpty') && !is_file($name);
+			if(($this->get($newInstance) || $absent) &&
 				!$rss->merge($newInstance, $arg))
 			{
 				flock( $lock, LOCK_UN );
@@ -233,6 +240,17 @@ class rCache
 				self::logRefusal('set', $name, 'merge rejected newer cache entry');
 				return(false);
 			}
+		}
+		// A document with nothing left in it is removed, under the same lock,
+		// rather than stored empty.
+		if(is_object($rss) && method_exists($rss, 'isEmpty') && $rss->isEmpty())
+		{
+			$removed = $this->unlinkLocked($name);
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+			if(!$removed)
+				self::logRefusal('set', $name, 'cache unlink failed');
+			return($removed);
 		}
 		// Use a per-process temporary file and publish it atomically under the key lock.
 		$tmpName = $name.'.'.getmypid().'.'.uniqid('', true).'.tmp';
@@ -352,23 +370,25 @@ class rCache
 			self::logRefusal('remove', $name, 'key lock unavailable');
 			return(false);
 		}
-		$ret = @unlink($name);
-		if(!$ret)
-		{
-			clearstatcache(true, $name);
-			// lstat() alone also fails when an ancestor is unreadable. Confirm
-			// absence in the directory while still holding the key's writer lock.
-			if(@lstat($name) === false)
-			{
-				$entries = @scandir($this->dir);
-				$ret = is_array($entries) && !in_array(basename($name), $entries, true);
-			}
-		}
+		$ret = $this->unlinkLocked($name);
 		flock( $lock, LOCK_UN );
 		fclose( $lock );
 		if(!$ret)
 			self::logRefusal('remove', $name, 'cache unlink failed');
 		return($ret);
+	}
+	// Called with the key's writer lock held: true once the entry is gone.
+	private function unlinkLocked( $name )
+	{
+		if(@unlink($name))
+			return(true);
+		clearstatcache(true, $name);
+		// lstat() alone also fails when an ancestor is unreadable. Confirm
+		// absence in the directory while still holding the key's writer lock.
+		if(@lstat($name) !== false)
+			return(false);
+		$entries = @scandir($this->dir);
+		return(is_array($entries) && !in_array(basename($name), $entries, true));
 	}
 	// Null when the key names anything other than a file in this directory.
 	// Every caller treats that as a miss rather than reaching for the path.

@@ -120,6 +120,7 @@ class StrictTestSuite
                     'rutrackerMetaWait' => $GLOBALS['rutrackerMetaWait'] ?? null,
                     'rutrackerFuseShare' => $GLOBALS['rutrackerFuseShare'] ?? null,
                     'rutrackerFuseFloor' => $GLOBALS['rutrackerFuseFloor'] ?? null,
+                    'kinozalHosts' => $GLOBALS['kinozalHosts'] ?? null,
                 );
                 try {
                     call_user_func($callback);
@@ -335,6 +336,7 @@ function fetchErrorParityCases()
         array('gzip-decoder-unavailable', 'gzip-decoder-unavailable'),
         array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
         array('request-deadline', 'request-deadline'),
+        array('request-throttled', 'request-throttled'),
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
         array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
@@ -361,7 +363,7 @@ function fetchErrorTokenVocabulary()
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'request-deadline', 'unclassified');
+        'unreadable-or-oversized-response', 'request-deadline', 'request-throttled', 'unclassified');
 }
 
 function strictInvoke($className, $method, $arguments = array())
@@ -729,6 +731,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
     class Snoopy
     {
         const RESPONSE_BODY_FAILED = -101;
+        const REQUEST_THROTTLED = 'request-throttled';
         public static $responses = array();
         // Catch-all queue, consulted only when $url has no exact match.
         // RuTracker's layer-2 probe URL carries a random peer_id tail and a
@@ -750,6 +753,10 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public $read_timeout = 0;
         public $_fp_timeout = 0;
         public $agent = '';
+        // The URL whose answer the client holds, as real Snoopy records it;
+        // a queued answer may name another one (a credential POST that
+        // loginmgr sent on the way, a redirect target Snoopy followed).
+        public $lastResponseURL = '';
 
         public static function reset()
         {
@@ -766,12 +773,13 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // php/Snoopy.class.inc:596). The request side ($rawheaders) is
         // recorded per request into $rawheadersLog, index-parallel to
         // $requests, for the tests that pin conditional-GET behaviour.
-        public static function queue($url, $status, $results, $headers = array(), $redirect = null, $error = '')
+        public static function queue($url, $status, $results, $headers = array(), $redirect = null, $error = '',
+            $answeredUrl = null)
         {
             if (!isset(self::$responses[$url])) {
                 self::$responses[$url] = array();
             }
-            self::$responses[$url][] = array($status, $results, $headers, $redirect, $error);
+            self::$responses[$url][] = array($status, $results, $headers, $redirect, $error, $answeredUrl);
         }
 
         // A refusal before Snoopy receives a response leaves status/results
@@ -783,10 +791,12 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         }
 
         // Model a fetchComplex() refusal after fresh HTTP bytes were recorded.
-        public static function queueAnsweredFailure($url, $status, $results, $headers = array(), $redirect = null)
+        public static function queueAnsweredFailure($url, $status, $results, $headers = array(), $redirect = null,
+            $answeredUrl = null)
         {
             if (!isset(self::$responses[$url])) self::$responses[$url] = array();
-            self::$responses[$url][] = array('answeredFailure' => array($status, $results, $headers, $redirect));
+            self::$responses[$url][] = array('answeredFailure' => array($status, $results, $headers, $redirect,
+                $answeredUrl));
         }
 
         // loginmgr may refuse before it reaches Snoopy::fetch(), preserving
@@ -822,6 +832,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             // error, even when it fails before a new HTTP response is received.
             $this->lastredirectaddr = '';
             $this->error = '';
+            $this->lastResponseURL = '';
             self::$requests[] = array($method, $url);
             self::$rawheadersLog[] = $this->rawheaders;
             // The agent the client actually held when it fetched. Recorded
@@ -837,12 +848,14 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                     return false;
                 }
                 if (isset($response['answeredFailure'])) {
-                    list($this->status, $this->results, $this->headers, $redirect) = $response['answeredFailure'];
+                    list($this->status, $this->results, $this->headers, $redirect, $answered) = $response['answeredFailure'];
                     $this->error = '';
                     if ($redirect !== null) $this->lastredirectaddr = $redirect;
+                    $this->lastResponseURL = $answered !== null ? $answered : $url;
                     return false;
                 }
-                list($this->status, $this->results, $this->headers, $redirect, $this->error) = $response;
+                list($this->status, $this->results, $this->headers, $redirect, $this->error, $answered) = $response;
+                $this->lastResponseURL = $answered !== null ? $answered : ($this->error === '' ? $url : '');
                 // A top-level fetch clears the previous redirect above; only
                 // a new redirect sets this field.
                 if ($redirect !== null) $this->lastredirectaddr = $redirect;
@@ -850,6 +863,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             }
             if (count(self::$any)) {
                 list($this->status, $this->results, $this->headers) = array_shift(self::$any);
+                $this->lastResponseURL = $url;
                 return true;
             }
             throw new RuntimeException("Unexpected {$method} request: {$url}");

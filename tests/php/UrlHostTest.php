@@ -49,6 +49,17 @@ class UrlHostTest extends TestCase
 		$this->assertTrue(!UrlHost::isOneOf('t-ru.org', array('')), 'an empty candidate matches nobody');
 	}
 
+	public function testAnExactListAdmitsNoSubdomain()
+	{
+		$hosts = array('bt.nnmclub.to', 'Kinozal.Cloudns.NZ.');
+		$this->assertTrue(UrlHost::isExactlyOneOf('BT.nnmclub.to.', $hosts), 'case and the root dot are folded');
+		$this->assertTrue(UrlHost::isExactlyOneOf('kinozal.cloudns.nz', $hosts), 'on both sides');
+		$this->assertTrue(!UrlHost::isExactlyOneOf('dl.kinozal.cloudns.nz', $hosts), 'a subdomain is another host');
+		$this->assertTrue(!UrlHost::isExactlyOneOf('nnmclub.to', $hosts), 'and so is the parent');
+		$this->assertTrue(!UrlHost::isExactlyOneOf('', array('')), 'an empty host is nobody');
+		$this->assertTrue(!UrlHost::isExactlyOneOf(null, $hosts), 'a missing host is nobody');
+	}
+
 	public function testTheSchemeMayNotBeWeakenedAndThePathMayBeRequired()
 	{
 		$hosts = array('tracker.example');
