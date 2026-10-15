@@ -7,3 +7,6 @@
 # gzip size); provenance.json pins both by SHA-256.
 /tests/php/fixtures/rutracker-https-304/conditional.headers -text -whitespace
 /tests/php/fixtures/rutracker-https-304/forum-7.json -text
+# The live Kinozal mirror pages, byte-for-byte with their mixed CRLF and LF.
+/tests/plugins/rutracker_check/fixtures/kinozal-mirror-missing-download-2026-10-15.html -text -whitespace
+/tests/plugins/loginmgr/fixtures/kinozal-mirror-login-2026-10-15.html -text -whitespace

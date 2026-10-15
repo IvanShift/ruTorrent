@@ -26,3 +26,11 @@ insert_final_newline = false
 end_of_line = unset
 insert_final_newline = false
 trim_trailing_whitespace = false
+
+# The live Kinozal mirror pages of 2026-10-15 byte for byte (see
+# .gitattributes): they mix CRLF and LF line ends, and tests pin their md5.
+[tests/plugins/rutracker_check/fixtures/kinozal-mirror-missing-download-2026-10-15.html]
+end_of_line = unset
+
+[tests/plugins/loginmgr/fixtures/kinozal-mirror-login-2026-10-15.html]
+end_of_line = unset
