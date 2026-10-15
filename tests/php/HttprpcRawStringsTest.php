@@ -208,7 +208,7 @@ class HttprpcRawStringsTest extends TestCase
 					.$case[0].'</value></param></params></methodResponse>');
 				$this->same($case[1], $this->post('mode='.$mode, true, $reply), $mode.' '.$name);
 			}
-			$this->same(array(), $this->post('mode='.$mode, true, new FakeRtorrentFault(-500, 'tracker read failed')),
+			$this->same(array(), $this->post('mode='.$mode, true, FakeRtorrentDaemon::fault('tracker read failed', -500)),
 				$mode.' does not publish a fault as tracker rows');
 		}
 	}

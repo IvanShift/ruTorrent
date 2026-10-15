@@ -27,7 +27,11 @@ class FakeRtorrentRawReply
 	}
 }
 
-/** One XMLRPC fault reply with a chosen code and text, such as rTorrent's missing-hash answer. */
+/**
+ * One XMLRPC fault reply with a chosen code and text, such as rTorrent's
+ * missing-hash answer. Build it with FakeRtorrentDaemon::fault(); responder
+ * classes return it from the worker process, so it stays serializable.
+ */
 class FakeRtorrentFault
 {
 	public $code;
@@ -118,7 +122,7 @@ class FakeRtorrentAddTorrentReplies
 			return false;
 		if(isset($this->present[$hash]) && ($this->present[$hash]-- <= 0))
 			return array($hash);
-		return new FakeRtorrentFault(-500, 'invalid parameters: info-hash not found');
+		return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
 	}
 
 	public function __invoke($request, $methods)
@@ -263,23 +267,23 @@ class FakeRtorrentDaemon
 	private $logFile;
 	private $bodyLogFile;
 
-	const FAULT = '__fault__';
-
 	/**
 	 * A reply entry that makes the daemon answer with a fault instead of
-	 * values, for a test that needs the caller's request to fail.
+	 * values, for a test that needs the caller's request to fail. The one way
+	 * to ask for a fault; a bare false reply is shorthand for
+	 * fault('fixture failure').
 	 */
 	public static function fault($message, $code = -501)
 	{
-		return array(self::FAULT => array('code' => $code, 'message' => $message));
+		return new FakeRtorrentFault($code, $message);
 	}
 
 	/**
 	 * $replies is a list, one per request: each entry is the list of values
 	 * the daemon answers that request with, or self::fault(...). It may also
 	 * be a callback accepting the request body and method names for flows
-	 * with dynamic readback keys. A false reply emits an XMLRPC fault; null
-	 * closes without a reply.
+	 * with dynamic readback keys. A false reply is fault('fixture failure');
+	 * null closes without a reply.
 	 */
 	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = array())
 	{
@@ -507,20 +511,15 @@ class FakeRtorrentDaemon
 
 	private function reply($values)
 	{
-		if(is_array($values) && isset($values[self::FAULT])) {
-			$body = self::faultReply($values[self::FAULT]);
-		} elseif($values instanceof FakeRtorrentRawReply) {
+		if($values === false)
+			$values = self::fault('fixture failure');
+		if($values instanceof FakeRtorrentRawReply) {
 			$body = $values->body;
 		} elseif($values instanceof FakeRtorrentFault) {
 			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
 				. '<member><name>faultCode</name><value><i4>' . (int)$values->code . '</i4></value></member>'
 				. '<member><name>faultString</name><value><string>' . self::escapeText((string)$values->message)
 				. '</string></value></member></struct></value></fault></methodResponse>';
-		} elseif($values === false) {
-			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
-				. '<member><name>faultCode</name><value><i4>-501</i4></value></member>'
-				. '<member><name>faultString</name><value><string>fixture failure</string></value></member>'
-				. '</struct></value></fault></methodResponse>';
 		} elseif($values instanceof FakeRtorrentDirectStringReply) {
 			$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>'
 				. self::escapeText((string)$values->value)
@@ -537,15 +536,5 @@ class FakeRtorrentDaemon
 		}
 		return "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
 			. strlen($body) . "\r\n\r\n" . $body;
-	}
-
-	private static function faultReply($fault)
-	{
-		return '<?xml version="1.0" encoding="UTF-8"?><methodResponse><fault><value><struct>'
-			. '<member><name>faultCode</name><value><i4>' . (int)$fault['code']
-			. '</i4></value></member>'
-			. '<member><name>faultString</name><value><string>'
-			. self::escapeText($fault['message'])
-			. '</string></value></member></struct></value></fault></methodResponse>';
 	}
 }

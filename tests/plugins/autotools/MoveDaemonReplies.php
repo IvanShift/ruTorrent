@@ -39,22 +39,22 @@ class AutoToolsMoveDaemonReplies
             case 'd.get_name': $answer = array($s['name']); break;
             case 'd.get_custom1': $answer = array(''); break;
             case 'd.complete':
-                if (!empty($s['missing'])) return new FakeRtorrentFault(-500, 'invalid parameters: info-hash not found');
+                if (!empty($s['missing'])) return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
                 $answer = array('1'); break;
             case 'd.hash':
-                if (!empty($s['missing'])) return new FakeRtorrentFault(-500, 'invalid parameters: info-hash not found');
+                if (!empty($s['missing'])) return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
                 $answer = array($s['hash']); break;
             case 'd.get_base_path': $answer = array($s['multi'] ? $s['directory'] : $s['directory'] . '/' . $s['basename']); break;
             case 'd.is_open': $answer = array((string)$s['open']); break;
             case 'd.is_active': $answer = array((string)$s['active']); break;
             case 'd.stop_close_claim_state':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return new FakeRtorrentFault(-500, 'stop claim: reserved by another job');
+                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
                 $answer = array($s['lease'] === 'absent' ? 'absent' : ($s['lease'] === 'active'
                     ? 'active|' . $receipt : $s['lease'] . '|' . $s['mode'] . '|' . $receipt)); break;
             case 'd.autotools.move_enqueue':
                 $s['queued'] = true; $answer = array('queued:' . $s['qid']); break;
             case 'd.autotools.move_begin':
-                if ($args[1] !== $s['qid']) return new FakeRtorrentFault(-500, 'stale Q');
+                if ($args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stale Q', -500);
                 if (!empty($s['busy'])) { $answer = array('busy:owner'); break; }
                 $s['lease'] = 'active'; $s['active'] = 0; $s['open'] = 0;
                 if (!empty($s['collision'])) file_put_contents($s['destination'], 'foreign payload');
@@ -73,21 +73,21 @@ class AutoToolsMoveDaemonReplies
                 $s['open'] = in_array($s['mode'], array('S','O'), true) ? 1 : 0;
                 $answer = array($s['mode'] === 'K' ? '0' : '1'); break;
             case 'd.replay_stop_close_claim':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return new FakeRtorrentFault(-500, 'stop claim: reserved by another job');
+                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
                 $s['lease'] = 'done'; $answer = array('1'); break;
             case 'd.ack_stop_close_claim':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return new FakeRtorrentFault(-500, 'stop claim: reserved by another job');
+                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
                 $s['lease'] = 'absent'; $answer = array('1'); break;
             case 'd.autotools.move_finish':
-                if ($s['lease'] !== 'absent') return new FakeRtorrentFault(-500, 'lease held');
+                if ($s['lease'] !== 'absent') return FakeRtorrentDaemon::fault('lease held', -500);
                 $s['queued'] = false; $answer = array('finished'); break;
             case 'd.autotools.move_cancel': $s['queued'] = false; $answer = array('cancelled'); break;
             case 'd.autotools.move_defer':
                 if ($args[1] !== $s['qid'] || $args[2] !== $s['retry'] || $s['lease'] !== 'absent')
-                    return new FakeRtorrentFault(-500, 'CAS refused');
+                    return FakeRtorrentDaemon::fault('CAS refused', -500);
                 $s['retry'] = $args[3]; $answer = array('deferred'); break;
             case 'd.custom.items':
-                if ($args !== array($s['hash'])) return new FakeRtorrentFault(-500, 'd.custom.keys/items takes no arguments.');
+                if ($args !== array($s['hash'])) return FakeRtorrentDaemon::fault('d.custom.keys/items takes no arguments.', -500);
                 if (array_key_exists('customReply', $s))
                     return $s['customReply'] === null ? null : new FakeRtorrentRawReply(ScgiToolPeer::response($s['customReply']));
                 $members='';
@@ -98,7 +98,7 @@ class AutoToolsMoveDaemonReplies
             case 'd.multicall':
             case 'd.multicall2':
                 if(isset($s['aliasVersion']) && (count($args)<3 || $args[0]!=='' || $args[1]!=='main'))
-                    return new FakeRtorrentFault(-500, "Could not find '=' in command 'main'.");
+                    return FakeRtorrentDaemon::fault("Could not find '=' in command 'main'.", -500);
                 if (array_key_exists('inventoryReply', $s))
                     return $s['inventoryReply'] === null ? null : new FakeRtorrentRawReply($s['inventoryReply']);
                 $rows=array();

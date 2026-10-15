@@ -49,7 +49,7 @@ class RatioInitializationTest extends TestCase
     public function testConcurrentViewInsertIsExpectedAndKeepsTheRatioCallback()
     {
         $this->daemon = new FakeRtorrentDaemon(array(array(),
-            new FakeRtorrentFault(-501, 'View with same name already inserted.'), array(0)), $this->base.'/calls');
+            FakeRtorrentDaemon::fault('View with same name already inserted.', -501), array(0)), $this->base.'/calls');
         $GLOBALS['scgi_port'] = $this->daemon->port();
         $ratio = new rRatio();
         $ratio->fillArray();

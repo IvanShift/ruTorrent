@@ -137,9 +137,9 @@ class MiniRtorrent
 			}
 			$reply = $lose ? null : $values;
 		} catch (MiniRtorrentFault $fault) {
-			$reply = new FakeRtorrentFault($fault->faultCode, $fault->getMessage());
+			$reply = FakeRtorrentDaemon::fault($fault->getMessage(), $fault->faultCode);
 		} catch (RtorrentInputError $error) {
-			$reply = new FakeRtorrentFault($this->legacy ? -503 : -500, $error->getMessage());
+			$reply = FakeRtorrentDaemon::fault($error->getMessage(), $this->legacy ? -503 : -500);
 		}
 		$this->save();
 		return $reply;
