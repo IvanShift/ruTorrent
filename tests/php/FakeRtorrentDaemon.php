@@ -263,10 +263,23 @@ class FakeRtorrentDaemon
 	private $logFile;
 	private $bodyLogFile;
 
+	const FAULT = '__fault__';
+
 	/**
-	 * $replies is a list of values per request, or a callback accepting the
-	 * request body and method names for flows with dynamic readback keys.
-	 * A false reply emits an XMLRPC fault; null closes without a reply.
+	 * A reply entry that makes the daemon answer with a fault instead of
+	 * values, for a test that needs the caller's request to fail.
+	 */
+	public static function fault($message, $code = -501)
+	{
+		return array(self::FAULT => array('code' => $code, 'message' => $message));
+	}
+
+	/**
+	 * $replies is a list, one per request: each entry is the list of values
+	 * the daemon answers that request with, or self::fault(...). It may also
+	 * be a callback accepting the request body and method names for flows
+	 * with dynamic readback keys. A false reply emits an XMLRPC fault; null
+	 * closes without a reply.
 	 */
 	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = array())
 	{
@@ -494,7 +507,9 @@ class FakeRtorrentDaemon
 
 	private function reply($values)
 	{
-		if($values instanceof FakeRtorrentRawReply) {
+		if(is_array($values) && isset($values[self::FAULT])) {
+			$body = self::faultReply($values[self::FAULT]);
+		} elseif($values instanceof FakeRtorrentRawReply) {
 			$body = $values->body;
 		} elseif($values instanceof FakeRtorrentFault) {
 			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
@@ -522,5 +537,15 @@ class FakeRtorrentDaemon
 		}
 		return "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
 			. strlen($body) . "\r\n\r\n" . $body;
+	}
+
+	private static function faultReply($fault)
+	{
+		return '<?xml version="1.0" encoding="UTF-8"?><methodResponse><fault><value><struct>'
+			. '<member><name>faultCode</name><value><i4>' . (int)$fault['code']
+			. '</i4></value></member>'
+			. '<member><name>faultString</name><value><string>'
+			. self::escapeText($fault['message'])
+			. '</string></value></member></struct></value></fault></methodResponse>';
 	}
 }
