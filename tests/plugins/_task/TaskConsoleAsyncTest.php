@@ -49,6 +49,8 @@ class TaskConsoleAsyncTest extends TestCase
 				$plugin.' completes through the existing task check path');
 			$this->assertEquals(array('complete'), $result['log'],
 				$plugin.' keeps its completed console output');
+			$this->assertEquals(true, taskNotificationSettled(rTask::formatPath($task->id)),
+				$plugin.' finished its completion notification before the profile is removed');
 		}
 	}
 }

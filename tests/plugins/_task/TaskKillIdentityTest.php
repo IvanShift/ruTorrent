@@ -412,6 +412,8 @@ class TaskKillIdentityTest extends TestCase
 			'The task recorded a verifiable process birth beside its PID');
 		$this->assertEquals(true, is_file($dir.'/supervisor.complete'),
 			'The waiting task completed after its supervisor proved the tree empty');
+		$this->assertEquals(true, taskNotificationSettled($dir),
+			'The completion notification finished before the profile is removed');
 		if (is_file($dir.'/pid.identity')) {
 			$identity = file_get_contents($dir.'/pid.identity');
 			$this->assertEquals(true, strpos($identity, trim(file_get_contents('/proc/sys/kernel/random/boot_id'))."\n")===0,

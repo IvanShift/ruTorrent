@@ -25,3 +25,18 @@ function taskNativeSupervisorFixture($testHook = false)
     $binaries[$key] = $binary;
     return $binary;
 }
+
+// The supervisor publishes status and supervisor.complete before its detached
+// notifier runs, and that notifier still reads and writes the task directory.
+// A test that removes the profile afterwards first waits for it to finish.
+function taskNotificationSettled($dir, $seconds = 10.0)
+{
+    $pending = $dir.'/supervisor.notify-pending';
+    $deadline = microtime(true) + $seconds;
+    while (is_file($pending) && !is_file($dir.'/supervisor.notify-failed')
+        && microtime(true) < $deadline) {
+        usleep(10000);
+        clearstatcache(true, $pending);
+    }
+    return !is_file($pending);
+}
