@@ -95,6 +95,7 @@ class RuTrackerFetchError
 			'request-deadline' => '/^request-deadline$/i',
 			'request-throttled' => '/^request-throttled$/i',
 			'credential-post-failed' => '/^credential-post-failed$/i',
+			'login-paused' => '/^login-paused$/i',
 		);
 		foreach($classes as $token => $pattern)
 			if(preg_match($pattern, $error)) return($token);

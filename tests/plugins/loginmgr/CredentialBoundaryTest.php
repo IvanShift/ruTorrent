@@ -7,6 +7,10 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 // tests/php/KinozalRequestPacingTest.php pins the shipped values.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 
 // Keep this suite's diagnostics out of the shared application log.
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/loginmgr-boundary-' . getmypid() . '.log';

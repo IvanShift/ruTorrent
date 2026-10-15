@@ -9,6 +9,10 @@ $_ENV['RU_LOG_FILE'] = $sourceTestRoot . '/loginmgr.log';
 // tests/php/KinozalRequestPacingTest.php pins the shipped values.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 
 require_once(__DIR__ . '/../../../php/Snoopy.class.inc');
 require_once(__DIR__ . '/../../../plugins/cookies/cookies.php');

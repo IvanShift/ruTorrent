@@ -8,6 +8,10 @@
  */
 
 define('TESTLIB_HANDLER_STUBS', 1);
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 // TestLib's Snoopy stub sends nothing, so the pace between Kinozal requests
 // never applies here; tests/php/KinozalRequestPacingTest.php drives it.
 require_once(__DIR__ . '/TestLib.php');
@@ -1471,6 +1475,7 @@ if (!$manager->store()) throw new RuntimeException('cannot save isolated account
 // Real Snoopy below: no pace or 429 pause is wanted between scripted answers.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+define('KINOZAL_LOGIN_PAUSE', 0);
 require $repo . '/plugins/rutracker_check/trackers/kinozal.php';
 $client = ruTrackerChecker::makeClient(KinozalCheckImpl::downloadUrl('1'));
 $reader = new ReflectionMethod('KinozalCheckImpl', 'decideFromDownload');
@@ -1879,6 +1884,7 @@ if (!$manager->store()) throw new RuntimeException('cannot save isolated account
 // Real Snoopy below: no pace or 429 pause is wanted between scripted answers.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+define('KINOZAL_LOGIN_PAUSE', 0);
 require $repo . '/plugins/rutracker_check/trackers/kinozal.php';
 $verdicts = array();
 for ($id = 1; $id <= (int) $topics; $id++) {

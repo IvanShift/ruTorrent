@@ -209,11 +209,17 @@ class Snoopy
 		return true;
 	}
 
-	/** Throttle every request to $hosts and their subdomains as one group. */
-	public static function throttleHosts($group, $hosts, $interval, $pause, $maxPause)
+	/**
+	 * Throttle every request to $hosts and their subdomains as one group.
+	 * $margin ends each pause after a 429 that many seconds early, after the
+	 * doubling and never shortening a Retry-After: a periodic caller's run at
+	 * the end of a pause then is admitted whatever second it starts at.
+	 */
+	public static function throttleHosts($group, $hosts, $interval, $pause, $maxPause, $margin = 0)
 	{
 		$interval = is_numeric($interval) ? (float)$interval : 0.0;
 		$pause = is_numeric($pause) ? (float)$pause : 0.0;
+		$margin = is_numeric($margin) && is_finite((float)$margin) ? (float)$margin : 0.0;
 		if(!is_string($group) || !preg_match('/^[a-z0-9_-]{1,32}$/D', $group))
 			return;
 		if(!is_finite($interval) || !is_finite($pause) || ($interval <= 0 && $pause <= 0))
@@ -223,7 +229,9 @@ class Snoopy
 		}
 		self::$throttleGroups[$group] = array('hosts' => array_values((array)$hosts),
 			'interval' => max(0.0, $interval), 'pause' => max(0.0, $pause),
-			'maxPause' => max(0.0, $pause, is_numeric($maxPause) ? (float)$maxPause : 0.0));
+			'maxPause' => max(0.0, $pause, is_numeric($maxPause) ? (float)$maxPause : 0.0),
+			// At most half the first pause, so no pause shrinks to nothing.
+			'margin' => min(max(0.0, $margin), max(0.0, $pause) / 2));
 	}
 
 	private static function throttleGroupFor($scheme, $host)
@@ -338,8 +346,10 @@ class Snoopy
 				// but adds no strike.
 				if($state['until'] <= $now)
 					$state['strikes'] = min($state['strikes'] + 1, 16);
-				$state['until'] = max($state['until'], $now + min(max($throttle['pause']
-					* pow(2, max($state['strikes'], 1) - 1), (float)$retryAfter), $throttle['maxPause']));
+				$own = min($throttle['pause'] * pow(2, max($state['strikes'], 1) - 1), $throttle['maxPause'])
+					- $throttle['margin'];
+				$state['until'] = max($state['until'], $now + min(max($own, (float)$retryAfter),
+					$throttle['maxPause']));
 				return($state['until']);
 			}
 			if($http >= 100)

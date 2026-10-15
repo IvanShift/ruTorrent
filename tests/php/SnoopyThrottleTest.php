@@ -818,6 +818,33 @@ $tests = array(
             'A request after the backoff but within Retry-After');
         throttleAssertWire(array_map(function ($reply) { return $reply['url']; }, $plan), 'The refused request never reached the wire');
     },
+    'a margin ends each pause early after the doubling, never shortens a Retry-After, and is at most half a pause' =>
+        function () {
+        $pause = 0.4;
+        $margin = 0.1;
+        $host = 'https://margin429.test';
+        Snoopy::throttleHosts('margin429', array('margin429.test'), 0.02, $pause, 10, $margin);
+        throttlePlan(array(ScriptedCurlFixture::reply('GET', "$host/1", 429, ''), ScriptedCurlFixture::reply('GET', "$host/2", 429, ''),
+            ScriptedCurlFixture::reply('GET', 'https://marginra.test/x', 429, '', array('Retry-After: 2')),
+            ScriptedCurlFixture::reply('GET', 'https://marginhalf.test/x', 429, '')));
+        $first = throttleFetch("$host/1");
+        $paused = throttleState('margin429');
+        throttleAssertBetween($paused['until'], $first['wallCalled'] + $pause - $margin, $first['wallReturned'] + $pause - $margin,
+            'The first pause ends the margin early');
+        throttleSleepUntil($paused['until'] + 0.02);
+        $second = throttleFetch("$host/2");
+        throttleAssertBetween(throttleState('margin429')['until'], $second['wallCalled'] + 2 * $pause - $margin,
+            $second['wallReturned'] + 2 * $pause - $margin, 'The doubled pause ends the same margin early');
+        Snoopy::throttleHosts('marginra', array('marginra.test'), 0.02, $pause, 10, $margin);
+        $ra = throttleFetch('https://marginra.test/x');
+        throttleAssertBetween(throttleState('marginra')['until'], $ra['wallCalled'] + 2, $ra['wallReturned'] + 2,
+            'A Retry-After is honoured in full');
+        Snoopy::throttleHosts('marginhalf', array('marginhalf.test'), 0.02, $pause, 10, 5 * $pause);
+        $half = throttleFetch('https://marginhalf.test/x');
+        throttleAssertBetween(throttleState('marginhalf')['until'], $half['wallCalled'] + $pause / 2, $half['wallReturned'] + $pause / 2,
+            'A margin longer than half the pause is cut to half');
+        throttleAssertWire(array("$host/1", "$host/2", 'https://marginra.test/x', 'https://marginhalf.test/x'), 'Each request was sent');
+    },
     'a Retry-After that is neither delta-seconds nor an exact IMF-fixdate is ignored' => function () {
         $pause = 0.1;
         $at = time() + 30;

@@ -11,6 +11,10 @@
  * test comes straight from plugins/loginmgr/accounts/KinozalTV.php.
  */
 
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 require_once(__DIR__ . '/../rutracker_check/TestLib.php');
 
 abstract class commonAccount
@@ -548,7 +552,9 @@ $suite->test('login fails when the tracker cannot be reached at all', function (
         'it names the missing answer: ' . $lines[0]);
 });
 
-$suite->test('a rate-limited credential POST is the limiter\'s answer, not the account\'s', function () {
+// Production 2026-10-15: login.php answered 200 and every credential POST
+// 429, and nothing in the log said a POST had gone out at all.
+$suite->test('a rate-limited credential POST is logged and left to the caller as a rate limit', function () {
     KinozalResponse::resetCycle();
     $client = new KinozalFakeClient();
     $client->responses['https://kinozal.guru/login.php'] = array('status' => 200, 'results' => kinozalLoginPage());
@@ -557,7 +563,9 @@ $suite->test('a rate-limited credential POST is the limiter\'s answer, not the a
         strictAssertSame(false, kinozalLogin($client), 'the login fails');
     });
     strictAssertSame('', $client->error, 'no account mark hides the 429 from the caller');
-    strictAssertSame(array(), $lines, 'the throttle, not the account, reports a rate limit');
+    strictAssertSame(1, count($lines), 'the POST that went out is visible once: ' . implode(' | ', $lines));
+    strictAssertTrue(strpos($lines[0], 'login on kinozal.guru refused (credential-post-http-429)') !== false,
+        'it names the answer: ' . $lines[0]);
 });
 
 $suite->test('a refused or unrelated login form cannot spend a credential POST', function () {

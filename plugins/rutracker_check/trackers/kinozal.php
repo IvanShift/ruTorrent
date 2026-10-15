@@ -347,6 +347,11 @@ class KinozalCheckImpl
             self::abandonCycle('rate-limited');
             return self::cantReach($endpoint . ' attempt: rate limited id=' . $id);
         }
+        // No credential POST until the login pause ends: every door shares it.
+        if (KinozalResponse::isLoginPaused($client)) {
+            self::abandonCycle('login-paused');
+            return self::cantReach($endpoint . ' attempt: login paused id=' . $id);
+        }
         if (self::errorClass($client) === 'credential-post-failed')
             return self::guestAnswer($endpoint . ' attempt: the credential POST failed: id=' . $id, $endpoint);
         return null;

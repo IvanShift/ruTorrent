@@ -1,6 +1,10 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 
 /**
  * commonAccount -- how loginmgr decides whether a stored session is still good,

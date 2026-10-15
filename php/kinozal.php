@@ -13,9 +13,21 @@ if(!defined('KINOZAL_REQUEST_PAUSE'))
 if(!defined('KINOZAL_RATE_LIMIT_PAUSE'))
 	// Seconds for which Kinozal requests are refused unsent (request-throttled)
 	// after an HTTP 429, doubling while the limiter keeps refusing, up to a
-	// day. One hourly cycle, so a ban is not prodded every hour; on 2026-10-14
-	// the limiter refused two probes an hour apart, the ban still in force.
-	define('KINOZAL_RATE_LIMIT_PAUSE', 3600);
+	// day. On 2026-10-14 the limiter refused probes an hour apart for hours,
+	// and lifted its ban only after about ten hours without a request.
+	define('KINOZAL_RATE_LIMIT_PAUSE', 7200);
+if(!defined('KINOZAL_LOGIN_PAUSE'))
+	// Seconds after a credential POST before another is sent, by any process,
+	// doubling while they keep failing, up to a day. On 2026-10-15 the mirror
+	// answered login.php 200 and the POST 429, so a pause on HTTP 429 alone,
+	// reset by that 200, let a password POST out every hour or two.
+	define('KINOZAL_LOGIN_PAUSE', 7200);
+if(!defined('KINOZAL_PAUSE_MARGIN'))
+	// Both pauses end this many seconds early. The hourly scheduler reaches
+	// Kinozal at a slightly different second each run: on 2026-10-15 a pause
+	// ending at 14:00:20 refused the run that asked at 14:00:11, and the next
+	// probe came an hour later than the pause meant.
+	define('KINOZAL_PAUSE_MARGIN', 600);
 
 // Shared by the optional loginmgr and rutracker_check plugins. Keep this leaf
 // independent of either plugin's configuration files and client classes: its
@@ -38,6 +50,11 @@ class KinozalResponse
 	// Left in a client's $error by the KinozalTV account when its credential
 	// POST went out and brought no session, however it ended.
 	const CREDENTIAL_POST_FAILED = 'credential-post-failed';
+	// Left in a client's $error when the login pause, or an unreadable record
+	// of it, kept the KinozalTV account from sending credentials.
+	const LOGIN_PAUSED = 'login-paused';
+	// The longest pause either kind of refusal may reach.
+	const MAX_PAUSE = 86400;
 
 	private static $doors = null;
 
@@ -114,7 +131,102 @@ class KinozalResponse
 	{
 		if(class_exists('Snoopy', false) && method_exists('Snoopy', 'throttleHosts'))
 			Snoopy::throttleHosts('kinozal', array_merge(self::SITE_HOSTS, self::MIRROR_HOSTS),
-				KINOZAL_REQUEST_PAUSE, KINOZAL_RATE_LIMIT_PAUSE, 86400);
+				KINOZAL_REQUEST_PAUSE, KINOZAL_RATE_LIMIT_PAUSE, self::MAX_PAUSE, KINOZAL_PAUSE_MARGIN);
+	}
+
+	// The login pause: one credential POST per KINOZAL_LOGIN_PAUSE across
+	// every process on the profile, the pause doubling while the POSTs that
+	// follow keep failing. It has its own record and rules rather than
+	// Snoopy's request pause, which any answer but a 429 resets: on
+	// 2026-10-15 a 200 for login.php reset that one before every 429 for the
+	// POST. Even a successful POST closes it, since whether a session took is
+	// decided later and elsewhere; a day without a POST forgets the streak.
+	//
+	// null when a credential POST may be sent now, else the time before which
+	// none is: INF when the record cannot be read or kept, since a pause that
+	// cannot be kept cannot keep anything from the wire.
+	public static function loginPausedUntil()
+	{
+		if(KINOZAL_LOGIN_PAUSE <= 0)
+			return(null);
+		$until = self::changeLoginState(function(&$state)
+		{
+			return($state['until'] > microtime(true) ? $state['until'] : null);
+		});
+		return($until === false ? INF : $until);
+	}
+
+	// Like loginPausedUntil(), and when it answers null the POST about to be
+	// sent is recorded, under the same lock, as the pause's next strike: a
+	// process that dies before learning the answer leaves the pause closed.
+	public static function reserveLogin()
+	{
+		if(KINOZAL_LOGIN_PAUSE <= 0)
+			return(null);
+		$until = self::changeLoginState(function(&$state)
+		{
+			$now = microtime(true);
+			if($state['until'] > $now)
+				return($state['until']);
+			if($now - $state['last'] >= self::MAX_PAUSE)
+				$state['strikes'] = 0;
+			$state['strikes'] = min($state['strikes'] + 1, 16);
+			$state['last'] = $now;
+			$state['until'] = $now + min(KINOZAL_LOGIN_PAUSE * pow(2, $state['strikes'] - 1), self::MAX_PAUSE)
+				- min(KINOZAL_PAUSE_MARGIN, KINOZAL_LOGIN_PAUSE / 2);
+			return(null);
+		});
+		return($until === false ? INF : $until);
+	}
+
+	// Runs $change on the login pause's record under its lock; false when the
+	// record cannot be opened, locked or written.
+	private static function changeLoginState(callable $change)
+	{
+		global $profileMask;
+		if(!class_exists('FileUtil') || FileUtil::settingsReadOnlyContext())
+			return(false);
+		$mask = isset($profileMask) ? $profileMask : 0777;
+		$dir = FileUtil::getSettingsPathEx('');
+		if(!is_dir($dir))
+			FileUtil::makeDirectory($dir, $mask | 01000, true);
+		$path = $dir . '/kinozal-login.json';
+		// The scheduler's and the web server's OS users must both open it.
+		$previous = @umask(~($mask & 0666) & 0777);
+		$fp = @fopen($path, 'c+');
+		@umask($previous);
+		if($fp === false)
+			return(false);
+		@chmod($path, $mask & 0666);
+		if(!@flock($fp, LOCK_EX))
+		{
+			fclose($fp);
+			return(false);
+		}
+		$stored = @json_decode((string) stream_get_contents($fp, -1, 0), true);
+		$now = microtime(true);
+		// Only what a writer could have stored: a clock step or a damaged
+		// record must not close the login for longer than the longest pause.
+		$value = function($key, $limit) use($stored)
+		{
+			$number = is_array($stored) && isset($stored[$key]) && is_numeric($stored[$key])
+				? (float) $stored[$key] : 0.0;
+			return(is_finite($number) && $number >= 0 && $number <= $limit ? $number : 0.0);
+		};
+		$state = array('last' => $value('last', $now + self::MAX_PAUSE),
+			'until' => $value('until', $now + self::MAX_PAUSE), 'strikes' => (int) $value('strikes', 16));
+		$result = $change($state);
+		$json = json_encode($state);
+		$written = ftruncate($fp, 0) && fseek($fp, 0) === 0 && fwrite($fp, $json) === strlen($json) && fflush($fp);
+		flock($fp, LOCK_UN);
+		fclose($fp);
+		return($written ? $result : false);
+	}
+
+	// Whether the client was kept from logging in by the login pause.
+	public static function isLoginPaused($client)
+	{
+		return(is_object($client) && ($client->error ?? null) === self::LOGIN_PAUSED);
 	}
 
 	// Scan every tag so guest-looking text inside another tag's quoted
@@ -144,6 +256,7 @@ class KinozalResponse
 	// One application-log line per cycle: a cycle asks once per topic.
 	private static $failureLogged = false;
 	private static $loginRefusalLogged = array();
+	private static $loginPausedLogged = array();
 	// Sites that answered a challenge, until the next checker cycle or for
 	// the rest of any other process.
 	private static $blockedSites = array();
@@ -151,7 +264,7 @@ class KinozalResponse
 	public static function resetCycle()
 	{
 		self::$failureLogged = false;
-		self::$loginRefusalLogged = self::$blockedSites = array();
+		self::$loginRefusalLogged = self::$loginPausedLogged = self::$blockedSites = array();
 		self::$doors = null;
 	}
 
@@ -232,15 +345,29 @@ class KinozalResponse
 	}
 
 	// $post: the credential POST was sent and refused; otherwise the login
-	// form could not be used and no credentials were sent.
-	public static function logLoginRefusal($reason, $origin, $post = false)
+	// form could not be used and no credentials were sent. $nextPost: when
+	// the login pause lets the next credential POST out, if it is known.
+	public static function logLoginRefusal($reason, $origin, $post = false, $nextPost = null)
 	{
 		$host = (string) UrlHost::of($origin);
 		if(isset(self::$loginRefusalLogged[$host]) || !class_exists('FileUtil'))
 			return;
 		self::$loginRefusalLogged[$host] = true;
 		FileUtil::toLog('kinozal: login on ' . ($host !== '' ? $host : 'an unlisted site') . ' refused ('
-			. $reason . ')' . ($post ? '' : '; no credential POST was sent'));
+			. $reason . ')' . ($post ? '' : '; no credential POST was sent')
+			. ($nextPost === null || is_infinite($nextPost) ? ''
+				: '; the next credential POST is not sent before ' . gmdate('Y-m-d\TH:i:s\Z', (int) ceil($nextPost))));
+	}
+
+	// Once per process for each site: the login pause kept this login off the wire.
+	public static function logLoginPaused($origin, $until)
+	{
+		$host = (string) UrlHost::of($origin);
+		if(isset(self::$loginPausedLogged[$host]) || !class_exists('FileUtil'))
+			return;
+		self::$loginPausedLogged[$host] = true;
+		FileUtil::toLog('kinozal: login on ' . ($host !== '' ? $host : 'an unlisted site') . ' paused until '
+			. gmdate('Y-m-d\TH:i:s\Z', (int) ceil($until)) . ' after the previous credential POST; no request was sent');
 	}
 
 	/** True for a guest page, false for no marker, null when parsing failed. */

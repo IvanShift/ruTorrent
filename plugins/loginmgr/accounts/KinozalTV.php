@@ -56,6 +56,9 @@ class KinozalTVAccount extends commonAccount
 			return(false);
 		}
 		if(KinozalResponse::requestsBlocked($origin)) return(false);
+		// The login pause is asked before any request: when it holds, not even
+		// login.php is fetched.
+		if(self::loginPaused($client, $origin, KinozalResponse::loginPausedUntil())) return(false);
 		// Replay of the captured login form admits the POST. A transport result
 		// alone also accepts 403/5xx and unrelated landing pages.
 		if(!self::holdsLoginForm($client, $origin))
@@ -70,6 +73,9 @@ class KinozalTVAccount extends commonAccount
 				return(false);
 			}
 		}
+		// Asked again under the pause's lock, which records this POST: another
+		// process may have sent one while this one fetched the form.
+		if(self::loginPaused($client, $origin, KinozalResponse::reserveLogin())) return(false);
 		$client->setcookies();
 		$client->referer = $origin;
 		$fetched = $client->fetch($origin . "/takelogin.php", "POST", "application/x-www-form-urlencoded",
@@ -83,18 +89,33 @@ class KinozalTVAccount extends commonAccount
 
 	// The credential POST went out, or may have, and brought no session,
 	// however it ended: a refusal, a redirect to an error page, a lost
-	// answer. The mark tells the caller that asking another door would only
-	// send the password again. The rate limit answers for the whole site and
-	// stays for the caller to read; the throttle never sent such a POST.
+	// answer, a 429. Each is logged with the time the login pause lets the
+	// next POST out. The mark tells the caller that asking another door would
+	// only send the password again; a 429 is left unmarked, as the rate limit
+	// answers for the whole site and stays for the caller to read.
 	private static function credentialPostFailed($client, $origin)
 	{
-		if(KinozalResponse::isRateLimited($client))
-			return(false);
 		$status = (int) $client->status;
 		KinozalResponse::logLoginRefusal($status >= 400 ? 'credential-post-http-' . $status
-			: 'credential-post-unanswered', $origin, true);
+			: 'credential-post-unanswered', $origin, true, KinozalResponse::loginPausedUntil());
+		if(KinozalResponse::isRateLimited($client))
+			return(false);
 		$client->error = KinozalResponse::CREDENTIAL_POST_FAILED;
 		return(false);
+	}
+
+	// Refuses the login while the pause holds, or while its record cannot be
+	// kept, with the reason left on the client for the caller.
+	private static function loginPaused($client, $origin, $until)
+	{
+		if($until === null)
+			return(false);
+		$client->error = KinozalResponse::LOGIN_PAUSED;
+		if(is_infinite($until))
+			KinozalResponse::logLoginRefusal('login-state-unavailable', $origin);
+		else
+			KinozalResponse::logLoginPaused($origin, $until);
+		return(true);
 	}
 
 	// The answer that just walled the caller may already be this origin's

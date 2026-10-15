@@ -7,6 +7,10 @@
 // have; they are declared before php/kinozal.php can define its own.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+// The login pause lets one credential POST out per two hours across
+// processes; these cases count the POSTs a cycle may spend under it, so
+// it is declared away. tests/php/KinozalRequestPacingTest.php pins it.
+define('KINOZAL_LOGIN_PAUSE', 0);
 $sessionRoot = sys_get_temp_dir() . '/kinozal-sessions-' . getmypid() . '-' . bin2hex(random_bytes(4));
 mkdir($sessionRoot, 0700);
 mkdir($sessionRoot . '/curl', 0700);
@@ -237,6 +241,7 @@ class KinozalSessionFixture
 // Another request on the same account, in its own process.
 define('KINOZAL_REQUEST_PAUSE', 0);
 define('KINOZAL_RATE_LIMIT_PAUSE', 0);
+define('KINOZAL_LOGIN_PAUSE', 0);
 list(, $root, $action, $source) = $argv;
 $_ENV['RU_PROFILE_PATH'] = $root . '/profile';
 $_ENV['RU_LOG_FILE'] = $root . '/application.log';
