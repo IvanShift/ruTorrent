@@ -135,13 +135,14 @@ class CacheWalkBudgetTest extends TestCase
 	 * ask for an unbounded walk from a file small enough to go unnoticed.
 	 *
 	 * The value ids unserialize() hands out run in order of appearance, so the
-	 * array at level k is id k and the level below it is id k+1.
+	 * array at level k is id k and the level below it is id k+1; $before
+	 * shifts both by the number of values the file writes ahead of the graph.
 	 */
-	private function amplified($depth)
+	private function amplified($depth, $before = 0)
 	{
 		$bytes = 's:1:"x";';
 		for ($k = $depth; $k >= 1; $k--)
-			$bytes = 'a:2:{i:0;' . $bytes . 'i:1;R:' . ($k + 1) . ';}';
+			$bytes = 'a:2:{i:0;' . $bytes . 'i:1;R:' . ($k + 1 + $before) . ';}';
 		return $bytes;
 	}
 
@@ -286,12 +287,9 @@ class CacheWalkBudgetTest extends TestCase
 
 	public function testTheLogSaysWhichBudgetRefusedTheFile()
 	{
-		// The root must be the requested class; shift R: ids by one because
-		// the graph now sits inside its lst property instead of at the root.
-		$graph = preg_replace_callback('/R:(\d+);/', function ($match) {
-			return 'R:' . ((int)$match[1] + 1) . ';';
-		}, $this->amplified(40));
-		$payload = 'O:17:"BudgetListPayload":1:{s:3:"lst";' . $graph . '}';
+		// Inside the caller's own class, so the file gets as far as the walk:
+		// a file whose root is not a BudgetListPayload is refused before it.
+		$payload = 'O:17:"BudgetListPayload":1:{s:3:"lst";' . $this->amplified(40, 1) . '}';
 		$this->assertTrue(unserialize($payload) instanceof BudgetListPayload,
 			'the planted amplified graph has a permitted cache root');
 		$this->plant('budget-list.dat', $payload);

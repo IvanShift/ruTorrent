@@ -590,7 +590,8 @@ class CacheTest extends TestCase
 			$mine->add('mine');
 			$this->assertSame(true, $cache->set($mine), 'this writer stores');
 			$lines = is_file($log_file) ? file_get_contents($log_file) : '';
-			$this->assertSame(1, substr_count($lines, 'names a different root value; not loaded'),
+			$this->assertSame(1, substr_count($lines,
+				'does not hold CacheEmptiablePayload at its root (found class CacheUnexpectedPayload); not loaded'),
 				'the unloadable newer document was read and refused visibly');
 		} finally {
 			$log_file = $previousLog;

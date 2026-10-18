@@ -388,4 +388,79 @@ class RequestsCSRFTest extends TestCase
         )), 'a POST that names no origin at all');
     }
 
+    // The cases below come from upstream's #3389. Its header sets were
+    // captured from real browsers and are refused here as they are there.
+
+    public function testAnOpaqueOriginIsRefusedWithoutOurReferer()
+    {
+        // A browser sends "Origin: null" for a form POST from a sandboxed or
+        // data: frame, a file: page, or any page whose referrer policy is
+        // no-referrer -- one <meta> tag on a foreign page is enough. These
+        // header sets were captured from Chrome 155 and Firefox 158 posting
+        // such forms from another origin to http://127.0.0.1:18781, which
+        // is potentially trustworthy and so gets Sec-Fetch-*, and to
+        // http://rutorrent.lan:18781, a plain http name, which does not.
+        foreach (array(
+            'a no-referrer or file: page, by IP' => array(
+                'HTTP_HOST' => '127.0.0.1:18781',
+                'HTTP_ORIGIN' => 'null',
+                'HTTP_SEC_FETCH_SITE' => 'cross-site',
+                'HTTP_SEC_FETCH_MODE' => 'navigate',
+                'HTTP_SEC_FETCH_DEST' => 'document',
+            ),
+            'a sandboxed or data: frame, by IP' => array(
+                'HTTP_HOST' => '127.0.0.1:18781',
+                'HTTP_ORIGIN' => 'null',
+                'HTTP_SEC_FETCH_SITE' => 'cross-site',
+                'HTTP_SEC_FETCH_MODE' => 'navigate',
+                'HTTP_SEC_FETCH_DEST' => 'iframe',
+            ),
+            'any of those, by name' => array(
+                'HTTP_HOST' => 'rutorrent.lan:18781',
+                'HTTP_ORIGIN' => 'null',
+            ),
+            'a sandboxed frame in Firefox, by IP' => array(
+                'HTTP_HOST' => '127.0.0.1:18781',
+                'HTTP_ORIGIN' => 'null',
+                'HTTP_REFERER' => 'http://127.0.0.2:18782/',
+                'HTTP_SEC_FETCH_SITE' => 'cross-site',
+                'HTTP_SEC_FETCH_MODE' => 'navigate',
+                'HTTP_SEC_FETCH_DEST' => 'iframe',
+            ),
+            'a sandboxed frame in Firefox, by name' => array(
+                'HTTP_HOST' => 'rutorrent.lan:18781',
+                'HTTP_ORIGIN' => 'null',
+                'HTTP_REFERER' => 'http://attacker.lan:18782/',
+            ),
+        ) as $page => $headers) {
+            $this->assertEquals('Forbidden', $this->probe($headers), 'a form POST from ' . $page);
+        }
+    }
+
+    // Upstream #3389 lets the Referer decide when the Origin is "null". This
+    // check lets a present Origin decide alone (6ed49326), so "null" is
+    // refused whatever the Referer says: it comes from a sandboxed frame, a
+    // data: or file: page or a no-referrer page, and a sandboxed frame may
+    // still send a Referer (the Firefox cases above). These are upstream's
+    // inputs with this fork's verdict; each Referer alone is the control.
+    public function testAnOpaqueOriginIsRefusedEvenWithOurReferer()
+    {
+        foreach (array(
+            'a page on the host it was sent to' => array(array(
+                'REQUEST_SCHEME' => 'https',
+                'HTTP_HOST' => 'rutorrent.example',
+                'HTTP_REFERER' => 'https://rutorrent.example/rutorrent/',
+            ), array()),
+            'a page on a configured host' => array(array(
+                'HTTP_HOST' => '[::1]:8080',
+                'HTTP_REFERER' => 'https://rutorrent.example/rutorrent/',
+            ), array('rutorrent.example')),
+        ) as $page => list($headers, $origins)) {
+            $this->assertEquals('ALLOW', $this->probe($headers, $origins),
+                'the Referer of ' . $page . ' alone is admitted');
+            $headers['HTTP_ORIGIN'] = 'null';
+            $this->assertEquals('Forbidden', $this->probe($headers, $origins),
+                'and with "Origin: null" a POST from ' . $page . ' is refused');
+        }
+    }
 }
