@@ -207,9 +207,14 @@ static bool wait_for_tree(const char *dir, pid_t shell, int *shell_status)
 static void mark_notification_failure(const char *dir, const char *reason,
                                       const char *message)
 {
+    /* Log first: a reader that finds the marker also finds this line. */
+    log_failure(dir, message);
+#ifdef RTASK_SUPERVISOR_TEST_HOOK
+    const char *pause = getenv("RTASK_SUPERVISOR_TEST_MARKER_DELAY_US");
+    if (pause) usleep((useconds_t)strtoul(pause, NULL, 10));
+#endif
     if (!write_atomic(dir, "supervisor.notify-failed", reason))
         log_failure(dir, "could not record notifier failure marker; pending work retained");
-    log_failure(dir, message);
 }
 
 static bool send_normal_notification(const char *php, const char *notify,

@@ -32,9 +32,9 @@ class TaskSupervisorTest extends TestCase
         $this->removeTree($_ENV['RU_PROFILE_PATH']);
     }
 
-    private function waitFor($path)
+    private function waitFor($path, $attempts = 200)
     {
-        for ($i=0; $i<200 && !is_file($path); ++$i) usleep(10000);
+        for ($i=0; $i<$attempts && !is_file($path); ++$i) usleep(10000);
         return is_file($path);
     }
 
@@ -516,6 +516,46 @@ class TaskSupervisorTest extends TestCase
                 'supervisor.notify-pending','supervisor.notify-failed','supervisor.outcome',
                 'supervisor.complete','status','errors') as $file) @unlink($dir.'/'.$file);
             @rmdir($dir);
+        }
+    }
+
+    // A reader that finds the failure marker also finds the logged line: the
+    // test build pauses between the two writes, so the other order fails here.
+    public function testNotifierFailureIsLoggedBeforeItsMarker()
+    {
+        $binary = taskNativeSupervisorFixture(true);
+        $env = array_merge($_ENV, array('RTASK_SUPERVISOR_TEST_MARKER_DELAY_US'=>'300000'));
+        $cases = array(
+            'exec' => array('/no/such/php', null, "exec-failed\n", 'notifier exec failed'),
+            'exit' => array(PHP_BINARY, '<?php exit(3);', "exit-failed\n", 'notifier exited unsuccessfully'),
+        );
+        foreach ($cases as $case => $expected) {
+            list($php, $script, $reason, $line) = $expected;
+            $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-order-'.$case.'-'.bin2hex(random_bytes(4));
+            mkdir($dir, 0700);
+            file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
+            $notify = $dir.'/notify.php';
+            if ($script !== null) file_put_contents($notify, $script);
+            $process = proc_open(array($binary, $dir, $php, $notify, 'test'),
+                array(0=>array('file','/dev/null','r'),1=>array('file','/dev/null','w'),
+                    2=>array('file','/dev/null','w')), $pipes, null, $env);
+            if (!is_resource($process)) throw new RuntimeException('Could not start notifier order witness');
+            try {
+                $this->assertEquals(0, proc_close($process), "Task completion is independent of the notifier ($case)");
+                $process = null;
+                $this->assertEquals(true, $this->waitFor($dir.'/supervisor.notify-failed', 1000),
+                    "The notifier failure is marked ($case)");
+                $this->assertEquals($reason, @file_get_contents($dir.'/supervisor.notify-failed'),
+                    "The marker names the failure ($case)");
+                $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'), $line) !== false,
+                    "The failure was logged before the marker appeared ($case)");
+            } finally {
+                if (is_resource($process)) proc_close($process);
+                foreach (array('start.sh','notify.php','pid','pid.identity','supervisor.version',
+                    'supervisor.notify-pending','supervisor.notify-failed','supervisor.outcome',
+                    'supervisor.complete','status','errors') as $file) @unlink($dir.'/'.$file);
+                @rmdir($dir);
+            }
         }
     }
 

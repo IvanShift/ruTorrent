@@ -398,13 +398,33 @@ if ($pacingMode === '--shipped-default') {
             $gate = $pacingRoot . '/go';
             $ready = function () use ($pacingRoot) { return count(glob($pacingRoot . '/*.ready') ?: array()); };
             $children = array();
+            $clock = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
+            $writer = false;
+            $writerSlot = null;
             try {
                 foreach (array('scheduler', 'batch') as $label)
                     $children[$label] = pacingStart(array('--request', $pacingRoot, $pathToExternals['curl'],
                         $label, $gate, $url));
                 for ($waited = 0; $ready() < 2 && $waited < 10000; $waited++) usleep(1000);
                 testAssertSame(2, $ready(), 'Both processes wait at the gate');
+                // A third writer holds the shared clock in the middle of its write,
+                // after ftruncate() and before fwrite(), while both processes ask
+                // for a slot: they must wait for its lock and queue after its slot.
+                // The hold is how long a process that skipped the clock has to show
+                // itself; each process reserves within milliseconds of the gate.
+                // The children start first: they must not inherit the lock.
+                if (!is_dir(dirname($clock))) mkdir(dirname($clock), 0700, true);
+                $writer = fopen($clock, 'c+');
+                testAssertTrue($writer !== false && flock($writer, LOCK_EX) && ftruncate($writer, 0),
+                    'The third writer holds the shared clock mid-write (precondition)');
                 touch($gate);
+                usleep(300000);
+                $writerSlot = microtime(true);
+                fwrite($writer, json_encode(array('next' => $writerSlot + KINOZAL_REQUEST_PAUSE, 'ended' => 0.0,
+                    'until' => 0.0, 'strikes' => 0)));
+                fflush($writer);
+                fclose($writer);
+                $writer = false;
                 foreach (array_keys($children) as $label) {
                     $child = $children[$label];
                     unset($children[$label]);
@@ -413,6 +433,7 @@ if ($pacingMode === '--shipped-default') {
                 }
             } finally {
                 // Release and reap a child an assertion above left behind.
+                if ($writer !== false) fclose($writer);
                 touch($gate);
                 foreach ($children as $child) {
                     stream_get_contents($child[1]);
@@ -423,13 +444,23 @@ if ($pacingMode === '--shipped-default') {
                     @unlink($file);
             }
             $requests = pacingWire(array(array('GET', $url), array('GET', $url)));
-            // Both reserve at once, so their slots are exactly an interval apart;
-            // the stand-in records each start after its own PHP startup, which
-            // varies by a few milliseconds. Two separate clocks would let both
-            // requests start within those few milliseconds.
-            $gap = abs($requests[1]['time'] - $requests[0]['time']);
-            testAssertTrue($gap >= KINOZAL_REQUEST_PAUSE / 2, sprintf('The later process waited for the earlier'
-                . ' one\'s slot instead of starting with it: %.3f s apart', $gap));
+            // The slots follow the third writer's one interval apart. The stand-in
+            // records a start only after its own process and PHP startup, which a
+            // loaded host stretches unevenly: a first start 60 ms late puts two
+            // slots 0.1 s apart 0.04 s apart in the record. So each start is held
+            // to the earliest its slot allows, not to the other start. The
+            // millisecond covers the two clocks (pacingAssertSpaced()).
+            $state = json_decode((string) file_get_contents($clock), true);
+            testAssertTrue(is_array($state) && $state['next'] >= $writerSlot + 3 * KINOZAL_REQUEST_PAUSE - 0.000001,
+                'Both processes took their slots from the shared clock, after the third writer\'s');
+            $mono = hrtime();
+            $wall = microtime(true) - ($mono[0] + $mono[1] / 1000000000.0);
+            $starts = array($wall + $requests[0]['time'], $wall + $requests[1]['time']);
+            sort($starts);
+            foreach ($starts as $i => $start)
+                testAssertTrue($start >= $writerSlot + ($i + 1) * KINOZAL_REQUEST_PAUSE - 0.001, sprintf('The %s process'
+                    . ' waited for its slot, %d interval(s) after the third writer\'s (it started %.3f s after it)',
+                    $i === 0 ? 'earlier' : 'later', $i + 1, $start - $writerSlot));
         },
         'a wait longer than the request deadline refuses before the wire' => function () use ($mirror) {
             $primed = $mirror . '/get_srv_details.php?action=2&id=6';

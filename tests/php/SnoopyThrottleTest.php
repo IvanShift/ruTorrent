@@ -7,7 +7,11 @@
 // the group everywhere. Snoopy, the state file and the child processes are
 // real; only curl's wire answers come from tests/php/ScriptedCurlFixture.php.
 // Wire times are the fixture's: hrtime() when the stand-in started, the same
-// monotonic clock in every process, so they compare across processes.
+// monotonic clock in every process, so they compare across processes. They
+// come after the stand-in's own process and PHP startup, though: a late start
+// only lengthens a measured wait, so a lower bound may use them, but how soon
+// a request left, and the turns of two processes, are judged where fetch()
+// hands the request to curl (ThrottleRecordingSnoopy below).
 
 // A child process runs this file with --child <config.json>: it shares the
 // parent's profile and scripted curl, fetches the configured URLs and prints
@@ -38,10 +42,6 @@ $httpBlockPrivateNetworks = false;
 // Snoopy ends a turn inside fetch() on microtime(); the fixture and this file
 // measure on hrtime(), and a busy host may delay this process in between.
 const THROTTLE_SLACK = 0.05;
-// Two processes' stand-ins record their start after their own PHP startup.
-// Measured here: mostly under 15 ms apart, once 79 ms with five full runs of
-// this file in parallel. A missing shared turn shows as ~0 s.
-const THROTTLE_JITTER = 0.1;
 
 function throttleClock()
 {
@@ -49,9 +49,29 @@ function throttleClock()
     return $time[0] + $time[1] / 1000000000.0;
 }
 
+// Records each request fetch() hands to curl: the turn the throttle granted it
+// (Snoopy's own reservation, on microtime) and the moment of the hand-off on
+// both clocks. The throttle decides when a request may leave; how long the
+// stand-in then takes to start is the host's. On a loaded CI runner two turns
+// 0.25 s apart reached the fixture's record 0.025 s apart: the first stand-in
+// took about 0.22 s longer to start than the second.
+class ThrottleRecordingSnoopy extends Snoopy
+{
+    public $launches = array();
+
+    function _httpsrequest($url, $content_type = "", $body = "", $http_method = "GET")
+    {
+        $reservation = Closure::bind(static function (Snoopy $client) { return $client->throttleReservation; }, null, 'Snoopy');
+        $turn = $reservation($this);
+        $this->launches[] = array('turn' => $turn === null ? null : $turn[1], 'wall' => microtime(true), 'clock' => throttleClock());
+        // Forward exactly the arguments given: Snoopy counts them.
+        return parent::_httpsrequest(...func_get_args());
+    }
+}
+
 function throttleFetch($url, $deadline = null, $tag = null, $complex = false, $maxlength = null)
 {
-    $client = new Snoopy();
+    $client = new ThrottleRecordingSnoopy();
     if ($maxlength !== null) $client->maxlength = $maxlength;
     // A cookie names the sending process in the fixture's record.
     if ($tag !== null) $client->cookies = array('process' => $tag);
@@ -64,7 +84,7 @@ function throttleFetch($url, $deadline = null, $tag = null, $complex = false, $m
     $returned = throttleClock();
     return array('ok' => $ok, 'status' => $client->status, 'error' => $client->error,
         'called' => $called, 'returned' => $returned,
-        'wallCalled' => $wallCalled, 'wallReturned' => microtime(true));
+        'wallCalled' => $wallCalled, 'wallReturned' => microtime(true), 'launches' => $client->launches);
 }
 
 // Stands in for a filesystem on which flock() fails, for the throttle state
@@ -289,10 +309,15 @@ function throttleAssertTurns(array $fetches, array $wire, $interval)
     }
 }
 
+// A request that waits for no turn is handed to curl promptly; the stand-in's
+// startup after that is not a wait (see ThrottleRecordingSnoopy).
 function throttleAssertPrompt(array $fetch, array $request, $limit, $message)
 {
-    $wait = $request['time'] - $fetch['called'];
-    testAssertTrue($wait < $limit, sprintf('%s (sent %.3f s after the call)', $message, $wait));
+    testAssertSame(1, count($fetch['launches']), $message . ': one request was handed to curl');
+    $launch = $fetch['launches'][0];
+    testAssertTrue($request['time'] >= $launch['clock'], $message . ': the wire request is the one handed to curl');
+    $wait = $launch['clock'] - $fetch['called'];
+    testAssertTrue($wait < $limit, sprintf('%s (handed to curl %.3f s after the call)', $message, $wait));
 }
 
 function throttleAssertBetween($value, $low, $high, $message)
@@ -540,10 +565,28 @@ $tests = array(
             $children[$tag] = throttleStartChild('shared-' . $tag, array('group' => 'shared', 'hosts' => array('shared.test'),
                 'interval' => $interval, 'pause' => 1, 'maxPause' => 1, 'urls' => array($url, $url, $url), 'tag' => $tag,
                 'ready' => $throttleRoot . '/shared-' . $tag . '.ready', 'go' => $go));
+        // A third writer holds the state file in the middle of its write, after
+        // ftruncate() and before fwrite(), while both processes ask for their
+        // first turn: they must wait for its lock and queue after its turn. The
+        // hold is how long a reader that skipped the lock has to show itself;
+        // each process reserves within milliseconds of the go. The children
+        // start first: they must not inherit the lock.
+        $statePath = throttleStatePath('shared');
+        if (!is_dir(dirname($statePath))) mkdir(dirname($statePath), 0700, true);
+        $writer = fopen($statePath, 'c+');
+        $writerTurn = null;
         try {
+            testAssertTrue($writer !== false && flock($writer, LOCK_EX) && ftruncate($writer, 0),
+                'The third writer holds the state file mid-write (precondition)');
             throttleAwaitFiles(array($throttleRoot . '/shared-a.ready', $throttleRoot . '/shared-b.ready'), 'Both processes start');
-        } finally {
             touch($go);
+            usleep(300000);
+            $writerTurn = microtime(true);
+            fwrite($writer, json_encode(array('next' => $writerTurn + $interval, 'ended' => 0.0, 'until' => 0.0, 'strikes' => 0)));
+            fflush($writer);
+        } finally {
+            if ($writer !== false) fclose($writer);
+            if (!file_exists($go)) touch($go);
             $results = throttleFinishChildren($children);
         }
         foreach ($results as $tag => $fetches) {
@@ -557,11 +600,27 @@ $tests = array(
         sort($senders);
         testAssertSame(array_merge(array_fill(0, 3, 'Cookie: process=a'), array_fill(0, 3, 'Cookie: process=b')), $senders,
             'Each process sent its three requests');
-        $times = array_map(function ($request) { return $request['time']; }, $wire);
-        sort($times);
-        for ($i = 1; $i < count($times); $i++)
-            testAssertTrue($times[$i] - $times[$i - 1] >= $interval - THROTTLE_JITTER,
-                sprintf('Wire requests %d and %d, from either process, are an interval apart (%.3f s)', $i, $i + 1, $times[$i] - $times[$i - 1]));
+        // Each wire request is held to its own turn where it is handed to curl,
+        // and all turns, the third writer's included, are an interval apart.
+        $turns = array($writerTurn);
+        foreach ($results as $tag => $fetches) {
+            $sent = array_values(array_filter($wire, function ($request) use ($tag) { return $request['cookie'] === "Cookie: process=$tag"; }));
+            foreach ($fetches as $k => $fetch) {
+                $request = "Process $tag's request " . ($k + 1);
+                testAssertSame(1, count($fetch['launches']), "$request was handed to curl once");
+                $launch = $fetch['launches'][0];
+                testAssertTrue(is_float($launch['turn']), "$request was granted a turn");
+                testAssertTrue($launch['wall'] >= $launch['turn'],
+                    sprintf('%s waited for its turn (handed to curl %.3f s early)', $request, $launch['turn'] - $launch['wall']));
+                testAssertTrue($sent[$k]['time'] >= $launch['clock'], "$request reached the wire after it was handed to curl");
+                $turns[] = $launch['turn'];
+            }
+        }
+        sort($turns);
+        testAssertSame($writerTurn, $turns[0], 'No process took a turn while the third writer held the state file');
+        for ($i = 1; $i < count($turns); $i++)
+            testAssertTrue($turns[$i] - $turns[$i - 1] >= $interval - 0.000001,
+                sprintf('Turns %d and %d, from the third writer or either process, are an interval apart (%.3f s)', $i, $i + 1, $turns[$i] - $turns[$i - 1]));
     },
     'an HTTP 429 in one process pauses the group for every process, and the next one doubles it' => function () {
         $pause = 1.0;
