@@ -16,6 +16,9 @@ require_once(dirname(__FILE__) . "/../erasedata/removewithdata.php");
 class RuTrackerUpdatePass
 {
     const COLUMNS = 9;
+    // Foreign rows the start of pass 2 moves by each pass when no foreign
+    // owner declared a quota.
+    const DEFAULT_ROTATION_STEP = 25;
     const FORUM_CORRECTION_MAX_AGE = 2592000; // 30 days
 
     // Test seam: run()'s production default dispatches straight to
@@ -24,6 +27,9 @@ class RuTrackerUpdatePass
     // capture dispatches without loading a real tracker handler. null means
     // "use the production default".
     private static $checker = null;
+    // Test seam: the pass number fairOrder() turns the foreign rows by; null
+    // derives it from the clock (rotationPass()).
+    private static $rotationPass = null;
     private static $invalidFuseShareReported = false;
     private static $invalidForeignRestReported = false;
 
@@ -389,6 +395,82 @@ class RuTrackerUpdatePass
             % ($spread + 1));
     }
 
+    // The order pass 2 takes the rows in: the view order, with the foreign
+    // rows (every row pass 1 found no RuTracker host for) turned round among
+    // their own slots so that each pass starts about $step foreign rows on.
+    // In plain view order a handler cut off after a few topics -- by its quota
+    // or by a 429 -- answered the same head every time: on 2026-10-18 the 39
+    // Kinozal topics up to date were the first 39 of 127 in the view, and the
+    // other 88 had no answer. Turning keeps the cyclic order, so topics that
+    // fail together are no closer than in the view, except that the last
+    // foreign row now meets the first. An order computed from chk-time instead
+    // gathered failing topics at the head of each pass, where three in a row
+    // closed both doors before any healthy topic was asked. Such a run still
+    // cuts off what follows it when nothing between spends a request; turning
+    // moves that cut-off round the list instead of leaving it on the same
+    // topics. $step is reduced and made coprime with the number of foreign
+    // rows, so while that number holds, every foreign row is first once in as
+    // many consecutive passes.
+    static private function fairOrder($rows, $hosts, $pass, $step)
+    {
+        $foreign = array();
+        foreach ($rows as $index => $row)
+            if ($hosts[$index] === '') $foreign[] = $index;
+        $count = count($foreign);
+        if ($count > 1) {
+            // Reduced first: an enormous configured quota must not be
+            // incremented past PHP_INT_MAX into a float that never changes.
+            $step = (max(1, (int) $step) % $count) ?: 1;
+            while (self::gcd($step, $count) !== 1) $step++;
+            $start = (int) (((int) $pass % $count) * $step % $count);
+            $foreign = array_merge(array_slice($foreign, $start), array_slice($foreign, 0, $start));
+        }
+        $order = array();
+        $next = 0;
+        foreach ($rows as $index => $row)
+            $order[] = $hosts[$index] === '' ? $foreign[$next++] : $index;
+        return $order;
+    }
+
+    // Consecutive scheduler passes get consecutive numbers: the clock divided
+    // by the cadence init.php schedules update.php with, an hour while that
+    // schedule is disabled. On a four-hour cadence a clock hour would advance
+    // by four between passes, and with a row count divisible by four only a
+    // quarter of the starts would ever come round.
+    static private function rotationPass($now)
+    {
+        if (self::$rotationPass !== null) return self::$rotationPass;
+        return intdiv((int) $now, self::replacementCadence() ?? 3600);
+    }
+
+    static private function gcd($a, $b)
+    {
+        while ($b !== 0) list($a, $b) = array($b, $a % $b);
+        return $a;
+    }
+
+    // The quota the owner of this comment declared (registerTracker()), asked
+    // once per pass, or null when there is none. Ownership comes from
+    // ownerOf(), not from the comment filter that names the metrics bucket:
+    // an NNMClub topic that mentions kinozal.tv spends no Kinozal quota.
+    static private function cycleQuotaFor($comment, &$quotas)
+    {
+        $owner = ruTrackerChecker::ownerOf($comment);
+        if ($owner === null || empty($owner['cycleQuota'])) return null;
+        $callable = $owner['cycleQuota'];
+        if (is_string($callable)) $key = $callable;
+        elseif (is_object($callable)) $key = spl_object_hash($callable);
+        elseif (is_array($callable) && count($callable) === 2 && is_string($callable[1] ?? null))
+            $key = (is_object($callable[0] ?? null) ? spl_object_hash($callable[0]) : (string) ($callable[0] ?? ''))
+                . '::' . $callable[1];
+        else return null;
+        if (!array_key_exists($key, $quotas)) {
+            $limit = call_user_func($callable);
+            $quotas[$key] = is_int($limit) && $limit > 0 ? array('key' => $key, 'limit' => $limit) : null;
+        }
+        return $quotas[$key];
+    }
+
     static private function withinRestWindow($row, $seconds, $now)
     {
         return $seconds > 0 && $row['time'] <= $now + ruTrackerChecker::MAX_LOCK_TIME
@@ -547,7 +629,20 @@ class RuTrackerUpdatePass
         // The fast-path verdicts below are buffered rather than written where
         // they are decided; see flushVerdicts() for why.
         $deferred = array();
+        $quotas = array();
+        $quotaUsed = array();
+        // The start moves by about one quota a pass, the smallest a foreign
+        // owner in this pass declared, counted in foreign rows; without one,
+        // by DEFAULT_ROTATION_STEP.
+        $step = null;
         foreach ($rows as $index => $row) {
+            if ($hosts[$index] !== '') continue;
+            $quota = self::cycleQuotaFor($comments[$index], $quotas);
+            if ($quota !== null) $step = $step === null ? $quota['limit'] : min($step, $quota['limit']);
+        }
+        foreach (self::fairOrder($rows, $hosts, self::rotationPass($now),
+            $step ?? self::DEFAULT_ROTATION_STEP) as $index) {
+            $row = $rows[$index];
             $correctionKey = strtoupper((string) $row['hash']);
             $hasCorrection = array_key_exists($correctionKey, $corrections);
             $correction = $hasCorrection ? $corrections[$correctionKey] : null;
@@ -649,6 +744,18 @@ class RuTrackerUpdatePass
                         $foreignMetrics[$bucket]['postponed']++;
                         continue;
                     }
+                }
+
+                // A row past its owner's quota is not touched at all: it keeps
+                // its verdict and chk-time, and the next pass starts further on.
+                // Recovery, correction and resting rows above spend no quota.
+                $quota = self::cycleQuotaFor($comments[$index], $quotas);
+                if ($quota !== null) {
+                    if (($quotaUsed[$quota['key']] ?? 0) >= $quota['limit']) {
+                        $foreignMetrics[$bucket]['capped']++;
+                        continue;
+                    }
+                    $quotaUsed[$quota['key']] = ($quotaUsed[$quota['key']] ?? 0) + 1;
                 }
 
                 self::dispatchChecker($checker, $defaultChecker, $row);

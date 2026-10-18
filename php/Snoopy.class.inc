@@ -1752,6 +1752,14 @@ class Snoopy
 			$this->headers[] = $currentHeader;
 		}
 
+		// fgets() returns false when read_timeout expires before a header line
+		// arrives, so the in-loop check never sees a peer that stays silent.
+		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
+		{
+			$this->status=-100;
+			return false;
+		}
+
 		if($this->response_code === '')
 			return $this->refuseResponseBody('missing-final-response');
 
@@ -1780,6 +1788,13 @@ class Snoopy
 				$results .= $data;
 				if(strlen($results) > $this->maxlength)
 					break;
+			}
+			// fread() ends the loop on a timeout as it does at EOF; check before
+			// the gzip decode refuses the truncated body as invalid gzip.
+			if ($this->read_timeout > 0 && $this->_check_timeout($fp))
+			{
+				$this->status=-100;
+				return false;
 			}
 			if(strlen($results) > $this->maxlength)
 			{

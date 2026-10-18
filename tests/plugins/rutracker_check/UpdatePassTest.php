@@ -106,6 +106,8 @@ class Snoopy
     const REQUEST_THROTTLED = 'request-throttled';
     public static $queue = array();
     public static $requests = array();
+    // When set, answers every fetch by URL instead of the queue.
+    public static $responder = null;
 
     public $status = 0;
     public $results = '';
@@ -120,6 +122,7 @@ class Snoopy
     {
         self::$queue = array();
         self::$requests = array();
+        self::$responder = null;
     }
 
     public static function queue($status, $results, $headers = array())
@@ -130,6 +133,10 @@ class Snoopy
     public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
     {
         self::$requests[] = array('url' => $url, 'rawheaders' => $this->rawheaders);
+        if (self::$responder !== null) {
+            list($this->status, $this->results, $this->headers) = call_user_func(self::$responder, $url);
+            return true;
+        }
         if (!count(self::$queue))
             throw new RuntimeException("Unexpected feed fetch: {$url}");
         list($this->status, $this->results, $this->headers) = array_shift(self::$queue);
@@ -143,7 +150,10 @@ function upTest($suite, $name, $callback)
 {
     $suite->test($name, function () use ($callback) {
         UpdatePassErasedataFake::reset();
-        return strictWithStateDir('chk-updatepass', $callback);
+        // Pass 0 leaves pass 2 in plain view order; the rotation tests set it.
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 0);
+        try { return strictWithStateDir('chk-updatepass', $callback); }
+        finally { strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', null); }
     });
 }
 
@@ -1767,8 +1777,9 @@ upTest($suite, 'each scheduler pass retries Kinozal while keeping its endpoint l
         for ($failure = 0; $failure < 4; $failure++) Snoopy::queue(503, 'unavailable');
         $first = RuTrackerUpdatePass::run($rows);
         strictAssertSame(array_column($rows, 'hash'), $first['checked'], 'all four hashes reach the handler');
-        strictAssertSame(array_fill(0, 4, ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts,
-            'the first pass keeps every refusal retryable');
+        strictAssertSame(array(ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_UNCHANGED), $verdicts,
+            'the three refused topics stay retryable and the one never asked keeps its verdict');
         strictAssertSame(3, count(Snoopy::$requests), 'one endpoint latch suppresses the fourth fetch');
         strictAssertSame(1, count(Snoopy::$queue), 'the fourth topic never consumed its endpoint response');
         strictAssertTrue(strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
@@ -1935,7 +1946,7 @@ upTest($suite, 'foreign bucket counts reconcile postponed and dispatched rows', 
     strictAssertSame(3, $metric['eligible'], 'only the active settled rest is excluded');
     strictAssertSame(1, $metric['postponed'], 'a fresh authoritative UPTODATE rests');
     strictAssertSame(2, $metric['dispatched'], 'both due rows were dispatched');
-    strictAssertSame(0, $metric['capped'], 'R1 has no dispatch quota');
+    strictAssertSame(0, $metric['capped'], 'two due rows stay within the Kinozal cycle quota');
     strictAssertSame($metric['eligible'] - $metric['postponed'],
         $metric['dispatched'] + $metric['capped'], 'no eligible row disappears');
     strictAssertSame(1, $metric['error'], 'snapshot ERROR count');
@@ -1943,6 +1954,356 @@ upTest($suite, 'foreign bucket counts reconcile postponed and dispatched rows', 
     strictAssertTrue($metric['max_age'] >= 86401 && $metric['max_age'] <= 86403,
         'oldest valid snapshot age is preserved');
     upAssertNoCustomWrites('metrics and postponement do not write custom fields');
+});
+
+function upWithKinozalCycleTopics($value, $callback)
+{
+    $had = array_key_exists('rutrackerKinozalCycleTopics', $GLOBALS);
+    $saved = $had ? $GLOBALS['rutrackerKinozalCycleTopics'] : null;
+    $GLOBALS['rutrackerKinozalCycleTopics'] = $value;
+    try { return $callback(); }
+    finally {
+        if ($had) $GLOBALS['rutrackerKinozalCycleTopics'] = $saved;
+        else unset($GLOBALS['rutrackerKinozalCycleTopics']);
+    }
+}
+
+function upMetricsByBucket($log)
+{
+    preg_match_all('/update: metrics (\{[^\r\n]+\})/', $log, $matches);
+    $metrics = array();
+    foreach ($matches[1] as $encoded) {
+        $row = json_decode($encoded, true);
+        $metrics[$row['bucket']] = $row;
+    }
+    return $metrics;
+}
+
+function upKinozalRowAt($letter, $state, $time)
+{
+    // A failing announce: never certified alive, so never postponed.
+    $row = upKinozalRow(str_repeat($letter, 40), 1, 0);
+    $row['state'] = $state;
+    $row['time'] = $time;
+    return $row;
+}
+
+// A simplified chk-state/chk-time store for the handler doubles below:
+// STE_UNCHANGED leaves both alone, any other verdict is stamped with the time.
+function upStoreVerdict(&$store, $hash, $verdict, &$clock)
+{
+    if ($verdict === ruTrackerChecker::STE_UNCHANGED) return;
+    $store[$hash] = array($verdict, ++$clock);
+}
+
+// As ruTrackerChecker::run() stores an answer, terminal rows included: a
+// CANT_REACH or ERROR answer for a DELETED/ABSORBED row writes nothing and
+// keeps the old clock (CheckerTest: "the original terminal clock is not
+// refreshed").
+function upStoreAsRun(&$store, $hash, $verdict, &$clock)
+{
+    $previous = $store[$hash][0];
+    if (in_array($previous, array(ruTrackerChecker::STE_DELETED, ruTrackerChecker::STE_ABSORBED), true)
+        && in_array($verdict, array(ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_ERROR), true))
+        return;
+    upStoreVerdict($store, $hash, $verdict, $clock);
+}
+
+function upRowsFromStore($store, $rows)
+{
+    $current = array();
+    foreach ($rows as $row) {
+        $row['state'] = $store[$row['hash']][0];
+        $row['time'] = $store[$row['hash']][1];
+        $current[] = $row;
+    }
+    return $current;
+}
+
+// Production, 2026-10-16 and 2026-10-18: each time Kinozal's mirrors stopped
+// answering HTTP 429, the pass sent every due Kinozal topic; 39 topics were
+// answered and the 429 came back, with a ban of hours behind it. A handler
+// declares a cycle quota when it registers. A row past the quota is left
+// exactly as it is.
+upTest($suite, 'a declared cycle quota caps ordinary foreign dispatch and leaves the rest untouched', function () {
+    upLoadKinozalRegistration();
+    upWithKinozalCycleTopics(2, function () {
+        $now = time();
+        $rows = array();
+        foreach (array('A', 'B', 'C', 'D') as $i => $letter)
+            $rows[] = upKinozalRowAt($letter, ruTrackerChecker::STE_CANT_REACH_TRACKER, $now - 100 + $i);
+        // Ahead of the rows above in the view: none of these spends quota.
+        $resting = upKinozalRow(str_repeat('R', 40), 0, 5);   // alive announce, recent UPTODATE
+        $resting['state'] = ruTrackerChecker::STE_UPTODATE;
+        $resting['time'] = $now - 3600;
+        $settled = upKinozalRowAt('S', ruTrackerChecker::STE_NOT_NEED, $now - 3600);
+        $settled['msg'] = ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . str_repeat('F', 40);
+        $recovering = upKinozalRowAt('I', ruTrackerChecker::STE_INPROGRESS, $now - 5000);
+        // Kinozal's loose filter asks first about an NNMClub topic that names
+        // kinozal.tv, but Kinozal does not own it: it spends no Kinozal quota.
+        $crossSeed = upParsedRow(str_repeat('E', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+            'https://nnmclub.to/forum/viewtopic.php?t=12&source=kinozal.tv',
+            array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER, 'time' => $now - 50));
+        $owner = ruTrackerChecker::ownerOf($crossSeed['comment']);
+        strictAssertTrue($owner === null || $owner['handler'] !== 'KinozalCheckImpl::download_torrent',
+            'the cross-seed topic is not Kinozal-owned');
+        $all = array_merge(array($resting, $settled, $recovering), $rows, array($crossSeed));
+        $log = upCapturedLog(function () use ($all, &$result, &$checked) {
+            $result = upRunPass($all, $checked);
+        });
+        strictAssertSame(array($recovering['hash'], $rows[0]['hash'], $rows[1]['hash'], $crossSeed['hash']), $checked,
+            'recovery goes, two Kinozal topics go, two wait, the NNMClub topic is not held back');
+        strictAssertSame($checked, $result['checked'], 'capped rows are not reported as checked');
+        $metrics = upMetricsByBucket($log);
+        $bucket = ruTrackerChecker::schedulingBucket($rows[0]['comment']);
+        strictAssertTrue(isset($metrics[$bucket]), 'the Kinozal bucket has a metrics line');
+        strictAssertSame(2, $metrics[$bucket]['capped'], 'both rows past the quota are counted as capped');
+        strictAssertSame(1, $metrics[$bucket]['postponed'], 'the resting row rests');
+        $eligible = 0; $postponed = 0; $dispatched = 0; $capped = 0;
+        foreach ($metrics as $line) {
+            $eligible += $line['eligible']; $postponed += $line['postponed'];
+            $dispatched += $line['dispatched']; $capped += $line['capped'];
+        }
+        strictAssertSame(3, $dispatched, 'three ordinary rows were dispatched in all buckets');
+        strictAssertSame($eligible - $postponed, $dispatched + $capped, 'no eligible row disappears');
+        upAssertNoCustomWrites('a capped row keeps its verdict and its chk-time');
+    });
+});
+
+upTest($suite, 'the Kinozal cycle quota is read from the configuration and validated', function () {
+    upLoadKinozalRegistration();
+    $flag = 'invalidCycleTopicsReported';
+    $saved = strictGetPrivateStatic('KinozalCheckImpl', $flag);
+    try {
+        // Unset means conf.php was not loaded; it assigns the default itself.
+        foreach (array(array(25, 25), array(1, 1), array('7', 7), array(0, null),
+            array(null, KinozalCheckImpl::DEFAULT_CYCLE_TOPICS)) as $case)
+            upWithKinozalCycleTopics($case[0], function () use ($case) {
+                strictAssertSame($case[1], KinozalCheckImpl::cycleQuota(),
+                    'cycle quota for ' . var_export($case[0], true));
+            });
+        foreach (array(-1, 'many', 2.5, '', '07') as $value) {
+            strictSetPrivateStatic('KinozalCheckImpl', $flag, false);
+            $log = upCapturedLog(function () use ($value) {
+                upWithKinozalCycleTopics($value, function () use ($value) {
+                    strictAssertSame(KinozalCheckImpl::DEFAULT_CYCLE_TOPICS, KinozalCheckImpl::cycleQuota(),
+                        'an invalid quota ' . var_export($value, true) . ' falls back to the default');
+                    KinozalCheckImpl::cycleQuota();
+                });
+            });
+            strictAssertSame(1, substr_count($log, 'config: invalid rutrackerKinozalCycleTopics'),
+                'an invalid quota is reported once per process: ' . var_export($value, true));
+        }
+    } finally {
+        strictSetPrivateStatic('KinozalCheckImpl', $flag, $saved);
+    }
+});
+
+// In view order a handler cut off after a few topics answered the same head
+// every time; on 2026-10-18 the 39 Kinozal topics up to date were the first 39
+// of 127 in the seeding view. Pass 2 turns the foreign rows round each pass.
+upTest($suite, 'each pass the foreign rows start one step further and keep their cyclic order', function () {
+    $hosts = array('', 'bt.t-ru.org', '', '', 'bt.t-ru.org', '', '');
+    $rows = array_fill(0, count($hosts), array());
+    $foreignSlots = array(0, 2, 3, 5, 6);
+    foreach (array(1, 2, 5, 25) as $step) {
+        $firsts = array();
+        $previous = null;
+        for ($pass = 1000; $pass < 1000 + count($foreignSlots); $pass++) {
+            $order = strictInvoke('RuTrackerUpdatePass', 'fairOrder', array($rows, $hosts, $pass, $step));
+            strictAssertSame(1, $order[1], 'step ' . $step . ': a RuTracker row keeps its slot');
+            strictAssertSame(4, $order[4], 'step ' . $step . ': so does the other');
+            $sequence = array();
+            foreach ($foreignSlots as $slot) $sequence[] = $order[$slot];
+            $at = array_search($sequence[0], $foreignSlots, true);
+            strictAssertSame(array_merge(array_slice($foreignSlots, $at), array_slice($foreignSlots, 0, $at)),
+                $sequence, 'step ' . $step . ': the foreign rows are the view order turned round');
+            $firsts[] = $sequence[0];
+            // Five foreign rows: every step here is already coprime but 5 and
+            // 25, which reduce to nothing and move by one.
+            $expected = ($step % 5) ?: 1;
+            if ($previous !== null)
+                strictAssertSame(($previous + $expected) % 5, $at, 'step ' . $step . ': the start moves by the step');
+            $previous = $at;
+        }
+        sort($firsts);
+        strictAssertSame($foreignSlots, $firsts,
+            'step ' . $step . ': every foreign row is first exactly once in as many passes as there are rows');
+    }
+});
+
+// PHP_INT_MAX is a canonical integer, and 2^63-1 is a multiple of 7, 73 and
+// 127: incrementing it towards a coprime step left a float that never changed.
+upTest($suite, 'an enormous quota turns the foreign rows without stalling the pass', function () {
+    foreach (array(7, 73, 127, 128) as $count) {
+        $hosts = array_fill(0, $count, '');
+        $order = strictInvoke('RuTrackerUpdatePass', 'fairOrder',
+            array(array_fill(0, $count, array()), $hosts, 3, PHP_INT_MAX));
+        $sorted = $order;
+        sort($sorted);
+        strictAssertSame(range(0, $count - 1), $sorted, $count . ' rows: every row is taken once');
+    }
+});
+
+upTest($suite, 'consecutive scheduler passes get consecutive rotation numbers', function () {
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', null);
+    $saved = $GLOBALS['updateInterval'] ?? null;
+    try {
+        foreach (array(60 => 3600, 240 => 14400, 30 => 1800, 0 => 3600) as $minutes => $seconds) {
+            $GLOBALS['updateInterval'] = $minutes;
+            foreach (array(0, 1, 7) as $passes)
+                strictAssertSame(1000 + $passes,
+                    strictInvoke('RuTrackerUpdatePass', 'rotationPass', array((1000 + $passes) * $seconds + 6)),
+                    $minutes . ' minutes: the pass ' . $passes . ' cadences on');
+        }
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 42);
+        strictAssertSame(42, strictInvoke('RuTrackerUpdatePass', 'rotationPass', array(time())),
+            'the test seam overrides the clock');
+    } finally {
+        $GLOBALS['updateInterval'] = $saved;
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 0);
+    }
+});
+
+// Successive scheduler passes with a handler double: $answer($hash, $served)
+// returns the verdict for the $served-th topic dispatched in that pass.
+function upSuccessivePasses($rows, $passes, $answer)
+{
+    $clock = time() - 900;
+    $store = array();
+    foreach ($rows as $row) $store[$row['hash']] = array($row['state'], $row['time']);
+    $answered = array();
+    try {
+        for ($pass = 0; $pass < $passes; $pass++) {
+            strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 5000 + $pass);
+            $served = 0;
+            strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+                function ($hash) use (&$store, &$served, &$answered, &$clock, $answer) {
+                    $verdict = $answer($hash, $served++);
+                    if ($verdict === ruTrackerChecker::STE_UPTODATE) $answered[$hash] = true;
+                    upStoreVerdict($store, $hash, $verdict, $clock);
+                });
+            rXMLRPCRequest::reset();
+            RuTrackerUpdatePass::run(upRowsFromStore($store, $rows));
+        }
+    } finally {
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 0);
+    }
+    ksort($answered);
+    return array_keys($answered);
+}
+
+upTest($suite, 'under the quota every Kinozal topic is reached even when no announce lets one rest', function () {
+    upLoadKinozalRegistration();
+    upWithKinozalCycleTopics(2, function () {
+        $rows = array();
+        foreach (array('A', 'B', 'C', 'D', 'E', 'F', 'G') as $letter)
+            $rows[] = upKinozalRowAt($letter, ruTrackerChecker::STE_UPTODATE, time() - 3 * 86400);
+        // The start moves by the quota, so four passes of two cover seven.
+        $answered = upSuccessivePasses($rows, 4, function () { return ruTrackerChecker::STE_UPTODATE; });
+        strictAssertSame(array_column($rows, 'hash'), $answered,
+            'four passes of two topics each reach all seven topics');
+    });
+});
+
+upTest($suite, 'a handler cut off after a few topics reaches every topic over successive passes', function () {
+    upLoadKinozalRegistration();
+    upWithKinozalCycleTopics(0, function () {
+        $rows = array();
+        foreach (array('A', 'B', 'C', 'D', 'E', 'F') as $letter)
+            $rows[] = upKinozalRowAt($letter, ruTrackerChecker::STE_CANT_REACH_TRACKER, time() - 1000);
+        // As the Kinozal handler answers after HTTP 429: two topics answered,
+        // every later one not asked and left as it was.
+        $answered = upSuccessivePasses($rows, 6, function ($hash, $served) {
+            return $served < 2 ? ruTrackerChecker::STE_UPTODATE : ruTrackerChecker::STE_UNCHANGED;
+        });
+        strictAssertSame(array_column($rows, 'hash'), $answered,
+            'six passes cut off after two answers reach all six topics');
+    });
+});
+
+// Two reviews of the first candidates: an order computed from chk-time
+// gathered topics that fail at every mirror at the head of each pass -- first
+// CANT_REACH rows, then DELETED rows, whose failed checks keep their old clock
+// -- where they closed both doors (TRANSPORT_TOLERANCE) and abandoned the
+// cycle before any healthy topic was asked, pass after pass. Here healthy due
+// topics sit between them in the view, as they did in the reproductions; the
+// real handler and both default mirrors, three passes.
+upTest($suite, 'failing topics keep their view neighbours instead of gathering at the head of a pass', function () {
+    upLoadKinozalRegistration();
+    $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
+    $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
+    $hadHosts = array_key_exists('kinozalHosts', $GLOBALS);
+    $savedHosts = $hadHosts ? $GLOBALS['kinozalHosts'] : null;
+    unset($GLOBALS['kinozalHosts']);
+    strictSetPrivateStatic('KinozalResponse', 'doors', null);
+    try {
+        $now = time();
+        // Failing ids start with 9: HTTP 500, or a reworded missing-topic page
+        // that carries neither a hash nor Kinozal's marker.
+        $cases = array(
+            'unreachable, failed long ago' => array(ruTrackerChecker::STE_CANT_REACH_TRACKER, $now - 4 * 86400,
+                array(500, 'Internal Server Error', array())),
+            'unreachable, failed last hour' => array(ruTrackerChecker::STE_CANT_REACH_TRACKER, $now - 3600,
+                array(500, 'Internal Server Error', array())),
+            'deleted, page reworded' => array(ruTrackerChecker::STE_DELETED, $now - 10 * 86400,
+                array(200, '<div class="red">gone</div>', array())),
+        );
+        foreach ($cases as $label => $case) {
+            list($failedState, $failedAt, $failure) = $case;
+            $rows = array();
+            $hashById = array();
+            $plan = array(array('A', '101'), array('B', '901'), array('C', '102'), array('D', '902'),
+                array('E', '103'), array('F', '903'), array('7', '104'), array('8', '105'), array('9', '106'));
+            foreach ($plan as $entry) {
+                list($letter, $id) = $entry;
+                $failing = $id[0] === '9';
+                $row = upKinozalRowAt($letter, $failing ? $failedState : ruTrackerChecker::STE_UPTODATE,
+                    $failing ? $failedAt : $now - 3 * 86400);
+                $row['comment'] = 'http://kinozal.tv/details.php?id=' . $id;
+                $rows[] = $row;
+                $hashById[$id] = $row['hash'];
+            }
+            $store = array();
+            foreach ($rows as $row) $store[$row['hash']] = array($row['state'], $row['time']);
+            Snoopy::reset();
+            Snoopy::$responder = function ($url) use ($hashById, $failure) {
+                preg_match('/[?&]id=(\d+)/', $url, $m);
+                if ($m[1][0] === '9') return $failure;
+                return array(200, '<ul><li>' . $hashById[$m[1]] . '</li></ul>', array());
+            };
+            $clock = $now - 600;
+            $healthyAsked = array();
+            for ($pass = 0; $pass < 3; $pass++) {
+                strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 7000 + $pass);
+                strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+                    function ($hash, $row) use (&$store, &$clock) {
+                        upStoreAsRun($store, $hash,
+                            KinozalCheckImpl::download_torrent($row['comment'], $hash, null), $clock);
+                    });
+                Snoopy::$requests = array();
+                rXMLRPCRequest::reset();
+                upCapturedLog(function () use ($store, $rows) {
+                    RuTrackerUpdatePass::run(upRowsFromStore($store, $rows));
+                });
+                $ids = array();
+                foreach (Snoopy::$requests as $request)
+                    if (preg_match('/get_srv_details\.php.*[?&]id=(1\d+)/', $request['url'], $m)) $ids[$m[1]] = true;
+                $healthyAsked[] = count($ids);
+            }
+            strictAssertSame(array(6, 6, 6), $healthyAsked, $label . ': every healthy topic is asked in every pass');
+            foreach ($rows as $row)
+                if ($row['state'] === ruTrackerChecker::STE_UPTODATE)
+                    strictAssertSame(ruTrackerChecker::STE_UPTODATE, $store[$row['hash']][0],
+                        $label . ': healthy topic ' . $row['hash'][0] . ' keeps a real answer');
+        }
+    } finally {
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 0);
+        if ($hadHosts) $GLOBALS['kinozalHosts'] = $savedHosts;
+        foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
+        foreach ($responseState as $property => $value) strictSetPrivateStatic('KinozalResponse', $property, $value);
+        Snoopy::reset();
+    }
 });
 
 upTest($suite, 'every selected handler bucket logs even without foreign eligibility', function () {

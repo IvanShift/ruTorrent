@@ -155,9 +155,15 @@ class ruTrackerChecker
 	 *        it. An authority declared without this test is never reached:
 	 *        ownerOf() answers null at a handler that declared no test, and
 	 *        the free pass is granted to owners only.
+	 * @param callable|null $cycleQuota      Optional. Answers how many of this
+	 *        handler's topics one scheduler pass may dispatch for an ordinary
+	 *        check (a positive int), or null for no limit; asked once per pass.
+	 *        Recovery of an interrupted check and forum corrections are not
+	 *        counted. Like the free pass it is granted to owners only, through
+	 *        ownerOf(), so $topicPattern is required.
 	 */
 	static public function registerTracker($commentFilter, $announceFilter, $handler,
-		$announceAuthority = null, $topicPattern = null)
+		$announceAuthority = null, $topicPattern = null, $cycleQuota = null)
 	{
 		if(!array_key_exists($commentFilter, self::$TRACKERS))
 		{
@@ -166,6 +172,7 @@ class ruTrackerChecker
 				'handler' => $handler,
 				'announceAuthority' => $announceAuthority,
 				'topicPattern' => $topicPattern,
+				'cycleQuota' => $cycleQuota,
 			);
 		}
 	}

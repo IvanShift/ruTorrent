@@ -207,13 +207,15 @@ class SnoopySocketReplies extends Snoopy
     }
 }
 
-function snoopyPlainHttpReply($header, $body, $limit = null, $client = null)
+// With $peerStaysOpen the peer sends the reply and then holds the connection
+// without closing it, so the client's read ends only by its read_timeout.
+function snoopyPlainHttpReply($header, $body, $limit = null, $client = null, $peerStaysOpen = false)
 {
     $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
     testAssertTrue(is_array($pair), 'Unable to open gzip transport fixture');
     list($near, $far) = $pair;
     fwrite($far, "HTTP/1.1 200 OK\r\n".$header."\r\n\r\n".$body);
-    stream_socket_shutdown($far, STREAM_SHUT_WR);
+    if(!$peerStaysOpen) stream_socket_shutdown($far, STREAM_SHUT_WR);
     if($client === null) $client = new Snoopy();
     $client->host = 'tracker.example';
     $client->port = 80;
@@ -734,6 +736,89 @@ $tests = array(
         testAssertSame(false, snoopyRequestHasCookie($wire, 'interim=wrong')
             || snoopyRequestHasCookie($wire, 'hints=wrong'),
             'interim cookies never enter the origin jar');
+    },
+    // fgets() answers false both at EOF and when read_timeout expires before
+    // the first header line, so only the stream's timed_out flag tells them
+    // apart. A loopback listener that never calls accept() took the connection
+    // (the kernel completes the handshake into the backlog) and holds the
+    // request without a byte back: the shape of the live NNMClub scrape that
+    // was logged as missing-final-response five seconds after it started.
+    'a silent plain-HTTP peer that keeps the connection open is a read timeout' => function () {
+        $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+        testAssertTrue(is_resource($server), 'Could not open the silent loopback peer: ' . $error);
+        try {
+            $address = stream_socket_get_name($server, false);
+            $client = new Snoopy();
+            $client->block_private = false;
+            $client->read_timeout = 1;
+            $client->_fp_timeout = 1;
+            $started = microtime(true);
+            $fetched = $client->fetch('http://' . $address . '/scrape?info_hash=silent');
+            $elapsed = microtime(true) - $started;
+            testAssertSame(false, $fetched, 'A peer that never answered was reported as fetched');
+            testAssertSame(-100, $client->status,
+                'A silent open peer is the read timeout, not a body refusal (error: ' . $client->error . ')');
+            testAssertSame(true, $client->timed_out, 'The read timeout is recorded');
+            testAssertSame('', $client->error, 'A read timeout carries no body-refusal reason');
+            testAssertTrue($elapsed >= 0.9, 'The client gave up before read_timeout expired: ' . $elapsed . ' s');
+            // The request reached the peer, so the silence is the peer's.
+            $peer = stream_socket_accept($server, 1);
+            testAssertTrue(is_resource($peer), 'The client connection never reached the peer');
+            stream_set_timeout($peer, 1);
+            $request = stream_get_contents($peer);
+            fclose($peer);
+            testAssertSame(0, strpos((string) $request, "GET /scrape?info_hash=silent HTTP/"),
+                'The peer received the request: ' . json_encode($request));
+        } finally {
+            fclose($server);
+        }
+    },
+    'a plain-HTTP peer that closes without a byte is still a missing final response' => function () {
+        $client = new SnoopySocketReplies();
+        $client->read_timeout = 1;
+        $client->responses = array('');
+        testAssertSame(false, $client->fetch('http://tracker.test/scrape'), 'An empty answer was reported as fetched');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+            'A closed silent peer is a body refusal, not a read timeout');
+        testAssertSame('missing-final-response', $client->error, 'The refusal names the missing response');
+        testAssertSame(false, $client->timed_out, 'EOF is not a read timeout');
+        testAssertSame(0, strpos($client->request(0), 'GET /scrape HTTP/'), 'The peer received the request');
+    },
+    // fread() also answers a timeout as EOF, and the gzip decode ran before
+    // the post-body timeout check, so a body cut short by a silent open peer
+    // was refused as invalid gzip. The same truncated bytes followed by a
+    // close are a complete transfer of a corrupt body and stay a refusal.
+    'a gzip body cut short by a silent open peer is a read timeout' => function () {
+        $client = new Snoopy();
+        $client->read_timeout = 1;
+        $truncated = substr(gzencode(str_repeat('a', 1000)), 0, 10);
+        $started = microtime(true);
+        list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip', $truncated, null, $client, true);
+        $elapsed = microtime(true) - $started;
+        testAssertSame(false, $ok, 'A body the peer never finished was reported as fetched');
+        testAssertSame(-100, $client->status,
+            'A silent open peer is the read timeout, not a gzip refusal (error: ' . $client->error . ')');
+        testAssertSame(true, $client->timed_out, 'The read timeout is recorded');
+        testAssertSame('', $client->error, 'A read timeout carries no body-refusal reason');
+        testAssertSame('', $client->results, 'A truncated body is not handed out');
+        testAssertTrue($elapsed >= 0.9, 'The client gave up before read_timeout expired: ' . $elapsed . ' s');
+    },
+    'gzip bodies with a read timeout set still decode or refuse when the peer closes' => function () {
+        $client = new Snoopy();
+        $client->read_timeout = 1;
+        list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip', gzencode('decoded body'), null, $client);
+        testAssertSame(true, $ok, 'A complete gzip body completes');
+        testAssertSame('decoded body', $client->results, 'A complete gzip body is decoded');
+        testAssertSame(false, $client->timed_out, 'A complete body is not a read timeout');
+        $client = new Snoopy();
+        $client->read_timeout = 1;
+        $truncated = substr(gzencode(str_repeat('a', 1000)), 0, 10);
+        list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip', $truncated, null, $client);
+        testAssertSame(false, $ok, 'A corrupt gzip body was reported as fetched');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status,
+            'A corrupt body the peer finished is a body refusal, not a read timeout');
+        testAssertSame('invalid-or-oversized-gzip', $client->error, 'The refusal names the gzip body');
+        testAssertSame(false, $client->timed_out, 'EOF is not a read timeout');
     },
     'curl redirect ignores proxy CONNECT Set-Cookie on the next origin wire' => function () {
         putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/next');

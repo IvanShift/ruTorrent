@@ -141,6 +141,34 @@ class KinozalCheckImpl
     // Internal answer of a door that did not answer the topic.
     const NEXT_DOOR = 'next-door';
 
+    // How many Kinozal topics one scheduler pass dispatches. The mirrors share
+    // one IP behind one limiter: on 2026-10-16 and 2026-10-18 production asked
+    // every due topic, about forty requests were answered (a login and 39
+    // topics), the next one drew HTTP 429, and the ban lasted hours. A topic
+    // costs one details request, an update adds a download and a login two.
+    // The rest are not dispatched and keep their verdict and chk-time; each
+    // pass starts about one quota further along the foreign rows
+    // (RuTrackerUpdatePass::fairOrder()).
+    const DEFAULT_CYCLE_TOPICS = 25;
+    static private $invalidCycleTopicsReported = false;
+
+    // $rutrackerKinozalCycleTopics, or null for no limit (0).
+    static public function cycleQuota()
+    {
+        $value = $GLOBALS['rutrackerKinozalCycleTopics'] ?? null;
+        if ($value === null) return self::DEFAULT_CYCLE_TOPICS;
+        $quota = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
+        if ($quota === null) {
+            if (!self::$invalidCycleTopicsReported) {
+                self::$invalidCycleTopicsReported = true;
+                ruTrackerChecker::logUnrepairable('config: invalid rutrackerKinozalCycleTopics; using '
+                    . self::DEFAULT_CYCLE_TOPICS . ' topics per pass');
+            }
+            return self::DEFAULT_CYCLE_TOPICS;
+        }
+        return $quota === 0 ? null : $quota;
+    }
+
     // Called once by the scheduler/manual batch, never once per hash.
     static public function resetCycle()
     {
@@ -283,6 +311,19 @@ class KinozalCheckImpl
         return ruTrackerChecker::STE_CANT_REACH_TRACKER;
     }
 
+    // These refusals say nothing about this topic -- a 429, the pause after
+    // one, the login pause, or a cycle already abandoned -- and leave the
+    // stored verdict and its chk-time alone. Stamping CANT_REACH on every
+    // topic the cycle never asked made all of them look asked a minute ago:
+    // on 2026-10-18 the 88 Kinozal topics that had no answer all showed the
+    // last cycle as their check time, and the panel lost the time of their
+    // last real answer. A topic that was asked and failed is still CANT_REACH.
+    static private function notAsked($log)
+    {
+        ruTrackerChecker::logDebug($log);
+        return ruTrackerChecker::STE_UNCHANGED;
+    }
+
     // A download latch skips only later download.php requests. A details
     // latch ends this Kinozal handler's checks for the current process cycle.
     static private function abandonEndpoint($log, $endpoint, $reason)
@@ -345,12 +386,12 @@ class KinozalCheckImpl
     {
         if (KinozalResponse::isRateLimited($client)) {
             self::abandonCycle('rate-limited');
-            return self::cantReach($endpoint . ' attempt: rate limited id=' . $id);
+            return self::notAsked($endpoint . ' attempt: rate limited id=' . $id);
         }
         // No credential POST until the login pause ends: every door shares it.
         if (KinozalResponse::isLoginPaused($client)) {
             self::abandonCycle('login-paused');
-            return self::cantReach($endpoint . ' attempt: login paused id=' . $id);
+            return self::notAsked($endpoint . ' attempt: login paused id=' . $id);
         }
         if (self::errorClass($client) === 'credential-post-failed')
             return self::guestAnswer($endpoint . ' attempt: the credential POST failed: id=' . $id, $endpoint);
@@ -541,9 +582,10 @@ class KinozalCheckImpl
             return ruTrackerChecker::STE_DECLINED;
 
         // Checked after the URL match, so a topic this handler does not own
-        // still falls through to STE_DECLINED exactly as before.
+        // still falls through to STE_DECLINED exactly as before. No request
+        // is sent, so the stored verdict stands (notAsked()).
         if (self::$cycleAbandoned)
-            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            return ruTrackerChecker::STE_UNCHANGED;
 
         $id = $matches["id"];
         // Every request below, loginmgr's and redirect hops included, keeps
@@ -720,4 +762,5 @@ ruTrackerChecker::registerTracker("/kinozal\./",
 	'/' . implode('|', array_map(function ($host) { return preg_quote($host, '/'); }, $kinozalAnnounceHosts)) . '/',
 	"KinozalCheckImpl::download_torrent",
 	$kinozalAnnounceHosts,
-	KinozalCheckImpl::topicPattern());
+	KinozalCheckImpl::topicPattern(),
+	'KinozalCheckImpl::cycleQuota');

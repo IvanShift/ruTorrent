@@ -465,9 +465,9 @@ if ($pacingMode === '--shipped-default') {
                 'The limiter answered the login hop');
             $after = time();
             // From here on no Kinozal request reaches the wire, whoever sends it.
-            testAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
                 KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=8', $hash, null),
-                'The handler reports the topic unreachable');
+                'A 429 concerns the IP, not the topic: its verdict stands');
             foreach (array('https://kinozal.cloudns.nz/browse.php', 'https://kinozal.me/details.php?id=8') as $url) {
                 $client = new Snoopy();
                 testAssertSame(false, $client->fetchComplex($url), 'A later request to ' . $url . ' is refused');
@@ -510,9 +510,9 @@ if ($pacingMode === '--shipped-default') {
                 ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>'),
             ));
             $before = time();
-            testAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
                 KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=11', $hash, null),
-                'The topic stays retryable');
+                'The 429 refused the login, not the topic: its verdict stands');
             $after = time();
             pacingWire(array(array('GET', $login), array('POST', $post)));
             $lines = pacingLoginLine('kinozal.jumpingcrab.com',
@@ -539,9 +539,9 @@ if ($pacingMode === '--shipped-default') {
             // would have reset its strikes: neither may reopen the login.
             pacingExpireRequestPause();
             KinozalCheckImpl::resetCycle();
-            testAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
                 KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=12', $hash, null),
-                'The next cycle reports the topic unreachable');
+                'The next cycle sends nothing and leaves the topic as it was');
             $gate = $pacingRoot . '/open';
             touch($gate);
             try {
@@ -655,9 +655,9 @@ if ($pacingMode === '--shipped-default') {
             // The session is lost again at once: no second POST within the pause.
             (new privateData('KinozalTV'))->remove();
             KinozalCheckImpl::resetCycle();
-            testAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
                 KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=14', $hash, null),
-                'The topic waits for the pause');
+                'The topic keeps its verdict while the login pause runs');
             pacingWire(array(array('GET', $login), array('POST', $post), array('GET', $landing),
                 array('GET', $details)));
         },
