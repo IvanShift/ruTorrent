@@ -10,6 +10,9 @@ class ExternalConfigurationTest extends TestCase
             . ($present ? 'true' : 'false') . ' && $path === "/usr/local/bin/mktorrent"; }');
         $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/external.php'), 1);
         eval('namespace ' . $namespace . '; ' . $source);
+        // externals.php (upstream ca354ca9) maps a backend to its program name.
+        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/externals.php'), 1);
+        eval('namespace ' . $namespace . '; ' . $source);
         return $namespace;
     }
 
@@ -55,6 +58,8 @@ class ExternalConfigurationTest extends TestCase
         $init = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/init.php'), 1);
         $init = str_replace("require_once(__DIR__.'/external.php');", '', $init, $replaced);
         $this->assertEquals(1, $replaced, 'The fixture supplies the real resolver before the real init body');
+        $init = str_replace("require_once( dirname(__FILE__).'/externals.php' );", '', $init, $replaced);
+        $this->assertEquals(1, $replaced, 'The fixture supplies the real program-name map before the real init body');
         foreach (array('torrenttools', 'mktorrent', false) as $creator) {
             $fileUtil::$conf = 'namespace ' . $namespace . '; ' . $conf . '$useExternal = ' . var_export($creator, true) . ';';
             $plugin = array('name'=>'create');
@@ -80,7 +85,7 @@ class ExternalConfigurationTest extends TestCase
         $action = file_get_contents(dirname(__DIR__, 3) . '/plugins/create/action.php');
         $header = preg_replace('/^<\?php/', '', substr($action, 0, strpos($action, 'class recentTrackers')), 1);
         $header = preg_replace('/^require_once\([^;]+;\s*$/m', '', $header, -1, $replaced);
-        $this->assertEquals(4, $replaced, 'The fixture supplies dependencies before the real action configuration');
+        $this->assertEquals(5, $replaced, 'The fixture supplies dependencies before the real action configuration');
         $fallback = substr($action, strpos($action, 'if(!$pathToCreatetorrent'));
         $fallback = substr($fallback, 0, strpos($fallback, 'if($useExternal=="mktorrent")'));
         foreach (array(array('mktorrent', '', '/usr/local/bin/mktorrent'),

@@ -1,14 +1,17 @@
 <?php
 
+require_once( dirname(__FILE__).'/externals.php' );
+
 eval(FileUtil::getPluginConf($plugin["name"]));
 require_once(__DIR__.'/external.php');
 $pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
 
 if($useExternal!==false)
 {
-	if($do_diagnostic && empty($pathToCreatetorrent) && (findEXE($useExternal)==false))
+	$externalEXE = createExternalEXE($useExternal);
+	if($do_diagnostic && empty($pathToCreatetorrent) && (findEXE($externalEXE)==false))
 	{
-		$jResult.="plugin.disable(); plugin.showError('theUILang.createExternalNotFound+\' (".$useExternal.").\'');";
+		$jResult.="plugin.disable(); plugin.showError('theUILang.createExternalNotFound+\' (".$externalEXE.").\'');";
 	}
 	else
 	{

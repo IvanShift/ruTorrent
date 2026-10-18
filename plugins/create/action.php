@@ -3,6 +3,7 @@
 require_once( dirname(__FILE__).'/../_task/task.php' );
 require_once( dirname(__FILE__).'/../../php/Torrent.php' );
 require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
+require_once( dirname(__FILE__).'/externals.php' );
 eval( FileUtil::getPluginConf( 'create' ) );
 require_once(__DIR__.'/external.php');
 $pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
@@ -183,7 +184,7 @@ if($cmd !== null)
 					if(isset($_POST['piece_size']))
 						$piece_size = $_POST['piece_size']*1024;
 					if(!$pathToCreatetorrent || ($pathToCreatetorrent==""))
-						$pathToCreatetorrent = $useExternal;
+						$pathToCreatetorrent = createExternalEXE($useExternal);
 					if($useExternal=="mktorrent")
 						$piece_size = log($piece_size,2);
 					if(isset($_POST['hybrid']))
