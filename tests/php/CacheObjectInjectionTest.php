@@ -234,6 +234,46 @@ class CacheObjectInjectionTest extends TestCase
 		$this->assertTrue($ok === false, 'and the load is a miss');
 	}
 
+	/**
+	 * A root of another type than the caller's value: an array or a scalar
+	 * in an object's file, a scalar in an array's file. Each used to come
+	 * back in place of the caller's value. The root is checked before
+	 * unserialize() and the refusal is logged once. Ported from
+	 * up/w3-cache-expected-root (Novik/ruTorrent#3394), with this fork's
+	 * refusal line.
+	 */
+	public function testARootOfAnotherTypeIsAMiss()
+	{
+		$cases = array(
+			array('injection-target.dat', serialize(array('rows' => array('a'))), new InjectionTargetPayload()),
+			array('injection-target.dat', serialize(42), new InjectionTargetPayload()),
+			array('array-target.dat', serialize('text'), array('__hash__' => 'array-target.dat')),
+		);
+		$log = $this->profilePath . '/cache-root-type.log';
+		foreach ($cases as list($key, $bytes, $target)) {
+			$this->plant($key, $bytes);
+			$expected = is_object($target) ? get_class($target) : 'array';
+			@unlink($log);
+			$GLOBALS['log_file'] = $log;
+			$thrown = '';
+			try {
+				$ok = (new rCache())->get($target);
+			} catch (Throwable $e) {
+				$ok = null;
+				$thrown = ' (threw ' . get_class($e) . ')';
+			} finally {
+				$GLOBALS['log_file'] = '';
+			}
+			$lines = is_file($log) ? file_get_contents($log) : '';
+			$this->assertTrue($ok === false, "{$key} holding {$bytes} is a miss" . $thrown);
+			$this->assertTrue(($expected === 'array') ? is_array($target) : ($target instanceof $expected),
+				"and the caller still holds its {$expected}");
+			$this->assertTrue((substr_count($lines, 'rCache: ' . $key . ' names a different root value; not loaded.') === 1)
+				&& (substr_count($lines, "\n") === 1),
+				"and the refusal is logged once: " . json_encode($lines));
+		}
+	}
+
 	// ---- the file a cache key may name -----------------------------------
 
 	/**

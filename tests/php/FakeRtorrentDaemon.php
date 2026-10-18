@@ -28,6 +28,23 @@ class FakeRtorrentRawReply
 }
 
 /**
+ * Bytes the daemon sends exactly as given, SCGI headers and all, and then
+ * closes the connection: an answer captured from a real rtorrent, or one cut
+ * short the way a daemon that stopped mid-write leaves it. Build it with
+ * FakeRtorrentDaemon::raw(). FakeRtorrentRawReply, by contrast, is framed
+ * with headers whose Content-Length matches the body.
+ */
+class FakeRtorrentWireReply
+{
+	public $bytes;
+
+	public function __construct($bytes)
+	{
+		$this->bytes = $bytes;
+	}
+}
+
+/**
  * One XMLRPC fault reply with a chosen code and text, such as rTorrent's
  * missing-hash answer. Build it with FakeRtorrentDaemon::fault(); responder
  * classes return it from the worker process, so it stays serializable.
@@ -252,11 +269,12 @@ class FakeRtorrentEditReloadReplies
  * the only way to see that the erase happened and the reload did not is to be
  * the daemon on the other end of both.
  *
- * php/xmlrpc.php reads a reply by regex over <value><string> and <value><i8>.
+ * php/xmlrpc.php parses a reply with rXMLRPCResponse (php/xmlrpc_response.php).
  * The SCGI response carries Content-Length headers followed by that XMLRPC
- * body. The request is an SCGI netstring header followed by the XMLRPC body;
- * method names are taken out of the body -- both the single <methodName> form
- * and the members of a system.multicall.
+ * body, except for a raw() entry, which is sent as it is given. The request
+ * is an SCGI netstring header followed by the XMLRPC body; method names are
+ * taken out of the body -- both the single <methodName> form and the members
+ * of a system.multicall.
  */
 class FakeRtorrentDaemon
 {
@@ -276,6 +294,12 @@ class FakeRtorrentDaemon
 	public static function fault($message, $code = -501)
 	{
 		return new FakeRtorrentFault($code, $message);
+	}
+
+	/** A reply entry sent byte for byte, without headers of the daemon's own. */
+	public static function raw($bytes)
+	{
+		return new FakeRtorrentWireReply($bytes);
 	}
 
 	/**
@@ -515,6 +539,8 @@ class FakeRtorrentDaemon
 	{
 		if($values === false)
 			$values = self::fault('fixture failure');
+		if($values instanceof FakeRtorrentWireReply)
+			return $values->bytes;
 		if($values instanceof FakeRtorrentRawReply) {
 			$body = $values->body;
 		} elseif($values instanceof FakeRtorrentFault) {
