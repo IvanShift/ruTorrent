@@ -306,7 +306,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'unavailable dump emits no warning');
         $result = json_decode($out, true);
         $this->assertSame(255, $result['status'], 'unavailable source does not start a task');
-        $this->assertSame(array('Source torrent is unavailable'), $result['errors'],
+        // The merged dump action reports its refusal as the classified reason
+        // and the file it looked for (upstream #3384), not a fixed sentence.
+        $this->assertSame(array(array('reason' => 'dumpErrorNoFile',
+            'file' => $this->directory . '/' . self::INFO_HASH . '.torrent', 'user' => '')), $result['errors'],
             'unavailable-source refusal is visible to the requester');
         $log = file_get_contents($this->directory . '/source.log');
         $this->assertTrue(strpos($log, 'dump: source refused: ' . self::INFO_HASH

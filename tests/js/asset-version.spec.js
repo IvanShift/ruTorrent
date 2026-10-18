@@ -42,7 +42,7 @@ test('the WebUI imports its modules with the deployment key', async () => {
     const {context} = loadContext('abcdef0123456789');
     const imported = [];
     Object.assign(context, {
-        makeContent() {}, theContextMenu: {init() {}}, theTabs: {init() {}},
+        makeContent() {}, theContextMenu: {init() {}}, theTabs: {init() {}}, theStatusTip: {init() {}},
         createCategoryList: () => ({}),
         $: () => ({ready: fn => fn()}),
         importModule: url => {

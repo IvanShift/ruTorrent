@@ -700,7 +700,7 @@ class Torrent
 	 * decoded from a file, a setter is an edit -- a tracker, a comment, the
 	 * private flag -- and an edit is not authorship. Stamping there would
 	 * destroy the only record a .torrent keeps of who made it and when, which
-	 * is also what rtorrent serves as d.get_creation_date. Absent keys are
+	 * is also what rtorrent serves as d.creation_date. Absent keys are
 	 * left absent for the same reason.
 	 * @return void
 	 */

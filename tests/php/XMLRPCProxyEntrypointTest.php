@@ -1201,7 +1201,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'plugins/httprpc/action.php',
 			'plugins/httprpc/settingspolicy.php',
 			'php/xmlrpc_path.php',
-			'php/urlhost.php',
+			'php/utility/urlhost.php',
 			'php/utility/requests.php',
 			'php/xmlrpc_proxy.php',
 			'php/xmlrpc_proxy_native.php',

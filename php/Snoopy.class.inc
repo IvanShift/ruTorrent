@@ -96,7 +96,7 @@ class Snoopy
 	var $error		=	"";			// error messages sent here
 	var $response_code	=	"";			// response code returned from server
 	var $headers		=	array();		// headers returned from server sent here
-	var $maxlength		=	4194304;		// max return data length (body)
+	var $maxlength		=	4194304;		// max return data length (body), see $httpMaxResponseLength
 	var $read_timeout	=	0;			// timeout on read operations, in seconds
 
 	var $timed_out		=	false;			// if a read operation timed out
@@ -151,6 +151,7 @@ class Snoopy
 		global $httpUserAgent;
 		global $httpTimeOut;
 		global $httpUseGzip;
+		global $httpMaxResponseLength;
 		global $httpBlockPrivateNetworks;
 		global $httpPrivateNetworkAllowlist;
 		global $httpVerifyCertificates;
@@ -170,6 +171,11 @@ class Snoopy
 		}
 		if (isset($httpUseGzip))
 			$this->use_gzip = $httpUseGzip;
+		// Anything that is not a positive byte count would refuse every fetch,
+		// which is not what an operator who wrote it meant; the bound the class
+		// ships with stands instead.
+		if (isset($httpMaxResponseLength) && (int)$httpMaxResponseLength > 0)
+			$this->maxlength = (int)$httpMaxResponseLength;
 		if(isset($httpBlockPrivateNetworks))
 			$this->block_private = $httpBlockPrivateNetworks;
 		if(isset($httpPrivateNetworkAllowlist) && is_array($httpPrivateNetworkAllowlist))
@@ -1595,6 +1601,12 @@ class Snoopy
 	// limit. The old external fallback trusted gzip's exit status, which can ignore trailing bytes.
 	protected function decodeGzipBody($encoded)
 	{
+		// A 304 or 204 may carry Content-Encoding: gzip with no body behind it
+		// (RFC 9110 only says a 304 SHOULD NOT), and the RSS plugin reads a
+		// 304 as "unchanged". An empty body is an empty body under its own
+		// status, never a refusal (upstream #3370; curl writes no file then).
+		if($encoded === '' || $encoded === false)
+			return('');
 		$limit = (int)$this->maxlength;
 		if(!is_string($encoded) || strlen($encoded) < 10 || $limit < 0
 			|| strlen($encoded) > $limit || substr($encoded, 0, 2) !== "\x1f\x8b")

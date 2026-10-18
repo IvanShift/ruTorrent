@@ -76,6 +76,59 @@ class ConfigTest extends TestCase
 			'and the report names the setting: ' . var_export($diagnostic, true));
 	}
 
+	/**
+	 * Naming the setting only narrows the hunt to one variable; the operator
+	 * still has to find where it was set to see what it says. The diagnostic
+	 * carries the value it rejected so that reading the log is enough.
+	 */
+	public function testTheDiagnosticNamesTheValueItRejected()
+	{
+		$diagnostic = null;
+		$this->configuredProfileMask('02770', $diagnostic);
+
+		$this->assertTrue(strpos($diagnostic, '02770') !== false,
+			'the rejected value is in the diagnostic: ' . var_export($diagnostic, true));
+	}
+
+	/**
+	 * error_log() writes one entry per call, and the value is read from the
+	 * environment, so it can carry anything. A raw newline in it would split
+	 * the entry in two and let the tail of the value read as a log line of
+	 * its own.
+	 */
+	public function testTheDiagnosticStaysOnOneLineWhateverTheValue()
+	{
+		$diagnostic = null;
+		$this->configuredProfileMask("0770\n0777", $diagnostic);
+
+		// Asserted first: without it the two below pass on a diagnostic that
+		// never mentions the value, which is the thing being tested.
+		$this->assertTrue(strpos($diagnostic, '0770') !== false,
+			'the value reached the diagnostic: ' . var_export($diagnostic, true));
+		$this->assertEquals(1, substr_count($diagnostic, "\n"),
+			'and the entry is still one line: ' . var_export($diagnostic, true));
+		$this->assertTrue(strpos($diagnostic, '\n') !== false,
+			'because the newline is shown escaped rather than written raw');
+	}
+
+	/**
+	 * config.php is loaded by every request, so the diagnostic is written on
+	 * every request for as long as the setting stays wrong. What it writes
+	 * cannot be whatever length the environment happens to carry.
+	 */
+	public function testTheDiagnosticBoundsAnOverlongValue()
+	{
+		$diagnostic = null;
+		$this->configuredProfileMask(str_repeat('7', 4096), $diagnostic);
+
+		// Asserted first, for the same reason as above: a diagnostic that drops
+		// the value entirely is short too.
+		$this->assertTrue(strpos($diagnostic, '7777') !== false,
+			'the value reached the diagnostic: ' . var_export($diagnostic, true));
+		$this->assertTrue(strlen($diagnostic) < 256,
+			'but not whole: ' . strlen($diagnostic) . ' bytes for a 4096-character value');
+	}
+
 	public function testInvalidMaskDiagnosticUsesTheServerLogInsteadOfTheResponse()
 	{
 		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
@@ -101,6 +154,73 @@ class ConfigTest extends TestCase
 			'the configuration diagnostic cannot corrupt an HTTP response body');
 		$this->assertTrue(strpos($diagnostic, 'RU_PROFILE_MASK') !== false,
 			'the invalid mask remains visible in the server error log: ' . var_export($diagnostic, true));
+	}
+
+	public function testInvalidMaskDiagnosticLeavesHttpJsonResponseClean()
+	{
+		$directory = tempnam(sys_get_temp_dir(), 'rut-mask-http-');
+		unlink($directory);
+		mkdir($directory, 0700);
+		$router = $directory . '/router.php';
+		$errorLog = $directory . '/errors.log';
+		$serverLog = $directory . '/server.log';
+		file_put_contents($router, '<?php $_ENV["RU_PROFILE_MASK"] = "02770"; require '
+			. var_export(__DIR__ . '/../../conf/config.php', true)
+			. '; header("Content-Type: application/json"); echo json_encode(array("profileMask" => $profileMask));');
+		$process = null;
+		try {
+			$socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+			if ($socket === false)
+				throw new RuntimeException('Could not reserve a configuration HTTP port: ' . $error);
+			$address = stream_socket_get_name($socket, false);
+			fclose($socket);
+			// exec keeps proc_terminate directed at PHP rather than a shell parent.
+			$command = 'exec ' . escapeshellarg(PHP_BINARY)
+				. ' -d variables_order=GPCS -d error_reporting=-1 -d display_errors=1 -d log_errors=0'
+				. ' -d error_log=' . escapeshellarg($errorLog)
+				. ' -S ' . escapeshellarg($address) . ' ' . escapeshellarg($router);
+			$process = proc_open($command, array(0 => array('pipe', 'r'),
+				1 => array('file', $serverLog, 'a'), 2 => array('file', $serverLog, 'a')), $pipes);
+			if (!is_resource($process))
+				throw new RuntimeException('Could not start the configuration HTTP fixture');
+			fclose($pipes[0]);
+			$ready = false;
+			$deadline = microtime(true) + 5;
+			do {
+				$connection = @stream_socket_client('tcp://' . $address, $errno, $error, 0.1);
+				if ($connection !== false) {
+					fclose($connection);
+					$ready = true;
+					break;
+				}
+				usleep(10000);
+			} while (microtime(true) < $deadline && proc_get_status($process)['running']);
+			if (!$ready)
+				throw new RuntimeException('Configuration HTTP fixture did not become ready: ' . file_get_contents($serverLog));
+			$context = stream_context_create(array('http' => array('timeout' => 5, 'ignore_errors' => true)));
+			$response = fopen('http://' . $address . '/', 'r', false, $context);
+			if ($response === false)
+				throw new RuntimeException('Could not read the configuration HTTP response');
+			$body = stream_get_contents($response);
+			$headers = stream_get_meta_data($response)['wrapper_data'];
+			fclose($response);
+			$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
+			$this->assertTrue(strpos($headers[0], '200 OK') !== false, 'configuration loading keeps HTTP status 200');
+			$this->assertTrue(in_array('Content-Type: application/json', $headers, true),
+				'the configuration diagnostic does not prevent the JSON content type');
+			$this->assertEquals('{"profileMask":511}', $body,
+				'the actual HTTP body contains only JSON with the documented fallback mask');
+			$this->assertTrue(strpos($diagnostic, 'RU_PROFILE_MASK') !== false,
+				'the HTTP request records the invalid mask in the server error log');
+		} finally {
+			if (is_resource($process)) {
+				proc_terminate($process);
+				proc_close($process);
+			}
+			foreach (array($router, $errorLog, $serverLog) as $file)
+				if (is_file($file)) unlink($file);
+			rmdir($directory);
+		}
 	}
 
 	public function testAMaskThatIsSimplyUnsetSaysNothing()

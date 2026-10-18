@@ -12,6 +12,14 @@
 	$httpUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
 	$httpTimeOut = 30;			// in seconds
 	$httpUseGzip = true;		// Advertise and decode gzip over HTTP and HTTPS when zlib is available.
+	// Largest response body Snoopy accepts, in bytes. It is applied to the body
+	// as it arrives and again to a gzip body once inflated; a larger answer is
+	// refused outright rather than truncated, so a caller cannot mistake a
+	// cut-off document for a complete one. Raise it where legitimate downloads
+	// are bigger -- the metainfo of a very large torrent runs to several
+	// megabytes of piece hashes alone -- bearing in mind that an inflated body
+	// is held in memory and so has to fit within PHP's memory_limit.
+	$httpMaxResponseLength = 4194304;	// 4 MiB
 	$httpIP = null;				// IP string. Or null for any.
 	$httpProxy = array
 	(
@@ -118,10 +126,15 @@
 	$profilePath = $readEnvironment('RU_PROFILE_PATH', '../../share');		// Path to user profiles
 	// Environment values are strings; parse the documented octal notation before using it as a file mode.
 	// An unset, empty, or malformed RU_PROFILE_MASK uses the documented 0777 default -- and a mask that
-	// was set but could not be read says so, because the default is wider than any mask worth setting.
+	// was set but could not be read names the value it rejected, because the default is wider than any
+	// mask worth setting and naming only the variable leaves the operator to find where it was set.
+	// json_encode quotes the value and escapes anything non-printable in it, so one error_log() call
+	// stays one entry and trailing whitespace is visible; a mask is four characters, so 32 bounds what
+	// a wrong setting writes to the error log on every request that loads this file.
 	$profileMask = $readEnvironment('RU_PROFILE_MASK', '');
 	if(($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask))
-		error_log('RU_PROFILE_MASK is not three or four octal digits; using the 0777 default.');
+		error_log('RU_PROFILE_MASK is not three or four octal digits: '
+			.json_encode(substr($profileMask, 0, 32), JSON_INVALID_UTF8_SUBSTITUTE).'; using the 0777 default.');
 	$profileMask = preg_match('/^0?[0-7]{3}$/D', $profileMask) ? intval($profileMask, 8) : 0777;
 						// Both Webserver and rtorrent users must have read-write access to it.
 						// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.

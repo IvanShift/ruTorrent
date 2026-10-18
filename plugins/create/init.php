@@ -12,7 +12,7 @@ if($useExternal!==false)
 	}
 	else
 	{
-		if(($useExternal === "transmissioncli") || ($useExternal === "transmissioncreate"))
+		if($useExternal === "transmissioncreate")
 			$jResult.="plugin.hidePieceSize = true;";
 
 		if (($useExternal !== "torrenttools") && ($useInternalHybrid==false))

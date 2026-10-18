@@ -44,6 +44,7 @@ function snoopyCookieHeaderValues($wire)
 // Location instead; $SNOOPY_TEST_SEEN is how the script remembers it did.
 $curlPath = tempnam(sys_get_temp_dir(), 'snoopy-curl-');
 $argsPath = tempnam(sys_get_temp_dir(), 'snoopy-args-');
+$bodyPath = tempnam(sys_get_temp_dir(), 'snoopy-body-');
 $seenPath = sys_get_temp_dir() . '/snoopy-seen-' . getmypid();
 $script = <<<'SH'
 #!/bin/sh
@@ -224,6 +225,164 @@ function snoopyPlainHttpReply($header, $body, $limit = null, $client = null)
         fclose($far);
     }
     return array($result, $client);
+}
+
+// One gzip member holding $size zero bytes, built a megabyte at a time so the
+// suite never holds the inflated size itself: 64 MiB of zeros is about 64 KiB
+// of gzip, which is the shape of answer that inflates past memory_limit.
+function snoopyGzipZeros($size)
+{
+    $deflater = deflate_init(ZLIB_ENCODING_GZIP, array('level' => 9));
+    $chunk = str_repeat("\0", 1048576);
+    $encoded = '';
+    while ($size > 0) {
+        $piece = $size >= strlen($chunk) ? $chunk : substr($chunk, 0, $size);
+        $size -= strlen($piece);
+        $encoded .= deflate_add($deflater, $piece, $size > 0 ? ZLIB_NO_FLUSH : ZLIB_FINISH);
+    }
+    return $encoded;
+}
+
+function snoopyGzipResponse($body)
+{
+    return "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" . $body;
+}
+
+// A loopback PHP server answering prepared gzip bodies on the plain-HTTP path,
+// and a child PHP that fetches from it under a memory_limit of its own, so a
+// body that inflates without bound ends the child and not this suite. The
+// server command starts with exec so proc_terminate reaches PHP rather than
+// the shell that started it. The router names its own directory with
+// __FILE__. Both children get the suite's php-test.ini, as the suite runner
+// passes it, so a developer's system php.ini cannot change what they measure.
+class SnoopyGzipServer
+{
+    const SUITE_INI = __DIR__ . '/../php-test.ini';
+    public $address;
+    private $directory;
+    private $process = null;
+    private $log;
+    private $files = array();
+
+    public function __construct($bodies)
+    {
+        $this->directory = tempnam(sys_get_temp_dir(), 'snoopy-gzip-');
+        unlink($this->directory);
+        mkdir($this->directory, 0700);
+        foreach ($bodies as $name => $body) {
+            $this->write($name . '.gz', $body);
+        }
+        $router = $this->write('router.php', <<<'PHP'
+<?php
+$file = dirname(__FILE__) . '/' . basename($_SERVER['REQUEST_URI']) . '.gz';
+if (!is_file($file)) {
+    http_response_code(404);
+    exit;
+}
+header('Content-Type: application/octet-stream');
+header('Content-Encoding: gzip');
+readfile($file);
+PHP
+        );
+        $this->log = $this->write('server.log', '');
+        try {
+            $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+            testAssertTrue($socket !== false, 'Could not reserve a loopback port: ' . $error);
+            $this->address = stream_socket_get_name($socket, false);
+            fclose($socket);
+            $this->process = proc_open(
+                'exec ' . escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(self::SUITE_INI)
+                . ' -S ' . escapeshellarg($this->address)
+                . ' -t ' . escapeshellarg($this->directory) . ' ' . escapeshellarg($router),
+                array(0 => array('pipe', 'r'), 1 => array('file', $this->log, 'a'), 2 => array('file', $this->log, 'a')),
+                $pipes
+            );
+            testAssertTrue(is_resource($this->process), 'Could not start the loopback server');
+            fclose($pipes[0]);
+            $deadline = microtime(true) + 5;
+            do {
+                $connection = @stream_socket_client('tcp://' . $this->address, $errno, $error, 0.1);
+                if ($connection !== false) {
+                    fclose($connection);
+                    return;
+                }
+                usleep(10000);
+            } while (microtime(true) < $deadline && proc_get_status($this->process)['running']);
+            throw new RuntimeException('The loopback server did not become ready: ' . file_get_contents($this->log));
+        } catch (Throwable $error) {
+            $this->close();
+            throw $error;
+        }
+    }
+
+    private function write($name, $content)
+    {
+        $path = $this->directory . '/' . $name;
+        file_put_contents($path, $content);
+        $this->files[] = $path;
+        return $path;
+    }
+
+    // What the child saw: fetch()'s answer, status, error and the body's
+    // length and digest. A child that died first -- which on an unbounded
+    // inflate is memory_limit ending it with a fatal error -- is reported with
+    // everything it printed.
+    public function fetchInChild($path, $memoryLimit, $maxlength = '')
+    {
+        $script = $this->write('fetch.php', <<<'PHP'
+<?php
+require_once($argv[1]);
+$client = new Snoopy();
+$client->read_timeout = 10;
+if ($argv[3] !== '') {
+    $client->maxlength = (int) $argv[3];
+}
+$fetched = $client->fetch($argv[2]);
+echo json_encode(array(
+    'fetched' => $fetched,
+    'status' => $client->status,
+    'error' => $client->error,
+    'length' => is_string($client->results) ? strlen($client->results) : null,
+    'sha1' => is_string($client->results) ? sha1($client->results) : null,
+    'peak' => memory_get_peak_usage(true),
+));
+PHP
+        );
+        $process = proc_open(
+            array(PHP_BINARY, '-c', self::SUITE_INI, '-d', 'memory_limit=' . $memoryLimit, $script,
+                __DIR__ . '/../../php/Snoopy.class.inc', 'http://' . $this->address . $path, (string) $maxlength),
+            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes
+        );
+        testAssertTrue(is_resource($process), 'Could not start the fetching child');
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($process);
+        $seen = json_decode($stdout, true);
+        if (!is_array($seen)) {
+            throw new RuntimeException(
+                'The child exited ' . $exit . ' without answering; it printed: '
+                . trim($stdout . "\n" . $stderr)
+            );
+        }
+        return $seen;
+    }
+
+    public function close()
+    {
+        if (is_resource($this->process)) {
+            proc_terminate($this->process);
+            proc_close($this->process);
+            $this->process = null;
+        }
+        foreach ($this->files as $file) {
+            @unlink($file);
+        }
+        @rmdir($this->directory);
+    }
 }
 
 function snoopyAssertPrefixRefused($cookie, $redirect = 'https://prefix.test/next')
@@ -2051,6 +2210,279 @@ $tests = array(
             putenv('SNOOPY_TEST_EXIT');
         }
     },
+    // From upstream's tests/php/SnoopyTest.php: the #3379 cases for
+    // $httpMaxResponseLength and the #3370 cases the fork's gzip tests above
+    // do not already close. They run against the fork's own decoder and
+    // socket helper, and name the fork's refusal reasons for an oversized
+    // plain body: oversized-response on the socket path,
+    // unreadable-or-oversized-response on the curl path.
+
+    // $maxlength bounds the compressed body at 4 MiB, and zeros compress
+    // about 1000:1, so what a server sends in 64 KiB inflates to 64 MiB; the
+    // child has 32 MiB, which is where memory_limit used to end the request
+    // with a fatal error. The bound refuses the body instead, as a failed
+    // fetch with a status below 100 and the reason in ->error.
+    'a gzip body inflating past maxlength is refused before it fills memory' => function () {
+        $server = new SnoopyGzipServer(array('zeros' => snoopyGzipZeros(64 * 1048576)));
+        try {
+            $seen = $server->fetchInChild('/zeros', '32M');
+        } finally {
+            $server->close();
+        }
+        testAssertSame(false, $seen['fetched'], 'An oversized body was reported as fetched');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $seen['status'], 'The refusal must carry its own status');
+        testAssertSame('invalid-or-oversized-gzip', $seen['error'], 'The refusal must say why');
+        testAssertSame(0, $seen['length'], 'A refused body must not be handed out in part');
+    },
+    'a small gzip body still decodes whole over plain http' => function () {
+        $body = str_repeat("The quick brown fox jumps over the lazy dog.\n", 100);
+        $server = new SnoopyGzipServer(array('small' => gzencode($body, 9)));
+        try {
+            $seen = $server->fetchInChild('/small', '32M');
+        } finally {
+            $server->close();
+        }
+        testAssertSame(true, $seen['fetched'], 'A small gzip body was refused: ' . $seen['error']);
+        testAssertSame('200', $seen['status'], 'The status is still read off the response');
+        testAssertSame(strlen($body), $seen['length'], 'The body must come back whole');
+        testAssertSame(sha1($body), $seen['sha1'], 'The body must come back unchanged');
+    },
+    // The bound is $maxlength itself, on the inflated size: that many bytes
+    // are a body, one more is not. Over the socket pair, in this process.
+    'the bound is maxlength exactly: that many bytes decode, one more is refused' => function () {
+        $exact = str_repeat('a', 100000);
+        $client = new SnoopySocketReplies();
+        $client->responses = array(
+            snoopyGzipResponse(gzencode($exact, 9)),
+            snoopyGzipResponse(gzencode($exact . 'a', 9)),
+        );
+        $client->maxlength = 100000;
+        testAssertTrue($client->fetch('http://tracker.test/exact'), 'A body of exactly maxlength bytes was refused: ' . $client->error);
+        testAssertSame($exact, $client->results, 'A body of exactly maxlength bytes must come back whole');
+        testAssertSame(false, $client->fetch('http://tracker.test/over'), 'A body one byte past maxlength was accepted');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'The refusal must carry its own status');
+        testAssertSame('invalid-or-oversized-gzip', $client->error, 'The refusal must say why');
+        testAssertSame('', $client->results, 'A refused body must not be handed out in part');
+    },
+    // A body that gzinflate cannot read used to come back as results === false
+    // under a 200, which callers read as an empty page (bulk_magnet and the
+    // RSS plugin then write a 0-byte .torrent and report it downloaded), and
+    // the external-gzip fallback handed back exec()'s output array. It is
+    // refused on the same terms as an oversized one: gzinflate's return value
+    // does not say which, and both become one classified reason on purpose.
+    'a body that is not gzip at all is refused rather than returned as false' => function () {
+        $client = new SnoopySocketReplies();
+        $client->responses = array(snoopyGzipResponse('this is not a gzip member'));
+        testAssertSame(false, $client->fetch('http://tracker.test/plain'), 'An unreadable body was reported as fetched');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'The refusal must carry its own status');
+        testAssertSame('invalid-or-oversized-gzip', $client->error, 'The refusal must say why');
+        testAssertSame('', $client->results, 'A refused body must be empty, not false');
+    },
+    // A 304 or 204 may carry Content-Encoding: gzip with no body behind it
+    // (RFC 9110 only says a 304 SHOULD NOT), and the RSS plugin sends
+    // If-None-Match and reads a 304 as "unchanged". Such an answer is an empty
+    // body under its own status, never a refusal. An empty gzip member is the
+    // same answer, spelled out. Ported from upstream #3370.
+    'a bodyless answer with a gzip header keeps its status and an empty body' => function () {
+        $answers = array(
+            '304' => "HTTP/1.1 304 Not Modified\r\nETag: \"x\"\r\nContent-Encoding: gzip\r\n\r\n",
+            '204' => "HTTP/1.1 204 No Content\r\nContent-Encoding: gzip\r\n\r\n",
+            '200' => "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n",
+            '200 with an empty member' => snoopyGzipResponse(gzencode('', 9)),
+        );
+        $client = new SnoopySocketReplies();
+        $client->responses = array_values($answers);
+        foreach ($answers as $label => $answer) {
+            $status = substr($label, 0, 3);
+            testAssertTrue($client->fetch('http://tracker.test/feed'), 'A bodyless ' . $label . ' with a gzip header was refused: ' . $client->error);
+            testAssertSame($status, (string)$client->status, 'A bodyless ' . $label . ' must keep its status');
+            testAssertSame('', $client->results, 'A bodyless ' . $label . ' must be an empty string, not false');
+        }
+    },
+    // The curl path decodes the same way, off the file curl wrote. The fake
+    // curl copies $SNOOPY_TEST_BODY_FILE into it.
+    'the curl path refuses an oversized gzip body too' => function () use ($bodyPath) {
+        file_put_contents($bodyPath, snoopyGzipZeros(1048576));
+        putenv('SNOOPY_TEST_BODY_FILE=' . $bodyPath);
+        snoopyRespondWith('HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n');
+        try {
+            $client = new Snoopy();
+            $client->maxlength = 100000;
+            testAssertSame(false, $client->fetch('https://tracker.test/feed'), 'An oversized body was reported as fetched');
+            testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'The refusal must carry its own status');
+            testAssertSame('invalid-or-oversized-gzip', $client->error, 'The refusal must say why');
+            testAssertSame('', $client->results, 'A refused body must not be handed out in part');
+        } finally {
+            putenv('SNOOPY_TEST_BODY_FILE');
+            putenv('SNOOPY_TEST_RESPONSE');
+        }
+    },
+    // $httpMaxResponseLength is the operator's handle on the bound. A
+    // conf/config.php that predates it keeps what the class ships with.
+    'the bound is 4 MiB when conf/config.php says nothing' => function () {
+        unset($GLOBALS['httpMaxResponseLength']);
+        $client = new Snoopy();
+        testAssertSame(4194304, $client->maxlength, 'The shipped bound must survive an absent setting');
+    },
+    'the bound is configured from conf/config.php' => function () {
+        $GLOBALS['httpMaxResponseLength'] = 100000;
+        $client = new Snoopy();
+        unset($GLOBALS['httpMaxResponseLength']);
+        testAssertSame(100000, $client->maxlength, 'Configured bound was not picked up');
+    },
+    // Anything that is not a positive byte count would refuse every fetch, and
+    // an operator who wrote one did not mean that, so the shipped bound stands.
+    'a bound that is not a positive byte count is ignored' => function () {
+        foreach (array(0, -1, 'four megabytes') as $value) {
+            $GLOBALS['httpMaxResponseLength'] = $value;
+            $client = new Snoopy();
+            unset($GLOBALS['httpMaxResponseLength']);
+            testAssertSame(
+                4194304,
+                $client->maxlength,
+                'A bound of ' . var_export($value, true) . ' must leave the shipped one in place'
+            );
+        }
+    },
+    // Raising the bound is the point of the setting: a body the shipped 4 MiB
+    // refuses comes back whole once an operator asks for more. Zeros keep the
+    // wire small, so what is measured here is the inflated size.
+    'a raised bound accepts a body the shipped one refuses' => function () {
+        $size = 5 * 1048576;
+        $encoded = snoopyGzipZeros($size);
+        $refusing = new SnoopySocketReplies();
+        $refusing->responses = array(snoopyGzipResponse($encoded));
+        testAssertSame(false, $refusing->fetch('http://tracker.test/big'), 'The shipped bound accepted a 5 MiB body');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $refusing->status, 'The refusal must carry its own status');
+        $GLOBALS['httpMaxResponseLength'] = 8 * 1048576;
+        $raised = new SnoopySocketReplies();
+        $raised->responses = array(snoopyGzipResponse($encoded));
+        unset($GLOBALS['httpMaxResponseLength']);
+        testAssertTrue($raised->fetch('http://tracker.test/big'), 'A body under the raised bound was refused: ' . $raised->error);
+        testAssertSame($size, strlen($raised->results), 'A body under the raised bound must come back whole');
+    },
+    // The bound means one thing whatever the body arrived as: that many bytes
+    // are a document, one more is not, and the one more is refused rather than
+    // quietly dropped -- a caller handed a truncated body under a 200 cannot
+    // tell it from a complete one.
+    'a lowered bound is the same boundary for gzip and for plaintext' => function () {
+        $limit = 50000;
+        $exact = str_repeat('a', $limit);
+        $over = $exact . 'a';
+        $GLOBALS['httpMaxResponseLength'] = $limit;
+        $client = new SnoopySocketReplies();
+        $client->responses = array(
+            "HTTP/1.1 200 OK\r\n\r\n" . $exact,
+            "HTTP/1.1 200 OK\r\n\r\n" . $over,
+            snoopyGzipResponse(gzencode($exact, 9)),
+            snoopyGzipResponse(gzencode($over, 9)),
+        );
+        unset($GLOBALS['httpMaxResponseLength']);
+        foreach (array('plaintext' => 'oversized-response', 'gzip' => 'invalid-or-oversized-gzip') as $encoding => $reason) {
+            testAssertTrue($client->fetch('http://tracker.test/exact'), 'A ' . $encoding . ' body of exactly the bound was refused: ' . $client->error);
+            testAssertSame($exact, $client->results, 'A ' . $encoding . ' body of exactly the bound must come back whole');
+            testAssertSame(false, $client->fetch('http://tracker.test/over'), 'A ' . $encoding . ' body one byte past the bound was accepted');
+            testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'An oversized ' . $encoding . ' body must carry the refusal status');
+            testAssertSame($reason, $client->error, 'An oversized ' . $encoding . ' body must say why it was refused');
+            testAssertSame('', $client->results, 'An oversized ' . $encoding . ' body must not be handed out in part');
+        }
+    },
+    'a lowered bound is the same boundary on the curl path' => function () use ($bodyPath) {
+        $limit = 50000;
+        $exact = str_repeat('a', $limit);
+        putenv('SNOOPY_TEST_BODY_FILE=' . $bodyPath);
+        $GLOBALS['httpMaxResponseLength'] = $limit;
+        try {
+            foreach (array('plaintext' => 'unreadable-or-oversized-response', 'gzip' => 'invalid-or-oversized-gzip') as $encoding => $reason) {
+                $gzipped = $encoding === 'gzip';
+                snoopyRespondWith($gzipped ? 'HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n' : 'HTTP/1.1 200 OK\r\n');
+                file_put_contents($bodyPath, $gzipped ? gzencode($exact, 9) : $exact);
+                $client = new Snoopy();
+                testAssertTrue($client->fetch('https://tracker.test/exact'), 'A ' . $encoding . ' body of exactly the bound was refused on the curl path: ' . $client->error);
+                testAssertSame($exact, $client->results, 'A ' . $encoding . ' body of exactly the bound must come back whole on the curl path');
+                file_put_contents($bodyPath, $gzipped ? gzencode($exact . 'a', 9) : $exact . 'a');
+                $client = new Snoopy();
+                testAssertSame(false, $client->fetch('https://tracker.test/over'), 'A ' . $encoding . ' body one byte past the bound was accepted on the curl path');
+                testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'An oversized ' . $encoding . ' body must carry the refusal status on the curl path');
+                testAssertSame($reason, $client->error, 'An oversized ' . $encoding . ' body must say why it was refused on the curl path');
+                testAssertSame('', $client->results, 'An oversized ' . $encoding . ' body must not be handed out in part on the curl path');
+            }
+        } finally {
+            unset($GLOBALS['httpMaxResponseLength']);
+            putenv('SNOOPY_TEST_BODY_FILE');
+            putenv('SNOOPY_TEST_RESPONSE');
+        }
+    },
+    // curl writes the whole answer to a file of its own, and reading all of
+    // that file back is how an answer far past the bound ends the request with
+    // a memory_limit fatal error before anything can refuse it. One byte past
+    // the bound is all that is read, so the refusal fits in the memory the
+    // bound implies: a child holding 32 MiB refuses a 64 MiB answer.
+    'the curl path refuses a huge answer without reading it into memory' => function () use ($curlPath) {
+        $huge = tempnam(sys_get_temp_dir(), 'snoopy-huge-');
+        $child = tempnam(sys_get_temp_dir(), 'snoopy-child-');
+        $handle = fopen($huge, 'w');
+        ftruncate($handle, 64 * 1048576);
+        fclose($handle);
+        file_put_contents($child, <<<'PHP'
+<?php
+require_once($argv[1]);
+$pathToExternals['curl'] = $argv[2];
+$client = new Snoopy();
+$client->maxlength = 1048576;
+$fetched = $client->fetch('https://tracker.test/huge');
+echo json_encode(array(
+    'fetched' => $fetched,
+    'status' => $client->status,
+    'error' => $client->error,
+    'length' => is_string($client->results) ? strlen($client->results) : null,
+));
+PHP
+        );
+        putenv('SNOOPY_TEST_BODY_FILE=' . $huge);
+        try {
+            $process = proc_open(
+                array(PHP_BINARY, '-c', SnoopyGzipServer::SUITE_INI, '-d', 'memory_limit=32M',
+                    $child, __DIR__ . '/../../php/Snoopy.class.inc', $curlPath),
+                array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+                $pipes
+            );
+            testAssertTrue(is_resource($process), 'Could not start the fetching child');
+            fclose($pipes[0]);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exit = proc_close($process);
+            $seen = json_decode($stdout, true);
+            testAssertTrue(
+                is_array($seen),
+                'The child exited ' . $exit . ' without answering, which is what reading the whole file does; it printed: '
+                . trim($stdout . "\n" . $stderr)
+            );
+            testAssertSame(false, $seen['fetched'], 'A 64 MiB answer was reported as fetched');
+            testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $seen['status'], 'The refusal must carry its own status');
+            testAssertSame('unreadable-or-oversized-response', $seen['error'], 'The refusal must say why');
+            testAssertSame(0, $seen['length'], 'A refused body must not be handed out in part');
+        } finally {
+            putenv('SNOOPY_TEST_BODY_FILE');
+            putenv('SNOOPY_TEST_RESPONSE');
+            @unlink($huge);
+            @unlink($child);
+        }
+    },
+    // The bound covers the bytes on the wire too, so a body already longer
+    // than it is refused without being inflated at all.
+    'a gzip body already past the bound on the wire is refused before inflating' => function () {
+        $GLOBALS['httpMaxResponseLength'] = 50000;
+        $client = new SnoopySocketReplies();
+        $client->responses = array(snoopyGzipResponse(gzencode(str_repeat('a', 80000), 0)));
+        unset($GLOBALS['httpMaxResponseLength']);
+        testAssertSame(false, $client->fetch('http://tracker.test/stored'), 'A body oversized on the wire was accepted');
+        testAssertSame(Snoopy::RESPONSE_BODY_FAILED, $client->status, 'The refusal must carry its own status');
+        testAssertSame('oversized-response', $client->error, 'The refusal must say it was the size, not the gzip');
+        testAssertSame('', $client->results, 'A refused body must not be handed out in part');
+    },
 );
 
 $status = testRunCases($tests, function () {
@@ -2062,5 +2494,6 @@ putenv('SNOOPY_TEST_SEEN');
 @unlink($seenPath);
 @unlink($curlPath);
 @unlink($argsPath);
+@unlink($bodyPath);
 @unlink($_ENV['RU_LOG_FILE']);
 exit($status);

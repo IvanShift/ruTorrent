@@ -210,6 +210,16 @@ class rTorrentSettings
 			else
 			{
 				$cache = new rCache();
+				// Nothing read means nothing known: the first request of a
+				// profile's life, a profile the web server cannot write, a
+				// cache file removed. An unprobed object reports no version
+				// and an empty alias map, and every caller takes it at its
+				// word -- getCommand() answers with the pre-0.9 spelling of
+				// each renamed command, and patchDeprecatedCommand() leaves
+				// out the target argument d.multicall has taken since
+				// 0.16.16. So every entry point probes here, inside the
+				// once-per-process guard above: obtain() builds commands of
+				// its own, and every command asks get() for the settings.
 				if(!$cache->get(self::$theSettings))
 				{
 					if(self::synchronousHook())
@@ -220,10 +230,15 @@ class rTorrentSettings
 					}
 					self::$theSettings->obtain();
 				}
-				else if(self::$theSettings->valueFormat !== self::VALUE_FORMAT && !self::synchronousHook())
+				else if((self::$theSettings->valueFormat !== self::VALUE_FORMAT
+					|| empty(self::$theSettings->iVersion)) && !self::synchronousHook())
 				{
 					// As on a cache miss, but the plugin registrations stored
 					// with the old values stay until getplugins renews them.
+					// A cache that records no version is the same nothing
+					// written down: store() has not always refused a failed
+					// probe, so a profile carried over from an older install
+					// can hold one.
 					$stale = self::$theSettings;
 					self::$theSettings = new rTorrentSettings();
 					if(is_array($stale->plugins))

@@ -282,8 +282,10 @@ class FakeRtorrentDaemon
 	 * $replies is a list, one per request: each entry is the list of values
 	 * the daemon answers that request with, or self::fault(...). It may also
 	 * be a callback accepting the request body and method names for flows
-	 * with dynamic readback keys. A false reply is fault('fixture failure');
-	 * null closes without a reply.
+	 * with dynamic readback keys, or for a caller whose next request depends
+	 * on the answer to this one (rTorrentSettings::obtain()); such a daemon
+	 * answers for as long as it is asked rather than for a fixed count. A
+	 * false reply is fault('fixture failure'); null closes without a reply.
 	 */
 	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = array())
 	{

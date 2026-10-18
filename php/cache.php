@@ -170,7 +170,8 @@ class rCache
 	// inside one second look identical -- and that is the common case here:
 	// replacing a torrent fires three writers within the same second. set()
 	// always publishes through rename(), which gives the file a fresh inode,
-	// so the inode is what actually separates them.
+	// so the inode is what separates them -- until it repeats, which
+	// hasChangedSinceLoad() is for.
 	protected static function stampOf( $name )
 	{
 		clearstatcache(true, $name);

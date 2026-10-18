@@ -11,7 +11,7 @@ class PluginBootstrapConfigTest extends TestCase
             mkdir($this->root.'/'.$directory, 0700, true);
         $repo = dirname(__DIR__, 2);
         foreach(array('php/getplugins.php', 'php/environment.php', 'php/utility/requests.php',
-            'php/urlhost.php', 'conf/config.php') as $file)
+            'php/utility/urlhost.php', 'conf/config.php') as $file)
             copy($repo.'/'.$file, $this->root.'/'.$file);
         // This is the first dependency after the real gate. It proves bootstrap
         // was admitted without running plugins, profiles or daemon requests.

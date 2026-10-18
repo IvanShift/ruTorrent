@@ -51,6 +51,9 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/autotools/util_rt.php'                  => 4,
 		'plugins/check_port/action.php'                  => 2,
 		'plugins/datadir/util_setdir.php'                => 31,
+		// Upstream #3384 (merged 2026-10-18): session and tied-file paths used raw as
+		// file names, escapeshellarg() into the task, JSON::safeEncode() in the reply.
+		'plugins/dump/action.php'                        => 8,
 		'plugins/edit/action.php'                        => 18,
 		'plugins/erasedata/outcome.php'                  => 8,
 		'plugins/erasedata/removewithdata.php'           => 50,

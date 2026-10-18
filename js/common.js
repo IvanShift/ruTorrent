@@ -15,6 +15,20 @@ function $type(obj)
 
 var browser = new browserDetect();
 
+// Two questions the UI asks separately.
+//
+// touchable: can this device deliver touch events? A laptop with a touchscreen
+// answers yes, and still has a mouse and a keyboard.
+//
+// touchPrimary: is touch the way this device is pointed at? That is what to ask
+// wherever the alternative is a hovering cursor or a physical keyboard, and the
+// touchscreen laptop answers no.
+$.extend($.support,
+{
+	touchable: ("ontouchstart" in window) || (navigator.maxTouchPoints > 0),
+	touchPrimary: window.matchMedia("(hover: none) and (pointer: coarse)").matches
+});
+
 $(document).ready(function()
 {
 	var i = document.createElement('p');
@@ -87,7 +101,7 @@ $.fn.extend(
 {
 	mouseclick: function( handler )
 	{
-		var contextMenuPresent = ("oncontextmenu" in document.createElement("foo")) || browser.isFirefox || $.support.touchable;
+		var contextMenuPresent = ("oncontextmenu" in document.createElement("foo"));
 	        return( this.each( function()
 	        {
 	        	if($type(handler)=="function")
@@ -976,20 +990,6 @@ function log(text,noTime,divClass,force) {
 		obj.append(
 			$("<span>").addClass(divClass).text(tm + " " + text)
 		);
-		obj[0].scrollTop = obj[0].scrollHeight;
-		if(iv(theWebUI.settings["webui.log_autoswitch"]) || force)
-			theTabs.show("lcont");
-	}
-}
-
-function logHTML(text,divClass,force)
-{
-	var obj = $("#lcont");
-	if(!divClass)
-		divClass = 'std';
-	if(obj.length)
-	{
-		obj.append( $("<div>").addClass(divClass).html(text).show() );
 		obj[0].scrollTop = obj[0].scrollHeight;
 		if(iv(theWebUI.settings["webui.log_autoswitch"]) || force)
 			theTabs.show("lcont");

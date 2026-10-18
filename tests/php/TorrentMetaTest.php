@@ -467,6 +467,35 @@ class TorrentMetaTest extends TestCase
 			'and the written torrent is the one it came from plus the comment');
 	}
 
+	/** Present fields retain their values and types; missing siblings stay missing. */
+	public function testEditsPreservePartialAndAtypicalAuthorshipFields()
+	{
+		$fields = array(
+			$this->bstr('created by') . $this->bstr(''),
+			$this->bstr('creation date') . 'i0e',
+			$this->bstr('created by') . 'i7e'
+				. $this->bstr('creation date') . $this->bstr('not a timestamp'),
+			$this->bstr('built') . 'i1e'
+				. $this->bstr('created by') . $this->bstr('external')
+				. $this->bstr('creation date') . 'i1234567890e',
+		);
+		foreach ($fields as $authorship) {
+			$info = $this->bstr('info') . $this->infoDictionary();
+			$torrent = new Torrent('d' . $authorship . $info . 'e');
+			$this->assertTrue($torrent->errors() === false,
+				'Bencoded authorship values are accepted without imposing a new schema');
+			$torrent->comment('edited');
+			$written = (string)$torrent;
+			$reread = new Torrent($written);
+			$this->assertTrue($reread->errors() === false, 'The edit reads back without errors');
+			$reread->clear_comment();
+			$this->assertTrue((string)$reread === 'd' . $authorship . $info . 'e',
+				'Editing preserves existing authorship values and leaves absent fields absent');
+			$this->assertTrue($reread->hash_info() === strtoupper(sha1($this->infoDictionary())),
+				'The metadata edit preserves the info dictionary');
+		}
+	}
+
 	/**
 	 * The other half of the same rule: a torrent this class builds from files
 	 * on disk really was created by this class, at that moment, so the
