@@ -30,6 +30,7 @@ $suite->test('every shared Snoopy message classifies to its token', function () 
 // the token it stops producing rather than by a live log nobody reads.
 $suite->test('each of Snoopy own messages has its own token', function () {
     $expected = array(
+        'invalid-url' => 'invalid-url',
         'Invalid protocol "gopher"\n' => 'invalid-protocol',
         'Refusing to fetch: cannot resolve host "nx.invalid".' => 'refused-unresolvable-host',
         'Refusing to fetch: host "a.invalid" resolves to the non-public address 10.0.0.1.'
@@ -56,15 +57,15 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
-    // The original assignments, initializer, shared refusal helper and
-    // second account-port refusal all use classified reasons.
-    strictAssertSame(14, count($assignments[0]),
+    // The original assignments, initializer, shared refusal helper,
+    // second account-port refusal and zero-errno resolver failure are classified.
+    strictAssertSame(15, count($assignments[0]),
         'new direct Snoopy error assignments require classification');
     // Compare distinct reasons, not call sites: redirects and transports may
     // reuse a refusal, while a new reason still needs explicit classification.
     preg_match_all('/refuseResponseBody\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
     $actualRefusals = array_values(array_unique($refusals[1]));
-    $expectedRefusals = array('too-many-interim-responses', 'missing-final-response',
+    $expectedRefusals = array('invalid-url', 'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
         'oversized-response', 'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response', 'request-deadline');
@@ -79,6 +80,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     // otherwise still matches a needle taken from the middle of the message.
     // Body refusal tokens are exact helper arguments.
     $sourceNeedles = array(
+        'invalid-url' => 'invalid-url',
         'invalid-protocol' => '\'Invalid protocol "',
         'refused-unresolvable-host' => '\'Refusing to fetch: cannot resolve host "',
         'refused-non-public-address' => '\'Refusing to fetch: host "',
@@ -112,12 +114,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     strictAssertSame(1, preg_match("/const CREDENTIAL_POST_FAILED\s*=\s*'credential-post-failed';/", $kinozal),
         'the credential POST mark retains the classified token');
     foreach ($sourceNeedles as $token => $needle) {
-        $isBodyRefusal = in_array($token, array(
-            'too-many-interim-responses', 'missing-final-response',
-            'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
-            'oversized-response', 'invalid-or-oversized-gzip',
-            'gzip-decoder-unavailable',
-            'unreadable-or-oversized-response', 'request-deadline'), true);
+        $isBodyRefusal = in_array($token, $expectedRefusals, true);
         $pattern = $isBodyRefusal
             ? '/refuseResponseBody\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
             : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
@@ -131,6 +128,18 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         $seen[$token] = true;
     }
     strictAssertSame(count($expected), count($seen), 'the messages map onto distinct tokens');
+});
+
+// A second DNS sentence is an errno variant, not a new diagnostic category.
+// Keep it separate from the one-message-per-token assertion above.
+$suite->test('the zero errno resolver message retains the existing DNS token', function () {
+    $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
+    strictAssertSame(1, preg_match('/\$this->error\s*=\s*\'dns lookup failure \(0\)\';/', $source),
+        'the zero-errno resolver assignment keeps its classified sentence');
+    strictAssertSame('dns-lookup', RuTrackerFetchError::classify('dns lookup failure (0)'),
+        'a recognised resolver failure keeps its DNS category even without an errno');
+    strictAssertSame('connect-errno', RuTrackerFetchError::classify('connection failed (0)'),
+        'an unclassified zero-errno connection failure does not imply DNS');
 });
 
 // Whitespace is normalised before matching, not after. Snoopy's strings are
@@ -163,8 +172,7 @@ $suite->test('leading, trailing, repeated and embedded whitespace does not chang
     }
 });
 
-// An absent message is evidence in its own right -- Snoopy's header loops and
-// its early URI bail touch only the status -- and both callers render '' by
+// An absent message is evidence in its own right. Both callers render '' by
 // omitting the error= field entirely rather than logging an empty one.
 $suite->test('an empty or non-string message is reported as no message at all', function () {
     strictAssertSame('', RuTrackerFetchError::classify(''), 'the empty string');

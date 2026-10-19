@@ -505,14 +505,25 @@ DSL;
 			false,
 			array($baseDir, 'label', 'slow', 'seed-value', $topic, $forum)
 		);
+		$this->queueReplacementStop($state, $open);
+	}
+
+	private function queueReuseSnapshot($baseDir)
+	{
+		rXMLRPCRequest::queue('d.get_directory_base', true, false, array($baseDir));
+		$this->queueReplacementStop(1, 1);
+	}
+
+	private function queueReplacementStop($state, $open)
+	{
 		rXMLRPCRequest::queue('branch', true, false, function($commands) use ($state, $open) {
 			$matches = array();
-			if($state)
+			$run = $state ? 'started' : ($open ? 'open' : 'stopped');
+			preg_match_all('/' . self::NEW_HASH . '-'.$run.'-\d+/', $commands[0]->params[2], $matches);
+			if(!count($matches[0]) && !$state && !$open)
 				preg_match_all('/' . self::NEW_HASH . '-(?:started|open|stopped)-\d+/', $commands[0]->params[2], $matches);
-			else
-				preg_match_all('/' . self::NEW_HASH . '-(?:started|open|stopped)-\d+/', $commands[0]->params[3], $matches);
 			if(!count($matches[0])) throw new RuntimeException('No marker in replacement branch');
-			return array($state || !$open ? end($matches[0]) : $matches[0][0]);
+			return array(end($matches[0]));
 		});
 	}
 
@@ -552,6 +563,12 @@ DSL;
 	{
 		rXMLRPCRequest::queue('branch', $ok, $fault,
 			$ok && !$fault ? array($sentinel) : array());
+	}
+
+	private function queueReuseRead($marker, $record, $reuse = '')
+	{
+		rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom'),
+			true, false, array($marker, $record, $reuse));
 	}
 
 	// Queue the post-F08 contract directly: non-run metadata is snapshotted,
@@ -620,30 +637,19 @@ DSL;
 
 	private function withDebugLog($body)
 	{
-		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
-		$GLOBALS['rutrackerCheckDebug'] = true;
-		try
-		{
-			$body();
-		}
-		finally
-		{
-			if($savedDebug === null)
-				unset($GLOBALS['rutrackerCheckDebug']);
-			else
-				$GLOBALS['rutrackerCheckDebug'] = $savedDebug;
-		}
+		$this->withDebugSetting(true, $body);
 	}
 
-	// The other half of withDebugLog(), and the only setting under which the
-	// two log channels are distinguishable: conf.php's shipped
-	// $rutrackerCheckDebug = false. logDebug() writes nothing here, so
-	// anything that still reaches FileUtil::toLog() came out the ungated
-	// channel -- which is what "an operator is told" means in production.
+	// A refusal is operator-visible only when it also logs with debug disabled.
 	private function withoutDebugLog($body)
 	{
+		$this->withDebugSetting(false, $body);
+	}
+
+	private function withDebugSetting($enabled, $body)
+	{
 		$savedDebug = isset($GLOBALS['rutrackerCheckDebug']) ? $GLOBALS['rutrackerCheckDebug'] : null;
-		$GLOBALS['rutrackerCheckDebug'] = false;
+		$GLOBALS['rutrackerCheckDebug'] = $enabled;
 		try
 		{
 			$body();
@@ -683,6 +689,7 @@ DSL;
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array(
 			self::PLUGIN_MARKER, $state, $open, self::OLD_HASH . '-started-1787587200'));
+		$this->queueReuseRead(self::PLUGIN_MARKER, self::OLD_HASH . '-started-1787587200');
 		if($oldPresence === true)
 			rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
 		elseif($oldPresence === false)
@@ -1346,24 +1353,6 @@ DSL;
 			strictAssertTrue(strpos($lines[0], $case['not']) === false,
 				$case['label'] . ': and must not also claim the other outcome: ' . $lines[0]);
 		}
-	}
-
-	public function testPublishedCleanupSurvivesActivationFailure()
-	{
-		$this->resetFakes();
-		$base = sys_get_temp_dir() . '/rut-check-activation-published-' . bin2hex(random_bytes(5));
-		mkdir($base, 0777, true);
-		file_put_contents($base . '/old.mkv', 'old');
-		$this->stageHappyReplacement($base, 1, 1, array('name' => 'old.mkv'), array('name' => 'new.mkv'));
-		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED);
-		try
-		{
-			strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH), 'activation uncertainty remains post-commit success');
-			strictAssertSame(1, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')), 'the durable job remains published');
-			strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'published cleanup is kicked despite activation uncertainty');
-			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom')), 'activation failure retains both transaction keys');
-		}
-		finally { strictRemoveTree($base); }
 	}
 
 	public function testCleanupKickFailureDoesNotRollbackCommittedReplacement()
@@ -2125,7 +2114,268 @@ DSL;
 		strictAssertSame(null, rTorrent::$lastSend, 'a preflight conflict must not enqueue a load');
 	}
 
-	public function testRunningUnmarkedSameHashOccupantIsNeverAdopted()
+	public function testExistingCurrentTorrentUsesTheOrdinaryCleanupWithoutReloadOrActivation()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir().'/rut-check-reuse-'.bin2hex(random_bytes(5));
+		mkdir($base, 0700, true);
+		mkdir($base.'/old');
+		mkdir($base.'/new');
+		file_put_contents($base.'/old/film.mkv', 'old');
+		file_put_contents($base.'/new/film.mkv', 'new');
+		$comment = 'https://nnmclub.to/forum/viewtopic.php?t=123';
+		$old = new Torrent(array('hash'=>self::OLD_HASH, 'comment'=>$comment,
+			'info'=>array('name'=>'film.mkv', 'length'=>3)));
+		$new = new Torrent(array('hash'=>self::NEW_HASH, 'comment'=>$comment,
+			'info'=>array('name'=>'film.mkv', 'length'=>3)));
+		rTorrent::$source = $new;
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 1, 1, ''));
+		rXMLRPCRequest::queue(array('d.get_local_id', 'd.is_meta', 'd.get_directory_base',
+			'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom'),
+			true, false, array(self::LOCAL_ID, 0, $base.'/new', '', '', '', '', '', ''));
+		$this->queueReuseSnapshot($base.'/old');
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+		try {
+			strictAssertSame(null, ruTrackerChecker::createTorrent($new, self::OLD_HASH, $old),
+				'the already loaded current version retires its predecessor');
+			strictAssertSame(null, rTorrent::$lastSend, 'reuse never loads the successor again');
+			$prepared = $this->erasedataCalls('erasedataPrepareObsoleteCleanup');
+			strictAssertSame(1, count($prepared), 'reuse enters the ordinary durable cleanup producer');
+			strictAssertSame($base.'/old/film.mkv', $prepared[0]['arguments'][5][0]['path'],
+				'the old copy is obsolete even when the other directory has the same relative name');
+			strictAssertSame(array('erasedataCleanupOtherOwnerSnapshot', 'erasedataPrepareObsoleteCleanup',
+				'erasedataArmObsoleteCleanup', 'erasedataPublishObsoleteCleanup', 'erasedataKickCollector'),
+				array_column(ErasedataFake::$calls, 'name'), 'the existing cleanup lifecycle is reused');
+			$erases = $this->branchRequestsContaining('$d.erase=');
+			strictAssertSame(1, count($erases), 'only the predecessor erase is sent');
+			strictAssertSame(self::OLD_HASH, $erases[0]['commands'][0]->params[0], 'the erase targets OLD');
+			$saves = $this->branchRequestsContaining('d.save_full_session=');
+			strictAssertSame(1, count($saves), 'reuse requests the ordinary queued session save once');
+			strictAssertSame(self::NEW_HASH, $saves[0]['commands'][0]->params[0], 'the save targets the claimed successor');
+			strictAssertTrue(array_search($saves[0], rXMLRPCRequest::$requests, true)
+				< array_search($erases[0], rXMLRPCRequest::$requests, true), 'the save is requested before OLD erase');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')), 'NEW is not activated');
+			strictAssertSame(0, count($this->branchRequestsContaining('$d.open=')), 'NEW is not opened');
+			strictAssertTrue(is_file($base.'/new/film.mkv'), 'the successor payload remains untouched');
+		} finally { strictRemoveTree($base); }
+	}
+
+	public function testOrdinaryReplacementDoesNotRequestAReuseSessionSave()
+	{
+		$this->resetFakes();
+		$this->stageHappyReplacement(sys_get_temp_dir());
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+		strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+			'ordinary loading still follows the existing replacement path');
+		strictAssertNoRpcCommand('d.save_full_session', 'ordinary load retains its own session-save mechanism');
+	}
+
+	public function testReusedReplacementDisposalClearsOnlyTheExactReuseTuple()
+	{
+		$this->resetFakes();
+		$record = self::OLD_HASH.'-started-1787587200';
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+		strictAssertSame(RuTrackerAtomicOwnership::ACTED, ruTrackerChecker::discardReplacement(self::NEW_HASH, self::PLUGIN_MARKER, $record),
+			'a reused successor is released instead of discarded');
+		$branches = rXMLRPCRequest::requestsFor('branch');
+		strictAssertSame(1, count($branches), 'disposal uses one guarded daemon operation');
+		$params = $branches[0]['commands'][0]->params;
+		strictAssertSame(self::NEW_HASH, $params[0], 'the operation targets the successor');
+		require_once(__DIR__.'/../../php/RtorrentCommandParser.php');
+		$release = RtorrentCommandParser::commands($params[1]);
+		strictAssertTrue(in_array('equal=d.get_custom=chk-reuse,cat='.self::PLUGIN_MARKER,
+			$release[0]['args'], true), 'the release requires the exact reused generation');
+		$fallback = RtorrentCommandParser::commands($params[3]);
+		strictAssertSame('branch', $fallback[0]['name'], 'ordinary disposal has a separate condition');
+		$ordinary = RtorrentCommandParser::commands($fallback[0]['args'][0]);
+		strictAssertTrue(in_array('equal=d.get_custom=chk-reuse,cat=', $ordinary[0]['args'], true),
+			'the ordinary erase branch explicitly requires an empty reuse claim');
+	}
+
+	private function queueReusedReplacement($base, $claim = RuTrackerAtomicOwnership::SENTINEL_ACTED)
+	{
+		$comment = 'https://nnmclub.to/forum/viewtopic.php?t=123';
+		$old = new Torrent(array('hash'=>self::OLD_HASH, 'comment'=>$comment,
+			'info'=>array('name'=>'old.mkv', 'length'=>3)));
+		$new = new Torrent(array('hash'=>self::NEW_HASH, 'comment'=>$comment,
+			'info'=>array('name'=>'new.mkv', 'length'=>3)));
+		rTorrent::$source = $new;
+		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 0, 0, ''));
+		rXMLRPCRequest::queue(array('d.get_local_id', 'd.is_meta', 'd.get_directory_base',
+			'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom'),
+			true, false, array(self::LOCAL_ID, 0, $base, '', '', '', '', '', ''));
+		$this->queueReuseSnapshot($base);
+		$this->queueAtomic($claim, $claim !== RuTrackerAtomicOwnership::UNKNOWN);
+		return array($old, $new);
+	}
+
+	public function testReusedSuccessorNeedsOnlyTheOldPayloadDirectory()
+	{
+		$this->resetFakes();
+		list($old, $new) = $this->queueReusedReplacement(sys_get_temp_dir());
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+		strictAssertSame(null, ruTrackerChecker::createTorrent($new, self::OLD_HASH, $old),
+			'reuse can finish without reading OLD metadata that NEW keeps independently');
+		strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_directory_base')),
+			'OLD contributes only its payload directory for cleanup');
+		foreach(array('d.views', 'view_list', self::SNAPSHOT_KEY) as $key)
+			strictAssertSame(array(), rXMLRPCRequest::requestsFor($key),
+				'reuse does not depend on unused predecessor inheritance: '.$key);
+		strictAssertSame(null, rTorrent::$lastSend, 'the existing successor is retained in place');
+	}
+
+	public function testReusedReplacementRefusalRestoresOnlyOldAndNeverDisposesNew()
+	{
+		foreach(array('prepare', 'arm', 'erase', 'claim-unknown', 'claim-raced') as $failure)
+		{
+			$this->resetFakes();
+			$base = sys_get_temp_dir().'/rut-check-reuse-refusal-'.bin2hex(random_bytes(5));
+			mkdir($base, 0700, true);
+			file_put_contents($base.'/old.mkv', 'old');
+			file_put_contents($base.'/new.mkv', 'new');
+			$claim = $failure === 'claim-unknown' ? RuTrackerAtomicOwnership::UNKNOWN
+				: ($failure === 'claim-raced' ? RuTrackerAtomicOwnership::SENTINEL_SKIPPED
+					: RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			list($old, $new) = $this->queueReusedReplacement($base, $claim);
+			if($failure === 'prepare') ErasedataFake::$prepareResult = false;
+			if($failure === 'arm') ErasedataFake::$armResult = false;
+			if($failure === 'erase') {
+				$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_SKIPPED);
+				rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+			}
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED); // OLD restore
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED); // exact release
+			try {
+				strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent($new, self::OLD_HASH, $old),
+					$failure.': the failed operation remains retryable');
+				strictAssertSame(null, rTorrent::$lastSend, $failure.': NEW is never reloaded');
+				$starts = $this->branchRequestsContaining('$d.start=');
+				strictAssertSame(1, count($starts), $failure.': only OLD is restored');
+				strictAssertSame(self::OLD_HASH, $starts[0]['commands'][0]->params[0], $failure.': restore targets OLD');
+				foreach(rXMLRPCRequest::requestsFor('branch') as $request) {
+					$params = $request['commands'][0]->params;
+					if($params[0] !== self::NEW_HASH) continue;
+					strictAssertTrue(strpos($params[2], '$d.erase=') === false
+						&& strpos($params[2], '$d.start=') === false && strpos($params[2], '$d.open=') === false,
+						$failure.': exact reused branch only changes ownership keys');
+				}
+				strictAssertSame(0, count($this->erasedataCalls('erasedataPublishObsoleteCleanup')),
+					$failure.': no cleanup is published before OLD commit');
+			} finally { strictRemoveTree($base); }
+		}
+	}
+
+	public function testReusedReplacementPublishFailureKeepsRecoveryWithoutActivatingNew()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir().'/rut-check-reuse-publish-'.bin2hex(random_bytes(5));
+		mkdir($base, 0700, true);
+		file_put_contents($base.'/old.mkv', 'old');
+		file_put_contents($base.'/new.mkv', 'new');
+		list($old, $new) = $this->queueReusedReplacement($base);
+		ErasedataFake::$publishResult = false;
+		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+		try {
+			strictAssertSame(null, ruTrackerChecker::createTorrent($new, self::OLD_HASH, $old),
+				'OLD commit remains successful while the durable cleanup awaits recovery');
+			strictAssertSame(3, count(rXMLRPCRequest::requestsFor('branch')),
+				'only OLD stop, NEW claim and OLD erase run; recovery keys remain');
+			strictAssertSame(null, rTorrent::$lastSend, 'no load or activation replaces the independent NEW');
+			strictAssertNoRpcCommand('d.start', 'publish failure never starts NEW');
+		} finally { strictRemoveTree($base); }
+	}
+
+	public function testMarkedReusedReplacementReconcilesWithoutRestaging()
+	{
+		foreach(array(true, false, null) as $oldPresence)
+		{
+			$this->resetFakes();
+			$record = self::OLD_HASH.'-started-1787587200';
+			$this->queueExistingGeneration(0, 0, $oldPresence);
+			rXMLRPCRequest::$responses['d.get_custom|d.get_custom|d.get_custom'] = array();
+			$this->queueReuseRead(self::PLUGIN_MARKER, $record, self::PLUGIN_MARKER);
+			if($oldPresence === true) $this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			if($oldPresence !== null) $this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+			strictAssertSame($oldPresence === false ? null : ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+				'only a confirmed old absence closes the reused transaction as committed');
+			strictAssertSame(null, rTorrent::$lastSend, 'reconciliation never restages an existing successor');
+			strictAssertNoRpcCommand('d.erase', 'reconciliation never discards NEW');
+			foreach($this->branchRequestsContaining('$d.start=') as $request)
+				strictAssertSame(self::OLD_HASH, $request['commands'][0]->params[0], 'only a stranded OLD may be restored');
+		}
+	}
+
+	public function testExistingSourceNeedsTheCurrentHashAndTopicBeforeAnyStop()
+	{
+		foreach(array('hash', 'topic', 'empty-topic', 'missing') as $failure)
+		{
+			$this->resetFakes();
+			$comment = 'https://nnmclub.to/forum/viewtopic.php?t=123';
+			$new = new Torrent(array('hash'=>self::NEW_HASH, 'comment'=>$comment,
+				'info'=>array('name'=>'new.mkv', 'length'=>1)));
+			rTorrent::$source = $failure === 'missing' ? false : new Torrent(array(
+				'hash'=>$failure === 'hash' ? self::OLD_HASH : self::NEW_HASH,
+				'comment'=>$failure === 'topic' ? $comment.'4' : ($failure === 'empty-topic' ? '' : $comment),
+				'info'=>array('name'=>'new.mkv', 'length'=>1)));
+			rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
+			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false, array('', 1, 1, ''));
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent($new, self::OLD_HASH),
+				$failure.': unproved installed metadata refuses reuse');
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')), $failure.': no stop or claim is sent');
+		}
+	}
+
+	public function testExistingSuccessorRecoveryOrMetadataWorkRefusesReuseBeforeStop()
+	{
+		foreach(array(0=>'invalid-identity', 1=>1, 3=>'owned-replacing', 4=>self::OLD_HASH,
+			5=>self::OLD_HASH, 6=>'123', 7=>'123', 8=>self::PLUGIN_MARKER) as $slot=>$value)
+		{
+			$this->resetFakes();
+			list($old, $new) = $this->queueReusedReplacement(sys_get_temp_dir());
+			$key = 'd.get_local_id|d.is_meta|d.get_directory_base|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom';
+			rXMLRPCRequest::$responses[$key][0][2][$slot] = $value;
+			strictAssertSame(ruTrackerChecker::STE_ERROR, ruTrackerChecker::createTorrent($new, self::OLD_HASH, $old),
+				'pending ownership, metadata or invalid identity refuses slot '.$slot);
+			strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')), 'the predecessor has not been stopped');
+		}
+	}
+
+	public function testReusedSuccessorHardlinkInAnotherDirectoryProtectsTheOldName()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir().'/rut-check-reuse-alias-'.bin2hex(random_bytes(5));
+		mkdir($base.'/old', 0700, true);
+		mkdir($base.'/new');
+		file_put_contents($base.'/old/old.mkv', 'shared');
+		link($base.'/old/old.mkv', $base.'/new/new.mkv');
+		try {
+			$old = new Torrent(array('hash'=>self::OLD_HASH, 'info'=>array('name'=>'old.mkv', 'length'=>6)));
+			$new = new Torrent(array('hash'=>self::NEW_HASH, 'info'=>array('name'=>'new.mkv', 'length'=>6)));
+			$entries = strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array($old, $new, $base.'/old',
+				self::OLD_HASH, self::NEW_HASH, self::PLUGIN_MARKER, self::OLD_HASH.'-started-1787587200', $base.'/new'));
+			strictAssertSame(null, $entries, 'the actual successor inode protects the old alias across directories');
+		} finally { strictRemoveTree($base); }
+	}
+
+	public function testReplacementStopRefusesAReusedSuccessorInEitherIdentityMode()
+	{
+		foreach(array(null, self::LOCAL_ID) as $localId)
+		{
+			$command = strictInvoke('ruTrackerChecker', 'replacementStopCommand',
+				array(self::OLD_HASH, self::NEW_HASH, 1787587200, null, $localId));
+			strictAssertTrue(strpos($command->params[1], 'd.get_custom=chk-reuse,cat=') !== false,
+				'OLD cannot be stopped while another replacement protects it as reused NEW');
+			strictAssertSame('cat=stale-generation', $command->params[3], 'a refused stop performs no mutation');
+		}
+	}
+
+	public function testRunningUnmarkedSameHashWithoutTrustedSourceIsNotAdopted()
 	{
 		$this->resetFakes();
 		Torrent::$fixtures['new-torrent'] = array('hash' => self::NEW_HASH,
@@ -2247,6 +2497,7 @@ DSL;
 		// with both halves of the ownership proof still naming this predecessor.
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 1, 1, $oldHash . '-started-1786899620'));
+		$this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-started-1786899620');
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
 
@@ -2273,6 +2524,7 @@ DSL;
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 0, 1, $oldHash . '-open-1786899620'));
+		$this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-open-1786899620');
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
 
@@ -2297,6 +2549,7 @@ DSL;
 		rXMLRPCRequest::queue('d.hash', true, false, array(self::NEW_HASH));
 		rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 			array(self::PLUGIN_MARKER, 0, 0, $oldHash . '-started-1786899620'));
+		$this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-started-1786899620');
 		rXMLRPCRequest::queue('d.hash', true, false, array($oldHash));
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueViews();
@@ -2333,6 +2586,7 @@ DSL;
 			// The staged copy carries the dead run's record: staged while STARTED.
 			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 				array(self::PLUGIN_MARKER, 0, 0, $oldHash . '-started-1786899620'));
+			$this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-started-1786899620');
 			rXMLRPCRequest::queue('d.hash', true, false, array($oldHash));
 			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 			$this->queueViews();
@@ -2363,7 +2617,7 @@ DSL;
 				$command = $stops[0]['commands'][0];
 				strictAssertSame($oldHash, $command->params[0],
 					'the daemon-side branch targets the predecessor');
-				strictAssertTrue(strpos($command->params[3], 'chk-replacing,' . self::NEW_HASH . '-started-') !== false,
+				strictAssertTrue(strpos($command->params[2], 'chk-replacing,' . self::NEW_HASH . '-started-') !== false,
 					'the stopped branch must carry the RECORDED run state, not the dead run\'s own stop');
 		});
 	}
@@ -3077,14 +3331,18 @@ DSL;
 		$open = self::NEW_HASH . '-open-1700000000';
 		$stopped = self::NEW_HASH . '-stopped-1700000000';
 		strictAssertSame('branch', $command->command, 'the commit is one top-level branch command');
+		strictAssertSame('equal=d.get_custom=chk-reuse,cat=', $command->params[1],
+			'the outer guard protects an existing successor before selecting run state');
+		require_once(__DIR__.'/../../php/RtorrentCommandParser.php');
+		$stateBranch = RtorrentCommandParser::commands($command->params[2]);
+		strictAssertSame('branch', $stateBranch[0]['name'], 'the guarded body selects the live state');
 		strictAssertSame(array(
-			self::OLD_HASH,
 			'd.get_state=',
 			'cat="$d.set_custom=chk-replacing,' . $started . '",$d.stop=,$d.close=,' . $started,
 			'branch=d.is_open=,"cat=\"$d.set_custom=chk-replacing,' . $open
 				. '\",$d.stop=,$d.close=,' . $open . '","cat=\"$d.set_custom=chk-replacing,'
 				. $stopped . '\",$d.stop=,$d.close=,' . $stopped . '"',
-		), $command->params,
+		), $stateBranch[0]['args'],
 			'the selected branch writes its exact marker before stop/close and returns that marker');
 	}
 
@@ -3316,6 +3574,29 @@ DSL;
 			strictAssertSame(0, count(rXMLRPCRequest::$requests),
 				$label . ' must not touch rTorrent');
 		}
+	}
+
+	public function testUndisownableReplacementIsRefusedBeforeStoppingThePredecessor()
+	{
+		$this->resetFakes();
+		$this->stageTorrents();
+		$this->queueTransactionStart(sys_get_temp_dir());
+		// Model the helper's explicit compatibility refusal if Torrent changes
+		// the field behind getFileName(); no user file may be handed to sendTorrent.
+		$parsed = new class(array('hash' => CheckerTest::NEW_HASH,
+			'info' => array('name' => 'unchanged.mkv', 'length' => 1))) extends Torrent {
+			public function getFileName() { return '/owned-by-user.torrent'; }
+		};
+		$this->withoutDebugLog(function() use ($parsed) {
+			strictAssertSame(ruTrackerChecker::STE_ERROR,
+				ruTrackerChecker::createTorrent($parsed, self::OLD_HASH),
+				'an object that still claims a user file is refused');
+		});
+		strictAssertSame(null, rTorrent::$lastSend, 'the user-owned source never reaches the loader');
+		strictAssertSame(array(), rXMLRPCRequest::requestsFor('branch'),
+			'a local metainfo refusal cannot strand the predecessor stopped');
+		strictAssertOneLogMatching(FileUtil::$log, 'replacement still claims a file on disk',
+			'the compatibility refusal stays visible without debug logging');
 	}
 
 	// A replacement harvested through rTorrent::getSource() arrives backed by
@@ -3801,7 +4082,8 @@ DSL;
 			// That race is the state store's, and StateTest proves it with two
 			// real processes released together on a barrier; re-staging it
 			// here would prove the same thing twice and more slowly.
-			strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, time()));
+			$owner = strictInvoke('ruTrackerChecker', 'claimCheck', array(self::OLD_HASH, time()));
+			strictAssertTrue(is_string($owner), 'the first worker holds an explicit owner token');
 
 			strictAssertSame(true, ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, time(), ''),
 				'standing down is not a failed check');
@@ -3809,7 +4091,7 @@ DSL;
 				'the INPROGRESS lock is not written over the holder');
 
 			// Released, the next caller runs normally and leaves no claim.
-			strictInvoke('ruTrackerChecker', 'releaseCheck', array(self::OLD_HASH));
+			strictInvoke('ruTrackerChecker', 'releaseCheck', array(self::OLD_HASH, $owner));
 			rXMLRPCRequest::reset();
 			self::queueStateRead( true, false,
 				array((string) ruTrackerChecker::STE_UPTODATE, (string) time(), ''));
@@ -3973,6 +4255,27 @@ DSL;
 		strictInvoke('ruTrackerChecker', 'releaseCheck', array(self::OLD_HASH, $token));
 		strictAssertSame(array(), RuTrackerState::load('meta-claims'),
 			'the holder releasing its own claim leaves nothing behind');
+	}
+
+	public function testWorkerCannotReleaseAClaimWithoutItsExactOwnerToken()
+	{
+		$token = str_repeat('a', 16);
+		foreach(array(
+			'legacy timestamp' => 1000,
+			'missing token' => array('since' => 1000),
+			'empty token' => array('since' => 1000, 'token' => ''),
+			'malformed token' => array('since' => 1000, 'token' => array()),
+			'foreign owner' => array('since' => 1000, 'token' => str_repeat('b', 16)),
+		) as $label => $entry)
+		{
+			$this->resetFakes();
+			$claims = array(self::OLD_HASH => $entry);
+			strictAssertSame(true, RuTrackerState::save('meta-claims', $claims),
+				$label.': the fixture claim was persisted');
+			ruTrackerChecker::releaseCheckForWorker(self::OLD_HASH, $token);
+			strictAssertSame($claims, RuTrackerState::load('meta-claims'),
+				$label.': an old worker cannot prove ownership and must retain the claim');
+		}
 	}
 
 	public function testWorkerReleaseRefusesAnythingThatIsNotAnOwnerToken()
@@ -6658,7 +6961,7 @@ DSL;
 
 	// And it is retained indefinitely. An unreadable timestamp supplies no
 	// owner generation or lease to observe, so a contender cannot reclaim it.
-	// A token holder or an explicit untokened release can clear it. Reported
+	// Only its exact token holder can clear it automatically. Reported
 	// through logDebug(), gated on conf.php's
 	// shipped $rutrackerCheckDebug = false, that permanent wedge said nothing
 	// at all: the fault two earlier rounds of this work were rejected for.
@@ -7122,6 +7425,7 @@ DSL;
 			rXMLRPCRequest::queue(self::PREFLIGHT_KEY_COMMANDS, true, false,
 				array(self::PLUGIN_MARKER, $runState[0], $runState[1],
 					$oldHash . '-started-1786899620'));
+			$this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-started-1786899620');
 			// Everything the coercive reading WOULD have gone on to consume is
 			// queued and waiting, so a run state read as 0/1 by intval() really
 			// does reach the atomic clear/activate below. Reaching it is the

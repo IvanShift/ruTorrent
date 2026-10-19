@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/../../../plugins/rutracker_check/runstate.php');
 
 /**
  * The dialog reports predictable move refusals before starting a detached
@@ -59,12 +60,12 @@ class SetDirActionCollisionTest extends TestCase
 	 * Posts a "set data directory" to action.php and reports what came back
 	 * and what rTorrent was asked for.
 	 *
-	 * $occupy are names already standing under the destination, $isOpen is the
-	 * run state rTorrent reports, and $datadir defaults to a directory that is
+	 * $occupy are names already standing under the destination, $isOpen says
+	 * whether rTorrent has the download open, and $datadir defaults to a directory that is
 	 * not where the data already is.
 	 */
 	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1,
-		$rawEquals = false, $malformed = false, $afterStart = array(0, 1))
+		$rawEquals = false, $malformed = false, $afterStart = array(0, 1), $checkerCustoms = array())
 	{
 		$this->removeTree($this->base);
 		if ($this->daemon !== null)
@@ -107,7 +108,10 @@ class SetDirActionCollisionTest extends TestCase
 			// The request read the claim ABI above; the change does not read it
 			// again. A restored start is followed by its hash check outcome.
 			$receipt = 'token:1|1|1|1|local-1';
-			$replies = array_merge($replies, array(array_fill(0, 9, ''),
+			$ownership = array(''); // download label precedes the shared ownership keys
+			foreach (RuTrackerAtomicOwnership::ownershipKeys() as $key)
+				$ownership[] = isset($checkerCustoms[$key]) ? $checkerCustoms[$key] : '';
+			$replies = array_merge($replies, array($ownership,
 				array('absent'), array($isOpen, 'local-1', $this->base . '/src'),
 				array('absent'), array($receipt), array($this->base . '/src'),
 				array(1), array(1), array('done|S|' . $receipt), array(1), $afterStart,
@@ -126,7 +130,7 @@ class SetDirActionCollisionTest extends TestCase
 			. '$r = new ReflectionClass("rTorrentSettings"); $s = $r->newInstanceWithoutConstructor();'
 			. ' $s->iVersion = 0x1018; $s->aliases = array(); $s->directory = "/";'
 			. ' $s->linkExist = true; $p = $r->getProperty("theSettings");'
-			. ' $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
+			. ' if (PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
 			. '$scgi_host = "127.0.0.1"; $scgi_port = ' . $this->daemon->port() . ';'
 				. ' $rpcTimeOut = 10; $rpcLogCalls = false;' . "\n"
 			. '$topDirectory = "/";' . "\n"
@@ -138,9 +142,12 @@ class SetDirActionCollisionTest extends TestCase
 			. 'require(' . var_export($this->repoRoot() . '/plugins/datadir/action.php', true) . ");\n");
 
 		$out = array();
-		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' . escapeshellarg($driver)
-			. ' 2>&1', $out);
+		exec(escapeshellarg(PHP_BINARY)
+			. ' -d display_errors=1 -d log_errors=0 -d error_reporting=E_ALL ' . escapeshellarg($driver)
+			. ' 2>&1', $out, $status);
 		$printed = implode("\n", $out);
+		if ($status !== 0)
+			throw new Exception('action.php exited with status ' . $status . ': ' . $printed);
 		$answer = json_decode($printed, true);
 		if (!is_array($answer) || !array_key_exists('errors', $answer))
 			throw new Exception('action.php printed: ' . $printed);
@@ -154,6 +161,20 @@ class SetDirActionCollisionTest extends TestCase
 			'started' => in_array('execute', $this->daemon->calls(), true),
 			'applied' => in_array('d.directory.set_if_stop_close_claim', $this->daemon->calls(), true),
 		);
+	}
+
+	public function testAReusedSuccessorRefusesADirectoryChangeBeforeClaim()
+	{
+		$r = $this->setTheDataDirectory(array(), 1, null, 0, false, false, array(0, 1),
+			array('chk-reuse' => str_repeat('B', 32)));
+		$this->assertSame(array(array('desc' => 'theUILang.datadirSetDirFail',
+			'prm' => 'active-checker-transaction-or-service-label')), $r['errors'],
+			'the exact shared ownership read recognizes a reused successor');
+		$this->assertTrue(strpos(implode("\n", $r['bodies']), '<string>chk-reuse</string>') !== false,
+			'the admission request reads the reuse marker');
+		$this->assertTrue(!$r['applied'] && !$r['started']
+			&& !in_array('d.stop_close_claim', $r['calls'], true),
+			'active reuse refuses before a claim, directory setter or worker dispatch');
 	}
 
 	public function testRawEqualsInDirectoryReachesWorkerCommand()
@@ -207,11 +228,10 @@ class SetDirActionCollisionTest extends TestCase
 	}
 
 	/**
-	 * A name that only looks taken. On a case sensitive filesystem 2.BIN does
-	 * not occupy 2.bin, the move would have made it, and the check must not
-	 * refuse it: it is the same test the move applies, not a stricter one.
+	 * Case-only differences are distinct only on a case-sensitive filesystem.
+	 * The preflight must follow the same filesystem semantics as the move.
 	 */
-	public function testANameThatDiffersOnlyInCaseIsNotTreatedAsTaken()
+	public function testCaseOnlyNameDifferencesFollowTheFilesystem()
 	{
 		// Whether 2.BIN occupies 2.bin is the filesystem's answer, not an
 		// assumption, so it is asked rather than assumed.
@@ -219,21 +239,12 @@ class SetDirActionCollisionTest extends TestCase
 		file_put_contents($this->base . '/CASE', 'x');
 		$foldsCase = file_exists($this->base . '/case');
 		@unlink($this->base . '/CASE');
-		if ($foldsCase)
-		{
-			$this->assertTrue(true,
-				'the filesystem under the test tree folds case, so 2.BIN does '
-				. 'occupy 2.bin and there is nothing to tell apart here');
-			return;
-		}
-
 		$r = $this->setTheDataDirectory(array('2.BIN'));
 
-		$this->assertEquals(array(), $r['errors'],
-			'a name differing only in case does not occupy the destination, so '
-			. 'the move goes ahead; action.php answered: ' . $r['printed']);
-		$this->assertTrue($r['started'],
-			'and the move is started; calls: ' . implode(', ', $r['calls']));
+		$this->assertSame($foldsCase, count($r['errors']) > 0,
+			'case-only collisions follow the measured filesystem semantics: ' . $r['printed']);
+		$this->assertSame(!$foldsCase, $r['started'],
+			'the worker starts only when the destination is distinct: ' . implode(', ', $r['calls']));
 	}
 
 	/**

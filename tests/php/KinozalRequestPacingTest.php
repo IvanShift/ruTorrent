@@ -283,14 +283,16 @@ if ($pacingMode === '--shipped-default') {
             ruTrackerChecker::makeClient($checked);
             // What RSS and add-by-URL fetch with: a client nobody set up for Kinozal.
             testAssertSame(true, (new Snoopy())->fetchComplex($added), 'The default client fetches the mirror URL');
+            $clock = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
+            $beforeOther = file_get_contents($clock);
             testAssertSame(true, (new Snoopy())->fetchComplex($other), 'The other host is fetched');
             $requests = pacingWire(array(array('GET', $checked), array('GET', $added), array('GET', $other)));
             testAssertSame('Cookie: sid=stored-session', $requests[1]['cookie'],
                 'The default client went through the KinozalTV account');
             pacingAssertSpaced(array_slice($requests, 0, 2));
-            $gap = $requests[2]['time'] - $requests[1]['time'];
-            testAssertTrue($gap < KINOZAL_REQUEST_PAUSE, sprintf('A host outside the Kinozal group does not wait'
-                . ' for its clock: it started %.3f s after the last Kinozal request', $gap));
+            // External process startup can exceed the interval on a loaded
+            // runner. The unrelated request must not reserve or finish a turn.
+            testAssertSame($beforeOther, file_get_contents($clock), 'The other host does not consume the Kinozal clock');
         },
         'a cached download re-login waits its turn on each of its six wire requests' =>
             function () use ($mirror, $loginForm) {
@@ -358,8 +360,8 @@ if ($pacingMode === '--shipped-default') {
                 array('GET', $confirmedDownload))));
         },
         'the handler keeps the pace without a KinozalTV account' => function () use ($mirror, $hash) {
-            // No account fetch registers the hosts here; the handler's own
-            // KinozalResponse::throttle() call has to.
+            // No account fetch is involved; the handler and transport keep
+            // their shared pace independently of loginmgr.
             rTorrentSettings::get()->unregisterPlugin('loginmgr');
             try {
                 $details = $mirror . '/get_srv_details.php?action=2&id=9';

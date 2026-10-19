@@ -32,7 +32,7 @@ for ($i = 1; $i < $argc - 1; $i++) {
     if ($argv[$i] === '-D') $headerFile = $argv[++$i];
     elseif ($argv[$i] === '-o') $bodyFile = $argv[++$i];
     elseif ($argv[$i] === '-X') $request['method'] = $argv[++$i];
-    elseif ($argv[$i] === '-d') $request['body'] = $argv[++$i];
+    elseif ($argv[$i] === '-d' || $argv[$i] === '--data-raw') $request['body'] = $argv[++$i];
     elseif ($argv[$i] === '-H' && strncasecmp($argv[$i + 1], 'Cookie:', 7) === 0) $request['cookie'] = $argv[++$i];
 }
 $clock = hrtime();

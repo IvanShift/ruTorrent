@@ -17,10 +17,6 @@ class RuTrackerMetaFetch
     const WAIT_ATTEMPTS = 40;
     const WAIT_DELAY_US = 50000;
 
-    const ACTIVATION_UNKNOWN = 'unknown';
-    const ACTIVATION_SETTLED = 'settled';
-    const ACTIVATION_UNCONFIRMED = 'unconfirmed';
-
     const REPLACEMENT_FOREIGN = 'foreign';
     const REPLACEMENT_UNPROVED = 'unproved';
     const REPLACEMENT_OWNED = 'owned';
@@ -189,9 +185,8 @@ class RuTrackerMetaFetch
 
         // load silently swallows a hash it already knows, so an already
         // present successor must be detected before loading. An earlier
-        // incomplete run of this plugin announces itself through the
-        // chk-meta-old marker and is adopted below. Hash equality alone
-        // cannot prove a foreign occupant superseded the predecessor.
+        // metadata worker is adopted by its marks; an ordinary download of
+        // this topic goes through the common replacement and cleanup path.
         $exists = ruTrackerChecker::torrentExists($newHash);
         if ($exists === null) {
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash
@@ -241,6 +236,17 @@ class RuTrackerMetaFetch
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
 
+            if ((string) $marker->val[0] === '' && (string) $marker->val[1] === ''
+                && (string) $marker->val[2] === '') {
+                $source = rTorrent::getSource($newHash);
+                if ($source instanceof Torrent && !$source->errors()
+                    && strcasecmp((string) $source->hash_info(), (string) $newHash) === 0
+                    && RuTrackerCheckImpl::extractTopicId($source->comment()) === (int) $topicId) {
+                    // The dump selected this topic's current hash. Reuse its
+                    // loaded metainfo without creating or erasing a service stub.
+                    return ruTrackerChecker::createTorrent($source, $oldHash);
+                }
+            }
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
                 . ' collision-foreign-occupant at ' . $newHash . '; retaining predecessor for retry');
             return ruTrackerChecker::STE_ERROR;
@@ -731,10 +737,9 @@ class RuTrackerMetaFetch
         $result = ruTrackerChecker::createTorrent($torrent, $oldHash);
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' replacement by ' . $newHash
             . ' returned ' . self::describeResult($result));
-        if ($result === null) {
-            self::restoreReplacement($oldHash, $newHash);
-            return null;
-        }
+        // createTorrent owns activation and may retain the recovery keys when
+        // cleanup publication is unconfirmed. Its caller must not close them.
+        if ($result === null) return null;
         // A refusal leaves the predecessor in place, but the metadata stub
         // has been erased. Retire its exact marks before exposing a normal
         // verdict; an unconfirmed clear must remain META_PENDING for retry.
@@ -839,105 +844,6 @@ class RuTrackerMetaFetch
         if (!is_array($rows) || !isset($rows[$topicId]) || !is_array($rows[$topicId])) return null;
         // ?? null covers a document cached before parseDump() kept the column.
         return self::canonicalRegistrationTime($rows[$topicId]['reg_time'] ?? null);
-    }
-
-    static private function activationState($oldHash, $newHash)
-    {
-        $req = new rXMLRPCRequest(array(
-            new rXMLRPCCommand(getCmd("d.get_custom"),
-                array($newHash, ruTrackerChecker::REPLACEMENT_MARKER_KEY)),
-            new rXMLRPCCommand(getCmd("d.get_custom"), array($newHash, 'chk-replaces')),
-            new rXMLRPCCommand(getCmd("d.get_state"), $newHash),
-            new rXMLRPCCommand(getCmd("d.is_open"), $newHash),
-        ));
-        $req->important = false;
-        if (!$req->success() || $req->fault || !is_array($req->val) || count($req->val) !== 4) {
-            ruTrackerChecker::logDebug('metafetch: unreadable replacement marker on ' . $newHash
-                . ', refusing fallback activation');
-            return array('status' => self::ACTIVATION_UNKNOWN, 'run' => null, 'marker' => null,
-                'rawRecord' => null, 'expectedValues' => null);
-        }
-        if ((string) $req->val[0] === '')
-            return array('status' => self::ACTIVATION_SETTLED, 'run' => null, 'marker' => null,
-                'rawRecord' => null, 'expectedValues' => null);
-        if (!in_array($req->val[2], array(0, 1, '0', '1'), true)
-            || !in_array($req->val[3], array(0, 1, '0', '1'), true)) {
-            ruTrackerChecker::logDebug('metafetch: unreadable replacement run state on ' . $newHash
-                . ', refusing fallback activation');
-            return array('status' => self::ACTIVATION_UNKNOWN, 'run' => null, 'marker' => null,
-                'rawRecord' => null, 'expectedValues' => null);
-        }
-        $replacement = self::replacementOwnership($req->val[0], $req->val[1], $oldHash);
-        if ($replacement['status'] !== self::REPLACEMENT_OWNED) {
-            ruTrackerChecker::logDebug('metafetch: replacement ownership record on ' . $newHash
-                . ' has no plugin nonce plus strict matching record; refusing fallback activation');
-            return array('status' => self::ACTIVATION_UNKNOWN, 'run' => null, 'marker' => null,
-                'rawRecord' => null, 'expectedValues' => null);
-        }
-        return array(
-            'status' => self::ACTIVATION_UNCONFIRMED,
-            'run' => $replacement['record']['run'],
-            'marker' => (string) $req->val[0],
-            'rawRecord' => (string) $req->val[1],
-            'expectedValues' => array(
-                'state' => (int) $req->val[2],
-                'is_open' => (int) $req->val[3],
-            ),
-        );
-    }
-
-    static private function restoreReplacement($oldHash, $newHash)
-    {
-        $activation = self::activationState($oldHash, $newHash);
-        if ($activation['status'] === self::ACTIVATION_UNKNOWN)
-            return;
-        if ($activation['status'] === self::ACTIVATION_SETTLED) {
-            ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash
-                . ' was already settled by the replacement itself, on a fresher reading than this fetch holds');
-            return;
-        }
-        $run = $activation['run'];
-        $marker = $activation['marker'];
-        $rawRecord = $activation['rawRecord'];
-        $expectedValues = $activation['expectedValues'];
-        if (!$run['started'] && !$run['open']) {
-            ruTrackerChecker::logDebug('metafetch: leaving the replacement ' . $newHash
-                . ' stopped and closed: createTorrent selected the predecessor\'s fresh stopped state');
-            RuTrackerAtomicOwnership::clearCustoms(
-                $newHash,
-                array('chk-replacement' => $marker, 'chk-replaces' => $rawRecord),
-                array('chk-replaces', 'chk-replacement'),
-                $expectedValues
-            );
-            return;
-        }
-
-        $expectedCustoms = array(
-            'chk-replacement' => $marker,
-            'chk-replaces' => $rawRecord,
-        );
-        $afterSuccess = array(
-            'chk-replaces' => '',
-            'chk-replacement' => '',
-        );
-
-        $issued = $run['started'] ? 'd.open+d.start' : 'd.open';
-        $status = RuTrackerAtomicOwnership::runState(
-            $newHash,
-            $expectedCustoms,
-            $run['started'],
-            $expectedValues,
-            $afterSuccess
-        );
-        if ($status === RuTrackerAtomicOwnership::ACTED) {
-            ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' inherited the old torrent\'s '
-                . ($run['started'] ? RuTrackerReplacementRecord::RUN_STARTED : RuTrackerReplacementRecord::RUN_OPEN)
-                . ' state (' . $issued . ' accepted)');
-            return;
-        }
-        ruTrackerChecker::logDebug('metafetch: the replacement ' . $newHash . ' should be '
-            . ($run['started'] ? RuTrackerReplacementRecord::RUN_STARTED : RuTrackerReplacementRecord::RUN_OPEN)
-            . ' but ' . $issued . ' was unconfirmed');
     }
 
     static private function describeResult($result)

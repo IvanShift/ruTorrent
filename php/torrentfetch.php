@@ -13,13 +13,19 @@ class TorrentFetch
 		$error = (is_object($client) && isset($client->error)) ? (string)$client->error : '';
 		// Snoopy reports a transport failure in the field that otherwise holds
 		// the HTTP status: a socket that did not connect sets a nonpositive
-		// status, with its original errno in "connection failed (N)". A failed
+		// status, with its original errno in a fixed socket error sentence. A failed
 		// curl run leaves its exit code -- any code,
 		// 100 and up included (CURLE_TOO_LARGE, and the shell's 126 and 127 when
 		// curl cannot be run) -- with one of Snoopy's curl messages. Neither
 		// came from the server, so neither is an http-status.
-		if(preg_match('/^connection failed \((-?[0-9]+)\)$/D', $error, $match))
-			return 'connect-failed errno='.$match[1];
+		$socketReasons = array(
+			'connection failed' => 'connect-failed',
+			'connection refused or timed out' => 'connect-failed',
+			'socket creation failed' => 'socket-create-failed',
+			'dns lookup failure' => 'dns-failed',
+		);
+		if(preg_match('/^(.+) \((-?[0-9]+)\)$/D', $error, $match) && isset($socketReasons[$match[1]]))
+			return $socketReasons[$match[1]].' errno='.$match[2];
 		if(($status > 0) && ((strpos($error, 'Error: cURL ') === 0) || ($error === 'oversized-response')))
 			return 'curl-failed exit='.$status;
 		if(($status >= 100) && ($status <= 599) && !Snoopy::isSuccessfulResponse($client))

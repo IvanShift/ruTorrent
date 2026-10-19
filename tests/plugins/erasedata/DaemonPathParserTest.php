@@ -338,7 +338,7 @@ class DaemonPathParserTest extends TestCase
 		$dir = $this->dir;
 		$hash = $this->sessionCopy($this->multiInfo());
 		$answer = $this->ownerSnapshot(array(
-			array($hash, '', '', ''),
+			array($hash, '', '', '', ''),
 			$this->sourceReply(),
 			array($dir, 1, $dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'),
 			array($dir, 1, self::NAME, '.pad/0', 'sub/b.bin')));
@@ -365,7 +365,7 @@ class DaemonPathParserTest extends TestCase
 			'piece length' => 16384,
 			'pieces' => str_repeat("\x03", 20)));
 		$answer = $this->ownerSnapshot(array(
-			array($hash, '', '', ''),
+			array($hash, '', '', '', ''),
 			// The plan reads the copy, then the metadata-stub check reads it again.
 			$this->sourceReply(),
 			$this->sourceReply(),

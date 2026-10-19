@@ -2843,7 +2843,7 @@ final class ErasedataCollector
 	}
 
 	private function cleanupCapturedFile($file, $current, $expected, $reservationKey,
-		$manifest, $successorFiles, $successorSnapshot, &$reason)
+		$manifest, $successorFiles, &$reason)
 	{
 		$original = $this->filesystem->entryIdentity($file);
 		if(!is_array($original) || (empty($original['is_file']) && empty($original['is_link'])))
@@ -3088,8 +3088,8 @@ final class ErasedataCollector
 			$actions[] = array('file' => $file, 'expected' => $expected,
 				'alias_observation' => $aliasObservation);
 		}
-		// One final linear successor scan covers every name that could have become
-		// an alias without multiplying successor probes by obsolete-file count.
+		// Revalidate every successor before starting the batch. Each capture also
+		// rebuilds ownership while the obsolete file's public name is absent.
 		if($complete && !erasedataCleanupSuccessorSnapshotStillMatches(
 			$successorSnapshot, $this->filesystem))
 		{
@@ -3125,7 +3125,7 @@ final class ErasedataCollector
 					|| !erasedataSameStatIdentity($captured['lstat'], $current['lstat'])
 					|| !$this->cleanupCapturedFile($action['file'], $current,
 						$action['expected'], $path, $manifest, $successorFiles,
-						$successorSnapshot, $reason))
+						$reason))
 				{
 					$complete = false;
 					if($reason === null) $reason = 'unlink-failure';

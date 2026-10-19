@@ -625,7 +625,6 @@ class RuTrackerUpdatePass
         // before an announce or ignore fast path can overwrite an owned fetch.
         // The checker claim decides whether another worker is still active.
         $checked = array();
-        $uptodate = 0;
         // The fast-path verdicts below are buffered rather than written where
         // they are decided; see flushVerdicts() for why.
         $deferred = array();
@@ -846,7 +845,7 @@ class RuTrackerUpdatePass
             self::dispatchChecker($checker, $defaultChecker, $row);
             $checked[] = $row['hash'];
         }
-        $uptodate += self::flushVerdicts($deferred);
+        $uptodate = self::flushVerdicts($deferred);
         // The row/state denominator is the full selected seeding snapshot;
         // eligible/postponed/dispatched describe only the foreign dispatch branch.
         foreach ($foreignMetrics as $bucket => $counts)
@@ -1249,9 +1248,9 @@ class RuTrackerUpdatePass
     }
 
     // The first four columns reach both halves of a replacement transaction.
-    // The remaining five diagnose stopped predecessors whose recovery key was
-    // already lost by an older release, without another fleet-wide RPC.
-    const SWEEP_COLUMNS = 9;
+    // The next five diagnose stopped predecessors whose recovery key was
+    // already lost by an older release; the last exposes partial reuse claims.
+    const SWEEP_COLUMNS = 10;
 
     /**
      * Finish or diagnose a replacement transaction that never closed.
@@ -1280,6 +1279,7 @@ class RuTrackerUpdatePass
             getCmd("d.get_custom=") . "chk-state",
             getCmd("d.get_custom=") . "chk-time",
             getCmd("d.get_custom=") . "chk-meta-new",
+            getCmd("d.get_custom=") . ruTrackerChecker::REUSE_KEY,
         )));
         $scan->important = false;
         if (!$scan->success() || !is_array($scan->val)
@@ -1289,8 +1289,17 @@ class RuTrackerUpdatePass
         }
 
         for ($i = 0; $i < count($scan->val); $i += self::SWEEP_COLUMNS) {
-            self::diagnoseLegacyRow($scan->val, $i, $now);
             $hash = (string) $scan->val[$i];
+            $rawReuse = (string) $scan->val[$i + 9];
+            if ($rawReuse !== '' && (!ruTrackerChecker::isPluginReplacementMarker($rawReuse)
+                || (string) $scan->val[$i + 1] !== $rawReuse || (string) $scan->val[$i + 2] === '')) {
+                // Claim writes reuse first and release clears it last. A
+                // partial tuple is not authority to adopt or erase the row.
+                ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $hash
+                    . ' carries incomplete or mismatched reuse ownership; torrent and keys retained for manual inspection');
+                continue;
+            }
+            self::diagnoseLegacyRow($scan->val, $i, $now);
             if ((string) $scan->val[$i + 1] === '') {
                 // No staged copy was ever marked -- but this row may be a
                 // PREDECESSOR whose transaction died before it staged
@@ -1585,17 +1594,6 @@ class RuTrackerUpdatePass
                     . " because no run policy can be proved");
                 return;
             }
-            $canonicalRecord = RuTrackerReplacementRecord::encode(
-                $record['old'],
-                $record['run']['started'],
-                $record['run']['open'],
-                $record['staged']
-            );
-            if ($canonicalRecord !== $encoded) {
-                ruTrackerChecker::logDebug("sweepReplacements: " . $hash
-                    . " carries a non-canonical replacement recovery record; retaining both generations");
-                return;
-            }
             // Younger than the lock window: the transaction may simply be in
             // flight. batch_check.php takes no cycle lock, so "no other cycle is
             // running" is not the same as "nobody is mid-replacement".
@@ -1657,19 +1655,6 @@ class RuTrackerUpdatePass
                         ruTrackerChecker::logDebug("sweepReplacements: " . $successorHash
                             . " carries an unreadable successor recovery record; retaining both generations");
                         return;
-                    }
-                    if ($succRecord !== null) {
-                        $canonicalSuccRecord = RuTrackerReplacementRecord::encode(
-                            $succRecord['old'],
-                            $succRecord['run']['started'],
-                            $succRecord['run']['open'],
-                            $succRecord['staged']
-                        );
-                        if ($canonicalSuccRecord !== $rawSuccRecord) {
-                            ruTrackerChecker::logDebug("sweepReplacements: " . $successorHash
-                                . " carries a non-canonical successor recovery record; retaining both generations");
-                            return;
-                        }
                     }
                     $expectedSuccRecord = RuTrackerReplacementRecord::encode(
                         $hash,
@@ -1743,19 +1728,6 @@ class RuTrackerUpdatePass
 				. " carries an unreadable nonempty replacement record; retaining its recovery keys");
 			return;
 		}
-        if ($record !== null) {
-            $canonicalRecord = RuTrackerReplacementRecord::encode(
-                $record['old'],
-                $record['run']['started'],
-                $record['run']['open'],
-                $record['staged']
-            );
-            if ($canonicalRecord !== $rawRecord) {
-                ruTrackerChecker::logDebug("sweepReplacements: " . $hash
-                    . " carries a non-canonical replacement record; retaining its recovery keys");
-                return;
-            }
-        }
         if ($record === null) {
             self::inspectMarkedRow($hash, $rawMarker, $rawRecord, $now, null);
             return;
@@ -1788,7 +1760,6 @@ class RuTrackerUpdatePass
             new rXMLRPCCommand(getCmd("d.get_complete"), $hash),
             new rXMLRPCCommand(getCmd("d.get_message"), $hash),
             new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-stime")),
-            new rXMLRPCCommand(getCmd("d.get_custom"), array($hash, "chk-state")),
             // The marker and the record again, re-read HERE. Everything this
             // function goes on to do is irreversible -- it erases the staged
             // copy, or starts a download -- and the values it was handed came
@@ -1804,15 +1775,15 @@ class RuTrackerUpdatePass
         // A faulting member injects its faultString into the flat value list
         // rather than shortening it, so the last slot must be present before
         // any of them is trusted.
-        if (!$probe->success() || !isset($probe->val[9])) {
+        if (!$probe->success() || !isset($probe->val[8])) {
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash . " could not be read, deferring to the next cycle");
             return;
         }
         // Marker nonce and raw inheritance bytes are the generation. Decoded
         // predecessor/time equality is insufficient: a same-second retry can
         // change the nonce or run token while preserving both decoded fields.
-        if ((string) $probe->val[8] !== $rawMarker
-            || (string) $probe->val[9] !== $rawRecord) {
+        if ((string) $probe->val[7] !== $rawMarker
+            || (string) $probe->val[8] !== $rawRecord) {
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " changed between the fleet scan and now; leaving it to whoever owns it");
             return;
@@ -1838,6 +1809,22 @@ class RuTrackerUpdatePass
                 . " cannot be recovered, so it is logged and left untouched"
                 . " (state=" . intval($val[0]) . " open=" . intval($val[1])
                 . " hashed=" . intval($val[2]) . " bytes=" . intval($val[3]) . ")");
+            return;
+        }
+
+        // Reused downloads existed independently before this transaction.
+        // Their live or stopped state never proves OLD committed, and OLD's
+        // recorded policy must never activate or discard them during recovery.
+        $reused = ruTrackerChecker::reusedReplacement($hash, $rawMarker, $rawRecord);
+        if ($reused === null) return;
+        if ($reused) {
+            $exists = ruTrackerChecker::torrentExists($record['old']);
+            if (!self::reconcileObsoleteCleanup($record['old'], $hash, $rawMarker,
+                $rawRecord, $exists)) return;
+            if ($exists)
+                self::reviveStrandedPredecessor($hash, $record, $rawMarker, $rawRecord);
+            else
+                ruTrackerChecker::clearReplacementRecord($hash, $rawMarker, $rawRecord);
             return;
         }
 
@@ -1879,9 +1866,7 @@ class RuTrackerUpdatePass
         // good -- precisely the outcome this sweep exists to prevent -- and
         // the "opened since staged" guard below would swallow it too, since
         // opening a complete download is what puts chunks on its counters.
-        // The $record !== null re-test is defensive: a null record has already
-        // returned above. Keep it -- every branch under it writes.
-        $resuming = $live && $record !== null && !$satisfied
+        $resuming = $live && !$satisfied
             && ($record['run']['started'] || $record['run']['open']);
 
         // A marked row that is running is a finished replacement whose final
@@ -1904,8 +1889,8 @@ class RuTrackerUpdatePass
             self::reviveStrandedPredecessor(
                 $hash,
                 $record,
-                (string) $probe->val[8],
-                (string) $probe->val[9]
+                (string) $probe->val[7],
+                (string) $probe->val[8]
             );
             return;
         }
@@ -2057,24 +2042,14 @@ class RuTrackerUpdatePass
             . " is unknown; retaining both exact recovery generations");
     }
 
-    // Erases a staged copy whose predecessor is up. The predecessor revival
-    // took several round trips, so the exact marker+record generation proved
+    // Retires a staged copy, or releases only a reused download's ownership.
+    // Predecessor revival took several round trips, so the exact generation proved
     // by sweepMarkedRow() must still be present now. A concurrent replacement
     // may stage a fresh generation at the same hash; erasing that would lose
     // its only durable recovery handle.
     static private function discardStaged($hash, $expectedMarker, $expectedRecord)
     {
-        $status = RuTrackerAtomicOwnership::erase(
-            $hash,
-            array(
-                ruTrackerChecker::REPLACEMENT_MARKER_KEY => (string) $expectedMarker,
-                ruTrackerChecker::INHERIT_KEY => (string) $expectedRecord,
-            ),
-            array(
-                'state' => 0,
-                'is_open' => 0,
-            )
-        );
+        $status = ruTrackerChecker::discardReplacement($hash, $expectedMarker, $expectedRecord);
         ruTrackerChecker::logUnrepairable('sweepReplacements: ' . $hash
             . ' discard status=' . $status);
         if ($status === RuTrackerAtomicOwnership::ACTED) {
@@ -2110,8 +2085,8 @@ class RuTrackerUpdatePass
     //     here at all.
     static private function finishStrandedReplacement($hash, $record, $val, $resuming = false)
     {
-        $marker = (string) $val[8];
-        $rawRecord = (string) $val[9];
+        $marker = (string) $val[7];
+        $rawRecord = (string) $val[8];
         if (!$record['run']['started'] && !$record['run']['open']) {
             // The predecessor was stopped, so leaving the replacement stopped
             // IS the finished outcome -- createTorrent()'s never-resurrect
@@ -2170,6 +2145,7 @@ class RuTrackerUpdatePass
             array(
                 ruTrackerChecker::REPLACEMENT_MARKER_KEY => $marker,
                 ruTrackerChecker::INHERIT_KEY => $rawRecord,
+                ruTrackerChecker::REUSE_KEY => '',
             ),
             $record['run']['started'],
             array(

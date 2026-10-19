@@ -29,9 +29,9 @@ if(!defined('KINOZAL_PAUSE_MARGIN'))
 	// probe came an hour later than the pause meant.
 	define('KINOZAL_PAUSE_MARGIN', 600);
 
-// Shared by the optional loginmgr and rutracker_check plugins. Keep this leaf
-// independent of either plugin's configuration files and client classes: its
-// one setting, $kinozalHosts, is global so that both plugins read it alike.
+// Shared by Snoopy and the optional loginmgr and rutracker_check plugins. Keep
+// this leaf independent of either plugin's configuration files and client
+// classes: $kinozalHosts is global so that both plugins read it alike.
 class KinozalResponse
 {
 	// The site's own registered domains. kinozal.me and kinozal.guru answer a
@@ -122,11 +122,9 @@ class KinozalResponse
 		return('https://' . self::doors()[0]);
 	}
 
-	// From the first call on, every request this process sends to a Kinozal
-	// host keeps one pace and one 429 pause, shared with every other process
-	// that called it: the update checker, a manual batch, and fetches through
-	// the KinozalTV account. A process that never loads the account or the
-	// checker -- an anonymous RSS fetch or add-by-URL -- is not paced.
+	// Snoopy registers this policy before each HTTP transport, so anonymous
+	// RSS, add-by-URL and redirect targets share the checker's and account's
+	// pace and 429 pause without loading either plugin.
 	public static function throttle()
 	{
 		if(class_exists('Snoopy', false) && method_exists('Snoopy', 'throttleHosts'))

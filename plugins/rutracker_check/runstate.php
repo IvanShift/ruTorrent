@@ -47,6 +47,9 @@ class RuTrackerReplacementRecord
             return null;
         if (!preg_match('/^[0-9]+$/D', $parts[2])) return null;
         $shaped = true;
+        // encode() always writes uppercase. A different spelling is corruption,
+        // not a second ownership identity that individual consumers may normalize.
+        if ($parts[0] !== strtoupper($parts[0])) return null;
         // "03" is not the epoch 3: it is a record encode() cannot reproduce.
         $staged = RuTrackerRpcValue::canonicalNonnegativeInteger($parts[2]);
         if ($staged === null || $staged <= 0) return null;
@@ -273,6 +276,7 @@ class RuTrackerAtomicOwnership
 
     static private $allowedCustomKeys = array(
         'chk-replacement',
+        'chk-reuse',
         'chk-replaces',
         'chk-replacing',
         'chk-revived',
@@ -312,19 +316,11 @@ class RuTrackerAtomicOwnership
         if ($value === '') {
             return true; // clearing key is allowed
         }
-        if ($key === 'chk-replacement') {
+        if ($key === 'chk-replacement' || $key === 'chk-reuse') {
             return RuTrackerReplacementRecord::isPluginMarker($value);
         }
         if ($key === 'chk-replaces' || $key === 'chk-replacing') {
-            $decoded = RuTrackerReplacementRecord::decode($value);
-            if ($decoded === null) return false;
-            $reencoded = RuTrackerReplacementRecord::encode(
-                $decoded['old'],
-                $decoded['run']['started'],
-                $decoded['run']['open'],
-                $decoded['staged']
-            );
-            return $reencoded === $value;
+            return RuTrackerReplacementRecord::decode($value) !== null;
         }
         if ($key === 'chk-revived' || $key === 'chk-meta-until' || $key === 'chk-meta-topic') {
             $int = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
@@ -436,6 +432,12 @@ class RuTrackerAtomicOwnership
      */
     static public function erase($hash, $expectedCustoms, $expectedValues = array())
     {
+        // A reused successor existed before this transaction. No ordinary
+        // erase caller may dispose it, even from a stale ownership snapshot.
+        if (!is_array($expectedCustoms)
+            || (array_key_exists('chk-reuse', $expectedCustoms) && $expectedCustoms['chk-reuse'] !== ''))
+            return self::UNKNOWN;
+        $expectedCustoms['chk-reuse'] = '';
         $condStr = self::buildCondition($expectedCustoms, $expectedValues);
         if ($condStr === null) return self::UNKNOWN;
 
@@ -445,6 +447,36 @@ class RuTrackerAtomicOwnership
             self::SENTINEL_ERASED => self::ACTED,
             self::SENTINEL_SKIPPED => self::SKIPPED,
         ));
+    }
+
+    /** Release a replacement, disposing only a stopped copy created by us. */
+    static public function closeReplacement($hash, $marker, $record, $expectedValues = array(), $discard = false)
+    {
+        if (!self::validateExpectedValues($expectedValues) || !is_bool($discard)) return self::UNKNOWN;
+        $pair = array('chk-replacement' => $marker, 'chk-replaces' => $record);
+        $reuseValues = $expectedValues;
+        unset($reuseValues['state'], $reuseValues['is_open']);
+        $reuse = self::buildCondition($pair + array('chk-reuse' => $marker), $reuseValues);
+        $ordinary = self::buildCondition($pair + array('chk-reuse' => ''),
+            $discard ? array_merge($expectedValues, array('state' => 0, 'is_open' => 0)) : $expectedValues);
+        if ($reuse === null || $ordinary === null || !RuTrackerReplacementRecord::isPluginMarker($marker)
+            || RuTrackerReplacementRecord::decode($record) === null) return self::UNKNOWN;
+        // Reuse is written first on claim and cleared last on release: a
+        // partially executed command never makes an existing torrent disposable.
+        $clear = 'cat=' . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-replaces,')
+            . ',' . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-replacement,')
+            . ',' . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-reuse,')
+            . ',' . self::SENTINEL_CLEARED;
+        $ordinaryBody = $discard
+            ? 'cat="$' . getCmd('d.erase=') . '",' . self::SENTINEL_ERASED : $clear;
+        $fallback = getCmd('branch=') . self::quoteRtorrentArgument($ordinary)
+            . ',' . self::quoteRtorrentArgument($ordinaryBody) . ',cat=' . self::SENTINEL_SKIPPED;
+        $replies = array(
+            self::SENTINEL_CLEARED => self::ACTED,
+            self::SENTINEL_SKIPPED => self::SKIPPED,
+        );
+        if ($discard) $replies[self::SENTINEL_ERASED] = self::ACTED;
+        return self::executeBranch($hash, $reuse, $clear, $fallback, $replies);
     }
 
     /**
@@ -475,9 +507,11 @@ class RuTrackerAtomicOwnership
     /**
      * Conditionally set customs on a download in the given order if its ownership matches.
      */
-    static public function setCustoms($hash, $expectedCustoms, $customsToSet, $expectedValues = array())
+    static public function setCustoms($hash, $expectedCustoms, $customsToSet, $expectedValues = array(),
+        $saveSession = false)
     {
-        if (!is_array($customsToSet) || count($customsToSet) === 0) return self::UNKNOWN;
+        if (!is_bool($saveSession) || !is_array($customsToSet) || count($customsToSet) === 0)
+            return self::UNKNOWN;
         foreach ($customsToSet as $k => $v) {
             if (!self::validateCustomKeyAndValue($k, $v)) return self::UNKNOWN;
         }
@@ -493,7 +527,14 @@ class RuTrackerAtomicOwnership
                 '$' . getCmd('d.set_custom=') . $k . ',' . $v
             );
         }
-        $parts[] = self::SENTINEL_ACTED;
+        // Request the same queued save as ordinary load additions. Consume its
+        // version-dependent return value instead of prefixing the exact sentinel.
+        if ($saveSession) {
+            $parts[] = self::quoteRtorrentArgument('$branch=' . getCmd('d.save_full_session=')
+                . ',cat=' . self::SENTINEL_ACTED . ',cat=' . self::SENTINEL_ACTED);
+        } else {
+            $parts[] = self::SENTINEL_ACTED;
+        }
         $trueBody = 'cat=' . implode(',', $parts);
         $falseBody = 'cat=' . self::SENTINEL_SKIPPED;
         return self::executeBranch($hash, $condStr, $trueBody, $falseBody, array(
@@ -507,7 +548,7 @@ class RuTrackerAtomicOwnership
     {
         if (!self::isValidHash($hash)
             || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
-            || !is_array($fields) || !count($fields)) return self::UNKNOWN;
+            || !is_array($fields) || !count($fields) || !is_array($expectedCustoms)) return self::UNKNOWN;
         $allowed = array('chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del', 'chk-topic',
             'chk-meta-new', 'chk-meta-until');
         $parts = array();
@@ -535,6 +576,10 @@ class RuTrackerAtomicOwnership
     static public function runState($hash, $expectedCustoms, $wantStarted, $expectedValues = array(), $afterSuccess = array())
     {
         if (!is_bool($wantStarted)) return self::UNKNOWN;
+        if (!is_array($expectedCustoms)
+            || (array_key_exists('chk-reuse', $expectedCustoms) && $expectedCustoms['chk-reuse'] !== ''))
+            return self::UNKNOWN;
+        $expectedCustoms['chk-reuse'] = '';
         if (!is_array($afterSuccess)) return self::UNKNOWN;
         foreach ($afterSuccess as $k => $v) {
             if (!self::validateCustomKeyAndValue($k, $v)) return self::UNKNOWN;
@@ -582,7 +627,8 @@ class RuTrackerAtomicOwnership
         $expectedValues = array(), $legacyExpected = array())
     {
         $stampInt = RuTrackerRpcValue::canonicalNonnegativeInteger($stamp);
-        if ($stampInt === null || $stampInt <= 0) return self::UNKNOWN;
+        if ($stampInt === null || $stampInt <= 0 || !self::validateExpectedValues($expectedValues))
+            return self::UNKNOWN;
         if (!is_array($recordedRun)
             || count($recordedRun) !== 2
             || !array_key_exists('started', $recordedRun)
@@ -600,10 +646,10 @@ class RuTrackerAtomicOwnership
                 array_keys($legacyExpected))) !== 0)))
             return self::UNKNOWN;
         $expectedCustoms = array_merge($legacyExpected,
-            array('chk-replacing' => $expectedReplacing));
+            array('chk-replacing' => $expectedReplacing, 'chk-reuse' => ''));
         // Revival is authorized only for the stopped+closed crash signature.
         // Caller predicates may add is_meta, but can never weaken these two.
-        $allExpectedValues = array_merge((array) $expectedValues,
+        $allExpectedValues = array_merge($expectedValues,
             array('state' => 0, 'is_open' => 0));
         $condStr = self::buildCondition($expectedCustoms, $allExpectedValues);
         if ($condStr === null) return self::UNKNOWN;

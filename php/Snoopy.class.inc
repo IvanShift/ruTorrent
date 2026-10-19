@@ -77,9 +77,9 @@ class Snoopy
 	// ('ended'); a turn handed back unused rolls back 'next' only. An HTTP 429
 	// pauses the group, doubling up to a cap while the limiter keeps refusing.
 	// The state lives in a flock-guarded file in the shared settings path, so
-	// the processes that register the group (the checker cycle, manual batches,
-	// account fetches) share one clock; without that file the group is still
-	// throttled in this process.
+	// independent callers share one clock; without that file the group is still
+	// throttled in this process. Kinozal's group is registered at the transport
+	// boundary, including for anonymous clients and redirect targets.
 	private static $throttleGroups = array();
 	private static $throttleStates = array();
 	private static $throttleLogged = array();
@@ -244,6 +244,11 @@ class Snoopy
 	{
 		if($scheme !== 'http' && $scheme !== 'https')
 			return(null);
+		// A shared pause must also cover anonymous RSS, add-by-URL and redirects
+		// that never select an account. The leaf declares policy without loading
+		// either optional plugin or its configuration.
+		require_once(__DIR__ . '/kinozal.php');
+		KinozalResponse::throttle();
 		foreach(self::$throttleGroups as $group => $throttle)
 			if(UrlHost::isOneOf($host, $throttle['hosts']))
 				return($group);
@@ -487,6 +492,8 @@ class Snoopy
 			return($p_url);
 		$p_url = str_replace("\t","%09",$p_url);
 		$uparts = @parse_url($p_url);
+		if(!is_array($uparts))
+			return($p_url);
 		$scheme = array_key_exists('scheme',$uparts) ? $uparts['scheme'] : "";
 		$pass = array_key_exists('pass',$uparts) ? $uparts['pass']  : "";
 		$user = array_key_exists('user',$uparts) ? $uparts['user']  : "";
@@ -1179,7 +1186,10 @@ class Snoopy
 		$parts = parse_url($URI);
 		if( !is_array($parts) || !isset($parts["scheme"]) || !isset($parts["host"]) )
 		{
-			return(false);
+			$this->headers = array();
+			$this->response_code = '';
+			$this->_redirectaddr = false;
+			return($this->refuseResponseBody('invalid-url'));
 		}
 		rTorrentSettings::get()->pushEvent( "HostConnect", array
 		(
@@ -1674,7 +1684,7 @@ class Snoopy
 				$headers .= "; boundary=".$this->_mime_boundary;
 			$headers .= "\r\n";
 		}
-		if(!empty($body))
+		if(strlen((string)$body) > 0)
 			$headers .= "Content-length: ".strlen($body)."\r\n";
 		if(!empty($this->user) || !empty($this->pass))
 			$headers .= "Authorization: Basic ".base64_encode($this->user.":".$this->pass)."\r\n";
@@ -1783,7 +1793,7 @@ class Snoopy
 		}
 		if(!$is_chunked)
 		{
-			while($data = fread($fp, 4096))
+			while(($data = fread($fp, 4096)) !== false && $data !== '')
 			{
 				$results .= $data;
 				if(strlen($results) > $this->maxlength)
@@ -1849,7 +1859,7 @@ class Snoopy
 			else
 				$headers[] = "Content-type: $content_type";
 		}
-		if(!empty($body))
+		if(strlen((string)$body) > 0)
 			$headers[] = "Content-length: ".strlen($body);
 		if(!empty($this->user) || !empty($this->pass))
 			$headers[] = "Authorization: Basic ".base64_encode($this->user.":".$this->pass);
@@ -1864,8 +1874,9 @@ class Snoopy
 		foreach( $headers as $header )
 			$cmdline_params .= " -H ".escapeshellarg($header);
 
-		if(!empty($body))
-			$cmdline_params .= " -d ".escapeshellarg($body);
+		if(strlen((string)$body) > 0)
+			// -d treats a leading '@' as a local filename, even when shell-quoted.
+			$cmdline_params .= " --data-raw ".escapeshellarg($body);
 
 		if(!is_null($this->IP))
 			$cmdline_params .= " --interface ".$this->IP;
@@ -2140,14 +2151,24 @@ class Snoopy
 			// would collide with read timeout (-100) and body refusal (-101).
 			// Keep the original errno in $error for detailed diagnostics.
 			$this->status = $errno > 0 ? self::SOCKET_CONNECT_FAILED : $errno;
+			// PHP's resolver can fail with errno 0. Keep its known category,
+			// without copying a hostname or arbitrary system text into logs.
+			if($errno === 0 && strpos((string)$errstr, 'php_network_getaddresses:') === 0)
+			{
+				$this->error = 'dns lookup failure (0)';
+				return(false);
+			}
 			switch($errno)
 			{
 				case -3:
 					$this->error="socket creation failed (-3)";
+					break;
 				case -4:
 					$this->error="dns lookup failure (-4)";
+					break;
 				case -5:
 					$this->error="connection refused or timed out (-5)";
+					break;
 				default:
 					$this->error="connection failed (".$errno.")";
 			}

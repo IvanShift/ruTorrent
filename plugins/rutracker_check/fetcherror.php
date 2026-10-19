@@ -74,6 +74,7 @@ class RuTrackerFetchError
 		// status < 100 do not emit redirect-refused; the class remains available
 		// to callers that inspect the error field directly.
 		$classes = array(
+			'invalid-url' => '/^invalid-url$/i',
 			'invalid-protocol' => '/^Invalid protocol\b/i',
 			'refused-unresolvable-host' => '/^Refusing to fetch: cannot resolve host\b/i',
 			'refused-non-public-address' => '/^Refusing to fetch: host .* non-public address\b/i',

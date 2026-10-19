@@ -463,28 +463,31 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 		getCmd('d.get_hash='),
 		getCmd('d.get_custom=').'chk-replacement',
 		getCmd('d.get_custom=').'chk-replaces',
-		getCmd('d.get_custom=').'chk-replacing')));
+		getCmd('d.get_custom=').'chk-replacing',
+		getCmd('d.get_custom=').'chk-reuse')));
 	$scan->important = false;
-	if(!$scan->success() || !is_array($scan->val) || count($scan->val) % 4 !== 0)
+	if(!$scan->success() || !is_array($scan->val) || count($scan->val) % 5 !== 0)
 		return(false);
 	$seenHashes = array();
 	$paths = array();
 	$inodes = array();
 	$bindings = array();
-	for($index = 0; $index < count($scan->val); $index += 4)
+	for($index = 0; $index < count($scan->val); $index += 5)
 	{
-		$row = array_slice($scan->val, $index, 4);
+		$row = array_slice($scan->val, $index, 5);
 		$hash = erasedataCanonicalHash($row[0]);
 		if($hash === false || !is_string($row[0]) || strtoupper($row[0]) !== $hash
 			|| !is_string($row[1]) || !is_string($row[2]) || !is_string($row[3])
+			|| !is_string($row[4])
 			|| isset($seenHashes[$hash]))
 			return(false);
 		$seenHashes[$hash] = true;
 		if($hash === $oldHash && $row[1] === '' && $row[2] === ''
-			&& $row[3] === $oldMarker)
+			&& $row[3] === $oldMarker && $row[4] === '')
 			continue;
+		// An independently loaded successor keeps its own path and inode claims.
 		if($hash === $newHash && $row[1] === $marker && $row[2] === $record
-			&& $row[3] === '')
+			&& $row[3] === '' && $row[4] === '')
 			continue;
 		$failure = null;
 		$owned = erasedataCollectPhysicalPaths($hash, $failure);
@@ -2426,6 +2429,7 @@ if(!function_exists('erasedataDrainDiagnostic'))
 	// belongs to, how many members it covers and what the consequence is.
 	// Never a raw path, a settings root, a manifest byte, a hash LIST or any
 	// text rTorrent sent us.
+	// A null member count means no queue count was observed, not an empty queue.
 	//
 	// `file=` is the one exception, and it is a bare name, never a directory: a
 	// refusal that only a human can repair has to name the thing they must act
@@ -2437,8 +2441,8 @@ if(!function_exists('erasedataDrainDiagnostic'))
 	{
 		erasedataAdmissionRefusalReason($reason);
 		$message = 'erasedata: '.$reason
-			.' generation='.(erasedataGenerationIsValid($generation) ? $generation : 'none')
-			.' members='.(int)$members
+			.' generation='.(erasedataGenerationIsValid($generation) ? $generation : 'unknown')
+			.' members='.($members === null ? 'unknown' : (int)$members)
 			.(erasedataIsCanonicalPendingHash($hash) ? ' hash='.$hash : '')
 			.(erasedataIsStagingObjectName($object) ? ' file='.$object : '')
 			.' consequence='.$consequence;
@@ -2757,30 +2761,13 @@ if(!function_exists('erasedataPreparedBindingStillMatches'))
 			return(false);
 		foreach($accepted as $hash)
 		{
-			if(!isset($entry['staging'][$hash]['path'], $entry['staging'][$hash]['dev'],
-				$entry['staging'][$hash]['ino']))
+			if(!isset($entry['staging'][$hash]['path']))
 				return(false);
 			$path = $entry['staging'][$hash]['path'];
 			if(!is_string($path) || strpos($path, $listPath.'/') !== 0)
 				return(false);
-			clearstatcache(true, $path);
-			if(is_link($path) || !is_file($path))
-				return(false);
-			$stat = @lstat($path);
-			if(!is_array($stat) || !isset($stat['dev'], $stat['ino'], $stat['mode'])
-				|| (($stat['mode'] & 0170000) !== 0100000)
-				|| (string)$stat['dev'] !== (string)$entry['staging'][$hash]['dev']
-				|| (string)$stat['ino'] !== (string)$entry['staging'][$hash]['ino'])
-				return(false);
-			$bytes = @file_get_contents($path, false, null, 0,
-				ErasedataManifestCodec::MAX_MANIFEST_BYTES + 1);
-			if(!is_string($bytes)
-				|| strlen($bytes) > ErasedataManifestCodec::MAX_MANIFEST_BYTES)
-				return(false);
-			$manifest = ErasedataManifestCodec::decodeBytes($bytes, $hash);
-			if(!is_array($manifest) || !isset($manifest['operation'], $manifest['force'])
-				|| $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD
-				|| $manifest['force'] !== $force)
+			// Admission and recovery must grant erase authority from the same bytes.
+			if(!erasedataStagingManifestStillMatches($entry['staging'][$hash], $hash, $force))
 				return(false);
 		}
 		return(true);
@@ -3424,6 +3411,13 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						'admission-refused-unreadable-state');
 					return(false);
 				}
+				if(!erasedataDrainStateBelongsTo($state, $user))
+				{
+					erasedataReleaseAdmissionLocks($stateLock, $locks);
+					erasedataDrainDiagnostic($log, 'admission-user-mismatch',
+						$state['generation'], $members, 'admission-refused-nothing-staged');
+					return(false);
+				}
 				$abandoned = array();
 				$state = erasedataPruneResolvedJournalRecords($listPath, $state, $abandoned);
 				foreach($abandoned as $dropped => $phase)
@@ -3988,7 +3982,7 @@ if(!function_exists('erasedataAcknowledgeDrainGeneration'))
 		$stateLock = erasedataAcquireDrainStateLock($listPath);
 		if(!is_resource($stateLock))
 		{
-			erasedataDrainDiagnostic($log, 'state-lock', null, 0,
+			erasedataDrainDiagnostic($log, 'state-lock', null, null,
 				'nothing-acknowledged-nothing-consumed');
 			return(false);
 		}
@@ -3996,7 +3990,7 @@ if(!function_exists('erasedataAcknowledgeDrainGeneration'))
 		if(!is_array($state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'state-unreadable', null, 0,
+			erasedataDrainDiagnostic($log, 'state-unreadable', null, null,
 				'nothing-acknowledged-nothing-consumed');
 			return(false);
 		}
@@ -4007,7 +4001,7 @@ if(!function_exists('erasedataAcknowledgeDrainGeneration'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'worker-user-mismatch',
-				$state['generation'], 0, 'nothing-acknowledged-nothing-consumed');
+				$state['generation'], null, 'nothing-acknowledged-nothing-consumed');
 			return(false);
 		}
 		$state['user'] = $user;
@@ -4019,7 +4013,7 @@ if(!function_exists('erasedataAcknowledgeDrainGeneration'))
 		if(!erasedataWriteDrainState($listPath, $state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'ack-write', $generation, 0,
+			erasedataDrainDiagnostic($log, 'ack-write', $generation, null,
 				'nothing-acknowledged-nothing-consumed');
 			return(false);
 		}
@@ -4239,12 +4233,12 @@ if(!function_exists('erasedataDrainReportGroup'))
 		// That is the intended reading -- 'worker-busy' at generation 2 is not the
 		// same fact as 'worker-busy' at generation 1 -- but it is a behaviour
 		// change, not a no-op, and it costs one extra line per group per
-		// generation. 'cleanup' is unaffected: its notes carry 'none' by
+		// generation. 'cleanup' is unaffected: its notes carry no generation by
 		// construction, because a cleanup job's name has no generation in it.
 		foreach($notes as $note)
 			$parts[] = $note[0].'|'
 				.(erasedataGenerationIsValid($note[1]) ? $note[1] : '')
-				.'|'.(int)$note[2].'|'
+				.'|'.($note[2] === null ? 'unknown' : (int)$note[2]).'|'
 				.(erasedataIsCanonicalPendingHash($note[4]) ? $note[4] : '')
 				.'|'.(isset($note[5]) && erasedataIsStagingObjectName($note[5])
 					? $note[5] : '')
@@ -5197,7 +5191,7 @@ if(!function_exists('erasedataRetirementRun'))
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
 			|| $key === false)
 		{
-			$notes[] = array('retire-user', null, 0, 'schedule-retained', null);
+			$notes[] = array('retire-user', null, null, 'schedule-retained', null);
 			return(false);
 		}
 		// A queue directory that does not exist was never armed by anybody, so
@@ -5207,14 +5201,14 @@ if(!function_exists('erasedataRetirementRun'))
 		$stateLock = erasedataAcquireDrainStateLock($listPath);
 		if(!is_resource($stateLock))
 		{
-			$notes[] = array('retire-state-lock', null, 0, 'schedule-retained', null);
+			$notes[] = array('retire-state-lock', null, null, 'schedule-retained', null);
 			return(false);
 		}
 		$state = erasedataReadDrainState($listPath);
 		if(!is_array($state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-state-unreadable', null, 0,
+			$notes[] = array('retire-state-unreadable', null, null,
 				'schedule-retained', null);
 			return(false);
 		}
@@ -5223,7 +5217,7 @@ if(!function_exists('erasedataRetirementRun'))
 		if(!erasedataDrainStateBelongsTo($state, $user))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-user-mismatch', $state['generation'], 0,
+			$notes[] = array('retire-user-mismatch', $state['generation'], null,
 				'schedule-retained', null);
 			return(false);
 		}
@@ -5241,7 +5235,7 @@ if(!function_exists('erasedataRetirementRun'))
 		if($state['generation'] === ERASEDATA_DRAIN_ZERO_GENERATION)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-unarmed', $state['generation'], 0,
+			$notes[] = array('retire-unarmed', $state['generation'], null,
 				'no-generation-was-ever-admitted-nothing-to-retire', null);
 			return(false);
 		}
@@ -5254,7 +5248,7 @@ if(!function_exists('erasedataRetirementRun'))
 			|| $state['acknowledged'] !== $state['generation'])
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-unstable', $state['generation'], 0,
+			$notes[] = array('retire-unstable', $state['generation'], null,
 				'schedule-retained-admission-in-flight', null);
 			return(false);
 		}
@@ -5483,13 +5477,13 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 			return(false);
 		if(erasedataDrainScheduleKey($user) === false)
 		{
-			erasedataDrainDiagnostic($log, 'rearm-user', null, 0,
+			erasedataDrainDiagnostic($log, 'rearm-user', null, null,
 				$context . '-refused');
 			return(false);
 		}
 		if(!erasedataEnsureQueueDirectory($listPath))
 		{
-			erasedataDrainDiagnostic($log, 'queue-unavailable', null, 0,
+			erasedataDrainDiagnostic($log, 'queue-unavailable', null, null,
 				$context . '-refused');
 			return(false);
 		}
@@ -5499,15 +5493,15 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		$stateLock = erasedataAcquireDrainStateLock($listPath, true);
 		if(!is_resource($stateLock))
 		{
-			erasedataDrainDiagnostic($log, 'rearm-state-busy', null, 0,
-				$context . '-deferred-another-actor-owns-the-state');
+			erasedataDrainDiagnostic($log, 'rearm-state-busy', null, null,
+				$context . '-deferred-state-lock-unavailable');
 			return(false);
 		}
 		$state = erasedataReadDrainState($listPath);
 		if(!is_array($state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			erasedataDrainDiagnostic($log, 'rearm-state-unreadable', null, 0,
+			erasedataDrainDiagnostic($log, 'rearm-state-unreadable', null, null,
 				$context . '-refused-nothing-armed');
 			return(false);
 		}
@@ -5517,7 +5511,7 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			erasedataDrainDiagnostic($log, 'rearm-user-mismatch',
-				$state['generation'], 0, $context . '-refused-nothing-armed');
+				$state['generation'], null, $context . '-refused-nothing-armed');
 			return(false);
 		}
 		$scan = erasedataRetirementScan($dependencies);
@@ -5778,13 +5772,13 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		// a single-user install and gets the bare-prefix key like any other.
 		if(erasedataDrainScheduleKey($user) === false)
 		{
-			erasedataDrainDiagnostic($log, 'worker-user', null, 0,
+			erasedataDrainDiagnostic($log, 'worker-user', null, null,
 				'worker-refused-nothing-consumed');
 			return(false);
 		}
 		if(!erasedataEnsureQueueDirectory($listPath))
 		{
-			erasedataDrainDiagnostic($log, 'queue-unavailable', null, 0,
+			erasedataDrainDiagnostic($log, 'queue-unavailable', null, null,
 				'worker-refused-nothing-consumed');
 			return(false);
 		}
@@ -5811,7 +5805,7 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		if(!is_resource($workerLock))
 		{
 			erasedataDrainReportGroup($log, 'tick', array(array('worker-busy',
-				$generation, 0, 'another-worker-owns-the-queue-nothing-consumed',
+				$generation, null, 'worker-lock-unavailable-nothing-consumed',
 				null)), $memory, $fresh);
 			// A tick that got no further re-evaluated nothing but itself, so it
 			// KEEPS what the last complete tick remembered and only adds its
@@ -5834,7 +5828,7 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		if(!is_resource($schedulerLock))
 		{
 			erasedataDrainReportGroup($log, 'tick', array(array('scheduler-lock',
-				$generation, 0, 'nothing-consumed', null)), $memory, $fresh);
+				$generation, null, 'nothing-consumed', null)), $memory, $fresh);
 			erasedataPersistDrainReport($listPath, $user, array_merge($memory, $fresh));
 			erasedataReleaseDrainPassLock($workerLock);
 			return(false);
@@ -5847,7 +5841,7 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			if(!is_array($obligations))
 			{
 				erasedataDrainReportGroup($log, 'tick', array(array('queue-unreadable',
-					$generation, 0, 'nothing-consumed', null)), $memory, $fresh);
+					$generation, null, 'nothing-consumed', null)), $memory, $fresh);
 				erasedataPersistDrainReport($listPath, $user, array_merge($memory, $fresh));
 				return(false);
 			}

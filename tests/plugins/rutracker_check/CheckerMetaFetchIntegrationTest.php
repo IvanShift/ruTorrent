@@ -19,10 +19,12 @@ require_once($checkerMetaFetchRoot . '/php/xmlrpc_path.php');
 class CheckerMetaFetchErasedata
 {
     public static $calls = array();
+    public static $publishResult = true;
 
     public static function reset()
     {
         self::$calls = array();
+        self::$publishResult = true;
     }
 
     public static function record($name, $arguments)
@@ -59,7 +61,7 @@ function erasedataArmObsoleteCleanup($job)
 function erasedataPublishObsoleteCleanup(&$job)
 {
     CheckerMetaFetchErasedata::record(__FUNCTION__, array($job));
-    return true;
+    return CheckerMetaFetchErasedata::$publishResult;
 }
 
 function erasedataKickCollector($oldHash)
@@ -82,6 +84,7 @@ class rTorrent
     public static $sources = array();
     public static $sends = array();
     public static $replacementMarker = '';
+    public static $replacementRecord = '';
     public static $sourceReads = array();
     public static $sourceSequences = array();
 
@@ -91,6 +94,7 @@ class rTorrent
         self::$sources = array();
         self::$sends = array();
         self::$replacementMarker = '';
+        self::$replacementRecord = '';
         self::$sourceReads = array();
         self::$sourceSequences = array();
     }
@@ -114,10 +118,13 @@ class rTorrent
         );
         // The real implementation reads the session file. Once d.erase has
         // run that file is gone, so a reordered harvest must fail loudly.
-        foreach (rXMLRPCRequest::$requests as $request)
+        foreach (rXMLRPCRequest::$requests as $request) {
+            if (($request['values'] ?? null) !== array(RuTrackerAtomicOwnership::SENTINEL_ERASED))
+                continue;
             foreach ($request['commands'] as $command)
                 if (self::commandErasesHash($command, $hash))
                     return false;
+        }
         if (isset(self::$sourceSequences[$hash]) && count(self::$sourceSequences[$hash]))
             return array_shift(self::$sourceSequences[$hash]);
         return array_key_exists($hash, self::$sources) ? self::$sources[$hash] : false;
@@ -154,6 +161,12 @@ class rTorrent
         foreach ((array) $addition as $command)
             if (strpos((string) $command, $prefix) === 0) {
                 self::$replacementMarker = substr((string) $command, strlen($prefix), -1);
+                break;
+            }
+        $prefix = getCmd('d.set_custom') . '="chk-replaces","';
+        foreach ((array) $addition as $command)
+            if (strpos((string) $command, $prefix) === 0) {
+                self::$replacementRecord = substr((string) $command, strlen($prefix), -1);
                 break;
             }
         return strtoupper((string) $torrent->hash_info());
@@ -246,6 +259,15 @@ $suite->test('the source guard recognizes an erase nested inside an atomic branc
         'the fixture records a successful conditional erase');
     strictAssertSame(false, rTorrent::getSource($hash),
         'a source read after nested d.erase is rejected like the real missing session file');
+    foreach (array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED, 'unreadable') as $reply) {
+        cmfReset();
+        $source = new stdClass();
+        rTorrent::$sources[$hash] = $source;
+        rXMLRPCRequest::queue('branch', true, false, array($reply));
+        RuTrackerAtomicOwnership::erase($hash, array('chk-meta-old' => str_repeat('B', 40)));
+        strictAssertSame($source, rTorrent::getSource($hash),
+            'a skipped or unknown erase response cannot simulate a missing session');
+    }
 });
 
 $suite->test('real UPTODATE projection writes state time and same stime', function () {
@@ -335,8 +357,10 @@ $suite->test('real readiness waits through stale session bytes until the expecte
     cmfAssertNoQueuedResponses();
 });
 
-$suite->test('immediate metadata is harvested and committed by both real classes', function () {
+function cmfHarvestComposition($published)
+{
     cmfReset();
+    CheckerMetaFetchErasedata::$publishResult = $published;
     $announce = 'http://bt.t-ru.org/ann?pk=integration-secret';
     $oldTorrent = cmfTorrent('integration-old.bin', $announce,
         'https://rutracker.org/forum/viewtopic.php?t=42');
@@ -386,16 +410,35 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         return array(rTorrent::$replacementMarker);
     });
     rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ERASED));
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
-    rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_state', 'd.is_open'),
-        true, false, array('', '', 0, 0)
-    );
+    $retainedMarkers = null;
+    $activation = function ($commands) use (&$retainedMarkers) {
+        if ($retainedMarkers === null)
+            $retainedMarkers = array(rTorrent::$replacementMarker, rTorrent::$replacementRecord);
+        $body = (string) $commands[0]->params[2];
+        if (strpos($body, 'chk-replaces,') !== false
+            && strpos($body, 'chk-replacement,') !== false)
+            $retainedMarkers = array('', '');
+        return array(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+    };
+    rXMLRPCRequest::queue('branch', true, false, $activation);
+    if (!$published) {
+        // A second activation would see the committed, running successor and
+        // retire the handles createTorrent deliberately kept for publication.
+        rXMLRPCRequest::queue(
+            array('d.get_custom', 'd.get_custom', 'd.get_state', 'd.is_open'),
+            true, false, function () use (&$retainedMarkers) {
+                return array($retainedMarkers[0], $retainedMarkers[1], 1, 1);
+            });
+        rXMLRPCRequest::queue('branch', true, false, $activation);
+    }
 
     $result = RuTrackerMetaFetch::begin($oldHash, $newHash, 42, $announce, 1000);
 
     strictAssertSame(null, $result,
         'real createTorrent success and real MetaFetch success agree on null');
+    strictAssertSame($published ? array('', '')
+        : array(rTorrent::$replacementMarker, rTorrent::$replacementRecord), $retainedMarkers,
+        'failed cleanup publication retains the exact successor recovery handles');
     strictAssertSame(1, count(rTorrent::$magnets), 'the fetch loads exactly one magnet');
     strictAssertSame(1, count(rTorrent::$sends), 'the harvest stages exactly one real Torrent');
     strictAssertSame($newHash,
@@ -415,12 +458,10 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'the harvest stamps no invented creation date');
     strictAssertSame(null, $staged->meta('created by'),
         'the harvest claims no authorship of someone else\'s torrent');
-    strictAssertSame(array(
-        'erasedataPrepareObsoleteCleanup',
-        'erasedataArmObsoleteCleanup',
-        'erasedataPublishObsoleteCleanup',
-        'erasedataKickCollector',
-    ), array_column(CheckerMetaFetchErasedata::$calls, 'name'),
+    $cleanupCalls = array('erasedataPrepareObsoleteCleanup', 'erasedataArmObsoleteCleanup',
+        'erasedataPublishObsoleteCleanup');
+    if ($published) $cleanupCalls[] = 'erasedataKickCollector';
+    strictAssertSame($cleanupCalls, array_column(CheckerMetaFetchErasedata::$calls, 'name'),
         'the real checker composes the exact durable cleanup producer lifecycle');
     strictAssertSame($base . '/integration-old.bin',
         CheckerMetaFetchErasedata::$calls[0]['arguments'][5][0]['path'],
@@ -472,12 +513,19 @@ $suite->test('immediate metadata is harvested and committed by both real classes
         'd.get_custom',
         'branch',
         'branch',
-        'd.get_custom|d.get_custom|d.get_state|d.is_open',
     ), cmfRequestKeys(), 'the full composition completes without an unexpected fallback branch');
-    cmfAssertNoQueuedResponses();
+    if ($published) cmfAssertNoQueuedResponses();
     } finally {
         strictRemoveTree($base);
     }
+}
+
+$suite->test('immediate metadata is harvested and committed by both real classes', function () {
+    cmfHarvestComposition(true);
+});
+
+$suite->test('metafetch preserves recovery handles after the real checker cannot publish cleanup', function () {
+    cmfHarvestComposition(false);
 });
 
 $suite->test('real download guards reject non-200 and malformed bodies before mutation', function () {

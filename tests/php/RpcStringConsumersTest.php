@@ -63,13 +63,13 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/httprpc/action.php'                     => 38,
 		'plugins/ratio/ratio.php'                        => 9,
 		'plugins/retrackers/update.php'                  => 2,
-		'plugins/rutracker_check/check.php'              => 66,
+		'plugins/rutracker_check/check.php'              => 96,
 		'plugins/rutracker_check/forumindex.php'         => 16,
-		'plugins/rutracker_check/metafetch.php'          => 48,
+		'plugins/rutracker_check/metafetch.php'          => 40,
 		'plugins/rutracker_check/runstate.php'           => 9,
 		'plugins/rutracker_check/trackers/rutracker.php' => 7,
 		'plugins/rutracker_check/update.php'             => 1,
-		'plugins/rutracker_check/updatepass.php'         => 67,
+		'plugins/rutracker_check/updatepass.php'         => 70,
 		'plugins/scheduler/scheduler.php'                => 4,
 		'plugins/throttle/throttle.php'                  => 10,
 		'plugins/trafic/ratios.php'                      => 3,
@@ -120,7 +120,8 @@ class RpcStringConsumersTest extends TestCase
 		}
 		$next = function ($from, $step) use ($tokens, $count) {
 			for ($at = $from + $step; $at >= 0 && $at < $count; $at += $step) {
-				if (!is_array($tokens[$at]) || $tokens[$at][0] !== T_WHITESPACE) {
+				if (!is_array($tokens[$at])
+					|| !in_array($tokens[$at][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) {
 					return $at;
 				}
 			}
@@ -144,7 +145,6 @@ class RpcStringConsumersTest extends TestCase
 					&& ($after < 0 || $tokens[$after] !== '(')) $result['semantic']++;
 				if ($name >= 0 && is_array($tokens[$name]) && $tokens[$name][0] === T_STRING
 					&& in_array($tokens[$name][1], array('val', 'strings'), true)) {
-					$after = $next($name, 1);
 					if ($after < 0 || $tokens[$after] !== '(') {
 						$result['access']++;
 					}
@@ -250,6 +250,24 @@ PHP;
 		$this->assertSame(array('access' => 7, 'unescape' => 3, 'flag' => 2, 'table' => 2, 'array' => 2, 'moveRows' => 2, 'semantic' => 2), self::scan($fixture),
 			'seven reads (plain, $this, strings, both interpolations, spaced, ?->), three unescapeValue '
 			. 'mentions besides the definition, two flags, two typed table calls, two typed array calls, two Move edges and two semantic property accesses: ' . json_encode(self::scan($fixture)));
+	}
+
+	public function testCommentsBetweenTokensCannotHideDaemonReads()
+	{
+		$fixture = <<<'PHP'
+<?php
+$a = $r /* receiver */ -> /* property */ val;
+$b = $r-> /** property */ strings;
+$r-> /* method */ stringArray /* arguments */ ();
+$r-> /* method */ stringTable /* arguments */ (2);
+$r-> /* semantic value */ responseValues;
+AutoToolsMoveQueue /* owner */ :: /* method */ downloadRows /* arguments */ ();
+class X { static function /* definition */ unescapeValue() {} }
+$r->val /* method, not a property */ ();
+PHP;
+		$this->assertSame(array('access' => 2, 'unescape' => 0, 'flag' => 0,
+			'table' => 1, 'array' => 1, 'moveRows' => 1, 'semantic' => 1), self::scan($fixture),
+			'comments are trivia between PHP tokens, including method arguments and definitions');
 	}
 
 	public function testEveryFileReadingDaemonStringsHasBeenReviewed()

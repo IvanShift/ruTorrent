@@ -316,6 +316,7 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 function fetchErrorParityCases()
 {
     return array(
+        array('invalid-url', 'invalid-url'),
         array('Invalid protocol "gopher"\n', 'invalid-protocol'),
         array('Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'),
         array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
@@ -325,6 +326,7 @@ function fetchErrorParityCases()
         array('Error: cURL could not verify the certificate of "tracker.invalid" (error 60). Install the certificate authority that signed it.', 'certificate-verification'),
         array('socket creation failed (-3)', 'socket-create'),
         array('dns lookup failure (-4)', 'dns-lookup'),
+        array('dns lookup failure (0)', 'dns-lookup'),
         array('connection refused or timed out (-5)', 'connect-refused'),
         array('connection failed (111)', 'connect-errno'),
         array('too-many-interim-responses', 'too-many-interim-responses'),
@@ -337,6 +339,8 @@ function fetchErrorParityCases()
         array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
         array('request-deadline', 'request-deadline'),
         array('request-throttled', 'request-throttled'),
+        array('credential-post-failed', 'credential-post-failed'),
+        array('login-paused', 'login-paused'),
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
         array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
@@ -358,12 +362,13 @@ function fetchErrorParityCases()
 // membership can.
 function fetchErrorTokenVocabulary()
 {
-    return array('', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
+    return array('', 'invalid-url', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
         'redirect-refused', 'curl-transfer', 'certificate-verification', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'request-deadline', 'request-throttled', 'unclassified');
+        'unreadable-or-oversized-response', 'request-deadline', 'request-throttled',
+        'credential-post-failed', 'login-paused', 'unclassified');
 }
 
 function strictInvoke($className, $method, $arguments = array())

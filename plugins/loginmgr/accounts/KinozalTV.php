@@ -15,16 +15,9 @@ class KinozalTVAccount extends commonAccount
 
 	public function fetch($client, $url, $login, $password, $method, $content_type, $body)
 	{
-		KinozalResponse::throttle();
 		if(KinozalResponse::requestsBlocked($url)) return(false);
 		$ret = parent::fetch($client, $url, $login, $password, $method, $content_type, $body);
 		return(KinozalResponse::observeChallenge($client, $url) ? false : $ret);
-	}
-
-	public function check($client, $login, $password, $auto)
-	{
-		KinozalResponse::throttle();
-		return(parent::check($client, $login, $password, $auto));
 	}
 
 	protected function isOK($client)

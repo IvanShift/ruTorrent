@@ -122,7 +122,7 @@ class RenameAdmissionTest extends TestCase
             $this->assertTrue($this->admit(new ErasedataAdmissionProbeFixture()) === false,
                 'the removal is refused: '.$case);
             $this->assertEquals('paths', erasedataAdmissionRefusalReason(), 'with its own reason: '.$case);
-            $this->assertEquals(array('erasedata: paths generation=none members=1 hash='.$this->hash
+            $this->assertEquals(array('erasedata: paths generation=unknown members=1 hash='.$this->hash
                 .' consequence=admission-refused-torrents-retained'), FileUtil::$log,
                 'one classified line names the download: '.$case.': '.implode(' | ', FileUtil::$log));
             $this->assertEquals(array(), rXMLRPCRequest::$erased, 'nothing is erased: '.$case);
@@ -148,6 +148,64 @@ class RenameAdmissionTest extends TestCase
         $this->assertEquals(array($this->hash), rXMLRPCRequest::$erased, 'supported admission erases the requested torrent');
         $this->assertEquals(array($this->queue, $this->dir.'/data'), $filesystem->parents,
             'admission probes queue and payload parents before publication');
+    }
+
+    public function testAdmissionCannotTakeOverAnotherUsersDrainState()
+    {
+        foreach(array('', 'another-user') as $owner)
+        {
+            $state = erasedataDefaultDrainState();
+            $state['user'] = $owner;
+            $state['generation'] = $state['acknowledged'] = '0000000000000001';
+            $state['phase'] = 'armed';
+            $this->assertTrue(erasedataWriteDrainState($this->queue, $state),
+                'the other user has an established durable queue');
+            $before = file_get_contents(erasedataDrainStatePath($this->queue));
+            rXMLRPCRequest::$erased = rXMLRPCRequest::$requested = FileUtil::$log = array();
+            $this->assertSame(false, $this->admit(new ErasedataAdmissionProbeFixture()),
+                'an established owner, including the empty user, cannot be replaced by admission');
+            $this->assertSame($before, file_get_contents(erasedataDrainStatePath($this->queue)),
+                'refusal preserves the exact durable owner and generation');
+            $this->assertSame('admission-user-mismatch', erasedataAdmissionRefusalReason(),
+                'the refusal identifies the owner mismatch');
+            $this->assertSame(array(), rXMLRPCRequest::$erased, 'the foreign queue authorizes no erase');
+            $this->assertTrue(!in_array('schedule', rXMLRPCRequest::$requested, true),
+                'no second user schedule is installed over the same queue');
+            $this->assertSame(array(), glob($this->queue.'/*.pending'), 'no foreign obligation is added');
+            $this->assertSame(array(), glob($this->queue.'/*.tmp'), 'no foreign manifest is staged');
+        }
+    }
+
+    public function testPreparedBindingUsesTheSameUnambiguousManifestRuleAsRecovery()
+    {
+        $generation = '0000000000000001';
+        $path = $this->dir.'/data/quoted\\name';
+        $contents = ErasedataManifestCodec::encode($this->hash,
+            array('base' => $path, 'multi' => false, 'files' => array($path)), 1);
+        $staged = erasedataStageAdmittedManifest($this->queue, $this->hash, $generation, $contents);
+        $this->assertTrue(is_array($staged), 'the initial daemon-byte manifest is staged');
+        if(!is_array($staged)) return;
+        $record = array('path' => $staged['path'], 'dev' => (string)$staged['stat']['dev'],
+            'ino' => (string)$staged['stat']['ino']);
+        $state = erasedataDefaultDrainState();
+        $state['user'] = User::getUser();
+        $state['generation'] = $state['acknowledged'] = $generation;
+        $state['phase'] = 'armed';
+        $state['journal'][$generation] = erasedataDrainJournalRecord(
+            array($this->hash => $record), 1, 'prepared');
+        $this->assertTrue(erasedataPreparedBindingStillMatches($state, $this->queue,
+            User::getUser(), $generation, array($this->hash), 1), 'the marked daemon paths admit the binding');
+        $legacy = json_decode($contents, true);
+        unset($legacy['path_bytes']);
+        file_put_contents($record['path'], json_encode($legacy));
+        $decoded = ErasedataManifestCodec::decodeBytes(file_get_contents($record['path']), $this->hash);
+        $this->assertTrue(is_array($decoded) && $decoded['paths_ambiguous'],
+            'the same inode now contains a readable but ambiguous historic path spelling');
+        $this->assertSame(false, erasedataStagingManifestStillMatches($record, $this->hash, 1),
+            'recovery refuses the ambiguous manifest');
+        $this->assertSame(false, erasedataPreparedBindingStillMatches($state, $this->queue,
+            User::getUser(), $generation, array($this->hash), 1),
+            'admission also refuses before granting erase authority');
     }
 
     public function testPrivateManifestPublicationNeedsNoNoReplaceCapability()

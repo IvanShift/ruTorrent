@@ -661,8 +661,7 @@ class ErasedataNativeCompletionTest extends TestCase
 						$current=erasedataCleanupCurrentIdentity($public);$expected=$current;
 						$expected['canonical']=$current['path'];
 						$method=self::makeAccessible(new ReflectionMethod($service,'cleanupCapturedFile'));
-						$arguments=array($public,$current,$expected,$key,$manifest,array(),
-							array('observations'=>array(),'by_identity'=>array()),&$reason);
+						$arguments=array($public,$current,$expected,$key,$manifest,array(),&$reason);
 					}
 					$result=$method->invokeArgs($service,$arguments);
 				}

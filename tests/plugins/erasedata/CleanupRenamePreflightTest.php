@@ -262,7 +262,7 @@ class CleanupRenamePreflightTest extends TestCase
 		$dir = $this->dir.'/data/other';
 		mkdir($dir, 0700);
 		file_put_contents($dir.'/kept.bin', 'kept');
-		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', '', ''));
 		rXMLRPCRequest::$responses['d.get_directory'] = array('ok' => true,
 			'val' => array($dir, 'kept.bin', $dir.'/kept.bin', 'pad/0', ''));
 		rXMLRPCRequest::$responses['d.save_full_session'] = array('ok' => true, 'val' => array(0));
@@ -294,7 +294,7 @@ class CleanupRenamePreflightTest extends TestCase
 		file_put_contents($dir.'/kept.bin', 'kept');
 		ErasedataCollectorTestState::$fleetSources[$other] = array('hash' => $other,
 			'info' => array('length' => 4, 'name' => 'kept.bin'));
-		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', '', ''));
 		// The exact plan's stored read and the claim read start with the same
 		// command; the claim's answer has no multi-file flag, so the plan is
 		// not confirmed while the claim is.
@@ -316,7 +316,7 @@ class CleanupRenamePreflightTest extends TestCase
 	public function testDownloadWithoutSessionCopyOrDaemonFileListBlocksWithItsHashNamed()
 	{
 		$other = str_repeat('D', 40);
-		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', ''));
+		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true, 'val' => array($other, '', '', '', ''));
 		foreach(array('unanswered' => null, 'relative directory' => array('relative', 'f', ''),
 			'absolute file path' => array($this->dir, '/f', ''), 'odd answer' => array($this->dir, 'f')) as $case => $val)
 		{
@@ -360,7 +360,7 @@ class CleanupRenamePreflightTest extends TestCase
 		$hash = str_repeat('F', 40);
 		$mirror->scriptRpc(array(
 			'get_session' => array('ok' => true, 'val' => array($mirror->settings.'/', '')),
-			'd.multicall' => array('ok' => true, 'val' => array($hash, '', '', '')),
+			'd.multicall' => array('ok' => true, 'val' => array($hash, '', '', '', '')),
 			'd.is_meta' => array('ok' => $rpcOk,
 				'val' => array($meta, $replyHash === null ? $hash : $replyHash))));
 		// Captured verbatim from a real daemon's unresolved magnet session on
@@ -456,7 +456,7 @@ class CleanupRenamePreflightTest extends TestCase
 	{
 		$stubHash = str_repeat('F', 40);
 		rXMLRPCRequest::$responses['d.multicall'] = array('ok' => true,
-			'val' => array($stubHash, '', '', ''));
+			'val' => array($stubHash, '', '', '', ''));
 		$envelope = $this->capturedEnvelope($stubHash);
 		ErasedataCollectorTestState::$fleetSources[$stubHash] = array('hash' => $stubHash, 'info' => $envelope);
 		rXMLRPCRequest::$responses['d.is_meta'] = array('ok' => true, 'val' => array(1, $stubHash));

@@ -588,9 +588,6 @@ class KinozalCheckImpl
             return ruTrackerChecker::STE_UNCHANGED;
 
         $id = $matches["id"];
-        // Every request below, loginmgr's and redirect hops included, keeps
-        // Kinozal's pace and its pause after HTTP 429, across processes.
-        KinozalResponse::throttle();
         $doors = self::doorOrder('details', self::$door);
         foreach ($doors as $index => $door) {
             if (self::isClosed($door, 'details')) continue;

@@ -18,7 +18,7 @@ foreach (array('blocking owner', 'unknown fleet') as $scene) {
             ErasedataCollectorTestState::$fleetSources = array();
             $owner = str_repeat('D', 40);
             if ($scene === 'blocking owner')
-                rXMLRPCRequest::queue('d.multicall', true, false, array($owner, '', '', ''));
+                rXMLRPCRequest::queue('d.multicall', true, false, array($owner, '', '', '', ''));
             $old = (object) array('info' => array('name' => 'old.bin', 'length' => 3));
             $new = (object) array('info' => array('name' => 'new.bin', 'length' => 3));
             $result = strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array(

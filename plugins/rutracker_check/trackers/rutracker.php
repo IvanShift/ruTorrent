@@ -28,7 +28,7 @@ class RuTrackerCheckImpl
         return preg_match('/^[0-9A-F]{40}$/', $value) ? $value : null;
     }
 
-    static private function extractTopicId($url)
+    static public function extractTopicId($url)
     {
         if (!is_string($url) || $url === '') return null;
         $parts = @parse_url(trim($url));
