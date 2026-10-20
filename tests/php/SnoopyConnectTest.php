@@ -43,8 +43,10 @@ namespace {
                     $GLOBALS['snoopyConnectCall'] = null;
                     $client = new \SnoopyConnectFixture\Snoopy();
                     $client->IP = $bind === '' ? null : $bind;
+                    $client->status = 200;
                     testAssertSame(false, $client->connect(), 'The socket connection failed');
                     testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
+                    testAssertSame(-102, $client->status, 'A positive errno replaces a stale HTTP status');
                     testAssertSame('connection failed (' . $errno . ')', $client->error,
                         'The original OS errno remains available for detailed diagnostics');
                     testAssertSame('transport=socket status=-102 reason=socket',
@@ -57,28 +59,34 @@ namespace {
             }
         },
         'zero and legacy negative socket statuses retain their diagnostic contract' => function () {
-            foreach (array(
-                0 => array('transport=no-status reason=unset', 'connection failed (0)', 'connect-errno', 'connect-failed'),
-                -3 => array('transport=socket status=-3 reason=socket-create', 'socket creation failed (-3)', 'socket-create', 'socket-create-failed'),
-                -4 => array('transport=socket status=-4 reason=dns', 'dns lookup failure (-4)', 'dns-lookup', 'dns-failed'),
-                -5 => array('transport=socket status=-5 reason=connect', 'connection refused or timed out (-5)', 'connect-refused', 'connect-failed'),
-            ) as $errno => $expected) {
-                list($detail, $message, $classification, $downloadReason) = $expected;
-                $GLOBALS['snoopyConnectErrno'] = $errno;
-                $client = new \SnoopyConnectFixture\Snoopy();
-                testAssertSame(false, $client->connect(), 'The socket connection failed');
-                testAssertSame($errno, $client->status, 'Existing nonpositive statuses are preserved');
-                testAssertSame($detail,
-                    \SnoopyConnectFixture\ruTrackerChecker::fetchStatusDetail($client->status),
-                    'Existing transport classification is preserved');
-                testAssertSame($message, $client->error,
-                    'A specific socket error must not fall through to the generic message');
-                testAssertSame($classification,
-                    \SnoopyConnectFixture\ruTrackerChecker::classifyFetchError($client->error),
-                    'The checker receives the socket failure category');
-                testAssertSame($downloadReason . ' errno=' . $errno,
-                    \SnoopyConnectFixture\TorrentFetch::rejectionReason($client, false),
-                    'Torrent download diagnostics keep the category and exact errno');
+            foreach (array('' => 'fsockopen', '127.0.0.1' => 'stream_socket_client') as $bind => $call) {
+                foreach (array(
+                    0 => array('transport=no-status reason=unset', 'connection failed (0)', 'connect-errno', 'connect-failed'),
+                    -3 => array('transport=socket status=-3 reason=socket-create', 'socket creation failed (-3)', 'socket-create', 'socket-create-failed'),
+                    -4 => array('transport=socket status=-4 reason=dns', 'dns lookup failure (-4)', 'dns-lookup', 'dns-failed'),
+                    -5 => array('transport=socket status=-5 reason=connect', 'connection refused or timed out (-5)', 'connect-refused', 'connect-failed'),
+                ) as $errno => $expected) {
+                    list($detail, $message, $classification, $downloadReason) = $expected;
+                    $GLOBALS['snoopyConnectErrno'] = $errno;
+                    $GLOBALS['snoopyConnectCall'] = null;
+                    $client = new \SnoopyConnectFixture\Snoopy();
+                    $client->IP = $bind === '' ? null : $bind;
+                    $client->status = 200;
+                    testAssertSame(false, $client->connect(), 'The socket connection failed');
+                    testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
+                    testAssertSame($errno, $client->status, 'Existing nonpositive statuses are preserved');
+                    testAssertSame($detail,
+                        \SnoopyConnectFixture\ruTrackerChecker::fetchStatusDetail($client->status),
+                        'Existing transport classification is preserved');
+                    testAssertSame($message, $client->error,
+                        'A specific socket error must not fall through to the generic message');
+                    testAssertSame($classification,
+                        \SnoopyConnectFixture\ruTrackerChecker::classifyFetchError($client->error),
+                        'The checker receives the socket failure category');
+                    testAssertSame($downloadReason . ' errno=' . $errno,
+                        \SnoopyConnectFixture\TorrentFetch::rejectionReason($client, false),
+                        'Torrent download diagnostics keep the category and exact errno');
+                }
             }
         },
         'PHP resolver failure with errno zero is classified without leaking the resolver text' => function () {
@@ -99,6 +107,7 @@ namespace {
                         $GLOBALS['snoopyConnectCall'] = null;
                         $client = new \SnoopyConnectFixture\Snoopy();
                         $client->IP = $bind === '' ? null : $bind;
+                        $client->status = 200;
                         testAssertSame(false, $client->connect(), 'The socket connection failed');
                         testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
                         testAssertSame(0, $client->status, 'Resolver classification does not invent an OS errno');

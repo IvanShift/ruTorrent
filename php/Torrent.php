@@ -600,7 +600,7 @@ class Torrent
 			return(false);
         	}
 		$pieces = '';
-		while( $piece = fread( $handle, $piece_length ) )
+		while( ($piece = fread( $handle, $piece_length )) !== false && $piece !== '' )
 			$pieces .= self::pack( $piece );
 		fclose( $handle );
 		return(array(

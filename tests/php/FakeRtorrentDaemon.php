@@ -44,6 +44,19 @@ class FakeRtorrentWireReply
 	}
 }
 
+/** Serializable wire pieces with a delay between writes; build with paced(). */
+class FakeRtorrentPacedReply
+{
+	public $pieces;
+	public $pause;
+
+	public function __construct($pieces, $pause)
+	{
+		$this->pieces = $pieces;
+		$this->pause = $pause;
+	}
+}
+
 /**
  * One XMLRPC fault reply with a chosen code and text, such as rTorrent's
  * missing-hash answer. Build it with FakeRtorrentDaemon::fault(); responder
@@ -303,9 +316,24 @@ class FakeRtorrentDaemon
 	}
 
 	/**
+	 * A reply entry that makes the daemon write these pieces in order, waiting
+	 * $pause microseconds between them, and close. The wait is what makes each
+	 * piece a read of its own on the other end: a reader blocked in fread()
+	 * gets the piece that woke it, not the whole reply. An answer written in
+	 * one call cannot show where a reader's reads fall, because the kernel is
+	 * free to hand it over in any division at all -- including, under TCP, one
+	 * that puts a single byte in a read by itself.
+	 */
+	public static function paced($pieces, $pause = 300000)
+	{
+		return new FakeRtorrentPacedReply($pieces, $pause);
+	}
+
+	/**
 	 * $replies is a list, one per request: each entry is the list of values
-	 * the daemon answers that request with, or self::fault(...). It may also
-	 * be a callback accepting the request body and method names for flows
+	 * the daemon answers that request with, self::fault(...), self::raw(...)
+	 * or self::paced(...). It may also be a callback accepting the request
+	 * body and method names for flows
 	 * with dynamic readback keys, or for a caller whose next request depends
 	 * on the answer to this one (rTorrentSettings::obtain()); such a daemon
 	 * answers for as long as it is asked rather than for a fixed count. A
@@ -463,11 +491,29 @@ class FakeRtorrentDaemon
 				file_put_contents($this->logFile, $method . "\n", FILE_APPEND);
 			}
 			$values = $dynamic ? $replies($body, $methods) : $replies[$index];
+			if($values instanceof FakeRtorrentPacedReply)
+				$this->writePaced($client, $values);
 			// A null plan deliberately drops the reply after recording the call.
-			if($values !== null) @fwrite($client, $this->reply($values));
+			elseif($values !== null)
+				@fwrite($client, $this->reply($values));
 			@fclose($client);
 		}
 		@fclose($this->socket);
+	}
+
+	private function writePaced($client, $paced)
+	{
+		$first = true;
+		foreach ($paced->pieces as $piece) {
+			if (!$first) {
+				usleep($paced->pause);
+			}
+			$first = false;
+			// The reader may have stopped and closed before the last piece;
+			// that is the failure such a test is looking for, not an error here.
+			@fwrite($client, $piece);
+			@fflush($client);
+		}
 	}
 
 	/** SCGI: "<len>:<headers>,<body>", with CONTENT_LENGTH in the headers. */

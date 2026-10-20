@@ -607,7 +607,9 @@ class Snoopy
 		// only after removing it, including for pathless source URLs.
 		$urlCookies = self::getURLCookies($URI);
 		$parts = @parse_url($URI);
-		$this->host = is_array($parts) && isset($parts["host"]) ? $parts["host"] : '';
+		if(!is_array($parts) || !isset($parts["scheme"]) || !isset($parts["host"]))
+			return($this->fetch($URI,$method,$content_type,$body));
+		$this->host = $parts["host"];
 		$originalCookies = $this->cookies;
 		$originalSecureCookies = $this->secureResponseCookies;
 		$originalFlattenedCookies = $this->flattenedResponseCookies;
@@ -1706,7 +1708,7 @@ class Snoopy
 		$transferCodings = array();
 		$interimBlocks = 0;
 
-		while($currentHeader = fgets($fp,$this->_maxlinelen))
+		while(($currentHeader = fgets($fp,$this->_maxlinelen)) !== false)
 		{
 			if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 			{
@@ -1761,9 +1763,8 @@ class Snoopy
 
 			$this->headers[] = $currentHeader;
 		}
-
-		// fgets() returns false when read_timeout expires before a header line
-		// arrives, so the in-loop check never sees a peer that stays silent.
+		// A timed-out fgets() returns false without entering the loop body.
+		// Check before another read can clear the stream's timeout flag.
 		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 		{
 			$this->status=-100;
