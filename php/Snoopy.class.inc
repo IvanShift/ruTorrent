@@ -89,6 +89,8 @@ class Snoopy
 	private static $throttleLogged = array();
 	private $throttleReservation = null;
 	private $throttleResponse = null;
+	private $kinozalAttempt = null;
+	private static $kinozalAttemptNumber = 0;
 
 	var $user		=	"";			// user for http authentication
 	var $pass		=	"";			// password for http authentication
@@ -205,6 +207,57 @@ class Snoopy
 		return $time[0] + $time[1] / 1000000000.0;
 	}
 
+	private function beginKinozalAttempt($url, $method)
+	{
+		require_once(__DIR__ . '/kinozal.php');
+		$target = KinozalResponse::httpLogTarget($url, $method);
+		$this->kinozalAttempt = $target === null ? null : $target + array(
+			'pid' => getmypid(), 'attempt' => ++self::$kinozalAttemptNumber,
+			'caller' => KinozalResponse::httpLogCaller(),
+			// The limiter uses the installation settings path, not an account.
+			// This getter explicitly avoids creating a profile just for logging.
+			'profile' => substr(hash('sha256', FileUtil::getProfilePathEx('', false) . '/settings'), 0, 12),
+			'transport' => null, 'transport_attempted' => false, 'configured_proxy' => null, 'clock' => self::requestClock(),
+			'wall' => microtime(true), 'http' => 0, 'retry_after_s' => null, 'strikes' => null, 'until' => null);
+	}
+
+	private function beginKinozalTransport($transport)
+	{
+		if($this->kinozalAttempt === null)
+			return;
+		$this->kinozalAttempt['transport'] = $transport;
+		$this->kinozalAttempt['transport_attempted'] = true;
+		$this->kinozalAttempt['configured_proxy'] = (bool)$this->_isproxy;
+		$this->kinozalAttempt['clock'] = self::requestClock();
+		$this->kinozalAttempt['wall'] = microtime(true);
+	}
+
+	private function rememberKinozalThrottleState($state)
+	{
+		if($this->kinozalAttempt !== null)
+		{
+			$this->kinozalAttempt['strikes'] = $state['strikes'];
+			$this->kinozalAttempt['until'] = $state['until'];
+		}
+	}
+
+	private function finishKinozalAttempt($completed)
+	{
+		if($this->kinozalAttempt === null)
+			return;
+		$record = $this->kinozalAttempt;
+		$this->kinozalAttempt = null;
+		$record['started_at'] = gmdate('Y-m-d\TH:i:s', (int)$record['wall'])
+			. sprintf('.%03dZ', (int)(($record['wall'] - floor($record['wall'])) * 1000));
+		$record['duration_ms'] = round(max(0.0, self::requestClock() - $record['clock']) * 1000, 3);
+		$record['status'] = (int)$this->status;
+		$record['result'] = !$record['transport_attempted'] ? 'local-refused' : ($completed ? 'response' : 'transfer-failed');
+		unset($record['clock'], $record['wall'], $record['curl_origin']);
+		// Best-effort diagnostics must not turn a working fetch into a refusal.
+		try { @FileUtil::toLog('kinozal-http: ' . json_encode($record, JSON_UNESCAPED_SLASHES)); }
+		catch(Throwable $error) { }
+	}
+
 	private function requestTimeLeft()
 	{
 		return $this->requestDeadline === null ? null : $this->requestDeadline - self::requestClock();
@@ -270,6 +323,7 @@ class Snoopy
 		$until = $slot = null;
 		self::changeThrottleState($group, function(&$state) use($throttle, $budget, &$until, &$slot)
 		{
+			$this->rememberKinozalThrottleState($state);
 			$now = microtime(true);
 			$start = max($now, $state['next'], $state['ended']);
 			if($state['until'] > $now)
@@ -304,6 +358,7 @@ class Snoopy
 		// Another process may have met a 429 while this one waited its turn.
 		$until = self::changeThrottleState($group, function(&$state)
 		{
+			$this->rememberKinozalThrottleState($state);
 			return($state['until'] > microtime(true) ? $state['until'] : null);
 		});
 		if($until !== null)
@@ -369,10 +424,12 @@ class Snoopy
 					- $throttle['margin'];
 				$state['until'] = max($state['until'], $now + min(max($own, (float)$retryAfter),
 					$throttle['maxPause']));
+				$this->rememberKinozalThrottleState($state);
 				return($state['until']);
 			}
 			if($http >= 100)
 				$state['strikes'] = 0;
+			$this->rememberKinozalThrottleState($state);
 			return(null);
 		});
 		if($paused !== null)
@@ -1156,6 +1213,8 @@ class Snoopy
 
 	public function fetch($URI,$method="GET",$content_type="",$body="")
 	{
+		$previousAttempt = $this->kinozalAttempt;
+		$this->beginKinozalAttempt($URI, $method);
 		$parts = @parse_url((string) $URI);
 		$scopedCredentials = is_array($parts) && isset($parts['user']);
 		if($scopedCredentials)
@@ -1169,6 +1228,10 @@ class Snoopy
 		}
 		finally
 		{
+			// Normal hops finish before redirect recursion. Early local refusals
+			// finish here, and a nested HostConnect fetch restores its parent's context.
+			$this->finishKinozalAttempt(false);
+			$this->kinozalAttempt = $previousAttempt;
 			// URL userinfo belongs to this request chain, not to a reused client.
 			if($scopedCredentials)
 			{
@@ -1206,6 +1269,15 @@ class Snoopy
 			"content_type" => &$content_type,
 			"body" => &$body
 		) );
+		// HostConnect may rewrite the method. Categorize the effective request,
+		// while keeping paths, query values and arbitrary method text out of logs.
+		$target = KinozalResponse::httpLogTarget($URI, $method);
+		if($target === null)
+			$this->kinozalAttempt = null;
+		else if($this->kinozalAttempt === null)
+			$this->beginKinozalAttempt($URI, $method);
+		else
+			$this->kinozalAttempt = array_merge($this->kinozalAttempt, $target);
 		if($this->_redirectdepth === 0)
 			$this->requestChainSourceURL = $URI;
 		$this->port = empty($parts["port"]) ? (($parts["scheme"]=="https") ? 443 : 80) : $parts["port"];
@@ -1241,6 +1313,7 @@ class Snoopy
 			{
 				if($this->proxy_proto!='https' && $this->requestDeadline === null)
 				{
+					$this->beginKinozalTransport('socket');
 					if(($fp = $this->connect())!==false)
 					{
 						$path = (isset($parts["path"]) ? $parts["path"] : "/").(isset($parts["query"]) ? "?".$parts["query"] : "");
@@ -1278,6 +1351,7 @@ class Snoopy
 		}
 		if($throttle !== null)
 			$this->leaveThrottle($ret);
+		$this->finishKinozalAttempt($ret);
 		if($ret)
 		{
 			$this->lastResponseURL = $URI;
@@ -1556,11 +1630,21 @@ class Snoopy
 	{
 		// Complete final headers own the limiter verdict even if the body fails.
 		// Keep only these facts; discarded headers must not feed setcookies().
-		if($this->throttleReservation !== null
+		if(($this->throttleReservation !== null || $this->kinozalAttempt !== null)
 			&& preg_match('~^HTTP/\S+\s+(\d{3})~', (string)$this->response_code, $match)
 			&& (int)$match[1] >= 200)
-			$this->throttleResponse = array((int)$match[1],
-				(int)$match[1] === 429 ? $this->retryAfterSeconds() : null);
+		{
+			$http = (int)$match[1];
+			$retryAfter = $http === 429 ? $this->retryAfterSeconds() : null;
+			if($this->throttleReservation !== null)
+				$this->throttleResponse = array($http, $retryAfter);
+			if($this->kinozalAttempt !== null && ($this->kinozalAttempt['transport'] !== 'curl'
+				|| ($this->kinozalAttempt['curl_origin'] ?? 0) === $http))
+			{
+				$this->kinozalAttempt['http'] = $http;
+				$this->kinozalAttempt['retry_after_s'] = $retryAfter;
+			}
+		}
 	}
 
 	protected function refuseResponseBody($reason)
@@ -2025,6 +2109,7 @@ class Snoopy
 		$maxDownload = max(1, (int)$this->maxlength);
 		try
 		{
+			$this->beginKinozalTransport('curl');
 			exec(escapeshellarg(Utility::getExternal('curl'))." -g --max-filesize ".$maxDownload
 				." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)
 				." --write-out ".escapeshellarg('%{http_code}')." ".$cmdline_params." ".escapeshellarg($curlURL),$results,$return);
@@ -2034,6 +2119,10 @@ class Snoopy
 			if($bodyfile !== null)
 				@unlink($bodyfile);
 		}
+		$originStatus = count($results) === 1 && preg_match('/^[0-9]{3}$/D', $results[0])
+			? (int)$results[0] : 0;
+		if($this->kinozalAttempt !== null)
+			$this->kinozalAttempt['curl_origin'] = $originStatus;
 		$this->_redirectaddr = false;
 		$this->headers = array();
 		$this->status = $return;
@@ -2045,8 +2134,6 @@ class Snoopy
 			{
 				// curl's transfer code excludes CONNECT replies: a tunnel can
 				// succeed before TLS times out without any origin response.
-				$originStatus = count($results) === 1 && preg_match('/^[0-9]{3}$/D', $results[0])
-					? (int)$results[0] : 0;
 				$result_headers = @file($headerfile);
 				if($originStatus >= 200 && is_array($result_headers))
 					$this->readCurlHeaders($result_headers, $scheme, $originStatus);

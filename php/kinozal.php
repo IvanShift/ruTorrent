@@ -58,6 +58,42 @@ class KinozalResponse
 
 	private static $doors = null;
 
+	// Fixed diagnostic categories only: neither a URL suffix nor an arbitrary
+	// subdomain/method may turn routine logging into a credential transcript.
+	public static function httpLogTarget($url, $method)
+	{
+		$host = UrlHost::of($url);
+		$known = null;
+		foreach(array_merge(self::SITE_HOSTS, self::MIRROR_HOSTS) as $candidate)
+			if(UrlHost::isOneOf($host, array($candidate)))
+			{
+				$known = $host === $candidate ? $candidate : '*.' . $candidate;
+				break;
+			}
+		if($known === null || !in_array(@parse_url((string)$url, PHP_URL_SCHEME), array('http', 'https'), true))
+			return(null);
+		$method = strtoupper((string)$method);
+		if(!in_array($method, array('GET', 'POST', 'HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'), true))
+			$method = 'OTHER';
+		$paths = array('/login.php' => 'login-form', '/details.php' => 'details',
+			'/get_srv_details.php' => 'details-api', '/download.php' => 'download', '/rss.xml' => 'rss');
+		$path = @parse_url((string)$url, PHP_URL_PATH);
+		$operation = $path === '/takelogin.php' && $method === 'POST' ? 'credential-post' : ($paths[$path ?? ''] ?? 'other');
+		return(array('host' => $known, 'method' => $method, 'operation' => $operation));
+	}
+
+	public static function httpLogCaller()
+	{
+		$script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_FILENAME'] ?? ''));
+		foreach(array('rutracker_check/update.php' => 'checker-update',
+			'rutracker_check/batch_check.php' => 'checker-manual', 'rutracker_check/action.php' => 'checker-manual',
+			'loginmgr/update.php' => 'login-refresh', 'loginmgr/action.php' => 'login-settings',
+			'rss/update.php' => 'rss', 'rss/action.php' => 'rss') as $suffix => $caller)
+			if(substr($script, -strlen('/plugins/' . $suffix)) === '/plugins/' . $suffix)
+				return($caller);
+		return('other');
+	}
+
 	// The doors to Kinozal, in order: $kinozalHosts when it is set (in
 	// conf/config.php, which loginmgr and rutracker_check both load), else the
 	// mirrors. It orders the update checker, names the automatic refresh's
