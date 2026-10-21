@@ -46,6 +46,11 @@ PHP;
         $client->proxy_host = $client->proxy_port = '';
         $client->proxy_proto = 'http';
         $client->IP = null;
+        // php/util.php loads conf/config.php, so the configuration of the
+        // install the suite is run from reaches this client. With the
+        // private-network guard on, fetch() refuses the loopback peer before
+        // connecting and the failure reads as the peer's.
+        $client->block_private = false;
         $client->read_timeout = 3;
         $url = 'http://' . $address . '/body';
         if ($curl) {
@@ -106,6 +111,57 @@ $tests = array(
             list($client, $request) = bodyBytesRequest(true, $body);
             bodyBytesAssert($request['body'] === $body, 'The POST must contain the supplied string, not file contents');
             bodyBytesAssert(file_get_contents($file) === $canary, 'The local canary remains unchanged');
+        } finally {
+            unlink($file);
+        }
+    },
+    // The two transports build a request in different ways -- one writes the
+    // bytes to a socket itself, the other hands them to curl as an argument --
+    // so a body is only known to survive if both are measured on the same one.
+    // These shapes are the ones a transport could read as something other than
+    // bytes: a local filename, curl options, shell metacharacters, and the line
+    // breaks curl -d strips out of the input it reads from a file.
+    'both transports put the same bytes on the wire for every body shape' => function () {
+        $file = tempnam(sys_get_temp_dir(), 'snoopy-body-');
+        try {
+            bodyBytesAssert(file_put_contents($file, 'canary') === 6, 'The local canary is written');
+            $bodies = array(
+                'a leading at sign' => '@' . $file,
+                'a leading dash' => '-X POST',
+                'the spelling of a curl option' => '--data-raw',
+                'embedded line breaks' => "first=1\nsecond=2\r\nthird=3",
+                'nothing but a line break' => "\n",
+                'a single quote' => "name=it's",
+                'a shell substitution' => 'name=$(id)`id`',
+                'a backslash' => 'name=a\\b',
+            );
+            foreach ($bodies as $label => $body) {
+                $sent = array();
+                foreach (array(false => 'socket', true => 'curl') as $curl => $transport) {
+                    try {
+                        list($client, $request) = bodyBytesRequest($curl, $body);
+                    } catch (Throwable $error) {
+                        // A body the transport mangles makes the peer wait for
+                        // bytes that never arrive, which it reports as its own
+                        // failure; say which shape it was.
+                        throw new RuntimeException('The ' . $transport . ' transport did not complete '
+                            . $label . ' (' . bin2hex($body) . '): ' . $error->getMessage());
+                    }
+                    bodyBytesAssert($request['body'] === $body,
+                        'The ' . $transport . ' transport must send ' . $label . ' unchanged: sent '
+                        . bin2hex($body) . ', received ' . bin2hex($request['body']));
+                    bodyBytesAssert(preg_match('/^Content-Length: ' . strlen($body) . '\r?$/mi',
+                        $request['headers']) === 1,
+                        'The ' . $transport . ' transport must declare ' . strlen($body) . ' bytes for '
+                        . $label . ': ' . json_encode($request['headers']));
+                    $sent[$transport] = $request['body'];
+                }
+                bodyBytesAssert($sent['socket'] === $sent['curl'],
+                    'The transports must agree on the bytes of ' . $label . ': socket sent '
+                    . bin2hex($sent['socket']) . ', curl sent ' . bin2hex($sent['curl']));
+                bodyBytesAssert(file_get_contents($file) === 'canary',
+                    'No transport may read or write a local file for ' . $label);
+            }
         } finally {
             unlink($file);
         }

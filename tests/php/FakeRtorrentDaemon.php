@@ -331,13 +331,18 @@ class FakeRtorrentDaemon
 
 	/**
 	 * $replies is a list, one per request: each entry is the list of values
-	 * the daemon answers that request with, self::fault(...), self::raw(...)
-	 * or self::paced(...). It may also be a callback accepting the request
-	 * body and method names for flows
-	 * with dynamic readback keys, or for a caller whose next request depends
-	 * on the answer to this one (rTorrentSettings::obtain()); such a daemon
-	 * answers for as long as it is asked rather than for a fixed count. A
-	 * false reply is fault('fixture failure'); null closes without a reply.
+	 * the daemon answers that request with, self::fault(...) or
+	 * self::raw(...), self::paced(...), or null to close without a reply.
+	 *
+	 * It may instead be a Closure taking the request body and returning one of
+	 * those, for a caller whose own next request depends on the answer to
+	 * this one -- rTorrentSettings::obtain() is seven round trips and chooses
+	 * several of them from what it has been told so far. Such a daemon
+	 * answers for as long as it is asked rather than for a fixed count.
+	 * Serializable plans run through proc_open(); a Closure retains the optional
+	 * pcntl path. A serializable responder object instead receives the body and
+	 * method names. $replyClassFiles must define its test-owned class before the
+	 * worker unserializes it.
 	 */
 	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = array())
 	{
@@ -356,12 +361,16 @@ class FakeRtorrentDaemon
 		@unlink($this->bodyLogFile);
 		if($replies instanceof Closure)
 		{
-			if(!function_exists('pcntl_fork'))
-				throw new RuntimeException('a closure reply requires pcntl; use a serializable reply plan');
+			if(!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')
+				|| !function_exists('posix_kill'))
+				throw new RuntimeException('a closure reply requires pcntl and posix; use a serializable reply plan');
 			$this->listen();
 			$this->pid = pcntl_fork();
 			if($this->pid === -1)
+			{
+				fclose($this->socket);
 				throw new RuntimeException('cannot fork a daemon');
+			}
 			if($this->pid === 0)
 			{
 				$this->serve($replies);
@@ -389,7 +398,9 @@ class FakeRtorrentDaemon
 		foreach($replyClassFiles as $file)
 			$source .= 'require_once '.var_export($file, true).';';
 		$source .= 'FakeRtorrentDaemon::runWorker();';
-		$command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($source);
+		// An argv command owns the PHP process directly, without a shell to orphan it.
+		$command = array(PHP_BINARY, '-d', 'display_errors=stderr', '-r', $source);
+		$plan = serialize(array('replies' => $replies, 'logFile' => $this->logFile));
 		$this->process = proc_open($command, array(
 			0 => array('pipe', 'r'),
 			1 => array('pipe', 'w'),
@@ -397,7 +408,6 @@ class FakeRtorrentDaemon
 		), $pipes, dirname($this->logFile));
 		if(!is_resource($this->process))
 			throw new RuntimeException('cannot start a daemon process');
-		$plan = serialize(array('replies' => $replies, 'logFile' => $this->logFile));
 		$sent = 0;
 		while($sent < strlen($plan))
 		{

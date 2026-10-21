@@ -49,13 +49,15 @@ class RedactedOriginTest extends TestCase
 
     public function setUp()
     {
+        // The captured current site is chosen explicitly; no origin ships trusted.
+        $GLOBALS['redactedOrigin'] = 'https://redacted.sh';
         @unlink($_ENV['RU_LOG_FILE']);
     }
 
     public function testOnlyCurrentOriginOwnsRedactedRequests()
     {
         $account = new RedactedAccount();
-        $this->assertSame('https://redacted.sh', $account->url, 'The account uses the current Redacted site');
+        $this->assertSame('https://redacted.sh', $account->url, 'The account uses the explicitly configured current Redacted site');
         $this->assertSame(true, $account->test('https://redacted.sh/torrents.php'), 'Current site owns its requests');
         $this->assertSame(false, $account->test('https://redacted.ch/torrents.php'), 'Parked old domain owns no credentials');
     }

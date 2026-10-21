@@ -139,7 +139,7 @@ class XMLRPCProxy
 	// An unmatched original elevation is refused locally. For names added to
 	// serve checked WebUI batches, an unmatched direct call retains the older
 	// untrusted route. A batch may send all-untrusted members without trust,
-	// but mixed trust or a locally rejected member refuses the whole batch.
+	// but mixed trust goes untrusted; a locally rejected member refuses the batch.
 	//
 	// The claim being made is per call, not per command: not "d.custom1.set is
 	// safe" but "this call, naming one download by hash, with a value rtorrent
@@ -641,7 +641,7 @@ class XMLRPCProxy
 	 */
 	public static function refusedCommandName($value)
 	{
-		$elements = preg_split('/[,\$\{\}()"\s]+/', (string)$value, -1, PREG_SPLIT_NO_EMPTY);
+		$elements = preg_split('/[,;\$\{\}()"\s]+/', (string)$value, -1, PREG_SPLIT_NO_EMPTY);
 		if($elements === false)
 			return null;
 		foreach($elements as $element)
@@ -1511,7 +1511,7 @@ class XMLRPCProxy
 			$memberLogs = array();
 			$untrustedMethods = array();
 			$untrustedMethodsTruncated = false;
-			$batchTrusted = null;
+			$batchTrusted = true;
 			foreach($params[0]['value'] as $index => $rawMember)
 			{
 				$member = self::systemMulticallMember($rawMember);
@@ -1532,10 +1532,10 @@ class XMLRPCProxy
 				if($innerDecision['action'] !== 'send')
 					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log'],
 						isset($innerDecision['offender']) ? $innerDecision['offender'] : $innerDecision['method']);
-				if($batchTrusted !== null && $innerDecision['trusted'] !== $batchTrusted)
-					return self::rejectSystemMember($index, $innerMethod, $innerDecision['log']);
-				$batchTrusted = $innerDecision['trusted'];
-				if(!$batchTrusted)
+				// Trust belongs to the whole connection. Preserve mixed batches on
+				// the untrusted path while retaining every validated member value.
+				$batchTrusted = $batchTrusted && $innerDecision['trusted'];
+				if(!$innerDecision['trusted'])
 				{
 					$name = self::normalizeMethodName($innerMethod);
 					if(!in_array($name, $untrustedMethods, true))

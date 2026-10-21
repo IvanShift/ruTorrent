@@ -22,7 +22,7 @@ class Requests
 	{
 		global $publicURL;
 		$environment = getenv('RU_PUBLIC_URL');
-		// Images expose an empty default; keep config.local.php overrides usable.
+		// An empty environment value permits config.local.php overrides.
 		$usesEnvironment = $environment !== false && $environment !== '';
 		$configured = $usesEnvironment ? $environment : ($publicURL ?? '');
 		if($configured !== '' && $configured !== null)
@@ -168,6 +168,7 @@ class Requests
 			($_SERVER['REQUEST_METHOD']!='POST') )
 		{
 			header('HTTP/1.0 405 Method Not Allowed', true, 405);
+			header('Content-Type: text/plain; charset=UTF-8');
 			die('Method Not Allowed');
 		}
 	}
@@ -213,6 +214,7 @@ class Requests
 				return;
 			error_log('csrf: refused POST: untrusted or missing origin');
 			header('HTTP/1.0 403 Forbidden', true, 403);
+			header('Content-Type: text/plain; charset=UTF-8');
 			die('Forbidden');
 		}
 	}

@@ -17,6 +17,7 @@ switch($cmd)
 		}
 		else
 			CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
+		break;
 	}
 	case 'add':
 	{
@@ -25,6 +26,7 @@ switch($cmd)
 		if(isset($_POST['host'], $_POST['cookies']))
 			$cookies->add($_POST['host'], rawurldecode($_POST['cookies']));
         	CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
+		break;
 	}
 	case 'set':
 	case '':
@@ -41,6 +43,7 @@ switch($cmd)
 			CachedEcho::send($error->getMessage(),"text/plain");
 		}
 		CachedEcho::send($cookies->get(),"application/javascript");
+		break;
 	}
 	default:
 	{

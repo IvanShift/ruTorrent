@@ -139,6 +139,30 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 		$this->assertTrue(count($this->inlineAliases()) >= 2,
 			'the table php/settings.php builds inline was parsed out of it ('
 			. count($this->inlineAliases()) . ' entries)');
+		$gate = $this->baseAliasGate();
+		foreach ($gate === null ? array() : $gate['aliases'] as $name => $info)
+			$this->assertTrue(is_array($info) && isset($info['name']) && array_key_exists('prm', $info),
+				'the inline entry '.$name.' names a command and a prm flag');
+	}
+
+	public function testInlineAliasGateAcceptsBothLiteralArraySpellings()
+	{
+		$source = self::$settingsSource;
+		try {
+			foreach (array(
+				"array('a' => array('name' => 'd.name', 'prm' => 0))",
+				"[ 'a' => [ 'name' => 'd.name', 'prm' => 0, ], ]",
+			) as $literal) {
+				self::$settingsSource = '<?php $this->aliases = array(); '
+					.'if ($this->iVersion > 0x0806) { $this->aliases = '.$literal.'; }';
+				$gate = $this->baseAliasGate();
+				$this->assertEquals(array('op' => '>', 'version' => 0x0806,
+					'aliases' => array('a' => array('name' => 'd.name', 'prm' => 0))), $gate,
+					'the version gate owns the literal aliases after an empty reset');
+			}
+		} finally {
+			self::$settingsSource = $source;
+		}
 	}
 
 	/**

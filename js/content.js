@@ -47,17 +47,13 @@ function makeContent() {
 		},
 	});
 
-	// php/addtorrent.php answers in the frame with one noty(text, kind) call
-	// per item, written as literals. Run only lines that start such a call,
-	// against a collector, as plugins/mobile/init.js does. An answer without
-	// one -- the origin check's 403, the web server's 413 or 5xx page, the
-	// browser's cross-origin error page after a lost connection -- would end
-	// the upload with no message, so it is shown as a failure. The input is
-	// cleared once something was added and kept otherwise, to send again.
+	// Collect the rendered noty calls, as the mobile UI does. A refusal or
+	// unreadable browser error page has no results; show a failure and keep
+	// the input for correction. Clear it only after a confirmed success.
 	var addTorrentFinished = function(frame, input, button, isEmpty) {
 		var d = null;
 		try { d = frame.contentDocument || frame.contentWindow.document; } catch(e) {}
-		// The frame's own blank page loads when the frame is inserted.
+		// Inserting the frame also loads its initial blank page.
 		if(d && (d.location.href == "about:blank"))
 			return;
 		var results = [];

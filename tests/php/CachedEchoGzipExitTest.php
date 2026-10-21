@@ -22,7 +22,7 @@ class CachedEchoGzipExitTest extends TestCase
         rmdir($this->profile);
     }
 
-    private function sendLargeBody($exit, $acceptEncoding = 'gzip')
+    private function sendLargeBody($exit, $acceptEncoding = 'gzip', $gzip = true)
     {
         $util = var_export(__DIR__.'/../../php/util.php', true);
         $encoding = var_export($acceptEncoding, true);
@@ -31,7 +31,8 @@ class CachedEchoGzipExitTest extends TestCase
             .'$_SERVER["REQUEST_METHOD"] = "GET"; '
             .'$_SERVER["HTTP_ACCEPT_ENCODING"] = '.$encoding.'; '
             .'require '.$util.'; '
-            .'$phpUseGzip = true; $phpGzipLevel = 2; '
+            .'$phpUseGzip = '.($gzip ? 'true' : 'false').'; $phpGzipLevel = 2; '
+            .'$tempDirectory = $argv[1]."/answers"; '
             .'CachedEcho::send(str_repeat("A", 2500), "text/plain", false'
             .($exit ? '' : ', false').'); '
             .'echo "AFTER_SEND";';
@@ -48,6 +49,8 @@ class CachedEchoGzipExitTest extends TestCase
         $status = proc_close($process);
         if($status !== 0 || $errors !== '')
             throw new RuntimeException('CachedEcho child failed: '.$errors);
+        $this->assertSame(array(), glob($this->profile.'/answers/*') ?: array(),
+            'the response removes its temporary body before returning or exiting');
         return $body;
     }
 
@@ -166,5 +169,17 @@ class CachedEchoGzipExitTest extends TestCase
             'explicit exit=false keeps post-response work reachable');
         $this->assertSame(str_repeat('A', 2500), gzdecode(substr($body, 0, -10)),
             'the continued response still has the expected gzip payload');
+    }
+
+    public function testLargePlainBodyStopsAtDefaultExit()
+    {
+        $this->assertSame(str_repeat('A', 2500), $this->sendLargeBody(true, 'gzip', false),
+            'the plain response sends the exact body and stops its caller');
+    }
+
+    public function testLargePlainBodyAllowsExplicitContinue()
+    {
+        $this->assertSame(str_repeat('A', 2500).'AFTER_SEND', $this->sendLargeBody(false, 'gzip', false),
+            'an explicit exit=false permits caller cleanup after the exact plain body');
     }
 }

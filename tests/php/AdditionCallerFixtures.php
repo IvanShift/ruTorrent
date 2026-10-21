@@ -62,19 +62,137 @@ trait AdditionCallerFixtures
 	 */
 	public function baseAliasGate()
 	{
+		// Bind the literal to its version gate; an earlier empty reset is not a base table.
 		if (!preg_match('/\$this->iVersion\s*(>=|>)\s*(0x[0-9a-fA-F]+)\s*\)\s*\{\s*'
-			. '\$this->aliases\s*=\s*array\s*\((.*?)\)\s*;/s',
-			$this->settingsSource(), $m)) {
+			. '\$this->aliases\s*=\s*/s', $this->settingsSource(), $m, PREG_OFFSET_CAPTURE)) {
 			return null;
 		}
-		preg_match_all('/"([^"]+)"\s*=>\s*array\(\s*"name"\s*=>\s*"([^"]+)"\s*,\s*'
-			. '"prm"\s*=>\s*(\d+)\s*\)/', $m[3], $entries, PREG_SET_ORDER);
-		$aliases = array();
-		foreach ($entries as $e) {
-			$aliases[$e[1]] = array('name' => $e[2], 'prm' => (int)$e[3]);
-		}
-		return array('op' => $m[1], 'version' => hexdec($m[2]), 'aliases' => $aliases);
+		$tokens = $this->significantTokens('<?php '.substr($this->settingsSource(),
+			$m[0][1] + strlen($m[0][0])));
+		$at = 0;
+		$aliases = $this->constantValue($tokens, $at);
+		if (!is_array($aliases)) return null;
+		return array('op' => $m[1][0], 'version' => hexdec($m[2][0]), 'aliases' => $aliases);
 	}
+
+	/**
+	 * The tokens of $source with whitespace and comments dropped, each as
+	 * array(token id or null for punctuation, text).
+	 */
+	private function significantTokens($source)
+	{
+		$out = array();
+		foreach (token_get_all($source) as $token) {
+			if (is_array($token)) {
+				if (in_array($token[0], array(T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) {
+					continue;
+				}
+				$out[] = array($token[0], $token[1]);
+			} else {
+				$out[] = array(null, $token);
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * The value of the constant expression starting at $at, advancing $at past
+	 * it, or null if the expression is not one this can evaluate -- anything
+	 * built from a variable or a call.
+	 */
+	private function constantValue($tokens, &$at)
+	{
+		if (!isset($tokens[$at])) {
+			return null;
+		}
+		list($id, $text) = $tokens[$at];
+
+		if ($id === T_ARRAY) {
+			$at++;
+			if (!isset($tokens[$at]) || $tokens[$at][1] !== '(') {
+				return null;
+			}
+			return $this->constantArray($tokens, $at, ')');
+		}
+		if ($text === '[') {
+			return $this->constantArray($tokens, $at, ']');
+		}
+		if ($id === T_CONSTANT_ENCAPSED_STRING) {
+			$at++;
+			return $this->literalString($text);
+		}
+		if ($id === T_LNUMBER) {
+			$at++;
+			return intval($text, 0);
+		}
+		if ($id === T_DNUMBER) {
+			$at++;
+			return floatval($text);
+		}
+		if ($text === '-') {
+			$at++;
+			$value = $this->constantValue($tokens, $at);
+			return is_int($value) || is_float($value) ? -$value : null;
+		}
+		if ($id === T_STRING && in_array(strtolower($text), array('true', 'false', 'null'), true)) {
+			$at++;
+			switch (strtolower($text)) {
+				case 'true': return true;
+				case 'false': return false;
+			}
+			return null;
+		}
+		return null;
+	}
+
+	/**
+	 * The entries of an array literal whose opening bracket is at $at, up to
+	 * $close. A trailing comma is allowed, as PHP allows it.
+	 */
+	private function constantArray($tokens, &$at, $close)
+	{
+		$at++;    // the opening bracket
+		$result = array();
+		while (isset($tokens[$at])) {
+			if ($tokens[$at][1] === $close) {
+				$at++;
+				return $result;
+			}
+			$first = $this->constantValue($tokens, $at);
+			if ($first === null) {
+				return null;
+			}
+			if (isset($tokens[$at]) && $tokens[$at][0] === T_DOUBLE_ARROW) {
+				$at++;
+				$second = $this->constantValue($tokens, $at);
+				if ($second === null) {
+					return null;
+				}
+				$result[$first] = $second;
+			} else {
+				$result[] = $first;
+			}
+			if (isset($tokens[$at]) && $tokens[$at][1] === ',') {
+				$at++;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The text a quoted literal stands for. A single-quoted one knows only two
+	 * escapes; a double-quoted one here carries no interpolation, because an
+	 * interpolated string is not one token.
+	 */
+	private function literalString($text)
+	{
+		$body = substr($text, 1, -1);
+		if (substr($text, 0, 1) === "'") {
+			return str_replace(array("\\\\", "\\'"), array("\\", "'"), $body);
+		}
+		return stripcslashes($body);
+	}
+
 
 	private function gatePasses($op, $iVersion, $constant)
 	{

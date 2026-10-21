@@ -877,12 +877,11 @@ class CacheTest extends TestCase
 		$this->assertTrue($cache->set($payload), 'Cache set creates the cache file');
 		$this->assertTrue(file_exists($lockFile), 'Cache set creates the lock file');
 
-		$cache->remove($payload);
-
+		$this->assertTrue($cache->remove($payload), 'Cache remove deletes an existing entry');
 		clearstatcache(true, $cacheFile);
 		clearstatcache(true, $lockFile);
 		$this->assertEquals(false, file_exists($cacheFile), 'Cache remove deletes the cache file');
-		$this->assertEquals(true, file_exists($lockFile), 'Cache remove keeps the lock inode for waiting writers');
+		$this->assertTrue(file_exists($lockFile), 'Cache remove keeps the lock for waiting writers');
 	}
 
 	public function testRemovingAnAbsentKeySucceedsWithoutARefusal()
@@ -1297,5 +1296,55 @@ class CacheTest extends TestCase
 		restore_error_handler();
 
 		$this->assertEquals(['after'], $seen, "The caller's error handler is restored");
+	}
+
+	public function testRemoveDoesNotDeleteWhileAnotherProcessHoldsTheKeyLock()
+	{
+		$payload = new CacheMergePayload();
+		$payload->hash = 'held-remove-cache-test.dat';
+		$cache = new rCache();
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$this->assertTrue($cache->set($payload), 'The cache entry exists before the competing writer');
+		$bytes = file_get_contents($cacheFile);
+		$worker = '$lock = fopen($argv[1], "c");'
+			. 'if ($lock === false || !flock($lock, LOCK_EX)) exit(2);'
+			. 'echo "locked\\n"; fflush(STDOUT);'
+			. 'fgets(STDIN); flock($lock, LOCK_UN); fclose($lock);';
+		$process = proc_open(array(PHP_BINARY, '-r', $worker, $cacheFile . '.lock'),
+			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+		if(!is_resource($process))
+			throw new RuntimeException('Could not start the competing cache writer');
+		try {
+			stream_set_timeout($pipes[1], 5);
+			if(fgets($pipes[1]) !== "locked\n")
+				throw new RuntimeException('The competing cache writer did not acquire its lock');
+			$this->assertEquals(false, $cache->remove($payload),
+				'Remove refuses while a real competing writer holds the key lock');
+			$this->assertEquals($bytes, @file_get_contents($cacheFile),
+				'A refused remove leaves the competing writer\'s cache bytes intact');
+		} finally {
+			fclose($pipes[0]);
+			$errors = stream_get_contents($pipes[2]);
+			fclose($pipes[1]);
+			fclose($pipes[2]);
+			$exit = proc_close($process);
+			$this->assertEquals('', $errors, 'The competing cache writer emits no errors');
+			$this->assertEquals(0, $exit, 'The competing cache writer exits after the release signal');
+		}
+		$this->assertTrue($cache->remove($payload), 'Removal succeeds after the competing writer releases the lock');
+	}
+
+	public function testRemoveDoesNotDeleteWhenTheLockCannotBeOpened()
+	{
+		$payload = new CacheMergePayload();
+		$payload->hash = 'unopenable-remove-cache-test.dat';
+		$cacheFile = FileUtil::getSettingsPath() . '/' . $payload->hash;
+		$bytes = serialize($payload);
+		file_put_contents($cacheFile, $bytes);
+		mkdir($cacheFile . '.lock', 0700);
+		$this->assertEquals(false, @(new rCache())->remove($payload),
+			'Remove refuses when a directory prevents opening the key lock');
+		$this->assertEquals($bytes, @file_get_contents($cacheFile),
+			'A lock-open refusal leaves the removable cache entry intact');
 	}
 }

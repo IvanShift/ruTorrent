@@ -506,7 +506,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 	}
 
-	public function testBothDoorsSendStopBatchAndDeferGetSavePathBatches()
+	public function testBothDoorsTrustStopBatchAndKeepGetSavePathBatchesUntrusted()
 	{
 		$hash = str_repeat('A', 40);
 		$stop = $this->systemBatchXml(array(
@@ -539,9 +539,12 @@ class XMLRPCProxyEntrypointTest extends TestCase
 					array('d.close', array($hash)),
 				));
 				$r = $this->runEntrypoint($door, $path, true);
-				$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
-					&& $r['state']['sends'] === 0,
-					$door.' defers the '.$method.' getsavepath batch without sending it');
+				$this->assertTrue(strpos($r['status'], '200 OK') !== false
+					&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false
+					&& strpos($r['state']['payload'], '<string>'.$method.'</string>') !== false
+					&& strpos($r['state']['payload'], '<string>d.open</string>') !== false
+					&& strpos($r['state']['payload'], '<string>d.close</string>') !== false,
+					$door.' transports every '.$method.' getsavepath member once without trust');
 			}
 			$bad = $this->systemBatchXml(array(
 				array('d.stop', array($hash)), array('d.close', array($hash, 'extra')),
@@ -586,7 +589,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 	}
 
-	public function testBothDoorsKeepHomogeneousFallbackUntrustedAndRejectReverseMixedBatch()
+	public function testBothDoorsKeepHomogeneousFallbackAndReverseMixedBatchUntrusted()
 	{
 		$hash = str_repeat('A', 40);
 		$fallback = $this->systemBatchXml(array(
@@ -615,13 +618,21 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				&& $ok['state']['sends'] === 1 && $ok['state']['trusted'] === false,
 				$door.' sends a homogeneous fallback batch without trust');
 			$no = $this->runEntrypoint($door, $mixed, true);
-			$this->assertTrue(strpos($no['status'], '403 Forbidden') !== false
-				&& $no['state']['sends'] === 0,
-				$door.' refuses an untrusted-first mixed batch without any send');
+			$this->assertTrue(strpos($no['status'], '200 OK') !== false
+				&& $no['state']['sends'] === 1 && $no['state']['trusted'] === false,
+				$door.' sends an untrusted-first mixed batch once without trust');
+			if(!is_string($no['state']['payload']) || $no['state']['payload'] === '') continue;
+			$sent = simplexml_load_string($no['state']['payload']);
+			$members = $sent->params->param->value->array->data->value;
+			$this->assertTrue(count($members) === 2
+				&& (string)$members[0]->struct->member[0]->value->string === 'd.wibble.set'
+				&& (string)$members[1]->struct->member[0]->value->string === 'd.stop'
+				&& (string)$members[0]->struct->member[1]->value->array->data->value[1]->string === '1',
+				$door.' transports both mixed members in order with their values');
 		}
 	}
 
-	public function testBothDoorsSendOnlyFullyCheckedSystemMulticalls()
+	public function testBothDoorsTrustOnlyFullyCheckedSystemMulticalls()
 	{
 		$hash = str_repeat('A', 40);
 		$member = function($method) use ($hash) {
@@ -636,7 +647,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				.'</params></methodCall>';
 		};
 		$allowed = $wrap($member('d.stop').$member('d.start'));
-		$denied = $wrap($member('d.stop').$member('system.client_version'));
+		$mixed = $wrap($member('d.stop').$member('system.client_version'));
 		foreach(array('action', 'rpc2') as $door)
 		{
 			$ok = $this->runEntrypoint($door, $allowed, true);
@@ -646,12 +657,15 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$this->assertTrue($ok['state']['payload_length'] === 703
 				&& $ok['state']['payload_sha256'] === self::CANONICAL_SYSTEM_BATCH_SHA256,
 				$door.' sends the canonical checked batch bytes');
-			$no = $this->runEntrypoint($door, $denied, true);
-			$this->assertTrue(strpos($no['status'], '403 Forbidden') !== false && $no['state']['sends'] === 0,
-				$door.' refuses a batch whose second member was not trusted');
-			$this->assertTrue(strpos($no['body'],
-				"The command 'system.multicall' was rejected by this server.") !== false,
-				$door.' retains the outer client-visible fault');
+			$untrusted = $this->runEntrypoint($door, $mixed, true, 'untrusted-refused');
+			$this->assertTrue(strpos($untrusted['status'], '200 OK') !== false
+				&& $untrusted['state']['sends'] === 1 && $untrusted['state']['trusted'] === false,
+				$door.' sends a trusted-first mixed batch once without trust');
+			$this->assertTrue(strpos((string)$untrusted['state']['payload'], '<string>d.stop</string>') !== false
+				&& strpos((string)$untrusted['state']['payload'], '<string>system.client_version</string>') !== false,
+				$door.' transports both admitted mixed member methods');
+			$this->assertTrue(strpos($untrusted['body'], '<i4>-507</i4>') !== false,
+				$door.' relays a daemon refusal after sending the mixed batch');
 		}
 	}
 
@@ -1305,8 +1319,8 @@ class rSCGITransport
 		}
 
 		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
-		if($send === 'socket-refused' && !$trusted
-			&& strpos($payload, '<methodName>system.sockets.') !== false)
+		if(!$trusted && ($send === 'untrusted-refused' || ($send === 'socket-refused'
+			&& strpos($payload, '<methodName>system.sockets.') !== false)))
 			return '<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
 		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}
@@ -1405,8 +1419,8 @@ class rXMLRPCRequest
 			$failure = ($send === 'false') ? 'connect-failed' : $send;
 			return false;
 		}
-		if($send === 'socket-refused' && !$trusted
-			&& strpos($payload, '<methodName>system.sockets.') !== false)
+		if(!$trusted && ($send === 'untrusted-refused' || ($send === 'socket-refused'
+			&& strpos($payload, '<methodName>system.sockets.') !== false)))
 			return 'HTTP/1.1 200 OK'."\r\n".'Content-Type: text/xml'."\r\n\r\n".'<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
 		return "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}

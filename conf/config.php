@@ -152,6 +152,7 @@
 	$trustedOrigins = preg_split('/\s*,\s*/', (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
 		-1, PREG_SPLIT_NO_EMPTY);
 	// Absolute public application base, including its proxy prefix, for RSS links.
+	// A nonempty RU_PUBLIC_URL environment variable overrides local configuration.
 	$publicURL = $readEnvironment('RU_PUBLIC_URL', '');
 
 	// Load local deployment overrides if present

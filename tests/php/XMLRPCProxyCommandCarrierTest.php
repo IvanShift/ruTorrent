@@ -76,7 +76,7 @@ class XMLRPCProxyCommandCarrierTest extends TestCase
 
 	public function testBatchRefusesUnknownAndNestedCommands()
 	{
-		foreach(array('execute=/bin/id', 'd.multicall=main,execute=/bin/id') as $command)
+		foreach(array('execute=/bin/id', 'd.multicall=main,execute=/bin/id', 'd.wibble=data') as $command)
 		{
 			$d = $this->decide($this->batch(array(array('d.multicall',
 				array('', 'main', $command)))));
@@ -99,11 +99,11 @@ class XMLRPCProxyCommandCarrierTest extends TestCase
 	public function testDirectDirectorySettersAreDeniedAtEitherPath()
 	{
 		foreach(array('d.directory.set', 'd.directory_base.set',
-			'd.set_directory', 'd.set_directory_base') as $name)
+			'd.set_directory', 'd.set_directory_base', 'directory.default.set') as $name)
 		{
 			foreach(array('/torrents1/ok', '/var/www/html') as $path)
 			{
-				$args = array($this->hash, $path);
+				$args = $name === 'directory.default.set' ? array($path) : array($this->hash, $path);
 				$this->assertRefused($this->decide($this->call($name, $args)),
 					$name, $name . ' direct to ' . $path);
 				$this->assertRefused($this->decide($this->batch(array(array($name, $args)))),
@@ -112,13 +112,13 @@ class XMLRPCProxyCommandCarrierTest extends TestCase
 		}
 	}
 
-	public function testMixedTrustBatchIsRefusedButHomogeneousBatchesWork()
+	public function testMixedTrustBatchIsUntrustedButHomogeneousBatchesKeepTheirTrust()
 	{
 		$read = array('d.name', array($this->hash));
 		$write = array('d.custom1.set', array($this->hash, 'label'));
 		$mixed = $this->decide($this->batch(array($write, $read)));
-		$this->assertRefused($mixed, 'system.multicall',
-			'a trusted setter mixed with an untrusted reader');
+		$this->assertTrue($mixed['action'] === 'send' && !$mixed['trusted'],
+			'a validated setter mixed with a reader is sent without granting trust');
 		$reads = $this->decide($this->batch(array($read, $read)));
 		$this->assertTrue($reads['action'] === 'send' && !$reads['trusted'],
 			'a read-only batch still works without trust');
@@ -150,4 +150,13 @@ class XMLRPCProxyCommandCarrierTest extends TestCase
 		$this->assertTrue(XMLRPCProxy::refusedCommandName('d.custom1.set=season 1') === null,
 			'ordinary text is not mistaken for a command');
 	}
+
+	public function testACommandStringEndsAtASemicolon()
+	{
+		$this->assertTrue(XMLRPCProxy::refusedCommandName('d.name=;execute=id') === 'execute',
+			'a semicolon introduces another command for diagnostic classification');
+		$this->assertTrue(XMLRPCProxy::refusedCommandName('d.custom1.set=season 1') === null,
+			'ordinary argument text is not classified as a command');
+	}
+
 }

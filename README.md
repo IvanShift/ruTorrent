@@ -59,8 +59,9 @@ a reverse proxy; `X-Forwarded-Host` is ignored.
 
 If a reverse proxy rewrites `Host` or the application prefix, set
 `RU_PUBLIC_URL=https://public.example/torrents/`, or set `$publicURL` to that
-absolute application base in `conf/config.local.php`. RSS channel, image and
-download links use this base, including its port and path prefix. Credentials,
+absolute application base in `conf/config.local.php`. A nonempty environment
+value overrides the local setting; an empty or unset value permits it. RSS
+channel, image and download links use this base, including its port and path prefix. Credentials,
 query strings and fragments are refused with a configuration diagnostic.
 Without this setting the feed uses the direct request Host, a single
 `X-Forwarded-Proto` value and the server's script path. A CSRF trusted origin

@@ -25,13 +25,22 @@ $suite->test('every shared Snoopy message classifies to its token', function () 
     }
 });
 
+$suite->test('the request body write refusal has one exact classified token', function () {
+    strictAssertSame('request-body-not-written', RuTrackerFetchError::classify('request-body-not-written'),
+        'the local temporary-body failure remains visible without echoing a payload');
+    foreach (array('request-body-not-written extra', 'prefix-request-body-not-written') as $message)
+        strictAssertSame('unclassified', RuTrackerFetchError::classify($message),
+            'a near-match cannot claim the local write-failure token');
+});
+
 // The sentences php/Snoopy.class.inc actually writes, spelled here with
 // the values that file interpolates, so a merge that rewords one is caught by
 // the token it stops producing rather than by a live log nobody reads.
 $suite->test('each of Snoopy own messages has its own token', function () {
     $expected = array(
         'invalid-url' => 'invalid-url',
-        'Invalid protocol "gopher"\n' => 'invalid-protocol',
+        'invalid-protocol "gopher"' => 'invalid-protocol',
+        'request-body-not-written' => 'request-body-not-written',
         'Refusing to fetch: cannot resolve host "nx.invalid".' => 'refused-unresolvable-host',
         'Refusing to fetch: host "a.invalid" resolves to the non-public address 10.0.0.1.'
             => 'refused-non-public-address',
@@ -57,22 +66,22 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
-    // The original assignments, initializer, shared refusal helper,
-    // second account-port refusal and zero-errno resolver failure are classified.
-    strictAssertSame(15, count($assignments[0]),
+    // Protocol refusal now uses the shared request helper instead of a direct
+    // assignment; the remaining assignments retain their classified messages.
+    strictAssertSame(14, count($assignments[0]),
         'new direct Snoopy error assignments require classification');
     // Compare distinct reasons, not call sites: redirects and transports may
     // reuse a refusal, while a new reason still needs explicit classification.
-    preg_match_all('/refuseResponseBody\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
+    preg_match_all('/refuse(?:ResponseBody|Request)\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
     $actualRefusals = array_values(array_unique($refusals[1]));
     $expectedRefusals = array('invalid-url', 'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
         'oversized-response', 'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'request-deadline');
+        'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline');
     sort($actualRefusals);
     sort($expectedRefusals);
     strictAssertSame($expectedRefusals, $actualRefusals,
-        'every distinct body refusal requires an explicit classified case');
+        'every distinct literal request/body refusal requires an explicit classified case');
     strictAssertTrue(strpos($source, "\$this->error = 'oversized-response';") !== false,
         'the oversized response assignment stays classified');
     // Count alone misses a reworded assignment. For direct assignments,
@@ -81,7 +90,8 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     // Body refusal tokens are exact helper arguments.
     $sourceNeedles = array(
         'invalid-url' => 'invalid-url',
-        'invalid-protocol' => '\'Invalid protocol "',
+        'invalid-protocol' => '\'invalid-protocol "',
+        'request-body-not-written' => 'request-body-not-written',
         'refused-unresolvable-host' => '\'Refusing to fetch: cannot resolve host "',
         'refused-non-public-address' => '\'Refusing to fetch: host "',
         'redirect-refused' => 'self::CREDENTIAL_REDIRECT_REFUSED',
@@ -114,10 +124,12 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     strictAssertSame(1, preg_match("/const CREDENTIAL_POST_FAILED\s*=\s*'credential-post-failed';/", $kinozal),
         'the credential POST mark retains the classified token');
     foreach ($sourceNeedles as $token => $needle) {
-        $isBodyRefusal = in_array($token, $expectedRefusals, true);
-        $pattern = $isBodyRefusal
-            ? '/refuseResponseBody\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
+        $isHelperRefusal = in_array($token, $expectedRefusals, true);
+        $pattern = $isHelperRefusal
+            ? '/refuse(?:ResponseBody|Request)\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
             : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
+        if ($token === 'invalid-protocol')
+            $pattern = '/refuseRequest\(\s*' . preg_quote($needle, '/') . '/';
         strictAssertSame(1, preg_match($pattern, $source),
             $token . ': Snoopy still writes the reason this token classifies');
     }
@@ -203,6 +215,9 @@ $suite->test('an unrecognised message classifies rather than echoing', function 
         'the connection failed (111)',
         'socket create failed (-3)',
         'dns lookup failed (-4)',
+        'request-body-not-written extra',
+        'prefix-request-body-not-written',
+        'invalid--protocol "gopher"',
     );
     foreach ($unknown as $message) {
         strictAssertSame('unclassified', RuTrackerFetchError::classify($message),

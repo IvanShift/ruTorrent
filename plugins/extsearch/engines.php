@@ -37,6 +37,38 @@ class commonEngine
 			"peers"=>0,
 			));
 	}
+	// Cached engine requests can outlive loginmgr removal or disablement.
+	protected function loginAccount($name)
+	{
+		$accounts = dirname(__FILE__)."/../loginmgr/accounts.php";
+		$file = dirname(__FILE__)."/../loginmgr/accounts/".$name.".php";
+		if(!rTorrentSettings::get()->isPluginRegistered('loginmgr') ||
+			!is_file($accounts) || !is_file($file))
+			return(null);
+		require_once($accounts);
+		require_once($file);
+		$class = $name."Account";
+		return(new $class());
+	}
+
+	// Search and authentication read one validated origin from the account.
+	// No origin is available while loginmgr or its setting is unavailable.
+	protected function accountOrigin($name)
+	{
+		$account = $this->loginAccount($name);
+		return($account === null ? '' : $account->url);
+	}
+
+	// The one entry a search returns when it has no origin to search: the
+	// setting to fill in, in place of results from a host nobody chose.
+	protected function unconfiguredOriginEntry($name,$setting,&$ret)
+	{
+		$item = $this->getNewEntry();
+		$item["name"] = $name.': set $'.$setting.' to the tracker\'s https origin'
+			.' in the loginmgr plugin configuration';
+		$ret[""] = $item;
+	}
+
 	public function makeClient($url)
 	{
 		global $HTTPTimeoutPerSite;

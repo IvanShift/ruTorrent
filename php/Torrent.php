@@ -356,6 +356,19 @@ class Torrent
 			$dictionary[$key] = $this->decode_data();
 	        }
         	$this->pointer++;
+		// is_list() is the question encode_array() puts to this array when the
+		// torrent is written back, and PHP has already turned every key that is
+		// a decimal number into an integer, so a dictionary it answers yes for
+		// leaves here as a list carrying the values with the keys gone. Nothing
+		// in the array can tell the two apart any more, so the caller is told
+		// instead of being handed a torrent that is not the one it read.
+		//
+		// An empty dictionary is not that: it holds no keys to lose, and it is
+		// indistinguishable from an empty list with nothing either way to
+		// prefer one reading over the other. It stays a list, as before.
+		if( $dictionary && self::is_list( $dictionary ) )
+			$this->notify_err( 'Cannot write back a dictionary whose keys are all decimal numbers: '
+				.implode( ', ', array_keys( $dictionary ) ) );
 	        return($dictionary);
 	}
 
@@ -624,12 +637,12 @@ class Torrent
 	 */
 	private function files( $files, $piece_length )
 	{
-		if(!$this->basedir)
+		if(is_null( $this->basedir ))
         		$files  = array_map( 'realpath', $files );
 
 		usort( $files, array($this,'sortNames') );
 
-		if($this->basedir)
+		if(!is_null( $this->basedir ))
 			$path   = explode( DIRECTORY_SEPARATOR, $this->basedir );
 		else
 		        $path   = explode( DIRECTORY_SEPARATOR, dirname( realpath( current( $files ) ) ) );
@@ -673,7 +686,7 @@ class Torrent
 					'files'         => $info_files,
 					'name'          => end( $path ),
 					'piece length'  => $piece_length,
-					'pieces'        => $pieces . ( $piece ? self::pack( $piece ) : '' )
+					'pieces'        => $pieces . ( $piece !== '' ? self::pack( $piece ) : '' )
 					));
         	}
     	}

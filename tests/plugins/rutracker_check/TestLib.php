@@ -318,6 +318,8 @@ function fetchErrorParityCases()
     return array(
         array('invalid-url', 'invalid-url'),
         array('Invalid protocol "gopher"\n', 'invalid-protocol'),
+        array('invalid-protocol "gopher"', 'invalid-protocol'),
+        array('request-body-not-written', 'request-body-not-written'),
         array('Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'),
         array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
             'refused-non-public-address'),
@@ -367,7 +369,7 @@ function fetchErrorTokenVocabulary()
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'request-deadline', 'request-throttled',
+        'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline', 'request-throttled',
         'credential-post-failed', 'login-paused', 'unclassified');
 }
 

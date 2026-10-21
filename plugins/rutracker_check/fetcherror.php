@@ -75,7 +75,7 @@ class RuTrackerFetchError
 		// to callers that inspect the error field directly.
 		$classes = array(
 			'invalid-url' => '/^invalid-url$/i',
-			'invalid-protocol' => '/^Invalid protocol\b/i',
+			'invalid-protocol' => '/^Invalid[ -]protocol\b/i',
 			'refused-unresolvable-host' => '/^Refusing to fetch: cannot resolve host\b/i',
 			'refused-non-public-address' => '/^Refusing to fetch: host .* non-public address\b/i',
 			'redirect-refused' => '/^credential-redirect-refused$/i',
@@ -93,6 +93,7 @@ class RuTrackerFetchError
 			'invalid-or-oversized-gzip' => '/^invalid-or-oversized-gzip$/i',
 			'gzip-decoder-unavailable' => '/^gzip-decoder-unavailable$/i',
 			'unreadable-or-oversized-response' => '/^unreadable-or-oversized-response$/i',
+			'request-body-not-written' => '/^request-body-not-written$/i',
 			'request-deadline' => '/^request-deadline$/i',
 			'request-throttled' => '/^request-throttled$/i',
 			'credential-post-failed' => '/^credential-post-failed$/i',

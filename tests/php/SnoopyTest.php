@@ -11,6 +11,10 @@ $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/snoopy-core-' . getmypid() . '.log
 // require order. A minimal local runner keeps the real classes intact.
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 
+// Individual guard tests opt in; the install configuration is not their fixture.
+$GLOBALS['httpBlockPrivateNetworks'] = false;
+$GLOBALS['httpPrivateNetworkAllowlist'] = array();
+
 function snoopyCurlArgs()
 {
     return file(getenv('SNOOPY_TEST_ARGS'), FILE_IGNORE_NEW_LINES);
@@ -42,6 +46,10 @@ function snoopyCookieHeaderValues($wire)
 // redirect test reads the request Snoopy made after following the redirect.
 // With $SNOOPY_TEST_REDIRECT set, the first invocation answers 302 with that
 // Location instead; $SNOOPY_TEST_SEEN is how the script remembers it did.
+// $SNOOPY_TEST_BODY_FILE names a file whose bytes become the response body;
+// $SNOOPY_TEST_OMIT_BODY leaves no body file at all, as curl does when the
+// answer has no body. An argument naming a file with a leading @ is read the
+// way curl reads one, so the record holds the request body itself.
 $curlPath = tempnam(sys_get_temp_dir(), 'snoopy-curl-');
 $argsPath = tempnam(sys_get_temp_dir(), 'snoopy-args-');
 $bodyPath = tempnam(sys_get_temp_dir(), 'snoopy-body-');
@@ -61,6 +69,15 @@ while [ "$#" -gt 0 ]; do
 		-o)
 			shift
 			body_file=$1
+			;;
+		# curl reads a request body named with a leading @ out of that
+		# file, so the record carries the bytes it was handed and not
+		# only the name of the file they came in.
+		@/*)
+			if [ -f "${1#@}" ]; then
+				cat "${1#@}" >> "$SNOOPY_TEST_ARGS"
+				printf '\n' >> "$SNOOPY_TEST_ARGS"
+			fi
 			;;
 	esac
 	shift
@@ -335,6 +352,7 @@ PHP
 <?php
 require_once($argv[1]);
 $client = new Snoopy();
+$client->block_private = false;
 $client->read_timeout = 10;
 if ($argv[3] !== '') {
     $client->maxlength = (int) $argv[3];
@@ -1063,6 +1081,11 @@ $tests = array(
         testAssertSame(true, $ok, 'multiple gzip members complete');
         testAssertSame('firstsecond', $client->results,
             'all gzip members reach the caller');
+        list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
+            substr(gzencode('first'), 0, -8));
+        testAssertSame(false, $ok, 'a complete deflate stream without its gzip trailer is refused');
+        testAssertSame('invalid-or-oversized-gzip', $client->error,
+            'the fork requires the entire gzip member, including its trailer');
         list($ok, $client) = snoopyPlainHttpReply('Content-Encoding: gzip',
             gzencode('first').'junk');
         testAssertSame(false, $ok, 'trailing garbage after a valid member is refused');
@@ -2514,6 +2537,7 @@ $tests = array(
 require_once($argv[1]);
 $pathToExternals['curl'] = $argv[2];
 $client = new Snoopy();
+$client->block_private = false;
 $client->maxlength = 1048576;
 $fetched = $client->fetch('https://tracker.test/huge');
 echo json_encode(array(

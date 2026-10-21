@@ -6,7 +6,7 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 /**
  * Compare each validated call alone and as the sole member of a batch.
  * Matching calls must have the same decision, trust level and emitted scalar
- * values. A mixed-trust batch is a separate refusal: no member may borrow
+ * values. A mixed-trust batch goes untrusted: no member may borrow
  * another member's trusted connection. The corpora cover every elevation
  * shape and every load spelling in the current proxy policy.
  */
@@ -708,10 +708,10 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
 	}
 
 	/**
-	 * A trusted call may not be combined with an untrusted reader in one
-	 * system.multicall connection.
+	 * Validated arguments survive beside an untrusted reader, without sharing
+	 * the trusted connection granted to homogeneous validated calls.
 	 */
-	public function testAnElevatedMemberCannotShareTrustWithAnUntrustedMember()
+	public function testAnElevateMemberIsTransformedAlongsideOtherMembers()
 	{
 		$this->start();
 		$sizeLimitMax = $this->property('sizeLimitMax');
@@ -730,8 +730,15 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
 			$batch = $this->decide($this->batch(array(
 				$this->member($method, $good),
 				$this->member('d.name', array($this->hash)))), false);
-			if($batch['action'] !== 'reject' || $batch['payload'] !== '')
-				$this->bad[] = $method . ' can share a trusted batch with d.name';
+			if($batch['action'] !== 'send' || $batch['trusted'] ||
+				$this->arguments($batch['payload'], $method) !== $this->arguments($alone['payload'], $method))
+				$this->bad[] = $method . ' loses its validated arguments or shares trust with d.name';
+			$control = ($method === 'd.start') ? 'd.stop' : 'd.start';
+			$trusted = $this->decide($this->batch(array(
+				$this->member($control, array($this->hash)), $this->member($method, $good))), false);
+			if($trusted['action'] !== 'send' || !$trusted['trusted'] ||
+				$this->arguments($trusted['payload'], $method) !== $this->arguments($alone['payload'], $method))
+				$this->bad[] = $method . ' loses its validated arguments or trust beside another elevated member';
 		}
 		$this->assertTrue($this->cases > 0, 'at least one trusted elevation was tested');
 		$this->verdict('trusted members mixed with an untrusted read');

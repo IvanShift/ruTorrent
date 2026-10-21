@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 // there with one noty(text, kind) call per item. An answer without one --
 // the origin check's 403, the web server's 413 or 5xx page, a browser error
 // page after a lost connection -- used to end the upload with no message at
-// all and with the selection cleared (O-2). The mobile UI already shows such
+// all and with the selection cleared. The mobile UI already shows such
 // an answer as a failure (plugins/mobile/init.js uploadFinished).
 
 window.$ = window.jQuery = require("jquery");
@@ -93,6 +93,7 @@ describe("the file upload", () => {
   it.each([
     ["the web server's 413 page", nginx413],
     ["the origin check's 403", "Forbidden"],
+    ["a server error page", "Internal Server Error"],
     ["an empty answer", ""],
     ["a lost connection", null],
   ])("shows %s as a failure and keeps the selection to send again", (_name, body) => {
@@ -109,6 +110,13 @@ describe("the file upload", () => {
     expect($("#add_button").prop("disabled")).toBe(false);
   });
 
+  it("keeps a pending upload visible without claiming success", () => {
+    answer("uploadfrm", result("one.torrent", "Pending", "warning"));
+    expect(notes).toEqual([["one.torrent - " + theUILang.addTorrentPending, "warning"]]);
+    expect($("#torrent_file").val()).toBe("C:\\fakepath\\one.torrent");
+    expect($("#add_button").prop("disabled")).toBe(false);
+  });
+
   it("shows every item of a batch", () => {
     answer("uploadfrm", result("one.torrent", "Success", "success") + result("two.torrent", "Duplicate", "alert"));
     expect(notes).toEqual([
@@ -117,7 +125,7 @@ describe("the file upload", () => {
     ]);
   });
 
-  it("runs only the result calls, not other text in the answer", () => {
+  it("ignores unrelated lines around the result calls", () => {
     answer("uploadfrm", "window.__ran = true;\n" + result("one.torrent", "Success", "success"));
     expect(window.__ran).toBeUndefined();
     expect(notes).toEqual([["one.torrent - " + theUILang.addTorrentSuccess, "success"]]);
@@ -127,6 +135,7 @@ describe("the file upload", () => {
     answer("uploadfrm", "", "about:blank");
     expect(notes).toEqual([]);
     expect($("#torrent_file").val()).toBe("C:\\fakepath\\one.torrent");
+    expect($("#add_button").prop("disabled")).toBe(true);
   });
 });
 
@@ -143,15 +152,41 @@ describe("the URL add", () => {
     answer("uploadfrmurl", result(magnet, "Success", "success"));
     expect(notes).toEqual([[magnet + " - " + theUILang.addTorrentSuccess, "success"]]);
     expect($("#url").val()).toBe("");
+    expect($("#add_url").prop("disabled")).toBe(true);
   });
 
   it.each([
     ["the origin check's 403", "Forbidden"],
+    ["the web server's 413 page", nginx413],
+    ["an empty answer", ""],
     ["a lost connection", null],
   ])("shows %s as a failure and keeps the URLs to send again", (_name, body) => {
     answer("uploadfrmurl", body);
     expect(notes).toEqual([[theUILang.addTorrentFailed, "error"]]);
     expect($("#url").val()).toBe(magnet);
     expect($("#add_url").prop("disabled")).toBe(false);
+  });
+});
+
+describe("independent add forms", () => {
+  it("restores only the form whose answer arrived", () => {
+    select(["retry.torrent"]);
+    $("#url").val("https://example.invalid/new.torrent");
+    $("#addtorrent").triggerHandler("submit");
+    $("#addtorrenturl").triggerHandler("submit");
+    answer("uploadfrm", "Forbidden");
+    expect($("#torrent_file").val()).toBe("C:\\fakepath\\retry.torrent");
+    expect($("#add_button").prop("disabled")).toBe(false);
+    expect($("#url").val()).toBe("https://example.invalid/new.torrent");
+    expect($("#add_url").prop("disabled")).toBe(true);
+    answer("uploadfrmurl", result("new.torrent", "Success", "success"));
+    expect(notes).toEqual([
+      [theUILang.addTorrentFailed, "error"],
+      ["new.torrent - " + theUILang.addTorrentSuccess, "success"],
+    ]);
+    expect($("#url").val()).toBe("");
+    expect($("#add_url").prop("disabled")).toBe(true);
+    expect($("#torrent_file").val()).toBe("C:\\fakepath\\retry.torrent");
+    expect($("#add_button").prop("disabled")).toBe(false);
   });
 });

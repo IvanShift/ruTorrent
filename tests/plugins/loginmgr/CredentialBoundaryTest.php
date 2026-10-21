@@ -20,11 +20,12 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/YggTorrent.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/LostFilm.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/KinozalTV.php');
 
-// The transport double mirrors cookie import using fixture headers.
-// SnoopyTest exercises the real HTTP parser with socket pairs and HTTPS with fake curl.
+// The transport double supplies replies; Snoopy owns response-cookie capture.
+// Record its real Cookie builder so scoped cookies are observed on the next request.
 class BoundaryTransport extends Snoopy
 {
     public $requests = array();
+    public $cookieHeaders = array();
     public $redirect = false;
     public $replyCookies = false;
     public $guest = false;
@@ -36,9 +37,10 @@ class BoundaryTransport extends Snoopy
     }
     public function _httpsrequest($url, $content_type = '', $body = '', $method = 'GET')
     {
-        if ($this->passcookies && $this->_redirectaddr) {
-            $this->setcookies();
-        }
+        $cookieHeader = Closure::bind(function ($target) {
+            return $this->cookieHeaderForRequest($target);
+        }, $this, 'Snoopy');
+        $this->cookieHeaders[] = $cookieHeader($url);
         $this->requests[] = array($url, $method, $body, $this->cookies);
         if ($this->queue) {
             $reply = array_shift($this->queue);
@@ -158,7 +160,7 @@ $tests = array(
         );
         testAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous chain succeeds');
         testAssertSame(3, count($client->requests), 'all three replies are consumed');
-        testAssertSame(array('destination' => 'own'), $client->requests[2][3], 'CDN can retain its own cookie');
+        testAssertSame('Cookie: destination=own', $client->cookieHeaders[2], 'CDN can retain its own scoped cookie on its next request');
     },
     'an anonymous account-scoped refusal logs the blocked target without claiming a session' => function () {
         global $log_file;
@@ -276,7 +278,7 @@ $tests = array(
         $client->replyCookies = true;
         $client->redirect = 'https://TRACKER.EXAMPLE.:443/next';
         testAssertSame(true, $client->fetch('https://tracker.example/start'), 'normalized same origin');
-        testAssertSame(array('session' => 'fake-secret', 'fresh' => 'secret'), $client->requests[1][3], 'cookies remain available');
+        testAssertSame('Cookie: session=fake-secret; fresh=secret', $client->cookieHeaders[1], 'caller and scoped response cookies remain available on the request');
         $client = new BoundaryTransport();
         $client->redirect = 'https://cdn.example/file';
         testAssertSame(true, $client->fetch('https://tracker.example/start'), 'anonymous CDN redirect');

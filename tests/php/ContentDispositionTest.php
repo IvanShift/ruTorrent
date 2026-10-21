@@ -2,22 +2,7 @@
 
 require_once(__DIR__ . '/TestCase.php');
 
-/**
- * SendFile::send() and Torrent::send() offer a download under a name that is
- * often a daemon string: a file of a torrent (data, unpack) or the torrent's
- * own name (source, dump, create). They pasted it between the quotes of
- * `Content-Disposition: attachment; filename="..."`.
- *
- * rXMLRPCRequest used to escape every '"' and '\' it read, which happened to
- * keep that quoted-string whole; it hands out the daemon's own bytes now
- * (AUD-ESC), so a name carrying a quote ended the quoted-string and the file
- * was saved under a truncated or mangled name. Both now build the value with
- * ContentDisposition::attachment(): an RFC 8187 filename* with the exact
- * bytes, and an ASCII quoted-string fallback with '"' and '\' escaped.
- *
- * The two senders are run under PHP's built-in web server, so the header
- * read here is the one a browser receives.
- */
+/** Download headers are checked through the real senders and a loopback HTTP server. */
 class ContentDispositionTest extends TestCase
 {
 	const NAME = 'aud "q" \\b \'a\' &c';
@@ -50,7 +35,7 @@ class ContentDispositionTest extends TestCase
 	}
 
 	/** The Content-Disposition values a browser receives for each request path. */
-	private function served(array $paths)
+	private function served(array $paths, $userAgent = null)
 	{
 		$root = realpath(__DIR__ . '/../..');
 		$file = $this->base . '/' . self::NAME . '.bin';
@@ -63,12 +48,12 @@ class ContentDispositionTest extends TestCase
 		file_put_contents($this->base . '/www/router.php', "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
 			. '$_ENV[\'RU_LOG_FILE\'] = ' . var_export($this->base . '/app.log', true) . ";\n"
-			. 'if ($_SERVER[\'SCRIPT_NAME\'] === \'/file\') {' . "\n"
+			. 'if (strpos($_SERVER[\'SCRIPT_NAME\'], \'/file\') === 0) {' . "\n"
 			. '  require ' . var_export($root . '/php/utility/sendfile.php', true) . ";\n"
-			. '  SendFile::send(' . var_export($file, true) . ");\n"
+			. '  SendFile::send(' . var_export($file, true) . ', null, $_GET[\'name\'] ?? null);' . "\n"
 			. '} else {' . "\n"
 			. '  require ' . var_export($root . '/php/Torrent.php', true) . ";\n"
-			. '  (new Torrent(' . var_export($torrent, true) . '))->send();' . "\n"
+			. '  (new Torrent(' . var_export($torrent, true) . '))->send($_GET[\'name\'] ?? null);' . "\n"
 			. "}\n");
 		$listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
 		if ($listener === false) {
@@ -103,10 +88,16 @@ class ContentDispositionTest extends TestCase
 			foreach ($paths as $path) {
 				$socket = stream_socket_client('tcp://' . $address, $errno, $error, 5);
 				stream_set_timeout($socket, 5);
-				fwrite($socket, 'GET ' . $path . " HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+				fwrite($socket, 'GET ' . $path . " HTTP/1.0\r\nHost: localhost\r\n"
+					. ($userAgent === null ? '' : 'User-Agent: ' . $userAgent . "\r\n")
+					. "Connection: close\r\n\r\n");
 				$response = stream_get_contents($socket);
 				fclose($socket);
-				$head = explode("\r\n\r\n", $response, 2)[0];
+				$parts = explode("\r\n\r\n", $response, 2);
+				$head = $parts[0];
+				$this->assertTrue(strpos($head, 'HTTP/1.0 200 OK') === 0, $path . ' sends HTTP 200');
+				$this->same(strpos($path, '/file') === 0 ? 'data' : file_get_contents($torrent),
+					$parts[1] ?? null, $path . ' keeps the response body unchanged');
 				$values[$path] = preg_match('/^Content-Disposition: (.*)$/mi', $head, $match) === 1
 					? rtrim($match[1], "\r") : null;
 			}
@@ -143,7 +134,7 @@ class ContentDispositionTest extends TestCase
 
 	private function same($expected, $actual, $what)
 	{
-		$this->assertSame($expected, $actual, $what
+		$this->assertTrue($expected === $actual, $what
 			. ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
 	}
 
@@ -157,6 +148,22 @@ class ContentDispositionTest extends TestCase
 			$this->same($name, self::chosenName($value), $path . ' offers the name with its quote and backslash');
 			$this->assertTrue(is_string($value) && strpos($value, 'filename="aud \\"q\\" \\\\b') !== false,
 				$path . ' keeps an ASCII fallback with the quote and backslash escaped');
+		}
+	}
+
+	public function testExplicitUtf8NamesAndLegacyMsieKeepTheirDownloadNames()
+	{
+		$name = "Фильм \"q\" \\b.bin";
+		$paths = array('/file?name=' . rawurlencode($name), '/torrent?name=' . rawurlencode($name));
+		foreach (array(null, 'Mozilla/4.0 (compatible; MSIE 8.0)') as $userAgent) {
+			foreach ($this->served($paths, $userAgent) as $path => $value) {
+				$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed explicit name');
+				$this->same($name, self::chosenName($value), $path . ' preserves the explicit UTF-8 name');
+				if ($userAgent !== null) {
+					$this->assertTrue(strpos($value, 'filename="' . rawurlencode($name) . '"') !== false,
+						$path . ' preserves the MSIE percent-encoded fallback');
+				}
+			}
 		}
 	}
 

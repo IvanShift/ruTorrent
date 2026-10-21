@@ -17,7 +17,14 @@ foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $account
     $productionAccountClasses[] = basename($accountFile, ".php") . "Account";
 }
 
+// Five accounts name no site until one is configured; YggTorrentOriginTest and
+// ConfiguredOriginTest are about that. Here they have one, so that they are
+// asked like every other account.
 $yggTorrentOrigin = 'https://www.ygg.re';
+$abTorrentsOrigin = 'https://abtorrents.example';
+$revolutionTTOrigin = 'https://revolutiontt.example';
+$tfileOrigin = 'https://tfile.example';
+$redactedOrigin = 'https://redacted.example';
 
 // A site still configured http, to pin the direction the rule allows.
 class ProbeHttpSiteAccount extends commonAccount
@@ -164,15 +171,15 @@ $tests = array(
     },
     // Whoever writes the URL picks the spelling of the host. Case is one
     // spelling DNS ignores; a trailing dot is the DNS root and names the same
-    // host -- "abtorrents.me." is "abtorrents.me" -- and an anchored test that
+    // host -- "abtorrents.example." is "abtorrents.example" -- and an anchored test that
     // forgot it once sent RuTracker's own announce row down the foreign path
     // in rutracker_check. The host test is shared with that plugin now
     // (php/urlhost.php), so the same folding holds here.
     'two spellings of the same host reach the same account' => function () {
         $account = new ABTorrentsAccount();
-        testAssertSame(true, $account->test('https://ABTORRENTS.ME/x'), 'a host has no case');
-        testAssertSame(true, $account->test('https://abtorrents.me./x'), 'the root dot names the same host');
-        testAssertSame(false, $account->test('https://abtorrents.me.evil.test./x'),
+        testAssertSame(true, $account->test('https://ABTORRENTS.EXAMPLE/x'), 'a host has no case');
+        testAssertSame(true, $account->test('https://abtorrents.example./x'), 'the root dot names the same host');
+        testAssertSame(false, $account->test('https://abtorrents.example.evil.test./x'),
             'and the root dot does not rescue a look-alike');
     },
     'only the configured Kinozal mirrors receive the account session' => function () {
@@ -200,10 +207,17 @@ $tests = array(
         // the account's cookies to a host the attacker controls, and the url
         // need not come from the user -- plugins/rss follows feed links.
         $cases = array(
-            array('ABTorrentsAccount', 'https://abtorrents.me/x', true),
-            array('ABTorrentsAccount', 'https://abtorrents.me@evil.test/', false),
-            array('ABTorrentsAccount', 'https://abtorrents.me.evil.test/', false),
-            array('ABTorrentsAccount', 'https://evil.test/abtorrents.me/', false),
+            array('ABTorrentsAccount', 'https://abtorrents.example/x', true),
+            array('ABTorrentsAccount', 'https://abtorrents.example@evil.test/', false),
+            array('ABTorrentsAccount', 'https://abtorrents.example.evil.test/', false),
+            array('ABTorrentsAccount', 'https://evil.test/abtorrents.example/', false),
+            array('TfileAccount', 'https://tfile.example/forum/index.php', true),
+            array('TfileAccount', 'https://tfile.example/other/', false),
+            array('TfileAccount', 'https://evil.test/x/tfile.example/forum/', false),
+            array('RedactedAccount', 'https://redacted.example/torrents.php?id=1', true),
+            array('RedactedAccount', 'https://redacted.example.evil.test/torrents.php?id=1', false),
+            array('RevolutionTTAccount', 'https://revolutiontt.example/download.php/1/x', true),
+            array('RevolutionTTAccount', 'https://revolutiontt.example@evil.test/download.php/1/x', false),
             array('KinozalTVAccount', 'https://kinozal.guru/details.php?id=1', true),
             array('KinozalTVAccount', 'https://dl.kinozal.guru/download.php?id=1', true),
             array('KinozalTVAccount', 'https://evil.test/path/kinozal.guru/feed', false),
@@ -246,9 +260,9 @@ $tests = array(
         // redirect could upgrade it -- and the url can arrive from a feed.
         foreach (array(
             array('LostFilmAccount', 'http://lostfilm.tv/download.php?id=7&'),
-            array('TfileAccount', 'http://megatfile.cc/forum/index.php'),
+            array('TfileAccount', 'http://tfile.example/forum/index.php'),
             array('AniDUBAccount', 'http://tr.anidub.com/'),
-            array('ABTorrentsAccount', 'http://abtorrents.me/x'),
+            array('ABTorrentsAccount', 'http://abtorrents.example/x'),
         ) as $case) {
             list($class, $url) = $case;
             $account = new $class();

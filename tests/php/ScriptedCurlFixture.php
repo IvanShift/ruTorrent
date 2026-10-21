@@ -27,12 +27,17 @@ class ScriptedCurlFixture
 <?php
 $root = getenv('SCRIPTED_CURL_ROOT');
 $request = array('method' => 'GET', 'url' => end($argv), 'cookie' => '', 'body' => '');
-$headerFile = $bodyFile = null;
+$headerFile = $bodyFile = $writeOut = null;
 for ($i = 1; $i < $argc - 1; $i++) {
     if ($argv[$i] === '-D') $headerFile = $argv[++$i];
     elseif ($argv[$i] === '-o') $bodyFile = $argv[++$i];
     elseif ($argv[$i] === '-X') $request['method'] = $argv[++$i];
+    elseif ($argv[$i] === '--write-out' || $argv[$i] === '-w') $writeOut = $argv[++$i];
     elseif ($argv[$i] === '-d' || $argv[$i] === '--data-raw') $request['body'] = $argv[++$i];
+    elseif ($argv[$i] === '--data-binary') {
+        $data = $argv[++$i];
+        $request['body'] = substr($data, 0, 1) === '@' ? file_get_contents(substr($data, 1)) : $data;
+    }
     elseif ($argv[$i] === '-H' && strncasecmp($argv[$i + 1], 'Cookie:', 7) === 0) $request['cookie'] = $argv[++$i];
 }
 $clock = hrtime();
@@ -50,10 +55,21 @@ if (!is_array($reply) || $reply['url'] !== $request['url'] || $reply['method'] !
     fwrite(STDERR, 'Unexpected offline request: ' . $request['method'] . ' ' . $request['url'] . "\n");
     exit(1);
 }
+// A failed transfer may still have received response headers and partial bytes.
+$headers = isset($reply['status']) ? 'HTTP/1.1 ' . $reply['status'] . " Fixture\r\n"
+    . implode("\r\n", $reply['headers']) . "\r\n\r\n" : '';
+if ($headers !== '') {
+    file_put_contents($headerFile, $headers);
+    file_put_contents($bodyFile, $reply['body']);
+}
+if ($writeOut !== null) {
+    preg_match_all('/^HTTP\/\S+\s+(\d{3})\b/m', $headers, $codes);
+    $code = isset($reply['http_code']) ? $reply['http_code'] : ($codes[1] ? end($codes[1]) : 0);
+    $connect = isset($reply['http_connect']) ? $reply['http_connect'] : 0;
+    echo str_replace(array('%{http_code}', '%{http_connect}'),
+        array(sprintf('%03d', $code), sprintf('%03d', $connect)), $writeOut);
+}
 if (isset($reply['exit'])) exit($reply['exit']);
-file_put_contents($headerFile, 'HTTP/1.1 ' . $reply['status'] . " Fixture\r\n"
-    . implode("\r\n", $reply['headers']) . "\r\n\r\n");
-file_put_contents($bodyFile, $reply['body']);
 PHP
         );
         file_put_contents($root . '/curl', "#!/bin/sh\nexec " . escapeshellarg(PHP_BINARY) . ' -c '

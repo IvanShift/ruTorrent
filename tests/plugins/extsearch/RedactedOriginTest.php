@@ -18,6 +18,13 @@ class CapturedRedactedEngine extends RedactedEngine
 
 final class RedactedOriginTest extends TestCase
 {
+    public function setUp()
+    {
+        // Reuse the approved current-site parser contract under explicit trust.
+        rTorrentSettings::get()->registerPlugin('loginmgr');
+        $GLOBALS['redactedOrigin'] = 'https://redacted.sh';
+    }
+
     public function testSearchRequestsTheCurrentWebsite()
     {
         $engine = new CapturedRedactedEngine();

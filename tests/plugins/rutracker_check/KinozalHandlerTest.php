@@ -1458,8 +1458,8 @@ class ruTrackerChecker {
     public static function makeClient($url) {
         self::$client = new LoginRedirectSnoopy();
         self::$client->mode = self::$mode;
-        // Exercise the real preflight refusal before a second transport can
-        // clear the first response. No actual DNS or network is consulted.
+        // The real caller-URL preflight refusal must discard the preceding
+        // login response. No actual DNS or network is consulted.
         self::$client->block_private = self::$mode === 'no-metainfo';
         self::$client->private_allowlist = array();
         self::$fetched = self::$client->fetchComplex($url);
@@ -1490,6 +1490,8 @@ $abandoned = new ReflectionProperty('KinozalCheckImpl', 'downloadAbandoned');
 if (PHP_VERSION_ID < 80100) $abandoned->setAccessible(true);
 echo json_encode(array('requests' => ruTrackerChecker::$client->requests,
     'fetched' => ruTrackerChecker::$fetched, 'status' => ruTrackerChecker::$client->status,
+    'body' => ruTrackerChecker::$client->results, 'headers' => ruTrackerChecker::$client->headers,
+    'response_code' => ruTrackerChecker::$client->response_code,
     'redirect' => ruTrackerChecker::$client->lastredirectaddr,
     'response_url' => ruTrackerChecker::$client->lastResponseURL, 'verdict' => $verdict,
     'resolve_calls' => LoginRedirectSnoopy::$resolveCalls,
@@ -1503,8 +1505,8 @@ PHP
                 'download attempt: the credential POST failed: id=1'),
             'guest' => array(200, 'https://kinozal.jumpingcrab.com/takelogin.php', 1,
                 'download attempt ended at a guest page, check the loginmgr account: id=1'),
-            'no-metainfo' => array(200, '', 0,
-                'download attempt ended without metainfo: id=1 bytes=25'),
+            'no-metainfo' => array(Snoopy::RESPONSE_BODY_FAILED, '', 0,
+                'download attempt failed: refused-unresolvable-host id=1'),
         );
         foreach ($cases as $mode => $expected) {
             strictAssertTrue(mkdir($dir . '/' . $mode, 0700), 'each trace has a cold account profile');
@@ -1529,7 +1531,10 @@ PHP
             strictAssertSame($errorClass[$mode], $answer['error_class'],
                 $mode . ': the final error names what refused the attempt');
             strictAssertSame(false, $answer['fetched'], $mode . ': fetchComplex refused the caller URL');
-            strictAssertSame($expected[0], $answer['status'], $mode . ': status belongs to the last login response');
+            strictAssertSame($expected[0], $answer['status'], $mode . ': status describes the final response or preflight refusal');
+            if ($mode === 'no-metainfo')
+                strictAssertSame(array('', array(), ''), array($answer['body'], $answer['headers'], $answer['response_code']),
+                    'the refused download attempt exposes no earlier login response bytes or headers');
             strictAssertSame($mode === 'redirect' ? $expected[1] : '', $answer['redirect'],
                 $mode . ': only the login redirect case records a redirect');
             strictAssertSame($expected[1], $answer['response_url'], $mode . ': the original download has no HTTP response');

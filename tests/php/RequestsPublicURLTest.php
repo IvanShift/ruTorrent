@@ -46,12 +46,26 @@ final class RequestsPublicURLTest extends TestCase
 
     public function testDirectFallbackHandlesHttpsOffAndIPv6()
     {
+        $_SERVER['HTTP_X_FORWARDED_HOST'] = 'trap.test';
+        $_SERVER['PHP_SELF'] = '/other/plugins/feeds/action.php/path-info';
         $this->assertSame('http://public.test:8443/app/', Requests::publicBaseURL('/plugins/feeds/action.php'),
-            'HTTPS=off selects HTTP');
+            'HTTPS=off selects HTTP and SCRIPT_NAME takes precedence over PHP_SELF');
         $_SERVER['HTTP_HOST'] = '[::1]:8443';
         $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
         $this->assertSame('https://[::1]:8443/app/', Requests::publicBaseURL('/plugins/feeds/action.php'),
             'a single forwarded scheme and valid IPv6 authority are preserved');
+        unset($_SERVER['SCRIPT_NAME']);
+        $_SERVER['PHP_SELF'] = '/fallback/plugins/feeds/action.php';
+        $this->assertSame('https://[::1]:8443/fallback/', Requests::publicBaseURL('/plugins/feeds/action.php'),
+            'PHP_SELF is a compatibility fallback when SCRIPT_NAME is absent');
+        unset($_SERVER['HTTP_X_FORWARDED_PROTO']);
+        $_SERVER['HTTPS'] = 'on';
+        $this->assertSame('https://[::1]:8443/fallback/', Requests::publicBaseURL('/plugins/feeds/action.php'),
+            'a directly secured request uses HTTPS');
+        unset($_SERVER['HTTPS']);
+        $_SERVER['REQUEST_SCHEME'] = 'HTTPS';
+        $this->assertSame('https://[::1]:8443/fallback/', Requests::publicBaseURL('/plugins/feeds/action.php'),
+            'the request scheme is normalized when HTTPS is absent');
     }
 
     public function testEmptyContainerEnvironmentKeepsTheLocalPublicBaseOverride()
@@ -77,6 +91,10 @@ final class RequestsPublicURLTest extends TestCase
         $this->assertTrue(strpos($log, 'public-url: refused setting=publicURL') !== false
             && strpos($log, 'secret') === false && strpos($log, 'Injected') === false,
             'configuration refusal is classified without echoing a credential or input');
+        $publicURL = 'https://config.test/app/';
+        putenv('RU_PUBLIC_URL=https://user:secret@public.test/');
+        $this->assertSame(false, Requests::publicBaseURL('/plugins/feeds/action.php'),
+            'an invalid environment override refuses instead of using local configuration');
     }
 
     public function testInvalidDirectAuthoritySchemeOrScriptIsRefused()
@@ -89,5 +107,7 @@ final class RequestsPublicURLTest extends TestCase
             $this->assertSame(false, Requests::publicBaseURL('/plugins/feeds/action.php'),
                 'malformed request metadata cannot manufacture a public base');
         }
+        $_SERVER = $valid;
+        $this->assertSame(false, Requests::publicBaseURL(''), 'an empty endpoint suffix is refused');
     }
 }

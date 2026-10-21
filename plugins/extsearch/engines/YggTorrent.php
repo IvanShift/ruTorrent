@@ -77,17 +77,7 @@ class YggTorrentEngine extends commonEngine
 
     private function trustedAccount()
     {
-        // A cached engine may outlive loginmgr removal or disablement.
-        $accounts = __DIR__ . '/../../loginmgr/accounts.php';
-        $yggAccount = __DIR__ . '/../../loginmgr/accounts/YggTorrent.php';
-        if (!rTorrentSettings::get()->isPluginRegistered('loginmgr') ||
-            !is_file($accounts) || !is_file($yggAccount)) {
-            return null;
-        }
-        // Use the same validated, per-user loginmgr configuration as downloads.
-        require_once($accounts);
-        require_once($yggAccount);
-        return new YggTorrentAccount();
+        return $this->loginAccount('YggTorrent');
     }
 
     public function getTorrent($url)

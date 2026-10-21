@@ -5,8 +5,11 @@ require_once( dirname(__FILE__)."/../../php/urlhost.php" );
 require_once( dirname(__FILE__)."/../../php/cache.php" );
 require_once( dirname(__FILE__)."/../../php/Snoopy.class.inc");
 require_once( dirname(__FILE__)."/../../php/utility/json.php");
-// accounts.php can be first included from Snoopy::fetchComplex() method scope.
-global $yggTorrentOrigin;
+// The plugin configuration is read into the scope this file is first
+// included from, and that is not always the global one: on the download
+// path it is Snoopy::fetchComplex(), a method. The accounts read their
+// settings as globals, so the settings are declared global here first.
+global $yggTorrentOrigin, $abTorrentsOrigin, $revolutionTTOrigin, $tfileOrigin, $redactedOrigin;
 eval( FileUtil::getPluginConf( 'loginmgr' ) );
 
 // rCache merges under its stable key lock, so concurrent PHP requests can
@@ -158,10 +161,14 @@ class privateData
 		$this->loaded = false;
 	}
 
+	// True when this account holds no stored session afterwards. The cache
+	// refuses a removal it cannot make safely -- it needs the writer lock the
+	// stores take, and the unlink itself can fail -- so the answer belongs to
+	// the caller, which has no other way to tell.
 	public function remove()
 	{
 		$cache = new rCache('/accounts');
-		$cache->remove($this);
+		return($cache->remove($this));
 	}
 
 	// $replacedUrl: a refresh logged in on this origin without the stored
@@ -300,10 +307,121 @@ abstract class commonAccount
 	// the host identity rule; a prefix of the raw URL is not an identity.
 	public function test($url)
 	{
+		if($this->refuseUnconfigured())
+			return(false);
+		$site = parse_url((string) $this->url);
+		return(self::urlAddresses($url,array($site["host"]),$site["scheme"]));
+	}
+
+	// Why this account cannot be used, or '' when it can. The base rule is
+	// that $url parses into a scheme and a host; an account that takes its
+	// site from configuration says here what is missing.
+	protected function unconfigured()
+	{
 		$site = @parse_url((string) $this->url);
 		if(!is_array($site) || empty($site["host"]) || empty($site["scheme"]))
+			return('the account names no site');
+		return('');
+	}
+
+	public function configurationError()
+	{
+		return($this->unconfigured());
+	}
+
+	// Refuse once per account, before selection or refresh can use an empty site.
+	protected function refuseUnconfigured()
+	{
+		$reason = $this->unconfigured();
+		if($reason==='')
 			return(false);
-		return(self::urlAddresses($url,array($site["host"]),$site["scheme"]));
+		$name = $this->getName();
+		if(!isset(self::$missingOriginLogged[$name]))
+		{
+			self::$missingOriginLogged[$name] = true;
+			FileUtil::toLog($reason==='the account names no site'
+				? 'loginmgr: missing-origin: ' . $name . '; automatic refresh skipped'
+				: 'loginmgr: '.$name.' is not used: '.$reason);
+		}
+		return(true);
+	}
+
+	// One parser for configurable HTTPS origins. Reject raw delimiters before
+	// parse_url(): PHP 7.4 drops empty query/fragment parts and rewrites controls.
+	// $reason retains the classified Ygg configuration contract; $error never
+	// quotes the value, which may contain credentials. Explicit IPv6 is allowed.
+	static protected function configuredOrigin($origin,&$error,&$reason = null)
+	{
+		$reason = 'missing-origin';
+		if(!is_string($origin))
+		{
+			$error = 'is not a string';
+			return('');
+		}
+		if($origin==='')
+		{
+			$error = 'is not set';
+			return('');
+		}
+		$error = 'is not an https origin ("https://host" with an ASCII host or IPv6 literal, optionally a port, and nothing else)';
+		if(preg_match('/[\x00-\x20\x7f?#]/', $origin) || strpos($origin, '\\') !== false)
+		{
+			$reason = 'invalid-characters';
+			return('');
+		}
+		$parts = @parse_url($origin);
+		if(!is_array($parts) || !isset($parts['scheme'], $parts['host']))
+		{
+			$reason = 'invalid-url';
+			return('');
+		}
+		if(strtolower($parts['scheme']) !== 'https')
+		{
+			$reason = 'bad-scheme';
+			return('');
+		}
+		if(isset($parts['user']) || isset($parts['pass']))
+		{
+			$reason = 'has-credentials';
+			return('');
+		}
+		if(isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/')
+		{
+			$reason = 'has-path';
+			return('');
+		}
+		// Some PHP versions parse ':443x' as port 443 and discard the suffix.
+		if(!preg_match('~^[a-z][a-z0-9+.-]*://(?:\[[^\]]+\]|[^:/]+)(?::[0-9]+)?/?$~i', $origin))
+		{
+			$reason = 'invalid-url';
+			return('');
+		}
+		if(isset($parts['port']) && $parts['port'] < 1)
+		{
+			$reason = 'bad-port';
+			return('');
+		}
+		$host = $parts['host'];
+		$ipv6 = substr($host, 0, 1) === '[' && substr($host, -1) === ']'
+			&& filter_var(substr($host, 1, -1), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+		if(!$ipv6 && filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false)
+		{
+			$reason = 'bad-host';
+			return('');
+		}
+		$error = '';
+		$reason = '';
+		return('https://' . UrlHost::of($origin) . (isset($parts['port']) ? ':' . $parts['port'] : ''));
+	}
+
+	// The reason an account that takes its site from configuration cannot be
+	// used, naming the setting that carries it and where to set it. The value
+	// is never quoted: a mistyped setting can hold a password.
+	static protected function unconfiguredOrigin($setting,$error)
+	{
+		return('$'.$setting.' '.$error
+			.'; set it to the tracker\'s origin in plugins/loginmgr/conf.local.php'
+			.' or conf/users/<user>/plugins/loginmgr/conf.php');
 	}
 
 	// Compatibility wrapper for account subclasses. Host, scheme and path
@@ -493,17 +611,8 @@ abstract class commonAccount
 	{
 		return($this->withRedirectTrust($client, function() use($client,$login,$password,$auto)
 		{
-			// An account without a configured origin cannot renew a session.
-			if(UrlHost::of($this->url) === null)
-			{
-				$name = $this->getName();
-				if(!isset(self::$missingOriginLogged[$name]))
-				{
-					self::$missingOriginLogged[$name] = true;
-					FileUtil::toLog('loginmgr: missing-origin: ' . $name . '; automatic refresh skipped');
-				}
+			if($this->refuseUnconfigured())
 				return;
-			}
 			$modified = privateData::getModified($this->getName());
 			if( ($modified===false) || ((time()-$modified)>=$auto))
 			{
@@ -554,6 +663,10 @@ class accountManager
 		return($cache->set($this));
 	}
 
+	// True when the discovered list is durable. A refused write leaves that
+	// list standing for this request only, so the scheduled job is left
+	// alone as well: it would otherwise describe accounts that no later
+	// request can read.
 	public function obtain( $dir = '../plugins/loginmgr/accounts' )
 	{
 		$oldAccounts = $this->accounts;
@@ -579,8 +692,13 @@ class accountManager
 			closedir($handle);
 	        }
 		ksort($this->accounts);
-		$this->store();
+		if(!$this->store())
+		{
+			FileUtil::toLog('loginmgr: the discovered account list could not be saved.');
+			return(false);
+		}
 		$this->setHandlers();
+		return(true);
 	}
 
 	static protected function asFlag($value)
@@ -623,8 +741,12 @@ class accountManager
 		return("theWebUI.theAccounts = ".JSON::jsValue((object) $accounts).";\n");
 	}
 
-	public function set()
+	// $notRetired comes back holding the accounts whose stored session is
+	// still on disk after a save that changed their credentials. The save
+	// itself succeeded in that case, so the return value cannot carry it.
+	public function set( &$notRetired = null )
 	{
+		$previous = $this->accounts;
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			if(isset($_POST[$name."_enabled"]))
@@ -639,18 +761,34 @@ class accountManager
 			if(isset($_POST[$name."_auto"]))
 				$this->accounts[$name]["auto"] = self::asNumber($_POST[$name."_auto"]);
 		}
+		// A refused edit must leave the active credentials and sessions in place.
 		if(!$this->store())
+		{
+			$this->accounts = $previous;
 			return(false);
-		foreach($this->accounts as $name=>$nfo)
-			$this->forgetSession($name);
+		}
+		$notRetired = array();
+		foreach(array_keys($this->accounts) as $name)
+			if(!$this->forgetSession($name))
+				$notRetired[] = $name;
+		// A session the cache would not discard is still sent to the tracker
+		// under credentials that no longer exist, which is the one thing
+		// forgetSession() is for. Nothing here can force the removal, so the
+		// names go where an operator can read them.
+		if(count($notRetired))
+			FileUtil::toLog('loginmgr: a stored session outlived the credentials it was made with: '.
+				implode(', ',$notRetired));
 		$this->setHandlers();
 		return(true);
 	}
 
+	// Discards the cookies and referer held for this account: whatever was
+	// just written may name another site or another user. False when the
+	// session is still there afterwards.
 	protected function forgetSession( $name )
 	{
 		$data = new privateData( $name );
-		$data->remove();
+		return($data->remove());
 	}
 
 	public function getAccount( $url, &$httpsAccount = null )

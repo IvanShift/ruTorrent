@@ -241,19 +241,20 @@ class XMLRPCProxyTest extends TestCase
 			'a nonroutine local-path warning remains visible with its member slot');
 	}
 
-	public function testUntrustedFirstThenTrustedSystemBatchIsRejected()
+	public function testUntrustedFirstThenTrustedSystemBatchKeepsUntrustedTransport()
 	{
 		$hash = str_repeat('A', 40);
 		$decision = self::decideOnModernDaemon($this->systemMulticallXml(array(
 			array('d.wibble.set', array($hash, '1')),
 			array('d.stop', array($hash)),
 		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'reject' && !$decision['trusted']
-			&& $decision['payload'] === '',
-			'an untrusted first member cannot be upgraded by a later trusted member');
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
+			&& strpos($decision['payload'], 'd.wibble.set') !== false
+			&& strpos($decision['payload'], 'd.stop') !== false,
+			'an untrusted first member cannot be upgraded or lost beside a later trusted member');
 	}
 
-	public function testStopBatchElevatesCloseWhileGetSavePathRemainsDeferred()
+	public function testStopBatchElevatesCloseWhileGetSavePathKeepsUntrustedTransport()
 	{
 		$hash = str_repeat('A', 40);
 		$stop = self::decideOnModernDaemon($this->systemMulticallXml(array(
@@ -277,8 +278,11 @@ class XMLRPCProxyTest extends TestCase
 				array('d.open', array($hash)), array($method, array($hash)),
 				array('d.close', array($hash)),
 			)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($batch['action'] === 'reject',
-				$method.' getsavepath batch remains deferred under the mixed-trust rule');
+			$this->assertTrue($batch['action'] === 'send' && !$batch['trusted']
+				&& strpos($batch['payload'], '<string>'.$method.'</string>') !== false
+				&& strpos($batch['payload'], '<string>d.open</string>') !== false
+				&& strpos($batch['payload'], '<string>d.close</string>') !== false,
+				$method.' getsavepath batch retains every member on the untrusted route');
 		}
 	}
 
@@ -309,7 +313,7 @@ class XMLRPCProxyTest extends TestCase
 			array('d.stop', array(str_repeat('A', 40))),
 			array('system.sockets.adjust_alloc', array()),
 		)), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'reject',
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
 			'a socket mutator cannot borrow trust from another batch member');
 		$read = self::decideOnModernDaemon($this->methodCallXml('system.sockets.files.max_alloc'),
 			'sanitize', XMLRPCProxy::defaultSafeParams());
@@ -601,8 +605,8 @@ class XMLRPCProxyTest extends TestCase
 	 * Without httprpc the WebUI sends a label as d.custom1.set for each
 	 * download followed by d.save_resume for each, so the label reaches the
 	 * session at once rather than at the next periodic session.save
-	 * (ACC-OWN-A-02). The save has to be trusted like the label it follows:
-	 * a mixed-trust batch is refused whole, which would have cost the label.
+	 * (ACC-OWN-A-02). Trusting each save like its label keeps the homogeneous
+	 * batch eligible for the trusted route; mixed batches use the daemon gate.
 	 */
 	public function testALabelBatchCarriesTheSessionSaveOfEachDownload()
 	{
@@ -650,7 +654,7 @@ class XMLRPCProxyTest extends TestCase
 			array('d.custom1.set', array($a, 'tv')),
 			array('d.save_resume', array('main')),
 		)), 'sanitize', XMLRPCProxy::defaultSafeParams(), false, array('rtorrentVersion' => 0x1019));
-		$this->assertEquals('reject', $borrowing['action'],
+		$this->assertTrue($borrowing['action'] === 'send' && !$borrowing['trusted'],
 			'a save outside its shape does not borrow the label\'s trust');
 	}
 
@@ -715,7 +719,7 @@ class XMLRPCProxyTest extends TestCase
 			array('d.views.push_back_unique', array($hash, 'sonarr_imported')),
 		));
 		$decision = self::decideOnModernDaemon($batched, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'reject',
+		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
 			'an unsupported member must not borrow trust from another batch member');
 		$oldElevation = self::decideOnModernDaemon($this->methodCallXml('d.stop', array($hash, 'extra')),
 			'sanitize', XMLRPCProxy::defaultSafeParams());
@@ -868,11 +872,16 @@ class XMLRPCProxyTest extends TestCase
 				array('d.stop', array($hash)), array($untrusted, array()),
 			));
 			$decision = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'reject' && !$decision['trusted'],
+			$this->assertTrue(!$decision['trusted'],
 				$untrusted.' must not inherit trust from another member');
-			$refused = $untrusted === 'execute.capture' ? $untrusted : 'system.multicall';
-			$this->assertTrue($decision['method'] === $refused,
-				'a denied member is named; a trust mismatch names the outer carrier');
+			if($untrusted === 'system.client_version')
+				$this->assertTrue($decision['action'] === 'send' && $decision['method'] === null,
+					'an admitted read retains the mixed untrusted carrier');
+			else {
+				$refused = $untrusted === 'execute.capture' ? $untrusted : 'system.multicall';
+				$this->assertTrue($decision['action'] === 'reject' && $decision['method'] === $refused,
+					'a denied member remains terminal and names its refused command');
+			}
 		}
 	}
 
@@ -1806,7 +1815,7 @@ class XMLRPCProxyTest extends TestCase
 			array('throttle.max_uploads.global', array()),
 			array('d.open', array(str_repeat('A', 40))),
 		)), 'sanitize', $policy);
-		$this->assertEquals('reject', $mixed['action'],
+		$this->assertTrue($mixed['action'] === 'send' && !$mixed['trusted'],
 			'an arbitrary read plus privileged write cannot use the settings exception');
 		$direct = self::decideOnModernDaemon($this->methodCallXml('network.scgi.dont_route'),
 			'sanitize', $policy);

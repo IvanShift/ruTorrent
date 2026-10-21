@@ -42,6 +42,10 @@ require_once( 'publicsuffix.php' );
 
 class Snoopy
 {
+	// $status when the client has no response to report: a request it refused
+	// to send, or a reply it could not take. Below 100 like the -100 of a read
+	// timeout, so callers that already treat a status under 100 as "nothing
+	// arrived" need no new case; the reason is in $error.
 	const RESPONSE_BODY_FAILED = -101;
 	const SOCKET_CONNECT_FAILED = -102;
 	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
@@ -84,6 +88,7 @@ class Snoopy
 	private static $throttleStates = array();
 	private static $throttleLogged = array();
 	private $throttleReservation = null;
+	private $throttleResponse = null;
 
 	var $user		=	"";			// user for http authentication
 	var $pass		=	"";			// password for http authentication
@@ -346,6 +351,9 @@ class Snoopy
 			return;
 		}
 		$retryAfter = $http === 429 ? $this->retryAfterSeconds() : null;
+		if($http === 0 && $this->throttleResponse !== null)
+			list($http, $retryAfter) = $this->throttleResponse;
+		$this->throttleResponse = null;
 		$paused = self::changeThrottleState($group, function(&$state) use($throttle, $http, $retryAfter)
 		{
 			$now = microtime(true);
@@ -666,7 +674,7 @@ class Snoopy
 					$this->error = self::CREDENTIAL_REDIRECT_REFUSED;
 					self::logAccountPortRefusal($this->requestCookieHost,
 						self::effectivePort($URI), $configuredPort);
-					return false;
+					return($this->refuseRequest());
 				}
 				return($am->fetch( $acc, $this, $URI, $method, $content_type, $body ));
 			}
@@ -1154,8 +1162,6 @@ class Snoopy
 		{
 			$previousUser = $this->user;
 			$previousPass = $this->pass;
-			$this->user = isset($parts['user']) ? rawurldecode($parts['user']) : '';
-			$this->pass = isset($parts['pass']) ? rawurldecode($parts['pass']) : '';
 		}
 		try
 		{
@@ -1175,9 +1181,8 @@ class Snoopy
 	private function fetchRequest($URI,$method,$content_type,$body)
 	{
 		$this->error = "";
-		if($this->requestDeadline !== null)
-			// Opt-in callers can distinguish a fresh HTTP answer from preflight refusal.
-			$this->response_code = '';
+		$this->timed_out = false;
+		$this->discardResponse();
 		if($this->_redirectdepth === 0)
 		{
 			$this->lastredirectaddr = "";
@@ -1204,11 +1209,18 @@ class Snoopy
 		if($this->_redirectdepth === 0)
 			$this->requestChainSourceURL = $URI;
 		$this->port = empty($parts["port"]) ? (($parts["scheme"]=="https") ? 443 : 80) : $parts["port"];
+		// Keep the URI override after HostConnect, including empty userinfo.
+		if(isset($parts['user']))
+		{
+			$this->user = rawurldecode($parts['user']);
+			$this->pass = isset($parts['pass']) ? rawurldecode($parts['pass']) : '';
+		}
 		$this->host = $parts["host"];
 		$this->_isproxy = (!empty($this->proxy_host) && !empty($this->proxy_port));
 		$this->_pinnedaddr = false;
+		// checkTarget() names in $error the rule that turned the host down.
 		if($this->block_private && ($parts["scheme"]=="http" || $parts["scheme"]=="https") && !$this->checkTarget($this->host))
-			return(false);
+			return($this->refuseRequest());
 		if($this->requestDeadlineExpired())
 			return false;
 		$throttle = self::throttleGroupFor($parts["scheme"], $this->host);
@@ -1260,9 +1272,7 @@ class Snoopy
 			}
 			default:
 			{
-				// not a valid protocol
-				$this->error = 'Invalid protocol "'.$parts["scheme"].'"\n';
-				$ret = false;
+				$ret = $this->refuseRequest('invalid-protocol "'.$parts["scheme"].'"');
 				break;
 			}
 		}
@@ -1520,7 +1530,7 @@ class Snoopy
 			&& !preg_match('/(^Refresh:\s+\d+\s*;\s*url\s*=\s*)(.+)/i', $header, $matches))
 			return false;
 		$target = trim($matches[2]);
-		if($target === '')
+		if($target === '' || preg_match('/[[:space:][:cntrl:]]/', $target))
 			return false;
 		// A network-path reference names its own authority and inherits only
 		// the current scheme; it is not a path on the requested host.
@@ -1533,12 +1543,38 @@ class Snoopy
 			. ($target[0] === '/' ? $target : '/' . $target);
 	}
 
+	protected function refuseRequest($reason = null)
+	{
+		$this->discardResponse();
+		$this->status = self::RESPONSE_BODY_FAILED;
+		if($reason !== null)
+			$this->error = $reason;
+		return(false);
+	}
+
+	private function rememberThrottleResponse()
+	{
+		// Complete final headers own the limiter verdict even if the body fails.
+		// Keep only these facts; discarded headers must not feed setcookies().
+		if($this->throttleReservation !== null
+			&& preg_match('~^HTTP/\S+\s+(\d{3})~', (string)$this->response_code, $match)
+			&& (int)$match[1] >= 200)
+			$this->throttleResponse = array((int)$match[1],
+				(int)$match[1] === 429 ? $this->retryAfterSeconds() : null);
+	}
+
 	protected function refuseResponseBody($reason)
 	{
-		$this->status = self::RESPONSE_BODY_FAILED;
-		$this->error = $reason;
+		return($this->refuseRequest($reason));
+	}
+
+	// Reused clients and explicit setcookies() must never see a refused response.
+	protected function discardResponse()
+	{
+		$this->headers = array();
+		$this->response_code = '';
 		$this->results = '';
-		return(false);
+		$this->_redirectaddr = false;
 	}
 
 	protected function refuseGzipBody()
@@ -1554,13 +1590,13 @@ class Snoopy
 			rtrim($header, "\r\n")) === 1);
 	}
 
-	protected static function readFixedBytes($fp, $length)
+	protected function readFixedBytes($fp, $length)
 	{
 		$body = '';
 		while(strlen($body) < $length)
 		{
 			$part = fread($fp, min(4096, $length - strlen($body)));
-			if($part === false || $part === '')
+			if($this->_check_timeout($fp) || $part === false || $part === '')
 				return(false);
 			$body .= $part;
 		}
@@ -1576,7 +1612,7 @@ class Snoopy
 		while(true)
 		{
 			$line = fgets($fp, $this->_maxlinelen);
-			if($line === false || !preg_match('/^([0-9a-f]+)(?:;[^\r\n]*)?\r?\n$/i',
+			if($this->_check_timeout($fp) || $line === false || !preg_match('/^([0-9a-f]+)(?:;[^\r\n]*)?\r?\n$/i',
 				$line, $match))
 				return(false);
 			$size = hexdec($match[1]);
@@ -1584,14 +1620,16 @@ class Snoopy
 				return(false);
 			if($size == 0)
 				break;
-			$part = self::readFixedBytes($fp, (int)$size);
-			if($part === false || self::readFixedBytes($fp, 2) !== "\r\n")
+			$part = $this->readFixedBytes($fp, (int)$size);
+			if($part === false || $this->readFixedBytes($fp, 2) !== "\r\n")
 				return(false);
 			$body .= $part;
 		}
 		$trailerBytes = 0;
 		while(($line = fgets($fp, $this->_maxlinelen)) !== false)
 		{
+			if($this->_check_timeout($fp))
+				return(false);
 			$trailerBytes += strlen($line);
 			if($trailerBytes > 8192)
 				return(false);
@@ -1661,6 +1699,7 @@ class Snoopy
 
 	function _httprequest($url,$fp,$URI,$http_method,$content_type="",$body="")
 	{
+		$this->discardResponse();
 		if(empty($url))
 			$url = "/";
 		$headers = $http_method." ".$url." ".$this->_httpversion."\r\n";
@@ -1707,11 +1746,13 @@ class Snoopy
 		$is_gzipped = false;
 		$transferCodings = array();
 		$interimBlocks = 0;
+		$completeHeaders = false;
 
 		while(($currentHeader = fgets($fp,$this->_maxlinelen)) !== false)
 		{
 			if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 			{
+				$this->discardResponse();
 				$this->status=-100;
 				return false;
 			}
@@ -1731,6 +1772,7 @@ class Snoopy
 					$transferCodings = array();
 					continue;
 				}
+				$completeHeaders = true;
 				break;
 			}
 
@@ -1767,12 +1809,15 @@ class Snoopy
 		// Check before another read can clear the stream's timeout flag.
 		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 		{
+			$this->discardResponse();
 			$this->status=-100;
 			return false;
 		}
 
 		if($this->response_code === '')
 			return $this->refuseResponseBody('missing-final-response');
+		if($completeHeaders)
+			$this->rememberThrottleResponse();
 
 		$is_chunked = $transferCodings === array('chunked')
 			|| $transferCodings === array('gzip', 'chunked');
@@ -1786,8 +1831,8 @@ class Snoopy
 		{
 			if($this->_check_timeout($fp))
 			{
+				$this->discardResponse();
 				$this->status = -100;
-				$this->results = '';
 				return(false);
 			}
 			return($this->refuseResponseBody('invalid-or-oversized-chunked'));
@@ -1796,6 +1841,9 @@ class Snoopy
 		{
 			while(($data = fread($fp, 4096)) !== false && $data !== '')
 			{
+				// Partial fread() bytes can already carry a timeout on PHP 7.4/8.1.
+				if($this->_check_timeout($fp))
+					break;
 				$results .= $data;
 				if(strlen($results) > $this->maxlength)
 					break;
@@ -1804,6 +1852,7 @@ class Snoopy
 			// the gzip decode refuses the truncated body as invalid gzip.
 			if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 			{
+				$this->discardResponse();
 				$this->status=-100;
 				return false;
 			}
@@ -1825,6 +1874,7 @@ class Snoopy
 
 		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 		{
+			$this->discardResponse();
 			$this->status=-100;
 			return false;
 		}
@@ -1835,6 +1885,7 @@ class Snoopy
 
 	function _httpsrequest($url,$content_type="",$body="",$http_method="GET")
 	{
+		$this->discardResponse();
 		$scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
 		$defaultPort = $scheme === 'http' ? 80 : 443;
 		$headers = array();
@@ -1875,9 +1926,30 @@ class Snoopy
 		foreach( $headers as $header )
 			$cmdline_params .= " -H ".escapeshellarg($header);
 
+		$bodyfile = null;
 		if(strlen((string)$body) > 0)
-			// -d treats a leading '@' as a local filename, even when shell-quoted.
-			$cmdline_params .= " --data-raw ".escapeshellarg($body);
+		{
+			// A body is bytes, and the command line is not a way to carry
+			// bytes: escapeshellarg() keeps only what is a valid character in
+			// the process locale and drops the rest, a single argument is
+			// capped well below the size of a request body, and every argument
+			// is readable in the process table by anyone on the host, where a
+			// body may be carrying credentials. A file has none of those
+			// limits, and the name is one this code generated, so the leading
+			// @ that makes curl read it cannot be mistaken for part of a body.
+			// --data-binary and not -d, which strips line breaks out of what
+			// it reads from a file.
+			$bodyfile = FileUtil::getTempFilename('https-request-body');
+			$mask = umask(0177);
+			$written = @file_put_contents($bodyfile, (string)$body);
+			umask($mask);
+			if($written !== strlen((string)$body))
+			{
+				@unlink($bodyfile);
+				return $this->refuseRequest('request-body-not-written');
+			}
+			$cmdline_params .= " --data-binary ".escapeshellarg("@".$bodyfile);
+		}
 
 		if(!is_null($this->IP))
 			$cmdline_params .= " --interface ".$this->IP;
@@ -1927,7 +1999,11 @@ class Snoopy
 		// Recompute immediately before starting curl. Redirects and later fetches
 		// on this client spend the remaining budget instead of restarting it.
 		if($this->requestDeadlineExpired())
+		{
+			if($bodyfile !== null)
+				@unlink($bodyfile);
 			return false;
+		}
 		$timeout = $this->requestTimeLeft();
 		if($this->read_timeout > 0)
 			$timeout = $timeout === null ? $this->read_timeout : min($timeout, $this->read_timeout);
@@ -1947,8 +2023,17 @@ class Snoopy
 		// The shipped curl (8.22) stops even an unknown-length response during
 		// transfer, before the temporary body file can grow without bound.
 		$maxDownload = max(1, (int)$this->maxlength);
-		exec(escapeshellarg(Utility::getExternal('curl'))." -g --max-filesize ".$maxDownload
-			." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($curlURL),$results,$return);
+		try
+		{
+			exec(escapeshellarg(Utility::getExternal('curl'))." -g --max-filesize ".$maxDownload
+				." -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)
+				." --write-out ".escapeshellarg('%{http_code}')." ".$cmdline_params." ".escapeshellarg($curlURL),$results,$return);
+		}
+		finally
+		{
+			if($bodyfile !== null)
+				@unlink($bodyfile);
+		}
 		$this->_redirectaddr = false;
 		$this->headers = array();
 		$this->status = $return;
@@ -1956,6 +2041,18 @@ class Snoopy
 		$this->results = "";
 		if($return)
 		{
+			if($return === 28)
+			{
+				// curl's transfer code excludes CONNECT replies: a tunnel can
+				// succeed before TLS times out without any origin response.
+				$originStatus = count($results) === 1 && preg_match('/^[0-9]{3}$/D', $results[0])
+					? (int)$results[0] : 0;
+				$result_headers = @file($headerfile);
+				if($originStatus >= 200 && is_array($result_headers))
+					$this->readCurlHeaders($result_headers, $scheme, $originStatus);
+				$this->discardResponse();
+				$this->status = $return;
+			}
 			if($return === 63)
 			{
 				$this->error = 'oversized-response';
@@ -2032,7 +2129,7 @@ class Snoopy
 
 	// Reads the header lines curl wrote with -D into the status, response line,
 	// headers and redirect target. Returns whether the answer is gzip-encoded.
-	private function readCurlHeaders($result_headers, $scheme)
+	private function readCurlHeaders($result_headers, $scheme, $originStatus = null)
 	{
 		$is_gzipped = false;
 		foreach($result_headers as $header)
@@ -2062,6 +2159,10 @@ class Snoopy
 				$is_gzipped = true;
 			$this->headers[] = $header;
 		}
+		$lastHeader = end($this->headers);
+		if(($lastHeader === "\r\n" || $lastHeader === "\n")
+			&& ($originStatus === null || (int)$this->status === $originStatus))
+			$this->rememberThrottleResponse();
 		return($is_gzipped);
 	}
 
@@ -2069,7 +2170,11 @@ class Snoopy
 	{
 		foreach($this->headers as $header)
 		{
-			if(preg_match("/^set-cookie:[\s]+([^=]+)=([^;]+)/i", $header,$match))
+			// Neither a cookie name nor its value carries a control
+			// character. A value bounded only by ";" takes the line
+			// terminator of an attributeless Set-Cookie with it, and what is
+			// stored here is written into an outgoing request header by hand.
+			if(preg_match("/^set-cookie:[\s]+([^;=[:cntrl:]]+)=([^;[:cntrl:]]+)/i", $header,$match))
 			{
 				if($match[2]=="deleted")
 				{

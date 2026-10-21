@@ -13,47 +13,7 @@ class YggTorrentAccount extends commonAccount
         if ($origin === '') {
             return;
         }
-        // Reject delimiters before parsing: PHP 7.4 discards empty query/fragment
-        // components, and parse_url() rewrites control characters in host names.
-        if (preg_match('/[\x00-\x20\x7f?#]/', $origin) || strpos($origin, '\\') !== false) {
-            $this->configurationError = 'invalid-characters';
-            return;
-        }
-        $parts = @parse_url($origin);
-        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
-            $this->configurationError = 'invalid-url';
-            return;
-        }
-        if (strtolower($parts['scheme']) !== 'https') {
-            $this->configurationError = 'bad-scheme';
-            return;
-        }
-        if (isset($parts['user']) || isset($parts['pass'])) {
-            $this->configurationError = 'has-credentials';
-            return;
-        }
-        if (isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/') {
-            $this->configurationError = 'has-path';
-            return;
-        }
-        // Some PHP versions parse ':443x' as port 443 and discard the suffix.
-        if (!preg_match('~^[a-z][a-z0-9+.-]*://(?:\[[^\]]+\]|[^:/]+)(?::[0-9]+)?/?$~i', $origin)) {
-            $this->configurationError = 'invalid-url';
-            return;
-        }
-        if (isset($parts['port']) && $parts['port'] < 1) {
-            $this->configurationError = 'bad-port';
-            return;
-        }
-        $host = $parts['host'];
-        $ipv6 = substr($host, 0, 1) === '[' && substr($host, -1) === ']'
-            && filter_var(substr($host, 1, -1), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
-        if (!$ipv6 && filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
-            $this->configurationError = 'bad-host';
-            return;
-        }
-        $this->url = 'https://' . UrlHost::of($origin) . (isset($parts['port']) ? ':' . $parts['port'] : '');
-        $this->configurationError = '';
+        $this->url = self::configuredOrigin($origin, $error, $this->configurationError);
     }
 
     public function configurationError()

@@ -85,9 +85,8 @@ $cases = array(
     // Every byte of a header block that ends without its blank line has to be
     // accounted for in $headers, whatever the last line says.
     'a last header line of zero is kept' => array("HTTP/1.0 200 OK\r\nX-A: 1\r\n0", '200', ''),
-    // The fork rejects a response without a final HTTP status while retaining
-    // every header byte. Keeping '0' does not make that response valid.
-    'a last header line of zero with nothing before it is kept' => array(
+    // A refusal discards every response field, including any incomplete header.
+    'a lone zero without a final response is refused without response headers' => array(
         '0', Snoopy::RESPONSE_BODY_FAILED, '', false, 'missing-final-response'),
     'a last header line of one is kept' => array("HTTP/1.0 200 OK\r\nX-A: 1\r\n1", '200', ''),
     'a zero line inside a complete header block is kept' => array(
@@ -103,6 +102,7 @@ foreach ($cases as $name => $case) {
         $expected = array('fetched' => $case[3] ?? true, 'status' => $status,
             'headers' => $block[0] === '' ? array() : explode("\r\n", $block[0]), 'body' => $body,
             'error' => $case[4] ?? '');
+        if (!$expected['fetched']) $expected['headers'] = array();
         foreach ($expected['headers'] as $line => $text) {
             // explode() drops the terminator fgets() keeps, except on the last
             // line of a block that has none.

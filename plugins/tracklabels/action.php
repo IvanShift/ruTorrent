@@ -8,6 +8,7 @@ eval(FileUtil::getPluginConf('tracklabels'));
 function bad($message) {
 	http_response_code(400);
 	header('Content-Type: text/plain; charset=UTF-8');
+	header('X-Content-Type-Options: nosniff');
 	echo $message;
 	exit;
 }

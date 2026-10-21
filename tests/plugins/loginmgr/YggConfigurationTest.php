@@ -190,12 +190,18 @@ $tests = array(
         try {
             copy(__DIR__ . '/../../../plugins/extsearch/engines/YggTorrent.php',
                 $root . '/plugins/extsearch/engines/YggTorrent.php');
+            // Exercise the shipped commonEngine loader with its real file-relative
+            // lookup, without bootstrapping the rest of the application in this mirror.
+            $source = file_get_contents(__DIR__ . '/../../../plugins/extsearch/engines.php');
+            $start = strpos($source, "class commonEngine\n");
+            $end = strpos($source, "\nclass rSearchHistory", $start);
+            testAssertTrue($start !== false && $end !== false && $end > $start,
+                'the real commonEngine boundary is available for the isolated fixture');
+            file_put_contents($root . '/plugins/extsearch/engines.php',
+                "<?php\n" . substr($source, $start, $end - $start));
             $script = <<<'CHILD'
 <?php
-class commonEngine {
-    public function getNewEntry() { return array('name' => ''); }
-    public function getTorrent($url) { return 'unexpected-download'; }
-}
+require getcwd() . '/plugins/extsearch/engines.php';
 class rTorrentSettings {
     public static function get() { return new self(); }
     public function isPluginRegistered($name) { return true; }
