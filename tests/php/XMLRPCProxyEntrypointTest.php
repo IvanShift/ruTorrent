@@ -160,6 +160,125 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	}
 
 
+	public function testBothDoorsServeAReviewed1626Daemon()
+	{
+		// docker tests/smoke/default.sh failed here with 503 on a 0.16.26 daemon.
+		$listing = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
+			.'<params><param><value><string></string></value></param>'
+			.'<param><value><string>main</string></value></param>'
+			.'<param><value><string>d.name=</string></value></param>'
+			.'</params></methodCall>';
+		foreach(array('action', 'rpc2') as $door)
+			foreach(array('listing' => $listing, 'version read' => $this->allowedXml()) as $name => $xml)
+			{
+				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.16.26');
+				$this->assertHttp($result, '200 OK',
+					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+				$this->assertEquals(1, $result['state']['version_probes'],
+					$door.' probes the 0.16.26 daemon before the '.$name);
+				$this->assertEquals(1, $result['state']['sends'],
+					$door.' forwards the '.$name.' to a reviewed 0.16.26 daemon');
+				$this->assertSameStrict($name === 'listing', $result['state']['trusted'],
+					$door.' keeps the checked trust of the '.$name.' on 0.16.26');
+			}
+	}
+
+	public function testBothDoorsNameAnUnreviewedDaemonRelease()
+	{
+		$reason = 'rTorrent 0.16.27 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.26)';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$result = $this->runEntrypoint($door, $this->allowedXml(), true,
+				'success', 'shipped', false, '0.16.27');
+			$this->assertHttp($result, '503 Service Unavailable',
+				$door === 'action' ? 'text/html; charset=UTF-8' : 'text/xml;charset=UTF-8');
+			$this->assertEquals(0, $result['state']['sends'],
+				$door.' sends no client command to an unreviewed release');
+			$this->assertTrue(strpos($result['body'], 'Could not verify the rTorrent version. '.$reason.'.') !== false,
+				$door.' tells the caller which release was refused');
+			$line = 'refusing request: rTorrent version unavailable or unsupported: '.$reason;
+			if($door === 'action')
+				$this->assertTrue(in_array('httprpc: '.$line, $result['state']['logs'], true),
+					'httprpc names the refused release in the app log');
+			else
+				$this->assertTrue(strpos($result['rpc2logs'], 'rpc2: '.$line) !== false,
+					'rpc2 names the refused release in its log');
+		}
+	}
+
+	/**
+	 * Each answer fails one part of the filter that decides whether a daemon's
+	 * reply is repeated: the suffix characters, the end anchor, the digit
+	 * lengths. Both doors then keep the generic refusal in the body and the
+	 * log line, with nothing of the reply in either.
+	 */
+	public function testBothDoorsRepeatOnlyAPlainReleaseInTheRefusal()
+	{
+		$generic = 'Could not verify the rTorrent version.';
+		$line = 'refusing request: rTorrent version unavailable or unsupported';
+		foreach(array('0.16.27-<b>', '0.16.27-<svg/onload=alert(1)>', '0.16.27-a"b',
+			"0.16.27\n", '1234.16.27', '0.16.1234') as $version)
+			foreach(array('action', 'rpc2') as $door)
+			{
+				$label = $door.' '.json_encode($version);
+				$result = $this->runEntrypoint($door, $this->allowedXml(), true,
+					'success', 'shipped', false, $version);
+				$this->assertEquals(0, $result['state']['sends'], $label.' sends no client command');
+				if($door === 'action')
+				{
+					$this->assertHttp($result, '503 Service Unavailable', 'text/html; charset=UTF-8', $generic);
+					$this->assertTrue(in_array('httprpc: '.$line, $result['state']['logs'], true),
+						$label.' logs the generic refusal');
+					$this->assertTrue(strpos(implode("\n", $result['state']['logs']), 'is not a supported version') === false,
+						$label.' names no release in the app log');
+				}
+				else
+				{
+					$this->assertHttp($result, '503 Service Unavailable', 'text/xml;charset=UTF-8');
+					$this->assertSameStrict($generic, $this->faultString($result['body']),
+						$label.' answers the generic fault');
+					$this->assertRpc2Log($result, $line, $label.' logs the generic refusal');
+					$this->assertTrue(strpos($result['rpc2logs'], 'is not a supported version') === false,
+						$label.' names no release in its log');
+				}
+			}
+	}
+
+	/**
+	 * The filter is not the only layer: httprpc escapes the named release for
+	 * its text/html 503 and rpc2 writes it as XML text. With the filter
+	 * widened in the copied tree, markup in a daemon's answer still reaches
+	 * neither body as markup.
+	 */
+	public function testBothDoorsEscapeTheNamedReleaseWithoutTheFilter()
+	{
+		$widen = array('php/xmlrpc_proxy.php' => array(
+			'(?:[-+][A-Za-z0-9._-]{1,32})?$/D\', $text))' => '(?:[-+][^\r\n]{1,64})?$/D\', $text))'));
+		$version = '0.16.27-<svg/onload=alert(1)>"\'&';
+		$why = 'rTorrent '.$version.' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.26)';
+		foreach(array('action', 'rpc2') as $door)
+		{
+			$result = $this->runEntrypoint($door, $this->allowedXml(), true,
+				'success', 'shipped', false, $version, null, array(), $widen);
+			$this->assertEquals(0, $result['state']['sends'], $door.' sends no client command');
+			$this->assertTrue(strpos($result['body'], '<svg') === false,
+				$door.' does not echo markup from the daemon answer');
+			if($door === 'action')
+			{
+				$this->assertHttp($result, '503 Service Unavailable', 'text/html; charset=UTF-8',
+					'Could not verify the rTorrent version. '.htmlspecialchars($why, ENT_QUOTES, 'UTF-8').'.');
+				$this->assertTrue(in_array('httprpc: refusing request: rTorrent version unavailable or unsupported: '.$why,
+					$result['state']['logs'], true), 'the widened filter reaches the httprpc log');
+			}
+			else
+			{
+				$this->assertHttp($result, '503 Service Unavailable', 'text/xml;charset=UTF-8');
+				$this->assertSameStrict('Could not verify the rTorrent version. '.$why.'.',
+					$this->faultString($result['body']), 'rpc2 carries the release as XML text');
+			}
+		}
+	}
+
 	public function testD4HttprpcFreshVersionOverridesStaleNewerSettingsCache()
 	{
 		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
@@ -1143,7 +1262,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '<params></params></methodCall>';
 	}
 
-	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = array())
+	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = array(), $sourceEdits = array())
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
 		$process = null;
@@ -1151,7 +1270,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		{
 			if(!mkdir($tree, 0700, true) && !is_dir($tree))
 				throw new Exception('could not create entrypoint fixture tree');
-			$this->copyProductionTree($tree, $policy);
+			$this->copyProductionTree($tree, $policy, $sourceEdits);
 			$state = $tree . '/state.json';
 			file_put_contents($state, json_encode(array(
 				'sends' => 0, 'responses' => 0, 'logs' => array(),
@@ -1209,7 +1328,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 	}
 
-	private function copyProductionTree($tree, $policy = 'shipped')
+	private function copyProductionTree($tree, $policy = 'shipped', $sourceEdits = array())
 	{
 		$files = array(
 			'plugins/httprpc/action.php',
@@ -1240,6 +1359,17 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
 				throw new Exception('could not byte-copy production source ' . $relative);
 		}
+		// A case may weaken one layer of a copied file to show that the next
+		// layer holds on its own. Each edit must apply exactly once, so a
+		// renamed source line fails the case instead of testing nothing.
+		foreach($sourceEdits as $relative => $edits)
+			foreach($edits as $search => $replace)
+			{
+				$text = file_get_contents($tree . '/' . $relative);
+				if(substr_count($text, $search) !== 1
+					|| file_put_contents($tree . '/' . $relative, str_replace($search, $replace, $text)) === false)
+					throw new Exception('fixture edit does not apply exactly once to ' . $relative);
+			}
 		if($policy !== 'none')
 		{
 			$file = $tree . '/conf/xmlrpc_proxy.php';
@@ -1569,6 +1699,17 @@ PHP
 		$this->assertSameStrict($a['timeouts'], $b['timeouts'], $prefix . ' identical timeouts');
 		$this->assertSameStrict($a['response_mode'], $b['response_mode'], $prefix . ' identical response_mode');
 		$this->assertSameStrict($a['events'], $b['events'], $prefix . ' identical events');
+	}
+
+	/** The faultString of an XML-RPC fault body, or null. */
+	private function faultString($body)
+	{
+		$document = new DOMDocument();
+		if(!is_string($body) || $body === '' || !@$document->loadXML($body, LIBXML_NONET))
+			return null;
+		$nodes = (new DOMXPath($document))->query(
+			'/methodResponse/fault/value/struct/member[name="faultString"]/value/string');
+		return ($nodes !== false && $nodes->length === 1) ? $nodes->item(0)->textContent : null;
 	}
 
 	private function assertRpc2Log($result, $expected, $message)

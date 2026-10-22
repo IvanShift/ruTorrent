@@ -9,7 +9,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
  */
 class HttprpcSettingsEntrypointTest extends TestCase
 {
-	private function runRequest($body, $rpcFailure = null)
+	private function runRequest($body, $rpcFailure = null, $daemonVersion = '0.16.24')
 	{
 		$root = sys_get_temp_dir().'/httprpc-settings-'.getmypid().'-'.bin2hex(random_bytes(6));
 		mkdir($root.'/plugins/httprpc', 0700, true);
@@ -35,13 +35,18 @@ class rXMLRPCCommand {
     public $method;
     public function __construct($method, $parameters = null) { $this->method = $method; }
     public function addParameters($parameters) {}
+    public function addParameter($parameter) {
+        if(getenv("HTTPRPC_TEST_TRACE"))
+            file_put_contents(getenv("HTTPRPC_TEST_TRACE"), "PRM[".$parameter."];", FILE_APPEND);
+    }
 }
 class rXMLRPCRequest {
     public static function send($data, $trusted = false) {
         if($trusted || strpos($data, "<methodName>system.client_version</methodName>") === false) {
             fwrite(STDERR, "unexpected version probe"); exit(73);
         }
-        $body = "<?xml version=\"1.0\"?><methodResponse><params><param><value><string>0.16.24</string></value></param></params></methodResponse>";
+        $body = "<?xml version=\"1.0\"?><methodResponse><params><param><value><string>"
+            .getenv("HTTPRPC_TEST_DAEMON_VERSION")."</string></value></param></params></methodResponse>";
         return "Content-Length: ".strlen($body)."\r\n\r\n".$body;
     }
     public $fault = false;
@@ -90,7 +95,8 @@ class rXMLRPCRequest {
 			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
 			$pipes, $root.'/plugins/httprpc',
 			array_merge($_ENV, array('HTTPRPC_TEST_FAILURE' => (string)$rpcFailure,
-				'HTTPRPC_TEST_TRACE' => $root.'/trace')));
+				'HTTPRPC_TEST_TRACE' => $root.'/trace',
+				'HTTPRPC_TEST_DAEMON_VERSION' => $daemonVersion)));
 		if(!is_resource($process))
 			throw new Exception('could not start isolated action.php fixture');
 		fclose($pipes[0]);
@@ -152,6 +158,30 @@ class rXMLRPCRequest {
 					$mode.' returns HTTP 403 without constructing an RPC request');
 				$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
 			}
+	}
+
+	public function testCommandExtensionsServeAReviewed1626Daemon()
+	{
+		// Every mode=...&cmd=... answered 503 on a 0.16.26 daemon before it was reviewed.
+		foreach(array('0.16.24', '0.16.26') as $version)
+		{
+			$result = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, $version);
+			$this->assertEquals(72, $result['status'], 'a native list extension reaches the RPC boundary on '.$version);
+			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
+				'the 0.16.26 version check admits the extension on '.$version);
+			$this->assertEquals('', $result['error'], 'the extension has no PHP diagnostic on '.$version);
+			$this->assertEquals('PRM[d.name=""];', $result['trace'],
+				'the extension is rebuilt by the shared slot policy on '.$version);
+		}
+		$refused = $this->runRequest('cmd='.rawurlencode('execute.capture=,id').'&mode=list', null, '0.16.26');
+		$this->assertEquals(0, $refused['status'], 'a refused extension is answered on 0.16.26');
+		$this->assertEquals('403|Refused: this server does not allow execute.capture on this connection.',
+			$refused['output'], 'the refused extension is named without constructing an RPC request');
+		$next = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, '0.16.27');
+		$this->assertEquals(0, $next['status'], 'an unreviewed release is answered, not crashed');
+		$this->assertEquals('503|Could not verify the rTorrent version. rTorrent 0.16.27 is not a supported '
+			.'version (supported: 0.9.8 and 0.16.0 to 0.16.26).', $next['output'],
+			'the extension refusal names the unreviewed release');
 	}
 
 	public function testOrdinaryModesStillReachTheStubbedRpcBoundary()

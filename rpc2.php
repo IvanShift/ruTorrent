@@ -192,8 +192,12 @@ if($mode === 'sanitize')
 	$version = XMLRPCProxy::daemonVersionFromReply($reply);
 	if($version === null)
 	{
-		rpc2_log('refusing request: rTorrent version unavailable or unsupported', true);
-		rpc2_fault('503 Service Unavailable', 'Could not verify the rTorrent version.');
+		// Name a release this proxy has not reviewed, so the operator sees why.
+		$why = XMLRPCProxy::daemonVersionRefusal($reply);
+		rpc2_log('refusing request: rTorrent version unavailable or unsupported'
+			.(($why === null) ? '' : ': '.$why), true);
+		rpc2_fault('503 Service Unavailable', 'Could not verify the rTorrent version.'
+			.(($why === null) ? '' : ' '.$why.'.'));
 	}
 	$proxyOptions['rtorrentVersion'] = $version;
 }

@@ -67,13 +67,17 @@ function httprpcVerifiedDaemonVersion()
 		return $version;
 	$reply = rXMLRPCRequest::send(XMLRPCProxy::daemonVersionProbe(), false);
 	$separator = is_string($reply) ? strpos($reply, "\r\n\r\n") : false;
-	$version = ($separator === false) ? null
-		: XMLRPCProxy::daemonVersionFromReply(substr($reply, $separator + 4));
+	$body = ($separator === false) ? null : substr($reply, $separator + 4);
+	$version = XMLRPCProxy::daemonVersionFromReply($body);
 	if($version === null)
 	{
-		FileUtil::toLog('httprpc: refusing request: rTorrent version unavailable or unsupported');
+		// Name a release this proxy has not reviewed, so the operator sees why.
+		$why = XMLRPCProxy::daemonVersionRefusal($body);
+		FileUtil::toLog('httprpc: refusing request: rTorrent version unavailable or unsupported'
+			.(($why === null) ? '' : ': '.$why));
 		header('HTTP/1.0 503 Service Unavailable');
-		CachedEcho::send('Could not verify the rTorrent version.', 'text/html');
+		CachedEcho::send('Could not verify the rTorrent version.'
+			.(($why === null) ? '' : ' '.htmlspecialchars($why, ENT_QUOTES, 'UTF-8').'.'), 'text/html');
 		exit;
 	}
 	return $version;

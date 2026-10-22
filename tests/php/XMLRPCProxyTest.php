@@ -134,13 +134,27 @@ class XMLRPCProxyTest extends TestCase
 			'the supported 0.9.8 baseline is recognized');
 		$this->assertEquals(0x1019, XMLRPCProxy::daemonVersionFromReply($reply('0.16.25')),
             'reviewed 0.16.25 is supported');
+		$this->assertEquals(0x101A, XMLRPCProxy::daemonVersionFromReply($reply('0.16.26')),
+			'reviewed 0.16.26 is supported');
 		$this->assertEquals(0x1016, XMLRPCProxy::daemonVersionFromReply($reply('0.16.22')),
 			'a reviewed 0.16 release is recognized');
-		foreach(array('0.16.26', '0.9.7', '0.16.22evil', '0.16.999') as $value)
+		foreach(array('0.16.27', '0.9.7', '0.16.22evil', '0.16.999') as $value)
 			$this->assertTrue(XMLRPCProxy::daemonVersionFromReply($reply($value)) === null,
 				'unreviewed version '.$value.' fails closed');
 		$this->assertTrue(XMLRPCProxy::daemonVersionFromReply('<methodResponse><fault/></methodResponse>') === null,
 			'a fault is not a version');
+		$this->assertTrue(XMLRPCProxy::daemonVersionFromReply(self::faultBesideVersionReply('0.16.26')) === null,
+			'a reply that carries a fault beside a reviewed version selects no version');
+	}
+
+	/** A malformed reply with both a version string and a fault. */
+	private static function faultBesideVersionReply($value)
+	{
+		return '<?xml version="1.0"?><methodResponse><params><param><value><string>'.$value
+			.'</string></value></param></params><fault><value><struct>'
+			.'<member><name>faultCode</name><value><i4>-501</i4></value></member>'
+			.'<member><name>faultString</name><value><string>refused</string></value></member>'
+			.'</struct></value></fault></methodResponse>';
 	}
 
 	public function testD4OldDaemonChecksLoadTailAndSystemBatchMembers()
@@ -3742,6 +3756,269 @@ class XMLRPCProxyTest extends TestCase
 			$this->assertTrue($result['action'] === 'send' && $result['trusted'],
 				'reviewed 0.16.25 listing and stop retain their checked trusted route');
 		}
+	}
+
+	public function testReviewedDaemon1626KeepsNativeListingStopLabelAndSettingsRead()
+	{
+		$options = array('rtorrentVersion' => 0x101A);
+		$policy = XMLRPCProxy::defaultSafeParams();
+		foreach(array(
+			'listing' => $this->methodCallXml('d.multicall2',
+				array('', 'main', 'd.name=', 'd.custom=chk-state')),
+			'stop batch' => $this->systemMulticallXml(array(array('d.stop', array(str_repeat('A', 40))))),
+			'label' => $this->methodCallXml('d.custom1.set', array(str_repeat('A', 40), 'label')),
+		) as $label => $xml)
+		{
+			$result = XMLRPCProxy::decide($xml, 'sanitize', $policy, false, $options);
+			$this->assertTrue($result['action'] === 'send' && $result['trusted'],
+				'reviewed 0.16.26 '.$label.' keeps its checked trusted route');
+		}
+		// The Settings dialog sends the same batch on 0.16.26: no command it
+		// reads changed between 0.16.24 and 0.16.26.
+		$read = XMLRPCProxy::decide(file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml'),
+			'sanitize', $policy, false, $options);
+		$this->assertTrue($read['action'] === 'send' && $read['trusted'],
+			'the captured Settings read batch keeps its exact trusted grant on 0.16.26');
+		$refused = XMLRPCProxy::decide($this->methodCallXml('execute.capture', array('', 'id')),
+			'sanitize', $policy, false, $options);
+		$this->assertEquals('reject', $refused['action'], 'an execution primitive stays refused on 0.16.26');
+		$this->assertEquals('execute.capture', $refused['method'], 'and the refusal names it');
+		$alias = XMLRPCProxy::decide($this->methodCallXml('d.multicall2', array('', 'main', 'd.get_name=')),
+			'sanitize', $policy, false, $options);
+		$this->assertEquals('reject', $alias['action'], 'a client-only spelling is still not native on 0.16.26');
+	}
+
+	/**
+	 * Bit 27 is v0.16.26 (62899bd0). Its CMD and CMD_REDIRECT registrations are
+	 * those of v0.16.25 plus session.umask and session.umask.set; none was
+	 * removed or renamed, and the rutorrent-native merge c0afbc17 adds the same
+	 * two upstream names. Both are recorded: the table is provenance, and
+	 * rTorrent itself refuses the startup-only setter after startup, as it
+	 * does session.use_lock.set (see the table header).
+	 */
+	public function testNative1626ColumnIsThe1625ColumnPlusBothSessionUmaskCommands()
+	{
+		$native = require(__DIR__.'/../../php/xmlrpc_proxy_native.php');
+		$changed = array();
+		$beyond = array();
+		foreach($native as $name => $mask)
+		{
+			if((($mask >> 26) & 1) !== (($mask >> 27) & 1))
+				$changed[] = $name;
+			if($mask >= (1 << 28))
+				$beyond[] = $name;
+		}
+		$this->assertEquals(array('session.umask', 'session.umask.set'), $changed,
+			'only the two session.umask commands differ between the 0.16.25 and 0.16.26 columns');
+		$this->assertEquals(array(), $beyond, 'no name claims a release after 0.16.26');
+		foreach(array('session.umask', 'session.umask.set') as $name)
+			$this->assertEquals(1 << 27, isset($native[$name]) ? $native[$name] : null,
+				$name.' is native from 0.16.26 only');
+
+		$options = array('rtorrentVersion' => 0x101A);
+		$policy = XMLRPCProxy::defaultSafeParams();
+		foreach(array('session.umask' => array(), 'session.umask.set' => array('', '18')) as $name => $args)
+		{
+			$direct = XMLRPCProxy::decide($this->methodCallXml($name, $args), 'sanitize', $policy, false, $options);
+			$this->assertTrue($direct['action'] === 'send' && !$direct['trusted'],
+				$name.' is forwarded untrusted on 0.16.26; rTorrent applies its own safe list');
+		}
+		// An operator policy that names a startup-only setter carries it in a
+		// load tail the way it carries session.use_lock.set; rTorrent then
+		// answers "cannot be changed after startup". On 0.16.25 the umask
+		// setter is not native, so the same policy cannot carry it there.
+		$operator = array('session.umask.set', 'session.use_lock.set', 'd.custom1.set');
+		$tail = function($command, $version) use ($operator) {
+			return XMLRPCProxy::decide($this->methodCallXml('load.start',
+				array('', 'https://example.test/a.torrent', $command)), 'sanitize', $operator, false,
+				array('rtorrentVersion' => $version));
+		};
+		foreach(array('session.umask.set=0022', 'session.use_lock.set=0', 'd.custom1.set=label') as $command)
+			foreach(array(0x101A => '0.16.26', 0x1019 => '0.16.25') as $version => $release)
+			{
+				$decision = $tail($command, $version);
+				if($command === 'session.umask.set=0022' && $version === 0x1019)
+					$this->assertEquals('reject', $decision['action'],
+						'session.umask.set is not native on 0.16.25, so no policy carries it there');
+				else
+					$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
+						$command.' named by the operator policy is carried in a '.$release.' load tail');
+			}
+	}
+
+	/**
+	 * Every release the version parser accepts must also pass the other
+	 * ceilings and have a native column; a release past the newest reviewed
+	 * one must fail closed. A bump that edits only some of them fails here.
+	 */
+	public function testEveryAcceptedReleaseHasAColumnAndTheNextReleaseFailsClosed()
+	{
+		$policy = XMLRPCProxy::defaultSafeParams();
+		$listing = $this->methodCallXml('d.multicall2', array('', 'main', 'd.name='));
+		$settings = file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml');
+		$accepted = array();
+		for($minor = 0; $minor <= 99; $minor++)
+		{
+			$version = XMLRPCProxy::daemonVersionFromString('0.16.'.$minor);
+			if($version !== null)
+				$accepted[$minor] = $version;
+		}
+		$this->assertEquals(range(0, 26), array_keys($accepted),
+			'the parser accepts exactly 0.16.0 through 0.16.26');
+		$failures = array();
+		foreach($accepted as $minor => $version)
+		{
+			if($version !== 0x1000 + $minor)
+				$failures[] = '0.16.'.$minor.' parse';
+			$decision = XMLRPCProxy::decide($listing, 'sanitize', $policy, false,
+				array('rtorrentVersion' => $version));
+			if($decision['action'] !== 'send' || !$decision['trusted'])
+				$failures[] = '0.16.'.$minor.' listing';
+			if($version < 0x1012)
+				continue;
+			$read = XMLRPCProxy::decide($settings, 'sanitize', $policy, false,
+				array('rtorrentVersion' => $version));
+			if($read['action'] !== 'send' || !$read['trusted'])
+				$failures[] = '0.16.'.$minor.' settings read';
+		}
+		$this->assertEquals(array(), $failures,
+			'every accepted 0.16 release passes each proxy ceiling and has a native column');
+		// 0.16.27, then values no parser returns: an API caller's typo must not
+		// select some other release's column.
+		foreach(array(0x101B, 0x0907, 0x0FFF, 0x001A, 0, '0.16.26', (float)0x101A) as $unsupported)
+		{
+			$next = XMLRPCProxy::decide($listing, 'sanitize', $policy, false,
+				array('rtorrentVersion' => $unsupported));
+			$this->assertTrue($next['action'] === 'reject'
+				&& strpos(implode("\n", $next['log']), 'unsupported or unreadable rTorrent version') !== false,
+				var_export($unsupported, true).' handed to decide() fails closed as an unsupported version');
+		}
+
+		// The legacy baseline is unchanged.
+		$old = array('rtorrentVersion' => 0x0908);
+		$this->assertEquals(0x0908, XMLRPCProxy::daemonVersionFromString('0.9.8'), '0.9.8 is still recognized');
+		$legacy = XMLRPCProxy::decide($listing, 'sanitize', $policy, false, $old);
+		$this->assertTrue($legacy['action'] === 'send' && $legacy['trusted'],
+			'a native 0.9.8 listing keeps its trusted route');
+		$newer = XMLRPCProxy::decide($this->methodCallXml('d.multicall2',
+			array('', 'main', 'd.base_path.realpath.or_empty=')), 'sanitize', $policy, false, $old);
+		$this->assertEquals('reject', $newer['action'], 'a 0.16-only getter is still not native on 0.9.8');
+		$legacyRead = XMLRPCProxy::decide($settings, 'sanitize', $policy, false, $old);
+		$this->assertEquals('reject', $legacyRead['action'],
+			'the 0.16 Settings batch grant does not reach a 0.9.8 daemon');
+		$umask = XMLRPCProxy::decide($this->methodCallXml('session.umask'), 'sanitize', $policy, false, $old);
+		$this->assertEquals('reject', $umask['action'], 'session.umask is not native on 0.9.8');
+	}
+
+	/**
+	 * Without a version the proxy may use only a name native on every reviewed
+	 * release. No shipped name lacks just the newest column, so the
+	 * intersection mask is checked against a synthetic table in a child.
+	 */
+	public function testOmittedVersionIntersectsEveryReviewedColumn()
+	{
+		$tree = sys_get_temp_dir().'/rutorrent-native-mask-'.getmypid().'-'.bin2hex(random_bytes(6));
+		try
+		{
+			if(!mkdir($tree, 0700) || !copy(__DIR__.'/../../php/xmlrpc_proxy.php', $tree.'/xmlrpc_proxy.php'))
+				throw new Exception('could not create the synthetic native table tree');
+			$every = (2 << 27) - 1;
+			file_put_contents($tree.'/xmlrpc_proxy_native.php', '<?php return '.var_export(array(
+				'every.release' => $every,
+				'not.newest' => $every & ~(1 << 27),
+				'not.legacy' => $every & ~1,
+			), true).';');
+			$script = 'require $argv[1];'
+				.' $m = new ReflectionMethod("XMLRPCProxy", "nativeOnDaemon");'
+				.' if(PHP_VERSION_ID < 80100) $m->setAccessible(true);'
+				.' foreach(array("every.release", "not.newest", "not.legacy") as $n)'
+				.' echo $n, "=", var_export($m->invoke(null, $n, null), true), ";";';
+			$process = proc_open(array(PHP_BINARY, '-r', $script, $tree.'/xmlrpc_proxy.php'),
+				array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+			if(!is_resource($process))
+				throw new Exception('could not start the synthetic table child');
+			fclose($pipes[0]);
+			$output = stream_get_contents($pipes[1]);
+			$error = stream_get_contents($pipes[2]);
+			fclose($pipes[1]);
+			fclose($pipes[2]);
+			$this->assertEquals(0, proc_close($process), 'the synthetic table child exits cleanly');
+			$this->assertEquals('', $error, 'the synthetic table child prints no diagnostic');
+			$this->assertEquals('every.release=true;not.newest=false;not.legacy=false;', $output,
+				'an omitted version admits only a name native on 0.9.8 and on 0.16.0 through 0.16.26');
+		}
+		finally
+		{
+			foreach(array('xmlrpc_proxy.php', 'xmlrpc_proxy_native.php') as $file)
+				if(is_file($tree.'/'.$file))
+					unlink($tree.'/'.$file);
+			if(is_dir($tree))
+				rmdir($tree);
+		}
+	}
+
+	/**
+	 * nativeOnDaemon() keeps its own ceiling although decide() checks the
+	 * version first: sanitizeHttprpcCommandParameter() is public. Without it,
+	 * minor 63 or more shifts the column bit out of the integer (1 << 64 is
+	 * 0) and every name matches; minor 256 wraps to the 0.16.0 column.
+	 */
+	public function testNativeTableRefusesAnUnreviewedReleaseOnItsOwn()
+	{
+		$native = new ReflectionMethod('XMLRPCProxy', 'nativeOnDaemon');
+		if(PHP_VERSION_ID < 80100) $native->setAccessible(true);
+		$this->assertTrue($native->invoke(null, 'd.name', 0x101A) === true
+			&& $native->invoke(null, 'session.umask', 0x101A) === true
+			&& $native->invoke(null, 'network.port_open', 0x0908) === true,
+			'the reviewed columns still answer for themselves');
+		foreach(array(0x101B, 0x103E, 0x103F, 0x1040, 0x10FF, 0x1100, 0x1FFF, PHP_INT_MAX) as $version)
+			foreach(array('d.name', 'network.port_open', 'session.umask', 'no.such.command') as $name)
+				$this->assertTrue($native->invoke(null, $name, $version) === false,
+					sprintf('%s is not native on the unreviewed 0x%X', $name, $version));
+		foreach(array(0x101B, 0x103F, 0x1100) as $version)
+			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
+				'd.name=', 'd.name=', 'list', array(), $version) === null,
+				sprintf('the public httprpc rebuilder refuses d.name= on the unreviewed 0x%X', $version));
+	}
+
+	public function testAnUnreviewedDaemonReleaseIsNamedForTheOperator()
+	{
+		$reply = function($value) {
+			return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+				.htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8')
+				.'</string></value></param></params></methodResponse>';
+		};
+		$supported = ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.26)';
+		foreach(array('0.16.27', '0.16.27-rc1', '0.16.999', '0.17.0', '1.0.0', '0.9.7') as $value)
+			$this->assertEquals('rTorrent '.$value.$supported,
+				XMLRPCProxy::daemonVersionRefusal($reply($value)),
+				'the unreviewed release '.$value.' is named with the supported range');
+		foreach(array('0.16.26', '0.16.25', '0.9.8') as $value)
+			$this->assertTrue(XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
+				'a supported release '.$value.' has nothing to refuse');
+		// The bounds of the repeated text: three runs of at most three digits
+		// and a suffix of at most 32 characters.
+		foreach(array('999.999.999', '0.16.27-'.str_repeat('a', 32), '0.16.27+build.7_x-y') as $value)
+			$this->assertEquals('rTorrent '.$value.$supported,
+				XMLRPCProxy::daemonVersionRefusal($reply($value)),
+				'the plain release '.$value.' is named');
+		// Only a version-shaped answer is repeated; other reply text stays out of
+		// the operator log and the HTTP body. Each case below fails one part of
+		// the filter alone: the suffix characters, the end anchor (/D), the
+		// digit and suffix lengths, or the separator.
+		foreach(array('unparseable', '0.16.22evil', '0.16.27 <b>', '0.16.27'."\n".'x', '',
+			'0.16.27-'.str_repeat('a', 40), '0.16.27-'.str_repeat('a', 33),
+			'0.16.27-<b>', '0.16.27-<svg/onload=alert(1)>', '0.16.27-a"b', "0.16.27-a'b", '0.16.27-a&b',
+			'0.16.27-a b', '0.16.27-a/b', "0.16.27\n", "0.16.27-rc1\n", "0.16.27\r\n", "0.16.27\t",
+			'1234.16.27', '0.1234.27', '0.16.1234', '0.16.27-', '0.16.27=rc1', '0.16', '.16.27') as $value)
+			$this->assertTrue(XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
+				'a reply that is not a plain version is not repeated: '.json_encode($value));
+		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(
+			'<methodResponse><fault><value><string>0.16.27</string></value></fault></methodResponse>') === null,
+			'a fault names no version');
+		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(self::faultBesideVersionReply('0.16.27')) === null,
+			'a reply that carries a fault beside a version names none');
+		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(null) === null, 'no reply names no version');
 	}
 
 }
