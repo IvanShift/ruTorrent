@@ -27,6 +27,11 @@ class RtorrentProbeFixture
 	const INVALID_TARGET = 'invalid parameters: invalid target';
 	const SOURCE = __FILE__;
 
+	public static function replyClassFiles()
+	{
+		return array(self::SOURCE);
+	}
+
 	/** The method names one request asks for, in order. */
 	public static function methodNames($body)
 	{

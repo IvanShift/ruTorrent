@@ -63,8 +63,8 @@ absolute application base in `conf/config.local.php`. A nonempty environment
 value overrides the local setting; an empty or unset value permits it. RSS
 channel, image and download links use this base, including its port and path prefix. Credentials,
 query strings and fragments are refused with a configuration diagnostic.
-Without this setting the feed uses the direct request Host, a single
-`X-Forwarded-Proto` value and the server's script path. A CSRF trusted origin
+Without this setting the feed uses the direct request Host, the server TLS scheme (or the first
+`X-Forwarded-Proto` entry when TLS is terminated upstream) and the server's script path. A CSRF trusted origin
 does not select the feed URL. Torrent-upload redirects are relative, so the
 browser preserves the public origin and prefix.
 
@@ -92,20 +92,25 @@ for rtorrent to accept a socket. A local SCGI socket answers in microseconds, so
 a tight value is right here — when rtorrent is down, the panel should say so at
 once rather than hang.
 
-`$rpcTransferTimeOut` (default `null`) is how long to wait for rtorrent to
-**answer**, once connected. rtorrent computes a whole multicall before it writes
-its first byte, so on a large session — or one still loading from disk after a
-restart — a reply can legitimately take far longer than opening the socket did.
-`null` means PHP's `default_socket_timeout`, usually 60 seconds. Set a number to
-override it without touching `php.ini`. It is independent of `$rpcTimeOut`: the
-two bound different phases, and neither constrains the other.
+`$rpcTransferTimeOut` (default `null`) bounds the complete request write and
+response read together. rTorrent computes a whole multicall before it writes its
+first byte, so a large or restarting session can need longer than connecting.
+`null` uses the greater of the connection timeout and PHP's finite positive
+`default_socket_timeout` (or 60 seconds). Progress cannot extend this total budget.
+For a large response over a slow connection, set a finite positive value such as
+`180` for an 80-second transfer and allow enough time in PHP and the web server.
+Both timeouts are capped at 2147483 seconds; there is no unlimited mode.
+`php env_check.php` reports unusable settings. A transfer timeout names the budget
+and the setting to raise in the application log.
 
-The same transfer value is one absolute budget for sending the complete SCGI
-request and the idle timeout while reading its reply. rTorrent supplies a
-required `Content-Length`; ruTorrent therefore stops at that exact body instead
-of waiting for the peer to close the socket. `$rpcMaxResponseBytes` defaults to
-64 MiB and may be raised only as far as rTorrent's supported 100 MiB wire
-ceiling.
+rTorrent supplies a required `Content-Length`; ruTorrent stops at that exact body
+instead of waiting for the peer to close the socket. `$rpcMaxResponseBytes`
+defaults to 64 MiB and may be raised to rTorrent's 100 MiB wire ceiling. Set an
+integer byte count, not `"64M"`; an invalid limit refuses the call. Responses over
+1 MiB spill to a temporary file under `FileUtil::getTempDirectory()` when possible;
+without a usable temporary directory, the bounded response stays in memory and
+may need about twice its size. The socket readiness wait uses `stream_select()`
+when available and bounded backoff otherwise.
 
 The tested rTorrent 0.16.21 has a separate 60-second SCGI request deadline.
 A long synchronous call can finish its work after that deadline but lose its

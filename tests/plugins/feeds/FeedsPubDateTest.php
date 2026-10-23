@@ -97,7 +97,7 @@ class FeedsPubDateTest extends TestCase
 	 * Runs action.php and returns [title => pubDate or null] for every item
 	 * in the feed it prints.
 	 */
-	private function feed($descriptions, $server = array(), $public = null, $version = '0.16.25', $mode = 'all', $environment = null)
+	private function feed($descriptions, $server = array(), $public = null, $version = '0.16.25', $mode = 'all', $environment = null, $sessionName = null)
 	{
 		$root = realpath(__DIR__ . '/../../..');
 		$tree = $this->base . '/tree-' . ($descriptions ? 'on' : 'off');
@@ -134,6 +134,17 @@ class FeedsPubDateTest extends TestCase
 			. strlen($xml) . "\r\n\r\n" . $xml);
 
 		// Seed the singleton so this peer sees the feed request, not settings probes.
+		// Load the shipped aliases too, so the multicall has its real target/view shape.
+		$maps = array('methods-0.9.4.php');
+		if ($version !== '0.9.8') {
+			$maps = array_merge($maps, array('methods-0.10.2.php', 'methods-0.16.0.php',
+				'methods-0.16.16.php', 'methods-0.16.18.php'));
+		}
+		$aliasSetup = '';
+		foreach ($maps as $map) {
+			$aliasSetup .= '(function($map) { require $map; })->call($settings, '
+				. var_export($tree . '/php/' . $map, true) . ");\n";
+		}
 		$driver = $this->base . '/drive-feeds.php';
 		file_put_contents($driver, "<?php\n"
 			. 'ini_set(\'error_log\', ' . var_export($this->base . '/child-errors.log', true) . ");\n"
@@ -161,7 +172,8 @@ class FeedsPubDateTest extends TestCase
 			. '$settings->linkExist = true;' . "\n"
 			. '$settings->iVersion = '.($version === '0.9.8' ? '0x908' : '0x1019').';' . "\n"
 			. '$settings->version = $settings->libVersion = '.var_export($version, true).';' . "\n"
-			. '$settings->server = '.var_export($this->sessionName, true).';' . "\n"
+			. '$settings->server = '.var_export($sessionName === null ? $this->sessionName : $sessionName, true).';' . "\n"
+			. $aliasSetup
 			. '$settings->registerPlugin(\'data\');' . "\n"
 			. 'ob_start(); require(' . var_export($tree . '/plugins/feeds/action.php', true) . ");\n");
 
@@ -404,6 +416,162 @@ class FeedsPubDateTest extends TestCase
 		}
 		$this->assertTrue((string)$xml->channel->link === 'http://public.test:8443/torrents/',
 			'The actual script path and HTTPS=off determine a direct installation base');
+	}
+
+	public function testDirectFeedKeepsTheSchemeTheServerTerminated()
+	{
+		list($items, $output, $status) = $this->feed(false, array('HTTP_HOST' => 'public.test',
+			'HTTPS' => 'on', 'HTTP_X_FORWARDED_PROTO' => 'http',
+			'SCRIPT_NAME' => '/torrents/plugins/feeds/action.php'));
+		$xml = @simplexml_load_string($output);
+		$this->assertTrue($xml !== false, 'The feed of a secured request is well-formed XML');
+		if ($xml === false) {
+			throw new Exception('The feed could not be parsed');
+		}
+		$this->assertEquals(200, $status, 'A secured request produces a feed');
+		$this->assertTrue((string)$xml->channel->link === 'https://public.test/torrents/',
+			'A request header does not turn the links of a secured feed into http');
+		$this->assertTrue(strpos($output, 'http://public.test') === false,
+			'No link in the document is downgraded');
+	}
+
+	public function testFeedBehindChainedProxiesUsesTheClientScheme()
+	{
+		list($items, $output, $status) = $this->feed(false, array('HTTP_HOST' => 'public.test',
+			'HTTP_X_FORWARDED_PROTO' => 'https,http',
+			'SCRIPT_NAME' => '/torrents/plugins/feeds/action.php'));
+		$xml = @simplexml_load_string($output);
+		$this->assertEquals(200, $status, 'A chain of proxies still produces a feed: ' . substr($output, 0, 200));
+		$this->assertTrue($xml !== false, 'The feed behind a proxy chain is well-formed XML');
+		if ($xml === false) {
+			throw new Exception('The feed could not be parsed');
+		}
+		$this->assertTrue((string)$xml->channel->link === 'https://public.test/torrents/',
+			'The scheme the client used is the first entry of the forwarded header');
+	}
+
+	/**
+	 * The channel title and description carry rtorrent's session name,
+	 * which is free text its owner sets in .rtorrent.rc.
+	 */
+	public function testSessionNameCannotBreakTheChannelHeader()
+	{
+		$name = 'box</title><script>alert(1)</script> & "quoted" \'single\'';
+		list($items, $output, $status) = $this->feed(false, array(), null, '0.16.25', 'all', null, $name);
+		$document = new DOMDocument();
+		$this->assertTrue(@$document->loadXML($output),
+			'The feed of a session name with markup is well-formed XML: ' . substr($output, 0, 400));
+		if (!@$document->loadXML($output)) {
+			throw new Exception('The feed could not be parsed');
+		}
+		$this->assertEquals(200, $status, 'The feed is still served');
+		$channel = $document->getElementsByTagName('channel')->item(0);
+		$title = $channel->getElementsByTagName('title')->item(0)->textContent;
+		$description = $channel->getElementsByTagName('description')->item(0)->textContent;
+		$this->assertEquals($name . ': All torrents', $title,
+			'The channel title reads back as the session name, as text: ' . $title);
+		$this->assertTrue(strpos($description, $name) !== false,
+			'The channel description reads back the session name too: ' . $description);
+		$this->assertEquals(0, $document->getElementsByTagName('script')->length,
+			'The session name produces no element of its own');
+	}
+
+	/**
+	 * The view asked of rtorrent. d.multicall takes the target first and the
+	 * view second, so the view is the second string of the call.
+	 */
+	private function viewAsked()
+	{
+		$request = $this->daemon->request();
+		$body = $request['payload'] ?? '';
+		if (strpos($body, '<methodName>d.multicall</methodName>') === false) {
+			return null;
+		}
+		preg_match_all('`<value><string>([^<]*)</string></value>`', $body, $strings);
+		return isset($strings[1][1]) ? $strings[1][1] : null;
+	}
+
+	private function channelTitle($output)
+	{
+		// An empty body is the shape a script that died where it was reading
+		// the title leaves behind, and loadXML() refuses it with a different
+		// error than it gives malformed markup.
+		$this->assertTrue($output !== '', 'the feed has a body at all');
+		$document = new DOMDocument();
+		$parsed = $output !== '' && @$document->loadXML($output);
+		$this->assertTrue($parsed, 'the feed is well-formed XML: ' . substr($output, 0, 400));
+		if (!$parsed) {
+			throw new Exception('The feed could not be parsed');
+		}
+		return $document->getElementsByTagName('channel')->item(0)
+			->getElementsByTagName('title')->item(0)->textContent;
+	}
+
+	/**
+	 * mode arrives in the request and titles the channel out of the language
+	 * file, so an unknown key reads no string: the diagnostic that produces
+	 * is printed before the document the script is still building, and the
+	 * reader is handed bytes ahead of the XML declaration.
+	 */
+	public function testAnUnknownModeStillProducesAWellFormedFeed()
+	{
+		foreach (array('nosuchmode', '', '0', 'ALL', 'all\'; drop', '../../lang/en') as $mode) {
+			list($items, $output, $status) = $this->feed(false, array(), null, '0.16.25', $mode);
+			$this->assertEquals(200, $status, 'an unknown mode still serves a feed: ' . substr($output, 0, 200));
+			$this->assertEquals('fake: All torrents', $this->channelTitle($output),
+				'a mode the feed does not serve is titled as the whole list');
+			$this->assertEquals('', $this->viewAsked(),
+				'and lists every torrent, which is what that title says');
+			$this->assertEquals($this->expected(), $items, 'the items are the feed\'s own');
+		}
+	}
+
+	/**
+	 * A language file holds more than the six views. Reading a title out of
+	 * it by request names free text from a translation, and reaches entries
+	 * that are not a title at all.
+	 */
+	public function testAModeNamingAnotherLanguageEntryDoesNotTitleTheFeed()
+	{
+		foreach (array('Comment', 'Seeds', 'time_w', 'bytes') as $mode) {
+			list($items, $output, $status) = $this->feed(false, array(), null, '0.16.25', $mode);
+			$this->assertEquals('fake: All torrents', $this->channelTitle($output),
+				'"' . $mode . '" is an entry of the language file, not a view of this feed');
+		}
+	}
+
+	/** $_REQUEST carries whatever shape the query string spells. */
+	public function testAModeThatIsNotAStringStillProducesAFeed()
+	{
+		list($items, $output, $status) = $this->feed(false, array(), null, '0.16.25', array('all'));
+		$this->assertEquals(200, $status, 'an array mode still serves a feed: ' . substr($output, 0, 200));
+		$this->assertEquals('fake: All torrents', $this->channelTitle($output),
+			'and is titled as the whole list');
+	}
+
+	public function testEachViewTheFeedServesKeepsItsOwnTitleAndView()
+	{
+		// Title, the view asked of rtorrent, and how many of the three rows
+		// the daemon returns survive the filter this mode applies to them.
+		// None of the fixtures carries a message or any rate, so error and
+		// active keep none of them and inactive keeps all three.
+		$views = array(
+			'all' => array('All torrents', '', 3),
+			'inactive' => array('Inactive torrents', '', 3),
+			'downloading' => array('Downloading torrents', 'incomplete', 3),
+			'completed' => array('Completed torrents', 'complete', 3),
+			'active' => array('Active torrents', 'active', 0),
+			'error' => array('Error torrents', 'active', 0),
+		);
+		foreach ($views as $mode => $expected) {
+			list($items, $output, $status) = $this->feed(false, array(), null, '0.16.25', $mode);
+			$this->assertEquals('fake: ' . $expected[0], $this->channelTitle($output),
+				$mode . ' keeps its own title');
+			$this->assertEquals($expected[1], $this->viewAsked(), $mode . ' asks rtorrent for its own view, got '
+				. var_export($this->viewAsked(), true));
+			$this->assertEquals($expected[2], count($items),
+				$mode . ' keeps the rows it is about: ' . json_encode($items));
+		}
 	}
 
 	public function testInvalidPublicBaseRefusesBeforeReadingTheDaemon()

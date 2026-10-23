@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__.'/SCGIRequest.php');
+
 
 /** One scalar XMLRPC string reply, for read-only daemon version probes. */
 class FakeRtorrentDirectStringReply
@@ -359,6 +361,7 @@ class FakeRtorrentDaemon
 		}
 		@unlink($this->logFile);
 		@unlink($this->bodyLogFile);
+		@unlink($this->logFile . '.server.err');
 		if($replies instanceof Closure)
 		{
 			if(!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')
@@ -373,8 +376,15 @@ class FakeRtorrentDaemon
 			}
 			if($this->pid === 0)
 			{
-				$this->serve($replies);
-				exit(0);
+				$code = 0;
+				try { $this->serve($replies); }
+				catch(Throwable $error)
+				{
+					@file_put_contents($this->logFile . '.server.err',
+						get_class($error) . ': ' . $error->getMessage() . "\n", FILE_APPEND);
+					$code = 1;
+				}
+				exit($code);
 			}
 			return;
 		}
@@ -489,18 +499,26 @@ class FakeRtorrentDaemon
 	{
 		@fclose(STDOUT);
 		$dynamic = is_callable($replies);
-		for ($index = 0; $dynamic || $index < count($replies); $index++) {
+		$index = 0;
+		while ($dynamic || $index < count($replies)) {
 			$client = @stream_socket_accept($this->socket, 10);
 			if ($client === false) {
 				break;
 			}
-			$body = $this->readRequest($client);
+			try { $body = SCGIRequest::read($client)['payload']; }
+			catch(RuntimeException $error)
+			{
+				// An abandoned or incomplete connection consumes no scripted reply.
+				@fclose($client);
+				continue;
+			}
 			file_put_contents($this->bodyLogFile, $body . "\x00--REQ--\x00", FILE_APPEND);
 			$methods = $this->methodNames($body);
 			foreach ($methods as $method) {
 				file_put_contents($this->logFile, $method . "\n", FILE_APPEND);
 			}
 			$values = $dynamic ? $replies($body, $methods) : $replies[$index];
+			$index++;
 			if($values instanceof FakeRtorrentPacedReply)
 				$this->writePaced($client, $values);
 			// A null plan deliberately drops the reply after recording the call.
@@ -524,42 +542,6 @@ class FakeRtorrentDaemon
 			@fwrite($client, $piece);
 			@fflush($client);
 		}
-	}
-
-	/** SCGI: "<len>:<headers>,<body>", with CONTENT_LENGTH in the headers. */
-	private function readRequest($client)
-	{
-		stream_set_timeout($client, 10);
-		$length = '';
-		while (($char = fread($client, 1)) !== '' && $char !== false && $char !== ':') {
-			$length .= $char;
-		}
-		$headers = '';
-		$want = (int)$length;
-		while (strlen($headers) < $want) {
-			$chunk = fread($client, $want - strlen($headers));
-			if ($chunk === '' || $chunk === false) {
-				break;
-			}
-			$headers .= $chunk;
-		}
-		fread($client, 1); // the ',' that closes the netstring
-		$fields = explode("\x00", $headers);
-		$contentLength = 0;
-		for ($i = 0; $i + 1 < count($fields); $i += 2) {
-			if ($fields[$i] === 'CONTENT_LENGTH') {
-				$contentLength = (int)$fields[$i + 1];
-			}
-		}
-		$body = '';
-		while (strlen($body) < $contentLength) {
-			$chunk = fread($client, $contentLength - strlen($body));
-			if ($chunk === '' || $chunk === false) {
-				break;
-			}
-			$body .= $chunk;
-		}
-		return $body;
 	}
 
 	private function methodNames($body)

@@ -191,4 +191,38 @@ final class AddTorrentRedirectTest extends TestCase
             $this->assertSame(array($names[$index].' - ', 'FailedFile', 'error'), $call,
                 'the POST body keeps file '.$index);
     }
+
+    public function testRedirectKeepsTheBrowserOriginForDirectAndProxiedRequests()
+    {
+        foreach (array(
+            array(array('Host' => '127.0.0.1'), ''),
+            array(array('Host' => 'internal.test:8080'), 'https://public.test/app'),
+            array(array('Host' => 'public.test', 'X-Forwarded-Proto' => 'https'), ''),
+            array(array('Host' => 'public.test'), 'ftp://public.test/app'),
+        ) as $case) {
+            $server = AddTorrentHttpHarness::forAddTorrent(
+                new FakeRtorrentAddTorrentReplies(array(), array(), false),
+                array('globals' => array('publicURL' => $case[1])));
+            try {
+                $response = $server->request('POST', '/php/addtorrent.php', '', $case[0]);
+                $this->assertSame(302, $response['code'], 'an empty upload redirects with its result');
+                $this->assertSame('./addtorrent.php?result[]=Failed&', $response['headers']['location'] ?? '',
+                    'the browser retains its public origin and prefix for every server URL setting');
+                $this->assertSame(array(), $server->phpDiagnostics(),
+                    'the production endpoint returns without a PHP diagnostic');
+            } finally {
+                $server->close();
+            }
+        }
+    }
+
+    public function testRedirectCarriesTheJsonRequestOnward()
+    {
+        $response = $this->send('POST', '?json=1');
+        $this->assertSame('./addtorrent.php?result[]=Failed&json=1', $response['headers']['location'] ?? '',
+            'a small JSON upload redirects to its JSON result with the same public origin');
+        $result = $this->send('GET', strstr($response['headers']['location'] ?? '', '?'));
+        $this->assertSame(array('result' => 'Failed'), json_decode($result['body'], true),
+            'the redirected JSON result keeps its first-result contract');
+    }
 }

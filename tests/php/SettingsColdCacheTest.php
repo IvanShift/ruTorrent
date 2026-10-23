@@ -74,7 +74,7 @@ class SettingsColdCacheTest extends TestCase
 		$root = $this->repoRoot();
 		@mkdir($profile . '/settings', 0700, true);
 		$this->daemon = new FakeRtorrentDaemon(RtorrentProbeFixture::responder(),
-			$this->base . '/calls.log', false, array(RtorrentProbeFixture::SOURCE));
+			$this->base . '/calls.log', false, RtorrentProbeFixture::replyClassFiles());
 
 		$driver = $this->base . '/drive.php';
 		file_put_contents($driver, "<?php\n"

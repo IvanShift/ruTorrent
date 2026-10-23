@@ -139,6 +139,50 @@ class rRSS
 		return($ret);
 	}
 
+	// The entity tag a response carries, or null for anything that is not
+	// one. What is kept here goes back out as an If-None-Match request
+	// header this plugin writes by hand, and the feed chooses the bytes, so
+	// the bytes allowed are the ones an entity tag may hold: a quoted
+	// string of visible characters other than the quote, optionally marked
+	// weak (RFC 9110 8.8.3). A tag bounded at an offending byte rather than
+	// declined would be a prefix, and a prefix names a different entity.
+	static protected function entityTag($value)
+	{
+		return(preg_match('/^(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*"$/D',$value) ? $value : null);
+	}
+
+	// The last-modified date a response carries, as the single format a
+	// sender must generate, or null for anything that is not a date. What is
+	// kept here goes back out as an If-Modified-Since request header, which
+	// a recipient must ignore unless its value is an HTTP-date, so the three
+	// formats a recipient must accept are the ones read and the first of
+	// them is the one written (RFC 9110 5.6.7).
+	//
+	// Each is asked for by re-spelling the parse: a format the whole value
+	// does not spell comes back as different bytes. That is also what
+	// settles the day name, which PHP otherwise reads as "the next such
+	// weekday" and so moves the date to one the feed never named.
+	static protected function httpDate($value)
+	{
+		// HTTP dates contain no controls; PHP 8 throws on NUL instead of returning false.
+		if(preg_match('/[\x00-\x1f\x7f]/', $value))
+			return(null);
+		$utc = new DateTimeZone('UTC');
+		foreach(array('D, d M Y H:i:s \G\M\T','l, d-M-y H:i:s \G\M\T','asctime') as $format)
+		{
+			$date = @DateTimeImmutable::createFromFormat('!'.
+				($format==='asctime' ? 'D M j H:i:s Y' : $format),$value,$utc);
+			if($date===false)
+				continue;
+			$spelled = ($format==='asctime')
+				? $date->format('D M ').str_pad($date->format('j'),2,' ',STR_PAD_LEFT).$date->format(' H:i:s Y')
+				: $date->format($format);
+			if($spelled===$value)
+				return($date->format('D, d M Y H:i:s \G\M\T'));
+		}
+		return(null);
+	}
+
 	public function fetch( $history )
 	{
 		$headers = [];
@@ -180,14 +224,15 @@ class rRSS
 			$colon = strpos($header, ':');
 			if($colon === false)
 				continue;
+			// Fold the field name only: validators are opaque, case-sensitive bytes.
 			$name = strtolower(trim(substr($header, 0, $colon)));
 			$value = trim(substr($header, $colon + 1));
 			switch($name) {
 				case 'etag':
-					$this->etag = $value;
+					$this->etag = self::entityTag($value);
 					break;
 				case 'last-modified':
-					$this->lastModified = $value;
+					$this->lastModified = self::httpDate($value);
 			}
 		}
 		// map data from Atom or RSS feeds

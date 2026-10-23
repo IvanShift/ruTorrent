@@ -46,19 +46,18 @@
 	$httpVerifyCertificates = true;
 
 	// for xmlrpc actions
-	$rpcTimeOut = 5;			// connect timeout, in seconds
-	// One absolute budget covers the complete SCGI request write; reply reads
-	// use the same value as their idle timeout. rtorrent builds a whole
-	// multicall before it writes its first byte, so on a large session -- or one
-	// still loading after a restart -- an answer can legitimately take far
-	// longer than it takes to open the socket. Keeping both phases on
-	// $rpcTimeOut cut every reply off at five seconds.
-	// null = PHP's default_socket_timeout (usually 60), which is what ruTorrent
-	// waited before this budget became explicit. The tested rTorrent 0.16.21
-	// has its own 60-second SCGI request deadline; increasing this PHP value
-	// cannot recover a reply that daemon discards.
+	$rpcTimeOut = 5;			// connect timeout, in seconds; unusable values mean 30
+	// One total budget covers the complete request write and response read.
+	// null uses the larger of the connect timeout and PHP's positive
+	// default_socket_timeout (or 60). For slow, large replies, set a finite
+	// positive value such as 180 and raise PHP/web-server timeouts too.
+	// Maximum: 2147483 seconds; no unlimited mode. env_check.php reports
+	// unusable settings. A daemon's own deadline may still discard a reply.
 	$rpcTransferTimeOut = null;
-	// Bound one daemon reply so a broken peer cannot exhaust a PHP worker.
+	// Maximum daemon response body, in integer bytes: default 64 MiB,
+	// up to rTorrent's 100 MiB wire ceiling. Invalid values refuse the call.
+	// Without a usable temporary directory, a large response needs about
+	// twice its size in PHP memory.
 	$rpcMaxResponseBytes = 67108864;
 	$rpcLogCalls = false;
 	$rpcLogFaults = true;

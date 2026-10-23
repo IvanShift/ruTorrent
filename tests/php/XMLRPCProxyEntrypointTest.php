@@ -2,6 +2,9 @@
 
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/PermissionsBiteFixture.php');
+require_once(__DIR__ . '/TestHttpServer.php');
+require_once(__DIR__ . '/TestTree.php');
+require_once(__DIR__ . '/../../php/scgitransport.php');
 
 /**
  * These tests exercise the two HTTP doors, not a reimplementation of them.
@@ -365,7 +368,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertHttp($result, '500 Server Error', 'text/html; charset=UTF-8',
 			'Could not complete the rTorrent XMLRPC request.');
 		$this->assertFullTranscript('httprpc', $result['state'], 1, self::ORDINARY_PAYLOAD,
-			self::ORDINARY_LENGTH, self::ORDINARY_SHA256, null, null, false, null, null,
+			self::ORDINARY_LENGTH, self::ORDINARY_SHA256, null, null, false, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -382,7 +385,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'headerless EOF does not imply the daemon was unreachable');
 		$this->assertFullTranscript('httprpc headerless EOF', $result['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
-			null, null, false, null, null,
+			null, null, false, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -408,6 +411,17 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertTrue(strpos($failure['rpc2logs'], 'rpc-call request base64='.base64_encode($xml)) !== false
 			&& strpos($failure['rpc2logs'], 'rpc-call response: transport-failed') !== false,
 			'failed transports are diagnosed without pretending to have a reply');
+	}
+
+	public function testHttprpcReturnsOnlyTheCompleteXmlBody()
+	{
+		$result = $this->runEntrypoint('action', $this->allowedXml(), true);
+		$this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8',
+			"<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>");
+		$this->assertEquals(rSCGITransport::RESPONSE_BODY, $result['state']['response_mode'],
+			'httprpc asks the transport for exactly the XML body');
+		$this->assertTrue($result['state']['sends'] === 1 && $result['state']['responses'] === 1,
+			'the complete body is sent and published once');
 	}
 
 	public function testRpc2UnreadableInputReturnsClassified400()
@@ -814,7 +828,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$result['state']['logs'], 'one traced decision accompanies one runtime fallback warning');
 		$this->assertFullTranscript('httprpc', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
-			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, null,
+			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -838,7 +852,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('rpc2', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, '127.0.0.1', 1, true,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
 			array(array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1)));
 	}
 
@@ -1020,7 +1034,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertHttp($httprpc, '200 OK', 'text/xml; charset=UTF-8');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
-			null, null, false, null, null,
+			null, null, false, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -1031,7 +1045,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			'127.0.0.1', 1, false,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
 			));
@@ -1045,7 +1059,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertHttp($httprpc, '200 OK', 'text/xml; charset=UTF-8');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
-			null, null, true, null, null,
+			null, null, true, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -1056,7 +1070,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
 			'127.0.0.1', 1, true,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
 			));
@@ -1071,7 +1085,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'Could not complete the rTorrent XMLRPC request.');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
-			null, null, false, null, null,
+			null, null, false, null, rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
 				array('event' => 'response', 'door' => 'httprpc'),
@@ -1082,7 +1096,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			'127.0.0.1', 1, false,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), 1,
+			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
 			array(
 				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
 			));
@@ -1178,10 +1192,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$this->assertHttp($httprpcQuiet, $disp['httprpc_status'], $disp['httprpc_type']);
 			$this->assertFullTranscript('httprpc logged (' . $name . ')', $httprpcLogged['state'],
 				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
-				null, null, $disp['trusted'], null, null, $disp['httprpc_events']);
+				null, null, $disp['trusted'], null, ($disp['sends'] > 0 ? rSCGITransport::RESPONSE_BODY : null), $disp['httprpc_events']);
 			$this->assertFullTranscript('httprpc quiet (' . $name . ')', $httprpcQuiet['state'],
 				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
-				null, null, $disp['trusted'], null, null, $disp['httprpc_events']);
+				null, null, $disp['trusted'], null, ($disp['sends'] > 0 ? rSCGITransport::RESPONSE_BODY : null), $disp['httprpc_events']);
 			$this->assertTranscriptsStrictlyIdentical('httprpc (' . $name . ')', $httprpcLogged['state'], $httprpcQuiet['state']);
 			$this->assertTrue(count($httprpcLogged['state']['logs']) >= count($httprpcQuiet['state']['logs']),
 				'httprpc (' . $name . ') logged has at least as many log entries');
@@ -1201,7 +1215,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$rpc2Host = ($disp['sends'] > 0) ? '127.0.0.1' : null;
 			$rpc2Port = ($disp['sends'] > 0) ? 1 : null;
 			$rpc2Timeouts = ($disp['sends'] > 0) ? array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null) : null;
-			$rpc2ResponseMode = ($disp['sends'] > 0) ? 1 : null;
+			$rpc2ResponseMode = ($disp['sends'] > 0) ? rSCGITransport::RESPONSE_BODY : null;
 			$this->assertFullTranscript('rpc2 logged (' . $name . ')', $rpc2Logged['state'],
 				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
 				$rpc2Host, $rpc2Port, $disp['trusted'], $rpc2Timeouts, $rpc2ResponseMode, $disp['rpc2_events']);
@@ -1265,7 +1279,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = array(), $sourceEdits = array())
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
-		$process = null;
+		$server = null;
 		try
 		{
 			if(!mkdir($tree, 0700, true) && !is_dir($tree))
@@ -1281,8 +1295,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			)));
 			$this->writeStubs($tree);
 
-			$port = $this->reservePort();
-			$environment = array_merge($_ENV, array(
+			$environment = array(
 				'XMLRPC_ENTRYPOINT_STATE' => $state,
 				'XMLRPC_ENTRYPOINT_LOGGING' => $logging ? '1' : '0',
 				'XMLRPC_ENTRYPOINT_LOG_CALLS' => $logCalls ? '1' : '0',
@@ -1290,23 +1303,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'XMLRPC_ENTRYPOINT_VERSION' => $daemonVersion,
 				'XMLRPC_ENTRYPOINT_CACHED_VERSION' => ($cachedVersion === null) ? $daemonVersion : $cachedVersion,
 				'XMLRPC_ENTRYPOINT_UNREADABLE' => ($body === 'unreadable') ? '1' : '0',
-			));
-			// Replace the command shell so proc_terminate() always targets the
-			// disposable PHP server instead of leaving it orphaned.
-			$command = 'exec ' . escapeshellarg(PHP_BINARY)
-				. ' -d auto_prepend_file=' . escapeshellarg($tree . '/prepend.php')
-				. ' -d display_errors=0'
-				. ' -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($tree);
-			$process = proc_open($command, array(
-				0 => array('pipe', 'r'),
-				1 => array('file', $tree . '/server.out', 'a'),
-				2 => array('file', $tree . '/server.err', 'a'),
-			), $pipes, $tree, $environment);
-			if(!is_resource($process))
-				throw new Exception('could not start copied PHP entrypoint server');
-			fclose($pipes[0]);
-			$this->waitForServer($port, $process, $tree . '/server.err');
-			$response = $this->rawPost($port, ($door === 'action')
+			);
+			$server = TestHttpServer::start($tree, $environment, array(
+				'-d', 'auto_prepend_file=' . $tree . '/prepend.php', '-d', 'display_errors=0'));
+			$response = $this->rawPost($server->port(), ($door === 'action')
 				? '/plugins/httprpc/action.php' : '/rpc2.php', ($body === 'unreadable') ? '' : $body, $requestHeaders);
 			$decoded = json_decode(file_get_contents($state), true);
 			if(!is_array($decoded))
@@ -1319,12 +1319,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 		finally
 		{
-			if(is_resource($process))
-			{
-				@proc_terminate($process);
-				@proc_close($process);
-			}
-			$this->deleteTree($tree);
+			if($server !== null) $server->close();
+			TestTree::remove($tree);
 		}
 	}
 
@@ -1407,10 +1403,25 @@ class XMLRPCProxyEntrypointTest extends TestCase
 <?php
 class rSCGITransport
 {
-	const RESPONSE_BODY = 1;
+	const RESPONSE_BODY = 'body';
+	const RESPONSE_RAW = 'raw';
 
-	public static function send($host, $port, $payload, $trusted = false, $timeout = 0, &$failure = null, $transferTimeout = null, $maxResponseBytes = null, $responseMode = self::RESPONSE_BODY)
+	public static function sendConfigured($payload, $trusted, $options = array(), &$failure = null, &$error = null)
 	{
+		global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes;
+		return self::send($scgi_host, $scgi_port, $payload, $trusted, $options + array(
+			'connectTimeout' => $rpcTimeOut ?? 30, 'transferTimeout' => $rpcTransferTimeOut,
+			'maxResponseBytes' => $rpcMaxResponseBytes), $failure, $error);
+	}
+
+	public static function describeFailure($failure) { return $failure; }
+
+	public static function send($host, $port, $payload, $trusted = false, $options = array(), &$failure = null, &$error = null)
+	{
+		$timeout = $options['connectTimeout'] ?? 30;
+		$transferTimeout = $options['transferTimeout'] ?? null;
+		$maxResponseBytes = $options['maxResponseBytes'] ?? null;
+		$responseMode = $options['responseMode'] ?? self::RESPONSE_RAW;
 		$path = getenv('XMLRPC_ENTRYPOINT_STATE');
 		$state = json_decode(@file_get_contents($path), true);
 		if(!is_array($state))
@@ -1461,6 +1472,7 @@ PHP
 <?php
 // The real xmlrpc.php loads util.php, which bootstraps conf/config.php.
 require_once(dirname(__FILE__).'/../conf/config.php');
+require_once(dirname(__FILE__).'/scgitransport.php');
 function entrypoint_state($key, $value = null)
 {
 	$path = getenv('XMLRPC_ENTRYPOINT_STATE');
@@ -1485,7 +1497,7 @@ function entrypoint_state($key, $value = null)
 		$state['payload_length'] = strlen($value[0]);
 		$state['trusted'] = (bool)$value[1];
 		$state['timeouts'] = null;
-		$state['response_mode'] = null;
+		$state['response_mode'] = $value[2];
 		$state['events'][] = array('event' => 'send', 'door' => 'httprpc', 'trusted' => (bool)$value[1], 'sends' => $state['sends']);
 	}
 	elseif($key === 'response')
@@ -1527,7 +1539,7 @@ class rTorrentSettings
 }
 class rXMLRPCRequest
 {
-	public static function send($payload, $trusted, &$failure = null)
+	public static function send($payload, $trusted, &$failure = null, $responseMode = rSCGITransport::RESPONSE_RAW)
 	{
 		$failure = null;
 		$statePath = getenv('XMLRPC_ENTRYPOINT_STATE');
@@ -1542,7 +1554,7 @@ class rXMLRPCRequest
 				.htmlspecialchars(getenv('XMLRPC_ENTRYPOINT_VERSION'), ENT_NOQUOTES, 'UTF-8')
 				.'</string></value></param></params></methodResponse>';
 		}
-		entrypoint_state('send', array($payload, $trusted));
+		entrypoint_state('send', array($payload, $trusted, $responseMode));
 		$send = getenv('XMLRPC_ENTRYPOINT_SEND');
 		if($send === 'false' || $send === 'closed-before-headers')
 		{
@@ -1551,8 +1563,8 @@ class rXMLRPCRequest
 		}
 		if(!$trusted && ($send === 'untrusted-refused' || ($send === 'socket-refused'
 			&& strpos($payload, '<methodName>system.sockets.') !== false)))
-			return 'HTTP/1.1 200 OK'."\r\n".'Content-Type: text/xml'."\r\n\r\n".'<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
-		return "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
+			return (($responseMode === rSCGITransport::RESPONSE_BODY) ? '' : 'HTTP/1.1 200 OK'."\r\n".'Content-Type: text/xml'."\r\n\r\n").'<?xml version="1.0"?><methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-507</i4></value></member><member><name>faultString</name><value><string>Command refused</string></value></member></struct></value></fault></methodResponse>';
+		return (($responseMode === rSCGITransport::RESPONSE_BODY) ? '' : "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n")."<?xml version=\"1.0\"?>\n<methodResponse><params><param><value><string>SCGI-REPLY</string></value></param></params></methodResponse>";
 	}
 }
 class CachedEcho
@@ -1599,34 +1611,7 @@ PHP
 );
 	}
 
-	private function reservePort()
-	{
-		$socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-		if($socket === false)
-			throw new Exception('could not reserve local test port: ' . $error);
-		$name = stream_socket_get_name($socket, false);
-		fclose($socket);
-		$parts = explode(':', $name);
-		return intval(array_pop($parts));
-	}
 
-	private function waitForServer($port, $process, $errorFile)
-	{
-		for($i = 0; $i < 100; $i++)
-		{
-			$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
-			if($socket !== false)
-			{
-				fclose($socket);
-				return;
-			}
-			$status = proc_get_status($process);
-			if(!$status['running'])
-				throw new Exception('copied PHP entrypoint server exited: ' . @file_get_contents($errorFile));
-			usleep(25000);
-		}
-		throw new Exception('copied PHP entrypoint server did not start');
-	}
 
 	private function rawPost($port, $path, $body, $headers = array())
 	{
@@ -1719,21 +1704,4 @@ PHP
 		$this->assertTrue(in_array($expected, $lines[1], true), $message);
 	}
 
-	private function deleteTree($path)
-	{
-		if(!is_dir($path))
-			return;
-		foreach(scandir($path) as $entry)
-			if(($entry !== '.') && ($entry !== '..'))
-			{
-				$child = $path . '/' . $entry;
-				if(is_link($child))
-					@unlink($child);
-				else if(is_dir($child))
-					$this->deleteTree($child);
-				else
-					@unlink($child);
-			}
-		@rmdir($path);
-	}
 }

@@ -406,7 +406,9 @@ final class RSSTest extends TestCase
 	{
 		$exp_url = 'https://example.org/rss';
 		$exp_etag = 'some etag';
-		$exp_lastModified = 'some date';
+		// The date goes back out in a header whose value is an HTTP-date, so
+		// what the property can hold is one.
+		$exp_lastModified = 'Wed, 21 Oct 2026 07:28:00 GMT';
 		$rssFetchURL = function ($url, $cookies, $headers) use ($exp_url, $exp_etag, $exp_lastModified) {
 			$this->assertEquals($exp_url, $url);
 			$this->assertEquals(['key' => 'value', 'key2'=> 'value2'], $cookies);

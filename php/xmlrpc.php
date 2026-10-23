@@ -172,30 +172,32 @@ class rXMLRPCRequest
 		}
 	}
 
-	public static function send( $data, $trusted = true, &$failure = null )
+	public static function send( $data, $trusted = true, &$failure = null, $responseMode = rSCGITransport::RESPONSE_RAW )
 	{
 		global $rpcLogCalls;
 		if($rpcLogCalls)
 			FileUtil::toLog($data);
-		global $rpcTimeOut;
-		global $rpcTransferTimeOut;
-		global $rpcMaxResponseBytes;
-		global $scgi_host;
-		global $scgi_port;
-		$failure = null;
-		$result = rSCGITransport::send($scgi_host, $scgi_port, $data, $trusted,
-			isset($rpcTimeOut) ? $rpcTimeOut : 30, $failure,
-			isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
-			isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
-			rSCGITransport::RESPONSE_RAW);
+		$result = rSCGITransport::sendConfigured($data, $trusted, array('responseMode' => $responseMode,
+			'temporaryDirectory' => self::temporaryDirectory()), $failure);
 		if($result === null)
 		{
-			FileUtil::toLog('rXMLRPCRequest: '.$failure);
+			// A stopped daemon would add a line on every WebUI poll, which
+			// already answers "Could not reach rTorrent"; log the other failures.
+			if($failure !== 'connect-failed')
+				FileUtil::toLog('rXMLRPCRequest: '.rSCGITransport::describeFailure($failure));
 			$result = false;
 		}
 		if($rpcLogCalls)
 			FileUtil::toLog($result);
 		return($result);
+	}
+
+	/** Spill is optional even when functions used by ruTorrent's directory owner are disabled. */
+	private static function temporaryDirectory()
+	{
+		foreach(array('ini_get', 'is_dir', 'file_exists', 'is_readable', 'is_writable', 'umask', 'mkdir') as $function)
+			if(!function_exists($function)) return false;
+		return FileUtil::getTempDirectory();
 	}
 
 	/**

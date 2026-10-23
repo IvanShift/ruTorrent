@@ -168,9 +168,11 @@ class RtorrentLoadConfirmationTest extends TestCase
 		$oldHost = $GLOBALS['scgi_host'] ?? null;
 		$oldPort = $GLOBALS['scgi_port'] ?? null;
 		$oldLog = $GLOBALS['log_file'] ?? null;
+		$oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
 		$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
 		$GLOBALS['log_file'] = $path;
-		$GLOBALS['scgi_host'] = sys_get_temp_dir()
+		$GLOBALS['rpcLogCalls'] = false;
+		$GLOBALS['scgi_host'] = 'unix://' . sys_get_temp_dir()
 			. '/rutorrent-load-absent-' . bin2hex(random_bytes(8)) . '.sock';
 		$GLOBALS['scgi_port'] = 0;
 		try {
@@ -178,13 +180,23 @@ class RtorrentLoadConfirmationTest extends TestCase
 				'key' => 'ru-load-proof-' . str_repeat('a', 32));
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
 				'connect-failed means the receipt remains unresolved');
+			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
+				'a repeated connection failure leaves the receipt unresolved');
+			$request = new rXMLRPCRequest(new rXMLRPCCommand('system.client_version'));
+			$this->assertSame(false, $request->run(), 'the stopped daemon still refuses the core request');
+			$this->assertSame('connect-failed', $request->transportFailure,
+				'the request retains its classified failure without a routine log line');
 			$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-			$this->assertSame(1, count($lines), 'transport failure is logged once');
-			$this->assertTrue(strpos($lines[0] ?? '', 'rXMLRPCRequest: connect-failed') !== false,
-				'transport retains its existing classified diagnostic');
+			$this->assertSame(1, count($lines), 'an unresolved receipt logs its transport failure once across repeated polls');
+			$this->assertTrue(strpos($lines[0] ?? '', 'rtorrent: pending load status unknown: connect-failed') !== false,
+				'the pending-load diagnostic names its classified transport failure');
+			$this->assertTrue(strpos(implode("\n", $lines), 'rXMLRPCRequest: connect-failed') === false,
+				'the ordinary core connection refusal adds no duplicate polling log line');
 		} finally {
 			if ($oldLog === null) unset($GLOBALS['log_file']);
 			else $GLOBALS['log_file'] = $oldLog;
+			if ($oldRpcLog === null) unset($GLOBALS['rpcLogCalls']);
+			else $GLOBALS['rpcLogCalls'] = $oldRpcLog;
 			@unlink($path);
 			if ($oldHost === null) unset($GLOBALS['scgi_host']);
 			else $GLOBALS['scgi_host'] = $oldHost;

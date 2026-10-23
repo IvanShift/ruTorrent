@@ -108,22 +108,18 @@ function rpc2_fault($status, $message)
 function rpc2_send($payload, $trusted)
 {
 	require_once(dirname(__FILE__).'/php/scgitransport.php');
-	global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes, $rpcLogCalls;
-	// Explicit call tracing records exact bytes safely on one line, including
-	// failures, even when routine proxy decision logging is disabled.
+	global $scgi_host, $rpcLogCalls;
 	if(!empty($rpcLogCalls))
 		rpc2_log('rpc-call request base64='.base64_encode($payload), true);
 	$failure = null;
-	$result = rSCGITransport::send($scgi_host, $scgi_port, $payload, $trusted,
-		isset($rpcTimeOut) ? $rpcTimeOut : 30, $failure,
-		isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
-		isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
-		rSCGITransport::RESPONSE_BODY);
+	$result = rSCGITransport::sendConfigured($payload, $trusted,
+		array('responseMode' => rSCGITransport::RESPONSE_BODY), $failure, $error);
 	if(!empty($rpcLogCalls))
 		rpc2_log($result === null ? 'rpc-call response: transport-failed'
 			: 'rpc-call response base64='.base64_encode($result), true);
 	if($result === null)
-		rpc2_log($failure);
+		rpc2_log(($failure === 'connect-failed') ? 'cannot reach rtorrent at '.$scgi_host.': '.$error
+			: rSCGITransport::describeFailure($failure));
 	return $result;
 }
 

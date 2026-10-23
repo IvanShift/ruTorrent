@@ -48,6 +48,10 @@ class Snoopy
 	// arrived" need no new case; the reason is in $error.
 	const RESPONSE_BODY_FAILED = -101;
 	const SOCKET_CONNECT_FAILED = -102;
+	// Provisional (1xx) blocks one answer may carry before its final response.
+	// A server sends one or two; each block is discarded when it ends, so only
+	// this count stops a peer that streams them without end.
+	const MAX_INTERIM_RESPONSES = 5;
 	const CREDENTIAL_REDIRECT_REFUSED = 'credential-redirect-refused';
 	const REQUEST_THROTTLED = 'request-throttled';
 
@@ -1829,7 +1833,7 @@ class Snoopy
 		$this->response_code = '';
 		$is_gzipped = false;
 		$transferCodings = array();
-		$interimBlocks = 0;
+		$interimResponses = 0;
 		$completeHeaders = false;
 
 		while(($currentHeader = fgets($fp,$this->_maxlinelen)) !== false)
@@ -1846,11 +1850,11 @@ class Snoopy
 				$status = (int) $this->status;
 				if($status >= 100 && $status < 200 && $status !== 101)
 				{
-					if(++$interimBlocks > 5)
+					// A provisional block owns neither the final metadata nor
+					// its body. 101 switches protocols rather than preceding it.
+					if(++$interimResponses > self::MAX_INTERIM_RESPONSES)
 						return $this->refuseResponseBody('too-many-interim-responses');
-					$this->headers = array();
-					$this->_redirectaddr = false;
-					$this->response_code = '';
+					$this->discardResponse();
 					$this->status = 0;
 					$is_gzipped = false;
 					$transferCodings = array();
@@ -1898,7 +1902,8 @@ class Snoopy
 			return false;
 		}
 
-		if($this->response_code === '')
+		if($this->response_code === ''
+			|| ((int)$this->status >= 100 && (int)$this->status < 200 && (int)$this->status !== 101))
 			return $this->refuseResponseBody('missing-final-response');
 		if($completeHeaders)
 			$this->rememberThrottleResponse();
@@ -2104,6 +2109,23 @@ class Snoopy
 		if(!$this->verify_certificates)
 			$cmdline_params .= " -k";
 		$cmdline_params .= " -s ";
+		// escapeshellarg() keeps only the bytes that form a character in the
+		// process locale and drops the rest, so a url is not something the
+		// command line carries as it stands: under C every byte above ASCII
+		// goes, and a six-byte path arrives as four -- a request for a
+		// resource nobody asked for, with nothing to say it happened.
+		// Percent-encoding those bytes first leaves the locale nothing to
+		// decide, and in a path it is what curl does with them in any case.
+		// The authority keeps its own bytes: a non-ASCII host is curl's to
+		// resolve, and it has an IDN library for that.
+		$authority = strpos($curlURL, '://');
+		$authority = ($authority === false) ? 0 : $authority + 3;
+		$target = $authority + strcspn($curlURL, '/?#', $authority);
+		$encoded = '';
+		for($at = $target, $end = strlen($curlURL); $at < $end; $at++)
+			$encoded .= (ord($curlURL[$at]) < 0x80) ? $curlURL[$at] : sprintf('%%%02X', ord($curlURL[$at]));
+		$curlURL = substr($curlURL, 0, $target).$encoded;
+
 		// The shipped curl (8.22) stops even an unknown-length response during
 		// transfer, before the temporary body file can grow without bound.
 		$maxDownload = max(1, (int)$this->maxlength);
@@ -2174,7 +2196,7 @@ class Snoopy
 			}
 			$is_gzipped = $this->readCurlHeaders($result_headers, $scheme);
 			if($this->response_code === ''
-				|| ((int) $this->status >= 100 && (int) $this->status < 200))
+				|| ((int)$this->status >= 100 && (int)$this->status < 200 && (int)$this->status !== 101))
 			{
 				@unlink($headerfile);
 				@unlink($contfile);
@@ -2230,14 +2252,12 @@ class Snoopy
 			}
 			if(preg_match("|^HTTP/|",$header))
 			{
-				// curl -D can include CONNECT and 100 blocks before the
-				// origin answer. Only the final block owns its cookies.
-				if($this->response_code !== '')
-				{
-					$this->headers = array();
-					$this->_redirectaddr = false;
-					$is_gzipped = false;
-				}
+				// curl -D includes CONNECT and provisional responses before
+				// the origin's final block. None of their metadata survives it.
+				$this->headers = array();
+				$this->_redirectaddr = false;
+				$this->status = 0;
+				$is_gzipped = false;
 				$this->response_code = $header;
 				if(preg_match("|^HTTP/[^\s]*\s(.*?)\s|",$this->response_code, $match))
 					$this->status= $match[1];
@@ -2340,9 +2360,13 @@ class Snoopy
 			$fp = fsockopen($host,$port,$errno,$errstr,$this->_fp_timeout);
 		if(!$fp)
 		{
-			// Positive OS errno values overlap HTTP statuses. Negating them
-			// would collide with read timeout (-100) and body refusal (-101).
-			// Keep the original errno in $error for detailed diagnostics.
+			// A request whose socket never opened has no response of its own,
+			// and the one still in place describes whatever the client last
+			// fetched. Callers reuse a client for a sequence of fetches and
+			// read $results and $headers rather than the return value.
+			$this->discardResponse();
+			// Positive OS errno values overlap HTTP statuses. Keep the errno in
+			// the message and use a distinct transport status, not -100 or -101.
 			$this->status = $errno > 0 ? self::SOCKET_CONNECT_FAILED : $errno;
 			// PHP's resolver can fail with errno 0. Keep its known category,
 			// without copying a hostname or arbitrary system text into logs.

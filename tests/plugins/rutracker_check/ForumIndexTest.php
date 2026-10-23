@@ -556,7 +556,7 @@ fiPermissionStateTest($suite, 'fetchDump publishes no ETag hint when the dump do
         $answer = RuTrackerForumIndex::fetchDump(921, $client, $reason);
     } finally {
         if ($hadMask) $GLOBALS['profileMask'] = $savedMask;
-        else unset($GLOBALS['profileMask']);
+        elseif (array_key_exists('profileMask', $GLOBALS)) unset($GLOBALS['profileMask']);
         @chmod($tmp, 0777);
     }
 
@@ -2938,7 +2938,7 @@ fiPermissionStateTest($suite, 'staging failure after another winner returns only
         $answer = RuTrackerForumIndex::fetchDump(921, $outer, $reason);
     } finally {
         if ($hadMask) $GLOBALS['profileMask'] = $savedMask;
-        else unset($GLOBALS['profileMask']);
+        elseif (array_key_exists('profileMask', $GLOBALS)) unset($GLOBALS['profileMask']);
         @chmod($tmp, 0777);
     }
 

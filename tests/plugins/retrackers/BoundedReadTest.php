@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/RetrackersTestStubs.php');
 require_once(__DIR__ . '/../../php/SCGITransportFixture.php');
+require_once(__DIR__ . '/../../php/GlobalSettingsFixture.php');
 require_once(__DIR__ . '/../../../php/scgitransport.php');
 define('RETRACKERS_IMPORT_ONLY', true);
 define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.025);
@@ -13,7 +14,7 @@ require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 class BoundedReadTest extends TestCase
 {
 	// rSCGITransport codes that describe a wrong or refused answer, not a missing one.
-	const PROTOCOL = array('empty-request', 'invalid-response-mode', 'invalid-response-limit',
+	const PROTOCOL = array('empty-request', 'invalid-options', 'invalid-response-mode', 'invalid-response-limit',
 		'headers-too-large', 'malformed-header', 'missing-content-length', 'duplicate-content-length',
 		'malformed-content-length', 'zero-content-length', 'response-too-large');
 
@@ -143,6 +144,43 @@ class BoundedReadTest extends TestCase
 				}
 			}
 		}
+	}
+
+	public function testDirectAdapterUsesTheRealTransportOptionsAndRawFrame()
+	{
+		$globals = GlobalSettingsFixture::scgi();
+		$adapter = new class extends RetrackersDirectRpcAdapter {
+			public function exchange(&$failure) {
+				return $this->send('<request/>', array('mode' => 'direct-scalar', 'type' => 'string'), $failure);
+			}
+		};
+		$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>kept</string></value></param></params></methodResponse>';
+		$frame = "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: ".strlen($body)."\r\n\r\n".$body;
+		try {
+			foreach (array(array(0, 1, 4096, null), array(0.3, 0.05, 4096, 'read-timeout'),
+				array(0, 1, strlen($body) - 1, 'response-too-large'), array(0, 1, '64M', 'invalid-response-limit')) as $case) {
+				$peer = SCGITransportFixture::startChunks(array(array($case[0], $frame)));
+				try {
+					$GLOBALS['scgi_host'] = $peer->host(); $GLOBALS['scgi_port'] = $peer->port();
+					$GLOBALS['rpcTransferTimeOut'] = $case[1]; $GLOBALS['rpcMaxResponseBytes'] = $case[2];
+					$failure = 'stale';
+					$decoded = $adapter->exchange($failure);
+					if ($case[3] === null) {
+						$this->assertTrue($decoded === array('ok' => true, 'family' => 2, 'value' => 'kept') && $failure === null,
+							'the real adapter receives the exact framed RAW response for its restricted decoder');
+						$request = $peer->request();
+						$this->assertTrue($request['payload'] === '<request/>' &&
+							strpos($request['header'], "UNTRUSTED_CONNECTION\0"."0\0") !== false,
+							'the adapter preserves the exact request and trusted SCGI bit');
+					} else {
+						$this->assertTrue($decoded === false && $failure === $case[3],
+							'the real adapter forwards the configured timeout and response cap: '.$case[3]);
+						if ($case[3] === 'invalid-response-limit')
+							$this->assertTrue(!$peer->accepted(), 'an invalid response limit makes no daemon connection');
+					}
+				} finally { $peer->close(); }
+			}
+		} finally { $globals->restore(); }
 	}
 
 	public function testSourceSnapshotsReserveTransportClassificationForKnownNoAnswerCodes()

@@ -9,7 +9,9 @@ on:
 # ubuntu-latest moves to 26.04 from 2026-10-19. Move the pin deliberately.
 jobs:
   php-syntax:
-    # Blocking: application PHP must parse on the support floor and image runtime.
+    # Blocking: every PHP file must parse, on every PHP the README supports.
+    # tests/ included: a test that does not parse is a test that does not run,
+    # and nothing else reads those files before CI executes them.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -25,7 +27,7 @@ jobs:
           fail=0
           while IFS= read -r f; do
             php -l "$f" > /dev/null || { echo "::error file=$f::PHP syntax error"; fail=1; }
-          done < <(find . -type f -name '*.php' -not -path './tests/*' -not -path './node_modules/*')
+          done < <(find . -type f -name '*.php' -not -path '*/node_modules/*')
           exit $fail
 
   editorconfig:
@@ -59,7 +61,8 @@ jobs:
         run: npx --yes editorconfig-checker@7
 
   eslint:
-    # Advisory for now (same plan as editorconfig).
+    # Advisory for now (same plan as editorconfig). Covers the jest specs
+    # under tests/ as well as js/ and plugins/.
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -76,6 +79,7 @@ jobs:
 
   phpstan:
     # Blocking: the tree is at zero level-0 findings and stays there.
+    # See phpstan.neon for what it reads, tests/ included.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,7 +88,8 @@ jobs:
           php-version: '8.1'
           tools: phpstan:2.2.9
       - name: phpstan
-        run: phpstan analyse --no-progress --memory-limit=512M --error-format=github
+        # Including the fork test fixtures exceeds the upstream 512 MiB budget.
+        run: phpstan analyse --no-progress --memory-limit=1G --error-format=github
 
   image-lint:
     # Stable producer contract consumed by docker-rutorrent's exact-SHA check gate.

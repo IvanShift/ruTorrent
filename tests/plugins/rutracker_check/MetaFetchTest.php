@@ -2206,7 +2206,7 @@ $suite->test('a replacement keeps the creation date and creator its own bytes ca
         // A float, because Torrent::decode_integer() runs every bencoded
         // integer through floatval() -- so this is byte-for-byte what the
         // fixture carried, not a value this code chose.
-        strictAssertSame(1300000000.0, $payload->meta('creation date'),
+        strictAssertSame(1300000000, $payload->meta('creation date'),
             "the author's own date is restored, not replaced by the tracker's reg_time");
         strictAssertTrue(strpos((string) $payload, '13:creation datei1300000000e') !== false,
             'and it re-encodes as the same bencoded integer the author wrote');
@@ -2263,7 +2263,7 @@ $suite->test('the replacement keeps its own creator and date over a setter that 
             'the harvest patched the stamping Torrent, not a quietly rebuilt plain one');
         strictAssertSame('mktorrent 1.1', $payload->meta('created by'),
             "the author's own name is put back over the stamp the setters wrote");
-        strictAssertSame(1300000000.0, $payload->meta('creation date'),
+        strictAssertSame(1300000000, $payload->meta('creation date'),
             "and the author's own date is put back over it too");
     });
 });

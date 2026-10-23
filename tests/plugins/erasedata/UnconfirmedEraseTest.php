@@ -190,8 +190,9 @@ class UnconfirmedEraseTest extends TestCase
 			. 'require_once(' . var_export($root . '/plugins/erasedata/removewithdata.php', true) . ");\n"
 			. '$__result = erasedataRemoveWithData(array(' . var_export($hash, true) . '), "1");' . "\n"
 			. 'echo ($__result === false) ? "refused" : "erased";' . "\n");
-		// The writer reads a reply until the daemon closes the connection, so a
-		// daemon that never answers holds it for default_socket_timeout.
+		// rSCGITransport::sendConfigured() sets the transfer budget to
+		// max(default_socket_timeout, $rpcTimeOut): config.php leaves
+		// $rpcTransferTimeOut null, and the preamble sets $rpcTimeOut = 5.
 		return $this->run_($driver, '-d default_socket_timeout=' . (int)$socketTimeout);
 	}
 

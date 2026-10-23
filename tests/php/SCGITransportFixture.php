@@ -1,11 +1,22 @@
 <?php
 
+require_once(__DIR__.'/PhpProcess.php');
+require_once(__DIR__.'/TestTree.php');
+
 /**
  * Disposable TCP or UNIX SCGI peer. It captures the parsed request, writes a
  * scripted reply, and can keep the connection open after the declared body.
  */
 class SCGITransportFixture
 {
+	// sun_path holds 108 bytes, the last of them the terminating NUL.
+	const MAX_SOCKET_PATH = 107;
+
+	/** Fixtures this process started and has not closed yet, by object id. */
+	private static $open = array();
+	private static $hooked = false;
+	private $owner;
+
 	private $accepted;
 	private $capture;
 	private $dir;
@@ -15,29 +26,26 @@ class SCGITransportFixture
 	private $process;
 	private $release;
 
-	/** Shared by XMLRPCProxyTest for dependency checks in an isolated PHP child. */
+	/** Shared by XMLRPCProxyTest for isolated PHP dependency checks. */
 	public static function runPhpChild($arguments)
 	{
-		$command = array(escapeshellarg(PHP_BINARY));
-		foreach($arguments as $argument)
-			$command[] = escapeshellarg($argument);
-		$process = proc_open(implode(' ', $command), array(
-			0 => array('pipe', 'r'),
-			1 => array('pipe', 'w'),
-			2 => array('pipe', 'w'),
-		), $pipes);
-		if(!is_resource($process))
-			throw new RuntimeException('failed to start PHP child process');
-		fclose($pipes[0]);
-		$stdout = stream_get_contents($pipes[1]);
-		fclose($pipes[1]);
-		$stderr = stream_get_contents($pipes[2]);
-		fclose($pipes[2]);
-		return array(
-			'exitCode' => proc_close($process),
-			'stdout' => $stdout,
-			'stderr' => $stderr,
-		);
+		$run = PhpProcess::run($arguments);
+		return array('exitCode' => $run['code'], 'stdout' => $run['out'], 'stderr' => $run['err']);
+	}
+
+	public static function startThenCloseSecond($response)
+	{
+		return self::create(array(array(0, $response)), false, false, 0, 0, true);
+	}
+
+	public static function startWithVersionProbe($chunks, $holdOpen = false, $unix = false)
+	{
+		return self::create($chunks, $holdOpen, $unix, 0, 0, false, true);
+	}
+
+	public static function startVersionProbeOnly()
+	{
+		return self::create(array(), false, false, 0, 0, false, true, true);
 	}
 
 	public static function start($response, $holdOpen = false)
@@ -50,43 +58,35 @@ class SCGITransportFixture
 		return self::startChunks(array(array(0, $response)), $holdOpen, true);
 	}
 
-	/** Reply once, then read and close the next request without headers. */
-	public static function startThenCloseSecond($response)
-	{
-		$fixture = new self();
-		$fixture->boot(array(array(0, $response)), false, false, 0, true);
-		return $fixture;
-	}
-
-	/** Answer a live-version probe before serving the request under test. */
-	public static function startWithVersionProbe($chunks, $holdOpen = false, $unix = false)
-	{
-		$fixture = new self();
-		$fixture->boot($chunks, $holdOpen, $unix, 0, false, true);
-		return $fixture;
-	}
-
-	/** Answer the version probe, then make the next connection fail. */
-	public static function startVersionProbeOnly()
-	{
-		$fixture = new self();
-		$fixture->boot(array(), false, false, 0, false, true, true);
-		return $fixture;
-	}
-
 	public static function startRepeatedBody($length, $unix = false)
 	{
-		$fixture = new self();
-		$fixture->boot(array(array(0, "Content-Length: ".$length."\r\n\r\n")), false,
+		return self::create(array(array(0, "Content-Length: ".$length."\r\n\r\n")), false,
 			$unix, (int)$length);
-		return $fixture;
+	}
+
+	/** Reads the request only after $holdSeconds, then answers with $chunks. */
+	public static function startNotReading($holdSeconds = 5, $chunks = array())
+	{
+		return self::create($chunks, false, false, 0, $holdSeconds);
 	}
 
 	/** Each chunk is array(delay-in-seconds-before-write, bytes). */
 	public static function startChunks($chunks, $holdOpen = false, $unix = false)
 	{
+		return self::create($chunks, $holdOpen, $unix);
+	}
+
+	private static function create($chunks, $holdOpen, $unix, $repeatBytes = 0, $readDelay = 0,
+		$closeSecond = false, $versionProbe = false, $probeOnly = false)
+	{
 		$fixture = new self();
-		$fixture->boot($chunks, $holdOpen, $unix);
+		self::closeAtShutdown($fixture);
+		try { $fixture->boot($chunks, $holdOpen, $unix, $repeatBytes, $readDelay, $closeSecond, $versionProbe, $probeOnly); }
+		catch(Throwable $error)
+		{
+			$fixture->close();
+			throw $error;
+		}
 		return $fixture;
 	}
 
@@ -128,35 +128,62 @@ class SCGITransportFixture
 		return is_file($this->errorFile) ? trim(file_get_contents($this->errorFile)) : '';
 	}
 
+	/**
+	 * A test that ends in a fatal error never reaches its finally block, and
+	 * the peer and its directory would outlive it.
+	 */
+	private static function closeAtShutdown($fixture)
+	{
+		if(!self::$hooked)
+		{
+			self::$hooked = true;
+			register_shutdown_function(function()
+			{
+				// A forked child inherits this hook and its parent's fixtures;
+				// each process closes only the ones it started.
+				foreach(self::$open as $fixture)
+					if($fixture->owner === getmypid())
+						$fixture->close();
+			});
+		}
+		$fixture->owner = getmypid();
+		self::$open[spl_object_id($fixture)] = $fixture;
+	}
+
 	public function close()
 	{
+		unset(self::$open[spl_object_id($this)]);
 		if($this->release !== null)
 			@touch($this->release);
 		if(is_resource($this->process))
 		{
+			// A holding peer leaves on its own once it sees the release file.
 			$status = proc_get_status($this->process);
-			if(isset($status['running']) && $status['running'])
+			if(!empty($status['running']))
 			{
 				usleep(20000);
 				$status = proc_get_status($this->process);
-				if(isset($status['running']) && $status['running'])
-					@proc_terminate($this->process);
+				if(!empty($status['running']))
+					PhpProcess::stop($this->process);
 			}
 			@proc_close($this->process);
 		}
-		if($this->dir !== null && is_dir($this->dir))
-		{
-			foreach(scandir($this->dir) as $name)
-				if(($name !== '.') && ($name !== '..'))
-					@unlink($this->dir.'/'.$name);
-			@rmdir($this->dir);
-		}
+		$this->process = null;
+		$this->release = null;
+		if($this->dir !== null)
+			TestTree::remove($this->dir);
+		$this->dir = null;
 	}
 
-	private function boot($chunks, $holdOpen, $unix, $repeatBytes = 0, $closeSecond = false,
-		$versionProbe = false, $probeOnly = false)
+	private function boot($chunks, $holdOpen, $unix, $repeatBytes, $readDelay, $closeSecond, $versionProbe, $probeOnly)
 	{
 		$this->dir = sys_get_temp_dir().'/rutorrent-scgi-'.uniqid('', true);
+		$socketPath = $this->dir.'/scgi.sock';
+		// PHP cuts a longer path with a silenced notice, and the peer then
+		// binds a name outside its directory or fails with an empty error.
+		if($unix && (strlen($socketPath) > self::MAX_SOCKET_PATH))
+			throw new Exception('SCGI fixture socket path is '.strlen($socketPath).' bytes; a UNIX socket path'
+				.' holds at most '.self::MAX_SOCKET_PATH.' (sun_path). Shorten TMPDIR: '.$socketPath);
 		if(!mkdir($this->dir, 0700, true))
 			throw new Exception('could not create SCGI fixture directory');
 		$endpointFile = $this->dir.'/endpoint';
@@ -165,7 +192,7 @@ class SCGITransportFixture
 		$this->errorFile = $this->dir.'/err';
 		$this->release = $this->dir.'/release';
 		$configFile = $this->dir.'/config.json';
-		$listen = $unix ? 'unix://'.$this->dir.'/scgi.sock' : 'tcp://127.0.0.1:0';
+		$listen = $unix ? 'unix://'.$socketPath : 'tcp://127.0.0.1:0';
 		$configChunks = array();
 		foreach($chunks as $chunk)
 		{
@@ -184,9 +211,9 @@ class SCGITransportFixture
 			'closeSecond' => $closeSecond,
 			'versionProbe' => $versionProbe,
 			'probeOnly' => $probeOnly,
+			'readDelay' => max(0, (int)round($readDelay * 1000000)),
 		)));
-		$script = <<<'PHP'
-<?php
+		$script = "<?php\nrequire_once ".var_export(__DIR__.'/SCGIRequest.php', true).";\n".<<<'PHP'
 $config = json_decode(file_get_contents($argv[1]), true);
 $server = @stream_socket_server($config['listen'], $errno, $error);
 if($server === false)
@@ -195,90 +222,28 @@ if($server === false)
 	exit(2);
 }
 file_put_contents($argv[2], stream_socket_get_name($server, false));
-function readRequest($client)
-{
-	$length = '';
-	while(true)
-	{
-		$byte = fread($client, 1);
-		if($byte === false || $byte === '')
-			exit(4);
-		if($byte === ':')
-			break;
-		if(($byte < '0') || ($byte > '9') || (strlen($length) >= 12))
-			exit(5);
-		$length .= $byte;
-	}
-	if($length === '')
-		exit(6);
-	$need = (int)$length + 1;
-	$request = '';
-	while(strlen($request) < $need)
-	{
-		$part = fread($client, $need - strlen($request));
-		if($part === false || $part === '')
-			exit(7);
-		$request .= $part;
-	}
-	if(substr($request, -1) !== ',')
-		exit(8);
-	$header = substr($request, 0, -1);
-	$parts = explode("\0", $header);
-	if(array_pop($parts) !== '')
-		exit(9);
-	$fields = array();
-	for($i = 0; $i < count($parts); $i += 2)
-	{
-		if(!isset($parts[$i + 1]))
-			exit(10);
-		$fields[$parts[$i]] = $parts[$i + 1];
-	}
-	if(!isset($fields['CONTENT_LENGTH']) || !preg_match('/^[0-9]+$/', $fields['CONTENT_LENGTH']))
-		exit(11);
-	$payload = '';
-	$payloadLength = (int)$fields['CONTENT_LENGTH'];
-	while(strlen($payload) < $payloadLength)
-	{
-		$part = fread($client, $payloadLength - strlen($payload));
-		if($part === false || $part === '')
-			exit(12);
-		$payload .= $part;
-	}
-	return array('header' => base64_encode($header), 'payload' => base64_encode($payload));
-}
 if(!empty($config['versionProbe']))
 {
 	$probe = @stream_socket_accept($server, 5);
-	if($probe === false)
-		exit(18);
-	touch($argv[3]);
-	$record = readRequest($probe);
-	if(base64_decode($record['payload']) !== '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>')
+	if($probe === false) exit(18);
+	touch($argv[5]);
+	$record = SCGIRequest::read($probe);
+	if($record['payload'] !== '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>')
 		exit(19);
-	// A probe-only peer stops listening before it answers. The client reads
-	// the answer by its Content-Length and connects again at once; a listener
-	// that was still open then took that connection into its backlog and reset
-	// it when it closed, which the client reports as closed-before-headers
-	// rather than the refused connection under test. Measured: 1 of 200 runs
-	// under 8-way parallel load, and every run with a 300 ms stall between
-	// the answer and the close.
-	if(!empty($config['probeOnly']))
-		fclose($server);
+	// Close before answering so the next connect is reliably refused.
+	if(!empty($config['probeOnly'])) fclose($server);
 	$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>0.16.24</string></value></param></params></methodResponse>';
-	$frame = 'Content-Length: '.strlen($body)."\r\n\r\n".$body;
-	fwrite($probe, $frame);
-	if(!empty($config['probeOnly']))
-	{
-		fclose($probe);
-		exit(0);
-	}
+	fwrite($probe, 'Content-Length: '.strlen($body)."\r\n\r\n".$body);
 	fclose($probe);
+	if(!empty($config['probeOnly'])) exit(0);
 }
 $client = @stream_socket_accept($server, 5);
 if($client === false)
 	exit(3);
-touch($argv[3]);
-file_put_contents($argv[4], json_encode(readRequest($client)));
+if($config['readDelay'] > 0)
+	usleep($config['readDelay']);
+touch($argv[5]);
+file_put_contents($argv[3], json_encode(array_map('base64_encode', SCGIRequest::read($client))));
 foreach($config['chunks'] as $chunk)
 {
 	if($chunk['delay'] > 0)
@@ -312,37 +277,24 @@ if($config['repeat'] > 0)
 	}
 }
 if($config['hold'])
-	for($i = 0; $i < 500 && !is_file($argv[5]); $i++)
+	for($i = 0; $i < 500 && !is_file($argv[4]); $i++)
 		usleep(10000);
 fclose($client);
 if(!empty($config['closeSecond']))
 {
 	$second = @stream_socket_accept($server, 5);
-	if($second === false)
-		exit(15);
-	stream_set_timeout($second, 5);
-	$tail = '';
-	while(strpos($tail, '</methodCall>') === false)
-	{
-		$part = fread($second, 8192);
-		if($part === false || $part === '')
-			exit(16);
-		$tail = substr($tail.$part, -32);
-	}
+	if($second === false) exit(15);
+	SCGIRequest::read($second);
 	fclose($second);
 }
 fclose($server);
 PHP;
 		$scriptFile = $this->dir.'/peer.php';
 		file_put_contents($scriptFile, $script);
-		// 'exec ' so proc_terminate() in close() reaches the peer itself: proc_open()
-		// runs a string command through /bin/sh, this shell forks rather than execs it,
-		// and the signal would otherwise stop at the shell while the peer keeps its
-		// socket open. Same reason as the copied-rpc2 server in SCGITransportTest.
-		$command = 'exec '.escapeshellarg(PHP_BINARY).' '.escapeshellarg($scriptFile).' '
-			.escapeshellarg($configFile).' '.escapeshellarg($endpointFile).' '
-			.escapeshellarg($this->accepted).' '.escapeshellarg($this->capture).' '
-			.escapeshellarg($this->release);
+		$command = array(PHP_BINARY, $scriptFile, $configFile, $endpointFile,
+			$this->capture, $this->release, $this->accepted);
+		if(!function_exists('proc_open'))
+			throw new Exception('could not start SCGI fixture peer: proc_open is unavailable');
 		$this->process = proc_open($command, array(
 			0 => array('pipe', 'r'),
 			1 => array('file', $this->dir.'/out', 'a'),

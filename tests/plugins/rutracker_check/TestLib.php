@@ -978,6 +978,9 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         {
             return self::answer(__FUNCTION__, array($hash));
         }
+        // Mirrors the real accountOrigin() lookup without loading loginmgr
+        // and its real Snoopy behind the strict transport double.
+        public static $accountOrigins = array();
 
         public static function reset()
         {
@@ -987,6 +990,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             self::$runLocalId = null;
             self::$results = array();
             self::$agents = array();
+            self::$accountOrigins = array();
             Snoopy::reset();
             rXMLRPCRequest::reset();
         }
@@ -1112,6 +1116,11 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function createTorrent($torrent, $oldHash, $oldTorrent = null)
         {
             return self::answer(__FUNCTION__, array($torrent, $oldHash, $oldTorrent));
+        }
+
+        public static function accountOrigin($name)
+        {
+            return isset(self::$accountOrigins[$name]) ? self::$accountOrigins[$name] : '';
         }
 
         public static function logDebug($message)

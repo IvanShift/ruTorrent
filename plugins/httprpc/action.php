@@ -437,7 +437,12 @@ switch($mode)
 			refuseTrustedHashBatch('setprio');
 		$req = new rXMLRPCRequest();
 		foreach($vs as $v)
+		{
+			// Only a spelled-out file index may select a file; intval() maps any other string to zero.
+			if(!preg_match('/^[0-9]+$/D', $v))
+				continue;
 			$req->addCommand( new rXMLRPCCommand( "f.set_priority", array($hash[0], intval($v), intval($ss[0])) ) );
+		}
 		$req->addCommand( new rXMLRPCCommand("d.update_priorities", $hash[0]) );
 		$req->addSessionSaves($hash);
 		if($req->success(true))
@@ -902,7 +907,8 @@ switch($mode)
 			CachedEcho::send(XMLRPCProxy::rejectionFault($decision['method']), "text/xml");
 		}
 		$transportFailure = null;
-		$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted'], $transportFailure);
+		$result = rXMLRPCRequest::send($decision['payload'], $decision['trusted'], $transportFailure,
+			rSCGITransport::RESPONSE_BODY);
 		if($result === false)
 		{
 			header("HTTP/1.0 500 Server Error");
@@ -914,9 +920,6 @@ switch($mode)
 		}
 		if(!empty($result))
 		{
-			$pos = strpos($result, "\r\n\r\n");
-			if($pos !== false)
-				$result = substr($result,$pos+4);
 			CachedEcho::send($result, "text/xml");
 		}
 		break;

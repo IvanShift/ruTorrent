@@ -36,8 +36,9 @@ function v18LabRpc($method, $params, $allowFault = false)
 	global $scgi_host, $scgi_port;
 	$failure = null;
 	$body = rSCGITransport::send($scgi_host, $scgi_port,
-		retrackersBuildDirectRequest($method, $params), true, 0.25,
-		$failure, 5, 67108864, rSCGITransport::RESPONSE_BODY);
+		retrackersBuildDirectRequest($method, $params), true, array('connectTimeout' => 0.25,
+		'transferTimeout' => 5, 'maxResponseBytes' => 67108864,
+		'responseMode' => rSCGITransport::RESPONSE_BODY), $failure);
 	if ($body === null) throw new RuntimeException($method . ': ' . $failure);
 	$xml = simplexml_load_string($body);
 	if (!$xml) throw new RuntimeException($method . ': invalid XML');
@@ -52,7 +53,7 @@ function v18LabBencode($value)
 {
 	if (is_int($value)) return('i' . $value . 'e');
 	if (is_string($value)) return(strlen($value) . ':' . $value);
-	if (array_is_list($value)) return('l' . implode('', array_map('v18LabBencode', $value)) . 'e');
+	if ($value === array_values($value)) return('l' . implode('', array_map('v18LabBencode', $value)) . 'e');
 	ksort($value, SORT_STRING);
 	$out = 'd';
 	foreach ($value as $key => $item) $out .= v18LabBencode((string)$key) . v18LabBencode($item);

@@ -1233,7 +1233,9 @@ $tests = array(
         foreach ($stored as $key => $what) {
             Snoopy::throttleHosts("honor-$key", array("honor-$key.test"), 0.1, 1, 1);
             $turn = microtime(true) + 0.3;
-            throttleStoreState("honor-$key", array('next' => 0, 'ended' => 0, 'until' => 0, 'strikes' => 0, $key => $turn));
+            $storedState = array('next' => 0, 'ended' => 0, 'until' => 0, 'strikes' => 0);
+            $storedState[$key] = $turn;
+            throttleStoreState("honor-$key", $storedState);
             $waiting = throttleFetch("https://honor-$key.test/x");
             $wire = throttleWire();
             $request = $wire[count($wire) - 1];

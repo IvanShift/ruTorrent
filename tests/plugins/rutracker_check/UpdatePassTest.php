@@ -6042,7 +6042,7 @@ function upRunThroughProductionXMLRPC($dir, $hash, $answers)
         if (!copy(testFindRepoRoot() . '/php/' . $name, $fixture . '/' . $name))
             throw new RuntimeException('Unable to copy php/' . $name . ' into ' . $fixture);
     file_put_contents($fixture . '/util.php', '<?php '
-        . 'class FileUtil{public static function toLog($message){}}');
+        . 'class FileUtil{public static function toLog($message){}public static function getTempDirectory(){return null;}}');
     file_put_contents($fixture . '/settings.php', '<?php '
         . 'class rTorrentSettings{public static function get(){static $instance;'
         . 'if(!$instance)$instance=new self();return $instance;}'
@@ -6052,8 +6052,7 @@ function upRunThroughProductionXMLRPC($dir, $hash, $answers)
         . 'public function maxContentSize(){return 1048576;}}');
     file_put_contents($fixture . '/scgitransport.php', '<?php '
         . 'class rSCGITransport{const RESPONSE_RAW="raw";public static $raw="";'
-        . 'public static function send($host,$port,$data,$trusted,$timeout,&$error,'
-        . '$transferTimeout=null,$maxResponseBytes=null,$responseMode=self::RESPONSE_RAW)'
+        . 'public static function sendConfigured($data,$trusted,$options=array(),&$failure=null,&$connectError=null)'
         . '{return self::$raw;}}');
     $scenario = $fixture . '/scenario.json';
     file_put_contents($scenario, json_encode(array(
@@ -6628,6 +6627,7 @@ upTest($suite, 'the actual update driver repairs a staged replacement before hol
     $result = null;
     $log = upCapturedLog(function () use ($driver, $start, &$result) {
         $argv = array('update.php', '');
+        $cycleLock = null;
         eval(substr($driver, $start));
         strictAssertTrue(is_resource($cycleLock), 'the actual driver holds its cycle lock during recovery and dispatch');
     });

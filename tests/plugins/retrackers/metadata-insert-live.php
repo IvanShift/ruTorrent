@@ -46,7 +46,7 @@ function rpc($method, ...$params) {
     if (!$result || isset($result->fault)) throw new RuntimeException($method.': '.$reply);
     return decodeValue($result->params->param->value);
 }
-function check($ok,$message) { if (!$ok) throw new RuntimeException($message); }
+function metadataInsertCheck($ok,$message) { if (!$ok) throw new RuntimeException($message); }
 function waitFor($predicate,$message) {
     $deadline=microtime(true)+15;
     do { if ($predicate()) return; usleep(100000); } while (microtime(true)<$deadline);
@@ -79,46 +79,46 @@ function insertAction($settings=null) {
 function nativeEnqueued($hash) {
     $queue=rpc('d.custom',$hash,'retrackers-queued');
     $claim=explode(':',rpc('system.retrackers.original_claim','',$hash));
-    check(count($claim)===7 && $claim[0]==='original' &&
+    metadataInsertCheck(count($claim)===7 && $claim[0]==='original' &&
         $claim[2]===rpc('d.incarnation',$hash) && $claim[3]===rpc('d.local_id',$hash) &&
         $claim[4]===hash('sha256','alice') && $queue==='q1:'.$claim[4].':'.$claim[6],
         'ordinary hook did not attest an exact queued original');
-    check(rpc('d.custom',$hash,'retrackers-recovery')!=='' &&
+    metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery')!=='' &&
         rpc('d.custom',$hash,'retrackers-recovery-ack')!=='','queued original recovery markers absent');
-    check((bool)glob('/data/.session/.retrackers-migration/'.$hash.'*'),'queued original durable sidecar absent');
-    check(nativeChildren()===0,'insert hook launched an actor before the dispatcher');
+    metadataInsertCheck((bool)glob('/data/.session/.retrackers-migration/'.$hash.'*'),'queued original durable sidecar absent');
+    metadataInsertCheck(nativeChildren()===0,'insert hook launched an actor before the dispatcher');
 }
 function nativeDrain($hash) {
     $failure=null;
     $adapter=new RetrackersLifecycleRpcAdapter(); $adapter->setFamily(2);
-    check($adapter->armNativeQueueDispatcher('alice',$failure),'fixed dispatcher cadence refused: '.$failure);
+    metadataInsertCheck($adapter->armNativeQueueDispatcher('alice',$failure),'fixed dispatcher cadence refused: '.$failure);
     // An admitted profile answers idle when the cadence already started this job.
-    check(in_array(rpc('system.retrackers.dispatcher_start','','alice'),array('spawned','active','idle'),true),
+    metadataInsertCheck(in_array(rpc('system.retrackers.dispatcher_start','','alice'),array('spawned','active','idle'),true),
         'fixed dispatcher was not admitted');
     waitFor(function() use ($hash) {
         try { return rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0; }
         catch (Exception $e) { return false; }
     },'fixed application worker drains the queued original');
     rpc('schedule.remove','','rr.queue.'.hash('sha256','alice'));
-    check(rpc('d.custom',$hash,'retrackers-recovery')==='' &&
+    metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery')==='' &&
         rpc('d.custom',$hash,'retrackers-recovery-ack')==='','fixed worker did not retire recovery markers');
     $urls=array_map(function ($row) { return $row[0]; },rpc('t.multicall',$hash,'','t.url='));
-    check(in_array('http://127.0.0.1:9/retracker',$urls,true),'fixed worker did not apply the actual tracker edit');
+    metadataInsertCheck(in_array('http://127.0.0.1:9/retracker',$urls,true),'fixed worker did not apply the actual tracker edit');
 }
 rpc('method.insert','','rr.receipts.v1','multi|private');
 if ($native) {
     $settings=new rRetrackers(); $settings->list=array(array('http://127.0.0.1:9/retracker'));
     $settings->todelete=array(); $settings->dontAddPrivate=0;
-    check($settings->store(),'native fixture settings store failed');
+    metadataInsertCheck($settings->store(),'native fixture settings store failed');
     $failure=null;
-    check(RetrackersLifecycleCoordinator::init('alice','/rutorrent/app/plugins/retrackers/run.sh',
+    metadataInsertCheck(RetrackersLifecycleCoordinator::init('alice','/rutorrent/app/plugins/retrackers/run.sh',
         '/usr/bin/php85',$failure,null,$settings),'native fixture lifecycle init failed: '.$failure);
     rpc('schedule.remove','','rr.queue.'.hash('sha256','alice'));
     // Replace only this disposable fixture's insert callbacks while preserving profile admission.
     foreach (rpc('method.list_keys','','event.download.inserted_new') as $key)
         rpc('method.set_key','','event.download.inserted_new',$key);
     $keys=rpc('method.list_keys','','rr.receipts.v1');
-    check(count(array_filter($keys,function ($key) { return strncmp($key,'pf:',3)===0; }))===1 &&
+    metadataInsertCheck(count(array_filter($keys,function ($key) { return strncmp($key,'pf:',3)===0; }))===1 &&
         count(array_filter($keys,function ($key) { return strncmp($key,'pv:',3)===0; }))===1,
         'native fixture lacks sole profile and epoch admission');
 } else {
@@ -146,13 +146,13 @@ if (($argv[2] ?? '') === 'eligibility') {
         else usleep(300000);
         $marker=rpc('d.custom',$hash,'retrackers-recovery');
         $ack=rpc('d.custom',$hash,'retrackers-recovery-ack');
-        check(($marker!=='')===$wanted && ($ack!=='')===$wanted,'eligibility claim mismatch');
-        if (!$native) check(file_exists('/data/worker-called')===$wanted,'eligibility worker mismatch');
-        if (!$wanted) check(fixtureKeys()===array(),'ineligible torrent published a receipt');
+        metadataInsertCheck(($marker!=='')===$wanted && ($ack!=='')===$wanted,'eligibility claim mismatch');
+        if (!$native) metadataInsertCheck(file_exists('/data/worker-called')===$wanted,'eligibility worker mismatch');
+        if (!$wanted) metadataInsertCheck(fixtureKeys()===array(),'ineligible torrent published a receipt');
         if ($native) {
-            check((bool)glob('/data/.session/.retrackers-migration/'.$hash.'*')===$wanted,'eligibility native sidecar mismatch');
+            metadataInsertCheck((bool)glob('/data/.session/.retrackers-migration/'.$hash.'*')===$wanted,'eligibility native sidecar mismatch');
             if ($wanted) { nativeEnqueued($hash); nativeDrain($hash); }
-            else check(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
+            else metadataInsertCheck(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
                 'ineligible torrent queued work or launched an actor');
         }
         rpc('d.erase',$hash);
@@ -173,36 +173,36 @@ foreach (array('safety','defer','functional') as $kind) {
     rpc('load.normal','','magnet:?xt=urn:btih:'.$hash);
     waitFor(function() use ($hash) { try { return rpc('d.is_meta',$hash)==='1'; } catch (Exception $e) { return false; } },'metadata inserted');
     usleep(300000);
-    check(rpc('d.custom',$hash,'retrackers-recovery')==='', $kind.' metadata published a marker');
-    check(rpc('d.custom',$hash,'retrackers-recovery-ack')==='', $kind.' metadata published an ack');
-    check(fixtureKeys()===array(),$kind.' metadata published a ledger receipt');
-    check(!file_exists('/data/worker-called'),$kind.' metadata launched a worker');
+    metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery')==='', $kind.' metadata published a marker');
+    metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery-ack')==='', $kind.' metadata published an ack');
+    metadataInsertCheck(fixtureKeys()===array(),$kind.' metadata published a ledger receipt');
+    metadataInsertCheck(!file_exists('/data/worker-called'),$kind.' metadata launched a worker');
     if ($native) {
-        check(!glob('/data/.session/.retrackers-migration/'.$hash.'*'),$kind.' metadata acquired a native claim');
-        check(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
+        metadataInsertCheck(!glob('/data/.session/.retrackers-migration/'.$hash.'*'),$kind.' metadata acquired a native claim');
+        metadataInsertCheck(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
             $kind.' metadata queued work or launched an actor');
     }
     rpc('d.custom3.set',$hash,'1');
     rpc('d.multicall2','', 'main', $action);
-    check(rpc('d.custom3',$hash)==='1',$kind.' metadata reached the legacy-marker mutation');
+    metadataInsertCheck(rpc('d.custom3',$hash)==='1',$kind.' metadata reached the legacy-marker mutation');
     rpc('d.erase',$hash);
     file_put_contents('/data/'.$kind.'.torrent','d4:info'.$info.'e');
     rpc('load.normal','','/data/'.$kind.'.torrent');
     waitFor(function() use ($hash) { try { return rpc('d.is_meta',$hash)==='0'; } catch (Exception $e) { return false; } },'ordinary inserted');
     if ($kind === 'defer') {
         $keys=rpc('method.list_keys','','rr.receipts.v1');
-        check(in_array('dq:1',$keys,true), 'ordinary defer did not set dirty');
-        check(count(array_filter($keys, function ($key) { return strncmp($key,'di:',3)===0; }))===1, 'ordinary defer did not capture local id');
+        metadataInsertCheck(in_array('dq:1',$keys,true), 'ordinary defer did not set dirty');
+        metadataInsertCheck(count(array_filter($keys, function ($key) { return strncmp($key,'di:',3)===0; }))===1, 'ordinary defer did not capture local id');
     } elseif ($kind === 'functional') {
         if ($native) { nativeEnqueued($hash); nativeDrain($hash); }
         else {
             waitFor(function() { return file_exists('/data/worker-called'); }, 'ordinary worker launch');
-            check(rpc('d.custom',$hash,'retrackers-recovery')!=='','ordinary functional did not publish marker');
+            metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery')!=='','ordinary functional did not publish marker');
         }
     } else {
         rpc('d.custom3.set',$hash,'1');
         rpc('d.multicall2','', 'main', $action);
-        check(rpc('d.custom3',$hash)==='', 'ordinary safety did not clear the legacy marker');
+        metadataInsertCheck(rpc('d.custom3',$hash)==='', 'ordinary safety did not clear the legacy marker');
     }
     if ($kind !== 'functional') rpc('d.erase',$hash);
     printf("ok - %s %s metadata stays untouched; ordinary hook executes\n",$native?'native':'legacy',$kind);

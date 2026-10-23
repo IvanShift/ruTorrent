@@ -73,12 +73,12 @@ if(!class_exists('ErasedataWriteFailureStream'))
 
 		public static function register()
 		{
-			if(!in_array(static::SCHEME, stream_get_wrappers(), true))
-				stream_wrapper_register(static::SCHEME, get_called_class());
+			if(!in_array(static::scheme(), stream_get_wrappers(), true))
+				stream_wrapper_register(static::scheme(), get_called_class());
 		}
 		public static function real($path)
 		{
-			return(substr($path, strlen(static::SCHEME.'://')));
+			return(substr($path, strlen(static::scheme().'://')));
 		}
 		public function stream_open($path, $mode, $options, &$openedPath)
 		{
@@ -103,6 +103,7 @@ if(!class_exists('ErasedataWriteFailureStream'))
 		{
 			return(@rename(static::real($from), static::real($to)));
 		}
+		abstract protected static function scheme();
 		abstract public function stream_write($data);
 	}
 }
@@ -113,6 +114,7 @@ if(!class_exists('ErasedataPartialWriteStream'))
 	class ErasedataPartialWriteStream extends ErasedataWriteFailureStream
 	{
 		const SCHEME = 'erasedatapartial';
+		protected static function scheme() { return(self::SCHEME); }
 		private $wrote = false;
 
 		public function stream_write($data)
@@ -133,6 +135,7 @@ if(!class_exists('ErasedataFlushFailureStream'))
 	class ErasedataFlushFailureStream extends ErasedataWriteFailureStream
 	{
 		const SCHEME = 'erasedatanoflush';
+		protected static function scheme() { return(self::SCHEME); }
 
 		public function stream_write($data)
 		{
@@ -585,7 +588,7 @@ class RemoveWithDataTest extends TestCase
 				hash_file('sha256', $fixture.'/'.$name), 'raw fault fixture executes the shipped '.$name.' bytes');
 		}
 		file_put_contents($fixture.'/util.php', '<?php '
-			.'class FileUtil{public static function toLog($message){}}');
+			.'class FileUtil{public static function toLog($message){}public static function getTempDirectory(){return null;}}');
 		file_put_contents($fixture.'/settings.php', '<?php '
 			.'class rTorrentSettings{public static function get(){static $instance;'
 			.'if(!$instance)$instance=new self();return $instance;}'
@@ -595,9 +598,8 @@ class RemoveWithDataTest extends TestCase
 			.'public function maxContentSize(){return 1048576;}}');
 		file_put_contents($fixture.'/scgitransport.php', '<?php '
 			.'class rSCGITransport{const RESPONSE_RAW="raw";public static $raw="";'
-			.'public static function send($host,$port,$data,$trusted,$timeout,&$error,'
-			.'$transferTimeout=null,$maxResponseBytes=null,$responseMode=self::RESPONSE_RAW)'
-			.'{return self::$raw;}}');
+			.'public static function sendConfigured($data,$trusted,$options=array(),&$failure=null,&$connectError=null)'
+			.'{$failure=$connectError=null;return self::$raw;}}');
 		// The production XMLRPC parser needs its own include tree, so it runs in
 		// a real script that receives one absolute JSON scenario filename.
 		$scenario = $fixture.'/scenario.json';

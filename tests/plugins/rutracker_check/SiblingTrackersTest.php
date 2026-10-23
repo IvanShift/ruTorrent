@@ -31,6 +31,12 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/toloka.php'
 
 $suite = new StrictTestSuite();
 
+function sibReset()
+{
+    ruTrackerChecker::reset();
+    ruTrackerChecker::$accountOrigins['Tfile'] = 'https://tfile.example';
+}
+
 $suite->test('Toloka production Cloudflare pause remains five seconds', function () {
     $source = file_get_contents(testFindRepoRoot() . '/plugins/rutracker_check/trackers/toloka.php');
     strictAssertSame(1, preg_match('/define\(\x27TOLOKA_CLOUDFLARE_PAUSE\x27,\s*5\)/', $source),
@@ -78,8 +84,8 @@ function sibHandlers($hash = SIB_NEW_HASH)
         'tfile' => array(
             'call'  => array('TfileCheckImpl', 'download_torrent'),
             'topic' => 'http://tfile.me/forum/viewtopic.php?p=7',
-            'page'  => 'https://megatfile.cc/forum/viewtopic.php?p=7',
-            'down'  => 'https://megatfile.cc/forum/download.php?id=99',
+            'page'  => 'https://tfile.example/forum/viewtopic.php?p=7',
+            'down'  => 'https://tfile.example/forum/download.php?id=99',
             'body'  => 'Info hash:</td><td><strong>' . $hash . '</strong></td> <a href="download.php?id=99">get</a>',
             'old'   => null,
         ),
@@ -114,7 +120,7 @@ function sibHandlers($hash = SIB_NEW_HASH)
 
 $suite->test('a failed second fetch cannot reuse the previous topic page as a download', function () {
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
-        ruTrackerChecker::reset();
+        sibReset();
         Snoopy::queue($h['page'], 200, $h['body']);
         Snoopy::queueEarlyFailure($h['down'], 'Refusing to fetch: cannot resolve host');
         $old = $h['old'] === null ? null : new $h['old']();
@@ -128,7 +134,7 @@ $suite->test('a failed second fetch cannot reuse the previous topic page as a do
 
 $suite->test('a failed second fetch logs a classified reason without remote text', function () {
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
-        ruTrackerChecker::reset();
+        sibReset();
         Snoopy::queue($h['page'], 200, $h['body']);
         Snoopy::queueEarlyFailure($h['down'], 'Refusing to fetch: cannot resolve host secret-token');
         $old = $h['old'] === null ? null : new $h['old']();
@@ -140,7 +146,7 @@ $suite->test('a failed second fetch logs a classified reason without remote text
             $name . ': the early refusal has a classified diagnostic');
         strictAssertSame(false, strpos($line, 'secret-token') !== false,
             $name . ': remote text does not enter routine logs');
-        ruTrackerChecker::reset();
+        sibReset();
         Snoopy::queue($h['page'], 200, $h['body']);
         Snoopy::queueEarlyFailure($h['down'], '');
         call_user_func($h['call'], $h['topic'], SIB_OLD_HASH, $old);
@@ -153,7 +159,7 @@ $suite->test('a failed second fetch logs a classified reason without remote text
 $suite->test('a download link that did not answer 200 is not a deletion', function () {
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
         foreach (sibNotFound() as $why => $status) {
-            ruTrackerChecker::reset();
+            sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
             Snoopy::queue($h['page'], 200, $h['body']);
@@ -173,7 +179,7 @@ $suite->test('a download link that did not answer 200 is not a deletion', functi
     // (it keys on the quality tag, not the hash), so two are checked here;
     // Toloka has its own same-hash case below.
     Snoopy::reset();
-    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7',
+    Snoopy::queue('https://tfile.example/forum/viewtopic.php?p=7',
         200, 'Info hash:</td><td><strong>' . SIB_OLD_HASH . '</strong></td>');
     strictAssertSame(ruTrackerChecker::STE_UPTODATE,
         TfileCheckImpl::download_torrent('http://tfile.me/forum/viewtopic.php?p=7', SIB_OLD_HASH, null),
@@ -206,7 +212,7 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
             'Show_[bdrip1080p]_ep01' => 'bd1080',
         ) as $name => $blockId) {
             SibAniDubTorrent::$torrentName = $name;
-            ruTrackerChecker::reset();
+            sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
             // Only the block matching the parsed quality carries a link, so
@@ -233,7 +239,7 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
             'Show_HWP_remux_[1080p]_ep01' => 'tv1080',
         ) as $name => $blockId) {
             SibAniDubTorrent::$torrentName = $name;
-            ruTrackerChecker::reset();
+            sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
             Snoopy::queue('https://tr.anidub.com/?newsid=7', 200,
@@ -258,7 +264,7 @@ $suite->test('anidub: a missing or unsupported quality tag is retryable and logg
     $saved = SibAniDubTorrent::$torrentName;
     try {
         foreach (array('Show_without_a_tag', 'Show_[HDTVRip]_ep01') as $name) {
-            ruTrackerChecker::reset();
+            sibReset();
             SibAniDubTorrent::$torrentName = $name;
 
             strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -286,7 +292,7 @@ $suite->test('handlers delegate HTTP-200 payload validation and propagate its re
 
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
         foreach (array('a login wall' => $wall, 'an empty body' => '', 'truncated bytes' => 'd8:announce') as $why => $payload) {
-            ruTrackerChecker::reset();
+            sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
             Snoopy::queue($h['page'], 200, $h['body']);
@@ -341,7 +347,7 @@ $suite->test('anidub: a page whose quality block is missing stops instead of fet
 // with a different hash and a download link -- and bounds the pair. A pause
 // left literal at either fetch costs five seconds and fails the bound.
 $suite->test('toloka: the Cloudflare pause honours its declaration at both fetches', function () {
-    ruTrackerChecker::reset();
+    sibReset();
     ruTrackerChecker::queueResult('createTorrentFromDownload', ruTrackerChecker::STE_CANT_REACH_TRACKER);
     Snoopy::reset();
     $h = sibHandlers(SIB_NEW_HASH)['toloka'];
@@ -488,12 +494,10 @@ $suite->test('tapochek: a URL this handler does not own is still not its busines
 // "this torrent is none of my business". STE_NOT_NEED is the verdict for a URL
 // the handler does not own, and nothing else -- it stops the plugin looking.
 $suite->test('tfile: a topic page it cannot read is retryable, not "no jurisdiction"', function () {
-    // The handler routes tfile.me topics to megatfile.cc, which answered with a
-    // parked-domain page (HTTP 200, no Info hash) when the review probed it on
-    // 2026-08-21. Until a working canonical endpoint is known, that has to read
-    // as "could not check", or a Tfile torrent silently stops being checked.
-    Snoopy::reset();
-    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7', 200,
+    // A configured forum can still return an unrelated HTTP-200 page. It
+    // proves neither deletion nor that this topic is outside our jurisdiction.
+    sibReset();
+    Snoopy::queue('https://tfile.example/forum/viewtopic.php?p=7', 200,
         '<html><body>This domain is parked.</body></html>');
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -502,8 +506,8 @@ $suite->test('tfile: a topic page it cannot read is retryable, not "no jurisdict
 });
 
 $suite->test('tfile: a changed hash with no download link is retryable too', function () {
-    Snoopy::reset();
-    Snoopy::queue('https://megatfile.cc/forum/viewtopic.php?p=7', 200,
+    sibReset();
+    Snoopy::queue('https://tfile.example/forum/viewtopic.php?p=7', 200,
         'Info hash:</td><td><strong>' . SIB_NEW_HASH . '</strong></td>');
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
@@ -577,7 +581,7 @@ $suite->test('a tapochek post containing the marker and download evidence is not
 
 
 $suite->test('toloka same hash needs no download link', function () {
-    ruTrackerChecker::reset();
+    sibReset();
     $h = sibHandlers(SIB_OLD_HASH)['toloka'];
     Snoopy::queue($h['page'], 200, 'href="magnet:?xt=urn:btih:' . SIB_OLD_HASH . '"');
     strictAssertSame(ruTrackerChecker::STE_UPTODATE,
@@ -589,7 +593,7 @@ $suite->test('toloka same hash needs no download link', function () {
 $suite->test('AniDUB accepts old and HTTPS comments but sends both requests over HTTPS', function () {
     $h = sibHandlers()['anidub'];
     foreach (array('http', 'https') as $scheme) {
-        ruTrackerChecker::reset();
+        sibReset();
         Snoopy::queue($h['page'], 200, $h['body']);
         Snoopy::queue($h['down'], 200, 'metainfo');
         ruTrackerChecker::queueResult('createTorrentFromDownload', ruTrackerChecker::STE_UPTODATE);

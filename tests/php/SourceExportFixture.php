@@ -134,8 +134,10 @@ if (getenv('SOURCE_EXPORT_ROUTE') === 'dump') {
     }
     $_POST = array('cmd' => 'dumptorrent', 'hash' => $hash);
     $_REQUEST = $_POST;
-    chdir($scratch . '/plugins/dump');
+    $action = $scratch . '/plugins/dump/action.php';
+    chdir(dirname($action));
 } else {
-    chdir($scratch . '/plugins/source');
+    $action = $scratch . '/plugins/source/action.php';
+    chdir(dirname($action));
 }
-require 'action.php';
+require $action;

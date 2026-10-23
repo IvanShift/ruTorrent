@@ -16,6 +16,7 @@ if(!class_exists('SQLite3'))
 		public function __construct($path) {}
 		public function exec($sql) { return(true); }
 		public function close() {}
+		public static function escapeString($value) { return str_replace("'", "''", $value); }
 	}
 }
 require_once(__DIR__.'/../../../plugins/geoip/ip_db.php');

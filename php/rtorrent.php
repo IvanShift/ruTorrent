@@ -430,8 +430,7 @@ class rTorrent
 		$req->important = false;
 		if(!$req->run())
 		{
-			if($req->transportFailure === null)
-				self::logUnknownLoadStatus('unusable-response');
+			self::logUnknownLoadStatus($req->transportFailure ?? 'unusable-response');
 			return 'unknown';
 		}
 		if($req->fault)

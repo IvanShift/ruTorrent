@@ -22,6 +22,7 @@ class ExternalConfigurationTest extends TestCase
         $namespace = 'CreateOverride' . bin2hex(random_bytes(4));
         eval('namespace ' . $namespace . '; function is_executable($path) { return $path === "/usr/local/bin/mktorrent"; }');
         foreach (array('torrenttools', 'buildtorrent', false) as $override) {
+            $pathToCreatetorrent = null;
             eval('namespace ' . $namespace . '; ' . $source);
             $useExternal = $override;
             $this->assertEquals('', $pathToCreatetorrent,
@@ -93,6 +94,7 @@ class ExternalConfigurationTest extends TestCase
             $fileUtil::$conf = 'namespace ' . $namespace . '; ' . $conf
                 . '$useExternal = ' . var_export($case[0], true) . ';'
                 . '$pathToCreatetorrent = ' . var_export($case[1], true) . ';';
+            $pathToCreatetorrent = null;
             eval('namespace ' . $namespace . '; ' . $header . $fallback);
             $this->assertEquals($case[2], $pathToCreatetorrent,
                 'The real action gives the selected wrapper its selected program');

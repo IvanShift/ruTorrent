@@ -64,7 +64,7 @@ final class RetrackersBoundedRead
 	const TRANSPORT_FAILURES = array('closed-before-headers', 'truncated-headers', 'connect-failed',
 		'socket-config-failed', 'write-failed', 'write-timeout', 'write-wait-failed',
 		'read-failed', 'read-timeout', 'truncated-body', 'rpc-timeout',
-		'transport-failed', 'initial-transport');
+		'transport-failed', 'initial-transport', 'transport-unavailable');
 	// Native getters answer these while a claim or a finalization still settles.
 	const SETTLING_NATIVE_READS = array('native-original-incarnation-unconfirmed',
 		'native-original-finalize-pending');
@@ -8287,20 +8287,16 @@ class RetrackersDirectRpcAdapter
 			$failure = 'invalid-request';
 			return(false);
 		}
-		global $scgi_host, $scgi_port, $rpcTransferTimeOut, $rpcMaxResponseBytes;
+		global $scgi_host, $scgi_port, $rpcTransferTimeOut, $rpcMaxResponseBytes, $tempDirectory;
 		$failure = null;
 		// The 0.25 second budget is connect-only; read timeout and response cap remain independent.
-		$raw = rSCGITransport::send(
-			$scgi_host,
-			$scgi_port,
-			$payload,
-			true,
-			0.25,
-			$failure,
-			isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
-			isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
-			rSCGITransport::RESPONSE_RAW
-		);
+		$raw = rSCGITransport::send($scgi_host, $scgi_port, $payload, true, array(
+			'connectTimeout' => 0.25,
+			'transferTimeout' => isset($rpcTransferTimeOut) ? $rpcTransferTimeOut : null,
+			'maxResponseBytes' => isset($rpcMaxResponseBytes) ? $rpcMaxResponseBytes : null,
+			'responseMode' => rSCGITransport::RESPONSE_RAW,
+			'temporaryDirectory' => isset($tempDirectory) ? $tempDirectory : null,
+		), $failure);
 		if ($raw === null) {
 			return(false);
 		}

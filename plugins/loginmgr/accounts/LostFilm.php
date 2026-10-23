@@ -19,7 +19,7 @@ class LostFilmAccount extends commonAccount
 		{
 			if(!$client->fetch($this->url."/details.php?id=".$id) ||
 				!$this->hasReadableBody($client) ||
-				!preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^']*)'`si", $client->results, $md5))
+				!preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^'[:cntrl:]]*)'`si", $client->results, $md5))
 				return(false);
 			$client->cookies["dlt_2"] = $md5[1];
 			// The retry is an answer like any other. get_filename() reads only

@@ -44,9 +44,17 @@ namespace {
                     $client = new \SnoopyConnectFixture\Snoopy();
                     $client->IP = $bind === '' ? null : $bind;
                     $client->status = 200;
+                    $client->results = 'previous body';
+                    $client->headers = array("Set-Cookie: previous=wrong\r\n");
+                    $client->response_code = "HTTP/1.1 200 OK\r\n";
+                    $client->_redirectaddr = 'http://previous.test/redirect';
                     testAssertSame(false, $client->connect(), 'The socket connection failed');
                     testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
                     testAssertSame(-102, $client->status, 'A positive errno replaces a stale HTTP status');
+                    testAssertSame('', $client->results, 'Direct failed connect clears the previous body');
+                    testAssertSame(array(), $client->headers, 'Direct failed connect clears the previous headers');
+                    testAssertSame('', $client->response_code, 'Direct failed connect clears the previous status line');
+                    testAssertSame(false, $client->_redirectaddr, 'Direct failed connect clears the previous redirect');
                     testAssertSame('connection failed (' . $errno . ')', $client->error,
                         'The original OS errno remains available for detailed diagnostics');
                     testAssertSame('transport=socket status=-102 reason=socket',

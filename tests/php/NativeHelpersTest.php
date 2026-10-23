@@ -66,6 +66,7 @@ class NativeHelpersTest extends TestCase
         eval('namespace '.$namespace.'; '.$external);
         try {
             foreach (array(false, true) as $present) {
+                $useExternal = $pathToCreatetorrent = $useInternalHybrid = null;
                 $GLOBALS['createDefaultBinaryPresent'] = $present;
                 eval('namespace '.$namespace.'; '.$source);
                 $this->assertEquals($present ? 'mktorrent' : false, $useExternal, 'Standalone defaults reflect actual binary availability');

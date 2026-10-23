@@ -60,7 +60,7 @@ describe("extsearch pending torrent load", () => {
   afterEach(() => jest.useRealTimers());
 
   test("a normal torrent-list refresh confirms the open pending result", () => {
-    const { plugin, item, theWebUI, rTorrentStub } = loadExtsearch();
+    const { item, theWebUI, rTorrentStub } = loadExtsearch();
     theWebUI.setTagsHash({ teg: "extteg_0", data: [{ ndx: 0, hash: null }] });
     expect(item.hash).toBeNull();
     expect(theWebUI.getTorrents).toHaveBeenCalledWith("list=1");

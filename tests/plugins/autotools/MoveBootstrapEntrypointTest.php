@@ -15,7 +15,7 @@ if (isset($argv[1]) && $argv[1] === '--getplugins-child') {
     $_SERVER['REQUEST_SCHEME'] = 'http';
 
     chdir($root . '/php');
-    require_once('settings.php');
+    require_once($root . '/php/settings.php');
     // Reach the same enabled-plugin branch as a live daemon without contacting one.
     $reflection = new ReflectionClass('rTorrentSettings');
     $settings = $reflection->newInstanceWithoutConstructor();
@@ -29,13 +29,13 @@ if (isset($argv[1]) && $argv[1] === '--getplugins-child') {
     $instance->setAccessible(true);
     $instance->setValue(null, $settings);
 
-    require_once('../plugins/autotools/autotools.php');
+    require_once($root . '/plugins/autotools/autotools.php');
     $at = new rAutoTools();
     $at->enable_move = 1;
     $at->fileop_type = 'Move';
     $at->path_to_finished = $scratch . '/finished';
     if (!$at->store()) throw new RuntimeException('AutoTools fixture setting was not stored');
-    require('getplugins.php');
+    require($root . '/php/getplugins.php');
     exit(0);
 }
 
