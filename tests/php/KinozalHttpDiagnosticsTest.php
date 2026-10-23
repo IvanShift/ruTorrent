@@ -10,7 +10,8 @@ if (!$diagnosticChild) mkdir($diagnosticRoot, 0700);
 $_ENV['RU_PROFILE_PATH'] = $diagnosticRoot . '/profile';
 $_ENV['RU_LOG_FILE'] = $diagnosticRoot . '/application.log';
 define('KINOZAL_REQUEST_PAUSE', 0.001);
-define('KINOZAL_RATE_LIMIT_PAUSE', 0.1);
+// Keep the production 429 pause: a separate PHP worker may take longer to start
+// than a shortened pause. Each case clears its state instead of waiting for expiry.
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 $httpBlockPrivateNetworks = false;
 rTorrentSettings::get()->unregisterPlugin('loginmgr');

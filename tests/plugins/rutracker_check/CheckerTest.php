@@ -21,6 +21,7 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/state.php');
 class FileUtil
 {
 	public static $log = array();
+	public static $logFailure = null;
 
 	// state.php creates its directory through this; the real one wraps mkdir
 	// in umask(0) so the requested mode takes effect for the second OS user
@@ -41,6 +42,7 @@ class FileUtil
 
 	public static function toLog($message)
 	{
+		if(self::$logFailure !== null) throw self::$logFailure;
 		self::$log[] = $message;
 	}
 }
@@ -447,6 +449,7 @@ DSL;
 		rXMLRPCRequest::reset();
 		rXMLRPCRequest::$defaultLocalProjectionResponse = RuTrackerAtomicOwnership::SENTINEL_ACTED;
 		FileUtil::$log = array();
+		FileUtil::$logFailure = null;
 		RuTrackerMetaFetch::$calls = array();
 		RuTrackerMetaFetch::$result = null;
 		ErasedataFake::reset();
@@ -600,6 +603,83 @@ DSL;
 		$this->queueTransactionStart($baseDir, $state, $open, $topic, $forum);
 		$this->queueLoadConfirmed();
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+	}
+
+	public function testCompletedReplacementIsVisibleWithoutDebug()
+	{
+		foreach(array(array(0, 0), array(0, 1), array(1, 1)) as $run)
+		{
+			$this->resetFakes();
+			$this->stageHappyReplacement(sys_get_temp_dir(), $run[0], $run[1]);
+			$this->queueAtomic($run[0] || $run[1]
+				? RuTrackerAtomicOwnership::SENTINEL_ACTED : RuTrackerAtomicOwnership::SENTINEL_CLEARED);
+			$this->withoutDebugLog(function() {
+				strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+					'the ordinary replacement completes');
+			});
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'replacement complete ',
+				'one completed transaction is visible with optional debug disabled');
+			strictAssertTrue(strpos($line, 'old='.self::OLD_HASH.' new='.self::NEW_HASH.' successor=loaded') !== false,
+				'the completion identifies both generations and the newly loaded successor');
+		}
+	}
+
+	public function testUnconfirmedActivationDoesNotClaimCompletion()
+	{
+		foreach(array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED,
+			RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED, null) as $result)
+		{
+			$this->resetFakes();
+			$this->stageHappyReplacement(sys_get_temp_dir());
+			$this->queueAtomic($result, $result !== null);
+			$this->withoutDebugLog(function() {
+				strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+					'committed OLD removal remains successful while activation needs recovery');
+			});
+			strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'replacement complete '),
+				'unknown, partial or refused activation is never announced as completed');
+		}
+	}
+
+	public function testCompletionLogFailureCannotUndoTheFinishedTransaction()
+	{
+		foreach(array(new RuntimeException('log unavailable'), new Error('logging disabled')) as $error)
+		{
+			$this->resetFakes();
+			$this->stageHappyReplacement(sys_get_temp_dir());
+			$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
+			FileUtil::$logFailure = $error;
+			try {
+				$this->withoutDebugLog(function() {
+					strictAssertSame(null, ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH),
+						'a logging failure does not change an already completed replacement');
+				});
+				strictAssertSame(1, count($this->branchRequestsContaining('$d.erase=')),
+					'logging failure cannot start a rollback or repeat the commit');
+			} finally { FileUtil::$logFailure = null; }
+		}
+	}
+
+	public function testCommittedRecoveryNeedsAConfirmedFinalTransitionBeforeLogging()
+	{
+		foreach(array('stopped', 'live', 'reused') as $kind)
+			foreach(array(RuTrackerAtomicOwnership::SENTINEL_SKIPPED,
+				RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED, null) as $reply)
+			{
+				$this->resetFakes();
+				$this->queueExistingGeneration($kind === 'live' ? 1 : 0, $kind === 'live' ? 1 : 0, false);
+				if($kind === 'reused')
+				{
+					rXMLRPCRequest::$responses['d.get_custom|d.get_custom|d.get_custom'] = array();
+					$this->queueReuseRead(self::PLUGIN_MARKER, self::OLD_HASH.'-started-1787587200', self::PLUGIN_MARKER);
+				}
+				$this->queueAtomic($reply, $reply !== null);
+				ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), self::OLD_HASH);
+				strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
+					$kind . ': recovery reaches its one final atomic transition');
+				strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'replacement complete '),
+					$kind . ': a refused, partial or unreadable final transition is not completion');
+			}
 	}
 
 	private function requestIndexes($key, $params = null)
@@ -1316,6 +1396,8 @@ DSL;
 			strictAssertTrue(strpos(implode('|', $activation[0]['commands'][0]->params), '$d.set_custom=chk-replacement,') === false,
 				'marker-retaining activation never clears the replacement marker');
 			strictAssertSame(0, count($this->erasedataCalls('erasedataKickCollector')), 'an unpublished job is never kicked');
+			strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'replacement complete '),
+				'a transaction retaining an unpublished cleanup is not complete');
 		}
 		finally { strictRemoveTree($base); }
 	}
@@ -1402,6 +1484,9 @@ DSL;
 		strictAssertSame(array('erasedataRecoverObsoleteCleanup', 'erasedataKickCollector'),
 			array_column(ErasedataFake::$calls, 'name'), 'cleanup is recovered and kicked before transaction finish');
 		strictAssertSame(null, rTorrent::$lastSend, 'the committed successor is not discarded or loaded again');
+		strictAssertSame('rutracker_check: replacement complete old='.self::OLD_HASH.' new='.self::NEW_HASH.' successor=loaded',
+			strictAssertOneLogMatching(FileUtil::$log, 'replacement complete ', 'confirmed recovery is visible'),
+			'recovered activation identifies the predecessor and the newly loaded successor in order');
 	}
 
 	public function testExistingLiveCommittedGenerationRecoversCleanupBeforeKeyClear()
@@ -1417,6 +1502,9 @@ DSL;
 		strictAssertTrue($recover[0]['request_count'] <= array_search($clear[0], rXMLRPCRequest::$requests, true),
 			'recovery precedes transaction-key clear');
 		strictAssertSame(1, count($this->erasedataCalls('erasedataKickCollector')), 'a recovered durable job is kicked');
+		strictAssertSame('rutracker_check: replacement complete old='.self::OLD_HASH.' new='.self::NEW_HASH.' successor=loaded',
+			strictAssertOneLogMatching(FileUtil::$log, 'replacement complete ', 'a confirmed final recovery clear is visible'),
+			'recovered final clear identifies the predecessor and the newly loaded successor in order');
 	}
 
 	public function testExistingGenerationWithUnknownPredecessorPresenceRetainsEverything()
@@ -1433,6 +1521,8 @@ DSL;
 				$label . ' retains the transaction for retry');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.erase=')), $label . ' does not discard either generation');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.set_custom=chk-replacement,')), $label . ' does not clear successor keys');
+			strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'replacement complete '),
+				$label . ' is not announced as complete');
 		}
 	}
 
@@ -2160,6 +2250,9 @@ DSL;
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.start=')), 'NEW is not activated');
 			strictAssertSame(0, count($this->branchRequestsContaining('$d.open=')), 'NEW is not opened');
 			strictAssertTrue(is_file($base.'/new/film.mkv'), 'the successor payload remains untouched');
+			$line = strictAssertOneLogMatching(FileUtil::$log, 'replacement complete ', 'reuse completion is visible');
+			strictAssertTrue(strpos($line, 'old='.self::OLD_HASH.' new='.self::NEW_HASH.' successor=reused') !== false,
+				'the completion distinguishes the existing successor from a new load');
 		} finally { strictRemoveTree($base); }
 	}
 
@@ -2287,6 +2380,8 @@ DSL;
 				'only OLD stop, NEW claim and OLD erase run; recovery keys remain');
 			strictAssertSame(null, rTorrent::$lastSend, 'no load or activation replaces the independent NEW');
 			strictAssertNoRpcCommand('d.start', 'publish failure never starts NEW');
+			strictAssertSame(array(), strictLogsMatching(FileUtil::$log, 'replacement complete '),
+				'reuse keeps its recovery obligation and is not announced as complete');
 		} finally { strictRemoveTree($base); }
 	}
 
@@ -2306,6 +2401,13 @@ DSL;
 				'only a confirmed old absence closes the reused transaction as committed');
 			strictAssertSame(null, rTorrent::$lastSend, 'reconciliation never restages an existing successor');
 			strictAssertNoRpcCommand('d.erase', 'reconciliation never discards NEW');
+			strictAssertSame($oldPresence === false ? 1 : 0,
+				count(strictLogsMatching(FileUtil::$log, 'replacement complete ')),
+				'only a confirmed committed reuse is announced as completed');
+			if($oldPresence === false)
+				strictAssertSame('rutracker_check: replacement complete old='.self::OLD_HASH.' new='.self::NEW_HASH.' successor=reused',
+					strictAssertOneLogMatching(FileUtil::$log, 'replacement complete ', 'reused recovery is visible'),
+					'recovery identifies the existing successor without claiming a new load');
 			foreach($this->branchRequestsContaining('$d.start=') as $request)
 				strictAssertSame(self::OLD_HASH, $request['commands'][0]->params[0], 'only a stranded OLD may be restored');
 		}

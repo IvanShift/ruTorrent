@@ -1162,6 +1162,13 @@ class RemoveWithDataTest extends TestCase
 		return(is_array($logs) ? $logs : array());
 	}
 
+	private function cleanupCompletions($output)
+	{
+		return(array_values(array_filter($this->collectorLogs($output), function($line) {
+			return(strpos($line, 'erasedata: cleanup complete ') === 0);
+		})));
+	}
+
 	// -- frozen paths available (an opened download) ------------------------
 
 	public function testFrozenPathsUsedForMultiFile()
@@ -5300,6 +5307,74 @@ class RemoveWithDataTest extends TestCase
 			'a foreign occupant on the old hash is still another owner');
 	}
 
+	public function testCleanupCompletionIsUnconditionalAndNamesItsExactPlan()
+	{
+		foreach(array(false, true) as $debug)
+		{
+			$this->reset();
+			$oldHash = $this->hash('A');
+			$newHash = $this->hash('B');
+			$base = $this->dir.'/completion-log';
+			@mkdir($base, 0777, true);
+			$old = $base.'/old.bin';
+			$missing = $base.'/already-gone.bin';
+			file_put_contents($old, 'obsolete');
+			file_put_contents($missing, 'already removed');
+			$tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($old, $missing));
+			$token = substr($tmp, 0, -4).'.list';
+			unlink($missing);
+			list($status, $output) = $this->runCollector(array('debug' => $debug, 'captureLogs' => true));
+			$this->assertEquals(0, $status, 'completed cleanup must not crash: '.$output);
+			$this->assertTrue(!file_exists($old) && !file_exists($tmp) && !file_exists($token),
+				'the payload, exact manifest and commit token retire before success is reported');
+			$expected = 'erasedata: cleanup complete old='.$oldHash.' new='.$newHash
+				.' planned_entries=2 job='.basename($tmp, '.tmp');
+			$this->assertEquals(array($expected), $this->cleanupCompletions($output),
+				'both debug settings emit one bounded completion with plan size, not a deletion count');
+			list($status, $output) = $this->runCollector(array('debug' => $debug, 'captureLogs' => true));
+			$this->assertEquals(0, $status, 'an empty retry must not crash: '.$output);
+			$this->assertEquals(array(), $this->collectorLogs($output), 'a retired job cannot emit another completion');
+		}
+	}
+
+	public function testCleanupCompletionLogFailureCannotInterruptTheNextJob()
+	{
+		foreach(array(false, new RuntimeException('log failed'), new Error('log unavailable')) as $failure)
+		{
+			$this->reset();
+			$jobs = array();
+			foreach(array('A', 'C') as $label)
+			{
+				$base = $this->dir.'/log-failure-'.$label;
+				@mkdir($base, 0777, true);
+				$file = $base.'/old.bin';
+				file_put_contents($file, 'obsolete');
+				$tmp = $this->writeCleanupCollectorManifest($this->hash($label), $this->hash('B'), $base, array($file));
+				$jobs[] = array($file, $tmp, substr($tmp, 0, -4).'.list');
+			}
+			$attempted = 0;
+			FileUtil::$logHook = function($line) use ($failure, &$attempted) {
+				if(strpos($line, 'erasedata: cleanup complete ') === 0)
+				{
+					$attempted++;
+					if($failure instanceof Throwable) throw $failure;
+					return(false);
+				}
+				FileUtil::$log[] = $line;
+			};
+			try {
+				list($status, $output) = $this->runCollector(array('captureLogs' => true));
+			} finally {
+				FileUtil::$logHook = null;
+			}
+			$this->assertEquals(0, $status, 'a completion logger failure cannot abort collection: '.$output);
+			$this->assertEquals(2, $attempted, 'both jobs reach the real unconditional completion logger');
+			foreach($jobs as $job)
+				$this->assertTrue(!file_exists($job[0]) && !file_exists($job[1]) && !file_exists($job[2]),
+					'a failed diagnostic cannot retain a later payload or job');
+		}
+	}
+
 	public function testCleanupMissingTargetCompletes()
 	{
 		$this->reset();
@@ -5588,10 +5663,15 @@ class RemoveWithDataTest extends TestCase
 			'a cleanup unlink failure must retain the target, manifest, and commit token');
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' unlink-failure', $this->collectorLogs($output), true),
 			'a cleanup unlink failure must retain the unlink-failure reason');
-		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(array(), $this->cleanupCompletions($output),
+			'a retained payload cannot emit cleanup completion');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
 		$this->assertEquals(0, $status, 'the retry after a cleanup unlink failure must not crash: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && !file_exists($token),
 			'a successful retry must consume the manifest first and then its exact token');
+		$this->assertTrue(in_array('erasedata: cleanup complete old='.$oldHash.' new='.$newHash
+			.' planned_entries=1 job='.basename($tmp, '.tmp'), $this->collectorLogs($output), true),
+			'the successful retry reports completion without enabling debug');
 	}
 
 	public function testCleanupRetainedLogReportsOneReasonPerJobPerRun()
@@ -6196,7 +6276,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals('foreign-list', is_file($tmp) ? file_get_contents($tmp) : null,
 			'a replacement cleanup manifest must survive the final exact-consumption check');
 		$this->assertTrue(is_file($token), 'a tmp swap must retain the paired commit token');
-		$this->assertTrue(!in_array('erasedata: cleanup complete '.$oldHash, $this->collectorLogs($output), true),
+		$this->assertEquals(array(), $this->cleanupCompletions($output),
 			'cleanup completion must not be logged before exact manifest consumption succeeds');
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' unreadable-manifest', $this->collectorLogs($output), true),
 			'a failed final manifest consumption must retain one stable unreadable-manifest reason');
@@ -6227,7 +6307,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_file($token), 'a same-inode tmp rewrite must retain the paired token');
 		$this->assertTrue(is_file($old),
 			'a same-inode manifest rewrite must block obsolete-target deletion before a fresh manifest read');
-		$this->assertTrue(!in_array('erasedata: cleanup complete '.$oldHash, $this->collectorLogs($output), true),
+		$this->assertEquals(array(), $this->cleanupCompletions($output),
 			'a same-inode manifest rewrite must not produce a premature completion log');
 		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' unreadable-manifest', $this->collectorLogs($output), true),
 			'a same-inode manifest rewrite must retain the unreadable-manifest reason');
@@ -6937,10 +7017,15 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(0, $status, 'a token-unlink interruption must not crash collection: '.$output);
 		$this->assertTrue(!file_exists($old) && !file_exists($tmp) && is_file($token),
 			'the post-tmp-unlink crash window must retain only the exact FINALIZING token');
-		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(array(), $this->cleanupCompletions($output),
+			'a retained commit token cannot emit cleanup completion');
+		list($status, $output) = $this->runCollector(array('captureLogs' => true));
 		$this->assertEquals(0, $status, 'a FINALIZING token retry must not crash: '.$output);
 		$this->assertTrue(!file_exists($token),
 			'a repeated collector run must converge the token-only finalization state');
+		$this->assertTrue(in_array('erasedata: cleanup complete old='.$oldHash.' recovered=token-only job='
+			.basename($tmp, '.tmp'), $this->collectorLogs($output), true),
+			'token-only recovery names only the attested hash and job without inventing a successor or plan count');
 	}
 
 	public function testCleanupTokenOnlyFinalizationEmitsCompletionOnce()
@@ -6960,8 +7045,9 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals(0, $status, 'a token-only finalization must not crash the collector: '.$output);
 		$this->assertTrue(!file_exists($token) && is_file($old),
 			'a token-only finalization must consume only its exact commit token');
-		$this->assertEquals(1, count(array_filter($this->collectorLogs($output), function($line) use ($oldHash) {
-			return($line === 'erasedata: cleanup complete '.$oldHash);
+		$expected = 'erasedata: cleanup complete old='.$oldHash.' recovered=token-only job='.basename($tmp, '.tmp');
+		$this->assertEquals(1, count(array_filter($this->collectorLogs($output), function($line) use ($expected) {
+			return($line === $expected);
 		})), 'a successful token-only finalization must emit exactly one cleanup completion event');
 	}
 

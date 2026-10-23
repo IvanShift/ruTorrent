@@ -1823,8 +1823,8 @@ class RuTrackerUpdatePass
                 $rawRecord, $exists)) return;
             if ($exists)
                 self::reviveStrandedPredecessor($hash, $record, $rawMarker, $rawRecord);
-            else
-                ruTrackerChecker::clearReplacementRecord($hash, $rawMarker, $rawRecord);
+            else if (ruTrackerChecker::clearReplacementRecord($hash, $rawMarker, $rawRecord))
+                ruTrackerChecker::logReplacementComplete($record['old'], $hash, true);
             return;
         }
 
@@ -1875,8 +1875,9 @@ class RuTrackerUpdatePass
         if ($live && !$resuming) {
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " is already running, retiring its replacement keys");
-            ruTrackerChecker::clearReplacementRecord($hash, $rawMarker, $rawRecord,
-                array('state' => $observedState, 'is_open' => $observedOpen));
+            if (ruTrackerChecker::clearReplacementRecord($hash, $rawMarker, $rawRecord,
+                array('state' => $observedState, 'is_open' => $observedOpen)) && $exists === false)
+                ruTrackerChecker::logReplacementComplete($record['old'], $hash);
             return;
         }
 
@@ -2093,8 +2094,9 @@ class RuTrackerUpdatePass
             // rule, now surviving the erase that used to destroy its input.
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " inherited a stopped predecessor, so the transaction is complete as it stands");
-            ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
-                array('state' => $val[0], 'is_open' => $val[1]));
+            if (ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
+                array('state' => $val[0], 'is_open' => $val[1])))
+                ruTrackerChecker::logReplacementComplete($record['old'], $hash);
             return;
         }
         if ((string) $val[5] !== '') {
@@ -2136,8 +2138,9 @@ class RuTrackerUpdatePass
             // whose d.open is exactly what put those counters there.
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " has been opened since it was staged, leaving its run state alone");
-            ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
-                array('state' => $val[0], 'is_open' => $val[1]));
+            if (ruTrackerChecker::clearReplacementRecord($hash, $marker, $rawRecord,
+                array('state' => $val[0], 'is_open' => $val[1])))
+                ruTrackerChecker::logReplacementComplete($record['old'], $hash);
             return;
         }
         $status = RuTrackerAtomicOwnership::runState(
@@ -2158,6 +2161,7 @@ class RuTrackerUpdatePass
             )
         );
         if ($status === RuTrackerAtomicOwnership::ACTED) {
+            ruTrackerChecker::logReplacementComplete($record['old'], $hash);
             ruTrackerChecker::logDebug("sweepReplacements: " . $hash
                 . " finished a replacement its own cycle never activated"
                 . " (wanted " . ($record['run']['started'] ? "started" : "open") . ")");

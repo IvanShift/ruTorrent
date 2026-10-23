@@ -1370,6 +1370,21 @@ class ruTrackerChecker
 		FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
 	}
 
+	// Call only after OLD is known absent and the exact replacement generation
+	// has closed. Cleanup completion is reported separately by its queue owner.
+	static public function logReplacementComplete($oldHash, $newHash, $reused = false)
+	{
+		try
+		{
+			self::logRoutine('replacement complete old=' . $oldHash . ' new=' . $newHash
+				. ' successor=' . ($reused ? 'reused' : 'loaded'));
+		}
+		catch(Throwable $error)
+		{
+			// An optional success log cannot undo an already closed transaction.
+		}
+	}
+
 	static public function logUnrepairable($message)
 	{
 		self::logRoutine($message);
@@ -1859,7 +1874,8 @@ class ruTrackerChecker
 				{
 					if($reconciled === 'committed')
 					{
-						self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord);
+						if(self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord))
+							self::logReplacementComplete($hash, $newHash, true);
 						self::clearLocalRefusal($hash, $newHash);
 						return null;
 					}
@@ -1874,13 +1890,15 @@ class ruTrackerChecker
 				{
 					if($stagedState !== 0 || $stagedOpen !== 0)
 					{
-						self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
-							array('state' => $stagedState, 'is_open' => $stagedOpen));
+						if(self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
+							array('state' => $stagedState, 'is_open' => $stagedOpen)))
+							self::logReplacementComplete($hash, $newHash);
 						return self::STE_ERROR;
 					}
 					else
-						self::activateReplacement($newHash, $stagedRecord['run']['open'], $stagedRecord['run']['started'],
-							(string) $markerReq->val[0], $rawStagedRecord);
+						if(self::activateReplacement($newHash, $stagedRecord['run']['open'], $stagedRecord['run']['started'],
+							(string) $markerReq->val[0], $rawStagedRecord))
+							self::logReplacementComplete($hash, $newHash);
 					self::clearLocalRefusal($hash, $newHash);
 					return null;
 				}
@@ -2282,6 +2300,8 @@ class ruTrackerChecker
 		if($published && !erasedataKickCollector($hash))
 			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . $hash
 				. '; the published job remains scheduled for retry');
+		if($activated && $closeTransaction)
+			self::logReplacementComplete($hash, $newHash, $reuse !== null);
 		self::clearLocalRefusal($hash, $newHash);
 		return null;
 	}

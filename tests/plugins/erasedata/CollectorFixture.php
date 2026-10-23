@@ -38,6 +38,7 @@ if(!class_exists('FileUtil'))
 	{
 		public static $settingsPath = null;
 		public static $log = array();
+		public static $logHook = null;
 		// Models a mount/owner that rejects chmod even when a test-owned 0555
 		// directory could be repaired by its real owner.
 		public static $denyDirectoryRepair = false;
@@ -55,7 +56,11 @@ if(!class_exists('FileUtil'))
 			try { return is_dir($dir) ? @chmod($dir, $perms) : @mkdir($dir, $perms, true); }
 			finally { umask($old); }
 		}
-		public static function toLog($msg) { self::$log[] = $msg; }
+		public static function toLog($msg)
+		{
+			if(is_callable(self::$logHook)) return(call_user_func(self::$logHook, $msg));
+			self::$log[] = $msg;
+		}
 		public static function getPluginConf($plugin) { return self::$pluginConf; }
 	}
 }

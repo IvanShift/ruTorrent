@@ -141,15 +141,13 @@ class KinozalCheckImpl
     // Internal answer of a door that did not answer the topic.
     const NEXT_DOOR = 'next-door';
 
-    // How many Kinozal topics one scheduler pass dispatches. The mirrors share
-    // one IP behind one limiter: on 2026-10-16 and 2026-10-18 production asked
-    // every due topic, about forty requests were answered (a login and 39
-    // topics), the next one drew HTTP 429, and the ban lasted hours. A topic
+    // How many Kinozal topics one scheduler pass dispatches. This bounds the
+    // batch independently of request pacing and the HTTP 429 pause. A topic
     // costs one details request, an update adds a download and a login two.
     // The rest are not dispatched and keep their verdict and chk-time; each
     // pass starts about one quota further along the foreign rows
     // (RuTrackerUpdatePass::fairOrder()).
-    const DEFAULT_CYCLE_TOPICS = 25;
+    const DEFAULT_CYCLE_TOPICS = 50;
     static private $invalidCycleTopicsReported = false;
 
     // $rutrackerKinozalCycleTopics, or null for no limit (0).

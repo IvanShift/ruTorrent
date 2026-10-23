@@ -2094,6 +2094,72 @@ upTest($suite, 'the Kinozal cycle quota is read from the configuration and valid
     }
 });
 
+upTest($suite, 'Kinozal dispatches fifty due topics by default and preserves explicit quotas', function () {
+    upLoadKinozalRegistration();
+    require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
+    $flag = 'invalidCycleTopicsReported';
+    $savedFlag = strictGetPrivateStatic('KinozalCheckImpl', $flag);
+    try {
+        foreach (array(
+            'configured default' => array($GLOBALS['rutrackerKinozalCycleTopics'], 50, false),
+            'unset configuration' => array(null, 50, false),
+            'invalid configuration' => array('many', 50, true),
+            'explicit earlier cap' => array(25, 25, false),
+            'custom cap' => array(7, 7, false),
+            'unlimited' => array(0, 53, false),
+        ) as $label => $case) {
+            strictSetPrivateStatic('KinozalCheckImpl', $flag, false);
+            upWithKinozalCycleTopics($case[0], function () use ($label, $case) {
+                $now = time();
+                $rows = array();
+                for ($topic = 1; $topic <= 53; $topic++) {
+                    $row = upKinozalRow(sprintf('%040X', $topic), 1, 0);
+                    $row['comment'] = 'https://kinozal.me/details.php?id=' . (2100000 + $topic);
+                    $row['state'] = ruTrackerChecker::STE_CANT_REACH_TRACKER;
+                    $row['time'] = $now - 3600 - $topic;
+                    $rows[] = $row;
+                }
+                $kinozal = $rows;
+                for ($topic = 1; $topic <= 4; $topic++)
+                    $rows[] = upParsedRow(sprintf('%040X', 100 + $topic), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+                        'https://nnmclub.to/forum/viewtopic.php?t=' . (1200000 + $topic),
+                        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER, 'time' => $now - 3600));
+                $store = array();
+                foreach ($rows as $row) $store[$row['hash']] = array($row['state'], $row['time']);
+                $before = $store;
+                $checked = array();
+                $clock = $now;
+                strictSetPrivateStatic('RuTrackerUpdatePass', 'checker',
+                    function ($hash) use (&$checked, &$store, &$clock) {
+                        $checked[] = $hash;
+                        upStoreVerdict($store, $hash, ruTrackerChecker::STE_UPTODATE, $clock);
+                    });
+                rXMLRPCRequest::reset();
+                upQueueProjection($rows);
+                $log = upCapturedLog(function () use ($rows, &$result) {
+                    $result = RuTrackerUpdatePass::run($rows);
+                });
+                $expected = array_merge(array_column(array_slice($kinozal, 0, $case[1]), 'hash'),
+                    array_column(array_slice($rows, 53), 'hash'));
+                strictAssertSame($expected, $checked, $label . ': the quota affects Kinozal alone and every NNMClub topic runs');
+                strictAssertSame($checked, $result['checked'], $label . ': only dispatched topics are reported as checked');
+                foreach (array_slice($kinozal, $case[1]) as $row)
+                    strictAssertSame($before[$row['hash']], $store[$row['hash']],
+                        $label . ': a capped topic keeps its previous verdict and chk-time');
+                $metrics = upMetricsByBucket($log);
+                $bucket = ruTrackerChecker::schedulingBucket($kinozal[0]['comment']);
+                strictAssertSame(53 - $case[1], $metrics[$bucket]['capped'], $label . ': metrics expose the remaining due topics');
+                upAssertNoCustomWrites($label . ': quota handling never writes a new clock for capped topics');
+                strictAssertSame(array(), upGuardedWrites(),
+                    $label . ': the scheduler publishes no guarded verdict or chk-time writes for these rows');
+                strictAssertSame($case[2] ? 1 : 0,
+                    substr_count($log, 'config: invalid rutrackerKinozalCycleTopics; using 50 topics per pass'),
+                    $label . ': invalid input visibly selects the fifty-topic fallback');
+            });
+        }
+    } finally { strictSetPrivateStatic('KinozalCheckImpl', $flag, $savedFlag); }
+});
+
 // In view order a handler cut off after a few topics answered the same head
 // every time; on 2026-10-18 the 39 Kinozal topics up to date were the first 39
 // of 127 in the seeding view. Pass 2 turns the foreign rows round each pass.
@@ -3025,6 +3091,65 @@ function sweepAssertReuseClearOnly($hash, $marker, $message)
         strictAssertTrue(strpos($command->params[2], $mutation) === false,
             $message . ': NEW run state is never changed by ' . $mutation);
 }
+
+upTest($suite, 'replacement sweep logs only a confirmed completed transaction', function () {
+    $hash = str_repeat('A', 40);
+    $old = str_repeat('B', 40);
+    $marker = sweepFixtureMarker('nonce');
+    foreach (array(
+        'new activation' => array('started', 0, 0, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_ACTED, true),
+        'already running' => array('started', 1, 1, 0, '', false, ERASEDATA_CLEANUP_READY,
+            RuTrackerAtomicOwnership::SENTINEL_CLEARED, true),
+        'inherited stop' => array('stopped', 0, 0, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_CLEARED, true),
+        'later user stop' => array('started', 0, 0, 100, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_CLEARED, true),
+        'existing successor' => array('started', 1, 1, 0, $marker, false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_CLEARED, true),
+        'lost activation' => array('started', 0, 0, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            null, false),
+        'refused clear' => array('stopped', 0, 0, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_SKIPPED, false),
+        'refused live clear' => array('started', 1, 1, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_SKIPPED, false),
+        'refused later stop clear' => array('started', 0, 0, 100, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_SKIPPED, false),
+        'unconfirmed activation' => array('started', 0, 0, 0, '', false, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_UNCONFIRMED, false),
+        'lost reuse clear' => array('started', 1, 1, 0, $marker, false, ERASEDATA_CLEANUP_NONE,
+            null, false),
+        'unknown OLD presence' => array('started', 0, 0, 0, '', null, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_ACTED, false),
+        'cleanup pending' => array('started', 0, 0, 0, '', false, ERASEDATA_CLEANUP_RETRY,
+            RuTrackerAtomicOwnership::SENTINEL_ACTED, false),
+        'live successor before commit' => array('started', 1, 1, 0, '', true, ERASEDATA_CLEANUP_NONE,
+            RuTrackerAtomicOwnership::SENTINEL_CLEARED, false),
+    ) as $label => $case) {
+        list($run, $state, $open, $bytes, $reuse, $oldPresent, $cleanup, $reply, $completed) = $case;
+        rXMLRPCRequest::reset();
+        UpdatePassErasedataFake::reset();
+        $record = $old . '-' . $run . '-1000';
+        sweepScan(array(array($hash, $marker, $record)));
+        sweepDetail($state, $open, 0, $bytes, 0, '', '1000', $marker, $record, $reuse);
+        rXMLRPCRequest::queue('d.hash', $oldPresent !== null, $oldPresent === false,
+            $oldPresent ? array($old) : array());
+        UpdatePassErasedataFake::$recoverResults = array($cleanup);
+        rXMLRPCRequest::queue('branch', $reply !== null, false, $reply === null ? array() : array($reply));
+        $log = testCapturedAppLog(function () {
+            RuTrackerUpdatePass::sweepReplacements(1000 + ruTrackerChecker::MAX_LOCK_TIME + 1);
+        });
+        strictAssertSame($completed ? 1 : 0, substr_count($log, 'replacement complete '),
+            $label . ': only a confirmed final ownership transition completes the replacement');
+        strictAssertSame($cleanup === ERASEDATA_CLEANUP_RETRY || $oldPresent === null ? 0 : 1,
+            count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': the fixture reaches the intended final transition unless an earlier guard retains it');
+        if ($completed)
+            strictAssertTrue(strpos($log, 'old='.$old.' new='.$hash.' successor='.
+                ($reuse === '' ? 'loaded' : 'reused')) !== false,
+                $label . ': the log identifies the completed replacement without payload paths');
+    }
+});
 
 upTest($suite, 'reused successor after commit keeps its current run state', function () {
     $hash = str_repeat('A', 40);

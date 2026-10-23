@@ -2646,7 +2646,7 @@ final class ErasedataCollector
 		return($paths === false || !isset($paths['files']) || !is_array($paths['files']) ? false : $paths['files']);
 	}
 
-	private function cleanupLog($hash, $state, $reason = null, $jobPath = '', $jobKey = null)
+	private function cleanupLog($hash, $state, $reason = null, $jobPath = '', $jobKey = null, $manifest = null)
 	{
 		if($reason === 'capture-failed' && ErasedataFilesystemOps::lastRenameRefusalContext() !== '')
 			$reason = ErasedataFilesystemOps::lastRenameRefusalContext();
@@ -2657,7 +2657,16 @@ final class ErasedataCollector
 		{
 			if(isset($this->cleanupLogState['completed'][$key])) return;
 			$this->cleanupLogState['completed'][$key] = true;
-			$this->log('cleanup complete '.$hash);
+			// Retired obligations are useful at the normal log level. The plan
+			// size includes missing or protected entries, not only deleted files.
+			try {
+				FileUtil::toLog('erasedata: cleanup complete old='.$hash
+					.(is_array($manifest) ? ' new='.$manifest['new_hash'].' planned_entries='.count($manifest['files'])
+						: ' recovered=token-only')
+					.' job='.$jobKey);
+			} catch(Throwable $e) {
+				// A failed diagnostic cannot interrupt collection of later jobs.
+			}
 			return;
 		}
 		if(isset($this->cleanupLogState['retained'][$key])) return;
@@ -3165,7 +3174,7 @@ final class ErasedataCollector
 			$this->cleanupLog($hash, 'retained', 'unreadable-manifest', $path, $jobKey);
 			return(false);
 		}
-		$this->cleanupLog($hash, 'complete', null, $path, $jobKey);
+		$this->cleanupLog($hash, 'complete', null, $path, $jobKey, $manifest);
 		return(true);
 	}
 
