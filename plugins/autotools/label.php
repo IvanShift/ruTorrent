@@ -175,7 +175,7 @@ if( $is_ok )
 		// periodic session.save lost it (ACC-SCALE-03). The save follows the
 		// label in the same request, as it does for a label set in the WebUI.
 		$req = new rXMLRPCRequest( array(
-			new rXMLRPCCommand( "d.set_custom1", array( $hash, UTF::raw_url_encode( $label ) ) ),
+			new rXMLRPCCommand( "d.set_custom1", array( $hash, rawurlencode( $label ) ) ),
 			new rXMLRPCCommand( "d.save_resume", $hash ) ) );
 		if( $req->success() )
 			rTorrentSettings::get()->pushEvent( "LabelChanged", array( "hash"=>$hash, "label"=>$label ) );

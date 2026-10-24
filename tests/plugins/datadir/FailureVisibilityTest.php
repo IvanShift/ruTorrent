@@ -26,6 +26,8 @@ class DataDirFailureVisibilityTest extends TestCase
         if (!mkdir($this->tree . '/php/utility', 0700)
             || !copy($root . '/php/utility/permission.php', $this->tree . '/php/utility/permission.php'))
             throw new RuntimeException('Could not copy shared process identity helper');
+        copy($root . '/php/utility/utility.php', $this->tree . '/php/utility/utility.php');
+        copy($root . '/php/utility/utf.php', $this->tree . '/php/utility/utf.php');
         file_put_contents($this->tree . '/php/xmlrpc.php', '<?php require_once __DIR__ . "/util.php";');
         file_put_contents($this->tree . '/php/util.php', <<<'STUB'
 <?php
@@ -50,7 +52,9 @@ class rTorrentSettings
         return strpos($dir . '/', rtrim($top, '/') . '/') === 0;
     }
 }
-class Utility { public static function getPHP() { return PHP_BINARY; } }
+require_once __DIR__.'/utility/utility.php';
+require_once __DIR__.'/utility/utf.php';
+$pathToExternals = array('php' => PHP_BINARY);
 class User { public static function getUser() { return 'test'; } }
 class JSON { public static function safeEncode($value) { return json_encode($value); } }
 class CachedEcho
@@ -126,7 +130,7 @@ function rtSetDataDir($hash, $path, $add, $move, $resume, $debug, &$failure = nu
         FileUtil::toLog('datadir: change refused hash=' . $hash . ' reason=' . $failure);
         return false;
     }
-    $warning = $result === 'stopped' ? 'stopped-after-hash-check' : '';
+    $warning = $result === 'stopped' ? (getenv('DATADIR_TEST_WARNING') ?: 'stopped-after-hash-check') : '';
     return true;
 }
 STUB
@@ -553,4 +557,19 @@ STUB
         $this->assertTrue(!is_file($dispatch) && !is_file($capability), 'no detached worker or new claim path runs');
         $this->assertTrue(is_file($outcome), 'the existing held document gets a durable visible outcome');
     }
+    public function testBytePathsInErrorsAndWarningsRemainVisible()
+    {
+        $body = 'hash='.str_repeat('A',40).'&datadir=%2Fdata%2Fdownloads%2Fnew';
+        foreach(array(
+            array('errors', $body.'&move_datafiles=1', array('DATADIR_TEST_PREFLIGHT_REFUSAL'=>"blocked raw\xFF"), 'blocked raw\\xFF'),
+            array('warnings', $body.'&move_datafiles=0', array('DATADIR_TEST_RESULT'=>'stopped', 'DATADIR_TEST_WARNING'=>"stopped raw\xFE"), 'stopped raw\\xFE'),
+        ) as $case) {
+            list($code,$output,$stderr) = $this->action($case[1],$case[2]);
+            $this->assertSame(0,$code,'the classified action completes');
+            $this->assertSame('',$stderr,'the action emits no PHP diagnostics');
+            $answer=json_decode($output,true);
+            $this->assertSame($case[3],$answer[$case[0]][0]['prm'] ?? null,'byte paths remain visible in the JSON error or warning');
+        }
+    }
+
 }

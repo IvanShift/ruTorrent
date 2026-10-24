@@ -6,6 +6,7 @@
 // The torrent presence probe and its three answers live in presence.php,
 // which datadir loads without the rest of this file.
 require_once(dirname(__FILE__)."/presence.php");
+require_once(__DIR__."/../../php/utility/json.php");
 
 if(!defined('ERASEDATA_CLEANUP_NONE'))
 	define('ERASEDATA_CLEANUP_NONE', 'none');
@@ -1662,8 +1663,8 @@ if(!function_exists('erasedataCollectorCommand'))
 			return(false);
 		if($onlyHash !== null && ($onlyHash = erasedataCanonicalHash($onlyHash)) === false)
 			return(false);
-		$command = escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg($user);
-		return($onlyHash === null ? $command : $command.' '.escapeshellarg($onlyHash));
+		$command = Utility::escapeShellArg(Utility::getPHP()).' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php').' '.Utility::escapeShellArg($user);
+		return($onlyHash === null ? $command : $command.' '.Utility::escapeShellArg($onlyHash));
 	}
 }
 
@@ -2240,7 +2241,7 @@ if(!function_exists('erasedataReadDrainState'))
 		}
 		if(strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES)
 			return(false);
-		$decoded = json_decode($bytes, true);
+		$decoded = JSON::decodeBytes($bytes);
 		if(!is_array($decoded))
 			return(false);
 		if(!erasedataValidateDrainState($decoded, $listPath))
@@ -2273,7 +2274,7 @@ if(!function_exists('erasedataWriteDrainState'))
 		$path = erasedataDrainStatePath($listPath);
 		if($path === false || !erasedataValidateDrainState($state, $listPath))
 			return(false);
-		$bytes = json_encode($state);
+		$bytes = JSON::encodeBytes($state);
 		if(!is_string($bytes) || $bytes === ''
 			|| strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES)
 			return(false);
@@ -2505,15 +2506,15 @@ if(!function_exists('erasedataDrainWorkerCommand'))
 	// The command line the scheduled tick really runs: the guarded worker entry
 	// point, with the exact user the schedule key was built from -- '' included,
 	// which is a real user on every single-user install. Every argument is
-	// escapeshellarg()'d, because rTorrent hands this to sh.
+	// quoted as a shell argument, because rTorrent hands this to sh.
 	function erasedataDrainWorkerCommand($user)
 	{
 		if(erasedataDrainScheduleKey($user) === false)
 			return(false);
-		return(escapeshellarg(Utility::getPHP())
-			.' '.escapeshellarg(dirname(__FILE__).'/update.php')
-			.' '.escapeshellarg($user)
-			.' '.escapeshellarg('drain'));
+		return(Utility::escapeShellArg(Utility::getPHP())
+			.' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php')
+			.' '.Utility::escapeShellArg($user)
+			.' '.Utility::escapeShellArg('drain'));
 	}
 }
 

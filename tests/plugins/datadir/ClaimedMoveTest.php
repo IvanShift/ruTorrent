@@ -198,6 +198,34 @@ function dataDirClaimQueueOutcome()
 
 $suite = new StrictTestSuite();
 
+$suite->test('raw byte job and receipt paths recover without selecting their visible escape neighbors', function () {
+    $root = dataDirClaimFixture();
+    rename($root, $root . "\xFF"); $root .= "\xFF";
+    try {
+        $raw = "file\xFE%41"; $literal = 'file\\xFE%41';
+        file_put_contents($root . '/src/' . $raw, 'raw payload');
+        file_put_contents($root . '/src/' . $literal, 'literal neighbor');
+        $daemon = new DataDirClaimFake(); $daemon->path = $root . '/src'; $daemon->loseFinishOnce = true;
+        $moves = 0;
+        $move = function ($source, $destination) use (&$moves) { $moves++; return dataDirClaimRename($source, $destination); };
+        $job = dataDirClaimJob($root, $daemon, array($raw), true, $move);
+        try { $job->run(); throw new RuntimeException('lost finish response was accepted'); }
+        catch (RuntimeException $error) {
+            strictAssertTrue(strpos($error->getMessage(), 'unconfirmed') !== false, 'the missing finish reply retains recovery');
+        }
+        strictAssertSame('raw payload', file_get_contents($root . '/dst/' . $raw), 'the exact raw file moved');
+        $inode = fileinode($root . '/dst/' . $raw);
+        strictAssertSame(true, dataDirClaimReload($root, $daemon, $move)->run(), 'fresh job and receipt readers recover the tagged byte records');
+        strictAssertSame(1, $moves, 'recovery does not repeat the physical operation');
+        strictAssertSame($inode, fileinode($root . '/dst/' . $raw), 'the original target inode survives recovery');
+        strictAssertSame('literal neighbor', file_get_contents($root . '/src/' . $literal), 'the escaped-looking neighbor remains untouched');
+        strictAssertSame(false, file_exists($root . '/dst/' . $literal), 'display text never becomes an operation path');
+        strictAssertSame($root . '/dst', $daemon->path, 'the daemon receives the original directory bytes');
+        strictAssertSame('absent', $daemon->phase, 'only confirmed recovery acknowledges the job');
+    } finally { strictRemoveTree($root); }
+});
+
+
 foreach (array('paused', 'late Stop') as $scene) {
     $suite->test('scheduled cancellation replaces its held outcome after ' . $scene, function () use ($scene) {
         $root = dataDirClaimFixture();

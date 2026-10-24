@@ -166,7 +166,7 @@ function erasedataNativeRetryStore($listPath, array $state, array $retry)
 	}
 	while(true)
 	{
-		$state['native_retry']=$retry;$bytes=json_encode($state);
+		$state['native_retry']=$retry;$bytes=JSON::encodeBytes($state);
 		if(is_string($bytes) && strlen($bytes)<=ERASEDATA_DRAIN_STATE_MAX_BYTES) break;
 		if(!count($retry['jobs'])) return(false);
 		unset($retry['jobs'][array_key_first($retry['jobs'])]);$overflow=true;

@@ -1,6 +1,11 @@
 import { readFileSync } from "fs";
 
 window.$ = require("jquery");
+for (const file of ["lang/en.js", "js/common.js"]) {
+  const script = document.createElement("script");
+  script.textContent = readFileSync(`../${file}`, "utf8");
+  document.body.appendChild(script);
+}
 
 // js/objects.js builds a context menu entry from a two-element array. When the
 // second element is a string it runs it through eval on click (js/objects.js:400);
@@ -131,7 +136,7 @@ describe("tracklabels context menu entry", () => {
     const icon = () => theWebUI.categoryList.refreshPanel.plabel(attribs)[0][1].icon;
     const uri = 'url:plugins/tracklabels/action.php?label=' + encodeURIComponent(label);
     expect(icon()).toBe(uri);
-    window.__tracklabels.imageEditSuffix.label[label] = '&t=123';
+    window.__tracklabels.imageEditSuffix.label[labelId(label)] = '&t=123';
     expect(icon()).toBe(uri + '&t=123');
   });
 

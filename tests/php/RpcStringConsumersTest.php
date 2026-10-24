@@ -39,7 +39,8 @@ class RpcStringConsumersTest extends TestCase
 	 * unpack now read file paths through rTorrent::getFilePath().
 	 */
 	const REVIEWED_ACCESS_COUNTS = array(
-		'php/rtorrent.php'                               => 20,
+		// Source paths read the raw reply once, or reuse the already-read batch paths.
+		'php/rtorrent.php'                               => 7,
 		'php/settings.php'                               => 13,
 		'php/utility/hashfault.php'                      => 6,
 		'php/xmlrpc.php'                                 => 4,
@@ -52,15 +53,14 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/check_port/action.php'                  => 2,
 		'plugins/datadir/util_setdir.php'                => 31,
 		// Upstream #3384 (merged 2026-10-18): session and tied-file paths used raw as
-		// file names, escapeshellarg() into the task, JSON::safeEncode() in the reply.
+		// file names, byte-preserving shell quoting into tasks, display projection in replies.
 		'plugins/dump/action.php'                        => 8,
 		'plugins/edit/action.php'                        => 18,
-		'plugins/erasedata/outcome.php'                  => 8,
+		'plugins/erasedata/outcome.php'                  => 9,
 		'plugins/erasedata/removewithdata.php'           => 50,
 		'plugins/extratio/rules.php'                     => 5,
-		'plugins/feeds/action.php'                       => 27,
-		// trkall shares trkall2's nested values; its three delimiter-parser reads are gone.
-		'plugins/httprpc/action.php'                     => 38,
+		// List and files preserve nested subcall boundaries; other modes retain flat values.
+		'plugins/httprpc/action.php'                     => 46,
 		'plugins/ratio/ratio.php'                        => 9,
 		'plugins/retrackers/update.php'                  => 2,
 		'plugins/rutracker_check/check.php'              => 96,
@@ -92,10 +92,15 @@ class RpcStringConsumersTest extends TestCase
 
 	// Raw semantic values retain XML provenance; these consumers must not flatten it.
 	const REVIEWED_SEMANTIC_COUNTS = array(
+		// File download paths retain required result slots separately from optional name evidence.
+		'php/rtorrent.php' => 4,
 		'php/xmlrpc.php' => 12,
 		// Exact version/incarnation strings and typed state fields are compared without flattening.
 		'plugins/erasedata/native.php' => 14,
-		'plugins/httprpc/action.php' => 3,
+		// Feed rows and optional metadata paths share one typed response without flattening.
+		'plugins/feeds/action.php' => 3,
+		// List/file batches validate main tables separately from optional source-path results.
+		'plugins/httprpc/action.php' => 9,
 		'tools/autotools-move-readiness.php' => 4,
 	);
 

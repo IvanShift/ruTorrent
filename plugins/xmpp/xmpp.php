@@ -3,6 +3,7 @@
 require_once(__DIR__.'/../../php/rtorrent.php');
 require_once( dirname(__FILE__)."/../../php/settings.php");
 require_once( dirname(__FILE__)."/../../php/utility/json.php");
+require_once(__DIR__.'/../../php/torrentfilenames.php');
 
 class rXmpp
 {
@@ -162,6 +163,25 @@ class rXmpp
 		)).";\n";
 	}
 
+	public function notificationMessage($name, $hash = '', $knownPaths = false)
+	{
+		$source = false;
+		if(TorrentFileNames::needsTitleMetadata($name))
+		{
+			try
+			{
+				$sourcePath = null;
+				$source = rTorrent::getSource($hash, $sourcePath, $knownPaths);
+			}
+			catch(Throwable $error)
+			{
+				// Notification delivery does not depend on optional metadata.
+			}
+		}
+		$title = TorrentFileNames::title($name, $hash, $source);
+		return str_replace('{TORRENT}', is_array($title) ? $title['name'] : $title, UTF::display($this->message));
+	}
+
 	public function setHandlers()
 	{
 		$theSettings = rTorrentSettings::get();
@@ -170,7 +190,7 @@ class rXmpp
 		if ( $this->message !== '' && isset($this->jabberServer) && isset($this->jabberLogin) && isset($this->jabberPasswd) && isset($this->jabberFor))
 		{
 		    $cmd = $theSettings->getOnFinishedCommand(array('xmpp'.User::getUser(),
-			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($pathToXmpp.'/notify.php').',"$'.getCmd('d.name').'=","'.User::getUser().'"}'
+			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($pathToXmpp.'/notify.php').',"$'.getCmd('d.name').'=",'.rTorrent::quoteCommandArg(User::getUser()).',"$'.getCmd('d.get_hash').'=","$'.getCmd('get_session').'=","$'.getCmd('d.get_tied_to_file').'="}'
 			    ));
 		}
 		else

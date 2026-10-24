@@ -48,7 +48,8 @@ if(isset($_POST['hash']))
 				foreach($files as $entry)
 				{
 					list($hash, $filepath, $file) = $entry;
-					$filename = $file->info['name']."-".$fn.".torrent";
+					// A download label is one ZIP member, including on Windows extractors.
+					$filename = str_replace(array('/', '\\'), '_', $file->displayName())."-".$fn.".torrent";
 					$isMetadata = rTorrent::isMetadataStubName(basename($filepath), $hash);
 					$added = $isMetadata
 						? @$zip->addFromString($filename, (string)$file)

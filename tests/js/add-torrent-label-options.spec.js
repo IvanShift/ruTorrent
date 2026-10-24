@@ -12,6 +12,15 @@ import { readFileSync } from "fs";
 
 window.$ = window.jQuery = require("jquery");
 
+beforeAll(() => {
+  for (const file of ["../lang/en.js", "../js/browser.js", "../js/common.js"]) {
+    const script = document.createElement("script");
+    script.textContent = readFileSync(file, "utf8");
+    document.body.appendChild(script);
+  }
+});
+
+
 // Pull the shipped handlers out of js/content.js rather than restating them,
 // so this spec cannot drift from the code that ships.
 function extractBlock(src, needle) {

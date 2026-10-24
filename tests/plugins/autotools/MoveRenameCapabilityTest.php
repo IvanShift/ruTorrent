@@ -1,4 +1,7 @@
 <?php
+require_once(__DIR__.'/../../../php/utility/json.php');
+// Extracted classes omit the production bootstrap which supplies Utility.
+require_once(__DIR__.'/../../../php/utility/utility.php');
 require_once __DIR__ . '/../rutracker_check/TestLib.php';
 
 class FileUtil
@@ -109,6 +112,34 @@ function autoToolsCleanup($root)
 }
 
 $suite = new StrictTestSuite();
+
+$suite->test('Move preparation and its journal preserve raw names while byte filters still apply', function () {
+    $root = autoToolsMoveFixture();
+    try {
+        autoToolsHelper($root, 0, 0);
+        $name = "payload\xFF.rar"; $label = "label\xFE"; $title = "title\xFD";
+        rename($root . '/dl/payload.bin', $root . '/dl/' . $name);
+        file_put_contents($root . '/session/' . str_repeat('A', 40) . '.torrent',
+            'd4:infod6:lengthi13e4:name' . strlen($name) . ':' . $name . '12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\x01", 20) . 'ee');
+        $args = array(str_repeat('A', 40), $root . '/dl/' . $name, $name, '0', rawurlencode($label), $title, '', str_repeat('c', 32));
+        rAutoTools::$config['addLabel'] = 1;
+        rAutoTools::$config['skip_move_for_files'] = '/\\.rar$/';
+        try { autoToolsPrepare($args); throw new LogicException('raw archive skip filter was ignored'); }
+        catch (RuntimeException $error) { strictAssertSame('skip-filter-match', $error->getMessage(), 'the exclusion matches the original byte basename'); }
+        strictAssertSame(array(), autoToolsHelperCalls($root), 'a filtered download performs no filesystem probe');
+        rAutoTools::$config['skip_move_for_files'] = '';
+        $job = autoToolsPrepare($args);
+        strictAssertSame($root . '/dl/' . $name, $job['src'], 'raw source bytes survive preparation');
+        strictAssertSame($root . '/fin/new/' . $label . '/' . $title . '/' . $name, $job['dst'], 'raw label and title keep their exact destination components');
+        strictAssertSame(array($name), $job['files'], 'the source manifest keeps the original filename');
+        mkdir($root . '/jobs', 0700);
+        AutoToolsMoveJob::writeJob($root . '/jobs', $job);
+        strictAssertSame($job, AutoToolsMoveJob::readJob($root . '/jobs', $job['hash']), 'the exact prepared job survives durable write/read');
+        strictAssertSame('payload bytes', file_get_contents($root . '/dl/' . $name), 'planning did not consume the payload');
+    } finally { autoToolsCleanup($root); }
+});
+
 
 $suite->test('AutoTools accepts a usable shared rename probe including fallback support', function () {
     $root = autoToolsMoveFixture();

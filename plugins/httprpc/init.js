@@ -25,9 +25,6 @@ rTorrentStub.prototype.getCommon = function(cmd)
         {
 		// Keep the plugin's existing literal-hash wire while sharing the body shape.
 		setHttprpcModeBody(this, cmd, false);
-		if($type(theRequestManager[cmd]))
-			for(var i=theRequestManager[cmd].count; i<theRequestManager[cmd].commands.length; i++)
-				this.content+=("&cmd="+encodeURIComponent(theRequestManager.map(cmd,i)));
 	}
 	else
 		plugin["orig"+cmd].call(this);

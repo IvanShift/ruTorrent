@@ -1,5 +1,7 @@
 <?php
 
+if(!class_exists('JSON', false)) require_once(__DIR__.'/../../php/utility/json.php');
+
 // ErasedataFilesystemOps::payloadDirectoryTrusted()/payloadFileTrusted() are
 // the payload trust rule this file shares with every AutoTools file operation
 // (Move, Copy, HardLink, SoftLink).
@@ -23,7 +25,7 @@ final class DataDirDocument
         $prefixes = self::STAGING_PREFIX;
         if (!isset($prefixes[$kind]))
             throw new RuntimeException('document-kind-invalid');
-        $json = json_encode($data, JSON_UNESCAPED_SLASHES);
+        $json = JSON::encodeBytes($data, JSON_UNESCAPED_SLASHES);
         if (!is_string($json) || strlen($json) > self::MAX_BYTES)
             throw new RuntimeException($kind . '-too-large');
         $parent = @realpath(dirname($path));
@@ -303,7 +305,7 @@ class DataDirMoveIntent
         $json = @file_get_contents($receipt, false, null, 0, DataDirDocument::MAX_BYTES + 1);
         if (!is_string($json) || strlen($json) > DataDirDocument::MAX_BYTES)
             throw new RuntimeException('receipt-unreadable');
-        $data = json_decode($json, true);
+        $data = JSON::decodeBytes($json);
         if (!is_array($data) || array_keys($data) !== array('version', 'phase', 'job', 'hash',
             'source', 'destination', 'witness', 'files')
             || $data['version'] !== 2 || !in_array($data['phase'], array('preparing', 'ready', 'aborting', 'finishing', 'terminal', 'ack-pending'), true)

@@ -681,7 +681,7 @@ class rRSSFilter
 				"chklink"=>intval($this->linkCheck),
 				"no"=>intval($this->no),
 				"interval"=>intval($this->interval),
-				"dir"=>$this->directory
+				"dir"=>FileUtil::displayPath((string)$this->directory)
 			));
 	}
 }
@@ -945,7 +945,7 @@ class rRSSManager
 	{
 	        $startAt = 0;
 		$req = new rXMLRPCRequest( rTorrentSettings::get()->getScheduleCommand("rss",$this->data->interval,
-			getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' & exit 0}', $startAt) );
+			getCmd('execute').'={sh,-c,'.Utility::escapeShellArg(Utility::getPHP()).' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php').' '.Utility::escapeShellArg(User::getUser()).' & exit 0}', $startAt) );
 		if($req->success())
 		{
 			$this->setStartTime($startAt);

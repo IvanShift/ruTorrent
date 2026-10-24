@@ -39,6 +39,8 @@ function tracklabelsWithServer($check)
         $image = file_get_contents($root . '/plugins/tracklabels/trackers/unknown.png');
         if ($image === false) throw new RuntimeException('Could not read the fixture PNG');
         file_put_contents($directory . '/profile/settings/labels/safe.png', $image);
+        foreach (array("raw\xFF" => 'bytes', 'raw%ff' => 'percent', 'raw\\xff' => 'literal', 'raw?' => 'replacement') as $label => $suffix)
+            file_put_contents($directory . '/profile/settings/labels/' . $label . '.png', $image . $suffix);
         $router = '<?php $_ENV["RU_PROFILE_PATH"] = '
             . var_export($directory . '/profile', true) . '; $_ENV["RU_LOG_FILE"] = '
             . var_export($directory . '/application.log', true) . '; require '
@@ -83,13 +85,16 @@ tracklabelsWithServer(function($address, $image) use (&$failures) {
     $cases = array(
         'an invalid label is plain text even when it contains markup' => array('label', '../<b>sample</b>'),
         'an invalid tracker is plain text even when it contains markup' => array('tracker', '../<b>sample</b>'),
-        'a valid label still returns the exact PNG' => array('label', 'safe'),
+        'a valid label still returns the exact PNG' => array('label', 'safe', ''),
+        'a raw label retains its exact icon instead of the replacement neighbor' => array('label', "raw\xFF", 'bytes'),
+        'a percent-looking label is decoded exactly once' => array('label', 'raw%FF', 'percent'),
+        'literal escape text names a separate icon' => array('label', 'raw\\xFF', 'literal'),
     );
     foreach ($cases as $name => $case) {
         try {
             list($field, $value) = $case;
             list($status, $headers, $body) = tracklabelsResponse($address, $field, $value);
-            $valid = $value === 'safe';
+            $valid = isset($case[2]);
             if (strpos($status, $valid ? ' 200 ' : ' 400 ') === false)
                 throw new RuntimeException('Unexpected HTTP status: ' . $status);
             $type = strtolower($headers['content-type'] ?? '');
@@ -98,7 +103,7 @@ tracklabelsWithServer(function($address, $image) use (&$failures) {
             if (!$valid && ($headers['x-content-type-options'] ?? '') !== 'nosniff')
                 throw new RuntimeException('The refusal does not forbid sniffing');
             // Tracker names cannot contain a slash; reject before constructing a cache path.
-            $expected = $valid ? $image : ($field === 'tracker' ? 'Invalid tracker' : 'Invalid label: ' . $value);
+            $expected = $valid ? $image . $case[2] : ($field === 'tracker' ? 'Invalid tracker' : 'Invalid label: ' . $value);
             if ($body !== $expected)
                 throw new RuntimeException('The response bytes changed');
             echo 'ok - ', $name, "\n";
@@ -108,5 +113,5 @@ tracklabelsWithServer(function($address, $image) use (&$failures) {
         }
     }
 });
-echo '3 tests, ', $failures, " failures\n";
+echo '6 tests, ', $failures, " failures\n";
 exit($failures ? 1 : 0);

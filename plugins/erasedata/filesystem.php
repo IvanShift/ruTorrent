@@ -1406,7 +1406,7 @@ function erasedataEnsureQueueDirectory($listPath)
 	if($unsealed || (is_array($before) && ($before['mode'] & 0022)))
 	{
 		$action = 'stop services; inspect *.list and *.pending obligations before operator attestation; '
-			.'chmod go-w on the named ancestor and chmod 0700 on queue '.json_encode($physicalPath, JSON_UNESCAPED_SLASHES);
+			.'chmod go-w on the named ancestor and chmod 0700 on queue '.erasedataLogPath($physicalPath);
 		$offending = $ancestor === null ? $physicalPath : $ancestor['path'];
 		$offendingStat = $ancestor === null ? $before : $ancestor['stat'];
 		return(erasedataQueueRefusal('legacy writable path needs operator attestation',

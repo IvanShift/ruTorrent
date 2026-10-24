@@ -306,7 +306,8 @@ class FileUtil {
  public static function addslash($path){return rtrim($path,'/').'/';}
  public static function makeDirectory($path,$mode,$preserve){return is_dir($path)||mkdir($path,$mode,true);}
 }
-class Utility { public static function getPHP(){return PHP_BINARY;} }
+require_once __DIR__.'/utility/utility.php';
+$pathToExternals = array('php' => PHP_BINARY);
 class User { public static function getUser(){return '';} }
 class rXMLRPCCommand {
  public $command; public $params;

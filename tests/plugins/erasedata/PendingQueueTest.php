@@ -74,6 +74,8 @@ class PendingQueueTest extends TestCase
 			// presence.php decides absence with this core leaf.
 			'php/utility/hashfault.php' => 'php/utility/hashfault.php',
 			'php/utility/permission.php' => 'php/utility/permission.php',
+			'php/utility/json.php' => 'php/utility/json.php',
+			'php/utility/utf.php' => 'php/utility/utf.php',
 		);
 		foreach ($copies as $relative => $name) {
 			$source = dirname(dirname(dirname(__DIR__))) . '/' . $relative;

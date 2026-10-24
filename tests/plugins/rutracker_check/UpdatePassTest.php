@@ -6167,6 +6167,7 @@ function upRunThroughProductionXMLRPC($dir, $hash, $answers)
         if (!copy(testFindRepoRoot() . '/php/' . $name, $fixture . '/' . $name))
             throw new RuntimeException('Unable to copy php/' . $name . ' into ' . $fixture);
     file_put_contents($fixture . '/util.php', '<?php '
+        . 'require_once ' . var_export(testFindRepoRoot() . '/php/utility/utf.php', true) . '; '
         . 'class FileUtil{public static function toLog($message){}public static function getTempDirectory(){return null;}}');
     file_put_contents($fixture . '/settings.php', '<?php '
         . 'class rTorrentSettings{public static function get(){static $instance;'

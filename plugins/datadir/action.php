@@ -151,4 +151,8 @@ $answer = array( "errors"=>$errors );
 // A warning reports an applied change that did not end as asked.
 if( $warnings )
 	$answer["warnings"] = $warnings;
+foreach($answer as $kind => $messages)
+	foreach($messages as $index => $message)
+		if(isset($message['prm']) && UTF::isString($message['prm']))
+			$answer[$kind][$index]['prm'] = UTF::display($message['prm']);
 CachedEcho::send(JSON::safeEncode($answer),"application/json");

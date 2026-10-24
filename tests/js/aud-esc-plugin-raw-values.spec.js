@@ -3,6 +3,15 @@ import { readFileSync } from "fs";
 window.$ = require("jquery");
 window.jQuery = window.$;
 
+beforeAll(() => {
+  for (const file of ["../lang/en.js", "../js/browser.js", "../js/common.js"]) {
+    const script = document.createElement("script");
+    script.textContent = readFileSync(file, "utf8");
+    document.body.appendChild(script);
+  }
+});
+
+
 // AUD-ESC-05, plugin part. httprpc now hands the WebUI the daemon's own
 // bytes, so these plugins must pass names, paths and tracker URLs through
 // untouched: no unescaping of their own, and one encoding on the way out.

@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__.'/../../php/rtorrent.php');
+require_once(__DIR__.'/../../php/torrentfilenames.php');
 require_once( dirname(__FILE__).'/../../php/cache.php');
 require_once( dirname(__FILE__).'/../../php/util.php');
 require_once( dirname(__FILE__).'/../../php/settings.php');
@@ -135,12 +136,47 @@ class rHistoryData
 		$this->data = self::ordered($this->data, $limit);
 		$this->store();
 	}
+	// Capture a display snapshot while the hook's exact source paths may still
+	// exist. The original name remains the event's data; no polling RPC is added.
+	static public function captureTorrentName($event, $hash, $knownPaths)
+	{
+		try
+		{
+			if(!UTF::isString($hash) || @preg_match('/\A[0-9A-Fa-f]{40}\z/', $hash) !== 1) return $event;
+			$event['torrent_hash'] = $hash;
+			if(!isset($event['name']) || !UTF::isString($event['name']) || UTF::isValid($event['name'])) return $event;
+			$sourcePath = null;
+			$source = @rTorrent::getSource($hash, $sourcePath, $knownPaths ?? false);
+			$title = @TorrentFileNames::title($event['name'], $hash, $source);
+			if(@is_array($title) && isset($title['name']) && UTF::isString($title['name']) && UTF::isValid($title['name']))
+				$event['display_name'] = $title['name'];
+		}
+		catch(Throwable $error)
+		{
+			// Erase hooks run detached: a source may have disappeared already.
+		}
+		return $event;
+	}
+
+	// Both the WebUI and notifications use a copy. Stored byte strings and
+	// the event hash used by delete() must never become display labels.
+	static public function displayRecord($event)
+	{
+		$name = $event['name'] ?? null;
+		foreach(array('name', 'label', 'tracker') as $field)
+			if(isset($event[$field]) && UTF::isString($event[$field])) $event[$field] = UTF::display($event[$field]);
+		if(UTF::isString($name) && !UTF::isValid($name) && isset($event['display_name'])
+			&& UTF::isString($event['display_name']) && $event['display_name'] !== '' && UTF::isValid($event['display_name']))
+			$event['name'] = $event['display_name'];
+		return $event;
+	}
+
 	public function get( $mark )
 	{
 		$ret = array();
 		foreach( $this->data as $hash=>$e )
 			if( $e["action_time"]>$mark )
-				$ret[] = $e;
+				$ret[] = self::displayRecord($e);
 			else
 				break;
 		return(array( "items"=>$ret, "mode"=>($mark==0) ));
@@ -214,8 +250,9 @@ class rHistory
 	{
 		global $rootPath;
 		$serviceMarker = ',$'.getCmd('d.get_custom').'=chk-meta-old';
-		// Keep the final argument nonempty even for an anonymous profile.
+		// Keep the existing user argument present, then append source identity.
 		$hookUser = 'u:'.User::getUser();
+		$sourceFields = ',$'.getCmd('d.get_hash').'=,$'.getCmd('get_session').'=,$'.getCmd('d.get_tied_to_file').'=';
 		if($this->log["addition"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_addition"]))
 		{
 			$addCmd = getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($rootPath.'/plugins/history/update.php').',1,$'.
@@ -224,7 +261,7 @@ class rHistory
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
 				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
-				$hookUser.'}';
+				$hookUser.$sourceFields.'}';
 		}
 		else
 			$addCmd = getCmd('cat=');
@@ -235,7 +272,7 @@ class rHistory
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
 				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
-				$hookUser.'}';
+				$hookUser.$sourceFields.'}';
 		else
 			$finCmd = getCmd('cat=');
 		if($this->log["deletion"] || ($this->log["pushbullet_enabled"] && $this->log["pushbullet_deletion"]))
@@ -245,7 +282,7 @@ class rHistory
 				getCmd('d.get_custom').'=addtime,$'.getCmd('d.get_custom').'=seedingtime'.
 				',"$'.getCmd('t.multicall').'=$'.getCmd('d.get_hash').'=,'.getCmd('t.get_url').'=,'.getCmd('cat').'=#",$'.
 				getCmd('d.get_custom1')."=,$".getCmd('d.get_custom')."=x-pushbullet".$serviceMarker.",".
-				$hookUser.'}';
+				$hookUser.$sourceFields.'}';
 		else
 			$delCmd = getCmd('cat=');
 		$req = new rXMLRPCRequest( array(
@@ -284,6 +321,7 @@ class rHistory
 	public function pushBulletNotify( $data )
 	{
 		global $pushBulletNotifications, $pushBulletEndpoint;
+		$data = rHistoryData::displayRecord($data);
 		$actions = array
 		(
 			1 => 'addition',

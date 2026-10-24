@@ -6,7 +6,7 @@ rutorrent_require_cli(__FILE__);
 	if(chdir($path))
 	{
 		// Older registered hooks pass the user at 13 and no marker. New
-		// hooks tag the final user argument so an empty profile stays present.
+		// hooks tag the user at 14; newer ones append captured source paths.
 		$hasMarker = count( $argv ) > 14;
 		if( $hasMarker )
 		{
@@ -55,6 +55,9 @@ rutorrent_require_cli(__FILE__);
 		if(!rHistoryData::isServiceEntry($data["name"], $data["label"],
 			$hasMarker ? $argv[13] : '', $hasMarker))
 		{
+			if(isset($argv[15]))
+				$data = rHistoryData::captureTorrentName($data, $argv[15],
+					isset($argv[16], $argv[17]) ? array($argv[16], $argv[17]) : false);
 			if($mgr->log[$actions[$action]])
 			{
 				$hst->add( $data, $mgr->log["limit"] );

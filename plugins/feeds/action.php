@@ -1,6 +1,8 @@
 <?php
 require_once( '../../php/util.php' );
 require_once( '../../php/settings.php' );
+require_once( '../../php/rtorrent.php' );
+require_once( '../../php/torrentfilenames.php' );
 eval( FileUtil::getPluginConf( 'feeds' ) );
 
 $lang = (isset($_REQUEST['lang']) &&
@@ -83,16 +85,15 @@ function eta($tm)
 }
 
 // A daemon value as XML 1.0 text; the description also carries it as HTML
-// text inside a CDATA section. ENT_SUBSTITUTE turns a byte sequence that is
-// not UTF-8 into U+FFFD: without it htmlspecialchars() answers '' and the
-// item is untitled. ENT_XML1|ENT_DISALLOWED turns a code point XML 1.0 does
+// text inside a CDATA section. Unknown bytes become visible escapes before
+// XML escaping. ENT_XML1|ENT_DISALLOWED turns a code point XML 1.0 does
 // not allow -- a C0 control other than TAB, LF and CR, U+FFFE, U+FFFF --
 // into U+FFFD as well, so one such byte in a tracker message or a name no
 // longer makes the whole feed ill-formed. '>' is escaped, so a value cannot
 // close the CDATA section either.
 function feedText($value)
 {
-	return(htmlspecialchars($value,ENT_COMPAT|ENT_SUBSTITUTE|ENT_XML1|ENT_DISALLOWED,"UTF-8"));
+	return(htmlspecialchars(UTF::display($value),ENT_COMPAT|ENT_SUBSTITUTE|ENT_XML1|ENT_DISALLOWED,"UTF-8"));
 }
 
 function formatItemDescription($torrent)
@@ -192,62 +193,98 @@ if($showItemDescription)
 		getCmd("d.get_peers_connected="),
 		getCmd("d.get_peers_accounted="),
 		getCmd("d.get_peers_complete=")));
-$req = new rXMLRPCRequest( new rXMLRPCCommand("d.multicall", $prm) );
+$paths = new rXMLRPCCommand('d.multicall', array($view, getCmd('d.get_hash='), getCmd('d.get_tied_to_file=')));
+$req = new rXMLRPCRequest(array(new rXMLRPCCommand('d.multicall', $prm), $paths,
+	new rXMLRPCCommand('get_session')));
 
-if($req->success())
+if($req->run(true) && $req->responseTypes === array('array') && count($req->responseValues) === 1)
 {
-	$items = array();
+	$replies = $req->responseValues[0];
+	$rows = isset($replies[0]) && is_array($replies[0]) && array_keys($replies[0]) === array(0)
+		&& is_array($replies[0][0]) ? $replies[0][0] : array();
+	$sourcePaths = array();
+	// Optional source failures must not discard the live list or trigger a
+	// separate daemon request for every name that needs display metadata.
+	if(isset($replies[1], $replies[2]) && is_array($replies[1]) && is_array($replies[2])
+		&& array_keys($replies[1]) === array(0) && array_keys($replies[2]) === array(0)
+		&& is_array($replies[1][0]) && is_string($replies[2][0]))
+		foreach($replies[1][0] as $row)
+			if(is_array($row) && array_keys($row) === array(0,1) && is_string($row[0]) && is_string($row[1]))
+				$sourcePaths[$row[0]] = array($replies[2][0], $row[1]);
+	$values = array();
 	$fields = count($prm)-1;
-	for($i = 0; $i<count($req->val); $i+=$fields)
+	foreach($rows as $row)
+	{
+		if(!is_array($row) || array_keys($row) !== range(0,$fields-1)) continue;
+		foreach($row as $value) if(!is_string($value)) continue 2;
+		if(TorrentFileNames::needsTitleMetadata($row[1]))
+		{
+			$source = false;
+			try
+			{
+				$sourcePath = null;
+				$source = rTorrent::getSource($row[0], $sourcePath, $sourcePaths[$row[0]] ?? false);
+			}
+			catch(Throwable $error)
+			{
+				// Unreadable optional metadata leaves the daemon name visible.
+			}
+			$title = TorrentFileNames::title($row[1], $row[0], $source);
+			$row[1] = $title['name'];
+		}
+		foreach($row as $value) $values[] = $value;
+	}
+	$items = array();
+	for($i = 0; $i<count($values); $i+=$fields)
 	{
 		$item = array(
-			"guid"=>$req->val[$i],
-			"title"=>$req->val[$i+1],
-			"category"=>rawurldecode($req->val[$i+5]),
-			"pubDate"=>floatval($req->val[$i+6]) );
+			"guid"=>$values[$i],
+			"title"=>$values[$i+1],
+			"category"=>rawurldecode($values[$i+5]),
+			"pubDate"=>floatval($values[$i+6]) );
 		if(rTorrentSettings::get()->isPluginRegistered('data'))
-			$item["link"] = $url.'plugins/data/action.php?hash='.$req->val[$i].'&no=0&readable=1';
+			$item["link"] = $url.'plugins/data/action.php?hash='.$values[$i].'&no=0&readable=1';
 		if($mode=='error')
 		{
-                        if(empty($req->val[$i+2]))
+                        if(empty($values[$i+2]))
 				continue;
 		}
 		else
 		{
 			if($mode=='active')
 			{
-				if( floatval($req->val[$i+3])<1024 && floatval($req->val[$i+4])<1024 )
+				if( floatval($values[$i+3])<1024 && floatval($values[$i+4])<1024 )
 					continue;
 			}
 			else
 			if($mode=='inactive')
 			{
-				if( floatval($req->val[$i+3])>=1024 || floatval($req->val[$i+4])>=1024 )
+				if( floatval($values[$i+3])>=1024 || floatval($values[$i+4])>=1024 )
 					continue;
 			}
 		}
 
 		if($showItemDescription)
 		{
-			$get_completed_chunks = floatval($req->val[$i+8]);
-			$get_size_chunks = floatval($req->val[$i+9]);
-			$get_chunk_size = floatval($req->val[$i+16]);
-			$get_peers_not_connected = floatval($req->val[$i+17]);
-			$get_peers_connected = floatval($req->val[$i+18]);
+			$get_completed_chunks = floatval($values[$i+8]);
+			$get_size_chunks = floatval($values[$i+9]);
+			$get_chunk_size = floatval($values[$i+16]);
+			$get_peers_not_connected = floatval($values[$i+17]);
+			$get_peers_connected = floatval($values[$i+18]);
 			$get_peers_all = $get_peers_not_connected+$get_peers_connected;
 
 			$torrent = array(
-				"downloaded" => floatval($req->val[$i+11]),
-				"uploaded" => floatval($req->val[$i+12]),
-				"size" => floatval($req->val[$i+10]),
-				"ratio" => floatval($req->val[$i+13])/1000,
-				"ul" => floatval($req->val[$i+14]),
-				"dl" =>  floatval($req->val[$i+15]),
-				"comment" => rawurldecode(substr($req->val[$i+7],10)),
-				"hash" => $req->val[$i],
-				"peers" => $req->val[$i+19]." (".$get_peers_all.")",
-				"seeds" => $req->val[$i+20]." (".$get_peers_all.")",
-				"message" => $req->val[$i+2],
+				"downloaded" => floatval($values[$i+11]),
+				"uploaded" => floatval($values[$i+12]),
+				"size" => floatval($values[$i+10]),
+				"ratio" => floatval($values[$i+13])/1000,
+				"ul" => floatval($values[$i+14]),
+				"dl" =>  floatval($values[$i+15]),
+				"comment" => rawurldecode(substr($values[$i+7],10)),
+				"hash" => $values[$i],
+				"peers" => $values[$i+19]." (".$get_peers_all.")",
+				"seeds" => $values[$i+20]." (".$get_peers_all.")",
+				"message" => $values[$i+2],
 				);
 			$torrent["eta"] = ($torrent["dl"]>0) ? floor(($get_size_chunks-$get_completed_chunks)*$get_chunk_size/$torrent["dl"]) : -1;
 			$item["description"] = formatItemDescription( $torrent );

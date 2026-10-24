@@ -579,6 +579,21 @@ class Torrent
         	return file_put_contents( $this->filename, $this->__toString() );
 	}
 
+	/** Unicode label from this torrent's own metadata, without changing its info. */
+	public function displayName()
+	{
+		$name = $this->name();
+		if(UTF::isValid($name))
+			return $name;
+		try {
+			require_once(__DIR__.'/torrentfilenames.php');
+			$title = @TorrentFileNames::title($name, @$this->hash_info(), $this);
+			return is_array($title) ? $title['name'] : $title;
+		} catch(Throwable $error) {
+			return UTF::display($name);
+		}
+	}
+
 	/** Send torrent file to client
 	 * @param null|string name of the file (optional)
 	 * @return void script exit
@@ -586,7 +601,7 @@ class Torrent
 	public function send( $filename = null )
 	{
 	        if(is_null( $filename ))
-			$filename = $this->info['name'].'.torrent';
+			$filename = $this->displayName().'.torrent';
 		// Loaded here, not with the file: copies of the parser that never
 		// send a torrent (test mirrors) need not carry the helper.
 		require_once( __DIR__.'/utility/contentdisposition.php' );

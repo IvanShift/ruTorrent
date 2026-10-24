@@ -1,5 +1,7 @@
 <?php
 
+if(!class_exists('JSON', false)) require_once(__DIR__.'/../../php/utility/json.php');
+
 // Importable erasedata collector service. Requiring this file only defines
 // symbols: it performs no RPC, no filesystem mutation, no scheduler lock and no
 // log line. plugins/erasedata/update.php owns the runtime entry point.
@@ -1849,7 +1851,7 @@ final class ErasedataCollector
 			|| !erasedataSameEntryIdentity($before, $after)
 			|| !is_string($bytes))
 			return(false);
-		$record = json_decode($bytes, true);
+		$record = JSON::decodeBytes($bytes);
 		if(!is_array($record) || array_keys($record) !== array(
 			'version', 'manifest', 'logical', 'parent', 'parentDev', 'parentIno',
 			'targetDev', 'targetIno', 'phase', 'reservation')
@@ -1959,7 +1961,7 @@ final class ErasedataCollector
 			'targetDev' => is_array($entry) ? (string)$entry['dev'] : null,
 			'targetIno' => is_array($entry) ? (string)$entry['ino'] : null,
 			'phase' => 'prepared', 'reservation' => null);
-		$bytes = json_encode($record, JSON_UNESCAPED_SLASHES);
+		$bytes = JSON::encodeBytes($record, JSON_UNESCAPED_SLASHES);
 		return(is_string($bytes)
 			&& erasedataWriteDurableFile($this->directoryIntentPath($item), $bytes)
 			&& $this->readDirectoryIntent($item) === $record);
@@ -2029,7 +2031,7 @@ final class ErasedataCollector
 		if($phase === 'deleting') $record['version'] = 2;
 		$record['phase'] = $phase;
 		$record['reservation'] = $name;
-		$bytes = json_encode($record, JSON_UNESCAPED_SLASHES);
+		$bytes = JSON::encodeBytes($record, JSON_UNESCAPED_SLASHES);
 		return(is_string($bytes)
 			&& erasedataWriteDurableFile($this->directoryIntentPath($item), $bytes)
 			&& $this->readDirectoryIntent($item) === $record);

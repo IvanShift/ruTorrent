@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/HttprpcListFixture.php');
 
 /**
  * A daemon that answers rTorrentSettings::obtain() the way rtorrent 0.16.20
@@ -46,13 +47,15 @@ class RtorrentProbeFixture
 		return array();
 	}
 
-	/** The first parameter of a single-command request, or null. */
+	/** The first command's first parameter, or null. */
 	public static function firstParameter($body)
 	{
 		if (preg_match('|<params>\s*<param><value><string>(.*)</string></value></param>|Us',
 			$body, $m)) {
 			return $m[1];
 		}
+		if(preg_match('|<name>params</name>\s*<value><array><data>\s*<value><string>(.*?)</string>|s', $body, $m))
+			return $m[1];
 		return null;
 	}
 
@@ -154,6 +157,11 @@ class RtorrentProbeResponder
 		}
 		$names = RtorrentProbeFixture::methodNames($body);
 		$single = (count($names) === 1) ? $names[0] : '';
+		if($names === array('d.multicall', 'd.multicall', 'session.path')) {
+			if(RtorrentProbeFixture::firstParameter($body) !== '')
+				return FakeRtorrentDaemon::fault(RtorrentProbeFixture::INVALID_TARGET);
+			return HttprpcListFixture::reply(array(RtorrentProbeFixture::row($this->hash, 36)));
+		}
 
 		if ($single === 'd.multicall') {
 			if (RtorrentProbeFixture::firstParameter($body) !== '') {

@@ -9,7 +9,7 @@ function bad($message) {
 	http_response_code(400);
 	header('Content-Type: text/plain; charset=UTF-8');
 	header('X-Content-Type-Options: nosniff');
-	echo $message;
+	echo UTF::display($message);
 	exit;
 }
 
@@ -276,14 +276,17 @@ function image_name($prefix, $req_field, $values = null)
 		$dir = $basepath . '/' . $prefix;
 		if (!is_string($values[$req_field]))
 			bad('Invalid ' . $req_field);
-		$name = rawurldecode($values[$req_field]);
+		// PHP already decoded the query/form value. A second pass changes
+		// literal percent sequences into a different icon target.
+		$name = $values[$req_field];
 		if (strpos($name, "\0") !== false)
 			bad('Invalid ' . $req_field);
 		if ($prefix === 'trackers' && strpos($name, '/') !== false)
 			bad('Invalid ' . $req_field);
-		$name = get_alias(function_exists('mb_strtolower')
-			? mb_strtolower($name, 'utf-8')
-			: strtolower($name));
+		if(UTF::isValid($name))
+			$name = get_alias(function_exists('mb_strtolower')
+				? mb_strtolower($name, 'utf-8')
+				: strtolower($name));
 		$res = $dir . '/' . $name . '.png';
 		if (!strlen($name)
 			|| strlen($name) > 200

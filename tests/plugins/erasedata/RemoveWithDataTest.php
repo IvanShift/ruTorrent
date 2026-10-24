@@ -580,14 +580,14 @@ class RemoveWithDataTest extends TestCase
 	private function parseFaultThroughProductionXMLRPC($faultString)
 	{
 		$fixture = $this->dir.'/xmlrpc-fault-fixture';
-		@mkdir($fixture, 0777, true);
-		foreach(array('xmlrpc.php', 'xmlrpc_response.php') as $name)
+		@mkdir($fixture.'/utility', 0777, true);
+		foreach(array('xmlrpc.php', 'xmlrpc_response.php', 'utility/utf.php') as $name)
 		{
 			copy(__DIR__.'/../../../php/'.$name, $fixture.'/'.$name);
 			$this->assertEquals(hash_file('sha256', __DIR__.'/../../../php/'.$name),
 				hash_file('sha256', $fixture.'/'.$name), 'raw fault fixture executes the shipped '.$name.' bytes');
 		}
-		file_put_contents($fixture.'/util.php', '<?php '
+		file_put_contents($fixture.'/util.php', '<?php require_once __DIR__."/utility/utf.php"; '
 			.'class FileUtil{public static function toLog($message){}public static function getTempDirectory(){return null;}}');
 		file_put_contents($fixture.'/settings.php', '<?php '
 			.'class rTorrentSettings{public static function get(){static $instance;'
@@ -8328,6 +8328,42 @@ class RemoveWithDataTest extends TestCase
 			'a changed parent cannot redirect forced directory removal');
 		$this->assertEquals($manifest, @file_get_contents($manifestPath),
 			'the exact manifest remains until its original directory is handled');
+	}
+
+	public function testForcedDirectoryIntentRetainsLegacyBytesAcrossRecovery()
+	{
+		$this->reset();
+		$hash = $this->hash('D');
+		$parent = $this->dir."/legacy-parent\xFF";
+		$base = $parent."/payload\xFE";
+		$neighbor = $parent.'/payload\\xFE';
+		$marker = $this->dir.'/legacy-intent-prepared';
+		mkdir($base, 0700, true);
+		mkdir($neighbor, 0700);
+		file_put_contents($base.'/original.bin', 'original');
+		file_put_contents($neighbor.'/sentinel.bin', 'literal neighbor');
+		$this->writeManifestLines($hash.'.list', array($base.'/original.bin'), $base, 1, 2);
+		$manifestPath = $this->queuePath().'/'.$hash.'.list';
+		$manifest = file_get_contents($manifestPath);
+		list($status, $output) = $this->runCollector(array('filesystem' => array(
+			'makeDirectory:*' => array('basename_prefix' => '.erasedata-rmdir-',
+				'action' => 'exit', 'marker' => $marker),
+		)));
+		$this->assertEquals(0, $status, 'prepared collector exits: '.$output);
+		$this->assertTrue(is_file($marker), 'the durable intent precedes reservation');
+		$intents = glob($this->queuePath().'/.erasedata-rmdir-intent-*');
+		$this->assertEquals(1, count($intents), 'one raw-path intent survives the interruption');
+		if(count($intents) !== 1) return;
+		$record = JSON::decodeBytes(file_get_contents($intents[0]));
+		$this->assertEquals($base, $record['logical'], 'the logical path retains every byte');
+		$this->assertEquals($parent, $record['parent'], 'the attested parent retains every byte');
+		$this->assertEquals(hash('sha256', $manifest), $record['manifest'], 'the original manifest digest remains bound');
+		list($status, $output) = $this->runCollector(array());
+		$this->assertEquals(0, $status, 'fresh recovery exits: '.$output);
+		$this->assertTrue(!file_exists($base), 'the original raw directory is removed');
+		$this->assertEquals('literal neighbor', file_get_contents($neighbor.'/sentinel.bin'), 'the escaped-looking directory is untouched');
+		$this->assertTrue(!is_file($manifestPath), 'successful recovery retires the manifest');
+		$this->assertEquals(array(), glob($this->queuePath().'/.erasedata-rmdir-intent-*'), 'successful recovery retires the byte intent');
 	}
 
 	public function testForcedParentSwapAfterPreparedIntentRetainsOriginalManifest()

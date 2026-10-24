@@ -40,7 +40,7 @@ class AudLabelsTest extends TestCase
 		list($exit, $out, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(),
 			'plugins/_getdir/info.php', array('get' => array('mode' => 'labels')));
 		$this->assertSame(0, $exit, 'info.php ends cleanly: ' . $err);
-		$this->assertSame(array('labels' => array(self::AUD, self::AUD_PAIRS)), json_decode($out, true),
-			'one entry per distinct label, unencoded or percent-encoded, in its own bytes: ' . $out);
+		$this->assertSame(array('labels' => array(' ', self::AUD, self::AUD_PAIRS)), json_decode($out, true),
+			'one entry per distinct label, including a literal space, in its own bytes: ' . $out);
 	}
 }

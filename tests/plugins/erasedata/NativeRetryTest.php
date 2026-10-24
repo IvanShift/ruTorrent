@@ -34,6 +34,32 @@ class ErasedataNativeRetryTest extends TestCase
 		$state['generation']=$state['acknowledged']='0000000000000001';$state['phase']='armed';
 		erasedataWriteDrainState($this->dir,$state);return $state;
 	}
+	public function testLegacyQueuePathKeepsItsExactDrainBindingAndRetryHints()
+	{
+		$queue=$this->dir."/raw\xFF";mkdir($queue,0700);
+		$state=erasedataDefaultDrainState();$state['user']='rutorrent';
+		$generation='0000000000000001';$hash=str_repeat('A',40);
+		$path=$queue.'/'.$hash.'.'.$generation.'.actor.tmp';
+		$state['generation']=$generation;$state['phase']='arming';
+		$state['journal'][$generation]=array('phase'=>'prepared','force'=>1,'hashes'=>array($hash),
+			'staging'=>array($hash=>array('path'=>$path,'dev'=>'1','ino'=>'2')));
+		$this->assertTrue(erasedataWriteDrainState($queue,$state),'raw queue bytes are admitted without changing the staging path');
+		$this->assertSame($state,erasedataReadDrainState($queue),'fresh reads keep the complete owner and exact raw binding');
+		$key=str_repeat('b',64);$retry=array('jobs'=>array($key=>array(100,5,1,str_repeat('c',64))),
+			'cursor'=>$hash,'overflow'=>false);
+		$lock=erasedataAcquireDrainStateLock($queue);
+		try {
+			$this->assertTrue(erasedataNativeRetryStore($queue,$state,$retry),'retry size admission uses the same byte codec as the state writer');
+		} finally { erasedataReleaseDrainStateLock($lock); }
+		$after=erasedataReadDrainState($queue);
+		$this->assertSame($retry,$after['native_retry'],'the hint survives instead of being evicted because encoding failed');
+		unset($after['native_retry']);
+		$this->assertSame($state,$after,'retry metadata preserves every authority field');
+		$wrong=$this->dir.'/raw\\xFF';mkdir($wrong,0700);
+		file_put_contents(erasedataDrainStatePath($wrong),file_get_contents(erasedataDrainStatePath($queue)));
+		$this->assertSame(false,erasedataReadDrainState($wrong),'a visually similar literal path cannot adopt the raw queue binding');
+	}
+
 	public function testRetryHintsDoNotChangeAuthorityAndResetOnReasonIdentityOrClockChange()
 	{
 		if(!$this->api())return;$original=$this->state();

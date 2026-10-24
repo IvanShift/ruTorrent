@@ -34,7 +34,7 @@ if( $is_ok )
 	if( $at->enable_watch )
 	{
 		$auto_start = $at->watch_start;
-		$path_to_watch = rtAddTailSlash( trim( $at->path_to_watch ) );
+		$path_to_watch = rtAddTailSlash( $at->path_to_watch );
 		Debug( "path_to_watch    : ".$path_to_watch );
 		if( $path_to_watch == '' || $path_to_watch == '/' )
 			$is_ok = false;

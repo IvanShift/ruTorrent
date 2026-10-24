@@ -2285,8 +2285,9 @@ PHP
 
 		$added = array_values(array_diff($retrackersUpdateImportsAfter, $retrackersUpdateImportsBefore));
 		$this->assertEquals(array(realpath(__DIR__ . '/../../../plugins/retrackers/update.php'),
-			realpath(__DIR__ . '/../../../plugins/retrackers/trackerurl.php')), $added,
-			'import-only update.php loads only the pure tracker URL leaf, with no configuration, filesystem, or RPC dependency');
+			realpath(__DIR__ . '/../../../plugins/retrackers/trackerurl.php'),
+			realpath(__DIR__ . '/../../../php/utility/utility.php')), $added,
+			'import-only update.php loads only pure tracker URL and utility declarations, with no configuration, filesystem, or RPC dependency');
 		$this->assertTrue(!class_exists('rRetrackers', false) && !class_exists('rXMLRPCRequest', false),
 			'import-only update.php leaves plugin and RPC runtime classes unloaded');
 		$this->assertEquals(array(), array_diff(scandir($retrackersUpdateTestProfile), array('.', '..')),
@@ -3226,6 +3227,7 @@ PHP;
 		$this->assertTrue($status !== 0, 'invalid CLI argv exits with a failure status');
 		$this->assertEquals(array(), $output, 'invalid CLI argv writes no diagnostic output');
 		$this->assertEquals(array(realpath($script), $update, realpath(dirname($update).'/trackerurl.php'),
+			realpath(dirname($update).'/../../php/utility/utility.php'),
 			realpath(dirname($update).'/../../php/cli-only.php')), $observed['included'],
 			'invalid CLI argv includes only pure leaves, with no configuration, filesystem, or RPC dependency');
 		$this->assertEquals(array(), $observed['profile'], 'invalid CLI argv creates no profile files');

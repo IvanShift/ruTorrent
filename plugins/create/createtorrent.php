@@ -44,7 +44,7 @@ if( count( $argv ) > 1 )
 			explode("\r", $request['trackers']) : array());
 		$announce_list = $parsedTrackers['tiers'];
 		$trackersCount = $parsedTrackers['count'];
-		$path_edit = trim($request['path_edit']);
+		$path_edit = $request['path_edit'];
 		$piece_size = $request['piece_size'];
 		$callback_log = "log_stdout";
 		$callback_err = "log_stderr";

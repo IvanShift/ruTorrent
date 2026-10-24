@@ -29,7 +29,7 @@ if(isset($input['cmd']))
 						$name = '"${dir}"/frame'.$i.($st->data['exformat'] ? '.png' : '.jpg');
 						$commands[] = Utility::getExternal("ffmpeg").
 							' -ss '.$offs.
-							' -i '.escapeshellarg($filename).
+							' -i '.Utility::escapeShellArg($filename).
 							' -y'.
 							' -vframes 1'.
 							' -an'.
@@ -61,7 +61,7 @@ if(isset($input['cmd']))
 			if(@chdir( $dir ))
 			{
 				$randName = FileUtil::getTempFilename('screenshots-detail');
-				exec(escapeshellarg(Utility::getExternal('tar'))." -cf ".$randName." *.".($st->data['exformat'] ? 'png' : 'jpg'),$results,$return);
+				exec(Utility::escapeShellArg(Utility::getExternal('tar'))." -cf ".$randName." *.".($st->data['exformat'] ? 'png' : 'jpg'),$results,$return);
 				if(is_file($randName))
 				{
 					SendFile::send( $randName, "application/x-tar",  $input['file'].'.tar', false );

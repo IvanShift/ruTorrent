@@ -382,12 +382,11 @@ PHP
 
     public function testTrackerSubdirectoriesCannotBypassTheGlobalFetchSlots()
     {
-        foreach (array('extra/' . self::PUBLIC_HOST, 'extra%2F' . self::PUBLIC_HOST) as $tracker) {
-            $response = $this->fetch($tracker, self::NOT_FOUND);
-            $this->assertSame('400', $response['status'], 'tracker input must name one host, not a subdirectory');
-            $this->assertSame(array(), $response['requests'], 'a nested tracker cannot open an independent fetch pool');
-            $this->assertTrue(!file_exists($this->trackersDir()), 'a rejected tracker creates no cache or lock directory');
-        }
+        // This child receives PHP's already-decoded request values.
+        $response = $this->fetch('extra/' . self::PUBLIC_HOST, self::NOT_FOUND);
+        $this->assertSame('400', $response['status'], 'tracker input must name one host, not a subdirectory');
+        $this->assertSame(array(), $response['requests'], 'a nested tracker cannot open an independent fetch pool');
+        $this->assertTrue(!file_exists($this->trackersDir()), 'a rejected tracker creates no cache or lock directory');
     }
 
     public function testMissExpiresAfterADayAndSuccessClearsTheMarker()
@@ -1005,7 +1004,7 @@ PHP
 
     public function testNulTrackerIsRefusedBeforeBuildingACachePath()
     {
-        $response = $this->fetch('example.test%00', self::NOT_FOUND);
+        $response = $this->fetch("example.test\0", self::NOT_FOUND);
         $this->assertSame(0, $response['exit'], 'a NUL tracker exits without a fatal error: ' . $response['err']);
         $this->assertSame('400', $response['status'], 'a NUL tracker is a bad request');
         $this->assertSame(array(), $response['requests'], 'a NUL tracker never reaches the network');
@@ -1033,6 +1032,19 @@ PHP
                 'out' => $reply['body']);
         } finally {
             $http->close();
+        }
+    }
+
+    public function testEncodedForbiddenTrackerBytesAreRefusedAfterHttpDecoding()
+    {
+        foreach(array('extra%2F'.self::PUBLIC_HOST, 'example.test%00') as $encoded) {
+            $response = $this->httpRequest(array(), 'fetch=1&tracker='.$encoded,
+                array('Origin'=>'http://localhost', 'X-Requested-With'=>'XMLHttpRequest',
+                    'Content-Type'=>'application/x-www-form-urlencoded'));
+            $this->assertTrue(strpos($response['headers'], ' 400 ') !== false,
+                'the actual HTTP decoder passes the forbidden byte to tracker validation');
+            $this->assertSame('Invalid tracker', $response['out'], 'the request has a controlled refusal');
+            $this->assertTrue(!file_exists($this->trackersDir()), 'refusal happens before acquiring cache resources');
         }
     }
 

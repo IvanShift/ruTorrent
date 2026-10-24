@@ -2,6 +2,13 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/SCGITransportFixture.php');
+require_once(__DIR__ . '/../../php/HttprpcListFixture.php');
+require_once(__DIR__ . '/../../../php/Torrent.php');
+
+class FeedNameTorrent extends Torrent
+{
+	public static function bytes($data) { return parent::encode($data); }
+}
 
 /**
  * plugins/feeds/action.php builds an RSS item per torrent from one
@@ -29,6 +36,8 @@ class FeedsPubDateTest extends TestCase
 		array('3333333333333333333333333333333333333333', 'not finished', '', ''),
 	);
 	private $torrents;
+	private $sourceDocuments = array();
+	private $sourceFaults = array(false, false);
 
 	public function setUp()
 	{
@@ -36,6 +45,8 @@ class FeedsPubDateTest extends TestCase
 		// One instance runs every method; a case may change both.
 		$this->torrents = self::TORRENTS;
 		$this->sessionName = 'fake';
+		$this->sourceDocuments = array();
+		$this->sourceFaults = array(false, false);
 		@mkdir($this->base . '/profile/settings', 0700, true);
 	}
 
@@ -115,20 +126,22 @@ class FeedsPubDateTest extends TestCase
 		}
 
 		$values = array();
+		$paths = array();
+		$session = $this->base.'/session/';
+		@mkdir($session, 0700, true);
+		foreach($this->sourceDocuments as $hash=>$bytes)
+			file_put_contents($session.$hash.'.torrent', $bytes);
 		foreach ($this->torrents as $torrent) {
-			$values = array_merge($values, $this->row($torrent, $descriptions));
+			$values[] = $this->row($torrent, $descriptions);
+			$paths[] = array($torrent[0], '');
 		}
 		if ($this->daemon !== null) {
 			$this->daemon->close();
 		}
-		$xml = '<?xml version="1.0" encoding="UTF-8"?><methodResponse><params><param>'
-			. '<value><array><data>';
-		// Byte-wise, as both daemons write it: only & < > become entities, and
-		// a quote, a backslash or a byte that is not UTF-8 arrives as it is.
-		foreach($values as $value)
-			$xml .= '<value><string>' . strtr((string)$value, array('&' => '&amp;', '<' => '&lt;', '>' => '&gt;'))
-				. '</string></value>';
-		$xml .= '</data></array></value></param></params></methodResponse>';
+		$fault = array('faultCode'=>'1', 'faultString'=>'optional source unavailable');
+		$xml = HttprpcListFixture::body(array(array($values),
+			$this->sourceFaults[0] ? $fault : array($paths),
+			$this->sourceFaults[1] ? $fault : array($session)));
 		$this->daemon = SCGITransportFixture::start(
 			"Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
 			. strlen($xml) . "\r\n\r\n" . $xml);
@@ -249,8 +262,9 @@ class FeedsPubDateTest extends TestCase
 			. json_encode($items) . ' ' . substr($output, 0, 300));
 		$request = $this->daemon->request();
 		$this->assertEquals(true,
-			strpos($request['payload'], '<methodName>d.multicall</methodName>') !== false,
-			'the feed comes from d.multicall');
+			strpos($request['payload'], '<methodName>system.multicall</methodName>') !== false,
+			'the list and optional sources share one daemon request');
+		$this->assertSame('', $this->viewAsked(), 'the first list asks the all-torrents view');
 	}
 
 	const AUD = 'aud "q" \b \'a\' &c';
@@ -313,8 +327,40 @@ class FeedsPubDateTest extends TestCase
 		list($xml, $output) = $this->parsedFeed(false);
 		$this->assertTrue($xml !== null, 'the feed is well-formed XML: ' . substr($output, 0, 400));
 		if ($xml === null) return;
-		$this->assertSame("caf\u{FFFD} " . self::AUD, (string)$xml->channel->item[0]->title,
-			'the invalid byte is substituted and the rest of the name is kept');
+		$this->assertSame("caf\\xE9 " . str_replace('\\', '\\\\', self::AUD), (string)$xml->channel->item[0]->title,
+			'unknown bytes remain visible without inventing an encoding');
+	}
+
+	public function testLegacyTitlesUseOnlyMatchingMetadata()
+	{
+		$info = array('name'=>"raw\xFF", 'name.utf-8'=>'Название <&>', 'length'=>1);
+		$hash = strtoupper(sha1(FeedNameTorrent::bytes($info)));
+		$this->sourceDocuments[$hash] = FeedNameTorrent::bytes(array('info'=>$info));
+		$this->torrents = array(array($hash, "raw\xFF", '1700000000', ''));
+		list($xml, $output) = $this->parsedFeed(false);
+		$this->assertTrue($xml !== null, 'the title remains XML text: '.$output);
+		if($xml === null) return;
+		$this->assertSame('Название <&>', (string)$xml->channel->item[0]->title, 'attested alias is displayed');
+		$this->assertSame($hash, (string)$xml->channel->item[0]->guid, 'identity remains the daemon hash');
+		$this->torrents[0][1] = "different\xFF";
+		list($xml) = $this->parsedFeed(false);
+		$this->assertSame('different\\xFF', (string)$xml->channel->item[0]->title, 'a source with another raw name is ignored');
+	}
+
+	public function testOptionalSourceFaultsKeepDistinctLegacyTitles()
+	{
+		$this->torrents = array(array(str_repeat('1',40), "raw\xFE", '1700000000', ''),
+			array(str_repeat('2',40), "raw\xFF", '1700000000', ''));
+		foreach(array(array(true,false), array(false,true), array(true,true)) as $faults) {
+			$this->sourceFaults = $faults;
+			list($xml, $output) = $this->parsedFeed(false);
+			$this->assertTrue($xml !== null, 'an optional fault does not lose the feed: '.$output);
+			if($xml === null) continue;
+			$titles = array();
+			foreach($xml->channel->item as $item) $titles[] = (string)$item->title;
+			sort($titles);
+			$this->assertSame(array('raw\\xFE','raw\\xFF'), $titles, 'bytes remain distinct when metadata is unavailable');
+		}
 	}
 
 	/**
@@ -484,11 +530,11 @@ class FeedsPubDateTest extends TestCase
 	{
 		$request = $this->daemon->request();
 		$body = $request['payload'] ?? '';
-		if (strpos($body, '<methodName>d.multicall</methodName>') === false) {
-			return null;
-		}
-		preg_match_all('`<value><string>([^<]*)</string></value>`', $body, $strings);
-		return isset($strings[1][1]) ? $strings[1][1] : null;
+		$xml = new DOMDocument();
+		if(!@$xml->loadXML($body)) return null;
+		$xpath = new DOMXPath($xml);
+		$values = $xpath->query('//struct[member/name="methodName" and member/value/string="d.multicall"]/member[name="params"]/value/array/data/value/string');
+		return $values->length > 1 ? $values->item(1)->textContent : null;
 	}
 
 	private function channelTitle($output)

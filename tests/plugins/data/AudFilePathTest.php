@@ -2,6 +2,21 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
+require_once(__DIR__ . '/../../php/HttprpcListFixture.php');
+
+/** Preserve the real system.multicall result slots, including optional name evidence. */
+class AudFilePathReplies extends FakeRtorrentMethodReplies
+{
+	public function __invoke($request, $methods)
+	{
+		$values = parent::__invoke($request, $methods);
+		if(strpos($request, '<methodName>system.multicall</methodName>') === false)
+			return $values;
+		$body = HttprpcListFixture::body(array_map(function($value) { return array($value); }, $values));
+		// Keep this witness's literal quote/backslash spelling on the wire.
+		return new FakeRtorrentRawReply(str_replace(array('&quot;', '&apos;'), array('"', "'"), $body));
+	}
+}
 
 /**
  * AUD-ESC-06: the plugins that open one file of a download -- data ("Get
@@ -60,9 +75,9 @@ class AudFilePathTest extends TestCase
 		$answers = new FakeRtorrentPerCall(array_map(function ($path) {
 			return array($path);
 		}, $frozen));
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies(array(
+		$this->daemon = new FakeRtorrentDaemon(new AudFilePathReplies(array(
 			'f.get_frozen_path' => $answers, 'f.frozen_path' => $answers,
-		)), $this->base . '/calls.log');
+		)), $this->base . '/calls.log', false, array(__FILE__));
 		return PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
 	}
 
@@ -73,9 +88,14 @@ class AudFilePathTest extends TestCase
 				array('get' => array('hash' => self::HASH, 'no' => '0')));
 			$this->assertSame(self::PAYLOAD, $out, $state . ' download: "Get data" sends the file: ' . $out . $err);
 			$this->assertSame(0, $exit, $state . ' download: the script ends cleanly: ' . $err);
+			$this->assertSame($state === 'open' ? 1 : 2, count($this->daemon->bodies()),
+				'optional download-label evidence stays in the existing path request');
 		}
+		$lifecycle = array_values(array_filter($this->daemon->calls(), function($method) {
+			return in_array($method, array('d.open', 'f.get_frozen_path', 'd.close'), true);
+		}));
 		$this->assertSame(array('d.open', 'f.get_frozen_path', 'd.close'),
-			array_slice($this->daemon->calls(), -3),
+			array_slice($lifecycle, -3),
 			'a closed download is opened only to read the path, and closed again');
 	}
 

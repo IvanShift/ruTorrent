@@ -1,23 +1,15 @@
 <?php
 require_once( '../../php/util.php' );
 require_once( '../../php/settings.php' );
+require_once(__DIR__.'/directorylist.php');
 eval(FileUtil::getPluginConf("_getdir"));
-
-function compareEntries( $a, $b )
-{
-	if($a=='..')
-		return( -1 );
-	if($b=='..')
-		return( 1 );
-	return( strcmp(mb_strtolower($a), mb_strtolower($b)) );
-}
 
 $theSettings = rTorrentSettings::get();
 $requestedDir = $_REQUEST['dir'] ?? null;
 
 if(is_string($requestedDir) && strlen($requestedDir))
 {
-	$dir = rawurldecode($requestedDir);
+	$dir = $requestedDir;
 	if(
 			strpos($dir, "\0") !== false || !$theSettings->correctDirectory($dir, true, true) ||
 			(($theSettings->uid>=0) && $checkUserPermissions && !Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))
@@ -34,7 +26,9 @@ else
 }
 
 $dir = FileUtil::addslash($dir);
-$items = array_diff(scandir($dir, SCANDIR_SORT_NONE), ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
+$items = rDirectoryList::scan($dir);
+$error = $items === null;
+$items = array_diff($items ?? array(), ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
 $directories = array_filter($items, function ($item) {
 	global $dir, $theSettings, $checkUserPermissions;
 	$path = $dir.$item;
@@ -47,13 +41,16 @@ $files = (isset($_REQUEST['withfiles']) && $_REQUEST['withfiles'] === '1') ? arr
 	return is_file($path) && is_readable($path) && $theSettings->correctDirectory($path, true);
 }) : array();
 
-usort($directories, "compareEntries");
-usort($files, "compareEntries");
+usort($directories, array('rDirectoryList', 'compare'));
+usort($files, array('rDirectoryList', 'compare'));
 
 header("Content-Type: application/json");
-echo JSON::safeEncode(array(
-	"path" => $dir,
-	"directories" => array_values($directories),
-	"files" => array_values($files),
-));
+$output = array(
+	"path" => FileUtil::displayPath($dir),
+	"directories" => array_map(array('FileUtil', 'displayPath'), $directories),
+	"files" => array_map(array('FileUtil', 'displayPath'), $files),
+);
+if($error)
+	$output['error'] = 'directory-unavailable';
+echo JSON::safeEncode($output);
 ?>

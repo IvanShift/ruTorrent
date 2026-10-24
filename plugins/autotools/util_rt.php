@@ -22,10 +22,10 @@ function rtIsDaemon( $args )
 function rtDaemon( $php, $script, $args )
 {
 	if( !$php || $php == '' ) $php = 'php';
-	$params = escapeshellarg( $script ).' --daemon';
+	$params = Utility::escapeShellArg( $script ).' --daemon';
 	foreach( $args as $arg )
-		$params .= ' '.escapeshellarg( $arg );
-	exec( escapeshellarg($php).' '.$params.' > /dev/null 2>/dev/null &', $out, $ret );
+		$params .= ' '.Utility::escapeShellArg( $arg );
+	exec( Utility::escapeShellArg($php).' '.$params.' > /dev/null 2>/dev/null &', $out, $ret );
 	exit( (int)$ret );
 }
 
@@ -341,7 +341,7 @@ class AutoToolsFileTransaction
     {
         $path = $root . '/' . $record['id'] . '.nonmove.json';
         $temp = $path . '.tmp';
-        $body = json_encode($record);
+        $body = JSON::encodeBytes($record);
         if ($body === false || @file_put_contents($temp, $body, LOCK_EX) === false ||
             !@rename($temp, $path)) return false;
         return true;
@@ -869,7 +869,7 @@ class AutoToolsFileTransaction
             if (substr($entry, -13) === '.nonmove.json') $paths[] = $root . '/' . $entry;
         $usable = true;
         foreach ($paths as $path) {
-            $record = json_decode(@file_get_contents($path), true);
+            $record = JSON::decodeBytes(@file_get_contents($path));
             if (!self::validRecord($record) ||
                 $path !== $root . '/' . $record['id'] . '.nonmove.json' ||
                 !self::payloadDirectory($record['dst'])) {

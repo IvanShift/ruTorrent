@@ -1,4 +1,7 @@
 <?php
+require_once(__DIR__.'/../../../php/utility/json.php');
+// Extracted classes omit the production bootstrap which supplies Utility.
+require_once(__DIR__.'/../../../php/utility/utility.php');
 
 // The AutoTools finished hook for Copy, HardLink and SoftLink (hook_lib.php):
 // rTorrent waits for it in execute.capture, so it never waits for the journal
@@ -214,8 +217,10 @@ $suite->test('a deferred hook whose session copy never appears is refused in the
         strictAssertSame(array(HOOK_HASH, 'x-autotools-outcome'), array_slice($custom->params, 0, 2),
             'the outcome is kept in the download\'s custom key');
         $outcome = json_decode(rawurldecode($custom->params[2]), true);
+        strictAssertSame(array(2, 'base64'), array($outcome['version'], $outcome['directory_encoding']),
+            'the outcome explicitly identifies its reversible directory representation');
         strictAssertSame(array('session-copy-unreadable', $message->params[1], $root . '/dl', false),
-            array($outcome['reason'], $outcome['message'], $outcome['directory'], $outcome['while_stopped']),
+            array($outcome['reason'], $outcome['message'], base64_decode($outcome['directory'], true), $outcome['while_stopped']),
             'with the reason, the message and the directory it is about');
         strictAssertSame(array(), hookRequests($root), 'the request retires');
         strictAssertSame(false, file_exists($root . '/fin/payload.bin'), 'nothing is published');
@@ -443,6 +448,41 @@ $suite->test('a deferred hook is performed in a session directory that glob() wo
                 . ' recover.php performs the Copy within 60 s'), FileUtil::$messages,
                 'only the deferral is logged: ' . $name);
         } finally { hookClean($root); }
+    }
+});
+
+
+$suite->test('deferred hook preserves raw argv and copies the exact legacy filename', function () {
+    $root = hookFixture();
+    $holder = null;
+    try {
+        $name = "payload\xFF.bin";
+        rename($root . '/dl/payload.bin', $root . '/dl/' . $name);
+        file_put_contents($root . '/dl/payload\\xFF.bin', 'literal neighbor');
+        file_put_contents($root . '/session/' . HOOK_HASH . '.torrent',
+            'd4:infod6:lengthi13e4:name' . strlen($name) . ':' . $name . '12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\x01", 20) . 'ee');
+        $args = hookArgs($root); $args[1] = $root . '/dl/' . $name; $args[2] = $args[5] = $name;
+        $args[4] = rawurlencode("label\xFE");
+        rAutoTools::$config['skip_move_for_files'] = '/\\.bin$/';
+        strictAssertSame('', AutoToolsFinishedHook::hook($args), 'the configured byte-compatible file filter still excludes the file');
+        strictAssertSame(false, file_exists($root . '/fin/' . $name), 'an invalid UTF-8 filename does not bypass its exclusion');
+        rAutoTools::$config['skip_move_for_files'] = '';
+        $holder = hookHoldJournal($root);
+        strictAssertSame('', AutoToolsFinishedHook::hook($args), 'the busy owner defers the operation');
+        $requests = hookRequests($root);
+        strictAssertSame(1, count($requests), 'raw argv is durable');
+        $request = JSON::decodeBytes(file_get_contents($requests[0]));
+        strictAssertSame($args, $request['args'], 'all original argument bytes survive persistence');
+        hookReleaseJournal($holder); $holder = null;
+        AutoToolsFinishedHook::performDeferred();
+        strictAssertSame('payload bytes', @file_get_contents($root . '/fin/' . $name), 'fresh recovery selects the exact raw filename');
+        strictAssertSame(false, file_exists($root . '/fin/payload\\xFF.bin'), 'the visible escape spelling is not an action path');
+        strictAssertSame('literal neighbor', file_get_contents($root . '/dl/payload\\xFF.bin'), 'the neighboring source remains intact');
+        strictAssertSame(array(), hookRequests($root), 'the completed request retires');
+    } finally {
+        if ($holder !== null) hookReleaseJournal($holder);
+        hookClean($root);
     }
 });
 

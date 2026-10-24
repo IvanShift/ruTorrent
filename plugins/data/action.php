@@ -8,8 +8,9 @@ if(isset($_REQUEST['hash']) && isset($_REQUEST['no']))
 {
 	// The shared reader opens a closed download only to read the path and
 	// returns it in the daemon's own bytes (AUD-ESC-06).
-	$filename = rTorrent::getFilePath($_REQUEST['hash'], $_REQUEST['no']);
-	if(($filename !== false) && SendFile::send($filename))
+	$displayName = null;
+	$filename = rTorrent::getFilePath($_REQUEST['hash'], $_REQUEST['no'], $displayName);
+	if(($filename !== false) && SendFile::send($filename, null, $displayName))
 		exit;
 }
 

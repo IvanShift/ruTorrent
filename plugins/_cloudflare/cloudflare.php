@@ -26,7 +26,7 @@ class rCloudflare
 
 	public static function is_module_present()
 	{
-		exec( escapeshellarg(Utility::getExternal('python'))." -c \"import cloudscraper\" > /dev/null 2>&1", $output, $error_code);
+		exec( Utility::escapeShellArg(Utility::getExternal('python'))." -c \"import cloudscraper\" > /dev/null 2>&1", $output, $error_code);
 		return($error_code === 0);
 	}
 
@@ -52,8 +52,8 @@ class rCloudflare
 			{
 				$recaptcha = ",recaptcha={\"provider\": \"$cloudscraper_recaptcha[provider]\",\"api_key\": \"$cloudscraper_recaptcha[api_key]\",\"username\": \"$cloudscraper_recaptcha[username]\",\"password\": \"$cloudscraper_recaptcha[password]\"},delay=15";
 			}
-			$code = escapeshellarg(Utility::getExternal('python'))." -c ".
-				escapeshellarg("import cloudscraper\nimport json\ntokens, user_agent = cloudscraper.get_tokens({$url}{$proxies}{$recaptcha})\nprint(json.dumps([tokens,user_agent]))");
+			$code = Utility::escapeShellArg(Utility::getExternal('python'))." -c ".
+				Utility::escapeShellArg("import cloudscraper\nimport json\ntokens, user_agent = cloudscraper.get_tokens({$url}{$proxies}{$recaptcha})\nprint(json.dumps([tokens,user_agent]))");
 			$data = shell_exec($code);
 			if($data &&
 				($data = json_decode($data,true)) &&

@@ -63,7 +63,7 @@ describe.each([
   });
 });
 
-test.each([false, true])("getfiles keeps httprpc %s routing and mapped commands", (enabled) => {
+test.each([false, true])("getfiles uses the server name resolver with httprpc %s and mapped commands", (enabled) => {
   loadUI(enabled);
   const hash = "A".repeat(40);
   const added = "f.get_extra=";
@@ -74,17 +74,10 @@ test.each([false, true])("getfiles keeps httprpc %s routing and mapped commands"
       theRequestManager.map("fls", theRequestManager.fls.count + index)))
     .join("");
   const stub = new rTorrentStub(`?action=getfiles&hash=${hash}`);
-  if (enabled) {
-    expect(stub.mountPoint).toBe("plugins/httprpc/action.php");
-    expect(stub.contentType).toBe("application/x-www-form-urlencoded");
-    expect(stub.content).toBe(`mode=fls&hash=${hash}${expectedCommands}`);
-    expect(stub.commands).toHaveLength(0);
-  } else {
-    expect(stub.contentType).toBe("text/xml");
-    expect(stub.content).toContain("<methodName>f.multicall</methodName>");
-    expect(stub.content).toContain(added);
-    expect(stub.commands).toHaveLength(1);
-  }
+  expect(stub.mountPoint).toBe("plugins/httprpc/action.php");
+  expect(stub.contentType).toBe("application/x-www-form-urlencoded");
+  expect(stub.content).toBe(`mode=fls&hash=${hash}${expectedCommands}`);
+  expect(stub.commands).toHaveLength(0);
 });
 
 test("a missing server helper reports its HTTP 404 to the caller", () => {

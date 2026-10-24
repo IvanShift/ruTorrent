@@ -6,7 +6,7 @@ final class CreateSeeding
     public static function publish($torrent, array $request, $profileMask, $origin)
     {
         $fname = FileUtil::getUniqueUploadedFilename($torrent->info['name'] . '.torrent');
-        $path_edit = trim($request['path_edit']);
+        $path_edit = $request['path_edit'];
         if (is_dir($path_edit)) $path_edit = FileUtil::addslash($path_edit);
         if (rTorrentSettings::get()->correctDirectory($path_edit)) {
             $path_edit = dirname($path_edit);

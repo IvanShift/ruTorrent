@@ -83,7 +83,7 @@ describe("mobile row filters", () => {
     plugin.torrent = undefined;
     plugin.statusFilterOptions = [];
     plugin.showAlert = jest.fn();
-    for (const label of Object.keys(plugin.labelIds)) if (label !== '') delete plugin.labelIds[label];
+    for (const label of Object.keys(plugin.labelIds)) if (label !== labelId('')) delete plugin.labelIds[label];
     plugin.nextLabelId = 1;
   });
 
@@ -93,7 +93,7 @@ describe("mobile row filters", () => {
     plugin.processTorrents({ [hash]: row({ label }) }, true);
     expect(() => plugin.setFilter('label', label)).not.toThrow();
     expect($('#' + hash).css('display')).not.toBe('none');
-    expect(typeof plugin.labelIds[label]).toBe('number');
+    expect(typeof plugin.labelIds[labelId(label)]).toBe('number');
   });
 
   it("counts and filters a tracker whose host is an inherited object key", () => {

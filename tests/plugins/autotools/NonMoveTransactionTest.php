@@ -1,4 +1,7 @@
 <?php
+require_once(__DIR__.'/../../../php/utility/json.php');
+// Extracted classes omit the production bootstrap which supplies Utility.
+require_once(__DIR__.'/../../../php/utility/utility.php');
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
 eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
 class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; } }
@@ -1319,4 +1322,42 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $mode)
             strictAssertSame(true, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'), 'no receipt is held');
         } finally { strictRemoveTree($root); }
     });
+
+$suite->test('legacy byte paths survive committed Copy receipt recovery without replaying payload', function () {
+    $root = txFixture();
+    try {
+        $src = $root . "/source\xFF"; $dst = $root . "/destination\xFE";
+        mkdir($src, 0700); mkdir($dst, 0700);
+        $files = array("raw\xFD", 'raw\\xFD');
+        file_put_contents($src . '/' . $files[0], 'binary source');
+        file_put_contents($src . '/' . $files[1], 'literal source');
+        $context = txCallerContext($root);
+        $context['sourceBase'] = $src . '/' . $files[0];
+        $context['destination'] = $dst . '/';
+        strictAssertSame(true, rtOpFiles($files, $src, $dst, 'Copy', false, $context), 'raw paths publish');
+        $paths = glob($root . '/session/.autotools-file-jobs/*.nonmove.json');
+        strictAssertSame(1, count($paths), 'one exact caller receipt waits for acknowledgement');
+        $record = JSON::decodeBytes(file_get_contents($paths[0]));
+        strictAssertSame($context, $record['context'], 'caller paths retain original bytes');
+        strictAssertSame($files, $record['files'], 'raw and literal escape filenames stay distinct');
+        $inode = fileinode($dst . '/' . $files[0]);
+        file_put_contents($src . '/' . $files[0], 'changed source');
+        txWriteSidecar($context, $context['destination']);
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array('0', '0'));
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_SET'));
+        rXMLRPCRequest::queue('d.save_full_session', true, false, array('0'));
+        rXMLRPCRequest::queue('branch', true, false, array('AUTOTOOLS_XDEST_ALREADY'));
+        strictAssertSame(true, AutoToolsFileTransaction::recoverAll($root . '/session/.autotools-file-jobs'),
+            'fresh recovery reads the byte document and acknowledges metadata');
+        strictAssertSame('binary source', file_get_contents($dst . '/' . $files[0]), 'recovery does not repeat the Copy');
+        strictAssertSame('literal source', file_get_contents($dst . '/' . $files[1]), 'literal neighbor remains separate');
+        strictAssertSame($inode, fileinode($dst . '/' . $files[0]), 'the published inode remains unchanged');
+        strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'), 'acknowledged receipt retires');
+        $stages = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom');
+        strictAssertSame($context['sourceBase'], $stages[0]['commands'][0]->params[2], 'RPC source is the original raw path');
+        strictAssertSame($context['destination'], $stages[0]['commands'][1]->params[2], 'RPC destination is the original raw path');
+    } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
+});
+
 exit($suite->run());

@@ -230,7 +230,8 @@ if(!function_exists('getCmd'))
 }
 if(!class_exists('Utility'))
 {
-	class Utility { public static function getPHP() { return(PHP_BINARY); } }
+	require_once(__DIR__.'/../../../php/utility/utility.php');
+	$GLOBALS['pathToExternals']['php'] = PHP_BINARY;
 }
 if(!class_exists('User'))
 {
@@ -1077,6 +1078,9 @@ class ErasedataProductionMirror
 		// presence.php decides absence with this core leaf.
 		$copies['php/utility/hashfault.php'] = 'php/utility/hashfault.php';
 		$copies['php/utility/permission.php'] = 'php/utility/permission.php';
+		$copies['php/utility/utility.php'] = 'php/utility/utility.php';
+		$copies['php/utility/json.php'] = 'php/utility/json.php';
+		$copies['php/utility/utf.php'] = 'php/utility/utf.php';
 		@mkdir($root.'/php/utility', 0777, true);
 		foreach($copies as $relative => $target)
 		{
@@ -1779,16 +1783,14 @@ class ErasedataProductionMirror
 			."\treturn(@is_file(erasedataMirrorDaemonDir().'/config.json'));\n"
 			."}\n"
 			."function getCmd(\$command) { return(\$command); }\n"
-			."class Utility { public static function getPHP() { return(PHP_BINARY); } }\n"
+			."require_once __DIR__.'/utility/utility.php';\n"
+			."\$pathToExternals = array('php' => PHP_BINARY);\n"
 			."class User { public static function getUser() { return(".$user."); } }\n"
 			."class CachedEcho\n"
 			."{\n"
 			."\tpublic static function send(\$content, \$type = 'text/html') { echo \$content; }\n"
 			."}\n"
-			."class JSON\n"
-			."{\n"
-			."\tpublic static function safeEncode(\$value) { return(json_encode(\$value)); }\n"
-			."}\n"
+			."require_once __DIR__.'/utility/json.php';\n"
 			."class rTorrentSettings\n"
 			."{\n"
 			."\tprivate static \$instance = null;\n"

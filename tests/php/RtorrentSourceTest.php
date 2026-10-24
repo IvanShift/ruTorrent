@@ -73,6 +73,27 @@ class RtorrentSourceTest
 		});
 	}
 
+	public function testKnownSourcePathsReuseTheOwnerWithoutAnyAdditionalRpc()
+	{
+		$this->withSourceDirectory(function($dir) {
+			$tied = $dir.'tied.torrent';
+			file_put_contents($tied, 'd4:info'.$this->rawInfo().'e');
+			$sourcePath = null;
+			$torrent = rTorrent::getSource(self::INFO_HASH, $sourcePath, array($dir, $tied));
+			strictAssertTrue($torrent instanceof Torrent, 'known tied paths use the ordinary metainfo reader');
+			strictAssertSame($tied, $sourcePath, 'known paths retain the readable tied-file fallback');
+			strictAssertSame(self::INFO_HASH, $torrent->hash_info(), 'known paths retain the source identity');
+			$session = $dir.self::INFO_HASH.'.torrent';
+			file_put_contents($session, 'd4:info'.$this->rawInfo().'e');
+			strictAssertSame($session, rTorrent::getSourcePath(self::INFO_HASH, array($dir, $tied)), 'the session copy still has precedence');
+			foreach(array(false, array(), array($dir), array($dir, 1), array($dir, '/missing-source')) as $paths) {
+				if($paths === array($dir, '/missing-source')) unlink($session);
+				strictAssertSame(false, rTorrent::getSource(self::INFO_HASH, $sourcePath, $paths), 'failed known paths are refused without a fallback network lookup');
+			}
+			strictAssertSame(array(), rXMLRPCRequest::$requests, 'known source acquisition makes no daemon request');
+		});
+	}
+
 	public function testRawMagnetMetadataIsReadAsTheInfoDictionaryItContains()
 	{
 		$this->withSourceDirectory(function($dir) {

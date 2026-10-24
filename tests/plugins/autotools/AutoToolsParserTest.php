@@ -197,6 +197,13 @@ class AutoToolsParserTest extends TestCase
 	// answers by method name: rTorrent 0.16.25 whose default directory is
 	// <base>/dl, and a multi-file download in <base>/dl/Rock "n" Roll\x/Album,
 	// plus $replies. Returns the label it set, as the d.set_custom1 value sent.
+	public function testAutoLabelPreservesUnknownDirectoryBytesWithoutCharsetGuessing()
+	{
+		$directory = $this->base.'/dl/raw'."\xFF".'/Album';
+		$label = $this->autoLabel('{DIR}', array('d.get_directory'=>array($directory), 'd.directory'=>array($directory)));
+		$this->assertSame('raw%FF', $label, 'the insert hook stores the original directory bytes as custom1');
+	}
+
 	private function autoLabel($template, array $replies)
 	{
 		$root = $this->base . '/dl';

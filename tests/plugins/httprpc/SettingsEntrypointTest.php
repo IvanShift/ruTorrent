@@ -60,7 +60,8 @@ class rXMLRPCRequest {
     }
     public function addCommand($command) { $this->commands[] = $command->method; }
     public function getCommandsCount() { return count($this->commands); }
-    public function success($trusted = true) {
+    public function success($trusted = true) { return $this->run($trusted) && !$this->fault; }
+    public function run($trusted = true) {
         if(getenv("HTTPRPC_TEST_FAILURE") === "socket-rollback") {
             file_put_contents(getenv("HTTPRPC_TEST_TRACE"),
                 "RPC[".implode(",", $this->commands)."];", FILE_APPEND);

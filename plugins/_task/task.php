@@ -93,11 +93,11 @@ class rTask
 						fputs($sh,'if [ $last -ne 0 ] ; then '."\n");
 					else
 					if($cmd[0]=='>')
-						fputs($sh,'echo '.escapeshellarg(substr($cmd,1)).' >> "${dir}"/log'."\n");
+						fputs($sh,'echo '.Utility::escapeShellArg(substr($cmd,1)).' >> "${dir}"/log'."\n");
 					else
 					{
 						if($flags & self::FLG_ECHO_CMD)
-							fputs($sh,'echo '.escapeshellarg($cmd).' >> "${dir}"/log'."\n");
+							fputs($sh,'echo '.Utility::escapeShellArg($cmd).' >> "${dir}"/log'."\n");
                                 	        if($flags & self::FLG_NO_ERR)
 							fputs($sh,$cmd.' >> "${dir}"/log'."\n");
 						else
@@ -117,10 +117,10 @@ class rTask
 					return(self::startFailure($dir, $this->id, 'supervisor unavailable; task not started'));
 				}
 				$launcher = $dir.'/launch.sh';
-				$line = 'exec '.escapeshellarg(RTASK_SUPERVISOR_HELPER).' '.escapeshellarg($dir).' '.
-					escapeshellarg(Utility::getPHP()).' '.
-					escapeshellarg(dirname(__FILE__).'/notify.php').' '.
-					escapeshellarg(User::getUser())."\n";
+				$line = 'exec '.Utility::escapeShellArg(RTASK_SUPERVISOR_HELPER).' '.Utility::escapeShellArg($dir).' '.
+					Utility::escapeShellArg(Utility::getPHP()).' '.
+					Utility::escapeShellArg(dirname(__FILE__).'/notify.php').' '.
+					Utility::escapeShellArg(User::getUser())."\n";
 				if(file_put_contents($launcher, '#!/bin/sh'."\n".$line)===false || !@chmod($launcher, 0755))
 				{
 					return(self::startFailure($dir, $this->id, 'could not write supervisor launcher; task not started'));
@@ -353,6 +353,25 @@ class rTask
 			$ret['status'] = 255;
 			self::processLog($dir, 'errors', $ret, false, false, false);
 		}
+		// Keep task parameters and protocol output intact; only the UI reads this projection.
+		$display = array();
+		try
+		{
+			if(@is_array($ret['params']) && isset($ret['params']['arg']) && UTF::isString($ret['params']['arg']))
+			{
+				$arg = UTF::display($ret['params']['arg']);
+				if($arg !== $ret['params']['arg']) $display['arg'] = $arg;
+			}
+		}
+		catch(Throwable $error) {}
+		foreach(array('log', 'errors') as $field)
+		{
+			$lines = $ret[$field];
+			foreach($lines as $index=>$line)
+				if(UTF::isString($line)) $lines[$index] = UTF::display($line);
+			if($lines !== $ret[$field]) $display[$field] = $lines;
+		}
+		if($display) $ret['display'] = $display;
 		return($ret);
 	}
 
@@ -390,7 +409,7 @@ class rTask
 			$params.=" &";
 		if($flags & self::FLG_RUN_AS_WEB)
 		{
-			$cmd = ($flags & self::FLG_RUN_AS_CMD) ? '-c '.escapeshellarg($cmd) : escapeshellarg($cmd);
+			$cmd = ($flags & self::FLG_RUN_AS_CMD) ? '-c '.Utility::escapeShellArg($cmd) : Utility::escapeShellArg($cmd);
 			exec('sh '.$cmd.$params, $output, $ret);
 		}
 		else
@@ -452,8 +471,8 @@ class rTask
 				// A missing native helper cannot safely fall back to numeric kill.
 				if(!is_file(RTASK_KILL_HELPER) || !is_executable(RTASK_KILL_HELPER))
 					return(self::failKill($dir, 'pidfd helper unavailable; no signal sent'));
-				$cmd = escapeshellarg(RTASK_KILL_HELPER).' '.$pid.' '.
-					escapeshellarg($dir.'/pid.identity').' --supervisor-cancel '.escapeshellarg(RTASK_SUPERVISOR_HELPER);
+				$cmd = Utility::escapeShellArg(RTASK_KILL_HELPER).' '.$pid.' '.
+					Utility::escapeShellArg($dir.'/pid.identity').' --supervisor-cancel '.Utility::escapeShellArg(RTASK_SUPERVISOR_HELPER);
 				$result = self::run($cmd, ($flags & self::FLG_RUN_AS_WEB) | self::FLG_WAIT | self::FLG_RUN_AS_CMD);
 				if($result===3 && self::supervisorMarker($dir, 'supervisor.complete'))
 					return(self::kill($taskNo, $flags));

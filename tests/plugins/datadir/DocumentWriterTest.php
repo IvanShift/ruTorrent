@@ -162,4 +162,36 @@ SCRIPT;
     }
 });
 
+
+$suite->test('the historical large document still fits and oversized byte encoding refuses before staging', function () {
+    $dir = documentWriterFixture();
+    try {
+        $script = <<<'SCRIPT'
+require 'plugins/datadir/moveintent.php';
+$root = getenv('DOCUMENT_DIR'); $result = array();
+foreach (array('valid', 'raw') as $mode) {
+    $document = array('version' => 2, 'files' => array());
+    for ($i = 0; $i < 100000; $i++) $document['files'][] = array(
+        'path' => str_repeat('x', 80) . $i . ($mode === 'raw' ? "\xFF" : 'a'), 'identity' => '12345678:123456789');
+    $path = $root . '/jobs/' . $mode . '.json';
+    try { DataDirDocument::publish($path, $document, true, 'job'); $result[$mode] = 'published'; }
+    catch (RuntimeException $error) { $result[$mode] = $error->getMessage(); }
+    unset($document);
+}
+$result['files'] = array_values(array_diff(scandir($root . '/jobs'), array('.', '..')));
+echo json_encode($result);
+SCRIPT;
+        $process = proc_open(array(PHP_BINARY, '-d', 'memory_limit=128M', '-r', $script),
+            array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes, testFindRepoRoot(), array_merge($_ENV, array('DOCUMENT_DIR' => $dir)));
+        if (!is_resource($process)) throw new RuntimeException('large document child unavailable');
+        $output = stream_get_contents($pipes[1]); $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]); fclose($pipes[2]); $status = proc_close($process);
+        strictAssertSame(0, $status, 'the existing 128 MiB worker finishes without an allocation failure: ' . $errors);
+        strictAssertSame('', $errors, 'the bounded refusal emits no PHP failure');
+        strictAssertSame(array('valid' => 'published', 'raw' => 'job-too-large', 'files' => array('valid.json')),
+            json_decode($output, true), 'old valid workload passes while the 16 MiB byte document limit refuses before staging');
+    } finally { strictRemoveTree($dir); }
+});
+
 exit($suite->run());

@@ -117,7 +117,7 @@ class rAutoTools
 			}
 			else if( $parts[0] == "path_to_finished" )
 			{
-				$this->path_to_finished = $parts[1];
+				$this->path_to_finished = rawurldecode($parts[1]);
 				if(!rTorrentSettings::get()->correctDirectory($this->path_to_finished)) {
                     $this->path_to_finished = '';
                     $this->finishedPathRefused = true;
@@ -135,7 +135,7 @@ class rAutoTools
 			}
 			else if( $parts[0] == "path_to_watch" )
 			{
-				$this->path_to_watch = $parts[1];
+				$this->path_to_watch = rawurldecode($parts[1]);
 				if(!rTorrentSettings::get()->correctDirectory($this->path_to_watch))
 					$this->path_to_watch = '';
 			}
@@ -162,10 +162,10 @@ class rAutoTools
 			'LabelTemplate' => (string)$this->label_template,
 			'EnableMove' => intval($this->enable_move),
 			'FileOpType' => (string)$this->fileop_type,
-			'PathToFinished' => (string)$this->path_to_finished,
+			'PathToFinished' => FileUtil::displayPath((string)$this->path_to_finished),
 			'SkipMoveForFiles' => (string)$this->skip_move_for_files,
 			'EnableWatch' => intval($this->enable_watch),
-			'PathToWatch' => (string)$this->path_to_watch,
+			'PathToWatch' => FileUtil::displayPath((string)$this->path_to_watch),
 			'MoveFilter' => (string)$this->automove_filter,
 			'WatchStart' => intval($this->watch_start),
 			'AddLabel' => intval($this->addLabel),
@@ -237,8 +237,9 @@ class rAutoTools
 			FileUtil::toLog('autotools: completion mail refused: .mailto missing TO');
 			return false;
 		}
-		$subject = str_replace('{TORRENT}', $torrentName, $fields['SUBJECT']);
-		$message = str_replace('{TORRENT}', $torrentName, implode('', $lines));
+		$displayName = UTF::display($torrentName);
+		$subject = str_replace('{TORRENT}', $displayName, $fields['SUBJECT']);
+		$message = str_replace('{TORRENT}', $displayName, implode('', $lines));
 		$headers = 'From: ' . $fields['FROM'] . "\r\n";
 		if($fields['CC'] !== '') $headers .= 'CC: ' . $fields['CC'] . "\r\n";
 		if($fields['BCC'] !== '') $headers .= 'BCC: ' . $fields['BCC'] . "\r\n";

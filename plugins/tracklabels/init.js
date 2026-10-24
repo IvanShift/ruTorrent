@@ -22,17 +22,17 @@ catlist.refreshPanel.plabel = (attribs) => plabelEntries(attribs)
 	.map(([labelId, aa]) => [
 		labelId,
 		aa,
-		labelId.startsWith('clabel__') ? labelId.substring(8) : 'nlb'
+		labelValueFromId(catlist.torrentLabelTree, labelId)
 	])
-	.map(([labelId, a, label]) => [
-		labelId,
-		labelId === 'plabel_all'
+	.map(([id, a, label]) => [
+		id,
+		id === 'plabel_all'
 		? a
 		: {
 			...a,
 			icon: 'url:'
 				+ plugin.imageURI('label', label)
-				+ (plugin.imageEditSuffix.label[label] ?? '')
+				+ (plugin.imageEditSuffix.label[labelId(label)] ?? '')
 
 	}]);
 
@@ -85,10 +85,10 @@ catlist.contextMenuEntries = function(panelId, labelId) {
 	if (plugin.canChangeMenu() && ['ptrackers', 'plabel'].includes(panelId)) {
 		if (labelId !== `${panelId}_all`) {
 			const lbl = panelId === 'plabel'
-				? (labelId.startsWith('clabel__') ? labelId.substring(8) : 'nlb')
+				? labelValueFromId(catlist.torrentLabelTree, labelId)
 				: labelId.substring(1);
 			return entries.concat([
-				[theUILang.EditIcon, () => theWebUI.showTracklabelsDialog(lbl)]
+				[theUILang.EditIcon, () => theWebUI.showTracklabelsDialog(lbl, panelId === 'plabel' ? 'label' : 'tracker')]
 			]);
 		}
 	}
@@ -96,8 +96,10 @@ catlist.contextMenuEntries = function(panelId, labelId) {
 }
 
 
-theWebUI.showTracklabelsDialog = function(lbl) {
-	$(`#${plugin.dialogId} input[type=text]`).val(lbl);
+theWebUI.showTracklabelsDialog = function(lbl, target = null) {
+	const input = $(`#${plugin.dialogId} input[type=text]`);
+	setLabelInput(input, lbl);
+	input.data('iconTarget', target);
 	theDialogManager.show(plugin.dialogId);
 }
 
@@ -137,7 +139,7 @@ theWebUI.rebuildTrackersLabels = function()
 }
 
 plugin.imageURI = function (target, label, fetchMissing = true) {
-	const uri = `plugins/tracklabels/action.php?${target}=${encodeURIComponent(label)}`;
+	const uri = `plugins/tracklabels/action.php?${target}=${target === 'label' ? labelQuery(label) : encodeURIComponent(label)}`;
 	if (target === 'tracker' && fetchMissing && !plugin.faviconDisposed && !plugin.faviconRequests.has(label)) {
 		plugin.faviconRequests.add(label);
 		const request = new XMLHttpRequest();
@@ -227,10 +229,13 @@ plugin.onLangLoaded = function() {
 	const formEl = $(`#${eid} form`)[0];
 
 	const validFormData = (del) => {
-		const label = labelTxt.val();
+		const value = getLabelInput(labelTxt);
+		const label = labelDisplay(value);
 		const formData = new FormData(formEl);
 		const valid = label && (del || formData.get('uploadfile')?.size);
-		const trackerTarget = label.includes('.') && !label.includes('/');
+		const selectedTarget = labelTxt.data('labelText') === labelTxt.val() ? labelTxt.data('iconTarget') : null;
+		const trackerTarget = selectedTarget === 'tracker' ||
+			(!selectedTarget && typeof value === 'string' && label.includes('.') && !label.includes('/'));
 		if (valid) {
 			if (trackerTarget) {
 				formData.delete('label');
@@ -251,6 +256,7 @@ plugin.onLangLoaded = function() {
 		delBtn.prop('disabled', !validFormData(true));
 	};
 	labelTxt.keyup(updateButtons).change(updateButtons);
+	labelTxt.on('input.tracklabelsTarget', function() { $(this).removeData('iconTarget'); });
 	$(`#${eid} input[name=uploadfile]`).change(updateButtons);
 
 	const sendForm = (del) => {
@@ -260,7 +266,8 @@ plugin.onLangLoaded = function() {
 			submitBtn.prop('disabled', true);
 			const trkTarget = formData.has('tracker');
 			const target = trkTarget ? 'tracker' : 'label';
-			const label = formData.get(target);
+			const label = trkTarget ? formData.get(target) : getLabelInput(labelTxt);
+			const identity = trkTarget ? label : labelId(label);
 			const uri = plugin.imageURI(target, label, false);
 			formData.delete(target);
 			const request = new XMLHttpRequest();
@@ -269,7 +276,7 @@ plugin.onLangLoaded = function() {
 					// hide dialog if upload successful
 					theDialogManager.hide(plugin.dialogId);
 					// show uploaded image
-					plugin.imageEditSuffix[target][label] = `&t=${Date.now()}`;
+					plugin.imageEditSuffix[target][identity] = `&t=${Date.now()}`;
 					if (trkTarget) {
 						catlist.refreshPanel.ptrackers();
 					} else {
@@ -295,7 +302,7 @@ plugin.onLangLoaded = function() {
 	theDialogManager.setHandler(plugin.dialogId, 'beforeShow', function()
 	{
 		$(`#${eid}-datalist`).empty().append(
-			...[...catlist.torrentLabelTree.torrentLabels.keys()]
+			...[...catlist.torrentLabelTree.torrentLabels].map(([key, info]) => labelDisplay(info.value ?? key))
 				.concat(theWebUI.trackerNames)
 				.map(lbl => $('<option>').attr('value', lbl))
 		);

@@ -3,6 +3,15 @@ import { readFileSync } from "fs";
 window.$ = require("jquery");
 window.jQuery = window.$;
 
+beforeAll(() => {
+  for (const file of ["../lang/en.js", "../js/browser.js", "../js/common.js"]) {
+    const script = document.createElement("script");
+    script.textContent = readFileSync(file, "utf8");
+    document.body.appendChild(script);
+  }
+});
+
+
 test("mobile DataDir omits the removed fast option while add-torrent keeps its own", () => {
   const html = readFileSync("../plugins/mobile/mobile.html", "utf8");
   const page = new DOMParser().parseFromString(html, "text/html");

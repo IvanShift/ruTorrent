@@ -2,6 +2,92 @@
 
 class UTF
 {
+	/** Keep strict type checks usable when one optional predicate is disabled. */
+	public static function isString($value)
+	{
+		try {
+			$result = @is_string($value);
+			if($result === true || $result === false) return $result;
+		} catch(Throwable $error) {}
+		try { return @gettype($value) === 'string'; }
+		catch(Throwable $error) { return false; }
+	}
+
+	/** Strict Unicode scalar validation, independent of PCRE and converters. */
+	public static function isValid($text)
+	{
+		if(!self::isString($text)) return false;
+		for($offset = 0; isset($text[$offset]);)
+		{
+			$length = self::characterLength($text, $offset);
+			if($length === 0) return false;
+			$offset += $length;
+		}
+		return true;
+	}
+
+	private static function characterLength($text, $offset)
+	{
+		$first = $text[$offset];
+		if($first <= "\x7F") return 1;
+		if($first >= "\xC2" && $first <= "\xDF") $length = 2;
+		else if($first >= "\xE0" && $first <= "\xEF") $length = 3;
+		else if($first >= "\xF0" && $first <= "\xF4") $length = 4;
+		else return 0;
+		if(!isset($text[$offset + $length - 1])) return 0;
+		$minimum = $first === "\xE0" ? "\xA0" : ($first === "\xF0" ? "\x90" : "\x80");
+		$maximum = $first === "\xED" ? "\x9F" : ($first === "\xF4" ? "\x8F" : "\xBF");
+		if($text[$offset + 1] < $minimum || $text[$offset + 1] > $maximum) return 0;
+		for($part = 2; $part < $length; $part++)
+			if($text[$offset + $part] < "\x80" || $text[$offset + $part] > "\xBF") return 0;
+		return $length;
+	}
+
+	/** Display unknown bytes without guessing their encoding or changing valid text. */
+	public static function display(string $text)
+	{
+		// Keep valid strings exactly as supplied, including literal backslashes.
+		for($offset = 0; isset($text[$offset]);)
+		{
+			$length = self::characterLength($text, $offset);
+			if($length === 0) break;
+			$offset += $length;
+		}
+		if(!isset($text[$offset])) return $text;
+
+		// A byte lookup avoids depending on optional formatting/conversion functions.
+		static $escaped = null;
+		if($escaped === null)
+		{
+			$escaped = array();
+			$hex = '0123456789ABCDEF';
+			$high = "\x00\x10\x20\x30\x40\x50\x60\x70\x80\x90\xA0\xB0\xC0\xD0\xE0\xF0";
+			$low = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
+			for($hi = 0; $hi < 16; $hi++)
+				for($lo = 0; $lo < 16; $lo++)
+					$escaped[$high[$hi] | $low[$lo]] = '\\x'.$hex[$hi].$hex[$lo];
+		}
+		$out = '';
+		for($offset = 0; isset($text[$offset]);)
+		{
+			$byte = $text[$offset];
+			$length = self::characterLength($text, $offset);
+			if($length === 0 || ($byte < "\x20" && $byte !== "\t" && $byte !== "\r" && $byte !== "\n") || $byte === "\x7F")
+			{
+				$out .= $escaped[$byte];
+				$offset++;
+			}
+			else if($byte === '\\')
+			{
+				$out .= '\\\\';
+				$offset++;
+			}
+			else
+				for($part = 0; $part < $length; $part++) $out .= $text[$offset++];
+		}
+		return $out;
+	}
+
 	// What utf8_encode() returns, which PHP 8.2 deprecates: each byte read
 	// as ISO-8859-1.
 	public static function latin1ToUtf8($str)
@@ -31,28 +117,7 @@ class UTF
 
 	public static function isInvalidUTF8($str)
 	{
-		$len = strlen($str);
-		for($i = 0; $i < $len; $i++)
-		{
-			$c = ord($str[$i]);
-			if($c > 128)
-			{
-				if(($c > 247)) return(true);
-				elseif($c > 239) $bytes = 4;
-				elseif($c > 223) $bytes = 3;
-				elseif($c > 191) $bytes = 2;
-				else return(true);
-				if(($i + $bytes) > $len) return(true);
-				while ($bytes > 1)
-				{
-					$i++;
-					$b = ord($str[$i]);
-					if($b < 128 || $b > 191) return(true);
-					$bytes--;
-				}
-			}
-		}
-		return(false);
+		return !self::isValid($str);
 	}
 
 	public static function win2utf($str)

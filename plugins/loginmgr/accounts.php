@@ -893,7 +893,7 @@ class accountManager
 		{
 			$req =  new rXMLRPCRequest( $this->hasAuto() ?
 				rTorrentSettings::get()->getAlignedScheduleCommand("loginmgr",86400,
-					getCmd('execute').'={sh,-c,'.escapeshellarg(Utility::getPHP()).' '.escapeshellarg(dirname(__FILE__).'/update.php').' '.escapeshellarg(User::getUser()).' & exit 0}' ) :
+					getCmd('execute').'={sh,-c,'.Utility::escapeShellArg(Utility::getPHP()).' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php').' '.Utility::escapeShellArg(User::getUser()).' & exit 0}' ) :
 				rTorrentSettings::get()->getRemoveScheduleCommand("loginmgr") );
 			$req->success();
 		}

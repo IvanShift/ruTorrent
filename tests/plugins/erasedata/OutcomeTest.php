@@ -36,9 +36,73 @@ $suite->test('an outcome is kept in the custom key and shown as d.message, with 
     strictAssertSame(false, strpbrk($custom->params[2], "\"\\") !== false, 'the kept value has no quote or backslash');
     $kept = json_decode(rawurldecode($custom->params[2]), true);
     strictAssertSame(array('stopped-after-hash-check', 'datadir: stopped', '/data/downloads/x', true),
-        array($kept['reason'], $kept['message'], $kept['directory'], $kept['while_stopped']), 'the kept outcome');
+        array($kept['reason'], $kept['message'], base64_decode($kept['directory'], true), $kept['while_stopped']), 'the kept outcome');
+    strictAssertSame(array(2, 'base64'), array($kept['version'], $kept['directory_encoding']), 'the raw directory encoding is explicit and versioned');
     strictAssertTrue(is_int($kept['at']) && abs($kept['at'] - time()) < 60, 'with its time');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor(getCmd('d.save_full_session'))), 'and a session save');
+});
+
+$suite->test('legacy byte directories survive record and pending comparisons exactly', function () {
+    foreach(array('/data/中文 🙂 %FF', "/data/raw\xFF\\%41") as $directory) {
+        rXMLRPCRequest::reset();
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($directory));
+        $write = getCmd('d.set_custom').'|'.getCmd('d.message.set');
+        rXMLRPCRequest::queue($write, true, false, array('0','0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        strictAssertSame(true, FileOperationOutcome::record('datadir', OUTCOME_HASH, 'held', "path needs attention: \xFF", true), 'the outcome is confirmed');
+        $requests = rXMLRPCRequest::requestsFor($write);
+        $kept = $requests[0]['commands'][0]->params[2];
+        $stored = json_decode(rawurldecode($kept), true);
+        strictAssertSame($directory, base64_decode($stored['directory'], true), 'the journal keeps exact directory bytes, including literal percent and backslash');
+        strictAssertSame('path needs attention: \\xFF', $requests[0]['commands'][1]->params[1], 'the immediate message displays unknown bytes visibly');
+        rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, "name\xFF", $directory, '0', $kept));
+        $pending = FileOperationOutcome::pending('datadir');
+        strictAssertSame(1, count($pending), 'the kept outcome remains applicable to its original directory');
+        strictAssertSame($directory, $pending[0][2]['directory'], 'the reader restores raw identity before comparing');
+        rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, "name\xFF", $directory, '0', $kept));
+        $notice = FileOperationOutcome::sessionNotice('datadir');
+        strictAssertTrue(strpos($notice, json_encode('name\\xFF')) !== false || strpos($notice, 'name\\\\xFF') !== false, 'the session notice displays the raw torrent name visibly');
+        strictAssertSame(false, strpos($notice, '\\ufffd') !== false, 'the notice introduces no replacement characters');
+        rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, 'moved', $directory.'/different', '0', $kept));
+        strictAssertSame(array(), FileOperationOutcome::pending('datadir'), 'an actual directory change still retires the notice');
+        rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, 'started', $directory, '1', $kept));
+        strictAssertSame(array(), FileOperationOutcome::pending('datadir'), 'starting a stopped download still retires its notice');
+    }
+});
+
+$suite->test('old literal directories remain literal and malformed encoded identities are refused', function () {
+    rXMLRPCRequest::reset();
+    $directory = '/data/literal%FF%2F %41';
+    $legacy = outcomeValue($directory, 'old valid record');
+    rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, 'old', $directory, '0', $legacy));
+    strictAssertSame(1, count(FileOperationOutcome::pending('datadir')), 'an old valid directory is never percent-decoded');
+    $valid = array('version'=>2, 'directory_encoding'=>'base64', 'directory'=>base64_encode($directory), 'message'=>'notice');
+    foreach(array(array('version'=>3), array('directory_encoding'=>'percent'), array('directory'=>'%2Fdata'),
+        array('directory'=>base64_encode($directory)."\n"), array('directory'=>array()), array('directory'=>null)) as $bad) {
+        $record = array_replace($valid, $bad);
+        rXMLRPCRequest::queue('d.multicall', true, false, array(OUTCOME_HASH, 'bad', $directory, '0', rawurlencode(json_encode($record))));
+        strictAssertSame(array(), FileOperationOutcome::pending('datadir'), 'unknown versions and malformed/noncanonical encoded directories cannot name an outcome');
+    }
+});
+
+$suite->test('unavailable byte codecs refuse recording and skip unreadable notices without crashing', function () {
+    $root = testFindRepoRoot();
+    $record = rawurlencode(json_encode(array('version'=>2, 'directory_encoding'=>'base64',
+        'directory'=>base64_encode("/raw\xFF"), 'message'=>'kept')));
+    $script = 'require '.var_export($root.'/tests/plugins/rutracker_check/TestLib.php',true).';'
+        .' require '.var_export($root.'/plugins/erasedata/outcome.php',true).';'
+        .' $directory="/raw".chr(255);rXMLRPCRequest::reset();'
+        .' rXMLRPCRequest::queue("d.get_directory",true,false,array($directory));'
+        .' $ok=FileOperationOutcome::record("datadir",'.var_export(OUTCOME_HASH,true).',"held","notice");'
+        .' rXMLRPCRequest::queue("d.multicall",true,false,array('.var_export(OUTCOME_HASH,true).',"name",$directory,"0",'.var_export($record,true).'));'
+        .' $pending=FileOperationOutcome::pending("datadir");'
+        .' echo json_encode(array($ok,count(rXMLRPCRequest::requestsFor("d.set_custom|d.message.set")),count($pending)));';
+    foreach(array('base64_encode','base64_decode','base64_encode,base64_decode') as $disabled) {
+        $output = array();
+        exec(escapeshellarg(PHP_BINARY).' -d disable_functions='.escapeshellarg($disabled).' -r '.escapeshellarg($script).' 2>&1', $output, $status);
+        strictAssertSame(0, $status, 'disabled byte codecs cannot crash the outcome owner: '.implode("\n",$output));
+        strictAssertSame(array(false,0,0), json_decode(implode("\n",$output),true), 'unrepresentable identity never reaches a write or guessed comparison');
+    }
 });
 
 $suite->test('an outcome is not written without its directory, a known plugin or a valid hash', function () {

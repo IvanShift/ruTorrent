@@ -83,8 +83,10 @@ class OutcomeParserTest extends TestCase
 		$this->assertSame(false, strpbrk((string) $written, "\"\\") !== false,
 			'the kept value is URL-encoded, with no quote or backslash in it: ' . $written);
 		$kept = json_decode(rawurldecode((string) $written), true);
-		$this->assertSame(self::DIRECTORY, isset($kept['directory']) ? $kept['directory'] : null,
-			'the directory is kept in the daemon\'s own bytes');
+		$this->assertSame(2, $kept['version'], 'the outcome declares the byte-preserving representation');
+		$this->assertSame('base64', $kept['directory_encoding'], 'the directory encoding is explicit');
+		$this->assertSame(base64_encode(self::DIRECTORY), $kept['directory'],
+			'the directory is kept as the canonical encoding of the daemon\'s own bytes');
 		// A session lists it: the daemon answers the stored bytes, as 0.9.8 does.
 		$notice = $this->drive(array(array(self::HASH, self::NAME, self::DIRECTORY, 0, (string) $written)),
 			'require_once(' . var_export($outcome, true) . ");\n"

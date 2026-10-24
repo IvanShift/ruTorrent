@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__.'/trackerurl.php');
+require_once(__DIR__.'/../../php/utility/utility.php');
 
 // Lifecycle draining and terminal wp retirement share this timeout. Expiry
 // keeps the lease visible; the shipped default is five seconds. Recovery
@@ -8929,7 +8930,7 @@ class RetrackersWorkerRpcAdapter extends RetrackersLifecycleRpcAdapter
 	private static function operatorToolCommand($filename, $user, $hash, $containerMarker)
 	{
 		$word = function ($value) {
-			return(preg_match('~^[A-Za-z0-9_./:=+-]+$~D', $value) === 1 ? $value : escapeshellarg($value));
+			return(preg_match('~^[A-Za-z0-9_./:=+-]+$~D', $value) === 1 ? $value : Utility::escapeShellArg($value));
 		};
 		$tool = realpath(__DIR__ . '/../../tools/' . $filename);
 		$command = $word(class_exists('Utility', false) ? Utility::getPHP() : 'php') . ' ' .

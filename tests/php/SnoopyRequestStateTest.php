@@ -29,17 +29,14 @@ function stateHeader($wire, $name)
     return $matches[1];
 }
 
-// A port nothing listens on: reserved, read and released, so a connection to
-// it is refused rather than timing out. A case using it asserts that the
-// connection failed, so a port taken in between is a loud failure and not a
-// case that quietly stops testing what it was written for.
+// Hold a bound, non-listening socket so the HTTP peer cannot reclaim its port.
+// The caller keeps the reservation until the refused-connection case finishes.
 function stateClosedPort()
 {
-    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error, STREAM_SERVER_BIND);
     stateAssert($server !== false, 'A port can be reserved to find a closed one');
     $port = (int) substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
-    fclose($server);
-    return $port;
+    return array($server, $port);
 }
 
 function statePeer(array $responses, callable $body)
@@ -309,25 +306,29 @@ $tests = array(
     // and a caller reusing one client reads $results and $headers rather than
     // the return value.
     'a failed connection discards the previous response' => function () use ($ok) {
-        $closed = stateClosedPort();
-        statePeer(array($ok), function ($client, $port) use ($closed) {
-            stateAssert($client->fetch('http://first.test:' . $port . '/ok'), 'The seed request succeeds');
-            stateAssert($client->results === 'ok' && (int) $client->status === 200
-                && $client->headers !== array() && $client->response_code !== '',
-                'The seed response is a complete success');
-            stateAssert(@$client->fetch('http://first.test:' . $closed . '/gone') === false,
-                'The closed port refuses the connection');
-            stateAssert($client->status === Snoopy::SOCKET_CONNECT_FAILED,
-                'A failed connection reports the transport status');
-            stateAssert($client->results === '', 'A failed connection discards the earlier body');
-            stateAssert($client->headers === array() && $client->response_code === '',
-                'A failed connection discards the earlier headers');
-            stateAssert($client->_redirectaddr === false,
-                'A failed connection discards the earlier redirect');
-            return function ($requests) {
-                stateAssert(count($requests) === 1, 'Only the seed request reaches the peer');
-            };
-        });
+        list($reservation, $closed) = stateClosedPort();
+        try {
+            statePeer(array($ok), function ($client, $port) use ($closed) {
+                stateAssert($client->fetch('http://first.test:' . $port . '/ok'), 'The seed request succeeds');
+                stateAssert($client->results === 'ok' && (int) $client->status === 200
+                    && $client->headers !== array() && $client->response_code !== '',
+                    'The seed response is a complete success');
+                stateAssert(@$client->fetch('http://first.test:' . $closed . '/gone') === false,
+                    'The closed port refuses the connection');
+                stateAssert($client->status === Snoopy::SOCKET_CONNECT_FAILED,
+                    'A failed connection reports the transport status');
+                stateAssert($client->results === '', 'A failed connection discards the earlier body');
+                stateAssert($client->headers === array() && $client->response_code === '',
+                    'A failed connection discards the earlier headers');
+                stateAssert($client->_redirectaddr === false,
+                    'A failed connection discards the earlier redirect');
+                return function ($requests) {
+                    stateAssert(count($requests) === 1, 'Only the seed request reaches the peer');
+                };
+            });
+        } finally {
+            fclose($reservation);
+        }
     },
     // $passcookies carries a cookie through a redirect the client follows.
     // Nothing else may carry one: a chain that stops at its depth cap leaves a

@@ -76,7 +76,7 @@ final class AutoToolsFinishedHook
         $name = isset($args[5]) ? (string) $args[5] : '';
         $token = isset($args[7]) ? (string) $args[7] : '';
         $at = rAutoTools::load();
-        if (!$at->enable_move || @preg_match($at->automove_filter . 'u', $label) != 1)
+        if (!$at->enable_move || @preg_match($at->automove_filter . (UTF::isValid($label) ? 'u' : ''), $label) != 1)
             return $none;
         $finished = $at->path_to_finished;
         $op = $at->fileop_type;
@@ -153,7 +153,7 @@ final class AutoToolsFinishedHook
         if (strlen($filter) === 0)
             return false;
         foreach ($files as $file)
-            if (preg_match($filter . 'u', $file) === 1) {
+            if (preg_match($filter . (UTF::isValid($file) ? 'u' : ''), $file) === 1) {
                 if ($dbg) rtDbg('AutoMove', 'skip filter ' . $filter . ' matched ' . $file);
                 return true;
             }
@@ -168,7 +168,7 @@ final class AutoToolsFinishedHook
         if (!in_array($op, self::NON_MOVE, true)) return;
         $root = AutoToolsFileTransaction::journalRoot();
         $id = bin2hex(random_bytes(12));
-        $body = json_encode(array('version' => 1, 'id' => $id, 'reason' => $reason, 'at' => time(),
+        $body = JSON::encodeBytes(array('version' => 1, 'id' => $id, 'reason' => $reason, 'at' => time(),
             'args' => array_map('strval', array_values($args))));
         $staging = $root === false ? false : erasedataStagingFile($root, '.request-');
         $published = $staging !== false && is_string($body)
@@ -203,9 +203,9 @@ final class AutoToolsFinishedHook
             call_user_func(self::$spawn, $arguments);
             return;
         }
-        $command = escapeshellarg(Utility::getPHP());
+        $command = Utility::escapeShellArg(Utility::getPHP());
         foreach ($arguments as $argument)
-            $command .= ' ' . escapeshellarg($argument);
+            $command .= ' ' . Utility::escapeShellArg($argument);
         @exec($command . ' < /dev/null > /dev/null 2>&1 &');
     }
 
@@ -317,7 +317,7 @@ final class AutoToolsFinishedHook
     private static function readRequest($path)
     {
         $name = basename($path);
-        $request = json_decode((string) @file_get_contents($path, false, null, 0, 65536), true);
+        $request = JSON::decodeBytes((string) @file_get_contents($path, false, null, 0, 65536));
         if (!is_array($request) || array_keys($request) !== array('version', 'id', 'reason', 'at', 'args')
             || $request['version'] !== 1 || !is_string($request['id'])
             || preg_match('/^[0-9a-f]{24}$/D', $request['id']) !== 1

@@ -21,9 +21,8 @@ set_time_limit(0);
  * A unix filename is a string of bytes and need not be valid UTF-8, and it
  * reaches here as name[]. json_encode() answers false for bytes it cannot
  * encode, which concatenates as nothing at all and leaves the call with an
- * argument missing rather than an argument that is a literal. So the invalid
- * bytes become the replacement character, and a refusal for any other reason
- * still yields a literal.
+ * argument missing rather than an argument that is a literal. Callers project
+ * filesystem names before this final JSON guard, which always yields a literal.
  */
 function addtorrent_literal($value)
 {
@@ -112,7 +111,7 @@ function addtorrent_response($results, $names, $json = false)
 			'FailedFile', 'FailedURL', 'FailedDirectory'), true) ? $result : 'Failed';
 		$kind = $status === 'Success' ? 'success'
 			: ($status === 'Duplicate' ? 'alert' : ($status === 'Pending' ? 'warning' : 'error'));
-		$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? ($names[$ndx].' - ') : '').
+		$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? UTF::display($names[$ndx].' - ') : '').
 			'+theUILang["addTorrent"+'.addtorrent_literal($status).']'.
 			','.addtorrent_literal($kind).');');
 	}
@@ -153,11 +152,11 @@ else
 	$uploaded_files = array();
 	$label = null;
 	if(isset($_REQUEST['label']))
-		$label = trim($_REQUEST['label']);
+		$label = $_REQUEST['label'];
 	$dir_edit = null;
 	if(isset($_REQUEST['dir_edit']))
 	{
-		$dir_edit = trim($_REQUEST['dir_edit']);
+		$dir_edit = $_REQUEST['dir_edit'];
 		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}

@@ -54,8 +54,8 @@ class AutoToolsMoveJob
 
     static public function writeJob($root, $job)
     {
-        $encoded = json_encode($job, JSON_UNESCAPED_SLASHES);
-        if (!is_string($encoded)) throw new RuntimeException('path-not-utf8');
+        $encoded = JSON::encodeBytes($job, JSON_UNESCAPED_SLASHES);
+        if (!is_string($encoded)) throw new RuntimeException('journal-encode-failed');
         // Never tempnam()'s fallback outside the journal: see erasedataStagingFile().
         $tmp = erasedataStagingFile($root, '.move-');
         if ($tmp === false) throw new RuntimeException('journal-temp-failed');
@@ -76,7 +76,7 @@ class AutoToolsMoveJob
         if (!is_file($path)) throw new RuntimeException('journal-nonfile: path='
             . self::JOURNAL_DIR . '/' . self::logHash($hash)
             . '.move.json; Move held pending journal repair');
-        $job = json_decode((string) @file_get_contents($path), true);
+        $job = JSON::decodeBytes((string) @file_get_contents($path));
         if (!is_array($job) || !isset($job['hash'], $job['src'], $job['dst'], $job['identity'], $job['daemon_dir'])
             || $job['hash'] !== $hash || !isset($job['version'], $job['qid'], $job['kind'], $job['phase'])
             || $job['version'] !== 2 || $job['kind'] !== 'Move' || !is_string($job['qid'])
@@ -814,11 +814,9 @@ class AutoToolsMoveJob
         $label = rawurldecode(self::rpc('d.get_custom1', $hash));
         $name = self::rpc('d.get_name', $hash);
         if (self::rpc('d.complete', $hash) !== '1') throw new RuntimeException('source-not-ready');
-        foreach (array($basePath, $baseName, $label, $name) as $value)
-            if (preg_match('//u', $value) !== 1) throw new RuntimeException('path-not-utf8');
         $at = rAutoTools::load();
         if (!$at->enable_move || $at->fileop_type !== 'Move'
-            || @preg_match($at->automove_filter . 'u', $label) !== 1)
+            || @preg_match($at->automove_filter . (UTF::isValid($label) ? 'u' : ''), $label) !== 1)
             throw new RuntimeException('configuration-declined');
         $session = rTorrentSettings::get()->session;
         $torrentPath = rtrim($session, '/') . '/' . $hash . '.torrent';
@@ -835,7 +833,7 @@ class AutoToolsMoveJob
             if (!is_string($file) || $file === '' || $file[0] === '/'
                 || preg_match('~(^|/)\.\.?(/|$)~', $file))
                 throw new RuntimeException('manifest-path-invalid');
-            if (strlen($at->skip_move_for_files) && @preg_match($at->skip_move_for_files . 'u', $file) === 1)
+            if (strlen($at->skip_move_for_files) && @preg_match($at->skip_move_for_files . (UTF::isValid($file) ? 'u' : ''), $file) === 1)
                 throw new RuntimeException('skip-filter-match');
         }
         $sourceDir = rtAddTailSlash(dirname($basePath));
@@ -907,7 +905,7 @@ class AutoToolsMoveJob
             $message = 'autotools: move refused: download-stopped; the download was stopped before its'
                 . ' Move could claim it, so the data stays in place; move it with Set directory';
         elseif (in_array($reason, array('session-unavailable', 'journal-unavailable', 'journal-lock-unavailable',
-            'journal-temp-failed', 'request-encode-failed', 'request-write-failed'), true))
+            'journal-temp-failed', 'journal-encode-failed', 'request-encode-failed', 'request-write-failed'), true))
             $message = 'autotools: move refused: ' . $reason . $detail . '; the Move could not be recorded in'
                 . ' rTorrent\'s session directory (' . self::JOURNAL_DIR . '), so the data stays in place; check'
                 . ' that rTorrent can write its session directory and that no other user can, then move it with'
@@ -955,7 +953,10 @@ class AutoToolsMoveJob
                 }
                 self::writeJob($root, $job);
             }
-            if (self::reconcile($root, $job, $incarnation)) self::deliverNotice($root, $hash);
+            $notify = self::reconcile($root, $job, $incarnation);
+            // The notice owner reloads the durable result; do not retain another full receipt.
+            unset($job);
+            if ($notify) self::deliverNotice($root, $hash);
             return 0;
         } catch (Throwable $e) {
             self::log($hash, 'held: ' . $e->getMessage() . '; journal='
@@ -982,7 +983,7 @@ class AutoToolsMoveJob
             } catch (Throwable $e) {
                 self::log($hash, 'completed recovery held: ' . $e->getMessage()
                     . '; journal=' . $path . '; unrelated recovery continues');
-            } finally { if ($lock !== null) { flock($lock, LOCK_UN); fclose($lock); } }
+            } finally { unset($job); if ($lock !== null) { flock($lock, LOCK_UN); fclose($lock); } }
         }
     }
 }

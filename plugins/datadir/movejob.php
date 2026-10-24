@@ -77,7 +77,7 @@ class DataDirMoveJob
             || is_link($path) || !is_file($path))
             throw new RuntimeException('job-unavailable');
         $json = @file_get_contents($path, false, null, 0, DataDirDocument::MAX_BYTES + 1);
-        $data = is_string($json) && strlen($json) <= DataDirDocument::MAX_BYTES ? json_decode($json, true) : null;
+        $data = is_string($json) && strlen($json) <= DataDirDocument::MAX_BYTES ? JSON::decodeBytes($json) : null;
         $keys = array('version', 'phase', 'job',
             'hash', 'directory', 'add', 'move', 'source', 'destination', 'files', 'local_id',
             'previous_directory');

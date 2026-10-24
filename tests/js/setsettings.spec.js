@@ -172,9 +172,7 @@ describe("setsettings response handling", () => {
     ]);
     expect(new rTorrentStub("?action=setsettings&s=nmax_uploads_global&v=").content).toContain("<i8></i8>");
     expect(new rTorrentStub("?action=setsettings&s=nmax_uploads_global&v=").content).not.toContain("<i8>0</i8>");
-    expect(commandsFor("?action=setsettings&s=sdirectory&v=")).toStrictEqual([
-      ["directory.default.set", "string:", "string:"],
-    ]);
+    expect(new URLSearchParams(new rTorrentStub("?action=setsettings&s=sdirectory&v=").content).get("v")).toBe("");
   });
 
 
@@ -219,7 +217,7 @@ describe("setsettings response handling", () => {
 		jest.spyOn($, "ajax").mockReturnValue(deferred);
 		const notice = jest.spyOn(window, "noty").mockImplementation(() => {});
 
-		Ajax("?action=getsettings", true);
+		Ajax("?action=gettotal", true);
 		deferred.resolve(multicallResponse([fault("first read refused"), fault("second read refused")]), "success", headers);
 
 		expect(notice).toHaveBeenCalledTimes(2);
@@ -332,30 +330,11 @@ describe("the options save request", () => {
 		return `<value><array><data><value><i8>${v}</i8></value></data></array></value>`;
 	}
 
-	function fault(message) {
-		return (
-			"<value><struct>" +
-			"<member><name>faultCode</name><value><i4>-501</i4></value></member>" +
-			`<member><name>faultString</name><value><string>${message}</string></value></member>` +
-			"</struct></value>"
-		);
-	}
-
 	function multicallResponse(members) {
 		return new DOMParser().parseFromString(
 			'<?xml version="1.0"?><methodResponse><params><param><value><array><data>' +
 				members.join("") +
 				"</data></array></value></param></params></methodResponse>",
-			"text/xml"
-		);
-	}
-
-	function topLevelFaultResponse(message) {
-		return new DOMParser().parseFromString(
-			"<methodResponse><fault><value><struct>" +
-			"<member><name>faultCode</name><value><i4>-501</i4></value></member>" +
-			`<member><name>faultString</name><value><string>${message}</string></value></member>` +
-			"</struct></value></fault></methodResponse>",
 			"text/xml"
 		);
 	}
@@ -573,7 +552,6 @@ describe("the options save request", () => {
 		const save = addSettingsSaveButton();
 		const saveRequest = $.Deferred();
 		const refreshRequest = $.Deferred();
-		const headers = { getResponseHeader: () => null };
 		const ajax = jest.spyOn($, "ajax")
 			.mockImplementationOnce(() => saveRequest)
 			.mockImplementationOnce(() => refreshRequest);
@@ -593,7 +571,7 @@ describe("the options save request", () => {
 		);
 		expect(ajax).toHaveBeenCalledTimes(2);
 		expect(save.disabled).toBe(true);
-		refreshRequest.resolve(multicallResponse([fault("getsettings refused")]), "success", headers);
+		refreshRequest.reject({ status: 500, responseText: "getsettings refused", getResponseHeader: () => null }, "error", "error");
 		expect(notice).toHaveBeenCalledWith(expect.stringContaining("getsettings refused"), "error");
 		expect(theWebUI.settingsSavePending).toBe(false);
 		expect(save.disabled).toBe(false);
@@ -632,7 +610,7 @@ describe("the options save request", () => {
 			"error", "error"
 		);
 		expect(ajax).toHaveBeenCalledTimes(2);
-		refreshRequest.resolve(multicallResponse([value(0)]), "success", headers);
+		refreshRequest.resolve(Array(theRequestManager.stg.count + 1).fill("0"), "success", headers);
 		expect(theWebUI.settingsSavePending).toBe(true);
 		expect(save.disabled).toBe(true);
 		expect(ajax).toHaveBeenCalledTimes(3);
@@ -977,7 +955,7 @@ describe("the options save request", () => {
 		expect(notice).toHaveBeenCalledWith(theUILang.Settings_save_indeterminate, "error");
 	});
 
-	it("unlocks after getsettings returns an HTTP-200 XML-RPC fault", () => {
+	it("unlocks after getsettings returns an HTTP-200 malformed JSON value", () => {
 		loadSettingsUI();
 		theWebUI.settings = { max_open_files: 1024 };
 		$("#max_open_files").val("20000");
@@ -997,9 +975,9 @@ describe("the options save request", () => {
 			{ status: 500, responseText: "allocation refused after rollback", getResponseHeader: () => null },
 			"error", "error"
 		);
-		refreshRequest.resolve(topLevelFaultResponse("getsettings denied"), "success", headers);
+		refreshRequest.resolve(null, "success", headers);
 
-		expect(notice).toHaveBeenCalledWith(expect.stringContaining("getsettings denied"), "error");
+		expect(notice).toHaveBeenCalledWith("Invalid settings response", "error");
 		expect(theWebUI.settingsSavePending).toBe(false);
 		expect(save.disabled).toBe(false);
 		$("#max_open_files").val("4096");
@@ -1070,7 +1048,7 @@ describe("the options save request", () => {
 		expect(new URLSearchParams(refreshOptions.data).get("mode")).toBe("stg");
 		expect(save.disabled).toBe(true);
 
-		refreshRequest.resolve([], "success", headers);
+		refreshRequest.resolve(Array(theRequestManager.stg.count + 1).fill("0"), "success", headers);
 		expect(addSettings).toHaveBeenCalledTimes(1);
 		expect(theWebUI.settingsSavePending).toBe(false);
 		expect(save.disabled).toBe(false);
@@ -1164,43 +1142,8 @@ describe("the options save request", () => {
 	});
 });
 
-describe.each([0x1012, 0x1013, 0x1014, 0x1015, 0x1016, 0x1017, 0x1018])(
-  "captured Settings read shape on rTorrent version %i", (iVersion) => {
-    it("matches the exact zero-argument request captured from the browser", () => {
-      loadUI(iVersion);
-      const capture = readFileSync("php/fixtures/settings-read-rtorrent-0.16.24.xml", "utf8");
-      const capturedNames = Array.from(
-        capture.matchAll(/<name>methodName<\/name><value><string>([^<]+)<\/string>/g),
-        match => match[1]
-      );
-      expect(capturedNames).toHaveLength(49);
-      expect(commandsFor("?action=getsettings").map(([name]) => name)).toStrictEqual(capturedNames);
-    });
-  }
-);
-
-describe("settings read-back", () => {
-  function readCommands(iVersion) {
-    loadUI(iVersion);
-    return commandsFor("?action=getsettings").map(([name]) => name);
-  }
-
-  // max_alloc is only the ceiling and commonly sits orders of magnitude above
-  // the allocation in use, so reading it back would misreport the limit.
-  it("reads the allocation in effect once the socket manager owns the limits", () => {
-    const commands = readCommands(0x1010);
-    expect(commands).toContain("system.sockets.http.max_size");
-    expect(commands).not.toContain("system.sockets.http.max_alloc");
-    expect(commands).toContain("network.max_open_files");
-  });
-
-  it("keeps the legacy read-back commands on 0.9.8", () => {
-    const commands = readCommands(0x908);
-    expect(commands).toContain("network.max_open_files");
-    expect(commands).toContain("network.http.max_open");
-  });
-});
-
+// The HTTP settings entrypoint now owns versioned read commands. Its captured
+// command order and allocation readers are exercised in SettingsPathTest.php.
 // Sending these commands to an rtorrent that aborts on an over-budget
 // adjust_alloc would kill the process, so older versions keep the old command.
 describe("setsettings below the socket allocation version gate", () => {

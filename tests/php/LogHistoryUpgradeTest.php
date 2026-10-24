@@ -90,6 +90,18 @@ file_put_contents(getenv("RU_PROFILE_PATH")."/settings/log_history.dat", seriali
 		return $out;
 	}
 
+	public function testLegacyLogBytesRemainReadableWithoutRewritingStoredEntries()
+	{
+		$this->plantPreFixFile("Файл \xFF <b>literal</b>");
+		$file = $this->base.'/profile/settings/log_history.dat';
+		$stored = file_get_contents($file);
+		$first = $this->request('GET');
+		$this->assertSame('Файл \\xFF <b>literal</b>', $first['logs'][0]['message'] ?? null,
+			'cached legacy text is projected before JSON can discard the bytes');
+		$this->assertSame($first, $this->request('GET'), 'repeated reads do not escape the projection twice');
+		$this->assertSame($stored, file_get_contents($file), 'display never replaces the original cached bytes');
+	}
+
 	private function classesInFile()
 	{
 		$blob = (string)@file_get_contents($this->base . '/profile/settings/log_history.dat');

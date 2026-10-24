@@ -9,7 +9,8 @@ class ErasedataQueueRefusalFixture
     public static function installCheckerDependencies($tree)
     {
         $root = dirname(__DIR__, 3);
-        $paths = array('php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php',
+        $paths = array('php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php', 'php/utility/utility.php',
+            'php/utility/json.php', 'php/utility/utf.php',
             'plugins/rutracker_check/launcher.php');
         foreach($paths as $relative)
         {
@@ -73,7 +74,8 @@ class FileUtil {
  public static function addslash($path){return rtrim($path,'/').'/';}
  public static function makeDirectory($path,$mode,$preserve){return is_dir($path)||mkdir($path,$mode,true);}
 }
-class Utility { public static function getPHP(){return PHP_BINARY;} }
+require_once __DIR__.'/utility/utility.php';
+$pathToExternals = array('php' => PHP_BINARY);
 class User { public static function getUser(){return json_decode(getenv('QUEUE_USER_JSON'),true);} }
 class rXMLRPCCommand {
  public $command;public $params;

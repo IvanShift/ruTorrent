@@ -1,22 +1,8 @@
 <?php
 require_once( '../../php/util.php' );
 require_once( '../../php/settings.php' );
+require_once(__DIR__.'/directorylist.php');
 eval(FileUtil::getPluginConf("_getdir"));
-
-function compareEntries( $a, $b )
-{
-	if($a=='.')
-		return( -1 );
-	if($b=='.')
-		return( 1 );
-	if($a=='..')
-		return( -1 );
-	if($b=='..')
-		return( 1 );
-	return( function_exists("mb_strtolower") ?
-		strcmp(mb_strtolower($a), mb_strtolower($b)) :
-		strcmp(strtolower($a), strtolower($b)) );
-}
 
 $output = array();
 if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
@@ -31,48 +17,45 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 		{
 			for($i=0; $i<count($req->val); $i++)
 			{
-				$val = trim(rawurldecode($req->val[$i]));
-				if( $val!='' )
-					$labels[$val] = true;
+				$val = LabelValue::fromEncoded($req->val[$i]);
+				$key = is_array($val) ? 'b:'.$val['labelKey'] : 's:'.$val;
+				if($key !== 's:' && $key !== 'b:') $labels[$key] = $val;
 			}
-			$output["labels"] = array_keys($labels);
-			natcasesort($output["labels"]);
-			$output["labels"] = array_values($output["labels"]);
+			uasort($labels, function($left, $right) {
+				return strnatcasecmp(is_array($left) ? $left['name'] : $left,
+					is_array($right) ? $right['name'] : $right);
+			});
+			$output["labels"] = array_values($labels);
 		}
 	}
 	if(in_array("dirlist",$modes))
 	{
-		$dh = false;
+		$dir = null;
 		if(isset($_REQUEST['basedir']) && is_string($_REQUEST['basedir']))
 		{
-			$dir = rawurldecode($_REQUEST['basedir']);
+			$dir = $_REQUEST['basedir'];
 			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctDirectory($dir, true, true);
-			$dh = $allowedDirectory ? @opendir($dir) : false;
-			$dir = FileUtil::addslash($dir);
-
-			if( $dh &&
-				(!$allowedDirectory ||
+			if(!$allowedDirectory ||
 				(($theSettings->uid>=0) &&
 				$checkUserPermissions &&
-				!Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007))))
-			{
-				closedir($dh);
-				$dh = false;
-			}
+				!Permission::doesUserHave($theSettings->uid,$theSettings->gid,$dir,0x0007)))
+				$dir = null;
 		}
-		if(!$dh)
+		if($dir === null)
 		{
 			$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
 			if(!$theSettings->correctDirectory($dir, true, true))
 				$dir = $topDirectory;
-			$dh = @opendir($dir);
 		}
-		if($dh)
+		$files = array();
+		$dir = FileUtil::addslash($dir);
+		$entries = rDirectoryList::scan($dir);
+		if($entries === null)
+			$output['error'] = 'directory-unavailable';
+		else
 		{
-			$files = array();
-			$dir = FileUtil::addslash($dir);
-			while(false !== ($file = readdir($dh)))
-		        {
+			foreach($entries as $file)
+			{
 				$path = FileUtil::fullpath($dir . $file);
 				if(($file=="..") && (rtrim($dir, '/') === rtrim($topDirectory, '/')))
 					continue;
@@ -82,13 +65,12 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 					)
 				{
 					$files[] = $file;
-				}
+	}
 			}
-		        closedir($dh);
-			usort($files,"compareEntries");
-			$output["basedir"] = FileUtil::fullpath($dir);
-			$output["dirlist"] = $files;
 		}
+		usort($files, array('rDirectoryList', 'compare'));
+		$output["basedir"] = FileUtil::displayPath(FileUtil::fullpath($dir));
+		$output["dirlist"] = array_map(array('FileUtil', 'displayPath'), $files);
         }
 	if(in_array("channels",$modes) && $theSettings->isPluginRegistered('throttle'))
 	{

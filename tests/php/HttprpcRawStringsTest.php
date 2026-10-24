@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/HttprpcListFixture.php');
 
 /**
  * plugins/httprpc/action.php answers the WebUI's list, file, tracker and
@@ -41,6 +42,21 @@ class HttprpcNestedTrackerReplies extends FakeRtorrentMethodReplies
 				.'</data></array></value></data></array></value></data></array></value>'
 				.'</data></array></value></param></params></methodResponse>');
 		}
+		return parent::__invoke($request, $methods);
+	}
+}
+
+class HttprpcNestedListReplies extends FakeRtorrentMethodReplies
+{
+	private $row;
+	public function __construct($values, $row) { parent::__construct($values); $this->row = $row; }
+	public function __invoke($request, $methods)
+	{
+		if($methods === array('d.multicall', 'd.multicall', 'session.path'))
+			return HttprpcListFixture::reply(array($this->row));
+		if($methods === array('f.multicall', 'session.path', 'd.tied_to_file'))
+			return new FakeRtorrentRawReply(HttprpcListFixture::body(array(
+				array(array(parent::__invoke($request, array('f.multicall')))), array(''), array(''))));
 		return parent::__invoke($request, $methods);
 	}
 }
@@ -111,7 +127,7 @@ class HttprpcRawStringsTest extends TestCase
 		$file = array('dir "x" \\y/file \'z\'.bin', 1, 1, 100, 1);
 		$tracker = array('http://tracker.test/ann?x="q"\\', 1, 1, 0, 5, 6, 7, 1800, 0);
 		$this->stopDaemon();
-		$class = $nestedTrackers ? 'HttprpcNestedTrackerReplies' : 'FakeRtorrentMethodReplies';
+		$class = $nestedTrackers ? 'HttprpcNestedTrackerReplies' : 'HttprpcNestedListReplies';
 		$values = array(
 			'system.client_version' => array('0.16.25'),
 			'system.api_version' => array(11),
@@ -121,9 +137,9 @@ class HttprpcRawStringsTest extends TestCase
 			'd.base_path' => array('/downloads/' . self::NAME),
 			'd.is_open' => array(1),
 		);
-		$replies = $nestedTrackers ? new $class($values, $trackerReply) : new $class($values);
+		$replies = $nestedTrackers ? new $class($values, $trackerReply) : new $class($values, $row);
 		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log', false,
-			$nestedTrackers ? array(__FILE__) : array());
+			array(__FILE__));
 		$driver = $this->base . '/drive-httprpc.php';
 		file_put_contents($driver, "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"

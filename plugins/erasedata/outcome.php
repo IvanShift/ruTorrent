@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__.'/../../php/utility/utf.php');
+
 // The durable outcome of a datadir or AutoTools operation on a download
 // (ACC-OWNB-01). rTorrent sets d.message to an empty string on the next
 // successful tracker answer -- measured 0.44 s after a datadir warning -- so
@@ -26,6 +28,17 @@ final class FileOperationOutcome
 	// Notices beyond this many are counted, not listed.
 	const NOTICE_LIMIT = 20;
 
+	private static function directoryBytes($encoded)
+	{
+		try
+		{
+			if(!@function_exists('base64_encode') || !@function_exists('base64_decode')) return false;
+			$raw = @base64_decode($encoded, true);
+			return UTF::isString($raw) && @base64_encode($raw) === $encoded ? $raw : false;
+		}
+		catch(Throwable $error) { return false; }
+	}
+
 	// Keeps $message for the download and shows it as d.message; true when the
 	// daemon confirmed both. $whileStopped limits the notice to the time the
 	// download stays stopped.
@@ -38,9 +51,16 @@ final class FileOperationOutcome
 		$read->important = false;
 		if(!$read->success() || !is_array($read->val) || count($read->val) !== 1 || !is_string($read->val[0]))
 			return(false);
-		$value = json_encode(array('at' => time(), 'reason' => $reason, 'message' => $message,
-			'directory' => $read->val[0], 'while_stopped' => (bool)$whileStopped),
-			JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+		try {
+			if(!@function_exists('base64_encode')) return false;
+			$directory = @base64_encode($read->val[0]);
+		}
+		catch(Throwable $error) { return false; }
+		if(!UTF::isString($directory) || self::directoryBytes($directory) !== $read->val[0]) return false;
+		$message = UTF::display($message);
+		$value = json_encode(array('version' => 2, 'at' => time(), 'reason' => UTF::display($reason), 'message' => $message,
+			'directory_encoding' => 'base64', 'directory' => $directory,
+			'while_stopped' => (bool)$whileStopped), JSON_UNESCAPED_SLASHES);
 		if(!is_string($value))
 			return(false);
 		$value = rawurlencode($value);
@@ -86,8 +106,19 @@ final class FileOperationOutcome
 			if(!is_string($value) || $value === '')
 				continue;
 			$outcome = json_decode(rawurldecode($value), true);
+			if(is_array($outcome) && array_key_exists('version', $outcome))
+			{
+				if($outcome['version'] !== 2 || !isset($outcome['directory_encoding'], $outcome['directory'])
+					|| $outcome['directory_encoding'] !== 'base64' || !is_string($outcome['directory']))
+					continue;
+				$raw = self::directoryBytes($outcome['directory']);
+				if($raw === false)
+					continue;
+				$outcome['directory'] = $raw;
+				unset($outcome['version'], $outcome['directory_encoding']);
+			}
 			if(!is_array($outcome) || !isset($outcome['message'], $outcome['directory'])
-				|| !is_string($outcome['message']) || $outcome['directory'] !== $directory
+				|| !is_string($outcome['message']) || !is_string($outcome['directory']) || $outcome['directory'] !== $directory
 				|| (!empty($outcome['while_stopped']) && (string)$state !== '0'))
 				continue;
 			$rows[] = array((string)$hash, (string)$name, $outcome);
@@ -105,8 +136,8 @@ final class FileOperationOutcome
 			return('');
 		$script = '';
 		foreach(array_slice($rows, 0, self::NOTICE_LIMIT) as $row)
-			$script .= 'noty('.json_encode(self::LABELS[$plugin].': '.$row[1].' ('.$row[0].'): '
-				.$row[2]['message'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_HEX_TAG)
+			$script .= 'noty('.json_encode(self::LABELS[$plugin].': '.UTF::display($row[1]).' ('.$row[0].'): '
+				.UTF::display($row[2]['message']), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG)
 				.",'error');\n";
 		if(count($rows) > self::NOTICE_LIMIT)
 			$script .= 'noty('.json_encode(self::LABELS[$plugin].': '.(count($rows) - self::NOTICE_LIMIT)

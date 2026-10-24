@@ -10,7 +10,8 @@ class FileUtil
     static public function addslash($path) { return rtrim($path, '/') . '/'; }
     static public function toLog($message) { self::$log[] = $message; }
 }
-class Utility { static public function getPHP() { return "/opt/o'neil/php"; } }
+require_once(testFindRepoRoot().'/php/utility/utility.php');
+$pathToExternals = array('php' => "/opt/o'neil/php");
 class User { static public function getUser() { return "alice';touch forbidden;'"; } }
 class InitScheduleSettings
 {
@@ -32,6 +33,9 @@ $tree = sys_get_temp_dir() . '/checker-init-' . uniqid();
 mkdir($tree . '/plugins/rutracker_check', 0700, true);
 mkdir($tree . '/plugins/erasedata', 0700, true);
 mkdir($tree . '/php', 0700);
+mkdir($tree . '/php/utility', 0700);
+file_put_contents($tree . '/php/utility/utility.php', '<?php require_once '
+    . var_export(testFindRepoRoot() . '/php/utility/utility.php', true) . ';');
 foreach (array('init.php', 'launcher.php') as $file)
     copy(testFindRepoRoot() . '/plugins/rutracker_check/' . $file, $tree . '/plugins/rutracker_check/' . $file);
 foreach (array('xmlrpc.php', 'rtorrent.php') as $file) file_put_contents($tree . '/php/' . $file, '<?php');

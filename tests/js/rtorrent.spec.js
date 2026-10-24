@@ -370,6 +370,8 @@ describe("xmlrpc calls", () => {
 
   it("should parse getsettings response", () => {
     const stub = new rTorrentStub("?action=getsettings");
+    // Retain coverage of the legacy XML decoder for captured responses.
+    stub.dataType = "xml";
     //console.log(stub.content);
     const ret = stub.getResponse(loadXML(stub.action));
     //console.log(ret);
@@ -402,7 +404,7 @@ describe("xmlrpc calls", () => {
   it("should parse getfiles response", () => {
     const stub = new rTorrentStub(`?action=getfiles&hash=${h("A")}`);
     //console.log(stub.content);
-    const ret = stub.getResponse(loadXML(stub.action));
+    const ret = stub.getResponse(stub.getfilesParseXML(loadXML(stub.action)));
     //console.log(ret);
     expect(Object.keys(ret).length).toBe(1);
     const size = 512 * 512;
@@ -440,7 +442,7 @@ describe("xmlrpc calls", () => {
   it("should parse list response", () => {
     const stub = new rTorrentStub("?list=1");
     //console.log(stub.content);
-    const ret = stub.getResponse(loadXML(stub.action));
+    const ret = stub.getResponse(stub.listParseXML(loadXML(stub.action)));
     //console.log(ret);
     for (const [hash, label, comment] of [
       [h("A"), "Cat A", ""],
@@ -460,7 +462,7 @@ describe("xmlrpc calls", () => {
   // sends the whole list and no deletions, and says so with "full".
   function seedListState() {
     const stub = new rTorrentStub("?list=1");
-    stub.getResponse(loadXML(stub.action));
+    stub.getResponse(stub.listParseXML(loadXML(stub.action)));
     return stub;
   }
 
@@ -488,7 +490,7 @@ describe("xmlrpc calls", () => {
 
   it("reads the partially done flag from the list response", () => {
     const stub = new rTorrentStub("?list=1");
-    const ret = stub.getResponse(loadXML(stub.action));
+    const ret = stub.getResponse(stub.listParseXML(loadXML(stub.action)));
     expect(ret.torrents[h("A")].partially_done).toBe(0);
     // B is the fixture's partial seed: incomplete (done 500) yet every
     // selected chunk on disk. Without one such torrent the flag could be

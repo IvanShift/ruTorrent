@@ -45,7 +45,7 @@ class ManualEntrypointsTest
 		$tree = sys_get_temp_dir() . '/rutorrent-manual-' . uniqid('', true);
 		if(!mkdir($tree, 0700, true) && !is_dir($tree))
 			throw new RuntimeException('could not create the fixture tree');
-		foreach(array('plugins/rutracker_check', 'php', 'rec', 'tmp') as $sub)
+		foreach(array('plugins/rutracker_check', 'php/utility', 'rec', 'tmp') as $sub)
 			if(!mkdir($tree . '/' . $sub, 0700, true))
 				throw new RuntimeException('could not create ' . $sub);
 
@@ -62,6 +62,8 @@ class ManualEntrypointsTest
 
 		if(!copy($this->root . '/php/cli-only.php', $tree . '/php/cli-only.php'))
 			throw new RuntimeException('could not copy worker SAPI guard');
+		if(!copy($this->root . '/php/utility/utility.php', $tree . '/php/utility/utility.php'))
+			throw new RuntimeException('could not copy shell argument owner');
 
 		$this->writeUtilStub($tree);
 		$this->writeRecorder($tree);
@@ -95,13 +97,8 @@ class ManualEntrypointsTest
 			. '		return "";' . "\n"
 			. '	}' . "\n"
 			. '}' . "\n"
-			. 'class Utility' . "\n"
-			. '{' . "\n"
-			. '	public static function getPHP()' . "\n"
-			. '	{' . "\n"
-			. '		return getenv("MANUAL_TEST_PHP");' . "\n"
-			. '	}' . "\n"
-			. '}' . "\n"
+			. 'require_once dirname(__FILE__)."/utility/utility.php";' . "\n"
+			. '$pathToExternals = array("php" => getenv("MANUAL_TEST_PHP"));' . "\n"
 			. 'class User' . "\n"
 			. '{' . "\n"
 			. '	public static function getUser()' . "\n"

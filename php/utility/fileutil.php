@@ -2,6 +2,7 @@
 
 require_once( 'lfs.php' );
 require_once( 'user.php' );
+require_once(__DIR__.'/utf.php');
 
 class FileUtil
 {
@@ -17,6 +18,24 @@ class FileUtil
 	{
 		$arr = explode('/',$path);
 		return(end($arr));
+	}
+
+	/** Display metadata never replaces the bytes passed to filesystem owners. */
+	public static function displayPath($path)
+	{
+		return UTF::isValid($path) ? $path : array('name' => UTF::display($path), 'pathKey' => rawurlencode($path));
+	}
+
+	/** Decode a structured form path once, before the caller's usual path checks. */
+	public static function requestPath($value)
+	{
+		if(is_string($value))
+			return $value;
+		if(!is_array($value) || !isset($value['name'], $value['pathKey']) ||
+			!is_string($value['name']) || !is_string($value['pathKey']))
+			return null;
+		$path = rawurldecode($value['pathKey']);
+		return rawurlencode($path) === $value['pathKey'] ? $path : null;
 	}
 
 	public static function addslash( $str )

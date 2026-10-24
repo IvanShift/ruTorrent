@@ -10,13 +10,14 @@ class MediaEmptyPathTaskTest extends TestCase
     {
         $this->root = dirname(__DIR__, 2);
         $this->scratch = sys_get_temp_dir() . '/rt-media-empty-' . getmypid() . '-' . bin2hex(random_bytes(4));
-        foreach (array('php', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo') as $dir)
+        foreach (array('php/utility', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo') as $dir)
             mkdir($this->scratch . '/' . $dir, 0777, true);
         foreach (array('plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
             'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php') as $file)
             copy($this->root . '/' . $file, $this->scratch . '/' . $file);
         foreach (array('rtorrent.php', 'commandargs.php') as $file)
             copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file);
+        copy($this->root . '/php/utility/utility.php', $this->scratch . '/php/utility/utility.php');
         foreach (array('util.php', 'xmlrpc.php', 'Torrent.php') as $stub)
             file_put_contents($this->scratch . '/php/' . $stub, "<?php\n");
         file_put_contents($this->scratch . '/php/settings.php', "<?php\n");
@@ -29,7 +30,7 @@ class FileUtil {
 }
 class CachedEcho { public static function send($value, $type) { echo $value; } }
 class JSON { public static function safeEncode($value) { return json_encode($value); } }
-class Utility { public static function getExternal($name) { return $name; } }
+require_once(__DIR__.'/../../php/utility/utility.php');
 class rCache { public function get($item) { return false; } }
 class rXMLRPCCommand { public function __construct($name, $args = null) {} }
 class rXMLRPCRequest {

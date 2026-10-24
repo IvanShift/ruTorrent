@@ -1,4 +1,7 @@
 <?php
+require_once(__DIR__.'/../../../php/utility/json.php');
+// Extracted classes omit the production bootstrap which supplies Utility.
+require_once(__DIR__.'/../../../php/utility/utility.php');
 define('MOVE_WORKER_TEST_LIBRARY',true);
 require_once __DIR__.'/MoveWorkerTest.php';
 require_once testFindRepoRoot().'/plugins/erasedata/filesystem.php';
@@ -59,4 +62,48 @@ $suite->test('a journal whose new name answers late still delivers its notice on
         strictAssertSame(array(),glob($root.'/.settling-*'),'nothing is left hidden');
     }finally{strictSetPrivateStatic('AutoToolsMoveJob','files',null);strictRemoveTree($state['root']);rXMLRPCRequest::reset();}
 });
+
+$suite->test('large byte receipts are released before notice and next-job readback',function(){
+    $root=sys_get_temp_dir().'/move-large-'.bin2hex(random_bytes(5));mkdir($root,0700);
+    try {
+        $script=<<<'SCRIPT'
+require 'tests/plugins/rutracker_check/TestLib.php';
+require 'php/utility/json.php';
+require 'plugins/erasedata/filesystem.php';
+class FileUtil { public static $log=array(); public static function toLog($line){self::$log[]=$line;} }
+class AutoToolsFileTransaction {public static function journalRoot($required=false){return getenv('JOURNAL_ROOT');}}
+class AutoToolsMoveQueue {
+    public static function state($hash){return array('phase'=>'leased');}
+    public static function owns($state,$qid,$user){return true;}
+}
+eval(loadClassDefinition(testFindRepoRoot().'/plugins/autotools/move_job_lib.php','AutoToolsMoveJob'));
+$root=getenv('JOURNAL_ROOT');$hash=str_repeat('A',40);
+$job=array('version'=>2,'qid'=>str_repeat('a',32),'kind'=>'Move','hash'=>$hash,
+    'phase'=>'notice-pending','src'=>'/source','dst'=>'/destination','identity'=>'1:2','daemon_dir'=>'/destination',
+    'files'=>array(),'receipt'=>array('files'=>array(),'dirs'=>array()));
+for($i=0;$i<60000;$i++) {
+    $path=str_repeat('x',80).$i."\xFF";$job['files'][]=$path;
+    $job['receipt']['files'][$path]=array('id'=>'12345678:123456789','hash'=>str_repeat('a',64),'size'=>100000);
+}
+AutoToolsMoveJob::writeJob($root,$job);
+$job['hash']=str_repeat('B',40);AutoToolsMoveJob::writeJob($root,$job);unset($job);
+rXMLRPCRequest::queue('d.get_directory',true,false,array('/changed'));
+$status=AutoToolsMoveJob::run($hash,str_repeat('a',32),'tester',str_repeat('c',32));
+AutoToolsMoveJob::recoverCompleted();
+echo json_encode(array('status'=>$status,'classified'=>count(FileUtil::$log)===1
+    &&strpos(FileUtil::$log[0],'completed-state-changed')!==false,'journals'=>count(glob($root.'/*.move.json'))));
+SCRIPT;
+        $process=proc_open(array(PHP_BINARY,'-d','memory_limit=128M','-r',$script),
+            array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('pipe','w')),
+            $pipes,testFindRepoRoot(),array_merge($_ENV,array('JOURNAL_ROOT'=>$root)));
+        if(!is_resource($process))throw new RuntimeException('large receipt child unavailable');
+        $output=stream_get_contents($pipes[1]);$errors=stream_get_contents($pipes[2]);
+        fclose($pipes[1]);fclose($pipes[2]);$status=proc_close($process);
+        strictAssertSame(0,$status,'large readback reaches the owner without exhausting 128 MiB: '.$errors);
+        strictAssertSame('', $errors,'no PHP memory or decode failure');
+        strictAssertSame(array('status'=>1,'classified'=>true,'journals'=>2),json_decode($output,true),
+            'notice validates the current directory and recovery retains both unresolved jobs');
+    } finally {strictRemoveTree($root);}
+});
+
 exit($suite->run());

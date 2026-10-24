@@ -102,6 +102,45 @@ class SourceExportActionTest extends TestCase
             'ordinary source ZIP preserves the original full metainfo bytes');
     }
 
+    public function testSourceZipUsesTheMetadataAliasOnlyForTheArchiveLabel()
+    {
+        $raw = "cp\xFF %41";
+        $alias = 'серия "q" \\b %41';
+        $info = 'd6:lengthi1e4:name'.strlen($raw).':'.$raw
+            .'10:name.utf-8'.strlen($alias).':'.$alias.'12:piece lengthi16384e6:pieces20:'.str_repeat('x',20).'e';
+        $bytes = 'd4:info'.$info.'e';
+        $path = $this->directory.'/'.self::INFO_HASH.'.torrent';
+        file_put_contents($path, $bytes);
+        list($status, $out, $err) = $this->request($path);
+        $this->assertSame(0, $status, 'legacy source ZIP exits cleanly: '.$err);
+        $this->assertSame('', $err, 'legacy source ZIP emits no PHP warning');
+        $archive = json_decode($out, true);
+        $label = 'серия "q" _b %41-1.torrent';
+        $this->assertSame(array($label), is_array($archive) ? array_keys($archive) : null,
+            'the ZIP member uses Unicode and literal percent text while remaining one path component');
+        $this->assertSame($bytes, isset($archive[$label]) ? base64_decode($archive[$label], true) : null,
+            'the archive payload keeps the source torrent bytes and raw legacy name');
+    }
+
+    public function testSourceZipAliasesCannotCreateParentTraversalEntries()
+    {
+        foreach(array(array("cp\xFF", '..\\outside\\name'), array('../outside/name', 'ignored')) as $names) {
+            list($raw, $alias) = $names;
+            $info = 'd6:lengthi1e4:name'.strlen($raw).':'.$raw
+                .'10:name.utf-8'.strlen($alias).':'.$alias.'12:piece lengthi16384e6:pieces20:'.str_repeat('x',20).'e';
+            $bytes = 'd4:info'.$info.'e';
+            $path = $this->directory.'/'.self::INFO_HASH.'.torrent';
+            file_put_contents($path, $bytes);
+            list($status, $out, $err) = $this->request($path);
+            $archive = json_decode($out, true);
+            $this->assertSame(0, $status, 'a traversal-shaped label does not stop source export: '.$err);
+            $this->assertSame(array('.._outside_name-1.torrent'), is_array($archive) ? array_keys($archive) : null,
+                'a metadata label cannot traverse directories on either slash convention');
+            $this->assertSame($bytes, isset($archive['.._outside_name-1.torrent']) ? base64_decode($archive['.._outside_name-1.torrent'], true) : null,
+                'safe archive labels leave the torrent payload unchanged');
+        }
+    }
+
     public function testMultiSourceZipLogsRejectedMetadataEntry()
     {
         $raw = 'd6:lengthi1e4:name8:seed.bin12:piece lengthi16384e6:pieces20:'

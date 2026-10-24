@@ -1,4 +1,7 @@
 <?php
+require_once(__DIR__.'/../../../php/utility/json.php');
+// Extracted classes omit the production bootstrap which supplies Utility.
+require_once(__DIR__.'/../../../php/utility/utility.php');
 
 // AutoTools Copy, HardLink and SoftLink under the payload trust rule that
 // datadir and AutoTools Move share (R3-OWN-01): a Windows-like 0777 tree at and

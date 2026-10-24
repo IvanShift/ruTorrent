@@ -23,7 +23,11 @@ if(isset($input['cmd']))
 		{
 			Requests::requirePost();
 			$up = rUnpack::load();
-			$ret = $up->startTask( $input['hash'], $input['dir'], $input['mode'], $input['no'] );
+			$directory = FileUtil::requestPath($input['dir'] ?? null);
+			if($directory !== null)
+				$ret = $up->startTask( $input['hash'], $directory, $input['mode'], $input['no'] );
+			else
+				$ret = array('no' => -1, 'pid' => 0, 'status' => 255, 'log' => array(), 'errors' => array('Invalid directory.'));
 			break;
 		}
 	}

@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__.'/../../php/utility/utility.php');
+
 /**
  * The manual "check for update" handover, shared by its two entrypoints.
  *
@@ -59,12 +61,12 @@ class RuTrackerDetachedPhp
 	static public function command($php, $script, $arguments = array())
 	{
 		$parts = array(
-			escapeshellarg((string) $php),
+			Utility::escapeShellArg((string) $php),
 			'-f',
-			escapeshellarg((string) $script),
+			Utility::escapeShellArg((string) $script),
 		);
 		foreach((array) $arguments as $argument)
-			$parts[] = escapeshellarg((string) $argument);
+			$parts[] = Utility::escapeShellArg((string) $argument);
 		return implode(' ', $parts) . ' > /dev/null 2>&1 &';
 	}
 

@@ -1,5 +1,6 @@
 <?php
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
+require_once dirname(__DIR__, 3) . '/php/utility/utf.php';
 $source = getenv('AUTOTOOLS_CLASS_SOURCE') ?: dirname(__DIR__, 3) . '/plugins/autotools/autotools.php';
 eval(loadClassDefinition($source, 'rAutoTools'));
 
@@ -29,6 +30,30 @@ $suite->test('documented .mailto is sent from the nearest destination parent', f
         unlink($root . '/.mailto');
         rmdir($root . '/parent/leaf');
         rmdir($root . '/parent');
+        rmdir($root);
+    }
+});
+$suite->test('completion mail renders raw torrent bytes in its UTF-8 subject and body', function () {
+    $root = (getenv('TMPDIR') ?: sys_get_temp_dir()) . '/autotools-mail-' . bin2hex(random_bytes(8));
+    mkdir($root);
+    $destination = $root . "/raw\xFF";
+    mkdir($destination);
+    try {
+        file_put_contents($destination . '/.mailto', "TO: local@example.test\n"
+            . "SUBJECT: Finished {TORRENT}\nBody for {TORRENT}\n");
+        $sent = [];
+        $result = rAutoTools::notifyCompletedFileTransfer($destination, $root,
+            "raw\xFF", function ($to, $subject, $body, $headers) use (&$sent) {
+                $sent[] = [$to, $subject, $body, $headers];
+                return true;
+            });
+        strictAssertSame(true, $result, 'the raw destination still selects its own .mailto file');
+        strictAssertSame([['local@example.test', 'Finished raw\\xFF', "Body for raw\\xFF\n",
+            "From: \r\nContent-type: text/plain; charset=utf-8\r\n"]], $sent,
+            'the UTF-8 message displays the byte without changing the file lookup');
+    } finally {
+        unlink($destination . '/.mailto');
+        rmdir($destination);
         rmdir($root);
     }
 });
