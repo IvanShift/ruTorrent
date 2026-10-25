@@ -45,14 +45,20 @@ class ErasedataCollectorRpcWire
 	}
 }
 
-// Borrow the request owner's accessor verbatim. The fixture only supplies
-// its parser fields; it cannot turn a PHP array into XML row provenance.
-eval('trait ErasedataCollectorStringTable { public '
-    . loadFunctionDefinition(__DIR__ . '/../../../php/xmlrpc.php', 'stringTable') . '}');
-
 trait ErasedataCollectorTypedReplies
 {
-    use ErasedataCollectorStringTable;
+    // Keep the wrapper visible to static analysis while executing the real
+    // request owner's accessor against the fixture's parsed wire evidence.
+    public function stringTable($columns, $resultIndex = null)
+    {
+        static $reader = null;
+        if ($reader === null) {
+            $definition = loadFunctionDefinition(__DIR__ . '/../../../php/xmlrpc.php', 'stringTable');
+            $reader = eval('return ' . preg_replace('/^function\s+stringTable\s*/', 'function ', $definition, 1) . ';');
+        }
+        $bound = $reader->bindTo($this, __CLASS__);
+        return $bound($columns, $resultIndex);
+    }
 
     public $responseCommandValues = array();
     public $responseCommandTypes = array();
