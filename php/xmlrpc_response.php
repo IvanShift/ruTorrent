@@ -19,6 +19,10 @@ final class rXMLRPCResponse
 	public $stringArrayWidths = array();
 	// One compact table width per top-level result: null invalid, -1 empty.
 	public $stringTableWidths = array();
+	// One compact proof per command result; native multicall wrappers remain in values.
+	public $commandValues = array();
+	public $commandTypes = array();
+	public $commandStringTableWidths = array();
 	public $fault = false;
 	public $faultString = '';
 
@@ -71,7 +75,10 @@ final class rXMLRPCResponse
 					!($code >= 0xE000 && $code <= 0xFFFD) &&
 					!($code >= 0x10000 && $code <= 0x10FFFF)) $this->refuse();
 			}
-		return html_entity_decode($text, ENT_QUOTES | ENT_XML1, 'UTF-8');
+		try { $decoded = @html_entity_decode($text, ENT_QUOTES | ENT_XML1, 'UTF-8'); }
+		catch(Throwable $error) { $this->refuse('text-decoder-unavailable'); }
+		if(!is_string($decoded)) $this->refuse('text-decoder-unavailable');
+		return $decoded;
 	}
 
 	/** Scalar text is consumed once; CDATA is literal, entities decode once. */
@@ -107,9 +114,9 @@ final class rXMLRPCResponse
 			(strlen($digits) === strlen($bound) && strcmp($digits, $bound) <= 0);
 	}
 
-	private function value($faultContext = false, $multicall = false, $depth = 0, &$resultType = null, &$rowWidth = null, &$tableWidth = null)
+	private function value($faultContext = false, $multicall = false, $depth = 0, &$resultType = null, &$rowWidth = null, &$tableWidth = null, &$wrappedResult = null)
 	{
-		$rowWidth = $tableWidth = null;
+		$rowWidth = $tableWidth = $wrappedResult = null;
 		if($depth > 64) $this->refuse();
 		list($tag, $empty) = $this->open();
 		if($tag !== 'value') $this->refuse();
@@ -148,7 +155,15 @@ final class rXMLRPCResponse
 				$this->space();
 				while(substr($this->xml, $this->offset, 7) !== '</data>')
 				{
-					$result[] = $this->value($multicall, false, $depth + 1, $childType, $childRowWidth, $childTableWidth);
+					$child = $this->value($multicall, false, $depth + 1, $childType, $childRowWidth, $childTableWidth, $childWrappedResult);
+					$result[] = $child;
+					if($multicall)
+					{
+						// Only an XML array with exactly one result is a success wrapper.
+						$this->commandValues[] = $childWrappedResult === null ? null : $child[0];
+						$this->commandTypes[] = $childWrappedResult === null ? null : $childWrappedResult[0];
+						$this->commandStringTableWidths[] = $childWrappedResult === null ? null : $childWrappedResult[1];
+					}
 					// Track only widths while parsing. No parallel tree of cell types
 					// survives beside the semantic result and flat scalar accessors.
 					if($rowWidth !== null)
@@ -165,6 +180,8 @@ final class rXMLRPCResponse
 			}
 			$this->space();
 			$this->take('</array>');
+			if($faultContext && $depth === 1 && count($result) === 1)
+				$wrappedResult = array($childType, $childTableWidth);
 		}
 		else if($type === 'struct')
 		{
@@ -216,8 +233,11 @@ final class rXMLRPCResponse
 					$text = null;
 					break;
 				case 'base64':
-					$text = base64_decode(preg_replace('/[\x20\t\r\n]+/', '', $text), true);
+					// Strict decoding already accepts XML-RPC whitespace.
+					try { $text = @base64_decode($text, true); }
+					catch(Throwable $error) { $this->refuse('base64-decoder-unavailable'); }
 					if($text === false) $this->refuse('invalid-base64');
+					if(!is_string($text)) $this->refuse('base64-decoder-unavailable');
 					break;
 				default: $this->refuse('unsupported-response-type');
 			}
@@ -276,6 +296,12 @@ final class rXMLRPCResponse
 		$this->take('</methodResponse>');
 		$this->space();
 		if($this->offset !== strlen($this->xml)) $this->refuse();
+		if(!$this->multicall)
+		{
+			$this->commandValues = $this->values;
+			$this->commandTypes = $this->valueTypes;
+			$this->commandStringTableWidths = $this->stringTableWidths;
+		}
 		return $this;
 	}
 }

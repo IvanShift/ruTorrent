@@ -76,6 +76,11 @@ final class DaemonBytesScene
     public function seedPredecessor($torrent, $fields = array())
     {
         file_put_contents($this->session . $torrent['hash'] . '.torrent', $torrent['bytes']);
+        $metainfo = MiniBencode::decode($torrent['bytes']);
+        $info = $metainfo['value']['info'];
+        $paths = isset($info['files']) ? array_map(function ($file) {
+            return implode('/', $file['path']);
+        }, $info['files']) : array($info['name']);
         $this->mini->addDownload($torrent['hash'], array_merge(array(
             'name' => DB_SPECIAL,
             'directory_base' => $this->root,
@@ -83,6 +88,8 @@ final class DaemonBytesScene
             'custom1' => rawurlencode('movies'),
             'state' => 1,
             'open' => 1,
+            'files' => $paths,
+            'multi' => isset($info['files']) ? 1 : 0,
             'customs' => array('chk-topic' => '6879823', 'chk-forum' => '1106'),
         ), $fields));
     }

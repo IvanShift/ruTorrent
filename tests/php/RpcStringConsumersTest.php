@@ -57,7 +57,8 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/dump/action.php'                        => 8,
 		'plugins/edit/action.php'                        => 18,
 		'plugins/erasedata/outcome.php'                  => 9,
-		'plugins/erasedata/removewithdata.php'           => 50,
+		// Physical paths now retain per-command XML types/table rows instead of flat values.
+		'plugins/erasedata/removewithdata.php'           => 41,
 		'plugins/extratio/rules.php'                     => 5,
 		// List and files preserve nested subcall boundaries; other modes retain flat values.
 		'plugins/httprpc/action.php'                     => 46,
@@ -81,9 +82,15 @@ class RpcStringConsumersTest extends TestCase
 	// Method names retain their opaque wire bytes through the typed array owner.
 	const REVIEWED_ARRAY_COUNTS = array('php/xmlrpc.php' => 1);
 
-	// Move's three inventory consumers delegate to the one typed RPC owner.
+	// Physical-file and Move inventories retain row/cell provenance at the shared RPC owner.
+	const REVIEWED_TABLE_COUNTS = array(
+		'plugins/autotools/file_paths.php' => 1,
+		'plugins/autotools/hook_lib.php' => 1,
+		'plugins/autotools/move_queue.php' => 1,
+		'plugins/erasedata/removewithdata.php' => 1,
+	);
+	// Move's three inventory consumers delegate to that typed owner.
 	// Keep these edges visible even though they no longer read flat ->val.
-	const REVIEWED_TABLE_COUNTS = array('plugins/autotools/move_queue.php' => 1);
 	const REVIEWED_MOVE_ROW_COUNTS = array(
 		'plugins/autotools/move_queue.php' => 1,
 		'tools/autotools-move-readiness.php' => 1,

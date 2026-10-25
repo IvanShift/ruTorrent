@@ -13,6 +13,7 @@ class FileUtil
 
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
 require_once testFindRepoRoot() . '/plugins/erasedata/outcome.php';
+require_once testFindRepoRoot() . '/plugins/autotools/file_paths.php';
 
 // The real shared runner, status table and parent preflight behind a scripted
 // helper executable: only the helper path differs from production.

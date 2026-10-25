@@ -1,10 +1,11 @@
 <?php
+require_once __DIR__ . '/../../../php/utility/json.php';
 /** Serializable native queue/lease model for the real SCGI parser and CLI worker. */
 class AutoToolsMoveDaemonReplies
 {
     public $state;
     public function __construct($state) { $this->state = $state; }
-    private function save() { file_put_contents($this->state['root'] . '/native.json', json_encode($this->state)); }
+    private function save() { file_put_contents($this->state['root'] . '/native.json', JSON::encodeBytes($this->state)); }
     public function __invoke($body, $methods)
     {
         preg_match_all('~<string>(.*?)</string>~s', $body, $matches);
@@ -38,6 +39,15 @@ class AutoToolsMoveDaemonReplies
             case 'd.get_base_filename': $answer = array($s['basename']); break;
             case 'd.get_name': $answer = array($s['name']); break;
             case 'd.get_custom1': $answer = array(''); break;
+            case 'f.multicall':
+                if (array_key_exists('filePathsReply', $s))
+                    return $s['filePathsReply'] === null ? null : new FakeRtorrentRawReply($s['filePathsReply']);
+                $paths = isset($s['filePaths']) ? $s['filePaths'] : array($s['multi'] ? 'item' : $s['basename']);
+                $rows = '';
+                foreach ($paths as $path)
+                    $rows .= '<value><array><data><value><base64>' . base64_encode($path)
+                        . '</base64></value></data></array></value>';
+                return new FakeRtorrentRawReply(ScgiToolPeer::response('<array><data>' . $rows . '</data></array>'));
             case 'd.complete':
                 if (!empty($s['missing'])) return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
                 $answer = array('1'); break;

@@ -9,8 +9,9 @@
 // daemon and never waits for .autotools-file-jobs/.lock, because the other
 // owner of that lock (recover.php) calls the daemon and waits for its session saves
 // while they hold it. Only background processes may wait for that lock, so
-// the daemon never waits on a holder that waits on the daemon. When the lock
-// is busy, or the session copy the hook plans from is not published yet,
+// the daemon never waits on a holder that waits on the daemon. Multi-file
+// hooks also resolve the daemon's selected paths only in the background.
+// When the lock is busy, or the session copy is not published yet,
 // move.php records its arguments as a request and returns at once;
 // recover.php performs the request in the background, where waiting is
 // harmless, one pass at a time (.recover.lock), within the retry window of
@@ -37,6 +38,8 @@ final class AutoToolsFinishedHook
         if ($result['status'] === 'busy' || $result['status'] === 'copy-missing')
             self::defer($args, $result['status'] === 'busy' ? 'journal-busy' : 'session-copy-unreadable',
                 $result['op']);
+        elseif ($result['status'] === 'daemon-paths-needed')
+            self::defer($args, 'daemon-paths-needed', $result['op']);
         elseif ($result['status'] === 'refused' && in_array($result['op'], self::NON_MOVE, true))
             self::notifyLater((string) $args[0], $result['op'], $result['reason'], self::user($args),
                 $result['detail']);
@@ -53,6 +56,59 @@ final class AutoToolsFinishedHook
         return array('status' => 'refused', 'op' => $op, 'reason' => $reason, 'detail' => (string) $detail);
     }
 
+    private static function directoryIdentity($directory)
+    {
+        if (!is_string($directory)) throw new RuntimeException('source-context-unconfirmed');
+        try { $withoutTail = @rtrim($directory, '/'); }
+        catch (Throwable $error) { throw new RuntimeException('source-context-unconfirmed', 0, $error); }
+        if (!is_string($withoutTail)) throw new RuntimeException('source-context-unconfirmed');
+        return $directory !== '' && $withoutTail === '' ? '/' : $withoutTail;
+    }
+
+    // Capture the current source and generation with its file table in one
+    // read-only daemon callback. A delayed request cannot borrow a new load
+    // of the same hash or a directory the user selected after completion.
+    private static function backgroundFiles($hash, $info, $multi, $basePath, $baseName, $token)
+    {
+        $request = new rXMLRPCRequest(array(
+            new rXMLRPCCommand('d.get_base_path', $hash),
+            new rXMLRPCCommand('d.is_multi_file', $hash),
+            new rXMLRPCCommand('d.get_base_filename', $hash),
+            new rXMLRPCCommand('d.get_custom', array($hash, 'x-autotools-nonmove-job')),
+            new rXMLRPCCommand('d.get_directory', $hash),
+            new rXMLRPCCommand('f.multicall', array($hash, '', getCmd('f.get_path=')))));
+        $request->important = false;
+        if (!$request->success() || $request->fault
+            || count($request->responseCommandValues) !== 6
+            || count($request->responseCommandTypes) !== 6)
+            throw new RuntimeException('source-context-unconfirmed');
+        $values = $request->responseCommandValues;
+        $types = $request->responseCommandTypes;
+        foreach (array(0, 2, 3, 4) as $index)
+            if (!in_array($types[$index], array('string', 'base64'), true) || !is_string($values[$index]))
+                throw new RuntimeException('source-context-unconfirmed');
+        if (!in_array($types[1], array('int', 'i4', 'i8', 'boolean'), true)
+            || !in_array($values[1], array('0', '1'), true))
+            throw new RuntimeException('source-context-unconfirmed');
+        try { $directory = $multi ? $basePath : @dirname($basePath); }
+        catch (Throwable $error) { throw new RuntimeException('source-context-unconfirmed', 0, $error); }
+        if (self::directoryIdentity($values[4]) !== self::directoryIdentity($directory)
+            || $values[1] !== ($multi ? '1' : '0') || $values[3] !== $token
+            || ($values[0] !== '' && $values[0] !== $basePath)
+            || ($values[2] !== '' && $values[2] !== $baseName))
+            throw new RuntimeException('source-context-changed');
+        // The later x-dest acknowledgement binds the captured frozen path.
+        // Keep a cold object's request until it can prove that same path.
+        if ($values[0] === '' || $values[2] === '')
+            throw new RuntimeException('source-context-unconfirmed');
+        $rows = $request->stringTable(1, 5);
+        if ($multi) return AutoToolsFilePaths::fromTable($rows, $info);
+        if ($rows === null || count($rows) !== 1) throw new RuntimeException('file-list-malformed');
+        $paths = AutoToolsFilePaths::read($hash, $info, false, $rows[0][0]);
+        if ($paths[0] !== $baseName) throw new RuntimeException('source-context-changed');
+        return $paths;
+    }
+
     // Plans one finished hook from rTorrent's arguments (hash, base path, base
     // file name, multi-file flag, url-encoded label, name, user, job token) and
     // runs the planned file operation. The status is 'published' (with the
@@ -60,8 +116,10 @@ final class AutoToolsFinishedHook
     // unusable journal, logged with the hash; 'reason' and 'detail' name it
     // on the download), 'none' (another refusal is logged; a filter or a
     // download outside the default directory is skipped silently, by design),
-    // 'busy' (another owner holds the journal) or 'copy-missing'.
-    public static function perform(array $args, $dbg = false)
+    // 'busy' (another owner holds the journal), 'copy-missing',
+    // 'daemon-paths-needed' (the synchronous hook must return before RPC),
+    // or 'paths-unavailable' (background resolution may be retried).
+    public static function perform(array $args, $dbg = false, $daemonReady = false)
     {
         $none = array('status' => 'none', 'op' => null);
         $hash = isset($args[0]) ? (string) $args[0] : '';
@@ -111,6 +169,27 @@ final class AutoToolsFinishedHook
             $destination .= FileUtil::addslash($label);
         if ($at->addName && $name !== '')
             $destination .= FileUtil::addslash($name);
+        $multi = $isMulti === '1';
+        $sub = $multi ? rtAddTailSlash($baseName) : '';
+        $source = $base . $sub;
+        $target = $destination . $sub;
+        if ($multi && !$daemonReady)
+            return array('status' => 'daemon-paths-needed', 'op' => $op);
+        try {
+            $files = $daemonReady ? self::backgroundFiles($hash, $torrent->info, $multi, $basePath, $baseName, $token)
+                : AutoToolsFilePaths::read($hash, $torrent->info, false, $baseName);
+        } catch (RuntimeException $error) {
+            if (in_array($error->getMessage(), array('file-list-unconfirmed', 'source-context-unconfirmed'), true))
+                return array('status' => 'paths-unavailable', 'op' => $op, 'reason' => $error->getMessage());
+            if ($error->getMessage() === 'source-context-changed') {
+                FileUtil::toLog('autotools: nonmove ' . $hash . ' refused: source-context-changed');
+                return self::refused($op, 'source-context-changed');
+            }
+            FileUtil::toLog('autotools: nonmove ' . $hash . ' refused: file-list-invalid: ' . $error->getMessage());
+            return self::refused($op, 'file-list-invalid', $error->getMessage());
+        }
+        if (self::skipped($at->skip_move_for_files, $files, $dbg) || $source === $target || !is_dir($source))
+            return $none;
         if (!rtMkDir($finished, 0755)) {
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': finished-root-unavailable');
             return self::refused($op, 'finished-root-unavailable');
@@ -119,18 +198,6 @@ final class AutoToolsFinishedHook
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': destination-outside-finished-root');
             return self::refused($op, 'destination-outside-finished-root');
         }
-        $sub = $isMulti ? rtAddTailSlash($baseName) : '';
-        $source = $base . $sub;
-        $target = $destination . $sub;
-        $files = array();
-        $info = $torrent->info;
-        if (isset($info['files']))
-            foreach ($info['files'] as $file)
-                $files[] = implode('/', $file['path']);
-        else
-            $files[] = $info['name'];
-        if (self::skipped($at->skip_move_for_files, $files, $dbg) || $source === $target || !is_dir($source))
-            return $none;
         if ($dbg) rtDbg('AutoMove', 'Operation ' . $op . ' from ' . $source . ' to ' . $target);
         $context = array('hash' => $hash, 'token' => $token, 'sourceBase' => $basePath, 'destination' => $target);
         $context['notice'] = array('noticeDestination' => $destination, 'finishedRoot' => $finished,
@@ -217,6 +284,7 @@ final class AutoToolsFinishedHook
         switch ($reason) {
             case 'journal-busy':
             case 'session-copy-unreadable':
+            case 'daemon-paths-needed':
                 return 'autotools: ' . $op . ' refused: ' . $reason . '; the deferred request could not be'
                     . ' recorded in the session directory' . $nothing . '; check that rTorrent can write its'
                     . ' session directory and that no other user can';
@@ -230,8 +298,14 @@ final class AutoToolsFinishedHook
             case 'destination-unavailable':
                 return 'autotools: ' . $op . ' refused: destination-unavailable ' . $detail
                     . '; the directory could not be created' . $nothing;
+            case 'source-context-changed':
+                return 'autotools: ' . $op . ' refused: source-context-changed; the download source or job token'
+                    . ' changed after its finished hook; source data is retained';
+            case 'source-context-unconfirmed':
+                return 'autotools: ' . $op . ' refused: source-context-unconfirmed; rTorrent did not confirm'
+                    . ' the captured source within the retry window; source data is retained';
         }
-        if (in_array($reason, array('session-copy-invalid', 'finished-root-unavailable',
+        if (in_array($reason, array('session-copy-invalid', 'file-list-unconfirmed', 'file-list-invalid', 'finished-root-unavailable',
             'destination-outside-finished-root', 'journal-write-failed', 'file-operation-refused'), true))
             return 'autotools: ' . $op . ' refused: ' . $reason
                 . '; inspect the file-job journal and errors.log; source data is retained';
@@ -291,7 +365,7 @@ final class AutoToolsFinishedHook
                     clearstatcache(true, $copy);
                     return is_readable($copy);
                 });
-                $result = self::perform($args);
+                $result = self::perform($args, false, true);
                 if ($result['status'] === 'busy')
                     break;
                 if ($result['status'] === 'copy-missing') {
@@ -301,6 +375,12 @@ final class AutoToolsFinishedHook
                     if (time() - $request['at'] < rtFileJobRetryWindow())
                         continue;
                     self::refuseMissingCopy($args[0], $result['op']);
+                }
+                elseif ($result['status'] === 'paths-unavailable') {
+                    if (time() - $request['at'] < rtFileJobRetryWindow())
+                        continue;
+                    FileUtil::toLog('autotools: nonmove ' . $args[0] . ' refused: ' . $result['reason']);
+                    self::notifyRefusal($args[0], $result['op'], $result['reason']);
                 }
                 elseif ($result['status'] === 'refused')
                     self::notifyRefusal($args[0], $result['op'], $result['reason'], $result['detail']);
@@ -322,7 +402,7 @@ final class AutoToolsFinishedHook
             || $request['version'] !== 1 || !is_string($request['id'])
             || preg_match('/^[0-9a-f]{24}$/D', $request['id']) !== 1
             || $name !== $request['id'] . self::REQUEST_SUFFIX || !is_int($request['at'])
-            || !in_array($request['reason'], array('journal-busy', 'session-copy-unreadable'), true)
+            || !in_array($request['reason'], array('journal-busy', 'session-copy-unreadable', 'daemon-paths-needed'), true)
             || !is_array($request['args']) || count($request['args']) < 7 || count($request['args']) > 8
             || array_values($request['args']) !== $request['args'])
             return null;

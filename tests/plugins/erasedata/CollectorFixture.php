@@ -31,6 +31,7 @@
 
 require_once(dirname(__FILE__).'/../../../plugins/erasedata/filesystem.php');
 require_once(dirname(__FILE__).'/../../php/SourceDefinitionFixture.php');
+require_once __DIR__ . '/PhysicalRpcFixture.php';
 
 if(!class_exists('FileUtil'))
 {
@@ -94,6 +95,7 @@ if(!class_exists('rXMLRPCRequest'))
 {
 	class rXMLRPCRequest
 	{
+		use ErasedataCollectorTypedReplies;
 		public static $responses = array();	// first command name => scripted reply
 		public static $requested = array();	// first command name of each request, in order
 		public static $erased = array();	// hashes passed to d.erase
@@ -127,6 +129,7 @@ if(!class_exists('rXMLRPCRequest'))
 		}
 		public function run($trusted = true)
 		{
+			$this->clearPhysicalReply();
 			if(!count($this->commands))
 				return(false);
 			$first = $this->commands[0]->command;
@@ -182,6 +185,7 @@ if(!class_exists('rXMLRPCRequest'))
 			$this->rawFaultString = array_key_exists("rawFaultString", $response)
 				? $response["rawFaultString"] : null;
 			$this->faultCode = isset($response["faultCode"]) ? $response["faultCode"] : 0;
+			$this->acceptPhysicalReply($this->commands, $response);
 			if(isset($response["runResult"]))
 				return($response["runResult"]);
 			return(isset($response["ok"]) ? $response["ok"] : true);
@@ -1535,6 +1539,7 @@ class ErasedataProductionMirror
 			."// scripted reply table. It never starts, acknowledges or stands in\n"
 			."// for a child process of any kind.\n"
 			."require_once(dirname(dirname(__FILE__)).'/php/util.php');\n"
+			.'require_once('.var_export(__DIR__.'/PhysicalRpcFixture.php', true).");\n"
 			."// Historical adapter exercises the user-approved legacy engine.\n"
 			."function erasedataNativeCapability() { return('legacy'); }\n"
 			."class rXMLRPCCommand\n"
@@ -1546,6 +1551,8 @@ class ErasedataProductionMirror
 			."}\n"
 			."class rXMLRPCRequest\n"
 			."{\n"
+			."\tuse ErasedataCollectorTypedReplies;\n"
+			."\tpublic \$responseValues = array(); public \$responseTypes = array();\n"
 			."\tpublic \$val = array(); public \$fault = false;\n"
 			."\tpublic \$faultString = ''; public \$rawFaultString = null;\n"
 			."\tpublic \$faultCode = 0; public \$important = true;\n"
@@ -1559,6 +1566,7 @@ class ErasedataProductionMirror
 			."\tpublic function addCommand(\$command) { \$this->commands[] = \$command; }\n"
 			."\tpublic function run(\$trusted = true)\n"
 			."\t{\n"
+			."\t\t\$this->clearPhysicalReply();\n"
 			."\t\tif(!count(\$this->commands)) return(false);\n"
 			// The aggregate mode is decided FIRST, before the scripted lookup
 			// below. That order is the whole point: d.set_custom5 is the first
@@ -1694,6 +1702,7 @@ class ErasedataProductionMirror
 			."\t\t\$this->faultString = isset(\$reply['faultString'])\n"
 			."\t\t\t? \$reply['faultString'] : '';\n"
 			."\t\t\$this->faultCode = isset(\$reply['faultCode']) ? \$reply['faultCode'] : 0;\n"
+			."\t\t\$this->acceptPhysicalReply(\$this->commands, \$reply);\n"
 			."\t\treturn(isset(\$reply['ok']) ? (bool)\$reply['ok'] : true);\n"
 			."\t}\n"
 			."\tpublic function success(\$trusted = true)\n"
@@ -1755,6 +1764,7 @@ class ErasedataProductionMirror
 			."\t\t\$this->rawFaultString = \$this->fault ? \$this->faultString : null;\n"
 			."\t\t\$this->faultCode = isset(\$reply['faultCode'])\n"
 			."\t\t\t? (int)\$reply['faultCode'] : 0;\n"
+			."\t\t\$this->acceptPhysicalReply(\$this->commands, \$reply);\n"
 			."\t\treturn(isset(\$reply['ok']) ? (bool)\$reply['ok'] : true);\n"
 			."\t}\n"
 			."\tprivate static function readReply(\$dir, \$id)\n"

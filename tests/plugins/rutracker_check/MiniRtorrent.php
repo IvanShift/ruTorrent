@@ -124,7 +124,7 @@ class MiniRtorrent
 	 */
 	public function __invoke($request, $methods)
 	{
-		$values = array();
+		$results = array();
 		$lose = false;
 		try {
 			foreach (self::parseRequest($request) as $call) {
@@ -133,9 +133,15 @@ class MiniRtorrent
 					$this->loseReplies[$call['method']]--;
 					$lose = true;
 				}
-				self::flatten($this->rpc($call['method'], $call['params']), $values);
+				$results[] = $this->rpc($call['method'], $call['params']);
 			}
-			$reply = $lose ? null : $values;
+			$batch = strpos($request, '<methodName>system.multicall</methodName>') !== false;
+			$body = '';
+			foreach ($results as $result)
+				$body .= self::xmlValue($batch ? array($result) : $result);
+			$reply = $lose ? null : new FakeRtorrentRawReply('<methodResponse><params><param>'
+				. ($batch ? '<value><array><data>' . $body . '</data></array></value>' : $body)
+				. '</param></params></methodResponse>');
 		} catch (MiniRtorrentFault $fault) {
 			$reply = FakeRtorrentDaemon::fault($fault->getMessage(), $fault->faultCode);
 		} catch (RtorrentInputError $error) {
@@ -191,16 +197,20 @@ class MiniRtorrent
 		return $values;
 	}
 
-	private static function flatten($value, &$into)
+	// Preserve command wrappers and table rows, as the real XMLRPC grammar does.
+	// XML text stays byte-wise: quotes and backslashes are ordinary string bytes.
+	private static function xmlValue($value)
 	{
 		if (is_array($value)) {
+			$body = '';
 			foreach ($value as $item)
-				self::flatten($item, $into);
-		} elseif ($value === null) {
-			$into[] = 0;
-		} else {
-			$into[] = $value;
+				$body .= self::xmlValue($item);
+			return '<value><array><data>' . $body . '</data></array></value>';
 		}
+		if ($value === null || is_int($value))
+			return '<value><i8>' . (int) $value . '</i8></value>';
+		return '<value><string>' . strtr((string) $value,
+			array('&' => '&amp;', '<' => '&lt;', '>' => '&gt;')) . '</string></value>';
 	}
 
 	// --------------------------------------------------------------- RPC
@@ -321,8 +331,10 @@ class MiniRtorrent
 		foreach ($this->downloads as $hash => $download) {
 			if ($view !== '' && $view !== 'main' && !in_array($view, $download['views'], true))
 				continue;
+			$row = array();
 			foreach ($params as $command)
-				$values[] = $this->exec((string) $command, $hash);
+				$row[] = $this->exec((string) $command, $hash);
+			$values[] = $row;
 		}
 		return $values;
 	}
@@ -332,9 +344,12 @@ class MiniRtorrent
 	{
 		$values = array();
 		$rows = $kind === 't' ? $this->downloads[$hash]['trackers'] : $this->downloads[$hash]['files'];
-		foreach (array_keys($rows) as $index)
+		foreach (array_keys($rows) as $index) {
+			$row = array();
 			foreach ($commands as $command)
-				$values[] = $this->exec((string) $command, $hash, array($kind, $index));
+				$row[] = $this->exec((string) $command, $hash, array($kind, $index));
+			$values[] = $row;
+		}
 		return $values;
 	}
 

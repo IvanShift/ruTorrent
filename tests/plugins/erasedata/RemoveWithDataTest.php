@@ -5876,6 +5876,78 @@ class RemoveWithDataTest extends TestCase
 			'the mixed-padding commit token is consumed with its manifest');
 	}
 
+	public function testCleanupCollectorUsesSelectedUtf8PathsWhileFilteringPadding()
+	{
+		foreach(array(false, true) as $open)
+		{
+			$this->reset();
+			$oldHash = $this->hash('A');
+			$newHash = $this->hash('B');
+			$base = $this->dir.'/selected-successor-'.(int)$open;
+			mkdir($base, 0700);
+			$padding = $base.'/padding.bin';
+			$name = 'episode серия.mkv';
+			$selected = $base.'/'.$name;
+			file_put_contents($padding, 'obsolete physical file');
+			file_put_contents($selected, 'successor payload');
+			$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($padding, $selected));
+			$successor = array(
+				'source' => array('hash'=>$newHash, 'info'=>array('name'=>'Show', 'files'=>array(
+					array('path'=>array('legacy-padding'), 'length'=>1, 'attr'=>'p'),
+					array('path'=>array("episode \xF1\xE5\xF0\xE8\xFF.mkv"), 'path.utf-8'=>array($name), 'length'=>17)))),
+				'frozen' => array('ok'=>true, 'fault'=>false,
+					'val'=>array($open ? $base : '', 1, $open ? $padding : '', $open ? $selected : '')),
+				'stored' => array('ok'=>true, 'fault'=>false, 'val'=>array($base, 1, 'padding.bin', $name)));
+			list($status, $output) = $this->runCollector(array('val'=>array($newHash),
+				'owned'=>array('base'=>$base, 'multi'=>1, 'files'=>array($padding, $selected)),
+				'successorOverride'=>$successor));
+			$this->assertEquals(0, $status, 'selected-path cleanup exits normally: '.$output);
+			$this->assertTrue(!file_exists($padding), 'the indexed padding row does not protect obsolete physical data');
+			$this->assertEquals('successor payload', @file_get_contents($selected),
+				'the actual UTF-8 successor file remains protected');
+			$this->assertSame(false, $this->onlyManifest($oldHash, 'tmp'), 'selected aliases do not strand the cleanup job');
+			$this->assertSame(false, $this->onlyManifest($oldHash, 'list'), 'the matching commit token retires');
+		}
+	}
+
+	public function testCleanupCollectorRetainsWhenPhysicalFileRowsAreMalformed()
+	{
+		$this->reset();
+		$oldHash = $this->hash('A');
+		$newHash = $this->hash('B');
+		$base = $this->dir.'/malformed-selected-rows';
+		mkdir($base, 0700);
+		$live = $base.'/selected-live';
+		$padding = $base.'/selected-pad';
+		file_put_contents($live, 'successor payload');
+		file_put_contents($padding, 'ordinary neighbour');
+		$this->writeCleanupCollectorManifest($oldHash, $newHash, $base, array($live));
+		// This struct has the same flat scalar count as two single-cell rows,
+		// but its insertion order would assign the live file the padding role.
+		$table = '<value><array><data><value><struct><member><name>1</name>'
+			.ErasedataCollectorRpcWire::value('selected-live').'</member><member><name>0</name>'
+			.ErasedataCollectorRpcWire::value('selected-pad').'</member></struct></value></data></array></value>';
+		$wire = ErasedataCollectorRpcWire::batch(array(ErasedataCollectorRpcWire::value($base),
+			ErasedataCollectorRpcWire::value(1), $table));
+		$successor = array(
+			'source' => array('hash'=>$newHash, 'info'=>array('name'=>'Show', 'files'=>array(
+				array('path'=>array('legacy-pad'), 'length'=>1, 'attr'=>'p'),
+				array('path'=>array('legacy-live'), 'length'=>17)))),
+			'frozen' => array('ok'=>true, 'fault'=>false, 'val'=>array('', 1, '', '')),
+			'stored' => array('ok'=>true, 'fault'=>false, 'wire'=>$wire,
+				'val'=>array($base, 1, 'selected-live', 'selected-pad')));
+		list($status, $output) = $this->runCollector(array('val'=>array($newHash),
+			'owned'=>array('base'=>$base, 'multi'=>1, 'files'=>array($padding, $live)),
+			'successorOverride'=>$successor, 'debug'=>true));
+		$this->assertEquals(0, $status, 'malformed rows retain without crashing: '.$output);
+		$this->assertEquals('successor payload', @file_get_contents($live), 'the live ordinary file cannot become unclaimed padding');
+		$this->assertEquals('ordinary neighbour', @file_get_contents($padding), 'an unrelated neighbour remains unchanged');
+		$this->assertTrue(is_string($this->onlyManifest($oldHash, 'tmp')) && is_string($this->onlyManifest($oldHash, 'list')),
+			'the malformed snapshot retains the exact cleanup obligation');
+		$this->assertTrue(in_array('erasedata: cleanup retained '.$oldHash.' rpc-unknown', $this->collectorLogs($output), true),
+			'the malformed snapshot remains visibly unconfirmed');
+	}
+
 	public function testCleanupCollectorTreatsAllPaddingSuccessorAsNoPhysicalFiles()
 	{
 		$this->reset();
@@ -5961,8 +6033,8 @@ class RemoveWithDataTest extends TestCase
 				)))),
 			'multi discriminator mismatch' => array('source' => array('hash' => $newHash,
 				'info' => array('name' => 'new.bin', 'length' => 1))),
-			'file order path mismatch' => array('source' => array('hash' => $newHash, 'info' => array(
-				'name' => 'bundle', 'files' => array(array('path' => array('other.bin'), 'length' => 1))))),
+			'frozen path mismatch' => array('frozen' => array('ok' => true, 'fault' => false,
+				'val' => array('/other/root', 1, '/other/root/new.bin'))),
 		);
 		foreach($cases as $label => $override)
 		{

@@ -824,11 +824,7 @@ class AutoToolsMoveJob
         $torrent = new Torrent($torrentPath);
         if ($torrent->errors()) throw new RuntimeException('session-copy-invalid');
         $info = $torrent->info;
-        $files = array();
-        if ($multi && isset($info['files'])) {
-            foreach ($info['files'] as $file) $files[] = implode('/', $file['path']);
-        } elseif (!$multi && isset($info['name'])) $files[] = $info['name'];
-        if (!$files) throw new RuntimeException('manifest-empty');
+        $files = AutoToolsFilePaths::read($hash, $info, $multi, $baseName);
         foreach ($files as $file) {
             if (!is_string($file) || $file === '' || $file[0] === '/'
                 || preg_match('~(^|/)\.\.?(/|$)~', $file))
@@ -876,7 +872,6 @@ class AutoToolsMoveJob
         if ($sourceStat === false || $destStat === false)
             throw new RuntimeException('source-or-destination-unavailable');
         $cross = $sourceStat['dev'] !== $destStat['dev'];
-        if (!$multi && $baseName !== $info['name']) throw new RuntimeException('source-name-mismatch');
         self::validateSourceManifest($src, $files, $multi);
         // Probe both actual publication/quarantine parents through the shared
         // preflight before a daemon claim or any payload copy: the source

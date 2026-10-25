@@ -35,6 +35,7 @@ function rtDbg($scope, $line) {}
 
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
 require_once testFindRepoRoot() . '/plugins/erasedata/outcome.php';
+require_once testFindRepoRoot() . '/plugins/autotools/file_paths.php';
 eval(loadClassDefinition(testFindRepoRoot() . '/php/Torrent.php', 'Torrent'));
 foreach (array('rtAddTailSlash', 'rtMkDir') as $function)
     eval(loadFunctionDefinition(testFindRepoRoot() . '/php/utility/rtpluginutil.php', $function));
@@ -87,6 +88,52 @@ function hookArgs($root)
     return array(HOOK_HASH, $root . '/dl/payload.bin', 'payload.bin', '0', '', 'payload.bin', '', HOOK_TOKEN);
 }
 
+function hookMultiFixture()
+{
+    $root = hookFixture();
+    mkdir($root . '/dl/Root', 0700);
+    file_put_contents($root . '/dl/Root/Серия.ass', 'payload bytes');
+    $raw = "\xD1\xE5\xF0\xE8\xFF.ass";
+    $alias = 'Серия.ass';
+    file_put_contents($root . '/session/' . HOOK_HASH . '.torrent',
+        'd4:infod5:filesld6:lengthi13e4:pathl' . strlen($raw) . ':' . $raw
+        . 'e10:path.utf-8l' . strlen($alias) . ':' . $alias . 'ee'
+        . 'e4:name4:Root12:piece lengthi16384e6:pieces20:' . str_repeat("\x01", 20) . 'ee');
+    rAutoTools::$config['path_to_finished'] = $root . '/fin/pending';
+    $args = hookArgs($root);
+    $args[1] = $root . '/dl/Root'; $args[2] = $args[5] = 'Root'; $args[3] = '1';
+    return array($root, $args);
+}
+
+function hookContextMethods()
+{
+    $methods = array('d.get_base_path', 'd.is_multi_file', 'd.get_base_filename', 'd.get_custom',
+        'd.get_directory', 'f.multicall');
+    return array_map('getCmd', $methods);
+}
+
+function hookPerformDeferred($root, $args = null, $context = 'valid')
+{
+    if ($args === null) $args = hookArgs($root);
+    $multi = $args[3] === '1';
+    if ($context === 'unconfirmed') {
+        rXMLRPCRequest::queue(hookContextMethods(), false, false);
+    } else {
+        $values = array('<base64>' . base64_encode($args[1]) . '</base64>',
+            '<i8>' . ($multi ? '1' : '0') . '</i8>', '<base64>' . base64_encode($args[2]) . '</base64>',
+            '<string>' . $args[7] . '</string>',
+            '<base64>' . base64_encode($multi ? $args[1] : dirname($args[1])) . '</base64>');
+        $cell = '<value><base64>' . base64_encode($multi ? 'Серия.ass' : $args[2]) . '</base64></value>';
+        $values[] = '<array><data>' . ($context === 'malformed' ? $cell : '<value><array><data>' . $cell
+            . '</data></array></value>') . '</data></array>';
+        $rows = '';
+        foreach ($values as $value) $rows .= '<value><array><data><value>' . $value . '</value></data></array></value>';
+        rXMLRPCRequest::queueRaw(hookContextMethods(), '<?xml version="1.0"?><methodResponse><params><param><value><array><data>'
+            . $rows . '</data></array></value></param></params></methodResponse>');
+    }
+    AutoToolsFinishedHook::performDeferred();
+}
+
 function hookRequests($root)
 {
     return glob($root . '/session/.autotools-file-jobs/*' . AutoToolsFinishedHook::REQUEST_SUFFIX) ?: array();
@@ -122,6 +169,119 @@ function hookClean($root)
 
 $suite = new StrictTestSuite();
 
+$suite->test('stored-directory identity strips separators without trimming names or collapsing root', function () {
+    foreach (array('/'=>'/', '///'=>'/', '/data/name/'=>'/data/name', '/data/name '=>'/data/name ',
+        ''=>'', '0'=>'0', "/data/raw\xFF/"=>"/data/raw\xFF") as $input=>$expected)
+        strictAssertSame($expected, strictInvoke('AutoToolsFinishedHook', 'directoryIdentity', array((string)$input)),
+            'only directory separator tails are canonicalized');
+});
+
+$suite->test('an unavailable directory normalizer is not a directory identity', function () {
+    foreach (array(null, false, array()) as $input) {
+        try {
+            strictInvoke('AutoToolsFinishedHook', 'directoryIdentity', array($input));
+            throw new LogicException('an unknown directory value was accepted');
+        } catch (RuntimeException $error) {
+            strictAssertSame('source-context-unconfirmed', $error->getMessage(), 'unknown dirname results remain retryable');
+        }
+    }
+});
+
+$suite->test('a disabled directory normalizer fails closed on this PHP runtime', function () {
+    $repo = testFindRepoRoot();
+    $code = 'require ' . var_export($repo . '/tests/php/SourceDefinitionFixture.php', true) . ';'
+        . 'eval(loadClassDefinition(' . var_export($repo . '/plugins/autotools/hook_lib.php', true) . ',"AutoToolsFinishedHook"));'
+        . '$m=new ReflectionMethod("AutoToolsFinishedHook","directoryIdentity");$m->setAccessible(true);'
+        . 'try{$m->invoke(null,"/captured/root");exit(2);}catch(RuntimeException $e){echo $e->getMessage();}';
+    $process = proc_open(array(PHP_BINARY, '-d', 'disable_functions=rtrim', '-r', $code),
+        array(0=>array('file', '/dev/null', 'r'), 1=>array('pipe', 'w'), 2=>array('pipe', 'w')), $pipes);
+    if (!is_resource($process)) throw new RuntimeException('normalizer probe did not start');
+    $output = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $error = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $exit = proc_close($process);
+    strictAssertSame(0, $exit, 'disabled-function probe completed: ' . $error);
+    strictAssertSame('source-context-unconfirmed', $output, 'Error and NULL normalization failures retain the request');
+});
+
+$suite->test('a synchronous hook defers selected daemon paths before creating a destination', function () {
+    list($root, $args) = hookMultiFixture();
+    try {
+        strictAssertSame('', AutoToolsFinishedHook::hook($args), 'the daemon capture returns before background path resolution');
+        $requests = hookRequests($root);
+        strictAssertSame(1, count($requests), 'the existing recovery owner receives the request');
+        strictAssertSame('daemon-paths-needed', JSON::decodeBytes(file_get_contents($requests[0]))['reason'],
+            'the request names the missing background-only path read');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'the synchronous process never waits on its daemon');
+        strictAssertSame(false, file_exists($root . '/fin/pending'), 'no destination is created before actual paths are read');
+        strictAssertSame('payload bytes', file_get_contents($root . '/dl/Root/Серия.ass'), 'source data stays in place');
+    } finally { hookClean($root); }
+});
+
+$suite->test('background path failures remain pending until the existing retry window expires', function () {
+    list($root, $args) = hookMultiFixture();
+    try {
+        AutoToolsFinishedHook::hook($args);
+        hookPerformDeferred($root, $args, 'unconfirmed');
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor(implode('|', hookContextMethods()))), 'only the background owner reads selected paths');
+        $requests = hookRequests($root);
+        strictAssertSame(1, count($requests), 'an unavailable response inside the window retains its request');
+        $request = JSON::decodeBytes(file_get_contents($requests[0]));
+        $request['at'] = time() - (int) ceil(rtFileJobRetryWindow()) - 1;
+        file_put_contents($requests[0], JSON::encodeBytes($request));
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl/Root'));
+        $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
+        rXMLRPCRequest::queue($write, true, false, array('0', '0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        hookPerformDeferred($root, $args, 'unconfirmed');
+        strictAssertSame(array(), hookRequests($root), 'the expired request retires');
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor($write)), 'the final refusal is named and kept on its torrent');
+        strictAssertSame(false, file_exists($root . '/fin/pending'), 'no failed path read creates a destination');
+        strictAssertSame('payload bytes', file_get_contents($root . '/dl/Root/Серия.ass'), 'source bytes remain unchanged');
+    } finally { hookClean($root); }
+});
+
+$suite->test('an unproven file table retires its deferred request with a named refusal', function () {
+    list($root, $args) = hookMultiFixture();
+    try {
+        AutoToolsFinishedHook::hook($args);
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl/Root'));
+        $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
+        rXMLRPCRequest::queue($write, true, false, array('0', '0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        hookPerformDeferred($root, $args, 'malformed');
+        strictAssertSame(array(), hookRequests($root), 'the malformed table is a final refusal');
+        strictAssertSame(1, count(rXMLRPCRequest::requestsFor($write)), 'the refusal is visible on the torrent');
+        strictAssertSame(false, file_exists($root . '/fin/pending'), 'no destination is created');
+    } finally { hookClean($root); }
+});
+
+$suite->test('a multi-file path deferral that cannot be recorded is named without synchronous RPC', function () {
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        echo "scope - root creates the journal in a read-only directory; the case did not run\n";
+        return;
+    }
+    list($root, $args) = hookMultiFixture();
+    $spawned = array();
+    strictSetPrivateStatic('AutoToolsFinishedHook', 'spawn', function ($argv) use (&$spawned) { $spawned[] = $argv; });
+    chmod($root . '/session', 0500);
+    try {
+        strictAssertSame('', AutoToolsFinishedHook::hook($args), 'the synchronous process returns at once');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'it does not query the blocked daemon');
+        strictAssertSame(1, count($spawned), 'one detached notifier receives the refusal');
+        strictAssertSame('daemon-paths-needed', $spawned[0][3], 'the notifier gets the failed path deferral reason');
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl/Root'));
+        rXMLRPCRequest::queue(getCmd('d.set_custom') . '|' . getCmd('d.message.set'), true, false, array('0', '0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        strictAssertSame(true, AutoToolsFinishedHook::notifyRefusal(HOOK_HASH, 'Copy', 'daemon-paths-needed'),
+            'the detached refusal has an operator-visible message');
+        strictAssertSame(false, file_exists($root . '/fin/pending'), 'no destination is created');
+    } finally {
+        strictSetPrivateStatic('AutoToolsFinishedHook', 'spawn', null);
+        chmod($root . '/session', 0700);
+        hookClean($root);
+    }
+});
+
 $suite->test('a finished hook publishes at once when the journal is free', function () {
     $root = hookFixture();
     try {
@@ -129,6 +289,21 @@ $suite->test('a finished hook publishes at once when the journal is free', funct
         strictAssertSame('payload bytes', @file_get_contents($root . '/fin/payload.bin'), 'the Copy is published');
         strictAssertSame(array(), hookRequests($root), 'nothing is deferred');
         strictAssertSame(array(), rXMLRPCRequest::$requests, 'the hook never calls the daemon');
+    } finally { hookClean($root); }
+});
+
+$suite->test('a single-file hook uses the daemon basename without querying the daemon', function () {
+    $root = hookFixture();
+    try {
+        $selected = 'Серия.bin';
+        rename($root . '/dl/payload.bin', $root . '/dl/' . $selected);
+        $args = hookArgs($root);
+        $args[1] = $root . '/dl/' . $selected;
+        $args[2] = $selected;
+        strictAssertSame($root . '/fin/', AutoToolsFinishedHook::hook($args), 'the actual basename is authoritative over raw metainfo');
+        strictAssertSame('payload bytes', file_get_contents($root . '/fin/' . $selected), 'the selected file is copied');
+        strictAssertSame(false, file_exists($root . '/fin/payload.bin'), 'the metadata basename is not guessed as a disk path');
+        strictAssertSame(array(), rXMLRPCRequest::$requests, 'the native hook arguments need no synchronous RPC');
     } finally { hookClean($root); }
 });
 
@@ -145,11 +320,11 @@ $suite->test('a finished hook never waits for a journal another owner holds; rec
         strictAssertSame(1, count(hookRequests($root)), 'the hook is recorded for recover.php');
         strictAssertSame(array('autotools: nonmove ' . HOOK_HASH . ' deferred: journal-busy;'
             . ' recover.php performs the Copy within 60 s'), FileUtil::$messages, 'the deferral is visible');
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame(1, count(hookRequests($root)), 'a pass that finds the journal still busy keeps the request');
         hookReleaseJournal($holder);
         $holder = null;
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame('payload bytes', @file_get_contents($root . '/fin/payload.bin'), 'recover.php publishes the Copy');
         strictAssertSame(array(), hookRequests($root), 'and retires the request');
         strictAssertSame(1, count(glob($root . '/session/.autotools-file-jobs/*.nonmove.json')),
@@ -172,7 +347,7 @@ $suite->test('a finished hook without the session copy is deferred visibly, and 
             hookPublishCopy($root);
             return array('0');
         });
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame('payload bytes', @file_get_contents($root . '/fin/payload.bin'), 'recover.php publishes the Copy');
         strictAssertSame(array(), hookRequests($root), 'and retires the request');
         strictAssertSame(0, count(rXMLRPCRequest::requestsFor(getCmd('d.message.set'))), 'no refusal is shown');
@@ -186,7 +361,7 @@ $suite->test('a deferred hook whose session copy never appears is refused in the
         FileUtil::$messages = array();
         // Within the retry window a missing copy is waited for again.
         rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame(array(), FileUtil::$messages, 'a pass inside the window refuses nothing');
         strictAssertSame(1, count(hookRequests($root)), 'and keeps the request');
         $requests = hookRequests($root);
@@ -200,7 +375,7 @@ $suite->test('a deferred hook whose session copy never appears is refused in the
         rXMLRPCRequest::queue($write, true, false, array('0', '0'));
         rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
         $started = microtime(true);
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertTrue(microtime(true) - $started >= AUTOTOOLS_SESSION_SAVE_WAIT, 'recover.php waited for the copy');
         strictAssertSame(array('autotools: nonmove ' . HOOK_HASH . ' refused: session-copy-unreadable'),
             FileUtil::$messages, 'the refusal is logged once');
@@ -324,7 +499,7 @@ $suite->test('a deferred hook refused by recover.php is named on the torrent wit
         $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
         rXMLRPCRequest::queue($write, true, false, array('0', '0'));
         rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame(array('autotools: nonmove ' . HOOK_HASH . ' refused: untrusted-directory path='
             . erasedataLogPath($root . '/fin')), FileUtil::$messages, 'the refusal is logged once with its hash');
         $set = rXMLRPCRequest::requestsFor($write);
@@ -382,7 +557,7 @@ $suite->test('a journal made by a recovery pass keeps the deferral of an unwrita
             hookPublishCopy($root);
             return array('0');
         });
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame('payload bytes', @file_get_contents($root . '/fin/payload.bin'), 'recover.php publishes the Copy');
         strictAssertSame(array(), hookRequests($root), 'and retires the request');
     } finally {
@@ -397,7 +572,7 @@ $suite->test('an invalid deferred request is refused visibly and not performed',
         mkdir($root . '/session/.autotools-file-jobs', 0700);
         $name = str_repeat('a', 24) . AutoToolsFinishedHook::REQUEST_SUFFIX;
         file_put_contents($root . '/session/.autotools-file-jobs/' . $name, '{"version":1}');
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root);
         strictAssertSame(array('autotools: nonmove request ' . $name
             . ' refused: invalid request; the hook it held is not performed'), FileUtil::$messages,
             'the refusal names the request');
@@ -437,7 +612,7 @@ $suite->test('a deferred hook is performed in a session directory that glob() wo
                 hookPublishCopy($root, $session);
                 return array('0');
             });
-            AutoToolsFinishedHook::performDeferred();
+            hookPerformDeferred($root);
             strictAssertSame('payload bytes', @file_get_contents($root . '/fin/payload.bin'),
                 'recover.php publishes the Copy: ' . $name);
             strictAssertSame(array(), $requests(), 'and retires the request: ' . $name);
@@ -475,7 +650,7 @@ $suite->test('deferred hook preserves raw argv and copies the exact legacy filen
         $request = JSON::decodeBytes(file_get_contents($requests[0]));
         strictAssertSame($args, $request['args'], 'all original argument bytes survive persistence');
         hookReleaseJournal($holder); $holder = null;
-        AutoToolsFinishedHook::performDeferred();
+        hookPerformDeferred($root, $args);
         strictAssertSame('payload bytes', @file_get_contents($root . '/fin/' . $name), 'fresh recovery selects the exact raw filename');
         strictAssertSame(false, file_exists($root . '/fin/payload\\xFF.bin'), 'the visible escape spelling is not an action path');
         strictAssertSame('literal neighbor', file_get_contents($root . '/dl/payload\\xFF.bin'), 'the neighboring source remains intact');

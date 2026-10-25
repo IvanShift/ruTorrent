@@ -5,6 +5,67 @@ require_once(__DIR__.'/../../php/xmlrpc_response.php');
 
 class XMLRPCResponseGrammarTest extends TestCase
 {
+	public function testUnavailableCodecsRefuseBeforePublishingDecodedPaths()
+	{
+		$directory = sys_get_temp_dir().'/rpc-codecs-'.getmypid();
+		mkdir($directory, 0700);
+		$driver = $directory.'/decode.php';
+		file_put_contents($driver, <<<'DRIVER'
+<?php
+require $argv[1].'/php/xmlrpc_response.php';
+$mode = $argv[2];
+$cases = array(
+    'base64_decode' => '<base64>cHJlZml4L2ZpbGUubWt2</base64>',
+    'html_entity_decode' => '<string>prefix/<![CDATA[file]]>.mkv</string>',
+    'raw' => '<base64>'.base64_encode("raw \xFF\0\r.bin").'</base64>',
+    'whitespace' => "<base64> \tcHJlZml4L2ZpbGUubWt2\r\n</base64>",
+);
+$xml = '<methodResponse><params><param><value><array><data><value><array><data><value>'
+    .$cases[$mode].'</value></data></array></value></data></array></value></param></params></methodResponse>';
+$reader = new rXMLRPCResponse($xml);
+try {
+    $reader->read();
+    echo json_encode(array('refused'=>false, 'value'=>base64_encode($reader->values[0][0][0]),
+        'width'=>$reader->stringTableWidths[0]));
+} catch(UnexpectedValueException $error) {
+    echo json_encode(array('refused'=>true, 'scalars'=>$reader->scalars, 'values'=>$reader->values,
+        'widths'=>$reader->stringTableWidths, 'commands'=>$reader->commandValues));
+}
+DRIVER
+		);
+		try
+		{
+			foreach(array('base64_decode', 'html_entity_decode', 'raw', 'whitespace') as $mode)
+			{
+				$disabled = in_array($mode, array('base64_decode', 'html_entity_decode'), true) ? $mode : '';
+				foreach($disabled === '' ? array('') : array('', $disabled) as $function)
+				{
+					$process = proc_open(array(PHP_BINARY, '-d', 'display_errors=1', '-d', 'disable_functions='.$function,
+						$driver, realpath(__DIR__.'/../..'), $mode),
+						array(0=>array('file','/dev/null','r'), 1=>array('pipe','w'), 2=>array('pipe','w')), $pipes);
+					if(!is_resource($process)) throw new RuntimeException('codec fixture did not start');
+					$output = stream_get_contents($pipes[1]); fclose($pipes[1]);
+					$error = stream_get_contents($pipes[2]); fclose($pipes[2]);
+					$code = proc_close($process);
+					$result = json_decode($output, true);
+					$this->assertSame(0, $code, 'codec refusal is a controlled reader failure: '.$error);
+					$this->assertTrue(is_array($result), 'codec diagnostics must not corrupt the result: '.$output);
+					if($function === '')
+					{
+						$expected = $mode === 'raw' ? "raw \xFF\0\r.bin" : 'prefix/file.mkv';
+						$this->assertSame(array('refused'=>false, 'value'=>base64_encode($expected), 'width'=>1), $result,
+							'available codecs preserve raw bytes and every CDATA segment');
+					}
+					else
+						$this->assertSame(array('refused'=>true, 'scalars'=>array(), 'values'=>array(),
+							'widths'=>array(), 'commands'=>array()), $result,
+							'an unavailable codec cannot attest an empty or shortened physical name');
+				}
+			}
+		}
+		finally { unlink($driver); rmdir($directory); }
+	}
+
 	private function envelope($value)
 	{
 		return '<?xml version="1.0"?><methodResponse><params><param>'.$value.'</param></params></methodResponse>';

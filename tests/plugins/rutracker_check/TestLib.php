@@ -474,6 +474,11 @@ class rXMLRPCRequest
     public $val = array();
     public $responseValues = array();
     public $responseTypes = array();
+    public $responseCommandValues = array();
+    public $responseCommandTypes = array();
+    private $responseStringTableWidths = array();
+    private $responseCommandStringTableWidths = array();
+    private $wireReply = false;
 
     public function __construct($commands = null)
     {
@@ -524,6 +529,14 @@ class rXMLRPCRequest
         self::$responses[$key][] = array($ok, $fault, $values, $faultString);
     }
 
+    /** Typed fixtures use the production XML reader; flat queues prove no table shape. */
+    public static function queueRaw($commands, $xml)
+    {
+        if (!is_string($xml)) throw new InvalidArgumentException('An XMLRPC wire fixture must be a string');
+        $key = is_array($commands) ? implode('|', $commands) : $commands;
+        self::$responses[$key][] = array(true, false, array(), '', 'raw' => $xml);
+    }
+
     public static function requestsFor($key)
     {
         $matched = array();
@@ -553,6 +566,9 @@ class rXMLRPCRequest
         $this->fault = false;
         $this->faultString = '';
         $this->rawFaultString = null;
+        $this->wireReply = false;
+        $this->responseCommandValues = $this->responseCommandTypes = array();
+        $this->responseStringTableWidths = $this->responseCommandStringTableWidths = array();
         if (!$response[0]) {
             $this->fault = true;
             $this->faultString = 'rpc-response-unavailable';
@@ -560,6 +576,29 @@ class rXMLRPCRequest
             $this->fault = true;
             $this->rawFaultString = $queuedFault;
             $this->faultString = trim($queuedFault);
+        }
+        if (isset($response['raw'])) {
+            require_once testFindRepoRoot() . '/php/xmlrpc_response.php';
+            $this->wireReply = true;
+            $this->val = $this->responseValues = $this->responseTypes = array();
+            try {
+                $parsed = (new rXMLRPCResponse($response['raw'], count($this->commands) > 1 || $key === 'system.multicall'))->read();
+                $this->fault = $parsed->fault;
+                $this->rawFaultString = $parsed->fault ? $parsed->faultString : null;
+                $this->faultString = trim($parsed->faultString);
+                $this->responseValues = $parsed->values;
+                $this->responseTypes = $parsed->valueTypes;
+                $this->responseStringTableWidths = $parsed->stringTableWidths;
+                $this->responseCommandValues = $parsed->commandValues;
+                $this->responseCommandTypes = $parsed->commandTypes;
+                $this->responseCommandStringTableWidths = $parsed->commandStringTableWidths;
+                foreach ($parsed->scalars as $scalar) $this->val[] = $scalar[1];
+            } catch (UnexpectedValueException $error) {
+                $this->fault = true;
+                $this->faultString = 'rpc-' . $error->getMessage();
+            }
+            self::$requests[count(self::$requests) - 1]['values'] = $this->val;
+            return true;
         }
         // A lazily-computed value is queued as a Closure (see CheckerTest's
         // queueLoadConfirmed()); every other value is a plain literal, most
@@ -610,11 +649,17 @@ class rXMLRPCRequest
         return $this->responseValues[0];
     }
 
-    public function stringTable($columns)
+    public function stringTable($columns, $resultIndex = null)
     {
         // Flat queued fixtures carry no XML row-type provenance. Table consumers
-        // use FakeRtorrentDaemon with the real parser instead of inventing it.
-        return null;
+        // use queueRaw or FakeRtorrentDaemon instead of inventing it.
+        if (!$this->wireReply) return null;
+        static $reader = null;
+        if ($reader === null) {
+            $definition = loadFunctionDefinition(testFindRepoRoot() . '/php/xmlrpc.php', 'stringTable');
+            $reader = eval('return ' . preg_replace('/^function\s+stringTable\s*/', 'function ', $definition, 1) . ';');
+        }
+        return $reader->call($this, $columns, $resultIndex);
     }
 
     public function run($trusted = true)

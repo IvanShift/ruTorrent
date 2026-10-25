@@ -15,6 +15,13 @@ chdir($checkerMetaFetchRoot . '/php');
 require_once($checkerMetaFetchRoot . '/php/Torrent.php');
 chdir($checkerMetaFetchPreviousCwd);
 require_once($checkerMetaFetchRoot . '/php/xmlrpc_path.php');
+require_once(__DIR__ . '/../erasedata/PhysicalRpcFixture.php');
+
+// Keep the physical reader real while the queue lifecycle below is recorded.
+// Evaluating the checker class omits its file-level erasedata dependency.
+foreach (array('erasedataCanonicalHash', 'erasedataPhysicalRelativePath', 'erasedataPhysicalMetainfoPlan',
+    'erasedataPhysicalMultiValue', 'erasedataPhysicalPathReply', 'erasedataCollectPhysicalPaths') as $function)
+    eval(loadFunctionDefinition($checkerMetaFetchRoot . '/plugins/erasedata/removewithdata.php', $function));
 
 class CheckerMetaFetchErasedata
 {
@@ -374,6 +381,13 @@ function cmfHarvestComposition($published)
     mkdir($base, 0777, true);
     file_put_contents($base . '/integration-old.bin', 'old');
 
+    foreach (array('integration-old.bin', 'integration-new.bin') as $name) {
+        rXMLRPCRequest::queueRaw(array('d.get_base_path', 'd.is_multi_file', 'f.multicall'),
+            ErasedataCollectorRpcWire::physicalBatch(array($base . '/' . $name, 0, $base . '/' . $name)));
+        rXMLRPCRequest::queueRaw(array('d.get_directory', 'd.is_multi_file', 'f.multicall'),
+            ErasedataCollectorRpcWire::physicalBatch(array($base, 0, $name)));
+    }
+
     try {
 
     cmfQueueBegin($oldHash, 42, 87400);
@@ -511,9 +525,22 @@ function cmfHarvestComposition($published)
         'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom',
         'branch',
         'd.get_custom',
+        'd.get_base_path|d.is_multi_file|f.multicall',
+        'd.get_directory|d.is_multi_file|f.multicall',
+        'd.get_base_path|d.is_multi_file|f.multicall',
+        'd.get_directory|d.is_multi_file|f.multicall',
         'branch',
         'branch',
     ), cmfRequestKeys(), 'the full composition completes without an unexpected fallback branch');
+    foreach (array('d.get_base_path', 'd.get_directory') as $getter) {
+        $requests = rXMLRPCRequest::requestsFor($getter . '|d.is_multi_file|f.multicall');
+        strictAssertSame(array($oldHash, $newHash), array_map(function ($request) {
+            $hash = $request['commands'][0]->params;
+            strictAssertSame($hash, $request['commands'][1]->params, 'multi getter targets the same generation');
+            strictAssertSame($hash, $request['commands'][2]->params[0], 'file table targets the same generation');
+            return $hash;
+        }, $requests), 'cleanup confirms both live generations without substituting a metadata service stub');
+    }
     if ($published) cmfAssertNoQueuedResponses();
     } finally {
         strictRemoveTree($base);

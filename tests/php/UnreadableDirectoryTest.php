@@ -75,6 +75,8 @@ class UnreadableDirectoryTest extends TestCase
 		@mkdir($this->tree . '/php/utility', 0777, true);
 		copy($this->repoRoot() . '/php/utility/rtpluginutil.php',
 			$this->tree . '/php/utility/rtpluginutil.php');
+		copy($this->repoRoot() . '/plugins/autotools/file_paths.php',
+			$holder . '/file_paths.php');
 
 		$from = $this->repoRoot() . '/' . $source;
 		$to = $holder . '/' . basename($source);

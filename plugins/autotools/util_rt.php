@@ -4,6 +4,7 @@ require_once dirname(__DIR__, 2) . '/php/rtorrent.php';
 require_once( "../../php/xmlrpc.php" );
 require_once( "../../php/Torrent.php" );
 require_once( dirname(__FILE__)."/../../php/utility/rtpluginutil.php" );
+require_once(__DIR__ . '/file_paths.php');
 
 //------------------------------------------------------------------------------
 // Check if script was launched in background (with --daemon switch)

@@ -106,12 +106,14 @@ if(!function_exists('erasedataPhysicalMetainfoPlan'))
 	// copy is this download's own (its info hash matches) but its layout
 	// gives no exact plan. A save cannot change the latter: the daemon would
 	// write the same info dictionary again.
-	function erasedataPhysicalMetainfoPlan($hash, &$failure = null)
+	// Replacement preparation may reuse its already parsed, hash-verified source.
+	function erasedataPhysicalMetainfoPlan($hash, &$failure = null, $source = null)
 	{
 		$failure = 'plan-unavailable';
 		$canonicalHash = erasedataCanonicalHash($hash);
-		$source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash);
-		if(!is_object($source) || !method_exists($source, 'hash_info')
+		if($source === null)
+			$source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash);
+		if($canonicalHash === false || !is_object($source) || !method_exists($source, 'hash_info')
 			|| !isset($source->info) || !is_array($source->info)
 			|| erasedataCanonicalHash($source->hash_info()) !== $canonicalHash)
 			return(false);
@@ -170,15 +172,31 @@ if(!function_exists('erasedataPhysicalMultiValue'))
 
 if(!function_exists('erasedataCollectPhysicalPaths'))
 {
+	// Keep native command/row positions from the streaming XML grammar. A
+	// numeric-keyed struct can flatten like a list while reassigning padding.
+	function erasedataPhysicalPathReply($request, $count)
+	{
+		$values = $request->responseCommandValues;
+		$types = $request->responseCommandTypes;
+		$rows = $request->stringTable(1, 2);
+		if(!is_array($values) || !is_array($types) || count($values) !== 3 || count($types) !== 3
+			|| !in_array($types[0], array('string', 'base64'), true) || !is_string($values[0])
+			|| !in_array($types[1], array('i4', 'i8', 'int', 'boolean', 'string'), true)
+			|| !is_array($rows) || count($rows) !== $count)
+			return(false);
+		$multi = erasedataPhysicalMultiValue($values[1]);
+		return($multi === false ? false : array('base'=>$values[0], 'multi'=>$multi, 'rows'=>$rows));
+	}
+
 	// $failure says why there is no answer: the plan's own reason
 	// (erasedataPhysicalMetainfoPlan()), otherwise 'daemon-paths-unconfirmed'
-	// when the daemon's answer did not confirm it. Every path the daemon
-	// answers is compared and returned in its own bytes, as php/xmlrpc.php
-	// hands them out; while it escaped them, a name with a quote or a
-	// backslash never matched the session copy (ACC-OWNB-04, AUD-ESC-09).
-	function erasedataCollectPhysicalPaths($hash, &$failure = null)
+	// when the daemon's answer did not confirm it. Stored and frozen paths
+	// must agree; metadata supplies their indexed physical/padding roles.
+	// Preserve the daemon's own bytes, including aliases and file renames,
+	// without another unescape (ACC-OWNB-04, AUD-ESC-09).
+	function erasedataCollectPhysicalPaths($hash, &$failure = null, $source = null)
 	{
-		$plan = erasedataPhysicalMetainfoPlan($hash, $failure);
+		$plan = erasedataPhysicalMetainfoPlan($hash, $failure, $source);
 		if($plan === false)
 			return(false);
 		$failure = 'daemon-paths-unconfirmed';
@@ -189,21 +207,22 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_frozen_path")."=") )
 		) );
 		$frozenOk = $frozen->success();
-		if($frozenOk && (count($frozen->val) !== $count + 2
-			|| erasedataPhysicalMultiValue($frozen->val[1]) !== $plan['multi']
-			|| !is_string($frozen->val[0])))
+		$frozenReply = $frozenOk ? erasedataPhysicalPathReply($frozen, $count) : false;
+		if($frozenOk && ($frozenReply === false || $frozenReply['multi'] !== $plan['multi']))
 			return(false);
-		$frozenBase = $frozenOk ? $frozen->val[0] : '';
+		$frozenBase = $frozenOk ? $frozenReply['base'] : '';
 
 		$stored = new rXMLRPCRequest( array(
 			new rXMLRPCCommand( getCmd("d.get_directory"), $hash ),
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
 			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_path")."=") )
 		) );
-		if(!$stored->success() || count($stored->val) !== $count + 2
-			|| erasedataPhysicalMultiValue($stored->val[1]) !== $plan['multi'])
+		if(!$stored->success())
 			return(false);
-		$directory = $stored->val[0];
+		$storedReply = erasedataPhysicalPathReply($stored, $count);
+		if($storedReply === false || $storedReply['multi'] !== $plan['multi'])
+			return(false);
+		$directory = $storedReply['base'];
 		if(!is_string($directory) || $directory === '' || $directory[0] !== '/'
 			|| strpos($directory, "\0") !== false)
 			return(false);
@@ -213,8 +232,10 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 		$storedFiles = array();
 		for($index = 0; $index < $count; $index++)
 		{
-			$path = $stored->val[$index + 2];
-			if(!is_string($path) || $path !== $plan['relative'][$index])
+			$path = $storedReply['rows'][$index][0];
+			// Metadata supplies the layout and padding flags, while the daemon
+			// owns selected aliases and operator-renamed file paths by index.
+			if(!is_string($path) || erasedataPhysicalRelativePath(explode('/', $path)) !== $path)
 				return(false);
 			$storedFiles[] = ($directory === '/' ? '/' : $directory.'/').$path;
 		}
@@ -228,13 +249,11 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 				return(false);
 			for($index = 0; $index < $count; $index++)
 			{
-				$path = $frozen->val[$index + 2];
+				$path = $frozenReply['rows'][$index][0];
 				if(!is_string($path) || strpos($path, "\0") !== false
 					|| ($path !== '' && $path[0] !== '/'))
 					return(false);
-				$expectedPath = $plan['multi']
-					? ($expectedBase === '/' ? '/' : $expectedBase.'/').$plan['relative'][$index]
-					: $expectedBase;
+				$expectedPath = $storedFiles[$index];
 				if($path !== '' && ($frozenBase === '' || $path !== $expectedPath))
 					return(false);
 				$frozenFiles[] = $path;
@@ -255,6 +274,7 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 					$files[] = $path;
 				}
 			}
+		$failure = null;
 		return(array(
 			'base' => $plan['multi'] ? $directory : $storedFiles[0],
 			'multi' => $plan['multi'] ? '1' : '0',

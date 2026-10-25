@@ -356,13 +356,13 @@ public static function rtRemoveDirectory( $path, $with_files = false )
         $at = rAutoTools::load();
         $destination = $source;
         $finished = $at->path_to_finished;
+        $label = rawurldecode($label);
         if ($at->enable_move && $at->fileop_type === 'Move'
-            && @preg_match($at->automove_filter . 'u', rawurldecode($label)) === 1 && $finished !== '') {
+            && @preg_match($at->automove_filter . (UTF::isValid($label) ? 'u' : ''), $label) === 1 && $finished !== '') {
             $relative = rtGetRelativePath(rtAddTailSlash(rTorrentSettings::get()->directory), $source);
             if ($relative !== '') {
                 if ($relative === './') $relative = '';
                 $destination = rtAddTailSlash($finished . '/' . $relative);
-                $label = rawurldecode($label);
                 if ($at->addLabel && $label !== '' && $label !== trim($relative, '/'))
                     $destination .= FileUtil::addslash($label);
                 if ($at->addName && $name !== '') $destination .= FileUtil::addslash($name);
@@ -374,9 +374,31 @@ public static function rtRemoveDirectory( $path, $with_files = false )
 
     public static function check($args)
     {
-        list($source, $destination) = self::plan($args[0], $args[1], $args[2] === '1', $args[3], $args[4]);
+        $count = is_array($args) ? count($args) : null;
+        if ($count !== 5 && $count !== 6) throw new RuntimeException('callback-arguments-invalid');
+        $hasHash = $count === 6;
+        $hash = $hasHash ? $args[0] : '';
+        $args = self::sourceArguments($args, $hasHash ? 1 : 0);
+        $source = $args[2] === '1' ? @rtrim($args[0], '/') : @dirname($args[0]);
+        if (!is_string($source) || $source === '' || $source[0] !== '/')
+            throw new RuntimeException('callback-arguments-invalid');
+        $source = $source === '/' ? '/' : $source.'/';
+        // Old handlers have no torrent identity and cannot attest a file list.
+        if (!$hasHash) {
+            self::refuse($hash, 'file-list-needs-daemon');
+            return $source;
+        }
+        if (!is_string($hash) || @preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1) {
+            self::refuse($hash, 'torrent-hash-invalid');
+            return $source;
+        }
+        list($source, $destination, $at) = self::plan($args[0], $args[1], $args[2] === '1', $args[3], $args[4]);
         if ($destination !== $source) {
-            $files = $args[2] === '1' ? rtScanFiles($source, '/.*/') : array($args[1]);
+            try { list($torrent, $files) = self::sourceFiles($hash, $args[2] === '1', $args[1], $at); }
+            catch (RuntimeException $error) {
+                self::refuse($hash, $error->getMessage());
+                return $source;
+            }
             if (!ErasedataFilesystemOps::payloadPathTrusted($destination, null, true)
                 || self::rtTakenDestination($files, $destination) !== '') {
                 FileUtil::toLog('autotools: upstream-move refused: destination-unavailable');
@@ -388,26 +410,56 @@ public static function rtRemoveDirectory( $path, $with_files = false )
 
     public static function move($args)
     {
-        $hash = array_shift($args);
+        $count = is_array($args) ? count($args) : null;
+        if ($count !== 6 && $count !== 7) throw new RuntimeException('callback-arguments-invalid');
+        $hash = $args[0];
+        $directory = $count === 7 ? $args[6] : null;
+        $args = self::sourceArguments($args, 1);
+        if (!is_string($hash) || @preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1)
+            return self::refuse($hash, 'torrent-hash-invalid');
+        if (!is_string($directory)) return self::refuse($hash, 'directory-publication-unconfirmed');
         list($source, $destination, $at) = self::plan($args[0], $args[1], $args[2] === '1', $args[3], $args[4]);
         if ($source === $destination) return false;
-        $path = rtrim(rTorrentSettings::get()->session, '/') . '/' . $hash . '.torrent';
-        if (!is_readable($path)) return self::refuse($hash, 'session-copy-unreadable');
-        $torrent = new Torrent($path);
-        if ($torrent->errors()) return self::refuse($hash, 'session-copy-invalid');
-        $files = array();
-        if (isset($torrent->info['files']))
-            foreach ($torrent->info['files'] as $file) $files[] = implode('/', $file['path']);
-        else $files[] = $torrent->info['name'];
-        foreach ($files as $file)
-            if ($at->skip_move_for_files !== '' && @preg_match($at->skip_move_for_files . 'u', $file) === 1)
-                return self::refuse($hash, 'skip-filter-match');
+        // The hook captures this after its directory setter. An old handler,
+        // or a check that kept the source, cannot authorize moving the data.
+        if (rtrim($directory, '/') !== rtrim($destination, '/'))
+            return self::refuse($hash, 'directory-publication-unconfirmed');
+        try { list($torrent, $files) = self::sourceFiles($hash, $args[2] === '1', $args[1], $at); }
+        catch (RuntimeException $error) { return self::refuse($hash, $error->getMessage()); }
         if (!ErasedataFilesystemOps::payloadPathTrusted($destination, null, true))
             return self::refuse($hash, 'untrusted-directory');
         if (!self::rtOpFiles($files, $source, $destination, 'Move')) return self::refuse($hash, 'payload-refused');
         if ($args[2] === '1') self::rtRemoveDirectory($source, false);
         rAutoTools::notifyCompletedFileTransfer(dirname(rtrim($destination, '/')), $at->path_to_finished, $torrent->name());
         return true;
+    }
+
+    private static function sourceFiles($hash, $multi, $baseName, $at)
+    {
+        $path = rtrim(rTorrentSettings::get()->session, '/') . '/' . $hash . '.torrent';
+        if (!is_readable($path)) throw new RuntimeException('session-copy-unreadable');
+        $torrent = new Torrent($path);
+        if ($torrent->errors()) throw new RuntimeException('session-copy-invalid');
+        $files = AutoToolsFilePaths::forSynchronousHook($torrent->info, $multi, $baseName);
+        foreach ($files as $file)
+            if ($at->skip_move_for_files !== '' && @preg_match($at->skip_move_for_files . (UTF::isValid($file) ? 'u' : ''), $file) === 1)
+                throw new RuntimeException('skip-filter-match');
+        return array($torrent, $files);
+    }
+
+    private static function sourceArguments($args, $offset)
+    {
+        // Keep the captured slots fixed even when PHP array helpers are unavailable.
+        $source = array();
+        for ($index = 0; $index < 5; ++$index) {
+            if (!isset($args[$offset + $index]) || !is_string($args[$offset + $index]))
+                throw new RuntimeException('callback-arguments-invalid');
+            $source[] = $args[$offset + $index];
+        }
+        if ($source[0] === '' || $source[0][0] !== '/' || $source[1] === ''
+            || ($source[2] !== '0' && $source[2] !== '1'))
+            throw new RuntimeException('callback-arguments-invalid');
+        return $source;
     }
 
     private static function refuse($hash, $reason)

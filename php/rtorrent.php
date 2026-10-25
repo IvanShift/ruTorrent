@@ -740,8 +740,12 @@ class rTorrent
 	{
 	        $files = array();
 	        $info = $torrent->info;
+		// Before load only the daemon can choose a differing legacy UTF-8
+		// alias. Let it hash the selected files rather than certify another name.
+		if(isset($info['name.utf-8']) && (!isset($info['files']) || $add_path)
+			&& $info['name.utf-8'] !== $info['name'])
+			return(false);
 	        $psize = intval($info['piece length']);
-		$base = trim($base);
 	        if($base=='')
 	        {
 	        	$base = rTorrentSettings::get()->directory;
@@ -754,6 +758,8 @@ class rTorrent
 			{
 				foreach($info['files'] as $key=>$file)
 				{
+					if(isset($file['path.utf-8']) && $file['path.utf-8'] !== $file['path'])
+						return(false);
 				        $tsize+=floatval($file['length']);
 					$files[] = ($add_path ? $info['name']."/".implode('/',$file['path']) : implode('/',$file['path']));
 				}

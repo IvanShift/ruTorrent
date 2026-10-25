@@ -154,6 +154,8 @@ class ErasedataFake
 	public static $kickResult = true;
 	public static $claimPaths = array();
 	public static $scanUnknown = false;
+	public static $physicalBases = array();
+	public static $physicalPaths = array();
 
 	public static function reset()
 	{
@@ -168,6 +170,8 @@ class ErasedataFake
 		self::$kickResult = true;
 		self::$claimPaths = array();
 		self::$scanUnknown = false;
+		self::$physicalBases = array();
+		self::$physicalPaths = array();
 	}
 
 	public static function record($name, $arguments)
@@ -178,6 +182,22 @@ class ErasedataFake
 			'request_count' => count(rXMLRPCRequest::$requests),
 		);
 	}
+}
+
+// The collector owns daemon path validation. Checker fixtures model its
+// confirmed physical reply; selected aliases and unavailable reads override
+// this legacy-layout default explicitly in the path authority regressions.
+function erasedataCollectPhysicalPaths($hash, &$failure = null, $source = null)
+{
+	$failure = null;
+	if(array_key_exists($hash, ErasedataFake::$physicalPaths))
+		return(ErasedataFake::$physicalPaths[$hash]);
+	$base = isset(ErasedataFake::$physicalBases[$hash])
+		? ErasedataFake::$physicalBases[$hash] : sys_get_temp_dir();
+	$paths = strictInvoke('ruTrackerChecker', 'collectTorrentPaths', array($source));
+	if(!is_array($paths)) return(false);
+	$files = array_map(function($path) use ($base) { return rtrim($base, '/').'/'.$path; }, $paths);
+	return(array('files' => $files));
 }
 
 function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
@@ -502,6 +522,7 @@ DSL;
 
 	private function queueSnapshot($baseDir, $state = 1, $open = 1, $topic = '6879823', $forum = '1106')
 	{
+		ErasedataFake::$physicalBases = array(self::OLD_HASH => $baseDir, self::NEW_HASH => $baseDir);
 		rXMLRPCRequest::queue(
 			self::SNAPSHOT_KEY_COMMANDS,
 			true,
@@ -511,8 +532,10 @@ DSL;
 		$this->queueReplacementStop($state, $open);
 	}
 
-	private function queueReuseSnapshot($baseDir)
+	private function queueReuseSnapshot($baseDir, $newBaseDir = null)
 	{
+		ErasedataFake::$physicalBases = array(self::OLD_HASH => $baseDir,
+			self::NEW_HASH => $newBaseDir === null ? $baseDir : $newBaseDir);
 		rXMLRPCRequest::queue('d.get_directory_base', true, false, array($baseDir));
 		$this->queueReplacementStop(1, 1);
 	}
@@ -579,6 +602,7 @@ DSL;
 	// stops/closes the predecessor without another PHP round trip.
 	private function queueDaemonSelectedStart($baseDir, $selectedRun, $topic = '6879823', $forum = '1106')
 	{
+		ErasedataFake::$physicalBases = array(self::OLD_HASH => $baseDir, self::NEW_HASH => $baseDir);
 		rXMLRPCRequest::queue('d.hash', true, true, array());
 		$this->queueViews();
 		rXMLRPCRequest::queue(self::SNAPSHOT_KEY_COMMANDS, true, false,
@@ -745,6 +769,7 @@ DSL;
 
 	private function cleanupEntries($oldInfo, $newInfo, $base)
 	{
+		ErasedataFake::$physicalBases = array(self::OLD_HASH => $base, self::NEW_HASH => $base);
 		$oldInfo = $this->realisticInfo($oldInfo);
 		$newInfo = $this->realisticInfo($newInfo);
 		$old = new Torrent(array('hash' => self::OLD_HASH, 'info' => $oldInfo));
@@ -833,6 +858,46 @@ DSL;
 				'an unchanged exact path creates no cleanup obligation');
 		}
 		finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffUsesTheDaemonSelectedOldAndNewPaths()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir().'/rut-check-selected-'.bin2hex(random_bytes(5));
+		mkdir($base, 0700);
+		$legacy = "episode \xF1\xE5\xF0\xE8\xFF.mkv";
+		$selected = 'episode серия.mkv';
+		file_put_contents($base.'/'.$selected, 'shared payload');
+		try {
+			ErasedataFake::$physicalPaths = array(
+				self::OLD_HASH => array('files' => array($base.'/'.$selected)),
+				self::NEW_HASH => array('files' => array($base.'/new.mkv')));
+			$entries = $this->cleanupEntries(array('name'=>$legacy, 'name.utf-8'=>$selected),
+				array('name'=>'new.mkv'), $base);
+			strictAssertSame(array($base.'/'.$selected), array_column($entries === null ? array() : $entries, 'path'),
+				'the obsolete existing alias is scheduled instead of the absent legacy spelling');
+			ErasedataFake::$physicalPaths[self::NEW_HASH] = array('files' => array($base.'/'.$selected));
+			strictAssertSame(null, $this->cleanupEntries(array('name'=>$selected),
+				array('name'=>$legacy, 'name.utf-8'=>$selected), $base),
+				'the actual selected successor path protects the shared file');
+			strictAssertSame('shared payload', file_get_contents($base.'/'.$selected), 'planning leaves the shared data intact');
+		} finally { strictRemoveTree($base); }
+	}
+
+	public function testObsoleteDiffRefusesUnconfirmedAndOutOfRootDaemonPaths()
+	{
+		$this->resetFakes();
+		$base = sys_get_temp_dir().'/rut-check-selected-refusal-'.bin2hex(random_bytes(5));
+		mkdir($base, 0700);
+		file_put_contents($base.'/old.mkv', 'old');
+		try {
+			foreach(array(false, array('files'=>array('/outside/new.mkv')),
+				array('files'=>array($base.'/sub/../new.mkv'))) as $reply) {
+				ErasedataFake::$physicalPaths = array(self::NEW_HASH => $reply);
+				strictAssertSame(false, $this->cleanupEntries(array('name'=>'old.mkv'), array('name'=>'new.mkv'), $base),
+					'an unavailable or unconfined daemon path never falls back to raw metadata');
+			}
+		} finally { strictRemoveTree($base); }
 	}
 
 	public function testObsoleteDiffRejectsUnsafeMetainfoComponents()
@@ -2224,7 +2289,7 @@ DSL;
 		rXMLRPCRequest::queue(array('d.get_local_id', 'd.is_meta', 'd.get_directory_base',
 			'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom'),
 			true, false, array(self::LOCAL_ID, 0, $base.'/new', '', '', '', '', '', ''));
-		$this->queueReuseSnapshot($base.'/old');
+		$this->queueReuseSnapshot($base.'/old', $base.'/new');
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ACTED);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
 		$this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_CLEARED);
@@ -2459,6 +2524,7 @@ DSL;
 		try {
 			$old = new Torrent(array('hash'=>self::OLD_HASH, 'info'=>array('name'=>'old.mkv', 'length'=>6)));
 			$new = new Torrent(array('hash'=>self::NEW_HASH, 'info'=>array('name'=>'new.mkv', 'length'=>6)));
+			ErasedataFake::$physicalBases = array(self::OLD_HASH => $base.'/old', self::NEW_HASH => $base.'/new');
 			$entries = strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', array($old, $new, $base.'/old',
 				self::OLD_HASH, self::NEW_HASH, self::PLUGIN_MARKER, self::OLD_HASH.'-started-1787587200', $base.'/new'));
 			strictAssertSame(null, $entries, 'the actual successor inode protects the old alias across directories');

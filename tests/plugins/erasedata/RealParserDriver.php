@@ -25,8 +25,30 @@ final class ErasedataRealParserDriver
 		return $this->daemon;
 	}
 
-	// Answers $replies in order -- one list of values per request -- and
-	// returns what $body printed, decoded from JSON.
+	// system.multicall wraps each command result once. The third result is
+	// f.multicall's array of one-string rows, not more scalar command results.
+	// Keep XML text byte-wise so quote/backslash paths exercise the string
+	// parser, including '&' beside the bytes which must not be unescaped.
+	public static function physicalPathReply($root, $multi, array $paths)
+	{
+		$string = function ($value) {
+			return '<value><string>' . strtr($value, array('&' => '&amp;', '<' => '&lt;', '>' => '&gt;'))
+				. '</string></value>';
+		};
+		$rows = '';
+		foreach ($paths as $path)
+			$rows .= '<value><array><data>' . $string($path) . '</data></array></value>';
+		$results = array($string($root), '<value><i8>' . $multi . '</i8></value>',
+			'<value><array><data>' . $rows . '</data></array></value>');
+		$body = '';
+		foreach ($results as $result)
+			$body .= '<value><array><data>' . $result . '</data></array></value>';
+		return new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data>'
+			. $body . '</data></array></value></param></params></methodResponse>');
+	}
+
+	// Answers $replies in order -- one scalar list or explicit wire reply per
+	// request -- and returns what $body printed, decoded from JSON.
 	public function drive(array $replies, $body)
 	{
 		$this->stop();

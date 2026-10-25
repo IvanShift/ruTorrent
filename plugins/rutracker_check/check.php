@@ -416,6 +416,31 @@ class ruTrackerChecker
 		return($paths);
 	}
 
+	// The daemon owns selected aliases and file renames. Metadata remains the
+	// hash-verified layout/padding authority inside the shared physical reader.
+	static private function collectCleanupPaths($hash, $torrent, $baseDir)
+	{
+		if(!is_string($baseDir) || $baseDir === '' || $baseDir[0] !== '/'
+			|| strpos($baseDir, "\0") !== false)
+			return(false);
+		$failure = null;
+		$owned = erasedataCollectPhysicalPaths($hash, $failure, $torrent);
+		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
+			return(false);
+		$prefix = rtrim($baseDir, '/').'/';
+		$paths = array();
+		foreach($owned['files'] as $file)
+		{
+			if(!is_string($file) || strpos($file, $prefix) !== 0)
+				return(false);
+			$relative = substr($file, strlen($prefix));
+			if(self::makeSafeRelativePath(explode('/', $relative)) !== $relative)
+				return(false);
+			$paths[] = $relative;
+		}
+		return($paths);
+	}
+
 	static private function fileIdentityIndexKey($identity)
 	{
 		if(!is_array($identity) || empty($identity['exists'])
@@ -452,8 +477,8 @@ class ruTrackerChecker
 		$oldHash, $newHash, $marker, $record, $newBaseDir = null)
 	{
 		self::$obsoleteCleanupSummary = array('old' => 0, 'new' => 0, 'obsolete' => 0, 'missing' => 0);
-		$oldPaths = self::collectTorrentPaths($oldTorrent);
-		$newPaths = self::collectTorrentPaths($newTorrent);
+		$oldPaths = self::collectCleanupPaths($oldHash, $oldTorrent, $baseDir);
+		$newPaths = self::collectCleanupPaths($newHash, $newTorrent, $newBaseDir === null ? $baseDir : $newBaseDir);
 		if(!is_array($oldPaths) || !is_array($newPaths))
 			return(false);
 		$newBase = null;

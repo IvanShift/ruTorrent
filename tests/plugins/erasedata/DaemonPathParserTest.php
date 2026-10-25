@@ -310,16 +310,19 @@ class DaemonPathParserTest extends TestCase
 		$multiHash = $this->sessionCopy($this->multiInfo());
 		$singleHash = $this->sessionCopy(array('length' => 5, 'name' => self::SINGLE,
 			'piece length' => 16384, 'pieces' => str_repeat("\x02", 20)));
-		$stored = array($dir, 1, self::NAME, '.pad/0', 'sub/b.bin');
+		$stored = ErasedataRealParserDriver::physicalPathReply($dir, 1,
+			array(self::NAME, '.pad/0', 'sub/b.bin'));
 		$multi = array('base' => $dir, 'multi' => '1',
 			'files' => array($dir . '/' . self::NAME, $dir . '/sub/b.bin'));
 		$cases = array(
 			'opened multi-file' => array($multiHash, array($this->sourceReply(),
-				array($dir, 1, $dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'), $stored), $multi),
+				ErasedataRealParserDriver::physicalPathReply($dir, 1,
+					array($dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin')), $stored), $multi),
 			'unopened multi-file' => array($multiHash, array($this->sourceReply(),
-				array('', 1, '', '', ''), $stored), $multi),
-			'single-file' => array($singleHash, array($this->sourceReply(), array($this->file, 0, $this->file),
-				array(dirname($this->file), 0, self::SINGLE)),
+				ErasedataRealParserDriver::physicalPathReply('', 1, array('', '', '')), $stored), $multi),
+			'single-file' => array($singleHash, array($this->sourceReply(),
+				ErasedataRealParserDriver::physicalPathReply($this->file, 0, array($this->file)),
+				ErasedataRealParserDriver::physicalPathReply(dirname($this->file), 0, array(self::SINGLE))),
 				array('base' => $this->file, 'multi' => '0', 'files' => array($this->file))),
 		);
 		foreach ($cases as $case => $plan)
@@ -340,8 +343,9 @@ class DaemonPathParserTest extends TestCase
 		$answer = $this->ownerSnapshot(array(
 			array($hash, '', '', '', ''),
 			$this->sourceReply(),
-			array($dir, 1, $dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'),
-			array($dir, 1, self::NAME, '.pad/0', 'sub/b.bin')));
+			ErasedataRealParserDriver::physicalPathReply($dir, 1,
+				array($dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin')),
+			ErasedataRealParserDriver::physicalPathReply($dir, 1, array(self::NAME, '.pad/0', 'sub/b.bin'))));
 		$this->assertSame($this->claims(array($dir . '/' . self::NAME, $dir . '/sub/b.bin')), $answer['snapshot'],
 			'its payload files are claimed as they are on disk, and its padding is not: '
 			. self::show($answer['snapshot']));

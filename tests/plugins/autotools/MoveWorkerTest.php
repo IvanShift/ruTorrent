@@ -42,7 +42,10 @@ function moveWorkerRun($state, $actor = 'worker')
         . '; $s->session=' . var_export($root.'/session',true) . '; $p=$r->getProperty("theSettings"); $p->setAccessible(true); $p->setValue(null,$s);'
         . '$scgi_host="127.0.0.1"; $scgi_port=' . $daemon->port() . '; $rpcTimeOut=1; $rpcLogCalls=false;'
         . 'require_once "./move_job_lib.php"; $at=new rAutoTools(); $at->enable_move=1; $at->fileop_type="Move"; $at->skip_move_for_files="";'
-        . '$at->path_to_finished=' . var_export($root.'/fin',true) . '; $at->store();'
+        . '$at->path_to_finished=' . var_export($root.'/fin',true) . ';'
+        . (isset($state['autoFilter']) ? '$at->automove_filter=' . var_export($state['autoFilter'],true) . ';' : '')
+        . (isset($state['skipFilter']) ? '$at->skip_move_for_files=' . var_export($state['skipFilter'],true) . ';' : '')
+        . '$at->store();'
         . 'class MoveTestFiles extends ErasedataFilesystemOps { public static function renameHelperPath() { return '
         . var_export($root.'/rename',true) . '; }} $p=new ReflectionProperty("AutoToolsMoveJob","files"); $p->setAccessible(true); $p->setValue(null,new MoveTestFiles());'
         // array(pattern, revealAt, foreign): a rename whose new name answers
@@ -74,14 +77,30 @@ function moveWorkerRun($state, $actor = 'worker')
     } elseif (strpos($actor, 'upstream-') === 0) {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $args = array('upstream_move.php', substr($actor, 9));
-        if ($actor === 'upstream-move') $args[] = $state['hash'];
-        $args = array_merge($args, array($state['source'], $state['basename'], $state['multi'] ? '1' : '0', '', $state['name'], 'tester'));
+        if ($actor === 'upstream-move' || ($actor === 'upstream-check' && empty($state['upstreamCheckWithoutHash'])))
+            $args[] = $state['hash'];
+        $args = array_merge($args, array($state['source'], $state['basename'], $state['multi'] ? '1' : '0',
+            isset($state['label']) ? $state['label'] : '', $state['name']));
+        if ($actor === 'upstream-move' && empty($state['upstreamMoveWithoutDirectory']))
+            $args[] = isset($state['upstreamDirectory']) ? $state['upstreamDirectory']
+                : ($state['multi'] ? rtrim($state['destination'], '/') : dirname($state['destination']));
+        $args[] = isset($state['upstreamUser']) ? $state['upstreamUser'] : 'tester';
         $source .= '$argv=' . var_export($args, true) . '; require "./upstream_move.php";';
     } elseif (strpos($actor, 'hooks') === 0) {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $source .= '$pathToExternals["php"]=' . var_export($root . '/php "quoted" \\ binary',true) . ';';
         if ($actor === 'hooks-disabled') $source .= '$at->enable_move=0;';
         $source .= '$at->setHandlers(); echo $at->moveStatus;';
+    } elseif ($actor === 'prepare') {
+        $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
+        $source .= '$prepare=new ReflectionMethod("AutoToolsMoveJob","prepare");$prepare->setAccessible(true);'
+            . 'echo JSON::encodeBytes($prepare->invoke(null,' . var_export($state['hash'], true) . ','
+            . var_export($state['qid'], true) . '));';
+    } elseif ($actor === 'file-paths') {
+        $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
+        $source .= '$torrent=new Torrent(' . var_export($root.'/session/'.$state['hash'].'.torrent', true)
+            . ');echo JSON::encodeBytes(AutoToolsFilePaths::read(' . var_export($state['hash'], true)
+            . ',$torrent->info,' . ($state['multi'] ? 'true' : 'false') . ',' . var_export($state['basename'], true) . '));';
     } elseif ($actor === 'inventory-rows') {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $source .= 'echo json_encode(AutoToolsMoveQueue::downloadRows(array("d.name=")));';
@@ -104,7 +123,12 @@ function moveWorkerRun($state, $actor = 'worker')
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $source .= 'AutoToolsMoveJob::recoverCompleted();';
     }
-    $driverArgs=array(PHP_BINARY, '-d', 'display_errors=1', $driver);
+    $driverArgs=array(PHP_BINARY, '-d', 'display_errors=1');
+    if (isset($state['disabledFunctions'])) {
+        $driverArgs[] = '-d';
+        $driverArgs[] = 'disable_functions=' . $state['disabledFunctions'];
+    }
+    $driverArgs[] = $driver;
     if(in_array($actor,array('cold-readiness','cold-reset'),true)) {
         $source='<?php $_ENV["RU_PROFILE_PATH"]='.var_export($root.'/cold-profile',true)
             .'; $_ENV["RU_LOG_FILE"]='.var_export($root.'/errors.log',true).'; chdir('
@@ -123,7 +147,8 @@ function moveWorkerRun($state, $actor = 'worker')
         do { $calls = $daemon->calls(); if (in_array('d.save_full_session', $calls, true)) break; usleep(20000); } while (microtime(true) < $deadline);
     }
     $calls = $daemon->calls(); $bodies = $daemon->bodies(); $daemon->stop();
-    return array($exit, (is_file($root.'/native.json') ? json_decode(file_get_contents($root.'/native.json'), true) : $state), $calls, $out.$err, $bodies);
+    return array($exit, (is_file($root.'/native.json') ? JSON::decodeBytes(file_get_contents($root.'/native.json')) : $state),
+        $calls, $out.$err, $bodies, $out, $err);
 }
 
 function moveWorkerSeed(&$state, $phase, $lease, $moved = false)

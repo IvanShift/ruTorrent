@@ -218,6 +218,111 @@ class TorrentAddPathSequenceTest extends TestCase
 			'the entry is replaced with the mtime on disk and the rest of the torrent is untouched');
 	}
 
+	public function testFastResumeRefusesDifferentSingleFileAliasBeforeWritingProgress()
+	{
+		$raw = hex2bin('f1e5f0e8ff').'.data';
+		$alias = 'серия.data';
+		$torrent = new Torrent($this->announceOnlyTorrent());
+		$torrent->info['name'] = $raw;
+		$torrent->info['name.utf-8'] = $alias;
+		$before = (string)$torrent;
+		try {
+			foreach(array($raw => 'r', $alias => 'u') as $name => $byte) {
+				file_put_contents($this->base.'/'.$name, str_repeat($byte, 1024));
+				touch($this->base.'/'.$name, 1500000001);
+			}
+			$this->assertSame(false, rTorrent::fastResume($torrent, $this->base),
+				'distinct names with identical lengths and mtimes cannot attest the daemon-selected file before load');
+			$this->assertSame($before, (string)$torrent,
+				'the ordinary load receives no fabricated completed bitfield or changed metadata');
+		} finally {
+			foreach(array($raw, $alias) as $name) @unlink($this->base.'/'.$name);
+		}
+	}
+
+	public function testFastResumeRefusesDifferentFileAliasesWithAndWithoutRootPrefix()
+	{
+		$alias = $this->base.'/payload/selected.data';
+		try {
+			file_put_contents($alias, str_repeat('x', 600));
+			touch($alias, 1500000002);
+			foreach(array(true, false) as $addPath) {
+				$torrent = new Torrent($this->privateMultiFileTorrent());
+				$torrent->info['files'][0]['path.utf-8'] = array('selected.data');
+				$before = (string)$torrent;
+				$base = $addPath ? $this->base : $this->base.'/payload';
+				$this->assertSame(false, rTorrent::fastResume($torrent, $base, $addPath),
+					'a file alias can change the selected payload under either directory mode');
+				$this->assertSame($before, (string)$torrent, 'refusal precedes any resume write');
+			}
+		} finally { @unlink($alias); }
+	}
+
+	public function testFastResumeRefusesDifferentRootAliasWhenAddingTheRoot()
+	{
+		$torrent = new Torrent($this->privateMultiFileTorrent());
+		$torrent->info['name.utf-8'] = 'selected-root';
+		$before = (string)$torrent;
+		$this->assertSame(false, rTorrent::fastResume($torrent, $this->base, true),
+			'raw root files cannot attest the alternative directory the daemon may select');
+		$this->assertSame($before, (string)$torrent, 'the root-alias refusal does not change the torrent');
+	}
+
+	public function testFastResumeKeepsIdenticalAliasesAvailable()
+	{
+		$single = new Torrent($this->announceOnlyTorrent());
+		$single->info['name.utf-8'] = $single->info['name'];
+		$this->assertSame($single, rTorrent::fastResume($single, $this->base),
+			'an identical single-file alias names the same physical file');
+		$this->assertSame($this->mtimes['test.data'], $single->libtorrent_resume['files'][0]['mtime']);
+		$multi = new Torrent($this->privateMultiFileTorrent());
+		$multi->info['name.utf-8'] = $multi->info['name'];
+		foreach($multi->info['files'] as $index => $file)
+			$multi->info['files'][$index]['path.utf-8'] = $file['path'];
+		$this->assertSame($multi, rTorrent::fastResume($multi, $this->base),
+			'identical root and file aliases do not disable fast resume');
+		$this->assertSame(2, count($multi->libtorrent_resume['files']));
+	}
+
+	public function testFastResumeIgnoresAnUnusedMultiFileRootAlias()
+	{
+		$torrent = new Torrent($this->privateMultiFileTorrent());
+		$torrent->info['name.utf-8'] = 'unused-root';
+		$this->assertSame($torrent, rTorrent::fastResume($torrent, $this->base.'/payload', false),
+			'directory_base selects the supplied root directly, so its unused metadata alias is irrelevant');
+		$this->assertSame(2, count($torrent->libtorrent_resume['files']));
+	}
+
+	public function testFastResumePreservesTheExactDirectoryInsteadOfStattingItsTrimmedTwin()
+	{
+		$base = $this->base.' ';
+		try {
+			mkdir($base, 0700);
+			file_put_contents($base.'/test.data', str_repeat('x', 1024));
+			touch($base.'/test.data', 1500000099);
+			$torrent = new Torrent($this->announceOnlyTorrent());
+			$this->assertSame($torrent, rTorrent::fastResume($torrent, $base), 'the exact directory is usable');
+			$this->assertSame(1500000099, $torrent->libtorrent_resume['files'][0]['mtime'],
+				'the daemon receives this directory, so its file mtime must be used instead of the trimmed sibling');
+		} finally { @unlink($base.'/test.data'); @rmdir($base); }
+	}
+
+	public function testNewLoadLeavesHashingToTheDaemonWhenFastResumeCannotChooseAnAlias()
+	{
+		$torrent = new Torrent($this->sessionTorrent());
+		$torrent->info['name.utf-8'] = 'selected.data';
+		$before = (string)$torrent;
+		$prepared = rTorrent::preflightTorrentLoad($torrent, true, $this->base, true,
+			true, null, $failure);
+		$this->assertTrue(is_array($prepared), 'uncertain fast resume does not refuse an ordinary load');
+		$this->assertSame(null, $failure, 'load preparation still succeeds');
+		$this->assertTrue(!isset($prepared['torrent']->libtorrent_resume),
+			'a new load carries no completed bitfield derived from the raw-name sibling');
+		$this->assertSame($torrent->info, $prepared['torrent']->info,
+			'the daemon receives the original metadata and makes its own filename selection');
+		$this->assertSame($before, (string)$torrent, 'the caller-owned source remains unchanged');
+	}
+
 	// ---- php/addtorrent.php ---------------------------------------------
 
 	/**

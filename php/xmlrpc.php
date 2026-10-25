@@ -161,6 +161,9 @@ class rXMLRPCRequest
 	public $responseTypes = array();
 	private $responseStringArrayWidths = array();
 	private $responseStringTableWidths = array();
+	public $responseCommandValues = array();
+	public $responseCommandTypes = array();
+	private $responseCommandStringTableWidths = array();
 	public $fault = false;
 	public $faultString = '';
 	// Keep the transport reason on this request for its HTTP endpoint.
@@ -339,6 +342,9 @@ class rXMLRPCRequest
 		$this->responseTypes = array();
 		$this->responseStringArrayWidths = array();
 		$this->responseStringTableWidths = array();
+		$this->responseCommandValues = array();
+		$this->responseCommandTypes = array();
+		$this->responseCommandStringTableWidths = array();
 	}
 
 	public function run($trusted = true)
@@ -380,8 +386,14 @@ class rXMLRPCRequest
 				}
 		rTorrentSettings::get()->patchDeprecatedRequest($this->commands);
 		$this->commandOffset = 0;
+		$proofOffset = 0;
+		$commandProofValid = true;
 		while($this->makeNextCall())
 		{
+			$sentCommands = $this->commandOffset - $proofOffset;
+			$opaqueMulticall = count($this->commands) - $proofOffset === 1
+				&& $this->commands[$proofOffset]->command === 'system.multicall';
+			$proofOffset = $this->commandOffset;
 			// An earlier chunk cannot make a failed later chunk successful.
 			$ret = false;
 			$answer = self::send($this->content,$trusted,$this->transportFailure);
@@ -408,6 +420,17 @@ class rXMLRPCRequest
 			$this->responseTypes = array_merge($this->responseTypes, $response->valueTypes);
 			$this->responseStringArrayWidths = array_merge($this->responseStringArrayWidths, $response->stringArrayWidths);
 			$this->responseStringTableWidths = array_merge($this->responseStringTableWidths, $response->stringTableWidths);
+			// Counts must match this call, not just the sum of several chunks:
+			// a missing result and a later extra result must never shift indexes.
+			if($opaqueMulticall || count($response->commandValues) !== $sentCommands) $commandProofValid = false;
+			if($commandProofValid)
+			{
+				$this->responseCommandValues = array_merge($this->responseCommandValues, $response->commandValues);
+				$this->responseCommandTypes = array_merge($this->responseCommandTypes, $response->commandTypes);
+				$this->responseCommandStringTableWidths = array_merge($this->responseCommandStringTableWidths, $response->commandStringTableWidths);
+			}
+			else
+				$this->responseCommandValues = $this->responseCommandTypes = $this->responseCommandStringTableWidths = array();
 			foreach($response->scalars as $scalar)
 			{
 				list($type, $value) = $scalar;
@@ -422,6 +445,7 @@ class rXMLRPCRequest
 			if($response->fault)
 			{
 				$this->fault = true;
+				$this->responseCommandValues = $this->responseCommandTypes = $this->responseCommandStringTableWidths = array();
 				$this->rawFaultString = $response->faultString;
 				$this->faultString = trim($this->rawFaultString);
 				global $rpcLogFaults;
@@ -449,12 +473,23 @@ class rXMLRPCRequest
 	/**
 	 * One exact XML array of equally wide XML array rows, with string/base64
 	 * cells only. Empty inventory is []; unknown, fault or wrong shape is null.
-	 * Provenance comes from the streaming grammar, not PHP array key coercion.
+	 * An explicit index selects one command result, including native multicall
+	 * wrappers. The default still requires one sole top-level table. Provenance
+	 * comes from the streaming grammar, not PHP array key coercion.
 	 */
-	public function stringTable($columns)
+	public function stringTable($columns, $resultIndex = null)
 	{
-		if(!is_int($columns) || $columns < 1 || $this->fault ||
-			$this->responseTypes !== array('array') || count($this->responseValues) !== 1 ||
+		if(!is_int($columns) || $columns < 1 || $this->fault) return null;
+		if($resultIndex !== null)
+		{
+			if(!is_int($resultIndex) || $resultIndex < 0 ||
+				!isset($this->responseCommandValues[$resultIndex], $this->responseCommandTypes[$resultIndex],
+					$this->responseCommandStringTableWidths[$resultIndex]) ||
+				$this->responseCommandTypes[$resultIndex] !== 'array') return null;
+			$width = $this->responseCommandStringTableWidths[$resultIndex];
+			return ($width === -1 || $width === $columns) ? $this->responseCommandValues[$resultIndex] : null;
+		}
+		if($this->responseTypes !== array('array') || count($this->responseValues) !== 1 ||
 			count($this->responseStringTableWidths) !== 1) return null;
 		$width = $this->responseStringTableWidths[0];
 		return ($width === -1 || $width === $columns) ? $this->responseValues[0] : null;

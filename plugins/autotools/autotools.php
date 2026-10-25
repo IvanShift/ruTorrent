@@ -283,10 +283,11 @@ class rAutoTools
                     $script = 'upstream_move.php';
                     $args = '$' . getCmd('d.get_base_path') . '=,$' . getCmd('d.get_base_filename')
                         . '=,$' . getCmd('d.is_multi_file') . '=,$' . getCmd('d.get_custom1')
-                        . '=,$' . getCmd('d.get_name') . '=,' . $q($user);
+                        . '=,$' . getCmd('d.get_name') . '=';
                     $hook = getCmd('d.set_directory_base') . '='
-                        . $q('$' . $execute($script, 'check,' . $args, 'execute_capture'))
-                        . ' ; ' . $execute($script, 'move,$' . getCmd('d.get_hash') . '=,' . $args);
+                        . $q('$' . $execute($script, 'check,$' . getCmd('d.get_hash') . '=,' . $args . ',' . $q($user), 'execute_capture'))
+                        . ' ; ' . $execute($script, 'move,$' . getCmd('d.get_hash') . '=,' . $args
+                            . ',$' . getCmd('d.get_directory') . '=,' . $q($user));
                     FileUtil::toLog('autotools: move mode upstream (native file-job queue absent)');
                 } else FileUtil::toLog('autotools: move paused: incomplete or unconfirmed native file-job ABI');
             } else {
