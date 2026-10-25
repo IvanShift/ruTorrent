@@ -204,8 +204,10 @@ SH
 
 	public function testPostBodyUrlKeepsDesktopAndMobileQueryOptions()
 	{
+		// Absolute paths outside topDirectory are now interpreted below it;
+		// a URL remains an invalid directory before any torrent fetch begins.
 		$result = $this->probe(404, 'not found', 'POST', 'body',
-			'https://tracker.example/download', array('dir_edit' => '/outside-permitted-root'));
+			'https://tracker.example/download', array('dir_edit' => 'https://directory.invalid/downloads'));
 		$this->assertEquals('FailedDirectory', $result[0], 'query directory option is still applied to a POST body URL');
 		$this->assertEquals(false, $result[5], 'rejected directory prevents a fetch');
 	}

@@ -90,7 +90,7 @@ if( $is_ok )
 				null,				// label is emply
 				false,				// don't saveUploadedTorrents
 				false,				// don't fast_resume
-				true, null, $pendingReceipt
+				true, null, $pendingReceipt, null, true
 			);
 			if( $hash === false )
 			{

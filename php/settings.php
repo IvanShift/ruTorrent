@@ -606,6 +606,58 @@ class rTorrentSettings
 	{
 		return(	new rXMLRPCCommand("schedule_remove", $name.User::getUser()) );
 	}
+	// NAME_MAX and PATH_MAX as Linux counts them, in bytes. PATH_MAX includes
+	// the terminating NUL, so the longest path a call can name is one less.
+	const DIRECTORY_NAME_MAX = 255;
+	const DIRECTORY_PATH_MAX = 4095;
+
+	/**
+	 * The absolute directory a user's typed directory names, or false.
+	 *
+	 * A relative value is joined to $default, rtorrent's default directory,
+	 * or to $top when $default is not inside $top. An absolute value inside
+	 * $top is kept; one outside it is read as relative to $top, so "/x" is
+	 * <top>/x. "//", "." and ".." are folded, and a value that would end
+	 * outside $top is put under it the same way, so ".." cannot leave it.
+	 * "~" is an ordinary character.
+	 *
+	 * Refused before anything is joined: a URL or a magnet link, which
+	 * folding would turn into an ordinary looking path; a NUL byte; and a
+	 * name no filesystem holds. The result is refused when it is longer than
+	 * a path can be.
+	 */
+	public static function userDirectory($dir, $top, $default = '')
+	{
+		if(!is_string($dir) || (strpos($dir, "\0") !== false) ||
+			preg_match('`[A-Za-z][A-Za-z0-9+.-]*://`', $dir) || (stripos($dir, 'magnet:?') !== false))
+			return(false);
+		foreach(explode('/', $dir) as $name)
+			if(strlen($name) > self::DIRECTORY_NAME_MAX)
+				return(false);
+		$top = FileUtil::fullpath('/'.$top);
+		$rooted = FileUtil::fullpath('/'.$dir);
+		if(($dir !== '') && ($dir[0] === '/'))
+			$path = $rooted;
+		else
+		{
+			$base = FileUtil::fullpath('/'.$default);
+			if(!is_string($default) || ($default === '') || !self::isUnder($base, $top))
+				$base = $top;
+			$path = FileUtil::fullpath($base.'/'.$dir);
+		}
+		if(!self::isUnder($path, $top))
+			$path = FileUtil::fullpath($top.$rooted);
+		if(strlen($path) > self::DIRECTORY_PATH_MAX)
+			return(false);
+		return($path);
+	}
+
+	/** Whether the normalised absolute $path is $top or under it. */
+	private static function isUnder($path, $top)
+	{
+		return(($top === '/') || ($path === $top) || (strpos($path, $top.'/') === 0));
+	}
+
 	private function expandHomePath(&$path)
 	{
 		if(strlen($path) && $path[0]=='~')
@@ -617,15 +669,37 @@ class rTorrentSettings
 		}
 		return(true);
 	}
+
+	/**
+	 * Resolve a typed directory under the configured top. Real daemon paths
+	 * and picker entries use correctReportedDirectory() so their identity is
+	 * never moved under a different directory.
+	 */
 	public function correctDirectory(&$dir,$resolve_links = false,$preserve_top = false)
 	{
 		global $topDirectory;
+		$resolved = self::userDirectory($dir, $topDirectory, $this->directory);
+		if($resolved === false)
+			return(false);
+		$dir = $resolved;
+		return($this->checkDirectoryBoundary($dir, $resolve_links, $preserve_top));
+	}
+
+	/** Judge a daemon-reported path without changing which directory it names. */
+	public function correctReportedDirectory(&$dir,$resolve_links = false,$preserve_top = false)
+	{
 		if(!$this->expandHomePath($dir))
 			return(false);
 		$base = $this->directory;
 		if((!strlen($dir) || $dir[0]!='/') && !$this->expandHomePath($base))
 			return(false);
 		$dir = FileUtil::fullpath($dir,$base);
+		return($this->checkDirectoryBoundary($dir, $resolve_links, $preserve_top));
+	}
+
+	private function checkDirectoryBoundary(&$dir,$resolve_links,$preserve_top)
+	{
+		global $topDirectory;
 		$logicalTop = rtrim($topDirectory, '/');
 		$top = $logicalTop;
 		if($resolve_links)

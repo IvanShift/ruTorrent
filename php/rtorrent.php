@@ -270,8 +270,9 @@ class rTorrent
 
 	/** Validate and prepare a load before callers erase an existing download. */
 	static public function preflightTorrentLoad($fname, $isAddPath, $directory, $isFast,
-		$isNew = true, $addition = null, &$failure = null, $beforeDispatch = null)
+		$isNew = true, $addition = null, &$failure = null, $beforeDispatch = null, $directoryIsReported = false)
 	{
+		self::$directoryRefused = false;
 		$failure = 'invalid-load';
 		if(($beforeDispatch !== null && !is_callable($beforeDispatch)) ||
 			!self::areValidAdditions($addition))
@@ -280,9 +281,11 @@ class rTorrent
 		$torrent = $mustSave ? clone $fname : new Torrent($fname);
 		if($torrent->errors())
 			return false;
+		// New metainfo may reuse a daemon path; provenance is independent of $isNew.
+		$directoryIsReported = $directoryIsReported || !$isNew || (!$isAddPath && !$directory);
 		$directory = self::parseDirectory($directory, $isAddPath);
 		if($directory && strlen($directory)>0 &&
-			!rTorrentSettings::get()->correctDirectory($directory))
+			!self::validateLoadDirectory($directory, $directoryIsReported))
 		{
 			$failure = 'invalid-directory';
 			return false;
@@ -312,7 +315,8 @@ class rTorrent
 		$failure = null;
 		return array('torrent'=>$torrent, 'directory'=>$directory,
 			'filename'=>is_object($fname) ? $torrent->getFileName() : $fname,
-			'must_save'=>$mustSave, 'raw_value'=>$rawValue, 'raw_load'=>$rawLoad);
+			'must_save'=>$mustSave, 'raw_value'=>$rawValue, 'raw_load'=>$rawLoad,
+			'directory_reported'=>$directoryIsReported);
 	}
 
 	/**
@@ -322,11 +326,11 @@ class rTorrent
 	 *                          prove the deferred load was rejected. The receipt's
 	 *                          raw flag allows source cleanup after dispatch.
 	 */
-	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null, $beforeDispatch = null)
+	static public function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null, &$pendingReceipt = null, $beforeDispatch = null, $directoryIsReported = false)
 	{
 		$pendingReceipt = null;
 		$prepared = self::preflightTorrentLoad($fname, $isAddPath, $directory, $isFast,
-			$isNew, $addition, $failure, $beforeDispatch);
+			$isNew, $addition, $failure, $beforeDispatch, $directoryIsReported);
 		if($prepared === false)
 			return false;
 		$hash = false;
@@ -367,7 +371,8 @@ class rTorrent
 		$req = new rXMLRPCRequest();
 		if($directory && (strlen($directory)>0))
 		{
-			$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
+			if(!self::prepareDirectory($directory, $isNew, $req, $prepared['directory_reported']))
+				return false;
 			$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
 		}
 		$comment = $torrent->comment();
@@ -503,8 +508,9 @@ class rTorrent
 		return $hash === str_repeat('0', 40) ? false : $hash;
 	}
 
-	static public function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
+	static public function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null, $directoryIsReported = false)
 	{
+		self::$directoryRefused = false;
 		if(!self::areValidAdditions($addition))
 			return false;
 		$hash = self::magnetHash($magnet);
@@ -513,13 +519,13 @@ class rTorrent
 			$req = new rXMLRPCRequest();
 			$cmd = new rXMLRPCCommand( $isStart ? 'load_start' : 'load' );
 			$cmd->addParameter($magnet);
+			$directoryIsReported = $directoryIsReported || (!$isAddPath && !$directory);
 			$directory = self::parseDirectory($directory, $isAddPath);
 			if($directory && (strlen($directory)>0))
 			{
-				if(!rTorrentSettings::get()->correctDirectory($directory))
+				if(!self::prepareDirectory($directory, true, $req, $directoryIsReported))
 					return(false);
 				$cmd->addParameter( getCmd($isAddPath ? "d.set_directory=" : "d.set_directory_base=").self::quoteCommandArg($directory) );
-				$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
 			}
 			if($label && (strlen($label)>0))
 			{
@@ -750,7 +756,7 @@ class rTorrent
 	        {
 	        	$base = rTorrentSettings::get()->directory;
 		}
-	        if($psize && rTorrentSettings::get()->correctDirectory($base))
+	        if($psize && rTorrentSettings::get()->correctReportedDirectory($base))
 	        {
 		        $base = FileUtil::addslash($base);
 	                $tsize = 0.0;
@@ -804,6 +810,107 @@ class rTorrent
 	static public function quoteCommandArg($value)
 	{
 		return(RtorrentCommandArguments::quote($value));
+	}
+
+	private static $directoryRefused = false;
+
+	/**
+	 * Whether the last sendTorrent() or sendMagnet() that answered false did
+	 * so because of the download's directory: refused, or rtorrent could not
+	 * make it. addtorrent.php tells the user so rather than that the add
+	 * failed.
+	 */
+	static public function refusedDirectory()
+	{
+		return(self::$directoryRefused);
+	}
+
+	/**
+	 * Resolve, in place, the directory a download is loaded into, and see
+	 * that it exists. False when it is refused or cannot be made.
+	 *
+	 * A new user-supplied directory is resolved by correctDirectory(), which
+	 * places it under the top directory; isInsideTopDirectory() follows
+	 * its links. It is made before the load is sent, in a request of its own,
+	 * so a directory that cannot be made leaves nothing loaded.
+	 *
+	 * A reload sends back the directory rtorrent reported. It is judged as
+	 * one, and its mkdir is added to $req to go with the load: the caller has
+	 * already erased the download, so loading it where it cannot be written
+	 * keeps it, and refusing would lose it.
+	 */
+	static protected function prepareDirectory(&$directory, $isNew, $req, $directoryIsReported = false)
+	{
+		if(!self::validateLoadDirectory($directory, $directoryIsReported || !$isNew))
+			return false;
+		if($isNew)
+		{
+			$mkdir = new rXMLRPCRequest( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
+			return($mkdir->success() ? true : self::directoryFailed());
+		}
+		$req->addCommand( new rXMLRPCCommand( 'execute', array('mkdir','-p',$directory) ) );
+		return true;
+	}
+
+	/** Share directory admission with the preflight that runs before an erase. */
+	static private function validateLoadDirectory(&$directory, $directoryIsReported)
+	{
+		$settings = rTorrentSettings::get();
+		$valid = $directoryIsReported
+			? $settings->correctReportedDirectory($directory)
+			: $settings->correctDirectory($directory) && self::isInsideTopDirectory($directory);
+		return $valid ? true : self::directoryFailed();
+	}
+
+	static private function directoryFailed()
+	{
+		self::$directoryRefused = true;
+		return(false);
+	}
+
+	/**
+	 * Whether $dir, a directory correctDirectory() accepted, is still inside
+	 * $topDirectory once the symbolic links along it are followed.
+	 *
+	 * correctDirectory() compares the path as written; rtorrent's "mkdir -p"
+	 * and its file writes follow links. So the deepest part of $dir that
+	 * exists is resolved and the rest, which mkdir will create, re-attached.
+	 * A part that exists but does not resolve -- a dangling link, or a link
+	 * into a directory this user cannot enter -- is refused rather than read
+	 * as a plain name.
+	 *
+	 * Only a local rtorrent shares this filesystem, so for a remote one the
+	 * text check is all there is. A top directory that does not exist is
+	 * compared as written.
+	 */
+	static public function isInsideTopDirectory($dir)
+	{
+		global $topDirectory;
+		$top = FileUtil::addslash($topDirectory);
+		if(($top === '/') || !User::isLocalMode())
+			return(true);
+		foreach(array('realpath', 'file_exists', 'is_link', 'basename', 'dirname') as $function)
+			if(!function_exists($function)) return false;
+		$realTop = @realpath($top);
+		$realTop = FileUtil::addslash(is_string($realTop) ? $realTop : $top);
+		if(!is_string($dir) || ($dir === '') || ($dir[0] !== '/') || strpos($dir, "\0") !== false)
+			return(false);
+		$path = ($dir === '/') ? '/' : rtrim($dir, '/');
+		$rest = '';
+		while(!@file_exists($path) && !@is_link($path))
+		{
+			$parent = @dirname($path);
+			$name = @basename($path);
+			// An inaccessible root is not a missing directory we can keep climbing.
+			if(!is_string($parent) || $parent === '' || $parent === $path || !is_string($name))
+				return false;
+			$rest = '/'.$name.$rest;
+			$path = $parent;
+		}
+		$real = @realpath($path);
+		if(!is_string($real))
+			return(false);
+		return(strpos(FileUtil::addslash(rtrim($real, '/').$rest), $realTop) === 0);
 	}
 
 	static protected function parseDirectory($directory, $isAddPath)

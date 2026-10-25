@@ -37,7 +37,7 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 		if(isset($_REQUEST['basedir']) && is_string($_REQUEST['basedir']))
 		{
 			$dir = $_REQUEST['basedir'];
-			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctDirectory($dir, true, true);
+			$allowedDirectory = strpos($dir, "\0") === false && $theSettings->correctReportedDirectory($dir, true, true);
 			if(!$allowedDirectory ||
 				(($theSettings->uid>=0) &&
 				$checkUserPermissions &&
@@ -47,7 +47,7 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 		if($dir === null)
 		{
 			$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-			if(!$theSettings->correctDirectory($dir, true, true))
+			if(!$theSettings->correctReportedDirectory($dir, true, true))
 				$dir = $topDirectory;
 		}
 		$files = array();
@@ -63,7 +63,7 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 				if(($file=="..") && (rtrim($dir, '/') === rtrim($topDirectory, '/')))
 					continue;
 				if(is_dir($path) && is_readable($path) &&
-					$theSettings->correctDirectory($path, true) &&
+					$theSettings->correctReportedDirectory($path, true) &&
 					( $theSettings->uid<0 || !$checkUserPermissions || Permission::doesUserHave($theSettings->uid,$theSettings->gid,$path,0x0007) )
 					)
 				{

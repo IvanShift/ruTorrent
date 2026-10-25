@@ -353,12 +353,14 @@ $tests = array(
         // and this is what catches the next test() written against the raw
         // url string instead of the parsed host.
         global $productionAccountClasses;
+        $asked = 0;
         foreach ($productionAccountClasses as $class) {
             $account = new $class();
             $host = parse_url((string) $account->url, PHP_URL_HOST);
             if (!$host) {
                 continue;
             }
+            $asked++;
             $elsewhere = array(
                 'https://evil.test/x/' . $host . '/forum/dl.php?t=1',
                 'https://evil.test/x/' . $host . '/download.php?id=1',
@@ -373,17 +375,24 @@ $tests = array(
                     $class . ' must not claim ' . var_export($url, true));
             }
         }
+        // The accounts are loaded by the glob at the top of this file, and the
+        // cases that name a class by hand are the only ones that notice when
+        // it matches nothing. This one would simply ask no account anything.
+        testAssertSame(true, $asked > 0, 'accounts were found to ask');
     },
 
     'a url with no host at all matches nothing' => function () {
         global $productionAccountClasses;
+        $asked = 0;
         foreach ($productionAccountClasses as $class) {
+            $asked++;
             $account = new $class();
             foreach (array('', 'not a url', '/relative/path', 'javascript:alert(1)') as $url) {
                 testAssertSame(false, (bool) $account->test($url),
                     $class . ' must not claim ' . var_export($url, true));
             }
         }
+        testAssertSame(true, $asked > 0, 'accounts were found to ask');
     },
 );
 

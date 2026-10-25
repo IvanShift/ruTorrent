@@ -33,11 +33,12 @@ function addtorrent_literal($value)
 }
 
 // The result of one confirmed load: its hash is a duplicate when it was
-// loaded before this request, or by an earlier item of it.
+// loaded before this request, or by an earlier item of it. A load refused
+// over its directory says so, so the user knows what to change.
 function addtorrent_status($hash, &$loaded)
 {
 	if($hash===false)
-		return("Failed");
+		return(rTorrent::refusedDirectory() ? "FailedDirectory" : "Failed");
 	$hash = strtoupper($hash);
 	if(isset($loaded[$hash]))
 		return("Duplicate");
@@ -55,7 +56,7 @@ function addtorrent_status($hash, &$loaded)
 function addtorrent_magnet_status($hash, &$loaded)
 {
 	if($hash===false)
-		return("Failed");
+		return(addtorrent_status($hash, $loaded));
 	if(!rTorrent::magnetShown($hash, 'addtorrent'))
 		return("Pending");
 	return(addtorrent_status(strtoupper($hash), $loaded));
@@ -157,7 +158,8 @@ else
 	if(isset($_REQUEST['dir_edit']))
 	{
 		$dir_edit = trim($_REQUEST['dir_edit']);
-		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
+		if((strlen($dir_edit)>0) && (!rTorrentSettings::get()->correctDirectory($dir_edit) ||
+			!rTorrent::isInsideTopDirectory($dir_edit)))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}
 	// No addition is taken from the request. An addition is an rtorrent command

@@ -19,8 +19,11 @@ class RtorrentRawStringCaptureSettings extends rTorrentSettings
 
 	public function patchDeprecatedRequest($commands)
 	{
-		$this->captured = $commands;
-		throw new RtorrentRawStringCaptured();
+		$this->captured = array_merge($this->captured, $commands);
+		// Directory creation is now confirmed in its own request before a new load.
+		foreach($commands as $command)
+			if(strpos($command->command, 'load') === 0)
+				throw new RtorrentRawStringCaptured();
 	}
 }
 
@@ -194,7 +197,7 @@ class RtorrentRawStringConsumersTest extends TestCase
 					rTorrent::sendTorrent($torrent, true, false, $read->val[0], null, true, false);
 				}
 			} catch (RtorrentRawStringCaptured $stop) {
-				// expected: the request stops at the seam, before a socket
+				// Expected: mkdir was answered by the peer; stop before dispatching the load.
 			}
 			$what = $magnet ? 'sendMagnet()' : 'sendTorrent()';
 			$set = null;

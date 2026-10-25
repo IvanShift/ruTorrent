@@ -37,8 +37,8 @@ http://snoopy.sourceforge.com
 
 require_once( 'util.php' );
 require_once( 'settings.php' );
-require_once( 'urlhost.php' );
-require_once( 'publicsuffix.php' );
+require_once(__DIR__ . '/utility/urlhost.php');
+require_once(__DIR__ . '/publicsuffix.php');
 
 class Snoopy
 {
@@ -150,6 +150,11 @@ class Snoopy
 	const MAX_RESPONSE_COOKIES = 300;
 	const MAX_DOMAIN_COOKIES = 50;
 	const MAX_COOKIE_BYTES = 4096;
+	const MAX_COOKIE_HEADERS = 100;
+	const MAX_COOKIE_HEADER_BYTES = 8192;
+	private $lastResponseAt = null;
+	private $responseCookiesCaptured = false;
+	private $responseCookieActions = array();
 
 	var $_isproxy		=	false;			// set if using a proxy server
 	var $_fp_timeout	=	30;			// timeout for socket connection
@@ -860,6 +865,12 @@ class Snoopy
 		return $pairs;
 	}
 
+	/** Bind parser actions and stored tuples to the same account and wire scope. */
+	private function responseCookieKey($domain, $hostOnly, $path, $name)
+	{
+		return $this->cookiePartition() . "\0" . $domain . "\0" . (int) $hostOnly . "\0" . $path . "\0" . $name;
+	}
+
 	private static function cookiePathMatches($requestPath, $cookiePath)
 	{
 		if(strncmp($requestPath, $cookiePath, strlen($cookiePath)) !== 0)
@@ -872,7 +883,7 @@ class Snoopy
 	{
 		foreach($this->rawheaders as $name => $value)
 			if(strcasecmp((string) $name, 'Cookie') === 0)
-				return '';
+				return $name . ': ' . $value;
 		$pairs = $this->cookiePairsForRequest($url);
 		$values = array();
 		foreach($pairs as $pair)
@@ -905,7 +916,8 @@ class Snoopy
 	private function isFlattenedResponseCookie($name, $value)
 	{
 		return isset($this->flattenedResponseCookies[$name])
-			&& $this->flattenedResponseCookies[$name] === $value
+			&& !$this->flattenedResponseCookies[$name]['manual']
+			&& $this->flattenedResponseCookies[$name]['value'] === $value
 			&& (!array_key_exists($name, $this->requestOriginalCookies)
 				|| $this->requestOriginalCookies[$name] !== $value);
 	}
@@ -913,6 +925,7 @@ class Snoopy
 	/** Capture against the URL that answered, before another redirect changes headers. */
 	private function captureResponseCookies($url)
 	{
+		$this->responseCookieActions = array();
 		$host = UrlHost::of($url);
 		if($host === null)
 			return;
@@ -921,18 +934,20 @@ class Snoopy
 		$lastSlash = strrpos($path, '/');
 		$defaultPath = $lastSlash === false || $lastSlash === 0 ? '/'
 			: substr($path, 0, $lastSlash);
-		$now = time();
+		// Explicit setcookies() can run later than receipt, including when
+		// automatic capture is off. It must not restart a Max-Age lifetime.
+		$receivedAt = $this->lastResponseAt === null ? time() : $this->lastResponseAt;
 		$seen = 0;
 		foreach($this->headers as $header)
 		{
-			if(++$seen > 100)
+			if(!preg_match('/^Set-Cookie:[ \t]*(.*)$/i', trim($header), $match))
+				continue;
+			if(++$seen > self::MAX_COOKIE_HEADERS)
 			{
 				self::logCookieRefusal($host, 'header-limit');
 				break;
 			}
-			if(!preg_match('/^Set-Cookie:[ \t]*(.*)$/i', trim($header), $match))
-				continue;
-			if(strlen($header) > 8192
+			if(strlen($header) > self::MAX_COOKIE_HEADER_BYTES
 				|| (strlen($header) >= $this->_maxlinelen - 1 && substr($header, -1) !== "\n"))
 			{
 				self::logCookieRefusal($host, 'oversized-or-truncated-header');
@@ -977,18 +992,25 @@ class Snoopy
 					$domain = substr($domain, 1);
 				try
 				{
+					if(!function_exists('filter_var'))
+						throw new RuntimeException('Cookie IP validator is unavailable');
 					$valid = filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false
 						&& !PublicSuffix::isPublicSuffix($host)
 						&& !PublicSuffix::isPublicSuffix($domain)
 						&& UrlHost::isOneOf($host, array($domain));
 				}
-				catch(Exception $e)
+				catch(InvalidArgumentException $e)
 				{
 					$valid = false;
 				}
+				catch(Throwable $e)
+				{
+					self::logCookieRefusal($host, 'domain-validation-unavailable; check php/public_suffix_list.dat; Domain cookies dropped');
+					continue;
+				}
 				if(!$valid)
 				{
-					self::logCookieDomainRefusal($host);
+					self::logCookieRefusal($host, 'domain-refused');
 					continue;
 				}
 				$hostOnly = false;
@@ -1004,20 +1026,31 @@ class Snoopy
 				continue;
 			}
 			$expires = null;
-			if(isset($attributes['expires']))
+			$maxAge = isset($attributes['max-age'])
+				&& preg_match('/^-?[0-9]+$/D', $attributes['max-age']);
+			if(isset($attributes['expires']) && !$maxAge)
 			{
-				$parsed = strtotime($attributes['expires']);
-				if($parsed !== false)
+				try
+				{
+					if(!function_exists('strtotime'))
+						throw new RuntimeException('Cookie expiry parser is unavailable');
+					$parsed = strtotime($attributes['expires']);
+				}
+				catch(Throwable $e)
+				{
+					self::logCookieRefusal($host, 'expiry-unavailable');
+					continue;
+				}
+				if(is_int($parsed))
 					$expires = $parsed;
 			}
-			if(isset($attributes['max-age']) && preg_match('/^-?[0-9]+$/D', $attributes['max-age']))
+			if($maxAge)
 			{
 				$age = (float) $attributes['max-age'];
-				$expires = $age <= 0 ? $now : ($age >= PHP_INT_MAX - $now
-					? PHP_INT_MAX : $now + (int) $age);
+				$expires = $age <= 0 ? $receivedAt : ($age >= PHP_INT_MAX - $receivedAt
+					? PHP_INT_MAX : $receivedAt + (int) $age);
 			}
-			$key = $this->cookiePartition() . "\0" . $domain . "\0" . (int) $hostOnly
-				. "\0" . $cookiePath . "\0" . $name;
+			$key = $this->responseCookieKey($domain, $hostOnly, $cookiePath, $name);
 			$this->purgeResponseCookies();
 			if($sourceScheme !== 'https'
 				&& $this->overwritesSecureCookie($name, $domain, $cookiePath))
@@ -1025,20 +1058,21 @@ class Snoopy
 				self::logCookieRefusal($host, 'secure-overwrite-refused');
 				continue;
 			}
-			if($expires !== null && $expires <= $now)
+			if(($expires !== null && $expires <= time()) || $value === 'deleted')
 			{
 				unset($this->responseCookieJar[$key]);
+				$this->responseCookieActions[] = array('name' => $name, 'key' => $key, 'delete' => true);
 				continue;
 			}
 			$this->rememberResponseCookie($name, $value, $domain, $hostOnly,
 				$cookiePath, isset($attributes['secure']), $expires);
+			$this->responseCookieActions[] = array('name' => $name, 'value' => $value, 'key' => $key, 'delete' => false);
 		}
 	}
 
 	private function rememberResponseCookie($name, $value, $domain, $hostOnly, $path, $secure, $expires)
 	{
-		$key = $this->cookiePartition() . "\0" . $domain . "\0" . (int) $hostOnly
-			. "\0" . $path . "\0" . $name;
+		$key = $this->responseCookieKey($domain, $hostOnly, $path, $name);
 		$created = isset($this->responseCookieJar[$key])
 			? $this->responseCookieJar[$key]['created'] : ++$this->responseCookieSequence;
 		$this->responseCookieJar[$key] = array(
@@ -1062,11 +1096,6 @@ class Snoopy
 		return false;
 	}
 
-	private static function logCookieDomainRefusal($host)
-	{
-		self::logCookieRefusal($host, 'domain-refused');
-	}
-
 	private static function logCookieRefusal($host, $reason)
 	{
 		static $logged = array();
@@ -1074,7 +1103,9 @@ class Snoopy
 		if(isset($logged[$key]))
 			return;
 		$logged[$key] = true;
-		FileUtil::toLog('Snoopy: response-cookie-' . $reason . ' host=' . self::safeLogHost($host));
+		// Diagnostics must not turn rejected cookies into a failed HTTP response.
+		try { @FileUtil::toLog('Snoopy: response-cookie-' . $reason . ' host=' . self::safeLogHost($host)); }
+		catch(Throwable $e) {}
 	}
 
 	private function purgeResponseCookies()
@@ -1111,6 +1142,7 @@ class Snoopy
 			if($oldestKey === null)
 				break;
 			unset($this->responseCookieJar[$oldestKey]);
+			self::logCookieRefusal($domain, 'capacity-evicted');
 		}
 	}
 
@@ -1194,8 +1226,9 @@ class Snoopy
 				$validDomain = $domain !== ''
 					&& ($entry['hostOnly'] || !PublicSuffix::isPublicSuffix($domain));
 			}
-			catch(Exception $e)
+			catch(Throwable $e)
 			{
+				self::logCookieRefusal($domain, 'domain-validation-unavailable; check php/public_suffix_list.dat; Domain cookies dropped');
 				$validDomain = false;
 			}
 			if(!$validDomain)
@@ -1250,11 +1283,16 @@ class Snoopy
 		$this->error = "";
 		$this->timed_out = false;
 		$this->discardResponse();
+		$this->pruneResponseCookieFacade();
+		$this->lastResponseAt = null;
+		$this->responseCookiesCaptured = false;
+		$this->responseCookieActions = array();
 		if($this->_redirectdepth === 0)
 		{
 			$this->lastredirectaddr = "";
-			$this->lastResponseURL = "";
+			$this->_redirectaddr = false;
 		}
+		$this->lastResponseURL = "";
 		if($this->requestDeadlineExpired())
 			return false;
 		$parts = parse_url($URI);
@@ -1359,8 +1397,12 @@ class Snoopy
 		if($ret)
 		{
 			$this->lastResponseURL = $URI;
+			$this->lastResponseAt = time();
 			if($this->passcookies)
+			{
 				$this->captureResponseCookies($URI);
+				$this->responseCookiesCaptured = true;
+			}
 			rTorrentSettings::get()->pushEvent( "URLFetched", array
 			(
 				"client" => $this,
@@ -1805,7 +1847,8 @@ class Snoopy
 		if($cookieHeader !== '')
 			$headers .= $cookieHeader . "\r\n";
 		foreach( $this->rawheaders as $headerKey => $headerVal )
-			$headers .= $headerKey.": ".$headerVal."\r\n";
+			if(strcasecmp((string) $headerKey, 'Cookie') !== 0)
+				$headers .= $headerKey.": ".$headerVal."\r\n";
 		if(!empty($content_type))
 		{
 			$headers .= "Content-type: $content_type";
@@ -1992,7 +2035,8 @@ class Snoopy
 		if($cookieHeader !== '')
 			$headers[] = $cookieHeader;
 		foreach( $this->rawheaders as $headerKey => $headerVal )
-			$headers[] = $headerKey.": ".$headerVal;
+			if(strcasecmp((string) $headerKey, 'Cookie') !== 0)
+				$headers[] = $headerKey.": ".$headerVal;
 		if(!empty($content_type))
 		{
 			if ($content_type == "multipart/form-data")
@@ -2273,50 +2317,113 @@ class Snoopy
 		return($is_gzipped);
 	}
 
+	private function pruneResponseCookieFacade()
+	{
+		$this->purgeResponseCookies();
+		foreach($this->flattenedResponseCookies as $name => $source)
+		{
+			if(!array_key_exists($name, $this->cookies) || $this->cookies[$name] !== $source['value'])
+			{
+				unset($this->flattenedResponseCookies[$name]);
+				continue;
+			}
+			if(!isset($this->responseCookieJar[$source['key']])
+				|| $this->responseCookieJar[$source['key']]['value'] !== $source['value'])
+			{
+				if(!$source['manual'])
+					unset($this->cookies[$name]);
+				unset($this->flattenedResponseCookies[$name]);
+			}
+		}
+	}
+
 	function setcookies()
 	{
-		foreach($this->headers as $header)
+		$this->pruneResponseCookieFacade();
+		if($this->lastResponseURL === "")
 		{
-			// Neither a cookie name nor its value carries a control
-			// character. A value bounded only by ";" takes the line
-			// terminator of an attributeless Set-Cookie with it, and what is
-			// stored here is written into an outgoing request header by hand.
-			if(preg_match("/^set-cookie:[\s]+([^;=[:cntrl:]]+)=([^;[:cntrl:]]+)/i", $header,$match))
+			foreach($this->headers as $header)
 			{
-				if($match[2]=="deleted")
+				// Neither a cookie name nor its value carries a control
+				// character. A value bounded only by ";" takes the line
+				// terminator of an attributeless Set-Cookie with it, and what is
+				// stored here is written into an outgoing request header by hand.
+				if(preg_match("/^set-cookie:[\s]+([^;=[:cntrl:]]+)=([^;[:cntrl:]]+)/i", $header,$match))
 				{
-					unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]],
-						$this->secureResponseCookies[$match[1]], $this->loadedAccountCookies[$match[1]],
-						$this->flattenedResponseCookies[$match[1]]);
-				}
-				else
-				{
-					$captured = false;
-					foreach($this->responseCookieJar as $entry)
-						if($entry['account'] === $this->cookiePartition()
-							&& $entry['name'] === $match[1] && $entry['value'] === $match[2])
-						{
-							$captured = true;
-							break;
-						}
-					// Login responses already passed Domain, Path and expiry validation
-					// in captureResponseCookies(). Never reintroduce rejected values
-					// through this legacy flat-cookie facade.
-					if($this->selectedCookieAccount !== null && !$captured)
-						continue;
-					$this->cookies[$match[1]] = $match[2];
-					if($captured)
-						$this->flattenedResponseCookies[$match[1]] = $match[2];
-					$this->requestAccountCookies[$match[1]] = true;
-					if(isset($this->loadedAccountCookies[$match[1]]))
-						$this->loadedAccountCookies[$match[1]] = $match[2];
-					$attributes = substr($header, strlen($match[0]));
-					if(preg_match('/(?:^|;)\s*secure\s*(?:=|;|$)/i', $attributes))
-						$this->secureResponseCookies[$match[1]] = $match[2];
+					unset($this->flattenedResponseCookies[$match[1]]);
+					if($match[2]=="deleted")
+					{
+						unset($this->cookies[$match[1]], $this->requestAccountCookies[$match[1]],
+							$this->secureResponseCookies[$match[1]], $this->loadedAccountCookies[$match[1]],
+							$this->flattenedResponseCookies[$match[1]]);
+					}
 					else
-						unset($this->secureResponseCookies[$match[1]]);
+					{
+						$captured = false;
+						foreach($this->responseCookieJar as $entry)
+							if($entry['account'] === $this->cookiePartition()
+								&& $entry['name'] === $match[1] && $entry['value'] === $match[2])
+							{
+								$captured = true;
+								break;
+							}
+						// Login responses already passed Domain, Path and expiry validation
+						// in captureResponseCookies(). Never reintroduce rejected values
+						// through this legacy flat-cookie facade.
+						if($this->selectedCookieAccount !== null && !$captured)
+							continue;
+						$this->cookies[$match[1]] = $match[2];
+						$this->requestAccountCookies[$match[1]] = true;
+						if(isset($this->loadedAccountCookies[$match[1]]))
+							$this->loadedAccountCookies[$match[1]] = $match[2];
+						$attributes = substr($header, strlen($match[0]));
+						if(preg_match('/(?:^|;)\s*secure\s*(?:=|;|$)/i', $attributes))
+							$this->secureResponseCookies[$match[1]] = $match[2];
+						else
+							unset($this->secureResponseCookies[$match[1]]);
+					}
 				}
 			}
+			return;
+		}
+		if(!$this->responseCookiesCaptured)
+		{
+			$this->captureResponseCookies($this->lastResponseURL);
+			$this->responseCookiesCaptured = true;
+		}
+		$this->pruneResponseCookieFacade();
+		// Keep the public flat facade, but export only the accepted actions of
+		// the same parser that owns the jar. Refused/expired values cannot be
+		// resurrected by saving that facade and loading it into a fresh client.
+		foreach($this->responseCookieActions as $action)
+		{
+			$name = $action['name'];
+			if($action['delete'])
+			{
+				// A flat facade can name only one tuple. Deleting another Path,
+				// host-only flag or Domain must not erase its still-live source.
+				if(!isset($this->flattenedResponseCookies[$name])
+					|| $this->flattenedResponseCookies[$name]['key'] === $action['key'])
+					unset($this->cookies[$name], $this->flattenedResponseCookies[$name],
+						$this->requestAccountCookies[$name], $this->secureResponseCookies[$name],
+						$this->loadedAccountCookies[$name]);
+				continue;
+			}
+			if(!isset($this->responseCookieJar[$action['key']])
+				|| $this->responseCookieJar[$action['key']]['value'] !== $action['value'])
+				continue;
+			$value = $action['value'];
+			$manualSame = array_key_exists($name, $this->cookies) && $this->cookies[$name] === $value
+				&& (!isset($this->flattenedResponseCookies[$name]) || $this->flattenedResponseCookies[$name]['manual']);
+			$this->cookies[$name] = $value;
+			$this->flattenedResponseCookies[$name] = array('value' => $value, 'key' => $action['key'], 'manual' => $manualSame);
+			$this->requestAccountCookies[$name] = true;
+			if(isset($this->loadedAccountCookies[$name]))
+				$this->loadedAccountCookies[$name] = $value;
+			if($this->responseCookieJar[$action['key']]['secure'])
+				$this->secureResponseCookies[$name] = $value;
+			else
+				unset($this->secureResponseCookies[$name]);
 		}
 	}
 

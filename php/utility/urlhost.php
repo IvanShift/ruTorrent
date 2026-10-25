@@ -105,7 +105,7 @@ class UrlHost
 		foreach((array) $hosts as $candidate)
 		{
 			$candidate = self::normalize($candidate);
-			if(($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate))
+			if($candidate !== '' && (($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate)))
 				return true;
 		}
 		return false;

@@ -24,9 +24,9 @@ class rTorrent
     public static $sourcesByHash = array();
     public static $sourceSequencesByHash = array();
 
-    public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
+    public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null, $directoryIsReported = false)
     {
-        self::$magnets[] = compact('magnet', 'isStart', 'directory', 'label', 'addition');
+        self::$magnets[] = compact('magnet', 'isStart', 'directory', 'label', 'addition', 'directoryIsReported');
         return self::$sendResult;
     }
 
@@ -320,6 +320,7 @@ $suite->test('begin loads a stopped magnet with inline markers and starts the st
     $sent = rTorrent::$magnets[0];
     strictAssertSame(false, $sent['isStart'], 'loaded stopped (plain load, not load.start)');
     strictAssertSame('/data/.chk-meta', $sent['directory'], 'service directory under topDirectory');
+    strictAssertSame(true, $sent['directoryIsReported'], 'the service path is never reinterpreted as a typed directory');
     strictAssertTrue(strpos($sent['magnet'], 'magnet:?xt=urn:btih:' . $newHash) === 0, 'magnet target');
     strictAssertTrue(strpos($sent['magnet'], rawurlencode('http://bt.t-ru.org/ann?pk=s3cr3t')) !== false,
         'tr= keeps the old announce with passkey');

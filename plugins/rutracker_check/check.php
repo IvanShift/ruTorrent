@@ -2164,8 +2164,9 @@ class ruTrackerChecker
 
 
 			// Stage stopped: a failed pre-commit replacement cannot write shared data.
+			$pendingReceipt = null;
 			$loadedHash = rTorrent::sendTorrent($disowned, false, false, $baseDir,
-				$label, $saveUploadedTorrents, false, true, $addition);
+				$label, $saveUploadedTorrents, false, true, $addition, $pendingReceipt, null, true);
 			$owner = self::waitForLoad($newHash, $marker);
 			// The checker has its own staged marker. It can confirm a core-pending
 			// load without mistaking an older download with this hash for our load.

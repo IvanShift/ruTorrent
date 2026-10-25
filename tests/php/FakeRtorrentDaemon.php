@@ -106,6 +106,7 @@ class FakeRtorrentAddTorrentReplies
 	private $unknown;
 	private $dropMagnets;
 	private $stubAfter;
+	private $loadFault;
 
 	/**
 	 * $daemon describes what d.hash sees, beyond the download_list snapshot:
@@ -113,6 +114,7 @@ class FakeRtorrentAddTorrentReplies
 	 *  - 'unknown':     hashes whose d.hash answers an unclassified fault;
 	 *  - 'dropMagnets': magnet hashes rTorrent drops without a stub;
 	 *  - 'stubAfter':   d.hash reads that miss a magnet's stub before it shows.
+	 *  - 'loadFault':   a fault returned before any load changes the session.
 	 * A .torrent load whose proof is confirmed is present at once.
 	 */
 	public function __construct($loaded, $proofs, $snapshotFails, $daemon = array())
@@ -126,6 +128,7 @@ class FakeRtorrentAddTorrentReplies
 		$this->unknown = $daemon['unknown'] ?? array();
 		$this->dropMagnets = $daemon['dropMagnets'] ?? array();
 		$this->stubAfter = $daemon['stubAfter'] ?? 0;
+		$this->loadFault = $daemon['loadFault'] ?? null;
 	}
 
 	/** Note what a load adds to the session, as rTorrent would. */
@@ -172,6 +175,7 @@ class FakeRtorrentAddTorrentReplies
 		foreach($methods as $method)
 			if(strpos($method, 'load_') === 0 || strpos($method, 'load.') === 0)
 			{
+				if($this->loadFault !== null) return $this->loadFault;
 				$this->loadIndex++;
 				$this->proofKey = preg_match('/ru-load-proof-[a-f0-9]{32}/', $request, $match)
 					? $match[0] : null;

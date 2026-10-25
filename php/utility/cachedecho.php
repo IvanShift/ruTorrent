@@ -23,7 +23,8 @@ class CachedEcho
 				else
 					$weight = 0.0;
 			}
-			$weights[$name] = isset($weights[$name]) ? 0.0 : $weight;
+			// Repeated codings retain their lowest weight, including explicit refusals.
+			$weights[$name] = isset($weights[$name]) ? min($weights[$name], $weight) : $weight;
 		}
 		$gzip = $weights['gzip'] ?? 0.0;
 		$xGzip = $weights['x-gzip'] ?? 0.0;
@@ -33,6 +34,7 @@ class CachedEcho
 		if(($gzip > 0) && ($gzip >= $xGzip)) return 'gzip';
 		return ($xGzip > 0) ? 'x-gzip' : null;
 	}
+
 	public static function send( $content, $type = null, $cacheable = false, $exit = true )
 	{
 		header("X-Server-Timestamp: ".time());

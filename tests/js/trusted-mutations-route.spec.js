@@ -92,6 +92,6 @@ test("a missing server helper reports its HTTP 404 to the caller", () => {
     responseText: "Not Found",
     getResponseHeader: () => null,
   }, "error", "Not Found");
-  expect(onError).toHaveBeenCalledWith("404 [error,setprops]", "Not Found");
+  expect(onError).toHaveBeenCalledWith("404 [error,setprops]", "Not Found", null);
   ajax.mockRestore();
 });

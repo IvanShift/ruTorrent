@@ -155,7 +155,7 @@ if($cmd !== null)
 				$path_edit = trim($requestedPath);
 				if(is_dir($path_edit))
 					$path_edit = FileUtil::addslash($path_edit);
-				if(rTorrentSettings::get()->correctDirectory($path_edit))
+				if(rTorrentSettings::get()->correctReportedDirectory($path_edit))
 				{
 					$rt = recentTrackers::load();
 					$trackers = array();

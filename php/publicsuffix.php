@@ -41,10 +41,11 @@ class PublicSuffix
 	{
 		if(self::$rules !== null)
 			return self::$rules;
+		if(!function_exists('file_get_contents') || !function_exists('hash'))
+			throw new RuntimeException('Public Suffix List cannot be verified');
 		$data = @file_get_contents(__DIR__ . '/public_suffix_list.dat');
-		if($data === false || strpos($data, '===BEGIN ICANN DOMAINS===') === false
-			|| strpos($data, '===BEGIN PRIVATE DOMAINS===') === false
-			|| strpos($data, '===END PRIVATE DOMAINS===') === false)
+		// Reject partial or damaged reads instead of silently widening Domain scope.
+		if(!is_string($data) || hash('sha256', $data) !== '257b298daca42f6d8ec964e238c2a55518e14f09d3117917ec8acee6f188503e')
 			throw new RuntimeException('Public Suffix List is unavailable or incomplete');
 		$rules = array();
 		foreach(explode("\n", $data) as $line)

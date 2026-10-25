@@ -4,7 +4,7 @@
  */
 
 var theWebUI = {
-	version: "5.3.18",
+	version: "5.3.19",
 	assetVersion: typeof ruTorrentAssetVersion === 'string' ? ruTorrentAssetVersion : String(Date.now()),
 	tables: {
 		trt: {
@@ -997,7 +997,7 @@ var theWebUI = {
 		request.onXMLFailure = this.finishSettingsSave.bind(this);
 		this.requestWithTimeout(request, [this.finishSettingsRefresh, this],
 			function() { theWebUI.timeout(); theWebUI.finishSettingsSave(); },
-			function(status, text) { theWebUI.error(status, text); theWebUI.finishSettingsSave(); }, true);
+			function(status, text, state) { theWebUI.error(status, text, state); theWebUI.finishSettingsSave(); }, true);
 	},
 
 	finishSettingsRefresh: function(data)
@@ -1083,7 +1083,7 @@ var theWebUI = {
 			theWebUI.requestWithTimeout(request,
 				function(data) { try { if(reply) reply(data); } finally { finish(); } },
 				function() { try { theWebUI.timeout(); } finally { finish(); } },
-				function(status, text) { try { theWebUI.error(status, text); } finally { finish(); } });
+				function(status, text, state) { try { theWebUI.error(status, text, state); } finally { finish(); } });
 		}
 		else
 			theWebUI.request(query, reply);
@@ -1820,9 +1820,9 @@ var theWebUI = {
 		this.perform("createqueued");
    	},
 
-	listRequestFailed: function(status,text)
+	listRequestFailed: function(status,text,state)
 	{
-		this.error(status,text);
+		this.error(status,text,state);
 		if(this.settings["webui.retry_on_error"])
 			this.setInterval( iv(this.settings["webui.retry_on_error"])*1000 );
 	},
@@ -1834,16 +1834,18 @@ var theWebUI = {
 		this.timer.start();
 		if(qs != "list=1")
 			qs = "action=" + qs;
-		this.requestWithTimeout("?" + qs + "&getmsg=1", [this.addTorrents, this],
+		this.requestWithTimeout("?" + qs + "&getmsg=1", [this.receiveTorrents, this],
 			function()
 			{
 	   			theWebUI.timeout();
 				theWebUI.setInterval();
 		   	},
-			function(status,text)
+			function(status,text,state)
 			{
-				// A failed list request alone does not establish whether rTorrent is running.
-				theWebUI.listRequestFailed(status,text);
+				// A failed list request alone does not establish whether rTorrent is
+				// running. Only the state the answer named does, and it is carried
+				// through to error() below.
+				theWebUI.listRequestFailed(status,text,state);
 		   	});
    	},
 
@@ -1868,15 +1870,41 @@ var theWebUI = {
 	 * @property {number} size
 	 */
 
+	torrentListValid: function(data)
+	{
+		// A 204 response reaches here as an empty string through getResponse().
+		return(!!data && !!data.torrents && (typeof data.torrents === "object")
+			&& !Array.isArray(data.torrents));
+	},
+
+	/**
+	 * Where a torrent list from the server enters the interface.
+	 *
+	 * addTorrents is an extension point: plugins replace it with a wrapper that
+	 * annotates the torrents on their way through, and the wrapper reads
+	 * data.torrents to do it. A container that is not one therefore has to be
+	 * refused ahead of that chain rather than inside the function it wraps.
+	 *
+	 * @param {Object} data
+	 * @param {Object.<string, WebUITorrent>} data.torrents
+	 */
+	receiveTorrents: function(data)
+	{
+		if(!this.torrentListValid(data))
+		{
+			this.listRequestFailed("Invalid torrent list response", "Missing torrents");
+			return;
+		}
+		this.addTorrents(data);
+	},
+
 	/**
 	 * @param {Object} data
 	 * @param {Object.<string, WebUITorrent>} data.torrents
 	 */
 	addTorrents: function(data)
 	{
-		// A 204 response reaches here as an empty string through getResponse().
-		if(!data || !data.torrents || typeof data.torrents !== "object"
-			|| Array.isArray(data.torrents))
+		if(!this.torrentListValid(data))
 		{
 			this.listRequestFailed("Invalid torrent list response", "Missing torrents");
 			return;
@@ -2191,7 +2219,7 @@ var theWebUI = {
 				req += ("&hash=" + k + "&s=label&v=" + labelQuery(lbl));
 		}
 		if(req.length>0)
-			this.request("?action=setlabel"+req+"&list=1",[this.addTorrents, this]);
+			this.request("?action=setlabel"+req+"&list=1",[this.receiveTorrents, this]);
 	},
 
 	removeLabel: function()
@@ -2706,9 +2734,14 @@ var theWebUI = {
 			}
    	},
 
-	error: function(status,text)
+	error: function(status,text,state)
 	{
 		theWebUI.show();
+		// Only an answer that named the daemon unreachable establishes that it is.
+		// A refusal, a fault and a local timeout each leave the last confirmed
+		// state standing, and the next list that comes back announces its return.
+		if(state === "unreachable")
+			theWebUI.systemInfo.rTorrent.started = false;
 		noty("Bad response from server: ("+status+") "+
 			(text ? text : "the server sent no message"),"error");
 	},

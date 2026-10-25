@@ -17,7 +17,7 @@ class User
 class rTorrentSettings
 {
     public static function get() { return(new self()); }
-    public function correctDirectory(&$path) { $path = rtrim($path, '/'); return(true); }
+    public function correctReportedDirectory(&$path) { $path = rtrim($path, '/'); return(true); }
 }
 class rTorrent
 {
@@ -28,8 +28,9 @@ class rTorrent
         return(false);
     }
     public static function sendTorrent($torrent, $start, $new, $path, $label,
-        $resume, $local) {
-        self::$calls[] = array('send', $start, $new, $path, $label, $resume, $local);
+        $resume, $local, $isNew = true, $addition = null, &$pendingReceipt = null,
+        $beforeDispatch = null, $directoryIsReported = false) {
+        self::$calls[] = array('send', $start, $new, $path, $label, $resume, $local, $directoryIsReported);
         return(self::$status);
     }
 }
@@ -65,6 +66,7 @@ class CreateSeedingTest extends TestCase
                     $this->assertSame(true, rTorrent::$calls[1][1]);
                     $this->assertSame(true, rTorrent::$calls[1][2]);
                     $this->assertSame(dirname($dir), rTorrent::$calls[1][3]);
+                    $this->assertSame(true, rTorrent::$calls[1][7], 'the source directory is reported, never reinterpreted as typed input');
                     $expected = $status === null ?
                         array($origin . ': seeding load pending confirmation') :
                         ($status === false ?

@@ -260,7 +260,7 @@ class RuTrackerMetaFetch
         );
         // Stopped, plain load: the meta stub's start=0 survives into the
         // real download rTorrent creates once metadata arrives.
-        $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), self::SERVICE_LABEL, $addition);
+        $sent = rTorrent::sendMagnet($magnet, false, false, self::serviceDirectory(), self::SERVICE_LABEL, $addition, true);
         if ($sent === false) {
             // The likeliest cause by far, and the one thing worth naming: a
             // service directory rTorrent cannot write into.

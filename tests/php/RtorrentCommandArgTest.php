@@ -25,6 +25,7 @@ class RtorrentCommandArgSettings extends rTorrentSettings
 
 	public $captured = array();
 
+
 	public function patchDeprecatedRequest($commands)
 	{
 		$this->captured = $commands;
@@ -105,12 +106,17 @@ class RtorrentCommandArgTest extends TestCase
 	/**
 	 * Run a load through sendTorrent() and return the command parameters it
 	 * put on the wire, as plain strings.
+	 *
+	 * A reload ($isNew false), because it sends the mkdir and the load in one
+	 * request, which is the one this seam stops; a new download's directory is
+	 * made in a request of its own first. The load's directory parameter is
+	 * built by the same line either way.
 	 */
 	private function loadInto($directory, $addPath = true)
 	{
 		try {
 			rTorrent::sendTorrent($this->torrentFile, true, $addPath, $directory,
-				null, true, false);
+				null, true, false, false);
 		} catch (RtorrentCommandArgCaptured $stop) {
 			// expected: the request was stopped at the seam
 		}

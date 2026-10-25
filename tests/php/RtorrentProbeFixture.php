@@ -143,11 +143,13 @@ class RtorrentProbeResponder
 {
 	private $hash;
 	private $silent;
+	private $listFault;
 
-	public function __construct($hash, $silent = false)
+	public function __construct($hash, $silent = false, $listFault = null)
 	{
 		$this->hash = $hash;
 		$this->silent = $silent;
+		$this->listFault = $listFault;
 	}
 
 	public function __invoke($body, $methods = null)
@@ -156,6 +158,8 @@ class RtorrentProbeResponder
 			return array();
 		}
 		$names = RtorrentProbeFixture::methodNames($body);
+		if($this->listFault !== null && in_array('d.multicall', $names, true))
+			return FakeRtorrentDaemon::fault($this->listFault);
 		$single = (count($names) === 1) ? $names[0] : '';
 		if($names === array('d.multicall', 'd.multicall', 'session.path')) {
 			if(RtorrentProbeFixture::firstParameter($body) !== '')
@@ -172,6 +176,8 @@ class RtorrentProbeResponder
 		}
 		switch ($single) {
 			case 'system.client_version':
+				if(strpos($body, '<methodName>system.client_version</methodName>') !== false)
+					return new FakeRtorrentDirectStringReply(RtorrentProbeFixture::VERSION);
 				return array(RtorrentProbeFixture::VERSION);
 			case 'system.api_version':
 				return array('11');

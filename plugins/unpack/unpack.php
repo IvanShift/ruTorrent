@@ -202,7 +202,7 @@ class rUnpack
 		$rarPresent = false;
 		$outPath = $this->path;
 
-		if(($outPath!='') && !rTorrentSettings::get()->correctDirectory($outPath))
+		if(($outPath!='') && !rTorrentSettings::get()->correctReportedDirectory($outPath))
 			$outPath = '';
 
 		self::log("[Auto] Check torrent [$name] at [$basename] for archives");

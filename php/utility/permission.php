@@ -19,10 +19,21 @@ class Permission
 		if($ss)
 		{
 			// POSIX selects exactly one class: owner, matching group, or other.
-			if($uid == $ss['uid'])
-				$flags <<= 6;
-			else if(in_array($ss['gid'], $gids))
-				$flags <<= 3;
+			if($uid==$ss['uid'])
+				$flags<<=6;
+			else
+				foreach($gids as $gid)
+				{
+					// Group IDs arrive as strings from command output, so they
+					// are compared as numbers -- and only when the entry spells
+					// one, because anything else names no group at all.
+					$id=(int)$gid;
+					if(((string)$id===(string)$gid) && ($id===(int)$ss['gid']))
+					{
+						$flags<<=3;
+						break;
+					}
+				}
 			return(($ss['mode'] & $flags) == $flags);
 		}
 		return(false);
@@ -40,8 +51,9 @@ class Permission
 		}
 		if(is_link($file))
 		{
-			$newfile = readlink($file);
-			if($newfile === false)
+			try { $newfile = @readlink($file); }
+			catch(Throwable $error) { return(false); }
+			if(!is_string($newfile) || ($newfile === ''))
 				return(false);
 			$file = substr($newfile, 0, 1) === '/' ? $newfile
 				: realpath(dirname($file) . DIRECTORY_SEPARATOR . $newfile);

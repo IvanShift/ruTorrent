@@ -1096,11 +1096,13 @@ else if(is_null($result))
 	$message = "Could not reach rTorrent over XMLRPC. Is rTorrent running?";
 	if($refused)
 		$message = "Refused: not an rtorrent command name.";
-	else if(isset($req))
+	else if(isset($req) && $req->fault && !isset($req->transportFailure))
+		$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
+	else
 	{
-		if($req->fault)
-			$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
-		else if($req->transportFailure === 'closed-before-headers')
+		// Keep the human diagnostic independent of the client's state signal.
+		header("X-rTorrent-State: unreachable");
+		if(isset($req) && $req->transportFailure === 'closed-before-headers')
 			$message = httprpcClosedBeforeHeadersMessage();
 	}
 	CachedEcho::send($message,"text/html");

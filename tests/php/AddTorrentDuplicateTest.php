@@ -277,6 +277,26 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->assertEquals(2, $this->loadCalls(), 'both the magnet and the torrent were sent');
 	}
 
+	public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload(array(), array('one.torrent' => $torrent), array('one.torrent'),
+			array(), array('loadFault' => FakeRtorrentDaemon::fault('Could not create download')));
+		$this->assertEquals(array('Failed'), $results,
+			'a load rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the upload was sent');
+		$this->assertEquals(array(), $this->kept(), 'the refused copy is not kept');
+	}
+
+	public function testAMagnetRtorrentRefusesIsFailed()
+	{
+		$results = $this->addUrls(array(), array('magnet:?xt=urn:btih:' . self::FRESH), array(),
+			array('loadFault' => FakeRtorrentDaemon::fault('Could not create download')));
+		$this->assertEquals(array('Failed'), $results,
+			'a magnet rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the magnet was sent');
+	}
+
 	public function testTheResultPageShowsADuplicateAsAnAlert()
 	{
 		$this->server = AddTorrentHttpHarness::forAddTorrent(

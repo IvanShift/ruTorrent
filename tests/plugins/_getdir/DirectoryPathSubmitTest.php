@@ -34,7 +34,7 @@ class CachedEcho {
 }
 class rTorrentSettings {
     public static function get() { return new self(); }
-    public function correctDirectory(&$path) { $GLOBALS['validated'] = base64_encode($path); return true; }
+    public function correctReportedDirectory(&$path) { $GLOBALS['validated'] = base64_encode($path); return true; }
 }
 class CreateExternalConfiguration { public static function path($mode, $path) { return $path; } }
 class rCache {
