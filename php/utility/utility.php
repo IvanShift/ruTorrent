@@ -3,8 +3,9 @@
 class Utility
 {
 	/** Quote one POSIX shell argument without locale-dependent byte filtering. */
-	public static function escapeShellArg(string $value)
+	public static function escapeShellArg($value)
 	{
+		$value = (string)$value;
 		$quoted = "'";
 		for($offset = 0; isset($value[$offset]); $offset++)
 		{

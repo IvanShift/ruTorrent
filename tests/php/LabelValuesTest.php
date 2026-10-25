@@ -34,7 +34,8 @@ class LabelValuesTest extends TestCase
         foreach(array('', '0', '映画/Серия', 'raw%FF', 'raw\\xFF', "a!'()*~") as $label)
             $this->assertSame($label, LabelValue::fromEncoded(rawurlencode($label)), 'a valid label stays a scalar with no storage conversion');
         $this->assertSame(array('name'=>'raw\\xFF', 'labelKey'=>'raw%FF'), LabelValue::fromEncoded('raw%ff'), 'unknown bytes are escaped and canonicalized without guessing');
-        $this->assertSame(' padded ', LabelValue::fromEncoded('%20padded%20'), 'selected existing whitespace remains part of the identity');
+        $this->assertSame('padded', LabelValue::fromEncoded('%20padded%20'), 'surrounding whitespace is trimmed as the WebUI trims labels');
+        $this->assertSame(array('name'=>'raw\\xFF', 'labelKey'=>'raw%FF'), LabelValue::fromEncoded('%20raw%FF%20'), 'a byte label is trimmed before its key is built');
     }
 
     public function testListAddsOpaqueLabelsAfterCachingAndKeepsDistinctLiteralText()
@@ -93,21 +94,15 @@ class LabelValuesTest extends TestCase
         $this->assertSame(true, in_array('映画', $output['labels'], true), 'valid Unicode stays backward-compatible');
     }
 
-    public function testMissingByteCodecsRefuseInsteadOfSelectingAnEmptyLabel()
+    public function testMissingByteCodecsLeaveTheLabelToTheBrowser()
     {
         $loader = 'require '.var_export(__DIR__.'/../../php/utility/utf.php', true).';'
             .'require '.var_export(__DIR__.'/../../php/utility/labelvalue.php', true).';';
-        foreach(array('rawurldecode', 'rawurlencode') as $disabled) {
-            $code = $loader.'try { LabelValue::fromEncoded("raw%FF"); exit(1); }'
-                .'catch (RuntimeException $error) { if ($error->getMessage() !== "Could not encode torrent label") exit(2); }';
-            $result = PhpProcess::run(array('-n', '-d', 'disable_functions='.$disabled, '-r', $code));
-            $this->assertSame(0, $result['code'], 'PHP NULL and Error both refuse mandatory label decoding');
-            $this->assertSame('', $result['out'].$result['err'], 'the classified refusal has no warnings');
+        foreach(array('rawurldecode', 'rawurlencode', 'trim') as $disabled) {
+            $code = $loader.'exit(LabelValue::fromEncoded("raw%FF") === null ? 0 : 1);';
+            $result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'xdebug.mode=off', '-d', 'disable_functions='.$disabled, '-r', $code)));
+            $this->assertSame(0, $result['code'], 'PHP NULL and Error both give no label value: '.$disabled);
+            $this->assertSame('', $result['out'].$result['err'], 'the missing codec prints nothing: '.$disabled);
         }
-        $code = $loader.'$label = LabelValue::fromEncoded("%20plain%20");'
-            .'if ($label !== " plain ") exit(1);';
-        $result = PhpProcess::run(array('-n', '-d', 'disable_functions=trim', '-r', $code));
-        $this->assertSame(0, $result['code'], 'valid UTF-8 labels keep their shape without trimming dependencies');
-        $this->assertSame('', $result['out'].$result['err'], 'scalar-shape detection stays quiet');
     }
 }

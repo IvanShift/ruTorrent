@@ -152,7 +152,7 @@ if($cmd !== null)
 			$requestedPath = FileUtil::requestPath($_POST['path_edit'] ?? null);
 			if(is_string($requestedPath) && strlen($requestedPath))
 			{
-				$path_edit = is_array($_POST['path_edit']) ? $requestedPath : trim($requestedPath);
+				$path_edit = trim($requestedPath);
 				if(is_dir($path_edit))
 					$path_edit = FileUtil::addslash($path_edit);
 				if(rTorrentSettings::get()->correctDirectory($path_edit))

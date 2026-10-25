@@ -157,13 +157,10 @@ test("create and unpack pass structured paths through the existing console task 
   setPathInput("#path_edit", legacy);
   runPathCreate();
   expect(theWebUI.startConsoleTask.mock.calls[0][2].path_edit).toEqual(legacy);
-  setPathInput("#path_edit", "/fixture/trailing \n");
-  runPathCreate();
-  expect(theWebUI.startConsoleTask.mock.calls[1][2].path_edit).toEqual({ name: "/fixture/trailing \n", pathKey: "%2Ffixture%2Ftrailing%20%0A" });
   pluginScript("unpack", { canChangeOptions: () => false });
   setPathInput("#edit_unpack", legacy);
   theWebUI.unpack();
-  expect(theWebUI.startConsoleTask.mock.calls[2][2].dir).toEqual(legacy);
+  expect(theWebUI.startConsoleTask.mock.calls[1][2].dir).toEqual(legacy);
   window.dxSTable = function() {};
   const task = pluginScript("_task");
   task.clearForeTimeout = () => {};

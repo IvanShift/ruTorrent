@@ -59,11 +59,12 @@ class UnpackDiagnosticTest extends TestCase
 		$this->assertSame(array("unzip '/data/raw\\xFF.zip'", $commands[1], $commands[2]), $arguments,
 			'the JSON diagnostic retains every command and represents invalid bytes visibly');
 	}
-	public function testSavedSelectedDirectoryPreservesItsBytesAndWhitespace()
+	public function testSavedSelectedDirectoryPreservesItsBytes()
 	{
 		$root = realpath(__DIR__.'/../../..');
 		$tree = sys_get_temp_dir().'/unpack-save-'.bin2hex(random_bytes(6));
 		mkdir($tree, 0700);
+		chmod($tree, 0700);
 		$server = null;
 		try
 		{
@@ -82,11 +83,11 @@ class UnpackDiagnosticTest extends TestCase
 				$response = TestHttpServer::rawPost($server->port(), '/', 'unpack_enabled=1&unpack_path='.rawurlencode($path), 'application/x-www-form-urlencoded');
 				$value = json_decode($response['body'], true);
 				$this->assertTrue(is_array($value), 'saved path produces a valid response: '.$response['body']);
-				$this->assertSame(base64_encode($path), $value[0] ?? null, 'the persistent cache retains the exact selected directory');
+				$this->assertSame(base64_encode(trim($path)), $value[0] ?? null, 'the persistent cache retains the selected bytes, trimmed like typed text');
 				$contents = isset($value[1]) ? substr($value[1], strlen('theWebUI.unpackData = '), -2) : '';
 				$settings = json_decode($contents, true);
 				$display = $settings['path'] ?? null;
-				$this->assertSame(FileUtil::displayPath($path), $display, 'reopening the plugin retains display text and the original path key');
+				$this->assertSame(FileUtil::displayPath(trim($path)), $display, 'reopening the plugin retains display text and the original path key');
 			}
 		}
 		finally

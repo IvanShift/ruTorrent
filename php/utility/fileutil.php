@@ -20,10 +20,20 @@ class FileUtil
 		return(end($arr));
 	}
 
-	/** Display metadata never replaces the bytes passed to filesystem owners. */
+	/**
+	 * A path that is not UTF-8 becomes a display name plus a byte key; the key,
+	 * never the name, identifies the path. Without a key the path stays as is.
+	 */
 	public static function displayPath($path)
 	{
-		return UTF::isValid($path) ? $path : array('name' => UTF::display($path), 'pathKey' => rawurlencode($path));
+		if(UTF::isValid($path))
+			return $path;
+		try {
+			$key = @rawurlencode($path);
+		} catch(Throwable $error) {
+			$key = null;
+		}
+		return is_string($key) ? array('name' => UTF::display($path), 'pathKey' => $key) : $path;
 	}
 
 	/** Decode a structured form path once, before the caller's usual path checks. */

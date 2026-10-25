@@ -1915,8 +1915,7 @@ function getPathInput(input, trim = false)
 	const selected = edit.data("pathValue");
 	const text = edit.val() || "";
 	if(selected !== undefined && edit.data("pathText") === text)
-		return trim && typeof selected === "string" && selected.trim() !== selected
-			? {name:selected, pathKey:pathQuery(selected)} : selected;
+		return selected;
 	return trim ? text.trim() : text;
 }
 

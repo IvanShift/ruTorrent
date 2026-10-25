@@ -141,9 +141,8 @@ theWebUI.rDirBrowser = class {
 						noty(res.error, "error");
 						return;
 					}
-					this.edit.data({cwd:res.path, previousValue:this.edit.val()});
 					setPathInput(this.edit, res.path);
-					this.edit.change();
+					this.edit.data({cwd:res.path, previousValue:this.edit.val()}).change();
 					this.frame.find(".rmenuobj").remove();
 					this.frame.append(
 						$("<div>").addClass("rmenuobj").append(

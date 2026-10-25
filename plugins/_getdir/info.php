@@ -17,9 +17,12 @@ if(isset($_REQUEST['mode']) && is_string($_REQUEST['mode']))
 		{
 			for($i=0; $i<count($req->val); $i++)
 			{
+				// Labels that are not UTF-8 are told apart by their byte key.
 				$val = LabelValue::fromEncoded($req->val[$i]);
-				$key = is_array($val) ? 'b:'.$val['labelKey'] : 's:'.$val;
-				if($key !== 's:' && $key !== 'b:') $labels[$key] = $val;
+				if(is_array($val))
+					$labels['b:'.$val['labelKey']] = $val;
+				else if(($val !== null) && ($val != ''))
+					$labels['s:'.$val] = $val;
 			}
 			uasort($labels, function($left, $right) {
 				return strnatcasecmp(is_array($left) ? $left['name'] : $left,

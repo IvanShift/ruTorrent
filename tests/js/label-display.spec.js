@@ -133,3 +133,10 @@ test('httprpc form wrapping preserves encoded custom1 instead of decoding it as 
   const request=new rTorrentStub(`?action=setlabel&hash=${hash}&s=label&v=raw%FF&list=1`);
   expect(new URLSearchParams(request.content).get('v')).toBe('raw%FF');
 });
+test('torrents with the same label share one tree path, built once per label',()=>{
+  const stub=new rTorrentStub('?list=1');
+  const rows={[hash]:row('Movies%2FHD'),[second]:row('Movies%2FHD')};
+  const list=stub.getResponse({t:rows,cid:1,full:1}).torrents;
+  expect(list[hash].label_path).toBe(list[second].label_path);
+  expect(list[hash].label_path.map(part=>part.name)).toEqual(['Movies','HD']);
+});

@@ -21,6 +21,7 @@ var theRequestManager =
 	torrents: {},
 	torrentPaths: Object.create(null),
 	torrentLabels: Object.create(null),
+	labelPaths: {},
 	cid: 0,
         trt:
         {
@@ -1430,13 +1431,15 @@ rTorrentStub.prototype.listResponse = function(data)
 		var labelValue = theRequestManager.torrentLabels[hash];
 		if(labelValue === undefined)
 		{
-			try { labelValue = decodeURIComponent(values[14]); }
-			catch(error) { labelValue = values[14]; }
+			try { labelValue = decodeURIComponent(values[14]).trim(); }
+			catch(error) { labelValue = ''; }
 		}
 		torrent.label_value = labelValue;
 		torrent.label = labelDisplay(labelValue);
 		torrent.label_id = labelId(labelValue);
-		torrent.label_path = labelTreePath(labelValue);
+		if(!theRequestManager.labelPaths[torrent.label_id])
+			theRequestManager.labelPaths[torrent.label_id] = labelTreePath(labelValue);
+		torrent.label_path = theRequestManager.labelPaths[torrent.label_id];
 
 		var get_peers_not_connected = iv(values[16]);
 		var get_peers_connected = iv(values[17]);

@@ -11,6 +11,7 @@ class ShellArgumentBytesTest extends TestCase
 		foreach(array('', '0', 'simple/path.ext', 'a b', "single'quote", '"double"', '\\path\\',
 			'$(printf INJECTED)', '`printf INJECTED`', 'a; printf INJECTED', "line\nbreak", '%2F+%25') as $value)
 			$this->assertSame(escapeshellarg($value), Utility::escapeShellArg($value), 'ASCII shell quoting remains byte-identical');
+		$this->assertSame("''", Utility::escapeShellArg(null), 'a missing optional argument quotes as empty, like escapeshellarg()');
 	}
 
 	public function testRealShellPreservesLegacyBytesAndUnicodeInBothLocales()

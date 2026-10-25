@@ -57,7 +57,7 @@ class rUnpack
 			else
 			if( $parts[0] == "unpack_path" )
 			{
-				$this->path = rawurldecode($parts[1]);
+				$this->path = trim(rawurldecode($parts[1]));
 				if(($this->path != '') && !rTorrentSettings::get()->correctDirectory($this->path))
 					$this->path = '';
 			}

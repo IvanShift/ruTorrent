@@ -326,17 +326,28 @@ switch($mode)
 		{
 			// Keep subcall boundaries: a source-path fault must not lose a good list.
 			$replies = $req->responseValues[0];
-			if(!isset($replies[0]) || !is_array($replies[0]) || array_keys($replies[0]) !== array(0)
-				|| !is_array($replies[0][0])) break;
+			$malformed = !isset($replies[0]) || !is_array($replies[0]) || array_keys($replies[0]) !== array(0)
+				|| !is_array($replies[0][0]);
+			if(!$malformed)
+				foreach($replies[0][0] as $row)
+					if(!is_array($row) || count($row) !== $cnt || array_keys($row) !== range(0, $cnt-1)
+						|| count(array_filter($row, 'is_string')) !== $cnt)
+					{
+						$malformed = true;
+						break;
+					}
+			if($malformed)
+			{
+				// The daemon answered, so the refusal must not call it unreachable.
+				$req->fault = true;
+				$req->faultString = 'Warning: rTorrent answered the list in an unexpected shape.';
+				break;
+			}
 			$theCache = new rpcCache();
 			$dTorrents = array();
 			$torrents = array();
 			foreach($replies[0][0] as $row)
-			{
-				if(!is_array($row) || count($row) !== $cnt || array_keys($row) !== range(0, $cnt-1)) break 2;
-				foreach($row as $value) if(!is_string($value)) break 3;
 				$torrents[$row[0]] = array_slice($row, 1);
-			}
 			$sourcePaths = array();
 			if(isset($replies[1], $replies[2]) && is_array($replies[1]) && is_array($replies[2])
 				&& isset($replies[1][0], $replies[2][0]) && is_array($replies[1][0]) && is_string($replies[2][0])

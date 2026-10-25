@@ -43,6 +43,8 @@ class TorrentTitleRequest
     public $val;
     public $responseTypes = array('array');
     public $responseValues;
+    public $fault = false;
+    public $faultString = '';
     public function __construct($command) { self::$command = $command; $this->val = array(); $this->responseValues = self::$values; }
     public function run($trusted)
     {

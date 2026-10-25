@@ -1814,7 +1814,7 @@ plugin.drawGetDir = function(path, first) {
 plugin.showGetDir = function(target) {
   this.getDirTarget = target || '#dir_edit';
   this.returningFromGetDir = true;
-  this.drawGetDir(getPathInput(this.getDirTarget), true);
+  this.drawGetDir('', true);
 };
 
 plugin.showDataDir = function() {

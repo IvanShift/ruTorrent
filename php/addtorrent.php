@@ -152,11 +152,11 @@ else
 	$uploaded_files = array();
 	$label = null;
 	if(isset($_REQUEST['label']))
-		$label = $_REQUEST['label'];
+		$label = trim($_REQUEST['label']);
 	$dir_edit = null;
 	if(isset($_REQUEST['dir_edit']))
 	{
-		$dir_edit = $_REQUEST['dir_edit'];
+		$dir_edit = trim($_REQUEST['dir_edit']);
 		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}
