@@ -140,7 +140,9 @@ final class AddTorrentHttpHarnessTest extends TestCase
 		});
 		$this->assertTrue($message !== null
 			&& strpos($message, 'the PHP built-in server did not start on 127.0.0.1:' . $port) === 0
-			&& strpos($message, $port . ' (reason: Address already in use)') !== false,
-			'a listener without the fixture token is refused: ' . var_export($message, true));
+			// Keep the bind diagnostic without depending on libc's wording.
+			&& preg_match('/Failed to listen on 127\\.0\\.0\\.1:' . $port
+				. ' \\(reason: [^\\r\\n)]+\\)/', $message) === 1,
+			'a listener without the fixture token is refused with its bind cause: ' . var_export($message, true));
 	}
 }

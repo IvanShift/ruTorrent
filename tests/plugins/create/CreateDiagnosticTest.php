@@ -95,8 +95,10 @@ class CreateDiagnosticTest extends TestCase
 
 	public function testABackendSpelledLikeItsProgramIsUnaffected()
 	{
-		$r = $this->loadInit('mktorrent', array('mktorrent'));
-		$this->assertEquals(array('mktorrent'), $r['asked'], 'mktorrent is looked up as itself');
+		// Unlike packaged mktorrent, buildtorrent has no fixed-path default.
+		// ExternalConfigurationTest covers that default with presence controlled.
+		$r = $this->loadInit('buildtorrent', array('buildtorrent'));
+		$this->assertEquals(array('buildtorrent'), $r['asked'], 'buildtorrent is looked up as itself');
 		$this->assertEquals(array('create'), $r['registered'], 'and the plugin loads');
 	}
 }

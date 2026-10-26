@@ -1,6 +1,8 @@
 <?php
 
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
+require_once(__DIR__ . '/ScriptedCurlFixture.php');
+require_once(__DIR__ . '/TestTree.php');
 
 function redirectTargetAssert($condition, $message)
 {
@@ -169,7 +171,8 @@ PHP;
 
 function redirectWith($header)
 {
-    return array('wire' => base64_encode("HTTP/1.0 302 Found\r\n" . $header . "\r\n\r\n"));
+    return array('wire' => base64_encode("HTTP/1.0 302 Found\r\n" . $header
+        . "\r\nContent-Length: 17\r\n\r\nredirect-response"));
 }
 
 $ok = array('wire' => base64_encode("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"));
@@ -187,12 +190,12 @@ $rejected = array(
     'a tab' => "Location: /next\tHTTP/1.0",
     // parse_url() turns a control character into "_", but whatever the
     // attacker put behind it stays, spaces included.
-    'a CR and a header behind it' => "Location: /next\rX-Injected: 1",
-    // Whether a response with a NUL in a header line is a response at all is
-    // curl's call and its versions differ: 8.14 refuses it with error 8,
-    // 7.74 passes it through. Either is the response the caller is given.
-    'a NUL' => array("Location: /next\x00X-Injected: 1", array(302, 8)),
-    'a DEL byte' => "Location: /next\x7fX-Injected: 1",
+    'a CR and a header behind it' => array("Location: /next\rX-Injected:1", array(302, 8)),
+    // curl versions differ on malformed CR/NUL header bytes: some refuse
+    // the transfer with error 8 before Snoopy can inspect the header. The
+    // scripted cases below also exercise Snoopy's own rejection directly.
+    'a NUL' => array("Location: /next\x00X-Injected:1", array(302, 8)),
+    'a DEL byte' => "Location: /next\x7fX-Injected:1",
     // The host half of the target is written into the Host header, which
     // names one host and cannot name a host with a space in it at all.
     'a space in the host' => 'Location: //evil host:{PORT}/next',
@@ -242,15 +245,19 @@ foreach ($transports as $transport => $tls) {
         $tests['a redirect target with ' . $label . ' names no redirect over ' . $transport] =
             function () use ($header, $status, $ok, $tls) {
                 redirectTargetPeer(array(redirectWith($header), $ok), $tls, function ($client, $base) use ($status) {
-                    $client->fetch($base . '/start');
-                    // A response naming a redirect this client will not write
-                    // is still that response, and is what the caller reads.
-                    // Declining the target keeps it; refusing the url instead,
-                    // which is what curl does when handed one, reports a
-                    // transport error and loses the response it came with.
+                    $fetched = $client->fetch($base . '/start');
                     redirectTargetAssert(in_array((int) $client->status, $status, true),
-                        'The caller is given the response that named the redirect: '
+                        'The caller receives the HTTP answer or an allowed malformed-header transport refusal: '
                         . $client->status . ' ' . $client->error);
+                    if ((int) $client->status === 8) {
+                        redirectTargetAssert($fetched === false && $client->results === ''
+                            && $client->headers === array() && $client->response_code === ''
+                            && strpos($client->error, 'error 8.') !== false,
+                            'A malformed-header transport refusal exposes no partial HTTP response');
+                    } else {
+                        redirectTargetAssert($fetched === true && $client->results === 'redirect-response',
+                            'Declining an unsafe redirect keeps the original response body');
+                    }
                     return function ($requests) {
                         requestsAreWellFormed($requests);
                         redirectTargetAssert(count($requests) === 1,
@@ -287,6 +294,40 @@ foreach ($transports as $transport => $tls) {
                     });
             };
     }
+}
+
+// A modern curl may discard malformed headers before Snoopy sees them. Feed
+// those same complete replies through the existing curl fixture as well, so
+// removing Snoopy's target guard still fails even on such a curl version.
+foreach ($rejected as $label => $case) {
+    $header = is_array($case) ? $case[0] : $case;
+    $tests['the curl response parser refuses a redirect target with ' . $label] =
+        function () use ($header) {
+            $root = FileUtil::getTempFilename('redirect-target-headers');
+            redirectTargetAssert(mkdir($root, 0700), 'The private header fixture directory is created');
+            $fixture = null;
+            try {
+                $fixture = new ScriptedCurlFixture($root);
+                $fixture->install();
+                $url = 'https://redirect-target.test/start';
+                $fixture->plan(array(
+                    ScriptedCurlFixture::reply('GET', $url, 302, 'redirect-response', array($header)),
+                    ScriptedCurlFixture::reply('GET', 'https://redirect-target.test/next', 200, 'ok'),
+                ));
+                $client = new Snoopy();
+                $client->block_private = false;
+                $client->proxy_host = $client->proxy_port = '';
+                redirectTargetAssert($client->fetch($url) === true && (int) $client->status === 302
+                    && $client->results === 'redirect-response',
+                    'The parser preserves the original answer while declining its target: '
+                    . $client->status . ' ' . $client->error);
+                redirectTargetAssert(count($fixture->requests()) === 1 && count($fixture->remaining()) === 1,
+                    'No unsafe or truncated target is requested');
+            } finally {
+                if ($fixture !== null) $fixture->restore();
+                TestTree::remove($root);
+            }
+        };
 }
 
 $failures = 0;

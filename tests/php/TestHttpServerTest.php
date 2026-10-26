@@ -163,9 +163,11 @@ class TestHttpServerTest extends TestCase
 			}
 			$this->assertTrue(is_string($error) && strpos($error, 'HTTP test server did not start') === 0,
 				'a listener that does not return the token is not taken for the server: '.json_encode($error));
+			// PHP reports libc's reason verbatim (glibc and musl differ).
 			$this->assertTrue(is_string($error) && strpos($error, 'exited') !== false
-				&& strpos($error, 'Address already in use') !== false,
-				'the failure says the server exited and why: '.json_encode($error));
+				&& preg_match('/Failed to listen on 127\\.0\\.0\\.1:'.$foreign->port()
+					.' \\(reason: [^\\r\\n)]+\\)/', $error) === 1,
+				'the failure names the exited server, its bind address and a reason: '.json_encode($error));
 			$hits = is_file($foreignTree.'/hits') ? file_get_contents($foreignTree.'/hits') : '';
 			$this->assertTrue(strpos($hits, '/__test_http_') !== false,
 				'the readiness request reached the foreign listener and was answered 200');

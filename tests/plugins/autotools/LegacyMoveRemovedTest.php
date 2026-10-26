@@ -9,18 +9,12 @@ $suite->test('only current Move implementation ships without importer or compati
         'daemon-claim-abi-', 'download-not-running', 'job-marker-mismatch', 'legacy Move entrypoint',
         'system.retrackers.original_claim', 'retrackers-queued', 'unescapeValue');
     $files = array();
-    $process = proc_open(array('git', '-C', $root, 'ls-files', '-z', '--', 'plugins', 'php', 'tools', 'js', 'conf'),
-        array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('file','/dev/null','w')), $pipes);
-    if (is_resource($process)) {
-        $listed = stream_get_contents($pipes[1]); fclose($pipes[1]);
-        if (proc_close($process) === 0) $files = array_filter(explode("\0", $listed));
-    }
-    // Matrix archives omit .git. Scan the same shipped roots there, and include
-    // new candidate files in an unstaged review without weakening the gate.
+    // Scan every shipped file, including unstaged candidates and assets. The
+    // same inventory applies to a checkout and to an archive without Git.
     foreach (array('plugins','php','tools','js','conf') as $directory)
         foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/' . $directory,
             FilesystemIterator::SKIP_DOTS)) as $entry)
-            if ($entry->isFile() && preg_match('/\.(php|js|sh|txt|md)$/D', $entry->getFilename()))
+            if ($entry->isFile())
                 $files[] = substr($entry->getPathname(), strlen($root) + 1);
     foreach (array_unique($files) as $relative) {
         $file = $root . '/' . $relative;

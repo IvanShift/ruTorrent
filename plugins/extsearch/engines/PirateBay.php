@@ -11,86 +11,41 @@ class PirateBayEngine extends commonEngine
 		return($client);
 	}
 	// The "Uploaded" column reads "MM-DD HH:MM" for this year, "MM-DD YYYY",
-	// "Today HH:MM", "Y-day HH:MM" or "N mins ago".
+	// "Today HH:MM", "Y-day HH:MM" or "N mins ago". Numeric dates must be
+	// complete and valid: libc strptime() accepted different partial fields
+	// on glibc and musl, while mktime() silently normalizes impossible dates.
 	public static function uploadedTime($tms)
 	{
-		if(strpos($tms,":")!==false)
+		$tms = trim($tms);
+		if(preg_match('/\A([0-9]{1,2})-([0-9]{1,2})\s+([0-9]{1,2}):([0-9]{1,2})\z/', $tms, $match))
 		{
-			$tm = self::scanTime($tms,"m-d H:M");
-			if($tm===false)
-			{
-				$tms = str_replace( "Y-day", "-1 day", $tms );
-				$tm = strtotime($tms);
-				if($tm!==false)
-					$tm = localtime($tm,true);
-			}
-			else
-				$tm["tm_year"] = date("Y")-1900;
+			$year = (int)date('Y');
+			$hour = (int)$match[3];
+			$minute = (int)$match[4];
+		}
+		elseif(preg_match('/\A([0-9]{1,2})-([0-9]{1,2})\s+([0-9]{1,4})\z/', $tms, $match))
+		{
+			$year = (int)$match[3];
+			$hour = $minute = 0;
 		}
 		else
 		{
-			if(preg_match( '/^(\d+) mins? ago$/i', $tms, $match ))
-			{
-				$tms = "-".$match[1]." minute";
-				$tm = strtotime($tms);
-				if($tm!==false)
-					$tm = localtime($tm,true);
-			}
-			else
-				$tm = self::scanTime($tms,"m-d Y");
+			if(preg_match('/\A([0-9]+) mins? ago\z/i', $tms, $match))
+				$tms = '-' . $match[1] . ' minute';
+			elseif(preg_match('/\A[0-9]/', $tms))
+				return(false);
+			return(strtotime(str_replace('Y-day', '-1 day', $tms)));
 		}
-		if($tm===false)
+		if(($hour > 23) || ($minute > 59) || !checkdate((int)$match[1], (int)$match[2], $year))
 			return(false);
-		return(mktime( $tm["tm_hour"], $tm["tm_min"], $tm["tm_sec"], $tm["tm_mon"]+1, $tm["tm_mday"], $tm["tm_year"]+1900 ));
-	}
-
-	// strptime(), deprecated as of PHP 8.1, for the numeric fields above:
-	// in $format, 'm', 'd', 'H', 'M' and 'Y' stand for "%m" and so on, a
-	// space for any run of white space, and anything else for itself. Each
-	// number is read as the C library reads it: leading white space
-	// skipped, and a second digit taken only while the value can still be
-	// in range.
-	private static function scanTime($str,$format)
-	{
-		$fields = array(
-			'm'=>array(1,12,2,'tm_mon',1),
-			'd'=>array(1,31,2,'tm_mday',0),
-			'H'=>array(0,23,2,'tm_hour',0),
-			'M'=>array(0,59,2,'tm_min',0),
-			'Y'=>array(0,9999,4,'tm_year',1900) );
-		$tm = array( 'tm_sec'=>0, 'tm_min'=>0, 'tm_hour'=>0, 'tm_mday'=>0, 'tm_mon'=>0, 'tm_year'=>0 );
-		$space = " \t\n\v\f\r";
-		$pos = 0;
-		$len = strlen($str);
-		foreach(str_split($format) as $f)
-		{
-			if($f==' ')
-			{
-				$pos += strspn($str,$space,$pos);
-				continue;
-			}
-			if(!array_key_exists($f,$fields))
-			{
-				if(($pos>=$len) || ($str[$pos]!==$f))
-					return(false);
-				$pos++;
-				continue;
-			}
-			list($from,$to,$digits,$key,$base) = $fields[$f];
-			$pos += strspn($str,$space,$pos);
-			if(!strspn($str,'0123456789',$pos,1))
-				return(false);
-			$val = 0;
-			do
-			{
-				$val = $val*10 + intval($str[$pos++]);
-			}
-			while((--$digits>0) && ($val*10<=$to) && strspn($str,'0123456789',$pos,1));
-			if(($val<$from) || ($val>$to))
-				return(false);
-			$tm[$key] = $val-$base;
-		}
-		return($tm);
+		// Retain mktime's choice of occurrence in a DST fold. Only years
+		// 1..100 need setDate(), because mktime() remaps them to 19xx/20xx.
+		if($year > 100)
+			return(mktime($hour, $minute, 0, (int)$match[1], (int)$match[2], $year));
+		$at = new DateTime();
+		$at->setDate($year, (int)$match[1], (int)$match[2]);
+		$at->setTime($hour, $minute, 0);
+		return($at->getTimestamp());
 	}
 
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)

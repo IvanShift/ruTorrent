@@ -1,9 +1,10 @@
 <?php
 
 // strftime() and gmstrftime() are deprecated as of PHP 8.1. This renders the
-// same conversions, flags and widths as they produce in the C locale, which
-// is the LC_TIME every ruTorrent entry point runs under, using date(). The
-// one deliberate difference is %s: libc may read the broken-down time back
+// C-locale conversions and GNU flags/widths independently of the system
+// libc. C is the LC_TIME every ruTorrent entry point runs under. Undefined
+// directives keep their literal spelling; %Z always names the zone (GMT
+// for gmstrftime). Unlike libc, %s never reads the broken-down time back
 // through the process time zone, even for gmstrftime(), while PHP uses its
 // configured zone. Here %s is always the original timestamp.
 class TimeFormat

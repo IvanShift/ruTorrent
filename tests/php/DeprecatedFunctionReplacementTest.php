@@ -9,8 +9,8 @@ require_once(__DIR__ . '/TestCase.php');
  * versions ruTorrent runs on, and each call writes a deprecation to the
  * log. Each code path that used one runs here in its own PHP process with
  * every error reported, so that a deprecation shows up in its output, and
- * the same process computes what the deprecated function would have
- * returned, silenced, for comparison.
+ * portable outputs are compared with the deprecated function, silenced.
+ * Platform-dependent date extensions use explicit contract examples instead.
  */
 class DeprecatedFunctionReplacementTest extends TestCase
 {
@@ -99,63 +99,134 @@ class DeprecatedFunctionReplacementTest extends TestCase
 
 	// ---- extsearch: PirateBay's strptime() -------------------------------
 
-	public function testPirateBayUploadedTimeMatchesStrptime()
+	public function testPirateBayUploadedTimeAcceptsCompleteListingDates()
 	{
 		list($result, $other) = $this->run_isolated('
-			$old = function($tms)
-			{
-				if(strpos($tms,":")!==false)
-				{
-					$tm = @strptime($tms,"%m-%d %H:%M");
-					if($tm===false)
-					{
-						$tms = str_replace( "Y-day", "-1 day", $tms );
-						$tm = strtotime($tms);
-						if($tm!==false)
-							$tm = localtime($tm,true);
-					}
-					else
-						$tm["tm_year"] = date("Y")-1900;
-				}
-				else
-					$tm = @strptime($tms,"%m-%d %Y");
-				if($tm===false)
-					return false;
-				return mktime( $tm["tm_hour"], $tm["tm_min"], $tm["tm_sec"], $tm["tm_mon"]+1, $tm["tm_mday"], $tm["tm_year"]+1900 );
-			};
-			$samples = array("05-12 12:34", "12-31 23:59", "01-01 00:00", "5-3 7:05", "05-12  12:34", "05-12 \t12:34",
-				"05-12 12:34 extra", "05-12 12:345", "05-12 12:65", "05-12 24:00", "13-01 10:00", "00-01 10:00",
-				"02-30 10:00", "05- 12 10:00", " 05-12 10:00", "05-12 1:2", "051-2 10:00", "05-12 10 :00",
-				"Today 12:34", "Y-day 08:15", "yesterday 01:00", "05-12 2021", "12-31 1999", "1-1 1", "01-01 99999",
-				"05-12 20211", "05-12", "05-12 ", "garbage", "", "02-29 2024", "02-29 2023", "10-10 2010x");
+			date_default_timezone_set("UTC");
+			$year = date("Y");
+			$samples = array(
+				"05-12 12:34" => $year . "-05-12 12:34:00",
+				"12-31 23:59" => $year . "-12-31 23:59:00",
+				"01-01 00:00" => $year . "-01-01 00:00:00",
+				"5-3 7:05" => $year . "-05-03 07:05:00",
+				"05-12  12:34" => $year . "-05-12 12:34:00",
+				"05-12 \t12:34" => $year . "-05-12 12:34:00",
+				" 05-12 10:00 " => $year . "-05-12 10:00:00",
+				"05-12 1:2" => $year . "-05-12 01:02:00",
+				"05-12 2021" => "2021-05-12 00:00:00",
+				"12-31 1999" => "1999-12-31 00:00:00",
+				"02-29 2024" => "2024-02-29 00:00:00",
+				"1-1 1" => "0001-01-01 00:00:00",
+				"01-01 0069" => "0069-01-01 00:00:00",
+				"01-01 0100" => "0100-01-01 00:00:00");
 			$differ = array();
-			foreach($samples as $s)
-				if(PirateBayEngine::uploadedTime($s) !== $old($s))
-					$differ[] = $s . " => " . var_export(PirateBayEngine::uploadedTime($s), true) . " vs " . var_export($old($s), true);
-			return array("count" => count($samples), "differ" => $differ);
+			foreach($samples as $input => $expected)
+			{
+				$stamp = PirateBayEngine::uploadedTime($input);
+				$actual = ($stamp === false) ? false : date("Y-m-d H:i:s", $stamp);
+				if($actual !== $expected)
+					$differ[] = $input . " => " . var_export($actual, true);
+			}
+			return $differ;
 		', array('plugins/extsearch/engines.php', 'plugins/extsearch/engines/PirateBay.php'));
-		$this->assertTrue(is_array($result), 'the PirateBay date parser ran: ' . $this->brief($other));
-		if(!is_array($result))
-			return;
-		$this->assertEquals(array(), $result['differ'], 'uploadedTime() reads each of ' . $result['count']
-			. ' listing dates as strptime() did; differ: ' . implode('; ', $result['differ']));
+		$this->assertEquals(array(), $result, 'complete listing dates preserve their calendar fields: ' . json_encode($result));
 		$this->assertQuiet($other, 'PirateBay date parsing');
+	}
+
+	public function testPirateBayUploadedTimeKeepsTheLegacyOccurrenceInADstFold()
+	{
+		list($result, $other) = $this->run_isolated('
+			$year = (int)date("Y");
+			$checked = 0;
+			$differ = array();
+			foreach(array("America/New_York", "Australia/Lord_Howe") as $zone)
+			{
+				date_default_timezone_set($zone);
+				$tz = new DateTimeZone($zone);
+				$changes = $tz->getTransitions(gmmktime(0, 0, 0, 1, 1, $year), gmmktime(0, 0, 0, 1, 1, $year + 1));
+				$previous = $changes[0]["offset"];
+				foreach($changes as $change)
+				{
+					$gap = $previous - $change["offset"];
+					$previous = $change["offset"];
+					if($gap <= 0)
+						continue;
+					// At the backward transition, this wall time occurs at
+					// both ts-gap and ts. Derive the valid UTC candidates from
+					// TZDB rather than the parser or mktime(). Retain the old
+					// mktime choice between them, which differs on PHP 7.4.
+					$at = new DateTime("@" . $change["ts"]);
+					$at->setTimezone($tz);
+					$input = $at->format("m-d H:i");
+					$actual = PirateBayEngine::uploadedTime($input);
+					$legacy = mktime((int)$at->format("G"), (int)$at->format("i"), 0,
+						(int)$at->format("n"), (int)$at->format("j"), $year);
+					$valid = array($change["ts"] - $gap, $change["ts"]);
+					if(($actual !== $legacy) || !in_array($actual, $valid, true))
+						$differ[] = $zone . " " . $input . " => " . var_export($actual, true) . " vs " . $legacy;
+					$checked++;
+				}
+			}
+			return array("checked" => $checked, "differ" => $differ);
+		', array('plugins/extsearch/engines.php', 'plugins/extsearch/engines/PirateBay.php'));
+		$this->assertTrue(is_array($result) && ($result['checked'] > 0), 'the listing parser is exercised in real DST folds');
+		$this->assertEquals(array(), is_array($result) ? $result['differ'] : $result,
+			'a repeated wall time keeps the legacy UTC occurrence: ' . json_encode($result));
+		$this->assertQuiet($other, 'PirateBay date parsing in DST folds');
+	}
+
+	public function testPirateBayUploadedTimeRejectsPartialAndInvalidDates()
+	{
+		list($result, $other) = $this->run_isolated('
+			date_default_timezone_set("UTC");
+			$accepted = array();
+			foreach(array("05-12 12:34 extra", "05-12 12:345", "05-12 12:65", "05-12 24:00",
+				"13-01 10:00", "00-01 10:00", "02-30 10:00", "04-31 10:00", "05-00 10:00",
+				"05- 12 10:00", "051-2 10:00", "05-12 10 :00", "01-01 99999", "05-12 20211",
+				"05-12", "05-12 ", "garbage", "", "02-29 2023", "10-10 2010x", "01-01 0000",
+				"2024-05-12", "2 hours ago") as $input)
+				if(PirateBayEngine::uploadedTime($input) !== false)
+					$accepted[] = $input;
+			return $accepted;
+		', array('plugins/extsearch/engines.php', 'plugins/extsearch/engines/PirateBay.php'));
+		$this->assertEquals(array(), $result, 'a partial or impossible date cannot become a different upload time: ' . json_encode($result));
+		$this->assertQuiet($other, 'invalid PirateBay date parsing');
+	}
+
+	public function testPirateBayUploadedTimeRetainsRelativeListingDates()
+	{
+		list($result, $other) = $this->run_isolated('
+			date_default_timezone_set("UTC");
+			$before = time();
+			$today = PirateBayEngine::uploadedTime("Today 12:34");
+			$yesterday = PirateBayEngine::uploadedTime("Y-day 08:15");
+			$ago = PirateBayEngine::uploadedTime("2 mins ago");
+			$after = time();
+			return array(
+				in_array(date("Y-m-d H:i", $today), array(date("Y-m-d", $before) . " 12:34", date("Y-m-d", $after) . " 12:34"), true),
+				in_array(date("Y-m-d H:i", $yesterday), array(date("Y-m-d", $before - 86400) . " 08:15", date("Y-m-d", $after - 86400) . " 08:15"), true),
+				($ago >= $before - 120) && ($ago <= $after - 120));
+		', array('plugins/extsearch/engines.php', 'plugins/extsearch/engines/PirateBay.php'));
+		$this->assertEquals(array(true, true, true), $result, 'today, yesterday and minute offsets remain listing dates');
+		$this->assertQuiet($other, 'relative PirateBay date parsing');
 	}
 
 	// ---- strftime() / gmstrftime() ---------------------------------------
 
-	public function testTimeFormatMatchesStrftime()
+	public function testTimeFormatMatchesPortableStrftimeConversions()
 	{
 		list($result, $other) = $this->run_isolated('
-			$convs = str_split("aAbBcCdDeFgGhHIjklmMnpPrRsStTuUVwWxXyYzZ%qfiJ");
+			// POSIX conversions and their defined E/O variants are portable.
+			// GNU flags, arbitrary widths, and undefined modifier/conversion
+			// pairs differ between libc implementations; literals below pin
+			// the extensions supported by operator autotools label formats.
+			// %Z may legally be empty in libc; the explicit zone contract is
+			// checked below, including GMT for the feeds consumer.
 			$specs = array();
-			foreach($convs as $c)
-				foreach(array("", "-", "_", "0", "^", "#", "-^") as $f)
-					foreach(array("", "1", "6") as $w)
-						foreach(array("", "E", "O") as $m)
-							$specs[] = "%" . $f . $w . $m . $c;
-			$specs[] = "%";
-			$specs[] = "50% off %";
+			foreach(str_split("aAbBcCdDeFgGhHIjmMnpRrStTuUVwWxXyYz%") as $conv)
+				$specs[] = "%" . $conv;
+			foreach(array("Ec", "EC", "Ex", "EX", "Ey", "EY", "Od", "Oe", "OH", "OI", "Om", "OM", "OS", "Ou", "OU", "OV", "Ow", "OW", "Oy") as $conv)
+				$specs[] = "%" . $conv;
 			$times = array(0, 951782400, 1009843199, 1704067199, 1735689600, 1767225599, 1790000000);
 			$zones = array("UTC", "Europe/Madrid", "America/New_York", "Asia/Kolkata", "Australia/Lord_Howe");
 			$checked = 0;
@@ -166,13 +237,7 @@ class DeprecatedFunctionReplacementTest extends TestCase
 				foreach($times as $t)
 					foreach($specs as $spec)
 					{
-						// glibc computes %s with mktime() of the broken-down time
-						// in the process zone (TZ), not in the zone PHP formats in:
-						// with TZ=Europe/Moscow both strftime("%s", 0) and
-						// gmstrftime("%s", 0) answer -10800. TimeFormat renders the
-						// timestamp itself, which is checked below for every zone.
-						if(substr($spec, -1) == "s")
-							continue;
+
 						$fmt = "<" . $spec . ">";
 						$pairs = array(array(@gmstrftime($fmt, $t), TimeFormat::gmstrftime($fmt, $t)),
 							array(@strftime($fmt, $t), TimeFormat::strftime($fmt, $t)));
@@ -232,8 +297,35 @@ class DeprecatedFunctionReplacementTest extends TestCase
 		if(!is_array($result))
 			return;
 		$this->assertEquals(array(), $result['differ'], 'TimeFormat renders ' . $result['checked']
-			. ' formats as strftime/gmstrftime did and %s as the timestamp; differ: ' . implode('; ', $result['differ']));
+			. ' portable formats as strftime/gmstrftime did and %s as the timestamp; differ: ' . implode('; ', $result['differ']));
 		$this->assertQuiet($other, 'TimeFormat');
+	}
+
+	public function testTimeFormatExtensionsHaveTheSameMeaningOnEveryLibc()
+	{
+		list($result, $other) = $this->run_isolated('
+			date_default_timezone_set("UTC");
+			$formats = array(
+				"%c" => "Thu Jan  1 00:00:00 1970", "%k|%l|%P" => " 0|12|am",
+				"%-d|%_d|%0e" => "1| 1|01", "%6d|%-6d|%06e" => "000001|     1|000001",
+				"%^a|%#B|%#p|%#P|%^P" => "THU|JANUARY|am|am|am",
+				"%6a|%06a|%_6a" => "   Thu|000Thu|   Thu",
+				"%^c|%06R|%12F" => "THU JAN  1 00:00:00 1970|000:00|  1970-01-01",
+				"%Ea|%Oa|%Od|%Ec|%OY" => "%Ea|%Oa|01|Thu Jan  1 00:00:00 1970|%OY",
+				"%q|%^q|%6q|%06q|%" => "%q|%^Q|   %6q|00%06q|%",
+				"%n%t%%" => "\n\t%", "%s|%Es|%Os" => "0|0|0",
+				"%z|%Z" => "+0000|GMT");
+			$differ = array();
+			foreach($formats as $format => $expected)
+			{
+				$actual = TimeFormat::gmstrftime($format, 0);
+				if($actual !== $expected)
+					$differ[] = $format . " => " . json_encode($actual) . " vs " . json_encode($expected);
+			}
+			return $differ;
+		', array('php/util.php'));
+		$this->assertEquals(array(), $result, 'operator date formats retain portable flags, widths and literal directives: ' . json_encode($result));
+		$this->assertQuiet($other, 'TimeFormat extension formatting');
 	}
 
 	public function testFeedsPubDateFormatIsRfc822()
