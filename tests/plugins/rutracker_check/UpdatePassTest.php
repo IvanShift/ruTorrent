@@ -2417,19 +2417,21 @@ upTest($suite, 'the Kinozal cycle quota is read from the configuration and valid
     }
 });
 
-upTest($suite, 'Kinozal dispatches fifty due topics by default and preserves explicit quotas', function () {
+upTest($suite, 'Kinozal dispatches thirty-five due topics by default and preserves explicit quotas', function () {
     upLoadKinozalRegistration();
     require_once(testFindRepoRoot() . '/plugins/rutracker_check/trackers/nnmclub.php');
     $flag = 'invalidCycleTopicsReported';
     $savedFlag = strictGetPrivateStatic('KinozalCheckImpl', $flag);
     try {
         foreach (array(
-            'configured default' => array($GLOBALS['rutrackerKinozalCycleTopics'], 50, false),
-            'unset configuration' => array(null, 50, false),
-            'invalid configuration' => array('many', 50, true),
+            'configured default' => array($GLOBALS['rutrackerKinozalCycleTopics'], 35, false),
+            'unset configuration' => array(null, 35, false),
+            'invalid configuration' => array('many', 35, true),
             'explicit earlier cap' => array(25, 25, false),
+            'explicit fifty-topic cap' => array(50, 50, false),
             'custom cap' => array(7, 7, false),
             'unlimited' => array(0, 53, false),
+            'largest integer cap' => array(PHP_INT_MAX, 53, false),
         ) as $label => $case) {
             strictSetPrivateStatic('KinozalCheckImpl', $flag, false);
             upWithKinozalCycleTopics($case[0], function () use ($label, $case) {
@@ -2476,8 +2478,8 @@ upTest($suite, 'Kinozal dispatches fifty due topics by default and preserves exp
                 strictAssertSame(array(), upGuardedWrites(),
                     $label . ': the scheduler publishes no guarded verdict or chk-time writes for these rows');
                 strictAssertSame($case[2] ? 1 : 0,
-                    substr_count($log, 'config: invalid rutrackerKinozalCycleTopics; using 50 topics per pass'),
-                    $label . ': invalid input visibly selects the fifty-topic fallback');
+                    substr_count($log, 'config: invalid rutrackerKinozalCycleTopics; using 35 topics per pass'),
+                    $label . ': invalid input visibly selects the thirty-five-topic fallback');
             });
         }
     } finally { strictSetPrivateStatic('KinozalCheckImpl', $flag, $savedFlag); }

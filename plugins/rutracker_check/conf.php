@@ -56,13 +56,13 @@ $rutrackerLayer2Enabled	??= true;	// announce confirmation layer; disabling it a
 $rutrackerAnnouncePause	??= 5;	// 0-60 seconds between probe announces
 $rutrackerAnnounceCap	??= 10;	// 0-40 probe announces per persisted window per announce host; 0 disables the probe
 // Kinozal topics one scheduler pass sends for a fresh check; 0 means no limit,
-// anything but a nonnegative integer or its canonical decimal string means 50.
+// anything but a nonnegative integer or its canonical decimal string means 35.
 // This bounds the scheduler batch, not the mirror's HTTP allowance: login and
 // updates need additional requests, and HTTP 429 still pauses every door.
 // Recovering an interrupted check, a forum correction and the manual
 // check button are not counted. The topics left over keep their state, and
 // each pass starts about one quota further along the foreign torrents.
-$rutrackerKinozalCycleTopics	??= 50;
+$rutrackerKinozalCycleTopics	??= 35;
 // Seconds between automatic full forum sweeps.
 //
 // Domain: a nonnegative PHP integer, or its canonical decimal spelling as a

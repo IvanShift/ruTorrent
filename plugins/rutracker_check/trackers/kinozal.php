@@ -158,7 +158,7 @@ class KinozalCheckImpl
     // The rest are not dispatched and keep their verdict and chk-time; each
     // pass starts about one quota further along the foreign rows
     // (RuTrackerUpdatePass::fairOrder()).
-    const DEFAULT_CYCLE_TOPICS = 50;
+    const DEFAULT_CYCLE_TOPICS = 35;
     static private $invalidCycleTopicsReported = false;
 
     // $rutrackerKinozalCycleTopics, or null for no limit (0).
