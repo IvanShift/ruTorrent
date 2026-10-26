@@ -38,9 +38,9 @@ if (isset($argv[1]) && $argv[1] === '--child') {
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 $httpBlockPrivateNetworks = false;
 
-// Slack for comparing a wire time with the moment the previous fetch returned:
-// Snoopy ends a turn inside fetch() on microtime(); the fixture and this file
-// measure on hrtime(), and a busy host may delay this process in between.
+// Courtesy allowance for caller-duration upper bounds below. Pacing itself
+// uses the recorded reservation, hand-off and transport completion on Snoopy's
+// wall clock (see below).
 const THROTTLE_SLACK = 0.05;
 
 function throttleClock()
@@ -63,13 +63,21 @@ class ThrottleRecordingSnoopy extends Snoopy
     {
         $reservation = Closure::bind(static function (Snoopy $client) { return $client->throttleReservation; }, null, 'Snoopy');
         $turn = $reservation($this);
+        $index = count($this->launches);
         $this->launches[] = array('turn' => $turn === null ? null : $turn[1], 'wall' => microtime(true), 'clock' => throttleClock());
-        // Forward exactly the arguments given: Snoopy counts them.
-        return parent::_httpsrequest(...func_get_args());
+        // Forward exactly the arguments given: Snoopy counts them. Record the
+        // transport's return before fetch() publishes its end bound; a later
+        // deschedule before the caller samples its return cannot move this.
+        try {
+            return parent::_httpsrequest(...func_get_args());
+        } finally {
+            $this->launches[$index]['finished'] = microtime(true);
+            $this->launches[$index]['finishedClock'] = throttleClock();
+        }
     }
 }
 
-function throttleFetch($url, $deadline = null, $tag = null, $complex = false, $maxlength = null)
+function throttleFetch($url, $deadline = null, $tag = null, $complex = false, $maxlength = null, $afterFetchDelay = 0)
 {
     $client = new ThrottleRecordingSnoopy();
     if ($maxlength !== null) $client->maxlength = $maxlength;
@@ -81,6 +89,8 @@ function throttleFetch($url, $deadline = null, $tag = null, $complex = false, $m
     $wallCalled = microtime(true);
     $called = throttleClock();
     $ok = $complex ? $client->fetchComplex($url) : $client->fetch($url);
+    // A controlled caller deschedule, after leaveThrottle() has run.
+    if ($afterFetchDelay > 0) usleep($afterFetchDelay);
     $returned = throttleClock();
     return array('ok' => $ok, 'status' => $client->status, 'error' => $client->error,
         'called' => $called, 'returned' => $returned,
@@ -296,16 +306,33 @@ function throttleAssertWire(array $urls, $message)
     testAssertSame(array(), $throttleCurl->remaining(), 'Every scripted answer was asked for');
 }
 
-// Sequential fetches, one wire request each: a turn starts an interval after
-// the previous request started, and a whole interval after it ended.
+// Compare the boundaries Snoopy paces, on one clock: reserved starts and the
+// next hand-off after the previous transport completed. Neither the caller's
+// return nor curl's process startup is the end of a throttle turn.
+function throttleAssertAfter(array $previous, array $fetch, $interval, $message)
+{
+    testAssertSame(1, count($previous['launches']), $message . ': the previous fetch handed one request to curl');
+    testAssertSame(1, count($fetch['launches']), $message . ': the next fetch handed one request to curl');
+    $before = $previous['launches'][0];
+    $after = $fetch['launches'][0];
+    testAssertTrue(is_float($before['turn']) && is_float($after['turn']), $message . ': both requests reserved a turn');
+    testAssertTrue($after['wall'] >= $after['turn'], $message . ': the next request waited for its reserved start');
+    $started = $after['turn'] - $before['turn'];
+    testAssertTrue($started >= $interval - 0.000001,
+        sprintf('%s: reserved starts stay an interval apart (%.3f s)', $message, $started));
+    $ended = $after['wall'] - $before['finished'];
+    testAssertTrue($ended >= $interval - 0.000001,
+        sprintf('%s: the next hand-off stays an interval after transport completion (%.3f s)', $message, $ended));
+}
+
+// Sequential fetches, one wire request each, including in-process fallback.
 function throttleAssertTurns(array $fetches, array $wire, $interval)
 {
     testAssertSame(count($fetches), count($wire), 'Each fetch made one wire request');
-    for ($i = 1; $i < count($wire); $i++) {
-        $started = $wire[$i]['time'] - $wire[$i - 1]['time'];
-        $ended = $wire[$i]['time'] - $fetches[$i - 1]['returned'];
-        testAssertTrue($started >= $interval, sprintf('Wire request %d starts an interval after request %d started (%.3f s)', $i + 1, $i, $started));
-        testAssertTrue($ended >= $interval - THROTTLE_SLACK, sprintf('Wire request %d starts an interval after request %d ended (%.3f s)', $i + 1, $i, $ended));
+    foreach ($fetches as $i => $fetch) {
+        testAssertSame(1, count($fetch['launches']), 'Each fetch handed one request to curl');
+        testAssertTrue($wire[$i]['time'] >= $fetch['launches'][0]['clock'], 'Each wire request follows its hand-off');
+        if ($i > 0) throttleAssertAfter($fetches[$i - 1], $fetch, $interval, 'Request ' . ($i + 1));
     }
 }
 
@@ -499,20 +526,27 @@ $tests = array(
     'a transfer longer than the interval delays the next turn until an interval after it ended' => function () {
         $interval = 0.2;
         $hold = 0.4;
-        Snoopy::throttleHosts('slow', array('slow.test'), $interval, 1, 1);
-        throttlePlan(array(ScriptedCurlFixture::reply('GET', 'https://slow.test/long', 200, 'long'),
-            ScriptedCurlFixture::reply('GET', 'https://slow.test/next', 200, 'next')));
-        throttleUseHook(array('THROTTLE_HOOK_HOLD' => (int) ($hold * 1000000)));
-        try {
-            $long = throttleFetch('https://slow.test/long');
-        } finally {
-            throttleResetTransport();
+        foreach (array(0, 300000) as $delay) {
+            Snoopy::throttleHosts('slow', array('slow.test'), $interval, 1, 1);
+            throttlePlan(array(ScriptedCurlFixture::reply('GET', 'https://slow.test/long', 200, 'long'),
+                ScriptedCurlFixture::reply('GET', 'https://slow.test/next', 200, 'next')));
+            throttleUseHook(array('THROTTLE_HOOK_HOLD' => (int) ($hold * 1000000)));
+            try {
+                $long = throttleFetch('https://slow.test/long', null, null, false, null, $delay);
+            } finally {
+                throttleResetTransport();
+            }
+            $finished = $long['launches'][0]['finished'];
+            testAssertTrue($long['wallReturned'] - $finished >= $delay / 1000000,
+                'The controlled caller delay follows the transport (precondition)');
+            testAssertTrue(throttleState('slow')['ended'] >= $finished + $interval,
+                'The recorded end bound keeps a whole interval after transport completion');
+            $next = throttleFetch('https://slow.test/next');
+            testAssertSame(true, $long['ok'] && $next['ok'], 'Both requests are answered');
+            $wire = throttleWire();
+            testAssertTrue($long['launches'][0]['finishedClock'] - $wire[0]['time'] >= $hold, 'The first transfer outlasted the interval (precondition)');
+            throttleAssertTurns(array($long, $next), $wire, $interval);
         }
-        $next = throttleFetch('https://slow.test/next');
-        testAssertSame(true, $long['ok'] && $next['ok'], 'Both requests are answered');
-        $wire = throttleWire();
-        testAssertTrue($long['returned'] - $wire[0]['time'] >= $hold, 'The first transfer outlasted the interval (precondition)');
-        throttleAssertTurns(array($long, $next), $wire, $interval);
     },
     'a redirect hop to a group host waits its own turn' => function () {
         $interval = 0.2;
@@ -548,8 +582,7 @@ $tests = array(
             testAssertSame(true, $other['ok'], $outside[$i] . ' is answered');
             throttleAssertPrompt($other, $wire[$i + 1], $interval / 2, $outside[$i] . ' does not wait for the group');
         }
-        testAssertTrue($wire[4]['time'] - $first['returned'] >= $interval - THROTTLE_SLACK,
-            sprintf('A subdomain waits for the group\'s turn (%.3f s)', $wire[4]['time'] - $first['returned']));
+        throttleAssertAfter($first, $subdomain, $interval, 'A subdomain waits for the group\'s turn');
         testAssertSame(true, $subdomain['ok'], 'The subdomain is answered');
         throttleAssertWire(array_merge(array('https://family.test/a'), $outside, array('https://cdn.family.test/e')),
             'Each HTTP request reaches the wire once');
@@ -696,7 +729,7 @@ $tests = array(
         }
         testAssertSame('429', $first['status'], 'Process A draws a 429');
         foreach ($results as $name => $fetches) {
-            testAssertTrue($fetches[0]['called'] < $first['returned'] - 0.1, "Process $name reserved its turn before the 429 arrived (precondition)");
+            testAssertTrue($fetches[0]['wallCalled'] < $first['launches'][0]['finished'] - 0.1, "Process $name reserved its turn before the 429 arrived (precondition)");
             throttleAssertRefused($fetches[0], Snoopy::REQUEST_THROTTLED, "Process $name, still waiting when the pause began");
             testAssertTrue($fetches[0]['returned'] - $fetches[0]['called'] >= $interval - $hold,
                 sprintf('Process %s was refused when its turn came (after %.3f s)', $name, $fetches[0]['returned'] - $fetches[0]['called']));
@@ -941,7 +974,7 @@ $tests = array(
             testAssertSame($exit, $lost['status'], "curl's exit code $exit is the status");
             testAssertSame("Error: cURL could not retrieve the document, error $exit.", $lost['error'], "curl exit $exit is reported");
             $wire = throttleWire();
-            testAssertTrue($wire[1]['time'] - $first['returned'] >= $interval - THROTTLE_SLACK, "The request lost with exit $exit waited for its turn");
+            throttleAssertAfter($first, $lost, $interval, "The request lost with exit $exit waited for its turn");
             testAssertSame($before['next'], throttleState($group)['next'], "Exit $exit hands the turn back: the next turn is the one before it");
             $after = throttleFetch("$host/after");
             $wire = throttleWire();
@@ -972,11 +1005,8 @@ $tests = array(
         testAssertSame(0, throttleState('sentfail')['strikes'], 'An HTTP answer other than 429 clears the strikes');
         $after = throttleFetch("$host/after");
         testAssertSame(true, $after['ok'], 'The following request is answered');
-        $wire = throttleWire();
-        testAssertTrue($wire[2]['time'] - $timeout['returned'] >= $interval - THROTTLE_SLACK,
-            sprintf('The request after a timeout waits a whole interval (%.3f s)', $wire[2]['time'] - $timeout['returned']));
-        testAssertTrue($wire[3]['time'] - $unavailable['returned'] >= $interval - THROTTLE_SLACK,
-            sprintf('The request after a 503 waits a whole interval (%.3f s)', $wire[3]['time'] - $unavailable['returned']));
+        throttleAssertAfter($timeout, $unavailable, $interval, 'The request after a timeout waits a whole interval');
+        throttleAssertAfter($unavailable, $after, $interval, 'The request after a 503 waits a whole interval');
         throttleAssertWire(array("$host/limited", "$host/timeout", "$host/unavailable", "$host/after"), 'Each request went out once');
     },
     'a 429 whose body is refused still pauses the group, and a refused answer still clears the strikes' => function () {
@@ -1088,9 +1118,8 @@ $tests = array(
         testAssertSame($competitor['next'], throttleState('contended')['next'],
             'The lost request does not hand back a turn somebody reserved after it');
         $after = throttleFetch("$host/after");
-        $wire = throttleWire();
-        $sentAt = $after['wallCalled'] + ($wire[2]['time'] - $after['called']);
-        testAssertTrue($sentAt >= $competitor['next'] - THROTTLE_SLACK,
+        $sentAt = $after['launches'][0]['wall'];
+        testAssertTrue($sentAt >= $competitor['next'],
             sprintf('The next request waits until the competing turn is over (%.3f s early)', $competitor['next'] - $sentAt));
         throttleAssertWire(array("$host/first", "$host/lost", "$host/after"), 'Each request went out once');
     },
@@ -1123,13 +1152,12 @@ $tests = array(
             $results = throttleFinishChild($child);
         }
         testAssertSame(true, $first['ok'], 'A is answered');
-        testAssertTrue($results[0]['called'] < $first['returned'] - 0.1, 'B reserved its turn while A was on the wire (precondition)');
+        testAssertTrue($results[0]['wallCalled'] < $first['launches'][0]['finished'] - 0.1, 'B reserved its turn while A was on the wire (precondition)');
         testAssertSame(6, $results[0]['status'], "B's first request is lost before it reaches the host");
         testAssertSame(true, $results[1]['ok'], "B's next request is answered");
         $wire = throttleWire();
-        testAssertTrue($wire[1]['time'] > $first['returned'], "B's lost turn came after A ended (precondition)");
-        $gap = $wire[2]['time'] - $first['returned'];
-        testAssertTrue($gap >= $interval - THROTTLE_SLACK, sprintf("B's next request starts an interval after A ended (%.3f s)", $gap));
+        testAssertTrue($results[0]['launches'][0]['wall'] > $first['launches'][0]['finished'], "B's lost turn came after A ended (precondition)");
+        throttleAssertAfter($first, $results[1], $interval, "B's next request starts an interval after A ended");
         throttleAssertWire(array('https://endrule.test/a', 'https://endrule.test/b', 'https://endrule.test/c'), 'Each request went out once');
     },
     'a turn that would outlast the request deadline is refused before anything is sent' => function () {
@@ -1148,7 +1176,7 @@ $tests = array(
         testAssertSame(true, $patient['ok'], 'A deadline that covers the wait is answered');
         $wire = throttleWire();
         $waited = $wire[1]['time'] - $first['returned'];
-        testAssertTrue($waited >= $interval - THROTTLE_SLACK, sprintf('It waits for its turn (%.3f s)', $waited));
+        throttleAssertAfter($first, $patient, $interval, 'It waits for its turn');
         testAssertTrue($waited < 2 * $interval - THROTTLE_SLACK, sprintf('and not for a turn the refused request never used (%.3f s)', $waited));
         throttleAssertWire(array("$host/first", "$host/patient"), 'The refused request never reached the wire');
     },
@@ -1168,8 +1196,9 @@ $tests = array(
         $next = throttleFetch('https://margin.test/next');
         $wire = throttleWire();
         $waited = $wire[1]['time'] - $first['returned'];
-        testAssertTrue($waited >= $interval - THROTTLE_SLACK && $waited < 2 * $interval - THROTTLE_SLACK,
-            sprintf('The next request keeps the original turn (%.3f s after the first ended)', $waited));
+        throttleAssertAfter($first, $next, $interval, 'The next request waits for the original turn');
+        testAssertTrue($waited < 2 * $interval - THROTTLE_SLACK,
+            sprintf('The next request keeps the original turn (%.3f s after the first returned)', $waited));
         throttleAssertWire(array('https://margin.test/first', 'https://margin.test/next'), 'The refused request never reached the wire');
     },
     'a deadline that runs out while the request waits hands its turn back' => function () {
@@ -1237,10 +1266,8 @@ $tests = array(
             $storedState[$key] = $turn;
             throttleStoreState("honor-$key", $storedState);
             $waiting = throttleFetch("https://honor-$key.test/x");
-            $wire = throttleWire();
-            $request = $wire[count($wire) - 1];
-            $sentAt = $waiting['wallCalled'] + ($request['time'] - $waiting['called']);
-            testAssertTrue($sentAt >= $turn - THROTTLE_SLACK, sprintf('%s is waited for (%.3f s early)', $what, $turn - $sentAt));
+            $sentAt = $waiting['launches'][0]['wall'];
+            testAssertTrue($sentAt >= $turn, sprintf('%s is waited for (%.3f s early)', $what, $turn - $sentAt));
         }
         Snoopy::throttleHosts('honor-until', array('honor-until.test'), 0.1, 1, 5);
         throttleStoreState('honor-until', array('next' => 0, 'until' => microtime(true) + 3, 'strikes' => 1));
@@ -1334,10 +1361,9 @@ $tests = array(
         testAssertSame($files, glob($settings . '/throttle-*'), 'Invalid names create no state file');
         Snoopy::throttleHosts(str_repeat('a', 32), array('boundary.test'), $interval, 1, 1);
         $first = throttleFetch('https://boundary.test/one');
-        throttleFetch('https://boundary.test/two');
+        $second = throttleFetch('https://boundary.test/two');
         $wire = throttleWire();
-        testAssertTrue($wire[count($wire) - 1]['time'] - $first['returned'] >= $interval - THROTTLE_SLACK,
-            'A 32-character name registers a group');
+        throttleAssertAfter($first, $second, $interval, 'A 32-character name registers a group');
         testAssertSame(count($plan), count($wire), 'Every request was sent');
         throttleAssertWire(array_map(function ($reply) { return $reply['url']; }, $plan), 'Every request was sent in order');
     },
@@ -1380,8 +1406,7 @@ $tests = array(
         testAssertSame('429', $limited['status'], 'The pace-only group draws a 429');
         $next = throttleFetch('https://paceonly.test/2');
         testAssertSame(true, $next['ok'], 'A pause of 0 refuses nothing');
-        $wire = throttleWire();
-        testAssertTrue($wire[count($wire) - 1]['time'] - $limited['returned'] >= $interval - THROTTLE_SLACK, 'and the interval still spaces requests');
+        throttleAssertAfter($limited, $next, $interval, 'and the interval still spaces requests');
         throttleAssertWire(array_map(function ($reply) { return $reply['url']; }, $plan), 'Every request but the refused one was sent');
     },
 );
