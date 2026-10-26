@@ -2546,7 +2546,9 @@ class ruTrackerChecker
 	{
 		$status = (int) $status;
 		if($status === Snoopy::RESPONSE_BODY_FAILED)
-			return('transport=response-body status=' . $status . ' reason=body-refusal');
+			// The same code covers a local request refusal and a rejected body.
+			// Only the separately classified error can distinguish them.
+			return('transport=client status=' . $status);
 		if($status < 0)
 		{
 			$reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
@@ -2695,13 +2697,16 @@ class ruTrackerChecker
 		return( in_array($label, $ignoreLabels, true) || in_array(rawurldecode((string) $label), $ignoreLabels, true) );
 	}
 
-	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null, $scheduledAt = null )
+	static public function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null, $scheduledAt = null, &$observation = null )
 	{
 		// $performed is deliberately narrower than "this invocation changed
 		// something": it acknowledges only a real tracker-handler run. The
 		// scheduler uses it to retire durable forum-correction work, which an
 		// ignored-label decision or a metadata-pump step has not consumed.
 		$performed = false;
+		// Diagnostic output only. A successful invocation may acquire no claim,
+		// run no handler, or retain an old verdict without learning anything.
+		$observation = 'not-observed';
 		// The scheduler passes a cycle-start snapshot, while a manual check can
 		// finish and change chk-state before this row is reached. Take the real
 		// per-hash claim first, then refresh state, time and label under that same
@@ -2946,6 +2951,23 @@ class ruTrackerChecker
 					&& !in_array($handlerVerdict, array(self::STE_UNCHANGED,
 						self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true)
 					&& $finalWrite === true;
+				if($handlerPerformed)
+				{
+					$observation = 'unconfirmed';
+					if($handlerVerdict === self::STE_UNCHANGED && !$missingRetry
+						&& ($terminal || $finalWrite === true))
+						$observation = 'unchanged';
+					elseif(in_array($handlerVerdict, array(self::STE_CANT_REACH_TRACKER, self::STE_ERROR), true))
+						$observation = 'failed';
+					elseif($finalWrite === true)
+					{
+						if($handlerVerdict === self::STE_META_PENDING)
+							$observation = 'pending';
+						elseif(in_array($handlerVerdict, array(self::STE_UPDATED, self::STE_UPTODATE,
+							self::STE_DELETED, self::STE_NOT_NEED, self::STE_IGNORED, self::STE_ABSORBED), true))
+							$observation = 'confirmed';
+					}
+				}
 				return($resultState != self::STE_CANT_REACH_TRACKER);
 			}
 			return(true); // only a still-held INPROGRESS state reaches here

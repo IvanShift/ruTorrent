@@ -3136,7 +3136,7 @@ DSL;
 					'failed body cannot retain HTTP 200 as its verdict');
 				strictAssertSame(1, count(FileUtil::$log), 'body failure is logged once');
 				strictAssertTrue(strpos(FileUtil::$log[0],
-					'transport=response-body status=-101 reason=body-refusal error=gzip-decoder-unavailable') !== false,
+					'transport=client status=-101 error=gzip-decoder-unavailable') !== false,
 					'the log gives the classified body reason, not remote bytes');
 			}
 			finally
@@ -3144,6 +3144,29 @@ DSL;
 				Snoopy::$nextStatus = 200;
 				Snoopy::$nextError = '';
 			}
+		});
+	}
+
+	public function testLocalRequestRefusalsDoNotClaimThatAResponseBodyFailed()
+	{
+		$this->resetFakes();
+		$this->withDebugLog(function() {
+			try
+			{
+				Snoopy::$nextStatus = Snoopy::RESPONSE_BODY_FAILED;
+				foreach(array('request-throttled', 'request-deadline', 'invalid-url', 'request-body-not-written') as $reason)
+				{
+					FileUtil::$log = array();
+					Snoopy::$nextError = $reason;
+					ruTrackerChecker::makeClient('https://tracker.test/');
+					strictAssertSame(1, count(FileUtil::$log), 'one diagnostic for the refused request');
+					strictAssertTrue(strpos(FileUtil::$log[0], 'transport=client status=-101 error=' . $reason) !== false,
+						'the client refusal keeps its exact safe reason without inventing a response');
+					strictAssertTrue(strpos(FileUtil::$log[0], 'response-body') === false,
+						'a local refusal cannot claim a received body failed');
+				}
+			}
+			finally { Snoopy::$nextStatus = 200; Snoopy::$nextError = ''; }
 		});
 	}
 
@@ -6121,9 +6144,12 @@ DSL;
 					rXMLRPCRequest::queue('d.get_custom|d.get_local_id', true, false,
 						array($marker, self::LOCAL_ID));
 					$performed = null;
+					$observation = 'stale';
 					strictAssertSame(false, ruTrackerChecker::run(self::OLD_HASH,
-						$previous, $past, '', $performed), 'the retry remains pending');
+						$previous, $past, '', $performed, null, null, $observation), 'the retry remains pending');
 					strictAssertSame(false, $performed, 'the cold answer consumed no work');
+					strictAssertSame('unconfirmed', $observation,
+						'an unresolved missing successor cannot become an unchanged result');
 					$states = $this->customWritesFor('chk-state');
 					$times = $this->customWritesFor('chk-time');
 					strictAssertSame((string) ruTrackerChecker::STE_ERROR,
@@ -6289,10 +6315,17 @@ DSL;
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array());
 					rXMLRPCRequest::queue('d.set_custom|d.set_custom|d.set_custom', true, false, array());
 					$performed = null;
+					$observation = 'stale';
 					$interrupted = null;
 					try {
-						$result = ruTrackerChecker::run(self::OLD_HASH, $row['previous'], time(), '', $performed);
+						$result = ruTrackerChecker::run(self::OLD_HASH, $row['previous'], time(), '', $performed,
+							null, null, $observation);
 					} catch (RuntimeException $error) { $interrupted = $error->getMessage(); }
+					$expectedObservation = $row['failure'] === null ? 'not-observed'
+						: ($row['failure'] === ruTrackerChecker::STE_UPTODATE ? 'confirmed'
+							: ($row['failure'] === ruTrackerChecker::STE_UNCHANGED ? 'unchanged' : 'failed'));
+					strictAssertSame($expectedObservation, $observation,
+						'the handler outcome is independent of the retained terminal verdict');
 					if ($row['failure'] === null) {
 						strictAssertSame('interrupted handler', $interrupted, 'the real handler interruption propagated');
 						strictAssertSame(false, $performed, 'an interrupted handler consumed no work');
@@ -6583,13 +6616,79 @@ DSL;
 					}
 
 					$performed = null;
+					$observation = 'stale';
 					strictAssertSame(true,
-						ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
+						ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed,
+							null, null, $observation),
 						$label . ': checker invocation itself completed');
 					strictAssertSame($case['expect'], $performed,
 						$label . ': durable correction acknowledgement follows the final write result');
+					strictAssertSame($case['expect'] ? 'confirmed' : 'unconfirmed', $observation,
+						$label . ': a diagnostic result requires the same attested final write');
 			});
 		}
+	}
+
+	public function testCheckerDiagnosticsDistinguishObservedOutcomesWithoutChangingWrites()
+	{
+		foreach(array(
+			array(ruTrackerChecker::STE_UPDATED, 'confirmed'),
+			array(ruTrackerChecker::STE_UPTODATE, 'confirmed'),
+			array(ruTrackerChecker::STE_DELETED, 'confirmed'),
+			array(ruTrackerChecker::STE_NOT_NEED, 'confirmed'),
+			array(ruTrackerChecker::STE_IGNORED, 'confirmed'),
+			array(ruTrackerChecker::STE_ABSORBED, 'confirmed'),
+			array(ruTrackerChecker::STE_UNCHANGED, 'unchanged'),
+			array(ruTrackerChecker::STE_CANT_REACH_TRACKER, 'failed'),
+			array(ruTrackerChecker::STE_ERROR, 'failed'),
+			array(ruTrackerChecker::STE_META_PENDING, 'pending'),
+			array(null, 'unconfirmed'),
+			array(false, 'unconfirmed'),
+		) as $case)
+		{
+			$traces = array();
+			foreach(array(false, true) as $diagnose)
+				$this->withVerdictSession('diagnostic', ruTrackerChecker::STE_UPTODATE, 123,
+					function() use ($case) { return $case[0]; },
+					function() use ($case, $diagnose, &$traces) {
+						$performed = null;
+						$observation = 'stale';
+						if($diagnose)
+							ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 123, '',
+								$performed, null, null, $observation);
+						else
+							ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 123, '', $performed);
+						if($diagnose) strictAssertSame($case[1], $observation, 'outcome for handler verdict ' . var_export($case[0], true));
+						$traces[] = array($this->customWritesFor('chk-state'), count(rXMLRPCRequest::$requests), $performed);
+						if($case[0] === ruTrackerChecker::STE_UNCHANGED)
+						{
+							$times = $this->customWritesFor('chk-time');
+							strictAssertSame('123', end($times), 'an unchanged outcome retains the old clock');
+						}
+				});
+			strictAssertSame($traces[0], $traces[1], 'diagnostics add no state transition or RPC');
+		}
+	}
+
+	public function testUnconfirmedUnchangedOrPendingWriteCannotConfirmAnOutcome()
+	{
+		foreach(array(ruTrackerChecker::STE_UNCHANGED, ruTrackerChecker::STE_META_PENDING) as $verdict)
+			$this->withVerdictSession('diagnostic-write', ruTrackerChecker::STE_UPTODATE, 100,
+				function() use ($verdict) { return $verdict; },
+				function() {
+					rXMLRPCRequest::queue('branch', true, false,
+						array(RuTrackerAtomicOwnership::SENTINEL_ACTED)); // preflight
+					rXMLRPCRequest::queue('branch', false, false, array());
+					rXMLRPCRequest::queue('d.get_custom|d.get_custom|d.get_local_id',
+						true, false, array('1', '0', self::LOCAL_ID));
+					rXMLRPCRequest::queue('d.hash', true, false, array(self::OLD_HASH));
+					$performed = null;
+					$observation = 'stale';
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '',
+						$performed, null, null, $observation);
+					strictAssertSame('unconfirmed', $observation, 'the final write was not proved');
+					strictAssertSame(false, $performed, 'unproved work is not acknowledged');
+				});
 	}
 
 	public function testRetryableHandlerVerdictNeverConsumesForumCorrection()
@@ -6622,9 +6721,12 @@ DSL;
 					true, false, array('1', '0', self::LOCAL_ID));
 
 				$performed = null;
+				$observation = 'stale';
 				strictAssertSame(true,
-					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed),
+					ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, 100, '', $performed,
+						null, null, $observation),
 					'the checker invocation itself completes');
+				strictAssertSame('unconfirmed', $observation, 'a truncated unproved write confirms no result');
 				strictAssertSame(false, $performed,
 					'forum correction work is not acknowledged without a measured final verdict');
 				strictAssertSame(1, count(rXMLRPCRequest::requestsFor(
@@ -6792,8 +6894,11 @@ DSL;
 				rXMLRPCRequest::queue('d.set_custom|d.set_custom', true, false, array()); // final verdict
 
 				$performed = null;
-				ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, time(), '', $performed);
+				$observation = 'stale';
+				ruTrackerChecker::run(self::OLD_HASH, ruTrackerChecker::STE_UPTODATE, time(), '', $performed,
+					null, null, $observation);
 
+				strictAssertSame('not-observed', $observation, $label . ': no handler result was observed');
 				strictAssertSame(false, $performed,
 					$label . ': no tracker handler consumed the forum-aware obligation');
 			}

@@ -819,6 +819,10 @@ upTest($suite, 'the production default checker calls ruTrackerChecker::run with 
 
     $result = RuTrackerUpdatePass::run($rows);
     strictAssertSame(array(str_repeat('A', 40)), $result['checked'], 'dispatched through the real default checker');
+    strictAssertSame(0, $result['results']['confirmed'] ?? null,
+        'a successful no-op from the real checker is not a confirmed handler verdict');
+    strictAssertSame(1, $result['results']['not-observed'] ?? null,
+        'the vanished torrent has no observed handler result');
     $probes = rXMLRPCRequest::requestsFor('d.hash');
     strictAssertSame(1, count($probes), 'ruTrackerChecker::run reached its own torrentExists probe');
     strictAssertSame(str_repeat('A', 40), $probes[0]['commands'][0]->params, 'probed the dispatched hash');
@@ -841,8 +845,12 @@ upTest($suite, 'the default scheduler dispatch gives its aligned slot to the rea
             'd.get_local_id', 'd.get_custom'), true, false,
             array((string) ruTrackerChecker::STE_META_PENDING, '100', '', str_repeat('A', 40), ''));
         $before = time();
-        RuTrackerUpdatePass::run($rows);
+        $result = RuTrackerUpdatePass::run($rows);
         $after = time();
+        strictAssertSame(1, $result['results']['not-observed'] ?? null,
+            'an early metadata pump is not an ordinary handler observation');
+        strictAssertSame(0, $result['results']['confirmed'] ?? null,
+            'the pump return value cannot certify a fresh handler verdict');
         strictAssertSame(1, count(RuTrackerMetaFetch::$calls), 'the real checker reached its metadata consumer');
         $slot = RuTrackerMetaFetch::$calls[0]['scheduledAt'];
         strictAssertTrue(is_int($slot), 'default dispatch supplies a slot instead of a manual-call null');
@@ -1945,6 +1953,12 @@ upTest($suite, 'foreign bucket counts reconcile postponed and dispatched rows', 
     strictAssertSame($metric['eligible'] - $metric['postponed'],
         $metric['dispatched'] + $metric['capped'], 'no eligible row disappears');
     strictAssertSame(1, $metric['error'], 'snapshot ERROR count');
+    strictAssertSame('cycle-start', $metric['snapshot'] ?? null, 'ages and states describe the incoming snapshot');
+    strictAssertSame($due['hash'], $metric['max_age_hash'] ?? null, 'the oldest row is identifiable');
+    strictAssertSame($due['state'], $metric['max_age_state'] ?? null, 'the oldest row retains its snapshot state');
+    strictAssertSame(1, $metric['stale_24h'] ?? null, 'only positive clocks older than a day count as stale');
+    strictAssertSame(2, $metric['handler_results']['not-observed'] ?? null,
+        'void callback calls provide no observed handler verdict');
     strictAssertSame(1, $metric['time_unset'], 'unset time is not an enormous age');
     strictAssertTrue($metric['max_age'] >= 86401 && $metric['max_age'] <= 86403,
         'oldest valid snapshot age is preserved');
@@ -1982,6 +1996,315 @@ function upKinozalRowAt($letter, $state, $time)
     $row['time'] = $time;
     return $row;
 }
+
+upTest($suite, 'snapshot oldest identity is stable across row order and excludes invalid clocks', function () {
+    upLoadKinozalRegistration();
+    $now = time();
+    $rows = array(
+        upKinozalRowAt('B', ruTrackerChecker::STE_ERROR, $now - 90000),
+        upKinozalRowAt('A', ruTrackerChecker::STE_CANT_REACH_TRACKER, $now - 90000),
+        upKinozalRowAt('C', ruTrackerChecker::STE_UPTODATE, 0),
+        upKinozalRowAt('D', ruTrackerChecker::STE_UPTODATE, $now + 60),
+        upKinozalRowAt('E', ruTrackerChecker::STE_UPTODATE, $now - 86390),
+    );
+    foreach (array($rows, array_reverse($rows)) as $order) {
+        $log = upCapturedLog(function () use ($order) { upRunPass($order, $checked); });
+        $metric = upMetricsByBucket($log)[ruTrackerChecker::schedulingBucket($rows[0]['comment'])];
+        strictAssertSame(str_repeat('A', 40), $metric['max_age_hash'] ?? null,
+            'equal oldest clocks choose the lexical first hash, independently of iteration order');
+        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $metric['max_age_state'] ?? null,
+            'state follows the chosen oldest hash');
+        strictAssertSame(2, $metric['stale_24h'] ?? null, 'unset, future and recent clocks are excluded');
+        strictAssertSame(1, $metric['time_unset'], 'zero keeps its own snapshot counter');
+        strictAssertSame(1, $metric['time_future'], 'future keeps its own snapshot counter');
+        strictAssertSame(5, $metric['handler_results']['not-observed'] ?? null,
+            'every actual call has one outcome in the bucket');
+        strictAssertSame(array(), rXMLRPCRequest::$requests,
+            'snapshot identity and call diagnostics add no RPC reads or writes');
+    }
+});
+
+upTest($suite, 'snapshot without valid clocks has no oldest identity but a current clock does', function () {
+    upLoadKinozalRegistration();
+    $rows = array(upKinozalRowAt('A', ruTrackerChecker::STE_ERROR, 0),
+        upKinozalRowAt('B', ruTrackerChecker::STE_ERROR, time() + 60));
+    $log = upCapturedLog(function () use ($rows) { upRunPass($rows, $checked); });
+    $bucket = ruTrackerChecker::schedulingBucket($rows[0]['comment']);
+    $metric = upMetricsByBucket($log)[$bucket];
+    strictAssertTrue(array_key_exists('max_age_hash', $metric), 'unknown identity is explicit');
+    strictAssertSame(null, $metric['max_age_hash'], 'invalid clocks select no hash');
+    strictAssertSame(null, $metric['max_age_state'], 'invalid clocks select no state');
+    strictAssertSame(0, $metric['max_age'], 'invalid clocks do not inflate the maximum');
+    strictAssertSame(0, $metric['stale_24h'], 'invalid clocks are not stale');
+
+    $current = upKinozalRowAt('C', ruTrackerChecker::STE_ERROR, time());
+    $log = upCapturedLog(function () use ($current) { upRunPass(array($current), $checked); });
+    $metric = upMetricsByBucket($log)[$bucket];
+    strictAssertSame($current['hash'], $metric['max_age_hash'], 'a zero-age valid clock still identifies a row');
+    strictAssertSame($current['state'], $metric['max_age_state'], 'a zero-age row retains its state');
+    strictAssertSame(0, $metric['stale_24h'], 'the new timestamp is not stale');
+});
+
+upTest($suite, 'a snapshot exactly one day old is not yet counted as stale', function () {
+    upLoadKinozalRegistration();
+    // A second may roll over between the fixture and run() taking its clock.
+    // Establish the boundary from the observed age, with bounded retries.
+    for ($attempt = 0; $attempt < 3; $attempt++) {
+        $row = upKinozalRowAt('A', ruTrackerChecker::STE_ERROR, time() - 86400);
+        $log = upCapturedLog(function () use ($row) { upRunPass(array($row), $checked); });
+        $metric = upMetricsByBucket($log)[ruTrackerChecker::schedulingBucket($row['comment'])];
+        if ($metric['max_age'] !== 86400) continue;
+        strictAssertSame(0, $metric['stale_24h'], 'stale means strictly older than twenty-four hours');
+        return;
+    }
+    throw new RuntimeException('The snapshot fixture could not establish an exact 86400-second age in three passes');
+});
+
+upTest($suite, 'snapshot hash tie-break stays lexical when strcmp is disabled', function () {
+    $first = '1' . str_repeat('0', 37) . 'E1';
+    $second = '2' . str_repeat('0', 37) . 'E0';
+    $rows = array();
+    foreach (array($second, $first) as $hash)
+        $rows[] = upParsedRow($hash, 'https://diagnostic.invalid/announce|1|1|0#',
+            'https://diagnostic.invalid/topic', array('time' => 100));
+    $root = testFindRepoRoot();
+    $code = 'require ' . var_export(__DIR__ . '/TestLib.php', true) . ';'
+        . 'eval(loadClassDefinition(' . var_export($root . '/plugins/rutracker_check/check.php', true) . ',"ruTrackerChecker"));'
+        . 'require ' . var_export($root . '/plugins/rutracker_check/conf.php', true) . ';'
+        . 'require ' . var_export($root . '/plugins/rutracker_check/updatepass.php', true) . ';'
+        . 'strictWithStateDir("no-strcmp",function(){'
+        . 'strictSetPrivateStatic("RuTrackerUpdatePass","checker",function(){});'
+        . 'strictSetPrivateStatic("RuTrackerUpdatePass","rotationPass",0);'
+        . '$log=testCapturedAppLog(function(){ $result=RuTrackerUpdatePass::run(' . var_export($rows, true) . ');'
+        . 'strictAssertSame(2,count($result["checked"]),"both calls survive optional hash diagnostics"); },true);'
+        . 'strictAssertTrue(strpos($log,' . var_export('"max_age_hash":"' . $first . '"', true)
+        . ')!==false,"hashes compare lexically even when they are numeric strings");'
+        . '});echo "lexical tie survived";';
+    $output = array();
+    exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg($root . '/tests/php-test.ini')
+        . ' -d disable_functions=strcmp -r ' . escapeshellarg($code) . ' 2>&1', $output, $status);
+    strictAssertSame(0, $status, 'optional identity diagnostics work without strcmp: ' . implode(' ', $output));
+    strictAssertSame(array('lexical tie survived'), $output, 'the child reached its actual dispatch and hash assertions');
+});
+
+upTest($suite, 'handler result counters require explicit outcomes and reconcile by bucket', function () {
+    upLoadKinozalRegistration();
+    $outcomes = array('confirmed', 'unchanged', 'failed', 'pending', 'unconfirmed', 'not-observed',
+        true, false, null, 'unexpected', array('confirmed'));
+    $rows = array();
+    $byHash = array();
+    foreach ($outcomes as $index => $outcome) {
+        $hash = str_pad(strtoupper(dechex($index + 1)), 40, '0', STR_PAD_LEFT);
+        $rows[] = upKinozalRow($hash, 1, 0);
+        $byHash[$hash] = $outcome;
+    }
+    $foreign = upParsedRow(str_repeat('F', 40), 'https://other.example/announce|1|1|0#',
+        'https://other.example/topic');
+    $rows[] = $foreign;
+    $byHash[$foreign['hash']] = 'failed';
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use ($byHash) {
+        return $byHash[$hash];
+    });
+    rXMLRPCRequest::reset();
+    $log = upCapturedLog(function () use ($rows, &$result) { $result = RuTrackerUpdatePass::run($rows); });
+    $expected = array('confirmed' => 1, 'unchanged' => 1, 'failed' => 2,
+        'pending' => 1, 'unconfirmed' => 1, 'not-observed' => 6);
+    strictAssertSame($expected, $result['results'] ?? null,
+        'boolean, void and unrecognized returns never become confirmed results');
+    strictAssertSame(array_column($rows, 'hash'), $result['checked'], 'legacy checked still lists every call');
+    strictAssertSame(count($result['checked']), array_sum($result['results']), 'one category per checker call');
+    $metrics = upMetricsByBucket($log);
+    $expected['failed']--;
+    strictAssertSame($expected, $metrics[ruTrackerChecker::schedulingBucket($rows[0]['comment'])]['handler_results'],
+        'Kinozal bucket contains only its own calls');
+    strictAssertSame(1, $metrics['fallback']['handler_results']['failed'], 'fallback has its own handler outcome');
+    strictAssertSame(1, $metrics['fallback']['dispatched'],
+        'legacy dispatched still counts calls through the foreign scheduling branch');
+    strictAssertSame(array(), rXMLRPCRequest::$requests, 'result counters add no RPC work');
+});
+
+upTest($suite, 'every scheduler dispatch branch contributes exactly one handler outcome', function () {
+    upLoadKinozalRegistration();
+    $pending = upKinozalRowAt('A', ruTrackerChecker::STE_META_PENDING, 100);
+    $corrected = upKinozalRowAt('B', ruTrackerChecker::STE_ERROR, 100);
+    $ordinary = upKinozalRowAt('C', ruTrackerChecker::STE_ERROR, 100);
+    $ruRows = RuTrackerUpdatePass::parseMulticall(array_merge(
+        upRow(str_repeat('D', 40), 0),
+        upRow(str_repeat('E', 40), 0, 'bt.t-ru.org', '3', '', '', '',
+            ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . str_repeat('F', 40)),
+        upRow(str_repeat('F', 40), 6)));
+    foreach ($ruRows as &$row) $row['comment'] = 'https://rutracker.org/forum/viewtopic.php?t=1';
+    unset($row);
+    $rows = array_merge(array($pending, $corrected, $ordinary), $ruRows);
+    $outcomes = array('confirmed', 'unchanged', 'failed', 'pending', 'unconfirmed', 'not-observed');
+    $byHash = array_combine(array_column($rows, 'hash'), $outcomes);
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use ($byHash) { return $byHash[$hash]; });
+    RuTrackerState::save('updatepass', array('forum_corrections' => array(
+        $corrected['hash'] => array('topic' => 200, 'forum' => 22, 'at' => time()))));
+    rXMLRPCRequest::reset();
+    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array('200', '55'));
+    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    $log = upCapturedLog(function () use ($rows, &$result) {
+        $result = RuTrackerUpdatePass::run($rows, array(str_repeat('D', 40)));
+    });
+    strictAssertSame(array_column($rows, 'hash'), $result['checked'], 'all six existing dispatch decisions are preserved');
+    strictAssertSame(array_fill_keys($outcomes, 1), $result['results'], 'each branch records its own explicit outcome');
+    $metrics = upMetricsByBucket($log);
+    $foreign = $metrics[ruTrackerChecker::schedulingBucket($pending['comment'])];
+    $ru = $metrics[ruTrackerChecker::schedulingBucket($ruRows[0]['comment'])];
+    strictAssertSame(3, array_sum($foreign['handler_results']), 'foreign recovery also contributes to outcomes');
+    strictAssertSame(2, $foreign['dispatched'], 'legacy foreign dispatched excludes the unconditional recovery branch');
+    strictAssertSame(3, array_sum($ru['handler_results']), 'RuTracker outcomes are counted despite zero foreign dispatched');
+    strictAssertSame(0, $ru['dispatched'], 'RuTracker dispatched keeps its existing branch-specific meaning');
+    strictAssertSame(array('d.get_custom|d.get_custom', 'branch'), array_column(rXMLRPCRequest::$requests, 'key'),
+        'the existing forum correction is the only RPC work');
+    strictAssertSame(array(), RuTrackerState::load('updatepass')['forum_corrections'] ?? array(),
+        'observations do not change the callback seam correction acknowledgement');
+});
+
+upTest($suite, 'the production scheduler counts the real checkers attested handler outcome', function () {
+    if (!class_exists('rTorrent', false))
+        eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
+    $cwd = getcwd();
+    try {
+        chdir(testFindRepoRoot() . '/php');
+        require_once(testFindRepoRoot() . '/php/Torrent.php');
+    } finally { chdir($cwd); }
+    $url = 'https://diagnostic.invalid/topic/1';
+    $raw = strictInvoke('Torrent', 'encode', array(array('comment' => $url,
+        'announce' => 'https://diagnostic.invalid/announce',
+        'info' => array('length' => 1, 'name' => 'diagnostic', 'piece length' => 16384,
+            'pieces' => str_repeat("\0", 20)))));
+    $torrent = new Torrent($raw);
+    strictAssertSame(false, $torrent->errors(), 'the production source fixture parses');
+    $hash = $torrent->hash_info();
+    $dir = strictGetPrivateStatic('RuTrackerState', 'dir') . '/';
+    strictAssertSame(strlen($raw), file_put_contents($dir . $hash . '.torrent', $raw),
+        'the real daemon source is available in the owned test directory');
+    $row = upParsedRow($hash, 'https://diagnostic.invalid/announce|1|1|0#', $url);
+    upWithRegistry(function () use ($dir, $hash, $row) {
+        foreach (array(
+            array(ruTrackerChecker::STE_UPTODATE, true, 'confirmed'),
+            array(ruTrackerChecker::STE_UNCHANGED, true, 'unchanged'),
+            array(ruTrackerChecker::STE_META_PENDING, true, 'pending'),
+            array(ruTrackerChecker::STE_UPTODATE, false, 'unconfirmed'),
+        ) as $case) {
+            $calls = 0;
+            strictSetPrivateStatic('ruTrackerChecker', 'TRACKERS', array());
+            ruTrackerChecker::registerTracker('~diagnostic\.invalid~', '~diagnostic\.invalid~',
+                function () use ($case, &$calls) { $calls++; return $case[0]; });
+            strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', null);
+            rXMLRPCRequest::reset();
+            rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom', 'd.get_custom1',
+                'd.get_local_id', 'd.get_custom'), true, false,
+                array((string) ruTrackerChecker::STE_UPTODATE, '100', '', str_repeat('A', 40), ''));
+            rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+            rXMLRPCRequest::queue(array('get_session', 'd.get_tied_to_file'), true, false, array($dir, ''));
+            rXMLRPCRequest::queue('branch', true, false, $case[1]
+                ? array(RuTrackerAtomicOwnership::SENTINEL_ACTED) : array());
+            $result = RuTrackerUpdatePass::run(array($row));
+            strictAssertSame(1, $calls, $case[2] . ': the real checker invokes the source-selected handler once');
+            strictAssertSame(array($hash), $result['checked'], 'the default dispatch retains its legacy checked list');
+            strictAssertSame(1, $result['results'][$case[2]], 'the eighth by-reference result reaches the scheduler');
+            strictAssertSame(1, array_sum($result['results']), 'one outcome for the real invocation');
+            $expectedRequests = array('d.get_custom|d.get_custom|d.get_custom1|d.get_local_id|d.get_custom',
+                'branch', 'get_session|d.get_tied_to_file', 'branch');
+            if (!$case[1]) $expectedRequests = array_merge($expectedRequests,
+                array('d.get_custom|d.get_custom|d.get_custom|d.get_local_id', 'd.hash'));
+            strictAssertSame($expectedRequests, array_column(rXMLRPCRequest::$requests, 'key'),
+                'only the original claim/source/final-write RPC trace is emitted');
+        }
+    });
+});
+
+upTest($suite, 'cycle summary distinguishes checker calls from fast verdicts and handler results', function () {
+    strictAssertTrue(method_exists('RuTrackerUpdatePass', 'logCycleSummary'), 'the driver has one summary formatter');
+    $result = array('checked' => array('A', 'B'), 'uptodate' => 3, 'fused' => array('bt.t-ru.org'),
+        'results' => array('confirmed' => 1, 'unchanged' => 0, 'failed' => 0,
+            'pending' => 0, 'unconfirmed' => 0, 'not-observed' => 1));
+    $log = upCapturedLog(function () use ($result) { RuTrackerUpdatePass::logCycleSummary($result); });
+    strictAssertTrue(strpos($log, 'update: cycle done checker_calls=2 fast_uptodate=3 handler_results=' . json_encode($result['results'])
+        . ' fused=bt.t-ru.org') !== false, 'summary names distinct facts without changing the legacy result keys');
+    strictAssertTrue(strpos($log, ' checked=') === false, 'ambiguous checked label is gone');
+    $quiet = testCapturedAppLog(function () use ($result) { RuTrackerUpdatePass::logCycleSummary($result); }, false);
+    strictAssertSame('', $quiet, 'the aggregate still respects the existing debug setting');
+});
+
+upTest($suite, 'cycle summary remains optional when formatting or its log writer fails', function () {
+    $result = array('checked' => array(), 'uptodate' => 0, 'fused' => array(), 'results' => array("\xFF" => 1));
+    $log = upCapturedLog(function () use ($result) { RuTrackerUpdatePass::logCycleSummary($result); });
+    strictAssertSame('', $log, 'failed JSON encoding cannot produce an empty misleading outcome field');
+    $code = 'require ' . var_export(__DIR__ . '/TestLib.php', true) . ';'
+        . 'eval(loadClassDefinition(' . var_export(testFindRepoRoot() . '/plugins/rutracker_check/updatepass.php', true)
+        . ',"RuTrackerUpdatePass"));'
+        . 'class ruTrackerChecker { public static function logDebug($message) { throw new RuntimeException("log failed"); } }'
+        . 'set_error_handler(function(){return true;});'
+        . 'RuTrackerUpdatePass::logCycleSummary(array("checked"=>array(),"uptodate"=>0,"fused"=>array(),"results"=>array()));'
+        . 'echo "cycle completed";';
+    foreach (array('', ' -d disable_functions=json_encode') as $options) {
+        $output = array();
+        exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(testFindRepoRoot() . '/tests/php-test.ini')
+            . $options . ' -r ' . escapeshellarg($code) . ' 2>&1', $output, $status);
+        strictAssertSame(0, $status, 'diagnostic failure cannot escape the completed cycle: ' . implode(' ', $output));
+        strictAssertSame(array('cycle completed'), $output, 'the caller still receives control');
+    }
+});
+
+upTest($suite, 'optional tracker summary cannot fail an empty scheduler pass', function () {
+    $root = testFindRepoRoot();
+    $code = 'require ' . var_export(__DIR__ . '/TestLib.php', true) . ';'
+        . 'eval(loadClassDefinition(' . var_export($root . '/plugins/rutracker_check/check.php', true) . ',"ruTrackerChecker"));'
+        . 'require ' . var_export($root . '/plugins/rutracker_check/conf.php', true) . ';'
+        . 'require ' . var_export($root . '/plugins/rutracker_check/updatepass.php', true) . ';'
+        . 'class KinozalCheckImpl { public static function resetCycle() {}'
+        . 'public static function logCycleSummary() { throw new RuntimeException("optional summary failed"); } }'
+        . 'set_error_handler(function(){return true;});'
+        . 'strictWithStateDir("optional-hook",function(){'
+        . 'strictSetPrivateStatic("RuTrackerUpdatePass","rotationPass",0);'
+        . '$result=RuTrackerUpdatePass::run(array());'
+        . 'strictAssertSame(array(),$result["checked"],"no checker calls");'
+        . 'strictAssertSame(0,array_sum($result["results"]),"no handler outcomes");'
+        . '});echo "empty pass completed";';
+    foreach (array(' -d disable_functions=method_exists', '') as $options) {
+        $output = array();
+        exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg($root . '/tests/php-test.ini')
+            . $options . ' -r ' . escapeshellarg($code) . ' 2>&1', $output, $status);
+        strictAssertSame(0, $status, 'optional hook failure cannot abort a pass: ' . implode(' ', $output));
+        strictAssertSame(array('empty pass completed'), $output, 'the completed pass returns its unchanged result');
+    }
+});
+
+upTest($suite, 'scheduler emits one real Kinozal summary per pass only when debug is enabled', function () {
+    upLoadKinozalRegistration();
+    $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
+    $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
+    $row = upKinozalRow(str_repeat('A', 40), 1, 0);
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash, $row) {
+        KinozalCheckImpl::download_torrent($row['comment'], $hash, null);
+    });
+    try {
+        foreach (array(false, true) as $debug) {
+            rXMLRPCRequest::reset();
+            Snoopy::reset();
+            Snoopy::queue(200, '<ul><li>' . $row['hash'] . '</li></ul>');
+            $log = testCapturedAppLog(function () use ($row) { RuTrackerUpdatePass::run(array($row)); }, $debug);
+            strictAssertSame(1, count(Snoopy::$requests), 'the real handler consumed one scripted response');
+            strictAssertSame($debug ? 1 : 0, substr_count($log, 'kinozal: cycle summary '),
+                'the end-of-pass summary uses the real checker debug gate exactly once');
+            if ($debug) {
+                strictAssertSame(1, preg_match('/kinozal: cycle summary (\{[^\r\n]+\})/', $log, $match),
+                    'the summary reaches the application log');
+                $summary = json_decode($match[1], true);
+                strictAssertSame(1, $summary['topic_calls'], 'cycle reset clears the earlier quiet pass');
+                strictAssertSame(1, $summary['details_attempt_bodies']['hash_found'], 'the real body outcome is reported');
+            } else strictAssertSame('', $log, 'diagnostics do not bypass the default debug-off setting');
+        }
+    } finally {
+        foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
+        foreach ($responseState as $property => $value) strictSetPrivateStatic('KinozalResponse', $property, $value);
+        Snoopy::reset();
+    }
+});
 
 // A simplified chk-state/chk-time store for the handler doubles below:
 // STE_UNCHANGED leaves both alone, any other verdict is stamped with the time.
@@ -6766,6 +7089,9 @@ upTest($suite, 'the actual update driver repairs a staged replacement before hol
     strictAssertSame(array(), $result['checked'], 'the active backoff still holds ordinary tracker work');
     strictAssertTrue(strpos($log, '"replacement_held":1') !== false,
         'the actual cycle counts the held predecessor after recovery');
+    strictAssertSame(1, substr_count($log, 'update: cycle done checker_calls=0 fast_uptodate=0 handler_results='
+        . '{"confirmed":0,"unchanged":0,"failed":0,"pending":0,"unconfirmed":0,"not-observed":0} fused='),
+        'the actual driver emits exactly one cycle summary with separate call, fast-verdict and handler-result counts');
     strictAssertSame(array($old => $now + 86400), RuTrackerReplacementBackoff::activeUntil($now),
         'recovery does not consume the independent local-failure backoff');
 });

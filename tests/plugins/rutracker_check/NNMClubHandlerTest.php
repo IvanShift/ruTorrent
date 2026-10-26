@@ -521,7 +521,7 @@ $suite->test('a failed HTTP 200 body stays retryable and logs its classified rea
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'Guest fetch failed',
         'body failure is logged once');
     strictAssertTrue(strpos($line,
-        'transport=response-body status=-101 reason=body-refusal error=gzip-decoder-unavailable') !== false,
+        'transport=client status=-101 error=gzip-decoder-unavailable') !== false,
         'body failure has a classified reason even when HTTP was 200');
 });
 

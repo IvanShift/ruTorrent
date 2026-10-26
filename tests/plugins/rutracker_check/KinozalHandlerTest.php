@@ -47,8 +47,8 @@ function kinozalRunAll($cases)
 }
 
 // A topic the handler asked and could not settle is CANT_REACH. A topic it did
-// not ask -- the cycle had stopped, or Kinozal refused the account or the IP
-// rather than the topic -- keeps its stored verdict and chk-time (notAsked()).
+// not ask -- the cycle had stopped, or an account/shared pause prevented a
+// topic answer -- keeps its stored verdict and chk-time (notAsked()).
 function kinozalAssertAsked($verdicts, $asked, $message)
 {
     strictAssertSame(array_merge(array_fill(0, $asked, ruTrackerChecker::STE_CANT_REACH_TRACKER),
@@ -1199,6 +1199,7 @@ if (function_exists('iconv')) { fwrite(STDERR, "iconv is still available\n"); ex
 class ruTrackerChecker {
     const STE_UPTODATE = 3; const STE_DELETED = 4; const STE_CANT_REACH_TRACKER = 5; const STE_UNCHANGED = -1; const STE_DECLINED = -2;
     public static $page = '';
+    public static $debugCalls = 0;
     public static $details = null;
     public static function registerTracker() {}
     public static function makeClient($url) {
@@ -1208,7 +1209,7 @@ class ruTrackerChecker {
         : (object) array('status' => 200, 'headers' => array(), 'results' => self::$page); }
     public static function parseMetainfo($payload) { return null; }
     public static function createTorrent() { return 0; }
-    public static function logDebug($message) {}
+    public static function logDebug($message) { self::$debugCalls++; }
 }
 ruTrackerChecker::$page = file_get_contents($pageFile);
 require $repo . '/plugins/rutracker_check/trackers/kinozal.php';
@@ -1216,8 +1217,11 @@ ruTrackerChecker::$details = "\xd2\xee\xf0\xf0\xe5\xed\xf2 \xf4\xe0\xe9\xeb \xed
 $detailsVerdict = KinozalCheckImpl::download_torrent('https://kinozal.guru/details.php?id=1', str_repeat('a', 40), null);
 ruTrackerChecker::$details = null;
 $verdict = KinozalCheckImpl::download_torrent('https://kinozal.guru/details.php?id=99999999', str_repeat('a', 40), null);
+ruTrackerChecker::$debugCalls = 0;
+KinozalCheckImpl::logCycleSummary(); // json_encode is disabled too: diagnostics stay optional.
 echo (int) function_exists('iconv'), '|', strlen(ruTrackerChecker::$page), '|', $verdict, "\n";
-exit($verdict === ruTrackerChecker::STE_DELETED && $detailsVerdict === ruTrackerChecker::STE_DELETED ? 0 : 1);
+exit($verdict === ruTrackerChecker::STE_DELETED && $detailsVerdict === ruTrackerChecker::STE_DELETED
+    && ruTrackerChecker::$debugCalls === 0 ? 0 : 1);
 PHP
         );
         $command = escapeshellarg(PHP_BINARY) . ' -n -d disable_functions=iconv,json_encode,json_decode '
@@ -2233,7 +2237,7 @@ $suite->test('a challenge closes only the door that showed it', function () {
 });
 
 // Captured 2026-10-14 17:30:58 UTC from https://kinozal.jumpingcrab.com/login.php
-// with the plugin's User-Agent, during the IP ban that followed a burst:
+// with the plugin's User-Agent, after the diagnostic request burst:
 // HTTP/1.1 429 Too Many Requests, Server: nginx, no Retry-After. The body is
 // nginx's error page; the handler reads only the status (the verbatim answer
 // is pinned in tests/php/KinozalRequestPacingTest.php).
@@ -2242,17 +2246,23 @@ $suite->test('the live mirror 429 answer stops every door for the cycle', functi
     Snoopy::queue($c[0]['details_url'], 429, '<html><head><title>429 Too Many Requests</title></head></html>',
         array('HTTP/1.1 429 Too Many Requests', 'Server: nginx'));
     $log = testCapturedAppLog(function () use ($c, &$verdicts) { $verdicts = kinozalRunAll($c); });
-    kinozalAssertAsked($verdicts, 0, 'a 429 concerns the IP, not a topic: every verdict stands');
+    kinozalAssertAsked($verdicts, 0, 'a remote 429 gives no topic verdict: every stored verdict stands');
     strictAssertSame(1, count(Snoopy::$requests),
-        'both mirrors share one limiter, so no other door is asked into the same ban');
-    strictAssertSame(1, kinozalDoorLog($log, 'scope=all reason=rate-limited'),
+        'the shared pause policy prevents attempts at another door');
+    strictAssertSame(1, kinozalDoorLog($log, 'scope=all reason=remote-http-429'),
         'the operator reads that the cycle stopped on a rate limit: ' . $log);
 });
 
 $suite->test('a pause Snoopy keeps after a 429 stops the cycle without a request', function () {
     $c = kinozalTopics(2, KINOZAL_TWO_DOORS);
     Snoopy::queueEarlyFailure($c[0]['details_url'], 'request-throttled');
-    kinozalAssertAsked(kinozalRunAll($c), 0, 'a paused group is not a door failure, and no topic was asked');
+    $log = testCapturedAppLog(function () use ($c, &$verdicts) { $verdicts = kinozalRunAll($c); });
+    kinozalAssertAsked($verdicts, 0, 'a paused group is not a door failure, and no topic was asked');
+    strictAssertSame(1, kinozalDoorLog($log, 'scope=all reason=local-pause'), 'the local stop is identified');
+    strictAssertSame(0, kinozalDoorLog($log, 'remote-http-429'), 'no new remote refusal is claimed');
+    strictAssertSame(0, kinozalDoorLog($log, 'retried next cycle'), 'eligibility alone is promised next cycle');
+    strictAssertSame(1, kinozalDoorLog(implode("\n", ruTrackerChecker::$logs), 'details attempt: local-pause'),
+        'the attempted topic has the same local classification');
     strictAssertSame(1, count(Snoopy::$requests), 'no other door and no later topic is tried');
     strictAssertSame(0, kinozalDoorFailures('details'), 'and the door is not counted as failing');
 });
@@ -2484,6 +2494,182 @@ $suite->test('without a setting the official mirrors are the doors', function ()
     strictAssertSame(array('kinozal.jumpingcrab.com', 'kinozal.cloudns.nz'), KinozalResponse::doors(), 'the default');
     strictAssertSame('https://kinozal.jumpingcrab.com', KinozalResponse::refreshOrigin(),
         'the automatic refresh logs in at the first door');
+});
+
+// Diagnostics count response bodies separately from topics: one topic can
+// try several mirrors, while a latched topic produces no parsed body at all.
+function kinozalCycleSummaries()
+{
+    $records = array();
+    $prefix = 'kinozal: cycle summary ';
+    foreach (ruTrackerChecker::$logs as $line) {
+        if (strpos($line, $prefix) !== 0) continue;
+        $record = json_decode(substr($line, strlen($prefix)), true);
+        strictAssertTrue(is_array($record), 'cycle summary is valid JSON');
+        $records[] = $record;
+    }
+    return $records;
+}
+
+$suite->test('cycle summary counts actual parsed bodies without changing topic verdicts', function () {
+    $c = kinozalTopics(5);
+    $bodies = array(kinozalDetailsBody($c[0]['hash']), kinozalUnauthorizedBody(),
+        kinozalParserFailureBody(), kinozalMissingBody(), '<html>Maintenance</html>');
+    foreach ($c as $i => $case) Snoopy::queue($case['details_url'], 200, $bodies[$i]);
+    $verdicts = kinozalWithParserBudget(function () use ($c) { return kinozalRunAll($c); });
+    strictAssertSame(array(ruTrackerChecker::STE_UPTODATE, ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        ruTrackerChecker::STE_CANT_REACH_TRACKER, ruTrackerChecker::STE_DELETED,
+        ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts, 'classification preserves all five verdicts');
+    KinozalCheckImpl::logCycleSummary();
+    KinozalCheckImpl::logCycleSummary();
+    strictAssertSame(array(array('topic_calls' => 5, 'details_attempt_bodies' => array('hash_found' => 1,
+        'guest' => 1, 'missing_topic' => 1, 'unrecognised' => 1, 'parse_failed' => 1),
+        'unchanged_topics' => 0, 'latched_topics' => 0)), kinozalCycleSummaries(),
+        'one bounded summary describes the five actual parsed bodies');
+    strictAssertSame(5, count(Snoopy::$requests), 'logging adds no requests');
+});
+
+$suite->test('cycle summary separates mirror bodies from topic calls', function () {
+    $c = kinozalTopics(1, KINOZAL_TWO_DOORS);
+    Snoopy::queue($c[0]['details_url'], 200, '<html>Maintenance</html>');
+    Snoopy::queue(kinozalDetailsUrl(1000, 'kinozal.cloudns.nz'), 200, kinozalDetailsBody($c[0]['hash']));
+    strictAssertSame(array(ruTrackerChecker::STE_UPTODATE), kinozalRunAll($c), 'the next door answers');
+    KinozalCheckImpl::logCycleSummary();
+    strictAssertSame(array(array('topic_calls' => 1, 'details_attempt_bodies' => array('hash_found' => 1,
+        'guest' => 0, 'missing_topic' => 0, 'unrecognised' => 1, 'parse_failed' => 0),
+        'unchanged_topics' => 0, 'latched_topics' => 0)), kinozalCycleSummaries(),
+        'two bodies came from attempts for a single topic');
+    strictAssertSame(2, count(Snoopy::$requests), 'no diagnostic fetch');
+});
+
+$suite->test('cycle summary distinguishes an unobserved local pause from later latched topics and resets', function () {
+    $c = kinozalTopics(3);
+    Snoopy::queueEarlyFailure($c[0]['details_url'], 'request-throttled');
+    kinozalAssertAsked(kinozalRunAll($c), 0, 'all stored verdicts stand');
+    KinozalCheckImpl::logCycleSummary();
+    $summaries = kinozalCycleSummaries();
+    strictAssertSame(array(array('topic_calls' => 3, 'details_attempt_bodies' => array('hash_found' => 0,
+        'guest' => 0, 'missing_topic' => 0, 'unrecognised' => 0, 'parse_failed' => 0),
+        'unchanged_topics' => 3, 'latched_topics' => 2)), $summaries,
+        'a local refusal and latched topics produce no parsed bodies');
+    strictAssertSame(1, count(Snoopy::$requests), 'only the first topic reaches the client');
+    KinozalCheckImpl::resetCycle();
+    KinozalCheckImpl::logCycleSummary();
+    strictAssertSame($summaries, kinozalCycleSummaries(), 'an empty cycle has nothing to summarize');
+    strictAssertSame(ruTrackerChecker::STE_DECLINED,
+        KinozalCheckImpl::download_torrent('https://example.test/details.php?id=1', '', null),
+        'foreign topics stay declined');
+    KinozalCheckImpl::logCycleSummary();
+    strictAssertSame($summaries, kinozalCycleSummaries(), 'foreign topics do not populate the summary');
+    Snoopy::queue($c[0]['details_url'], 200, kinozalDetailsBody($c[0]['hash']));
+    strictAssertSame(array(ruTrackerChecker::STE_UPTODATE), kinozalRunAll(array($c[0])), 'next cycle recovers');
+    KinozalCheckImpl::logCycleSummary();
+    $summaries[] = array('topic_calls' => 1, 'details_attempt_bodies' => array('hash_found' => 1,
+        'guest' => 0, 'missing_topic' => 0, 'unrecognised' => 0, 'parse_failed' => 0),
+        'unchanged_topics' => 0, 'latched_topics' => 0);
+    strictAssertSame($summaries, kinozalCycleSummaries(), 'all counters and the summary latch reset');
+});
+
+$suite->test('pause stop logs use an observed deadline and tolerate unknown diagnostic access', function () {
+    foreach (array('local', 'remote', 'fractional', 'unknown', 'throws', 'invalid', 'negative', 'nan', 'infinite', 'too_large', 'expired') as $kind) {
+        kinozalReset();
+        $until = time() + 3600 + ($kind === 'fractional' ? 0.75 : 0);
+        $client = new class($kind, $until) {
+            public $status;
+            public $error;
+            private $kind;
+            private $until;
+            public function __construct($kind, $until) {
+                $this->kind = $kind;
+                $this->until = $until;
+                $this->status = $kind === 'remote' ? 429 : 0;
+                $this->error = $kind === 'remote' ? '' : 'request-throttled';
+            }
+            public function observedThrottleUntil() {
+                if ($this->kind === 'throws') throw new RuntimeException('diagnostic access failed');
+                if ($this->kind === 'unknown') return null;
+                if ($this->kind === 'invalid') return false;
+                if ($this->kind === 'negative') return -1;
+                if ($this->kind === 'nan') return NAN;
+                if ($this->kind === 'infinite') return INF;
+                if ($this->kind === 'too_large') return PHP_FLOAT_MAX;
+                return $this->kind === 'expired' ? 1.0 : (float) $this->until;
+            }
+        };
+        $warnings = array();
+        $log = testCapturedAppLog(function () use ($client, &$verdict, &$warnings) {
+            // A warning must not become an exception caught by the diagnostic
+            // helper: that would hide invalid casts under this suite's handler.
+            set_error_handler(function ($severity, $message) use (&$warnings) {
+                $warnings[] = $message;
+                return true;
+            });
+            try {
+                $verdict = strictInvoke('KinozalCheckImpl', 'accountAnswer', array($client, 'details', 1));
+            } finally {
+                restore_error_handler();
+            }
+        });
+        strictAssertSame(array(), $warnings, 'formatting never relies on a warning becoming an exception');
+        strictAssertSame(ruTrackerChecker::STE_UNCHANGED, $verdict, 'diagnostics never change the paused verdict');
+        $reason = $kind === 'remote' ? 'remote-http-429' : 'local-pause';
+        strictAssertSame(1, kinozalDoorLog($log, 'scope=all reason=' . $reason), 'the refusal source is explicit');
+        $attempt = implode("\n", ruTrackerChecker::$logs);
+        strictAssertSame(1, kinozalDoorLog($attempt, 'details attempt: ' . $reason), 'the attempt names the same source');
+        if (in_array($kind, array('unknown', 'throws', 'invalid', 'negative', 'nan', 'infinite', 'too_large'), true)) {
+            $context = 'pause_until=unknown pause_remaining_s=unknown';
+        } elseif ($kind === 'expired') {
+            $context = 'pause_until=1970-01-01T00:00:01Z pause_remaining_s=0';
+        } else {
+            $context = 'pause_until=' . gmdate('Y-m-d\TH:i:s\Z', (int) ceil($until)) . ' pause_remaining_s=';
+            strictAssertTrue(preg_match('/pause_remaining_s=(\d+)/', $log, $match) === 1,
+                'the remaining duration is logged');
+            strictAssertTrue((int) $match[1] >= 3598 && (int) $match[1] <= ($kind === 'fractional' ? 3601 : 3600), 'remaining seconds use the snapshot');
+        }
+        strictAssertSame(1, kinozalDoorLog($log, $context), 'cycle stop carries only the observed pause');
+        strictAssertSame(1, kinozalDoorLog($attempt, $context), 'attempt carries the same pause');
+        strictAssertSame(array(), Snoopy::$requests, 'logging the observed client requires no fetch');
+    }
+});
+
+$suite->test('cycle summary records hash-parser exhaustion without changing its retryable verdict', function () {
+    $c = kinozalTopics(1);
+    Snoopy::queue($c[0]['details_url'], 200, '<li>' . str_repeat('x', 5000) . '</li>');
+    $verdicts = kinozalWithParserBudget(function () use ($c) { return kinozalRunAll($c); });
+    strictAssertSame(array(ruTrackerChecker::STE_CANT_REACH_TRACKER), $verdicts, 'no hash verdict is invented');
+    KinozalCheckImpl::logCycleSummary();
+    strictAssertSame(array(array('topic_calls' => 1, 'details_attempt_bodies' => array('hash_found' => 0,
+        'guest' => 0, 'missing_topic' => 0, 'unrecognised' => 0, 'parse_failed' => 1),
+        'unchanged_topics' => 0, 'latched_topics' => 0)), kinozalCycleSummaries(),
+        'an exhausted parser is distinct from content it successfully failed to recognise');
+});
+
+$suite->test('disabled pause-format functions leave diagnostics unknown without failing the handler', function () {
+    $script = tempnam(sys_get_temp_dir(), 'kinozal-diag-disabled-');
+    strictAssertTrue(is_string($script), 'temporary child script');
+    try {
+        file_put_contents($script, <<<'PHP'
+<?php
+class ruTrackerChecker { public static function registerTracker() {} }
+require $argv[1] . '/plugins/rutracker_check/trackers/kinozal.php';
+$client = new class { public function observedThrottleUntil() { return 2000000000.0; } };
+$reader = new ReflectionMethod('KinozalCheckImpl', 'observedPauseContext');
+$reader->setAccessible(true);
+echo $reader->invoke(null, $client), "\n";
+PHP
+        );
+        foreach (array('method_exists', 'is_float', 'is_finite', 'microtime', 'gmdate', 'ceil', 'is_string') as $disabled) {
+            $output = array();
+            exec(escapeshellarg(PHP_BINARY) . ' -n -d display_errors=0 -d log_errors=0 -d disable_functions='
+                . escapeshellarg($disabled) . ' ' . escapeshellarg($script) . ' '
+                . escapeshellarg(testFindRepoRoot()) . ' 2>&1', $output, $status);
+            strictAssertSame(0, $status, $disabled . ' unavailable: ' . implode(' | ', $output));
+            strictAssertSame(' pause_until=unknown pause_remaining_s=unknown', implode("\n", $output),
+                $disabled . ' unavailable cannot invent a deadline');
+        }
+    } finally {
+        unlink($script);
+    }
 });
 
 exit($suite->run());

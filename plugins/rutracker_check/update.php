@@ -83,9 +83,7 @@ if($req->success())
 
 	RuTrackerForumIndex::spawnCrawl();
 
-	ruTrackerChecker::logDebug("update: cycle done"
-		." checked=".count($result['checked'])
-		." uptodate=".$result['uptodate']." fused=".implode(',',$result['fused']));
+	RuTrackerUpdatePass::logCycleSummary($result);
 }
 else
 	// The one outcome that used to be completely silent: every statement above,

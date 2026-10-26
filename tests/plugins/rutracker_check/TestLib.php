@@ -1070,7 +1070,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         {
             $status = (int) $status;
             if ($status === Snoopy::RESPONSE_BODY_FAILED)
-                return 'transport=response-body status=' . $status . ' reason=body-refusal';
+                return 'transport=client status=' . $status;
             if ($status < 0) {
                 $reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
                 $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';

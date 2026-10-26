@@ -4,6 +4,7 @@
 // socket's peer are offline fixtures. No tracker or DNS request is made.
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/ScriptedCurlFixture.php');
+require_once(__DIR__ . '/PhpProcess.php');
 $diagnosticChild = getenv('KINOZAL_DIAGNOSTIC_CHILD');
 $diagnosticRoot = $diagnosticChild ?: sys_get_temp_dir() . '/kinozal-http-' . getmypid();
 if (!$diagnosticChild) mkdir($diagnosticRoot, 0700);
@@ -21,6 +22,9 @@ if ($diagnosticChild) {
     putenv('SCRIPTED_CURL_ROOT=' . $diagnosticRoot);
     $_SERVER['SCRIPT_FILENAME'] = __DIR__ . '/../../plugins/rss/update.php';
     $client = new Snoopy();
+    if (getenv('KINOZAL_DIAGNOSTIC_FAULT')) {
+        exit($client->fetch('https://kinozal.jumpingcrab.com/login.php') === true ? 0 : 1);
+    }
     exit($client->fetchComplex('https://kinozal.cloudns.nz/rss.xml') === false
         && $client->error === Snoopy::REQUEST_THROTTLED ? 0 : 1);
 }
@@ -34,6 +38,8 @@ function diagnosticLines()
         testAssertTrue(strlen($line) < 1200, 'The diagnostic line is bounded');
         $record = json_decode($match[1], true);
         testAssertTrue(is_array($record), 'The diagnostic payload is JSON');
+        foreach (array('refusal_reason', 'pause_remaining_s', 'session_cookie_pair') as $field)
+            testAssertTrue(array_key_exists($field, $record), 'The diagnostic explicitly includes nullable field ' . $field);
         $records[] = $record;
     }
     return $records;
@@ -86,12 +92,22 @@ class DiagnosticMethodSettings extends rTorrentSettings
     }
 }
 
+class DiagnosticRefusedClient extends Snoopy
+{
+    protected function checkTarget($host)
+    {
+        $this->error = 'CANARY_PRIVATE_REFUSAL with arbitrary third-party text';
+        return false;
+    }
+}
+
 $mirror = 'https://kinozal.jumpingcrab.com';
 $tests = array(
     'each redirect hop retains its own operation method and result before the next hop' => function () use ($mirror) {
         global $diagnosticFixture;
         $diagnosticFixture->plan(array(
-            ScriptedCurlFixture::reply('POST', $mirror . '/takelogin.php', 302, '', array('Location: ' . $mirror . '/details.php?id=4')),
+            ScriptedCurlFixture::reply('POST', $mirror . '/takelogin.php', 302, '', array('Location: ' . $mirror . '/details.php?id=4',
+                'Set-Cookie: uid=CANARY_UID; Path=/; Secure', 'Set-Cookie: pass=CANARY_PASS; Path=/; Secure')),
             ScriptedCurlFixture::reply('GET', $mirror . '/details.php?id=4', 200, 'details'),
         ));
         testAssertSame(true, diagnosticClient()->fetch($mirror . '/takelogin.php', 'POST', '', 'password=secret'), 'The redirect completes');
@@ -100,6 +116,8 @@ $tests = array(
         testAssertSame(array('credential-post', 'details'), array_column($lines, 'operation'), 'The parent hop is logged before recursion');
         testAssertSame(array('POST', 'GET'), array_column($lines, 'method'), 'The redirect changes the method on its own hop');
         testAssertSame(array(302, 200), array_column($lines, 'http'), 'Each hop retains its origin status');
+        testAssertSame(array(false, true), array_column($lines, 'session_cookie_pair'), 'Only the redirect request carries the newly issued pair');
+        testAssertSame('Cookie: uid=CANARY_UID; pass=CANARY_PASS', $diagnosticFixture->requests()[1]['cookie'], 'The diagnostic describes the actual outgoing header');
         testAssertTrue($lines[0]['attempt'] < $lines[1]['attempt'], 'The process sequence increases');
         foreach ($lines as $line) {
             testAssertSame(getmypid(), $line['pid'], 'The PHP worker is identified');
@@ -107,6 +125,7 @@ $tests = array(
             testAssertSame(true, $line['transport_attempted'], 'The transport was invoked, without claiming delivery');
             testAssertSame(false, $line['configured_proxy'], 'No explicit Snoopy proxy was configured');
             testAssertSame('response', $line['result'], 'The HTTP response completed');
+            testAssertSame(null, $line['refusal_reason'], 'An ordinary answer has no refusal reason');
             testAssertTrue(preg_match('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/D', $line['started_at']) === 1, 'Start time is UTC with milliseconds');
             testAssertTrue(is_numeric($line['duration_ms']) && $line['duration_ms'] >= 0, 'Duration is nonnegative');
         }
@@ -115,16 +134,25 @@ $tests = array(
         global $diagnosticFixture;
         $url = $mirror . '/takelogin.php';
         $diagnosticFixture->plan(array(ScriptedCurlFixture::reply('POST', $url, 429, 'limited', array('Retry-After: 5'))));
-        diagnosticClient()->fetch($url, 'POST', '', 'username=secret&password=secret');
+        $remote = diagnosticClient();
+        $remote->fetch($url, 'POST', '', 'username=secret&password=secret');
         $before = file_get_contents(FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json');
-        testAssertSame(false, diagnosticClient()->fetch('https://kinozal.cloudns.nz/rss.xml?passkey=secret'), 'The other mirror stays off the wire');
+        $local = diagnosticClient();
+        testAssertSame(false, $local->fetch('https://kinozal.cloudns.nz/rss.xml?passkey=secret'), 'The other mirror stays off the wire');
         $lines = diagnosticLines();
         testAssertSame(2, count($lines), 'Both the actual hop and local refusal are visible');
         testAssertSame(array(true, false), array_column($lines, 'transport_attempted'), 'Admission is not mistaken for a transfer');
         testAssertSame(array(429, 0), array_column($lines, 'http'), 'The refused RSS does not inherit the POST response');
         testAssertSame('rss', $lines[1]['operation'], 'The feed is identified without its query');
         testAssertSame('local-refused', $lines[1]['result'], 'No request was sent');
+        testAssertSame(array('remote-http-429', 'request-throttled'), array_column($lines, 'refusal_reason'), 'The cause distinguishes the remote refusal and its saved local pause');
+        testAssertSame(array(false, null), array_column($lines, 'session_cookie_pair'), 'A local refusal does not claim that an empty Cookie header was sent');
+        foreach ($lines as $line)
+            testAssertTrue(is_int($line['pause_remaining_s']) && $line['pause_remaining_s'] > 6000
+                && $line['pause_remaining_s'] <= 6600, 'The remaining default pause is positive and bounded');
         $state = json_decode($before, true);
+        testAssertSame($state['until'], $remote->observedThrottleUntil(), 'The remote refusal getter retains its exact future deadline');
+        testAssertSame($state['until'], $local->observedThrottleUntil(), 'The local refusal getter retains the same exact future deadline');
         testAssertSame($state['strikes'], $lines[0]['strikes'], 'The completed pause snapshot supplies strikes');
         testAssertSame($state['until'], $lines[0]['until'], 'The completed pause snapshot supplies until');
         testAssertSame($lines[0]['until'], $lines[1]['until'], 'The admission snapshot sees the same pause');
@@ -186,6 +214,7 @@ $tests = array(
         testAssertSame(429, $lines[0]['http'], 'Completed origin headers remain diagnostic facts');
         testAssertSame(28, $lines[0]['status'], 'curl status remains separate from HTTP');
         testAssertSame(5, $lines[0]['retry_after_s'], 'The discarded answer retains only parsed timing');
+        testAssertSame('remote-http-429', $lines[0]['refusal_reason'], 'A body timeout does not hide the observed server refusal');
         testAssertSame('details-api', $lines[0]['operation'], 'The details API endpoint is identified');
         testAssertSame(array(), $client->headers, 'Consumer headers remain empty');
         testAssertSame('', $client->results, 'Consumer body remains empty');
@@ -219,6 +248,7 @@ $tests = array(
             $timeout = $mode !== 'complete';
             $client = new DiagnosticPlainClient();
             $client->block_private = false;
+            $client->cookies = array('uid' => 'CANARY_UID', 'pass' => 'CANARY_PASS');
             $client->read_timeout = 1;
             $client->hold = $timeout;
             if ($timeout) $client->reply = "HTTP/1.0 429 Limited\r\nRetry-After: 5\r\n\r\npartial";
@@ -232,6 +262,29 @@ $tests = array(
                 testAssertSame($timeout ? 429 : 200, $lines[0]['http'], 'The final status survives a body timeout');
                 testAssertSame($timeout ? -100 : 200, $lines[0]['status'], 'The plain transport status remains separate');
                 testAssertSame(true, $lines[0]['transport_attempted'], 'The plain transport was invoked');
+                testAssertSame(true, $lines[0]['session_cookie_pair'], 'The plain request carries the same observed cookie pair');
+            } finally {
+                fclose($client->peer);
+            }
+        }
+    },
+    'plain socket cookie observation matches the formed header including an empty jar and raw override' => function () {
+        foreach (array('empty', 'pair', 'override') as $mode) {
+            diagnosticReset();
+            $client = new DiagnosticPlainClient();
+            $client->block_private = false;
+            if ($mode !== 'empty') $client->cookies = array('uid' => 'CANARY_UID', 'pass' => 'CANARY_PASS');
+            if ($mode === 'override') $client->rawheaders['cOoKiE'] = 'uid=CANARY_OVERRIDE';
+            try {
+                testAssertSame(true, $client->fetch('http://kinozal.me/login.php'), 'The plain request succeeds');
+                $lines = diagnosticLines();
+                testAssertSame(1, count($lines), 'Exactly one plain request is observed');
+                testAssertSame($mode === 'pair', $lines[0]['session_cookie_pair'], 'The flag comes from the actual formed socket header');
+                $request = stream_get_contents($client->peer);
+                preg_match('/^Cookie:[^\r\n]*/mi', $request, $match);
+                $expected = $mode === 'empty' ? '' : ($mode === 'pair'
+                    ? 'Cookie: uid=CANARY_UID; pass=CANARY_PASS' : 'cOoKiE: uid=CANARY_OVERRIDE');
+                testAssertSame($expected, $match[0] ?? '', 'The socket peer receives the original cookie header exactly');
             } finally {
                 fclose($client->peer);
             }
@@ -248,7 +301,155 @@ $tests = array(
         testAssertSame(null, $lines[0]['configured_proxy'], 'Preflight routing is unknown');
         testAssertSame(null, $lines[0]['strikes'], 'No state was observed before admission');
         testAssertSame(null, $lines[0]['until'], 'Unknown pause is not reported as zero');
+        testAssertSame(null, $lines[0]['pause_remaining_s'], 'Unknown pause duration is not reported as zero');
+        testAssertSame(null, $lines[0]['session_cookie_pair'], 'No outgoing Cookie header was formed');
+        testAssertSame('request-deadline', $lines[0]['refusal_reason'], 'A deadline is distinct from a saved remote refusal');
+        testAssertSame(null, $client->observedThrottleUntil(), 'No snapshot exists before admission');
         testAssertSame(array(), $diagnosticFixture->requests(), 'No curl runs');
+    },
+    'an observed expired pause has zero remaining time and a reused preflight refusal forgets it' => function () use ($mirror) {
+        global $diagnosticFixture;
+        $path = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
+        if (!is_dir(dirname($path))) mkdir(dirname($path), 0700, true);
+        $expired = microtime(true) - 10;
+        file_put_contents($path, json_encode(array('next' => 0, 'ended' => 0, 'until' => $expired, 'strikes' => 2)));
+        $url = $mirror . '/login.php';
+        $diagnosticFixture->plan(array(ScriptedCurlFixture::reply('GET', $url, 200, 'login')));
+        $client = diagnosticClient();
+        testAssertSame(true, $client->fetch($url), 'An expired pause admits the request');
+        $lines = diagnosticLines();
+        testAssertSame(0, $lines[0]['pause_remaining_s'], 'Known elapsed pause is zero rather than unknown');
+        testAssertSame($lines[0]['until'], $client->observedThrottleUntil(), 'The handler sees only the already observed snapshot');
+        testAssertTrue(abs($expired - $client->observedThrottleUntil()) < 0.001, 'The retained deadline belongs to the admitted attempt');
+        $client->setRequestDeadline(0);
+        testAssertSame(false, $client->fetch($url), 'The next attempt fails before reading pause state');
+        $lines = diagnosticLines();
+        testAssertSame(null, $client->observedThrottleUntil(), 'A reused client cannot lend the previous snapshot to an unobserved attempt');
+        testAssertSame(null, $lines[1]['pause_remaining_s'], 'The new diagnostic remains unknown');
+        testAssertSame(1, count($diagnosticFixture->requests()), 'No extra request observes the pause');
+    },
+    'a fractional saved pause rounds remaining seconds up without changing its state' => function () use ($mirror) {
+        global $diagnosticFixture;
+        $path = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
+        if (!is_dir(dirname($path))) mkdir(dirname($path), 0700, true);
+        $until = microtime(true) + 60.9;
+        $state = json_encode(array('next' => 0, 'ended' => 0, 'until' => $until, 'strikes' => 1));
+        file_put_contents($path, $state);
+        $client = diagnosticClient();
+        $before = microtime(true);
+        testAssertSame(false, $client->fetch($mirror . '/login.php'), 'The remaining fraction still refuses');
+        $after = microtime(true);
+        $remaining = diagnosticLines()[0]['pause_remaining_s'];
+        testAssertTrue($remaining >= (int)ceil($until - $after) && $remaining <= (int)ceil($until - $before),
+            'Remaining seconds round up within the measured observation interval');
+        testAssertSame($state, file_get_contents($path), 'Logging does not refresh the saved deadline');
+        testAssertSame(array(), $diagnosticFixture->requests(), 'No wire request is added');
+    },
+    'cookie diagnostics follow path host secure and expiry scope without selecting the jar again' => function () use ($mirror) {
+        global $diagnosticFixture, $diagnosticRoot;
+        $api = '/get_srv_details.php?action=2&id=3';
+        $diagnosticFixture->plan(array(
+            ScriptedCurlFixture::reply('GET', $mirror . '/login.php', 200, '', array(
+                'Set-Cookie: uid=CANARY_UID; Path=/get_srv_details.php; Secure',
+                'Set-Cookie: pass=CANARY_PASS; Path=/get_srv_details.php; Secure')),
+            ScriptedCurlFixture::reply('GET', $mirror . '/details.php?id=3', 200),
+            ScriptedCurlFixture::reply('GET', $mirror . $api, 200),
+            ScriptedCurlFixture::reply('GET', 'https://kinozal.cloudns.nz' . $api, 200),
+            ScriptedCurlFixture::reply('GET', 'http://kinozal.jumpingcrab.com' . $api, 200),
+            ScriptedCurlFixture::reply('GET', $mirror . $api, 200, '', array(
+                'Set-Cookie: pass=deleted; Path=/get_srv_details.php; Secure; Max-Age=0')),
+            ScriptedCurlFixture::reply('GET', $mirror . $api, 200),
+        ));
+        $client = diagnosticClient();
+        $client->fetch($mirror . '/login.php');
+        $client->fetch($mirror . '/details.php?id=3');
+        $sequence = new ReflectionProperty('Snoopy', 'responseCookieSequence');
+        if (PHP_VERSION_ID < 80100) $sequence->setAccessible(true);
+        $before = $sequence->getValue($client);
+        $client->fetch($mirror . $api);
+        testAssertSame($before + 2, $sequence->getValue($client), 'Each selected cookie is used once, not again for diagnostics');
+        $client->fetch('https://kinozal.cloudns.nz' . $api);
+        $client->setRequestDeadline(30); // Drive plain HTTP through the same offline curl fixture.
+        $client->fetch('http://kinozal.jumpingcrab.com' . $api);
+        $client->fetch($mirror . $api);
+        $client->fetch($mirror . $api);
+        testAssertSame(array(false, false, true, false, false, true, false), array_column(diagnosticLines(), 'session_cookie_pair'),
+            'Only the scoped nonexpired secure pair is reported');
+        testAssertSame(array('', '', 'Cookie: uid=CANARY_UID; pass=CANARY_PASS', '', '',
+            'Cookie: uid=CANARY_UID; pass=CANARY_PASS', 'Cookie: uid=CANARY_UID'), array_column($diagnosticFixture->requests(), 'cookie'),
+            'The wire header and the diagnostic agree without changing the wire');
+        testAssertTrue(strpos(file_get_contents($diagnosticRoot . '/application.log'), 'CANARY_') === false, 'Cookie values stay out of diagnostic logs');
+    },
+    'raw Cookie overrides and empty lookalike names do not borrow the stored pair' => function () use ($mirror) {
+        global $diagnosticFixture, $diagnosticRoot;
+        $url = $mirror . '/login.php';
+        $values = array('uid=CANARY_UID; pass=CANARY_PASS', 'uid=CANARY_UID',
+            'uid=; pass=CANARY_PASS', 'userid=CANARY_UID; password=CANARY_PASS', 'UID=CANARY_UID; pass=CANARY_PASS');
+        $diagnosticFixture->plan(array_fill(0, count($values), ScriptedCurlFixture::reply('GET', $url, 200)));
+        foreach ($values as $header) {
+            $client = diagnosticClient();
+            $client->cookies = array('uid' => 'CANARY_STORED_UID', 'pass' => 'CANARY_STORED_PASS');
+            $client->rawheaders['cOoKiE'] = $header;
+            testAssertSame(true, $client->fetch($url), 'The caller Cookie header reaches the transport');
+        }
+        testAssertSame(array(true, false, false, false, false), array_column(diagnosticLines(), 'session_cookie_pair'),
+            'The diagnostic reads the override, exact names and nonempty values');
+        testAssertSame(array_map(function ($value) { return 'cOoKiE: ' . $value; }, $values), array_column($diagnosticFixture->requests(), 'cookie'),
+            'Observation preserves the original header spelling and bytes');
+        testAssertTrue(strpos(file_get_contents($diagnosticRoot . '/application.log'), 'CANARY_') === false, 'Raw cookie values stay private');
+    },
+    'unrecognised refusal text is classified without being echoed' => function () use ($mirror) {
+        global $diagnosticFixture, $diagnosticRoot;
+        $client = new DiagnosticRefusedClient();
+        $client->block_private = true;
+        testAssertSame(false, $client->fetch($mirror . '/login.php'), 'The real request guard refuses the target');
+        $lines = diagnosticLines();
+        testAssertSame('client-refusal', $lines[0]['refusal_reason'], 'Unknown text has a fixed safe category');
+        testAssertSame(null, $lines[0]['session_cookie_pair'], 'A refused target never forms its cookie header');
+        testAssertTrue(strpos(file_get_contents($diagnosticRoot . '/application.log'), 'CANARY_PRIVATE_REFUSAL') === false, 'Untrusted refusal text remains private');
+        testAssertSame(array(), $diagnosticFixture->requests(), 'No probe is introduced to explain the refusal');
+    },
+    'ordinary HTTP refusal and unknown transport failure use fixed categories' => function () use ($mirror) {
+        global $diagnosticFixture;
+        $url = $mirror . '/login.php';
+        $failure = ScriptedCurlFixture::reply('GET', $url, 0, 'CANARY_FAILED_BODY');
+        $failure['exit'] = 28;
+        $diagnosticFixture->plan(array(ScriptedCurlFixture::reply('GET', $url, 403, 'CANARY_REMOTE_REFUSAL'), $failure));
+        $client = diagnosticClient();
+        testAssertSame(true, $client->fetch($url), 'An HTTP refusal remains a completed transfer');
+        testAssertSame(false, $client->fetch($url), 'A failed transfer remains a failure');
+        testAssertSame(array('http-refusal', 'client-refusal'), array_column(diagnosticLines(), 'refusal_reason'),
+            'HTTP refusal is separate from an unknown transport failure');
+    },
+    'unavailable optional numeric and date formatters cannot break the fetch' => function () use ($mirror) {
+        global $diagnosticFixture, $diagnosticRoot;
+        foreach (array('ceil', 'gmdate') as $disabled) {
+            diagnosticReset();
+            $url = $mirror . '/login.php';
+            $diagnosticFixture->plan(array(ScriptedCurlFixture::reply('GET', $url, 200, 'login')));
+            $process = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'disable_functions=' . $disabled, __FILE__)),
+                array('env' => array('KINOZAL_DIAGNOSTIC_CHILD' => $diagnosticRoot, 'KINOZAL_DIAGNOSTIC_FAULT' => $disabled)));
+            testAssertSame(0, $process['code'], 'A disabled diagnostic formatter leaves the request successful: ' . $disabled);
+            testAssertSame(1, count($diagnosticFixture->requests()), 'Diagnostics do not retry the successful wire request');
+            if ($disabled === 'ceil') {
+                $lines = diagnosticLines();
+                testAssertSame(1, count($lines), 'A missing optional rounding function retains the other observed diagnostics');
+                testAssertSame(null, $lines[0]['pause_remaining_s'], 'Unavailable rounding reports unknown on PHP 7 and PHP 8');
+            }
+        }
+    },
+    'a failed log sink cannot break the fetch or change the request' => function () use ($mirror) {
+        global $diagnosticFixture, $diagnosticRoot, $log_file;
+        $url = $mirror . '/login.php';
+        $diagnosticFixture->plan(array(ScriptedCurlFixture::reply('GET', $url, 200, 'login')));
+        $saved = $log_file;
+        try {
+            $log_file = $diagnosticRoot . '/missing/parent/log';
+            testAssertSame(true, diagnosticClient()->fetch($url), 'An unwritable log is best effort');
+            testAssertSame(1, count($diagnosticFixture->requests()), 'A log write failure does not retry the request');
+        } finally {
+            $log_file = $saved;
+        }
     },
     'safe host method operation caller and profile fields never echo arbitrary URL or payload text' => function () use ($mirror) {
         global $diagnosticFixture, $diagnosticRoot;

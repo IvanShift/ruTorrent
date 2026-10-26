@@ -84,6 +84,17 @@ class KinozalCheckImpl
     static private $sessionHintLogged = false;
     static private $skipLogged = array();
     static private $failoverLogged = false;
+    // Parsed bodies belong to details attempts, not necessarily to distinct
+    // topics (door failover and loginmgr can supply several/final answers).
+    private const EMPTY_CYCLE_DIAGNOSTICS = array(
+        'topic_calls' => 0,
+        'details_attempt_bodies' => array('hash_found' => 0, 'guest' => 0,
+            'missing_topic' => 0, 'unrecognised' => 0, 'parse_failed' => 0),
+        'unchanged_topics' => 0,
+        'latched_topics' => 0,
+    );
+    static private $cycleDiagnostics = self::EMPTY_CYCLE_DIAGNOSTICS;
+    static private $cycleSummaryLogged = false;
 
     // How many guest answers in a row mean the session is really gone rather
     // than blinking. Measured on the live fleet: one cycle got a guest answer
@@ -175,7 +186,22 @@ class KinozalCheckImpl
         self::$detailsUnverified = self::$downloadUnverified = 0;
         self::$door = 0;
         self::$failures = self::$lastFailure = self::$closed = self::$skipLogged = array();
+        self::$cycleDiagnostics = self::EMPTY_CYCLE_DIAGNOSTICS;
+        self::$cycleSummaryLogged = false;
         KinozalResponse::resetCycle();
+    }
+
+    // One debug-gated line, using only counters already collected in this run.
+    static public function logCycleSummary()
+    {
+        if (self::$cycleSummaryLogged || self::$cycleDiagnostics['topic_calls'] === 0) return;
+        self::$cycleSummaryLogged = true;
+        try {
+            $summary = json_encode(self::$cycleDiagnostics);
+            if (is_string($summary)) ruTrackerChecker::logDebug('kinozal: cycle summary ' . $summary);
+        } catch (Throwable $e) {
+            // Optional diagnostics must not change the cycle's verdicts.
+        }
     }
 
     // The hosts this cycle asks, in the configured order.
@@ -257,18 +283,18 @@ class KinozalCheckImpl
             self::logCycleSkip('download', $reason);
     }
 
-    static private function abandonCycle($reason)
+    static private function abandonCycle($reason, $context = '')
     {
         self::$cycleAbandoned = true;
-        self::logCycleSkip('all', $reason);
+        self::logCycleSkip('all', $reason, $context);
     }
 
-    static private function logCycleSkip($scope, $reason)
+    static private function logCycleSkip($scope, $reason, $context = '')
     {
         if (isset(self::$skipLogged[$scope])) return;
         self::$skipLogged[$scope] = true;
         ruTrackerChecker::logUnrepairable('kinozal: Kinozal checks skipped for the rest of this cycle: scope='
-            . $scope . ' reason=' . $reason . '; retried next cycle');
+            . $scope . ' reason=' . $reason . $context . '; eligibility checked next cycle');
     }
 
     static private function isMissingAnswer($body)
@@ -318,6 +344,7 @@ class KinozalCheckImpl
     // last real answer. A topic that was asked and failed is still CANT_REACH.
     static private function notAsked($log)
     {
+        self::$cycleDiagnostics['unchanged_topics']++;
         ruTrackerChecker::logDebug($log);
         return ruTrackerChecker::STE_UNCHANGED;
     }
@@ -374,17 +401,18 @@ class KinozalCheckImpl
 
     // What a finished request says before its body is read, for the answers
     // that concern Kinozal rather than one door or one topic. Snoopy paces
-    // every Kinozal host as one group -- the mirrors are one IP behind one
-    // limiter, and the Cloudflare-fronted site hosts are paused with them as
-    // a precaution -- so a 429, or the pause Snoopy keeps after one, stops
+    // every Kinozal host as one group by local policy, without inferring the
+    // remote limiter's identity. A 429, or the pause Snoopy keeps after one, stops
     // every door for the cycle. A credential POST that went out and failed
     // (KinozalTV marks the client) concerns the account: another door would
     // only receive the password again.
     static private function accountAnswer($client, $endpoint, $id)
     {
         if (KinozalResponse::isRateLimited($client)) {
-            self::abandonCycle('rate-limited');
-            return self::notAsked($endpoint . ' attempt: rate limited id=' . $id);
+            $reason = self::errorClass($client) === 'request-throttled' ? 'local-pause' : 'remote-http-429';
+            $context = self::observedPauseContext($client);
+            self::abandonCycle($reason, $context);
+            return self::notAsked($endpoint . ' attempt: ' . $reason . ' id=' . $id . $context);
         }
         // No credential POST until the login pause ends: every door shares it.
         if (KinozalResponse::isLoginPaused($client)) {
@@ -394,6 +422,29 @@ class KinozalCheckImpl
         if (self::errorClass($client) === 'credential-post-failed')
             return self::guestAnswer($endpoint . ' attempt: the credential POST failed: id=' . $id, $endpoint);
         return null;
+    }
+
+    // Read only Snoopy's already-observed snapshot: never load limiter state
+    // for logging, and allow older/test clients that do not expose a snapshot.
+    static private function observedPauseContext($client)
+    {
+        $unknown = ' pause_until=unknown pause_remaining_s=unknown';
+        try {
+            if (!method_exists($client, 'observedThrottleUntil')) return $unknown;
+            $until = $client->observedThrottleUntil();
+            if ((!is_int($until) && !is_float($until)) || !is_finite($until)
+                || $until < 0 || $until >= PHP_INT_MAX) return $unknown;
+            $now = microtime(true);
+            $stampSeconds = ceil($until);
+            if (!is_float($stampSeconds)) return $unknown;
+            $stamp = gmdate('Y-m-d\TH:i:s\Z', (int) $stampSeconds);
+            $remaining = $until > $now ? ceil($until - $now) : 0;
+            if (!is_float($now) || !is_string($stamp)
+                || (!is_int($remaining) && !is_float($remaining))) return $unknown;
+            return ' pause_until=' . $stamp . ' pause_remaining_s=' . (int) $remaining;
+        } catch (Throwable $e) {
+            return $unknown;
+        }
     }
 
     static private function errorClass($client)
@@ -582,8 +633,12 @@ class KinozalCheckImpl
         // Checked after the URL match, so a topic this handler does not own
         // still falls through to STE_DECLINED exactly as before. No request
         // is sent, so the stored verdict stands (notAsked()).
-        if (self::$cycleAbandoned)
+        self::$cycleDiagnostics['topic_calls']++;
+        if (self::$cycleAbandoned) {
+            self::$cycleDiagnostics['latched_topics']++;
+            self::$cycleDiagnostics['unchanged_topics']++;
             return ruTrackerChecker::STE_UNCHANGED;
+        }
 
         $id = $matches["id"];
         $doors = self::doorOrder('details', self::$door);
@@ -646,11 +701,13 @@ class KinozalCheckImpl
         // out to say -- a guest page included.
         $guest = KinozalResponse::isGuestPage($details);
         if ($guest === null) {
+            self::$cycleDiagnostics['details_attempt_bodies']['parse_failed']++;
             self::answeredBy($door, 'details');
             return self::unverifiedAnswer("details attempt: guest-page-parse-failed id=".$id, 'details');
         }
         self::$detailsUnverified = 0;
         if ($guest) {
+            self::$cycleDiagnostics['details_attempt_bodies']['guest']++;
             self::answeredBy($door, 'details');
             return self::guestAnswer("details attempt ended at a guest page, check the loginmgr account: id=".$id,
                 'details');
@@ -667,14 +724,17 @@ class KinozalCheckImpl
         $hasHash = preg_match('`<li>.*(?P<hash>[0-9A-Fa-f]{40})</li>`', $details, $matches1);
         if (!$hasHash) {
             if (self::isMissingAnswer($details)) {
+                self::$cycleDiagnostics['details_attempt_bodies']['missing_topic']++;
                 self::answeredBy($door, 'details');
                 return ruTrackerChecker::STE_DELETED;
             }
             // Neither a hash nor Kinozal's own answer: a maintenance page, a
             // parked name or a gate in front of this door.
+            self::$cycleDiagnostics['details_attempt_bodies'][$hasHash === false ? 'parse_failed' : 'unrecognised']++;
             return self::doorFailed($door, 'details', 'unrecognised-answer',
                 "details attempt ended with unrecognised content: id=".$id." bytes=".strlen($details));
         }
+        self::$cycleDiagnostics['details_attempt_bodies']['hash_found']++;
         self::answeredBy($door, 'details');
         if (strtoupper($matches1["hash"]) === strtoupper((string) $hash))
             return ruTrackerChecker::STE_UPTODATE;

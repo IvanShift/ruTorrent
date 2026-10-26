@@ -496,7 +496,9 @@ $suite->test('update.php brackets the cycle with a start and a summary line', fu
     // A fatal partway through a detached cycle is classified by the shutdown
     // logger. Start and done lines still bracket the normal cycle.
     strictAssertTrue(strpos($source, 'update: cycle start') !== false, 'the cycle announces itself');
-    strictAssertTrue(strpos($source, 'update: cycle done') !== false, 'and reports its summary');
+    // UpdatePassTest executes this driver and checks the actual summary fields.
+    epAssertOrder(epCalls('update.php'), 'RuTrackerUpdatePass::run', 'RuTrackerUpdatePass::logCycleSummary',
+        'the completed pass is followed by its shared summary');
     strictAssertTrue(strpos($source, 'liveVersionLabel') !== false,
         'the daemon version rides along, since an upgrade changed how a cycle behaves');
     strictAssertTrue(strpos($source, 'update: aborted') !== false,

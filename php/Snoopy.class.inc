@@ -94,6 +94,7 @@ class Snoopy
 	private $throttleReservation = null;
 	private $throttleResponse = null;
 	private $kinozalAttempt = null;
+	private $observedThrottleUntil = null;
 	private static $kinozalAttemptNumber = 0;
 
 	var $user		=	"";			// user for http authentication
@@ -218,6 +219,7 @@ class Snoopy
 
 	private function beginKinozalAttempt($url, $method)
 	{
+		$this->observedThrottleUntil = null;
 		require_once(__DIR__ . '/kinozal.php');
 		$target = KinozalResponse::httpLogTarget($url, $method);
 		$this->kinozalAttempt = $target === null ? null : $target + array(
@@ -227,7 +229,8 @@ class Snoopy
 			// This getter explicitly avoids creating a profile just for logging.
 			'profile' => substr(hash('sha256', FileUtil::getProfilePathEx('', false) . '/settings'), 0, 12),
 			'transport' => null, 'transport_attempted' => false, 'configured_proxy' => null, 'clock' => self::requestClock(),
-			'wall' => microtime(true), 'http' => 0, 'retry_after_s' => null, 'strikes' => null, 'until' => null);
+			'wall' => microtime(true), 'http' => 0, 'retry_after_s' => null, 'strikes' => null, 'until' => null,
+			'session_cookie_pair' => null);
 	}
 
 	private function beginKinozalTransport($transport)
@@ -247,7 +250,14 @@ class Snoopy
 		{
 			$this->kinozalAttempt['strikes'] = $state['strikes'];
 			$this->kinozalAttempt['until'] = $state['until'];
+			$this->observedThrottleUntil = $state['until'];
 		}
+	}
+
+	/** Last observed admission/response snapshot; never reads limiter state. */
+	public function observedThrottleUntil()
+	{
+		return $this->observedThrottleUntil;
 	}
 
 	private function finishKinozalAttempt($completed)
@@ -256,14 +266,59 @@ class Snoopy
 			return;
 		$record = $this->kinozalAttempt;
 		$this->kinozalAttempt = null;
-		$record['started_at'] = gmdate('Y-m-d\TH:i:s', (int)$record['wall'])
-			. sprintf('.%03dZ', (int)(($record['wall'] - floor($record['wall'])) * 1000));
-		$record['duration_ms'] = round(max(0.0, self::requestClock() - $record['clock']) * 1000, 3);
-		$record['status'] = (int)$this->status;
-		$record['result'] = !$record['transport_attempted'] ? 'local-refused' : ($completed ? 'response' : 'transfer-failed');
-		unset($record['clock'], $record['wall'], $record['curl_origin']);
 		// Best-effort diagnostics must not turn a working fetch into a refusal.
-		try { @FileUtil::toLog('kinozal-http: ' . json_encode($record, JSON_UNESCAPED_SLASHES)); }
+		try
+		{
+			$record['started_at'] = gmdate('Y-m-d\TH:i:s', (int)$record['wall'])
+				. sprintf('.%03dZ', (int)(($record['wall'] - floor($record['wall'])) * 1000));
+			$record['duration_ms'] = round(max(0.0, self::requestClock() - $record['clock']) * 1000, 3);
+			$record['status'] = (int)$this->status;
+			$record['result'] = !$record['transport_attempted'] ? 'local-refused' : ($completed ? 'response' : 'transfer-failed');
+			$record['pause_remaining_s'] = $record['until'] === null || !function_exists('ceil') ? null
+				: (int)ceil(max(0.0, $record['until'] - microtime(true)));
+			// Only exact core-owned tokens may reach the log. Other errors can
+			// contain URLs, account credentials or arbitrary transport output.
+			$record['refusal_reason'] = null;
+			if($record['http'] === 429)
+				$record['refusal_reason'] = 'remote-http-429';
+			elseif(in_array($this->error, array(self::REQUEST_THROTTLED, 'request-deadline', 'invalid-url',
+				'request-body-not-written', 'too-many-interim-responses', 'missing-final-response',
+				'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
+				'invalid-or-oversized-gzip', 'gzip-decoder-unavailable', 'unreadable-or-oversized-response'), true))
+				$record['refusal_reason'] = $this->error;
+			elseif(!$completed)
+				$record['refusal_reason'] = 'client-refusal';
+			elseif($record['http'] >= 400)
+				$record['refusal_reason'] = 'http-refusal';
+			unset($record['clock'], $record['wall'], $record['curl_origin']);
+			@FileUtil::toLog('kinozal-http: ' . json_encode($record, JSON_UNESCAPED_SLASHES));
+		}
+		catch(Throwable $error) { }
+	}
+
+	private function rememberKinozalCookieHeader($header)
+	{
+		if($this->kinozalAttempt === null)
+			return;
+		try
+		{
+			// Disabled functions return null on PHP 7 and throw on PHP 8. An
+			// unavailable observer must leave the answer unknown in either case.
+			foreach(array('explode', 'substr', 'strpos', 'trim') as $function)
+				if(!function_exists($function)) return;
+			$present = array('uid' => false, 'pass' => false);
+			foreach(explode(';', substr($header, strpos($header, ':') + 1)) as $pair)
+			{
+				$separator = strpos($pair, '=');
+				if($separator === false) continue;
+				$name = trim(substr($pair, 0, $separator));
+				if(isset($present[$name]) && trim(substr($pair, $separator + 1), " \t\"") !== '')
+					$present[$name] = true;
+			}
+			// Presence describes the formed request, not a confirmed session or
+			// delivery. Read this header once; selecting cookies again changes LRU.
+			$this->kinozalAttempt['session_cookie_pair'] = $present['uid'] && $present['pass'];
+		}
 		catch(Throwable $error) { }
 	}
 
@@ -1844,6 +1899,7 @@ class Snoopy
 		if(!empty($this->referer))
 			$headers .= "Referer: ".$this->referer."\r\n";
 		$cookieHeader = $this->cookieHeaderForRequest($URI);
+		$this->rememberKinozalCookieHeader($cookieHeader);
 		if($cookieHeader !== '')
 			$headers .= $cookieHeader . "\r\n";
 		foreach( $this->rawheaders as $headerKey => $headerVal )
@@ -2032,6 +2088,7 @@ class Snoopy
 		if(!empty($this->referer))
 			$headers[] = "Referer: ".$this->referer;
 		$cookieHeader = $this->cookieHeaderForRequest($url);
+		$this->rememberKinozalCookieHeader($cookieHeader);
 		if($cookieHeader !== '')
 			$headers[] = $cookieHeader;
 		foreach( $this->rawheaders as $headerKey => $headerVal )

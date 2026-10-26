@@ -266,6 +266,7 @@ class RuTrackerUpdatePass
     static private function dispatchChecker($checker, $defaultChecker, $row, $correction = null,
         $correctionPresent = null)
     {
+        $observation = 'not-observed';
         if ($correctionPresent === null) $correctionPresent = is_array($correction);
         $needsClaimedCorrection = $row['state'] === ruTrackerChecker::STE_INPROGRESS
             && $correctionPresent;
@@ -279,15 +280,40 @@ class RuTrackerUpdatePass
             $performed = false;
             ruTrackerChecker::run(
                 $row['hash'], $row['state'], $row['time'], $row['label'], $performed, $prepare,
-                self::replacementAttemptSlot(time()));
+                self::replacementAttemptSlot(time()), $observation);
         } else {
-            call_user_func($checker, $row['hash'], $row, $prepare);
+            $observation = call_user_func($checker, $row['hash'], $row, $prepare);
             // The test seam must invoke the claimed preparation callback
             // before it can acknowledge an INPROGRESS correction.
             $performed = !$needsClaimedCorrection || $prepared;
         }
         if ($performed && is_array($correction))
             self::clearForumCorrection($row['hash'], $correction);
+        // A bool return only describes the invocation's legacy contract.
+        // Test callbacks must explicitly supply the same diagnostic category.
+        return is_string($observation) && array_key_exists($observation, self::emptyHandlerResults())
+            ? $observation : 'not-observed';
+    }
+
+    static private function emptyHandlerResults()
+    {
+        return array('confirmed' => 0, 'unchanged' => 0, 'failed' => 0,
+            'pending' => 0, 'unconfirmed' => 0, 'not-observed' => 0);
+    }
+
+    static public function logCycleSummary($result)
+    {
+        try {
+            $results = json_encode($result['results']);
+            if (is_string($results))
+                ruTrackerChecker::logDebug('update: cycle done'
+                    . ' checker_calls=' . count($result['checked'])
+                    . ' fast_uptodate=' . $result['uptodate']
+                    . ' handler_results=' . $results
+                    . ' fused=' . implode(',', $result['fused']));
+        } catch (Throwable $error) {
+            // Optional diagnostics cannot turn a completed cycle into a failure.
+        }
     }
 
     // Splits update.php's flat d.multicall into nine-value rows: hash,
@@ -578,8 +604,10 @@ class RuTrackerUpdatePass
             if (!isset($foreignMetrics[$bucket]))
                 $foreignMetrics[$bucket] = array('rows' => 0, 'foreign_rows' => 0,
                     'eligible' => 0, 'postponed' => 0, 'dispatched' => 0, 'capped' => 0,
-                    'cant_reach' => 0, 'error' => 0, 'max_age' => 0,
-                    'time_unset' => 0, 'time_future' => 0, 'replacement_held' => 0);
+                    'snapshot' => 'cycle-start', 'cant_reach' => 0, 'error' => 0, 'max_age' => 0,
+                    'max_age_hash' => null, 'max_age_state' => null, 'stale_24h' => 0,
+                    'time_unset' => 0, 'time_future' => 0, 'replacement_held' => 0,
+                    'handler_results' => self::emptyHandlerResults());
             $foreignMetrics[$bucket]['rows']++;
             if ($row['state'] === ruTrackerChecker::STE_CANT_REACH_TRACKER)
                 $foreignMetrics[$bucket]['cant_reach']++;
@@ -591,8 +619,18 @@ class RuTrackerUpdatePass
                 if ($row['time'] > $now + ruTrackerChecker::MAX_LOCK_TIME)
                     $futureClocks[strtoupper((string) $row['hash'])] = $row['time'];
             }
-            else $foreignMetrics[$bucket]['max_age'] = max(
-                $foreignMetrics[$bucket]['max_age'], $now - $row['time']);
+            else {
+                $age = $now - $row['time'];
+                if ($age > 86400) $foreignMetrics[$bucket]['stale_24h']++;
+                if ($foreignMetrics[$bucket]['max_age_hash'] === null
+                    || $age > $foreignMetrics[$bucket]['max_age']
+                    || ($age === $foreignMetrics[$bucket]['max_age']
+                        && ('h' . $row['hash']) < ('h' . $foreignMetrics[$bucket]['max_age_hash']))) {
+                    $foreignMetrics[$bucket]['max_age'] = $age;
+                    $foreignMetrics[$bucket]['max_age_hash'] = $row['hash'];
+                    $foreignMetrics[$bucket]['max_age_state'] = $row['state'];
+                }
+            }
             if (self::requiresForeignDispatch($row, $comments[$index])) {
                 $verdicts[$index] = 'none';
                 $hosts[$index] = '';
@@ -625,6 +663,14 @@ class RuTrackerUpdatePass
         // before an announce or ignore fast path can overwrite an owned fetch.
         // The checker claim decides whether another worker is still active.
         $checked = array();
+        $results = self::emptyHandlerResults();
+        $dispatch = function ($index, $correction = null, $correctionPresent = null)
+            use ($checker, $defaultChecker, $rows, $buckets, &$results, &$foreignMetrics) {
+                $observation = self::dispatchChecker($checker, $defaultChecker, $rows[$index],
+                    $correction, $correctionPresent);
+                $results[$observation]++;
+                $foreignMetrics[$buckets[$index]]['handler_results'][$observation]++;
+            };
         // The fast-path verdicts below are buffered rather than written where
         // they are decided; see flushVerdicts() for why.
         $deferred = array();
@@ -652,7 +698,7 @@ class RuTrackerUpdatePass
                 // can claim and inspect that generation.
                 $correctionReady = $row['state'] === ruTrackerChecker::STE_META_PENDING
                     && $hasCorrection && self::installForumCorrection($row['hash'], $correction);
-                self::dispatchChecker($checker, $defaultChecker, $row,
+                $dispatch($index,
                     $row['state'] === ruTrackerChecker::STE_INPROGRESS
                         ? $correction : ($correctionReady ? $correction : null), $hasCorrection);
                 $checked[] = $row['hash'];
@@ -716,7 +762,7 @@ class RuTrackerUpdatePass
                 $bucket = $buckets[$index];
                 $foreignMetrics[$bucket]['foreign_rows']++;
                 if ($correctionReady) {
-                    self::dispatchChecker($checker, $defaultChecker, $row, $correction);
+                    $dispatch($index, $correction);
                     $foreignMetrics[$bucket]['eligible']++;
                     $foreignMetrics[$bucket]['dispatched']++;
                     $checked[] = $row['hash'];
@@ -757,7 +803,7 @@ class RuTrackerUpdatePass
                     $quotaUsed[$quota['key']] = ($quotaUsed[$quota['key']] ?? 0) + 1;
                 }
 
-                self::dispatchChecker($checker, $defaultChecker, $row);
+                $dispatch($index);
                 $foreignMetrics[$bucket]['dispatched']++;
                 $checked[] = $row['hash'];
                 continue;
@@ -771,7 +817,7 @@ class RuTrackerUpdatePass
             // could lose it if the flush or the process then failed.
             if ($correctionReady
                 || isset($forumChangedSet[$correctionKey])) {
-                self::dispatchChecker($checker, $defaultChecker, $row,
+                $dispatch($index,
                     $correctionReady ? $correction : null);
                 $checked[] = $row['hash'];
                 continue;
@@ -781,7 +827,7 @@ class RuTrackerUpdatePass
             // nor the ordinary settled rest can consume this durable retry.
             if (strpos((string) $row['msg'],
                 ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|') === 0) {
-                self::dispatchChecker($checker, $defaultChecker, $row);
+                $dispatch($index);
                 $checked[] = $row['hash'];
                 continue;
             }
@@ -842,16 +888,23 @@ class RuTrackerUpdatePass
                 continue;
             }
 
-            self::dispatchChecker($checker, $defaultChecker, $row);
+            $dispatch($index);
             $checked[] = $row['hash'];
         }
         $uptodate = self::flushVerdicts($deferred);
-        // The row/state denominator is the full selected seeding snapshot;
-        // eligible/postponed/dispatched describe only the foreign dispatch branch.
+        // rows and the state/age/clock fields describe the cycle-start snapshot.
+        // eligible/postponed/dispatched describe only the foreign dispatch branch;
+        // handler_results describes actual checker calls in this pass, for all trackers.
         foreach ($foreignMetrics as $bucket => $counts)
             ruTrackerChecker::logDebug('update: metrics '
                 . json_encode(array_merge(array('bucket' => $bucket), $counts)));
-        return array('checked' => $checked, 'fused' => $fused, 'uptodate' => $uptodate);
+        try {
+            if (class_exists('KinozalCheckImpl', false) && method_exists('KinozalCheckImpl', 'logCycleSummary'))
+                KinozalCheckImpl::logCycleSummary();
+        } catch (Throwable $error) {
+            // The optional tracker summary cannot change the completed pass.
+        }
+        return array('checked' => $checked, 'fused' => $fused, 'uptodate' => $uptodate, 'results' => $results);
     }
 
     // One buffered fast-path verdict: what to write, the snapshot values it was
