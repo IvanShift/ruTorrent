@@ -92,8 +92,8 @@ class XMLRPCProxy
 	// batch* needs trust; no subset or added command may borrow it. rpc2.php
 	// does not load the plugin settings policy or JS; deriving this grant from
 	// an expanding UI list would silently expand trusted RPC. The 0.16.24
-	// request is captured in XMLRPCProxyTest fixtures; live 0.16.25 and 0.16.26
-	// daemons answered it without a fault.
+	// request is captured in XMLRPCProxyTest fixtures; live 0.16.25, 0.16.26 and
+	// 0.16.27 daemons answered it without a fault.
 	private static $settingsReadMethods016 = array(
 		'dht.statistics', 'pieces.hash.on_completion', 'network.bind_address', 'dht.port',
 		'directory.default', 'throttle.global_down.max_rate', 'cat', 'cat',
@@ -523,7 +523,7 @@ class XMLRPCProxy
 	// xmlrpc_proxy_native.php (bit minor + 1). Every 0.16 ceiling below reads
 	// it, so a release past it fails closed until its column is derived from
 	// the daemon's source and reviewed; 0.9.8 is the one other release.
-	private const NEWEST_016_MINOR = 26;
+	private const NEWEST_016_MINOR = 27;
 
 	private static function isReviewed016($version)
 	{

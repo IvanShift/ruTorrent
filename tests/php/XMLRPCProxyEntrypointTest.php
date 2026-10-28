@@ -163,7 +163,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	}
 
 
-	public function testBothDoorsServeAReviewed1626Daemon()
+	public function testBothDoorsServeReviewed1626And1627Daemons()
 	{
 		// docker tests/smoke/default.sh failed here with 503 on a 0.16.26 daemon.
 		$listing = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
@@ -171,28 +171,29 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>main</string></value></param>'
 			.'<param><value><string>d.name=</string></value></param>'
 			.'</params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
-			foreach(array('listing' => $listing, 'version read' => $this->allowedXml()) as $name => $xml)
-			{
-				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.16.26');
-				$this->assertHttp($result, '200 OK',
-					$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
-				$this->assertEquals(1, $result['state']['version_probes'],
-					$door.' probes the 0.16.26 daemon before the '.$name);
-				$this->assertEquals(1, $result['state']['sends'],
-					$door.' forwards the '.$name.' to a reviewed 0.16.26 daemon');
-				$this->assertSameStrict($name === 'listing', $result['state']['trusted'],
-					$door.' keeps the checked trust of the '.$name.' on 0.16.26');
-			}
+		foreach(array('0.16.26', '0.16.27') as $version)
+			foreach(array('action', 'rpc2') as $door)
+				foreach(array('listing' => $listing, 'version read' => $this->allowedXml()) as $name => $xml)
+				{
+					$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, $version);
+					$this->assertHttp($result, '200 OK',
+						$door === 'action' ? 'text/xml; charset=UTF-8' : 'text/xml;charset=UTF-8');
+					$this->assertEquals(1, $result['state']['version_probes'],
+						$door.' probes the '.$version.' daemon before the '.$name);
+					$this->assertEquals(1, $result['state']['sends'],
+						$door.' forwards the '.$name.' to a reviewed '.$version.' daemon');
+					$this->assertSameStrict($name === 'listing', $result['state']['trusted'],
+						$door.' keeps the checked trust of the '.$name.' on '.$version);
+				}
 	}
 
 	public function testBothDoorsNameAnUnreviewedDaemonRelease()
 	{
-		$reason = 'rTorrent 0.16.27 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.26)';
+		$reason = 'rTorrent 0.16.28 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
 		foreach(array('action', 'rpc2') as $door)
 		{
 			$result = $this->runEntrypoint($door, $this->allowedXml(), true,
-				'success', 'shipped', false, '0.16.27');
+				'success', 'shipped', false, '0.16.28');
 			$this->assertHttp($result, '503 Service Unavailable',
 				$door === 'action' ? 'text/html; charset=UTF-8' : 'text/xml;charset=UTF-8');
 			$this->assertEquals(0, $result['state']['sends'],
@@ -219,8 +220,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$generic = 'Could not verify the rTorrent version.';
 		$line = 'refusing request: rTorrent version unavailable or unsupported';
-		foreach(array('0.16.27-<b>', '0.16.27-<svg/onload=alert(1)>', '0.16.27-a"b',
-			"0.16.27\n", '1234.16.27', '0.16.1234') as $version)
+		foreach(array('0.16.28-<b>', '0.16.28-<svg/onload=alert(1)>', '0.16.28-a"b',
+			"0.16.28\n", '1234.16.28', '0.16.1234') as $version)
 			foreach(array('action', 'rpc2') as $door)
 			{
 				$label = $door.' '.json_encode($version);
@@ -257,8 +258,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$widen = array('php/xmlrpc_proxy.php' => array(
 			'(?:[-+][A-Za-z0-9._-]{1,32})?$/D\', $text))' => '(?:[-+][^\r\n]{1,64})?$/D\', $text))'));
-		$version = '0.16.27-<svg/onload=alert(1)>"\'&';
-		$why = 'rTorrent '.$version.' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.26)';
+		$version = '0.16.28-<svg/onload=alert(1)>"\'&';
+		$why = 'rTorrent '.$version.' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
 		foreach(array('action', 'rpc2') as $door)
 		{
 			$result = $this->runEntrypoint($door, $this->allowedXml(), true,

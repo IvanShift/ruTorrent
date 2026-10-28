@@ -161,15 +161,15 @@ class rXMLRPCRequest {
 			}
 	}
 
-	public function testCommandExtensionsServeAReviewed1626Daemon()
+	public function testCommandExtensionsServeReviewed1626And1627Daemons()
 	{
 		// Every mode=...&cmd=... answered 503 on a 0.16.26 daemon before it was reviewed.
-		foreach(array('0.16.24', '0.16.26') as $version)
+		foreach(array('0.16.24', '0.16.26', '0.16.27') as $version)
 		{
 			$result = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, $version);
 			$this->assertEquals(72, $result['status'], 'a native list extension reaches the RPC boundary on '.$version);
 			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
-				'the 0.16.26 version check admits the extension on '.$version);
+				'the version check admits the extension on '.$version);
 			$this->assertEquals('', $result['error'], 'the extension has no PHP diagnostic on '.$version);
 			$this->assertEquals('PRM[d.name=""];', $result['trace'],
 				'the extension is rebuilt by the shared slot policy on '.$version);
@@ -178,10 +178,10 @@ class rXMLRPCRequest {
 		$this->assertEquals(0, $refused['status'], 'a refused extension is answered on 0.16.26');
 		$this->assertEquals('403|Refused: this server does not allow execute.capture on this connection.',
 			$refused['output'], 'the refused extension is named without constructing an RPC request');
-		$next = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, '0.16.27');
+		$next = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, '0.16.28');
 		$this->assertEquals(0, $next['status'], 'an unreviewed release is answered, not crashed');
-		$this->assertEquals('503|Could not verify the rTorrent version. rTorrent 0.16.27 is not a supported '
-			.'version (supported: 0.9.8 and 0.16.0 to 0.16.26).', $next['output'],
+		$this->assertEquals('503|Could not verify the rTorrent version. rTorrent 0.16.28 is not a supported '
+			.'version (supported: 0.9.8 and 0.16.0 to 0.16.27).', $next['output'],
 			'the extension refusal names the unreviewed release');
 	}
 
