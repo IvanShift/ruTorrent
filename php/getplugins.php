@@ -141,6 +141,15 @@ $jResult .= "theWebUI.showFlags = ".$perms.";\n";
 $jResult .= "theURLs.XMLRPCMountPoint = '".$XMLRPCMountPoint."';\n";
 $jResult.="theWebUI.systemInfo = {};\ntheWebUI.systemInfo.php = { canHandleBigFiles : ".((PHP_INT_SIZE<=4) ? "false" : "true")." };\n";
 
+// Advice rather than a fault, so it goes to the log only, once per load.
+// PHP 7 has had no security fixes since 7.4 reached its end of life.
+if($do_diagnostic && (PHP_VERSION_ID < 80000))
+	$jResult.="log(theUILang.insecurePHPVersion+".JSON::jsValue(' ('.PHP_VERSION.')').");";
+
+// The first rTorrent release with every security fix published so far:
+// 0.16.26, as (major << 16) + (minor << 8) + patch, like iVersion.
+$rtorrentFirstSafeVersion = 0x101A;
+
 if($handle = opendir('../plugins'))
 {
 	ignore_user_abort(true);
@@ -183,6 +192,10 @@ if($handle = opendir('../plugins'))
 			$jResult.=$theSettings->systemInfoScript();
 	        	if($do_diagnostic)
 	        	{
+				// The version is the daemon's own string; like systemInfoScript(),
+				// carry it as a JSON::jsValue() literal.
+				if($theSettings->iVersion < $rtorrentFirstSafeVersion)
+					$jResult.="log(theUILang.vulnerableRTorrentVersion+".JSON::jsValue(' ('.$theSettings->version.')').");";
 	        	        global $phpUseGzip;
 	        	        $up = FileUtil::getUploadsPath();
 	        	        $st = FileUtil::getSettingsPath();
