@@ -18,6 +18,13 @@ spec = importlib.util.spec_from_file_location(
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 LOCAL_LAUNCHER = "php:8.1-cli"
+# A parallel php-test.sh keeps its per-file durations here, in the leg's
+# TMPDIR; run_leg carries them to and from the file named by --timings.
+TIMINGS_NAME = "php-test-timings"
+# The 49-byte socket suffix of SCGITransportFixture leaves TMPDIR 58 of the
+# 107 bytes of sun_path; a parallel php-test.sh adds a 4-byte subdirectory.
+SOCKET_TMPDIR_BUDGET = 58
+PARALLEL_TMPDIR_SUFFIX = 4
 
 
 def docker_run(name, image, uid, gid, mounts, command, *, owner, local=False, groups=()):
@@ -66,7 +73,7 @@ def compile_helpers(tree, native, image, name, uid, gid, owner):
     return output, names
 
 
-def test_command(tree, temporary, test_files, source_tree=None):
+def test_command(tree, temporary, test_files, source_tree=None, jobs=1):
     source_tree = tree if source_tree is None else source_tree
     _, helpers = setup.read_manifest(source_tree)
     rename_source = (source_tree / "plugins/erasedata/rename-noreplace.c").resolve(strict=True)
@@ -89,7 +96,9 @@ def test_command(tree, temporary, test_files, source_tree=None):
                                      "auto_append_file=" + str(tree / "tests/php/TestCaseRunner.php"),
                                      "-f", test_file])]
     else:
-        commands += ["bash tests/php-test.sh"]
+        commands += [shlex.join(["env", "PHP_TEST_JOBS=" + str(jobs),
+                                 "PHP_TEST_TIMINGS=" + str(temporary / TIMINGS_NAME),
+                                 "bash", "tests/php-test.sh"])]
     return ["/usr/bin/env", "HOME=" + str(temporary), "TMPDIR=" + str(temporary),
             "RU_LOG_FILE=" + str(temporary / "application-errors.log"),
             "bash", "-e", "-o", "pipefail", "-c",
@@ -107,18 +116,35 @@ def remove_owned_container(name, owner):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None):
+def save_timings(produced, timings):
+    """Atomically keep a leg's durations for the next run's start order."""
+    if timings is None or not produced.is_file():
+        return
+    staged = timings.with_name(timings.name + "." + uuid.uuid4().hex)
+    try:
+        shutil.copyfile(produced, staged)
+        os.replace(staged, timings)
+    except OSError as error:
+        staged.unlink(missing_ok=True)
+        print("matrix native helpers: cannot keep PHP test durations: " + str(error), flush=True)
+
+
+def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None, jobs=1, timings=None):
     owner = uuid.uuid4().hex if owner is None else owner
     directory = Path(directory).resolve(strict=True)
     tree, temporary = directory / "tree", directory / "tmp"
-    if leg == "local" and len(os.fsencode(temporary)) > 58:
-        raise RuntimeError("resolved local TMPDIR must be at most 58 bytes: " + str(temporary))
+    budget = SOCKET_TMPDIR_BUDGET - (PARALLEL_TMPDIR_SUFFIX if jobs > 1 else 0)
+    if leg == "local" and len(os.fsencode(temporary)) > budget:
+        raise RuntimeError("resolved local TMPDIR must be at most " + str(budget) + " bytes: "
+                           + str(temporary))
     if temporary.is_symlink():
         raise RuntimeError("matrix TMPDIR must be a physical private directory")
     temporary.mkdir(mode=0o700, exist_ok=True)
     if temporary.stat().st_uid != uid:
         raise RuntimeError("matrix TMPDIR must be owned by the caller")
     temporary.chmod(0o700)
+    if timings is not None and timings.is_file():
+        shutil.copyfile(timings, temporary / TIMINGS_NAME)
     native = directory / "native"
     native.mkdir(mode=0o700)
     try:
@@ -136,7 +162,7 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None):
                 if target.is_symlink() or target.exists():
                     target.unlink()
                 shutil.copy2(output / helper, target)
-            command = test_command(tree, temporary, test_files)
+            command = test_command(tree, temporary, test_files, jobs=jobs)
             mounts = [(Path("/"), Path("/host"), True),
                       (tree, Path("/host") / tree.relative_to("/"), False),
                       (temporary, Path("/host") / temporary.relative_to("/"), False),
@@ -144,7 +170,7 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None):
             args = docker_run(name, image, uid, gid, mounts, command, owner=owner, local=True,
                               groups=sorted(set([gid, *os.getgroups()])))
         else:
-            command = test_command(Path("/w"), Path("/mtmp"), test_files, tree)
+            command = test_command(Path("/w"), Path("/mtmp"), test_files, tree, jobs)
             mounts = [(tree, Path("/w"), False), (temporary, Path("/mtmp"), False)]
             mounts += [(output / helper, Path("/usr/local/bin") / helper, True)
                        for helper in names]
@@ -156,6 +182,7 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None):
         # volumes belong to this named leg and must be removed together with it.
         remove_owned_container(name, owner)
         shutil.rmtree(native)
+        save_timings(temporary / TIMINGS_NAME, timings)
 
 
 def main():
@@ -169,9 +196,15 @@ def main():
     # This standalone tool can check a few files without modifying matrix.sh's
     # full exported-file accounting or ever recording its full-green marker.
     parser.add_argument("--test-file", action="append", default=[])
+    parser.add_argument("--jobs", type=int, default=1, help="PHP test files run at once")
+    parser.add_argument("--timings", type=Path,
+                        help="File that keeps per-file durations between full runs")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
     try:
-        run_leg(args.directory, args.leg, args.name, args.uid, args.gid, args.test_file, args.owner)
+        run_leg(args.directory, args.leg, args.name, args.uid, args.gid, args.test_file, args.owner,
+                args.jobs, args.timings)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, "matrix native helpers: " + str(error) + "\n")
 

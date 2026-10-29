@@ -336,4 +336,376 @@ PHP
     }
     rm "$scratch/tests/plugins/a b/ChildDiagnosticTest.php"
 done
-echo 'php-harness-test.sh: source paths, empty classes, early exits, and skipped TestCase methods passed'
+
+# PHP_TEST_JOBS: the parallel mode reports the same bytes and verdict as the
+# sequential run. The sleeps make later files finish before earlier ones.
+# Each parallel run is bounded: a runner that loses track of a worker would
+# otherwise hang this script instead of failing it.
+fixture_dir="$scratch/tests/plugins/a b"
+cat > "$fixture_dir/SlowPassTest.php" <<'PHP'
+<?php
+usleep(900000);
+echo "ok - slow standalone file\n1 tests, 0 failures\n";
+PHP
+cat > "$fixture_dir/FailingCaseTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class FailingParallelCase extends TestCase {
+    public function testFails() { usleep(300000); $this->assertTrue(false, 'parallel failure is reported'); }
+}
+PHP
+cat > "$fixture_dir/PassingCaseTest.php" <<'PHP'
+<?php
+require_once(__DIR__.'/../../php/TestCase.php');
+class PassingParallelCase extends TestCase {
+    public function testPasses() { usleep(600000); $this->assertTrue(true, 'parallel pass is reported'); }
+}
+PHP
+cat > "$fixture_dir/WarningTest.php" <<'PHP'
+<?php
+trigger_error('parallel warning', E_USER_WARNING);
+echo "ok - warning file\n1 tests, 0 failures\n";
+PHP
+cat > "$fixture_dir/ExitCodeTest.php" <<'PHP'
+<?php
+echo "ok - nonzero exit file\n1 tests, 0 failures\n";
+exit(3);
+PHP
+# A failure printed only to stderr fails the file: stderr is judged too.
+cat > "$fixture_dir/StderrFailureTest.php" <<'PHP'
+<?php
+fwrite(STDERR, "Failed: reported on stderr only\n");
+echo "ok - stdout looks fine\n1 tests, 0 failures\n";
+PHP
+mkdir -m 0700 "$scratch/parallel-tmp"
+seq_code=0
+(cd "$scratch" && bash tests/php-test.sh) > "$scratch/sequential.log" 2>&1 || seq_code=$?
+par_code=0
+(cd "$scratch" && TMPDIR="$scratch/parallel-tmp" PHP_TEST_JOBS=3 PHP_TEST_TIMINGS="$scratch/timings" \
+    timeout 60 bash tests/php-test.sh) > "$scratch/parallel.log" 2>&1 || par_code=$?
+if [ "$seq_code" -ne 1 ] || [ "$par_code" -ne 1 ] || ! cmp -s "$scratch/sequential.log" "$scratch/parallel.log"; then
+    diff "$scratch/sequential.log" "$scratch/parallel.log" >&2 || :
+    echo "parallel run differs from the sequential run (exit $seq_code, $par_code)" >&2
+    exit 1
+fi
+for expected in 'Passed: parallel pass is reported' 'Failed: parallel failure is reported' \
+    'parallel warning' 'Failed PHP test files (4):' '::error file=tests/plugins/a b/StderrFailureTest.php::'; do
+    grep -q "$expected" "$scratch/parallel.log" || {
+        cat "$scratch/parallel.log" >&2
+        echo "parallel run did not report: $expected" >&2
+        exit 1
+    }
+done
+# The per-file temporary directories were empty and are gone.
+[ -z "$(ls -A "$scratch/parallel-tmp")" ] || {
+    ls -A "$scratch/parallel-tmp" >&2
+    echo 'parallel run left temporary directories behind' >&2
+    exit 1
+}
+# Every finished file is kept, NUL-terminated, for the next start order.
+records="$(tr -cd '\0' < "$scratch/timings" | wc -c)"
+[ "$records" -eq 6 ] && tr '\0' '\n' < "$scratch/timings" | grep -q $'^[0-9]\+\tplugins/a b/SlowPassTest.php$' || {
+    tr '\0' '\n' < "$scratch/timings" >&2
+    echo "parallel run kept $records durations instead of 6" >&2
+    exit 1
+}
+# The sequential run neither reads nor writes durations.
+(cd "$scratch" && PHP_TEST_TIMINGS="$scratch/sequential-timings" bash tests/php-test.sh) > /dev/null 2>&1 || :
+[ ! -e "$scratch/sequential-timings" ] || { echo 'the sequential run wrote durations' >&2; exit 1; }
+rm -- "$fixture_dir"/{SlowPass,FailingCase,PassingCase,Warning,ExitCode,StderrFailure}Test.php "$scratch/timings"
+
+# Tests list and name files in their temporary directory. Beside other
+# files, each starts in an empty TMPDIR of its own below the run's TMPDIR,
+# which holds the runner's own files; the empty directory goes afterwards.
+cat > "$fixture_dir/PrivateTmpTest.php" <<'PHP'
+<?php
+$tmp = sys_get_temp_dir();
+$entries = array_diff(scandir($tmp), array('.', '..'));
+// tools/matrix.sh budgets exactly 4 bytes for this directory.
+if (dirname($tmp) !== getenv('RUN_TMPDIR') || strlen($tmp) !== strlen(getenv('RUN_TMPDIR')) + 4
+    || $entries !== array()) {
+    echo "not ok - shared or used TMPDIR $tmp: " . implode(' ', $entries) . "\n1 tests, 1 failures\n";
+    exit(1);
+}
+echo "ok - private temporary directory\n1 tests, 0 failures\n";
+PHP
+mkdir -m 0700 "$scratch/private-tmp"
+(cd "$scratch" && TMPDIR="$scratch/private-tmp" RUN_TMPDIR="$scratch/private-tmp" PHP_TEST_JOBS=2 \
+    timeout 60 bash tests/php-test.sh) > "$scratch/private.log" 2>&1 || {
+    cat "$scratch/private.log" >&2
+    echo 'a parallel file did not get an empty TMPDIR of its own' >&2
+    exit 1
+}
+[ -z "$(ls -A "$scratch/private-tmp")" ] || {
+    ls -A "$scratch/private-tmp" >&2
+    echo 'parallel run left temporary directories behind' >&2
+    exit 1
+}
+rm -rf -- "$fixture_dir/PrivateTmpTest.php" "$scratch/private-tmp"
+
+# A file on the run-alone list runs before any other file starts, whatever
+# its listing position or previous duration.
+for name in One Two Three; do
+    cat > "$fixture_dir/Beside${name}Test.php" <<'PHP'
+<?php
+touch(getenv('ALONE_DIR') . '/' . basename(__FILE__));
+echo "ok - beside\n1 tests, 0 failures\n";
+PHP
+done
+mkdir -p "$scratch/tests/plugins/erasedata" "$scratch/alone"
+cat > "$scratch/tests/plugins/erasedata/RemoveWithDataTest.php" <<'PHP'
+<?php
+usleep(500000);
+$started = count(glob(getenv('ALONE_DIR') . '/Beside*Test.php'));
+echo $started === 0 ? "ok - ran alone\n1 tests, 0 failures\n"
+    : "not ok - ran beside $started other files\n1 tests, 1 failures\n";
+PHP
+printf '1\tplugins/erasedata/RemoveWithDataTest.php\000' > "$scratch/alone-timings"
+(cd "$scratch" && ALONE_DIR="$scratch/alone" PHP_TEST_JOBS=4 PHP_TEST_TIMINGS="$scratch/alone-timings" \
+    timeout 60 bash tests/php-test.sh) > "$scratch/alone.log" 2>&1 && grep -q '^ok - ran alone$' "$scratch/alone.log" \
+    && [ "$(grep -c '^ok - beside$' "$scratch/alone.log")" -eq 3 ] || {
+    cat "$scratch/alone.log" >&2
+    echo 'a run-alone file ran beside other files' >&2
+    exit 1
+}
+rm -rf -- "$fixture_dir"/Beside{One,Two,Three}Test.php "$scratch/tests/plugins/erasedata" "$scratch/alone" "$scratch/alone-timings"
+
+# Bash makes background commands ignore SIGINT. A test interrupted by SIGINT
+# must stop, as it does in the sequential run, rather than carry on; the run
+# starts with default dispositions whatever this script's caller ignores.
+cat > "$fixture_dir/SignalsTest.php" <<'PHP'
+<?php
+echo "ok - SIGINT reached the test\n1 tests, 0 failures\n";
+exec('kill -INT ' . getmypid());
+usleep(200000);
+echo "SIGINT was ignored\n";
+PHP
+if (cd "$scratch" && PHP_TEST_JOBS=2 timeout 60 env --default-signal=INT,QUIT bash tests/php-test.sh) > "$scratch/signals.log" 2>&1 \
+    || grep -q 'SIGINT was ignored' "$scratch/signals.log" \
+    || ! grep -qF '::error file=tests/plugins/a b/SignalsTest.php::' "$scratch/signals.log"; then
+    cat "$scratch/signals.log" >&2
+    echo 'a test interrupted by SIGINT carried on in the parallel run' >&2
+    exit 1
+fi
+rm -- "$fixture_dir/SignalsTest.php"
+
+for jobs in 0 -2 two 1.5 65; do
+    if (cd "$scratch" && PHP_TEST_JOBS="$jobs" timeout 60 bash tests/php-test.sh) > "$scratch/jobs.log" 2>&1; then
+        echo "PHP_TEST_JOBS=$jobs was accepted" >&2
+        exit 1
+    fi
+    grep -q 'PHP_TEST_JOBS must be an integer from 1 to 64' "$scratch/jobs.log" || {
+        cat "$scratch/jobs.log" >&2
+        echo "PHP_TEST_JOBS=$jobs had no actionable diagnostic" >&2
+        exit 1
+    }
+done
+
+# Start order: with two slots, the last-listed file must start in the first
+# pair when the previous run measured it longest, or did not measure it. It
+# then has started before the first-listed file, which starts only after a
+# one-second file of the first pair has finished.
+for name in One Two Three; do
+    cat > "$fixture_dir/Order${name}Test.php" <<'PHP'
+<?php
+touch(getenv('ORDER_DIR') . '/' . basename(__FILE__));
+if (basename(__FILE__) === getenv('ORDER_LATE') && !is_file(getenv('ORDER_DIR') . '/' . getenv('ORDER_EARLY'))) {
+    echo "not ok - " . getenv('ORDER_EARLY') . " had not started\n1 tests, 1 failures\n";
+    exit(1);
+}
+sleep(1);
+echo "ok - start order\n1 tests, 0 failures\n";
+PHP
+done
+mapfile -d '' -t listed < <(cd "$scratch/tests" && find php plugins -type f -name '*Test.php' -print0)
+[ "${#listed[@]}" -eq 3 ] || { printf '%s\n' "${listed[@]}" >&2; echo 'unexpected order fixtures' >&2; exit 1; }
+run_order_case() {
+    rm -rf -- "$scratch/order" && mkdir "$scratch/order"
+    (cd "$scratch" && PHP_TEST_JOBS=2 PHP_TEST_TIMINGS="$scratch/order-timings" ORDER_DIR="$scratch/order" \
+        ORDER_EARLY="$(basename "${listed[2]}")" ORDER_LATE="$(basename "${listed[0]}")" \
+        timeout 60 bash tests/php-test.sh) > "$scratch/order.log" 2>&1
+}
+printf '1000\t%s\0002000\t%s\0003000\t%s\000' "${listed[0]}" "${listed[1]}" "${listed[2]}" > "$scratch/order-timings"
+run_order_case || { cat "$scratch/order.log" >&2; echo 'the longest previous file did not start first' >&2; exit 1; }
+printf '1000\t%s\0002000\t%s\000' "${listed[0]}" "${listed[1]}" > "$scratch/order-timings"
+run_order_case || { cat "$scratch/order.log" >&2; echo 'a file without a previous duration did not start first' >&2; exit 1; }
+# Without durations the files start in listing order, which this fixture
+# detects: it would otherwise prove nothing about the two cases above.
+rm -f -- "$scratch/order-timings"
+if run_order_case; then
+    echo 'the start-order fixture passed in listing order' >&2
+    exit 1
+fi
+rm -rf -- "$fixture_dir"/Order{One,Two,Three}Test.php "$scratch/order" "$scratch/order-timings"
+
+# A file whose temporary directory cannot be created fails visibly. The
+# first file locks the run's TMPDIR; the last starts in its slot afterwards.
+if [ "$(id -u)" -ne 0 ]; then
+    cat > "$fixture_dir/LockTmpTest.php" <<'PHP'
+<?php
+chmod(getenv('LOCK_DIR'), 0500);
+echo "ok - locked the run TMPDIR\n1 tests, 0 failures\n";
+PHP
+    cat > "$fixture_dir/HoldSlotTest.php" <<'PHP'
+<?php
+sleep(1);
+echo "ok - held a slot\n1 tests, 0 failures\n";
+PHP
+    cat > "$fixture_dir/AfterLockTest.php" <<'PHP'
+<?php
+echo "ok - ran without a temporary directory\n1 tests, 0 failures\n";
+PHP
+    printf '3\t%s\0002\t%s\0001\t%s\000' "plugins/a b/LockTmpTest.php" "plugins/a b/HoldSlotTest.php" \
+        "plugins/a b/AfterLockTest.php" > "$scratch/lock-timings"
+    mkdir -m 0700 "$scratch/lock-tmp"
+    lock_code=0
+    (cd "$scratch" && TMPDIR="$scratch/lock-tmp" LOCK_DIR="$scratch/lock-tmp" PHP_TEST_JOBS=2 PHP_TEST_TIMINGS="$scratch/lock-timings" \
+        timeout 60 bash tests/php-test.sh) > "$scratch/lock.log" 2>&1 || lock_code=$?
+    chmod 0700 "$scratch/lock-tmp"
+    if [ "$lock_code" -ne 1 ] || grep -q 'ran without a temporary directory' "$scratch/lock.log" \
+        || ! grep -qF 'php-test.sh: cannot create a temporary directory for plugins/a b/AfterLockTest.php' "$scratch/lock.log" \
+        || ! grep -qF '::error file=tests/plugins/a b/AfterLockTest.php::' "$scratch/lock.log"; then
+        cat "$scratch/lock.log" >&2
+        echo "a file without a temporary directory was not failed visibly (exit $lock_code)" >&2
+        exit 1
+    fi
+    rm -rf -- "$fixture_dir"/{LockTmp,HoldSlot,AfterLock}Test.php "$scratch/lock-tmp" "$scratch/lock-timings"
+fi
+
+# A file whose output cannot be kept whole fails, although the part that was
+# kept looks like a pass: the failure is at the end. The runner's own output
+# goes through a pipe, which the file size limit does not cover.
+if command -v prlimit > /dev/null; then
+    cat > "$fixture_dir/TailTest.php" <<'PHP'
+<?php
+echo "ok - head\n1 tests, 0 failures\n";
+for ($i = 0; $i < 6000; $i++) echo str_repeat('.', 50), "\n";
+echo "not ok - tail failure the gate must see\n";
+PHP
+    partial_code=0
+    (cd "$scratch" && PHP_TEST_JOBS=3 timeout 60 prlimit --fsize=204800 env --ignore-signal=XFSZ \
+        bash tests/php-test.sh) 2>&1 | cat > "$scratch/partial.log" || partial_code=$?
+    if [ "$partial_code" -ne 1 ] \
+        || ! grep -qF 'php-test.sh: the output of plugins/a b/TailTest.php was not kept whole' "$scratch/partial.log" \
+        || ! grep -qF '::error file=tests/plugins/a b/TailTest.php::' "$scratch/partial.log"; then
+        tail -5 "$scratch/partial.log" >&2
+        echo "a truncated output copy was judged as the file's result (exit $partial_code)" >&2
+        exit 1
+    fi
+    rm -- "$fixture_dir/TailTest.php"
+else
+    echo 'php-harness-test.sh: prlimit unavailable; the truncated-output case did not run' >&2
+fi
+
+# A file the start order never launched is reported as failed, not skipped.
+cat > "$fixture_dir/FirstLaunchedTest.php" <<'PHP'
+<?php
+echo "ok - launched\n1 tests, 0 failures\n";
+PHP
+cp "$fixture_dir/FirstLaunchedTest.php" "$fixture_dir/SecondLaunchedTest.php"
+mkdir -p "$scratch/shim"
+printf '#!/bin/sh\n%s "$@" | head -n 1\n' "$(command -v cut)" > "$scratch/shim/cut"
+chmod +x "$scratch/shim/cut"
+unlaunched_code=0
+(cd "$scratch" && PATH="$scratch/shim:$PATH" PHP_TEST_JOBS=2 timeout 60 bash tests/php-test.sh) \
+    > "$scratch/unlaunched.log" 2>&1 || unlaunched_code=$?
+if [ "$unlaunched_code" -ne 1 ] \
+    || ! grep -q '^php-test.sh: no result recorded for plugins/a b/[A-Za-z]*LaunchedTest.php$' "$scratch/unlaunched.log" \
+    || ! grep -q '^Failed PHP test files (1):$' "$scratch/unlaunched.log"; then
+    cat "$scratch/unlaunched.log" >&2
+    echo "a file that was never started was not reported as failed (exit $unlaunched_code)" >&2
+    exit 1
+fi
+rm -rf -- "$fixture_dir"/{First,Second}LaunchedTest.php "$scratch/shim"
+
+# A worker that dies without a result fails its file visibly; the other file
+# of the run is still reported.
+cat > "$fixture_dir/LostWorkerTest.php" <<'PHP'
+<?php
+// In the parallel mode this PHP process is the child of its worker shell.
+$stat = file_get_contents('/proc/self/stat');
+$fields = preg_split('/\s+/', substr($stat, strrpos($stat, ')') + 2));
+exec('kill -KILL ' . (int) $fields[1]);
+echo "ok - orphaned output\n1 tests, 0 failures\n";
+PHP
+cat > "$fixture_dir/SurvivorTest.php" <<'PHP'
+<?php
+echo "ok - survivor\n1 tests, 0 failures\n";
+PHP
+if (cd "$scratch" && PHP_TEST_JOBS=2 timeout 60 bash tests/php-test.sh) > "$scratch/lost.log" 2>&1; then
+    cat "$scratch/lost.log" >&2
+    echo 'a lost worker was reported as a pass' >&2
+    exit 1
+fi
+for expected in 'php-test.sh: no result recorded for plugins/a b/LostWorkerTest.php' \
+    '::error file=tests/plugins/a b/LostWorkerTest.php::' 'ok - survivor' 'Failed PHP test files (1):'; do
+    grep -qF "$expected" "$scratch/lost.log" || {
+        cat "$scratch/lost.log" >&2
+        echo "lost worker run did not report: $expected" >&2
+        exit 1
+    }
+done
+rm -- "$fixture_dir/LostWorkerTest.php" "$fixture_dir/SurvivorTest.php"
+
+# TERM stops the running PHP processes and removes the results directory,
+# even when a leaked child still holds a test's output open.
+cat > "$fixture_dir/SleeperTest.php" <<'PHP'
+<?php
+exec('sleep 30 >&2 & echo $!', $holder);
+file_put_contents(getenv('SLEEPER_DIR') . '/holders', $holder[0] . "\n", FILE_APPEND | LOCK_EX);
+file_put_contents(getenv('SLEEPER_DIR') . '/' . getmypid(), '');
+sleep(60);
+PHP
+cp "$fixture_dir/SleeperTest.php" "$fixture_dir/SecondSleeperTest.php"
+# A file that finished before the interrupt is still reported whole.
+cat > "$fixture_dir/FinishedBeforeTermTest.php" <<'PHP'
+<?php
+echo "ok - finished before TERM\n1 tests, 0 failures\n";
+PHP
+mkdir "$scratch/sleepers" "$scratch/interrupt-tmp"
+(cd "$scratch" && SLEEPER_DIR="$scratch/sleepers" TMPDIR="$scratch/interrupt-tmp" PHP_TEST_JOBS=3 \
+    exec bash tests/php-test.sh) > "$scratch/interrupt.log" 2>&1 &
+runner=$!
+for _ in $(seq 100); do
+    [ "$(find "$scratch/sleepers" -type f -name '[0-9]*' | wc -l)" -eq 2 ] \
+        && [ -n "$(find "$scratch/interrupt-tmp" -name '*.done')" ] && break
+    sleep 0.1
+done
+sleepers=($(ls "$scratch/sleepers" | grep -v holders))
+kill -TERM "$runner"
+for _ in $(seq 100); do
+    kill -0 "$runner" 2>/dev/null || break
+    sleep 0.1
+done
+runner_code=0
+if kill -0 "$runner" 2>/dev/null; then
+    runner_code=hung
+    kill -KILL "$runner" 2>/dev/null || :
+    wait "$runner" || :
+else
+    wait "$runner" || runner_code=$?
+fi
+xargs -r kill -KILL < "$scratch/sleepers/holders" 2>/dev/null || :
+alive=''
+for _ in $(seq 50); do
+    alive=''
+    for pid in "${sleepers[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then alive+=" $pid"; fi
+    done
+    [ -n "$alive" ] || break
+    sleep 0.1
+done
+if [ "${#sleepers[@]}" -ne 2 ] || [ "$runner_code" != 143 ] || [ -n "$alive" ] \
+    || [ -n "$(ls -A "$scratch/interrupt-tmp")" ] \
+    || ! grep -q '^ok - finished before TERM$' "$scratch/interrupt.log" \
+    || ! grep -qF 'php-test.sh: no result recorded for plugins/a b/SleeperTest.php' "$scratch/interrupt.log" \
+    || ! grep -qF 'php-test.sh: no result recorded for plugins/a b/SecondSleeperTest.php' "$scratch/interrupt.log" \
+    || ! grep -q '^Failed PHP test files (2):$' "$scratch/interrupt.log"; then
+    cat "$scratch/interrupt.log" >&2
+    for pid in $alive; do kill -KILL "$pid" 2>/dev/null || :; done
+    ls -A "$scratch/interrupt-tmp" >&2
+    echo "TERM left PHP processes ($alive) or results (exit $runner_code, ${#sleepers[@]} started)" >&2
+    exit 1
+fi
+rm -rf -- "$fixture_dir"/{Sleeper,SecondSleeper,FinishedBeforeTerm}Test.php "$scratch/sleepers" "$scratch/interrupt-tmp"
+echo 'php-harness-test.sh: source paths, empty classes, early exits, skipped TestCase methods, and parallel jobs passed'

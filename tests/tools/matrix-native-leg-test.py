@@ -153,6 +153,45 @@ os.execvp('cc', ['cc', *args[index+1:]])
             with self.assertRaisesRegex(RuntimeError, "58"):
                 runner.run_leg(alias, "local", "leg", os.getuid(), os.getgid())
 
+    def test_parallel_local_tmp_keeps_room_for_the_per_file_directory(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as short:
+            # 56 bytes fits the sequential 58 but not the parallel 54.
+            directory = Path(short) / ("p" * (56 - len(short) - len("//tmp")))
+            (directory / "tree").mkdir(parents=True)
+            self.assertEqual(56, len(os.fsencode(directory / "tmp")))
+            with patch.object(runner, "compile_helpers", side_effect=RuntimeError("build-reached")), \
+                 patch.object(runner, "remove_owned_container"):
+                with self.assertRaisesRegex(RuntimeError, "at most 54 bytes"):
+                    runner.run_leg(directory, "local", "leg", os.getuid(), os.getgid(), jobs=2)
+                with self.assertRaisesRegex(RuntimeError, "build-reached"):
+                    runner.run_leg(directory, "local", "leg", os.getuid(), os.getgid(), jobs=1)
+
+    def test_full_suite_gets_jobs_and_a_durations_file_in_its_tmpdir(self):
+        tree = self.root / "jobs"
+        self.declare_rename_helper(tree, "rutorrent-fixture-rename")
+        command = runner.test_command(Path("/w"), Path("/mtmp"), (), tree, 6)[-1]
+        self.assertIn("env PHP_TEST_JOBS=6 PHP_TEST_TIMINGS=/mtmp/php-test-timings bash tests/php-test.sh",
+                      command)
+
+    def test_durations_round_trip_through_the_leg_tmpdir(self):
+        directory = self.root / "durations"
+        self.declare_rename_helper(directory / "tree", "rutorrent-fixture-rename")
+        kept = self.root / "php-timings-7.4"
+        kept.write_bytes(b"1\tphp/OldTest.php\0")
+        def run_suite(*args, **kwargs):
+            produced = directory / "tmp" / runner.TIMINGS_NAME
+            self.assertEqual(b"1\tphp/OldTest.php\0", produced.read_bytes())
+            produced.write_bytes(b"2\tphp/NewTest.php\0")
+            raise subprocess.CalledProcessError(1, "php-test.sh")
+        with patch.object(runner, "compile_helpers", return_value=(self.root, [])), \
+             patch.object(runner.subprocess, "run", side_effect=run_suite), \
+             patch.object(runner, "remove_owned_container"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                runner.run_leg(directory, "7.4", "leg", os.getuid(), os.getgid(), jobs=6, timings=kept)
+        # A failed suite still leaves its durations for the next start order.
+        self.assertEqual(b"2\tphp/NewTest.php\0", kept.read_bytes())
+        self.assertEqual(["php-timings-7.4"], sorted(p.name for p in self.root.glob("php-timings-*")))
+
 
 if __name__ == "__main__":
     unittest.main()

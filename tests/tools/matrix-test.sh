@@ -19,7 +19,7 @@ cleanup() {
     done
 }
 trap cleanup EXIT
-short_home_real="$(mktemp -d /tmp/mx.XXXXXX)"
+short_home_real="$(mktemp -d /tmp/mxXXX)"
 long_home="$(mktemp -d "${TMPDIR:-/tmp}/rtmlonghome.XXXXXX")"
 # The fixture needs a short HOME for the UNIX-socket path budget; only this
 # directory and symlink live in /tmp. Run data stays under TMPDIR.
@@ -36,13 +36,17 @@ cat > "$scratch/tests/tools/matrix-native-leg.py" <<'NATIVE_LEG_FIXTURE'
 import argparse, os
 from pathlib import Path
 p = argparse.ArgumentParser()
-for argument in ('directory', 'leg', 'uid', 'gid', 'name', 'owner'):
+for argument in ('directory', 'leg', 'uid', 'gid', 'name', 'owner', 'jobs', 'timings'):
     p.add_argument('--' + argument, required=True)
 a = p.parse_args()
 d = Path(a.directory)
+if 'MATRIX_TEST_JOBS_LOG' in os.environ:
+    with open(os.environ['MATRIX_TEST_JOBS_LOG'], 'a') as log:
+        log.write(a.leg + ' ' + a.jobs + ' ' + os.path.basename(a.timings) + '\n')
 if a.leg == 'local':
     os.chdir(d / 'tree/tests')
     os.environ['TMPDIR'] = str(d / 'tmp')
+    os.environ['PHP_TEST_JOBS'] = a.jobs
     os.execvp('bash', ['bash', 'php-test.sh'])
 os.execvp('docker', ['docker', 'run', '--rm', '--pull=never', '--name', a.name,
                     '--label', 'io.rutorrent.matrix.owner=' + a.owner,
@@ -115,6 +119,63 @@ grep -q 'duplicate leg: local' "$short_home/duplicate.log" || {
     cat "$short_home/duplicate.log" >&2
     echo 'duplicate leg did not produce a clear error' >&2; exit 1
 }
+# A parallel leg gives each file TMPDIR/XXX, so the local TMPDIR budget is
+# 4 bytes smaller: a 14-byte HOME makes it 55 bytes, which only the
+# sequential run accepts.
+budget_home="$short_home_real/pad"
+mkdir "$budget_home"
+if HOME="$budget_home" "$scratch/tools/matrix.sh" local > "$short_home/budget.log" 2>&1; then
+    echo 'a 55-byte TMPDIR was accepted for parallel files' >&2; exit 1
+fi
+grep -q 'is 55 bytes; UNIX socket fixtures need it <= 54 with MATRIX_PHP_JOBS=6' "$short_home/budget.log" || {
+    cat "$short_home/budget.log" >&2
+    echo 'the parallel TMPDIR budget had no actionable diagnostic' >&2; exit 1
+}
+HOME="$budget_home" MATRIX_PHP_JOBS=1 "$scratch/tools/matrix.sh" local > "$short_home/budget-one.log" || {
+    cat "$short_home/budget-one.log" >&2
+    echo 'a 55-byte TMPDIR was refused for the sequential run' >&2; exit 1
+}
+# Each suite leg gets the per-leg file count and its own durations file.
+HOME="$short_home" MATRIX_TEST_JOBS_LOG="$short_home/jobs.log" "$scratch/tools/matrix.sh" local > "$short_home/jobs-default.log"
+HOME="$short_home" MATRIX_TEST_JOBS_LOG="$short_home/jobs.log" MATRIX_PHP_JOBS=1 "$scratch/tools/matrix.sh" local > "$short_home/jobs-one.log"
+[ "$(cat "$short_home/jobs.log")" = "$(printf 'local 6 php-timings-local\nlocal 1 php-timings-local')" ] || {
+    cat "$short_home/jobs.log" >&2
+    echo 'MATRIX_PHP_JOBS did not reach the suite leg' >&2; exit 1
+}
+# A green full run names its mode in the marker, and `last` shows it. The
+# Docker stand-in answers every leg's container with one passing file.
+mkdir "$scratch/bin-green"
+cat > "$scratch/bin-green/docker" <<'DOCKER_GREEN'
+#!/bin/sh
+case "$1" in
+    image) echo sha256:green ;;
+    run)
+        case "$*" in *php-test.sh*) printf '> php php/aTest.php\n' ;; esac
+        printf '1 tests, 0 failures\n' ;;
+esac
+exit 0
+DOCKER_GREEN
+chmod +x "$scratch/bin-green/docker"
+HOME="$short_home" PATH="$scratch/bin-green:$PATH" MATRIX_PHP_JOBS=64 "$scratch/tools/matrix.sh" > "$short_home/jobs-full.log" 2>&1 || {
+    cat "$short_home/jobs-full.log" >&2
+    echo 'the stand-in full run was not green' >&2; exit 1
+}
+[ "$(HOME="$short_home" "$scratch/tools/matrix.sh" last | sed -n 4p)" = jobs=64 ] \
+    && grep -q '^green on local 8.1 7.4 prod-kinozal with jobs=64 in ' "$short_home/jobs-full.log" || {
+    cat "$short_home/jobs-full.log" >&2
+    HOME="$short_home" "$scratch/tools/matrix.sh" last >&2
+    echo 'the green marker or summary did not name jobs=64' >&2; exit 1
+}
+rm -rf -- "$scratch/bin-green" "$short_home/.cache/rtm/last-green"
+for jobs in 0 -1 two 65; do
+    if HOME="$short_home" MATRIX_PHP_JOBS="$jobs" "$scratch/tools/matrix.sh" local > "$short_home/jobs-bad.log" 2>&1; then
+        echo "MATRIX_PHP_JOBS='$jobs' was accepted" >&2; exit 1
+    fi
+    grep -q 'MATRIX_PHP_JOBS must be an integer from 1 to 64' "$short_home/jobs-bad.log" || {
+        cat "$short_home/jobs-bad.log" >&2
+        echo 'an invalid MATRIX_PHP_JOBS did not produce a clear error' >&2; exit 1
+    }
+done
 cat > "$scratch/tests/php-test.sh" <<'TEST'
 #!/bin/bash
 printf 'leg edit\n' >> ../env_check.php
@@ -686,4 +747,4 @@ grep -q 'runtime changed while it ran' "$short_home/runtime-drift.log" || {
     cat "$short_home/runtime-drift.log" >&2
     echo 'runtime drift was reported as source drift' >&2; exit 1
 }
-echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, source/runtime drift, local PHP fingerprint, selected-leg marker revocation, Docker-only without host PHP passed'
+echo 'matrix-test.sh: digest/mode, deletion, export, leg isolation, PHP jobs, warning, empty PHP test, marker drift, TERM, INT, HUP, retention, umask, stale-run cleanup, long HOME, and delayed Docker cleanup, source/runtime drift, local PHP fingerprint, selected-leg marker revocation, Docker-only without host PHP passed'

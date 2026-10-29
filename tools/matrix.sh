@@ -12,6 +12,10 @@
 # RUTORRENT_MATRIX_PROD_IMAGE selects a local candidate for the packaged leg;
 # the selected image reference and identity are included in the runtime digest.
 # Only the default run with no leg arguments records the pre-commit marker.
+# MATRIX_PHP_JOBS (default 6, at most 64) is how many test files each suite
+# leg runs at once (tests/php-test.sh PHP_TEST_JOBS); 1 is the sequential run.
+# Each leg keeps its durations in the base directory and starts the slowest
+# files first. The marker's fourth line names the mode as jobs=N.
 #   tools/matrix.sh digest          print the digest of what the suite tests
 #   tools/matrix.sh last            show the last green run
 #
@@ -52,6 +56,9 @@ base="$(cd "$base" && pwd -P)" || exit 1
 marker="${base}/last-green"
 prod_image="${RUTORRENT_MATRIX_PROD_IMAGE:-ivanshift/rutorrent:latest}"
 tmpdir_budget=58  # 58 + the 49-byte socket suffix fits the 107-byte sun_path limit.
+# Three suite legs run side by side, so 6 files per leg keep 18 PHP processes
+# and their fixtures within this machine's 24 cores.
+php_jobs="${MATRIX_PHP_JOBS:-6}"
 
 # A tracked path removed in the working tree is deliberately absent. A file
 # vanishing while it is hashed or archived remains an error.
@@ -171,6 +178,12 @@ case "${1:-}" in
 	last)   cat "$marker" 2>/dev/null || echo "no green run recorded"; exit 0 ;;
 esac
 
+if ! [[ "$php_jobs" =~ ^[1-9][0-9]?$ ]] || [ "$php_jobs" -gt 64 ]; then
+    echo "matrix.sh: MATRIX_PHP_JOBS must be an integer from 1 to 64, not '$php_jobs'" >&2
+    exit 2
+fi
+# In parallel, php-test.sh runs each file under TMPDIR/XXX: 4 bytes more.
+[ "$php_jobs" -eq 1 ] || tmpdir_budget=$((tmpdir_budget - 4))
 legs=("$@")
 record_green=0
 if [ "${#legs[@]}" -eq 0 ]; then
@@ -196,7 +209,8 @@ if [[ " ${legs[*]} " == *" local "* ]]; then
     local_tmp="${base}/${stamp}.XXXXXX/local/tmp"
     local_tmp_bytes="$(printf '%s' "$local_tmp" | wc -c)"
     if [ "$local_tmp_bytes" -gt "$tmpdir_budget" ]; then
-        echo "matrix.sh: TMPDIR '$local_tmp' is $local_tmp_bytes bytes; UNIX socket fixtures need it <= $tmpdir_budget" >&2
+        echo "matrix.sh: TMPDIR '$local_tmp' is $local_tmp_bytes bytes; UNIX socket fixtures need it <= $tmpdir_budget" \
+            "with MATRIX_PHP_JOBS=$php_jobs; set RUTORRENT_MATRIX_BASE to a shorter directory" >&2
         exit 2
     fi
 fi
@@ -371,12 +385,13 @@ for leg in "${legs[@]}"; do
         *)
             container_name[$leg]="rtm-$(basename "$run")-$leg"
             setsid bash -c '
-                dir="$1"; leg="$2"; uid="$3"; gid="$4"; name="$5"; owner="$6"
+                dir="$1"; leg="$2"; uid="$3"; gid="$4"; name="$5"; owner="$6"; jobs="$7"; timings="$8"
                 python3 "$dir/tree/tests/tools/matrix-native-leg.py" \
                     --directory "$dir" --leg "$leg" --uid "$uid" --gid "$gid" --name "$name" --owner "$owner" \
-                    > "$dir/php-test.log" 2>&1
+                    --jobs "$jobs" --timings "$timings" > "$dir/php-test.log" 2>&1
                 printf "%s\n" "$?" > "$dir/exit"
-            ' _ "$dir" "$leg" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" &
+            ' _ "$dir" "$leg" "$uid" "$gid" "${container_name[$leg]}" "$container_owner" \
+                "$php_jobs" "$base/php-timings-$leg" &
             ;;
     esac
     pid[$leg]=$!
@@ -420,10 +435,11 @@ if [ "$status" = 0 ] && [ "$before" = "$after" ]; then
     if [ "$record_green" = 1 ]; then
         marker_lock
         tmp_marker="$(mktemp "${marker}.XXXXXX")" || exit 1
-        printf '%s\n%s\n%s\n' "$after" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${legs[*]}" > "$tmp_marker"
+        printf '%s\n%s\n%s\njobs=%s\n' "$after" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${legs[*]}" "$php_jobs" \
+            > "$tmp_marker"
         mv -f "$tmp_marker" "$marker"
         marker_unlock
-        echo "green on ${legs[*]} in ${elapsed}s; recorded ${after:0:12} for the pre-commit hook"
+        echo "green on ${legs[*]} with jobs=$php_jobs in ${elapsed}s; recorded ${after:0:12} for the pre-commit hook"
     else
         echo "green on ${legs[*]} in ${elapsed}s; focused run does not update last-green"
     fi
