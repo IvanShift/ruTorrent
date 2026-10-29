@@ -5,11 +5,15 @@ require_once( 'xmlrpc.php' );
 require_once( 'Torrent.php' );
 require_once( __DIR__.'/commandargs.php' );
 
+// A courtesy delay to the daemon between load checks; the settle window is
+// LOAD_WAIT_ATTEMPTS of them. Tests may declare it shorter before loading.
+if(!defined('RTORRENT_LOAD_WAIT_DELAY_US')) define('RTORRENT_LOAD_WAIT_DELAY_US', 50000);
+
 class rTorrent
 {
 	const RTORRENT_PACKET_LIMIT = 1572864;
 	const LOAD_WAIT_ATTEMPTS = 40;
-	const LOAD_WAIT_DELAY_US = 50000;
+	const LOAD_WAIT_DELAY_US = RTORRENT_LOAD_WAIT_DELAY_US;
 	const LOAD_PROOF_KEY_PREFIX = 'ru-load-proof-';
 
 	// An addition is appended to the load call as a trailing parameter, and

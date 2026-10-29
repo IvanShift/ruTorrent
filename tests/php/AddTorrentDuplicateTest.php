@@ -64,7 +64,11 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->server = AddTorrentHttpHarness::forAddTorrent(
 			new FakeRtorrentAddTorrentReplies($loaded, $proofs, $snapshotFails, $daemon),
 			array('globals' => array('rpcTimeOut' => 10, 'rpcLogCalls' => false,
-				'saveUploadedTorrents' => true)));
+				'saveUploadedTorrents' => true),
+				// The settle window is a courtesy to the daemon; the fake daemon
+				// shows a late stub by read count, so 20 ms polls keep its fourth
+				// read far inside a 0.8 s window.
+				'preamble' => "define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);"));
 		$this->daemon = $this->server->daemon();
 		$response = $this->server->request('POST', '/php/addtorrent.php', $body,
 			array('Content-Type' => $contentType));

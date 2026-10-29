@@ -61,6 +61,12 @@ define('RETRACKERS_IMPORT_ONLY', true);
 // the shipped defaults without these declarations.
 define('RETRACKERS_TEARDOWN_TIMEOUT', 0.2);
 define('RETRACKERS_RECEIPT_POLL', 0.01);
+// Bounded daemon reads retry for a peer initializer that no fixture here
+// plays. One concurrent-init case waits out that whole budget to reach its
+// verdict, five seconds at the shipped values; the verdict does not depend
+// on the budget's length. InitInFlightTest declares the same two values.
+define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.05);
+define('RETRACKERS_PREFLIGHT_POLL', 0.001);
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 $retrackersUpdateImportsAfter = get_included_files();
 

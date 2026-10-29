@@ -59,7 +59,9 @@ class TestHttpServer
 				self::closeAtShutdown($server);
 				fclose($pipes[0]);
 				$cause = 'server gave no answer with the readiness token';
-				for($i = 0; $i < 100; $i++)
+				// 500 polls 5 ms apart sleep the same 2.5 s in all as 100 polls
+				// 25 ms apart did, and a server that is up is seen 5 ms later at most.
+				for($i = 0; $i < 500; $i++)
 				{
 					$status = proc_get_status($server->process);
 					if(!$status['running'])
@@ -79,7 +81,7 @@ class TestHttpServer
 						if(is_string($response) && substr($response, -strlen($token)) === $token)
 							return $server;
 					}
-					usleep(25000);
+					usleep(5000);
 				}
 				$server->close();
 			}

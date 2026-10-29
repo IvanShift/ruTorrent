@@ -80,16 +80,21 @@ class PhpProcess
 		return ($ini === false) ? array() : array('-c', $ini);
 	}
 
-	/** SIGTERM, then SIGKILL if the child is still running two seconds later. */
+	/**
+	 * SIGTERM, then SIGKILL if the child is still running two seconds later.
+	 * A terminated child is usually gone within a few milliseconds, so the
+	 * exit is polled in 5 ms steps: every server a suite stops used to pay a
+	 * whole 50 ms step for it.
+	 */
 	public static function stop($process)
 	{
 		proc_terminate($process);
-		for($i = 0; $i < 40; $i++)
+		for($i = 0; $i < 400; $i++)
 		{
 			$status = proc_get_status($process);
 			if(empty($status['running']))
 				return;
-			usleep(50000);
+			usleep(5000);
 		}
 		proc_terminate($process, 9);
 	}

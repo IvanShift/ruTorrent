@@ -30,6 +30,10 @@ class TaskConsoleAsyncTest extends TestCase
 
 	public function testSlowDumpAndMediaInfoReturnBeforeTheirTaskCompletes()
 	{
+		// Both slow commands run side by side. Each start is still timed on its
+		// own against its own four-second command; the second request just no
+		// longer waits for the first command to finish before it is made.
+		$running = array();
 		foreach (array('dump', 'mediainfo') as $plugin) {
 			$task = new rTask(array('requester'=>$plugin, 'name'=>$plugin));
 			$start = microtime(true);
@@ -39,8 +43,9 @@ class TaskConsoleAsyncTest extends TestCase
 				$plugin.' returns the task number before the slow command completes');
 			$this->assertEquals(-1, $result['status'],
 				$plugin.' is still running when its console request returns');
-
-			$deadline = microtime(true) + 6.0;
+			$running[$plugin] = array($task, $result, microtime(true) + 6.0);
+		}
+		foreach ($running as $plugin => list($task, $result, $deadline)) {
 			while ($result['status'] < 0 && microtime(true) < $deadline) {
 				usleep(100000);
 				$result = rTask::check($task->id);

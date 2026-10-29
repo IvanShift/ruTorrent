@@ -34,7 +34,12 @@ function moveWorkerRun($state, $actor = 'worker')
     $daemon = new FakeRtorrentDaemon(new AutoToolsMoveDaemonReplies($state), $root . '/calls', false,
         array(__DIR__ . '/MoveDaemonReplies.php', __DIR__ . '/../../php/ScgiToolPeer.php'));
     $driver = $root . '/driver.php';
-    $source = '<?php $_SERVER["REMOTE_USER"]="tester"; $_ENV["RU_PROFILE_PATH"]=' . var_export($root.'/profile', true)
+    // The settle pause gives a remote filesystem time to show a renamed name.
+    // A local name is there at once, and SettlingRenameFiles reveals one by
+    // lookup count, never by time, so a short pause changes no answer and
+    // spares each missing or hidden lookup its 50 ms.
+    $source = '<?php define("ERASEDATA_RENAME_SETTLE_PAUSE_US", 1000); '
+        . '$_SERVER["REMOTE_USER"]="tester"; $_ENV["RU_PROFILE_PATH"]=' . var_export($root.'/profile', true)
         . '; $_ENV["RU_LOG_FILE"]=' . var_export($root.'/errors.log',true) . '; chdir('
         . var_export($repo.'/plugins/autotools',true) . '); require_once "../../conf/config.php"; require_once "../../php/settings.php";'
         . '$r=new ReflectionClass("rTorrentSettings"); $s=$r->newInstanceWithoutConstructor();'

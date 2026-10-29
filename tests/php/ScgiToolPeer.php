@@ -70,7 +70,10 @@ final class ScgiToolPeer
 		$exited = null;
 		$deadline = time() + 20;
 		while (time() < $deadline) {
-			$client = @stream_socket_accept($server, 1);
+			// A short accept wait: a pending connection is taken at once, and the
+			// tool's exit is seen within 50 ms rather than a whole second after
+			// its last request, which every run used to pay.
+			$client = @stream_socket_accept($server, 0.05);
 			if (!is_resource($client)) {
 				// Before PHP 8.3 only the call that first sees the exit carries its code.
 				$status = proc_get_status($process);

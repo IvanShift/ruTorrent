@@ -3,6 +3,10 @@
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/PermissiveDirectorySettings.php');
 require_once(__DIR__ . '/RtorrentLoadConfirmationFixture.php');
+// The settle window is a courtesy to the daemon. The fixture confirms a late
+// proof by query count, not by time, so 20 ms polls leave its third query far
+// inside a 0.8 s window and spare each unconfirmed load 1.2 s of waiting.
+if (!defined('RTORRENT_LOAD_WAIT_DELAY_US')) define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);
 require_once(__DIR__ . '/../../php/rtorrent.php');
 require_once(__DIR__ . '/../../plugins/rss/rss.php');
 
