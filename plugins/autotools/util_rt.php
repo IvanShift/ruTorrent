@@ -813,7 +813,7 @@ class AutoToolsFileTransaction
     {
         $path = $directory . '/' . $file;
         $parent = realpath(dirname($path));
-        return $parent === false ? null : $parent . '/' . basename($path);
+        return $parent === false ? null : $parent . '/' . FileUtil::getFileName($path);
     }
 
     private static function overlapsFiles($record, $retry)

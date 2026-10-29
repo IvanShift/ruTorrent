@@ -3,7 +3,8 @@ require_once(__DIR__.'/../../../php/utility/json.php');
 // Extracted classes omit the production bootstrap which supplies Utility.
 require_once(__DIR__.'/../../../php/utility/utility.php');
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
-class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; } }
+class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; }
+    public static function getFileName($path) { $parts = explode('/', $path); return end($parts); } }
 
 function rtAddTailSlash($path) { return rtrim($path, '/') . '/'; }
 function rtMkDir($path, $mode = 0777)

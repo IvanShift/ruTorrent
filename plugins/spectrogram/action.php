@@ -19,7 +19,7 @@ if(isset($input['cmd']))
 				$filename = rTorrent::getFilePath($input['hash'], $input['no']);
 				if($filename !== false)
 				{
-					$mediafile = basename($filename);
+					$mediafile = FileUtil::getFileName($filename);
 					$commands = array();
 					$name = '"${dir}"/frame.png';
 					$commands[] = Utility::getExternal("sox").

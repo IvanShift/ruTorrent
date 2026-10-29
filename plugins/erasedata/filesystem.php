@@ -1899,7 +1899,7 @@ function erasedataSameEntryIdentity($expected, $current)
 function erasedataCapturedEntryPrefix($path, $reservationKey)
 {
 	return(dirname($path).'/.erasedata-entry-'.hash(
-		'sha256', $reservationKey."\0".basename($path)).'-');
+		'sha256', $reservationKey."\0".FileUtil::getFileName($path)).'-');
 }
 
 function erasedataCapturedEntryNamePath($root)
@@ -1963,7 +1963,7 @@ function erasedataCapturedEntryRootInfo($root, $path, $reservationKey,
 	ErasedataFilesystemOps $filesystem)
 {
 	$prefix = erasedataCapturedEntryPrefix($path, $reservationKey);
-	if(strpos($root, $prefix) !== 0 || erasedataCapturedEntryName($root) !== basename($path))
+	if(strpos($root, $prefix) !== 0 || erasedataCapturedEntryName($root) !== FileUtil::getFileName($path))
 		return(false);
 	$suffix = substr($root, strlen($prefix));
 	if(!preg_match('/^([0-9]+)-([0-9]+)-([ldfo])-[a-f0-9]{32}$/D',
@@ -1996,7 +1996,7 @@ function erasedataCreateCapturedEntryRoot($path, $reservationKey, $expected,
 		|| !$filesystem->makeDirectory($root, 0700))
 		return(false);
 	$namePath = erasedataCapturedEntryNamePath($root);
-	$name = base64_encode(basename($path));
+	$name = base64_encode(FileUtil::getFileName($path));
 	$written = @file_put_contents($namePath, $name, LOCK_EX);
 	@chmod($namePath, 0600);
 	if($written !== strlen($name) || !erasedataCreatePrivateMarker($root,

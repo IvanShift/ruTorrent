@@ -4,7 +4,8 @@ require_once(__DIR__.'/../../../php/utility/json.php');
 require_once(__DIR__.'/../../../php/utility/utility.php');
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
 eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
-class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; } }
+class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; }
+    public static function getFileName($path) { $parts = explode('/', $path); return end($parts); } }
 // Use the production mail-file selection policy and spy only on delivery.
 eval('class rAutoTools { public static $sent = array(); public static '
     . loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/autotools.php', 'completionMailFile')
@@ -542,6 +543,28 @@ foreach (array('HardLink', 'Copy') as $nextMode) {
         } finally { rXMLRPCRequest::reset(); strictRemoveTree($root); }
     });
 }
+// Final names must not depend on the locale: the hook runs under rtorrent, in
+// C when rtorrent runs without LANG, and there PHP 7.4's basename() named both
+// a/Сериал and a/Фильм "a", so the second job waited for the first.
+$suite->test('pending Copy receipt permits a disjoint non-ASCII name in the C locale', function () {
+    $root = txFixture();
+    $locale = setlocale(LC_CTYPE, '0');
+    try {
+        file_put_contents($root . '/src/a/Сериал', 'new-alpha');
+        file_put_contents($root . '/src/a/Фильм', 'new-beta');
+        $first = txCallerContext($root);
+        $second = $first;
+        $second['hash'] = str_repeat('C', 40);
+        $second['token'] = str_repeat('d', 32);
+        setlocale(LC_CTYPE, 'C');
+        strictAssertSame(true, rtOpFiles(array('a/Сериал'), $root . '/src', $root . '/dst/item',
+            'Copy', false, $first), 'first Copy');
+        strictAssertSame(true, rtOpFiles(array('a/Фильм'), $root . '/src', $root . '/dst/item',
+            'Copy', false, $second), 'a file of another name is not the same final name');
+        strictAssertSame('new-alpha', file_get_contents($root . '/dst/item/a/Сериал'), 'first file');
+        strictAssertSame('new-beta', file_get_contents($root . '/dst/item/a/Фильм'), 'second file');
+    } finally { setlocale(LC_CTYPE, $locale); rXMLRPCRequest::reset(); strictRemoveTree($root); }
+});
 $suite->test('pending Copy receipt permits a new nested destination parent', function () {
     $root = txFixture();
     try {

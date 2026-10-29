@@ -15,6 +15,7 @@ class FileUtil
 {
     public static $messages = array();
     public static function toLog($message) { self::$messages[] = $message; }
+    public static function getFileName($path) { $parts = explode('/', $path); return end($parts); }
 }
 
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';

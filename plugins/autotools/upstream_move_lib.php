@@ -41,7 +41,7 @@ public static function rtMoveFile( $src, $dst, $dbg = false )
 
 public static function rtDestinationRoot( $dst )
 {
-	$dst = rtRemoveTailSlash( $dst );
+	$dst = rtrim( $dst, '/' );
 	if( $dst == '' )
 		return '';
 	$real = realpath( $dst );
@@ -58,7 +58,7 @@ public static function rtDestinationRoot( $dst )
 		$parent = dirname( $path );
 		if( $parent === $path )
 			return '';
-		array_unshift( $tail, basename( $path ) );
+		array_unshift( $tail, FileUtil::getFileName( $path ) );
 		$real = realpath( $parent );
 		if( $real !== false )
 			return rtRemoveTailSlash( $real ).'/'.implode( '/', $tail );

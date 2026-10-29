@@ -393,4 +393,25 @@ $suite->test('upstream rtMoveFile never touches a copied name that stays missing
         strictAssertSame('payload',file_get_contents($root.'/moved'),'payload intact');
     }finally{strictRemoveTree($root);}
 });
+// rtDestinationRoot() names a destination that is not there yet from its path
+// elements. The name must not depend on the locale: upstream_move.php runs
+// under rtorrent, in C when rtorrent runs without LANG, and there PHP 7.4's
+// basename() drops the non-ASCII bytes of a path element.
+$suite->test('upstream destination root keeps a non-ASCII name that is not there yet',function(){
+    if(!class_exists('AutoToolsUpstreamMove',false)){
+        require_once testFindRepoRoot().'/php/utility/fileutil.php';
+        eval(loadFunctionDefinition(testFindRepoRoot().'/plugins/autotools/util_rt.php','rtRemoveTailSlash'));
+        eval(loadClassDefinition(testFindRepoRoot().'/plugins/autotools/upstream_move_lib.php','AutoToolsUpstreamMove'));
+    }
+    $root=(getenv('TMPDIR')?:sys_get_temp_dir()).'/upstream-root-'.bin2hex(random_bytes(6));
+    mkdir($root.'/fin',0700,true);
+    $locale=setlocale(LC_CTYPE,'0');
+    setlocale(LC_CTYPE,'C');
+    try{
+        $named=AutoToolsUpstreamMove::rtDestinationRoot($root.'/fin/Сериал/');
+        $doubled=AutoToolsUpstreamMove::rtDestinationRoot($root.'/fin/TV//');
+    }finally{setlocale(LC_CTYPE,$locale);strictRemoveTree($root);}
+    strictAssertSame($root.'/fin/Сериал',$named,'the destination keeps its own name');
+    strictAssertSame($root.'/fin/TV',$doubled,'and one that ends in two slashes is named as with one');
+});
 exit($suite->run());

@@ -110,4 +110,21 @@ class AudFilePathTest extends TestCase
 				$plugin . ' runs its tool on the file the daemon named: ' . ($scripts[0] ?? ''));
 		}
 	}
+
+	/**
+	 * spectrogram titles its image with the file's name. The name must not
+	 * depend on the locale: in C, PHP 7.4's basename() made Сериал.flac .flac.
+	 */
+	public function testSpectrogramTitlesTheImageWithTheFileNameInTheCLocale()
+	{
+		$file = $this->base . '/data/Сериал.flac';
+		file_put_contents($file, self::PAYLOAD);
+		list($exit, $out, $err) = $this->drive('plugins/spectrogram/action.php', array('', $file),
+			array('post' => array('cmd' => 'sox', 'hash' => self::HASH, 'no' => '0'),
+				'before' => 'setlocale(LC_CTYPE, "C");'));
+		$scripts = PluginEntryDriver::taskScripts($this->base);
+		$this->assertSame(1, count($scripts), 'spectrogram builds one task: ' . $out . $err);
+		$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], " -t 'Сериал.flac' ") !== false,
+			'its title is the file\'s name: ' . ($scripts[0] ?? ''));
+	}
 }

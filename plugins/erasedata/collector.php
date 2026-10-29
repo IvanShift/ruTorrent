@@ -1691,7 +1691,7 @@ final class ErasedataCollector
 			return(array('state' => 'unsafe'));
 		}
 		return(array('state' => 'pinned', 'reference' => $reference,
-			'owned' => $owned, 'path' => $reference['path'].'/'.basename($path)));
+			'owned' => $owned, 'path' => $reference['path'].'/'.FileUtil::getFileName($path)));
 	}
 
 	private function pinnedBaseParent($path)
@@ -1720,7 +1720,7 @@ final class ErasedataCollector
 			return(array('state' => 'unsafe'));
 		}
 		return(array('state' => 'pinned', 'reference' => $reference,
-			'owned' => true, 'path' => $reference['path'].'/'.basename($path)));
+			'owned' => true, 'path' => $reference['path'].'/'.FileUtil::getFileName(rtrim($path, '/'))));
 	}
 
 	private function publicParentMatchesReference($path, $reference)
@@ -1980,7 +1980,7 @@ final class ErasedataCollector
 			if($record['reservation'] !== null
 				&& $record['reservation'] !== $name)
 				return(false);
-			$path = $record['parent'].'/'.basename($logical);
+			$path = $record['parent'].'/'.FileUtil::getFileName($logical);
 			$entry = $this->filesystem->entryIdentity($path);
 			$observed = $this->filesystem->pathIdentity($path);
 			if($entry === false

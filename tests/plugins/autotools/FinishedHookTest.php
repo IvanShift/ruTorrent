@@ -15,6 +15,7 @@ class FileUtil
     public static $messages = array();
     public static function toLog($message) { self::$messages[] = $message; }
     public static function addslash($path) { return rtrim($path, '/') . '/'; }
+    public static function getFileName($path) { $parts = explode('/', $path); return end($parts); }
 }
 
 // The plugin configuration the hook reads, and the checks it calls.

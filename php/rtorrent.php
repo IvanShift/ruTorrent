@@ -889,7 +889,7 @@ class rTorrent
 		$top = FileUtil::addslash($topDirectory);
 		if(($top === '/') || !User::isLocalMode())
 			return(true);
-		foreach(array('realpath', 'file_exists', 'is_link', 'basename', 'dirname') as $function)
+		foreach(array('realpath', 'file_exists', 'is_link', 'dirname') as $function)
 			if(!function_exists($function)) return false;
 		$realTop = @realpath($top);
 		$realTop = FileUtil::addslash(is_string($realTop) ? $realTop : $top);
@@ -900,9 +900,9 @@ class rTorrent
 		while(!@file_exists($path) && !@is_link($path))
 		{
 			$parent = @dirname($path);
-			$name = @basename($path);
+			$name = FileUtil::getFileName($path);
 			// An inaccessible root is not a missing directory we can keep climbing.
-			if(!is_string($parent) || $parent === '' || $parent === $path || !is_string($name))
+			if(!is_string($parent) || $parent === '' || $parent === $path)
 				return false;
 			$rest = '/'.$name.$rest;
 			$path = $parent;

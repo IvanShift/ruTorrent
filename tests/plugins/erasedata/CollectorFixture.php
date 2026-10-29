@@ -63,6 +63,7 @@ if(!class_exists('FileUtil'))
 			self::$log[] = $msg;
 		}
 		public static function getPluginConf($plugin) { return self::$pluginConf; }
+		public static function getFileName($path) { $parts = explode('/', $path); return end($parts); }
 	}
 }
 
@@ -1516,6 +1517,7 @@ class ErasedataProductionMirror
 			."\tpublic static function getSettingsPath() { return(".$settings."); }\n"
 			."\tpublic static function getProfilePath() { return(dirname(".$settings.")); }\n"
 			."\tpublic static function getConfFile(\$name) { return(false); }\n"
+			."\tpublic static function getFileName(\$path) { \$parts = explode('/', \$path); return(end(\$parts)); }\n"
 			."\tpublic static function makeDirectory(\$dir, \$perms = null, \$preserveExisting = false) { "
 			."if(\$perms === null) \$perms = 0777; if(\$preserveExisting && is_dir(\$dir)) return(true); "
 			."return(is_dir(\$dir) ? @chmod(\$dir, \$perms) : @mkdir(\$dir, \$perms, true)); }\n"

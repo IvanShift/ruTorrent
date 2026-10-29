@@ -171,6 +171,44 @@ class AddDirectorySymlinkTest extends TestCase
 		$this->assertTrue($inside === true, 'with "/" as the top directory nothing is outside it');
 	}
 
+	/**
+	 * A top directory that does not exist is compared as written, so the
+	 * names put back after the part that exists have to be the ones in the
+	 * path. In a non-UTF-8 locale, such as C, PHP 7.4's basename() drops a
+	 * non-ASCII name and answers the element before it instead.
+	 */
+	public function testANonAsciiTopDirectoryThatDoesNotExistYetHoldsWhatIsUnderIt()
+	{
+		$GLOBALS['topDirectory'] = $this->base . '/Загрузки/';
+		$locale = setlocale(LC_CTYPE, '0');
+		setlocale(LC_CTYPE, 'C');
+		try {
+			$inside = rTorrent::isInsideTopDirectory($this->base . '/Загрузки/new');
+		} finally {
+			setlocale(LC_CTYPE, $locale);
+		}
+		$this->assertTrue($inside === true, 'a directory under it is accepted');
+	}
+
+	/**
+	 * The names put back decide the answer when a link on the way points
+	 * up. A link inside the top directory that has the top directory's own
+	 * name and points at its parent is followed by a name PHP 7.4's
+	 * basename() drops: "\xff" is not a character in C or in any UTF-8
+	 * locale. The link's name came back in its place, and the directory
+	 * read as inside the top directory while mkdir -p makes it beside it.
+	 */
+	public function testALinkOutNamedLikeTheTopDirectoryIsRefused()
+	{
+		$link = $this->top . '/top';
+		symlink($this->base, $link);
+		$dir = $link . "/\xff/new";
+		$this->assertTrue(rTorrentSettings::get()->correctDirectory($dir),
+			'it passes the text check');
+		$this->assertTrue(rTorrent::isInsideTopDirectory($dir) === false,
+			'but it resolves beside the top directory and is refused');
+	}
+
 	// ---- the senders load nothing through a link out ------------------------
 
 	public function testSendTorrentLoadsNothingThroughALinkOut()
@@ -206,6 +244,19 @@ class AddDirectorySymlinkTest extends TestCase
 		$this->assertSame(0, $result['code'], 'filesystem refusal is not a PHP error');
 		$this->assertSame('refused', $result['out'], 'no usable ancestor means refusal');
 		$this->assertSame('', $result['err'], 'expected filesystem restrictions do not flood diagnostics');
+	}
+
+	public function testADisabledBasenameDoesNotRefuseADirectoryInside()
+	{
+		$root = dirname(__DIR__, 2);
+		$code = 'require ' . var_export($root . '/php/rtorrent.php', true) . ';'
+			. '$topDirectory = ' . var_export($this->top, true) . ';'
+			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
+			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/plain/new") ? "allowed" : "refused";';
+		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
+			array('-d', 'disable_functions=basename', '-r', $code)), array('timeout' => 10));
+		$this->assertSame('allowed', $result['out'], 'a new directory inside is accepted: ' . $result['err']);
+		$this->assertSame('', $result['err'], 'without diagnostics');
 	}
 
 	public function testNewTorrentAtAReportedOutsidePathIsRefusedBeforeDispatch()

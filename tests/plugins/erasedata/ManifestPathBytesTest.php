@@ -14,6 +14,9 @@ require_once(__DIR__ . '/../../../plugins/erasedata/collector.php');
  * like the escaped name (AUD-ESC-09 F3: `a\"b` next to the payload `a"b`), and
  * nothing tells such a path from a real backslash, so it is retained and
  * reported. Without a backslash both spellings are the same bytes.
+ *
+ * Three cases are about the locale instead: non-ASCII names in C, where PHP
+ * 7.4's basename() drops them.
  */
 class ManifestPathBytesTest extends TestCase
 {
@@ -74,12 +77,12 @@ class ManifestPathBytesTest extends TestCase
 	// One ordinary collector pass over the queue, every download already gone
 	// from rTorrent. With $sink the pass reports its retentions as the drain
 	// does.
-	private function collect($sink = null)
+	private function collect($sink = null, $force = false)
 	{
 		$collector = new ErasedataCollector(new ErasedataCollectorFixture(array()),
 			function($hash) { return ERASEDATA_TORRENT_ABSENT; },
 			function($hash, $physicalOnly = false) { return false; },
-			function($line) {}, false);
+			function($line) {}, $force);
 		if ($sink !== null)
 			$collector->reportRetentionsTo($sink);
 		$collector->run($this->queue);
@@ -236,5 +239,114 @@ class ManifestPathBytesTest extends TestCase
 		$this->assertSame(false, ErasedataManifestCodec::decodeBytes(json_encode($plainMarked,
 			JSON_UNESCAPED_SLASHES) . "\n", self::PLAIN), 'a mark on paths without a backslash is not this'
 			. ' producer\'s and is refused');
+	}
+
+	/**
+	 * A payload's name must not depend on the locale: the collector runs under
+	 * rtorrent, in C when rtorrent runs without LANG, and there PHP 7.4's
+	 * basename() drops the non-ASCII bytes a name starts with, so the file it
+	 * looked for was " 1.mkv" and the directory the one it is in.
+	 */
+	public function testNonAsciiPayloadsAreDeletedInTheCLocale()
+	{
+		$file = $this->data . '/Серия 1.mkv';
+		file_put_contents($file, 'payload');
+		$directory = $this->data . '/Сериал';
+		mkdir($directory, 0700);
+		file_put_contents($directory . '/Фильм.mkv', 'payload');
+		$single = $this->publish(self::PLAIN, (string) ErasedataManifestCodec::encode(self::PLAIN,
+			array('base' => $file, 'files' => array($file), 'multi' => false), 1));
+		$multi = $this->publish(self::MULTI, (string) ErasedataManifestCodec::encode(self::MULTI,
+			array('base' => $directory, 'files' => array($directory . '/Фильм.mkv'), 'multi' => true), 1));
+
+		$locale = setlocale(LC_CTYPE, '0');
+		setlocale(LC_CTYPE, 'C');
+		try {
+			$this->collect();
+		} finally {
+			setlocale(LC_CTYPE, $locale);
+		}
+		$this->assertSame(null, self::contents($file), 'the single file is deleted');
+		$this->assertSame(false, file_exists($directory), 'and so is the multi-file directory');
+		$this->assertSame(null, self::contents($single), 'its manifest is consumed');
+		$this->assertSame(null, self::contents($multi), 'and so is the other one');
+		$this->assertSame(array(), FileUtil::$log, 'with no refusal: ' . json_encode(FileUtil::$log));
+	}
+
+	/** A forced base that ends in slashes still names its directory, as basename() read it. */
+	public function testAForcedBaseEndingInSlashesIsDeleted()
+	{
+		$base = $this->data . '/Name';
+		mkdir($base, 0700);
+		file_put_contents($base . '/x', 'payload');
+		file_put_contents($this->data . '/sibling', 'sibling');
+		$this->publish(self::MULTI, (string) ErasedataManifestCodec::encode(self::MULTI,
+			array('base' => $base . '//', 'files' => array($base . '/x'), 'multi' => true), 2));
+
+		$this->collect(null, true);
+		$this->assertSame(false, file_exists($base), 'the directory is deleted: ' . json_encode(FileUtil::$log));
+		$this->assertSame('sibling', self::contents($this->data . '/sibling'), 'and its sibling is not');
+	}
+
+	/**
+	 * A captured entry's private root is found by a prefix made from its name.
+	 * In C, PHP 7.4's basename() gave Сериал.mkv and Фильм.mkv the same name,
+	 * .mkv, so the root of one was taken for one of the other's.
+	 */
+	public function testACapturedEntryRootBelongsToItsOwnNameInTheCLocale()
+	{
+		$captured = $this->data . '/Сериал.mkv';
+		file_put_contents($captured, 'payload');
+		$filesystem = new ErasedataFilesystemOps();
+		$key = $this->queue . '/' . self::OLD . '.list';
+		$locale = setlocale(LC_CTYPE, '0');
+		setlocale(LC_CTYPE, 'C');
+		try {
+			$root = erasedataCreateCapturedEntryRoot($captured, $key,
+				$filesystem->entryIdentity($captured), $filesystem);
+			$roots = erasedataCapturedEntryRoots($this->data . '/Фильм.mkv', $key, $filesystem);
+		} finally {
+			setlocale(LC_CTYPE, $locale);
+		}
+		$this->assertTrue(is_string($root), 'a private root is made for the captured file');
+		$this->assertSame(array(), $roots, 'and it is not one of the other file\'s');
+	}
+
+	/**
+	 * Directory recovery looks for the directory a record was written for.
+	 * In C, PHP 7.4's basename() turned .../data/Сериал into data, so a
+	 * prepared record no longer found its own directory.
+	 */
+	public function testADirectoryIntentFindsItsNonAsciiDirectoryInTheCLocale()
+	{
+		$directory = $this->data . '/Сериал';
+		mkdir($directory, 0700);
+		$item = $this->queue . '/' . self::MULTI . '.list';
+		$digest = str_repeat('a', 64);
+		$parent = stat($this->data);
+		$target = stat($directory);
+		$collector = new ErasedataCollector(new ErasedataCollectorFixture(array()),
+			function($hash) { return ERASEDATA_TORRENT_ABSENT; },
+			function($hash, $physicalOnly = false) { return false; },
+			function($line) {}, false);
+		$intentPath = new ReflectionMethod('ErasedataCollector', 'directoryIntentPath');
+		$mark = new ReflectionMethod('ErasedataCollector', 'markDirectoryIntentPhase');
+		if (PHP_VERSION_ID < 80100) {
+			$intentPath->setAccessible(true);
+			$mark->setAccessible(true);
+		}
+		file_put_contents($intentPath->invoke($collector, $item), json_encode(array('version' => 2,
+			'manifest' => $digest, 'logical' => $directory, 'parent' => realpath($this->data),
+			'parentDev' => (string) $parent['dev'], 'parentIno' => (string) $parent['ino'],
+			'targetDev' => (string) $target['dev'], 'targetIno' => (string) $target['ino'],
+			'phase' => 'prepared', 'reservation' => null), JSON_UNESCAPED_SLASHES));
+		$locale = setlocale(LC_CTYPE, '0');
+		setlocale(LC_CTYPE, 'C');
+		try {
+			$found = $mark->invoke($collector, $item, $digest, $directory, null, 'verify-missing');
+		} finally {
+			setlocale(LC_CTYPE, $locale);
+		}
+		$this->assertSame(true, $found, 'the prepared record still finds the directory it names');
 	}
 }
