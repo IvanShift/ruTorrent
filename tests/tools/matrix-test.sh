@@ -500,9 +500,10 @@ HOME="$long_home" PATH="$scratch/bin:$PATH" \
 grep -q 'green on prod-kinozal' "$short_home/prod.log"
 printf '%s\n' tests/plugins/rutracker_check/KinozalHandlerTest.php \
     tests/plugins/rutracker_check/SiblingTrackersTest.php \
-    tests/plugins/create/MktorrentDefaultImageSmoke.php > "$short_home/expected-prod-suites.log"
+    tests/plugins/create/MktorrentDefaultImageSmoke.php \
+    tests/plugins/unpack/UnpackArchiveLinksImageSmoke.php > "$short_home/expected-prod-suites.log"
 cmp -s "$short_home/expected-prod-suites.log" "$short_home/prod-suites.log" || {
-    echo 'image leg did not run both tracker suites and creator smoke in order' >&2; exit 1;
+    echo 'image leg did not run both tracker suites and the creator and unpack smokes in order' >&2; exit 1;
 }
 # A local candidate image must be selectable without retagging the shipped image,
 # and its selection must invalidate the runtime digest used by the green marker.
@@ -516,8 +517,8 @@ HOME="$long_home" PATH="$scratch/bin:$PATH" \
     MATRIX_TEST_DOCKER_SUITE_LOG="$short_home/candidate-suites.log" \
     MATRIX_TEST_PROD_ARG_LOG="$short_home/candidate-args.log" \
     "$scratch/tools/matrix.sh" prod-kinozal > "$short_home/candidate-prod.log"
-[ "$(grep -cx 'rutorrent-candidate:review' "$short_home/candidate-args.log")" = 3 ] || {
-    echo 'image leg did not run all three suites on the selected candidate' >&2; exit 1;
+[ "$(grep -cx 'rutorrent-candidate:review' "$short_home/candidate-args.log")" = 4 ] || {
+    echo 'image leg did not run all four suites on the selected candidate' >&2; exit 1;
 }
 ! grep -qx 'ivanshift/rutorrent:latest' "$short_home/candidate-args.log" || {
     echo 'candidate image selection silently used the shipped image' >&2; exit 1;

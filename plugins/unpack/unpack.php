@@ -142,20 +142,165 @@ class rUnpack
 		}
 	}
 
+	// A refusal is logged whatever $unpack_debug_enabled says, since an
+	// automatic unpack has no one to answer.
+	protected static function logRefusal( $how, $hash, $reason, $verb = "refused" )
+	{
+		// A manual unpack's hash comes from the request: only a well-formed
+		// one is copied into the log.
+		$hash = preg_match('/^[0-9A-Fa-f]{40}$/D', (string)$hash) ? strtoupper($hash) : "invalid";
+		FileUtil::toLog("unpack: ".$how." unpack ".$verb." hash=".$hash." reason=".$reason);
+	}
+
 	// unrar and unzip write through any symbolic link along the directory
 	// they are given, so it has to stay inside the top directory once those
-	// links are followed, not only as written. The refusal is logged whatever
-	// $unpack_debug_enabled says, since an automatic unpack has no one to
-	// answer.
+	// links are followed, not only as written.
 	protected static function outsideTopDirectory( $outPath, $how, $hash )
 	{
 		if(rTorrent::isInsideTopDirectory($outPath))
 			return(false);
-		// A manual unpack's hash comes from the request: only a well-formed
-		// one is copied into the log.
-		$hash = preg_match('/^[0-9A-Fa-f]{40}$/D', (string)$hash) ? strtoupper($hash) : "invalid";
-		FileUtil::toLog("unpack: ".$how." unpack refused hash=".$hash." reason=output-outside-top-directory");
+		self::logRefusal($how, $hash, "output-outside-top-directory");
 		return(true);
+	}
+
+	// The unpack scripts' arguments 7-10, for place.php (see stage.sh).
+	protected static function placeArguments( $how, $hash )
+	{
+		return(" ".Utility::escapeShellArg(Utility::getPHP())." ".Utility::escapeShellArg($how)." ".
+			Utility::escapeShellArg((string)$hash)." ".Utility::escapeShellArg(User::getUser()));
+	}
+
+	// What place() calls: place.php refuses to start when one is disabled,
+	// which PHP 7.4 would answer with null, "not a link", and PHP 8 with an
+	// Error half way through.
+	const PLACEMENT_FUNCTIONS = array('scandir', 'lstat', 'is_link', 'is_dir', 'file_exists', 'unlink', 'rename',
+		'mkdir', 'filemtime', 'touch');
+
+	// Moves what one extractor run wrote into its private directory $stage
+	// into $output (place.php, run by the unpack scripts). Every symbolic
+	// link the archive brought is dropped first, even one that resolves
+	// inside for now, since a directory is then moved whole; $skipped more
+	// were left out by the extractor itself (unrar -ol-) and count the same.
+	// Nothing is written into or through a symbolic link in $output. Each
+	// refusal is named on stderr, the task's output, and counted by reason
+	// in the log. Returns the exit status.
+	public static function place( $how, $hash, $stage, $output, $skipped )
+	{
+		$refused = ($skipped > 0) ? array("archive-symbolic-link"=>$skipped) : array();
+		if(self::dropLinks($stage, '', $refused))
+			self::placeEntries($stage, rtrim($output, '/'), '', $refused);
+		foreach($refused as $reason=>$entries)
+			self::logRefusal($how, $hash, $reason." entries=".$entries);
+		return(empty($refused) ? 0 : 1);
+	}
+
+	// What the unpack scripts meet outside a placement: named on stderr and
+	// logged. $verb is "refused" or "found".
+	public static function report( $how, $hash, $verb, $reason, $name )
+	{
+		fwrite(STDERR, "unpack: ".$verb." ".$reason.": ".self::displayName($name)."\n");
+		self::logRefusal($how, $hash, $reason." entries=1", $verb);
+	}
+
+	protected static function displayName( $name )
+	{
+		return(addcslashes($name, "\0..\37\177\\"));
+	}
+
+	protected static function refusePlacement( &$refused, $reason, $name )
+	{
+		$refused[$reason] = (isset($refused[$reason]) ? $refused[$reason] : 0) + 1;
+		fwrite(STDERR, "unpack: refused ".$reason.": ".self::displayName($name)."\n");
+	}
+
+	// The names in $directory, or null after a refusal.
+	protected static function placementNames( $directory, $shown, &$refused )
+	{
+		$names = @scandir($directory);
+		if($names === false)
+		{
+			self::refusePlacement($refused, "move-failed", ($shown === '') ? '.' : $shown);
+			return(null);
+		}
+		return(array_diff($names, array('.', '..')));
+	}
+
+	// Removes every symbolic link under $directory; false if one stays or
+	// an entry cannot be told a link or not.
+	protected static function dropLinks( $directory, $shown, &$refused )
+	{
+		$names = self::placementNames($directory, $shown, $refused);
+		if($names === null)
+			return(false);
+		$dropped = true;
+		foreach($names as $name)
+		{
+			$path = $directory.'/'.$name;
+			$stat = @lstat($path);
+			if($stat === false)
+			{
+				self::refusePlacement($refused, "move-failed", $shown.$name);
+				$dropped = false;
+			}
+			else
+			if(($stat['mode'] & 0170000) === 0120000)
+			{
+				self::refusePlacement($refused, "archive-symbolic-link", $shown.$name);
+				$dropped = @unlink($path) && $dropped;
+			}
+			else
+			if(($stat['mode'] & 0170000) === 0040000)
+				$dropped = self::dropLinks($path, $shown.$name.'/', $refused) && $dropped;
+		}
+		return($dropped);
+	}
+
+	protected static function placeEntries( $from, $to, $shown, &$refused )
+	{
+		$names = self::placementNames($from, $shown, $refused);
+		if($names === null)
+			return;
+		foreach($names as $name)
+		{
+			$source = $from.'/'.$name;
+			$target = $to.'/'.$name;
+			$entry = $shown.$name;
+			// A copy to another filesystem gets the time of the copy.
+			$mtime = @filemtime($source);
+			if(!is_dir($source))
+			{
+				if(is_dir($target) && !is_link($target))
+					self::refusePlacement($refused, "output-type-conflict", $entry);
+				else
+				// unlink() first: rename() to another filesystem copies, and
+				// the copy would write into the file or through the link there.
+				if(((is_link($target) || file_exists($target)) && !@unlink($target)) || !@rename($source, $target))
+					self::refusePlacement($refused, "move-failed", $entry);
+				else
+					@touch($target, $mtime);
+			}
+			else
+			if(is_link($target))
+				self::refusePlacement($refused, "output-symbolic-link", $entry);
+			else
+			if(is_dir($target))
+				self::placeEntries($source, $target, $entry.'/', $refused);
+			else
+			if(file_exists($target))
+				self::refusePlacement($refused, "output-type-conflict", $entry);
+			else
+			// rename() does not move a directory to another filesystem.
+			if(!@rename($source, $target))
+			{
+				if(@mkdir($target))
+				{
+					self::placeEntries($source, $target, $entry.'/', $refused);
+					@touch($target, $mtime);
+				}
+				else
+					self::refusePlacement($refused, "move-failed", $entry);
+			}
+		}
 	}
 
 	protected static function isDryRun()
@@ -296,7 +441,8 @@ class rUnpack
 				Utility::escapeShellArg($outPath)." ".
 				Utility::escapeShellArg($pathToUnzip)." ".
 				Utility::escapeShellArg($filesToDelete)." ".
-				Utility::escapeShellArg($randTempDirectory);
+				Utility::escapeShellArg($randTempDirectory).
+				self::placeArguments("automatic", $hash);
 			if($cleanupAutoTasks)
 				$commands[] = 'rm -r "${dir}"';
 
@@ -361,7 +507,8 @@ class rUnpack
 				$commands[] = Utility::escapeShellArg($rootPath.'/plugins/unpack/un'.$mode.'_file.sh')." ".
 					Utility::escapeShellArg($arh)." ".
 					Utility::escapeShellArg($filename)." ".
-					Utility::escapeShellArg(FileUtil::addslash($outPath));
+					Utility::escapeShellArg(FileUtil::addslash($outPath))." '' '' ''".
+					self::placeArguments("manual", $hash);
 				$taskArgs['arg'] = FileUtil::getFileName($filename);
 
 				self::log("[Manual] Unpack file [$filename] from torrent [$hash] to [$outPath]");
@@ -444,7 +591,8 @@ class rUnpack
 							Utility::escapeShellArg($arh)." ".
 							Utility::escapeShellArg($basename)." ".
 							Utility::escapeShellArg($outPath)." ".
-							Utility::escapeShellArg($pathToUnzip);
+							Utility::escapeShellArg($pathToUnzip)." '' ''".
+							self::placeArguments("manual", $hash);
 						$taskArgs['arg'] = FileUtil::getFileName(FileUtil::delslash($basename));
 
 						self::log("[Manual] Unpack files from torrent [$tname] at [$basename] to [$outPath]");

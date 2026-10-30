@@ -4,9 +4,9 @@
 # pre-commit hook can skip a run it has already seen.
 #
 #   tools/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
-#                                   plus no-iconv tracker suites and packaged creator smoke in the shipped image
+#                                   plus no-iconv tracker suites and packaged creator and unpack smokes in the shipped image
 #   tools/matrix.sh local 7.4       only these legs
-#   tools/matrix.sh prod-kinozal    shipped-image no-iconv tracker suites and creator smoke
+#   tools/matrix.sh prod-kinozal    shipped-image no-iconv tracker suites, creator and unpack smokes
 # Set RUTORRENT_MATRIX_BASE to a private disk-backed directory to isolate
 # exports, retention and the marker from existing runs.
 # RUTORRENT_MATRIX_PROD_IMAGE selects a local candidate for the packaged leg;
@@ -356,7 +356,7 @@ for leg in "${legs[@]}"; do
             setsid bash -c '
                 dir="$1"; uid="$2"; gid="$3"; name="$4"; owner="$5"; image="$6"; status=0
                 : > "$dir/php-test.log"
-                for test_file in tests/plugins/rutracker_check/KinozalHandlerTest.php tests/plugins/rutracker_check/SiblingTrackersTest.php tests/plugins/create/MktorrentDefaultImageSmoke.php; do
+                for test_file in tests/plugins/rutracker_check/KinozalHandlerTest.php tests/plugins/rutracker_check/SiblingTrackersTest.php tests/plugins/create/MktorrentDefaultImageSmoke.php tests/plugins/unpack/UnpackArchiveLinksImageSmoke.php; do
                     suite_log="$dir/$(basename "$test_file" .php).log"
                     iconv_args=()
                     case "$test_file" in
@@ -409,10 +409,10 @@ for leg in "${legs[@]}"; do
     fails="${fails:-0}"
     files="${files:-0}"
     if [ "$leg" = prod-kinozal ]; then
-        if [ "$files" -ne 3 ] \
-            || [ "$(grep -cE '^[1-9][0-9]* tests?, 0 failures$' "$dir/php-test.log")" -ne 3 ] \
+        if [ "$files" -ne 4 ] \
+            || [ "$(grep -cE '^[1-9][0-9]* tests?, 0 failures$' "$dir/php-test.log")" -ne 4 ] \
             || grep -q 'NOT CHECKED' "$dir/php-test.log"; then
-            echo 'matrix.sh: prod-kinozal did not execute both no-iconv suites and packaged creator smoke' >> "$dir/php-test.log"
+            echo 'matrix.sh: prod-kinozal did not execute both no-iconv suites and the packaged creator and unpack smokes' >> "$dir/php-test.log"
             fails=$((fails + 1))
         fi
     elif [ "$files" -ne "$expected_files" ]; then
